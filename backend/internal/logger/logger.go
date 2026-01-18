@@ -3,18 +3,15 @@ package logger
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
-	"runtime"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
-
-	apperrors "github.com/openmusicplayer/backend/internal/errors"
 )
 
-// Level represents the log level
+// Level represents log severity levels
 type Level int
 
 const (
@@ -39,180 +36,267 @@ func (l Level) String() string {
 	}
 }
 
-// LogEntry represents a structured log entry
-type LogEntry struct {
+// ParseLevel converts a string to a Level
+func ParseLevel(s string) Level {
+	switch strings.ToLower(s) {
+	case "debug":
+		return LevelDebug
+	case "info":
+		return LevelInfo
+	case "warn", "warning":
+		return LevelWarn
+	case "error":
+		return LevelError
+	default:
+		return LevelInfo
+	}
+}
+
+// Entry represents a structured log entry
+type Entry struct {
 	Timestamp string                 `json:"timestamp"`
 	Level     string                 `json:"level"`
 	Message   string                 `json:"message"`
 	RequestID string                 `json:"request_id,omitempty"`
-	Component string                 `json:"component,omitempty"`
-	Error     *ErrorDetails          `json:"error,omitempty"`
+	UserID    string                 `json:"user_id,omitempty"`
+	TraceID   string                 `json:"trace_id,omitempty"`
 	Fields    map[string]interface{} `json:"fields,omitempty"`
-	Caller    string                 `json:"caller,omitempty"`
+	Error     string                 `json:"error,omitempty"`
 }
 
-// ErrorDetails contains structured error information
-type ErrorDetails struct {
-	Code       string `json:"code,omitempty"`
-	Message    string `json:"message"`
-	Category   string `json:"category,omitempty"`
-	StackTrace string `json:"stack_trace,omitempty"`
-}
-
-// Logger provides structured logging
+// Logger is the structured JSON logger
 type Logger struct {
-	mu        sync.Mutex
-	output    io.Writer
-	level     Level
-	component string
+	mu       sync.Mutex
+	out      io.Writer
+	minLevel Level
+	redactor *Redactor
 }
 
-// global default logger
-var defaultLogger = New(os.Stdout, LevelInfo, "")
+// Config for logger initialization
+type Config struct {
+	Output   io.Writer
+	Level    Level
+	Redactor *Redactor
+}
 
-// New creates a new logger
-func New(output io.Writer, level Level, component string) *Logger {
+// New creates a new Logger instance
+func New(cfg *Config) *Logger {
+	out := cfg.Output
+	if out == nil {
+		out = os.Stdout
+	}
+	redactor := cfg.Redactor
+	if redactor == nil {
+		redactor = DefaultRedactor()
+	}
 	return &Logger{
-		output:    output,
-		level:     level,
-		component: component,
+		out:      out,
+		minLevel: cfg.Level,
+		redactor: redactor,
 	}
 }
 
-// SetDefault sets the default logger
-func SetDefault(l *Logger) {
-	defaultLogger = l
-}
-
-// Default returns the default logger
+// Default creates a logger with default settings
 func Default() *Logger {
-	return defaultLogger
+	return New(&Config{
+		Output:   os.Stdout,
+		Level:    ParseLevel(os.Getenv("LOG_LEVEL")),
+		Redactor: DefaultRedactor(),
+	})
 }
 
-// WithComponent creates a new logger with the specified component name
-func (l *Logger) WithComponent(component string) *Logger {
-	return &Logger{
-		output:    l.output,
-		level:     l.level,
-		component: component,
+// contextKey is the type for context keys
+type contextKey string
+
+const (
+	requestIDKey contextKey = "request_id"
+	userIDKey    contextKey = "user_id"
+	traceIDKey   contextKey = "trace_id"
+)
+
+// WithRequestID adds a request ID to the context
+func WithRequestID(ctx context.Context, requestID string) context.Context {
+	return context.WithValue(ctx, requestIDKey, requestID)
+}
+
+// GetRequestID retrieves the request ID from context
+func GetRequestID(ctx context.Context) string {
+	if v := ctx.Value(requestIDKey); v != nil {
+		return v.(string)
 	}
+	return ""
 }
 
-// log writes a log entry
+// WithUserID adds a user ID to the context
+func WithUserID(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, userIDKey, userID)
+}
+
+// GetUserID retrieves the user ID from context
+func GetUserID(ctx context.Context) string {
+	if v := ctx.Value(userIDKey); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
+// WithTraceID adds a trace ID to the context
+func WithTraceID(ctx context.Context, traceID string) context.Context {
+	return context.WithValue(ctx, traceIDKey, traceID)
+}
+
+// GetTraceID retrieves the trace ID from context
+func GetTraceID(ctx context.Context) string {
+	if v := ctx.Value(traceIDKey); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
+// log writes a log entry at the specified level
 func (l *Logger) log(ctx context.Context, level Level, msg string, fields map[string]interface{}, err error) {
-	if level < l.level {
+	if level < l.minLevel {
 		return
 	}
 
-	entry := LogEntry{
+	entry := Entry{
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Level:     level.String(),
-		Message:   msg,
-		RequestID: apperrors.GetRequestID(ctx),
-		Component: l.component,
-		Fields:    fields,
+		Message:   l.redactor.Redact(msg),
+		RequestID: GetRequestID(ctx),
+		UserID:    GetUserID(ctx),
+		TraceID:   GetTraceID(ctx),
 	}
 
-	// Add caller info for errors
-	if level >= LevelError {
-		_, file, line, ok := runtime.Caller(2)
-		if ok {
-			// Shorten file path
-			parts := strings.Split(file, "/")
-			if len(parts) > 2 {
-				file = strings.Join(parts[len(parts)-2:], "/")
-			}
-			entry.Caller = fmt.Sprintf("%s:%d", file, line)
-		}
+	if len(fields) > 0 {
+		entry.Fields = l.redactor.RedactFields(fields)
 	}
 
-	// Add error details if present
 	if err != nil {
-		entry.Error = &ErrorDetails{
-			Message: err.Error(),
-		}
-
-		if appErr, ok := err.(*apperrors.AppError); ok {
-			entry.Error.Code = appErr.Code
-			entry.Error.Category = string(appErr.Category)
-		}
-
-		// Add stack trace for errors
-		if level >= LevelError {
-			entry.Error.StackTrace = getStackTrace()
-		}
+		entry.Error = l.redactor.Redact(err.Error())
 	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	data, _ := json.Marshal(entry)
-	l.output.Write(data)
-	l.output.Write([]byte("\n"))
+	l.out.Write(data)
+	l.out.Write([]byte("\n"))
 }
 
-// Debug logs a debug message
-func (l *Logger) Debug(ctx context.Context, msg string, fields ...map[string]interface{}) {
-	var f map[string]interface{}
-	if len(fields) > 0 {
-		f = fields[0]
+// Debug logs at debug level
+func (l *Logger) Debug(ctx context.Context, msg string, fields map[string]interface{}) {
+	l.log(ctx, LevelDebug, msg, fields, nil)
+}
+
+// Info logs at info level
+func (l *Logger) Info(ctx context.Context, msg string, fields map[string]interface{}) {
+	l.log(ctx, LevelInfo, msg, fields, nil)
+}
+
+// Warn logs at warn level
+func (l *Logger) Warn(ctx context.Context, msg string, fields map[string]interface{}) {
+	l.log(ctx, LevelWarn, msg, fields, nil)
+}
+
+// Error logs at error level
+func (l *Logger) Error(ctx context.Context, msg string, fields map[string]interface{}, err error) {
+	l.log(ctx, LevelError, msg, fields, err)
+}
+
+// Redactor handles sensitive data redaction in logs
+type Redactor struct {
+	sensitiveKeys    map[string]bool
+	sensitivePatterns []*regexp.Regexp
+}
+
+// DefaultRedactor creates a redactor with common sensitive patterns
+func DefaultRedactor() *Redactor {
+	return &Redactor{
+		sensitiveKeys: map[string]bool{
+			"password":       true,
+			"password_hash":  true,
+			"secret":         true,
+			"token":          true,
+			"access_token":   true,
+			"refresh_token":  true,
+			"api_key":        true,
+			"apikey":         true,
+			"authorization":  true,
+			"auth":           true,
+			"credential":     true,
+			"private_key":    true,
+			"jwt":            true,
+			"bearer":         true,
+			"session":        true,
+			"cookie":         true,
+			"credit_card":    true,
+			"card_number":    true,
+			"cvv":            true,
+			"ssn":            true,
+			"s3_secret":      true,
+			"minio_secret":   true,
+			"db_password":    true,
+			"redis_password": true,
+		},
+		sensitivePatterns: []*regexp.Regexp{
+			// JWT tokens
+			regexp.MustCompile(`eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+`),
+			// Bearer tokens
+			regexp.MustCompile(`Bearer\s+[A-Za-z0-9-_]+`),
+			// Email addresses (partial redaction)
+			regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`),
+			// Credit card numbers
+			regexp.MustCompile(`\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b`),
+			// AWS-style access keys
+			regexp.MustCompile(`(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}`),
+		},
 	}
-	l.log(ctx, LevelDebug, msg, f, nil)
 }
 
-// Info logs an info message
-func (l *Logger) Info(ctx context.Context, msg string, fields ...map[string]interface{}) {
-	var f map[string]interface{}
-	if len(fields) > 0 {
-		f = fields[0]
+// Redact redacts sensitive information from a string
+func (r *Redactor) Redact(s string) string {
+	result := s
+	for _, pattern := range r.sensitivePatterns {
+		result = pattern.ReplaceAllString(result, "[REDACTED]")
 	}
-	l.log(ctx, LevelInfo, msg, f, nil)
+	return result
 }
 
-// Warn logs a warning message
-func (l *Logger) Warn(ctx context.Context, msg string, fields ...map[string]interface{}) {
-	var f map[string]interface{}
-	if len(fields) > 0 {
-		f = fields[0]
+// RedactFields redacts sensitive fields from a map
+func (r *Redactor) RedactFields(fields map[string]interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+	for k, v := range fields {
+		lowerKey := strings.ToLower(k)
+		if r.sensitiveKeys[lowerKey] {
+			result[k] = "[REDACTED]"
+		} else if str, ok := v.(string); ok {
+			result[k] = r.Redact(str)
+		} else if nested, ok := v.(map[string]interface{}); ok {
+			result[k] = r.RedactFields(nested)
+		} else {
+			result[k] = v
+		}
 	}
-	l.log(ctx, LevelWarn, msg, f, nil)
+	return result
 }
 
-// Error logs an error message
-func (l *Logger) Error(ctx context.Context, msg string, err error, fields ...map[string]interface{}) {
-	var f map[string]interface{}
-	if len(fields) > 0 {
-		f = fields[0]
+// IsSensitiveKey checks if a key name is considered sensitive
+func (r *Redactor) IsSensitiveKey(key string) bool {
+	return r.sensitiveKeys[strings.ToLower(key)]
+}
+
+// AddSensitiveKey adds a new sensitive key to the redactor
+func (r *Redactor) AddSensitiveKey(key string) {
+	r.sensitiveKeys[strings.ToLower(key)] = true
+}
+
+// AddSensitivePattern adds a new sensitive pattern to the redactor
+func (r *Redactor) AddSensitivePattern(pattern string) error {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return err
 	}
-	l.log(ctx, LevelError, msg, f, err)
-}
-
-// Package-level convenience functions
-
-func Debug(ctx context.Context, msg string, fields ...map[string]interface{}) {
-	defaultLogger.Debug(ctx, msg, fields...)
-}
-
-func Info(ctx context.Context, msg string, fields ...map[string]interface{}) {
-	defaultLogger.Info(ctx, msg, fields...)
-}
-
-func Warn(ctx context.Context, msg string, fields ...map[string]interface{}) {
-	defaultLogger.Warn(ctx, msg, fields...)
-}
-
-func Error(ctx context.Context, msg string, err error, fields ...map[string]interface{}) {
-	defaultLogger.Error(ctx, msg, err, fields...)
-}
-
-// getStackTrace returns a stack trace string
-func getStackTrace() string {
-	buf := make([]byte, 4096)
-	n := runtime.Stack(buf, false)
-	return string(buf[:n])
-}
-
-// RequestLogger returns a logger with request-specific context
-func RequestLogger(ctx context.Context, component string) *Logger {
-	return defaultLogger.WithComponent(component)
+	r.sensitivePatterns = append(r.sensitivePatterns, re)
+	return nil
 }

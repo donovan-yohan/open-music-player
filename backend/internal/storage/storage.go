@@ -174,6 +174,12 @@ func (c *Client) Bucket() string {
 	return c.bucket
 }
 
+// Ping checks if the storage is accessible by verifying bucket exists.
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.client.BucketExists(ctx, c.bucket)
+	return err
+}
+
 // ============================================================================
 // S3Storage (aws-sdk-go-v2) - for uploads with deduplication
 // ============================================================================
