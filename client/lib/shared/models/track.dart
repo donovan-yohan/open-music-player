@@ -1,3 +1,84 @@
+/// MusicBrainz match suggestion for unverified tracks
+class MBSuggestion {
+  final String mbRecordingId;
+  final String title;
+  final String artist;
+  final String? artistMbid;
+  final String? album;
+  final String? albumMbid;
+  final int? duration;
+  final double confidence;
+  final List<String> matchReasons;
+
+  const MBSuggestion({
+    required this.mbRecordingId,
+    required this.title,
+    required this.artist,
+    this.artistMbid,
+    this.album,
+    this.albumMbid,
+    this.duration,
+    required this.confidence,
+    this.matchReasons = const [],
+  });
+
+  factory MBSuggestion.fromJson(Map<String, dynamic> json) {
+    return MBSuggestion(
+      mbRecordingId: json['mb_recording_id'] as String,
+      title: json['title'] as String,
+      artist: json['artist'] as String,
+      artistMbid: json['artist_mbid'] as String?,
+      album: json['album'] as String?,
+      albumMbid: json['album_mbid'] as String?,
+      duration: json['duration'] as int?,
+      confidence: (json['confidence'] as num).toDouble(),
+      matchReasons: (json['match_reasons'] as List<dynamic>?)
+              ?.map((e) => e as String)
+              .toList() ??
+          [],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'mb_recording_id': mbRecordingId,
+      'title': title,
+      'artist': artist,
+      'artist_mbid': artistMbid,
+      'album': album,
+      'album_mbid': albumMbid,
+      'duration': duration,
+      'confidence': confidence,
+      'match_reasons': matchReasons,
+    };
+  }
+
+  String get formattedDuration {
+    if (duration == null) return '--:--';
+    final totalSeconds = duration! ~/ 1000;
+    final minutes = totalSeconds ~/ 60;
+    final seconds = totalSeconds % 60;
+    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  String get confidencePercentage => '${(confidence * 100).round()}%';
+
+  List<String> get formattedMatchReasons {
+    return matchReasons.map((reason) {
+      switch (reason) {
+        case 'title_match':
+          return 'Title matches';
+        case 'artist_match':
+          return 'Artist matches';
+        case 'duration_match':
+          return 'Duration matches';
+        default:
+          return reason;
+      }
+    }).toList();
+  }
+}
+
 class Track {
   final int id;
   final String identityHash;
@@ -15,6 +96,7 @@ class Track {
   final String? storageKey;
   final int? fileSizeBytes;
   final Map<String, dynamic>? metadata;
+  final List<MBSuggestion> mbSuggestions;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -35,11 +117,19 @@ class Track {
     this.storageKey,
     this.fileSizeBytes,
     this.metadata,
+    this.mbSuggestions = const [],
     required this.createdAt,
     required this.updatedAt,
   });
 
   factory Track.fromJson(Map<String, dynamic> json) {
+    // Parse MB suggestions from the mb_suggestions field
+    final suggestionsJson = json['mb_suggestions'] as List<dynamic>?;
+    final suggestions = suggestionsJson
+            ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
+            .toList() ??
+        [];
+
     return Track(
       id: json['id'] as int,
       identityHash: json['identity_hash'] as String,
@@ -57,6 +147,7 @@ class Track {
       storageKey: json['storage_key'] as String?,
       fileSizeBytes: json['file_size_bytes'] as int?,
       metadata: json['metadata_json'] as Map<String, dynamic>?,
+      mbSuggestions: suggestions,
       createdAt: DateTime.parse(json['created_at'] as String),
       updatedAt: DateTime.parse(json['updated_at'] as String),
     );
@@ -80,6 +171,7 @@ class Track {
       'storage_key': storageKey,
       'file_size_bytes': fileSizeBytes,
       'metadata_json': metadata,
+      'mb_suggestions': mbSuggestions.map((s) => s.toJson()).toList(),
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
     };
@@ -139,5 +231,56 @@ class Track {
     final minutes = seconds ~/ 60;
     final remainingSeconds = seconds % 60;
     return '$minutes:${remainingSeconds.toString().padLeft(2, '0')}';
+  }
+
+  /// Returns true if this track has suggestions available
+  bool get hasSuggestions => mbSuggestions.isNotEmpty;
+
+  /// Returns true if this track needs verification (unverified with suggestions)
+  bool get needsVerification => !mbVerified && hasSuggestions;
+
+  /// Creates a copy of this track with updated fields
+  Track copyWith({
+    int? id,
+    String? identityHash,
+    String? title,
+    String? artist,
+    String? album,
+    int? durationMs,
+    String? version,
+    String? mbRecordingId,
+    String? mbReleaseId,
+    String? mbArtistId,
+    bool? mbVerified,
+    String? sourceUrl,
+    String? sourceType,
+    String? storageKey,
+    int? fileSizeBytes,
+    Map<String, dynamic>? metadata,
+    List<MBSuggestion>? mbSuggestions,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+  }) {
+    return Track(
+      id: id ?? this.id,
+      identityHash: identityHash ?? this.identityHash,
+      title: title ?? this.title,
+      artist: artist ?? this.artist,
+      album: album ?? this.album,
+      durationMs: durationMs ?? this.durationMs,
+      version: version ?? this.version,
+      mbRecordingId: mbRecordingId ?? this.mbRecordingId,
+      mbReleaseId: mbReleaseId ?? this.mbReleaseId,
+      mbArtistId: mbArtistId ?? this.mbArtistId,
+      mbVerified: mbVerified ?? this.mbVerified,
+      sourceUrl: sourceUrl ?? this.sourceUrl,
+      sourceType: sourceType ?? this.sourceType,
+      storageKey: storageKey ?? this.storageKey,
+      fileSizeBytes: fileSizeBytes ?? this.fileSizeBytes,
+      metadata: metadata ?? this.metadata,
+      mbSuggestions: mbSuggestions ?? this.mbSuggestions,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
   }
 }

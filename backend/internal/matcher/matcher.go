@@ -9,23 +9,61 @@ import (
 
 // MatchResult represents a potential MusicBrainz match for a track
 type MatchResult struct {
-	MBID        string      `json:"mbid"`
-	Title       string      `json:"title"`
-	Artist      string      `json:"artist"`
-	ArtistMBID  string      `json:"artistMbid"`
-	Album       string      `json:"album,omitempty"`
-	AlbumMBID   string      `json:"albumMbid,omitempty"`
-	Duration    int         `json:"duration,omitempty"`
-	Score       *MatchScore `json:"score"`
-	ReleaseDate string      `json:"releaseDate,omitempty"`
+	MBID         string      `json:"mb_recording_id"`
+	Title        string      `json:"title"`
+	Artist       string      `json:"artist"`
+	ArtistMBID   string      `json:"artist_mbid,omitempty"`
+	Album        string      `json:"album,omitempty"`
+	AlbumMBID    string      `json:"album_mbid,omitempty"`
+	Duration     int         `json:"duration,omitempty"`
+	Score        *MatchScore `json:"score,omitempty"`
+	MatchReasons []string    `json:"match_reasons,omitempty"`
+	Confidence   float64     `json:"confidence"`
+	ReleaseDate  string      `json:"release_date,omitempty"`
+}
+
+// MBSuggestion represents a stored match suggestion in the database
+type MBSuggestion struct {
+	MBRecordingID string   `json:"mb_recording_id"`
+	Title         string   `json:"title"`
+	Artist        string   `json:"artist"`
+	ArtistMBID    string   `json:"artist_mbid,omitempty"`
+	Album         string   `json:"album,omitempty"`
+	AlbumMBID     string   `json:"album_mbid,omitempty"`
+	Duration      int      `json:"duration,omitempty"`
+	Confidence    float64  `json:"confidence"`
+	MatchReasons  []string `json:"match_reasons,omitempty"`
+}
+
+// BuildSuggestionsJSON creates the suggestion format for storage
+func BuildSuggestionsJSON(suggestions []MatchResult) map[string]interface{} {
+	mbSuggestions := make([]MBSuggestion, 0, len(suggestions))
+
+	for _, s := range suggestions {
+		mbSuggestions = append(mbSuggestions, MBSuggestion{
+			MBRecordingID: s.MBID,
+			Title:         s.Title,
+			Artist:        s.Artist,
+			ArtistMBID:    s.ArtistMBID,
+			Album:         s.Album,
+			AlbumMBID:     s.AlbumMBID,
+			Duration:      s.Duration,
+			Confidence:    s.Confidence,
+			MatchReasons:  s.MatchReasons,
+		})
+	}
+
+	return map[string]interface{}{
+		"mb_suggestions": mbSuggestions,
+	}
 }
 
 // MatchOutput is the result of the matching process
 type MatchOutput struct {
-	Verified    bool          `json:"verified"`              // True if auto-matched with high confidence
-	BestMatch   *MatchResult  `json:"bestMatch,omitempty"`   // The best match (if any)
-	Suggestions []MatchResult `json:"suggestions,omitempty"` // Top 3 suggestions for uncertain matches
-	ParsedTitle *ParsedTitle  `json:"parsedTitle"`           // How the title was parsed
+	Verified    bool          `json:"verified"`               // True if auto-matched with high confidence
+	BestMatch   *MatchResult  `json:"best_match,omitempty"`   // The best match (if any)
+	Suggestions []MatchResult `json:"suggestions,omitempty"`  // Top 3 suggestions for uncertain matches
+	ParsedTitle *ParsedTitle  `json:"parsed_title,omitempty"` // How the title was parsed
 }
 
 // TrackMetadata contains the input metadata for matching
@@ -108,15 +146,17 @@ func (m *Matcher) Match(ctx context.Context, metadata TrackMetadata) (*MatchOutp
 		)
 
 		scoredResults = append(scoredResults, MatchResult{
-			MBID:        mbTrack.MBID,
-			Title:       mbTrack.Title,
-			Artist:      mbTrack.Artist,
-			ArtistMBID:  mbTrack.ArtistMBID,
-			Album:       mbTrack.Album,
-			AlbumMBID:   mbTrack.AlbumMBID,
-			Duration:    mbTrack.Duration,
-			Score:       score,
-			ReleaseDate: mbTrack.ReleaseDate,
+			MBID:         mbTrack.MBID,
+			Title:        mbTrack.Title,
+			Artist:       mbTrack.Artist,
+			ArtistMBID:   mbTrack.ArtistMBID,
+			Album:        mbTrack.Album,
+			AlbumMBID:    mbTrack.AlbumMBID,
+			Duration:     mbTrack.Duration,
+			Score:        score,
+			MatchReasons: score.MatchReasons,
+			Confidence:   score.Overall / 100.0,
+			ReleaseDate:  mbTrack.ReleaseDate,
 		})
 	}
 

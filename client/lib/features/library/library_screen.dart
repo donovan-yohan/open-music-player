@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import '../../core/storage/offline_database.dart';
 import '../../core/download/download_state.dart';
 import '../../core/network/connectivity_service.dart';
+import '../../core/services/library_service.dart';
+import '../../core/services/api_client.dart';
 import '../../shared/models/models.dart';
 import '../../shared/widgets/widgets.dart';
 
@@ -167,6 +169,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             ),
           ),
         ),
+        const SizedBox(width: 8),
         Text(
           '$count',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -281,7 +284,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
         itemCount: _tracks.length,
         itemBuilder: (context, index) {
           final track = _tracks[index];
-          return _TrackListTile(track: track);
+          return _TrackListTile(
+            track: track,
+            onTrackUpdated: _loadTracks,
+          );
         },
       ),
     );
@@ -290,77 +296,141 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
 class _TrackListTile extends StatelessWidget {
   final Track track;
-  final VoidCallback? onTap;
+  final VoidCallback? onTrackUpdated;
 
-  const _TrackListTile({required this.track, this.onTap});
+  const _TrackListTile({
+    required this.track,
+    this.onTrackUpdated,
+  });
+
+  void _showMatchSuggestions(BuildContext context) {
+    if (!track.needsVerification) return;
+
+    MatchSuggestionsSheet.show(
+      context,
+      track: track,
+      onSelectSuggestion: (suggestion) async {
+        try {
+          final apiClient = context.read<ApiClient>();
+          final libraryService = LibraryService(apiClient);
+          await libraryService.confirmMatchSuggestion(
+            trackId: track.id,
+            recordingMbid: suggestion.mbRecordingId,
+            artistMbid: suggestion.artistMbid,
+            releaseMbid: suggestion.albumMbid,
+          );
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Matched to "${suggestion.title}" by ${suggestion.artist}'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+          onTrackUpdated?.call();
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Failed to confirm match: $e'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+        }
+      },
+      onManualSearch: () {
+        _showUnverifiedTrackSheet(context);
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isUnverified = !track.mbVerified;
 
-    return Container(
-      decoration: isUnverified
-          ? BoxDecoration(
-              border: Border(
-                left: BorderSide(
-                  color: Colors.orange.withValues(alpha: 0.5),
-                  width: 3,
+    return ListTile(
+      leading: Stack(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: const Icon(Icons.music_note),
+          ),
+          // Verification status indicator
+          if (!track.mbVerified)
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Container(
+                width: 14,
+                height: 14,
+                decoration: BoxDecoration(
+                  color: track.hasSuggestions ? Colors.orange : Colors.grey,
+                  borderRadius: BorderRadius.circular(7),
+                  border: Border.all(
+                    color: theme.colorScheme.surface,
+                    width: 2,
+                  ),
+                ),
+                child: Icon(
+                  track.hasSuggestions ? Icons.auto_fix_high : Icons.help_outline,
+                  size: 8,
+                  color: Colors.white,
                 ),
               ),
-            )
-          : null,
-      child: ListTile(
-        leading: Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(4),
-          ),
-          child: const Icon(Icons.music_note),
-        ),
-        title: Text(
-          track.title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Text(
-          track.displayArtist,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (isUnverified)
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: VerificationBadge(isVerified: track.mbVerified),
-              ),
-            Text(
-              track.formattedDuration,
-              style: theme.textTheme.bodySmall,
             ),
-            DownloadButton(track: track),
-          ],
-        ),
-        onTap: onTap ?? () => _showTrackOptions(context),
+        ],
       ),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              track.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (track.needsVerification) ...[
+            const SizedBox(width: 8),
+            UnverifiedTrackIndicator(
+              onTap: () => _showMatchSuggestions(context),
+            ),
+          ],
+        ],
+      ),
+      subtitle: Text(
+        track.displayArtist,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            track.formattedDuration,
+            style: theme.textTheme.bodySmall,
+          ),
+          DownloadButton(track: track),
+        ],
+      ),
+      onTap: () {
+        // TODO: Play track
+      },
+      onLongPress: track.needsVerification
+          ? () => _showMatchSuggestions(context)
+          : null,
     );
-  }
-
-  void _showTrackOptions(BuildContext context) {
-    if (!track.mbVerified) {
-      _showUnverifiedTrackSheet(context);
-    } else {
-      // TODO: Play track
-    }
   }
 
   void _showUnverifiedTrackSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       builder: (context) => _UnverifiedTrackSheet(track: track),
     );
   }
@@ -377,7 +447,7 @@ class _UnverifiedTrackSheet extends StatelessWidget {
     final sourceDisplay = _getSourceDisplay();
 
     return Padding(
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.fromLTRB(24, 24, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,

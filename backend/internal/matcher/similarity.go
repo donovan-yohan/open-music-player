@@ -27,13 +27,14 @@ var DefaultWeights = ScoreWeights{
 
 // MatchScore represents the similarity score between two tracks
 type MatchScore struct {
-	Overall        float64 // Combined weighted score (0-100)
-	ArtistScore    float64 // Artist name similarity (0-100)
-	TrackScore     float64 // Track title similarity (0-100)
-	DurationScore  float64 // Duration match score (0-100)
-	MBAPIScore     int     // Original MusicBrainz API score
-	Confidence     string  // "high", "medium", "low"
-	IsAutoMatchable bool   // True if score is high enough for auto-matching
+	Overall         float64  `json:"overall"`          // Combined weighted score (0-100)
+	ArtistScore     float64  `json:"artistScore"`     // Artist name similarity (0-100)
+	TrackScore      float64  `json:"trackScore"`      // Track title similarity (0-100)
+	DurationScore   float64  `json:"durationScore"`   // Duration match score (0-100)
+	MBAPIScore      int      `json:"mbApiScore"`      // Original MusicBrainz API score
+	Confidence      string   `json:"confidence"`      // "high", "medium", "low"
+	IsAutoMatchable bool     `json:"isAutoMatchable"` // True if score is high enough for auto-matching
+	MatchReasons    []string `json:"match_reasons,omitempty"`
 }
 
 const (
@@ -60,12 +61,26 @@ func CalculateScore(parsed *ParsedTitle, mbArtist, mbTrack string, parsedDuratio
 		(score.TrackScore * weights.TrackWeight) +
 		(score.DurationScore * weights.DurationWeight)
 
+	// Populating MatchReasons
+	if score.TrackScore >= 90 {
+		score.MatchReasons = append(score.MatchReasons, "title_match")
+	}
+	if score.ArtistScore >= 90 {
+		score.MatchReasons = append(score.MatchReasons, "artist_match")
+	}
+	if score.DurationScore >= 95 {
+		score.MatchReasons = append(score.MatchReasons, "duration_match")
+	}
+
 	// Boost score if featuring artists match
 	if len(parsed.Featuring) > 0 {
 		featScore := checkFeaturingMatch(parsed.Featuring, mbArtist)
 		if featScore > 0 {
 			// Add a small bonus for featuring artist matches
 			score.Overall = math.Min(100, score.Overall+(featScore*5))
+			if featScore >= 0.8 {
+				score.MatchReasons = append(score.MatchReasons, "featuring_match")
+			}
 		}
 	}
 

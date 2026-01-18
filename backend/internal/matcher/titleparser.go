@@ -7,12 +7,12 @@ import (
 
 // ParsedTitle contains extracted artist and track information from a title
 type ParsedTitle struct {
-	Artist      string
-	Track       string
-	Featuring   []string
-	IsRemix     bool
-	RemixArtist string
-	Raw         string
+	Artist      string   `json:"artist"`
+	Track       string   `json:"track"`
+	Featuring   []string `json:"featuring,omitempty"`
+	IsRemix     bool     `json:"is_remix"`
+	RemixArtist string   `json:"remix_artist,omitempty"`
+	Raw         string   `json:"raw"`
 }
 
 var (
