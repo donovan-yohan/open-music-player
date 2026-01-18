@@ -10,6 +10,7 @@ import '../features/library/library_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/player/player_screen.dart';
 import '../features/player/widgets/mini_player.dart';
+import '../features/downloads/downloads_screen.dart';
 
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
 final _shellNavigatorKey = GlobalKey<NavigatorState>();
@@ -18,7 +19,6 @@ final router = GoRouter(
   navigatorKey: _rootNavigatorKey,
   initialLocation: '/',
   routes: [
-    // Auth routes (no shell)
     GoRoute(
       path: '/',
       builder: (context, state) => const SplashScreen(),
@@ -31,7 +31,6 @@ final router = GoRouter(
       path: '/register',
       builder: (context, state) => const RegisterScreen(),
     ),
-    // Full player screen (no shell)
     GoRoute(
       path: '/player',
       pageBuilder: (context, state) => CustomTransitionPage(
@@ -50,7 +49,10 @@ final router = GoRouter(
         },
       ),
     ),
-    // Main app routes (with bottom nav shell)
+    GoRoute(
+      path: '/downloads',
+      builder: (context, state) => const DownloadsScreen(),
+    ),
     ShellRoute(
       navigatorKey: _shellNavigatorKey,
       builder: (context, state, child) {
