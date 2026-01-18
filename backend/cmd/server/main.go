@@ -9,6 +9,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/cache"
 	"github.com/openmusicplayer/backend/internal/config"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/search"
 )
@@ -42,7 +43,10 @@ func main() {
 	mbClient := musicbrainz.NewClient(redisCache)
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
 
-	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers)
+	matcherService := matcher.NewMatcher(mbClient)
+	matcherHandlers := matcher.NewHandler(matcherService, trackRepo)
+
+	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, matcherHandlers)
 
 	log.Printf("Starting server on %s", cfg.ServerAddr)
 	if err := http.ListenAndServe(cfg.ServerAddr, router); err != nil {
