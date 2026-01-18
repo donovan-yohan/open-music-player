@@ -17,6 +17,8 @@ import (
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/search"
+	"github.com/openmusicplayer/backend/internal/storage"
+	"github.com/openmusicplayer/backend/internal/stream"
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
 
@@ -49,6 +51,21 @@ func main() {
 	mbClient := musicbrainz.NewClient(redisCache)
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
 
+	// Initialize storage client
+	storageClient, err := storage.New(&storage.Config{
+		Endpoint:  cfg.MinioEndpoint,
+		AccessKey: cfg.MinioAccessKey,
+		SecretKey: cfg.MinioSecretKey,
+		Bucket:    cfg.MinioBucket,
+		UseSSL:    cfg.MinioUseSSL,
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize storage client: %v", err)
+	}
+
+	// Initialize stream handler
+	streamHandler := stream.NewHandler(trackRepo, storageClient)
+
 	// Initialize WebSocket hub and handler
 	wsHub := websocket.NewHub()
 	go wsHub.Run()
@@ -64,7 +81,7 @@ func main() {
 	}
 	downloadService.Start()
 
-	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler)
+	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, streamHandler)
 
 	server := &http.Server{
 		Addr:    cfg.ServerAddr,

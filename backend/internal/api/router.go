@@ -7,6 +7,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/search"
+	"github.com/openmusicplayer/backend/internal/stream"
 	"github.com/openmusicplayer/backend/internal/validators"
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
@@ -20,9 +21,10 @@ type Router struct {
 	musicbrainzHandlers *musicbrainz.Handlers
 	wsHandler           *websocket.Handler
 	validatorHandlers   *validators.Handlers
+	streamHandler       *stream.Handler
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, streamHandler *stream.Handler) *Router {
 	validatorRegistry := validators.DefaultRegistry()
 
 	r := &Router{
@@ -34,6 +36,7 @@ func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHan
 		musicbrainzHandlers: mbHandlers,
 		wsHandler:           wsHandler,
 		validatorHandlers:   validators.NewHandlers(validatorRegistry),
+		streamHandler:       streamHandler,
 	}
 	r.setupRoutes()
 	return r
@@ -77,6 +80,9 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURL))
 	r.mux.HandleFunc("GET /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURLQuery))
 	r.mux.HandleFunc("GET /api/v1/validate/sources", r.withAuth(r.validatorHandlers.GetSupportedSources))
+
+	// Audio streaming route (auth required)
+	r.mux.HandleFunc("GET /api/v1/stream/{track_id}", r.withAuth(r.streamHandler.Stream))
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {
