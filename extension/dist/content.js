@@ -1,0 +1,1 @@
+(()=>{"use strict";console.log("Open Music Player content script loaded")})();
