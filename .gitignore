@@ -3,6 +3,8 @@
 
 # Environment variables
 .env
+.env.local
+.env.*.local
 
 # Docker volumes (if stored locally)
 postgres_data/
@@ -17,10 +19,15 @@ dist/
 *.exe
 backend/server
 
+# Rust build artifacts
+/target/
+Cargo.lock
+
 # IDE
 .idea/
 .vscode/
 *.swp
+*.swo
 
 # OS
 .DS_Store
@@ -30,3 +37,6 @@ Thumbs.db
 .dart_tool/
 .packages
 build/
+
+# SQLx offline mode cache (regenerate with `cargo sqlx prepare`)
+.sqlx/

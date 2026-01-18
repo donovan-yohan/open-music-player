@@ -3,7 +3,7 @@ services:
     image: postgres:15-alpine
     container_name: omp-postgres
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5434}:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-omp}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-omp_dev_password}
@@ -21,7 +21,7 @@ services:
     image: redis:7-alpine
     container_name: omp-redis
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "${REDIS_PORT:-6380}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
