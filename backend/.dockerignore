@@ -1,0 +1,38 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go
+vendor/
+
+# Test files
+*_test.go
+coverage.out
+coverage.html
+
+# Local config
+.env
+.env.local
+*.local
+
+# Documentation
+*.md
+docs/
+
+# Makefile (not needed in container)
+Makefile

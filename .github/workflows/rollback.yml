@@ -1,0 +1,124 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      image_tag:
+        description: 'Image tag to rollback to (e.g., sha-abc1234 or a date tag)'
+        required: true
+        type: string
+      reason:
+        description: 'Reason for rollback'
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/backend
+
+jobs:
+  validate:
+    name: Validate Rollback
+    runs-on: ubuntu-latest
+    outputs:
+      image-exists: ${{ steps.check.outputs.exists }}
+
+    steps:
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check image exists
+        id: check
+        run: |
+          if docker manifest inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }} > /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Image ${{ inputs.image_tag }} found"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::error::Image ${{ inputs.image_tag }} not found in registry"
+            exit 1
+          fi
+
+  rollback-staging:
+    name: Rollback Staging
+    needs: validate
+    runs-on: ubuntu-latest
+    if: inputs.environment == 'staging'
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Perform rollback
+        run: |
+          echo "Rolling back staging to ${{ inputs.image_tag }}"
+          echo "Reason: ${{ inputs.reason }}"
+          # Add your rollback commands here
+          # Example: kubectl set image deployment/backend backend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}
+
+      - name: Verify rollback
+        run: |
+          echo "Verifying rollback..."
+          # Add health check commands
+
+      - name: Create rollback record
+        run: |
+          echo "Rollback record:"
+          echo "  Environment: staging"
+          echo "  Target tag: ${{ inputs.image_tag }}"
+          echo "  Triggered by: ${{ github.actor }}"
+          echo "  Reason: ${{ inputs.reason }}"
+          echo "  Time: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  rollback-production:
+    name: Rollback Production
+    needs: validate
+    runs-on: ubuntu-latest
+    if: inputs.environment == 'production'
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Perform rollback
+        run: |
+          echo "Rolling back production to ${{ inputs.image_tag }}"
+          echo "Reason: ${{ inputs.reason }}"
+          # Add your rollback commands here
+
+      - name: Verify rollback
+        run: |
+          echo "Verifying rollback..."
+          # Add health check commands
+
+      - name: Create rollback record
+        run: |
+          echo "Rollback record:"
+          echo "  Environment: production"
+          echo "  Target tag: ${{ inputs.image_tag }}"
+          echo "  Triggered by: ${{ github.actor }}"
+          echo "  Reason: ${{ inputs.reason }}"
+          echo "  Time: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+      - name: Notify rollback
+        if: always()
+        run: |
+          echo "Production rollback completed with status: ${{ job.status }}"
+          # Add notification (PagerDuty, Slack, etc.)

@@ -1,0 +1,147 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/backend
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value={{date 'YYYYMMDD-HHmmss'}}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: backend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to staging
+        run: |
+          echo "Deploying to staging environment..."
+          echo "Image: ${{ needs.build-and-push.outputs.image-tag }}"
+          # Add your deployment commands here
+          # Examples:
+          # - kubectl set image deployment/backend backend=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
+          # - ssh staging-server "docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest && docker-compose up -d"
+          # - aws ecs update-service --cluster staging --service backend --force-new-deployment
+
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests against staging..."
+          # Add smoke test commands
+          # Example: curl -f ${{ vars.STAGING_URL }}/health || exit 1
+
+      - name: Notify deployment
+        if: always()
+        run: |
+          echo "Staging deployment completed with status: ${{ job.status }}"
+          # Add notification (Slack, Discord, etc.)
+
+  deploy-production:
+    name: Deploy to Production
+    needs: [build-and-push, deploy-staging]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production environment..."
+          echo "Image: ${{ needs.build-and-push.outputs.image-tag }}"
+          # Add your production deployment commands here
+
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests against production..."
+          # Add smoke test commands
+
+      - name: Notify deployment
+        if: always()
+        run: |
+          echo "Production deployment completed with status: ${{ job.status }}"
+          # Add notification
+
+  # Manual promotion workflow - triggers production deployment after staging validation
+  promote-to-production:
+    name: Promote to Production
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    environment:
+      name: production-approval
+
+    steps:
+      - name: Request approval
+        run: |
+          echo "Staging deployment successful. Waiting for production approval..."
+          echo "To deploy to production, manually trigger the workflow with 'production' environment"
