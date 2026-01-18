@@ -20,9 +20,10 @@ type Router struct {
 	musicbrainzHandlers *musicbrainz.Handlers
 	wsHandler           *websocket.Handler
 	validatorHandlers   *validators.Handlers
+	playlistHandlers    *PlaylistHandlers
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, playlistHandlers *PlaylistHandlers) *Router {
 	validatorRegistry := validators.DefaultRegistry()
 
 	r := &Router{
@@ -34,6 +35,7 @@ func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHan
 		musicbrainzHandlers: mbHandlers,
 		wsHandler:           wsHandler,
 		validatorHandlers:   validators.NewHandlers(validatorRegistry),
+		playlistHandlers:    playlistHandlers,
 	}
 	r.setupRoutes()
 	return r
@@ -77,6 +79,16 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURL))
 	r.mux.HandleFunc("GET /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURLQuery))
 	r.mux.HandleFunc("GET /api/v1/validate/sources", r.withAuth(r.validatorHandlers.GetSupportedSources))
+
+	// Playlist routes (auth required)
+	r.mux.HandleFunc("GET /api/v1/playlists", r.withAuth(r.playlistHandlers.ListPlaylists))
+	r.mux.HandleFunc("POST /api/v1/playlists", r.withAuth(r.playlistHandlers.CreatePlaylist))
+	r.mux.HandleFunc("GET /api/v1/playlists/{id}", r.withAuth(r.playlistHandlers.GetPlaylist))
+	r.mux.HandleFunc("PUT /api/v1/playlists/{id}", r.withAuth(r.playlistHandlers.UpdatePlaylist))
+	r.mux.HandleFunc("DELETE /api/v1/playlists/{id}", r.withAuth(r.playlistHandlers.DeletePlaylist))
+	r.mux.HandleFunc("POST /api/v1/playlists/{id}/tracks", r.withAuth(r.playlistHandlers.AddTracks))
+	r.mux.HandleFunc("DELETE /api/v1/playlists/{id}/tracks/{trackId}", r.withAuth(r.playlistHandlers.RemoveTrack))
+	r.mux.HandleFunc("PUT /api/v1/playlists/{id}/tracks/reorder", r.withAuth(r.playlistHandlers.ReorderTracks))
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {
