@@ -1,1 +1,0 @@
-(()=>{"use strict";document.addEventListener("DOMContentLoaded",()=>{const t=document.getElementById("status");t&&(t.textContent="Open Music Player is ready")})})();
