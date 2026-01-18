@@ -8,3 +8,25 @@
 postgres_data/
 redis_data/
 minio_data/
+
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+*.exe
+backend/server
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Flutter
+.dart_tool/
+.packages
+build/

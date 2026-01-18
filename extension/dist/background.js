@@ -1,1 +1,0 @@
-(()=>{"use strict";chrome.runtime.onInstalled.addListener(()=>{console.log("Open Music Player extension installed")}),chrome.runtime.onMessage.addListener((e,n,s)=>("PING"===e.type&&s({type:"PONG"}),!0))})();
