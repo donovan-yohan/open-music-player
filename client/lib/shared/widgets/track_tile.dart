@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../models/track.dart';
 import '../models/library_track.dart';
 
@@ -100,31 +101,19 @@ class TrackTile extends StatelessWidget {
     if (coverArtUrl != null && coverArtUrl!.isNotEmpty) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(4),
-        child: Image.network(
-          coverArtUrl!,
+        child: CachedNetworkImage(
+          imageUrl: coverArtUrl!,
           width: 48,
           height: 48,
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _buildPlaceholder(theme),
+          memCacheWidth: 96, // 2x for retina displays
+          memCacheHeight: 96,
+          placeholder: (_, __) => _CoverArtPlaceholder(theme: theme),
+          errorWidget: (_, __, ___) => _CoverArtPlaceholder(theme: theme),
         ),
       );
     }
-    return _buildPlaceholder(theme);
-  }
-
-  Widget _buildPlaceholder(ThemeData theme) {
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Icon(
-        Icons.music_note,
-        color: theme.colorScheme.onSurfaceVariant,
-      ),
-    );
+    return _CoverArtPlaceholder(theme: theme);
   }
 
   Widget _buildTrailing(BuildContext context) {
@@ -147,6 +136,29 @@ class TrackTile extends StatelessWidget {
             child: const Icon(Icons.drag_handle),
           ),
       ],
+    );
+  }
+}
+
+/// Placeholder widget for cover art - extracted for reuse and const optimization
+class _CoverArtPlaceholder extends StatelessWidget {
+  final ThemeData theme;
+
+  const _CoverArtPlaceholder({required this.theme});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Icon(
+        Icons.music_note,
+        color: theme.colorScheme.onSurfaceVariant,
+      ),
     );
   }
 }

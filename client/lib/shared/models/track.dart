@@ -225,6 +225,22 @@ class Track {
   String get displayArtist => artist ?? 'Unknown Artist';
   String get displayAlbum => album ?? 'Unknown Album';
 
+  /// Returns the cover art URL from Cover Art Archive if MusicBrainz release ID is available
+  String? get coverArtUrl {
+    if (mbReleaseId != null && mbReleaseId!.isNotEmpty) {
+      return 'https://coverartarchive.org/release/$mbReleaseId/front-250';
+    }
+    return null;
+  }
+
+  /// Returns the thumbnail cover art URL (smaller size for lists)
+  String? get coverArtThumbnailUrl {
+    if (mbReleaseId != null && mbReleaseId!.isNotEmpty) {
+      return 'https://coverartarchive.org/release/$mbReleaseId/front-250';
+    }
+    return null;
+  }
+
   String get formattedDuration {
     if (durationMs == null) return '--:--';
     final seconds = durationMs! ~/ 1000;

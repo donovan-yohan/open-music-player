@@ -82,36 +82,40 @@ func (r *PlaylistRepository) GetByID(ctx context.Context, id int64) (*Playlist, 
 	return &p, nil
 }
 
-// GetByIDWithTracks retrieves a playlist with all its tracks.
+// GetByIDWithTracks retrieves a playlist with all its tracks in a single query.
 func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*PlaylistWithTracks, error) {
-	playlist, err := r.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-
-	tracksQuery := `
-		SELECT t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
+	// Single query to get playlist info and all tracks
+	query := `
+		SELECT p.id, p.user_id, p.name, p.description, p.created_at, p.updated_at,
+			   t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
 			   t.mb_recording_id, t.mb_release_id, t.mb_artist_id, t.mb_verified,
 			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
 			   t.metadata_json, t.created_at, t.updated_at
-		FROM tracks t
-		INNER JOIN playlist_tracks pt ON t.id = pt.track_id
-		WHERE pt.playlist_id = $1
+		FROM playlists p
+		LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
+		LEFT JOIN tracks t ON pt.track_id = t.id
+		WHERE p.id = $1
 		ORDER BY pt.position ASC
 	`
 
-	rows, err := r.db.QueryContext(ctx, tracksQuery, id)
+	rows, err := r.db.QueryContext(ctx, query, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
+	var result *PlaylistWithTracks
 	var tracks []Track
 	var totalDuration int64
+
 	for rows.Next() {
+		var p Playlist
 		var t Track
+		var trackID sql.NullInt64
+
 		err := rows.Scan(
-			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
+			&p.ID, &p.UserID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt,
+			&trackID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 			&t.MetadataJSON, &t.CreatedAt, &t.UpdatedAt,
@@ -119,9 +123,19 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 		if err != nil {
 			return nil, err
 		}
-		tracks = append(tracks, t)
-		if t.DurationMs.Valid {
-			totalDuration += int64(t.DurationMs.Int32)
+
+		// Initialize playlist on first row
+		if result == nil {
+			result = &PlaylistWithTracks{Playlist: p}
+		}
+
+		// Add track if present (LEFT JOIN may return NULL for empty playlists)
+		if trackID.Valid {
+			t.ID = trackID.Int64
+			tracks = append(tracks, t)
+			if t.DurationMs.Valid {
+				totalDuration += int64(t.DurationMs.Int32)
+			}
 		}
 	}
 
@@ -129,15 +143,18 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 		return nil, err
 	}
 
-	return &PlaylistWithTracks{
-		Playlist:   *playlist,
-		Tracks:     tracks,
-		TrackCount: len(tracks),
-		DurationMs: totalDuration,
-	}, nil
+	if result == nil {
+		return nil, ErrPlaylistNotFound
+	}
+
+	result.Tracks = tracks
+	result.TrackCount = len(tracks)
+	result.DurationMs = totalDuration
+
+	return result, nil
 }
 
-// GetByUserID retrieves all playlists for a user.
+// GetByUserID retrieves all playlists for a user with a single optimized query.
 func (r *PlaylistRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]PlaylistWithTracks, int, error) {
 	if limit <= 0 {
 		limit = 20
@@ -146,18 +163,12 @@ func (r *PlaylistRepository) GetByUserID(ctx context.Context, userID uuid.UUID, 
 		limit = 100
 	}
 
-	// Count total playlists for user
-	countQuery := `SELECT COUNT(*) FROM playlists WHERE user_id = $1`
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, userID).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
-	// Get playlists with track count and duration
+	// Single query with window function for total count (eliminates separate COUNT query)
 	selectQuery := `
 		SELECT p.id, p.user_id, p.name, p.description, p.created_at, p.updated_at,
 			   COALESCE(COUNT(pt.track_id), 0) as track_count,
-			   COALESCE(SUM(t.duration_ms), 0) as total_duration
+			   COALESCE(SUM(t.duration_ms), 0) as total_duration,
+			   COUNT(*) OVER() as total_playlists
 		FROM playlists p
 		LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
 		LEFT JOIN tracks t ON pt.track_id = t.id
@@ -174,11 +185,12 @@ func (r *PlaylistRepository) GetByUserID(ctx context.Context, userID uuid.UUID, 
 	defer rows.Close()
 
 	var playlists []PlaylistWithTracks
+	var total int
 	for rows.Next() {
 		var p PlaylistWithTracks
 		err := rows.Scan(
 			&p.ID, &p.UserID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt,
-			&p.TrackCount, &p.DurationMs,
+			&p.TrackCount, &p.DurationMs, &total,
 		)
 		if err != nil {
 			return nil, 0, err

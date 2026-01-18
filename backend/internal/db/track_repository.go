@@ -56,7 +56,7 @@ func NewTrackRepository(db *DB) *TrackRepository {
 	return &TrackRepository{db: db}
 }
 
-// SearchRecordings searches tracks by title with optional artist filter
+// SearchRecordings searches tracks by title with optional artist filter using full-text search
 func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, limit, offset int) ([]Track, int, error) {
 	if limit <= 0 {
 		limit = 20
@@ -65,45 +65,49 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 		limit = 100
 	}
 
-	// Count total matches
-	countQuery := `
-		SELECT COUNT(*) FROM tracks
-		WHERE title ILIKE $1 OR artist ILIKE $1 OR album ILIKE $1
-	`
-	var total int
-	searchPattern := "%" + query + "%"
-	if err := r.db.QueryRowContext(ctx, countQuery, searchPattern).Scan(&total); err != nil {
-		return nil, 0, err
+	// Convert query to tsquery format (split words and join with &)
+	tsQuery := strings.Join(strings.Fields(query), " & ")
+	if tsQuery == "" {
+		return []Track{}, 0, nil
 	}
+	tsQuery = tsQuery + ":*" // Prefix matching for partial words
 
-	// Get paginated results
+	// Single query with window function to get both results and total count
 	selectQuery := `
+		WITH search_results AS (
+			SELECT id, identity_hash, title, artist, album, duration_ms, version,
+				   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
+				   source_url, source_type, storage_key, file_size_bytes,
+				   metadata_json, created_at, updated_at,
+				   ts_rank(to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(artist, '') || ' ' || COALESCE(album, '')), to_tsquery('english', $1)) as rank,
+				   COUNT(*) OVER() as total_count
+			FROM tracks
+			WHERE to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(artist, '') || ' ' || COALESCE(album, '')) @@ to_tsquery('english', $1)
+		)
 		SELECT id, identity_hash, title, artist, album, duration_ms, version,
 			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
 			   source_url, source_type, storage_key, file_size_bytes,
-			   metadata_json, created_at, updated_at
-		FROM tracks
-		WHERE title ILIKE $1 OR artist ILIKE $1 OR album ILIKE $1
-		ORDER BY
-			CASE WHEN title ILIKE $1 THEN 0 ELSE 1 END,
-			title ASC
+			   metadata_json, created_at, updated_at, total_count
+		FROM search_results
+		ORDER BY rank DESC, title ASC
 		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := r.db.QueryContext(ctx, selectQuery, searchPattern, limit, offset)
+	rows, err := r.db.QueryContext(ctx, selectQuery, tsQuery, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
 
 	var tracks []Track
+	var total int
 	for rows.Next() {
 		var t Track
 		err := rows.Scan(
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
-			&t.MetadataJSON, &t.CreatedAt, &t.UpdatedAt,
+			&t.MetadataJSON, &t.CreatedAt, &t.UpdatedAt, &total,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -118,7 +122,7 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 	return tracks, total, nil
 }
 
-// SearchArtists searches distinct artists by name
+// SearchArtists searches distinct artists by name using full-text search
 func (r *TrackRepository) SearchArtists(ctx context.Context, query string, limit, offset int) ([]Artist, int, error) {
 	if limit <= 0 {
 		limit = 20
@@ -127,42 +131,41 @@ func (r *TrackRepository) SearchArtists(ctx context.Context, query string, limit
 		limit = 100
 	}
 
-	searchPattern := "%" + query + "%"
-
-	// Count distinct artists
-	countQuery := `
-		SELECT COUNT(DISTINCT artist) FROM tracks
-		WHERE artist ILIKE $1 AND artist IS NOT NULL
-	`
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, searchPattern).Scan(&total); err != nil {
-		return nil, 0, err
+	// Convert query to tsquery format
+	tsQuery := strings.Join(strings.Fields(query), " & ")
+	if tsQuery == "" {
+		return []Artist{}, 0, nil
 	}
+	tsQuery = tsQuery + ":*"
 
-	// Get paginated results with track counts
+	// Single query with window function for total count
 	selectQuery := `
-		SELECT artist, mb_artist_id, COUNT(*) as track_count
-		FROM tracks
-		WHERE artist ILIKE $1 AND artist IS NOT NULL
-		GROUP BY artist, mb_artist_id
-		ORDER BY
-			CASE WHEN artist ILIKE $2 THEN 0 ELSE 1 END,
-			track_count DESC,
-			artist ASC
-		LIMIT $3 OFFSET $4
+		WITH artist_results AS (
+			SELECT artist, mb_artist_id, COUNT(*) as track_count,
+				   ts_rank(to_tsvector('english', artist), to_tsquery('english', $1)) as rank,
+				   COUNT(*) OVER() as total_groups
+			FROM tracks
+			WHERE artist IS NOT NULL
+				AND to_tsvector('english', artist) @@ to_tsquery('english', $1)
+			GROUP BY artist, mb_artist_id
+		)
+		SELECT artist, mb_artist_id, track_count, total_groups
+		FROM artist_results
+		ORDER BY rank DESC, track_count DESC, artist ASC
+		LIMIT $2 OFFSET $3
 	`
 
-	exactPattern := query + "%"
-	rows, err := r.db.QueryContext(ctx, selectQuery, searchPattern, exactPattern, limit, offset)
+	rows, err := r.db.QueryContext(ctx, selectQuery, tsQuery, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
 
 	var artists []Artist
+	var total int
 	for rows.Next() {
 		var a Artist
-		err := rows.Scan(&a.Name, &a.MBArtistID, &a.TrackCount)
+		err := rows.Scan(&a.Name, &a.MBArtistID, &a.TrackCount, &total)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -176,7 +179,7 @@ func (r *TrackRepository) SearchArtists(ctx context.Context, query string, limit
 	return artists, total, nil
 }
 
-// SearchReleases searches distinct albums/releases by name
+// SearchReleases searches distinct albums/releases by name using full-text search
 func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limit, offset int) ([]Release, int, error) {
 	if limit <= 0 {
 		limit = 20
@@ -185,43 +188,42 @@ func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limi
 		limit = 100
 	}
 
-	searchPattern := "%" + query + "%"
-
-	// Count distinct releases
-	countQuery := `
-		SELECT COUNT(DISTINCT album) FROM tracks
-		WHERE album ILIKE $1 AND album IS NOT NULL
-	`
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, searchPattern).Scan(&total); err != nil {
-		return nil, 0, err
+	// Convert query to tsquery format
+	tsQuery := strings.Join(strings.Fields(query), " & ")
+	if tsQuery == "" {
+		return []Release{}, 0, nil
 	}
+	tsQuery = tsQuery + ":*"
 
-	// Get paginated results with track counts
+	// Single query with window function for total count
 	selectQuery := `
-		SELECT album, artist, mb_release_id, COUNT(*) as track_count
-		FROM tracks
-		WHERE album ILIKE $1 AND album IS NOT NULL
-		GROUP BY album, artist, mb_release_id
-		ORDER BY
-			CASE WHEN album ILIKE $2 THEN 0 ELSE 1 END,
-			track_count DESC,
-			album ASC
-		LIMIT $3 OFFSET $4
+		WITH release_results AS (
+			SELECT album, artist, mb_release_id, COUNT(*) as track_count,
+				   ts_rank(to_tsvector('english', album), to_tsquery('english', $1)) as rank,
+				   COUNT(*) OVER() as total_groups
+			FROM tracks
+			WHERE album IS NOT NULL
+				AND to_tsvector('english', album) @@ to_tsquery('english', $1)
+			GROUP BY album, artist, mb_release_id
+		)
+		SELECT album, artist, mb_release_id, track_count, total_groups
+		FROM release_results
+		ORDER BY rank DESC, track_count DESC, album ASC
+		LIMIT $2 OFFSET $3
 	`
 
-	exactPattern := query + "%"
-	rows, err := r.db.QueryContext(ctx, selectQuery, searchPattern, exactPattern, limit, offset)
+	rows, err := r.db.QueryContext(ctx, selectQuery, tsQuery, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
 
 	var releases []Release
+	var total int
 	for rows.Next() {
 		var release Release
 		var artist sql.NullString
-		err := rows.Scan(&release.Name, &artist, &release.MBReleaseID, &release.TrackCount)
+		err := rows.Scan(&release.Name, &artist, &release.MBReleaseID, &release.TrackCount, &total)
 		if err != nil {
 			return nil, 0, err
 		}

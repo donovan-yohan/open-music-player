@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/openmusicplayer/backend/internal/auth"
@@ -54,7 +55,35 @@ type LibraryErrorResponse struct {
 	Message string `json:"message"`
 }
 
+// FieldSelector tracks which fields to include in the response
+type FieldSelector struct {
+	fields map[string]bool
+	all    bool
+}
+
+// NewFieldSelector creates a selector from a comma-separated list of fields
+// If fields is empty, all fields are included
+func NewFieldSelector(fieldsParam string) *FieldSelector {
+	if fieldsParam == "" {
+		return &FieldSelector{all: true}
+	}
+	fields := make(map[string]bool)
+	for _, f := range strings.Split(fieldsParam, ",") {
+		fields[strings.TrimSpace(f)] = true
+	}
+	return &FieldSelector{fields: fields}
+}
+
+func (s *FieldSelector) Include(field string) bool {
+	if s.all {
+		return true
+	}
+	return s.fields[field]
+}
+
 // GetLibrary handles GET /api/v1/library
+// Supports field selection via ?fields=id,title,artist (comma-separated)
+// Available fields: id, title, artist, album, duration_ms, mb_verified, added_at, cover_art_url, mb_recording_id, mb_suggestions
 func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 	userCtx := auth.GetUserFromContext(r.Context())
 	if userCtx == nil {
@@ -66,6 +95,9 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 		Limit:  parseIntParam(r, "limit", 50),
 		Offset: parseIntParam(r, "offset", 0),
 	}
+
+	// Parse field selection
+	fields := NewFieldSelector(r.URL.Query().Get("fields"))
 
 	// Parse sort parameters
 	if sortBy := r.URL.Query().Get("sort"); sortBy != "" {
@@ -105,37 +137,53 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := LibraryListResponse{
-		Tracks: make([]LibraryTrackResponse, 0, len(tracks)),
-		Total:  total,
-		Limit:  opts.Limit,
-		Offset: opts.Offset,
-	}
-
+	// Build response with field selection for reduced payload size
+	trackResponses := make([]map[string]interface{}, 0, len(tracks))
 	for _, t := range tracks {
-		track := LibraryTrackResponse{
-			ID:         t.ID,
-			Title:      t.Title,
-			MBVerified: t.MBVerified,
-			AddedAt:    t.AddedAt.Format("2006-01-02T15:04:05Z"),
+		track := make(map[string]interface{})
+
+		// Always include ID
+		track["id"] = t.ID
+
+		if fields.Include("title") {
+			track["title"] = t.Title
 		}
-		if t.Artist.Valid {
-			track.Artist = t.Artist.String
+		if fields.Include("artist") && t.Artist.Valid {
+			track["artist"] = t.Artist.String
 		}
-		if t.Album.Valid {
-			track.Album = t.Album.String
+		if fields.Include("album") && t.Album.Valid {
+			track["album"] = t.Album.String
 		}
-		if t.DurationMs.Valid {
-			track.DurationMs = int(t.DurationMs.Int32)
+		if fields.Include("duration_ms") && t.DurationMs.Valid {
+			track["duration_ms"] = int(t.DurationMs.Int32)
 		}
-		if t.MBRecordingID != nil {
-			track.MBRecordingID = t.MBRecordingID
+		if fields.Include("mb_verified") {
+			track["mb_verified"] = t.MBVerified
+		}
+		if fields.Include("added_at") {
+			track["added_at"] = t.AddedAt.Format("2006-01-02T15:04:05Z")
+		}
+		if fields.Include("cover_art_url") && t.MBReleaseID != nil {
+			track["cover_art_url"] = "https://coverartarchive.org/release/" + t.MBReleaseID.String() + "/front-250"
+		}
+		if fields.Include("mb_recording_id") && t.MBRecordingID != nil {
+			track["mb_recording_id"] = t.MBRecordingID.String()
 		}
 		// Include suggestions for unverified tracks
-		if !t.MBVerified && len(t.MetadataJSON) > 0 {
-			track.MBSuggestions = parseMBSuggestions(t.MetadataJSON)
+		if fields.Include("mb_suggestions") && !t.MBVerified && len(t.MetadataJSON) > 0 {
+			if suggestions := parseMBSuggestions(t.MetadataJSON); len(suggestions) > 0 {
+				track["mb_suggestions"] = suggestions
+			}
 		}
-		response.Tracks = append(response.Tracks, track)
+
+		trackResponses = append(trackResponses, track)
+	}
+
+	response := map[string]interface{}{
+		"tracks": trackResponses,
+		"total":  total,
+		"limit":  opts.Limit,
+		"offset": opts.Offset,
 	}
 
 	writeLibraryJSON(w, http.StatusOK, response)
