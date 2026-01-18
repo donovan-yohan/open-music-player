@@ -18,6 +18,8 @@ import (
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/search"
+	"github.com/openmusicplayer/backend/internal/storage"
+	"github.com/openmusicplayer/backend/internal/stream"
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
 
@@ -52,6 +54,21 @@ func main() {
 	mbClient := musicbrainz.NewClient(redisCache)
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
 
+	// Initialize storage client
+	storageClient, err := storage.New(&storage.Config{
+		Endpoint:  cfg.MinioEndpoint,
+		AccessKey: cfg.MinioAccessKey,
+		SecretKey: cfg.MinioSecretKey,
+		Bucket:    cfg.MinioBucket,
+		UseSSL:    cfg.MinioUseSSL,
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize storage client: %v", err)
+	}
+
+	// Initialize stream handler
+	streamHandler := stream.NewHandler(trackRepo, storageClient)
+
 	// Initialize WebSocket hub and handler
 	wsHub := websocket.NewHub()
 	go wsHub.Run()
@@ -71,7 +88,7 @@ func main() {
 	matcherService := matcher.NewMatcher(mbClient)
 	matcherHandlers := matcher.NewHandler(matcherService, trackRepo)
 
-	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, matcherHandlers, libraryHandlers)
+	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, matcherHandlers, libraryHandlers, streamHandler)
 
 	server := &http.Server{
 		Addr:    cfg.ServerAddr,

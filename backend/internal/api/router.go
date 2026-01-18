@@ -8,6 +8,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/search"
+	"github.com/openmusicplayer/backend/internal/stream"
 	"github.com/openmusicplayer/backend/internal/validators"
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
@@ -22,9 +23,10 @@ type Router struct {
 	validatorHandlers   *validators.Handlers
 	matcherHandlers     *matcher.Handler
 	libraryHandlers     *LibraryHandlers
+	streamHandler       *stream.Handler
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, streamHandler *stream.Handler) *Router {
 	validatorRegistry := validators.DefaultRegistry()
 
 	r := &Router{
@@ -38,6 +40,7 @@ func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHan
 		validatorHandlers:   validators.NewHandlers(validatorRegistry),
 		matcherHandlers:     matcherHandlers,
 		libraryHandlers:     libraryHandlers,
+		streamHandler:       streamHandler,
 	}
 	r.setupRoutes()
 	return r
@@ -91,6 +94,9 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /api/v1/library", r.withAuth(r.libraryHandlers.GetLibrary))
 	r.mux.HandleFunc("POST /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.AddTrackToLibrary))
 	r.mux.HandleFunc("DELETE /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.RemoveTrackFromLibrary))
+
+	// Audio streaming route (auth required)
+	r.mux.HandleFunc("GET /api/v1/stream/{track_id}", r.withAuth(r.streamHandler.Stream))
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {

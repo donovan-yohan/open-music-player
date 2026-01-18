@@ -27,6 +27,13 @@ type Config struct {
 	S3Bucket         string
 	S3UsePathStyle   bool // Required for MinIO
 	S3ForcePathStyle bool // Alias for S3UsePathStyle
+
+	// MinIO/S3 streaming configuration
+	MinioEndpoint  string
+	MinioAccessKey string
+	MinioSecretKey string
+	MinioBucket    string
+	MinioUseSSL    bool
 }
 
 func Load() *Config {
@@ -34,6 +41,8 @@ func Load() *Config {
 	if workerCount <= 0 {
 		workerCount = 3
 	}
+
+	minioUseSSL, _ := strconv.ParseBool(getEnvOrDefault("MINIO_USE_SSL", "false"))
 
 	return &Config{
 		ServerAddr:  getEnvOrDefault("SERVER_ADDR", ":8080"),
@@ -55,6 +64,13 @@ func Load() *Config {
 		S3Bucket:         getEnvOrDefault("MINIO_BUCKET", "audio-files"),
 		S3UsePathStyle:   getEnvOrDefault("S3_USE_PATH_STYLE", "true") == "true",
 		S3ForcePathStyle: getEnvOrDefault("S3_USE_PATH_STYLE", "true") == "true",
+
+		// MinIO streaming configuration
+		MinioEndpoint:  getEnvOrDefault("MINIO_ENDPOINT", "localhost:9000"),
+		MinioAccessKey: getEnvOrDefault("MINIO_ACCESS_KEY", "minioadmin"),
+		MinioSecretKey: getEnvOrDefault("MINIO_SECRET_KEY", "minioadmin"),
+		MinioBucket:    getEnvOrDefault("MINIO_BUCKET", "audio-files"),
+		MinioUseSSL:    minioUseSSL,
 	}
 }
 
