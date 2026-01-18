@@ -33,10 +33,10 @@
   "content_scripts": [
     {
       "matches": [
-        "https://www.youtube.com/*",
-        "https://youtube.com/*",
-        "https://soundcloud.com/*",
-        "https://www.soundcloud.com/*"
+        "*://*.youtube.com/*",
+        "*://*.youtu.be/*",
+        "*://music.youtube.com/*",
+        "*://*.soundcloud.com/*"
       ],
       "js": ["content.js"]
     }
