@@ -6,6 +6,7 @@ import (
 
 	"github.com/openmusicplayer/backend/internal/api"
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/cache"
 	"github.com/openmusicplayer/backend/internal/config"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
@@ -25,6 +26,12 @@ func main() {
 		log.Fatalf("Failed to run migrations: %v", err)
 	}
 
+	redisCache, err := cache.New(cfg.RedisAddr)
+	if err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+	defer redisCache.Close()
+
 	userRepo := db.NewUserRepository(database)
 	tokenRepo := db.NewTokenRepository(database)
 	trackRepo := db.NewTrackRepository(database)
@@ -32,9 +39,10 @@ func main() {
 	authHandlers := auth.NewHandlers(authService)
 	searchHandlers := search.NewHandlers(trackRepo)
 
-	mbClient := musicbrainz.NewClient()
+	mbClient := musicbrainz.NewClient(redisCache)
+	mbHandlers := musicbrainz.NewHandlers(mbClient)
 
-	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient)
+	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers)
 
 	log.Printf("Starting server on %s", cfg.ServerAddr)
 	if err := http.ListenAndServe(cfg.ServerAddr, router); err != nil {

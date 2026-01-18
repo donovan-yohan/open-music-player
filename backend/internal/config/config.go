@@ -14,6 +14,7 @@ type Config struct {
 	DBPassword string
 	DBName     string
 	JWTSecret  string
+	RedisAddr  string
 }
 
 func Load() *Config {
@@ -25,6 +26,7 @@ func Load() *Config {
 		DBPassword: getEnvOrDefault("DB_PASSWORD", "omp_dev_password"),
 		DBName:     getEnvOrDefault("DB_NAME", "openmusicplayer"),
 		JWTSecret:  getEnvOrDefault("JWT_SECRET", generateDefaultSecret()),
+		RedisAddr:  getEnvOrDefault("REDIS_ADDR", "localhost:6380"),
 	}
 }
 

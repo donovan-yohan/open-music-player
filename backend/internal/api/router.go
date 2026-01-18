@@ -10,20 +10,22 @@ import (
 )
 
 type Router struct {
-	mux            *http.ServeMux
-	authHandlers   *auth.Handlers
-	authService    *auth.Service
-	searchHandlers *search.Handlers
-	browseHandlers *BrowseHandlers
+	mux                 *http.ServeMux
+	authHandlers        *auth.Handlers
+	authService         *auth.Service
+	searchHandlers      *search.Handlers
+	browseHandlers      *BrowseHandlers
+	musicbrainzHandlers *musicbrainz.Handlers
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers) *Router {
 	r := &Router{
-		mux:            http.NewServeMux(),
-		authHandlers:   authHandlers,
-		authService:    authService,
-		searchHandlers: searchHandlers,
-		browseHandlers: NewBrowseHandlers(mbClient),
+		mux:                 http.NewServeMux(),
+		authHandlers:        authHandlers,
+		authService:         authService,
+		searchHandlers:      searchHandlers,
+		browseHandlers:      NewBrowseHandlers(mbClient),
+		musicbrainzHandlers: mbHandlers,
 	}
 	r.setupRoutes()
 	return r
@@ -45,10 +47,15 @@ func (r *Router) setupRoutes() {
 	// Auth routes (auth required)
 	r.mux.HandleFunc("POST /api/v1/auth/logout", r.withAuth(r.authHandlers.Logout))
 
-	// Search routes (auth required)
+	// Search routes - local database (auth required)
 	r.mux.HandleFunc("GET /api/v1/search/recordings", r.withAuth(r.searchHandlers.SearchRecordings))
 	r.mux.HandleFunc("GET /api/v1/search/artists", r.withAuth(r.searchHandlers.SearchArtists))
 	r.mux.HandleFunc("GET /api/v1/search/releases", r.withAuth(r.searchHandlers.SearchReleases))
+
+	// Search routes - MusicBrainz with caching (auth required)
+	r.mux.HandleFunc("GET /api/v1/musicbrainz/search/tracks", r.withAuth(r.musicbrainzHandlers.SearchTracks))
+	r.mux.HandleFunc("GET /api/v1/musicbrainz/search/artists", r.withAuth(r.musicbrainzHandlers.SearchArtists))
+	r.mux.HandleFunc("GET /api/v1/musicbrainz/search/albums", r.withAuth(r.musicbrainzHandlers.SearchAlbums))
 
 	// Browse/discovery routes (auth required)
 	r.mux.HandleFunc("GET /api/v1/artists/{mb_id}", r.withAuth(r.browseHandlers.GetArtist))
