@@ -11,12 +11,142 @@ import type {
   UpdateMetadataRequest,
   UpdateMetadataResponse,
 } from './types';
+import { AppError, ErrorCodes, toAppError, type ApiErrorResponse } from './errors';
 
 const API_BASE_URL = 'http://localhost:8080/api/v1';
 const CONTEXT_MENU_ID = 'add-to-omp';
+const DEFAULT_TIMEOUT = 30000;
+const MAX_RETRIES = 3;
+const INITIAL_BACKOFF = 1000;
 
 // Storage keys
 const AUTH_TOKEN_KEY = 'auth_token';
+
+// Backend availability state
+let backendAvailable = true;
+let lastBackendCheck = 0;
+const BACKEND_CHECK_INTERVAL = 30000; // 30 seconds
+
+// Calculate exponential backoff with jitter
+function calculateBackoff(attempt: number): number {
+  const maxBackoff = 30000;
+  const backoff = Math.min(INITIAL_BACKOFF * Math.pow(2, attempt), maxBackoff);
+  const jitter = backoff * 0.25 * (Math.random() * 2 - 1);
+  return Math.floor(backoff + jitter);
+}
+
+// Sleep helper
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Fetch with timeout and retry
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  maxRetries = MAX_RETRIES
+): Promise<Response> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
+
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      // Update backend availability
+      backendAvailable = true;
+      lastBackendCheck = Date.now();
+
+      // Don't retry client errors (4xx except 429)
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+        return response;
+      }
+
+      // Retry server errors (5xx) and rate limiting (429)
+      if (response.status >= 500 || response.status === 429) {
+        lastError = new Error(`Server error: ${response.status}`);
+        if (attempt < maxRetries) {
+          const backoff = calculateBackoff(attempt);
+          console.log(`Retrying request in ${backoff}ms (attempt ${attempt + 1}/${maxRetries})`);
+          await sleep(backoff);
+          continue;
+        }
+      }
+
+      return response;
+    } catch (err) {
+      clearTimeout(timeoutId);
+
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        lastError = new Error('Request timed out');
+      } else {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        // Mark backend as potentially unavailable
+        backendAvailable = false;
+        lastBackendCheck = Date.now();
+      }
+
+      if (attempt < maxRetries) {
+        const backoff = calculateBackoff(attempt);
+        console.log(`Retrying after error in ${backoff}ms (attempt ${attempt + 1}/${maxRetries})`);
+        await sleep(backoff);
+        continue;
+      }
+    }
+  }
+
+  throw lastError ?? new Error('Request failed after all retries');
+}
+
+// Check backend availability
+async function checkBackendAvailability(): Promise<boolean> {
+  // Use cached result if recent
+  if (Date.now() - lastBackendCheck < BACKEND_CHECK_INTERVAL) {
+    return backendAvailable;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL.replace('/api/v1', '')}/health`, {
+      method: 'GET',
+    });
+    backendAvailable = response.ok;
+  } catch {
+    backendAvailable = false;
+  }
+
+  lastBackendCheck = Date.now();
+  return backendAvailable;
+}
+
+// Parse API error response
+function parseApiError(response: Response, body?: unknown): { code: string; message: string } {
+  const defaultMessage = `Request failed with status ${response.status}`;
+
+  if (body && typeof body === 'object') {
+    const errorBody = body as ApiErrorResponse;
+    if (errorBody.error) {
+      return {
+        code: errorBody.error.code || 'UNKNOWN_ERROR',
+        message: errorBody.error.message || defaultMessage,
+      };
+    }
+    // Legacy format
+    const legacyBody = body as { code?: string; message?: string; error?: string };
+    return {
+      code: legacyBody.code || 'UNKNOWN_ERROR',
+      message: legacyBody.message || legacyBody.error || defaultMessage,
+    };
+  }
+
+  return { code: 'UNKNOWN_ERROR', message: defaultMessage };
+}
 
 // Get auth token from storage
 async function getAuthToken(): Promise<string | null> {
@@ -67,6 +197,17 @@ async function checkAuth(): Promise<AuthState> {
 async function addToLibrary(
   message: AddToLibraryMessage
 ): Promise<AddToLibraryResponse> {
+  // Check backend availability first
+  const isAvailable = await checkBackendAvailability();
+  if (!isAvailable) {
+    return {
+      type: 'ADD_TO_LIBRARY_RESULT',
+      success: false,
+      error: 'backend_unavailable',
+      errorCode: ErrorCodes.NETWORK_ERROR,
+    } as AddToLibraryResponse & { errorCode?: string };
+  }
+
   const auth = await checkAuth();
 
   if (!auth.isLoggedIn || !auth.token) {
@@ -87,7 +228,7 @@ async function addToLibrary(
   };
 
   try {
-    const response = await fetch(`${API_BASE_URL}/downloads`, {
+    const response = await fetchWithRetry(`${API_BASE_URL}/downloads`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -105,8 +246,12 @@ async function addToLibrary(
       };
     }
 
+    // Parse error body
+    const errorBody = await response.json().catch(() => undefined);
+    const { code, message: errorMessage } = parseApiError(response, errorBody);
+
     // Handle specific error codes
-    if (response.status === 401) {
+    if (response.status === 401 || code === ErrorCodes.UNAUTHORIZED || code === ErrorCodes.INVALID_TOKEN) {
       await clearAuthToken();
       return {
         type: 'ADD_TO_LIBRARY_RESULT',
@@ -115,7 +260,7 @@ async function addToLibrary(
       };
     }
 
-    if (response.status === 409) {
+    if (response.status === 409 || code === ErrorCodes.CONFLICT) {
       return {
         type: 'ADD_TO_LIBRARY_RESULT',
         success: false,
@@ -123,18 +268,20 @@ async function addToLibrary(
       };
     }
 
-    const errorData = await response.json().catch(() => ({}));
     return {
       type: 'ADD_TO_LIBRARY_RESULT',
       success: false,
-      error: errorData.error || `Request failed with status ${response.status}`,
-    };
+      error: errorMessage,
+      errorCode: code,
+    } as AddToLibraryResponse & { errorCode?: string };
   } catch (err) {
+    const appError = toAppError(err);
     return {
       type: 'ADD_TO_LIBRARY_RESULT',
       success: false,
-      error: err instanceof Error ? err.message : 'Network error',
-    };
+      error: appError.displayMessage,
+      errorCode: appError.code,
+    } as AddToLibraryResponse & { errorCode?: string };
   }
 }
 
@@ -142,6 +289,16 @@ async function addToLibrary(
 async function updateMetadata(
   message: UpdateMetadataMessage & { force?: boolean }
 ): Promise<UpdateMetadataResult> {
+  // Check backend availability first
+  const isAvailable = await checkBackendAvailability();
+  if (!isAvailable) {
+    return {
+      type: 'UPDATE_METADATA_RESULT',
+      success: false,
+      error: 'Backend is currently unavailable. Please try again later.',
+    };
+  }
+
   const auth = await checkAuth();
 
   if (!auth.isLoggedIn || !auth.token) {
@@ -166,7 +323,7 @@ async function updateMetadata(
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/tracks/${message.trackId}/metadata`, {
+    const response = await fetchWithRetry(`${API_BASE_URL}/tracks/${message.trackId}/metadata`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -185,8 +342,12 @@ async function updateMetadata(
       };
     }
 
+    // Parse error body
+    const errorBody = await response.json().catch(() => undefined);
+    const { code, message: errorMessage } = parseApiError(response, errorBody);
+
     // Handle specific error codes
-    if (response.status === 401) {
+    if (response.status === 401 || code === ErrorCodes.UNAUTHORIZED) {
       await clearAuthToken();
       return {
         type: 'UPDATE_METADATA_RESULT',
@@ -195,19 +356,19 @@ async function updateMetadata(
       };
     }
 
-    if (response.status === 409) {
+    if (response.status === 409 || code === ErrorCodes.CONFLICT) {
       // Duplicate found
-      const errorData: UpdateMetadataResponse = await response.json();
+      const typedBody = errorBody as UpdateMetadataResponse | undefined;
       return {
         type: 'UPDATE_METADATA_RESULT',
         success: false,
         duplicateFound: true,
-        duplicateTrackId: errorData.duplicate_track_id,
+        duplicateTrackId: typedBody?.duplicate_track_id,
         error: 'duplicate_found',
       };
     }
 
-    if (response.status === 404) {
+    if (response.status === 404 || code === ErrorCodes.NOT_FOUND) {
       return {
         type: 'UPDATE_METADATA_RESULT',
         success: false,
@@ -215,17 +376,17 @@ async function updateMetadata(
       };
     }
 
-    const errorData = await response.json().catch(() => ({}));
     return {
       type: 'UPDATE_METADATA_RESULT',
       success: false,
-      error: errorData.error || `Request failed with status ${response.status}`,
+      error: errorMessage,
     };
   } catch (err) {
+    const appError = toAppError(err);
     return {
       type: 'UPDATE_METADATA_RESULT',
       success: false,
-      error: err instanceof Error ? err.message : 'Network error',
+      error: appError.displayMessage,
     };
   }
 }
@@ -235,6 +396,15 @@ async function mergeTracks(
   sourceTrackId: string,
   targetTrackId: string
 ): Promise<{ success: boolean; error?: string }> {
+  // Check backend availability first
+  const isAvailable = await checkBackendAvailability();
+  if (!isAvailable) {
+    return {
+      success: false,
+      error: 'Backend is currently unavailable. Please try again later.',
+    };
+  }
+
   const auth = await checkAuth();
 
   if (!auth.isLoggedIn || !auth.token) {
@@ -245,7 +415,7 @@ async function mergeTracks(
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/tracks/${targetTrackId}/merge`, {
+    const response = await fetchWithRetry(`${API_BASE_URL}/tracks/${targetTrackId}/merge`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -258,7 +428,11 @@ async function mergeTracks(
       return { success: true };
     }
 
-    if (response.status === 401) {
+    // Parse error body
+    const errorBody = await response.json().catch(() => undefined);
+    const { code, message: errorMessage } = parseApiError(response, errorBody);
+
+    if (response.status === 401 || code === ErrorCodes.UNAUTHORIZED) {
       await clearAuthToken();
       return {
         success: false,
@@ -266,15 +440,15 @@ async function mergeTracks(
       };
     }
 
-    const errorData = await response.json().catch(() => ({}));
     return {
       success: false,
-      error: errorData.error || `Request failed with status ${response.status}`,
+      error: errorMessage,
     };
   } catch (err) {
+    const appError = toAppError(err);
     return {
       success: false,
-      error: err instanceof Error ? err.message : 'Network error',
+      error: appError.displayMessage,
     };
   }
 }
@@ -377,6 +551,13 @@ chrome.commands.onCommand.addListener((command) => {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'PING') {
     sendResponse({ type: 'PONG' });
+    return true;
+  }
+
+  if (message.type === 'CHECK_BACKEND') {
+    checkBackendAvailability().then((available) => {
+      sendResponse({ available });
+    });
     return true;
   }
 

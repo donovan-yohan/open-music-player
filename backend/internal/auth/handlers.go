@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	"github.com/openmusicplayer/backend/internal/db"
+	apperrors "github.com/openmusicplayer/backend/internal/errors"
 )
 
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
@@ -40,96 +41,105 @@ func NewHandlers(authService *Service) *Handlers {
 }
 
 func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
+	requestID := apperrors.GetRequestID(r.Context())
+
 	var req RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
+		apperrors.WriteError(w, requestID, apperrors.BadRequest("invalid request body"))
 		return
 	}
 
 	if err := validateRegisterRequest(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
+		apperrors.WriteError(w, requestID, apperrors.ValidationError(err.Error()))
 		return
 	}
 
 	resp, err := h.authService.Register(r.Context(), req.Email, req.Password, req.Username)
 	if err != nil {
 		if errors.Is(err, db.ErrEmailExists) {
-			writeError(w, http.StatusConflict, "EMAIL_EXISTS", "email already registered")
+			apperrors.WriteError(w, requestID, apperrors.EmailExists())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create user")
+		apperrors.WriteError(w, requestID, apperrors.InternalError("failed to create user").WithCause(err))
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(resp)
+	apperrors.WriteJSON(w, requestID, http.StatusCreated, resp)
 }
 
 func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
+	requestID := apperrors.GetRequestID(r.Context())
+
 	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
+		apperrors.WriteError(w, requestID, apperrors.BadRequest("invalid request body"))
 		return
 	}
 
 	if req.Email == "" || req.Password == "" {
-		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "email and password are required")
+		apperrors.WriteError(w, requestID, apperrors.ValidationError("email and password are required"))
 		return
 	}
 
 	resp, err := h.authService.Login(r.Context(), req.Email, req.Password)
 	if err != nil {
 		if errors.Is(err, ErrInvalidCredentials) {
-			writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid email or password")
+			apperrors.WriteError(w, requestID, apperrors.InvalidCredentials())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "login failed")
+		apperrors.WriteError(w, requestID, apperrors.InternalError("login failed").WithCause(err))
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	apperrors.WriteJSON(w, requestID, http.StatusOK, resp)
 }
 
 func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
+	requestID := apperrors.GetRequestID(r.Context())
+
 	var req RefreshRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
+		apperrors.WriteError(w, requestID, apperrors.BadRequest("invalid request body"))
 		return
 	}
 
 	if req.RefreshToken == "" {
-		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "refresh token is required")
+		apperrors.WriteError(w, requestID, apperrors.ValidationError("refresh token is required"))
 		return
 	}
 
 	resp, err := h.authService.Refresh(r.Context(), req.RefreshToken)
 	if err != nil {
-		if errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrTokenExpired) {
-			writeError(w, http.StatusUnauthorized, "INVALID_TOKEN", "invalid or expired refresh token")
+		if errors.Is(err, ErrInvalidToken) {
+			apperrors.WriteError(w, requestID, apperrors.InvalidToken("invalid or expired refresh token"))
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "token refresh failed")
+		if errors.Is(err, ErrTokenExpired) {
+			apperrors.WriteError(w, requestID, apperrors.TokenExpired())
+			return
+		}
+		apperrors.WriteError(w, requestID, apperrors.InternalError("token refresh failed").WithCause(err))
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	apperrors.WriteJSON(w, requestID, http.StatusOK, resp)
 }
 
 func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) {
+	requestID := apperrors.GetRequestID(r.Context())
+
 	userCtx := GetUserFromContext(r.Context())
 	if userCtx == nil {
-		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "not authenticated")
+		apperrors.WriteError(w, requestID, apperrors.Unauthorized("not authenticated"))
 		return
 	}
 
 	if err := h.authService.Logout(r.Context(), userCtx.UserID); err != nil {
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "logout failed")
+		apperrors.WriteError(w, requestID, apperrors.InternalError("logout failed").WithCause(err))
 		return
 	}
 
+	w.Header().Set("X-Request-ID", requestID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -158,11 +168,8 @@ func validateRegisterRequest(req *RegisterRequest) error {
 	return nil
 }
 
+// Deprecated: use apperrors.WriteError instead
+// Keeping for backwards compatibility with any external callers
 func writeError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(ErrorResponse{
-		Code:    code,
-		Message: message,
-	})
+	apperrors.WriteError(w, "", apperrors.New(code, message, apperrors.CategoryClient, status))
 }

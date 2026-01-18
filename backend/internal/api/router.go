@@ -5,6 +5,8 @@ import (
 	"net/http"
 
 	"github.com/openmusicplayer/backend/internal/auth"
+	apperrors "github.com/openmusicplayer/backend/internal/errors"
+	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/queue"
@@ -55,7 +57,13 @@ func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHan
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	r.mux.ServeHTTP(w, req)
+	// Apply middleware chain: Recovery -> RequestID -> Logging -> Routes
+	handler := logger.RecoveryMiddleware(
+		apperrors.RequestIDMiddleware(
+			logger.LoggingMiddleware(r.mux),
+		),
+	)
+	handler.ServeHTTP(w, req)
 }
 
 func (r *Router) setupRoutes() {

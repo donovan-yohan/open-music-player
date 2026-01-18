@@ -8,6 +8,8 @@ import type {
   UpdateMetadataResult,
   TrackMetadata,
 } from '../types';
+import { toAppError, type AppError } from '../errors';
+import { setupOfflineDetection, showOfflineBanner, getErrorIcon, getErrorTitle } from '../errors/ui';
 
 interface UIElements {
   loading: HTMLElement;
@@ -17,6 +19,7 @@ interface UIElements {
   success: HTMLElement;
   error: HTMLElement;
   alreadyAdded: HTMLElement;
+  offline: HTMLElement;
   thumbnail: HTMLImageElement;
   sourceBadge: HTMLElement;
   trackTitle: HTMLElement;
@@ -25,6 +28,8 @@ interface UIElements {
   loginBtn: HTMLButtonElement;
   retryBtn: HTMLButtonElement;
   errorMessage: HTMLElement;
+  errorTitle: HTMLElement;
+  errorIcon: HTMLElement;
   jobStatus: HTMLElement;
   // Edit modal elements
   editBtn: HTMLButtonElement;
@@ -59,6 +64,11 @@ interface State {
 let elements: UIElements;
 let state: State;
 
+// Track last error for retry
+let lastError: AppError | null = null;
+let offlineBanner: HTMLElement | null = null;
+let cleanupOfflineDetection: (() => void) | null = null;
+
 function getElements(): UIElements {
   return {
     loading: document.getElementById('loading')!,
@@ -68,6 +78,7 @@ function getElements(): UIElements {
     success: document.getElementById('success')!,
     error: document.getElementById('error')!,
     alreadyAdded: document.getElementById('already-added')!,
+    offline: document.getElementById('offline') ?? createOfflineElement(),
     thumbnail: document.getElementById('thumbnail') as HTMLImageElement,
     sourceBadge: document.getElementById('source-badge')!,
     trackTitle: document.getElementById('track-title')!,
@@ -76,6 +87,8 @@ function getElements(): UIElements {
     loginBtn: document.getElementById('login-btn') as HTMLButtonElement,
     retryBtn: document.getElementById('retry-btn') as HTMLButtonElement,
     errorMessage: document.getElementById('error-message')!,
+    errorTitle: document.getElementById('error-title') ?? createErrorTitleElement(),
+    errorIcon: document.getElementById('error-icon') ?? createErrorIconElement(),
     jobStatus: document.getElementById('job-status')!,
     // Edit modal elements
     editBtn: document.getElementById('edit-btn') as HTMLButtonElement,
@@ -97,6 +110,46 @@ function getElements(): UIElements {
   };
 }
 
+function createOfflineElement(): HTMLElement {
+  const el = document.createElement('div');
+  el.id = 'offline';
+  el.className = 'section hidden';
+  el.innerHTML = `
+    <div class="icon">📴</div>
+    <h2>No Connection</h2>
+    <p>You appear to be offline. Please check your internet connection.</p>
+    <button id="offline-retry-btn" class="btn btn-secondary">Check Connection</button>
+  `;
+  document.body.appendChild(el);
+  return el;
+}
+
+function createErrorTitleElement(): HTMLElement {
+  const el = document.createElement('h3');
+  el.id = 'error-title';
+  el.textContent = 'Error';
+  const errorSection = document.getElementById('error');
+  if (errorSection) {
+    const message = errorSection.querySelector('#error-message');
+    if (message) {
+      message.parentNode?.insertBefore(el, message);
+    }
+  }
+  return el;
+}
+
+function createErrorIconElement(): HTMLElement {
+  const el = document.createElement('div');
+  el.id = 'error-icon';
+  el.className = 'icon';
+  el.textContent = '⚠️';
+  const errorSection = document.getElementById('error');
+  if (errorSection) {
+    errorSection.insertBefore(el, errorSection.firstChild);
+  }
+  return el;
+}
+
 function hideAll(): void {
   elements.loading.classList.add('hidden');
   elements.unsupported.classList.add('hidden');
@@ -106,6 +159,7 @@ function hideAll(): void {
   elements.error.classList.add('hidden');
   elements.alreadyAdded.classList.add('hidden');
   elements.editModal.classList.add('hidden');
+  elements.offline.classList.add('hidden');
 }
 
 function showSection(section: HTMLElement): void {
@@ -152,9 +206,40 @@ function showSuccess(jobId?: string): void {
   }
 }
 
-function showError(message: string): void {
+function showError(errorOrMessage: string | Error | AppError): void {
   showSection(elements.error);
-  elements.errorMessage.textContent = message;
+
+  // Convert to AppError for consistent handling
+  let appError: AppError;
+  if (typeof errorOrMessage === 'string') {
+    appError = toAppError(new Error(errorOrMessage));
+  } else {
+    appError = toAppError(errorOrMessage);
+  }
+
+  // Store for retry
+  lastError = appError;
+
+  // Update error display
+  elements.errorIcon.textContent = getErrorIcon(appError);
+  elements.errorTitle.textContent = getErrorTitle(appError);
+  elements.errorMessage.textContent = appError.displayMessage;
+
+  // Show/hide retry button based on whether error is retryable
+  if (appError.isRetryable) {
+    elements.retryBtn.classList.remove('hidden');
+  } else {
+    elements.retryBtn.classList.add('hidden');
+  }
+
+  // Handle auth errors specially
+  if (appError.isAuthError) {
+    showNotLoggedIn();
+  }
+}
+
+function showOffline(): void {
+  showSection(elements.offline);
 }
 
 function showAlreadyAdded(): void {
@@ -427,14 +512,34 @@ async function mergeWithDuplicate(): Promise<void> {
 function setupEventListeners(): void {
   elements.addBtn.addEventListener('click', addToLibrary);
 
-  elements.retryBtn.addEventListener('click', () => {
-    showTrackPreview();
+  elements.retryBtn.addEventListener('click', async () => {
+    // Retry the last operation based on state
+    if (lastError) {
+      if (state.isAdding) {
+        await addToLibrary();
+      } else {
+        showTrackPreview();
+      }
+    } else {
+      showTrackPreview();
+    }
   });
 
   elements.loginBtn.addEventListener('click', () => {
     // Open the app login page in a new tab
     chrome.tabs.create({ url: 'http://localhost:8080/login' });
   });
+
+  // Offline retry button
+  const offlineRetryBtn = document.getElementById('offline-retry-btn');
+  if (offlineRetryBtn) {
+    offlineRetryBtn.addEventListener('click', async () => {
+      if (navigator.onLine) {
+        // Re-initialize the popup
+        await init();
+      }
+    });
+  }
 
   // Edit modal event listeners
   elements.editBtn.addEventListener('click', showEditModal);
@@ -469,6 +574,32 @@ async function init(): Promise<void> {
   };
 
   setupEventListeners();
+
+  // Set up offline detection
+  if (cleanupOfflineDetection) {
+    cleanupOfflineDetection();
+  }
+  cleanupOfflineDetection = setupOfflineDetection(
+    () => {
+      // On offline
+      if (offlineBanner) return;
+      offlineBanner = showOfflineBanner(document.body);
+    },
+    () => {
+      // On online
+      if (offlineBanner) {
+        offlineBanner.remove();
+        offlineBanner = null;
+      }
+    }
+  );
+
+  // Check if offline at startup
+  if (!navigator.onLine) {
+    showOffline();
+    return;
+  }
+
   showLoading();
 
   // Get metadata from the current page

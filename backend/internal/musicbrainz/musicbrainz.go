@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/openmusicplayer/backend/internal/cache"
+	apperrors "github.com/openmusicplayer/backend/internal/errors"
+	"github.com/openmusicplayer/backend/internal/logger"
 )
 
 const (
@@ -613,35 +615,72 @@ func (c *Client) GetCoverArtURL(releaseID string) string {
 
 // HTTP client helpers
 
-func (c *Client) doRequest(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (c *Client) doRequest(ctx context.Context, reqURL string) ([]byte, error) {
+	log := logger.Default().WithComponent("musicbrainz")
+	cfg := apperrors.MusicBrainzRetryConfig()
+
+	var result []byte
+	err := apperrors.Retry(ctx, cfg, func(ctx context.Context) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("User-Agent", userAgent)
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			log.Warn(ctx, "MusicBrainz request failed, may retry", map[string]interface{}{
+				"url":   reqURL,
+				"error": err.Error(),
+			})
+			return apperrors.MusicBrainzError(fmt.Sprintf("request failed: %v", err))
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusNotFound {
+			return ErrNotFound
+		}
+
+		// Check for rate limiting (429)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			log.Warn(ctx, "MusicBrainz rate limited, will retry", map[string]interface{}{
+				"url": reqURL,
+			})
+			return apperrors.MusicBrainzError("rate limited")
+		}
+
+		// Check for retryable server errors
+		if apperrors.HTTPRetryableStatus(resp.StatusCode) {
+			log.Warn(ctx, "MusicBrainz server error, will retry", map[string]interface{}{
+				"url":    reqURL,
+				"status": resp.StatusCode,
+			})
+			return apperrors.MusicBrainzError(fmt.Sprintf("server error: %d", resp.StatusCode))
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("MusicBrainz API returned status %d", resp.StatusCode)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		result = body
+		return nil
+	})
+
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		log.Error(ctx, "MusicBrainz request failed after retries", err, map[string]interface{}{
+			"url": reqURL,
+		})
+		return nil, err
 	}
 
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, ErrNotFound
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("MusicBrainz API returned status %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	return body, nil
+	return result, nil
 }
 
 func (c *Client) buildCacheKey(entityType, query string, limit, offset int) string {
