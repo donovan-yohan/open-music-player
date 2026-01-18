@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/matcher"
 )
 
 type LibraryHandlers struct {
@@ -24,15 +25,16 @@ func NewLibraryHandlers(trackRepo *db.TrackRepository, libraryRepo *db.LibraryRe
 }
 
 type LibraryTrackResponse struct {
-	ID            int64      `json:"id"`
-	Title         string     `json:"title"`
-	Artist        string     `json:"artist,omitempty"`
-	Album         string     `json:"album,omitempty"`
-	DurationMs    int        `json:"duration_ms,omitempty"`
-	MBVerified    bool       `json:"mb_verified"`
-	AddedAt       string     `json:"added_at"`
-	CoverArtURL   string     `json:"cover_art_url,omitempty"`
-	MBRecordingID *uuid.UUID `json:"mb_recording_id,omitempty"`
+	ID            int64               `json:"id"`
+	Title         string              `json:"title"`
+	Artist        string              `json:"artist,omitempty"`
+	Album         string              `json:"album,omitempty"`
+	DurationMs    int                 `json:"duration_ms,omitempty"`
+	MBVerified    bool                `json:"mb_verified"`
+	AddedAt       string              `json:"added_at"`
+	CoverArtURL   string              `json:"cover_art_url,omitempty"`
+	MBRecordingID *uuid.UUID          `json:"mb_recording_id,omitempty"`
+	MBSuggestions []matcher.MBSuggestion `json:"mb_suggestions,omitempty"`
 }
 
 type LibraryListResponse struct {
@@ -128,6 +130,10 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 		}
 		if t.MBRecordingID != nil {
 			track.MBRecordingID = t.MBRecordingID
+		}
+		// Include suggestions for unverified tracks
+		if !t.MBVerified && len(t.MetadataJSON) > 0 {
+			track.MBSuggestions = parseMBSuggestions(t.MetadataJSON)
 		}
 		response.Tracks = append(response.Tracks, track)
 	}
@@ -237,4 +243,17 @@ func writeLibraryError(w http.ResponseWriter, status int, code, message string) 
 		Code:    code,
 		Message: message,
 	})
+}
+
+// parseMBSuggestions extracts MB suggestions from metadata JSON
+func parseMBSuggestions(metadataJSON []byte) []matcher.MBSuggestion {
+	var metadata struct {
+		MBSuggestions []matcher.MBSuggestion `json:"mb_suggestions"`
+	}
+
+	if err := json.Unmarshal(metadataJSON, &metadata); err != nil {
+		return nil
+	}
+
+	return metadata.MBSuggestions
 }

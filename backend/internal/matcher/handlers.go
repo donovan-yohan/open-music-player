@@ -33,11 +33,11 @@ type MatchRequest struct {
 
 // MatchResponse is the response for a match request
 type MatchResponse struct {
-	TrackID     int64        `json:"trackId,omitempty"`
+	TrackID     int64        `json:"track_id,omitempty"`
 	Verified    bool         `json:"verified"`
-	BestMatch   *MatchResult `json:"bestMatch,omitempty"`
+	BestMatch   *MatchResult `json:"best_match,omitempty"`
 	Suggestions []MatchResult `json:"suggestions,omitempty"`
-	ParsedTitle *ParsedTitle `json:"parsedTitle"`
+	ParsedTitle *ParsedTitle `json:"parsed_title"`
 }
 
 // HandleMatch handles POST /api/v1/match - matches metadata to MusicBrainz
@@ -166,9 +166,7 @@ func (h *Handler) HandleMatchTrack(w http.ResponseWriter, r *http.Request) {
 
 		// Store suggestions in metadata_json if not verified
 		if !output.Verified && len(output.Suggestions) > 0 {
-			suggestions := map[string]interface{}{
-				"mb_suggestions": output.Suggestions,
-			}
+			suggestions := BuildSuggestionsJSON(output.Suggestions)
 			if suggestionsJSON, err := json.Marshal(suggestions); err == nil {
 				update.MetadataJSON = suggestionsJSON
 			}

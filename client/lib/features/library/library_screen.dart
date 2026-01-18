@@ -3,6 +3,8 @@ import 'package:provider/provider.dart';
 import '../../core/storage/offline_database.dart';
 import '../../core/download/download_state.dart';
 import '../../core/network/connectivity_service.dart';
+import '../../core/services/library_service.dart';
+import '../../core/services/api_client.dart';
 import '../../shared/models/models.dart';
 import '../../shared/widgets/widgets.dart';
 
@@ -159,25 +161,117 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
 class _TrackListTile extends StatelessWidget {
   final Track track;
+  final VoidCallback? onTrackUpdated;
 
-  const _TrackListTile({required this.track});
+  const _TrackListTile({
+    required this.track,
+    this.onTrackUpdated,
+  });
+
+  void _showMatchSuggestions(BuildContext context) {
+    if (!track.needsVerification) return;
+
+    MatchSuggestionsSheet.show(
+      context,
+      track: track,
+      onSelectSuggestion: (suggestion) async {
+        try {
+          final apiClient = context.read<ApiClient>();
+          final libraryService = LibraryService(apiClient);
+          await libraryService.confirmMatchSuggestion(
+            trackId: track.id,
+            recordingMbid: suggestion.mbRecordingId,
+            artistMbid: suggestion.artistMbid,
+            releaseMbid: suggestion.albumMbid,
+          );
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Matched to "${suggestion.title}" by ${suggestion.artist}'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+          onTrackUpdated?.call();
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Failed to confirm match: $e'),
+                backgroundColor: Colors.red,
+              ),
+            );
+          }
+        }
+      },
+      onManualSearch: () {
+        // TODO: Navigate to manual search screen
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Manual search coming soon'),
+          ),
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return ListTile(
-      leading: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: const Icon(Icons.music_note),
+      leading: Stack(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: const Icon(Icons.music_note),
+          ),
+          // Verification status indicator
+          if (!track.mbVerified)
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Container(
+                width: 14,
+                height: 14,
+                decoration: BoxDecoration(
+                  color: track.hasSuggestions ? Colors.orange : Colors.grey,
+                  borderRadius: BorderRadius.circular(7),
+                  border: Border.all(
+                    color: theme.colorScheme.surface,
+                    width: 2,
+                  ),
+                ),
+                child: Icon(
+                  track.hasSuggestions ? Icons.auto_fix_high : Icons.help_outline,
+                  size: 8,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+        ],
       ),
-      title: Text(
-        track.title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              track.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (track.needsVerification) ...[
+            const SizedBox(width: 8),
+            UnverifiedTrackIndicator(
+              onTap: () => _showMatchSuggestions(context),
+            ),
+          ],
+        ],
       ),
       subtitle: Text(
         track.displayArtist,
@@ -189,7 +283,7 @@ class _TrackListTile extends StatelessWidget {
         children: [
           Text(
             track.formattedDuration,
-            style: Theme.of(context).textTheme.bodySmall,
+            style: theme.textTheme.bodySmall,
           ),
           DownloadButton(track: track),
         ],
@@ -197,6 +291,9 @@ class _TrackListTile extends StatelessWidget {
       onTap: () {
         // TODO: Play track
       },
+      onLongPress: track.needsVerification
+          ? () => _showMatchSuggestions(context)
+          : null,
     );
   }
 }

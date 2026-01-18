@@ -38,4 +38,28 @@ class LibraryService {
       },
     );
   }
+
+  /// Confirms a MusicBrainz match suggestion for a track
+  Future<void> confirmMatchSuggestion({
+    required int trackId,
+    required String recordingMbid,
+    String? artistMbid,
+    String? releaseMbid,
+  }) async {
+    await _apiClient.post(
+      '/tracks/$trackId/confirm-match',
+      body: {
+        'recordingMbid': recordingMbid,
+        if (artistMbid != null) 'artistMbid': artistMbid,
+        if (releaseMbid != null) 'releaseMbid': releaseMbid,
+      },
+    );
+  }
+
+  /// Triggers a re-match for an unverified track
+  Future<Map<String, dynamic>> rematchTrack(int trackId) async {
+    return await _apiClient.post<Map<String, dynamic>>(
+      '/tracks/$trackId/match',
+    );
+  }
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
+	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
 	"github.com/openmusicplayer/backend/internal/storage"
@@ -77,19 +78,27 @@ func main() {
 	go wsHub.Run()
 	wsHandler := websocket.NewHandler(wsHub, authService)
 
+	// Initialize matcher service
+	matcherService := matcher.NewMatcher(mbClient)
+	matcherHandlers := matcher.NewHandler(matcherService, trackRepo)
+
+	// Initialize job processor with matching integration
+	jobProcessor := processor.New(&processor.ProcessorConfig{
+		Matcher:     matcherService,
+		TrackRepo:   trackRepo,
+		LibraryRepo: libraryRepo,
+		Storage:     storageClient,
+	})
+
 	// Initialize download service with job queue
 	downloadService, err := download.NewService(&download.ServiceConfig{
 		RedisURL:    cfg.RedisURL,
 		WorkerCount: cfg.WorkerCount,
-	}, defaultJobProcessor)
+	}, jobProcessor.Process)
 	if err != nil {
 		log.Fatalf("Failed to initialize download service: %v", err)
 	}
 	downloadService.Start()
-
-	// Initialize matcher service
-	matcherService := matcher.NewMatcher(mbClient)
-	matcherHandlers := matcher.NewHandler(matcherService, trackRepo)
 
 	// Initialize queue service
 	queueService, err := queue.NewService(cfg.RedisURL)
@@ -137,33 +146,4 @@ func main() {
 	}
 
 	log.Println("Server stopped")
-}
-
-// defaultJobProcessor is a placeholder processor that will be replaced
-// when the actual download logic is implemented
-func defaultJobProcessor(ctx context.Context, job *download.DownloadJob, progress func(int)) error {
-	// Placeholder: actual download logic will be implemented in a future task
-	log.Printf("Processing job %s: URL=%s, SourceType=%s", job.ID, job.URL, job.SourceType)
-
-	// Simulate progress through lifecycle stages
-	stages := []struct {
-		status   string
-		progress int
-	}{
-		{download.StatusDownloading, 25},
-		{download.StatusProcessing, 50},
-		{download.StatusUploading, 75},
-	}
-
-	for _, stage := range stages {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			progress(stage.progress)
-			time.Sleep(100 * time.Millisecond) // Simulated work
-		}
-	}
-
-	return nil
 }
