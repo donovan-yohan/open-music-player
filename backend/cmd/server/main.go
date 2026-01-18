@@ -8,6 +8,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/config"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/search"
 )
 
 func main() {
@@ -25,10 +26,12 @@ func main() {
 
 	userRepo := db.NewUserRepository(database)
 	tokenRepo := db.NewTokenRepository(database)
+	trackRepo := db.NewTrackRepository(database)
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
 	authHandlers := auth.NewHandlers(authService)
+	searchHandlers := search.NewHandlers(trackRepo)
 
-	router := api.NewRouter(authHandlers, authService)
+	router := api.NewRouter(authHandlers, authService, searchHandlers)
 
 	log.Printf("Starting server on %s", cfg.ServerAddr)
 	if err := http.ListenAndServe(cfg.ServerAddr, router); err != nil {
