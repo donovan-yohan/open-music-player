@@ -228,3 +228,142 @@ body {
   margin-bottom: 12px;
   color: #007AFF;
 }
+
+/* Edit button */
+.btn-edit {
+  margin-top: 12px;
+}
+
+/* Edit modal */
+.edit-modal {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #1a1a1a;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.edit-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #333;
+}
+
+.edit-modal-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  margin: 0;
+}
+
+.edit-close-btn {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.edit-close-btn:hover {
+  color: #fff;
+}
+
+/* Edit form */
+.edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-group label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #888;
+}
+
+.form-group label .required {
+  color: #FF453A;
+}
+
+.form-group input {
+  padding: 10px 12px;
+  background: #2a2a2a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 14px;
+  transition: border-color 0.2s;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #007AFF;
+}
+
+.form-group input::placeholder {
+  color: #666;
+}
+
+/* Edit error */
+.edit-error {
+  padding: 10px 12px;
+  background: rgba(255, 69, 58, 0.1);
+  border: 1px solid #FF453A;
+  border-radius: 6px;
+  color: #FF453A;
+  font-size: 12px;
+}
+
+/* Duplicate warning */
+.duplicate-warning {
+  padding: 12px;
+  background: rgba(255, 159, 10, 0.1);
+  border: 1px solid #FF9F0A;
+  border-radius: 6px;
+}
+
+.duplicate-warning p {
+  color: #FF9F0A;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.duplicate-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-small {
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+/* Edit actions */
+.edit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 12px;
+}
+
+.edit-actions .btn {
+  flex: 1;
+}

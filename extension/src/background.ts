@@ -6,6 +6,10 @@ import type {
   DownloadResponse,
   MetadataResponse,
   AuthState,
+  UpdateMetadataMessage,
+  UpdateMetadataResult,
+  UpdateMetadataRequest,
+  UpdateMetadataResponse,
 } from './types';
 
 const API_BASE_URL = 'http://localhost:8080/api/v1';
@@ -134,6 +138,147 @@ async function addToLibrary(
   }
 }
 
+// Update track metadata via API
+async function updateMetadata(
+  message: UpdateMetadataMessage & { force?: boolean }
+): Promise<UpdateMetadataResult> {
+  const auth = await checkAuth();
+
+  if (!auth.isLoggedIn || !auth.token) {
+    return {
+      type: 'UPDATE_METADATA_RESULT',
+      success: false,
+      error: 'not_logged_in',
+    };
+  }
+
+  const requestBody: UpdateMetadataRequest & { force?: boolean } = {
+    title: message.metadata.title,
+    artist: message.metadata.artist,
+    album: message.metadata.album,
+    version: message.metadata.version,
+    cover_art_url: message.metadata.cover_art_url,
+  };
+
+  // Include force flag if provided
+  if (message.force) {
+    requestBody.force = true;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/tracks/${message.trackId}/metadata`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${auth.token}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (response.ok) {
+      const data: UpdateMetadataResponse = await response.json();
+      return {
+        type: 'UPDATE_METADATA_RESULT',
+        success: true,
+        track: data.track,
+        identityHashChanged: data.identity_hash_changed,
+      };
+    }
+
+    // Handle specific error codes
+    if (response.status === 401) {
+      await clearAuthToken();
+      return {
+        type: 'UPDATE_METADATA_RESULT',
+        success: false,
+        error: 'not_logged_in',
+      };
+    }
+
+    if (response.status === 409) {
+      // Duplicate found
+      const errorData: UpdateMetadataResponse = await response.json();
+      return {
+        type: 'UPDATE_METADATA_RESULT',
+        success: false,
+        duplicateFound: true,
+        duplicateTrackId: errorData.duplicate_track_id,
+        error: 'duplicate_found',
+      };
+    }
+
+    if (response.status === 404) {
+      return {
+        type: 'UPDATE_METADATA_RESULT',
+        success: false,
+        error: 'Track not found',
+      };
+    }
+
+    const errorData = await response.json().catch(() => ({}));
+    return {
+      type: 'UPDATE_METADATA_RESULT',
+      success: false,
+      error: errorData.error || `Request failed with status ${response.status}`,
+    };
+  } catch (err) {
+    return {
+      type: 'UPDATE_METADATA_RESULT',
+      success: false,
+      error: err instanceof Error ? err.message : 'Network error',
+    };
+  }
+}
+
+// Merge tracks via API
+async function mergeTracks(
+  sourceTrackId: string,
+  targetTrackId: string
+): Promise<{ success: boolean; error?: string }> {
+  const auth = await checkAuth();
+
+  if (!auth.isLoggedIn || !auth.token) {
+    return {
+      success: false,
+      error: 'not_logged_in',
+    };
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/tracks/${targetTrackId}/merge`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${auth.token}`,
+      },
+      body: JSON.stringify({ source_track_id: sourceTrackId }),
+    });
+
+    if (response.ok) {
+      return { success: true };
+    }
+
+    if (response.status === 401) {
+      await clearAuthToken();
+      return {
+        success: false,
+        error: 'not_logged_in',
+      };
+    }
+
+    const errorData = await response.json().catch(() => ({}));
+    return {
+      success: false,
+      error: errorData.error || `Request failed with status ${response.status}`,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : 'Network error',
+    };
+  }
+}
+
 // Get metadata from content script
 async function getMetadataFromTab(tabId: number): Promise<MetadataResponse | null> {
   return new Promise((resolve) => {
@@ -256,6 +401,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     clearAuthToken().then(() => {
       sendResponse({ success: true });
     });
+    return true;
+  }
+
+  if (message.type === 'UPDATE_METADATA') {
+    updateMetadata(message as UpdateMetadataMessage & { force?: boolean }).then(sendResponse);
+    return true;
+  }
+
+  if (message.type === 'MERGE_TRACKS') {
+    mergeTracks(message.sourceTrackId, message.targetTrackId).then(sendResponse);
     return true;
   }
 

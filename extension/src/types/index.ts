@@ -1,3 +1,102 @@
+// Source types
+export type SourceType = 'youtube' | 'soundcloud' | 'unknown';
+
+// Page metadata extracted from content script
+export interface PageMetadata {
+  title: string;
+  thumbnail?: string;
+  artist?: string;
+  duration?: string;
+}
+
+// Auth state
+export interface AuthState {
+  isLoggedIn: boolean;
+  token?: string;
+}
+
+// Messages between popup and content script
+export interface MetadataResponse {
+  type: 'PAGE_METADATA';
+  url: string;
+  sourceType: SourceType;
+  metadata: PageMetadata;
+  supported: boolean;
+}
+
+// Messages between popup and background for adding to library
+export interface AddToLibraryMessage {
+  type: 'ADD_TO_LIBRARY';
+  url: string;
+  sourceType: SourceType;
+  metadata: PageMetadata;
+}
+
+export interface AddToLibraryResponse {
+  type: 'ADD_TO_LIBRARY_RESULT';
+  success: boolean;
+  jobId?: string;
+  error?: string;
+}
+
+// Download API types
+export interface DownloadRequest {
+  url: string;
+  source_type: SourceType;
+  page_metadata: {
+    title: string;
+    thumbnail?: string;
+  };
+}
+
+export interface DownloadResponse {
+  job_id: string;
+  status: string;
+}
+
+// Track metadata editing types
+export interface TrackMetadata {
+  id: string;
+  title: string;
+  artist: string;
+  album?: string;
+  version?: string;
+  coverArtUrl?: string;
+}
+
+export interface UpdateMetadataRequest {
+  title: string;
+  artist: string;
+  album?: string;
+  version?: string;
+  cover_art_url?: string;
+}
+
+export interface UpdateMetadataResponse {
+  success: boolean;
+  track?: TrackMetadata;
+  identity_hash_changed?: boolean;
+  duplicate_found?: boolean;
+  duplicate_track_id?: string;
+  error?: string;
+}
+
+export interface UpdateMetadataMessage {
+  type: 'UPDATE_METADATA';
+  trackId: string;
+  metadata: UpdateMetadataRequest;
+}
+
+export interface UpdateMetadataResult {
+  type: 'UPDATE_METADATA_RESULT';
+  success: boolean;
+  track?: TrackMetadata;
+  identityHashChanged?: boolean;
+  duplicateFound?: boolean;
+  duplicateTrackId?: string;
+  error?: string;
+}
+
 // Progress message types matching backend WebSocket protocol
 export interface ProgressMessage {
   type: 'download_progress';

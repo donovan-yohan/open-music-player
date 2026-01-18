@@ -46,6 +46,7 @@
       <div class="success-icon">✓</div>
       <p class="message">Added to library!</p>
       <p id="job-status" class="job-status">Processing...</p>
+      <button id="edit-btn" class="btn btn-secondary btn-edit">Edit Metadata</button>
     </div>
 
     <div id="error" class="error hidden">
@@ -56,6 +57,51 @@
     <div id="already-added" class="already-added hidden">
       <div class="info-icon">ℹ</div>
       <p class="message">Already in your library</p>
+      <button id="edit-existing-btn" class="btn btn-secondary btn-edit">Edit Metadata</button>
+    </div>
+
+    <div id="edit-modal" class="edit-modal hidden">
+      <div class="edit-modal-header">
+        <h2>Edit Metadata</h2>
+        <button id="edit-close-btn" class="edit-close-btn" aria-label="Close">&times;</button>
+      </div>
+      <form id="edit-form" class="edit-form">
+        <div class="form-group">
+          <label for="edit-title">Title <span class="required">*</span></label>
+          <input type="text" id="edit-title" name="title" required>
+        </div>
+        <div class="form-group">
+          <label for="edit-artist">Artist <span class="required">*</span></label>
+          <input type="text" id="edit-artist" name="artist" required>
+        </div>
+        <div class="form-group">
+          <label for="edit-album">Album</label>
+          <input type="text" id="edit-album" name="album">
+        </div>
+        <div class="form-group">
+          <label for="edit-version">Version/Remix</label>
+          <input type="text" id="edit-version" name="version" placeholder="e.g., Radio Edit, Remix">
+        </div>
+        <div class="form-group">
+          <label for="edit-cover-art">Cover Art URL</label>
+          <input type="url" id="edit-cover-art" name="coverArtUrl" placeholder="https://...">
+        </div>
+        <div id="edit-error" class="edit-error hidden"></div>
+        <div id="duplicate-warning" class="duplicate-warning hidden">
+          <p>A track with this metadata already exists.</p>
+          <div class="duplicate-actions">
+            <button type="button" id="merge-btn" class="btn btn-secondary btn-small">Merge Tracks</button>
+            <button type="button" id="keep-separate-btn" class="btn btn-secondary btn-small">Keep Separate</button>
+          </div>
+        </div>
+        <div class="edit-actions">
+          <button type="button" id="edit-cancel-btn" class="btn btn-secondary">Cancel</button>
+          <button type="submit" id="edit-save-btn" class="btn btn-primary">
+            <span class="btn-text">Save</span>
+            <span class="btn-loading hidden">Saving...</span>
+          </button>
+        </div>
+      </form>
     </div>
   </div>
 
