@@ -11,6 +11,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/search"
+	"github.com/openmusicplayer/backend/internal/websocket"
 )
 
 func main() {
@@ -42,7 +43,12 @@ func main() {
 	mbClient := musicbrainz.NewClient(redisCache)
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
 
-	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers)
+	// Initialize WebSocket hub and handler
+	wsHub := websocket.NewHub()
+	go wsHub.Run()
+	wsHandler := websocket.NewHandler(wsHub, authService)
+
+	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler)
 
 	log.Printf("Starting server on %s", cfg.ServerAddr)
 	if err := http.ListenAndServe(cfg.ServerAddr, router); err != nil {

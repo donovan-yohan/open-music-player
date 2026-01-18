@@ -653,27 +653,44 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-  /downloads/ws:
+  /ws/progress:
     get:
       tags:
         - Downloads
-      summary: WebSocket endpoint for download progress
+      summary: WebSocket endpoint for real-time progress tracking
       description: |
         WebSocket connection for real-time download progress updates.
-        Connect to this endpoint and receive JSON messages with download progress.
+        Authentication is done via query parameter since browser WebSocket API
+        doesn't support custom headers.
 
-        Message format:
+        **Connection URL:** `ws://localhost:8000/api/v1/ws/progress?token=<jwt_access_token>`
+
+        **Message format (server -> client):**
         ```json
         {
-          "type": "progress",
-          "downloadId": "uuid",
-          "progress": 45.5,
-          "downloadedBytes": 4550000,
-          "totalBytes": 10000000,
-          "speed": 1024000
+          "type": "download_progress",
+          "job_id": 123,
+          "status": "downloading",
+          "progress": 45,
+          "track_title": "Song Title",
+          "artist_name": "Artist Name",
+          "error": ""
         }
         ```
-      operationId: downloadProgressWebSocket
+
+        **Status values:** `pending`, `downloading`, `processing`, `completed`, `failed`
+
+        The connection will automatically receive ping/pong messages every 54 seconds
+        to keep the connection alive.
+      operationId: progressWebSocket
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          description: JWT access token for authentication
+          schema:
+            type: string
       responses:
         '101':
           description: Switching Protocols to WebSocket
