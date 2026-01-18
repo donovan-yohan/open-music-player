@@ -1,0 +1,1529 @@
+openapi: 3.0.3
+info:
+  title: Open Music Player API
+  description: |
+    API for the Open Music Player application.
+    Provides endpoints for authentication, music search (via MusicBrainz),
+    library management, playlists, downloads, streaming, and queue management.
+  version: 1.0.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development server
+  - url: https://api.openmusicplayer.app/v1
+    description: Production server
+
+tags:
+  - name: Auth
+    description: Authentication and user management
+  - name: Search
+    description: Search MusicBrainz for tracks, artists, and albums
+  - name: Library
+    description: User's track collection management
+  - name: Playlists
+    description: Playlist CRUD and track management
+  - name: Downloads
+    description: Download management and progress tracking
+  - name: Stream
+    description: Audio streaming
+  - name: Queue
+    description: Playback queue management
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ============================================================================
+  # Auth Endpoints
+  # ============================================================================
+  /auth/register:
+    post:
+      tags:
+        - Auth
+      summary: Register a new user
+      operationId: registerUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Login with credentials
+      operationId: loginUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/refresh:
+    post:
+      tags:
+        - Auth
+      summary: Refresh access token
+      operationId: refreshToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Logout and invalidate tokens
+      operationId: logoutUser
+      responses:
+        '204':
+          description: Logged out successfully
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ============================================================================
+  # Search Endpoints
+  # ============================================================================
+  /search/tracks:
+    get:
+      tags:
+        - Search
+      summary: Search for tracks on MusicBrainz
+      operationId: searchTracks
+      parameters:
+        - $ref: '#/components/parameters/QueryParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackSearchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /search/artists:
+    get:
+      tags:
+        - Search
+      summary: Search for artists on MusicBrainz
+      operationId: searchArtists
+      parameters:
+        - $ref: '#/components/parameters/QueryParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtistSearchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /search/albums:
+    get:
+      tags:
+        - Search
+      summary: Search for albums on MusicBrainz
+      operationId: searchAlbums
+      parameters:
+        - $ref: '#/components/parameters/QueryParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlbumSearchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ============================================================================
+  # Library Endpoints
+  # ============================================================================
+  /library/tracks:
+    get:
+      tags:
+        - Library
+      summary: Get user's track library
+      operationId: getLibraryTracks
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+        - $ref: '#/components/parameters/CursorParam'
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [title, artist, album, added_at, duration]
+            default: added_at
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: List of tracks in library
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - Library
+      summary: Add a track to library
+      operationId: addTrackToLibrary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddTrackRequest'
+      responses:
+        '201':
+          description: Track added to library
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Track'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Track already in library
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /library/tracks/{trackId}:
+    get:
+      tags:
+        - Library
+      summary: Get a specific track from library
+      operationId: getLibraryTrack
+      parameters:
+        - $ref: '#/components/parameters/TrackIdParam'
+      responses:
+        '200':
+          description: Track details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Track'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Library
+      summary: Remove a track from library
+      operationId: removeTrackFromLibrary
+      parameters:
+        - $ref: '#/components/parameters/TrackIdParam'
+      responses:
+        '204':
+          description: Track removed from library
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # Playlist Endpoints
+  # ============================================================================
+  /playlists:
+    get:
+      tags:
+        - Playlists
+      summary: Get user's playlists
+      operationId: getPlaylists
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: List of playlists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaylistListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - Playlists
+      summary: Create a new playlist
+      operationId: createPlaylist
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePlaylistRequest'
+      responses:
+        '201':
+          description: Playlist created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Playlist'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /playlists/{playlistId}:
+    get:
+      tags:
+        - Playlists
+      summary: Get playlist details
+      operationId: getPlaylist
+      parameters:
+        - $ref: '#/components/parameters/PlaylistIdParam'
+      responses:
+        '200':
+          description: Playlist details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaylistWithTracks'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags:
+        - Playlists
+      summary: Update playlist details
+      operationId: updatePlaylist
+      parameters:
+        - $ref: '#/components/parameters/PlaylistIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePlaylistRequest'
+      responses:
+        '200':
+          description: Playlist updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Playlist'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Playlists
+      summary: Delete a playlist
+      operationId: deletePlaylist
+      parameters:
+        - $ref: '#/components/parameters/PlaylistIdParam'
+      responses:
+        '204':
+          description: Playlist deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /playlists/{playlistId}/tracks:
+    get:
+      tags:
+        - Playlists
+      summary: Get tracks in a playlist
+      operationId: getPlaylistTracks
+      parameters:
+        - $ref: '#/components/parameters/PlaylistIdParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: List of tracks in playlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    post:
+      tags:
+        - Playlists
+      summary: Add tracks to playlist
+      operationId: addTracksToPlaylist
+      parameters:
+        - $ref: '#/components/parameters/PlaylistIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddTracksRequest'
+      responses:
+        '200':
+          description: Tracks added to playlist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Playlist'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /playlists/{playlistId}/tracks/{trackId}:
+    delete:
+      tags:
+        - Playlists
+      summary: Remove a track from playlist
+      operationId: removeTrackFromPlaylist
+      parameters:
+        - $ref: '#/components/parameters/PlaylistIdParam'
+        - $ref: '#/components/parameters/TrackIdParam'
+      responses:
+        '204':
+          description: Track removed from playlist
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /playlists/{playlistId}/tracks/reorder:
+    post:
+      tags:
+        - Playlists
+      summary: Reorder tracks in playlist
+      operationId: reorderPlaylistTracks
+      parameters:
+        - $ref: '#/components/parameters/PlaylistIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderTracksRequest'
+      responses:
+        '200':
+          description: Tracks reordered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlaylistWithTracks'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # Download Endpoints
+  # ============================================================================
+  /downloads:
+    get:
+      tags:
+        - Downloads
+      summary: Get all download jobs
+      operationId: getDownloads
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, downloading, completed, failed, cancelled]
+      responses:
+        '200':
+          description: List of download jobs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DownloadListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - Downloads
+      summary: Initiate a new download
+      operationId: initiateDownload
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitiateDownloadRequest'
+      responses:
+        '202':
+          description: Download initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DownloadJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /downloads/{downloadId}:
+    get:
+      tags:
+        - Downloads
+      summary: Get download job status
+      operationId: getDownloadStatus
+      parameters:
+        - $ref: '#/components/parameters/DownloadIdParam'
+      responses:
+        '200':
+          description: Download job details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DownloadJob'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Downloads
+      summary: Cancel a download job
+      operationId: cancelDownload
+      parameters:
+        - $ref: '#/components/parameters/DownloadIdParam'
+      responses:
+        '204':
+          description: Download cancelled
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /downloads/ws:
+    get:
+      tags:
+        - Downloads
+      summary: WebSocket endpoint for download progress
+      description: |
+        WebSocket connection for real-time download progress updates.
+        Connect to this endpoint and receive JSON messages with download progress.
+
+        Message format:
+        ```json
+        {
+          "type": "progress",
+          "downloadId": "uuid",
+          "progress": 45.5,
+          "downloadedBytes": 4550000,
+          "totalBytes": 10000000,
+          "speed": 1024000
+        }
+        ```
+      operationId: downloadProgressWebSocket
+      responses:
+        '101':
+          description: Switching Protocols to WebSocket
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ============================================================================
+  # Stream Endpoint
+  # ============================================================================
+  /stream/{trackId}:
+    get:
+      tags:
+        - Stream
+      summary: Stream audio for a track
+      description: |
+        Streams audio content for the specified track.
+        Supports HTTP Range requests for seeking.
+      operationId: streamTrack
+      parameters:
+        - $ref: '#/components/parameters/TrackIdParam'
+        - name: Range
+          in: header
+          description: Byte range for partial content requests
+          schema:
+            type: string
+            example: bytes=0-1023
+      responses:
+        '200':
+          description: Full audio content
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: audio/mpeg
+            Content-Length:
+              schema:
+                type: integer
+            Accept-Ranges:
+              schema:
+                type: string
+                example: bytes
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+            audio/ogg:
+              schema:
+                type: string
+                format: binary
+            audio/flac:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: Partial audio content
+          headers:
+            Content-Type:
+              schema:
+                type: string
+            Content-Length:
+              schema:
+                type: integer
+            Content-Range:
+              schema:
+                type: string
+                example: bytes 0-1023/10000
+            Accept-Ranges:
+              schema:
+                type: string
+                example: bytes
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # Queue Endpoints
+  # ============================================================================
+  /queue:
+    get:
+      tags:
+        - Queue
+      summary: Get current playback queue
+      operationId: getQueue
+      responses:
+        '200':
+          description: Current queue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    put:
+      tags:
+        - Queue
+      summary: Replace the entire queue
+      operationId: replaceQueue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplaceQueueRequest'
+      responses:
+        '200':
+          description: Queue replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    delete:
+      tags:
+        - Queue
+      summary: Clear the queue
+      operationId: clearQueue
+      responses:
+        '204':
+          description: Queue cleared
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /queue/tracks:
+    post:
+      tags:
+        - Queue
+      summary: Add tracks to queue
+      operationId: addTracksToQueue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddToQueueRequest'
+      responses:
+        '200':
+          description: Tracks added to queue
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /queue/tracks/{position}:
+    delete:
+      tags:
+        - Queue
+      summary: Remove track at position from queue
+      operationId: removeFromQueue
+      parameters:
+        - name: position
+          in: path
+          required: true
+          description: Position in queue (0-indexed)
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        '204':
+          description: Track removed from queue
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /queue/reorder:
+    post:
+      tags:
+        - Queue
+      summary: Reorder tracks in queue
+      operationId: reorderQueue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderQueueRequest'
+      responses:
+        '200':
+          description: Queue reordered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /queue/shuffle:
+    post:
+      tags:
+        - Queue
+      summary: Shuffle the queue
+      operationId: shuffleQueue
+      responses:
+        '200':
+          description: Queue shuffled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT access token
+
+  parameters:
+    QueryParam:
+      name: q
+      in: query
+      required: true
+      description: Search query string
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 500
+
+    LimitParam:
+      name: limit
+      in: query
+      description: Maximum number of items to return
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+    OffsetParam:
+      name: offset
+      in: query
+      description: Number of items to skip
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+    CursorParam:
+      name: cursor
+      in: query
+      description: Cursor for pagination (alternative to offset)
+      schema:
+        type: string
+
+    TrackIdParam:
+      name: trackId
+      in: path
+      required: true
+      description: Track unique identifier
+      schema:
+        type: string
+        format: uuid
+
+    PlaylistIdParam:
+      name: playlistId
+      in: path
+      required: true
+      description: Playlist unique identifier
+      schema:
+        type: string
+        format: uuid
+
+    DownloadIdParam:
+      name: downloadId
+      in: path
+      required: true
+      description: Download job unique identifier
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: Authentication required or token invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    # ========================================================================
+    # Auth Schemas
+    # ========================================================================
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+        - username
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          minLength: 8
+        username:
+          type: string
+          minLength: 3
+          maxLength: 50
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    RefreshRequest:
+      type: object
+      required:
+        - refreshToken
+      properties:
+        refreshToken:
+          type: string
+
+    AuthResponse:
+      type: object
+      required:
+        - accessToken
+        - refreshToken
+        - expiresIn
+        - user
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        expiresIn:
+          type: integer
+          description: Access token expiration time in seconds
+        user:
+          $ref: '#/components/schemas/User'
+
+    # ========================================================================
+    # User Schema
+    # ========================================================================
+    User:
+      type: object
+      required:
+        - id
+        - email
+        - username
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    # ========================================================================
+    # Track Schemas
+    # ========================================================================
+    Track:
+      type: object
+      required:
+        - id
+        - title
+        - duration
+        - addedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        artist:
+          type: string
+        album:
+          type: string
+        duration:
+          type: integer
+          description: Duration in seconds
+        trackNumber:
+          type: integer
+        discNumber:
+          type: integer
+        year:
+          type: integer
+        genre:
+          type: string
+        mbid:
+          type: string
+          description: MusicBrainz recording ID
+        coverUrl:
+          type: string
+          format: uri
+        filePath:
+          type: string
+          description: Local file path (only for downloaded tracks)
+        addedAt:
+          type: string
+          format: date-time
+
+    TrackResult:
+      type: object
+      required:
+        - mbid
+        - title
+      properties:
+        mbid:
+          type: string
+          description: MusicBrainz recording ID
+        title:
+          type: string
+        artist:
+          type: string
+        artistMbid:
+          type: string
+        album:
+          type: string
+        albumMbid:
+          type: string
+        duration:
+          type: integer
+          description: Duration in milliseconds
+        trackNumber:
+          type: integer
+        releaseDate:
+          type: string
+        score:
+          type: integer
+          description: Search relevance score (0-100)
+
+    TrackSearchResponse:
+      type: object
+      required:
+        - results
+        - total
+        - limit
+        - offset
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrackResult'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    TrackListResponse:
+      type: object
+      required:
+        - tracks
+        - total
+        - limit
+        - offset
+      properties:
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Track'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        cursor:
+          type: string
+          description: Cursor for next page (if using cursor pagination)
+
+    AddTrackRequest:
+      type: object
+      required:
+        - mbid
+      properties:
+        mbid:
+          type: string
+          description: MusicBrainz recording ID
+
+    # ========================================================================
+    # Artist Schemas
+    # ========================================================================
+    ArtistResult:
+      type: object
+      required:
+        - mbid
+        - name
+      properties:
+        mbid:
+          type: string
+          description: MusicBrainz artist ID
+        name:
+          type: string
+        sortName:
+          type: string
+        type:
+          type: string
+          enum: [person, group, orchestra, choir, character, other]
+        country:
+          type: string
+        disambiguation:
+          type: string
+        score:
+          type: integer
+          description: Search relevance score (0-100)
+
+    ArtistSearchResponse:
+      type: object
+      required:
+        - results
+        - total
+        - limit
+        - offset
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArtistResult'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    # ========================================================================
+    # Album Schemas
+    # ========================================================================
+    AlbumResult:
+      type: object
+      required:
+        - mbid
+        - title
+      properties:
+        mbid:
+          type: string
+          description: MusicBrainz release group ID
+        title:
+          type: string
+        artist:
+          type: string
+        artistMbid:
+          type: string
+        releaseDate:
+          type: string
+        primaryType:
+          type: string
+          enum: [album, single, ep, broadcast, other]
+        secondaryTypes:
+          type: array
+          items:
+            type: string
+        trackCount:
+          type: integer
+        score:
+          type: integer
+          description: Search relevance score (0-100)
+
+    AlbumSearchResponse:
+      type: object
+      required:
+        - results
+        - total
+        - limit
+        - offset
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/AlbumResult'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    # ========================================================================
+    # Playlist Schemas
+    # ========================================================================
+    Playlist:
+      type: object
+      required:
+        - id
+        - name
+        - trackCount
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        trackCount:
+          type: integer
+        totalDuration:
+          type: integer
+          description: Total duration in seconds
+        coverUrl:
+          type: string
+          format: uri
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PlaylistWithTracks:
+      allOf:
+        - $ref: '#/components/schemas/Playlist'
+        - type: object
+          properties:
+            tracks:
+              type: array
+              items:
+                $ref: '#/components/schemas/PlaylistTrack'
+
+    PlaylistTrack:
+      allOf:
+        - $ref: '#/components/schemas/Track'
+        - type: object
+          required:
+            - position
+          properties:
+            position:
+              type: integer
+              description: Position in playlist (0-indexed)
+
+    PlaylistListResponse:
+      type: object
+      required:
+        - playlists
+        - total
+        - limit
+        - offset
+      properties:
+        playlists:
+          type: array
+          items:
+            $ref: '#/components/schemas/Playlist'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    CreatePlaylistRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+        trackIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Initial tracks to add to playlist
+
+    UpdatePlaylistRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+
+    AddTracksRequest:
+      type: object
+      required:
+        - trackIds
+      properties:
+        trackIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          minItems: 1
+        position:
+          type: integer
+          description: Position to insert tracks (appends to end if not specified)
+
+    ReorderTracksRequest:
+      type: object
+      required:
+        - trackId
+        - newPosition
+      properties:
+        trackId:
+          type: string
+          format: uuid
+        newPosition:
+          type: integer
+          minimum: 0
+
+    # ========================================================================
+    # Download Schemas
+    # ========================================================================
+    DownloadJob:
+      type: object
+      required:
+        - id
+        - trackId
+        - status
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        trackId:
+          type: string
+          format: uuid
+        trackTitle:
+          type: string
+        status:
+          type: string
+          enum: [pending, downloading, completed, failed, cancelled]
+        progress:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+          description: Download progress percentage
+        downloadedBytes:
+          type: integer
+        totalBytes:
+          type: integer
+        speed:
+          type: integer
+          description: Download speed in bytes per second
+        error:
+          type: string
+          description: Error message if status is failed
+        filePath:
+          type: string
+          description: Local file path when completed
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+
+    DownloadListResponse:
+      type: object
+      required:
+        - downloads
+        - total
+        - limit
+        - offset
+      properties:
+        downloads:
+          type: array
+          items:
+            $ref: '#/components/schemas/DownloadJob'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    InitiateDownloadRequest:
+      type: object
+      required:
+        - trackId
+      properties:
+        trackId:
+          type: string
+          format: uuid
+        quality:
+          type: string
+          enum: [low, medium, high, lossless]
+          default: high
+
+    # ========================================================================
+    # Queue Schemas
+    # ========================================================================
+    QueueResponse:
+      type: object
+      required:
+        - tracks
+        - currentIndex
+      properties:
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Track'
+        currentIndex:
+          type: integer
+          description: Index of currently playing track (-1 if queue is empty)
+        repeatMode:
+          type: string
+          enum: [off, one, all]
+          default: off
+        shuffled:
+          type: boolean
+          default: false
+
+    ReplaceQueueRequest:
+      type: object
+      required:
+        - trackIds
+      properties:
+        trackIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        startIndex:
+          type: integer
+          description: Index to start playback from
+          default: 0
+
+    AddToQueueRequest:
+      type: object
+      required:
+        - trackIds
+      properties:
+        trackIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          minItems: 1
+        position:
+          type: string
+          enum: [next, last]
+          default: last
+          description: Add tracks after current or at end of queue
+
+    ReorderQueueRequest:
+      type: object
+      required:
+        - fromIndex
+        - toIndex
+      properties:
+        fromIndex:
+          type: integer
+          minimum: 0
+        toIndex:
+          type: integer
+          minimum: 0
+
+    # ========================================================================
+    # Error Schema
+    # ========================================================================
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: object
+          additionalProperties: true
+          description: Additional error details
