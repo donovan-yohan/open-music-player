@@ -280,25 +280,61 @@ class OfflineDatabase {
     );
   }
 
-  Future<List<Track>> getLibraryTracks({bool downloadedOnly = false}) async {
+  Future<List<Track>> getLibraryTracks({
+    bool downloadedOnly = false,
+    VerificationFilter verificationFilter = VerificationFilter.all,
+  }) async {
     final db = await database;
-    String query;
+    final conditions = <String>[];
+
     if (downloadedOnly) {
-      query = '''
-        SELECT t.* FROM tracks t
-        INNER JOIN library_tracks l ON t.id = l.track_id
-        INNER JOIN downloaded_tracks d ON t.id = d.track_id AND d.status = 'completed'
-        ORDER BY l.added_at DESC
-      ''';
-    } else {
-      query = '''
-        SELECT t.* FROM tracks t
-        INNER JOIN library_tracks l ON t.id = l.track_id
-        ORDER BY l.added_at DESC
-      ''';
+      conditions.add("d.track_id IS NOT NULL AND d.status = 'completed'");
     }
+
+    switch (verificationFilter) {
+      case VerificationFilter.verifiedOnly:
+        conditions.add('t.mb_verified = 1');
+        break;
+      case VerificationFilter.unverifiedOnly:
+        conditions.add('t.mb_verified = 0');
+        break;
+      case VerificationFilter.all:
+        break;
+    }
+
+    final whereClause = conditions.isNotEmpty
+        ? 'WHERE ${conditions.join(' AND ')}'
+        : '';
+
+    final query = '''
+      SELECT t.* FROM tracks t
+      INNER JOIN library_tracks l ON t.id = l.track_id
+      LEFT JOIN downloaded_tracks d ON t.id = d.track_id
+      $whereClause
+      ORDER BY l.added_at DESC
+    ''';
+
     final maps = await db.rawQuery(query);
     return maps.map((m) => Track.fromDbMap(m)).toList();
+  }
+
+  Future<Map<VerificationFilter, int>> getLibraryTrackCounts() async {
+    final db = await database;
+    final result = await db.rawQuery('''
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN t.mb_verified = 1 THEN 1 ELSE 0 END) as verified,
+        SUM(CASE WHEN t.mb_verified = 0 THEN 1 ELSE 0 END) as unverified
+      FROM tracks t
+      INNER JOIN library_tracks l ON t.id = l.track_id
+    ''');
+
+    final row = result.first;
+    return {
+      VerificationFilter.all: (row['total'] as int?) ?? 0,
+      VerificationFilter.verifiedOnly: (row['verified'] as int?) ?? 0,
+      VerificationFilter.unverifiedOnly: (row['unverified'] as int?) ?? 0,
+    };
   }
 
   Future<void> close() async {
