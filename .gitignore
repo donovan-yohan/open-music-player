@@ -1,1 +1,9 @@
 .beads/
+
+# Environment variables
+.env
+
+# Docker volumes (if stored locally)
+postgres_data/
+redis_data/
+minio_data/
