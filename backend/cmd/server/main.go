@@ -42,9 +42,11 @@ func main() {
 	userRepo := db.NewUserRepository(database)
 	tokenRepo := db.NewTokenRepository(database)
 	trackRepo := db.NewTrackRepository(database)
+	libraryRepo := db.NewLibraryRepository(database)
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
 	authHandlers := auth.NewHandlers(authService)
 	searchHandlers := search.NewHandlers(trackRepo)
+	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
 
 	mbClient := musicbrainz.NewClient(redisCache)
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
@@ -64,7 +66,7 @@ func main() {
 	}
 	downloadService.Start()
 
-	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler)
+	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, libraryHandlers)
 
 	server := &http.Server{
 		Addr:    cfg.ServerAddr,

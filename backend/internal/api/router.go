@@ -20,9 +20,10 @@ type Router struct {
 	musicbrainzHandlers *musicbrainz.Handlers
 	wsHandler           *websocket.Handler
 	validatorHandlers   *validators.Handlers
+	libraryHandlers     *LibraryHandlers
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, libraryHandlers *LibraryHandlers) *Router {
 	validatorRegistry := validators.DefaultRegistry()
 
 	r := &Router{
@@ -34,6 +35,7 @@ func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHan
 		musicbrainzHandlers: mbHandlers,
 		wsHandler:           wsHandler,
 		validatorHandlers:   validators.NewHandlers(validatorRegistry),
+		libraryHandlers:     libraryHandlers,
 	}
 	r.setupRoutes()
 	return r
@@ -77,6 +79,11 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURL))
 	r.mux.HandleFunc("GET /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURLQuery))
 	r.mux.HandleFunc("GET /api/v1/validate/sources", r.withAuth(r.validatorHandlers.GetSupportedSources))
+
+	// Library routes (auth required)
+	r.mux.HandleFunc("GET /api/v1/library", r.withAuth(r.libraryHandlers.GetLibrary))
+	r.mux.HandleFunc("POST /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.AddTrackToLibrary))
+	r.mux.HandleFunc("DELETE /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.RemoveTrackFromLibrary))
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {
