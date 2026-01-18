@@ -18,6 +18,15 @@ type Config struct {
 	RedisAddr   string
 	RedisURL    string
 	WorkerCount int
+
+	// S3/MinIO storage configuration
+	S3Endpoint       string
+	S3Region         string
+	S3AccessKey      string
+	S3SecretKey      string
+	S3Bucket         string
+	S3UsePathStyle   bool // Required for MinIO
+	S3ForcePathStyle bool // Alias for S3UsePathStyle
 }
 
 func Load() *Config {
@@ -37,6 +46,15 @@ func Load() *Config {
 		RedisAddr:   getEnvOrDefault("REDIS_ADDR", "localhost:6380"),
 		RedisURL:    getEnvOrDefault("REDIS_URL", "redis://localhost:6380"),
 		WorkerCount: workerCount,
+
+		// S3/MinIO configuration
+		S3Endpoint:       getEnvOrDefault("MINIO_ENDPOINT", "http://localhost:9000"),
+		S3Region:         getEnvOrDefault("S3_REGION", "us-east-1"),
+		S3AccessKey:      getEnvOrDefault("MINIO_ACCESS_KEY", "minioadmin"),
+		S3SecretKey:      getEnvOrDefault("MINIO_SECRET_KEY", "minioadmin"),
+		S3Bucket:         getEnvOrDefault("MINIO_BUCKET", "audio-files"),
+		S3UsePathStyle:   getEnvOrDefault("S3_USE_PATH_STYLE", "true") == "true",
+		S3ForcePathStyle: getEnvOrDefault("S3_USE_PATH_STYLE", "true") == "true",
 	}
 }
 
