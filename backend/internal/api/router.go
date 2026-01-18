@@ -97,6 +97,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/match", r.withAuth(r.matcherHandlers.HandleMatch))
 	r.mux.HandleFunc("POST /api/v1/tracks/{id}/match", r.withAuth(r.matcherHandlers.HandleMatchTrack))
 	r.mux.HandleFunc("POST /api/v1/tracks/{id}/confirm-match", r.withAuth(r.matcherHandlers.HandleConfirmMatch))
+	r.mux.HandleFunc("POST /api/v1/tracks/{id}/link-mb", r.withAuth(r.matcherHandlers.HandleLinkMB))
 
 	// Library routes (auth required)
 	r.mux.HandleFunc("GET /api/v1/library", r.withAuth(r.libraryHandlers.GetLibrary))

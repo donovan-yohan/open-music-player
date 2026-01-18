@@ -311,6 +311,48 @@ func (r *TrackRepository) UpdateMBMatch(ctx context.Context, trackID int64, matc
 	return nil
 }
 
+// MetadataUpdate contains the metadata fields to update from MusicBrainz
+type MetadataUpdate struct {
+	Title      string
+	Artist     string
+	Album      string
+	DurationMs int
+}
+
+// UpdateMetadata updates a track's metadata fields (title, artist, album, duration)
+func (r *TrackRepository) UpdateMetadata(ctx context.Context, trackID int64, update *MetadataUpdate) error {
+	query := `
+		UPDATE tracks
+		SET title = COALESCE(NULLIF($2, ''), title),
+			artist = COALESCE(NULLIF($3, ''), artist),
+			album = COALESCE(NULLIF($4, ''), album),
+			duration_ms = CASE WHEN $5 > 0 THEN $5 ELSE duration_ms END,
+			updated_at = NOW()
+		WHERE id = $1
+	`
+
+	result, err := r.db.ExecContext(ctx, query,
+		trackID,
+		update.Title,
+		update.Artist,
+		update.Album,
+		update.DurationMs,
+	)
+	if err != nil {
+		return err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrTrackNotFound
+	}
+
+	return nil
+}
+
 // GetByIdentityHash retrieves a track by its identity hash.
 func (r *TrackRepository) GetByIdentityHash(ctx context.Context, identityHash string) (*Track, error) {
 	query := `

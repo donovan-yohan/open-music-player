@@ -57,6 +57,11 @@ func NewMatcherWithWeights(mbClient *musicbrainz.Client, weights ScoreWeights) *
 	}
 }
 
+// MBClient returns the MusicBrainz client for direct access
+func (m *Matcher) MBClient() *musicbrainz.Client {
+	return m.mbClient
+}
+
 // Match attempts to find a MusicBrainz match for the given track metadata
 func (m *Matcher) Match(ctx context.Context, metadata TrackMetadata) (*MatchOutput, error) {
 	// Parse the title to extract artist and track info

@@ -271,6 +271,169 @@ func (h *Handler) HandleConfirmMatch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// LinkMBRequest is the request body for linking a track to MusicBrainz
+type LinkMBRequest struct {
+	MBRecordingID  string `json:"mb_recording_id"`
+	UpdateMetadata bool   `json:"update_metadata,omitempty"`
+}
+
+// LinkMBResponse is the response for a link-mb request
+type LinkMBResponse struct {
+	TrackID         int64  `json:"track_id"`
+	MBRecordingID   string `json:"mb_recording_id"`
+	MBArtistID      string `json:"mb_artist_id,omitempty"`
+	MBReleaseID     string `json:"mb_release_id,omitempty"`
+	Verified        bool   `json:"verified"`
+	MetadataUpdated bool   `json:"metadata_updated"`
+	Track           *TrackInfo `json:"track,omitempty"`
+}
+
+// TrackInfo contains basic track information for the response
+type TrackInfo struct {
+	Title    string `json:"title"`
+	Artist   string `json:"artist,omitempty"`
+	Album    string `json:"album,omitempty"`
+	Duration int    `json:"duration,omitempty"`
+}
+
+// HandleLinkMB handles POST /api/v1/tracks/{id}/link-mb - links a track to a MusicBrainz recording
+func (h *Handler) HandleLinkMB(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract track ID from path
+	idStr := r.PathValue("id")
+	if idStr == "" {
+		writeError(w, http.StatusBadRequest, "Track ID is required")
+		return
+	}
+
+	trackID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid track ID")
+		return
+	}
+
+	// Parse request body
+	var req LinkMBRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.MBRecordingID == "" {
+		writeError(w, http.StatusBadRequest, "mb_recording_id is required")
+		return
+	}
+
+	// Validate MBID format
+	recordingID, err := uuid.Parse(req.MBRecordingID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid mb_recording_id format")
+		return
+	}
+
+	// Verify track exists
+	track, err := h.trackRepo.GetByID(r.Context(), trackID)
+	if err != nil {
+		if err == db.ErrTrackNotFound {
+			writeError(w, http.StatusNotFound, "Track not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Failed to get track")
+		return
+	}
+
+	// Fetch recording details from MusicBrainz
+	mbRecording, err := h.matcher.MBClient().GetRecording(r.Context(), req.MBRecordingID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "Failed to fetch recording from MusicBrainz: "+err.Error())
+		return
+	}
+
+	// Build update with MB IDs
+	update := &db.MBMatchUpdate{
+		MBRecordingID: &recordingID,
+		MBVerified:    true,
+	}
+
+	// Extract artist and release IDs from MB response
+	var artistIDStr, releaseIDStr string
+	if mbRecording.ArtistID != "" {
+		if artistID, err := uuid.Parse(mbRecording.ArtistID); err == nil {
+			update.MBArtistID = &artistID
+			artistIDStr = mbRecording.ArtistID
+		}
+	}
+	if mbRecording.AlbumID != "" {
+		if releaseID, err := uuid.Parse(mbRecording.AlbumID); err == nil {
+			update.MBReleaseID = &releaseID
+			releaseIDStr = mbRecording.AlbumID
+		}
+	}
+
+	// Update the track with MB match data
+	if err := h.trackRepo.UpdateMBMatch(r.Context(), trackID, update); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to update track")
+		return
+	}
+
+	// Optionally update metadata from MusicBrainz
+	metadataUpdated := false
+	if req.UpdateMetadata {
+		metadataUpdate := &db.MetadataUpdate{
+			Title:  mbRecording.Title,
+			Artist: mbRecording.Artist,
+			Album:  mbRecording.Album,
+		}
+		if mbRecording.Duration > 0 {
+			metadataUpdate.DurationMs = mbRecording.Duration
+		}
+
+		if err := h.trackRepo.UpdateMetadata(r.Context(), trackID, metadataUpdate); err != nil {
+			// Log but don't fail - the MB link was successful
+			// The metadata update is optional
+		} else {
+			metadataUpdated = true
+		}
+	}
+
+	// Build response
+	resp := LinkMBResponse{
+		TrackID:         trackID,
+		MBRecordingID:   req.MBRecordingID,
+		MBArtistID:      artistIDStr,
+		MBReleaseID:     releaseIDStr,
+		Verified:        true,
+		MetadataUpdated: metadataUpdated,
+		Track: &TrackInfo{
+			Title:    track.Title,
+			Duration: int(track.DurationMs.Int32),
+		},
+	}
+
+	if track.Artist.Valid {
+		resp.Track.Artist = track.Artist.String
+	}
+	if track.Album.Valid {
+		resp.Track.Album = track.Album.String
+	}
+
+	// If metadata was updated, use the new values in response
+	if metadataUpdated {
+		resp.Track.Title = mbRecording.Title
+		resp.Track.Artist = mbRecording.Artist
+		resp.Track.Album = mbRecording.Album
+		if mbRecording.Duration > 0 {
+			resp.Track.Duration = mbRecording.Duration
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
