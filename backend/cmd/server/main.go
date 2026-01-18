@@ -8,6 +8,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/config"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/musicbrainz"
 )
 
 func main() {
@@ -28,7 +29,9 @@ func main() {
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
 	authHandlers := auth.NewHandlers(authService)
 
-	router := api.NewRouter(authHandlers, authService)
+	mbClient := musicbrainz.NewClient()
+
+	router := api.NewRouter(authHandlers, authService, mbClient)
 
 	log.Printf("Starting server on %s", cfg.ServerAddr)
 	if err := http.ListenAndServe(cfg.ServerAddr, router); err != nil {
