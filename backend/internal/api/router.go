@@ -5,19 +5,22 @@ import (
 	"net/http"
 
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/search"
 )
 
 type Router struct {
-	mux          *http.ServeMux
-	authHandlers *auth.Handlers
-	authService  *auth.Service
+	mux            *http.ServeMux
+	authHandlers   *auth.Handlers
+	authService    *auth.Service
+	searchHandlers *search.Handlers
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers) *Router {
 	r := &Router{
-		mux:          http.NewServeMux(),
-		authHandlers: authHandlers,
-		authService:  authService,
+		mux:            http.NewServeMux(),
+		authHandlers:   authHandlers,
+		authService:    authService,
+		searchHandlers: searchHandlers,
 	}
 	r.setupRoutes()
 	return r
@@ -38,6 +41,11 @@ func (r *Router) setupRoutes() {
 
 	// Auth routes (auth required)
 	r.mux.HandleFunc("POST /api/v1/auth/logout", r.withAuth(r.authHandlers.Logout))
+
+	// Search routes (auth required)
+	r.mux.HandleFunc("GET /api/v1/search/recordings", r.withAuth(r.searchHandlers.SearchRecordings))
+	r.mux.HandleFunc("GET /api/v1/search/artists", r.withAuth(r.searchHandlers.SearchArtists))
+	r.mux.HandleFunc("GET /api/v1/search/releases", r.withAuth(r.searchHandlers.SearchReleases))
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {
