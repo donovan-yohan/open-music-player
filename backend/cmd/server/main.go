@@ -47,10 +47,12 @@ func main() {
 	tokenRepo := db.NewTokenRepository(database)
 	trackRepo := db.NewTrackRepository(database)
 	libraryRepo := db.NewLibraryRepository(database)
+	playlistRepo := db.NewPlaylistRepository(database)
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
 	authHandlers := auth.NewHandlers(authService)
 	searchHandlers := search.NewHandlers(trackRepo)
 	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
+	playlistHandlers := api.NewPlaylistHandlers(playlistRepo, trackRepo)
 
 	mbClient := musicbrainz.NewClient(redisCache)
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
@@ -97,7 +99,7 @@ func main() {
 	defer queueService.Close()
 	queueHandlers := queue.NewHandlers(queueService)
 
-	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, matcherHandlers, libraryHandlers, streamHandler, queueHandlers)
+	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, matcherHandlers, libraryHandlers, streamHandler, queueHandlers, playlistHandlers)
 
 	server := &http.Server{
 		Addr:    cfg.ServerAddr,
