@@ -20,6 +20,7 @@ type Router struct {
 	authService         *auth.Service
 	searchHandlers      *search.Handlers
 	browseHandlers      *BrowseHandlers
+	musicbrainzHandlers *musicbrainz.Handlers
 	wsHandler           *websocket.Handler
 	validatorHandlers   *validators.Handlers
 	matcherHandlers     *matcher.Handler
@@ -27,9 +28,10 @@ type Router struct {
 	streamHandler       *stream.Handler
 	queueHandlers       *queue.Handlers
 	playlistHandlers    *PlaylistHandlers
+	downloadHandlers    *DownloadHandlers
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, streamHandler *stream.Handler, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, streamHandler *stream.Handler, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
 	validatorRegistry := validators.DefaultRegistry()
 
 	r := &Router{
@@ -46,6 +48,7 @@ func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHan
 		streamHandler:       streamHandler,
 		queueHandlers:       queueHandlers,
 		playlistHandlers:    playlistHandlers,
+		downloadHandlers:    downloadHandlers,
 	}
 	r.setupRoutes()
 	return r
@@ -119,6 +122,11 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/playlists/{id}/tracks", r.withAuth(r.playlistHandlers.AddTracks))
 	r.mux.HandleFunc("DELETE /api/v1/playlists/{id}/tracks/{trackId}", r.withAuth(r.playlistHandlers.RemoveTrack))
 	r.mux.HandleFunc("PUT /api/v1/playlists/{id}/tracks/reorder", r.withAuth(r.playlistHandlers.ReorderTracks))
+
+	// Download routes (auth required)
+	r.mux.HandleFunc("POST /api/v1/downloads", r.withAuth(r.downloadHandlers.CreateDownload))
+	r.mux.HandleFunc("GET /api/v1/downloads", r.withAuth(r.downloadHandlers.GetUserJobs))
+	r.mux.HandleFunc("GET /api/v1/downloads/{job_id}", r.withAuth(r.downloadHandlers.GetJob))
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {

@@ -99,7 +99,10 @@ func main() {
 	defer queueService.Close()
 	queueHandlers := queue.NewHandlers(queueService)
 
-	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, matcherHandlers, libraryHandlers, streamHandler, queueHandlers, playlistHandlers)
+	// Initialize download handlers
+	downloadHandlers := api.NewDownloadHandlers(downloadService)
+
+	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, matcherHandlers, libraryHandlers, streamHandler, queueHandlers, playlistHandlers, downloadHandlers)
 
 	server := &http.Server{
 		Addr:    cfg.ServerAddr,

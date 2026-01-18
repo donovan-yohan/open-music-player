@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Open Music Player</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>Open Music Player</h1>
+    </header>
+
+    <div id="loading" class="loading">
+      <div class="spinner"></div>
+      <p>Loading...</p>
+    </div>
+
+    <div id="unsupported" class="unsupported hidden">
+      <p class="message">This page is not supported.</p>
+      <p class="hint">Navigate to a YouTube or SoundCloud track to add it to your library.</p>
+    </div>
+
+    <div id="not-logged-in" class="not-logged-in hidden">
+      <p class="message">Please log in to add tracks.</p>
+      <button id="login-btn" class="btn btn-primary">Log In</button>
+    </div>
+
+    <div id="track-preview" class="track-preview hidden">
+      <div class="thumbnail-container">
+        <img id="thumbnail" src="" alt="Track thumbnail" class="thumbnail">
+        <span id="source-badge" class="source-badge">YouTube</span>
+      </div>
+      <div class="track-info">
+        <p id="track-title" class="track-title">Track Title</p>
+        <p id="track-artist" class="track-artist">Artist</p>
+      </div>
+      <button id="add-btn" class="btn btn-primary btn-add">
+        <span class="btn-text">Add to Library</span>
+        <span class="btn-loading hidden">Adding...</span>
+      </button>
+    </div>
+
+    <div id="success" class="success hidden">
+      <div class="success-icon">✓</div>
+      <p class="message">Added to library!</p>
+      <p id="job-status" class="job-status">Processing...</p>
+    </div>
+
+    <div id="error" class="error hidden">
+      <p id="error-message" class="message">An error occurred</p>
+      <button id="retry-btn" class="btn btn-secondary">Retry</button>
+    </div>
+
+    <div id="already-added" class="already-added hidden">
+      <div class="info-icon">ℹ</div>
+      <p class="message">Already in your library</p>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
