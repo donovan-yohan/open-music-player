@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 var ErrTrackNotFound = errors.New("track not found")
+var ErrDuplicateTrack = errors.New("track with this identity hash already exists")
 
 type Track struct {
 	ID            int64
@@ -262,4 +264,161 @@ func (r *TrackRepository) GetByID(ctx context.Context, id int64) (*Track, error)
 	}
 
 	return &t, nil
+}
+
+// GetByIdentityHash retrieves a track by its identity hash.
+func (r *TrackRepository) GetByIdentityHash(ctx context.Context, identityHash string) (*Track, error) {
+	query := `
+		SELECT id, identity_hash, title, artist, album, duration_ms, version,
+			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
+			   source_url, source_type, storage_key, file_size_bytes,
+			   metadata_json, created_at, updated_at
+		FROM tracks
+		WHERE identity_hash = $1
+	`
+
+	var t Track
+	err := r.db.QueryRowContext(ctx, query, identityHash).Scan(
+		&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
+		&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
+		&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
+		&t.MetadataJSON, &t.CreatedAt, &t.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrTrackNotFound
+		}
+		return nil, err
+	}
+
+	return &t, nil
+}
+
+// Create inserts a new track into the database.
+// Returns ErrDuplicateTrack if a track with the same identity hash already exists.
+func (r *TrackRepository) Create(ctx context.Context, track *Track) error {
+	query := `
+		INSERT INTO tracks (
+			identity_hash, title, artist, album, duration_ms, version,
+			mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
+			source_url, source_type, storage_key, file_size_bytes, metadata_json
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		RETURNING id, created_at, updated_at
+	`
+
+	err := r.db.QueryRowContext(ctx, query,
+		track.IdentityHash, track.Title, track.Artist, track.Album, track.DurationMs, track.Version,
+		track.MBRecordingID, track.MBReleaseID, track.MBArtistID, track.MBVerified,
+		track.SourceURL, track.SourceType, track.StorageKey, track.FileSizeBytes, track.MetadataJSON,
+	).Scan(&track.ID, &track.CreatedAt, &track.UpdatedAt)
+
+	if err != nil {
+		// Check for unique constraint violation on identity_hash
+		if strings.Contains(err.Error(), "duplicate key") ||
+			strings.Contains(err.Error(), "unique constraint") ||
+			strings.Contains(err.Error(), "idx_tracks_identity_hash") {
+			return ErrDuplicateTrack
+		}
+		return err
+	}
+
+	return nil
+}
+
+// CreateOrGet attempts to create a new track, but if a track with the same
+// identity hash already exists, it returns the existing track instead.
+// The second return value indicates whether a new track was created (true)
+// or an existing track was returned (false).
+func (r *TrackRepository) CreateOrGet(ctx context.Context, track *Track) (*Track, bool, error) {
+	// First, try to get existing track by identity hash
+	existing, err := r.GetByIdentityHash(ctx, track.IdentityHash)
+	if err == nil {
+		// Track already exists, return it
+		return existing, false, nil
+	}
+	if !errors.Is(err, ErrTrackNotFound) {
+		// Unexpected error
+		return nil, false, err
+	}
+
+	// Track doesn't exist, try to create it
+	if err := r.Create(ctx, track); err != nil {
+		if errors.Is(err, ErrDuplicateTrack) {
+			// Race condition: another process created the track
+			// Try to fetch it again
+			existing, err = r.GetByIdentityHash(ctx, track.IdentityHash)
+			if err != nil {
+				return nil, false, err
+			}
+			return existing, false, nil
+		}
+		return nil, false, err
+	}
+
+	return track, true, nil
+}
+
+// CreateTrackFromMetadata creates a track from raw metadata, handling normalization
+// and identity hash calculation automatically. Returns the created or existing track.
+func (r *TrackRepository) CreateTrackFromMetadata(ctx context.Context, artist, title, album string, durationMs int, opts ...TrackOption) (*Track, bool, error) {
+	// Parse metadata and extract version
+	identity := ParseTrackMetadata(artist, title, album, durationMs)
+
+	// Calculate identity hash
+	identityHash := CalculateIdentityHashFromTrack(identity)
+
+	// Create track with normalized data
+	track := &Track{
+		IdentityHash: identityHash,
+		Title:        identity.Title,
+		Artist:       sql.NullString{String: artist, Valid: artist != ""},
+		Album:        sql.NullString{String: album, Valid: album != ""},
+		DurationMs:   sql.NullInt32{Int32: int32(durationMs), Valid: durationMs > 0},
+		Version:      sql.NullString{String: identity.Version, Valid: identity.Version != ""},
+	}
+
+	// Apply optional fields
+	for _, opt := range opts {
+		opt(track)
+	}
+
+	return r.CreateOrGet(ctx, track)
+}
+
+// TrackOption is a functional option for configuring a track during creation.
+type TrackOption func(*Track)
+
+// WithMusicBrainzIDs sets MusicBrainz IDs on the track.
+func WithMusicBrainzIDs(recordingID, releaseID, artistID *uuid.UUID) TrackOption {
+	return func(t *Track) {
+		t.MBRecordingID = recordingID
+		t.MBReleaseID = releaseID
+		t.MBArtistID = artistID
+		if recordingID != nil || releaseID != nil || artistID != nil {
+			t.MBVerified = true
+		}
+	}
+}
+
+// WithSource sets the source URL and type on the track.
+func WithSource(sourceURL, sourceType string) TrackOption {
+	return func(t *Track) {
+		t.SourceURL = sql.NullString{String: sourceURL, Valid: sourceURL != ""}
+		t.SourceType = sql.NullString{String: sourceType, Valid: sourceType != ""}
+	}
+}
+
+// WithStorage sets the storage key and file size on the track.
+func WithStorage(storageKey string, fileSizeBytes int64) TrackOption {
+	return func(t *Track) {
+		t.StorageKey = sql.NullString{String: storageKey, Valid: storageKey != ""}
+		t.FileSizeBytes = sql.NullInt64{Int64: fileSizeBytes, Valid: fileSizeBytes > 0}
+	}
+}
+
+// WithMetadata sets additional metadata JSON on the track.
+func WithMetadata(metadata json.RawMessage) TrackOption {
+	return func(t *Track) {
+		t.MetadataJSON = metadata
+	}
 }
