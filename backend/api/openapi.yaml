@@ -21,6 +21,8 @@ tags:
     description: Authentication and user management
   - name: Search
     description: Search MusicBrainz for tracks, artists, and albums
+  - name: Browse
+    description: Browse/discovery for artists, albums, and tracks
   - name: Library
     description: User's track collection management
   - name: Playlists
@@ -196,6 +198,75 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  # ============================================================================
+  # Browse/Discovery Endpoints
+  # ============================================================================
+  /artists/{mb_id}:
+    get:
+      tags:
+        - Browse
+      summary: Get artist details with discography
+      operationId: getArtist
+      parameters:
+        - $ref: '#/components/parameters/MusicBrainzIdParam'
+      responses:
+        '200':
+          description: Artist details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArtistDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /albums/{mb_id}:
+    get:
+      tags:
+        - Browse
+      summary: Get album details with track listing
+      operationId: getAlbum
+      parameters:
+        - $ref: '#/components/parameters/MusicBrainzIdParam'
+      responses:
+        '200':
+          description: Album details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlbumDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /tracks/{mb_id}:
+    get:
+      tags:
+        - Browse
+      summary: Get track details
+      operationId: getTrack
+      parameters:
+        - $ref: '#/components/parameters/MusicBrainzIdParam'
+      responses:
+        '200':
+          description: Track details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   # ============================================================================
   # Library Endpoints
@@ -895,6 +966,15 @@ components:
         type: string
         format: uuid
 
+    MusicBrainzIdParam:
+      name: mb_id
+      in: path
+      required: true
+      description: MusicBrainz unique identifier (UUID)
+      schema:
+        type: string
+        format: uuid
+
   responses:
     BadRequest:
       description: Invalid request parameters
@@ -1175,6 +1255,59 @@ components:
         offset:
           type: integer
 
+    ArtistDetail:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          description: MusicBrainz artist ID
+        name:
+          type: string
+        sortName:
+          type: string
+        type:
+          type: string
+          description: Artist type (person, group, orchestra, choir, character, other)
+        country:
+          type: string
+          description: Country code
+        disambiguation:
+          type: string
+          description: Disambiguation comment
+        beginDate:
+          type: string
+          description: Date formed/born
+        endDate:
+          type: string
+          description: Date disbanded/died
+        releases:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReleaseInfo'
+          description: Artist's discography
+
+    ReleaseInfo:
+      type: object
+      required:
+        - id
+        - title
+      properties:
+        id:
+          type: string
+          description: MusicBrainz release group ID
+        title:
+          type: string
+        date:
+          type: string
+          description: Release date
+        coverArtUrl:
+          type: string
+          format: uri
+          description: Cover art URL from Cover Art Archive
+
     # ========================================================================
     # Album Schemas
     # ========================================================================
@@ -1226,6 +1359,74 @@ components:
           type: integer
         offset:
           type: integer
+
+    AlbumDetail:
+      type: object
+      required:
+        - id
+        - title
+      properties:
+        id:
+          type: string
+          description: MusicBrainz release ID
+        title:
+          type: string
+        artist:
+          type: string
+        artistId:
+          type: string
+          description: MusicBrainz artist ID
+        date:
+          type: string
+          description: Release date
+        country:
+          type: string
+          description: Release country
+        trackCount:
+          type: integer
+        coverArtUrl:
+          type: string
+          format: uri
+          description: Cover art URL from Cover Art Archive
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrackDetail'
+          description: Track listing
+
+    TrackDetail:
+      type: object
+      required:
+        - id
+        - title
+      properties:
+        id:
+          type: string
+          description: MusicBrainz recording ID
+        title:
+          type: string
+        artist:
+          type: string
+        artistId:
+          type: string
+          description: MusicBrainz artist ID
+        album:
+          type: string
+        albumId:
+          type: string
+          description: MusicBrainz release ID
+        duration:
+          type: integer
+          description: Duration in milliseconds
+        position:
+          type: integer
+          description: Track position on album
+        inLibrary:
+          type: boolean
+          description: Whether track is in user's library
+        downloadable:
+          type: boolean
+          description: Whether track can be downloaded
 
     # ========================================================================
     # Playlist Schemas

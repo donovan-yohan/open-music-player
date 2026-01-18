@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/search"
 )
 
@@ -13,14 +14,16 @@ type Router struct {
 	authHandlers   *auth.Handlers
 	authService    *auth.Service
 	searchHandlers *search.Handlers
+	browseHandlers *BrowseHandlers
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client) *Router {
 	r := &Router{
 		mux:            http.NewServeMux(),
 		authHandlers:   authHandlers,
 		authService:    authService,
 		searchHandlers: searchHandlers,
+		browseHandlers: NewBrowseHandlers(mbClient),
 	}
 	r.setupRoutes()
 	return r
@@ -46,6 +49,11 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /api/v1/search/recordings", r.withAuth(r.searchHandlers.SearchRecordings))
 	r.mux.HandleFunc("GET /api/v1/search/artists", r.withAuth(r.searchHandlers.SearchArtists))
 	r.mux.HandleFunc("GET /api/v1/search/releases", r.withAuth(r.searchHandlers.SearchReleases))
+
+	// Browse/discovery routes (auth required)
+	r.mux.HandleFunc("GET /api/v1/artists/{mb_id}", r.withAuth(r.browseHandlers.GetArtist))
+	r.mux.HandleFunc("GET /api/v1/albums/{mb_id}", r.withAuth(r.browseHandlers.GetAlbum))
+	r.mux.HandleFunc("GET /api/v1/tracks/{mb_id}", r.withAuth(r.browseHandlers.GetTrack))
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {
