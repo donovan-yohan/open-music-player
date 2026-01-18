@@ -5,7 +5,12 @@
   "description": "Open Music Player browser extension",
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "notifications"
+  ],
+  "host_permissions": [
+    "http://localhost:8080/*",
+    "https://*.openmusicplayer.app/*"
   ],
   "action": {
     "default_popup": "popup.html",
