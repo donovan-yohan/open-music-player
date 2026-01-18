@@ -1,5 +1,8 @@
-# GT
+# GT / Gas Town
 .beads/
+
+# Environment variables
+.env
 
 # Dependencies
 node_modules/
@@ -22,3 +25,8 @@ Thumbs.db
 .dart_tool/
 .packages
 build/
+
+# Docker volumes (if stored locally)
+postgres_data/
+redis_data/
+minio_data/
