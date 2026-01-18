@@ -11,6 +11,8 @@ import '../features/settings/settings_screen.dart';
 import '../features/player/player_screen.dart';
 import '../features/player/widgets/mini_player.dart';
 import '../features/downloads/downloads_screen.dart';
+import '../features/playlists/playlists_screen.dart';
+import '../features/playlists/playlist_detail_screen.dart';
 
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
 final _shellNavigatorKey = GlobalKey<NavigatorState>();
@@ -52,6 +54,17 @@ final router = GoRouter(
     GoRoute(
       path: '/downloads',
       builder: (context, state) => const DownloadsScreen(),
+    ),
+    GoRoute(
+      path: '/playlists',
+      builder: (context, state) => const PlaylistsScreen(),
+    ),
+    GoRoute(
+      path: '/playlists/:id',
+      builder: (context, state) {
+        final id = int.parse(state.pathParameters['id']!);
+        return PlaylistDetailScreen(playlistId: id);
+      },
     ),
     ShellRoute(
       navigatorKey: _shellNavigatorKey,
