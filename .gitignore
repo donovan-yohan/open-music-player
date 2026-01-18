@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files (keep .env.example)
+.env
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+
+# SQLx offline mode cache (regenerate with `cargo sqlx prepare`)
+.sqlx/
