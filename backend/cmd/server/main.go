@@ -16,6 +16,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/matcher"
+	"github.com/openmusicplayer/backend/internal/middleware"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/queue"
@@ -113,9 +114,13 @@ func main() {
 
 	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, matcherHandlers, libraryHandlers, streamHandler, queueHandlers, playlistHandlers, downloadHandlers)
 
+	// Apply middleware chain (order: timing -> gzip -> etag -> router)
+	// Note: ETag is after gzip so it calculates hash on compressed content
+	handler := middleware.Timing(middleware.Gzip(middleware.ETag(router)))
+
 	server := &http.Server{
 		Addr:    cfg.ServerAddr,
-		Handler: router,
+		Handler: handler,
 	}
 
 	// Graceful shutdown handling

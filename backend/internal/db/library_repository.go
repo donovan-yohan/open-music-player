@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,6 +33,7 @@ func NewLibraryRepository(db *DB) *LibraryRepository {
 }
 
 // GetUserLibrary retrieves tracks in a user's library with pagination, sorting, and filtering.
+// Uses full-text search for search queries and window functions for efficient count.
 func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID, opts LibraryQueryOptions) ([]LibraryTrack, int, error) {
 	if opts.Limit <= 0 {
 		opts.Limit = 20
@@ -45,28 +47,21 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	args := []interface{}{userID}
 	argIndex := 2
 
+	// Use full-text search for search queries
 	if opts.Search != "" {
-		baseCondition += " AND (t.title ILIKE $" + itoa(argIndex) + " OR t.artist ILIKE $" + itoa(argIndex) + " OR t.album ILIKE $" + itoa(argIndex) + ")"
-		args = append(args, "%"+opts.Search+"%")
-		argIndex++
+		tsQuery := strings.Join(strings.Fields(opts.Search), " & ")
+		if tsQuery != "" {
+			tsQuery = tsQuery + ":*"
+			baseCondition += " AND to_tsvector('english', COALESCE(t.title, '') || ' ' || COALESCE(t.artist, '') || ' ' || COALESCE(t.album, '')) @@ to_tsquery('english', $" + itoa(argIndex) + ")"
+			args = append(args, tsQuery)
+			argIndex++
+		}
 	}
 
 	if opts.MBVerified != nil {
 		baseCondition += " AND t.mb_verified = $" + itoa(argIndex)
 		args = append(args, *opts.MBVerified)
 		argIndex++
-	}
-
-	// Count total matches
-	countQuery := `
-		SELECT COUNT(*)
-		FROM user_library ul
-		JOIN tracks t ON ul.track_id = t.id
-		WHERE ` + baseCondition
-
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-		return nil, 0, err
 	}
 
 	// Determine sort order
@@ -92,12 +87,13 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 		}
 	}
 
-	// Get paginated results
+	// Single query with window function for total count (eliminates separate COUNT query)
 	selectQuery := `
 		SELECT t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
 			   t.mb_recording_id, t.mb_release_id, t.mb_artist_id, t.mb_verified,
 			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
-			   t.metadata_json, t.created_at, t.updated_at, ul.added_at
+			   t.metadata_json, t.created_at, t.updated_at, ul.added_at,
+			   COUNT(*) OVER() as total_count
 		FROM user_library ul
 		JOIN tracks t ON ul.track_id = t.id
 		WHERE ` + baseCondition + `
@@ -113,13 +109,14 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	defer rows.Close()
 
 	var tracks []LibraryTrack
+	var total int
 	for rows.Next() {
 		var lt LibraryTrack
 		err := rows.Scan(
 			&lt.ID, &lt.IdentityHash, &lt.Title, &lt.Artist, &lt.Album, &lt.DurationMs, &lt.Version,
 			&lt.MBRecordingID, &lt.MBReleaseID, &lt.MBArtistID, &lt.MBVerified,
 			&lt.SourceURL, &lt.SourceType, &lt.StorageKey, &lt.FileSizeBytes,
-			&lt.MetadataJSON, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt,
+			&lt.MetadataJSON, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt, &total,
 		)
 		if err != nil {
 			return nil, 0, err

@@ -283,6 +283,8 @@ class OfflineDatabase {
   Future<List<Track>> getLibraryTracks({
     bool downloadedOnly = false,
     VerificationFilter verificationFilter = VerificationFilter.all,
+    int? limit,
+    int offset = 0,
   }) async {
     final db = await database;
     final conditions = <String>[];
@@ -306,16 +308,76 @@ class OfflineDatabase {
         ? 'WHERE ${conditions.join(' AND ')}'
         : '';
 
+    final limitClause = limit != null ? 'LIMIT $limit OFFSET $offset' : '';
+
     final query = '''
       SELECT t.* FROM tracks t
       INNER JOIN library_tracks l ON t.id = l.track_id
       LEFT JOIN downloaded_tracks d ON t.id = d.track_id
       $whereClause
       ORDER BY l.added_at DESC
+      $limitClause
     ''';
 
     final maps = await db.rawQuery(query);
     return maps.map((m) => Track.fromDbMap(m)).toList();
+  }
+
+  /// Returns library tracks with total count for pagination
+  Future<({List<Track> tracks, int total})> getLibraryTracksWithCount({
+    bool downloadedOnly = false,
+    VerificationFilter verificationFilter = VerificationFilter.all,
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    final db = await database;
+    final conditions = <String>[];
+
+    if (downloadedOnly) {
+      conditions.add("d.track_id IS NOT NULL AND d.status = 'completed'");
+    }
+
+    switch (verificationFilter) {
+      case VerificationFilter.verifiedOnly:
+        conditions.add('t.mb_verified = 1');
+        break;
+      case VerificationFilter.unverifiedOnly:
+        conditions.add('t.mb_verified = 0');
+        break;
+      case VerificationFilter.all:
+        break;
+    }
+
+    final whereClause = conditions.isNotEmpty
+        ? 'WHERE ${conditions.join(' AND ')}'
+        : '';
+
+    // Get count and data in parallel
+    final countQuery = '''
+      SELECT COUNT(*) as total FROM tracks t
+      INNER JOIN library_tracks l ON t.id = l.track_id
+      LEFT JOIN downloaded_tracks d ON t.id = d.track_id
+      $whereClause
+    ''';
+
+    final dataQuery = '''
+      SELECT t.* FROM tracks t
+      INNER JOIN library_tracks l ON t.id = l.track_id
+      LEFT JOIN downloaded_tracks d ON t.id = d.track_id
+      $whereClause
+      ORDER BY l.added_at DESC
+      LIMIT $limit OFFSET $offset
+    ''';
+
+    final results = await Future.wait([
+      db.rawQuery(countQuery),
+      db.rawQuery(dataQuery),
+    ]);
+
+    final total = (results[0].first['total'] as int?) ?? 0;
+    final tracks = results[1].map((m) => Track.fromDbMap(m)).toList();
+
+    return (tracks: tracks, total: total);
   }
 
   Future<Map<VerificationFilter, int>> getLibraryTrackCounts() async {

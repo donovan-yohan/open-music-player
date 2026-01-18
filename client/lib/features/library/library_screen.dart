@@ -16,36 +16,89 @@ class LibraryScreen extends StatefulWidget {
 }
 
 class _LibraryScreenState extends State<LibraryScreen> {
+  static const _pageSize = 20;
+
   bool _downloadedOnly = false;
   VerificationFilter _verificationFilter = VerificationFilter.all;
   List<Track> _tracks = [];
   Map<VerificationFilter, int> _counts = {};
   bool _isLoading = true;
+  bool _isLoadingMore = false;
+  bool _hasMore = true;
+  int _totalCount = 0;
+
+  final ScrollController _scrollController = ScrollController();
 
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);
     _loadTracks();
   }
 
+  @override
+  void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels >=
+        _scrollController.position.maxScrollExtent - 200) {
+      _loadMoreTracks();
+    }
+  }
+
   Future<void> _loadTracks() async {
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _tracks = [];
+      _hasMore = true;
+    });
     try {
       final db = context.read<OfflineDatabase>();
       final results = await Future.wait([
-        db.getLibraryTracks(
+        db.getLibraryTracksWithCount(
           downloadedOnly: _downloadedOnly,
           verificationFilter: _verificationFilter,
+          limit: _pageSize,
+          offset: 0,
         ),
         db.getLibraryTrackCounts(),
       ]);
+      final trackResult = results[0] as ({List<Track> tracks, int total});
       setState(() {
-        _tracks = results[0] as List<Track>;
+        _tracks = trackResult.tracks;
+        _totalCount = trackResult.total;
+        _hasMore = _tracks.length < _totalCount;
         _counts = results[1] as Map<VerificationFilter, int>;
         _isLoading = false;
       });
     } catch (e) {
       setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _loadMoreTracks() async {
+    if (_isLoadingMore || !_hasMore) return;
+
+    setState(() => _isLoadingMore = true);
+    try {
+      final db = context.read<OfflineDatabase>();
+      final result = await db.getLibraryTracksWithCount(
+        downloadedOnly: _downloadedOnly,
+        verificationFilter: _verificationFilter,
+        limit: _pageSize,
+        offset: _tracks.length,
+      );
+      setState(() {
+        _tracks.addAll(result.tracks);
+        _hasMore = _tracks.length < result.total;
+        _isLoadingMore = false;
+      });
+    } catch (e) {
+      setState(() => _isLoadingMore = false);
     }
   }
 
@@ -281,10 +334,23 @@ class _LibraryScreenState extends State<LibraryScreen> {
     return RefreshIndicator(
       onRefresh: _loadTracks,
       child: ListView.builder(
-        itemCount: _tracks.length,
+        controller: _scrollController,
+        // Add 1 for loading indicator if has more
+        itemCount: _tracks.length + (_hasMore ? 1 : 0),
+        // Use cacheExtent for smooth scrolling
+        cacheExtent: 200,
         itemBuilder: (context, index) {
+          // Loading indicator at the bottom
+          if (index >= _tracks.length) {
+            return const Padding(
+              padding: EdgeInsets.all(16.0),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+
           final track = _tracks[index];
           return _TrackListTile(
+            key: ValueKey(track.id),
             track: track,
             onTrackUpdated: _loadTracks,
           );
