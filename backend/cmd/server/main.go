@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,7 +14,11 @@ import (
 	"github.com/openmusicplayer/backend/internal/config"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
+	"github.com/openmusicplayer/backend/internal/health"
+	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/openmusicplayer/backend/internal/matcher"
+	"github.com/openmusicplayer/backend/internal/metrics"
+	"github.com/openmusicplayer/backend/internal/middleware"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/queue"
@@ -25,30 +28,59 @@ import (
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
 
+const version = "1.0.0"
+
 func main() {
+	// Initialize structured logger
+	log := logger.Default()
+	ctx := context.Background()
+
+	log.Info(ctx, "Starting OpenMusicPlayer server", map[string]interface{}{
+		"version": version,
+	})
+
 	cfg := config.Load()
 
+	// Initialize database
 	database, err := db.New(cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Error(ctx, "Failed to connect to database", nil, err)
+		os.Exit(1)
 	}
 	defer database.Close()
+	log.Info(ctx, "Connected to database", map[string]interface{}{
+		"host": cfg.DBHost,
+		"port": cfg.DBPort,
+		"name": cfg.DBName,
+	})
 
 	if err := database.Migrate(); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
+		log.Error(ctx, "Failed to run migrations", nil, err)
+		os.Exit(1)
 	}
+	log.Info(ctx, "Database migrations completed", nil)
 
+	// Initialize Redis cache
 	redisCache, err := cache.New(cfg.RedisAddr)
 	if err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		log.Error(ctx, "Failed to connect to Redis", map[string]interface{}{
+			"addr": cfg.RedisAddr,
+		}, err)
+		os.Exit(1)
 	}
 	defer redisCache.Close()
+	log.Info(ctx, "Connected to Redis", map[string]interface{}{
+		"addr": cfg.RedisAddr,
+	})
 
+	// Initialize repositories
 	userRepo := db.NewUserRepository(database)
 	tokenRepo := db.NewTokenRepository(database)
 	trackRepo := db.NewTrackRepository(database)
 	libraryRepo := db.NewLibraryRepository(database)
 	playlistRepo := db.NewPlaylistRepository(database)
+
+	// Initialize services
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
 	authHandlers := auth.NewHandlers(authService)
 	searchHandlers := search.NewHandlers(trackRepo)
@@ -67,8 +99,13 @@ func main() {
 		UseSSL:    cfg.MinioUseSSL,
 	})
 	if err != nil {
-		log.Fatalf("Failed to initialize storage client: %v", err)
+		log.Error(ctx, "Failed to initialize storage client", nil, err)
+		os.Exit(1)
 	}
+	log.Info(ctx, "Initialized storage client", map[string]interface{}{
+		"endpoint": cfg.MinioEndpoint,
+		"bucket":   cfg.MinioBucket,
+	})
 
 	// Initialize stream handler
 	streamHandler := stream.NewHandler(trackRepo, storageClient)
@@ -96,14 +133,19 @@ func main() {
 		WorkerCount: cfg.WorkerCount,
 	}, jobProcessor.Process)
 	if err != nil {
-		log.Fatalf("Failed to initialize download service: %v", err)
+		log.Error(ctx, "Failed to initialize download service", nil, err)
+		os.Exit(1)
 	}
 	downloadService.Start()
+	log.Info(ctx, "Started download service", map[string]interface{}{
+		"workers": cfg.WorkerCount,
+	})
 
 	// Initialize queue service
 	queueService, err := queue.NewService(cfg.RedisURL)
 	if err != nil {
-		log.Fatalf("Failed to initialize queue service: %v", err)
+		log.Error(ctx, "Failed to initialize queue service", nil, err)
+		os.Exit(1)
 	}
 	defer queueService.Close()
 	queueHandlers := queue.NewHandlers(queueService)
@@ -111,39 +153,85 @@ func main() {
 	// Initialize download handlers
 	downloadHandlers := api.NewDownloadHandlers(downloadService)
 
-	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, matcherHandlers, libraryHandlers, streamHandler, queueHandlers, playlistHandlers, downloadHandlers)
+	// Initialize metrics
+	appMetrics := metrics.New()
+
+	// Initialize health checker
+	healthChecker := health.NewChecker(&health.CheckerConfig{
+		DB:    database.DB,
+		Redis: redisCache.Client(),
+		StorageCheck: func(ctx context.Context) error {
+			return storageClient.Ping(ctx)
+		},
+		Version: version,
+		Timeout: 5 * time.Second,
+	})
+	healthHandler := health.NewHandler(healthChecker)
+
+	// Create router with all handlers
+	router := api.NewRouterWithConfig(&api.RouterConfig{
+		AuthHandlers:     authHandlers,
+		AuthService:      authService,
+		SearchHandlers:   searchHandlers,
+		MBClient:         mbClient,
+		MBHandlers:       mbHandlers,
+		WSHandler:        wsHandler,
+		MatcherHandlers:  matcherHandlers,
+		LibraryHandlers:  libraryHandlers,
+		StreamHandler:    streamHandler,
+		QueueHandlers:    queueHandlers,
+		PlaylistHandlers: playlistHandlers,
+		DownloadHandlers: downloadHandlers,
+		HealthHandler:    healthHandler,
+		Metrics:          appMetrics,
+	})
+
+	// Apply middleware chain
+	handler := middleware.Chain(
+		router,
+		middleware.Recoverer(log),
+		middleware.Logging(log),
+		middleware.RequestID,
+		metrics.MetricsMiddleware(appMetrics),
+	)
 
 	server := &http.Server{
 		Addr:    cfg.ServerAddr,
-		Handler: router,
+		Handler: handler,
 	}
 
 	// Graceful shutdown handling
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
+		sig := <-sigChan
 
-		log.Println("Shutting down...")
+		log.Info(ctx, "Received shutdown signal", map[string]interface{}{
+			"signal": sig.String(),
+		})
 
 		// Stop accepting new requests
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("HTTP server shutdown error: %v", err)
+			log.Error(ctx, "HTTP server shutdown error", nil, err)
 		}
 
 		// Stop download workers (waits for current jobs to finish)
 		if err := downloadService.Stop(shutdownCtx); err != nil {
-			log.Printf("Download service shutdown error: %v", err)
+			log.Error(ctx, "Download service shutdown error", nil, err)
 		}
+
+		log.Info(ctx, "Server shutdown complete", nil)
 	}()
 
-	log.Printf("Starting server on %s", cfg.ServerAddr)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("Server failed to start: %v", err)
-	}
+	log.Info(ctx, "Server starting", map[string]interface{}{
+		"addr": cfg.ServerAddr,
+	})
 
-	log.Println("Server stopped")
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Error(ctx, "Server failed to start", nil, err)
+		os.Exit(1)
+	}
 }

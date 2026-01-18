@@ -5,7 +5,9 @@ import (
 	"net/http"
 
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/health"
 	"github.com/openmusicplayer/backend/internal/matcher"
+	"github.com/openmusicplayer/backend/internal/metrics"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
@@ -29,26 +31,70 @@ type Router struct {
 	queueHandlers       *queue.Handlers
 	playlistHandlers    *PlaylistHandlers
 	downloadHandlers    *DownloadHandlers
+	healthHandler       *health.Handler
+	metricsHandler      http.HandlerFunc
+}
+
+// RouterConfig holds configuration for creating a new router
+type RouterConfig struct {
+	AuthHandlers        *auth.Handlers
+	AuthService         *auth.Service
+	SearchHandlers      *search.Handlers
+	MBClient            *musicbrainz.Client
+	MBHandlers          *musicbrainz.Handlers
+	WSHandler           *websocket.Handler
+	MatcherHandlers     *matcher.Handler
+	LibraryHandlers     *LibraryHandlers
+	StreamHandler       *stream.Handler
+	QueueHandlers       *queue.Handlers
+	PlaylistHandlers    *PlaylistHandlers
+	DownloadHandlers    *DownloadHandlers
+	HealthHandler       *health.Handler
+	Metrics             *metrics.Metrics
 }
 
 func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, streamHandler *stream.Handler, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
+	return NewRouterWithConfig(&RouterConfig{
+		AuthHandlers:     authHandlers,
+		AuthService:      authService,
+		SearchHandlers:   searchHandlers,
+		MBClient:         mbClient,
+		MBHandlers:       mbHandlers,
+		WSHandler:        wsHandler,
+		MatcherHandlers:  matcherHandlers,
+		LibraryHandlers:  libraryHandlers,
+		StreamHandler:    streamHandler,
+		QueueHandlers:    queueHandlers,
+		PlaylistHandlers: playlistHandlers,
+		DownloadHandlers: downloadHandlers,
+	})
+}
+
+func NewRouterWithConfig(cfg *RouterConfig) *Router {
 	validatorRegistry := validators.DefaultRegistry()
+
+	var metricsHandler http.HandlerFunc
+	if cfg.Metrics != nil {
+		metricsHandler = cfg.Metrics.Handler()
+	}
 
 	r := &Router{
 		mux:                 http.NewServeMux(),
-		authHandlers:        authHandlers,
-		authService:         authService,
-		searchHandlers:      searchHandlers,
-		browseHandlers:      NewBrowseHandlers(mbClient),
-		musicbrainzHandlers: mbHandlers,
-		wsHandler:           wsHandler,
+		authHandlers:        cfg.AuthHandlers,
+		authService:         cfg.AuthService,
+		searchHandlers:      cfg.SearchHandlers,
+		browseHandlers:      NewBrowseHandlers(cfg.MBClient),
+		musicbrainzHandlers: cfg.MBHandlers,
+		wsHandler:           cfg.WSHandler,
 		validatorHandlers:   validators.NewHandlers(validatorRegistry),
-		matcherHandlers:     matcherHandlers,
-		libraryHandlers:     libraryHandlers,
-		streamHandler:       streamHandler,
-		queueHandlers:       queueHandlers,
-		playlistHandlers:    playlistHandlers,
-		downloadHandlers:    downloadHandlers,
+		matcherHandlers:     cfg.MatcherHandlers,
+		libraryHandlers:     cfg.LibraryHandlers,
+		streamHandler:       cfg.StreamHandler,
+		queueHandlers:       cfg.QueueHandlers,
+		playlistHandlers:    cfg.PlaylistHandlers,
+		downloadHandlers:    cfg.DownloadHandlers,
+		healthHandler:       cfg.HealthHandler,
+		metricsHandler:      metricsHandler,
 	}
 	r.setupRoutes()
 	return r
@@ -59,8 +105,20 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) setupRoutes() {
-	// Health check
-	r.mux.HandleFunc("GET /health", healthHandler)
+	// Health check endpoints (Kubernetes-compatible)
+	if r.healthHandler != nil {
+		r.mux.HandleFunc("GET /health", r.healthHandler.HealthHandler)
+		r.mux.HandleFunc("GET /health/live", r.healthHandler.LivenessHandler)
+		r.mux.HandleFunc("GET /health/ready", r.healthHandler.ReadinessHandler)
+	} else {
+		// Fallback to simple health check if handler not configured
+		r.mux.HandleFunc("GET /health", defaultHealthHandler)
+	}
+
+	// Metrics endpoint (Prometheus-compatible)
+	if r.metricsHandler != nil {
+		r.mux.HandleFunc("GET /metrics", r.metricsHandler)
+	}
 
 	// Auth routes (no auth required)
 	r.mux.HandleFunc("POST /api/v1/auth/register", r.authHandlers.Register)
@@ -137,7 +195,7 @@ func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
+func defaultHealthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
