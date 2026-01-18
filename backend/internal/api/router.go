@@ -7,23 +7,28 @@ import (
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/search"
+	"github.com/openmusicplayer/backend/internal/validators"
 )
 
 type Router struct {
-	mux            *http.ServeMux
-	authHandlers   *auth.Handlers
-	authService    *auth.Service
-	searchHandlers *search.Handlers
-	browseHandlers *BrowseHandlers
+	mux               *http.ServeMux
+	authHandlers      *auth.Handlers
+	authService       *auth.Service
+	searchHandlers    *search.Handlers
+	browseHandlers    *BrowseHandlers
+	validatorHandlers *validators.Handlers
 }
 
 func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client) *Router {
+	validatorRegistry := validators.DefaultRegistry()
+
 	r := &Router{
-		mux:            http.NewServeMux(),
-		authHandlers:   authHandlers,
-		authService:    authService,
-		searchHandlers: searchHandlers,
-		browseHandlers: NewBrowseHandlers(mbClient),
+		mux:               http.NewServeMux(),
+		authHandlers:      authHandlers,
+		authService:       authService,
+		searchHandlers:    searchHandlers,
+		browseHandlers:    NewBrowseHandlers(mbClient),
+		validatorHandlers: validators.NewHandlers(validatorRegistry),
 	}
 	r.setupRoutes()
 	return r
@@ -54,6 +59,11 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /api/v1/artists/{mb_id}", r.withAuth(r.browseHandlers.GetArtist))
 	r.mux.HandleFunc("GET /api/v1/albums/{mb_id}", r.withAuth(r.browseHandlers.GetAlbum))
 	r.mux.HandleFunc("GET /api/v1/tracks/{mb_id}", r.withAuth(r.browseHandlers.GetTrack))
+
+	// URL validation routes (auth required)
+	r.mux.HandleFunc("POST /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURL))
+	r.mux.HandleFunc("GET /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURLQuery))
+	r.mux.HandleFunc("GET /api/v1/validate/sources", r.withAuth(r.validatorHandlers.GetSupportedSources))
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {
