@@ -6,6 +6,7 @@ import (
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
+	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
 	"github.com/openmusicplayer/backend/internal/validators"
 	"github.com/openmusicplayer/backend/internal/websocket"
@@ -20,9 +21,10 @@ type Router struct {
 	musicbrainzHandlers *musicbrainz.Handlers
 	wsHandler           *websocket.Handler
 	validatorHandlers   *validators.Handlers
+	queueHandlers       *queue.Handlers
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, queueHandlers *queue.Handlers) *Router {
 	validatorRegistry := validators.DefaultRegistry()
 
 	r := &Router{
@@ -34,6 +36,7 @@ func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHan
 		musicbrainzHandlers: mbHandlers,
 		wsHandler:           wsHandler,
 		validatorHandlers:   validators.NewHandlers(validatorRegistry),
+		queueHandlers:       queueHandlers,
 	}
 	r.setupRoutes()
 	return r
@@ -77,6 +80,13 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURL))
 	r.mux.HandleFunc("GET /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURLQuery))
 	r.mux.HandleFunc("GET /api/v1/validate/sources", r.withAuth(r.validatorHandlers.GetSupportedSources))
+
+	// Queue routes (auth required)
+	r.mux.HandleFunc("GET /api/v1/queue", r.withAuth(r.queueHandlers.GetQueue))
+	r.mux.HandleFunc("POST /api/v1/queue", r.withAuth(r.queueHandlers.AddToQueue))
+	r.mux.HandleFunc("DELETE /api/v1/queue/{position}", r.withAuth(r.queueHandlers.RemoveFromQueue))
+	r.mux.HandleFunc("PUT /api/v1/queue/reorder", r.withAuth(r.queueHandlers.ReorderQueue))
+	r.mux.HandleFunc("DELETE /api/v1/queue", r.withAuth(r.queueHandlers.ClearQueue))
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {

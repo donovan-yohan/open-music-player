@@ -16,6 +16,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
+	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
@@ -64,7 +65,15 @@ func main() {
 	}
 	downloadService.Start()
 
-	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler)
+	// Initialize queue service
+	queueService, err := queue.NewService(cfg.RedisURL)
+	if err != nil {
+		log.Fatalf("Failed to initialize queue service: %v", err)
+	}
+	defer queueService.Close()
+	queueHandlers := queue.NewHandlers(queueService)
+
+	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, queueHandlers)
 
 	server := &http.Server{
 		Addr:    cfg.ServerAddr,
