@@ -1,6 +1,9 @@
 # Environment variables
 .env
 
+# Gas Town internal
+.beads/
+
 # Docker volumes (if stored locally)
 postgres_data/
 redis_data/
