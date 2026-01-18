@@ -7,6 +7,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/search"
+	"github.com/openmusicplayer/backend/internal/validators"
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
 
@@ -18,9 +19,12 @@ type Router struct {
 	browseHandlers      *BrowseHandlers
 	musicbrainzHandlers *musicbrainz.Handlers
 	wsHandler           *websocket.Handler
+	validatorHandlers   *validators.Handlers
 }
 
 func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler) *Router {
+	validatorRegistry := validators.DefaultRegistry()
+
 	r := &Router{
 		mux:                 http.NewServeMux(),
 		authHandlers:        authHandlers,
@@ -29,6 +33,7 @@ func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHan
 		browseHandlers:      NewBrowseHandlers(mbClient),
 		musicbrainzHandlers: mbHandlers,
 		wsHandler:           wsHandler,
+		validatorHandlers:   validators.NewHandlers(validatorRegistry),
 	}
 	r.setupRoutes()
 	return r
@@ -67,6 +72,11 @@ func (r *Router) setupRoutes() {
 
 	// WebSocket route (auth via query param)
 	r.mux.HandleFunc("GET /api/v1/ws/progress", r.wsHandler.ServeWS)
+
+	// URL validation routes (auth required)
+	r.mux.HandleFunc("POST /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURL))
+	r.mux.HandleFunc("GET /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURLQuery))
+	r.mux.HandleFunc("GET /api/v1/validate/sources", r.withAuth(r.validatorHandlers.GetSupportedSources))
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {
