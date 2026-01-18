@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/search"
 	"github.com/openmusicplayer/backend/internal/validators"
@@ -17,12 +18,12 @@ type Router struct {
 	authService         *auth.Service
 	searchHandlers      *search.Handlers
 	browseHandlers      *BrowseHandlers
-	musicbrainzHandlers *musicbrainz.Handlers
 	wsHandler           *websocket.Handler
 	validatorHandlers   *validators.Handlers
+	matcherHandlers     *matcher.Handler
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler) *Router {
 	validatorRegistry := validators.DefaultRegistry()
 
 	r := &Router{
@@ -34,6 +35,7 @@ func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHan
 		musicbrainzHandlers: mbHandlers,
 		wsHandler:           wsHandler,
 		validatorHandlers:   validators.NewHandlers(validatorRegistry),
+		matcherHandlers:     matcherHandlers,
 	}
 	r.setupRoutes()
 	return r
@@ -77,6 +79,11 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURL))
 	r.mux.HandleFunc("GET /api/v1/validate/url", r.withAuth(r.validatorHandlers.ValidateURLQuery))
 	r.mux.HandleFunc("GET /api/v1/validate/sources", r.withAuth(r.validatorHandlers.GetSupportedSources))
+
+	// Auto-matching routes (auth required)
+	r.mux.HandleFunc("POST /api/v1/match", r.withAuth(r.matcherHandlers.HandleMatch))
+	r.mux.HandleFunc("POST /api/v1/tracks/{id}/match", r.withAuth(r.matcherHandlers.HandleMatchTrack))
+	r.mux.HandleFunc("POST /api/v1/tracks/{id}/confirm-match", r.withAuth(r.matcherHandlers.HandleConfirmMatch))
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {

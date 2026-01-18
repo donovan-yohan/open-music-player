@@ -266,6 +266,51 @@ func (r *TrackRepository) GetByID(ctx context.Context, id int64) (*Track, error)
 	return &t, nil
 }
 
+// MBMatchUpdate contains the MusicBrainz match data to update
+type MBMatchUpdate struct {
+	MBRecordingID *uuid.UUID
+	MBReleaseID   *uuid.UUID
+	MBArtistID    *uuid.UUID
+	MBVerified    bool
+	MetadataJSON  json.RawMessage // For storing suggestions when unverified
+}
+
+// UpdateMBMatch updates a track's MusicBrainz identifiers and verification status
+func (r *TrackRepository) UpdateMBMatch(ctx context.Context, trackID int64, match *MBMatchUpdate) error {
+	query := `
+		UPDATE tracks
+		SET mb_recording_id = $2,
+			mb_release_id = $3,
+			mb_artist_id = $4,
+			mb_verified = $5,
+			metadata_json = COALESCE($6, metadata_json),
+			updated_at = NOW()
+		WHERE id = $1
+	`
+
+	result, err := r.db.ExecContext(ctx, query,
+		trackID,
+		match.MBRecordingID,
+		match.MBReleaseID,
+		match.MBArtistID,
+		match.MBVerified,
+		match.MetadataJSON,
+	)
+	if err != nil {
+		return err
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrTrackNotFound
+	}
+
+	return nil
+}
+
 // GetByIdentityHash retrieves a track by its identity hash.
 func (r *TrackRepository) GetByIdentityHash(ctx context.Context, identityHash string) (*Track, error) {
 	query := `
@@ -421,4 +466,58 @@ func WithMetadata(metadata json.RawMessage) TrackOption {
 	return func(t *Track) {
 		t.MetadataJSON = metadata
 	}
+}
+
+// GetUnverifiedTracks returns tracks without MB verification for batch processing
+func (r *TrackRepository) GetUnverifiedTracks(ctx context.Context, limit, offset int) ([]Track, int, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	countQuery := `SELECT COUNT(*) FROM tracks WHERE mb_verified = FALSE`
+	var total int
+	if err := r.db.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	selectQuery := `
+		SELECT id, identity_hash, title, artist, album, duration_ms, version,
+			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
+			   source_url, source_type, storage_key, file_size_bytes,
+			   metadata_json, created_at, updated_at
+		FROM tracks
+		WHERE mb_verified = FALSE
+		ORDER BY created_at DESC
+		LIMIT $1 OFFSET $2
+	`
+
+	rows, err := r.db.QueryContext(ctx, selectQuery, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var tracks []Track
+	for rows.Next() {
+		var t Track
+		err := rows.Scan(
+			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
+			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
+			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
+			&t.MetadataJSON, &t.CreatedAt, &t.UpdatedAt,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+		tracks = append(tracks, t)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return tracks, total, nil
 }

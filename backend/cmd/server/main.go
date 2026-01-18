@@ -15,6 +15,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/config"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
+	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/search"
 	"github.com/openmusicplayer/backend/internal/websocket"
@@ -64,7 +65,11 @@ func main() {
 	}
 	downloadService.Start()
 
-	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler)
+	// Initialize matcher service
+	matcherService := matcher.NewMatcher(mbClient)
+	matcherHandlers := matcher.NewHandler(matcherService, trackRepo)
+
+	router := api.NewRouter(authHandlers, authService, searchHandlers, mbClient, mbHandlers, wsHandler, matcherHandlers)
 
 	server := &http.Server{
 		Addr:    cfg.ServerAddr,
