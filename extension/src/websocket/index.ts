@@ -208,6 +208,11 @@ export class DownloadJobManager {
     this.listeners.delete(listener);
   }
 
+  clearJobs(): void {
+    this.jobs.clear();
+    this.notifyListeners();
+  }
+
   private notifyListeners(): void {
     const jobs = this.getJobs();
     this.listeners.forEach((listener) => listener(jobs));

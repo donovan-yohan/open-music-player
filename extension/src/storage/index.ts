@@ -2,6 +2,8 @@ import type { AuthTokens } from '../types';
 
 const STORAGE_KEYS = {
   AUTH_TOKENS: 'auth_tokens',
+  USER_EMAIL: 'user_email',
+  REFRESH_TOKEN: 'refresh_token',
   API_BASE_URL: 'api_base_url',
   NOTIFICATIONS_ENABLED: 'notifications_enabled',
 } as const;
@@ -31,7 +33,28 @@ export async function setAuthTokens(tokens: AuthTokens): Promise<void> {
 
 export async function clearAuthTokens(): Promise<void> {
   return new Promise((resolve) => {
-    chrome.storage.local.remove([STORAGE_KEYS.AUTH_TOKENS], () => {
+    chrome.storage.local.remove([STORAGE_KEYS.AUTH_TOKENS, STORAGE_KEYS.USER_EMAIL, STORAGE_KEYS.REFRESH_TOKEN], () => {
+      resolve();
+    });
+  });
+}
+
+export async function getRefreshToken(): Promise<string | null> {
+  const tokens = await getAuthTokens();
+  return tokens?.refreshToken || null;
+}
+
+export async function getUserEmail(): Promise<string | null> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get([STORAGE_KEYS.USER_EMAIL], (result) => {
+      resolve((result[STORAGE_KEYS.USER_EMAIL] as string) || null);
+    });
+  });
+}
+
+export async function setUserEmail(email: string): Promise<void> {
+  return new Promise((resolve) => {
+    chrome.storage.local.set({ [STORAGE_KEYS.USER_EMAIL]: email }, () => {
       resolve();
     });
   });

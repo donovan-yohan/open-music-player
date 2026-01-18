@@ -78,6 +78,25 @@ export interface GetAuthStateRequest extends ExtensionMessage {
 export interface GetAuthStateResponse {
   type: 'AUTH_STATE';
   isAuthenticated: boolean;
+  userEmail?: string;
+}
+
+export interface LoginRequest extends ExtensionMessage {
+  type: 'LOGIN';
+  payload: {
+    email: string;
+    password: string;
+  };
+}
+
+export interface LoginResponse {
+  success: boolean;
+  userEmail?: string;
+  error?: string;
+}
+
+export interface LogoutRequest extends ExtensionMessage {
+  type: 'LOGOUT';
 }
 
 export interface GetNotificationPrefsRequest extends ExtensionMessage {
