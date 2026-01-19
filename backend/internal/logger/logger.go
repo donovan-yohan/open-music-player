@@ -56,6 +56,7 @@ func ParseLevel(s string) Level {
 type Entry struct {
 	Timestamp string                 `json:"timestamp"`
 	Level     string                 `json:"level"`
+	Component string                 `json:"component,omitempty"`
 	Message   string                 `json:"message"`
 	RequestID string                 `json:"request_id,omitempty"`
 	UserID    string                 `json:"user_id,omitempty"`
@@ -66,10 +67,11 @@ type Entry struct {
 
 // Logger is the structured JSON logger
 type Logger struct {
-	mu       sync.Mutex
-	out      io.Writer
-	minLevel Level
-	redactor *Redactor
+	mu        sync.Mutex
+	out       io.Writer
+	minLevel  Level
+	redactor  *Redactor
+	component string
 }
 
 // Config for logger initialization
@@ -103,6 +105,16 @@ func Default() *Logger {
 		Level:    ParseLevel(os.Getenv("LOG_LEVEL")),
 		Redactor: DefaultRedactor(),
 	})
+}
+
+// WithComponent returns a new logger with the component field set
+func (l *Logger) WithComponent(component string) *Logger {
+	return &Logger{
+		out:       l.out,
+		minLevel:  l.minLevel,
+		redactor:  l.redactor,
+		component: component,
+	}
 }
 
 // contextKey is the type for context keys
@@ -162,6 +174,7 @@ func (l *Logger) log(ctx context.Context, level Level, msg string, fields map[st
 	entry := Entry{
 		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Level:     level.String(),
+		Component: l.component,
 		Message:   l.redactor.Redact(msg),
 		RequestID: GetRequestID(ctx),
 		UserID:    GetUserID(ctx),

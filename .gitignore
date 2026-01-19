@@ -11,6 +11,11 @@ postgres_data/
 redis_data/
 minio_data/
 
+# SSL certificates (never commit)
+nginx/certs/*.pem
+nginx/certs/*.crt
+nginx/certs/*.key
+
 # Dependencies
 node_modules/
 

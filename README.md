@@ -235,62 +235,140 @@ openmusicplayer/
 
 ## Deployment
 
-### Production Environment Variables
+### Quick Start (Single VPS with Docker Compose)
 
-For production, set these additional environment variables:
+The easiest way to deploy the full stack is using Docker Compose:
 
 ```bash
-# Security
-JWT_SECRET=your-secure-random-secret-here
+# 1. Clone and configure
+git clone https://github.com/openmusicplayer/openmusicplayer.git
+cd openmusicplayer
+cp .env.example .env
 
-# Database (use your production database)
-DB_HOST=your-postgres-host
-DB_PORT=5432
-DB_USER=openmusicplayer
-DB_PASSWORD=secure-password
-DB_NAME=openmusicplayer
+# 2. Edit .env with production values (see below)
+nano .env
 
-# Redis
-REDIS_URL=redis://your-redis-host:6379
+# 3. Start the full stack
+docker compose up -d
 
-# MinIO/S3 Storage
-MINIO_ENDPOINT=https://your-s3-endpoint
-MINIO_ACCESS_KEY=your-access-key
-MINIO_SECRET_KEY=your-secret-key
+# 4. Verify all services are healthy
+docker compose ps
+
+# 5. View logs
+docker compose logs -f backend
+```
+
+This starts:
+- **Backend API** on port 8080 with yt-dlp for downloads
+- **PostgreSQL** for data persistence
+- **Redis** for caching and job queues
+- **MinIO** for audio file storage
+
+### Production Environment Variables
+
+Create a `.env` file with these production values:
+
+```bash
+# Security - REQUIRED: Generate with `openssl rand -hex 32`
+JWT_SECRET=your-64-character-hex-secret-here
+
+# Database - REQUIRED: Use strong passwords
+POSTGRES_USER=omp
+POSTGRES_PASSWORD=your-strong-database-password
+POSTGRES_DB=openmusicplayer
+
+# MinIO/S3 Storage - REQUIRED: Use strong passwords
+MINIO_ROOT_USER=your-minio-admin-user
+MINIO_ROOT_PASSWORD=your-strong-minio-password
+MINIO_ACCESS_KEY=your-minio-admin-user
+MINIO_SECRET_KEY=your-strong-minio-password
 MINIO_BUCKET=audio-files
-MINIO_USE_SSL=true
 
 # Server
-SERVER_ADDR=:8080
+SERVER_PORT=8080
 WORKER_COUNT=5
 ```
 
-### Docker Deployment
+### Production with Nginx (HTTPS)
 
-Build and run the backend:
+For production deployments with SSL/TLS:
 
 ```bash
-# Build the backend image
-docker build -t openmusicplayer-backend ./backend
+# 1. Generate SSL certificates (using Let's Encrypt)
+certbot certonly --standalone -d your-domain.com
 
-# Run with environment file
-docker run -d \
-  --name omp-backend \
-  --env-file .env.production \
-  -p 8080:8080 \
-  openmusicplayer-backend
+# 2. Copy certificates to nginx/certs/
+cp /etc/letsencrypt/live/your-domain.com/fullchain.pem nginx/certs/
+cp /etc/letsencrypt/live/your-domain.com/privkey.pem nginx/certs/
+
+# 3. Edit nginx/nginx.conf to enable HTTPS (uncomment the HTTPS server block)
+
+# 4. Start with production profile (includes nginx)
+docker compose --profile production up -d
 ```
 
-### Kubernetes/Cloud Deployment
+### Health Checks
 
-For production deployments:
+The backend exposes health check endpoints:
 
-1. Deploy PostgreSQL (use managed service like AWS RDS, Cloud SQL, etc.)
-2. Deploy Redis (use managed service like ElastiCache, Memorystore, etc.)
-3. Configure S3 or MinIO for object storage
-4. Deploy the backend as a container with horizontal scaling
-5. Set up a reverse proxy (nginx, Traefik) with TLS termination
-6. Configure CORS for your frontend domains
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Basic liveness check |
+| `GET /health?deep=true` | Full readiness check (checks DB, Redis, Storage) |
+| `GET /healthz` | Kubernetes liveness probe |
+| `GET /readyz` | Kubernetes readiness probe |
+
+### Database Backup Strategy
+
+**Automated backups with pg_dump:**
+
+```bash
+# Create a backup
+docker exec omp-postgres pg_dump -U omp openmusicplayer > backup_$(date +%Y%m%d_%H%M%S).sql
+
+# Restore from backup
+docker exec -i omp-postgres psql -U omp openmusicplayer < backup_20240115_120000.sql
+```
+
+**Recommended backup schedule:**
+- Daily full backups retained for 7 days
+- Weekly backups retained for 4 weeks
+- Monthly backups retained for 12 months
+
+**MinIO/S3 backup:**
+```bash
+# Sync audio files to external backup
+mc mirror omp-minio/audio-files /backup/audio-files/
+```
+
+### yt-dlp Updates
+
+yt-dlp requires regular updates to keep working with YouTube/SoundCloud changes:
+
+```bash
+# Update yt-dlp in the running container
+docker exec omp-backend pip3 install --upgrade yt-dlp
+
+# Or rebuild the container to get latest version
+docker compose build --no-cache backend
+docker compose up -d backend
+```
+
+**Recommended:** Set up a weekly cron job to update yt-dlp.
+
+### Scaling Considerations
+
+For high-traffic deployments:
+
+1. **Horizontal scaling**: Run multiple backend containers behind a load balancer
+2. **Database**: Use managed PostgreSQL (AWS RDS, Cloud SQL) with read replicas
+3. **Redis**: Use managed Redis (ElastiCache, Memorystore) with clustering
+4. **Storage**: Use AWS S3 or managed MinIO cluster for object storage
+5. **CDN**: Place audio file serving behind a CDN for reduced latency
+
+### Kubernetes Deployment (Future)
+
+A Helm chart is planned for Kubernetes deployments. For now, use the Docker Compose setup or adapt the configuration manually.
 
 ### Extension Distribution
 

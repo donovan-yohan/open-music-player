@@ -195,9 +195,9 @@ func main() {
 		metrics.MetricsMiddleware(appMetrics),
 	)
 
-	// Apply middleware chain (order: timing -> gzip -> etag -> router)
+	// Apply middleware chain (order: timing -> gzip -> etag -> handler)
 	// Note: ETag is after gzip so it calculates hash on compressed content
-	handler := middleware.Timing(middleware.Gzip(middleware.ETag(router)))
+	handler = middleware.Timing(middleware.Gzip(middleware.ETag(handler)))
 
 	server := &http.Server{
 		Addr:    cfg.ServerAddr,

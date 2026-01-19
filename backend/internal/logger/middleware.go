@@ -165,12 +165,12 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 			if err := recover(); err != nil {
 				requestID := apperrors.GetRequestID(r.Context())
 
-				log.Error(r.Context(), "panic recovered", nil, map[string]interface{}{
+				log.Error(r.Context(), "panic recovered", map[string]interface{}{
 					"panic":      err,
 					"request_id": requestID,
 					"path":       r.URL.Path,
 					"method":     r.Method,
-				})
+				}, nil)
 
 				// Return internal server error
 				apperrors.WriteError(w, requestID, apperrors.InternalError("an unexpected error occurred"))

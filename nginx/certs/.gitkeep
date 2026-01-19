@@ -1,0 +1,6 @@
+# Place SSL certificates here for production deployment
+# - fullchain.pem
+# - privkey.pem
+#
+# Generate with Let's Encrypt:
+#   certbot certonly --standalone -d your-domain.com
