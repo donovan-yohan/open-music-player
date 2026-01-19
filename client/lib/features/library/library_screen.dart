@@ -365,6 +365,7 @@ class _TrackListTile extends StatelessWidget {
   final VoidCallback? onTrackUpdated;
 
   const _TrackListTile({
+    super.key,
     required this.track,
     this.onTrackUpdated,
   });
