@@ -109,15 +109,17 @@ jobs:
       - name: Run tests
         run: flutter test --coverage
 
-      - name: Build APK
-        run: flutter build apk --release
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-apk
-          path: client/build/app/outputs/flutter-apk/app-release.apk
-          retention-days: 7
+      # APK build disabled - android platform not configured
+      # TODO: Run `flutter create --platforms=android .` in client/ to enable
+      # - name: Build APK
+      #   run: flutter build apk --release
+      #
+      # - name: Upload APK artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: android-apk
+      #     path: client/build/app/outputs/flutter-apk/app-release.apk
+      #     retention-days: 7
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
