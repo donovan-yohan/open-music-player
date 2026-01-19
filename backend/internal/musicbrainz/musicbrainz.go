@@ -141,10 +141,10 @@ type mbRecordingResponse struct {
 			} `json:"artist"`
 		} `json:"artist-credit"`
 		Releases []struct {
-			ID         string `json:"id"`
-			Title      string `json:"title"`
-			Date       string `json:"date"`
-			TrackCount int    `json:"track-count"`
+			ID           string `json:"id"`
+			Title        string `json:"title"`
+			Date         string `json:"date"`
+			TrackCount   int    `json:"track-count"`
 			ReleaseGroup struct {
 				ID string `json:"id"`
 			} `json:"release-group"`
@@ -233,10 +233,10 @@ type mbReleaseLookupResponse struct {
 	Media []struct {
 		Position int `json:"position"`
 		Tracks   []struct {
-			ID       string `json:"id"`
-			Position int    `json:"position"`
-			Title    string `json:"title"`
-			Length   int    `json:"length"`
+			ID        string `json:"id"`
+			Position  int    `json:"position"`
+			Title     string `json:"title"`
+			Length    int    `json:"length"`
 			Recording struct {
 				ID string `json:"id"`
 			} `json:"recording"`

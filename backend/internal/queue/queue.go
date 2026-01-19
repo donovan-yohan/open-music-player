@@ -19,16 +19,16 @@ const (
 )
 
 var (
-	ErrQueueEmpty     = errors.New("queue is empty")
+	ErrQueueEmpty      = errors.New("queue is empty")
 	ErrInvalidPosition = errors.New("invalid position")
-	ErrTrackNotFound  = errors.New("track not found in queue")
+	ErrTrackNotFound   = errors.New("track not found in queue")
 )
 
 // QueueItem represents a track in the playback queue
 type QueueItem struct {
-	Position int        `json:"position"`
-	TrackID  int64      `json:"track_id"`
-	AddedAt  time.Time  `json:"added_at"`
+	Position int       `json:"position"`
+	TrackID  int64     `json:"track_id"`
+	AddedAt  time.Time `json:"added_at"`
 }
 
 // QueueState represents the full state of a user's playback queue

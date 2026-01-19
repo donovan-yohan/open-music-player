@@ -37,11 +37,11 @@ type HealthResponse struct {
 
 // Checker performs health checks on various components
 type Checker struct {
-	db            *sql.DB
-	redis         *redis.Client
-	storageCheck  func(ctx context.Context) error
-	version       string
-	checkTimeout  time.Duration
+	db           *sql.DB
+	redis        *redis.Client
+	storageCheck func(ctx context.Context) error
+	version      string
+	checkTimeout time.Duration
 }
 
 // CheckerConfig holds configuration for the health checker

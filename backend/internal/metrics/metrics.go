@@ -15,9 +15,9 @@ type Metrics struct {
 	mu sync.RWMutex
 
 	// Request metrics
-	requestCount    map[string]*uint64 // endpoint:method -> count
+	requestCount    map[string]*uint64    // endpoint:method -> count
 	requestDuration map[string]*Histogram // endpoint:method -> duration histogram
-	requestErrors   map[string]*uint64 // endpoint:status_class -> count
+	requestErrors   map[string]*uint64    // endpoint:status_class -> count
 
 	// Application metrics
 	activeWSConnections int64
@@ -185,8 +185,8 @@ func (m *Metrics) Handler() http.HandlerFunc {
 
 		// Uptime
 		uptime := time.Since(m.startTime).Seconds()
-		sb.WriteString(fmt.Sprintf("# HELP omp_uptime_seconds Time since the server started\n"))
-		sb.WriteString(fmt.Sprintf("# TYPE omp_uptime_seconds gauge\n"))
+		sb.WriteString("# HELP omp_uptime_seconds Time since the server started\n")
+		sb.WriteString("# TYPE omp_uptime_seconds gauge\n")
 		sb.WriteString(fmt.Sprintf("omp_uptime_seconds %f\n\n", uptime))
 
 		// Active WebSocket connections

@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/matcher"

@@ -4,8 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/openmusicplayer/backend/internal/logger"
 )
 
 type Cache struct {

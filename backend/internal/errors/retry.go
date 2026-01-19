@@ -34,7 +34,7 @@ func DefaultRetryConfig() *RetryConfig {
 func MusicBrainzRetryConfig() *RetryConfig {
 	return &RetryConfig{
 		MaxRetries:     3,
-		InitialBackoff: 1 * time.Second,  // MB has rate limit of 1 req/sec
+		InitialBackoff: 1 * time.Second, // MB has rate limit of 1 req/sec
 		MaxBackoff:     10 * time.Second,
 		BackoffFactor:  2.0,
 		Jitter:         true,
@@ -188,9 +188,9 @@ func isRetryableError(err error) bool {
 		return IsRetryable(appErr)
 	}
 
-	// Check for network errors
+	// Check for network errors (only use Timeout, Temporary is deprecated)
 	if netErr, ok := err.(net.Error); ok {
-		return netErr.Temporary() || netErr.Timeout()
+		return netErr.Timeout()
 	}
 
 	// Check for common retryable error messages
@@ -221,11 +221,11 @@ func isRetryableError(err error) bool {
 // HTTPRetryableStatus returns true if the HTTP status code is retryable
 func HTTPRetryableStatus(statusCode int) bool {
 	switch statusCode {
-	case http.StatusTooManyRequests,      // 429
-		http.StatusInternalServerError,   // 500
-		http.StatusBadGateway,            // 502
-		http.StatusServiceUnavailable,    // 503
-		http.StatusGatewayTimeout:        // 504
+	case http.StatusTooManyRequests, // 429
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503
+		http.StatusGatewayTimeout:      // 504
 		return true
 	default:
 		return false

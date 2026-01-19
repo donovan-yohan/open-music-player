@@ -61,6 +61,7 @@ jobs:
         with:
           version: v1.63.4
           install-mode: goinstall
+          skip-cache: true
           working-directory: backend
 
       - name: Run tests

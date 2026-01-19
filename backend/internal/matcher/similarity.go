@@ -27,7 +27,7 @@ var DefaultWeights = ScoreWeights{
 
 // MatchScore represents the similarity score between two tracks
 type MatchScore struct {
-	Overall         float64  `json:"overall"`          // Combined weighted score (0-100)
+	Overall         float64  `json:"overall"`         // Combined weighted score (0-100)
 	ArtistScore     float64  `json:"artistScore"`     // Artist name similarity (0-100)
 	TrackScore      float64  `json:"trackScore"`      // Track title similarity (0-100)
 	DurationScore   float64  `json:"durationScore"`   // Duration match score (0-100)

@@ -105,15 +105,15 @@ func TestCalculateScore(t *testing.T) {
 	weights := DefaultWeights
 
 	tests := []struct {
-		name        string
-		parsed      *ParsedTitle
-		mbArtist    string
-		mbTrack     string
-		parsedDur   int
-		mbDur       int
-		mbAPIScore  int
-		expectHigh  bool
-		minOverall  float64
+		name       string
+		parsed     *ParsedTitle
+		mbArtist   string
+		mbTrack    string
+		parsedDur  int
+		mbDur      int
+		mbAPIScore int
+		expectHigh bool
+		minOverall float64
 	}{
 		{
 			name:       "exact match",
@@ -189,39 +189,39 @@ func TestMatchReasons(t *testing.T) {
 	weights := DefaultWeights
 
 	tests := []struct {
-		name           string
-		parsed         *ParsedTitle
-		mbArtist       string
-		mbTrack        string
-		parsedDur      int
-		mbDur          int
+		name            string
+		parsed          *ParsedTitle
+		mbArtist        string
+		mbTrack         string
+		parsedDur       int
+		mbDur           int
 		expectedReasons []string
 	}{
 		{
-			name:      "title and artist match",
-			parsed:    &ParsedTitle{Artist: "Radiohead", Track: "Creep"},
-			mbArtist:  "Radiohead",
-			mbTrack:   "Creep",
-			parsedDur: 0,
-			mbDur:     0,
+			name:            "title and artist match",
+			parsed:          &ParsedTitle{Artist: "Radiohead", Track: "Creep"},
+			mbArtist:        "Radiohead",
+			mbTrack:         "Creep",
+			parsedDur:       0,
+			mbDur:           0,
 			expectedReasons: []string{"title_match", "artist_match"},
 		},
 		{
-			name:      "title match only",
-			parsed:    &ParsedTitle{Artist: "Unknown", Track: "Creep"},
-			mbArtist:  "Radiohead",
-			mbTrack:   "Creep",
-			parsedDur: 0,
-			mbDur:     0,
+			name:            "title match only",
+			parsed:          &ParsedTitle{Artist: "Unknown", Track: "Creep"},
+			mbArtist:        "Radiohead",
+			mbTrack:         "Creep",
+			parsedDur:       0,
+			mbDur:           0,
 			expectedReasons: []string{"title_match"},
 		},
 		{
-			name:      "duration match",
-			parsed:    &ParsedTitle{Artist: "A", Track: "B"},
-			mbArtist:  "C",
-			mbTrack:   "D",
-			parsedDur: 180000,
-			mbDur:     180000,
+			name:            "duration match",
+			parsed:          &ParsedTitle{Artist: "A", Track: "B"},
+			mbArtist:        "C",
+			mbTrack:         "D",
+			parsedDur:       180000,
+			mbDur:           180000,
 			expectedReasons: []string{"duration_match"},
 		},
 	}
@@ -229,7 +229,7 @@ func TestMatchReasons(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := CalculateScore(tt.parsed, tt.mbArtist, tt.mbTrack, tt.parsedDur, tt.mbDur, 0, weights)
-			
+
 			for _, expected := range tt.expectedReasons {
 				found := false
 				for _, actual := range result.MatchReasons {

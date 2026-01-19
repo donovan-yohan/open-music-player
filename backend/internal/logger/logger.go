@@ -219,7 +219,7 @@ func (l *Logger) Error(ctx context.Context, msg string, fields map[string]interf
 
 // Redactor handles sensitive data redaction in logs
 type Redactor struct {
-	sensitiveKeys    map[string]bool
+	sensitiveKeys     map[string]bool
 	sensitivePatterns []*regexp.Regexp
 }
 

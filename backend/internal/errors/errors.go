@@ -18,13 +18,13 @@ const (
 // Common error codes
 const (
 	// Client errors (4xx)
-	CodeValidationError    = "VALIDATION_ERROR"
-	CodeInvalidRequest     = "INVALID_REQUEST"
-	CodeUnauthorized       = "UNAUTHORIZED"
-	CodeForbidden          = "FORBIDDEN"
-	CodeNotFound           = "NOT_FOUND"
-	CodeConflict           = "CONFLICT"
-	CodeRateLimited        = "RATE_LIMITED"
+	CodeValidationError = "VALIDATION_ERROR"
+	CodeInvalidRequest  = "INVALID_REQUEST"
+	CodeUnauthorized    = "UNAUTHORIZED"
+	CodeForbidden       = "FORBIDDEN"
+	CodeNotFound        = "NOT_FOUND"
+	CodeConflict        = "CONFLICT"
+	CodeRateLimited     = "RATE_LIMITED"
 
 	// Authentication specific
 	CodeInvalidCredentials = "INVALID_CREDENTIALS"
@@ -33,32 +33,32 @@ const (
 	CodeEmailExists        = "EMAIL_EXISTS"
 
 	// Resource specific
-	CodeTrackNotFound      = "TRACK_NOT_FOUND"
-	CodeArtistNotFound     = "ARTIST_NOT_FOUND"
-	CodeAlbumNotFound      = "ALBUM_NOT_FOUND"
-	CodePlaylistNotFound   = "PLAYLIST_NOT_FOUND"
-	CodeJobNotFound        = "JOB_NOT_FOUND"
-	CodeUnsupportedSource  = "UNSUPPORTED_SOURCE"
+	CodeTrackNotFound     = "TRACK_NOT_FOUND"
+	CodeArtistNotFound    = "ARTIST_NOT_FOUND"
+	CodeAlbumNotFound     = "ALBUM_NOT_FOUND"
+	CodePlaylistNotFound  = "PLAYLIST_NOT_FOUND"
+	CodeJobNotFound       = "JOB_NOT_FOUND"
+	CodeUnsupportedSource = "UNSUPPORTED_SOURCE"
 
 	// Server errors (5xx)
-	CodeInternalError      = "INTERNAL_ERROR"
-	CodeDatabaseError      = "DATABASE_ERROR"
-	CodeStorageError       = "STORAGE_ERROR"
+	CodeInternalError = "INTERNAL_ERROR"
+	CodeDatabaseError = "DATABASE_ERROR"
+	CodeStorageError  = "STORAGE_ERROR"
 
 	// External service errors
-	CodeMusicBrainzError   = "MUSICBRAINZ_ERROR"
-	CodeDownloadError      = "DOWNLOAD_ERROR"
-	CodeExternalTimeout    = "EXTERNAL_TIMEOUT"
+	CodeMusicBrainzError = "MUSICBRAINZ_ERROR"
+	CodeDownloadError    = "DOWNLOAD_ERROR"
+	CodeExternalTimeout  = "EXTERNAL_TIMEOUT"
 )
 
 // AppError represents a structured application error
 type AppError struct {
-	Code       string            `json:"code"`
-	Message    string            `json:"message"`
-	Category   ErrorCategory     `json:"-"`
-	HTTPStatus int               `json:"-"`
-	Details    map[string]any    `json:"details,omitempty"`
-	Cause      error             `json:"-"`
+	Code       string         `json:"code"`
+	Message    string         `json:"message"`
+	Category   ErrorCategory  `json:"-"`
+	HTTPStatus int            `json:"-"`
+	Details    map[string]any `json:"details,omitempty"`
+	Cause      error          `json:"-"`
 }
 
 // Error implements the error interface

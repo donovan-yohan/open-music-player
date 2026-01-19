@@ -258,10 +258,10 @@ func containsWord(s, word string) bool {
 	// Simple contains check for now - can be enhanced with word boundary checks
 	return len(s) > 0 && len(word) > 0 &&
 		(s == word ||
-		 len(s) > len(word) &&
-		 (s[:len(word)+1] == word+" " ||
-		  s[len(s)-len(word)-1:] == " "+word ||
-		  contains(s, " "+word+" ")))
+			len(s) > len(word) &&
+				(s[:len(word)+1] == word+" " ||
+					s[len(s)-len(word)-1:] == " "+word ||
+					contains(s, " "+word+" ")))
 }
 
 func contains(s, substr string) bool {

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/db"
 )
 
@@ -33,11 +34,11 @@ type MatchRequest struct {
 
 // MatchResponse is the response for a match request
 type MatchResponse struct {
-	TrackID     int64        `json:"track_id,omitempty"`
-	Verified    bool         `json:"verified"`
-	BestMatch   *MatchResult `json:"best_match,omitempty"`
+	TrackID     int64         `json:"track_id,omitempty"`
+	Verified    bool          `json:"verified"`
+	BestMatch   *MatchResult  `json:"best_match,omitempty"`
 	Suggestions []MatchResult `json:"suggestions,omitempty"`
-	ParsedTitle *ParsedTitle `json:"parsed_title"`
+	ParsedTitle *ParsedTitle  `json:"parsed_title"`
 }
 
 // HandleMatch handles POST /api/v1/match - matches metadata to MusicBrainz
@@ -263,8 +264,8 @@ func (h *Handler) HandleConfirmMatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"trackId": trackID,
+		"success":  true,
+		"trackId":  trackID,
 		"verified": true,
 	})
 }
@@ -277,12 +278,12 @@ type LinkMBRequest struct {
 
 // LinkMBResponse is the response for a link-mb request
 type LinkMBResponse struct {
-	TrackID         int64  `json:"track_id"`
-	MBRecordingID   string `json:"mb_recording_id"`
-	MBArtistID      string `json:"mb_artist_id,omitempty"`
-	MBReleaseID     string `json:"mb_release_id,omitempty"`
-	Verified        bool   `json:"verified"`
-	MetadataUpdated bool   `json:"metadata_updated"`
+	TrackID         int64      `json:"track_id"`
+	MBRecordingID   string     `json:"mb_recording_id"`
+	MBArtistID      string     `json:"mb_artist_id,omitempty"`
+	MBReleaseID     string     `json:"mb_release_id,omitempty"`
+	Verified        bool       `json:"verified"`
+	MetadataUpdated bool       `json:"metadata_updated"`
 	Track           *TrackInfo `json:"track,omitempty"`
 }
 

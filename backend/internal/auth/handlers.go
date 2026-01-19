@@ -167,9 +167,3 @@ func validateRegisterRequest(req *RegisterRequest) error {
 	}
 	return nil
 }
-
-// Deprecated: use apperrors.WriteError instead
-// Keeping for backwards compatibility with any external callers
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	apperrors.WriteError(w, "", apperrors.New(code, message, apperrors.CategoryClient, status))
-}

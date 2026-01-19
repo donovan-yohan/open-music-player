@@ -4,10 +4,8 @@ run:
   modules-download-mode: readonly
 
 linters:
+  disable-all: true
   enable:
-    # errcheck temporarily disabled - see issue op-ymws
-    # TODO: re-enable after fixing unchecked error returns
-    # - errcheck
     - gosimple
     - govet
     - ineffassign
@@ -20,6 +18,8 @@ linters:
     - bodyclose
     - noctx
     - sqlclosecheck
+  # errcheck temporarily disabled - see issue op-ymws
+  # TODO: re-enable after fixing unchecked error returns
 
 linters-settings:
   errcheck:

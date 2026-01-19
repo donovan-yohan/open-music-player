@@ -39,20 +39,20 @@ type Router struct {
 
 // RouterConfig holds configuration for creating a new router
 type RouterConfig struct {
-	AuthHandlers        *auth.Handlers
-	AuthService         *auth.Service
-	SearchHandlers      *search.Handlers
-	MBClient            *musicbrainz.Client
-	MBHandlers          *musicbrainz.Handlers
-	WSHandler           *websocket.Handler
-	MatcherHandlers     *matcher.Handler
-	LibraryHandlers     *LibraryHandlers
-	StreamHandler       *stream.Handler
-	QueueHandlers       *queue.Handlers
-	PlaylistHandlers    *PlaylistHandlers
-	DownloadHandlers    *DownloadHandlers
-	HealthHandler       *health.Handler
-	Metrics             *metrics.Metrics
+	AuthHandlers     *auth.Handlers
+	AuthService      *auth.Service
+	SearchHandlers   *search.Handlers
+	MBClient         *musicbrainz.Client
+	MBHandlers       *musicbrainz.Handlers
+	WSHandler        *websocket.Handler
+	MatcherHandlers  *matcher.Handler
+	LibraryHandlers  *LibraryHandlers
+	StreamHandler    *stream.Handler
+	QueueHandlers    *queue.Handlers
+	PlaylistHandlers *PlaylistHandlers
+	DownloadHandlers *DownloadHandlers
+	HealthHandler    *health.Handler
+	Metrics          *metrics.Metrics
 }
 
 func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, streamHandler *stream.Handler, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
@@ -199,7 +199,7 @@ func (r *Router) setupRoutes() {
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	middleware := auth.Middleware(r.authService)
 	return func(w http.ResponseWriter, req *http.Request) {
-		middleware(http.HandlerFunc(next)).ServeHTTP(w, req)
+		middleware(next).ServeHTTP(w, req)
 	}
 }
 

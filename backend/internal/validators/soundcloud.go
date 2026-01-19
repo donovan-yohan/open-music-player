@@ -120,18 +120,18 @@ func (v *SoundCloudValidator) validateMainURL(rawURL string, parsed *url.URL) Va
 
 	// Filter out reserved paths
 	reservedPaths := map[string]bool{
-		"discover":    true,
-		"stream":      true,
-		"you":         true,
-		"search":      true,
-		"upload":      true,
-		"people":      true,
-		"groups":      true,
-		"tags":        true,
-		"popular":     true,
-		"charts":      true,
+		"discover":     true,
+		"stream":       true,
+		"you":          true,
+		"search":       true,
+		"upload":       true,
+		"people":       true,
+		"groups":       true,
+		"tags":         true,
+		"popular":      true,
+		"charts":       true,
 		"terms-of-use": true,
-		"privacy":     true,
+		"privacy":      true,
 	}
 
 	if reservedPaths[segments[0]] {

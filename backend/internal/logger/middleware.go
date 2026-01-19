@@ -2,7 +2,6 @@ package logger
 
 import (
 	"bytes"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -179,22 +178,4 @@ func RecoveryMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
-}
-
-// limitReader limits the size of the body that can be read
-type limitReader struct {
-	r io.Reader
-	n int64
-}
-
-func (l *limitReader) Read(p []byte) (int, error) {
-	if l.n <= 0 {
-		return 0, io.EOF
-	}
-	if int64(len(p)) > l.n {
-		p = p[0:l.n]
-	}
-	n, err := l.r.Read(p)
-	l.n -= int64(n)
-	return n, err
 }
