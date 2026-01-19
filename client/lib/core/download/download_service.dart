@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import '../api/api_client.dart';
 import '../storage/offline_database.dart';
 import '../../shared/models/models.dart';
 

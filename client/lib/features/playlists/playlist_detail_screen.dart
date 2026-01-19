@@ -364,17 +364,17 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final tracks = _playlist!.tracks ?? [];
 
     if (tracks.isEmpty) {
-      return SliverFillRemaining(
+      return const SliverFillRemaining(
         hasScrollBody: false,
         child: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.music_note, size: 48, color: Colors.grey),
-              const SizedBox(height: 16),
-              const Text('No tracks yet'),
-              const SizedBox(height: 8),
-              const Text(
+              Icon(Icons.music_note, size: 48, color: Colors.grey),
+              SizedBox(height: 16),
+              Text('No tracks yet'),
+              SizedBox(height: 8),
+              Text(
                 'Add tracks from your library',
                 style: TextStyle(color: Colors.grey),
               ),

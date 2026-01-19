@@ -131,9 +131,9 @@ class TrackTile extends StatelessWidget {
             iconSize: 20,
           ),
         if (showDragHandle)
-          ReorderableDragStartListener(
+          const ReorderableDragStartListener(
             index: 0,
-            child: const Icon(Icons.drag_handle),
+            child: Icon(Icons.drag_handle),
           ),
       ],
     );

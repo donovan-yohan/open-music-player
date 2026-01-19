@@ -47,7 +47,7 @@ class AuthService {
     } on DioException catch (e) {
       return AuthResult.failure(_extractErrorMessage(e));
     } catch (e) {
-      return AuthResult.failure('An unexpected error occurred');
+      return const AuthResult.failure('An unexpected error occurred');
     }
   }
 
@@ -76,7 +76,7 @@ class AuthService {
     } on DioException catch (e) {
       return AuthResult.failure(_extractErrorMessage(e));
     } catch (e) {
-      return AuthResult.failure('An unexpected error occurred');
+      return const AuthResult.failure('An unexpected error occurred');
     }
   }
 
