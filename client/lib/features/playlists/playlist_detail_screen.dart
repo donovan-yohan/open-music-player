@@ -260,7 +260,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
               colors: [
-                Theme.of(context).colorScheme.primary.withValues(alpha: 0.6),
+                Theme.of(context).colorScheme.primary.withOpacity(0.6),
                 Theme.of(context).scaffoldBackgroundColor,
               ],
             ),
@@ -269,7 +269,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             child: Icon(
               Icons.queue_music,
               size: 80,
-              color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.5),
+              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
             ),
           ),
         ),

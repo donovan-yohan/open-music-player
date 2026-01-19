@@ -90,7 +90,7 @@ class PlayerScreen extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.4),
+              color: Colors.black.withOpacity(0.4),
               blurRadius: 30,
               offset: const Offset(0, 10),
             ),
@@ -166,7 +166,7 @@ class PlayerScreen extends StatelessWidget {
             activeTrackColor: AppTheme.primaryGreen,
             inactiveTrackColor: AppTheme.darkCard,
             thumbColor: AppTheme.lightText,
-            overlayColor: AppTheme.primaryGreen.withValues(alpha: 0.2),
+            overlayColor: AppTheme.primaryGreen.withOpacity(0.2),
           ),
           child: Slider(
             value: duration.inMilliseconds > 0

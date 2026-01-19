@@ -28,7 +28,7 @@ class MiniPlayer extends StatelessWidget {
               color: AppTheme.darkCard,
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.3),
+                  color: Colors.black.withOpacity(0.3),
                   blurRadius: 8,
                   offset: const Offset(0, -2),
                 ),

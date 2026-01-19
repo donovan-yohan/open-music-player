@@ -4,6 +4,8 @@ import '../storage/offline_database.dart';
 import 'download_service.dart';
 import '../../shared/models/models.dart';
 
+export 'download_service.dart' show DownloadProgress;
+
 class DownloadState extends ChangeNotifier {
   final DownloadService _downloadService;
   final OfflineDatabase _db;

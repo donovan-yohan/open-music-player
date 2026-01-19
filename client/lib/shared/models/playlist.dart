@@ -67,4 +67,45 @@ class Playlist {
   }
 
   int get trackCount => tracks?.length ?? 0;
+
+  /// Returns total duration of all tracks formatted as "Xh Ym" or "Xm Ys"
+  String get formattedDuration {
+    if (tracks == null || tracks!.isEmpty) return '0m';
+
+    final totalMs = tracks!.fold<int>(
+      0,
+      (sum, track) => sum + (track.durationMs ?? 0),
+    );
+
+    final totalSeconds = totalMs ~/ 1000;
+    final hours = totalSeconds ~/ 3600;
+    final minutes = (totalSeconds % 3600) ~/ 60;
+
+    if (hours > 0) {
+      return '${hours}h ${minutes}m';
+    }
+    return '${minutes}m';
+  }
+
+  /// Creates a copy with updated fields
+  Playlist copyWith({
+    int? id,
+    int? userId,
+    String? name,
+    String? description,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    List<Track>? tracks,
+    int? trackCount, // Ignored - computed from tracks
+  }) {
+    return Playlist(
+      id: id ?? this.id,
+      userId: userId ?? this.userId,
+      name: name ?? this.name,
+      description: description ?? this.description,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      tracks: tracks ?? this.tracks,
+    );
+  }
 }

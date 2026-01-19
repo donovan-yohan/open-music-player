@@ -22,7 +22,7 @@ class QueueItem extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Material(
-      color: isPlaying ? colorScheme.primaryContainer.withValues(alpha: 0.3) : null,
+      color: isPlaying ? colorScheme.primaryContainer.withOpacity(0.3) : null,
       child: InkWell(
         onTap: onTap,
         child: Padding(
