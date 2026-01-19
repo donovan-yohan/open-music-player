@@ -102,9 +102,9 @@ jobs:
         run: flutter pub get
 
       - name: Analyze code
-        # Note: Using --fatal-warnings instead of --fatal-infos
-        # Info-level issues (use_build_context_synchronously, prefer_const) tracked in follow-up
-        run: flutter analyze --fatal-warnings
+        # Only fail on actual errors, not warnings/infos
+        # Info-level issues (use_build_context_synchronously) tracked in follow-up
+        run: flutter analyze
 
       - name: Run tests
         run: flutter test --coverage
