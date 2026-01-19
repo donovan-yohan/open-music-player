@@ -1,7 +1,68 @@
 services:
+  # =============================================================================
+  # Backend API Service
+  # =============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: omp-backend
+    restart: unless-stopped
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    environment:
+      # Server
+      SERVER_ADDR: ":8080"
+
+      # Database
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-omp}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-omp_dev_password}
+      DB_NAME: ${POSTGRES_DB:-openmusicplayer}
+
+      # Redis
+      REDIS_ADDR: redis:6379
+      REDIS_URL: redis://redis:6379
+
+      # MinIO/S3 Storage
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-audio-files}
+      MINIO_USE_SSL: "false"
+      S3_USE_PATH_STYLE: "true"
+
+      # Auth
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+
+      # Workers
+      WORKER_COUNT: ${WORKER_COUNT:-3}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - omp-network
+
+  # =============================================================================
+  # PostgreSQL Database
+  # =============================================================================
   postgres:
     image: postgres:15-alpine
     container_name: omp-postgres
+    restart: unless-stopped
     ports:
       - "${POSTGRES_PORT:-5434}:5432"
     environment:
@@ -16,12 +77,19 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - omp-network
 
+  # =============================================================================
+  # Redis Cache & Queue
+  # =============================================================================
   redis:
     image: redis:7-alpine
     container_name: omp-redis
+    restart: unless-stopped
     ports:
       - "${REDIS_PORT:-6380}:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     healthcheck:
@@ -30,10 +98,16 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+    networks:
+      - omp-network
 
+  # =============================================================================
+  # MinIO Object Storage (S3-compatible)
+  # =============================================================================
   minio:
     image: minio/minio:latest
     container_name: omp-minio
+    restart: unless-stopped
     ports:
       - "${MINIO_PORT:-9000}:9000"
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
@@ -49,7 +123,12 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - omp-network
 
+  # =============================================================================
+  # MinIO Bucket Initialization
+  # =============================================================================
   minio-init:
     image: minio/mc:latest
     container_name: omp-minio-init
@@ -67,6 +146,33 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-audio-files}
+    networks:
+      - omp-network
+
+  # =============================================================================
+  # Nginx Reverse Proxy (Production)
+  # =============================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: omp-nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    profiles:
+      - production
+    networks:
+      - omp-network
+
+networks:
+  omp-network:
+    driver: bridge
 
 volumes:
   postgres_data:

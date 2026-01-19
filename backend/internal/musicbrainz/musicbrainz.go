@@ -674,9 +674,9 @@ func (c *Client) doRequest(ctx context.Context, reqURL string) ([]byte, error) {
 	})
 
 	if err != nil {
-		log.Error(ctx, "MusicBrainz request failed after retries", err, map[string]interface{}{
+		log.Error(ctx, "MusicBrainz request failed after retries", map[string]interface{}{
 			"url": reqURL,
-		})
+		}, err)
 		return nil, err
 	}
 
