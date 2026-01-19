@@ -60,6 +60,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: v1.63.4
+          install-mode: goinstall
           working-directory: backend
 
       - name: Run tests
