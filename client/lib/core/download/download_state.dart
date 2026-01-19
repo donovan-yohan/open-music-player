@@ -13,7 +13,7 @@ class DownloadState extends ChangeNotifier {
   StreamSubscription<DownloadProgress>? _progressSubscription;
 
   List<DownloadedTrack> _downloads = [];
-  Map<int, DownloadProgress> _activeProgress = {};
+  final Map<int, DownloadProgress> _activeProgress = {};
   int _totalSizeBytes = 0;
   bool _isLoading = false;
 

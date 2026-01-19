@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/storage/offline_database.dart';
-import '../../core/download/download_state.dart';
 import '../../core/network/connectivity_service.dart';
 import '../../core/services/library_service.dart';
 import '../../core/services/api_client.dart';

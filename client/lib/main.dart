@@ -31,7 +31,7 @@ void main() async {
 
   final offlineDb = OfflineDatabase();
   final connectivityService = ConnectivityService();
-  final downloadService = DownloadService(api: apiClient, db: offlineDb);
+  final downloadService = DownloadService(db: offlineDb);
   final downloadState = DownloadState(
     downloadService: downloadService,
     db: offlineDb,

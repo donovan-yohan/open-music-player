@@ -1,12 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart' hide Provider, ChangeNotifierProvider;
-import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
 import '../core/auth/auth_state.dart';
 import '../core/models/settings_model.dart';
 import '../core/providers/settings_provider.dart';
-import '../core/services/services.dart';
 import '../providers/queue_provider.dart';
 import '../services/api_client.dart' as queue_api;
 import 'router.dart';

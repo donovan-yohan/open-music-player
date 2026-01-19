@@ -3,12 +3,10 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
-import '../api/api_client.dart';
 import '../storage/offline_database.dart';
 import '../../shared/models/models.dart';
 
 class DownloadService {
-  final ApiClient _api;
   final OfflineDatabase _db;
   final Dio _downloadDio;
 
@@ -18,10 +16,8 @@ class DownloadService {
   final Map<int, CancelToken> _activeDownloads = {};
 
   DownloadService({
-    required ApiClient api,
     required OfflineDatabase db,
-  })  : _api = api,
-        _db = db,
+  })  : _db = db,
         _downloadDio = Dio() {
     _downloadDio.options.receiveTimeout = const Duration(minutes: 30);
     _downloadDio.options.connectTimeout = const Duration(seconds: 30);
@@ -89,10 +85,6 @@ class DownloadService {
           responseType: ResponseType.bytes,
         ),
       );
-
-      // Update file size from actual downloaded file
-      final file = File(localPath);
-      final actualSize = await file.length();
 
       await _db.updateDownloadStatus(
         track.id,
