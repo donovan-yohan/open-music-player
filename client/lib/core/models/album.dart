@@ -9,6 +9,7 @@ class AlbumResult {
   final String? primaryType;
   final List<String>? secondaryTypes;
   final int? trackCount;
+  final String? coverUrl;
   final int? score;
 
   const AlbumResult({
@@ -20,6 +21,7 @@ class AlbumResult {
     this.primaryType,
     this.secondaryTypes,
     this.trackCount,
+    this.coverUrl,
     this.score,
   });
 
@@ -35,6 +37,7 @@ class AlbumResult {
           ?.map((e) => e as String)
           .toList(),
       trackCount: json['trackCount'] as int?,
+      coverUrl: json['coverArtUrl'] ?? json['coverUrl'] as String?,
       score: json['score'] as int?,
     );
   }

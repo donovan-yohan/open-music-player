@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../../../core/models/models.dart';
 
@@ -14,16 +15,19 @@ class AlbumTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      leading: Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Icon(
-          Icons.album,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
+      leading: ClipRRect(
+        borderRadius: BorderRadius.circular(4),
+        child: SizedBox(
+          width: 48,
+          height: 48,
+          child: album.coverUrl != null
+              ? CachedNetworkImage(
+                  imageUrl: album.coverUrl!,
+                  fit: BoxFit.cover,
+                  placeholder: (context, url) => _buildPlaceholder(context),
+                  errorWidget: (context, url, error) => _buildPlaceholder(context),
+                )
+              : _buildPlaceholder(context),
         ),
       ),
       title: Text(
@@ -53,6 +57,16 @@ class AlbumTile extends StatelessWidget {
             )
           : null,
       onTap: onTap,
+    );
+  }
+
+  Widget _buildPlaceholder(BuildContext context) {
+    return Container(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Icon(
+        Icons.album,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
     );
   }
 }
