@@ -59,7 +59,9 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64.0
+          version: v1.63.4
+          install-mode: goinstall
+          skip-cache: true
           working-directory: backend
 
       - name: Run tests

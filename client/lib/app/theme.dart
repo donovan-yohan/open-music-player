@@ -50,7 +50,7 @@ class AppTheme {
           return const IconThemeData(color: greyText);
         }),
       ),
-      cardTheme: const CardTheme(
+      cardTheme: const CardThemeData(
         color: darkCard,
         elevation: 0,
       ),

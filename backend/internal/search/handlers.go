@@ -2,6 +2,7 @@ package search
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -9,12 +10,23 @@ import (
 	"github.com/openmusicplayer/backend/internal/db"
 )
 
+const coverArtArchiveURL = "https://coverartarchive.org"
+
+// getCoverArtURL returns the Cover Art Archive URL for a release
+func getCoverArtURL(releaseID *uuid.UUID) string {
+	if releaseID == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s/release/%s/front-250", coverArtArchiveURL, releaseID.String())
+}
+
 type RecordingResponse struct {
 	ID            int64      `json:"id"`
 	Title         string     `json:"title"`
 	Artist        string     `json:"artist,omitempty"`
 	Album         string     `json:"album,omitempty"`
 	DurationMs    int        `json:"durationMs,omitempty"`
+	CoverArtUrl   string     `json:"coverArtUrl,omitempty"`
 	MBRecordingID *uuid.UUID `json:"mbRecordingId,omitempty"`
 	MBReleaseID   *uuid.UUID `json:"mbReleaseId,omitempty"`
 	MBArtistID    *uuid.UUID `json:"mbArtistId,omitempty"`
@@ -29,6 +41,7 @@ type ArtistResponse struct {
 type ReleaseResponse struct {
 	Name        string     `json:"name"`
 	Artist      string     `json:"artist,omitempty"`
+	CoverArtUrl string     `json:"coverArtUrl,omitempty"`
 	MBReleaseID *uuid.UUID `json:"mbReleaseId,omitempty"`
 	TrackCount  int        `json:"trackCount"`
 }
@@ -74,6 +87,7 @@ func (h *Handlers) SearchRecordings(w http.ResponseWriter, r *http.Request) {
 		rec := RecordingResponse{
 			ID:            t.ID,
 			Title:         t.Title,
+			CoverArtUrl:   getCoverArtURL(t.MBReleaseID),
 			MBRecordingID: t.MBRecordingID,
 			MBReleaseID:   t.MBReleaseID,
 			MBArtistID:    t.MBArtistID,
@@ -152,6 +166,7 @@ func (h *Handlers) SearchReleases(w http.ResponseWriter, r *http.Request) {
 		responses = append(responses, ReleaseResponse{
 			Name:        rel.Name,
 			Artist:      rel.Artist,
+			CoverArtUrl: getCoverArtURL(rel.MBReleaseID),
 			MBReleaseID: rel.MBReleaseID,
 			TrackCount:  rel.TrackCount,
 		})

@@ -143,6 +143,7 @@ class TrackResult {
   final int? duration;
   final int? trackNumber;
   final String? releaseDate;
+  final String? coverUrl;
   final int? score;
 
   const TrackResult({
@@ -155,6 +156,7 @@ class TrackResult {
     this.duration,
     this.trackNumber,
     this.releaseDate,
+    this.coverUrl,
     this.score,
   });
 
@@ -169,6 +171,7 @@ class TrackResult {
       duration: json['duration'] as int?,
       trackNumber: json['trackNumber'] as int?,
       releaseDate: json['releaseDate'] as String?,
+      coverUrl: json['coverArtUrl'] ?? json['coverUrl'] as String?,
       score: json['score'] as int?,
     );
   }
