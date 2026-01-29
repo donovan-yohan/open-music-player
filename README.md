@@ -8,8 +8,8 @@ Open Music Player consists of four main components:
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Chrome/Firefox │     │  Flutter Client │     │   Rust CLI      │
-│   Extension     │     │  (Mobile/Web)   │     │   (Migrations)  │
+│  Chrome/Firefox │     │  Flutter Client │     │   Rust Tools    │
+│   Extension     │     │  (Mobile/Web)   │     │ (DB/MusicBrainz)│
 └────────┬────────┘     └────────┬────────┘     └────────┬────────┘
          │                       │                       │
          └───────────────────────┼───────────────────────┘
@@ -34,7 +34,7 @@ Open Music Player consists of four main components:
 - **Backend (Go)**: REST API server handling authentication, track management, playlists, downloads, and streaming
 - **Client (Flutter)**: Cross-platform client for iOS, Android, macOS, Windows, Linux, and web
 - **Extension (TypeScript)**: Browser extension for Chrome/Firefox to save tracks from YouTube and SoundCloud
-- **Database Tools (Rust)**: Database migrations and utilities
+- **Rust Tools**: Database migrations, MusicBrainz API client, and utilities
 
 **Infrastructure:**
 
@@ -190,10 +190,15 @@ make migrate-create
 # Enter migration name when prompted
 ```
 
-**Rust migrations (used by CLI tools):**
+**Rust tools (migrations and MusicBrainz client):**
 ```bash
-# Run Rust migrations
+# Run database migrations via Rust
 cargo run
+
+# The Rust crate also provides:
+# - Database connection pool with health checks
+# - MusicBrainz API client with rate limiting
+# - Data models for tracks, users, playlists
 ```
 
 ## Project Structure
@@ -226,8 +231,8 @@ openmusicplayer/
 │   ├── src/                # TypeScript source
 │   ├── manifest.json       # Extension manifest (MV3)
 │   └── webpack.config.js   # Build configuration
-├── migrations/             # SQL migrations (Rust tooling)
-├── src/                    # Rust database utilities
+├── migrations/             # SQL migrations (used by Rust tooling)
+├── src/                    # Rust tools (DB client, MusicBrainz API)
 ├── docker-compose.yml      # Infrastructure services
 ├── .env.example            # Environment template
 └── README.md               # This file

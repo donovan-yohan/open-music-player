@@ -45,3 +45,8 @@ build/
 
 # SQLx offline mode cache (regenerate with `cargo sqlx prepare`)
 .sqlx/
+
+# Gas Town (added by gt)
+.runtime/
+.claude/
+.logs/
