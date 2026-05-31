@@ -3,23 +3,13 @@ package download
 import (
 	"context"
 	"errors"
-	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func TestWorkerPool_StartStop(t *testing.T) {
-	redisURL := os.Getenv("REDIS_URL")
-	if redisURL == "" {
-		redisURL = "redis://localhost:6380"
-	}
-
-	queue, err := NewQueue(redisURL)
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	processor := func(ctx context.Context, job *DownloadJob, progress func(int)) error {
 		return nil
@@ -47,7 +37,7 @@ func TestWorkerPool_StartStop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = pool.Stop(ctx)
+	err := pool.Stop(ctx)
 	if err != nil {
 		t.Errorf("Failed to stop pool: %v", err)
 	}
@@ -58,16 +48,7 @@ func TestWorkerPool_StartStop(t *testing.T) {
 }
 
 func TestWorkerPool_ProcessJob(t *testing.T) {
-	redisURL := os.Getenv("REDIS_URL")
-	if redisURL == "" {
-		redisURL = "redis://localhost:6380"
-	}
-
-	queue, err := NewQueue(redisURL)
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	var processedCount int32
 
@@ -117,16 +98,7 @@ func TestWorkerPool_ProcessJob(t *testing.T) {
 }
 
 func TestWorkerPool_RetryOnFailure(t *testing.T) {
-	redisURL := os.Getenv("REDIS_URL")
-	if redisURL == "" {
-		redisURL = "redis://localhost:6380"
-	}
-
-	queue, err := NewQueue(redisURL)
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	var attemptCount int32
 
@@ -147,7 +119,7 @@ func TestWorkerPool_RetryOnFailure(t *testing.T) {
 	ctx := context.Background()
 
 	// Enqueue a job
-	_, err = queue.Enqueue(ctx, "retry-user", "https://example.com/retry.mp3", "test", nil)
+	_, err := queue.Enqueue(ctx, "retry-user", "https://example.com/retry.mp3", "test", nil)
 	if err != nil {
 		t.Fatalf("Failed to enqueue job: %v", err)
 	}

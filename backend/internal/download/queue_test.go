@@ -2,25 +2,12 @@ package download
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 )
 
-func getTestRedisURL() string {
-	url := os.Getenv("REDIS_URL")
-	if url == "" {
-		url = "redis://localhost:6380"
-	}
-	return url
-}
-
 func TestQueue_EnqueueDequeue(t *testing.T) {
-	queue, err := NewQueue(getTestRedisURL())
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	ctx := context.Background()
 
@@ -52,11 +39,7 @@ func TestQueue_EnqueueDequeue(t *testing.T) {
 }
 
 func TestQueue_GetJob(t *testing.T) {
-	queue, err := NewQueue(getTestRedisURL())
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	ctx := context.Background()
 
@@ -81,11 +64,7 @@ func TestQueue_GetJob(t *testing.T) {
 }
 
 func TestQueue_UpdateStatus(t *testing.T) {
-	queue, err := NewQueue(getTestRedisURL())
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	ctx := context.Background()
 
@@ -122,11 +101,7 @@ func TestQueue_UpdateStatus(t *testing.T) {
 }
 
 func TestQueue_IncrementRetry(t *testing.T) {
-	queue, err := NewQueue(getTestRedisURL())
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	ctx := context.Background()
 
@@ -172,11 +147,7 @@ func TestQueue_IncrementRetry(t *testing.T) {
 }
 
 func TestQueue_QueueLength(t *testing.T) {
-	queue, err := NewQueue(getTestRedisURL())
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	ctx := context.Background()
 
