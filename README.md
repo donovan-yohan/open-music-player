@@ -112,6 +112,39 @@ The backend will automatically:
 - Connect to Redis for caching and job queues
 - Initialize the MinIO bucket for audio storage
 
+### Tailnet backend staging smoke
+
+For the backend-only Tailnet staging smoke, use the checked-in helper script. It
+starts PostgreSQL, Redis, and MinIO with Docker Compose, runs the Go backend on a
+host bind address, and verifies the unauthenticated health endpoints locally.
+Keep any real secrets in `.env`; the script generates a temporary `JWT_SECRET`
+when `.env` still contains the example value.
+
+```bash
+# Optional: choose a different exposed port or bind address.
+SERVER_PORT=8080 SMOKE_SERVER_ADDR=0.0.0.0:8080 ./scripts/backend-staging-smoke.sh
+```
+
+If the infrastructure is already running, or this shell cannot access the Docker
+API, skip the Compose step and target an unused backend port:
+
+```bash
+SMOKE_SKIP_INFRA=1 SERVER_PORT=18080 SMOKE_SERVER_ADDR=127.0.0.1:18080 ./scripts/backend-staging-smoke.sh
+```
+
+The script curls:
+- `GET /health`
+- `GET /health/live`
+- `GET /health/ready`
+
+Tailnet membership is only transport reachability. It does not replace app auth:
+all protected `/api/v1/*` routes must still be called with the normal JWT flow.
+Final ops validation must be run from another Tailnet device, for example:
+
+```bash
+curl -fsS http://<tailnet-host>:8080/health/ready
+```
+
 ### 4. Build the Browser Extension
 
 ```bash
@@ -320,8 +353,8 @@ The backend exposes health check endpoints:
 |----------|-------------|
 | `GET /health` | Basic liveness check |
 | `GET /health?deep=true` | Full readiness check (checks DB, Redis, Storage) |
-| `GET /healthz` | Kubernetes liveness probe |
-| `GET /readyz` | Kubernetes readiness probe |
+| `GET /health/live` | Kubernetes-style liveness probe |
+| `GET /health/ready` | Kubernetes-style readiness probe |
 
 ### Database Backup Strategy
 

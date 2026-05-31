@@ -50,3 +50,4 @@ build/
 .runtime/
 .claude/
 .logs/
+.tmp/
