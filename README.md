@@ -149,7 +149,17 @@ flutter run -d chrome   # Web
 flutter run             # Connected mobile device
 ```
 
-Configure the API endpoint in the client settings to point to your backend (default: `http://localhost:8080`).
+### Tailnet staging
+
+To serve the latest backend and Flutter web client from a devbox to devices on the same Tailscale Tailnet, use the repeatable staging flow in [`docs/TAILNET_STAGING.md`](docs/TAILNET_STAGING.md):
+
+```bash
+scripts/tailnet-staging.sh start
+scripts/tailnet-staging.sh status
+scripts/tailnet-staging.sh stop
+```
+
+The default URLs are `http://<magicdns-or-tailscale-ip>:8080/health` for backend health and `http://<magicdns-or-tailscale-ip>:8090/` for the web client.
 
 ## API Endpoints
 

@@ -48,5 +48,6 @@ build/
 
 # Gas Town (added by gt)
 .runtime/
+.tailnet-staging/
 .claude/
 .logs/

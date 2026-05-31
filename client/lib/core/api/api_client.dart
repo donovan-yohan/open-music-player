@@ -2,7 +2,10 @@ import 'package:dio/dio.dart';
 import '../storage/secure_storage.dart';
 
 class ApiClient {
-  static const String baseUrl = 'http://localhost:8080/api/v1';
+  static const String baseUrl = String.fromEnvironment(
+    'OMP_API_BASE_URL',
+    defaultValue: 'http://localhost:8080/api/v1',
+  );
 
   final Dio _dio;
   final SecureStorage _storage;
