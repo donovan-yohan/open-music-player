@@ -133,23 +133,25 @@ Load the extension in Chrome:
 3. Click "Load unpacked"
 4. Select the `extension/dist` directory
 
-### 5. Run the Flutter Client
+### 5. Run the Flutter Web Client
+
+For the current MVP staging target, follow the [web-first staging checklist](docs/WEB_FIRST_STAGING_CHECKLIST.md) and the [Tailnet Flutter Web staging flow](docs/TAILNET_FLUTTER_WEB_STAGING.md). Start the helper script with:
+
+```bash
+scripts/tailnet-staging.sh start
+```
+
+The script starts the backend stack, builds Flutter Web with `OMP_API_BASE_URL` pointed at the discovered Tailnet host, serves the web build on port `8088`, and prints phone-accessible URLs plus curl smoke results. The checklist is the review gate; the Tailnet guide has the detailed command reference and manual fallback.
+
+For quick local-only client development:
 
 ```bash
 cd client
-
-# Get dependencies
 flutter pub get
-
-# Run on your platform
-flutter run -d macos    # macOS
-flutter run -d windows  # Windows
-flutter run -d linux    # Linux
-flutter run -d chrome   # Web
-flutter run             # Connected mobile device
+flutter run -d chrome --dart-define=OMP_API_BASE_URL=http://localhost:8080/api/v1
 ```
 
-Configure the API endpoint in the client settings to point to your backend (default: `http://localhost:8080`).
+Native/mobile installs are intentionally deferred for this devbox; keep the Flutter framework in place so that target can return on larger hardware or CI.
 
 ## API Endpoints
 
@@ -385,26 +387,16 @@ For production extension distribution:
 
 ### Client Distribution
 
-Build release versions of the Flutter client:
+The current MVP staging target is Flutter Web, served over Tailnet for phone-width validation. Use the [web-first staging checklist](docs/WEB_FIRST_STAGING_CHECKLIST.md) for the executable staging path.
+
+For a local web release build:
 
 ```bash
 cd client
-
-# Android APK
-flutter build apk --release
-
-# iOS (requires macOS and Xcode)
-flutter build ios --release
-
-# macOS
-flutter build macos --release
-
-# Windows
-flutter build windows --release
-
-# Web
-flutter build web --release
+flutter build web --release --no-wasm-dry-run --dart-define=OMP_API_BASE_URL=http://localhost:8080/api/v1
 ```
+
+Native mobile and desktop distributions remain deferred targets for larger hardware or CI, especially Android/background-audio proof. Do not treat native artifacts as the current staging deliverable on this devbox.
 
 ## Development Notes
 

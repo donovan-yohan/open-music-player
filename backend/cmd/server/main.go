@@ -193,6 +193,7 @@ func main() {
 		middleware.Logging(log),
 		middleware.RequestID,
 		metrics.MetricsMiddleware(appMetrics),
+		middleware.CORS(cfg.CORSAllowedOrigins),
 	)
 
 	// Apply middleware chain (order: timing -> gzip -> etag -> handler)

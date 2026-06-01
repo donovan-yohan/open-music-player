@@ -1,12 +1,13 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import '../core/config/api_config.dart';
 import '../models/queue_state.dart';
 
 class ApiClient {
   final String baseUrl;
   String? _accessToken;
 
-  ApiClient({this.baseUrl = 'http://localhost:8000/api/v1'});
+  ApiClient({this.baseUrl = ApiConfig.baseUrl});
 
   void setAccessToken(String token) {
     _accessToken = token;
