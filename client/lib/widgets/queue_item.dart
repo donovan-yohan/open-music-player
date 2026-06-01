@@ -41,9 +41,7 @@ class QueueItem extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Material(
-      color: isPlaying
-          ? colorScheme.primaryContainer.withValues(alpha: 0.3)
-          : null,
+      color: isPlaying ? colorScheme.primaryContainer.withOpacity(0.3) : null,
       child: InkWell(
         onTap: onTap,
         child: Padding(
@@ -188,7 +186,7 @@ class QueueItem extends StatelessWidget {
               alignment: Alignment.center,
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
-                color: Colors.grey.withValues(alpha: 0.18),
+                color: Colors.grey.withOpacity(0.18),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(

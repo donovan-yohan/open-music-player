@@ -238,11 +238,15 @@ class _QueueScreenState extends State<QueueScreen> {
           _sectionHeader(context, 'Next Up'),
           SliverReorderableList(
             itemCount: upNext.length,
-            onReorderItem: (oldIndex, newIndex) {
-              // Convert the SDK-adjusted relative queue indices to absolute
-              // queue positions after the currently playing track.
+            onReorder: (oldIndex, newIndex) {
+              // Convert relative queue indices to absolute queue positions
+              // after the currently playing track. Flutter 3.22 reports the
+              // downward insertion index before the dragged item is removed.
               final absoluteOldIndex = currentIndex + 1 + oldIndex;
-              final absoluteNewIndex = currentIndex + 1 + newIndex;
+              var absoluteNewIndex = currentIndex + 1 + newIndex;
+              if (newIndex > oldIndex) {
+                absoluteNewIndex--;
+              }
               provider.reorderQueue(absoluteOldIndex, absoluteNewIndex);
             },
             itemBuilder: (context, index) {
