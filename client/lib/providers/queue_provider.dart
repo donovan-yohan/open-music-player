@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 import '../models/queue_state.dart';
 import '../models/track.dart';
+import '../models/trim_range.dart';
+import '../models/waveform.dart';
 import '../services/queue_repository.dart';
 
 /// Drives the mobile-web queue screen. Talks only to [QueueRepository], so it
@@ -16,7 +18,7 @@ class QueueProvider extends ChangeNotifier {
   bool _isSearching = false;
   String _searchQuery = '';
 
-  Map<String, double> _cueOffsets = {};
+  Map<String, TrimRange> _trimRanges = {};
 
   MixPlan? _savedMixPlan;
   bool _isSaving = false;
@@ -35,8 +37,14 @@ class QueueProvider extends ChangeNotifier {
   bool get isSearching => _isSearching;
   String get searchQuery => _searchQuery;
 
-  Map<String, double> get cueOffsets => _cueOffsets;
-  double cueOffsetFor(String trackId) => _cueOffsets[trackId] ?? 0.0;
+  Map<String, TrimRange> get trimRanges => _trimRanges;
+
+  /// Trim range for a track, defaulting to the full track when untrimmed.
+  TrimRange trimRangeFor(Track track) =>
+      _trimRanges[track.id] ?? TrimRange.full(track.durationMs);
+
+  /// Deterministic mock waveform peaks for a track.
+  List<double> waveformPeaksFor(Track track) => mockWaveformPeaks(track.id);
 
   MixPlan? get savedMixPlan => _savedMixPlan;
   bool get isSaving => _isSaving;
@@ -48,7 +56,7 @@ class QueueProvider extends ChangeNotifier {
 
     try {
       _queue = await _repository.getQueue();
-      _cueOffsets = _repository.cueOffsets;
+      _trimRanges = _repository.trimRanges;
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -123,7 +131,7 @@ class QueueProvider extends ChangeNotifier {
   Future<void> clearQueue() async {
     try {
       _queue = await _repository.clear();
-      _cueOffsets = _repository.cueOffsets;
+      _trimRanges = _repository.trimRanges;
       notifyListeners();
     } catch (e) {
       _error = e.toString();
@@ -141,14 +149,18 @@ class QueueProvider extends ChangeNotifier {
     }
   }
 
-  /// Nudge a track's cue/offset by [deltaSeconds] (horizontal affordance).
-  Future<void> adjustCueOffset(String trackId, double deltaSeconds) =>
-      setCueOffset(trackId, cueOffsetFor(trackId) + deltaSeconds);
+  /// Move a track's entry point to [ms]. Clamped via [TrimRange].
+  Future<void> setStartOffsetMs(Track track, int ms) =>
+      setTrimRange(track, trimRangeFor(track).withStart(ms));
 
-  Future<void> setCueOffset(String trackId, double seconds) async {
+  /// Move a track's exit point to [ms]. Clamped via [TrimRange].
+  Future<void> setEndOffsetMs(Track track, int ms) =>
+      setTrimRange(track, trimRangeFor(track).withEnd(ms));
+
+  Future<void> setTrimRange(Track track, TrimRange range) async {
     try {
-      await _repository.setCueOffset(trackId, seconds);
-      _cueOffsets = _repository.cueOffsets;
+      await _repository.setTrimRange(track.id, range);
+      _trimRanges = _repository.trimRanges;
       notifyListeners();
     } catch (e) {
       _error = e.toString();
@@ -160,7 +172,7 @@ class QueueProvider extends ChangeNotifier {
     _isSaving = true;
     notifyListeners();
     try {
-      _savedMixPlan = await _repository.saveMixPlan(_queue, _cueOffsets);
+      _savedMixPlan = await _repository.saveMixPlan(_queue, _trimRanges);
     } catch (e) {
       _error = e.toString();
     } finally {

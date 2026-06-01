@@ -1,5 +1,6 @@
 import '../models/queue_state.dart';
 import '../models/track.dart';
+import '../models/trim_range.dart';
 
 /// Result of saving / committing a mix plan.
 ///
@@ -40,12 +41,14 @@ abstract class QueueRepository {
 
   Future<QueueState> shuffle();
 
-  /// Current cue/offset (in seconds) applied to a queued track's start point.
-  Map<String, double> get cueOffsets;
+  /// Current trim ranges (entry/exit points) per queued track id. Tracks with
+  /// no entry are absent (treated as the full track by the UI).
+  Map<String, TrimRange> get trimRanges;
 
-  /// Adjust the cue/offset for a track. Clamped to a sane range.
-  Future<void> setCueOffset(String trackId, double seconds);
+  /// Persist the trim range (entry/exit) for a track. Implementations clamp
+  /// to a valid range via [TrimRange].
+  Future<void> setTrimRange(String trackId, TrimRange range);
 
-  /// Persist the current queue + cue offsets as a mix plan. Stubbed.
-  Future<MixPlan> saveMixPlan(QueueState queue, Map<String, double> offsets);
+  /// Persist the current queue + trim ranges as a mix plan. Stubbed.
+  Future<MixPlan> saveMixPlan(QueueState queue, Map<String, TrimRange> trims);
 }
