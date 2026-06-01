@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/track.dart';
 import '../providers/queue_provider.dart';
 import '../widgets/queue_item.dart';
 
@@ -252,30 +253,20 @@ class _QueueScreenState extends State<QueueScreen> {
             itemBuilder: (context, index) {
               final track = upNext[index];
               final absoluteIndex = currentIndex + 1 + index;
-              return ReorderableDragStartListener(
+              // Keep horizontal waveform drags unambiguous: remove stays on the
+              // explicit row button instead of a full-row Dismissible swipe.
+              return QueueItem(
                 key: ValueKey(track.id),
-                index: index,
-                child: Dismissible(
-                  key: ValueKey('dismiss_${track.id}'),
-                  direction: DismissDirection.endToStart,
-                  onDismissed: (_) => provider.removeFromQueue(absoluteIndex),
-                  background: Container(
-                    alignment: Alignment.centerRight,
-                    padding: const EdgeInsets.only(right: 20),
-                    color: Colors.red,
-                    child: const Icon(Icons.delete, color: Colors.white),
-                  ),
-                  child: QueueItem(
-                    track: track,
-                    isPlaying: false,
-                    showDragHandle: true,
-                    showCueControls: true,
-                    cueOffset: provider.cueOffsetFor(track.id),
-                    onCueOffsetDelta: (delta) =>
-                        provider.adjustCueOffset(track.id, delta),
-                    onRemove: () => provider.removeFromQueue(absoluteIndex),
-                  ),
-                ),
+                track: track,
+                isPlaying: false,
+                reorderHandle: _buildReorderHandle(track, index),
+                showTrimControls: true,
+                trimRange: provider.trimRangeFor(track),
+                waveformPeaks: provider.waveformPeaksFor(track),
+                onTrimStartChanged: (ms) =>
+                    provider.setStartOffsetMs(track, ms),
+                onTrimEndChanged: (ms) => provider.setEndOffsetMs(track, ms),
+                onRemove: () => provider.removeFromQueue(absoluteIndex),
               );
             },
           ),
@@ -284,6 +275,31 @@ class _QueueScreenState extends State<QueueScreen> {
         // Bottom padding so the FAB never covers the last item.
         const SliverPadding(padding: EdgeInsets.only(bottom: 120)),
       ],
+    );
+  }
+
+  /// Left-edge vertical grip. Only this widget starts a reorder drag, keeping
+  /// reorder distinct from the waveform trim surface.
+  Widget _buildReorderHandle(Track track, int index) {
+    return ReorderableDragStartListener(
+      index: index,
+      child: Semantics(
+        key: ValueKey('reorder_handle_${track.id}'),
+        container: true,
+        explicitChildNodes: true,
+        label: 'Reorder ${track.title}',
+        button: true,
+        child: SizedBox(
+          width: 44,
+          height: 64,
+          child: Center(
+            child: Icon(
+              Icons.drag_indicator,
+              color: Colors.grey[500],
+            ),
+          ),
+        ),
+      ),
     );
   }
 

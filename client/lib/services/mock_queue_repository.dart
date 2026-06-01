@@ -1,5 +1,6 @@
 import '../models/queue_state.dart';
 import '../models/track.dart';
+import '../models/trim_range.dart';
 import 'queue_repository.dart';
 
 /// In-memory [QueueRepository] used for the mobile-web queue skeleton and for
@@ -19,12 +20,8 @@ class MockQueueRepository implements QueueRepository {
 
   late List<Track> _catalog;
   late QueueState _queue;
-  final Map<String, double> _cueOffsets = {};
+  final Map<String, TrimRange> _trimRanges = {};
   int _mixPlanCounter = 0;
-
-  /// Smallest / largest cue offset, in seconds.
-  static const double minCueOffset = -30.0;
-  static const double maxCueOffset = 30.0;
 
   Track _track(String id, String title, String artist, int duration) => Track(
         id: id,
@@ -101,7 +98,9 @@ class MockQueueRepository implements QueueRepository {
   @override
   Future<QueueState> removeAt(int position) async {
     if (position < 0 || position >= _queue.tracks.length) return _queue;
-    final tracks = List<Track>.from(_queue.tracks)..removeAt(position);
+    final tracks = List<Track>.from(_queue.tracks);
+    final removed = tracks.removeAt(position);
+    _trimRanges.remove(removed.id);
 
     var index = _queue.currentIndex;
     if (position < index) {
@@ -137,7 +136,7 @@ class MockQueueRepository implements QueueRepository {
   @override
   Future<QueueState> clear() async {
     _queue = QueueState.empty();
-    _cueOffsets.clear();
+    _trimRanges.clear();
     return _queue;
   }
 
@@ -157,21 +156,20 @@ class MockQueueRepository implements QueueRepository {
   }
 
   @override
-  Map<String, double> get cueOffsets => Map.unmodifiable(_cueOffsets);
+  Map<String, TrimRange> get trimRanges => Map.unmodifiable(_trimRanges);
 
   @override
-  Future<void> setCueOffset(String trackId, double seconds) async {
-    final clamped = seconds.clamp(minCueOffset, maxCueOffset).toDouble();
-    if (clamped == 0) {
-      _cueOffsets.remove(trackId);
+  Future<void> setTrimRange(String trackId, TrimRange range) async {
+    if (range.isFullTrack) {
+      _trimRanges.remove(trackId);
     } else {
-      _cueOffsets[trackId] = clamped;
+      _trimRanges[trackId] = range;
     }
   }
 
   @override
   Future<MixPlan> saveMixPlan(
-      QueueState queue, Map<String, double> offsets) async {
+      QueueState queue, Map<String, TrimRange> trims) async {
     _mixPlanCounter++;
     return MixPlan(
       id: 'mix-$_mixPlanCounter',
