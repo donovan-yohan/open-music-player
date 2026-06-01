@@ -47,7 +47,7 @@ class TimelineLaneHeader extends StatelessWidget {
         decoration: BoxDecoration(
           color: theme.colorScheme.surface,
           border: Border(
-            right: BorderSide(color: theme.dividerColor.withOpacity(0.4)),
+            right: BorderSide(color: theme.dividerColor.withValues(alpha: 0.4)),
           ),
         ),
         child: Column(
@@ -86,7 +86,7 @@ class TimelineLaneHeader extends StatelessWidget {
                 child: Container(
                   width: 28,
                   height: 28,
-                  color: accent.withOpacity(0.18),
+                  color: accent.withValues(alpha: 0.18),
                   child: Icon(Icons.music_note, size: 16, color: accent),
                 ),
               ),
@@ -146,15 +146,15 @@ class TimelineClipWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final waveColor = _muted ? accent.withOpacity(0.45) : accent;
+    final waveColor = _muted ? accent.withValues(alpha: 0.45) : accent;
 
     return Container(
       key: ValueKey('timeline_clip_${track.id}'),
       decoration: BoxDecoration(
-        color: accent.withOpacity(_active ? 0.10 : 0.05),
+        color: accent.withValues(alpha: _active ? 0.10 : 0.05),
         borderRadius: BorderRadius.circular(6),
         border: Border.all(
-          color: _active ? accent : accent.withOpacity(0.35),
+          color: _active ? accent : accent.withValues(alpha: 0.35),
           width: _active ? 2 : 1,
         ),
       ),
@@ -167,8 +167,8 @@ class TimelineClipWidget extends StatelessWidget {
               painter: TimelineWaveformPainter(
                 peaks: peaks,
                 color: waveColor,
-                dimColor: theme.disabledColor.withOpacity(0.35),
-                handleColor: accent.withOpacity(0.9),
+                dimColor: theme.disabledColor.withValues(alpha: 0.35),
+                handleColor: accent.withValues(alpha: 0.9),
                 trimStartFraction: trim.startFraction,
                 trimEndFraction: trim.endFraction,
               ),
@@ -190,7 +190,7 @@ class TimelineClipWidget extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surface.withOpacity(0.82),
+        color: theme.colorScheme.surface.withValues(alpha: 0.82),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(

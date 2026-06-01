@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import '../models/timeline_clip.dart';
 import '../models/timeline_viewport.dart';
@@ -112,9 +114,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         timelineStartMs: cursor,
       );
       placed[track] = clip;
-      // Next clip overlaps the tail by one transition window.
+      // Next clip overlaps the tail by one transition window. A zero-duration
+      // clip has timelineEndMs == timelineStartMs, so the naive lower bound
+      // (start + 1) can exceed the upper bound and invert the clamp; cap the
+      // lower bound at the clip end.
+      final lower = math.min(clip.timelineStartMs + 1, clip.timelineEndMs);
       cursor = (clip.timelineEndMs - StackedWaveformTimeline.transitionMs)
-          .clamp(clip.timelineStartMs + 1, clip.timelineEndMs);
+          .clamp(lower, clip.timelineEndMs);
     }
 
     final currentClip = placed[widget.currentTrack]!;
@@ -184,9 +190,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       if (overlap != null) {
         final left =
             StackedWaveformTimeline.railWidth + viewport.msToX(overlap.startMs);
+        final minBandWidth = math.min(2.0, paneWidth);
         final width =
             (viewport.msToX(overlap.endMs) - viewport.msToX(overlap.startMs))
-                .clamp(2.0, paneWidth);
+                .clamp(minBandWidth, paneWidth);
         transitionBand = Positioned(
           key: const ValueKey('transition_window'),
           left: left,
@@ -324,7 +331,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     return Container(
       height: 40,
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceVariant.withOpacity(0.4),
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
         border: Border(bottom: BorderSide(color: theme.dividerColor)),
       ),
       child: Row(
@@ -356,9 +363,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     return IgnorePointer(
       child: Container(
         decoration: BoxDecoration(
-          color: accent.withOpacity(0.12),
+          color: accent.withValues(alpha: 0.12),
           border: Border.symmetric(
-            vertical: BorderSide(color: accent.withOpacity(0.5)),
+            vertical: BorderSide(color: accent.withValues(alpha: 0.5)),
           ),
         ),
         alignment: Alignment.topCenter,
@@ -387,7 +394,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       constraints: const BoxConstraints(maxWidth: 150),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: accent.withOpacity(0.92),
+        color: accent.withValues(alpha: 0.92),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
@@ -410,6 +417,42 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   Widget _buildModeBar(BuildContext context) {
     final theme = Theme.of(context);
+    final leadingControls = [
+      _modeButton(
+        label: 'Browse',
+        icon: Icons.pan_tool_alt,
+        selected: _mode == _TimelineMode.browse,
+        onTap: () => setState(() => _mode = _TimelineMode.browse),
+      ),
+      const SizedBox(width: 4),
+      _modeButton(
+        label: 'Edit',
+        icon: Icons.edit,
+        selected: _mode == _TimelineMode.edit,
+        onTap: () => setState(() => _mode = _TimelineMode.edit),
+      ),
+    ];
+    final trailingControls = [
+      IconButton(
+        key: const ValueKey('timeline_zoom_reset'),
+        icon: const Icon(Icons.zoom_out_map),
+        tooltip: 'Reset zoom',
+        constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+        padding: EdgeInsets.zero,
+        onPressed: () {},
+      ),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.tertiaryContainer,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text('mock',
+            style: theme.textTheme.labelSmall
+                ?.copyWith(fontWeight: FontWeight.bold)),
+      ),
+    ];
+
     return Container(
       key: const ValueKey('timeline_mode_bar'),
       height: 60,
@@ -418,42 +461,28 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         color: theme.colorScheme.surface,
         border: Border(top: BorderSide(color: theme.dividerColor)),
       ),
-      child: Row(
-        children: [
-          _modeButton(
-            label: 'Browse',
-            icon: Icons.pan_tool_alt,
-            selected: _mode == _TimelineMode.browse,
-            onTap: () => setState(() => _mode = _TimelineMode.browse),
-          ),
-          const SizedBox(width: 4),
-          _modeButton(
-            label: 'Edit',
-            icon: Icons.edit,
-            selected: _mode == _TimelineMode.edit,
-            onTap: () => setState(() => _mode = _TimelineMode.edit),
-          ),
-          const Spacer(),
-          IconButton(
-            key: const ValueKey('timeline_zoom_reset'),
-            icon: const Icon(Icons.zoom_out_map),
-            tooltip: 'Reset zoom',
-            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-            padding: EdgeInsets.zero,
-            onPressed: () {},
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.tertiaryContainer,
-              borderRadius: BorderRadius.circular(8),
+      child: LayoutBuilder(builder: (context, constraints) {
+        if (constraints.maxWidth < 280) {
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ...leadingControls,
+                const SizedBox(width: 12),
+                ...trailingControls
+              ],
             ),
-            child: Text('mock',
-                style: theme.textTheme.labelSmall
-                    ?.copyWith(fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
+          );
+        }
+        return Row(
+          children: [
+            ...leadingControls,
+            const Spacer(),
+            ...trailingControls,
+          ],
+        );
+      }),
     );
   }
 
@@ -471,7 +500,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         padding: const EdgeInsets.symmetric(horizontal: 8),
         decoration: BoxDecoration(
           color: selected
-              ? StackedWaveformTimeline.currentAccent.withOpacity(0.15)
+              ? StackedWaveformTimeline.currentAccent.withValues(alpha: 0.15)
               : null,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
@@ -571,7 +600,7 @@ class TimelineEmptySurface extends StatelessWidget {
             color: theme.dividerColor,
             style: BorderStyle.solid,
           ),
-          color: theme.colorScheme.surfaceVariant.withOpacity(0.2),
+          color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.2),
         ),
         child: Center(
           child: Column(
@@ -664,7 +693,7 @@ class _TimelineChrome extends StatelessWidget {
         Container(
           height: 40,
           decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceVariant.withOpacity(0.4),
+            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
             border: Border(bottom: BorderSide(color: theme.dividerColor)),
           ),
           alignment: Alignment.centerLeft,
@@ -687,7 +716,7 @@ class _TimelineChrome extends StatelessWidget {
                         decoration: BoxDecoration(
                           border: Border(
                             right: BorderSide(
-                                color: theme.dividerColor.withOpacity(0.4)),
+                                color: theme.dividerColor.withValues(alpha: 0.4)),
                           ),
                         ),
                       ),
@@ -710,7 +739,7 @@ class _ShimmerLane extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(6),
       ),
     );

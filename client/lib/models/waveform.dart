@@ -13,8 +13,9 @@ import 'dart:math' as math;
 /// prototype: a uniform averaged strip would erase the transients and read as a
 /// flat block, so the mock data makes that failure visible.
 ///
-/// Returns [barCount] normalised heights in the range [0.06, 1.0].
+/// Returns max(0, [barCount]) normalised heights in the range [0.06, 1.0].
 List<double> mockWaveformPeaks(String trackId, {int barCount = 48}) {
+  final count = math.max(0, barCount);
   final seed = _seedFromId(trackId);
   final rng = _Lcg(seed);
 
@@ -24,13 +25,19 @@ List<double> mockWaveformPeaks(String trackId, {int barCount = 48}) {
   final freqB = 1.3 + (seed % 7) * 0.4;
 
   // Musical body: two folded sines lifted off the floor.
-  final peaks = List<double>.generate(barCount, (i) {
-    final t = i / barCount;
+  final peaks = List<double>.generate(count, (i) {
+    final t = i / count;
     final a = math.sin(phaseA + t * math.pi * 2 * freqA);
     final b = math.sin(phaseB + t * math.pi * 2 * freqB);
     final body = (a * 0.6 + b * 0.4).abs();
     return (0.18 + body * 0.5).clamp(0.06, 1.0).toDouble();
   });
+
+  // Too few bars to carve silence windows or seat a transient (idx-1..idx+1)
+  // without inverting the clamp bounds below; return the plain body.
+  if (count < 3) {
+    return peaks;
+  }
 
   // Carve 1-2 near-silence windows (breakdowns / quiet passages).
   final silenceWindows = 1 + (seed % 2);

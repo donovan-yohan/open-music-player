@@ -31,7 +31,8 @@ class TimelineWaveformPainter extends CustomPainter {
 
     final midY = size.height / 2;
     final slot = size.width / peaks.length;
-    final barWidth = (slot * 0.66).clamp(1.0, slot);
+    final barWidth =
+        slot < 1.0 ? slot : (slot * 0.66).clamp(1.0, slot).toDouble();
     final paint = Paint()..style = PaintingStyle.fill;
 
     for (var i = 0; i < peaks.length; i++) {

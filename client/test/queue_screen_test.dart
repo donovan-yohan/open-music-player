@@ -112,6 +112,8 @@ void main() {
     await provider.setStartOffsetMs(track, 42000);
     expect(provider.trimRanges.containsKey(track.id), isTrue);
 
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
+    await tester.pumpAndSettle();
     await tester.tap(find.byIcon(Icons.close));
     await tester.pumpAndSettle();
 

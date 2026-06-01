@@ -21,8 +21,9 @@ Future<void> _pump(
   required Track? previous,
   required Track current,
   required List<Track> upcoming,
+  Size size = const Size(390, 844),
 }) async {
-  tester.view.physicalSize = const Size(390, 844);
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -75,6 +76,21 @@ void main() {
       expect(mockWaveformPeaks('t1'), mockWaveformPeaks('t1'));
       expect(mockWaveformPeaks('t1'), isNot(mockWaveformPeaks('t2')));
     });
+
+    test('tiny bar counts do not throw and stay normalised', () {
+      for (final n in [0, 1, 2]) {
+        expect(
+          () => mockWaveformPeaks('tiny-$n', barCount: n),
+          returnsNormally,
+          reason: 'barCount=$n must not invert clamp bounds',
+        );
+        final peaks = mockWaveformPeaks('tiny-$n', barCount: n);
+        expect(peaks.length, n, reason: 'barCount=$n');
+        for (final p in peaks) {
+          expect(p, inInclusiveRange(0.06, 1.0), reason: 'barCount=$n');
+        }
+      }
+    });
   });
 
   testWidgets('renders stacked lanes, shared playhead and transition window',
@@ -121,6 +137,55 @@ void main() {
         find.byKey(const ValueKey('timeline_lane_header_t0')), findsOneWidget);
     expect(find.textContaining('ended'), findsOneWidget);
     expect(find.textContaining('starts in'), findsOneWidget);
+  });
+
+  testWidgets('handles zero-duration current and upcoming tracks',
+      (tester) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('z1', 'Zero Now', 0),
+      upcoming: [_track('z2', 'Zero Next', 0)],
+    );
+
+    expect(
+      find.byKey(const ValueKey('stacked_waveform_timeline')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('timeline_playhead')), findsOneWidget);
+  });
+
+  testWidgets('handles short-duration tracks with a previous clip',
+      (tester) async {
+    await _pump(
+      tester,
+      previous: _track('s0', 'Tiny Open', 0),
+      current: _track('s1', 'Tiny Now', 1),
+      upcoming: [_track('s2', 'Tiny Next', 0)],
+    );
+
+    expect(
+      find.byKey(const ValueKey('stacked_waveform_timeline')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('timeline_playhead')), findsOneWidget);
+  });
+
+  testWidgets('handles one-pixel timeline pane without transition clamp crash',
+      (tester) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('n1', 'Narrow Now', 214),
+      upcoming: [_track('n2', 'Narrow Next', 188)],
+      size: const Size(StackedWaveformTimeline.railWidth + 1, 844),
+    );
+
+    expect(
+      find.byKey(const ValueKey('stacked_waveform_timeline')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('transition_window')), findsOneWidget);
   });
 
   testWidgets('mode bar toggles browse and edit', (tester) async {
