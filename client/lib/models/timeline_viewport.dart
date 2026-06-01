@@ -54,7 +54,10 @@ class TimelineViewport {
   double msToX(int timelineMs) =>
       ((timelineMs - offsetMs) / 1000) * pixelsPerSecond;
 
-  int xToMs(double xPx) => offsetMs + ((xPx / pixelsPerSecond) * 1000).round();
+  int xToMs(double xPx) {
+    final x = xPx.isFinite ? xPx : 0.0;
+    return offsetMs + ((x / pixelsPerSecond) * 1000).round();
+  }
 
   TimelineViewport panToOffsetMs(int ms) => TimelineViewport.clamped(
         durationMs: durationMs,
@@ -63,8 +66,15 @@ class TimelineViewport {
         offsetMs: ms,
       );
 
-  TimelineViewport panByPixels(double deltaXPx) =>
-      panToOffsetMs(offsetMs + ((deltaXPx / pixelsPerSecond) * 1000).round());
+  TimelineViewport panByPixels(double deltaXPx) {
+    if (!deltaXPx.isFinite) {
+      return this;
+    }
+
+    return panToOffsetMs(
+      offsetMs + ((deltaXPx / pixelsPerSecond) * 1000).round(),
+    );
+  }
 
   TimelineViewport zoomAround({
     required double newPixelsPerSecond,

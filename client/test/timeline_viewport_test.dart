@@ -28,6 +28,18 @@ void main() {
       expect(v.xToMs(100), 15000);
     });
 
+    test('treats non-finite screen x pixels as the viewport origin', () {
+      final v = viewport(pixelsPerSecond: 20, offsetMs: 10000);
+
+      for (final x in [
+        double.nan,
+        double.infinity,
+        double.negativeInfinity,
+      ]) {
+        expect(v.xToMs(x), 10000);
+      }
+    });
+
     test('reports visible duration from width and scale', () {
       final v = viewport(widthPx: 400, pixelsPerSecond: 20);
       expect(v.visibleDurationMs, 20000);
@@ -72,6 +84,23 @@ void main() {
       );
       expect(v.panByPixels(100).offsetMs, 15000);
       expect(v.panByPixels(-1000).offsetMs, 0);
+    });
+
+    test('treats non-finite pan pixel deltas as no-ops', () {
+      final v = viewport(
+        durationMs: 60000,
+        widthPx: 400,
+        pixelsPerSecond: 20,
+        offsetMs: 10000,
+      );
+
+      for (final delta in [
+        double.nan,
+        double.infinity,
+        double.negativeInfinity,
+      ]) {
+        expect(v.panByPixels(delta), v);
+      }
     });
 
     test('content shorter than viewport forces zero offset', () {
