@@ -13,6 +13,7 @@ import '../features/player/widgets/mini_player.dart';
 import '../features/downloads/downloads_screen.dart';
 import '../features/playlists/playlists_screen.dart';
 import '../features/playlists/playlist_detail_screen.dart';
+import '../screens/queue_screen.dart';
 
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
 final _shellNavigatorKey = GlobalKey<NavigatorState>();
@@ -91,6 +92,12 @@ final router = GoRouter(
           ),
         ),
         GoRoute(
+          path: '/queue',
+          pageBuilder: (context, state) => const NoTransitionPage(
+            child: QueueScreen(),
+          ),
+        ),
+        GoRoute(
           path: '/settings',
           pageBuilder: (context, state) => const NoTransitionPage(
             child: SettingsScreen(),
@@ -135,6 +142,11 @@ class ScaffoldWithNavBar extends StatelessWidget {
             label: 'Library',
           ),
           NavigationDestination(
+            icon: Icon(Icons.queue_music_outlined),
+            selectedIcon: Icon(Icons.queue_music),
+            label: 'Queue',
+          ),
+          NavigationDestination(
             icon: Icon(Icons.settings_outlined),
             selectedIcon: Icon(Icons.settings),
             label: 'Settings',
@@ -149,7 +161,8 @@ class ScaffoldWithNavBar extends StatelessWidget {
     if (location.startsWith('/home')) return 0;
     if (location.startsWith('/search')) return 1;
     if (location.startsWith('/library')) return 2;
-    if (location.startsWith('/settings')) return 3;
+    if (location.startsWith('/queue')) return 3;
+    if (location.startsWith('/settings')) return 4;
     return 0;
   }
 
@@ -165,6 +178,9 @@ class ScaffoldWithNavBar extends StatelessWidget {
         context.go('/library');
         break;
       case 3:
+        context.go('/queue');
+        break;
+      case 4:
         context.go('/settings');
         break;
     }

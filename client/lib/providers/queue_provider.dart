@@ -1,15 +1,27 @@
 import 'package:flutter/foundation.dart';
 import '../models/queue_state.dart';
 import '../models/track.dart';
-import '../services/api_client.dart';
+import '../services/queue_repository.dart';
 
+/// Drives the mobile-web queue screen. Talks only to [QueueRepository], so it
+/// runs offline in tests and on staging web builds via a mock repository.
 class QueueProvider extends ChangeNotifier {
-  final ApiClient _apiClient;
+  final QueueRepository _repository;
+
   QueueState _queue = QueueState.empty();
   bool _isLoading = false;
   String? _error;
 
-  QueueProvider(this._apiClient);
+  List<Track> _searchResults = [];
+  bool _isSearching = false;
+  String _searchQuery = '';
+
+  Map<String, double> _cueOffsets = {};
+
+  MixPlan? _savedMixPlan;
+  bool _isSaving = false;
+
+  QueueProvider(this._repository);
 
   QueueState get queue => _queue;
   bool get isLoading => _isLoading;
@@ -19,13 +31,24 @@ class QueueProvider extends ChangeNotifier {
   List<Track> get upNext => _queue.upNext;
   bool get isEmpty => _queue.isEmpty;
 
+  List<Track> get searchResults => _searchResults;
+  bool get isSearching => _isSearching;
+  String get searchQuery => _searchQuery;
+
+  Map<String, double> get cueOffsets => _cueOffsets;
+  double cueOffsetFor(String trackId) => _cueOffsets[trackId] ?? 0.0;
+
+  MixPlan? get savedMixPlan => _savedMixPlan;
+  bool get isSaving => _isSaving;
+
   Future<void> loadQueue() async {
     _isLoading = true;
     _error = null;
     notifyListeners();
 
     try {
-      _queue = await _apiClient.getQueue();
+      _queue = await _repository.getQueue();
+      _cueOffsets = _repository.cueOffsets;
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -34,12 +57,41 @@ class QueueProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> addToQueue(List<String> trackIds, {bool playNext = false}) async {
+  Future<void> search(String query) async {
+    _searchQuery = query;
+    if (query.trim().isEmpty) {
+      _searchResults = [];
+      _isSearching = false;
+      notifyListeners();
+      return;
+    }
+
+    _isSearching = true;
+    notifyListeners();
     try {
-      _queue = await _apiClient.addToQueue(
-        trackIds: trackIds,
-        position: playNext ? 'next' : 'last',
-      );
+      _searchResults = await _repository.searchTracks(query);
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isSearching = false;
+      notifyListeners();
+    }
+  }
+
+  void clearSearch() {
+    _searchQuery = '';
+    _searchResults = [];
+    _isSearching = false;
+    notifyListeners();
+  }
+
+  Future<void> addTrack(Track track, {bool playNext = false}) =>
+      addToQueue([track.id], playNext: playNext);
+
+  Future<void> addToQueue(List<String> trackIds,
+      {bool playNext = false}) async {
+    try {
+      _queue = await _repository.addTracks(trackIds, playNext: playNext);
       notifyListeners();
     } catch (e) {
       _error = e.toString();
@@ -48,29 +100,10 @@ class QueueProvider extends ChangeNotifier {
   }
 
   Future<void> removeFromQueue(int position) async {
-    final previousQueue = _queue;
-
-    // Optimistic update
-    final newTracks = List<Track>.from(_queue.tracks);
-    newTracks.removeAt(position);
-    int newCurrentIndex = _queue.currentIndex;
-    if (position < _queue.currentIndex) {
-      newCurrentIndex--;
-    } else if (position == _queue.currentIndex) {
-      newCurrentIndex = newCurrentIndex.clamp(-1, newTracks.length - 1);
-    }
-    _queue = QueueState(
-      tracks: newTracks,
-      currentIndex: newCurrentIndex,
-      repeatMode: _queue.repeatMode,
-      shuffled: _queue.shuffled,
-    );
-    notifyListeners();
-
     try {
-      await _apiClient.removeFromQueue(position);
+      _queue = await _repository.removeAt(position);
+      notifyListeners();
     } catch (e) {
-      _queue = previousQueue;
       _error = e.toString();
       notifyListeners();
     }
@@ -78,50 +111,21 @@ class QueueProvider extends ChangeNotifier {
 
   Future<void> reorderQueue(int oldIndex, int newIndex) async {
     if (oldIndex == newIndex) return;
-
-    final previousQueue = _queue;
-
-    // Optimistic update
-    final newTracks = List<Track>.from(_queue.tracks);
-    final track = newTracks.removeAt(oldIndex);
-    newTracks.insert(newIndex, track);
-
-    int newCurrentIndex = _queue.currentIndex;
-    if (oldIndex == _queue.currentIndex) {
-      newCurrentIndex = newIndex;
-    } else if (oldIndex < _queue.currentIndex && newIndex >= _queue.currentIndex) {
-      newCurrentIndex--;
-    } else if (oldIndex > _queue.currentIndex && newIndex <= _queue.currentIndex) {
-      newCurrentIndex++;
-    }
-
-    _queue = QueueState(
-      tracks: newTracks,
-      currentIndex: newCurrentIndex,
-      repeatMode: _queue.repeatMode,
-      shuffled: _queue.shuffled,
-    );
-    notifyListeners();
-
     try {
-      await _apiClient.reorderQueue(fromIndex: oldIndex, toIndex: newIndex);
+      _queue = await _repository.reorder(oldIndex, newIndex);
+      notifyListeners();
     } catch (e) {
-      _queue = previousQueue;
       _error = e.toString();
       notifyListeners();
     }
   }
 
   Future<void> clearQueue() async {
-    final previousQueue = _queue;
-
-    _queue = QueueState.empty();
-    notifyListeners();
-
     try {
-      await _apiClient.clearQueue();
+      _queue = await _repository.clear();
+      _cueOffsets = _repository.cueOffsets;
+      notifyListeners();
     } catch (e) {
-      _queue = previousQueue;
       _error = e.toString();
       notifyListeners();
     }
@@ -129,10 +133,38 @@ class QueueProvider extends ChangeNotifier {
 
   Future<void> shuffleQueue() async {
     try {
-      _queue = await _apiClient.shuffleQueue();
+      _queue = await _repository.shuffle();
       notifyListeners();
     } catch (e) {
       _error = e.toString();
+      notifyListeners();
+    }
+  }
+
+  /// Nudge a track's cue/offset by [deltaSeconds] (horizontal affordance).
+  Future<void> adjustCueOffset(String trackId, double deltaSeconds) =>
+      setCueOffset(trackId, cueOffsetFor(trackId) + deltaSeconds);
+
+  Future<void> setCueOffset(String trackId, double seconds) async {
+    try {
+      await _repository.setCueOffset(trackId, seconds);
+      _cueOffsets = _repository.cueOffsets;
+      notifyListeners();
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+    }
+  }
+
+  Future<void> saveMixPlan() async {
+    _isSaving = true;
+    notifyListeners();
+    try {
+      _savedMixPlan = await _repository.saveMixPlan(_queue, _cueOffsets);
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _isSaving = false;
       notifyListeners();
     }
   }
