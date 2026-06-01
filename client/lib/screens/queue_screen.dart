@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/track.dart';
 import '../providers/queue_provider.dart';
 import '../widgets/queue_item.dart';
 
@@ -116,9 +117,9 @@ class _QueueScreenState extends State<QueueScreen> {
               padding: const EdgeInsets.all(16),
               child: Text(
                 'Now Playing',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
               ),
             ),
           ),
@@ -138,46 +139,38 @@ class _QueueScreenState extends State<QueueScreen> {
               padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
               child: Text(
                 'Next Up',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
               ),
             ),
           ),
           SliverReorderableList(
             itemCount: upNext.length,
-            onReorder: (oldIndex, newIndex) {
-              // Convert to absolute queue indices
+            onReorderItem: (oldIndex, newIndex) {
+              // Convert to absolute queue indices. onReorderItem already
+              // adjusts newIndex when the dragged item moves downward.
               final absoluteOldIndex = currentIndex + 1 + oldIndex;
-              var absoluteNewIndex = currentIndex + 1 + newIndex;
-              if (newIndex > oldIndex) {
-                absoluteNewIndex--;
-              }
+              final absoluteNewIndex = currentIndex + 1 + newIndex;
               provider.reorderQueue(absoluteOldIndex, absoluteNewIndex);
             },
             itemBuilder: (context, index) {
               final track = upNext[index];
               final absoluteIndex = currentIndex + 1 + index;
-              return ReorderableDragStartListener(
+              // Keep horizontal waveform drags unambiguous: remove stays on the
+              // explicit row button instead of a full-row Dismissible swipe.
+              return QueueItem(
                 key: ValueKey(track.id),
-                index: index,
-                child: Dismissible(
-                  key: ValueKey('dismiss_${track.id}'),
-                  direction: DismissDirection.endToStart,
-                  onDismissed: (_) => provider.removeFromQueue(absoluteIndex),
-                  background: Container(
-                    alignment: Alignment.centerRight,
-                    padding: const EdgeInsets.only(right: 20),
-                    color: Colors.red,
-                    child: const Icon(Icons.delete, color: Colors.white),
-                  ),
-                  child: QueueItem(
-                    track: track,
-                    isPlaying: false,
-                    showDragHandle: true,
-                    onRemove: () => provider.removeFromQueue(absoluteIndex),
-                  ),
-                ),
+                track: track,
+                isPlaying: false,
+                reorderHandle: _buildReorderHandle(track, index),
+                showTrimControls: true,
+                trimRange: provider.trimRangeFor(track),
+                waveformPeaks: provider.waveformPeaksFor(track),
+                onTrimStartChanged: (ms) =>
+                    provider.setStartOffsetMs(track, ms),
+                onTrimEndChanged: (ms) => provider.setEndOffsetMs(track, ms),
+                onRemove: () => provider.removeFromQueue(absoluteIndex),
               );
             },
           ),
@@ -186,6 +179,28 @@ class _QueueScreenState extends State<QueueScreen> {
         // Bottom padding
         const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
       ],
+    );
+  }
+
+  /// Left-edge vertical grip. Only this widget starts a reorder drag, keeping
+  /// reorder distinct from the waveform trim surface.
+  Widget _buildReorderHandle(Track track, int index) {
+    return ReorderableDragStartListener(
+      index: index,
+      child: Semantics(
+        key: ValueKey('reorder_handle_${track.id}'),
+        container: true,
+        explicitChildNodes: true,
+        label: 'Reorder ${track.title}',
+        button: true,
+        child: SizedBox(
+          width: 44,
+          height: 64,
+          child: Center(
+            child: Icon(Icons.drag_indicator, color: Colors.grey[500]),
+          ),
+        ),
+      ),
     );
   }
 
