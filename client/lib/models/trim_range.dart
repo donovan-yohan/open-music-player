@@ -5,7 +5,8 @@
 /// are kept valid by construction:
 ///   * entry >= 0
 ///   * exit <= track duration
-///   * entry + [minPlayableMs] <= exit (a minimum playable segment)
+///   * entry + effective minimum <= exit, where the effective minimum is
+///     [minPlayableMs] capped to the track duration for sub-second tracks
 /// Offsets snap to the [snapMs] grid so drag interactions feel stable.
 class TrimRange {
   final int startOffsetMs;
@@ -38,13 +39,15 @@ class TrimRange {
     var start = _clamp(_snap(startOffsetMs), 0, dur);
     var end = _clamp(_snap(endOffsetMs), 0, dur);
 
-    // Guarantee a minimum playable segment: push the exit out first, and if
-    // that runs past the track end, pull the entry back instead.
-    if (end - start < minPlayableMs) {
-      end = start + minPlayableMs;
+    final minPlayable = _effectiveMinPlayable(dur);
+
+    // Guarantee the effective minimum playable segment: push the exit out
+    // first, and if that runs past the track end, pull the entry back instead.
+    if (end - start < minPlayable) {
+      end = start + minPlayable;
       if (end > dur) {
         end = dur;
-        start = _clamp(dur - minPlayableMs, 0, dur);
+        start = _clamp(dur - minPlayable, 0, dur);
       }
     }
     return TrimRange._(start, end, dur);
@@ -52,14 +55,15 @@ class TrimRange {
 
   /// New range with the entry point moved to [ms] (clamped + snapped).
   TrimRange withStart(int ms) {
-    final start = _clamp(_snap(ms), 0, endOffsetMs - minPlayableMs);
+    final minPlayable = _effectiveMinPlayable(trackDurationMs);
+    final start = _clamp(_snap(ms), 0, endOffsetMs - minPlayable);
     return TrimRange._(start, endOffsetMs, trackDurationMs);
   }
 
   /// New range with the exit point moved to [ms] (clamped + snapped).
   TrimRange withEnd(int ms) {
-    final end =
-        _clamp(_snap(ms), startOffsetMs + minPlayableMs, trackDurationMs);
+    final minPlayable = _effectiveMinPlayable(trackDurationMs);
+    final end = _clamp(_snap(ms), startOffsetMs + minPlayable, trackDurationMs);
     return TrimRange._(startOffsetMs, end, trackDurationMs);
   }
 
@@ -84,12 +88,17 @@ class TrimRange {
       };
 
   factory TrimRange.fromJson(Map<String, dynamic> json) => TrimRange.clamped(
-        trackDurationMs: json['trackDurationMs'] as int,
-        startOffsetMs: json['startOffsetMs'] as int,
-        endOffsetMs: json['endOffsetMs'] as int,
+        trackDurationMs: (json['trackDurationMs'] as num).toInt(),
+        startOffsetMs: (json['startOffsetMs'] as num).toInt(),
+        endOffsetMs: (json['endOffsetMs'] as num).toInt(),
       );
 
   static int _snap(int ms) => ((ms / snapMs).round()) * snapMs;
+
+  static int _effectiveMinPlayable(int trackDurationMs) {
+    if (trackDurationMs <= 0) return 0;
+    return trackDurationMs < minPlayableMs ? trackDurationMs : minPlayableMs;
+  }
 
   static int _clamp(int v, int lo, int hi) {
     if (hi < lo) return lo;

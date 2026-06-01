@@ -128,30 +128,13 @@ class QueueWaveformTrimControl extends StatelessWidget {
       top: 0,
       bottom: 0,
       width: _handleWidth,
-      child: Semantics(
-        label: semanticLabel,
-        slider: true,
-        child: GestureDetector(
-          key: key,
-          behavior: HitTestBehavior.opaque,
-          onHorizontalDragUpdate: onChanged == null
-              ? null
-              : (details) {
-                  // Track the handle's new absolute position from the drag.
-                  final newCenter =
-                      (left + _handleWidth / 2) + details.delta.dx;
-                  onChanged(xToMs(newCenter));
-                },
-          child: Center(
-            child: Container(
-              width: 3,
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-        ),
+      child: _TrimHandle(
+        key: key,
+        centerX: centerX,
+        semanticLabel: semanticLabel,
+        color: color,
+        onChanged: onChanged,
+        xToMs: xToMs,
       ),
     );
   }
@@ -164,10 +147,82 @@ class QueueWaveformTrimControl extends StatelessWidget {
   }
 
   static String _fmt(int ms) {
-    final totalSeconds = (ms / 1000).round();
+    final totalSeconds = ms ~/ 1000;
     final minutes = totalSeconds ~/ 60;
     final seconds = totalSeconds % 60;
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
+}
+
+class _TrimHandle extends StatefulWidget {
+  final double centerX;
+  final String semanticLabel;
+  final Color color;
+  final ValueChanged<int>? onChanged;
+  final int Function(double) xToMs;
+
+  const _TrimHandle({
+    super.key,
+    required this.centerX,
+    required this.semanticLabel,
+    required this.color,
+    required this.onChanged,
+    required this.xToMs,
+  });
+
+  @override
+  State<_TrimHandle> createState() => _TrimHandleState();
+}
+
+class _TrimHandleState extends State<_TrimHandle> {
+  double? _dragStartCenterX;
+  double? _dragStartGlobalX;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: widget.semanticLabel,
+      slider: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragStart: widget.onChanged == null
+            ? null
+            : (details) {
+                _dragStartCenterX = widget.centerX;
+                _dragStartGlobalX = details.globalPosition.dx;
+              },
+        onHorizontalDragUpdate: widget.onChanged == null
+            ? null
+            : (details) {
+                final startCenter = _dragStartCenterX ?? widget.centerX;
+                final startGlobal =
+                    _dragStartGlobalX ?? details.globalPosition.dx;
+                final dragDelta = details.globalPosition.dx - startGlobal;
+                widget.onChanged!(widget.xToMs(startCenter + dragDelta));
+              },
+        onHorizontalDragEnd: widget.onChanged == null
+            ? null
+            : (_) {
+                _dragStartCenterX = null;
+                _dragStartGlobalX = null;
+              },
+        onHorizontalDragCancel: widget.onChanged == null
+            ? null
+            : () {
+                _dragStartCenterX = null;
+                _dragStartGlobalX = null;
+              },
+        child: Center(
+          child: Container(
+            width: 3,
+            decoration: BoxDecoration(
+              color: widget.color,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

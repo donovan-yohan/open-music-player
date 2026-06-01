@@ -65,6 +65,17 @@ void main() {
       expect(r.startOffsetMs % TrimRange.snapMs, 0);
       expect(r.endOffsetMs % TrimRange.snapMs, 0);
     });
+
+    test('uses track duration as the effective minimum for short tracks', () {
+      final r = TrimRange.clamped(
+        trackDurationMs: 500,
+        startOffsetMs: 400,
+        endOffsetMs: 500,
+      );
+      expect(r.startOffsetMs, 0);
+      expect(r.endOffsetMs, 500);
+      expect(r.selectedDurationMs, 500);
+    });
   });
 
   group('withStart / withEnd', () {
@@ -90,6 +101,27 @@ void main() {
     test('withEnd clamps beyond duration to duration', () {
       final r = TrimRange.full(dur).withEnd(dur + 5000);
       expect(r.endOffsetMs, dur);
+    });
+
+    test('withStart and withEnd keep short tracks valid', () {
+      final r = TrimRange.full(500);
+
+      expect(r.withStart(400).startOffsetMs, 0);
+      expect(r.withEnd(100).endOffsetMs, 500);
+    });
+  });
+
+  group('json', () {
+    test('accepts numeric values that are not already ints', () {
+      final r = TrimRange.fromJson({
+        'trackDurationMs': 214000.0,
+        'startOffsetMs': 42000.0,
+        'endOffsetMs': 138000.0,
+      });
+
+      expect(r.trackDurationMs, 214000);
+      expect(r.startOffsetMs, 42000);
+      expect(r.endOffsetMs, 138000);
     });
   });
 
