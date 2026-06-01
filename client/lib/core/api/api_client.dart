@@ -1,8 +1,9 @@
 import 'package:dio/dio.dart';
+import '../config/api_config.dart';
 import '../storage/secure_storage.dart';
 
 class ApiClient {
-  static const String baseUrl = 'http://localhost:8080/api/v1';
+  static const String baseUrl = ApiConfig.baseUrl;
 
   final Dio _dio;
   final SecureStorage _storage;

@@ -85,12 +85,16 @@ class MockQueueRepository implements QueueRepository {
     if (additions.isEmpty) return _queue;
 
     final tracks = List<Track>.from(_queue.tracks);
-    if (playNext && _queue.currentIndex >= 0) {
-      tracks.insertAll(_queue.currentIndex + 1, additions);
+    var currentIndex = _queue.currentIndex;
+    if (playNext && currentIndex >= 0) {
+      tracks.insertAll(currentIndex + 1, additions);
     } else {
       tracks.addAll(additions);
     }
-    _queue = _copyWith(tracks: tracks);
+    if (currentIndex < 0 && tracks.isNotEmpty) {
+      currentIndex = 0;
+    }
+    _queue = _copyWith(tracks: tracks, currentIndex: currentIndex);
     return _queue;
   }
 

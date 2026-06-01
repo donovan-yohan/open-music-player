@@ -178,6 +178,9 @@ class ScaffoldWithNavBar extends StatelessWidget {
         context.go('/library');
         break;
       case 3:
+        context.go('/queue');
+        break;
+      case 4:
         context.go('/settings');
         break;
     }

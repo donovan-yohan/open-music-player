@@ -238,13 +238,11 @@ class _QueueScreenState extends State<QueueScreen> {
           _sectionHeader(context, 'Next Up'),
           SliverReorderableList(
             itemCount: upNext.length,
-            onReorder: (oldIndex, newIndex) {
-              // Convert to absolute queue indices.
+            onReorderItem: (oldIndex, newIndex) {
+              // Convert the SDK-adjusted relative queue indices to absolute
+              // queue positions after the currently playing track.
               final absoluteOldIndex = currentIndex + 1 + oldIndex;
-              var absoluteNewIndex = currentIndex + 1 + newIndex;
-              if (newIndex > oldIndex) {
-                absoluteNewIndex--;
-              }
+              final absoluteNewIndex = currentIndex + 1 + newIndex;
               provider.reorderQueue(absoluteOldIndex, absoluteNewIndex);
             },
             itemBuilder: (context, index) {

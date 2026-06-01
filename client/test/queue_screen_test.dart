@@ -8,6 +8,17 @@ import 'package:open_music_player/services/mock_queue_repository.dart';
 import 'package:open_music_player/services/queue_repository.dart';
 
 void main() {
+  test('adding to an empty mock queue selects the first added track', () async {
+    final repository = MockQueueRepository();
+
+    await repository.clear();
+    final queue = await repository.addTracks(['t8']);
+
+    expect(queue.currentIndex, 0);
+    expect(queue.currentTrack?.title, 'Citrus Sky');
+    expect(queue.upNext, isEmpty);
+  });
+
   Future<void> pumpQueueScreen(WidgetTester tester) async {
     await tester.pumpWidget(
       MultiProvider(

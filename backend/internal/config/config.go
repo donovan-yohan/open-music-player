@@ -5,19 +5,21 @@ import (
 	"encoding/hex"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
-	ServerAddr  string
-	DBHost      string
-	DBPort      string
-	DBUser      string
-	DBPassword  string
-	DBName      string
-	JWTSecret   string
-	RedisAddr   string
-	RedisURL    string
-	WorkerCount int
+	ServerAddr         string
+	DBHost             string
+	DBPort             string
+	DBUser             string
+	DBPassword         string
+	DBName             string
+	JWTSecret          string
+	RedisAddr          string
+	RedisURL           string
+	WorkerCount        int
+	CORSAllowedOrigins []string
 
 	// S3/MinIO storage configuration
 	S3Endpoint       string
@@ -45,16 +47,17 @@ func Load() *Config {
 	minioUseSSL, _ := strconv.ParseBool(getEnvOrDefault("MINIO_USE_SSL", "false"))
 
 	return &Config{
-		ServerAddr:  getEnvOrDefault("SERVER_ADDR", ":8080"),
-		DBHost:      getEnvOrDefault("DB_HOST", "localhost"),
-		DBPort:      getEnvOrDefault("DB_PORT", "5432"),
-		DBUser:      getEnvOrDefault("DB_USER", "omp"),
-		DBPassword:  getEnvOrDefault("DB_PASSWORD", "omp_dev_password"),
-		DBName:      getEnvOrDefault("DB_NAME", "openmusicplayer"),
-		JWTSecret:   getEnvOrDefault("JWT_SECRET", generateDefaultSecret()),
-		RedisAddr:   getEnvOrDefault("REDIS_ADDR", "localhost:6380"),
-		RedisURL:    getEnvOrDefault("REDIS_URL", "redis://localhost:6380"),
-		WorkerCount: workerCount,
+		ServerAddr:         getEnvOrDefault("SERVER_ADDR", ":8080"),
+		DBHost:             getEnvOrDefault("DB_HOST", "localhost"),
+		DBPort:             getEnvOrDefault("DB_PORT", "5432"),
+		DBUser:             getEnvOrDefault("DB_USER", "omp"),
+		DBPassword:         getEnvOrDefault("DB_PASSWORD", "omp_dev_password"),
+		DBName:             getEnvOrDefault("DB_NAME", "openmusicplayer"),
+		JWTSecret:          getEnvOrDefault("JWT_SECRET", generateDefaultSecret()),
+		RedisAddr:          getEnvOrDefault("REDIS_ADDR", "localhost:6380"),
+		RedisURL:           getEnvOrDefault("REDIS_URL", "redis://localhost:6380"),
+		WorkerCount:        workerCount,
+		CORSAllowedOrigins: splitCSV(getEnvOrDefault("CORS_ALLOWED_ORIGINS", "http://localhost:8088,http://127.0.0.1:8088")),
 
 		// S3/MinIO configuration
 		S3Endpoint:       getEnvOrDefault("MINIO_ENDPOINT", "http://localhost:9000"),
@@ -79,6 +82,18 @@ func getEnvOrDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 
 func generateDefaultSecret() string {
