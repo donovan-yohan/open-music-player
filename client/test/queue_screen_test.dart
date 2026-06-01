@@ -26,7 +26,7 @@ void main() {
   }
 
   testWidgets(
-    'renders queue waveform trim controls with a distinct reorder grip',
+    'renders stacked timeline preview plus queue waveform trim controls',
     (tester) async {
       tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1;
@@ -35,9 +35,24 @@ void main() {
 
       await pumpQueueScreen(tester);
 
+      // Issue #19 visual prototype is present on the queue surface.
+      expect(find.byKey(const ValueKey('queue_surface')), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('stacked_waveform_timeline')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const ValueKey('timeline_playhead')), findsOneWidget);
+      expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
+      expect(find.byKey(const ValueKey('transition_window')), findsOneWidget);
+      expect(find.byKey(const ValueKey('right_future_teaser')), findsOneWidget);
+      expect(find.byKey(const ValueKey('timeline_clip_t1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('timeline_waveform_t1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('timeline_clip_t2')), findsOneWidget);
+
+      // Current main queue affordances are preserved below the preview.
       expect(find.text('Now Playing'), findsOneWidget);
       expect(find.text('Next Up'), findsOneWidget);
-      expect(find.text('Paper Planes'), findsOneWidget);
+      expect(find.text('Paper Planes'), findsWidgets);
       expect(find.byKey(const ValueKey('reorder_handle_t2')), findsOneWidget);
       expect(find.byKey(const ValueKey('trim_waveform_t2')), findsOneWidget);
       expect(
