@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart' hide Provider, ChangeNotifierProvider;
+import 'package:flutter_riverpod/flutter_riverpod.dart'
+    hide Provider, ChangeNotifierProvider;
 import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
 import '../core/auth/auth_state.dart';
 import '../core/models/settings_model.dart';
 import '../core/providers/settings_provider.dart';
 import '../providers/queue_provider.dart';
-import '../services/api_client.dart' as queue_api;
+import '../services/mock_queue_repository.dart';
+import '../services/queue_repository.dart';
 import 'router.dart';
 import 'theme.dart';
 
@@ -28,11 +30,14 @@ class OpenMusicPlayerApp extends ConsumerWidget {
       providers: [
         ChangeNotifierProvider.value(value: authState),
         ChangeNotifierProvider.value(value: playbackState),
-        Provider<queue_api.ApiClient>(create: (_) => queue_api.ApiClient()),
-        ChangeNotifierProxyProvider<queue_api.ApiClient, QueueProvider>(
-          create: (context) => QueueProvider(context.read<queue_api.ApiClient>()),
-          update: (_, apiClient, previous) =>
-              previous ?? QueueProvider(apiClient),
+        // Web/mobile queue skeleton runs on an in-memory repository so it
+        // works offline on staging builds and in tests. Swap for an
+        // API-backed QueueRepository when backend wiring lands.
+        Provider<QueueRepository>(create: (_) => MockQueueRepository()),
+        ChangeNotifierProxyProvider<QueueRepository, QueueProvider>(
+          create: (context) => QueueProvider(context.read<QueueRepository>()),
+          update: (_, repository, previous) =>
+              previous ?? QueueProvider(repository),
         ),
       ],
       child: MaterialApp.router(
