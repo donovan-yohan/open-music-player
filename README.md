@@ -133,23 +133,25 @@ Load the extension in Chrome:
 3. Click "Load unpacked"
 4. Select the `extension/dist` directory
 
-### 5. Run the Flutter Client
+### 5. Run the Flutter Web Client
+
+For the current MVP staging target, use the web-first Tailnet flow:
+
+```bash
+scripts/tailnet-staging.sh start
+```
+
+The script starts the backend stack, builds Flutter Web with `OMP_API_BASE_URL` pointed at the discovered Tailnet host, serves the web build on port `8088`, and prints phone-accessible URLs plus curl smoke results. See [Tailnet Flutter Web staging](docs/TAILNET_FLUTTER_WEB_STAGING.md) for the exact commands and manual fallback.
+
+For quick local-only client development:
 
 ```bash
 cd client
-
-# Get dependencies
 flutter pub get
-
-# Run on your platform
-flutter run -d macos    # macOS
-flutter run -d windows  # Windows
-flutter run -d linux    # Linux
-flutter run -d chrome   # Web
-flutter run             # Connected mobile device
+flutter run -d chrome --dart-define=OMP_API_BASE_URL=http://localhost:8080/api/v1
 ```
 
-Configure the API endpoint in the client settings to point to your backend (default: `http://localhost:8080`).
+Native/mobile installs are intentionally deferred for this devbox; keep the Flutter framework in place so that target can return on larger hardware or CI.
 
 ## API Endpoints
 
