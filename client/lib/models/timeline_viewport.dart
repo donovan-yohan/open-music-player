@@ -29,7 +29,7 @@ class TimelineViewport {
     required int offsetMs,
   }) {
     final duration = math.max(0, durationMs);
-    final width = math.max(0, widthPx).toDouble();
+    final width = widthPx.isFinite ? math.max(0, widthPx).toDouble() : 0.0;
     final scale = pixelsPerSecond
         .clamp(
           minPixelsPerSecond,
@@ -76,8 +76,9 @@ class TimelineViewport {
           maxPixelsPerSecond,
         )
         .toDouble();
-    final focalTimelineMs = xToMs(focalXPx);
-    final newOffset = focalTimelineMs - ((focalXPx / scale) * 1000).round();
+    final focalX = focalXPx.isFinite ? focalXPx : widthPx / 2;
+    final focalTimelineMs = xToMs(focalX);
+    final newOffset = focalTimelineMs - ((focalX / scale) * 1000).round();
 
     return TimelineViewport.clamped(
       durationMs: durationMs,

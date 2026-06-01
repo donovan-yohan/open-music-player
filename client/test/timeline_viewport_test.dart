@@ -35,6 +35,19 @@ void main() {
   });
 
   group('pan clamps', () {
+    test('sanitizes non-finite widths to zero before clamping', () {
+      for (final width in [
+        double.nan,
+        double.infinity,
+        double.negativeInfinity
+      ]) {
+        final v = viewport(widthPx: width, offsetMs: 5000);
+        expect(v.widthPx, 0);
+        expect(v.visibleDurationMs, 0);
+        expect(v.offsetMs, 5000);
+      }
+    });
+
     test('clamps offset below zero', () {
       final v = viewport(offsetMs: -5000);
       expect(v.offsetMs, 0);
@@ -115,6 +128,31 @@ void main() {
       expect(
           v.zoomAround(newPixelsPerSecond: 10000, focalXPx: 0).pixelsPerSecond,
           TimelineViewport.maxPixelsPerSecond);
+    });
+
+    test('uses viewport center when focal x is non-finite', () {
+      final v = viewport(
+        durationMs: 240000,
+        widthPx: 400,
+        pixelsPerSecond: 20,
+        offsetMs: 10000,
+      );
+      final centerZoomed = v.zoomAround(
+        newPixelsPerSecond: 40,
+        focalXPx: 200,
+      );
+
+      for (final focal in [
+        double.nan,
+        double.infinity,
+        double.negativeInfinity
+      ]) {
+        final zoomed = v.zoomAround(
+          newPixelsPerSecond: 40,
+          focalXPx: focal,
+        );
+        expect(zoomed, centerZoomed);
+      }
     });
   });
 }
