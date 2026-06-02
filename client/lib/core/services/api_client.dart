@@ -29,7 +29,10 @@ class ApiException implements Exception {
 }
 
 class ApiClient {
-  static const String _baseUrl = 'http://localhost:8000/api/v1';
+  static const String _baseUrl = String.fromEnvironment(
+    'OMP_API_BASE_URL',
+    defaultValue: 'http://localhost:8080/api/v1',
+  );
   static const String _accessTokenKey = 'access_token';
   static const String _refreshTokenKey = 'refresh_token';
 

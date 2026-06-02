@@ -8,16 +8,17 @@ import (
 )
 
 type Config struct {
-	ServerAddr  string
-	DBHost      string
-	DBPort      string
-	DBUser      string
-	DBPassword  string
-	DBName      string
-	JWTSecret   string
-	RedisAddr   string
-	RedisURL    string
-	WorkerCount int
+	ServerAddr   string
+	DBHost       string
+	DBPort       string
+	DBUser       string
+	DBPassword   string
+	DBName       string
+	JWTSecret    string
+	RedisEnabled bool
+	RedisAddr    string
+	RedisURL     string
+	WorkerCount  int
 
 	// S3/MinIO storage configuration
 	S3Endpoint       string
@@ -37,24 +38,26 @@ type Config struct {
 }
 
 func Load() *Config {
-	workerCount, _ := strconv.Atoi(getEnvOrDefault("WORKER_COUNT", "3"))
-	if workerCount <= 0 {
-		workerCount = 3
+	workerCount, _ := strconv.Atoi(getEnvOrDefault("WORKER_COUNT", "1"))
+	if workerCount < 0 {
+		workerCount = 0
 	}
 
 	minioUseSSL, _ := strconv.ParseBool(getEnvOrDefault("MINIO_USE_SSL", "false"))
+	redisEnabled, _ := strconv.ParseBool(getEnvOrDefault("REDIS_ENABLED", "true"))
 
 	return &Config{
-		ServerAddr:  getEnvOrDefault("SERVER_ADDR", ":8080"),
-		DBHost:      getEnvOrDefault("DB_HOST", "localhost"),
-		DBPort:      getEnvOrDefault("DB_PORT", "5432"),
-		DBUser:      getEnvOrDefault("DB_USER", "omp"),
-		DBPassword:  getEnvOrDefault("DB_PASSWORD", "omp_dev_password"),
-		DBName:      getEnvOrDefault("DB_NAME", "openmusicplayer"),
-		JWTSecret:   getEnvOrDefault("JWT_SECRET", generateDefaultSecret()),
-		RedisAddr:   getEnvOrDefault("REDIS_ADDR", "localhost:6380"),
-		RedisURL:    getEnvOrDefault("REDIS_URL", "redis://localhost:6380"),
-		WorkerCount: workerCount,
+		ServerAddr:   getEnvOrDefault("SERVER_ADDR", ":8080"),
+		DBHost:       getEnvOrDefault("DB_HOST", "localhost"),
+		DBPort:       getEnvOrDefault("DB_PORT", "5432"),
+		DBUser:       getEnvOrDefault("DB_USER", "omp"),
+		DBPassword:   getEnvOrDefault("DB_PASSWORD", "omp_dev_password"),
+		DBName:       getEnvOrDefault("DB_NAME", "openmusicplayer"),
+		JWTSecret:    getEnvOrDefault("JWT_SECRET", generateDefaultSecret()),
+		RedisEnabled: redisEnabled,
+		RedisAddr:    getEnvOrDefault("REDIS_ADDR", "localhost:6380"),
+		RedisURL:     getEnvOrDefault("REDIS_URL", "redis://localhost:6380"),
+		WorkerCount:  workerCount,
 
 		// S3/MinIO configuration
 		S3Endpoint:       getEnvOrDefault("MINIO_ENDPOINT", "http://localhost:9000"),

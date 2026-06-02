@@ -51,7 +51,7 @@ func NewWorkerPool(queue *Queue, processor JobProcessor, config *WorkerPoolConfi
 	}
 
 	workerCount := config.WorkerCount
-	if workerCount <= 0 {
+	if workerCount < 0 {
 		workerCount = DefaultWorkerCount
 	}
 

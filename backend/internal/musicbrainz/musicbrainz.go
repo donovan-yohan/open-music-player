@@ -43,6 +43,20 @@ func NewClient(cache *cache.Cache) *Client {
 	}
 }
 
+func (c *Client) cacheGet(ctx context.Context, key string) (string, bool) {
+	if c.cache == nil {
+		return "", false
+	}
+	return c.cache.Get(ctx, key)
+}
+
+func (c *Client) cacheSet(ctx context.Context, key string, value string, ttl time.Duration) {
+	if c.cache == nil {
+		return
+	}
+	_ = c.cache.Set(ctx, key, value, ttl)
+}
+
 // Search result types
 type TrackResult struct {
 	MBID        string `json:"mbid"`
@@ -268,7 +282,7 @@ func (c *Client) SearchTracks(ctx context.Context, query string, limit, offset i
 	cacheKey := c.buildCacheKey("recording", query, limit, offset)
 
 	if !skipCache {
-		if cached, ok := c.cache.Get(ctx, cacheKey); ok {
+		if cached, ok := c.cacheGet(ctx, cacheKey); ok {
 			var resp SearchResponse[TrackResult]
 			if err := json.Unmarshal([]byte(cached), &resp); err == nil {
 				return &resp, nil
@@ -324,7 +338,7 @@ func (c *Client) SearchTracks(ctx context.Context, query string, limit, offset i
 	}
 
 	if respJSON, err := json.Marshal(resp); err == nil {
-		c.cache.Set(ctx, cacheKey, string(respJSON), searchTTL)
+		c.cacheSet(ctx, cacheKey, string(respJSON), searchTTL)
 	}
 
 	return resp, nil
@@ -335,7 +349,7 @@ func (c *Client) SearchArtists(ctx context.Context, query string, limit, offset 
 	cacheKey := c.buildCacheKey("artist", query, limit, offset)
 
 	if !skipCache {
-		if cached, ok := c.cache.Get(ctx, cacheKey); ok {
+		if cached, ok := c.cacheGet(ctx, cacheKey); ok {
 			var resp SearchResponse[ArtistResult]
 			if err := json.Unmarshal([]byte(cached), &resp); err == nil {
 				return &resp, nil
@@ -377,7 +391,7 @@ func (c *Client) SearchArtists(ctx context.Context, query string, limit, offset 
 	}
 
 	if respJSON, err := json.Marshal(resp); err == nil {
-		c.cache.Set(ctx, cacheKey, string(respJSON), searchTTL)
+		c.cacheSet(ctx, cacheKey, string(respJSON), searchTTL)
 	}
 
 	return resp, nil
@@ -388,7 +402,7 @@ func (c *Client) SearchAlbums(ctx context.Context, query string, limit, offset i
 	cacheKey := c.buildCacheKey("release-group", query, limit, offset)
 
 	if !skipCache {
-		if cached, ok := c.cache.Get(ctx, cacheKey); ok {
+		if cached, ok := c.cacheGet(ctx, cacheKey); ok {
 			var resp SearchResponse[AlbumResult]
 			if err := json.Unmarshal([]byte(cached), &resp); err == nil {
 				return &resp, nil
@@ -440,7 +454,7 @@ func (c *Client) SearchAlbums(ctx context.Context, query string, limit, offset i
 	}
 
 	if respJSON, err := json.Marshal(resp); err == nil {
-		c.cache.Set(ctx, cacheKey, string(respJSON), searchTTL)
+		c.cacheSet(ctx, cacheKey, string(respJSON), searchTTL)
 	}
 
 	return resp, nil
@@ -452,7 +466,7 @@ func (c *Client) SearchAlbums(ctx context.Context, query string, limit, offset i
 func (c *Client) GetArtist(ctx context.Context, mbID string) (*Artist, error) {
 	cacheKey := fmt.Sprintf("mb:artist-full:%s", mbID)
 
-	if cached, ok := c.cache.Get(ctx, cacheKey); ok {
+	if cached, ok := c.cacheGet(ctx, cacheKey); ok {
 		var artist Artist
 		if err := json.Unmarshal([]byte(cached), &artist); err == nil {
 			return &artist, nil
@@ -494,7 +508,7 @@ func (c *Client) GetArtist(ctx context.Context, mbID string) (*Artist, error) {
 	}
 
 	if artistJSON, err := json.Marshal(artist); err == nil {
-		c.cache.Set(ctx, cacheKey, string(artistJSON), entityLookupTTL)
+		c.cacheSet(ctx, cacheKey, string(artistJSON), entityLookupTTL)
 	}
 
 	return artist, nil
@@ -504,7 +518,7 @@ func (c *Client) GetArtist(ctx context.Context, mbID string) (*Artist, error) {
 func (c *Client) GetRelease(ctx context.Context, mbID string) (*Release, error) {
 	cacheKey := fmt.Sprintf("mb:release:%s", mbID)
 
-	if cached, ok := c.cache.Get(ctx, cacheKey); ok {
+	if cached, ok := c.cacheGet(ctx, cacheKey); ok {
 		var release Release
 		if err := json.Unmarshal([]byte(cached), &release); err == nil {
 			return &release, nil
@@ -556,7 +570,7 @@ func (c *Client) GetRelease(ctx context.Context, mbID string) (*Release, error) 
 	release.TrackCount = len(release.Tracks)
 
 	if releaseJSON, err := json.Marshal(release); err == nil {
-		c.cache.Set(ctx, cacheKey, string(releaseJSON), entityLookupTTL)
+		c.cacheSet(ctx, cacheKey, string(releaseJSON), entityLookupTTL)
 	}
 
 	return release, nil
@@ -566,7 +580,7 @@ func (c *Client) GetRelease(ctx context.Context, mbID string) (*Release, error) 
 func (c *Client) GetRecording(ctx context.Context, mbID string) (*Track, error) {
 	cacheKey := fmt.Sprintf("mb:recording:%s", mbID)
 
-	if cached, ok := c.cache.Get(ctx, cacheKey); ok {
+	if cached, ok := c.cacheGet(ctx, cacheKey); ok {
 		var track Track
 		if err := json.Unmarshal([]byte(cached), &track); err == nil {
 			return &track, nil
@@ -602,7 +616,7 @@ func (c *Client) GetRecording(ctx context.Context, mbID string) (*Track, error) 
 	}
 
 	if trackJSON, err := json.Marshal(track); err == nil {
-		c.cache.Set(ctx, cacheKey, string(trackJSON), entityLookupTTL)
+		c.cacheSet(ctx, cacheKey, string(trackJSON), entityLookupTTL)
 	}
 
 	return track, nil

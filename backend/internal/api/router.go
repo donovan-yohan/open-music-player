@@ -173,12 +173,21 @@ func (r *Router) setupRoutes() {
 	// Audio streaming route (auth required)
 	r.mux.HandleFunc("GET /api/v1/stream/{track_id}", r.withAuth(r.streamHandler.Stream))
 
-	// Queue routes (auth required)
-	r.mux.HandleFunc("GET /api/v1/queue", r.withAuth(r.queueHandlers.GetQueue))
-	r.mux.HandleFunc("POST /api/v1/queue", r.withAuth(r.queueHandlers.AddToQueue))
-	r.mux.HandleFunc("DELETE /api/v1/queue/{position}", r.withAuth(r.queueHandlers.RemoveFromQueue))
-	r.mux.HandleFunc("PUT /api/v1/queue/reorder", r.withAuth(r.queueHandlers.ReorderQueue))
-	r.mux.HandleFunc("DELETE /api/v1/queue", r.withAuth(r.queueHandlers.ClearQueue))
+	// Queue routes (auth required, Redis-backed)
+	if r.queueHandlers != nil {
+		r.mux.HandleFunc("GET /api/v1/queue", r.withAuth(r.queueHandlers.GetQueue))
+		r.mux.HandleFunc("POST /api/v1/queue", r.withAuth(r.queueHandlers.AddToQueue))
+		r.mux.HandleFunc("DELETE /api/v1/queue/{position}", r.withAuth(r.queueHandlers.RemoveFromQueue))
+		r.mux.HandleFunc("PUT /api/v1/queue/reorder", r.withAuth(r.queueHandlers.ReorderQueue))
+		r.mux.HandleFunc("DELETE /api/v1/queue", r.withAuth(r.queueHandlers.ClearQueue))
+	} else {
+		queueUnavailable := unavailableHandler("Redis queue support is disabled for this local mode")
+		r.mux.HandleFunc("GET /api/v1/queue", queueUnavailable)
+		r.mux.HandleFunc("POST /api/v1/queue", queueUnavailable)
+		r.mux.HandleFunc("DELETE /api/v1/queue/{position}", queueUnavailable)
+		r.mux.HandleFunc("PUT /api/v1/queue/reorder", queueUnavailable)
+		r.mux.HandleFunc("DELETE /api/v1/queue", queueUnavailable)
+	}
 
 	// Playlist routes (auth required)
 	r.mux.HandleFunc("GET /api/v1/playlists", r.withAuth(r.playlistHandlers.ListPlaylists))
@@ -190,10 +199,28 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("DELETE /api/v1/playlists/{id}/tracks/{trackId}", r.withAuth(r.playlistHandlers.RemoveTrack))
 	r.mux.HandleFunc("PUT /api/v1/playlists/{id}/tracks/reorder", r.withAuth(r.playlistHandlers.ReorderTracks))
 
-	// Download routes (auth required)
-	r.mux.HandleFunc("POST /api/v1/downloads", r.withAuth(r.downloadHandlers.CreateDownload))
-	r.mux.HandleFunc("GET /api/v1/downloads", r.withAuth(r.downloadHandlers.GetUserJobs))
-	r.mux.HandleFunc("GET /api/v1/downloads/{job_id}", r.withAuth(r.downloadHandlers.GetJob))
+	// Download routes (auth required, Redis/worker-backed)
+	if r.downloadHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/downloads", r.withAuth(r.downloadHandlers.CreateDownload))
+		r.mux.HandleFunc("GET /api/v1/downloads", r.withAuth(r.downloadHandlers.GetUserJobs))
+		r.mux.HandleFunc("GET /api/v1/downloads/{job_id}", r.withAuth(r.downloadHandlers.GetJob))
+	} else {
+		downloadUnavailable := unavailableHandler("Download processing is disabled for this local mode")
+		r.mux.HandleFunc("POST /api/v1/downloads", downloadUnavailable)
+		r.mux.HandleFunc("GET /api/v1/downloads", downloadUnavailable)
+		r.mux.HandleFunc("GET /api/v1/downloads/{job_id}", downloadUnavailable)
+	}
+}
+
+func unavailableHandler(message string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"code":    "SERVICE_DISABLED",
+			"message": message,
+		})
+	}
 }
 
 func (r *Router) withAuth(next http.HandlerFunc) http.HandlerFunc {

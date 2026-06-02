@@ -53,6 +53,19 @@ Open Music Player consists of four main components:
 
 ## Local Development Setup
 
+### Low-memory backend + Flutter Web mode
+
+For backend control-plane development and Flutter Web mobile/responsive QA, prefer the low-memory stack instead of the full queue/download pipeline:
+
+```bash
+scripts/local-low-memory.sh start
+scripts/local-low-memory.sh smoke
+cd client
+flutter run -d chrome --dart-define=OMP_API_BASE_URL=http://localhost:8080/api/v1
+```
+
+This mode starts only the backend, PostgreSQL, and MinIO. Redis is disabled by default (`REDIS_ENABLED=false`) and download workers are disabled (`WORKER_COUNT=0`), so Redis-backed queue/download endpoints return `503 SERVICE_DISABLED` until you intentionally enable the downloads profile. See [`docs/LOW_MEMORY_LOCAL_DEV.md`](docs/LOW_MEMORY_LOCAL_DEV.md) for smoke checks, Redis/worker guidance, and the no-Android/no-Gradle workflow.
+
 ### 1. Clone and Configure Environment
 
 ```bash
