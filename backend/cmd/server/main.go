@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/openmusicplayer/backend/internal/api"
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/cache"
@@ -26,7 +28,6 @@ import (
 	"github.com/openmusicplayer/backend/internal/storage"
 	"github.com/openmusicplayer/backend/internal/stream"
 	"github.com/openmusicplayer/backend/internal/websocket"
-	"github.com/redis/go-redis/v9"
 )
 
 const version = "1.0.0"
