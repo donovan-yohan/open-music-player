@@ -58,6 +58,8 @@ You can print the exact command for the current port settings with:
 scripts/local-low-memory.sh flutter-web-command
 ```
 
+The helper treats `OMP_API_BASE_URL` as the Flutter `/api/v1` base URL. If you customize the backend root used by smoke checks, set `OMP_BACKEND_BASE_URL` separately, for example `OMP_BACKEND_BASE_URL=http://localhost:18080`.
+
 Use browser devtools responsive/mobile viewport modes for this pass. Do not run Android, Gradle, APK, emulators, or Android SDK commands on the devbox for this workflow.
 
 ## Smoke checks

@@ -38,13 +38,10 @@ type Config struct {
 }
 
 func Load() *Config {
-	workerCount, _ := strconv.Atoi(getEnvOrDefault("WORKER_COUNT", "1"))
-	if workerCount < 0 {
-		workerCount = 0
-	}
+	workerCount := parseWorkerCount()
 
 	minioUseSSL, _ := strconv.ParseBool(getEnvOrDefault("MINIO_USE_SSL", "false"))
-	redisEnabled, _ := strconv.ParseBool(getEnvOrDefault("REDIS_ENABLED", "true"))
+	redisEnabled := parseBoolEnv("REDIS_ENABLED", true)
 
 	return &Config{
 		ServerAddr:   getEnvOrDefault("SERVER_ADDR", ":8080"),
@@ -82,6 +79,32 @@ func getEnvOrDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func parseWorkerCount() int {
+	value := os.Getenv("WORKER_COUNT")
+	if value == "" {
+		return 1
+	}
+
+	workerCount, err := strconv.Atoi(value)
+	if err != nil || workerCount < 0 {
+		return 1
+	}
+	return workerCount
+}
+
+func parseBoolEnv(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
 }
 
 func generateDefaultSecret() string {

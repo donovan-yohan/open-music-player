@@ -2,10 +2,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
 COMPOSE_FILE="$ROOT/docker-compose.local-low-memory.yml"
 COMPOSE=(docker compose -f "$COMPOSE_FILE")
-API_BASE_URL="${OMP_API_BASE_URL:-http://localhost:${SERVER_PORT:-8080}}"
-FLUTTER_API_BASE_URL="${OMP_FLUTTER_API_BASE_URL:-$API_BASE_URL/api/v1}"
+BACKEND_BASE_URL="${OMP_BACKEND_BASE_URL:-http://localhost:${SERVER_PORT:-8080}}"
+FLUTTER_API_BASE_URL="${OMP_FLUTTER_API_BASE_URL:-${OMP_API_BASE_URL:-$BACKEND_BASE_URL/api/v1}}"
 
 usage() {
   cat <<'USAGE'
@@ -22,7 +28,7 @@ USAGE
 }
 
 wait_for_backend() {
-  local url="$API_BASE_URL/health"
+  local url="$BACKEND_BASE_URL/health"
   for _ in $(seq 1 30); do
     if curl -fsS "$url" >/dev/null; then
       return 0
@@ -49,12 +55,12 @@ case "$cmd" in
     ;;
   smoke)
     wait_for_backend
-    echo "backend health: ok ($API_BASE_URL/health)"
-    curl -fsS "$API_BASE_URL/health?deep=true" >/dev/null
-    echo "backend readiness/deep health: ok ($API_BASE_URL/health?deep=true)"
+    echo "backend health: ok ($BACKEND_BASE_URL/health)"
+    curl -fsS "$BACKEND_BASE_URL/health?deep=true" >/dev/null
+    echo "backend readiness/deep health: ok ($BACKEND_BASE_URL/health?deep=true)"
     "${COMPOSE[@]}" --profile smoke run --rm minio-smoke >/dev/null
     echo "storage access: ok (MinIO bucket is reachable)"
-    if grep -R "String.fromEnvironment(.*OMP_API_BASE_URL\|OMP_API_BASE_URL" "$ROOT/client/lib" >/dev/null; then
+    if grep -rq "OMP_API_BASE_URL" "$ROOT/client/lib"; then
       echo "Flutter Web API base URL wiring: ok (--dart-define=OMP_API_BASE_URL=$FLUTTER_API_BASE_URL)"
     else
       echo "Flutter Web API base URL wiring missing" >&2

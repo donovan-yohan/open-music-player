@@ -181,7 +181,7 @@ func (r *Router) setupRoutes() {
 		r.mux.HandleFunc("PUT /api/v1/queue/reorder", r.withAuth(r.queueHandlers.ReorderQueue))
 		r.mux.HandleFunc("DELETE /api/v1/queue", r.withAuth(r.queueHandlers.ClearQueue))
 	} else {
-		queueUnavailable := unavailableHandler("Redis queue support is disabled for this local mode")
+		queueUnavailable := r.withAuth(unavailableHandler("Redis queue support is disabled for this local mode"))
 		r.mux.HandleFunc("GET /api/v1/queue", queueUnavailable)
 		r.mux.HandleFunc("POST /api/v1/queue", queueUnavailable)
 		r.mux.HandleFunc("DELETE /api/v1/queue/{position}", queueUnavailable)
@@ -205,7 +205,7 @@ func (r *Router) setupRoutes() {
 		r.mux.HandleFunc("GET /api/v1/downloads", r.withAuth(r.downloadHandlers.GetUserJobs))
 		r.mux.HandleFunc("GET /api/v1/downloads/{job_id}", r.withAuth(r.downloadHandlers.GetJob))
 	} else {
-		downloadUnavailable := unavailableHandler("Download processing is disabled for this local mode")
+		downloadUnavailable := r.withAuth(unavailableHandler("Download processing is disabled for this local mode"))
 		r.mux.HandleFunc("POST /api/v1/downloads", downloadUnavailable)
 		r.mux.HandleFunc("GET /api/v1/downloads", downloadUnavailable)
 		r.mux.HandleFunc("GET /api/v1/downloads/{job_id}", downloadUnavailable)

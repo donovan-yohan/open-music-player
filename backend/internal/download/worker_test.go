@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+func workerCountPtr(count int) *int {
+	return &count
+}
+
 func TestWorkerPool_StartStop(t *testing.T) {
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
@@ -26,7 +30,7 @@ func TestWorkerPool_StartStop(t *testing.T) {
 	}
 
 	pool := NewWorkerPool(queue, processor, &WorkerPoolConfig{
-		WorkerCount: 2,
+		WorkerCount: workerCountPtr(2),
 		MaxRetries:  3,
 		JobTimeout:  1 * time.Minute,
 	})
@@ -79,7 +83,7 @@ func TestWorkerPool_ProcessJob(t *testing.T) {
 	}
 
 	pool := NewWorkerPool(queue, processor, &WorkerPoolConfig{
-		WorkerCount: 1,
+		WorkerCount: workerCountPtr(1),
 		MaxRetries:  3,
 		JobTimeout:  1 * time.Minute,
 	})
@@ -139,7 +143,7 @@ func TestWorkerPool_RetryOnFailure(t *testing.T) {
 	}
 
 	pool := NewWorkerPool(queue, processor, &WorkerPoolConfig{
-		WorkerCount: 1,
+		WorkerCount: workerCountPtr(1),
 		MaxRetries:  3,
 		JobTimeout:  1 * time.Minute,
 	})
@@ -164,6 +168,22 @@ func TestWorkerPool_RetryOnFailure(t *testing.T) {
 	attempts := atomic.LoadInt32(&attemptCount)
 	if attempts < 3 {
 		t.Errorf("Expected at least 3 attempts, got %d", attempts)
+	}
+}
+
+func TestWorkerPool_ZeroValueConfigUsesDefaultWorkerCount(t *testing.T) {
+	pool := NewWorkerPool(nil, nil, &WorkerPoolConfig{})
+
+	if pool.workerCount != DefaultWorkerCount {
+		t.Fatalf("workerCount = %d, want DefaultWorkerCount %d", pool.workerCount, DefaultWorkerCount)
+	}
+}
+
+func TestWorkerPool_ExplicitZeroWorkerCountDisablesWorkers(t *testing.T) {
+	pool := NewWorkerPool(nil, nil, &WorkerPoolConfig{WorkerCount: workerCountPtr(0)})
+
+	if pool.workerCount != 0 {
+		t.Fatalf("workerCount = %d, want explicit zero", pool.workerCount)
 	}
 }
 
