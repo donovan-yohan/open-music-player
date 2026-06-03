@@ -61,6 +61,9 @@ class Track {
     };
   }
 
+  /// Track duration in milliseconds (stored as whole seconds).
+  int get durationMs => duration * 1000;
+
   String get formattedDuration {
     final minutes = duration ~/ 60;
     final seconds = duration % 60;

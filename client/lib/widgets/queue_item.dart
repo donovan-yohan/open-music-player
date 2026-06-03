@@ -1,20 +1,46 @@
 import 'package:flutter/material.dart';
 import '../models/track.dart';
+import '../models/trim_range.dart';
+import 'queue_waveform_trim_control.dart';
 
 class QueueItem extends StatelessWidget {
   final Track track;
   final bool isPlaying;
-  final bool showDragHandle;
   final VoidCallback? onRemove;
   final VoidCallback? onTap;
+
+  /// Left-edge vertical reorder grip. Supplied by the screen so it can wrap the
+  /// grip — and only the grip — in a drag listener. Visually distinct from the
+  /// waveform trim surface.
+  final Widget? reorderHandle;
+
+  /// Whether to show the inline waveform trim surface (entry/exit points).
+  final bool showTrimControls;
+
+  /// Current trim range for this track. Required when [showTrimControls].
+  final TrimRange? trimRange;
+
+  /// Deterministic mock waveform peaks for the trim surface.
+  final List<double> waveformPeaks;
+
+  /// Called with an absolute entry-point target (ms) as the start handle drags.
+  final ValueChanged<int>? onTrimStartChanged;
+
+  /// Called with an absolute exit-point target (ms) as the end handle drags.
+  final ValueChanged<int>? onTrimEndChanged;
 
   const QueueItem({
     super.key,
     required this.track,
     this.isPlaying = false,
-    this.showDragHandle = false,
     this.onRemove,
     this.onTap,
+    this.reorderHandle,
+    this.showTrimControls = false,
+    this.trimRange,
+    this.waveformPeaks = const [],
+    this.onTrimStartChanged,
+    this.onTrimEndChanged,
   });
 
   @override
@@ -22,93 +48,104 @@ class QueueItem extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Material(
-      color: isPlaying ? colorScheme.primaryContainer.withOpacity(0.3) : null,
+      color: isPlaying
+          ? colorScheme.primaryContainer.withValues(alpha: 0.3)
+          : null,
       child: InkWell(
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Album art thumbnail
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: SizedBox(
-                  width: 48,
-                  height: 48,
-                  child: track.coverUrl != null
-                      ? Image.network(
-                          track.coverUrl!,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _buildPlaceholder(),
-                        )
-                      : _buildPlaceholder(),
-                ),
-              ),
-              const SizedBox(width: 12),
+              Row(
+                children: [
+                  // Left-edge vertical reorder grip (only it starts reorder).
+                  if (reorderHandle != null) ...[
+                    reorderHandle!,
+                    const SizedBox(width: 8),
+                  ],
 
-              // Track info
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+                  // Album art thumbnail
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: SizedBox(
+                      width: 48,
+                      height: 48,
+                      child: track.coverUrl != null
+                          ? Image.network(
+                              track.coverUrl!,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => _buildPlaceholder(),
+                            )
+                          : _buildPlaceholder(),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+
+                  // Track info
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (isPlaying) ...[
-                          Icon(
-                            Icons.equalizer,
-                            size: 16,
-                            color: colorScheme.primary,
-                          ),
-                          const SizedBox(width: 4),
-                        ],
-                        Expanded(
-                          child: Text(
-                            track.title,
-                            style: TextStyle(
-                              fontWeight: isPlaying ? FontWeight.bold : FontWeight.w500,
-                              color: isPlaying ? colorScheme.primary : null,
+                        Row(
+                          children: [
+                            if (isPlaying) ...[
+                              Icon(
+                                Icons.equalizer,
+                                size: 16,
+                                color: colorScheme.primary,
+                              ),
+                              const SizedBox(width: 4),
+                            ],
+                            Expanded(
+                              child: Text(
+                                track.title,
+                                style: TextStyle(
+                                  fontWeight: isPlaying
+                                      ? FontWeight.bold
+                                      : FontWeight.w500,
+                                  color: isPlaying ? colorScheme.primary : null,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          track.artist ?? 'Unknown artist',
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: Colors.grey[600]),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      track.artist ?? 'Unknown artist',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Colors.grey[600],
-                          ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
+                  ),
 
-              // Duration
-              Text(
-                track.formattedDuration,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  // Duration
+                  Text(
+                    track.formattedDuration,
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
+                  ),
+
+                  // Remove button
+                  if (onRemove != null)
+                    IconButton(
+                      icon: const Icon(Icons.close, size: 20),
+                      onPressed: onRemove,
                       color: Colors.grey[600],
                     ),
+                ],
               ),
-
-              // Drag handle or remove button
-              if (showDragHandle) ...[
-                const SizedBox(width: 8),
-                Icon(
-                  Icons.drag_handle,
-                  color: Colors.grey[400],
-                ),
-              ] else if (onRemove != null) ...[
-                IconButton(
-                  icon: const Icon(Icons.close, size: 20),
-                  onPressed: onRemove,
-                  color: Colors.grey[600],
-                ),
-              ],
+              if (showTrimControls && trimRange != null)
+                _buildTrimControls(context),
             ],
           ),
         ),
@@ -116,14 +153,25 @@ class QueueItem extends StatelessWidget {
     );
   }
 
+  /// Inline waveform trim surface (skipped intro / playable / cut tail) with
+  /// draggable entry + exit handles and a selected-duration label.
+  Widget _buildTrimControls(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: QueueWaveformTrimControl(
+        trackId: track.id,
+        peaks: waveformPeaks,
+        range: trimRange!,
+        onStartChanged: onTrimStartChanged,
+        onEndChanged: onTrimEndChanged,
+      ),
+    );
+  }
+
   Widget _buildPlaceholder() {
     return Container(
       color: Colors.grey[300],
-      child: Icon(
-        Icons.music_note,
-        color: Colors.grey[500],
-        size: 24,
-      ),
+      child: Icon(Icons.music_note, color: Colors.grey[500], size: 24),
     );
   }
 }
