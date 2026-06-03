@@ -41,6 +41,7 @@ Thumbs.db
 # Flutter
 .dart_tool/
 .packages
+.flutter-plugins-dependencies
 build/
 
 # SQLx offline mode cache (regenerate with `cargo sqlx prepare`)
