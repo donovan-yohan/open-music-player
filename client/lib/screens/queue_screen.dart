@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../models/track.dart';
 import '../providers/queue_provider.dart';
 import '../widgets/queue_item.dart';
+import '../widgets/stacked_waveform_timeline.dart';
 
 class QueueScreen extends StatefulWidget {
   const QueueScreen({super.key});
@@ -107,9 +108,29 @@ class _QueueScreenState extends State<QueueScreen> {
     final currentTrack = provider.currentTrack;
     final upNext = provider.upNext;
     final currentIndex = provider.queue.currentIndex;
+    final tracks = provider.queue.tracks;
+    final previousTrack = currentIndex > 0 ? tracks[currentIndex - 1] : null;
 
     return CustomScrollView(
       slivers: [
+        // Stacked timeline prototype (issue #19) is a visual arranger preview.
+        // The existing queue rows below remain the source of reorder/remove and
+        // interactive waveform trim controls added on main.
+        if (currentTrack != null)
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: 420,
+              child: StackedWaveformTimeline(
+                key: const ValueKey('queue_surface'),
+                previousTrack: previousTrack,
+                currentTrack: currentTrack,
+                upcomingTracks: upNext,
+                peaksFor: provider.waveformPeaksFor,
+                trimRangeFor: provider.trimRangeFor,
+              ),
+            ),
+          ),
+
         // Now Playing section
         if (currentTrack != null) ...[
           SliverToBoxAdapter(
