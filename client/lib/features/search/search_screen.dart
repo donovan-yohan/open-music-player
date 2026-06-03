@@ -27,7 +27,9 @@ class _SearchScreenState extends State<SearchScreen> {
   final List<DiscoveryQueueItem> _queue = [];
 
   bool _isSearching = false;
+  bool _isPolling = false;
   String _query = '';
+  int _searchGeneration = 0;
   String? _searchError;
 
   @override
@@ -46,25 +48,27 @@ class _SearchScreenState extends State<SearchScreen> {
 
   void _onQueryChanged(String value) {
     _debounceTimer?.cancel();
+    final next = value.trim();
+    if (next == _query) return;
+
+    _searchGeneration++;
+    setState(() {
+      _query = next;
+      _response = null;
+      _searchError = null;
+      _isSearching = next.isNotEmpty;
+    });
+
+    if (next.isEmpty) return;
+
     _debounceTimer = Timer(const Duration(milliseconds: 350), () {
-      final next = value.trim();
-      if (next == _query) return;
-      setState(() {
-        _query = next;
-      });
-      if (next.isEmpty) {
-        setState(() {
-          _response = null;
-          _searchError = null;
-        });
-        return;
-      }
-      _runSearch();
+      _runSearch(next);
     });
   }
 
-  Future<void> _runSearch() async {
-    if (_query.isEmpty) return;
+  Future<void> _runSearch(String query) async {
+    if (query.isEmpty) return;
+    final generation = ++_searchGeneration;
 
     setState(() {
       _isSearching = true;
@@ -72,18 +76,22 @@ class _SearchScreenState extends State<SearchScreen> {
     });
 
     try {
-      final response = await _discoveryService.search(_query);
-      if (!mounted) return;
+      final response = await _discoveryService.search(query);
+      if (!mounted || generation != _searchGeneration || query != _query) {
+        return;
+      }
       setState(() {
         _response = response;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || generation != _searchGeneration || query != _query) {
+        return;
+      }
       setState(() {
         _searchError = _friendlyApiError(error);
       });
     } finally {
-      if (mounted) {
+      if (mounted && generation == _searchGeneration) {
         setState(() {
           _isSearching = false;
         });
@@ -132,27 +140,36 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Future<void> _pollActiveJobs() async {
+    if (_isPolling || !mounted) return;
+    _isPolling = true;
+
     final pending = _queue
         .where((item) => item.jobId != null && item.isActive)
         .map((item) => item.jobId!)
         .toList();
 
-    for (final jobId in pending) {
-      try {
-        final snapshot = await _discoveryService.getJob(jobId);
-        _replaceJobItem(jobId, (current) => current.withSnapshot(snapshot));
-      } catch (error) {
-        _replaceJobItem(
-          jobId,
-          (current) => current.copyWith(
-            status: 'failed',
-            error: _friendlyApiError(error),
-          ),
-        );
+    try {
+      for (final jobId in pending) {
+        if (!mounted) return;
+        try {
+          final snapshot = await _discoveryService.getJob(jobId);
+          if (!mounted) return;
+          _replaceJobItem(jobId, (current) => current.withSnapshot(snapshot));
+        } catch (error) {
+          if (!mounted) return;
+          _replaceJobItem(
+            jobId,
+            (current) => current.copyWith(
+              status: 'failed',
+              error: _friendlyApiError(error),
+            ),
+          );
+        }
       }
+    } finally {
+      _isPolling = false;
+      if (mounted) _ensurePolling();
     }
-
-    _ensurePolling();
   }
 
   Future<void> _retryItem(DiscoveryQueueItem item) async {
@@ -246,7 +263,7 @@ class _SearchScreenState extends State<SearchScreen> {
       body: RefreshIndicator(
         onRefresh: () async {
           await Future.wait([
-            if (_query.isNotEmpty) _runSearch(),
+            if (_query.isNotEmpty) _runSearch(_query),
             _pollActiveJobs(),
           ]);
         },
@@ -256,7 +273,7 @@ class _SearchScreenState extends State<SearchScreen> {
           children: [
             _buildSearchBox(),
             if (_searchError != null)
-              _buildErrorCard(_searchError!, _runSearch),
+              _buildErrorCard(_searchError!, () => _runSearch(_query)),
             if (_response != null) _buildProviderRow(_response!.providers),
             const SizedBox(height: 12),
             _buildResultsSection(),
@@ -274,7 +291,25 @@ class _SearchScreenState extends State<SearchScreen> {
       minLines: 1,
       textInputAction: TextInputAction.search,
       onChanged: _onQueryChanged,
-      onSubmitted: (_) => _runSearch(),
+      onSubmitted: (value) {
+        _debounceTimer?.cancel();
+        final next = value.trim();
+        if (next != _query) {
+          setState(() {
+            _query = next;
+          });
+        }
+        if (next.isEmpty) {
+          _searchGeneration++;
+          setState(() {
+            _response = null;
+            _searchError = null;
+            _isSearching = false;
+          });
+          return;
+        }
+        _runSearch(next);
+      },
       decoration: InputDecoration(
         labelText: 'Search YouTube / SoundCloud',
         hintText: 'lofi study mix, live set, bootleg...',

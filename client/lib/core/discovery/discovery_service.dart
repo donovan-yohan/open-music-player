@@ -48,12 +48,27 @@ class DiscoveryService {
       throw const DiscoveryException('Download queue returned no data.');
     }
 
+    final jobId = _stringFromJson(data, const [
+      'job_id',
+      'jobId',
+      'downloadJobId',
+    ]);
+    if (jobId == null) {
+      throw const DiscoveryException(
+        'Download queue response was missing a job ID.',
+      );
+    }
+
     return DownloadJobSnapshot(
-      jobId: data['job_id'] as String? ?? '',
+      jobId: jobId,
       status: data['status'] as String? ?? 'queued',
-      progress: 0,
-      url: candidate.sourceUrl,
-      sourceType: candidate.sourceType,
+      progress: data['progress'] as int? ?? 0,
+      error: _blankToNull(data['error'] as String?),
+      url: data['url'] as String? ?? candidate.sourceUrl,
+      sourceType:
+          _stringFromJson(data, const ['source_type', 'sourceType']) ??
+          candidate.sourceType,
+      trackId: _intFromJson(data, const ['track_id', 'trackId']),
     );
   }
 
@@ -77,4 +92,25 @@ class DiscoveryException implements Exception {
 
   @override
   String toString() => message;
+}
+
+String? _stringFromJson(Map<String, dynamic> json, Iterable<String> keys) {
+  for (final key in keys) {
+    final value = json[key];
+    if (value is String && value.trim().isNotEmpty) return value;
+  }
+  return null;
+}
+
+int? _intFromJson(Map<String, dynamic> json, Iterable<String> keys) {
+  for (final key in keys) {
+    final value = json[key];
+    if (value is int) return value;
+  }
+  return null;
+}
+
+String? _blankToNull(String? value) {
+  if (value == null || value.trim().isEmpty) return null;
+  return value;
 }

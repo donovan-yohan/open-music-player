@@ -40,6 +40,22 @@ void main() {
     expect(response.providers.single.status, 'ok');
   });
 
+  test('download job snapshot accepts queue API camelCase fields', () {
+    final snapshot = DownloadJobSnapshot.fromJson({
+      'downloadJobId': 'job-camel',
+      'status': 'completed',
+      'progress': 100,
+      'url': 'https://soundcloud.com/demo/track',
+      'sourceType': 'soundcloud',
+      'trackId': 17,
+    });
+
+    expect(snapshot.jobId, 'job-camel');
+    expect(snapshot.sourceType, 'soundcloud');
+    expect(snapshot.trackId, 17);
+    expect(snapshot.isPlayable, isTrue);
+  });
+
   test('download queue item transitions to playable from completed job', () {
     const candidate = DiscoveryCandidate(
       candidateId: 'soundcloud:def',

@@ -119,8 +119,9 @@ class DiscoveryProviderSummary {
       status: json['status'] as String? ?? 'unknown',
       resultCount: json['resultCount'] as int? ?? 0,
       elapsedMs: json['elapsedMs'] as int? ?? 0,
-      errorMessage:
-          error is Map<String, dynamic> ? error['message'] as String? : null,
+      errorMessage: error is Map<String, dynamic>
+          ? error['message'] as String?
+          : null,
     );
   }
 }
@@ -146,13 +147,16 @@ class DownloadJobSnapshot {
 
   factory DownloadJobSnapshot.fromJson(Map<String, dynamic> json) {
     return DownloadJobSnapshot(
-      jobId: json['job_id'] as String? ?? '',
+      jobId:
+          _stringFromJson(json, const ['job_id', 'jobId', 'downloadJobId']) ??
+          '',
       status: json['status'] as String? ?? 'queued',
       progress: json['progress'] as int? ?? 0,
       error: _blankToNull(json['error'] as String?),
       url: json['url'] as String? ?? '',
-      sourceType: json['source_type'] as String? ?? '',
-      trackId: json['track_id'] as int?,
+      sourceType:
+          _stringFromJson(json, const ['source_type', 'sourceType']) ?? '',
+      trackId: _intFromJson(json, const ['track_id', 'trackId']),
     );
   }
 
@@ -252,4 +256,20 @@ class DiscoveryQueueItem {
 String? _blankToNull(String? value) {
   if (value == null || value.trim().isEmpty) return null;
   return value;
+}
+
+String? _stringFromJson(Map<String, dynamic> json, Iterable<String> keys) {
+  for (final key in keys) {
+    final value = json[key];
+    if (value is String && value.trim().isNotEmpty) return value;
+  }
+  return null;
+}
+
+int? _intFromJson(Map<String, dynamic> json, Iterable<String> keys) {
+  for (final key in keys) {
+    final value = json[key];
+    if (value is int) return value;
+  }
+  return null;
 }

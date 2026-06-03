@@ -12,7 +12,10 @@ void main() {
             {
               'trackId': 42,
               'url': 'https://objects.example/signed-track-42',
-              'expiresAt': DateTime.now().toUtc().add(const Duration(minutes: 5)).toIso8601String(),
+              'expiresAt': DateTime.now()
+                  .toUtc()
+                  .add(const Duration(minutes: 5))
+                  .toIso8601String(),
               'contentType': 'audio/mpeg',
               'sizeBytes': 1234,
               'etag': 'etag-42',
@@ -72,7 +75,10 @@ void main() {
             {
               'trackId': 9,
               'url': 'https://objects.example/expired',
-              'expiresAt': DateTime.now().toUtc().subtract(const Duration(seconds: 1)).toIso8601String(),
+              'expiresAt': DateTime.now()
+                  .toUtc()
+                  .subtract(const Duration(seconds: 1))
+                  .toIso8601String(),
             },
           ],
         };
@@ -88,6 +94,37 @@ void main() {
           ),
         ),
       );
+    });
+
+    test('signed playback descriptor parses backend storageKeyVersion', () {
+      final descriptor = SignedAudioDescriptor.fromJson({
+        'trackId': 42,
+        'url': 'http://localhost:9000/audio.mp3',
+        'expiresAt': DateTime.now()
+            .toUtc()
+            .add(const Duration(minutes: 5))
+            .toIso8601String(),
+        'contentType': 'audio/mpeg',
+        'sizeBytes': 44,
+        'etag': 'etag-1',
+        'storageKeyVersion': 'qa-version-d69a-d1fe-2ed82',
+      });
+
+      expect(descriptor.storageVersion, 'qa-version-d69a-d1fe-2ed82');
+    });
+
+    test('signed playback descriptor still accepts legacy storageVersion', () {
+      final descriptor = SignedAudioDescriptor.fromJson({
+        'trackId': 42,
+        'url': 'http://localhost:9000/audio.mp3',
+        'expiresAt': DateTime.now()
+            .toUtc()
+            .add(const Duration(minutes: 5))
+            .toIso8601String(),
+        'storageVersion': 'legacy-version',
+      });
+
+      expect(descriptor.storageVersion, 'legacy-version');
     });
   });
 }
