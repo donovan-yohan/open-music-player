@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import '../core/storage/secure_storage.dart';
 import '../models/queue_state.dart';
 
 class ApiClient {
@@ -9,20 +10,23 @@ class ApiClient {
   );
 
   final String baseUrl;
+  final SecureStorage? _storage;
   String? _accessToken;
 
-  ApiClient({this.baseUrl = defaultBaseUrl});
+  ApiClient({this.baseUrl = defaultBaseUrl, SecureStorage? storage})
+      : _storage = storage;
 
   void setAccessToken(String token) {
     _accessToken = token;
   }
 
-  Map<String, String> get _headers {
+  Future<Map<String, String>> get _headers async {
     final headers = <String, String>{
       'Content-Type': 'application/json',
     };
-    if (_accessToken != null) {
-      headers['Authorization'] = 'Bearer $_accessToken';
+    final accessToken = _accessToken ?? await _storage?.getAccessToken();
+    if (accessToken != null && accessToken.isNotEmpty) {
+      headers['Authorization'] = 'Bearer $accessToken';
     }
     return headers;
   }
@@ -30,7 +34,7 @@ class ApiClient {
   Future<QueueState> getQueue() async {
     final response = await http.get(
       Uri.parse('$baseUrl/queue'),
-      headers: _headers,
+      headers: await _headers,
     );
 
     if (response.statusCode == 200) {
@@ -45,7 +49,7 @@ class ApiClient {
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/queue/tracks'),
-      headers: _headers,
+      headers: await _headers,
       body: jsonEncode({
         'trackIds': trackIds,
         'position': position,
@@ -61,7 +65,7 @@ class ApiClient {
   Future<void> removeFromQueue(int position) async {
     final response = await http.delete(
       Uri.parse('$baseUrl/queue/tracks/$position'),
-      headers: _headers,
+      headers: await _headers,
     );
 
     if (response.statusCode != 204) {
@@ -75,7 +79,7 @@ class ApiClient {
   }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/queue/reorder'),
-      headers: _headers,
+      headers: await _headers,
       body: jsonEncode({
         'fromIndex': fromIndex,
         'toIndex': toIndex,
@@ -91,7 +95,7 @@ class ApiClient {
   Future<void> clearQueue() async {
     final response = await http.delete(
       Uri.parse('$baseUrl/queue'),
-      headers: _headers,
+      headers: await _headers,
     );
 
     if (response.statusCode != 204) {
@@ -102,7 +106,7 @@ class ApiClient {
   Future<QueueState> shuffleQueue() async {
     final response = await http.post(
       Uri.parse('$baseUrl/queue/shuffle'),
-      headers: _headers,
+      headers: await _headers,
     );
 
     if (response.statusCode == 200) {
@@ -117,7 +121,7 @@ class ApiClient {
   }) async {
     final response = await http.put(
       Uri.parse('$baseUrl/queue'),
-      headers: _headers,
+      headers: await _headers,
       body: jsonEncode({
         'trackIds': trackIds,
         'startIndex': startIndex,

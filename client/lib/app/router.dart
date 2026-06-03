@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../core/auth/auth_state.dart';
 import '../features/auth/screens/login_screen.dart';
 import '../features/auth/screens/register_screen.dart';
 import '../features/splash/splash_screen.dart';
@@ -13,93 +14,124 @@ import '../features/player/widgets/mini_player.dart';
 import '../features/downloads/downloads_screen.dart';
 import '../features/playlists/playlists_screen.dart';
 import '../features/playlists/playlist_detail_screen.dart';
+import '../screens/queue_screen.dart';
 
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
 final _shellNavigatorKey = GlobalKey<NavigatorState>();
 
-final router = GoRouter(
-  navigatorKey: _rootNavigatorKey,
-  initialLocation: '/',
-  routes: [
-    GoRoute(
-      path: '/',
-      builder: (context, state) => const SplashScreen(),
-    ),
-    GoRoute(
-      path: '/login',
-      builder: (context, state) => const LoginScreen(),
-    ),
-    GoRoute(
-      path: '/register',
-      builder: (context, state) => const RegisterScreen(),
-    ),
-    GoRoute(
-      path: '/player',
-      pageBuilder: (context, state) => CustomTransitionPage(
-        child: const PlayerScreen(),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          return SlideTransition(
-            position: Tween<Offset>(
-              begin: const Offset(0, 1),
-              end: Offset.zero,
-            ).animate(CurvedAnimation(
-              parent: animation,
-              curve: Curves.easeOutCubic,
-            )),
-            child: child,
-          );
+GoRouter createRouter(AuthState authState) {
+  return GoRouter(
+    navigatorKey: _rootNavigatorKey,
+    initialLocation: _initialRoute,
+    refreshListenable: authState,
+    redirect: (context, state) => _authRedirect(authState, state),
+    routes: [
+      GoRoute(
+        path: '/',
+        builder: (context, state) => const SplashScreen(),
+      ),
+      GoRoute(
+        path: '/login',
+        builder: (context, state) => const LoginScreen(),
+      ),
+      GoRoute(
+        path: '/register',
+        builder: (context, state) => const RegisterScreen(),
+      ),
+      GoRoute(
+        path: '/player',
+        pageBuilder: (context, state) => CustomTransitionPage(
+          child: const PlayerScreen(),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) {
+            return SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, 1),
+                end: Offset.zero,
+              ).animate(CurvedAnimation(
+                parent: animation,
+                curve: Curves.easeOutCubic,
+              )),
+              child: child,
+            );
+          },
+        ),
+      ),
+      GoRoute(
+        path: '/downloads',
+        builder: (context, state) => const DownloadsScreen(),
+      ),
+      GoRoute(
+        path: '/queue',
+        builder: (context, state) => const QueueScreen(),
+      ),
+      GoRoute(
+        path: '/playlists',
+        builder: (context, state) => const PlaylistsScreen(),
+      ),
+      GoRoute(
+        path: '/playlists/:id',
+        builder: (context, state) {
+          final id = int.parse(state.pathParameters['id']!);
+          return PlaylistDetailScreen(playlistId: id);
         },
       ),
-    ),
-    GoRoute(
-      path: '/downloads',
-      builder: (context, state) => const DownloadsScreen(),
-    ),
-    GoRoute(
-      path: '/playlists',
-      builder: (context, state) => const PlaylistsScreen(),
-    ),
-    GoRoute(
-      path: '/playlists/:id',
-      builder: (context, state) {
-        final id = int.parse(state.pathParameters['id']!);
-        return PlaylistDetailScreen(playlistId: id);
-      },
-    ),
-    ShellRoute(
-      navigatorKey: _shellNavigatorKey,
-      builder: (context, state, child) {
-        return ScaffoldWithNavBar(child: child);
-      },
-      routes: [
-        GoRoute(
-          path: '/home',
-          pageBuilder: (context, state) => const NoTransitionPage(
-            child: HomeScreen(),
+      ShellRoute(
+        navigatorKey: _shellNavigatorKey,
+        builder: (context, state, child) {
+          return ScaffoldWithNavBar(child: child);
+        },
+        routes: [
+          GoRoute(
+            path: '/home',
+            pageBuilder: (context, state) => const NoTransitionPage(
+              child: HomeScreen(),
+            ),
           ),
-        ),
-        GoRoute(
-          path: '/search',
-          pageBuilder: (context, state) => const NoTransitionPage(
-            child: SearchScreen(),
+          GoRoute(
+            path: '/search',
+            pageBuilder: (context, state) => const NoTransitionPage(
+              child: SearchScreen(),
+            ),
           ),
-        ),
-        GoRoute(
-          path: '/library',
-          pageBuilder: (context, state) => const NoTransitionPage(
-            child: LibraryScreen(),
+          GoRoute(
+            path: '/library',
+            pageBuilder: (context, state) => const NoTransitionPage(
+              child: LibraryScreen(),
+            ),
           ),
-        ),
-        GoRoute(
-          path: '/settings',
-          pageBuilder: (context, state) => const NoTransitionPage(
-            child: SettingsScreen(),
+          GoRoute(
+            path: '/settings',
+            pageBuilder: (context, state) => const NoTransitionPage(
+              child: SettingsScreen(),
+            ),
           ),
-        ),
-      ],
-    ),
-  ],
-);
+        ],
+      ),
+    ],
+  );
+}
+
+String? _authRedirect(AuthState authState, GoRouterState state) {
+  final path = state.uri.path;
+  const publicPaths = {'/', '/login', '/register'};
+  final isPublicPath = publicPaths.contains(path);
+
+  if (!authState.isAuthenticated && !isPublicPath) {
+    final next = Uri.encodeComponent(state.uri.toString());
+    return '/login?next=$next';
+  }
+
+  if (authState.isAuthenticated && (path == '/login' || path == '/register')) {
+    return '/home';
+  }
+
+  return null;
+}
+
+String get _initialRoute {
+  final path = Uri.base.path;
+  return path.isEmpty ? '/' : path;
+}
 
 class ScaffoldWithNavBar extends StatelessWidget {
   const ScaffoldWithNavBar({super.key, required this.child});

@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart' hide Provider, ChangeNotifierProvider;
+import 'package:flutter_riverpod/flutter_riverpod.dart'
+    hide Provider, ChangeNotifierProvider;
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
 import '../core/auth/auth_state.dart';
 import '../core/models/settings_model.dart';
 import '../core/providers/settings_provider.dart';
+import '../core/storage/secure_storage.dart';
 import '../providers/queue_provider.dart';
 import '../services/api_client.dart' as queue_api;
 import 'router.dart';
@@ -13,12 +16,13 @@ import 'theme.dart';
 class OpenMusicPlayerApp extends ConsumerWidget {
   final AuthState authState;
   final PlaybackState playbackState;
+  final GoRouter router;
 
-  const OpenMusicPlayerApp({
+  OpenMusicPlayerApp({
     super.key,
     required this.authState,
     required this.playbackState,
-  });
+  }) : router = createRouter(authState);
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -28,9 +32,14 @@ class OpenMusicPlayerApp extends ConsumerWidget {
       providers: [
         ChangeNotifierProvider.value(value: authState),
         ChangeNotifierProvider.value(value: playbackState),
-        Provider<queue_api.ApiClient>(create: (_) => queue_api.ApiClient()),
+        Provider<queue_api.ApiClient>(
+          create: (context) => queue_api.ApiClient(
+            storage: context.read<SecureStorage>(),
+          ),
+        ),
         ChangeNotifierProxyProvider<queue_api.ApiClient, QueueProvider>(
-          create: (context) => QueueProvider(context.read<queue_api.ApiClient>()),
+          create: (context) =>
+              QueueProvider(context.read<queue_api.ApiClient>()),
           update: (_, apiClient, previous) =>
               previous ?? QueueProvider(apiClient),
         ),
