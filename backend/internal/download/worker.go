@@ -165,7 +165,7 @@ func (wp *WorkerPool) processNextJob(workerID int) {
 		cancel()
 	}()
 
-	job, err := wp.queue.Dequeue(ctx, 5*time.Second)
+	job, err := wp.queue.Dequeue(ctx, 500*time.Millisecond)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return
