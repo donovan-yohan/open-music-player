@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import '../auth/auth_tokens.dart';
 import '../storage/secure_storage.dart';
 
 class ApiClient {
@@ -10,21 +11,16 @@ class ApiClient {
   final Dio _dio;
   final SecureStorage _storage;
 
-  ApiClient({
-    required SecureStorage storage,
-    Dio? dio,
-  })  : _storage = storage,
-        _dio = dio ?? Dio() {
+  ApiClient({required SecureStorage storage, Dio? dio})
+    : _storage = storage,
+      _dio = dio ?? Dio() {
     _dio.options.baseUrl = baseUrl;
     _dio.options.connectTimeout = const Duration(seconds: 10);
     _dio.options.receiveTimeout = const Duration(seconds: 10);
     _dio.options.headers['Content-Type'] = 'application/json';
 
     _dio.interceptors.add(
-      InterceptorsWrapper(
-        onRequest: _onRequest,
-        onError: _onError,
-      ),
+      InterceptorsWrapper(onRequest: _onRequest, onError: _onError),
     );
   }
 
@@ -62,14 +58,14 @@ class ApiClient {
     try {
       final response = await Dio().post(
         '$baseUrl/auth/refresh',
-        data: {'refresh_token': refreshToken},
+        data: refreshTokenPayload(refreshToken),
       );
 
       if (response.statusCode == 200) {
-        final data = response.data;
+        final tokens = parseAuthTokens(response.data);
         await _storage.saveTokens(
-          accessToken: data['access_token'],
-          refreshToken: data['refresh_token'],
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
         );
         return true;
       }

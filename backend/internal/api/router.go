@@ -11,6 +11,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/metrics"
+	"github.com/openmusicplayer/backend/internal/middleware"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
@@ -37,26 +38,33 @@ type Router struct {
 	downloadHandlers    *DownloadHandlers
 	healthHandler       *health.Handler
 	metricsHandler      http.HandlerFunc
+	corsAllowedOrigins  []string
+}
+
+var defaultCORSAllowedOrigins = []string{
+	"http://localhost:18145",
+	"http://127.0.0.1:18145",
 }
 
 // RouterConfig holds configuration for creating a new router
 type RouterConfig struct {
-	AuthHandlers      *auth.Handlers
-	AuthService       *auth.Service
-	SearchHandlers    *search.Handlers
-	MBClient          *musicbrainz.Client
-	MBHandlers        *musicbrainz.Handlers
-	WSHandler         *websocket.Handler
-	MatcherHandlers   *matcher.Handler
-	LibraryHandlers   *LibraryHandlers
-	PlaybackHandlers  *PlaybackHandlers
-	QueueHandlers     *queue.Handlers
-	DiscoveryHandlers *discovery.Handlers
-	PlaylistHandlers  *PlaylistHandlers
-	MixPlanHandlers   *MixPlanHandlers
-	DownloadHandlers  *DownloadHandlers
-	HealthHandler     *health.Handler
-	Metrics           *metrics.Metrics
+	AuthHandlers       *auth.Handlers
+	AuthService        *auth.Service
+	SearchHandlers     *search.Handlers
+	MBClient           *musicbrainz.Client
+	MBHandlers         *musicbrainz.Handlers
+	WSHandler          *websocket.Handler
+	MatcherHandlers    *matcher.Handler
+	LibraryHandlers    *LibraryHandlers
+	PlaybackHandlers   *PlaybackHandlers
+	QueueHandlers      *queue.Handlers
+	DiscoveryHandlers  *discovery.Handlers
+	PlaylistHandlers   *PlaylistHandlers
+	MixPlanHandlers    *MixPlanHandlers
+	DownloadHandlers   *DownloadHandlers
+	HealthHandler      *health.Handler
+	Metrics            *metrics.Metrics
+	CORSAllowedOrigins []string
 }
 
 func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
@@ -83,6 +91,11 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		metricsHandler = cfg.Metrics.Handler()
 	}
 
+	corsAllowedOrigins := cfg.CORSAllowedOrigins
+	if corsAllowedOrigins == nil {
+		corsAllowedOrigins = defaultCORSAllowedOrigins
+	}
+
 	r := &Router{
 		mux:                 http.NewServeMux(),
 		authHandlers:        cfg.AuthHandlers,
@@ -102,16 +115,19 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		downloadHandlers:    cfg.DownloadHandlers,
 		healthHandler:       cfg.HealthHandler,
 		metricsHandler:      metricsHandler,
+		corsAllowedOrigins:  corsAllowedOrigins,
 	}
 	r.setupRoutes()
 	return r
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// Apply middleware chain: Recovery -> RequestID -> Logging -> Routes
-	handler := logger.RecoveryMiddleware(
-		apperrors.RequestIDMiddleware(
-			logger.LoggingMiddleware(r.mux),
+	// Apply middleware chain: CORS -> Recovery -> RequestID -> Logging -> Routes
+	handler := middleware.CORS(r.corsAllowedOrigins)(
+		logger.RecoveryMiddleware(
+			apperrors.RequestIDMiddleware(
+				logger.LoggingMiddleware(r.mux),
+			),
 		),
 	)
 	handler.ServeHTTP(w, req)
