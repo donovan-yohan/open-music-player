@@ -1,6 +1,6 @@
 -- Create user_library table (links users to shared tracks)
 CREATE TABLE user_library (
-    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     track_id BIGINT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
     added_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 

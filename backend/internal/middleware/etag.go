@@ -37,9 +37,8 @@ func ETag(next http.Handler) http.Handler {
 			return
 		}
 
-		// Skip ETag for streaming and WebSocket endpoints
-		if strings.HasPrefix(r.URL.Path, "/api/v1/stream/") ||
-			strings.HasPrefix(r.URL.Path, "/api/v1/ws/") {
+		// Skip ETag for WebSocket endpoints
+		if strings.HasPrefix(r.URL.Path, "/api/v1/ws/") {
 			next.ServeHTTP(w, r)
 			return
 		}

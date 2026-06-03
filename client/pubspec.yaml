@@ -18,16 +18,19 @@ dependencies:
   http: ^1.2.0
   shared_preferences: ^2.2.2
   url_launcher: ^6.2.4
-  package_info_plus: ^5.0.1
+  package_info_plus: ^9.0.1
   cached_network_image: ^3.3.1
-  just_audio: ^0.9.36
-  just_audio_background: ^0.0.1-beta.11
-  audio_service: ^0.18.12
+  just_audio: ^0.10.5
+  just_audio_background: ^0.0.1-beta.17
+  audio_service: ^0.18.18
   rxdart: ^0.27.7
   sqflite: ^2.3.0
   path_provider: ^2.1.1
   path: ^1.8.3
   connectivity_plus: ^6.0.0
+  # Direct pin: just_audio 0.9.x otherwise resolves just_audio_web 0.4.11,
+  # which fails Flutter 3.44 web compilation under Dart 3.12.
+  just_audio_web: ^0.4.16
 
 dev_dependencies:
   flutter_test:

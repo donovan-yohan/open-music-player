@@ -3,12 +3,13 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
-import '../api/api_client.dart';
+import '../audio/signed_audio_url_service.dart';
 import '../storage/offline_database.dart';
 import '../../shared/models/models.dart';
 
 class DownloadService {
   final OfflineDatabase _db;
+  final SignedAudioUrlService _signedAudioUrlService;
   final Dio _downloadDio;
 
   final _progressController = StreamController<DownloadProgress>.broadcast();
@@ -18,7 +19,9 @@ class DownloadService {
 
   DownloadService({
     required OfflineDatabase db,
+    required SignedAudioUrlService signedAudioUrlService,
   })  : _db = db,
+        _signedAudioUrlService = signedAudioUrlService,
         _downloadDio = Dio() {
     _downloadDio.options.receiveTimeout = const Duration(minutes: 30);
     _downloadDio.options.connectTimeout = const Duration(seconds: 30);
@@ -63,16 +66,20 @@ class DownloadService {
 
       _emitProgress(track.id, 0, DownloadStatus.downloading);
 
-      // Download from streaming endpoint
-      final streamUrl = '${ApiClient.baseUrl}/stream/${track.id}';
+      final descriptor = await _signedAudioUrlService.requireDescriptor(
+        track.id,
+        ttlSeconds: 15 * 60,
+      );
 
       await _downloadDio.download(
-        streamUrl,
+        descriptor.url,
         localPath,
         cancelToken: cancelToken,
         onReceiveProgress: (received, total) {
-          if (total > 0) {
-            final progress = received / total;
+          final expectedTotal = total > 0 ? total : descriptor.sizeBytes ?? 0;
+          if (expectedTotal > 0) {
+            final progress =
+                (received / expectedTotal).clamp(0.0, 1.0).toDouble();
             _emitProgress(track.id, progress, DownloadStatus.downloading);
             _db.updateDownloadStatus(
               track.id,
@@ -81,10 +88,7 @@ class DownloadService {
             );
           }
         },
-        options: Options(
-          headers: await _getAuthHeaders(),
-          responseType: ResponseType.bytes,
-        ),
+        options: Options(responseType: ResponseType.bytes),
       );
 
       await _db.updateDownloadStatus(
@@ -94,6 +98,14 @@ class DownloadService {
       );
 
       _emitProgress(track.id, 1.0, DownloadStatus.completed);
+    } on SignedAudioUrlException catch (e) {
+      final message = _downloadErrorMessage(e);
+      await _db.updateDownloadStatus(
+        track.id,
+        DownloadStatus.failed,
+        error: message,
+      );
+      _emitProgress(track.id, 0, DownloadStatus.failed, error: message);
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) {
         await _db.deleteDownloadedTrack(track.id);
@@ -195,10 +207,18 @@ class DownloadService {
     return _activeDownloads.containsKey(trackId);
   }
 
-  Future<Map<String, dynamic>> _getAuthHeaders() async {
-    // We'd need access to storage here - for now return empty
-    // In real implementation, inject storage or get token differently
-    return {};
+  String _downloadErrorMessage(SignedAudioUrlException error) {
+    switch (error.code) {
+      case 'AUDIO_UNAVAILABLE':
+      case 'OBJECT_UNAVAILABLE':
+        return 'Audio is unavailable for download.';
+      case 'PLAYBACK_URL_EXPIRED':
+        return 'Download link expired before it could be used. Try again.';
+      case 'FORBIDDEN':
+        return 'You do not have access to download this track.';
+      default:
+        return 'Could not prepare a signed download URL.';
+    }
   }
 
   void _emitProgress(
@@ -207,12 +227,14 @@ class DownloadService {
     DownloadStatus status, {
     String? error,
   }) {
-    _progressController.add(DownloadProgress(
-      trackId: trackId,
-      progress: progress,
-      status: status,
-      error: error,
-    ));
+    _progressController.add(
+      DownloadProgress(
+        trackId: trackId,
+        progress: progress,
+        status: status,
+        error: error,
+      ),
+    );
   }
 
   String _sanitizeFileName(String name) {

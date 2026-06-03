@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import '../../app/theme.dart';
@@ -44,9 +45,7 @@ class PlayerScreen extends StatelessWidget {
             actions: [
               IconButton(
                 icon: const Icon(Icons.queue_music),
-                onPressed: () {
-                  _showQueueSheet(context, playback);
-                },
+                onPressed: () => context.push('/queue'),
               ),
             ],
           ),
@@ -58,23 +57,31 @@ class PlayerScreen extends StatelessWidget {
                   ),
                 )
               : SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 32),
-                    child: Column(
-                      children: [
-                        const Spacer(flex: 1),
-                        _buildAlbumArt(item.artUri?.toString()),
-                        const Spacer(flex: 1),
-                        _buildTrackInfo(item.title, item.artist),
-                        const SizedBox(height: 24),
-                        _buildProgressBar(playback),
-                        const SizedBox(height: 24),
-                        _buildControls(playback),
-                        const SizedBox(height: 16),
-                        _buildSecondaryControls(playback),
-                        const Spacer(flex: 1),
-                      ],
-                    ),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final horizontalPadding =
+                          constraints.maxWidth <= 360 ? 20.0 : 32.0;
+
+                      return Padding(
+                        padding:
+                            EdgeInsets.symmetric(horizontal: horizontalPadding),
+                        child: Column(
+                          children: [
+                            const Spacer(flex: 1),
+                            _buildAlbumArt(item.artUri?.toString()),
+                            const Spacer(flex: 1),
+                            _buildTrackInfo(item.title, item.artist),
+                            const SizedBox(height: 24),
+                            _buildProgressBar(playback),
+                            const SizedBox(height: 24),
+                            _buildControls(playback),
+                            const SizedBox(height: 16),
+                            _buildSecondaryControls(playback),
+                            const Spacer(flex: 1),
+                          ],
+                        ),
+                      );
+                    },
                   ),
                 ),
         );
@@ -170,7 +177,8 @@ class PlayerScreen extends StatelessWidget {
           ),
           child: Slider(
             value: duration.inMilliseconds > 0
-                ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0)
+                ? (position.inMilliseconds / duration.inMilliseconds)
+                    .clamp(0.0, 1.0)
                 : 0.0,
             onChanged: (value) {
               final newPosition = Duration(
@@ -207,56 +215,15 @@ class PlayerScreen extends StatelessWidget {
   }
 
   Widget _buildControls(PlaybackState playback) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-      children: [
-        IconButton(
-          icon: Icon(
-            Icons.shuffle,
-            color: playback.shuffleEnabled
-                ? AppTheme.primaryGreen
-                : AppTheme.greyText,
-          ),
-          iconSize: 28,
-          onPressed: playback.toggleShuffle,
-        ),
-        IconButton(
-          icon: const Icon(Icons.skip_previous, color: AppTheme.lightText),
-          iconSize: 40,
-          onPressed: playback.skipToPrevious,
-        ),
-        Container(
-          width: 72,
-          height: 72,
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
-            color: AppTheme.lightText,
-          ),
-          child: IconButton(
-            icon: Icon(
-              playback.isPlaying ? Icons.pause : Icons.play_arrow,
-              color: Colors.black,
-            ),
-            iconSize: 40,
-            onPressed: playback.togglePlayPause,
-          ),
-        ),
-        IconButton(
-          icon: const Icon(Icons.skip_next, color: AppTheme.lightText),
-          iconSize: 40,
-          onPressed: playback.skipToNext,
-        ),
-        IconButton(
-          icon: Icon(
-            _getLoopIcon(playback.loopMode),
-            color: playback.loopMode != LoopMode.off
-                ? AppTheme.primaryGreen
-                : AppTheme.greyText,
-          ),
-          iconSize: 28,
-          onPressed: playback.cycleLoopMode,
-        ),
-      ],
+    return PlaybackControls(
+      isPlaying: playback.isPlaying,
+      shuffleEnabled: playback.shuffleEnabled,
+      loopMode: playback.loopMode,
+      onShuffle: playback.toggleShuffle,
+      onPrevious: playback.skipToPrevious,
+      onPlayPause: playback.togglePlayPause,
+      onNext: playback.skipToNext,
+      onLoop: playback.cycleLoopMode,
     );
   }
 
@@ -280,7 +247,95 @@ class PlayerScreen extends StatelessWidget {
     );
   }
 
-  IconData _getLoopIcon(LoopMode mode) {
+  String _formatDuration(Duration duration) {
+    final minutes = duration.inMinutes;
+    final seconds = duration.inSeconds % 60;
+    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
+}
+
+@visibleForTesting
+class PlaybackControls extends StatelessWidget {
+  const PlaybackControls({
+    super.key,
+    required this.isPlaying,
+    required this.shuffleEnabled,
+    required this.loopMode,
+    required this.onShuffle,
+    required this.onPrevious,
+    required this.onPlayPause,
+    required this.onNext,
+    required this.onLoop,
+  });
+
+  final bool isPlaying;
+  final bool shuffleEnabled;
+  final LoopMode loopMode;
+  final VoidCallback onShuffle;
+  final VoidCallback onPrevious;
+  final VoidCallback onPlayPause;
+  final VoidCallback onNext;
+  final VoidCallback onLoop;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final playButtonSize = constraints.maxWidth < 296 ? 64.0 : 72.0;
+
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _ControlIconButton(
+              icon: Icons.shuffle,
+              color: shuffleEnabled ? AppTheme.primaryGreen : AppTheme.greyText,
+              iconSize: 28,
+              onPressed: onShuffle,
+            ),
+            _ControlIconButton(
+              icon: Icons.skip_previous,
+              color: AppTheme.lightText,
+              iconSize: 40,
+              onPressed: onPrevious,
+            ),
+            SizedBox.square(
+              dimension: playButtonSize,
+              child: DecoratedBox(
+                decoration: const BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppTheme.lightText,
+                ),
+                child: IconButton(
+                  icon: Icon(
+                    isPlaying ? Icons.pause : Icons.play_arrow,
+                    color: Colors.black,
+                  ),
+                  iconSize: playButtonSize < 72 ? 36 : 40,
+                  onPressed: onPlayPause,
+                ),
+              ),
+            ),
+            _ControlIconButton(
+              icon: Icons.skip_next,
+              color: AppTheme.lightText,
+              iconSize: 40,
+              onPressed: onNext,
+            ),
+            _ControlIconButton(
+              icon: _loopIcon(loopMode),
+              color: loopMode != LoopMode.off
+                  ? AppTheme.primaryGreen
+                  : AppTheme.greyText,
+              iconSize: 28,
+              onPressed: onLoop,
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  static IconData _loopIcon(LoopMode mode) {
     switch (mode) {
       case LoopMode.one:
         return Icons.repeat_one;
@@ -289,118 +344,31 @@ class PlayerScreen extends StatelessWidget {
         return Icons.repeat;
     }
   }
+}
 
-  String _formatDuration(Duration duration) {
-    final minutes = duration.inMinutes;
-    final seconds = duration.inSeconds % 60;
-    return '$minutes:${seconds.toString().padLeft(2, '0')}';
-  }
+class _ControlIconButton extends StatelessWidget {
+  const _ControlIconButton({
+    required this.icon,
+    required this.color,
+    required this.iconSize,
+    required this.onPressed,
+  });
 
-  void _showQueueSheet(BuildContext context, PlaybackState playback) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: AppTheme.darkSurface,
-      builder: (context) {
-        return SafeArea(
-          child: Column(
-            children: [
-              Container(
-                width: 40,
-                height: 4,
-                margin: const EdgeInsets.symmetric(vertical: 12),
-                decoration: BoxDecoration(
-                  color: AppTheme.greyText,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text(
-                  'Queue',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.lightText,
-                  ),
-                ),
-              ),
-              Expanded(
-                child: playback.queue.isEmpty
-                    ? const Center(
-                        child: Text(
-                          'Queue is empty',
-                          style: TextStyle(color: AppTheme.greyText),
-                        ),
-                      )
-                    : ListView.builder(
-                        itemCount: playback.queue.length,
-                        itemBuilder: (context, index) {
-                          final item = playback.queue[index];
-                          final isCurrentTrack = index == playback.currentIndex;
+  final IconData icon;
+  final Color color;
+  final double iconSize;
+  final VoidCallback onPressed;
 
-                          return ListTile(
-                            leading: ClipRRect(
-                              borderRadius: BorderRadius.circular(4),
-                              child: item.artUri != null
-                                  ? Image.network(
-                                      item.artUri.toString(),
-                                      width: 48,
-                                      height: 48,
-                                      fit: BoxFit.cover,
-                                      errorBuilder: (_, __, ___) =>
-                                          _buildQueuePlaceholder(),
-                                    )
-                                  : _buildQueuePlaceholder(),
-                            ),
-                            title: Text(
-                              item.title,
-                              style: TextStyle(
-                                color: isCurrentTrack
-                                    ? AppTheme.primaryGreen
-                                    : AppTheme.lightText,
-                                fontWeight: isCurrentTrack
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              item.artist ?? 'Unknown Artist',
-                              style: const TextStyle(color: AppTheme.greyText),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            trailing: isCurrentTrack
-                                ? const Icon(
-                                    Icons.equalizer,
-                                    color: AppTheme.primaryGreen,
-                                  )
-                                : null,
-                            onTap: () {
-                              playback.skipToIndex(index);
-                              Navigator.pop(context);
-                            },
-                          );
-                        },
-                      ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildQueuePlaceholder() {
-    return Container(
-      width: 48,
-      height: 48,
-      color: AppTheme.darkCard,
-      child: const Icon(
-        Icons.music_note,
-        color: AppTheme.greyText,
-        size: 24,
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.square(
+      dimension: 48,
+      child: IconButton(
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
+        icon: Icon(icon, color: color),
+        iconSize: iconSize,
+        onPressed: onPressed,
       ),
     );
   }

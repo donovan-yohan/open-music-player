@@ -4,7 +4,7 @@ info:
   description: |
     API for the Open Music Player application.
     Provides endpoints for authentication, music search (via MusicBrainz),
-    library management, playlists, downloads, streaming, and queue management.
+    library management, playlists, downloads, signed playback URLs, and queue management.
   version: 1.0.0
   license:
     name: MIT
@@ -27,10 +27,12 @@ tags:
     description: User's track collection management
   - name: Playlists
     description: Playlist CRUD and track management
+  - name: MixPlans
+    description: Durable saved mix-plan contract; client owns playback and rendering
   - name: Downloads
     description: Download management and progress tracking
-  - name: Stream
-    description: Audio streaming
+  - name: Playback
+    description: Signed direct object URL issuance for playback and offline downloads
   - name: Queue
     description: Playback queue management
 
@@ -569,6 +571,105 @@ paths:
           $ref: '#/components/responses/NotFound'
 
   # ============================================================================
+  # Saved Mix Plan Endpoints
+  # ============================================================================
+  /mix-plans:
+    get:
+      tags:
+        - MixPlans
+      summary: List saved mix plans
+      description: Returns durable saved mix plans for the authenticated user. Playback queues, playhead, fades execution, BPM/key, stems, cache, and rendering state are intentionally out of scope.
+      operationId: listMixPlans
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Saved mix plans
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MixPlanListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+        - MixPlans
+      summary: Create a saved mix plan
+      description: Stores versioned clip layout state only. The client remains responsible for playback and rendering.
+      operationId: createMixPlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveMixPlanRequest'
+      responses:
+        '201':
+          description: Mix plan created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MixPlan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /mix-plans/{mixPlanId}:
+    get:
+      tags:
+        - MixPlans
+      summary: Get a saved mix plan
+      operationId: getMixPlan
+      parameters:
+        - $ref: '#/components/parameters/MixPlanIdParam'
+      responses:
+        '200':
+          description: Saved mix plan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MixPlan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags:
+        - MixPlans
+      summary: Update a saved mix plan
+      description: Requires the current optimistic version in the request body. A stale version returns 409.
+      operationId: updateMixPlan
+      parameters:
+        - $ref: '#/components/parameters/MixPlanIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMixPlanRequest'
+      responses:
+        '200':
+          description: Mix plan updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MixPlan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Optimistic version conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ============================================================================
   # Download Endpoints
   # ============================================================================
   /downloads:
@@ -698,75 +799,47 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ============================================================================
-  # Stream Endpoint
+  # Playback Endpoints
   # ============================================================================
-  /stream/{trackId}:
-    get:
+  /playback/urls:
+    post:
       tags:
-        - Stream
-      summary: Stream audio for a track
+        - Playback
+      summary: Issue signed direct audio URLs
       description: |
-        Streams audio content for the specified track.
-        Supports HTTP Range requests for seeking.
-      operationId: streamTrack
-      parameters:
-        - $ref: '#/components/parameters/TrackIdParam'
-        - name: Range
-          in: header
-          description: Byte range for partial content requests
-          schema:
-            type: string
-            example: bytes=0-1023
+        Issues short-lived signed object-storage URLs for tracks already in the
+        authenticated user's library. Clients use the returned URLs directly for
+        playback or offline downloads instead of proxying audio bytes through
+        the backend.
+      operationId: createPlaybackUrls
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaybackURLRequest'
+            example:
+              trackIds: [42]
+              ttlSeconds: 600
       responses:
         '200':
-          description: Full audio content
-          headers:
-            Content-Type:
-              schema:
-                type: string
-                example: audio/mpeg
-            Content-Length:
-              schema:
-                type: integer
-            Accept-Ranges:
-              schema:
-                type: string
-                example: bytes
+          description: Signed playback URL descriptors and per-track unavailable entries
           content:
-            audio/mpeg:
+            application/json:
               schema:
-                type: string
-                format: binary
-            audio/ogg:
-              schema:
-                type: string
-                format: binary
-            audio/flac:
-              schema:
-                type: string
-                format: binary
-        '206':
-          description: Partial audio content
-          headers:
-            Content-Type:
-              schema:
-                type: string
-            Content-Length:
-              schema:
-                type: integer
-            Content-Range:
-              schema:
-                type: string
-                example: bytes 0-1023/10000
-            Accept-Ranges:
-              schema:
-                type: string
-                example: bytes
-          content:
-            audio/mpeg:
-              schema:
-                type: string
-                format: binary
+                $ref: '#/components/schemas/PlaybackURLResponse'
+              example:
+                urls:
+                  - trackId: 42
+                    url: https://storage.example.test/open-music/tracks/42.mp3?X-Amz-Signature=...
+                    expiresAt: '2026-06-03T16:15:00Z'
+                    contentType: audio/mpeg
+                    sizeBytes: 12345678
+                    etag: '"abc123"'
+                    storageKeyVersion: v1
+                unavailable: []
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -970,6 +1043,15 @@ components:
       in: path
       required: true
       description: Playlist unique identifier
+      schema:
+        type: string
+        format: uuid
+
+    MixPlanIdParam:
+      name: mixPlanId
+      in: path
+      required: true
+      description: Saved mix plan unique identifier
       schema:
         type: string
         format: uuid
@@ -1576,6 +1658,243 @@ components:
         newPosition:
           type: integer
           minimum: 0
+
+    # ========================================================================
+
+    # Playback Schemas
+    # =================================================================
+    PlaybackURLRequest:
+      type: object
+      required:
+        - trackIds
+      properties:
+        trackIds:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: integer
+            format: int64
+            minimum: 1
+          description: Track IDs to issue signed URLs for.
+        ttlSeconds:
+          type: integer
+          minimum: 60
+          maximum: 1800
+          description: Requested URL lifetime in seconds; omitted values use the server default.
+
+    PlaybackURLResponse:
+      type: object
+      required:
+        - urls
+      properties:
+        urls:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlaybackURLItem'
+        unavailable:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlaybackUnavailableItem'
+          description: Tracks that are authorized but do not currently have an available audio object.
+
+    PlaybackURLItem:
+      type: object
+      required:
+        - trackId
+        - url
+        - expiresAt
+        - contentType
+        - sizeBytes
+      properties:
+        trackId:
+          type: integer
+          format: int64
+        url:
+          type: string
+          format: uri
+          description: Short-lived signed object URL to use directly for playback/download.
+        expiresAt:
+          type: string
+          format: date-time
+        contentType:
+          type: string
+          example: audio/mpeg
+        sizeBytes:
+          type: integer
+          format: int64
+          minimum: 0
+        etag:
+          type: string
+        storageKeyVersion:
+          type: string
+
+    PlaybackUnavailableItem:
+      type: object
+      required:
+        - trackId
+        - code
+        - message
+      properties:
+        trackId:
+          type: integer
+          format: int64
+        code:
+          type: string
+          example: audio_unavailable
+        message:
+          type: string
+
+    # Saved Mix Plan Schemas
+    # ========================================================================
+    MixPlanClip:
+      type: object
+      required:
+        - clipId
+        - trackId
+        - sourceStartMs
+        - sourceEndMs
+        - timelineStartMs
+        - gainDb
+      properties:
+        clipId:
+          type: string
+          minLength: 1
+          description: Stable client-owned clip identifier within the plan.
+        trackId:
+          type: integer
+          format: int64
+          description: Track ID from the authenticated user's library. Multiple clips may reference the same track.
+        sourceStartMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Source media start offset in milliseconds.
+        sourceEndMs:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Source media end offset in milliseconds; must be greater than sourceStartMs.
+        timelineStartMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Timeline start offset in milliseconds. timelineEndMs is derived as timelineStartMs + sourceEndMs - sourceStartMs and is not stored as playback state.
+        gainDb:
+          type: number
+          format: double
+          description: Static clip gain in decibels. Realtime fades/effects are not executed by the backend.
+
+    SaveMixPlanRequest:
+      type: object
+      required:
+        - schemaVersion
+        - name
+        - clips
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+          description: MVP schema version. Future BPM/key/cue/stems/time-stretch fields must use a future schema version and are not required behavior in v1.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        clips:
+          type: array
+          items:
+            $ref: '#/components/schemas/MixPlanClip'
+          description: Client-rendered clip layout. Empty arrays are allowed for draft plans.
+
+    UpdateMixPlanRequest:
+      allOf:
+        - $ref: '#/components/schemas/SaveMixPlanRequest'
+        - type: object
+          required:
+            - version
+          properties:
+            version:
+              type: integer
+              minimum: 1
+              description: Optimistic concurrency token returned by the last create/read/update response.
+
+    MixPlanSummary:
+      type: object
+      required:
+        - clipCount
+        - trackIds
+        - durationMs
+      properties:
+        clipCount:
+          type: integer
+          minimum: 0
+        trackIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+          description: Unique referenced track IDs, sorted ascending.
+        durationMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Derived plan duration in milliseconds; not a server playhead.
+
+    MixPlan:
+      type: object
+      required:
+        - id
+        - schemaVersion
+        - name
+        - clips
+        - summary
+        - version
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        schemaVersion:
+          type: integer
+          enum: [1]
+        name:
+          type: string
+        clips:
+          type: array
+          items:
+            $ref: '#/components/schemas/MixPlanClip'
+        summary:
+          $ref: '#/components/schemas/MixPlanSummary'
+        version:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    MixPlanListResponse:
+      type: object
+      required:
+        - data
+        - total
+        - limit
+        - offset
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MixPlan'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
 
     # ========================================================================
     # Download Schemas

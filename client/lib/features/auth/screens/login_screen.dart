@@ -58,7 +58,12 @@ class _LoginScreenState extends State<LoginScreen> {
     );
 
     if (success && mounted) {
-      context.go('/home');
+      final next = GoRouterState.of(context).uri.queryParameters['next'];
+      final safeNext =
+          next != null && next.startsWith('/') && !next.startsWith('//')
+              ? next
+              : '/home';
+      context.go(safeNext);
     } else if (mounted && authState.error != null) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

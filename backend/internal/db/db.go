@@ -40,8 +40,8 @@ func (db *DB) Migrate() error {
 		email VARCHAR(255) UNIQUE NOT NULL,
 		username VARCHAR(50) NOT NULL,
 		password_hash VARCHAR(255) NOT NULL,
-		created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-		updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 	);
 	CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
@@ -50,7 +50,7 @@ func (db *DB) Migrate() error {
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		token_hash VARCHAR(255) NOT NULL,
 		expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-		created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 		revoked BOOLEAN DEFAULT FALSE
 	);
 	CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id);
@@ -153,6 +153,22 @@ func (db *DB) Migrate() error {
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS storage_key VARCHAR(500);
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT;
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_json JSONB;
+
+	CREATE TABLE IF NOT EXISTS mix_plans (
+		id UUID PRIMARY KEY,
+		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		schema_version INTEGER NOT NULL DEFAULT 1,
+		name VARCHAR(255) NOT NULL,
+		payload JSONB NOT NULL,
+		summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+		version INTEGER NOT NULL DEFAULT 1,
+		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		CONSTRAINT chk_mix_plans_schema_version CHECK (schema_version >= 1),
+		CONSTRAINT chk_mix_plans_version CHECK (version >= 1)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_mix_plans_user_updated ON mix_plans(user_id, updated_at DESC);
 	`
 
 	_, err := db.Exec(schema)

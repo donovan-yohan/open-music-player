@@ -23,17 +23,17 @@ import (
 )
 
 // ============================================================================
-// Streaming Client (minio-go) - for range requests and streaming
+// Object Storage Client (minio-go) - metadata, uploads, and signed reads
 // ============================================================================
 
-// Client provides access to S3-compatible object storage (MinIO) for streaming.
+// Client provides access to S3-compatible object storage (MinIO).
 type Client struct {
 	client        *minio.Client
 	presignClient *minio.Client
 	bucket        string
 }
 
-// Config holds the configuration for the streaming storage client.
+// Config holds the configuration for the object storage client.
 type Config struct {
 	Endpoint       string
 	PublicEndpoint string
@@ -44,7 +44,7 @@ type Config struct {
 	UseSSL         bool
 }
 
-// New creates a new streaming storage client.
+// New creates a new object storage client.
 func New(cfg *Config) (*Client, error) {
 	endpoint, secure, err := minioEndpointOptions(cfg.Endpoint, cfg.UseSSL)
 	if err != nil {

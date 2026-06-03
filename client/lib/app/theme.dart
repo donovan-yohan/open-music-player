@@ -53,7 +53,8 @@ class AppTheme {
       cardColor: darkCard,
       textTheme: const TextTheme(
         headlineLarge: TextStyle(color: lightText, fontWeight: FontWeight.bold),
-        headlineMedium: TextStyle(color: lightText, fontWeight: FontWeight.bold),
+        headlineMedium:
+            TextStyle(color: lightText, fontWeight: FontWeight.bold),
         headlineSmall: TextStyle(color: lightText, fontWeight: FontWeight.bold),
         titleLarge: TextStyle(color: lightText, fontWeight: FontWeight.w600),
         titleMedium: TextStyle(color: lightText),

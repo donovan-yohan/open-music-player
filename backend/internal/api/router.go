@@ -14,7 +14,6 @@ import (
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
-	"github.com/openmusicplayer/backend/internal/stream"
 	"github.com/openmusicplayer/backend/internal/validators"
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
@@ -30,11 +29,11 @@ type Router struct {
 	validatorHandlers   *validators.Handlers
 	matcherHandlers     *matcher.Handler
 	libraryHandlers     *LibraryHandlers
-	streamHandler       *stream.Handler
 	playbackHandlers    *PlaybackHandlers
 	queueHandlers       *queue.Handlers
 	discoveryHandlers   *discovery.Handlers
 	playlistHandlers    *PlaylistHandlers
+	mixPlanHandlers     *MixPlanHandlers
 	downloadHandlers    *DownloadHandlers
 	healthHandler       *health.Handler
 	metricsHandler      http.HandlerFunc
@@ -50,17 +49,17 @@ type RouterConfig struct {
 	WSHandler         *websocket.Handler
 	MatcherHandlers   *matcher.Handler
 	LibraryHandlers   *LibraryHandlers
-	StreamHandler     *stream.Handler
 	PlaybackHandlers  *PlaybackHandlers
 	QueueHandlers     *queue.Handlers
 	DiscoveryHandlers *discovery.Handlers
 	PlaylistHandlers  *PlaylistHandlers
+	MixPlanHandlers   *MixPlanHandlers
 	DownloadHandlers  *DownloadHandlers
 	HealthHandler     *health.Handler
 	Metrics           *metrics.Metrics
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, streamHandler *stream.Handler, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
 	return NewRouterWithConfig(&RouterConfig{
 		AuthHandlers:     authHandlers,
 		AuthService:      authService,
@@ -70,7 +69,6 @@ func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHan
 		WSHandler:        wsHandler,
 		MatcherHandlers:  matcherHandlers,
 		LibraryHandlers:  libraryHandlers,
-		StreamHandler:    streamHandler,
 		QueueHandlers:    queueHandlers,
 		PlaylistHandlers: playlistHandlers,
 		DownloadHandlers: downloadHandlers,
@@ -96,11 +94,11 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		validatorHandlers:   validators.NewHandlers(validatorRegistry),
 		matcherHandlers:     cfg.MatcherHandlers,
 		libraryHandlers:     cfg.LibraryHandlers,
-		streamHandler:       cfg.StreamHandler,
 		playbackHandlers:    cfg.PlaybackHandlers,
 		queueHandlers:       cfg.QueueHandlers,
 		discoveryHandlers:   cfg.DiscoveryHandlers,
 		playlistHandlers:    cfg.PlaylistHandlers,
+		mixPlanHandlers:     cfg.MixPlanHandlers,
 		downloadHandlers:    cfg.DownloadHandlers,
 		healthHandler:       cfg.HealthHandler,
 		metricsHandler:      metricsHandler,
@@ -182,9 +180,6 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.AddTrackToLibrary))
 	r.mux.HandleFunc("DELETE /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.RemoveTrackFromLibrary))
 
-	// Audio streaming route (auth required)
-	r.mux.HandleFunc("GET /api/v1/stream/{track_id}", r.withAuth(r.streamHandler.Stream))
-
 	// Direct playback/download URL issuance (auth required)
 	if r.playbackHandlers != nil {
 		r.mux.HandleFunc("POST /api/v1/playback/urls", r.withAuth(r.playbackHandlers.CreatePlaybackURLs))
@@ -219,6 +214,13 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/playlists/{id}/tracks", r.withAuth(r.playlistHandlers.AddTracks))
 	r.mux.HandleFunc("DELETE /api/v1/playlists/{id}/tracks/{trackId}", r.withAuth(r.playlistHandlers.RemoveTrack))
 	r.mux.HandleFunc("PUT /api/v1/playlists/{id}/tracks/reorder", r.withAuth(r.playlistHandlers.ReorderTracks))
+
+	// Saved mix plan routes (auth required). The server stores durable plan state only;
+	// playback/rendering state stays client-side.
+	r.mux.HandleFunc("GET /api/v1/mix-plans", r.withAuth(r.mixPlanHandlers.ListMixPlans))
+	r.mux.HandleFunc("POST /api/v1/mix-plans", r.withAuth(r.mixPlanHandlers.CreateMixPlan))
+	r.mux.HandleFunc("GET /api/v1/mix-plans/{mixPlanId}", r.withAuth(r.mixPlanHandlers.GetMixPlan))
+	r.mux.HandleFunc("PUT /api/v1/mix-plans/{mixPlanId}", r.withAuth(r.mixPlanHandlers.UpdateMixPlan))
 
 	// Download routes (auth required, Redis/worker-backed)
 	if r.downloadHandlers != nil {

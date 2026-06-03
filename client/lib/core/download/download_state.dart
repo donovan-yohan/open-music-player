@@ -43,6 +43,10 @@ class DownloadState extends ChangeNotifier {
   }
 
   void _init() {
+    if (kIsWeb) {
+      return;
+    }
+
     _progressSubscription =
         _downloadService.progressStream.listen(_onProgressUpdate);
     loadDownloads();
