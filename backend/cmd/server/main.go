@@ -85,6 +85,7 @@ func main() {
 	trackRepo := db.NewTrackRepository(database)
 	libraryRepo := db.NewLibraryRepository(database)
 	playlistRepo := db.NewPlaylistRepository(database)
+	mixPlanRepo := db.NewMixPlanRepository(database)
 
 	// Initialize services
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
@@ -92,6 +93,7 @@ func main() {
 	searchHandlers := search.NewHandlers(trackRepo)
 	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
 	playlistHandlers := api.NewPlaylistHandlers(playlistRepo, trackRepo)
+	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
 
 	mbClient := musicbrainz.NewClient(redisCache)
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
@@ -197,6 +199,7 @@ func main() {
 		PlaybackHandlers: playbackHandlers,
 		QueueHandlers:    queueHandlers,
 		PlaylistHandlers: playlistHandlers,
+		MixPlanHandlers:  mixPlanHandlers,
 		DownloadHandlers: downloadHandlers,
 		HealthHandler:    healthHandler,
 		Metrics:          appMetrics,
