@@ -9,6 +9,7 @@ import '../../shared/models/models.dart';
 
 class DownloadService {
   final OfflineDatabase _db;
+  final ApiClient _apiClient;
   final Dio _downloadDio;
 
   final _progressController = StreamController<DownloadProgress>.broadcast();
@@ -16,10 +17,10 @@ class DownloadService {
 
   final Map<int, CancelToken> _activeDownloads = {};
 
-  DownloadService({
-    required OfflineDatabase db,
-  })  : _db = db,
-        _downloadDio = Dio() {
+  DownloadService({required OfflineDatabase db, required ApiClient apiClient})
+    : _db = db,
+      _apiClient = apiClient,
+      _downloadDio = Dio() {
     _downloadDio.options.receiveTimeout = const Duration(minutes: 30);
     _downloadDio.options.connectTimeout = const Duration(seconds: 30);
   }
@@ -63,11 +64,10 @@ class DownloadService {
 
       _emitProgress(track.id, 0, DownloadStatus.downloading);
 
-      // Download from streaming endpoint
-      final streamUrl = '${ApiClient.baseUrl}/stream/${track.id}';
+      final playbackUrl = await _getPlaybackUrl(track.id);
 
       await _downloadDio.download(
-        streamUrl,
+        playbackUrl,
         localPath,
         cancelToken: cancelToken,
         onReceiveProgress: (received, total) {
@@ -81,10 +81,7 @@ class DownloadService {
             );
           }
         },
-        options: Options(
-          headers: await _getAuthHeaders(),
-          responseType: ResponseType.bytes,
-        ),
+        options: Options(responseType: ResponseType.bytes),
       );
 
       await _db.updateDownloadStatus(
@@ -195,10 +192,54 @@ class DownloadService {
     return _activeDownloads.containsKey(trackId);
   }
 
-  Future<Map<String, dynamic>> _getAuthHeaders() async {
-    // We'd need access to storage here - for now return empty
-    // In real implementation, inject storage or get token differently
-    return {};
+  Future<String> _getPlaybackUrl(int trackId) async {
+    final response = await _apiClient.post<Map<String, dynamic>>(
+      '/playback/urls',
+      data: {
+        'trackIds': [trackId],
+      },
+    );
+
+    final data = response.data;
+    if (data == null) {
+      throw StateError('Playback URL response was empty');
+    }
+
+    final urls = data['urls'];
+    if (urls is! List) {
+      throw StateError('Playback URL response did not include urls');
+    }
+
+    Map<String, dynamic>? descriptor;
+    for (final item in urls) {
+      if (item is Map<String, dynamic> && item['trackId'] == trackId) {
+        descriptor = item;
+        break;
+      }
+    }
+
+    if (descriptor == null) {
+      final unavailable = data['unavailable'];
+      if (unavailable is List) {
+        for (final item in unavailable) {
+          if (item is Map<String, dynamic> && item['trackId'] == trackId) {
+            final message = item['message'];
+            throw StateError(
+              message is String && message.isNotEmpty
+                  ? message
+                  : 'Track is unavailable for download',
+            );
+          }
+        }
+      }
+      throw StateError('Playback URL response did not include requested track');
+    }
+
+    final url = descriptor['url'];
+    if (url is! String || url.isEmpty) {
+      throw StateError('Playback URL response included an invalid url');
+    }
+    return url;
   }
 
   void _emitProgress(
@@ -207,12 +248,14 @@ class DownloadService {
     DownloadStatus status, {
     String? error,
   }) {
-    _progressController.add(DownloadProgress(
-      trackId: trackId,
-      progress: progress,
-      status: status,
-      error: error,
-    ));
+    _progressController.add(
+      DownloadProgress(
+        trackId: trackId,
+        progress: progress,
+        status: status,
+        error: error,
+      ),
+    );
   }
 
   String _sanitizeFileName(String name) {

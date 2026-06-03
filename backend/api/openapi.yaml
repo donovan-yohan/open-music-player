@@ -4,7 +4,7 @@ info:
   description: |
     API for the Open Music Player application.
     Provides endpoints for authentication, music search (via MusicBrainz),
-    library management, playlists, downloads, streaming, and queue management.
+    library management, playlists, downloads, signed playback URLs, and queue management.
   version: 1.0.0
   license:
     name: MIT
@@ -29,8 +29,8 @@ tags:
     description: Playlist CRUD and track management
   - name: Downloads
     description: Download management and progress tracking
-  - name: Stream
-    description: Audio streaming
+  - name: Playback
+    description: Signed direct object URL issuance for playback and offline downloads
   - name: Queue
     description: Playback queue management
 
@@ -698,75 +698,47 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ============================================================================
-  # Stream Endpoint
+  # Playback Endpoints
   # ============================================================================
-  /stream/{trackId}:
-    get:
+  /playback/urls:
+    post:
       tags:
-        - Stream
-      summary: Stream audio for a track
+        - Playback
+      summary: Issue signed direct audio URLs
       description: |
-        Streams audio content for the specified track.
-        Supports HTTP Range requests for seeking.
-      operationId: streamTrack
-      parameters:
-        - $ref: '#/components/parameters/TrackIdParam'
-        - name: Range
-          in: header
-          description: Byte range for partial content requests
-          schema:
-            type: string
-            example: bytes=0-1023
+        Issues short-lived signed object-storage URLs for tracks already in the
+        authenticated user's library. Clients use the returned URLs directly for
+        playback or offline downloads instead of proxying audio bytes through
+        the backend.
+      operationId: createPlaybackUrls
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaybackURLRequest'
+            example:
+              trackIds: [42]
+              ttlSeconds: 600
       responses:
         '200':
-          description: Full audio content
-          headers:
-            Content-Type:
-              schema:
-                type: string
-                example: audio/mpeg
-            Content-Length:
-              schema:
-                type: integer
-            Accept-Ranges:
-              schema:
-                type: string
-                example: bytes
+          description: Signed playback URL descriptors and per-track unavailable entries
           content:
-            audio/mpeg:
+            application/json:
               schema:
-                type: string
-                format: binary
-            audio/ogg:
-              schema:
-                type: string
-                format: binary
-            audio/flac:
-              schema:
-                type: string
-                format: binary
-        '206':
-          description: Partial audio content
-          headers:
-            Content-Type:
-              schema:
-                type: string
-            Content-Length:
-              schema:
-                type: integer
-            Content-Range:
-              schema:
-                type: string
-                example: bytes 0-1023/10000
-            Accept-Ranges:
-              schema:
-                type: string
-                example: bytes
-          content:
-            audio/mpeg:
-              schema:
-                type: string
-                format: binary
+                $ref: '#/components/schemas/PlaybackURLResponse'
+              example:
+                urls:
+                  - trackId: 42
+                    url: https://storage.example.test/open-music/tracks/42.mp3?X-Amz-Signature=...
+                    expiresAt: '2026-06-03T16:15:00Z'
+                    contentType: audio/mpeg
+                    sizeBytes: 12345678
+                    etag: '"abc123"'
+                    storageKeyVersion: v1
+                unavailable: []
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -1576,6 +1548,91 @@ components:
         newPosition:
           type: integer
           minimum: 0
+
+    # ========================================================================
+    # Playback Schemas
+    # ========================================================================
+    PlaybackURLRequest:
+      type: object
+      required:
+        - trackIds
+      properties:
+        trackIds:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: integer
+            format: int64
+            minimum: 1
+          description: Track IDs to issue signed URLs for.
+        ttlSeconds:
+          type: integer
+          minimum: 60
+          maximum: 1800
+          description: Requested URL lifetime in seconds; omitted values use the server default.
+
+    PlaybackURLResponse:
+      type: object
+      required:
+        - urls
+      properties:
+        urls:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlaybackURLItem'
+        unavailable:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlaybackUnavailableItem'
+          description: Tracks that are authorized but do not currently have an available audio object.
+
+    PlaybackURLItem:
+      type: object
+      required:
+        - trackId
+        - url
+        - expiresAt
+        - contentType
+        - sizeBytes
+      properties:
+        trackId:
+          type: integer
+          format: int64
+        url:
+          type: string
+          format: uri
+          description: Short-lived signed object URL to use directly for playback/download.
+        expiresAt:
+          type: string
+          format: date-time
+        contentType:
+          type: string
+          example: audio/mpeg
+        sizeBytes:
+          type: integer
+          format: int64
+          minimum: 0
+        etag:
+          type: string
+        storageKeyVersion:
+          type: string
+
+    PlaybackUnavailableItem:
+      type: object
+      required:
+        - trackId
+        - code
+        - message
+      properties:
+        trackId:
+          type: integer
+          format: int64
+        code:
+          type: string
+          example: audio_unavailable
+        message:
+          type: string
 
     # ========================================================================
     # Download Schemas
