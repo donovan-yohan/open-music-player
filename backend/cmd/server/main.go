@@ -15,6 +15,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/cache"
 	"github.com/openmusicplayer/backend/internal/config"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/health"
 	"github.com/openmusicplayer/backend/internal/logger"
@@ -91,6 +92,7 @@ func main() {
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
 	authHandlers := auth.NewHandlers(authService)
 	searchHandlers := search.NewHandlers(trackRepo)
+	discoveryHandlers := discovery.NewHandlers(discovery.NewDefaultService())
 	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
 	playlistHandlers := api.NewPlaylistHandlers(playlistRepo, trackRepo)
 
@@ -161,7 +163,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer queueService.Close()
-		queueHandlers = queue.NewHandlers(queueService)
+		queueHandlers = queue.NewHandlers(queueService, downloadService)
 	}
 
 	// Initialize metrics
@@ -186,21 +188,22 @@ func main() {
 
 	// Create router with all handlers
 	router := api.NewRouterWithConfig(&api.RouterConfig{
-		AuthHandlers:     authHandlers,
-		AuthService:      authService,
-		SearchHandlers:   searchHandlers,
-		MBClient:         mbClient,
-		MBHandlers:       mbHandlers,
-		WSHandler:        wsHandler,
-		MatcherHandlers:  matcherHandlers,
-		LibraryHandlers:  libraryHandlers,
-		StreamHandler:    streamHandler,
-		PlaybackHandlers: playbackHandlers,
-		QueueHandlers:    queueHandlers,
-		PlaylistHandlers: playlistHandlers,
-		DownloadHandlers: downloadHandlers,
-		HealthHandler:    healthHandler,
-		Metrics:          appMetrics,
+		AuthHandlers:      authHandlers,
+		AuthService:       authService,
+		SearchHandlers:    searchHandlers,
+		MBClient:          mbClient,
+		MBHandlers:        mbHandlers,
+		WSHandler:         wsHandler,
+		MatcherHandlers:   matcherHandlers,
+		LibraryHandlers:   libraryHandlers,
+		StreamHandler:     streamHandler,
+		PlaybackHandlers:  playbackHandlers,
+		QueueHandlers:     queueHandlers,
+		DiscoveryHandlers: discoveryHandlers,
+		PlaylistHandlers:  playlistHandlers,
+		DownloadHandlers:  downloadHandlers,
+		HealthHandler:     healthHandler,
+		Metrics:           appMetrics,
 	})
 
 	// Apply middleware chain

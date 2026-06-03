@@ -51,6 +51,7 @@ type GetJobResponse struct {
 	Error       string  `json:"error,omitempty"`
 	URL         string  `json:"url"`
 	SourceType  string  `json:"source_type"`
+	TrackID     *int64  `json:"track_id,omitempty"`
 	CreatedAt   string  `json:"created_at"`
 	StartedAt   *string `json:"started_at,omitempty"`
 	CompletedAt *string `json:"completed_at,omitempty"`
@@ -135,6 +136,7 @@ func (h *DownloadHandlers) GetJob(w http.ResponseWriter, r *http.Request) {
 		Error:      job.Error,
 		URL:        job.URL,
 		SourceType: job.SourceType,
+		TrackID:    job.TrackID,
 		CreatedAt:  job.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 
@@ -173,6 +175,7 @@ func (h *DownloadHandlers) GetUserJobs(w http.ResponseWriter, r *http.Request) {
 			Error:      job.Error,
 			URL:        job.URL,
 			SourceType: job.SourceType,
+			TrackID:    job.TrackID,
 			CreatedAt:  job.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 		if job.StartedAt != nil {

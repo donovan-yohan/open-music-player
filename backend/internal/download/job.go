@@ -25,6 +25,15 @@ type DownloadJob struct {
 	Error         string     `json:"error,omitempty"`
 	RetryCount    int        `json:"retry_count"`
 	MBRecordingID *string    `json:"mb_recording_id,omitempty"`
+	TrackID       *int64     `json:"track_id,omitempty"`
+	CandidateID   string     `json:"candidate_id,omitempty"`
+	SourceID      string     `json:"source_id,omitempty"`
+	Title         string     `json:"title,omitempty"`
+	Artist        string     `json:"artist,omitempty"`
+	Album         string     `json:"album,omitempty"`
+	Uploader      string     `json:"uploader,omitempty"`
+	DurationMs    int        `json:"duration_ms,omitempty"`
+	ThumbnailURL  string     `json:"thumbnail_url,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 	StartedAt     *time.Time `json:"started_at,omitempty"`

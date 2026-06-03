@@ -189,6 +189,12 @@ func (wp *WorkerPool) processJob(ctx context.Context, workerID int, job *Downloa
 		return
 	}
 
+	if job.TrackID != nil {
+		if err := wp.queue.UpdateTrackID(ctx, job.ID, *job.TrackID); err != nil {
+			log.Printf("Worker %d: failed to store track id for job %s: %v", workerID, job.ID, err)
+		}
+	}
+
 	if err := wp.queue.UpdateStatus(ctx, job.ID, StatusComplete, 100, ""); err != nil {
 		log.Printf("Worker %d: failed to update job status to complete: %v", workerID, err)
 	}

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/discovery"
 	apperrors "github.com/openmusicplayer/backend/internal/errors"
 	"github.com/openmusicplayer/backend/internal/health"
 	"github.com/openmusicplayer/backend/internal/logger"
@@ -32,6 +33,7 @@ type Router struct {
 	streamHandler       *stream.Handler
 	playbackHandlers    *PlaybackHandlers
 	queueHandlers       *queue.Handlers
+	discoveryHandlers   *discovery.Handlers
 	playlistHandlers    *PlaylistHandlers
 	downloadHandlers    *DownloadHandlers
 	healthHandler       *health.Handler
@@ -40,21 +42,22 @@ type Router struct {
 
 // RouterConfig holds configuration for creating a new router
 type RouterConfig struct {
-	AuthHandlers     *auth.Handlers
-	AuthService      *auth.Service
-	SearchHandlers   *search.Handlers
-	MBClient         *musicbrainz.Client
-	MBHandlers       *musicbrainz.Handlers
-	WSHandler        *websocket.Handler
-	MatcherHandlers  *matcher.Handler
-	LibraryHandlers  *LibraryHandlers
-	StreamHandler    *stream.Handler
-	PlaybackHandlers *PlaybackHandlers
-	QueueHandlers    *queue.Handlers
-	PlaylistHandlers *PlaylistHandlers
-	DownloadHandlers *DownloadHandlers
-	HealthHandler    *health.Handler
-	Metrics          *metrics.Metrics
+	AuthHandlers      *auth.Handlers
+	AuthService       *auth.Service
+	SearchHandlers    *search.Handlers
+	MBClient          *musicbrainz.Client
+	MBHandlers        *musicbrainz.Handlers
+	WSHandler         *websocket.Handler
+	MatcherHandlers   *matcher.Handler
+	LibraryHandlers   *LibraryHandlers
+	StreamHandler     *stream.Handler
+	PlaybackHandlers  *PlaybackHandlers
+	QueueHandlers     *queue.Handlers
+	DiscoveryHandlers *discovery.Handlers
+	PlaylistHandlers  *PlaylistHandlers
+	DownloadHandlers  *DownloadHandlers
+	HealthHandler     *health.Handler
+	Metrics           *metrics.Metrics
 }
 
 func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, streamHandler *stream.Handler, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
@@ -96,6 +99,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		streamHandler:       cfg.StreamHandler,
 		playbackHandlers:    cfg.PlaybackHandlers,
 		queueHandlers:       cfg.QueueHandlers,
+		discoveryHandlers:   cfg.DiscoveryHandlers,
 		playlistHandlers:    cfg.PlaylistHandlers,
 		downloadHandlers:    cfg.DownloadHandlers,
 		healthHandler:       cfg.HealthHandler,
@@ -150,6 +154,11 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /api/v1/musicbrainz/search/albums", r.withAuth(r.musicbrainzHandlers.SearchAlbums))
 
 	// Browse/discovery routes (auth required)
+	if r.discoveryHandlers != nil {
+		r.mux.HandleFunc("GET /api/v1/discovery/search", r.withAuth(r.discoveryHandlers.Search))
+	} else {
+		r.mux.HandleFunc("GET /api/v1/discovery/search", r.withAuth(unavailableHandler("Discovery search is unavailable")))
+	}
 	r.mux.HandleFunc("GET /api/v1/artists/{mb_id}", r.withAuth(r.browseHandlers.GetArtist))
 	r.mux.HandleFunc("GET /api/v1/albums/{mb_id}", r.withAuth(r.browseHandlers.GetAlbum))
 	r.mux.HandleFunc("GET /api/v1/tracks/{mb_id}", r.withAuth(r.browseHandlers.GetTrack))
@@ -187,6 +196,7 @@ func (r *Router) setupRoutes() {
 	if r.queueHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/queue", r.withAuth(r.queueHandlers.GetQueue))
 		r.mux.HandleFunc("POST /api/v1/queue", r.withAuth(r.queueHandlers.AddToQueue))
+		r.mux.HandleFunc("POST /api/v1/queue/items", r.withAuth(r.queueHandlers.AddQueueItem))
 		r.mux.HandleFunc("DELETE /api/v1/queue/{position}", r.withAuth(r.queueHandlers.RemoveFromQueue))
 		r.mux.HandleFunc("PUT /api/v1/queue/reorder", r.withAuth(r.queueHandlers.ReorderQueue))
 		r.mux.HandleFunc("DELETE /api/v1/queue", r.withAuth(r.queueHandlers.ClearQueue))
@@ -194,6 +204,7 @@ func (r *Router) setupRoutes() {
 		queueUnavailable := r.withAuth(unavailableHandler("Redis queue support is disabled for this local mode"))
 		r.mux.HandleFunc("GET /api/v1/queue", queueUnavailable)
 		r.mux.HandleFunc("POST /api/v1/queue", queueUnavailable)
+		r.mux.HandleFunc("POST /api/v1/queue/items", queueUnavailable)
 		r.mux.HandleFunc("DELETE /api/v1/queue/{position}", queueUnavailable)
 		r.mux.HandleFunc("PUT /api/v1/queue/reorder", queueUnavailable)
 		r.mux.HandleFunc("DELETE /api/v1/queue", queueUnavailable)

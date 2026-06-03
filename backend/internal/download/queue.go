@@ -31,6 +31,20 @@ type Queue struct {
 	client *redis.Client
 }
 
+// SourceCandidate carries normalized discovery metadata into the download worker.
+type SourceCandidate struct {
+	CandidateID  string
+	Provider     string
+	SourceID     string
+	SourceURL    string
+	Title        string
+	Artist       string
+	Album        string
+	Uploader     string
+	DurationMs   int
+	ThumbnailURL string
+}
+
 // NewQueue creates a new job queue with the given Redis URL
 func NewQueue(redisURL string) (*Queue, error) {
 	opts, err := redis.ParseURL(redisURL)
@@ -62,19 +76,41 @@ func (q *Queue) Close() error {
 
 // Enqueue adds a new job to the queue
 func (q *Queue) Enqueue(ctx context.Context, userID, url, sourceType string, mbRecordingID *string) (*DownloadJob, error) {
-	now := time.Now()
-	job := &DownloadJob{
-		ID:            uuid.New().String(),
+	return q.enqueueJob(ctx, &DownloadJob{
 		UserID:        userID,
 		URL:           url,
 		SourceType:    sourceType,
-		Status:        StatusQueued,
-		Progress:      0,
-		RetryCount:    0,
 		MBRecordingID: mbRecordingID,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}
+	})
+}
+
+// EnqueueCandidate adds a discovery source candidate to the queue with enough
+// metadata for the worker to create a local playable track.
+func (q *Queue) EnqueueCandidate(ctx context.Context, userID string, candidate SourceCandidate, mbRecordingID *string) (*DownloadJob, error) {
+	return q.enqueueJob(ctx, &DownloadJob{
+		UserID:        userID,
+		URL:           candidate.SourceURL,
+		SourceType:    candidate.Provider,
+		MBRecordingID: mbRecordingID,
+		CandidateID:   candidate.CandidateID,
+		SourceID:      candidate.SourceID,
+		Title:         candidate.Title,
+		Artist:        candidate.Artist,
+		Album:         candidate.Album,
+		Uploader:      candidate.Uploader,
+		DurationMs:    candidate.DurationMs,
+		ThumbnailURL:  candidate.ThumbnailURL,
+	})
+}
+
+func (q *Queue) enqueueJob(ctx context.Context, job *DownloadJob) (*DownloadJob, error) {
+	now := time.Now()
+	job.ID = uuid.New().String()
+	job.Status = StatusQueued
+	job.Progress = 0
+	job.RetryCount = 0
+	job.CreatedAt = now
+	job.UpdatedAt = now
 
 	if err := q.saveJob(ctx, job); err != nil {
 		return nil, err
@@ -153,6 +189,20 @@ func (q *Queue) UpdateStatus(ctx context.Context, jobID, status string, progress
 		return err
 	}
 
+	return q.publishProgress(ctx, job)
+}
+
+// UpdateTrackID stores the created local track ID for a completed download job.
+func (q *Queue) UpdateTrackID(ctx context.Context, jobID string, trackID int64) error {
+	job, err := q.GetJob(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	job.TrackID = &trackID
+	job.UpdatedAt = time.Now()
+	if err := q.saveJob(ctx, job); err != nil {
+		return err
+	}
 	return q.publishProgress(ctx, job)
 }
 
