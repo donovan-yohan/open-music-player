@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,6 +155,83 @@ func TestCreateMixPlanRejectsInvalidClipRangeBeforePersisting(t *testing.T) {
 	}
 	if store.created != nil {
 		t.Fatal("invalid clip range should not be persisted")
+	}
+}
+
+func TestCreateMixPlanRejectsClipTimelineEndOverflowBeforePersisting(t *testing.T) {
+	store := &fakeMixPlanStore{}
+	h := NewMixPlanHandlers(store)
+
+	body := []byte(`{
+		"schemaVersion":1,
+		"name":"Overflow mix",
+		"clips":[{"clipId":"overflow","trackId":42,"sourceStartMs":0,"sourceEndMs":2,"timelineStartMs":` + strconv.FormatInt(math.MaxInt64, 10) + `,"gainDb":0}]
+	}`)
+	req := authedRequest(uuid.New(), http.MethodPost, "/api/v1/mix-plans", body)
+	w := httptest.NewRecorder()
+
+	h.CreateMixPlan(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if store.created != nil {
+		t.Fatal("overflowing timeline end should not be persisted")
+	}
+}
+
+func TestCreateMixPlanRejectsOversizedBodyBeforePersisting(t *testing.T) {
+	store := &fakeMixPlanStore{}
+	h := NewMixPlanHandlers(store)
+
+	body := []byte(`{
+		"schemaVersion":1,
+		"name":"Huge mix",
+		"clips":[{"clipId":"clip-a","trackId":42,"sourceStartMs":0,"sourceEndMs":1000,"timelineStartMs":0,"gainDb":0}],
+		"padding":"` + strings.Repeat("a", 1024*1024+1) + `"
+	}`)
+	req := authedRequest(uuid.New(), http.MethodPost, "/api/v1/mix-plans", body)
+	w := httptest.NewRecorder()
+
+	h.CreateMixPlan(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body length = %d", w.Code, len(body))
+	}
+	if store.created != nil {
+		t.Fatal("oversized request body should not be persisted")
+	}
+}
+
+func TestCreateMixPlanRejectsTooManyClipsBeforePersisting(t *testing.T) {
+	store := &fakeMixPlanStore{}
+	h := NewMixPlanHandlers(store)
+
+	clips := make([]MixPlanClip, mixPlanMaxClips+1)
+	for i := range clips {
+		clips[i] = MixPlanClip{
+			ClipID:          "clip-" + strconv.Itoa(i),
+			TrackID:         int64(i + 1),
+			SourceStartMs:   0,
+			SourceEndMs:     1000,
+			TimelineStartMs: int64(i) * 1000,
+			GainDB:          0,
+		}
+	}
+	body, err := json.Marshal(SaveMixPlanRequest{SchemaVersion: 1, Name: "Too many clips", Clips: clips})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := authedRequest(uuid.New(), http.MethodPost, "/api/v1/mix-plans", body)
+	w := httptest.NewRecorder()
+
+	h.CreateMixPlan(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if store.created != nil {
+		t.Fatal("too many clips should not be persisted")
 	}
 }
 

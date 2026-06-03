@@ -2,7 +2,7 @@
 -- The client owns playback/rendering; this table stores durable, versioned plan state only.
 CREATE TABLE mix_plans (
     id UUID PRIMARY KEY,
-    user_id UUID NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     schema_version INTEGER NOT NULL DEFAULT 1,
     name VARCHAR(255) NOT NULL,
     payload JSONB NOT NULL,

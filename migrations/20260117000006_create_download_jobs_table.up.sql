@@ -1,7 +1,7 @@
 -- Create download_jobs table
 CREATE TABLE download_jobs (
     id BIGSERIAL PRIMARY KEY,
-    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     url TEXT NOT NULL,
     status VARCHAR(50) NOT NULL DEFAULT 'pending',
     progress INTEGER DEFAULT 0,

@@ -17,7 +17,11 @@ import (
 	"github.com/openmusicplayer/backend/internal/db"
 )
 
-const mixPlanSchemaVersion = 1
+const (
+	mixPlanSchemaVersion       = 1
+	mixPlanMaxRequestBodyBytes = 256 * 1024
+	mixPlanMaxClips            = 1000
+)
 
 type MixPlanStore interface {
 	Create(ctx context.Context, plan *db.MixPlan) error
@@ -115,7 +119,7 @@ func (h *MixPlanHandlers) CreateMixPlan(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	req, err := decodeSaveMixPlanRequest(r)
+	req, err := decodeSaveMixPlanRequest(w, r)
 	if err != nil {
 		writeMixPlanError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
 		return
@@ -209,7 +213,7 @@ func (h *MixPlanHandlers) UpdateMixPlan(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	req, err := decodeSaveMixPlanRequest(r)
+	req, err := decodeSaveMixPlanRequest(w, r)
 	if err != nil {
 		writeMixPlanError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
 		return
@@ -296,8 +300,9 @@ func (h *MixPlanHandlers) validateTrackOwnership(ctx context.Context, userID uui
 	return nil
 }
 
-func decodeSaveMixPlanRequest(r *http.Request) (*SaveMixPlanRequest, error) {
+func decodeSaveMixPlanRequest(w http.ResponseWriter, r *http.Request) (*SaveMixPlanRequest, error) {
 	var req SaveMixPlanRequest
+	r.Body = http.MaxBytesReader(w, r.Body, mixPlanMaxRequestBodyBytes)
 	decoder := json.NewDecoder(r.Body)
 	if err := decoder.Decode(&req); err != nil {
 		return nil, errors.New("invalid request body")
@@ -322,6 +327,9 @@ func buildMixPlanPayload(req *SaveMixPlanRequest) (MixPlanPayload, MixPlanSummar
 	}
 	if req.Clips == nil {
 		return payload, MixPlanSummary{}, nil, errors.New("clips is required")
+	}
+	if len(req.Clips) > mixPlanMaxClips {
+		return payload, MixPlanSummary{}, nil, fmt.Errorf("clips must contain %d or fewer items", mixPlanMaxClips)
 	}
 
 	seenClipIDs := make(map[string]bool, len(payload.Clips))
@@ -357,7 +365,11 @@ func buildMixPlanPayload(req *SaveMixPlanRequest) (MixPlanPayload, MixPlanSummar
 			trackSeen[clip.TrackID] = true
 			trackIDs = append(trackIDs, clip.TrackID)
 		}
-		timelineEnd := clip.TimelineStartMs + (clip.SourceEndMs - clip.SourceStartMs)
+		durationMs := clip.SourceEndMs - clip.SourceStartMs
+		if durationMs > math.MaxInt64-clip.TimelineStartMs {
+			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d] timeline end exceeds maximum duration", i)
+		}
+		timelineEnd := clip.TimelineStartMs + durationMs
 		if timelineEnd > maxTimelineEnd {
 			maxTimelineEnd = timelineEnd
 		}
