@@ -22,8 +22,9 @@ const (
 )
 
 var (
-	ErrJobNotFound = errors.New("job not found")
-	ErrQueueEmpty  = errors.New("queue is empty")
+	ErrJobNotFound     = errors.New("job not found")
+	ErrQueueEmpty      = errors.New("queue is empty")
+	ErrJobNotRetryable = errors.New("job is not retryable")
 )
 
 // Queue manages download jobs using Redis
@@ -217,11 +218,16 @@ func (q *Queue) UpdateTrackID(ctx context.Context, jobID string, trackID int64) 
 	return q.publishProgress(ctx, job)
 }
 
-// IncrementRetry increments the retry count and requeues the job
+// IncrementRetry validates retry eligibility, increments retry metadata, and
+// requeues the job as a single Redis pipeline so callers do not observe a queued
+// job that was never pushed back onto the worker queue.
 func (q *Queue) IncrementRetry(ctx context.Context, jobID string) error {
 	job, err := q.GetJob(ctx, jobID)
 	if err != nil {
 		return err
+	}
+	if job.Status != StatusFailed {
+		return ErrJobNotRetryable
 	}
 
 	job.RetryCount++
@@ -229,11 +235,16 @@ func (q *Queue) IncrementRetry(ctx context.Context, jobID string) error {
 	job.Error = ""
 	job.UpdatedAt = time.Now()
 
-	if err := q.saveJob(ctx, job); err != nil {
-		return err
+	data, err := json.Marshal(job)
+	if err != nil {
+		return fmt.Errorf("failed to marshal job: %w", err)
 	}
 
-	return q.client.LPush(ctx, keyJobQueue, jobID).Err()
+	pipe := q.client.TxPipeline()
+	pipe.Set(ctx, keyJobStatus+job.ID, data, 0)
+	pipe.LPush(ctx, keyJobQueue, jobID)
+	_, err = pipe.Exec(ctx)
+	return err
 }
 
 // GetUserJobs retrieves all jobs for a specific user

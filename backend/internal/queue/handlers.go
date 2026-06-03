@@ -2,6 +2,7 @@ package queue
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -330,7 +331,7 @@ func (h *Handlers) RetryQueueItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state, jobID, err := h.service.RetryQueueItem(r.Context(), userCtx.UserID.String(), queueItemID)
+	jobID, err := h.service.QueueItemDownloadJobID(r.Context(), userCtx.UserID.String(), queueItemID)
 	if err != nil {
 		if err == ErrTrackNotFound {
 			writeError(w, http.StatusNotFound, "QUEUE_ITEM_NOT_FOUND", "queue item not found")
@@ -345,7 +346,16 @@ func (h *Handlers) RetryQueueItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.downloadService.RetryJob(r.Context(), jobID); err != nil {
+		if errors.Is(err, download.ErrJobNotRetryable) {
+			writeError(w, http.StatusConflict, "DOWNLOAD_JOB_NOT_RETRYABLE", "download job is not retryable")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to retry download job")
+		return
+	}
+	state, _, err := h.service.RetryQueueItem(r.Context(), userCtx.UserID.String(), queueItemID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update queue item retry state")
 		return
 	}
 

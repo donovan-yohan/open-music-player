@@ -403,6 +403,27 @@ func (s *Service) ReorderQueueItem(ctx context.Context, userID, queueItemID stri
 	return nil, ErrTrackNotFound
 }
 
+// QueueItemDownloadJobID returns the download job backing a queue item without
+// mutating queue state. Retry handlers use this to validate/enqueue the download
+// retry before projecting the queue item back to queued.
+func (s *Service) QueueItemDownloadJobID(ctx context.Context, userID, queueItemID string) (string, error) {
+	state, err := s.GetQueue(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	for i := range state.Items {
+		item := &state.Items[i]
+		if item.ID != queueItemID {
+			continue
+		}
+		if item.DownloadJobID == "" {
+			return "", ErrTrackNotFound
+		}
+		return item.DownloadJobID, nil
+	}
+	return "", ErrTrackNotFound
+}
+
 // RetryQueueItem marks a failed download-backed item as queued again.
 func (s *Service) RetryQueueItem(ctx context.Context, userID, queueItemID string) (*QueueState, string, error) {
 	state, err := s.GetQueue(ctx, userID)
