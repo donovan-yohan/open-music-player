@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/storage/offline_database.dart';
 import '../../core/network/connectivity_service.dart';
+import '../../core/audio/playback_state.dart';
 import '../../core/services/library_service.dart';
 import '../../core/services/api_client.dart';
 import '../../shared/models/models.dart';
@@ -144,7 +145,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 ? Theme.of(context).colorScheme.primary
                 : null,
           ),
-          if (unverifiedCount > 0 && _verificationFilter == VerificationFilter.all)
+          if (unverifiedCount > 0 &&
+              _verificationFilter == VerificationFilter.all)
             Positioned(
               right: -6,
               top: -6,
@@ -204,7 +206,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
-  Widget _buildFilterMenuItem(String label, IconData icon, bool selected, int count) {
+  Widget _buildFilterMenuItem(
+      String label, IconData icon, bool selected, int count) {
     return Row(
       children: [
         Icon(
@@ -316,16 +319,32 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   (IconData, String, String) _getEmptyStateContent() {
     if (_downloadedOnly) {
-      return (Icons.download_done, 'No downloaded tracks', 'Download tracks to listen offline');
+      return (
+        Icons.download_done,
+        'No downloaded tracks',
+        'Download tracks to listen offline'
+      );
     }
 
     switch (_verificationFilter) {
       case VerificationFilter.verifiedOnly:
-        return (Icons.verified, 'No verified tracks', 'Tracks with MusicBrainz metadata will appear here');
+        return (
+          Icons.verified,
+          'No verified tracks',
+          'Tracks with MusicBrainz metadata will appear here'
+        );
       case VerificationFilter.unverifiedOnly:
-        return (Icons.check_circle, 'All tracks verified!', 'All your tracks have verified metadata');
+        return (
+          Icons.check_circle,
+          'All tracks verified!',
+          'All your tracks have verified metadata'
+        );
       case VerificationFilter.all:
-        return (Icons.library_music, 'Your Library', 'Your collection will appear here');
+        return (
+          Icons.library_music,
+          'Your Library',
+          'Your collection will appear here'
+        );
     }
   }
 
@@ -388,7 +407,8 @@ class _TrackListTile extends StatelessWidget {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('Matched to "${suggestion.title}" by ${suggestion.artist}'),
+                content: Text(
+                    'Matched to "${suggestion.title}" by ${suggestion.artist}'),
                 backgroundColor: Colors.green,
               ),
             );
@@ -409,6 +429,28 @@ class _TrackListTile extends StatelessWidget {
         _showUnverifiedTrackSheet(context);
       },
     );
+  }
+
+  Future<void> _playTrack(BuildContext context) async {
+    final playback = context.read<PlaybackState>();
+    try {
+      await playback.playTrack({
+        'id': track.id,
+        'title': track.title,
+        'artist': track.displayArtist,
+        'album': track.displayAlbum,
+        'duration': track.durationMs != null ? track.durationMs! ~/ 1000 : 0,
+        'artwork_url': track.coverArtUrl,
+      });
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(playback.playbackError ?? 'Could not play this track.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   @override
@@ -444,7 +486,9 @@ class _TrackListTile extends StatelessWidget {
                   ),
                 ),
                 child: Icon(
-                  track.hasSuggestions ? Icons.auto_fix_high : Icons.help_outline,
+                  track.hasSuggestions
+                      ? Icons.auto_fix_high
+                      : Icons.help_outline,
                   size: 8,
                   color: Colors.white,
                 ),
@@ -484,12 +528,9 @@ class _TrackListTile extends StatelessWidget {
           DownloadButton(track: track),
         ],
       ),
-      onTap: () {
-        // TODO: Play track
-      },
-      onLongPress: track.needsVerification
-          ? () => _showMatchSuggestions(context)
-          : null,
+      onTap: () => _playTrack(context),
+      onLongPress:
+          track.needsVerification ? () => _showMatchSuggestions(context) : null,
     );
   }
 
@@ -513,7 +554,8 @@ class _UnverifiedTrackSheet extends StatelessWidget {
     final sourceDisplay = _getSourceDisplay();
 
     return Padding(
-      padding: EdgeInsets.fromLTRB(24, 24, 24, MediaQuery.of(context).padding.bottom + 24),
+      padding: EdgeInsets.fromLTRB(
+          24, 24, 24, MediaQuery.of(context).padding.bottom + 24),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -544,7 +586,8 @@ class _UnverifiedTrackSheet extends StatelessWidget {
           const SizedBox(height: 24),
           _buildInfoRow(context, 'Title', track.title),
           _buildInfoRow(context, 'Artist', track.displayArtist),
-          if (track.album != null) _buildInfoRow(context, 'Album', track.album!),
+          if (track.album != null)
+            _buildInfoRow(context, 'Album', track.album!),
           _buildInfoRow(context, 'Source', sourceDisplay.name),
           if (sourceDisplay.url != null)
             _buildInfoRow(context, 'URL', sourceDisplay.url!, isUrl: true),
@@ -580,7 +623,8 @@ class _UnverifiedTrackSheet extends StatelessWidget {
     );
   }
 
-  Widget _buildInfoRow(BuildContext context, String label, String value, {bool isUrl = false}) {
+  Widget _buildInfoRow(BuildContext context, String label, String value,
+      {bool isUrl = false}) {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),

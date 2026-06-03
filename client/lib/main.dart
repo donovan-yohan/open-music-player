@@ -7,6 +7,7 @@ import 'app/app.dart';
 import 'core/api/api_client.dart';
 import 'core/audio/audio_player_service.dart';
 import 'core/audio/playback_state.dart';
+import 'core/audio/signed_audio_url_service.dart';
 import 'core/auth/auth_service.dart';
 import 'core/auth/auth_state.dart';
 import 'core/providers/settings_provider.dart';
@@ -27,12 +28,19 @@ void main() async {
   final authState = AuthState(authService: authService);
   await authState.checkAuthStatus();
 
+  final signedAudioUrlService = SignedAudioUrlService(apiClient);
   final audioService = await AudioPlayerService.init();
-  final playbackState = PlaybackState(audioService);
+  final playbackState = PlaybackState(
+    audioService,
+    signedAudioUrlService: signedAudioUrlService,
+  );
 
   final offlineDb = OfflineDatabase();
   final connectivityService = ConnectivityService();
-  final downloadService = DownloadService(db: offlineDb, apiClient: apiClient);
+  final downloadService = DownloadService(
+    db: offlineDb,
+    signedAudioUrlService: signedAudioUrlService,
+  );
   final downloadState = DownloadState(
     downloadService: downloadService,
     db: offlineDb,

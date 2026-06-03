@@ -3,13 +3,13 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
-import '../api/api_client.dart';
+import '../audio/signed_audio_url_service.dart';
 import '../storage/offline_database.dart';
 import '../../shared/models/models.dart';
 
 class DownloadService {
   final OfflineDatabase _db;
-  final ApiClient _apiClient;
+  final SignedAudioUrlService _signedAudioUrlService;
   final Dio _downloadDio;
 
   final _progressController = StreamController<DownloadProgress>.broadcast();
@@ -17,10 +17,12 @@ class DownloadService {
 
   final Map<int, CancelToken> _activeDownloads = {};
 
-  DownloadService({required OfflineDatabase db, required ApiClient apiClient})
-    : _db = db,
-      _apiClient = apiClient,
-      _downloadDio = Dio() {
+  DownloadService({
+    required OfflineDatabase db,
+    required SignedAudioUrlService signedAudioUrlService,
+  })  : _db = db,
+        _signedAudioUrlService = signedAudioUrlService,
+        _downloadDio = Dio() {
     _downloadDio.options.receiveTimeout = const Duration(minutes: 30);
     _downloadDio.options.connectTimeout = const Duration(seconds: 30);
   }
@@ -64,15 +66,20 @@ class DownloadService {
 
       _emitProgress(track.id, 0, DownloadStatus.downloading);
 
-      final playbackUrl = await _getPlaybackUrl(track.id);
+      final descriptor = await _signedAudioUrlService.requireDescriptor(
+        track.id,
+        ttlSeconds: 15 * 60,
+      );
 
       await _downloadDio.download(
-        playbackUrl,
+        descriptor.url,
         localPath,
         cancelToken: cancelToken,
         onReceiveProgress: (received, total) {
-          if (total > 0) {
-            final progress = received / total;
+          final expectedTotal = total > 0 ? total : descriptor.sizeBytes ?? 0;
+          if (expectedTotal > 0) {
+            final progress =
+                (received / expectedTotal).clamp(0.0, 1.0).toDouble();
             _emitProgress(track.id, progress, DownloadStatus.downloading);
             _db.updateDownloadStatus(
               track.id,
@@ -91,6 +98,14 @@ class DownloadService {
       );
 
       _emitProgress(track.id, 1.0, DownloadStatus.completed);
+    } on SignedAudioUrlException catch (e) {
+      final message = _downloadErrorMessage(e);
+      await _db.updateDownloadStatus(
+        track.id,
+        DownloadStatus.failed,
+        error: message,
+      );
+      _emitProgress(track.id, 0, DownloadStatus.failed, error: message);
     } on DioException catch (e) {
       if (e.type == DioExceptionType.cancel) {
         await _db.deleteDownloadedTrack(track.id);
@@ -192,54 +207,18 @@ class DownloadService {
     return _activeDownloads.containsKey(trackId);
   }
 
-  Future<String> _getPlaybackUrl(int trackId) async {
-    final response = await _apiClient.post<Map<String, dynamic>>(
-      '/playback/urls',
-      data: {
-        'trackIds': [trackId],
-      },
-    );
-
-    final data = response.data;
-    if (data == null) {
-      throw StateError('Playback URL response was empty');
+  String _downloadErrorMessage(SignedAudioUrlException error) {
+    switch (error.code) {
+      case 'AUDIO_UNAVAILABLE':
+      case 'OBJECT_UNAVAILABLE':
+        return 'Audio is unavailable for download.';
+      case 'PLAYBACK_URL_EXPIRED':
+        return 'Download link expired before it could be used. Try again.';
+      case 'FORBIDDEN':
+        return 'You do not have access to download this track.';
+      default:
+        return 'Could not prepare a signed download URL.';
     }
-
-    final urls = data['urls'];
-    if (urls is! List) {
-      throw StateError('Playback URL response did not include urls');
-    }
-
-    Map<String, dynamic>? descriptor;
-    for (final item in urls) {
-      if (item is Map<String, dynamic> && item['trackId'] == trackId) {
-        descriptor = item;
-        break;
-      }
-    }
-
-    if (descriptor == null) {
-      final unavailable = data['unavailable'];
-      if (unavailable is List) {
-        for (final item in unavailable) {
-          if (item is Map<String, dynamic> && item['trackId'] == trackId) {
-            final message = item['message'];
-            throw StateError(
-              message is String && message.isNotEmpty
-                  ? message
-                  : 'Track is unavailable for download',
-            );
-          }
-        }
-      }
-      throw StateError('Playback URL response did not include requested track');
-    }
-
-    final url = descriptor['url'];
-    if (url is! String || url.isEmpty) {
-      throw StateError('Playback URL response included an invalid url');
-    }
-    return url;
   }
 
   void _emitProgress(
