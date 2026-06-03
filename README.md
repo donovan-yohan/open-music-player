@@ -31,7 +31,7 @@ Open Music Player consists of four main components:
 
 **Components:**
 
-- **Backend (Go)**: REST API server handling authentication, track management, playlists, downloads, and streaming
+- **Backend (Go)**: REST API server handling authentication, track management, playlists, downloads, and signed audio URL issuance
 - **Client (Flutter)**: Cross-platform client for iOS, Android, macOS, Windows, Linux, and web
 - **Extension (TypeScript)**: Browser extension for Chrome/Firefox to save tracks from YouTube and SoundCloud
 - **Rust Tools**: Database migrations, MusicBrainz API client, and utilities
@@ -178,7 +178,7 @@ The backend exposes the following API groups:
 | `GET /api/library` | Get user's library |
 | `GET /api/playlists` | List playlists |
 | `POST /api/playlists` | Create playlist |
-| `GET /api/stream/:id` | Stream audio file |
+| `POST /api/v1/playback/urls` | Issue signed audio URL descriptors for playback/download |
 | `POST /api/download` | Queue track for download |
 | `GET /api/search` | Search tracks |
 | `GET /api/musicbrainz/search` | Search MusicBrainz for metadata |
@@ -232,8 +232,7 @@ openmusicplayer/
 │   │   ├── processor/      # Download job processing
 │   │   ├── queue/          # Redis job queue
 │   │   ├── search/         # Track search
-│   │   ├── storage/        # MinIO/S3 storage
-│   │   ├── stream/         # Audio streaming
+│   │   ├── storage/        # MinIO/S3 storage and signed reads
 │   │   ├── validators/     # Input validation
 │   │   └── websocket/      # WebSocket handlers
 │   └── Makefile            # Migration commands

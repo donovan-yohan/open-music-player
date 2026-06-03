@@ -1,6 +1,6 @@
 # Signed audio URL API
 
-The signed audio URL endpoint is the backend control-plane path for direct object storage/CDN playback and downloads: authenticate, authorize library ownership, stat the object, and issue short-lived bearer URLs. `/api/v1/stream/{track_id}` remains registered as the compatibility/dev fallback while clients migrate; this endpoint does not remove or replace it yet.
+The signed audio URL endpoint is the backend control-plane path for direct object storage/CDN playback and downloads: authenticate, authorize library ownership, stat the object, and issue short-lived bearer URLs. Normal playback/download clients should use these descriptors and fetch audio bytes directly from object storage/CDN. The backend no longer registers `/api/v1/stream/{track_id}` in the normal route table.
 
 ## Endpoint
 
@@ -54,8 +54,8 @@ Signed URLs are bearer credentials. Do not log them, store them long term, or se
 - Track has no storage key: returned in `unavailable` with `audio_unavailable`.
 - Storage object stat fails/missing object: returned in `unavailable` with `artifact_missing`.
 - Presign failure after authorization/object stat: `500 INTERNAL_ERROR` with no signed URL in the response.
-- The handler does not inline a `/stream` URL or automatically proxy on unavailable items. `/api/v1/stream/{track_id}` remains a separate fallback route for clients that still use the backend proxy.
+- The handler does not inline a `/stream` URL or automatically proxy on unavailable items. `/api/v1/stream/{track_id}` is not registered in the normal backend route table; legacy clients must migrate to signed URL descriptors instead of relying on Go byte proxying.
 
 ## Storage / CORS / Range notes
 
-The backend uses the same `storage.Client` object path as the existing stream endpoint for `StatObject` and MinIO presigned GET issuance. Object storage or CDN configuration must allow the client origin to issue `GET`/`HEAD` with `Range` headers and expose at least `Accept-Ranges`, `Content-Length`, `Content-Range`, `Content-Type`, and `ETag` for browser playback and download validation.
+The backend uses the same `storage.Client` object path as uploads for `StatObject` and MinIO presigned GET issuance. Object storage or CDN configuration must allow the client origin to issue `GET`/`HEAD` with `Range` headers and expose at least `Accept-Ranges`, `Content-Length`, `Content-Range`, `Content-Type`, and `ETag` for browser playback and download validation.

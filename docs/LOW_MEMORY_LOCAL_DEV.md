@@ -19,7 +19,7 @@ The low-memory defaults are:
 - no Android, Gradle, APK, emulator, or SDK path
 - no heavyweight analysis/stem-processing jobs
 
-Redis-backed queue, pub/sub, and download endpoints return `503 SERVICE_DISABLED` in this mode. Auth, library/playlists, search against local DB data, health, storage-backed streaming, and Flutter Web API integration can still be exercised.
+Redis-backed queue, pub/sub, and download endpoints return `503 SERVICE_DISABLED` in this mode. Auth, library/playlists, search against local DB data, health, signed audio URL issuance, MinIO access, and Flutter Web API integration can still be exercised.
 
 ## Commands
 

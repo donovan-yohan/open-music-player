@@ -50,12 +50,6 @@ func Gzip(next http.Handler) http.Handler {
 			return
 		}
 
-		// Skip compression for streaming endpoints (audio)
-		if strings.HasPrefix(r.URL.Path, "/api/v1/stream/") {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		// Get a gzip writer from the pool
 		gz := gzipWriterPool.Get().(*gzip.Writer)
 		gz.Reset(w)

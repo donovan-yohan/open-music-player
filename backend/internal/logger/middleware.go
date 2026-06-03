@@ -60,11 +60,8 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Don't capture body for streaming endpoints
-		captureBody := !strings.HasPrefix(r.URL.Path, "/api/v1/stream/")
-
 		// Wrap response writer
-		rw := newResponseWriter(w, captureBody)
+		rw := newResponseWriter(w, true)
 
 		// Log request
 		log.Info(r.Context(), "request started", map[string]interface{}{

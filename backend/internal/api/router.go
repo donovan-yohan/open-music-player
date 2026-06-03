@@ -13,7 +13,6 @@ import (
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
-	"github.com/openmusicplayer/backend/internal/stream"
 	"github.com/openmusicplayer/backend/internal/validators"
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
@@ -29,7 +28,6 @@ type Router struct {
 	validatorHandlers   *validators.Handlers
 	matcherHandlers     *matcher.Handler
 	libraryHandlers     *LibraryHandlers
-	streamHandler       *stream.Handler
 	playbackHandlers    *PlaybackHandlers
 	queueHandlers       *queue.Handlers
 	playlistHandlers    *PlaylistHandlers
@@ -48,7 +46,6 @@ type RouterConfig struct {
 	WSHandler        *websocket.Handler
 	MatcherHandlers  *matcher.Handler
 	LibraryHandlers  *LibraryHandlers
-	StreamHandler    *stream.Handler
 	PlaybackHandlers *PlaybackHandlers
 	QueueHandlers    *queue.Handlers
 	PlaylistHandlers *PlaylistHandlers
@@ -57,7 +54,7 @@ type RouterConfig struct {
 	Metrics          *metrics.Metrics
 }
 
-func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, streamHandler *stream.Handler, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
+func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
 	return NewRouterWithConfig(&RouterConfig{
 		AuthHandlers:     authHandlers,
 		AuthService:      authService,
@@ -67,7 +64,6 @@ func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHan
 		WSHandler:        wsHandler,
 		MatcherHandlers:  matcherHandlers,
 		LibraryHandlers:  libraryHandlers,
-		StreamHandler:    streamHandler,
 		QueueHandlers:    queueHandlers,
 		PlaylistHandlers: playlistHandlers,
 		DownloadHandlers: downloadHandlers,
@@ -93,7 +89,6 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		validatorHandlers:   validators.NewHandlers(validatorRegistry),
 		matcherHandlers:     cfg.MatcherHandlers,
 		libraryHandlers:     cfg.LibraryHandlers,
-		streamHandler:       cfg.StreamHandler,
 		playbackHandlers:    cfg.PlaybackHandlers,
 		queueHandlers:       cfg.QueueHandlers,
 		playlistHandlers:    cfg.PlaylistHandlers,
@@ -172,9 +167,6 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /api/v1/library", r.withAuth(r.libraryHandlers.GetLibrary))
 	r.mux.HandleFunc("POST /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.AddTrackToLibrary))
 	r.mux.HandleFunc("DELETE /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.RemoveTrackFromLibrary))
-
-	// Audio streaming route (auth required)
-	r.mux.HandleFunc("GET /api/v1/stream/{track_id}", r.withAuth(r.streamHandler.Stream))
 
 	// Direct playback/download URL issuance (auth required)
 	if r.playbackHandlers != nil {
