@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -24,11 +27,30 @@ var (
 	ErrTrackNotFound   = errors.New("track not found in queue")
 )
 
-// QueueItem represents a track in the playback queue
+// QueueItem represents an entry in the playback queue. Source-backed entries
+// are pending/non-playable until their download job resolves to a track ID.
 type QueueItem struct {
-	Position int       `json:"position"`
-	TrackID  int64     `json:"track_id"`
-	AddedAt  time.Time `json:"added_at"`
+	ID            string           `json:"id"`
+	Position      int              `json:"position"`
+	TrackID       *int64           `json:"track_id,omitempty"`
+	PlaybackState string           `json:"playback_state"`
+	DownloadJobID string           `json:"download_job_id,omitempty"`
+	Source        *SourceCandidate `json:"source_candidate,omitempty"`
+	AddedAt       time.Time        `json:"added_at"`
+}
+
+type SourceCandidate struct {
+	CandidateID  string `json:"candidateId"`
+	Provider     string `json:"provider"`
+	SourceID     string `json:"sourceId,omitempty"`
+	SourceURL    string `json:"sourceUrl"`
+	Title        string `json:"title"`
+	Artist       string `json:"artist,omitempty"`
+	Album        string `json:"album,omitempty"`
+	Uploader     string `json:"uploader,omitempty"`
+	DurationMs   int    `json:"durationMs,omitempty"`
+	ThumbnailURL string `json:"thumbnailUrl,omitempty"`
+	Downloadable bool   `json:"downloadable"`
 }
 
 // QueueState represents the full state of a user's playback queue
@@ -115,36 +137,21 @@ func (s *Service) AddToQueue(ctx context.Context, userID string, trackID int64, 
 		return nil, err
 	}
 
+	trackIDCopy := trackID
 	newItem := QueueItem{
-		TrackID: trackID,
-		AddedAt: time.Now(),
+		ID:            uuid.NewString(),
+		TrackID:       &trackIDCopy,
+		PlaybackState: "playable",
+		AddedAt:       time.Now(),
 	}
 
-	switch position {
-	case "next":
-		// Insert after current position
-		insertIdx := state.CurrentPosition + 1
-		if insertIdx > len(state.Items) {
-			insertIdx = len(state.Items)
-		}
-		state.Items = insertAt(state.Items, insertIdx, newItem)
-	case "last", "":
-		// Append to end
-		state.Items = append(state.Items, newItem)
-	default:
-		// Try to parse as index
-		var idx int
-		if _, err := fmt.Sscanf(position, "%d", &idx); err != nil {
-			return nil, fmt.Errorf("invalid position: %s", position)
-		}
-		if idx < 0 || idx > len(state.Items) {
-			return nil, ErrInvalidPosition
-		}
-		state.Items = insertAt(state.Items, idx, newItem)
-		// Adjust current position if inserting before it
-		if idx <= state.CurrentPosition {
-			state.CurrentPosition++
-		}
+	insertIdx, adjustCurrent, err := resolveInsertPosition(state, position)
+	if err != nil {
+		return nil, err
+	}
+	state.Items = insertAt(state.Items, insertIdx, newItem)
+	if adjustCurrent {
+		state.CurrentPosition++
 	}
 
 	// Recalculate positions
@@ -158,6 +165,71 @@ func (s *Service) AddToQueue(ctx context.Context, userID string, trackID int64, 
 	return state, nil
 }
 
+// ValidateInsertPosition verifies that a queue insertion position can be
+// applied to the user's current queue before side effects like download enqueue.
+func (s *Service) ValidateInsertPosition(ctx context.Context, userID string, position string) error {
+	state, err := s.GetQueue(ctx, userID)
+	if err != nil {
+		return err
+	}
+	_, _, err = resolveInsertPosition(state, position)
+	return err
+}
+
+func resolveInsertPosition(state *QueueState, position string) (int, bool, error) {
+	switch strings.TrimSpace(position) {
+	case "next":
+		insertIdx := state.CurrentPosition + 1
+		if insertIdx > len(state.Items) {
+			insertIdx = len(state.Items)
+		}
+		return insertIdx, false, nil
+	case "last", "":
+		return len(state.Items), false, nil
+	default:
+		idx, err := strconv.Atoi(strings.TrimSpace(position))
+		if err != nil {
+			return 0, false, ErrInvalidPosition
+		}
+		if idx < 0 || idx > len(state.Items) {
+			return 0, false, ErrInvalidPosition
+		}
+		return idx, idx <= state.CurrentPosition, nil
+	}
+}
+
+// AddSourceCandidate adds a non-playable discovery candidate to the queue.
+func (s *Service) AddSourceCandidate(ctx context.Context, userID string, candidate SourceCandidate, downloadJobID, position string) (*QueueState, error) {
+	state, err := s.GetQueue(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	newItem := QueueItem{
+		ID:            uuid.NewString(),
+		PlaybackState: "pendingDownload",
+		DownloadJobID: downloadJobID,
+		Source:        &candidate,
+		AddedAt:       time.Now(),
+	}
+
+	insertIdx, adjustCurrent, err := resolveInsertPosition(state, position)
+	if err != nil {
+		return nil, err
+	}
+	state.Items = insertAt(state.Items, insertIdx, newItem)
+	if adjustCurrent {
+		state.CurrentPosition++
+	}
+
+	s.recalculatePositions(state)
+	state.UpdatedAt = time.Now()
+	if err := s.saveQueue(ctx, userID, state); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
 // AddMultipleToQueue adds multiple tracks to the queue (for playlist support)
 func (s *Service) AddMultipleToQueue(ctx context.Context, userID string, trackIDs []int64, position string) (*QueueState, error) {
 	state, err := s.GetQueue(ctx, userID)
@@ -168,33 +240,22 @@ func (s *Service) AddMultipleToQueue(ctx context.Context, userID string, trackID
 	now := time.Now()
 	newItems := make([]QueueItem, len(trackIDs))
 	for i, trackID := range trackIDs {
+		trackIDCopy := trackID
 		newItems[i] = QueueItem{
-			TrackID: trackID,
-			AddedAt: now,
+			ID:            uuid.NewString(),
+			TrackID:       &trackIDCopy,
+			PlaybackState: "playable",
+			AddedAt:       now,
 		}
 	}
 
-	switch position {
-	case "next":
-		insertIdx := state.CurrentPosition + 1
-		if insertIdx > len(state.Items) {
-			insertIdx = len(state.Items)
-		}
-		state.Items = insertMultipleAt(state.Items, insertIdx, newItems)
-	case "last", "":
-		state.Items = append(state.Items, newItems...)
-	default:
-		var idx int
-		if _, err := fmt.Sscanf(position, "%d", &idx); err != nil {
-			return nil, fmt.Errorf("invalid position: %s", position)
-		}
-		if idx < 0 || idx > len(state.Items) {
-			return nil, ErrInvalidPosition
-		}
-		state.Items = insertMultipleAt(state.Items, idx, newItems)
-		if idx <= state.CurrentPosition {
-			state.CurrentPosition += len(newItems)
-		}
+	insertIdx, adjustCurrent, err := resolveInsertPosition(state, position)
+	if err != nil {
+		return nil, err
+	}
+	state.Items = insertMultipleAt(state.Items, insertIdx, newItems)
+	if adjustCurrent {
+		state.CurrentPosition += len(newItems)
 	}
 
 	s.recalculatePositions(state)

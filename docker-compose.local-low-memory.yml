@@ -23,6 +23,7 @@ services:
       REDIS_URL: redis://redis:6379
 
       MINIO_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: http://localhost:${MINIO_PORT:-9000}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-audio-files}
@@ -100,7 +101,7 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin};
       mc mb local/$${MINIO_BUCKET:-audio-files} --ignore-existing;
-      mc anonymous set download local/$${MINIO_BUCKET:-audio-files};
+      mc anonymous set none local/$${MINIO_BUCKET:-audio-files};
       exit 0;
       "
     environment:

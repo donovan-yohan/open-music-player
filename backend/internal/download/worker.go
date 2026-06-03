@@ -15,6 +15,10 @@ const (
 	DefaultMaxRetries  = 3
 	DefaultJobTimeout  = 10 * time.Minute
 
+	// Worker dequeue timeout is kept short so Stop is not held behind a
+	// Redis blocking pop when the queue is idle.
+	workerDequeueTimeout = 1 * time.Second
+
 	// Exponential backoff parameters
 	baseBackoff = 1 * time.Second
 	maxBackoff  = 5 * time.Minute
@@ -31,10 +35,11 @@ type WorkerPool struct {
 	jobTimeout  time.Duration
 	processor   JobProcessor
 
-	wg       sync.WaitGroup
-	stopChan chan struct{}
-	mu       sync.RWMutex
-	running  bool
+	wg         sync.WaitGroup
+	stopChan   chan struct{}
+	stopCancel context.CancelFunc
+	mu         sync.RWMutex
+	running    bool
 }
 
 // WorkerPoolConfig holds configuration for the worker pool
@@ -89,10 +94,12 @@ func (wp *WorkerPool) Start() {
 
 	wp.running = true
 	wp.stopChan = make(chan struct{})
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+	wp.stopCancel = stopCancel
 
 	for i := 0; i < wp.workerCount; i++ {
 		wp.wg.Add(1)
-		go wp.worker(i)
+		go wp.worker(stopCtx, i)
 	}
 
 	log.Printf("Worker pool started with %d workers", wp.workerCount)
@@ -106,6 +113,9 @@ func (wp *WorkerPool) Stop(ctx context.Context) error {
 		return nil
 	}
 	wp.running = false
+	if wp.stopCancel != nil {
+		wp.stopCancel()
+	}
 	close(wp.stopChan)
 	wp.mu.Unlock()
 
@@ -133,44 +143,30 @@ func (wp *WorkerPool) IsRunning() bool {
 }
 
 // worker is the main loop for a single worker
-func (wp *WorkerPool) worker(id int) {
+func (wp *WorkerPool) worker(stopCtx context.Context, id int) {
 	defer wp.wg.Done()
 
 	log.Printf("Worker %d started", id)
 
 	for {
 		select {
+		case <-stopCtx.Done():
+			log.Printf("Worker %d stopping", id)
+			return
 		case <-wp.stopChan:
 			log.Printf("Worker %d stopping", id)
 			return
 		default:
-			wp.processNextJob(id)
+			wp.processNextJob(stopCtx, id)
 		}
 	}
 }
 
 // processNextJob dequeues and processes the next available job
-func (wp *WorkerPool) processNextJob(workerID int) {
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-wp.stopChan:
-			cancel()
-		case <-done:
-		}
-	}()
-	defer func() {
-		close(done)
-		cancel()
-	}()
-
-	job, err := wp.queue.Dequeue(ctx, 500*time.Millisecond)
+func (wp *WorkerPool) processNextJob(dequeueCtx context.Context, workerID int) {
+	job, err := wp.queue.Dequeue(dequeueCtx, workerDequeueTimeout)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return
-		}
-		if errors.Is(err, ErrQueueEmpty) {
+		if errors.Is(err, ErrQueueEmpty) || errors.Is(err, context.Canceled) {
 			return
 		}
 		log.Printf("Worker %d: failed to dequeue job: %v", workerID, err)
@@ -178,7 +174,7 @@ func (wp *WorkerPool) processNextJob(workerID int) {
 	}
 
 	log.Printf("Worker %d: processing job %s", workerID, job.ID)
-	wp.processJob(ctx, workerID, job)
+	wp.processJob(context.Background(), workerID, job)
 }
 
 // processJob handles the full lifecycle of a single job
@@ -202,6 +198,12 @@ func (wp *WorkerPool) processJob(ctx context.Context, workerID int, job *Downloa
 	if err != nil {
 		wp.handleJobFailure(ctx, workerID, job, err)
 		return
+	}
+
+	if job.TrackID != nil {
+		if err := wp.queue.UpdateTrackID(ctx, job.ID, *job.TrackID); err != nil {
+			log.Printf("Worker %d: failed to store track id for job %s: %v", workerID, job.ID, err)
+		}
 	}
 
 	if err := wp.queue.UpdateStatus(ctx, job.ID, StatusComplete, 100, ""); err != nil {

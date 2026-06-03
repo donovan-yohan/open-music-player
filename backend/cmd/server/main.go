@@ -15,6 +15,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/cache"
 	"github.com/openmusicplayer/backend/internal/config"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/health"
 	"github.com/openmusicplayer/backend/internal/logger"
@@ -91,6 +92,7 @@ func main() {
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
 	authHandlers := auth.NewHandlers(authService)
 	searchHandlers := search.NewHandlers(trackRepo)
+	discoveryHandlers := discovery.NewHandlers(discovery.NewDefaultService())
 	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
 	playlistHandlers := api.NewPlaylistHandlers(playlistRepo, trackRepo)
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
@@ -100,19 +102,22 @@ func main() {
 
 	// Initialize storage client
 	storageClient, err := storage.New(&storage.Config{
-		Endpoint:  cfg.MinioEndpoint,
-		AccessKey: cfg.MinioAccessKey,
-		SecretKey: cfg.MinioSecretKey,
-		Bucket:    cfg.MinioBucket,
-		UseSSL:    cfg.MinioUseSSL,
+		Endpoint:       cfg.MinioEndpoint,
+		PublicEndpoint: cfg.MinioPublicEndpoint,
+		Region:         cfg.S3Region,
+		AccessKey:      cfg.MinioAccessKey,
+		SecretKey:      cfg.MinioSecretKey,
+		Bucket:         cfg.MinioBucket,
+		UseSSL:         cfg.MinioUseSSL,
 	})
 	if err != nil {
 		log.Error(ctx, "Failed to initialize storage client", nil, err)
 		os.Exit(1)
 	}
 	log.Info(ctx, "Initialized storage client", map[string]interface{}{
-		"endpoint": cfg.MinioEndpoint,
-		"bucket":   cfg.MinioBucket,
+		"endpoint":        cfg.MinioEndpoint,
+		"public_endpoint": cfg.MinioPublicEndpoint,
+		"bucket":          cfg.MinioBucket,
 	})
 
 	// Initialize playback URL handlers. Normal audio bytes are served by object
@@ -163,7 +168,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer queueService.Close()
-		queueHandlers = queue.NewHandlers(queueService)
+		queueHandlers = queue.NewHandlers(queueService, downloadService)
 	}
 
 	// Initialize metrics
@@ -188,21 +193,22 @@ func main() {
 
 	// Create router with all handlers
 	router := api.NewRouterWithConfig(&api.RouterConfig{
-		AuthHandlers:     authHandlers,
-		AuthService:      authService,
-		SearchHandlers:   searchHandlers,
-		MBClient:         mbClient,
-		MBHandlers:       mbHandlers,
-		WSHandler:        wsHandler,
-		MatcherHandlers:  matcherHandlers,
-		LibraryHandlers:  libraryHandlers,
-		PlaybackHandlers: playbackHandlers,
-		QueueHandlers:    queueHandlers,
-		PlaylistHandlers: playlistHandlers,
-		MixPlanHandlers:  mixPlanHandlers,
-		DownloadHandlers: downloadHandlers,
-		HealthHandler:    healthHandler,
-		Metrics:          appMetrics,
+		AuthHandlers:      authHandlers,
+		AuthService:       authService,
+		SearchHandlers:    searchHandlers,
+		MBClient:          mbClient,
+		MBHandlers:        mbHandlers,
+		WSHandler:         wsHandler,
+		MatcherHandlers:   matcherHandlers,
+		LibraryHandlers:   libraryHandlers,
+		PlaybackHandlers:  playbackHandlers,
+		QueueHandlers:     queueHandlers,
+		DiscoveryHandlers: discoveryHandlers,
+		PlaylistHandlers:  playlistHandlers,
+		MixPlanHandlers:   mixPlanHandlers,
+		DownloadHandlers:  downloadHandlers,
+		HealthHandler:     healthHandler,
+		Metrics:           appMetrics,
 	})
 
 	// Apply middleware chain

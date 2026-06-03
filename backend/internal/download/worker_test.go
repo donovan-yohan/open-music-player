@@ -61,6 +61,39 @@ func TestWorkerPool_StartStop(t *testing.T) {
 	}
 }
 
+func TestWorkerPool_StopCancelsBlockedDequeue(t *testing.T) {
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		redisURL = "redis://localhost:6380"
+	}
+
+	queue, err := NewQueue(redisURL)
+	if err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
+	defer queue.Close()
+
+	processor := func(ctx context.Context, job *DownloadJob, progress func(int)) error {
+		return nil
+	}
+
+	pool := NewWorkerPool(queue, processor, &WorkerPoolConfig{
+		WorkerCount: workerCountPtr(1),
+		MaxRetries:  3,
+		JobTimeout:  1 * time.Minute,
+	})
+
+	pool.Start()
+	time.Sleep(100 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := pool.Stop(ctx); err != nil {
+		t.Fatalf("Stop should cancel an idle worker blocked in dequeue: %v", err)
+	}
+}
+
 func TestWorkerPool_ProcessJob(t *testing.T) {
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {

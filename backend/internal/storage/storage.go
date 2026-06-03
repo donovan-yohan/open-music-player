@@ -28,38 +28,95 @@ import (
 
 // Client provides access to S3-compatible object storage (MinIO).
 type Client struct {
-	client *minio.Client
-	bucket string
+	client        *minio.Client
+	presignClient *minio.Client
+	bucket        string
 }
 
 // Config holds the configuration for the object storage client.
 type Config struct {
-	Endpoint  string
-	AccessKey string
-	SecretKey string
-	Bucket    string
-	UseSSL    bool
+	Endpoint       string
+	PublicEndpoint string
+	Region         string
+	AccessKey      string
+	SecretKey      string
+	Bucket         string
+	UseSSL         bool
 }
 
 // New creates a new object storage client.
 func New(cfg *Config) (*Client, error) {
-	// Strip protocol prefix if present (minio-go expects host:port)
-	endpoint := cfg.Endpoint
-	endpoint = strings.TrimPrefix(endpoint, "http://")
-	endpoint = strings.TrimPrefix(endpoint, "https://")
+	endpoint, secure, err := minioEndpointOptions(cfg.Endpoint, cfg.UseSSL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid minio endpoint: %w", err)
+	}
 
 	client, err := minio.New(endpoint, &minio.Options{
 		Creds:  miniocreds.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure: cfg.UseSSL,
+		Region: minioRegion(cfg.Region),
+		Secure: secure,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create minio client: %w", err)
 	}
+	presignClient := client
+	if strings.TrimSpace(cfg.PublicEndpoint) != "" {
+		publicEndpoint, publicSecure, err := minioEndpointOptions(cfg.PublicEndpoint, cfg.UseSSL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid minio public endpoint: %w", err)
+		}
+		presignClient, err = minio.New(publicEndpoint, &minio.Options{
+			Creds:  miniocreds.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
+			Region: minioRegion(cfg.Region),
+			Secure: publicSecure,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create minio presign client: %w", err)
+		}
+	}
 
 	return &Client{
-		client: client,
-		bucket: cfg.Bucket,
+		client:        client,
+		presignClient: presignClient,
+		bucket:        cfg.Bucket,
 	}, nil
+}
+
+func minioRegion(region string) string {
+	region = strings.TrimSpace(region)
+	if region == "" {
+		return "us-east-1"
+	}
+	return region
+}
+
+func minioEndpointOptions(endpoint string, defaultSecure bool) (string, bool, error) {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return "", defaultSecure, fmt.Errorf("endpoint must not be empty")
+	}
+
+	if strings.Contains(endpoint, "://") {
+		parsed, err := url.Parse(endpoint)
+		if err != nil {
+			return "", defaultSecure, err
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return "", defaultSecure, fmt.Errorf("unsupported scheme %q", parsed.Scheme)
+		}
+		if parsed.Host == "" {
+			return "", defaultSecure, fmt.Errorf("host must not be empty")
+		}
+		if parsed.Path != "" && parsed.Path != "/" {
+			return "", defaultSecure, fmt.Errorf("path is not supported in endpoint %q", endpoint)
+		}
+		if parsed.RawQuery != "" || parsed.Fragment != "" {
+			return "", defaultSecure, fmt.Errorf("query and fragment are not supported in endpoint %q", endpoint)
+		}
+		return parsed.Host, parsed.Scheme == "https", nil
+	}
+
+	return endpoint, defaultSecure, nil
 }
 
 // ObjectInfo contains metadata about a stored object.
@@ -139,7 +196,7 @@ func (c *Client) PresignGetObject(ctx context.Context, key string, expires time.
 		return "", fmt.Errorf("presign expiry must be positive")
 	}
 
-	u, err := c.client.PresignedGetObject(ctx, c.bucket, key, expires, url.Values{})
+	u, err := c.presignClient.PresignedGetObject(ctx, c.bucket, key, expires, url.Values{})
 	if err != nil {
 		return "", fmt.Errorf("failed to presign object %s: %w", key, err)
 	}

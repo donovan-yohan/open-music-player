@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/download"
@@ -51,6 +52,7 @@ type GetJobResponse struct {
 	Error       string  `json:"error,omitempty"`
 	URL         string  `json:"url"`
 	SourceType  string  `json:"source_type"`
+	TrackID     *int64  `json:"track_id,omitempty"`
 	CreatedAt   string  `json:"created_at"`
 	StartedAt   *string `json:"started_at,omitempty"`
 	CompletedAt *string `json:"completed_at,omitempty"`
@@ -70,6 +72,7 @@ func (h *DownloadHandlers) CreateDownload(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	req.URL = strings.TrimSpace(req.URL)
 	if req.URL == "" {
 		writeDownloadError(w, http.StatusBadRequest, "INVALID_REQUEST", "url is required")
 		return
@@ -77,6 +80,10 @@ func (h *DownloadHandlers) CreateDownload(w http.ResponseWriter, r *http.Request
 
 	if req.SourceType == "" {
 		writeDownloadError(w, http.StatusBadRequest, "INVALID_REQUEST", "source_type is required")
+		return
+	}
+	if err := download.ValidateUserFacingURL(req.URL); err != nil {
+		writeDownloadError(w, http.StatusBadRequest, "INVALID_URL", "url must be an absolute http(s) URL")
 		return
 	}
 
@@ -135,6 +142,7 @@ func (h *DownloadHandlers) GetJob(w http.ResponseWriter, r *http.Request) {
 		Error:      job.Error,
 		URL:        job.URL,
 		SourceType: job.SourceType,
+		TrackID:    job.TrackID,
 		CreatedAt:  job.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 
@@ -173,6 +181,7 @@ func (h *DownloadHandlers) GetUserJobs(w http.ResponseWriter, r *http.Request) {
 			Error:      job.Error,
 			URL:        job.URL,
 			SourceType: job.SourceType,
+			TrackID:    job.TrackID,
 			CreatedAt:  job.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		}
 		if job.StartedAt != nil {
