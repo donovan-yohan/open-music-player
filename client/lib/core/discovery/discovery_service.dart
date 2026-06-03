@@ -27,61 +27,116 @@ class DiscoveryService {
     return DiscoverySearchResponse.fromJson(data);
   }
 
+  Future<DiscoveryQueueState> getQueue() async {
+    final response = await _apiClient.get<Map<String, dynamic>>('/queue');
+    final data = response.data;
+    if (data == null) {
+      throw const DiscoveryException('Queue returned no data.');
+    }
+    return DiscoveryQueueState.fromJson(data);
+  }
+
+  Future<DiscoveryQueueState> addQueueItem(
+    DiscoveryCandidate candidate, {
+    String position = 'last',
+  }) async {
+    final response = await _apiClient.post<Map<String, dynamic>>(
+      '/queue/items',
+      data: {'position': position, 'sourceCandidate': candidate.toQueueJson()},
+    );
+
+    final data = response.data;
+    if (data == null) {
+      throw const DiscoveryException('Queue insertion returned no data.');
+    }
+    return _parseQueueMutationResponse(data);
+  }
+
+  Future<DiscoveryQueueState> retryQueueItem(String queueItemId) async {
+    final response = await _apiClient.post<Map<String, dynamic>>(
+      '/queue/items/$queueItemId/retry',
+    );
+    final data = response.data;
+    if (data == null) {
+      throw const DiscoveryException('Queue retry returned no data.');
+    }
+    return _parseQueueMutationResponse(data);
+  }
+
+  Future<DiscoveryQueueState> removeQueueItem(String queueItemId) async {
+    final response = await _apiClient.delete<Map<String, dynamic>>(
+      '/queue/items/$queueItemId',
+    );
+    final data = response.data;
+    if (data == null) {
+      return getQueue();
+    }
+    return _parseQueueMutationResponse(data);
+  }
+
+  Future<DiscoveryQueueState> reorderQueueItem({
+    required String queueItemId,
+    required int toPosition,
+  }) async {
+    final response = await _apiClient.put<Map<String, dynamic>>(
+      '/queue/reorder',
+      data: {'queueItemId': queueItemId, 'toPosition': toPosition},
+    );
+    final data = response.data;
+    if (data == null) {
+      throw const DiscoveryException('Queue reorder returned no data.');
+    }
+    return _parseQueueMutationResponse(data);
+  }
+
+  @Deprecated('Use addQueueItem; direct downloads do not update queue state.')
   Future<DownloadJobSnapshot> createDownload(
     DiscoveryCandidate candidate,
   ) async {
-    final response = await _apiClient.post<Map<String, dynamic>>(
-      '/downloads',
-      data: {
-        'url': candidate.sourceUrl,
-        'source_type': candidate.sourceType,
-        'page_metadata': {
-          'title': candidate.title,
-          if (candidate.thumbnailUrl != null)
-            'thumbnail': candidate.thumbnailUrl,
-        },
-      },
+    final queue = await addQueueItem(candidate);
+    final item = queue.items.firstWhere(
+      (item) => item.candidate.sourceUrl == candidate.sourceUrl,
+      orElse: () => throw const DiscoveryException(
+        'Queue insertion did not return the requested source candidate.',
+      ),
     );
-
-    final data = response.data;
-    if (data == null) {
-      throw const DiscoveryException('Download queue returned no data.');
-    }
-
-    final jobId = _stringFromJson(data, const [
-      'job_id',
-      'jobId',
-      'downloadJobId',
-    ]);
-    if (jobId == null) {
-      throw const DiscoveryException(
-        'Download queue response was missing a job ID.',
-      );
-    }
-
     return DownloadJobSnapshot(
-      jobId: jobId,
-      status: data['status'] as String? ?? 'queued',
-      progress: data['progress'] as int? ?? 0,
-      error: _blankToNull(data['error'] as String?),
-      url: data['url'] as String? ?? candidate.sourceUrl,
-      sourceType:
-          _stringFromJson(data, const ['source_type', 'sourceType']) ??
-          candidate.sourceType,
-      trackId: _intFromJson(data, const ['track_id', 'trackId']),
+      jobId: item.downloadJobId ?? '',
+      status: item.playbackState,
+      progress: item.progress,
+      error: item.error,
+      url: item.candidate.sourceUrl,
+      sourceType: item.candidate.sourceType,
+      trackId: item.trackId,
     );
   }
 
+  @Deprecated('Use getQueue; queue state is the source of truth.')
   Future<DownloadJobSnapshot> getJob(String jobId) async {
-    final response = await _apiClient.get<Map<String, dynamic>>(
-      '/downloads/$jobId',
+    final queue = await getQueue();
+    final item = queue.items.firstWhere(
+      (item) => item.downloadJobId == jobId,
+      orElse: () => throw const DiscoveryException(
+        'Queue projection did not include the requested download job.',
+      ),
     );
+    return DownloadJobSnapshot(
+      jobId: item.downloadJobId ?? jobId,
+      status: item.playbackState,
+      progress: item.progress,
+      error: item.error,
+      url: item.candidate.sourceUrl,
+      sourceType: item.candidate.sourceType,
+      trackId: item.trackId,
+    );
+  }
 
-    final data = response.data;
-    if (data == null) {
-      throw const DiscoveryException('Download job returned no data.');
+  DiscoveryQueueState _parseQueueMutationResponse(Map<String, dynamic> data) {
+    final queue = data['queue'];
+    if (queue is Map<String, dynamic>) {
+      return DiscoveryQueueState.fromJson(queue);
     }
-    return DownloadJobSnapshot.fromJson(data);
+    return DiscoveryQueueState.fromJson(data);
   }
 }
 
@@ -92,25 +147,4 @@ class DiscoveryException implements Exception {
 
   @override
   String toString() => message;
-}
-
-String? _stringFromJson(Map<String, dynamic> json, Iterable<String> keys) {
-  for (final key in keys) {
-    final value = json[key];
-    if (value is String && value.trim().isNotEmpty) return value;
-  }
-  return null;
-}
-
-int? _intFromJson(Map<String, dynamic> json, Iterable<String> keys) {
-  for (final key in keys) {
-    final value = json[key];
-    if (value is int) return value;
-  }
-  return null;
-}
-
-String? _blankToNull(String? value) {
-  if (value == null || value.trim().isEmpty) return null;
-  return value;
 }

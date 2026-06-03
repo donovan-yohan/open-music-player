@@ -26,10 +26,11 @@ class _SearchScreenState extends State<SearchScreen> {
   DiscoverySearchResponse? _response;
   final List<DiscoveryQueueItem> _queue = [];
 
+  int _searchRequestSerial = 0;
+  bool _isPollingQueue = false;
+
   bool _isSearching = false;
-  bool _isPolling = false;
   String _query = '';
-  int _searchGeneration = 0;
   String? _searchError;
 
   @override
@@ -47,51 +48,68 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   void _onQueryChanged(String value) {
-    _debounceTimer?.cancel();
     final next = value.trim();
-    if (next == _query) return;
+    _debounceTimer?.cancel();
+    if (next.isEmpty) {
+      _searchRequestSerial++;
+      setState(() {
+        _query = '';
+        _response = null;
+        _searchError = null;
+        _isSearching = false;
+      });
+      return;
+    }
 
-    _searchGeneration++;
-    setState(() {
-      _query = next;
-      _response = null;
-      _searchError = null;
-      _isSearching = next.isNotEmpty;
-    });
-
-    if (next.isEmpty) return;
-
+    setState(() {});
     _debounceTimer = Timer(const Duration(milliseconds: 350), () {
-      _runSearch(next);
+      if (next == _query) return;
+      _runSearch(query: next);
     });
   }
 
-  Future<void> _runSearch(String query) async {
-    if (query.isEmpty) return;
-    final generation = ++_searchGeneration;
+  Future<void> _runSearch({String? query}) async {
+    final searchText = (query ?? _queryController.text).trim();
+    _debounceTimer?.cancel();
+    final requestId = ++_searchRequestSerial;
+
+    if (searchText.isEmpty) {
+      setState(() {
+        _query = '';
+        _response = null;
+        _searchError = null;
+        _isSearching = false;
+      });
+      return;
+    }
 
     setState(() {
+      _query = searchText;
       _isSearching = true;
       _searchError = null;
     });
 
     try {
-      final response = await _discoveryService.search(query);
-      if (!mounted || generation != _searchGeneration || query != _query) {
+      final response = await _discoveryService.search(searchText);
+      if (!mounted ||
+          requestId != _searchRequestSerial ||
+          _query != searchText) {
         return;
       }
       setState(() {
         _response = response;
       });
     } catch (error) {
-      if (!mounted || generation != _searchGeneration || query != _query) {
+      if (!mounted ||
+          requestId != _searchRequestSerial ||
+          _query != searchText) {
         return;
       }
       setState(() {
         _searchError = _friendlyApiError(error);
       });
     } finally {
-      if (mounted && generation == _searchGeneration) {
+      if (mounted && requestId == _searchRequestSerial) {
         setState(() {
           _isSearching = false;
         });
@@ -105,29 +123,48 @@ class _SearchScreenState extends State<SearchScreen> {
     final localId = candidate.candidateId.isNotEmpty
         ? candidate.candidateId
         : candidate.sourceUrl;
-    final item = DiscoveryQueueItem(localId: localId, candidate: candidate);
+    final pending = DiscoveryQueueItem(
+      localId: localId,
+      candidate: candidate,
+      playbackState: 'queued',
+      canPlay: false,
+      canRetry: false,
+      canRemove: false,
+    );
 
     setState(() {
-      _queue.insert(0, item);
+      _queue.insert(0, pending);
     });
-    _ensurePolling();
 
     try {
-      final snapshot = await _discoveryService.createDownload(candidate);
-      _replaceQueueItem(localId, (current) => current.withSnapshot(snapshot));
+      final queue = await _discoveryService.addQueueItem(candidate);
+      _replaceQueue(queue.items);
     } catch (error) {
       _replaceQueueItem(
         localId,
-        (current) =>
-            current.copyWith(status: 'failed', error: _friendlyApiError(error)),
+        (current) => current.copyWith(
+          playbackState: 'failed',
+          error: _friendlyApiError(error),
+          canRetry: true,
+          canRemove: true,
+        ),
       );
     } finally {
       _ensurePolling();
     }
   }
 
+  void _replaceQueue(List<DiscoveryQueueItem> items) {
+    if (!mounted) return;
+    setState(() {
+      _queue
+        ..clear()
+        ..addAll(items);
+    });
+  }
+
   void _ensurePolling() {
-    final hasActive = _queue.any((item) => item.jobId != null && item.isActive);
+    final hasActive = _queue.any((item) => item.isActive);
     if (!hasActive) {
       _pollTimer?.cancel();
       _pollTimer = null;
@@ -139,42 +176,58 @@ class _SearchScreenState extends State<SearchScreen> {
     });
   }
 
-  Future<void> _pollActiveJobs() async {
-    if (_isPolling || !mounted) return;
-    _isPolling = true;
+  Future<void> _pollActiveJobs({bool force = false}) async {
+    if (_isPollingQueue) return;
+    if (!force && !_queue.any((item) => item.isActive)) {
+      _ensurePolling();
+      return;
+    }
 
-    final pending = _queue
-        .where((item) => item.jobId != null && item.isActive)
-        .map((item) => item.jobId!)
-        .toList();
-
+    _isPollingQueue = true;
     try {
-      for (final jobId in pending) {
-        if (!mounted) return;
-        try {
-          final snapshot = await _discoveryService.getJob(jobId);
-          if (!mounted) return;
-          _replaceJobItem(jobId, (current) => current.withSnapshot(snapshot));
-        } catch (error) {
-          if (!mounted) return;
-          _replaceJobItem(
-            jobId,
-            (current) => current.copyWith(
-              status: 'failed',
-              error: _friendlyApiError(error),
-            ),
-          );
-        }
+      final queue = await _discoveryService.getQueue();
+      _replaceQueue(queue.items);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _searchError = _friendlyApiError(error);
+        });
       }
     } finally {
-      _isPolling = false;
-      if (mounted) _ensurePolling();
+      _isPollingQueue = false;
+      _ensurePolling();
     }
   }
 
   Future<void> _retryItem(DiscoveryQueueItem item) async {
-    _removeItem(item.localId);
-    await _queueCandidate(item.candidate);
+    final queueItemId = item.queueItemId;
+    if (queueItemId == null || !item.canRetry) return;
+
+    _replaceQueueItem(
+      item.localId,
+      (current) => current.copyWith(
+        playbackState: 'queued',
+        progress: 0,
+        clearError: true,
+        canRetry: false,
+      ),
+    );
+
+    try {
+      final queue = await _discoveryService.retryQueueItem(queueItemId);
+      _replaceQueue(queue.items);
+    } catch (error) {
+      _replaceQueueItem(
+        item.localId,
+        (current) => current.copyWith(
+          playbackState: 'failed',
+          error: _friendlyApiError(error),
+          canRetry: true,
+        ),
+      );
+    } finally {
+      _ensurePolling();
+    }
   }
 
   Future<void> _playItem(DiscoveryQueueItem item) async {
@@ -184,11 +237,11 @@ class _SearchScreenState extends State<SearchScreen> {
     try {
       await context.read<PlaybackState>().playTrack({
         'id': trackId,
-        'title': item.candidate.title,
-        'artist': item.candidate.artist ?? item.candidate.uploader,
-        'album': item.candidate.provider,
+        'title': item.title,
+        'artist': item.artist,
+        'album': item.candidate.album ?? item.candidate.provider,
         'duration': item.candidate.durationSeconds,
-        'artwork_url': item.candidate.thumbnailUrl,
+        'artwork_url': item.thumbnailUrl,
       });
     } on SignedAudioUrlException {
       // PlaybackState exposes the user-facing error. Pressing play again asks
@@ -210,23 +263,32 @@ class _SearchScreenState extends State<SearchScreen> {
     });
   }
 
-  void _replaceJobItem(
-    String jobId,
-    DiscoveryQueueItem Function(DiscoveryQueueItem current) update,
-  ) {
-    if (!mounted) return;
-    final index = _queue.indexWhere((item) => item.jobId == jobId);
-    if (index == -1) return;
+  Future<void> _removeItem(DiscoveryQueueItem item) async {
+    final previousQueue = List<DiscoveryQueueItem>.from(_queue);
     setState(() {
-      _queue[index] = update(_queue[index]);
+      _queue.removeWhere((queued) => queued.localId == item.localId);
     });
-  }
 
-  void _removeItem(String localId) {
-    setState(() {
-      _queue.removeWhere((item) => item.localId == localId);
-    });
-    _ensurePolling();
+    final queueItemId = item.queueItemId;
+    if (queueItemId == null) {
+      _ensurePolling();
+      return;
+    }
+
+    try {
+      final queue = await _discoveryService.removeQueueItem(queueItemId);
+      _replaceQueue(queue.items);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _queue
+          ..clear()
+          ..addAll(previousQueue);
+        _searchError = _friendlyApiError(error);
+      });
+    } finally {
+      _ensurePolling();
+    }
   }
 
   bool _isCandidateQueued(DiscoveryCandidate candidate) {
@@ -236,11 +298,34 @@ class _SearchScreenState extends State<SearchScreen> {
     return _queue.any((item) => item.localId == key);
   }
 
-  void _onReorder(int oldIndex, int newIndex) {
+  Future<void> _onReorder(int oldIndex, int newIndex) async {
+    if (oldIndex == newIndex) return;
+    final previousQueue = List<DiscoveryQueueItem>.from(_queue);
+    final item = _queue[oldIndex];
+    final queueItemId = item.queueItemId;
+
     setState(() {
-      final item = _queue.removeAt(oldIndex);
-      _queue.insert(newIndex, item);
+      final moved = _queue.removeAt(oldIndex);
+      _queue.insert(newIndex, moved);
     });
+
+    if (queueItemId == null) return;
+
+    try {
+      final queue = await _discoveryService.reorderQueueItem(
+        queueItemId: queueItemId,
+        toPosition: newIndex,
+      );
+      _replaceQueue(queue.items);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _queue
+          ..clear()
+          ..addAll(previousQueue);
+        _searchError = _friendlyApiError(error);
+      });
+    }
   }
 
   @override
@@ -252,10 +337,9 @@ class _SearchScreenState extends State<SearchScreen> {
         title: const Text('Mobile Discovery'),
         actions: [
           IconButton(
-            tooltip: 'Refresh jobs',
-            onPressed: _queue.any((item) => item.jobId != null)
-                ? _pollActiveJobs
-                : null,
+            tooltip: 'Refresh queue',
+            onPressed:
+                _queue.isNotEmpty ? () => _pollActiveJobs(force: true) : null,
             icon: const Icon(Icons.refresh),
           ),
         ],
@@ -263,8 +347,8 @@ class _SearchScreenState extends State<SearchScreen> {
       body: RefreshIndicator(
         onRefresh: () async {
           await Future.wait([
-            if (_query.isNotEmpty) _runSearch(_query),
-            _pollActiveJobs(),
+            if (_query.isNotEmpty) _runSearch(),
+            _pollActiveJobs(force: true),
           ]);
         },
         child: ListView(
@@ -273,7 +357,7 @@ class _SearchScreenState extends State<SearchScreen> {
           children: [
             _buildSearchBox(),
             if (_searchError != null)
-              _buildErrorCard(_searchError!, () => _runSearch(_query)),
+              _buildErrorCard(_searchError!, _runSearch),
             if (_response != null) _buildProviderRow(_response!.providers),
             const SizedBox(height: 12),
             _buildResultsSection(),
@@ -291,25 +375,7 @@ class _SearchScreenState extends State<SearchScreen> {
       minLines: 1,
       textInputAction: TextInputAction.search,
       onChanged: _onQueryChanged,
-      onSubmitted: (value) {
-        _debounceTimer?.cancel();
-        final next = value.trim();
-        if (next != _query) {
-          setState(() {
-            _query = next;
-          });
-        }
-        if (next.isEmpty) {
-          _searchGeneration++;
-          setState(() {
-            _response = null;
-            _searchError = null;
-            _isSearching = false;
-          });
-          return;
-        }
-        _runSearch(next);
-      },
+      onSubmitted: (value) => _runSearch(query: value),
       decoration: InputDecoration(
         labelText: 'Search YouTube / SoundCloud',
         hintText: 'lofi study mix, live set, bootleg...',
@@ -447,8 +513,10 @@ class _SearchScreenState extends State<SearchScreen> {
               final item = _queue[index];
               return Dismissible(
                 key: ValueKey('dismiss-${item.localId}'),
-                direction: DismissDirection.endToStart,
-                onDismissed: (_) => _removeItem(item.localId),
+                direction: item.canRemove
+                    ? DismissDirection.endToStart
+                    : DismissDirection.none,
+                onDismissed: (_) => _removeItem(item),
                 background: Container(
                   margin: const EdgeInsets.only(bottom: 10),
                   alignment: Alignment.centerRight,
@@ -468,8 +536,8 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Widget _buildQueueTile(DiscoveryQueueItem item, int index) {
-    final canPlay = item.isPlayable;
-    final canRetry = item.isFailed;
+    final canPlay = item.canPlay;
+    final canRetry = item.canRetry;
 
     return Card(
       key: ValueKey(item.localId),
@@ -477,11 +545,7 @@ class _SearchScreenState extends State<SearchScreen> {
       child: ListTile(
         minVerticalPadding: 12,
         leading: _buildStatusLeading(item),
-        title: Text(
-          item.candidate.title,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
+        title: Text(item.title, maxLines: 2, overflow: TextOverflow.ellipsis),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -524,10 +588,10 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _buildStatusLeading(DiscoveryQueueItem item) {
     if (item.isPlayable) {
-      return _buildThumb(item.candidate.thumbnailUrl, overlay: Icons.check);
+      return _buildThumb(item.thumbnailUrl, overlay: Icons.check);
     }
     if (item.isFailed) {
-      return _buildThumb(item.candidate.thumbnailUrl, overlay: Icons.error);
+      return _buildThumb(item.thumbnailUrl, overlay: Icons.error);
     }
     return SizedBox(
       width: 56,
@@ -535,7 +599,7 @@ class _SearchScreenState extends State<SearchScreen> {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          _buildThumb(item.candidate.thumbnailUrl),
+          _buildThumb(item.thumbnailUrl),
           CircularProgressIndicator(
             value: item.progress > 0 ? item.progress / 100 : null,
             strokeWidth: 3,

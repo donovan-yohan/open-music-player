@@ -34,6 +34,7 @@ class DiscoveryCandidate {
   final String sourceUrl;
   final String title;
   final String? artist;
+  final String? album;
   final String? uploader;
   final int? durationMs;
   final String? thumbnailUrl;
@@ -47,6 +48,7 @@ class DiscoveryCandidate {
     required this.sourceUrl,
     required this.title,
     this.artist,
+    this.album,
     this.uploader,
     this.durationMs,
     this.thumbnailUrl,
@@ -62,12 +64,50 @@ class DiscoveryCandidate {
       sourceUrl: json['sourceUrl'] as String? ?? '',
       title: json['title'] as String? ?? 'Untitled result',
       artist: _blankToNull(json['artist'] as String?),
+      album: _blankToNull(json['album'] as String?),
       uploader: _blankToNull(json['uploader'] as String?),
-      durationMs: json['durationMs'] as int?,
-      thumbnailUrl: _blankToNull(json['thumbnailUrl'] as String?),
+      durationMs: _readInt(json['durationMs']) ?? _readInt(json['duration_ms']),
+      thumbnailUrl: _blankToNull(
+        json['thumbnailUrl'] as String? ?? json['thumbnail_url'] as String?,
+      ),
       downloadable: json['downloadable'] as bool? ?? false,
       playable: json['playable'] as bool? ?? false,
     );
+  }
+
+  factory DiscoveryCandidate.fromQueueItemJson(Map<String, dynamic> json) {
+    return DiscoveryCandidate(
+      candidateId: json['candidateId'] as String? ?? '',
+      provider: json['provider'] as String? ?? 'library',
+      sourceId: json['sourceId'] as String? ?? '',
+      sourceUrl: json['sourceUrl'] as String? ?? '',
+      title: json['title'] as String? ?? 'Queued track',
+      artist: _blankToNull(json['artist'] as String?),
+      album: _blankToNull(json['album'] as String?),
+      uploader: _blankToNull(json['uploader'] as String?),
+      durationMs: _readInt(json['durationMs']) ?? _readInt(json['duration_ms']),
+      thumbnailUrl: _blankToNull(
+        json['thumbnailUrl'] as String? ?? json['thumbnail_url'] as String?,
+      ),
+      downloadable: false,
+      playable: true,
+    );
+  }
+
+  Map<String, dynamic> toQueueJson() {
+    return {
+      'candidateId': candidateId,
+      'provider': provider,
+      if (sourceId.isNotEmpty) 'sourceId': sourceId,
+      'sourceUrl': sourceUrl,
+      'title': title,
+      if (artist != null) 'artist': artist,
+      if (album != null) 'album': album,
+      if (uploader != null) 'uploader': uploader,
+      if (durationMs != null) 'durationMs': durationMs,
+      if (thumbnailUrl != null) 'thumbnailUrl': thumbnailUrl,
+      'downloadable': downloadable,
+    };
   }
 
   String get displaySubtitle {
@@ -119,9 +159,38 @@ class DiscoveryProviderSummary {
       status: json['status'] as String? ?? 'unknown',
       resultCount: json['resultCount'] as int? ?? 0,
       elapsedMs: json['elapsedMs'] as int? ?? 0,
-      errorMessage: error is Map<String, dynamic>
-          ? error['message'] as String?
-          : null,
+      errorMessage:
+          error is Map<String, dynamic> ? error['message'] as String? : null,
+    );
+  }
+}
+
+class DiscoveryQueueState {
+  final List<DiscoveryQueueItem> items;
+  final int currentPosition;
+  final DateTime? updatedAt;
+
+  const DiscoveryQueueState({
+    required this.items,
+    required this.currentPosition,
+    this.updatedAt,
+  });
+
+  factory DiscoveryQueueState.empty() {
+    return const DiscoveryQueueState(items: [], currentPosition: 0);
+  }
+
+  factory DiscoveryQueueState.fromJson(Map<String, dynamic> json) {
+    return DiscoveryQueueState(
+      items: (json['items'] as List<dynamic>? ?? const [])
+          .map(
+            (item) => DiscoveryQueueItem.fromJson(item as Map<String, dynamic>),
+          )
+          .toList(),
+      currentPosition: _readInt(json['currentPosition']) ??
+          _readInt(json['current_position']) ??
+          0,
+      updatedAt: _readDate(json['updatedAt']) ?? _readDate(json['updated_at']),
     );
   }
 }
@@ -147,16 +216,19 @@ class DownloadJobSnapshot {
 
   factory DownloadJobSnapshot.fromJson(Map<String, dynamic> json) {
     return DownloadJobSnapshot(
-      jobId:
-          _stringFromJson(json, const ['job_id', 'jobId', 'downloadJobId']) ??
+      jobId: _stringFromJson(
+            json,
+            const ['jobId', 'job_id', 'downloadJobId', 'download_job_id'],
+          ) ??
           '',
       status: json['status'] as String? ?? 'queued',
-      progress: json['progress'] as int? ?? 0,
+      progress: _readInt(json['progress']) ?? 0,
       error: _blankToNull(json['error'] as String?),
-      url: json['url'] as String? ?? '',
+      url:
+          _stringFromJson(json, const ['url', 'sourceUrl', 'source_url']) ?? '',
       sourceType:
-          _stringFromJson(json, const ['source_type', 'sourceType']) ?? '',
-      trackId: _intFromJson(json, const ['track_id', 'trackId']),
+          _stringFromJson(json, const ['sourceType', 'source_type']) ?? '',
+      trackId: _readInt(json['trackId']) ?? _readInt(json['track_id']),
     );
   }
 
@@ -174,46 +246,133 @@ class DownloadJobSnapshot {
 
 class DiscoveryQueueItem {
   final String localId;
+  final String? queueItemId;
+  final int position;
+  final String kind;
   final DiscoveryCandidate candidate;
-  final String? jobId;
-  final String status;
+  final String? downloadJobId;
+  final String playbackState;
   final int progress;
   final int? trackId;
   final String? error;
+  final bool canPlay;
+  final bool canRetry;
+  final bool canRemove;
+  final DateTime? addedAt;
+  final DateTime? updatedAt;
 
   const DiscoveryQueueItem({
     required this.localId,
+    this.queueItemId,
+    this.position = 0,
+    this.kind = 'source',
     required this.candidate,
-    this.jobId,
-    this.status = 'pending',
+    this.downloadJobId,
+    String? status,
+    String? playbackState,
     this.progress = 0,
     this.trackId,
     this.error,
-  });
+    bool? canPlay,
+    bool? canRetry,
+    bool? canRemove,
+    this.addedAt,
+    this.updatedAt,
+  })  : playbackState = playbackState ?? status ?? 'queued',
+        canPlay = canPlay ??
+            ((playbackState ?? status ?? '') == 'playable' && trackId != null),
+        canRetry = canRetry ?? ((playbackState ?? status ?? '') == 'failed'),
+        canRemove = canRemove ?? true;
+
+  factory DiscoveryQueueItem.fromJson(Map<String, dynamic> json) {
+    final sourceJson = json['sourceCandidate'] ?? json['source_candidate'];
+    final candidate = sourceJson is Map<String, dynamic>
+        ? DiscoveryCandidate.fromJson(sourceJson)
+        : DiscoveryCandidate.fromQueueItemJson(json);
+    final queueItemId = json['queueItemId'] as String? ?? json['id'] as String?;
+    final trackId = _readInt(json['trackId']) ?? _readInt(json['track_id']);
+    final rawState = json['playbackState'] as String? ??
+        json['playback_state'] as String? ??
+        json['status'] as String? ??
+        (trackId != null ? 'playable' : 'queued');
+    final playbackState = _normalizePlaybackState(rawState);
+    final progress = _readInt(json['progress']) ??
+        (playbackState == 'playable'
+            ? 100
+            : playbackState == 'failed'
+                ? 0
+                : 0);
+    final error = _blankToNull(json['error'] as String?);
+    final downloadJobId =
+        json['downloadJobId'] as String? ?? json['download_job_id'] as String?;
+
+    return DiscoveryQueueItem(
+      localId: queueItemId ??
+          candidate.candidateId.ifNotEmpty ??
+          downloadJobId ??
+          candidate.sourceUrl,
+      queueItemId: queueItemId,
+      position: _readInt(json['position']) ?? 0,
+      kind:
+          json['kind'] as String? ?? (sourceJson == null ? 'track' : 'source'),
+      candidate: candidate,
+      downloadJobId: downloadJobId,
+      playbackState: playbackState,
+      progress: progress,
+      trackId: trackId,
+      error: error,
+      canPlay: json['canPlay'] as bool? ??
+          (playbackState == 'playable' && trackId != null),
+      canRetry: json['canRetry'] as bool? ?? playbackState == 'failed',
+      canRemove: json['canRemove'] as bool? ?? true,
+      addedAt: _readDate(json['addedAt']) ?? _readDate(json['added_at']),
+      updatedAt: _readDate(json['updatedAt']) ?? _readDate(json['updated_at']),
+    );
+  }
 
   DiscoveryQueueItem copyWith({
-    String? jobId,
+    String? queueItemId,
+    int? position,
+    String? kind,
+    String? downloadJobId,
     String? status,
+    String? playbackState,
     int? progress,
     int? trackId,
     String? error,
+    bool? canPlay,
+    bool? canRetry,
+    bool? canRemove,
     bool clearError = false,
   }) {
+    final nextState = _normalizePlaybackState(
+      playbackState ?? status ?? this.playbackState,
+    );
+    final nextTrackId = trackId ?? this.trackId;
     return DiscoveryQueueItem(
       localId: localId,
+      queueItemId: queueItemId ?? this.queueItemId,
+      position: position ?? this.position,
+      kind: kind ?? this.kind,
       candidate: candidate,
-      jobId: jobId ?? this.jobId,
-      status: status ?? this.status,
+      downloadJobId: downloadJobId ?? this.downloadJobId,
+      playbackState: nextState,
       progress: progress ?? this.progress,
-      trackId: trackId ?? this.trackId,
+      trackId: nextTrackId,
       error: clearError ? null : error ?? this.error,
+      canPlay: canPlay ?? (nextState == 'playable' && nextTrackId != null),
+      canRetry: canRetry ?? nextState == 'failed',
+      canRemove: canRemove ?? this.canRemove,
+      addedAt: addedAt,
+      updatedAt: updatedAt,
     );
   }
 
   DiscoveryQueueItem withSnapshot(DownloadJobSnapshot snapshot) {
+    final nextState = snapshot.isPlayable ? 'playable' : snapshot.status;
     return copyWith(
-      jobId: snapshot.jobId,
-      status: snapshot.isPlayable ? 'playable' : snapshot.status,
+      downloadJobId: snapshot.jobId,
+      playbackState: nextState,
       progress: snapshot.isPlayable ? 100 : snapshot.progress,
       trackId: snapshot.trackId,
       error: snapshot.error,
@@ -221,24 +380,20 @@ class DiscoveryQueueItem {
     );
   }
 
-  bool get isPending => status == 'pending' || status == 'queued';
+  bool get isPending => playbackState == 'pending' || playbackState == 'queued';
   bool get isActive => !isFailed && !isPlayable;
-  bool get isFailed => error != null || status.toLowerCase() == 'failed';
-  bool get isPlayable =>
-      trackId != null &&
-      const {
-        'playable',
-        'completed',
-        'complete',
-        'ready',
-      }.contains(status.toLowerCase());
+  bool get isFailed => error != null || playbackState == 'failed';
+  bool get isPlayable => canPlay && trackId != null;
+
+  String get title => candidate.title;
+  String? get artist => candidate.artist ?? candidate.uploader;
+  String? get thumbnailUrl => candidate.thumbnailUrl;
 
   String get statusLabel {
     if (isPlayable) return 'playable';
     if (isFailed) return 'failed';
-    switch (status.toLowerCase()) {
+    switch (playbackState) {
       case 'pending':
-        return 'pending';
       case 'queued':
         return 'queued';
       case 'downloading':
@@ -248,9 +403,47 @@ class DiscoveryQueueItem {
       case 'uploading':
         return 'uploading';
       default:
-        return status;
+        return playbackState;
     }
   }
+}
+
+extension _StringIfNotEmpty on String {
+  String? get ifNotEmpty => isEmpty ? null : this;
+}
+
+String _normalizePlaybackState(String value) {
+  switch (value.trim().toLowerCase()) {
+    case 'pendingdownload':
+    case 'pending_download':
+    case 'pending':
+    case 'queued':
+      return 'queued';
+    case 'complete':
+    case 'completed':
+    case 'ready':
+    case 'playable':
+      return 'playable';
+    case 'downloading':
+    case 'processing':
+    case 'uploading':
+    case 'failed':
+      return value.trim().toLowerCase();
+    default:
+      return value.trim().isEmpty ? 'queued' : value.trim();
+  }
+}
+
+int? _readInt(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value);
+  return null;
+}
+
+DateTime? _readDate(Object? value) {
+  if (value is! String || value.isEmpty) return null;
+  return DateTime.tryParse(value)?.toUtc();
 }
 
 String? _blankToNull(String? value) {
@@ -262,14 +455,6 @@ String? _stringFromJson(Map<String, dynamic> json, Iterable<String> keys) {
   for (final key in keys) {
     final value = json[key];
     if (value is String && value.trim().isNotEmpty) return value;
-  }
-  return null;
-}
-
-int? _intFromJson(Map<String, dynamic> json, Iterable<String> keys) {
-  for (final key in keys) {
-    final value = json[key];
-    if (value is int) return value;
   }
   return null;
 }

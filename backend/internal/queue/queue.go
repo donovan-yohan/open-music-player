@@ -30,13 +30,20 @@ var (
 // QueueItem represents an entry in the playback queue. Source-backed entries
 // are pending/non-playable until their download job resolves to a track ID.
 type QueueItem struct {
-	ID            string           `json:"id"`
+	ID            string           `json:"queueItemId"`
 	Position      int              `json:"position"`
-	TrackID       *int64           `json:"track_id,omitempty"`
-	PlaybackState string           `json:"playback_state"`
-	DownloadJobID string           `json:"download_job_id,omitempty"`
-	Source        *SourceCandidate `json:"source_candidate,omitempty"`
-	AddedAt       time.Time        `json:"added_at"`
+	Kind          string           `json:"kind"`
+	TrackID       *int64           `json:"trackId"`
+	PlaybackState string           `json:"playbackState"`
+	DownloadJobID string           `json:"downloadJobId"`
+	Source        *SourceCandidate `json:"sourceCandidate"`
+	Progress      int              `json:"progress"`
+	Error         string           `json:"error,omitempty"`
+	CanPlay       bool             `json:"canPlay"`
+	CanRetry      bool             `json:"canRetry"`
+	CanRemove     bool             `json:"canRemove"`
+	AddedAt       time.Time        `json:"addedAt"`
+	UpdatedAt     time.Time        `json:"updatedAt"`
 }
 
 type SourceCandidate struct {
@@ -56,8 +63,8 @@ type SourceCandidate struct {
 // QueueState represents the full state of a user's playback queue
 type QueueState struct {
 	Items           []QueueItem `json:"items"`
-	CurrentPosition int         `json:"current_position"`
-	UpdatedAt       time.Time   `json:"updated_at"`
+	CurrentPosition int         `json:"currentPosition"`
+	UpdatedAt       time.Time   `json:"updatedAt"`
 }
 
 // AddRequest represents a request to add tracks to the queue
@@ -137,12 +144,19 @@ func (s *Service) AddToQueue(ctx context.Context, userID string, trackID int64, 
 		return nil, err
 	}
 
+	now := time.Now()
 	trackIDCopy := trackID
 	newItem := QueueItem{
 		ID:            uuid.NewString(),
+		Kind:          "track",
 		TrackID:       &trackIDCopy,
 		PlaybackState: "playable",
-		AddedAt:       time.Now(),
+		Progress:      100,
+		CanPlay:       true,
+		CanRetry:      false,
+		CanRemove:     true,
+		AddedAt:       now,
+		UpdatedAt:     now,
 	}
 
 	insertIdx, adjustCurrent, err := resolveInsertPosition(state, position)
@@ -205,12 +219,19 @@ func (s *Service) AddSourceCandidate(ctx context.Context, userID string, candida
 		return nil, err
 	}
 
+	now := time.Now()
 	newItem := QueueItem{
 		ID:            uuid.NewString(),
-		PlaybackState: "pendingDownload",
+		Kind:          "source",
+		PlaybackState: "queued",
 		DownloadJobID: downloadJobID,
 		Source:        &candidate,
-		AddedAt:       time.Now(),
+		Progress:      0,
+		CanPlay:       false,
+		CanRetry:      false,
+		CanRemove:     true,
+		AddedAt:       now,
+		UpdatedAt:     now,
 	}
 
 	insertIdx, adjustCurrent, err := resolveInsertPosition(state, position)
@@ -243,9 +264,15 @@ func (s *Service) AddMultipleToQueue(ctx context.Context, userID string, trackID
 		trackIDCopy := trackID
 		newItems[i] = QueueItem{
 			ID:            uuid.NewString(),
+			Kind:          "track",
 			TrackID:       &trackIDCopy,
 			PlaybackState: "playable",
+			Progress:      100,
+			CanPlay:       true,
+			CanRetry:      false,
+			CanRemove:     true,
 			AddedAt:       now,
+			UpdatedAt:     now,
 		}
 	}
 
@@ -348,6 +375,65 @@ func (s *Service) ReorderQueue(ctx context.Context, userID string, fromPos, toPo
 	return state, nil
 }
 
+// RemoveQueueItem removes the queue item with the specified server ID.
+func (s *Service) RemoveQueueItem(ctx context.Context, userID, queueItemID string) (*QueueState, error) {
+	state, err := s.GetQueue(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range state.Items {
+		if item.ID == queueItemID {
+			return s.RemoveFromQueue(ctx, userID, item.Position)
+		}
+	}
+	return nil, ErrTrackNotFound
+}
+
+// ReorderQueueItem moves a queue item by server ID.
+func (s *Service) ReorderQueueItem(ctx context.Context, userID, queueItemID string, toPos int) (*QueueState, error) {
+	state, err := s.GetQueue(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range state.Items {
+		if item.ID == queueItemID {
+			return s.ReorderQueue(ctx, userID, item.Position, toPos)
+		}
+	}
+	return nil, ErrTrackNotFound
+}
+
+// RetryQueueItem marks a failed download-backed item as queued again.
+func (s *Service) RetryQueueItem(ctx context.Context, userID, queueItemID string) (*QueueState, string, error) {
+	state, err := s.GetQueue(ctx, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	for i := range state.Items {
+		item := &state.Items[i]
+		if item.ID != queueItemID {
+			continue
+		}
+		if item.DownloadJobID == "" {
+			return nil, "", ErrTrackNotFound
+		}
+		item.PlaybackState = "queued"
+		item.Progress = 0
+		item.Error = ""
+		item.CanPlay = false
+		item.CanRetry = false
+		item.CanRemove = true
+		item.UpdatedAt = time.Now()
+		state.UpdatedAt = item.UpdatedAt
+		s.recalculatePositions(state)
+		if err := s.saveQueue(ctx, userID, state); err != nil {
+			return nil, "", err
+		}
+		return state, item.DownloadJobID, nil
+	}
+	return nil, "", ErrTrackNotFound
+}
+
 // ClearQueue clears all items from the queue
 func (s *Service) ClearQueue(ctx context.Context, userID string) error {
 	return s.client.Del(ctx, s.queueKey(userID)).Err()
@@ -390,8 +476,32 @@ func (s *Service) saveQueue(ctx context.Context, userID string, state *QueueStat
 
 // recalculatePositions updates the position field for all items
 func (s *Service) recalculatePositions(state *QueueState) {
+	now := time.Now()
 	for i := range state.Items {
-		state.Items[i].Position = i
+		item := &state.Items[i]
+		item.Position = i
+		if item.Kind == "" {
+			if item.Source != nil {
+				item.Kind = "source"
+			} else {
+				item.Kind = "track"
+			}
+		}
+		if item.PlaybackState == "" || item.PlaybackState == "pendingDownload" {
+			item.PlaybackState = "queued"
+		}
+		if item.TrackID != nil && item.PlaybackState == "playable" {
+			item.Progress = 100
+			item.CanPlay = true
+		}
+		if item.PlaybackState == "failed" {
+			item.CanRetry = true
+			item.CanPlay = false
+		}
+		item.CanRemove = true
+		if item.UpdatedAt.IsZero() {
+			item.UpdatedAt = now
+		}
 	}
 }
 

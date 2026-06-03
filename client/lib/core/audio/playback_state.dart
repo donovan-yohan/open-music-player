@@ -87,22 +87,56 @@ class PlaybackState extends ChangeNotifier {
   Future<void> playTrack(Map<String, dynamic> track) async {
     await _resolveSignedUrls(() async {
       final trackId = _readTrackId(track);
-      final descriptor =
-          await _signedAudioUrlService.requireDescriptor(trackId);
-      final mediaItem = _buildMediaItem(track, descriptor);
-      await _audioService.setQueue([mediaItem]);
-      await _audioService.play();
+      await _playWithFreshSignedUrlRetry(
+        trackId: trackId,
+        start: (descriptor) async {
+          final mediaItem = _buildMediaItem(track, descriptor);
+          await _audioService.setQueue([mediaItem]);
+          await _audioService.play();
+        },
+      );
     });
   }
 
-  Future<void> playQueue(List<Map<String, dynamic>> tracks,
-      {int startIndex = 0}) async {
+  Future<void> playQueue(
+    List<Map<String, dynamic>> tracks, {
+    int startIndex = 0,
+  }) async {
     if (tracks.isEmpty) return;
 
     await _resolveSignedUrls(() async {
       final trackIds = tracks.map(_readTrackId).toList();
-      final descriptors =
-          await _signedAudioUrlService.requireDescriptors(trackIds);
+      await _playQueueWithFreshSignedUrlRetry(
+        tracks: tracks,
+        trackIds: trackIds,
+        startIndex: startIndex,
+      );
+    });
+  }
+
+  Future<void> _playWithFreshSignedUrlRetry({
+    required int trackId,
+    required Future<void> Function(SignedAudioDescriptor descriptor) start,
+  }) async {
+    final descriptor = await _signedAudioUrlService.requireDescriptor(trackId);
+    try {
+      await start(descriptor);
+    } catch (error) {
+      if (!_isRecoverableObjectUrlFailure(error)) rethrow;
+      final refreshed = await _signedAudioUrlService.requireDescriptor(trackId);
+      await start(refreshed);
+    }
+  }
+
+  Future<void> _playQueueWithFreshSignedUrlRetry({
+    required List<Map<String, dynamic>> tracks,
+    required List<int> trackIds,
+    required int startIndex,
+  }) async {
+    Future<void> start() async {
+      final descriptors = await _signedAudioUrlService.requireDescriptors(
+        trackIds,
+      );
       final items = tracks.map((track) {
         final trackId = _readTrackId(track);
         return _buildMediaItem(track, descriptors[trackId]!);
@@ -110,7 +144,24 @@ class PlaybackState extends ChangeNotifier {
 
       await _audioService.setQueue(items, initialIndex: startIndex);
       await _audioService.play();
-    });
+    }
+
+    try {
+      await start();
+    } catch (error) {
+      if (!_isRecoverableObjectUrlFailure(error)) rethrow;
+      await start();
+    }
+  }
+
+  bool _isRecoverableObjectUrlFailure(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('403') ||
+        message.contains('forbidden') ||
+        message.contains('expired') ||
+        message.contains('signature') ||
+        message.contains('accessdenied') ||
+        message.contains('access denied');
   }
 
   MediaItem _buildMediaItem(
@@ -133,8 +184,8 @@ class PlaybackState extends ChangeNotifier {
           'contentType': descriptor.contentType,
         if (descriptor.sizeBytes != null) 'sizeBytes': descriptor.sizeBytes,
         if (descriptor.etag != null) 'etag': descriptor.etag,
-        if (descriptor.storageVersion != null)
-          'storageVersion': descriptor.storageVersion,
+        if (descriptor.storageKeyVersion != null)
+          'storageKeyVersion': descriptor.storageKeyVersion,
       },
     );
   }
@@ -178,22 +229,83 @@ class PlaybackState extends ChangeNotifier {
   }
 
   String _userFacingPlaybackError(SignedAudioUrlException error) {
-    switch (error.code) {
-      case 'AUDIO_UNAVAILABLE':
-      case 'OBJECT_UNAVAILABLE':
+    final code = error.code.toLowerCase();
+    switch (code) {
+      case 'audio_unavailable':
+      case 'artifact_missing':
+      case 'audio_unavailable_error':
+      case 'object_unavailable':
         return 'Audio is unavailable for this track.';
-      case 'PLAYBACK_URL_EXPIRED':
+      case 'playback_url_expired':
         return 'The playback link expired. Try playing the track again.';
-      case 'TRACK_NOT_FOUND':
+      case 'track_not_found':
         return 'This track is no longer available.';
-      case 'FORBIDDEN':
+      case 'forbidden':
         return 'You do not have access to play this track.';
       default:
         return 'Could not prepare a signed playback URL.';
     }
   }
 
-  Future<void> play() => _audioService.play();
+  Future<void> play() async {
+    await _refreshCurrentSignedUrlIfNeeded();
+    try {
+      await _audioService.play();
+    } catch (error) {
+      if (!_isRecoverableObjectUrlFailure(error)) rethrow;
+      await _refreshCurrentSignedUrl(force: true);
+      await _audioService.play();
+    }
+  }
+
+  Future<void> _refreshCurrentSignedUrlIfNeeded() async {
+    final item = _currentItem;
+    if (item == null) return;
+    final expiresAt = item.extras?['expiresAt'];
+    if (expiresAt is! String) return;
+    final parsed = DateTime.tryParse(expiresAt)?.toUtc();
+    if (parsed == null) return;
+    final descriptor = SignedAudioDescriptor(
+      trackId: int.tryParse(item.id) ?? -1,
+      url: item.extras?['url'] as String? ?? '',
+      expiresAt: parsed,
+    );
+    if (!descriptor.shouldRefreshSoon()) return;
+    await _refreshCurrentSignedUrl(force: true);
+  }
+
+  Future<void> _refreshCurrentSignedUrl({bool force = false}) async {
+    final index = _currentIndex;
+    final item = _currentItem;
+    if (index == null || item == null || index < 0 || index >= _queue.length) {
+      return;
+    }
+    final trackId = int.tryParse(item.id);
+    if (trackId == null || trackId <= 0) return;
+    if (!force) return;
+
+    final descriptor = await _signedAudioUrlService.requireDescriptor(trackId);
+    final extras = Map<String, dynamic>.from(item.extras ?? const {});
+    extras['url'] = descriptor.url;
+    extras['expiresAt'] = descriptor.expiresAt.toIso8601String();
+    if (descriptor.contentType != null) {
+      extras['contentType'] = descriptor.contentType;
+    }
+    if (descriptor.sizeBytes != null) {
+      extras['sizeBytes'] = descriptor.sizeBytes;
+    }
+    if (descriptor.etag != null) {
+      extras['etag'] = descriptor.etag;
+    }
+    if (descriptor.storageKeyVersion != null) {
+      extras['storageKeyVersion'] = descriptor.storageKeyVersion;
+    }
+
+    final refreshedQueue = List<MediaItem>.from(_queue);
+    refreshedQueue[index] = item.copyWith(extras: extras);
+    await _audioService.setQueue(refreshedQueue, initialIndex: index);
+  }
+
   Future<void> pause() => _audioService.pause();
   Future<void> stop() => _audioService.stop();
   Future<void> seek(Duration position) => _audioService.seek(position);

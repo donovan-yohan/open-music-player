@@ -93,8 +93,10 @@ type AddQueueItemRequest struct {
 
 // ReorderQueueRequest represents a request to reorder the queue
 type ReorderQueueRequest struct {
-	FromPosition int `json:"from_position"`
-	ToPosition   int `json:"to_position"`
+	FromPosition int    `json:"from_position"`
+	ToPosition   int    `json:"to_position"`
+	QueueItemID  string `json:"queueItemId"`
+	ToPositionV2 int    `json:"toPosition"`
 }
 
 // GetQueue handles GET /api/v1/queue
@@ -283,6 +285,73 @@ func (h *Handlers) RemoveFromQueue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildQueueResponse(state, nil))
 }
 
+// RemoveQueueItem handles DELETE /api/v1/queue/items/{queueItemId}
+func (h *Handlers) RemoveQueueItem(w http.ResponseWriter, r *http.Request) {
+	userCtx := auth.GetUserFromContext(r.Context())
+	if userCtx == nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "user not authenticated")
+		return
+	}
+
+	queueItemID := r.PathValue("queueItemId")
+	if queueItemID == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "queueItemId is required")
+		return
+	}
+
+	state, err := h.service.RemoveQueueItem(r.Context(), userCtx.UserID.String(), queueItemID)
+	if err != nil {
+		if err == ErrTrackNotFound || err == ErrInvalidPosition {
+			writeError(w, http.StatusNotFound, "QUEUE_ITEM_NOT_FOUND", "queue item not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to remove queue item")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, buildQueueResponse(state, nil))
+}
+
+// RetryQueueItem handles POST /api/v1/queue/items/{queueItemId}/retry
+func (h *Handlers) RetryQueueItem(w http.ResponseWriter, r *http.Request) {
+	userCtx := auth.GetUserFromContext(r.Context())
+	if userCtx == nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "user not authenticated")
+		return
+	}
+	if h.downloadService == nil {
+		writeError(w, http.StatusServiceUnavailable, "SERVICE_DISABLED", "download processing is disabled")
+		return
+	}
+
+	queueItemID := r.PathValue("queueItemId")
+	if queueItemID == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "queueItemId is required")
+		return
+	}
+
+	state, jobID, err := h.service.RetryQueueItem(r.Context(), userCtx.UserID.String(), queueItemID)
+	if err != nil {
+		if err == ErrTrackNotFound {
+			writeError(w, http.StatusNotFound, "QUEUE_ITEM_NOT_FOUND", "queue item not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to retry queue item")
+		return
+	}
+	job, err := h.downloadService.GetJob(r.Context(), jobID)
+	if err != nil || job.UserID != userCtx.UserID.String() {
+		writeError(w, http.StatusNotFound, "DOWNLOAD_JOB_NOT_FOUND", "download job not found")
+		return
+	}
+	if err := h.downloadService.RetryJob(r.Context(), jobID); err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to retry download job")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, buildQueueResponse(state, nil))
+}
+
 // ReorderQueue handles PUT /api/v1/queue/reorder
 func (h *Handlers) ReorderQueue(w http.ResponseWriter, r *http.Request) {
 	userCtx := auth.GetUserFromContext(r.Context())
@@ -297,10 +366,20 @@ func (h *Handlers) ReorderQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state, err := h.service.ReorderQueue(r.Context(), userCtx.UserID.String(), req.FromPosition, req.ToPosition)
+	var state *QueueState
+	var err error
+	if req.QueueItemID != "" {
+		state, err = h.service.ReorderQueueItem(r.Context(), userCtx.UserID.String(), req.QueueItemID, req.ToPositionV2)
+	} else {
+		state, err = h.service.ReorderQueue(r.Context(), userCtx.UserID.String(), req.FromPosition, req.ToPosition)
+	}
 	if err != nil {
 		if err == ErrInvalidPosition {
 			writeError(w, http.StatusBadRequest, "INVALID_POSITION", "invalid position")
+			return
+		}
+		if err == ErrTrackNotFound {
+			writeError(w, http.StatusNotFound, "QUEUE_ITEM_NOT_FOUND", "queue item not found")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to reorder queue")

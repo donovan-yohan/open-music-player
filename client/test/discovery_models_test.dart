@@ -87,4 +87,78 @@ void main() {
     expect(updated.statusLabel, 'playable');
     expect(updated.trackId, 17);
   });
+  test('queue projection parses server-backed source state', () {
+    final state = DiscoveryQueueState.fromJson({
+      'items': [
+        {
+          'queueItemId': 'q_01j',
+          'position': 0,
+          'kind': 'source',
+          'playbackState': 'downloading',
+          'sourceCandidate': {
+            'candidateId': 'youtube:abc',
+            'provider': 'youtube',
+            'sourceId': 'abc',
+            'sourceUrl': 'https://youtube.com/watch?v=abc',
+            'title': 'Plastic Love',
+            'uploader': 'mariya channel',
+            'durationMs': 253000,
+            'thumbnailUrl': 'https://img.example/cover.jpg',
+            'downloadable': true,
+          },
+          'downloadJobId': 'job_01j',
+          'trackId': null,
+          'progress': 42,
+          'error': null,
+          'canPlay': false,
+          'canRetry': false,
+          'canRemove': true,
+          'addedAt': '2026-06-03T04:00:00Z',
+          'updatedAt': '2026-06-03T04:00:02Z',
+        },
+      ],
+      'currentPosition': 0,
+      'updatedAt': '2026-06-03T04:00:02Z',
+    });
+
+    final item = state.items.single;
+    expect(item.queueItemId, 'q_01j');
+    expect(item.downloadJobId, 'job_01j');
+    expect(item.playbackState, 'downloading');
+    expect(item.progress, 42);
+    expect(item.canPlay, isFalse);
+    expect(item.canRetry, isFalse);
+    expect(item.canRemove, isTrue);
+    expect(item.candidate.title, 'Plastic Love');
+  });
+
+  test(
+    'queue projection accepts legacy snake case from backend while normalizing states',
+    () {
+      final state = DiscoveryQueueState.fromJson({
+        'items': [
+          {
+            'id': 'legacy-q',
+            'position': 1,
+            'playback_state': 'pendingDownload',
+            'download_job_id': 'job-2',
+            'source_candidate': {
+              'candidateId': 'soundcloud:def',
+              'provider': 'soundcloud',
+              'sourceUrl': 'https://soundcloud.com/demo/track',
+              'title': 'Demo Track',
+              'downloadable': true,
+            },
+          },
+        ],
+        'current_position': 0,
+      });
+
+      final item = state.items.single;
+      expect(item.queueItemId, 'legacy-q');
+      expect(item.playbackState, 'queued');
+      expect(item.downloadJobId, 'job-2');
+      expect(item.isActive, isTrue);
+    },
+  );
 }
