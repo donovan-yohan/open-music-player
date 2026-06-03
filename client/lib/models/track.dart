@@ -19,14 +19,34 @@ class Track {
 
   factory Track.fromJson(Map<String, dynamic> json) {
     return Track(
-      id: json['id'] as String,
-      title: json['title'] as String,
+      id: json['id']?.toString() ?? json['track_id']?.toString() ?? '',
+      title: json['title'] as String? ?? 'Unknown track',
       artist: json['artist'] as String?,
       album: json['album'] as String?,
-      duration: json['duration'] as int,
-      coverUrl: json['coverUrl'] as String?,
-      addedAt: DateTime.parse(json['addedAt'] as String),
+      duration: _parseDuration(json),
+      coverUrl: json['coverUrl'] as String? ?? json['cover_url'] as String?,
+      addedAt: _parseDate(json['addedAt'] ?? json['added_at']),
     );
+  }
+
+  static int _parseDuration(Map<String, dynamic> json) {
+    final duration = json['duration'];
+    if (duration is int) return duration;
+    if (duration is num) return duration.round();
+
+    final durationMs = json['duration_ms'];
+    if (durationMs is int) return durationMs ~/ 1000;
+    if (durationMs is num) return (durationMs / 1000).round();
+
+    return 0;
+  }
+
+  static DateTime _parseDate(Object? value) {
+    if (value is String && value.isNotEmpty) {
+      return DateTime.tryParse(value) ?? DateTime.fromMillisecondsSinceEpoch(0);
+    }
+
+    return DateTime.fromMillisecondsSinceEpoch(0);
   }
 
   Map<String, dynamic> toJson() {
