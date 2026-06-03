@@ -31,6 +31,7 @@ type Router struct {
 	playbackHandlers    *PlaybackHandlers
 	queueHandlers       *queue.Handlers
 	playlistHandlers    *PlaylistHandlers
+	mixPlanHandlers     *MixPlanHandlers
 	downloadHandlers    *DownloadHandlers
 	healthHandler       *health.Handler
 	metricsHandler      http.HandlerFunc
@@ -49,6 +50,7 @@ type RouterConfig struct {
 	PlaybackHandlers *PlaybackHandlers
 	QueueHandlers    *queue.Handlers
 	PlaylistHandlers *PlaylistHandlers
+	MixPlanHandlers  *MixPlanHandlers
 	DownloadHandlers *DownloadHandlers
 	HealthHandler    *health.Handler
 	Metrics          *metrics.Metrics
@@ -92,6 +94,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		playbackHandlers:    cfg.PlaybackHandlers,
 		queueHandlers:       cfg.QueueHandlers,
 		playlistHandlers:    cfg.PlaylistHandlers,
+		mixPlanHandlers:     cfg.MixPlanHandlers,
 		downloadHandlers:    cfg.DownloadHandlers,
 		healthHandler:       cfg.HealthHandler,
 		metricsHandler:      metricsHandler,
@@ -200,6 +203,13 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/playlists/{id}/tracks", r.withAuth(r.playlistHandlers.AddTracks))
 	r.mux.HandleFunc("DELETE /api/v1/playlists/{id}/tracks/{trackId}", r.withAuth(r.playlistHandlers.RemoveTrack))
 	r.mux.HandleFunc("PUT /api/v1/playlists/{id}/tracks/reorder", r.withAuth(r.playlistHandlers.ReorderTracks))
+
+	// Saved mix plan routes (auth required). The server stores durable plan state only;
+	// playback/rendering state stays client-side.
+	r.mux.HandleFunc("GET /api/v1/mix-plans", r.withAuth(r.mixPlanHandlers.ListMixPlans))
+	r.mux.HandleFunc("POST /api/v1/mix-plans", r.withAuth(r.mixPlanHandlers.CreateMixPlan))
+	r.mux.HandleFunc("GET /api/v1/mix-plans/{id}", r.withAuth(r.mixPlanHandlers.GetMixPlan))
+	r.mux.HandleFunc("PUT /api/v1/mix-plans/{id}", r.withAuth(r.mixPlanHandlers.UpdateMixPlan))
 
 	// Download routes (auth required, Redis/worker-backed)
 	if r.downloadHandlers != nil {

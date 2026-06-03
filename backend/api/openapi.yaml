@@ -27,6 +27,8 @@ tags:
     description: User's track collection management
   - name: Playlists
     description: Playlist CRUD and track management
+  - name: MixPlans
+    description: Durable saved mix-plan contract; client owns playback and rendering
   - name: Downloads
     description: Download management and progress tracking
   - name: Playback
@@ -569,6 +571,105 @@ paths:
           $ref: '#/components/responses/NotFound'
 
   # ============================================================================
+  # Saved Mix Plan Endpoints
+  # ============================================================================
+  /mix-plans:
+    get:
+      tags:
+        - MixPlans
+      summary: List saved mix plans
+      description: Returns durable saved mix plans for the authenticated user. Playback queues, playhead, fades execution, BPM/key, stems, cache, and rendering state are intentionally out of scope.
+      operationId: listMixPlans
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Saved mix plans
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MixPlanListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags:
+        - MixPlans
+      summary: Create a saved mix plan
+      description: Stores versioned clip layout state only. The client remains responsible for playback and rendering.
+      operationId: createMixPlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveMixPlanRequest'
+      responses:
+        '201':
+          description: Mix plan created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MixPlan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /mix-plans/{mixPlanId}:
+    get:
+      tags:
+        - MixPlans
+      summary: Get a saved mix plan
+      operationId: getMixPlan
+      parameters:
+        - $ref: '#/components/parameters/MixPlanIdParam'
+      responses:
+        '200':
+          description: Saved mix plan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MixPlan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags:
+        - MixPlans
+      summary: Update a saved mix plan
+      description: Requires the current optimistic version in the request body. A stale version returns 409.
+      operationId: updateMixPlan
+      parameters:
+        - $ref: '#/components/parameters/MixPlanIdParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMixPlanRequest'
+      responses:
+        '200':
+          description: Mix plan updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MixPlan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Optimistic version conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ============================================================================
   # Download Endpoints
   # ============================================================================
   /downloads:
@@ -942,6 +1043,15 @@ components:
       in: path
       required: true
       description: Playlist unique identifier
+      schema:
+        type: string
+        format: uuid
+
+    MixPlanIdParam:
+      name: mixPlanId
+      in: path
+      required: true
+      description: Saved mix plan unique identifier
       schema:
         type: string
         format: uuid
@@ -1550,8 +1660,9 @@ components:
           minimum: 0
 
     # ========================================================================
+
     # Playback Schemas
-    # ========================================================================
+    # =================================================================
     PlaybackURLRequest:
       type: object
       required:
@@ -1633,6 +1744,157 @@ components:
           example: audio_unavailable
         message:
           type: string
+=======
+    # Saved Mix Plan Schemas
+    # ========================================================================
+    MixPlanClip:
+      type: object
+      required:
+        - clipId
+        - trackId
+        - sourceStartMs
+        - sourceEndMs
+        - timelineStartMs
+        - gainDb
+      properties:
+        clipId:
+          type: string
+          minLength: 1
+          description: Stable client-owned clip identifier within the plan.
+        trackId:
+          type: integer
+          format: int64
+          description: Track ID from the authenticated user's library. Multiple clips may reference the same track.
+        sourceStartMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Source media start offset in milliseconds.
+        sourceEndMs:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Source media end offset in milliseconds; must be greater than sourceStartMs.
+        timelineStartMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Timeline start offset in milliseconds. timelineEndMs is derived as timelineStartMs + sourceEndMs - sourceStartMs and is not stored as playback state.
+        gainDb:
+          type: number
+          format: double
+          description: Static clip gain in decibels. Realtime fades/effects are not executed by the backend.
+
+    SaveMixPlanRequest:
+      type: object
+      required:
+        - schemaVersion
+        - name
+        - clips
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+          description: MVP schema version. Future BPM/key/cue/stems/time-stretch fields must use a future schema version and are not required behavior in v1.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        clips:
+          type: array
+          items:
+            $ref: '#/components/schemas/MixPlanClip'
+          description: Client-rendered clip layout. Empty arrays are allowed for draft plans.
+
+    UpdateMixPlanRequest:
+      allOf:
+        - $ref: '#/components/schemas/SaveMixPlanRequest'
+        - type: object
+          required:
+            - version
+          properties:
+            version:
+              type: integer
+              minimum: 1
+              description: Optimistic concurrency token returned by the last create/read/update response.
+
+    MixPlanSummary:
+      type: object
+      required:
+        - clipCount
+        - trackIds
+        - durationMs
+      properties:
+        clipCount:
+          type: integer
+          minimum: 0
+        trackIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+          description: Unique referenced track IDs, sorted ascending.
+        durationMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Derived plan duration in milliseconds; not a server playhead.
+
+    MixPlan:
+      type: object
+      required:
+        - id
+        - schemaVersion
+        - name
+        - clips
+        - summary
+        - version
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        schemaVersion:
+          type: integer
+          enum: [1]
+        name:
+          type: string
+        clips:
+          type: array
+          items:
+            $ref: '#/components/schemas/MixPlanClip'
+        summary:
+          $ref: '#/components/schemas/MixPlanSummary'
+        version:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    MixPlanListResponse:
+      type: object
+      required:
+        - data
+        - total
+        - limit
+        - offset
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MixPlan'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+
 
     # ========================================================================
     # Download Schemas

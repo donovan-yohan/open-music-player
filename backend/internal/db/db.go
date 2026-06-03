@@ -53,6 +53,22 @@ func (db *DB) Migrate() error {
 
 	CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id);
 	CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token_hash ON refresh_tokens(token_hash);
+
+	CREATE TABLE IF NOT EXISTS mix_plans (
+		id UUID PRIMARY KEY,
+		user_id UUID NOT NULL,
+		schema_version INTEGER NOT NULL DEFAULT 1,
+		name VARCHAR(255) NOT NULL,
+		payload JSONB NOT NULL,
+		summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+		version INTEGER NOT NULL DEFAULT 1,
+		created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+		updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+		CONSTRAINT chk_mix_plans_schema_version CHECK (schema_version >= 1),
+		CONSTRAINT chk_mix_plans_version CHECK (version >= 1)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_mix_plans_user_updated ON mix_plans(user_id, updated_at DESC);
 	`
 
 	_, err := db.Exec(schema)
