@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -16,10 +17,13 @@ import (
 )
 
 const (
-	defaultPlaybackURLTTL = 5 * time.Minute
+	defaultPlaybackURLTTL = 10 * time.Minute
 	minPlaybackURLTTL     = 1 * time.Minute
-	maxPlaybackURLTTL     = 15 * time.Minute
+	maxPlaybackURLTTL     = 30 * time.Minute
 	maxPlaybackURLBatch   = 50
+
+	playbackUnavailableCodeAudioUnavailable = "audio_unavailable"
+	playbackUnavailableCodeArtifactMissing  = "artifact_missing"
 )
 
 type playbackTrackRepository interface {
@@ -63,13 +67,13 @@ type PlaybackURLResponse struct {
 }
 
 type PlaybackURLItem struct {
-	TrackID        int64     `json:"trackId"`
-	URL            string    `json:"url"`
-	ExpiresAt      time.Time `json:"expiresAt"`
-	ContentType    string    `json:"contentType"`
-	SizeBytes      int64     `json:"sizeBytes"`
-	ETag           string    `json:"etag,omitempty"`
-	StorageVersion string    `json:"storageVersion,omitempty"`
+	TrackID           int64     `json:"trackId"`
+	URL               string    `json:"url"`
+	ExpiresAt         time.Time `json:"expiresAt"`
+	ContentType       string    `json:"contentType"`
+	SizeBytes         int64     `json:"sizeBytes"`
+	ETag              string    `json:"etag,omitempty"`
+	StorageKeyVersion string    `json:"storageKeyVersion,omitempty"`
 }
 
 type PlaybackUnavailableItem struct {
@@ -103,8 +107,16 @@ func (h *PlaybackHandlers) CreatePlaybackURLs(w http.ResponseWriter, r *http.Req
 		writePlaybackError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON request body")
 		return
 	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writePlaybackError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid JSON request body")
+		return
+	}
 
-	trackIDs := dedupeTrackIDs(req.TrackIDs)
+	trackIDs, err := validateAndDedupeTrackIDs(req.TrackIDs)
+	if err != nil {
+		writePlaybackError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
 	if len(trackIDs) == 0 {
 		writePlaybackError(w, http.StatusBadRequest, "INVALID_REQUEST", "trackIds must contain at least one track ID")
 		return
@@ -121,6 +133,16 @@ func (h *PlaybackHandlers) CreatePlaybackURLs(w http.ResponseWriter, r *http.Req
 	}
 
 	for _, trackID := range trackIDs {
+		inLibrary, err := h.libraryRepo.IsTrackInLibrary(r.Context(), userCtx.UserID, trackID)
+		if err != nil {
+			writePlaybackError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to verify library ownership")
+			return
+		}
+		if !inLibrary {
+			writePlaybackError(w, http.StatusNotFound, "TRACK_NOT_FOUND", "track not found")
+			return
+		}
+
 		track, err := h.trackRepo.GetByID(r.Context(), trackID)
 		if err != nil {
 			if errors.Is(err, db.ErrTrackNotFound) {
@@ -131,31 +153,24 @@ func (h *PlaybackHandlers) CreatePlaybackURLs(w http.ResponseWriter, r *http.Req
 			return
 		}
 
-		inLibrary, err := h.libraryRepo.IsTrackInLibrary(r.Context(), userCtx.UserID, trackID)
-		if err != nil {
-			writePlaybackError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to verify library ownership")
-			return
-		}
-		if !inLibrary {
-			writePlaybackError(w, http.StatusForbidden, "FORBIDDEN", "track is not in the authenticated user's library")
-			return
-		}
-
-		if !track.StorageKey.Valid || strings.TrimSpace(track.StorageKey.String) == "" {
+		storageKey := strings.TrimSpace(track.StorageKey.String)
+		if !track.StorageKey.Valid || storageKey == "" {
 			resp.Unavailable = append(resp.Unavailable, PlaybackUnavailableItem{
 				TrackID: trackID,
-				Code:    "AUDIO_UNAVAILABLE",
+				Code:    playbackUnavailableCodeAudioUnavailable,
 				Message: "track has no stored audio object",
 			})
 			continue
 		}
 
-		storageKey := track.StorageKey.String
 		objInfo, err := h.storage.StatObject(r.Context(), storageKey)
 		if err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
 			resp.Unavailable = append(resp.Unavailable, PlaybackUnavailableItem{
 				TrackID: trackID,
-				Code:    "OBJECT_UNAVAILABLE",
+				Code:    playbackUnavailableCodeArtifactMissing,
 				Message: "stored audio object is unavailable",
 			})
 			continue
@@ -163,6 +178,9 @@ func (h *PlaybackHandlers) CreatePlaybackURLs(w http.ResponseWriter, r *http.Req
 
 		url, err := h.storage.PresignGetObject(r.Context(), storageKey, ttl)
 		if err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
 			writePlaybackError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to issue playback URL")
 			return
 		}
@@ -176,7 +194,7 @@ func (h *PlaybackHandlers) CreatePlaybackURLs(w http.ResponseWriter, r *http.Req
 			ETag:        objInfo.ETag,
 		}
 		if track.Version.Valid {
-			item.StorageVersion = track.Version.String
+			item.StorageKeyVersion = track.Version.String
 		}
 		resp.URLs = append(resp.URLs, item)
 	}
@@ -184,12 +202,12 @@ func (h *PlaybackHandlers) CreatePlaybackURLs(w http.ResponseWriter, r *http.Req
 	writePlaybackJSON(w, http.StatusOK, resp)
 }
 
-func dedupeTrackIDs(ids []int64) []int64 {
+func validateAndDedupeTrackIDs(ids []int64) ([]int64, error) {
 	seen := make(map[int64]struct{}, len(ids))
 	out := make([]int64, 0, len(ids))
 	for _, id := range ids {
 		if id <= 0 {
-			continue
+			return nil, errors.New("trackIds must contain only positive track IDs")
 		}
 		if _, ok := seen[id]; ok {
 			continue
@@ -197,7 +215,7 @@ func dedupeTrackIDs(ids []int64) []int64 {
 		seen[id] = struct{}{}
 		out = append(out, id)
 	}
-	return out
+	return out, nil
 }
 
 func clampPlaybackTTL(ttlSeconds int) time.Duration {
