@@ -8,12 +8,14 @@ class AudioPlayerService {
   static AudioPlayerService get instance => _instance!;
 
   final AudioPlayer _player;
-  final ConcatenatingAudioSource _playlist = ConcatenatingAudioSource(children: []);
+  final ConcatenatingAudioSource _playlist =
+      ConcatenatingAudioSource(children: []);
 
   final BehaviorSubject<List<MediaItem>> _queue = BehaviorSubject.seeded([]);
   final BehaviorSubject<int?> _currentIndex = BehaviorSubject.seeded(null);
   final BehaviorSubject<bool> _shuffleEnabled = BehaviorSubject.seeded(false);
-  final BehaviorSubject<LoopMode> _loopMode = BehaviorSubject.seeded(LoopMode.off);
+  final BehaviorSubject<LoopMode> _loopMode =
+      BehaviorSubject.seeded(LoopMode.off);
 
   AudioPlayerService._internal() : _player = AudioPlayer() {
     _player.currentIndexStream.listen((index) {
@@ -56,35 +58,37 @@ class AudioPlayerService {
   }
 
   Stream<MediaItem?> get currentMediaItemStream => Rx.combineLatest2(
-    _queue.stream,
-    _currentIndex.stream,
-    (List<MediaItem> queue, int? index) {
-      if (index != null && index >= 0 && index < queue.length) {
-        return queue[index];
-      }
-      return null;
-    },
-  );
+        _queue.stream,
+        _currentIndex.stream,
+        (List<MediaItem> queue, int? index) {
+          if (index != null && index >= 0 && index < queue.length) {
+            return queue[index];
+          }
+          return null;
+        },
+      );
 
   Stream<PositionData> get positionDataStream => Rx.combineLatest3(
-    _player.positionStream,
-    _player.bufferedPositionStream,
-    _player.durationStream,
-    (position, buffered, duration) => PositionData(
-      position: position,
-      bufferedPosition: buffered,
-      duration: duration ?? Duration.zero,
-    ),
-  );
+        _player.positionStream,
+        _player.bufferedPositionStream,
+        _player.durationStream,
+        (position, buffered, duration) => PositionData(
+          position: position,
+          bufferedPosition: buffered,
+          duration: duration ?? Duration.zero,
+        ),
+      );
 
   Future<void> setQueue(List<MediaItem> items, {int initialIndex = 0}) async {
     _queue.add(items);
     await _playlist.clear();
 
-    final sources = items.map((item) => AudioSource.uri(
-      Uri.parse(item.extras?['url'] ?? ''),
-      tag: item,
-    )).toList();
+    final sources = items
+        .map((item) => AudioSource.uri(
+              _signedAudioUriFor(item),
+              tag: item,
+            ))
+        .toList();
 
     await _playlist.addAll(sources);
     await _player.setAudioSource(_playlist, initialIndex: initialIndex);
@@ -95,7 +99,7 @@ class AudioPlayerService {
     _queue.add(queue);
 
     await _playlist.add(AudioSource.uri(
-      Uri.parse(item.extras?['url'] ?? ''),
+      _signedAudioUriFor(item),
       tag: item,
     ));
   }
@@ -125,11 +129,23 @@ class AudioPlayerService {
     }
   }
 
-  Future<void> skipToIndex(int index) => _player.seek(Duration.zero, index: index);
+  Future<void> skipToIndex(int index) =>
+      _player.seek(Duration.zero, index: index);
 
-  Future<void> setShuffleMode(bool enabled) => _player.setShuffleModeEnabled(enabled);
+  Future<void> setShuffleMode(bool enabled) =>
+      _player.setShuffleModeEnabled(enabled);
 
   Future<void> setLoopMode(LoopMode mode) => _player.setLoopMode(mode);
+
+  Uri _signedAudioUriFor(MediaItem item) {
+    final url = item.extras?['url'];
+    if (url is! String || url.trim().isEmpty) {
+      throw StateError(
+        'Missing signed audio URL for media item ${item.id}; backend stream proxy fallback is disabled.',
+      );
+    }
+    return Uri.parse(url);
+  }
 
   Future<void> toggleShuffle() => setShuffleMode(!_shuffleEnabled.value);
 
