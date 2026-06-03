@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awscreds "github.com/aws/aws-sdk-go-v2/credentials"
@@ -128,6 +130,20 @@ func (c *Client) ObjectExists(ctx context.Context, key string) (bool, error) {
 		return false, fmt.Errorf("failed to check object existence %s: %w", key, err)
 	}
 	return true, nil
+}
+
+// PresignGetObject returns a short-lived bearer URL for directly reading an object.
+// Callers must not log the returned URL.
+func (c *Client) PresignGetObject(ctx context.Context, key string, expires time.Duration) (string, error) {
+	if expires <= 0 {
+		return "", fmt.Errorf("presign expiry must be positive")
+	}
+
+	u, err := c.client.PresignedGetObject(ctx, c.bucket, key, expires, url.Values{})
+	if err != nil {
+		return "", fmt.Errorf("failed to presign object %s: %w", key, err)
+	}
+	return u.String(), nil
 }
 
 // PutObject uploads an object to storage.

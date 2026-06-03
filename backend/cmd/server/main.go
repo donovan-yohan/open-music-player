@@ -114,8 +114,9 @@ func main() {
 		"bucket":   cfg.MinioBucket,
 	})
 
-	// Initialize stream handler
+	// Initialize stream and playback URL handlers
 	streamHandler := stream.NewHandler(trackRepo, storageClient)
+	playbackHandlers := api.NewPlaybackHandlers(trackRepo, libraryRepo, storageClient)
 
 	// Initialize WebSocket hub and handler
 	wsHub := websocket.NewHub()
@@ -194,6 +195,7 @@ func main() {
 		MatcherHandlers:  matcherHandlers,
 		LibraryHandlers:  libraryHandlers,
 		StreamHandler:    streamHandler,
+		PlaybackHandlers: playbackHandlers,
 		QueueHandlers:    queueHandlers,
 		PlaylistHandlers: playlistHandlers,
 		DownloadHandlers: downloadHandlers,
