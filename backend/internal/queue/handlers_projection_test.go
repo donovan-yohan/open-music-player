@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,6 +212,32 @@ func TestGetQueueHandlerProjectsLiveDownloadJobState(t *testing.T) {
 	}
 	if item.DownloadJobID == nil || *item.DownloadJobID != job.ID {
 		t.Fatalf("downloadJobId = %v, want %s", item.DownloadJobID, job.ID)
+	}
+}
+
+func TestAddQueueItemRejectsNonHTTPSourceCandidateBeforeEnqueue(t *testing.T) {
+	h := NewHandlers(nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/queue/items", strings.NewReader(`{
+		"sourceCandidate": {
+			"provider": "youtube",
+			"sourceUrl": "file:///etc/passwd",
+			"title": "bad local file"
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.UserContext{
+		UserID: uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+		Email:  "user@example.test",
+	}))
+	rec := httptest.NewRecorder()
+
+	h.AddQueueItem(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("AddQueueItem file:// status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_SOURCE_URL") {
+		t.Fatalf("AddQueueItem file:// response should name INVALID_SOURCE_URL, got %s", rec.Body.String())
 	}
 }
 

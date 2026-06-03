@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/openmusicplayer/backend/internal/auth"
@@ -194,13 +195,18 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "trackId or sourceCandidate is required")
 		return
 	}
-	if h.downloadService == nil {
-		writeError(w, http.StatusServiceUnavailable, "SERVICE_DISABLED", "download processing is disabled")
-		return
-	}
 	candidate := req.SourceCandidate
+	candidate.SourceURL = strings.TrimSpace(candidate.SourceURL)
 	if candidate.Provider == "" || candidate.SourceURL == "" || candidate.Title == "" {
 		writeError(w, http.StatusBadRequest, "INVALID_SOURCE_CANDIDATE", "provider, sourceUrl, and title are required")
+		return
+	}
+	if err := download.ValidateUserFacingURL(candidate.SourceURL); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_SOURCE_URL", "sourceCandidate.sourceUrl must be an absolute http(s) URL")
+		return
+	}
+	if h.downloadService == nil {
+		writeError(w, http.StatusServiceUnavailable, "SERVICE_DISABLED", "download processing is disabled")
 		return
 	}
 	job, err := h.downloadService.EnqueueSourceCandidate(r.Context(), userCtx.UserID.String(), download.SourceCandidate{

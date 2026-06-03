@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/download"
@@ -71,6 +72,7 @@ func (h *DownloadHandlers) CreateDownload(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	req.URL = strings.TrimSpace(req.URL)
 	if req.URL == "" {
 		writeDownloadError(w, http.StatusBadRequest, "INVALID_REQUEST", "url is required")
 		return
@@ -78,6 +80,10 @@ func (h *DownloadHandlers) CreateDownload(w http.ResponseWriter, r *http.Request
 
 	if req.SourceType == "" {
 		writeDownloadError(w, http.StatusBadRequest, "INVALID_REQUEST", "source_type is required")
+		return
+	}
+	if err := download.ValidateUserFacingURL(req.URL); err != nil {
+		writeDownloadError(w, http.StatusBadRequest, "INVALID_URL", "url must be an absolute http(s) URL")
 		return
 	}
 

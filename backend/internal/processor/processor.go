@@ -26,6 +26,11 @@ type ObjectStorage interface {
 	PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
 }
 
+const (
+	maxYTDLPOutputBytes = 256 * 1024 * 1024
+	maxYTDLPLogBytes    = 64 * 1024
+)
+
 // Processor handles the full download and matching pipeline
 type Processor struct {
 	matcher     *matcher.Matcher
@@ -252,28 +257,42 @@ func copyToBoundedTemp(source string, maxBytes int64) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	outPath := out.Name()
 	defer out.Close()
 	if _, err := io.Copy(out, in); err != nil {
+		os.Remove(outPath)
 		return "", "", err
 	}
-	return out.Name(), mime.TypeByExtension(filepath.Ext(source)), nil
+	return outPath, mime.TypeByExtension(filepath.Ext(source)), nil
 }
 
 func runYTDLP(ctx context.Context, sourceURL string, metadata *TrackMetadata) (string, string, error) {
-	if _, err := exec.LookPath("yt-dlp"); err != nil {
+	return runYTDLPCommand(ctx, "yt-dlp", sourceURL, metadata, maxYTDLPOutputBytes)
+}
+
+func runYTDLPCommand(ctx context.Context, executable, sourceURL string, metadata *TrackMetadata, maxBytes int64) (string, string, error) {
+	if _, err := exec.LookPath(executable); err != nil {
 		return "", "", fmt.Errorf("yt-dlp is not installed")
 	}
 	dir, err := os.MkdirTemp("", "omp-ytdlp-*")
 	if err != nil {
 		return "", "", err
 	}
-	// The directory is intentionally left until the returned file is removed by caller.
+	defer os.RemoveAll(dir)
+
 	outputTemplate := filepath.Join(dir, "audio.%(ext)s")
-	cmd := exec.CommandContext(ctx, "yt-dlp", "--no-playlist", "--extract-audio", "--audio-format", "mp3", "--write-info-json", "--no-progress", "-o", outputTemplate, sourceURL)
-	combined, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", "", fmt.Errorf("yt-dlp failed: %w: %s", err, strings.TrimSpace(string(combined)))
+	cmd := exec.CommandContext(ctx, executable, "--no-playlist", "--max-filesize", fmt.Sprintf("%d", maxBytes), "--extract-audio", "--audio-format", "mp3", "--write-info-json", "--no-progress", "-o", outputTemplate, sourceURL)
+	var output limitedOutput
+	output.limit = maxYTDLPLogBytes
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Run(); err != nil {
+		return "", "", fmt.Errorf("yt-dlp failed: %w: %s", err, strings.TrimSpace(output.String()))
 	}
+	return collectYTDLPOutput(dir, metadata, maxBytes)
+}
+
+func collectYTDLPOutput(dir string, metadata *TrackMetadata, maxBytes int64) (string, string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return "", "", err
@@ -295,7 +314,42 @@ func runYTDLP(ctx context.Context, sourceURL string, metadata *TrackMetadata) (s
 			break
 		}
 	}
-	return audioPath, "audio/mpeg", nil
+	path, contentType, err := copyToBoundedTemp(audioPath, maxBytes)
+	if err != nil {
+		return "", "", err
+	}
+	if contentType == "" {
+		contentType = "audio/mpeg"
+	}
+	return path, contentType, nil
+}
+
+type limitedOutput struct {
+	buf       strings.Builder
+	limit     int
+	truncated bool
+}
+
+func (o *limitedOutput) Write(p []byte) (int, error) {
+	if o.limit <= 0 || o.buf.Len() >= o.limit {
+		o.truncated = true
+		return len(p), nil
+	}
+	remaining := o.limit - o.buf.Len()
+	if len(p) > remaining {
+		o.buf.Write(p[:remaining])
+		o.truncated = true
+		return len(p), nil
+	}
+	o.buf.Write(p)
+	return len(p), nil
+}
+
+func (o *limitedOutput) String() string {
+	if o.truncated {
+		return o.buf.String() + "... (yt-dlp output truncated)"
+	}
+	return o.buf.String()
 }
 
 func populateMetadataFromInfo(path string, metadata *TrackMetadata) {
