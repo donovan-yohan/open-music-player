@@ -276,7 +276,7 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 		}
 		id := stringValue(raw, "id")
 		sourceURL := stringValue(raw, "url")
-		if strings.HasPrefix(sourceURL, "http") == false && p.urlPrefix != "" && id != "" {
+		if !strings.HasPrefix(sourceURL, "http") && p.urlPrefix != "" && id != "" {
 			sourceURL = p.urlPrefix + id
 		}
 		if sourceURL == "" {
