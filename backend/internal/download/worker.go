@@ -39,7 +39,7 @@ type WorkerPool struct {
 
 // WorkerPoolConfig holds configuration for the worker pool
 type WorkerPoolConfig struct {
-	WorkerCount int
+	WorkerCount *int
 	MaxRetries  int
 	JobTimeout  time.Duration
 }
@@ -50,8 +50,11 @@ func NewWorkerPool(queue *Queue, processor JobProcessor, config *WorkerPoolConfi
 		config = &WorkerPoolConfig{}
 	}
 
-	workerCount := config.WorkerCount
-	if workerCount <= 0 {
+	workerCount := DefaultWorkerCount
+	if config.WorkerCount != nil {
+		workerCount = *config.WorkerCount
+	}
+	if workerCount < 0 {
 		workerCount = DefaultWorkerCount
 	}
 

@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/openmusicplayer/backend/internal/api"
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/cache"
@@ -60,18 +62,23 @@ func main() {
 	}
 	log.Info(ctx, "Database migrations completed", nil)
 
-	// Initialize Redis cache
-	redisCache, err := cache.New(cfg.RedisAddr)
-	if err != nil {
-		log.Error(ctx, "Failed to connect to Redis", map[string]interface{}{
+	// Initialize optional Redis cache/queue support.
+	var redisCache *cache.Cache
+	if cfg.RedisEnabled {
+		redisCache, err = cache.New(cfg.RedisAddr)
+		if err != nil {
+			log.Error(ctx, "Failed to connect to Redis", map[string]interface{}{
+				"addr": cfg.RedisAddr,
+			}, err)
+			os.Exit(1)
+		}
+		defer redisCache.Close()
+		log.Info(ctx, "Connected to Redis", map[string]interface{}{
 			"addr": cfg.RedisAddr,
-		}, err)
-		os.Exit(1)
+		})
+	} else {
+		log.Info(ctx, "Redis disabled; queue, download, and cached pub/sub features will return SERVICE_DISABLED", nil)
 	}
-	defer redisCache.Close()
-	log.Info(ctx, "Connected to Redis", map[string]interface{}{
-		"addr": cfg.RedisAddr,
-	})
 
 	// Initialize repositories
 	userRepo := db.NewUserRepository(database)
@@ -127,39 +134,47 @@ func main() {
 		Storage:     storageClient,
 	})
 
-	// Initialize download service with job queue
-	downloadService, err := download.NewService(&download.ServiceConfig{
-		RedisURL:    cfg.RedisURL,
-		WorkerCount: cfg.WorkerCount,
-	}, jobProcessor.Process)
-	if err != nil {
-		log.Error(ctx, "Failed to initialize download service", nil, err)
-		os.Exit(1)
-	}
-	downloadService.Start()
-	log.Info(ctx, "Started download service", map[string]interface{}{
-		"workers": cfg.WorkerCount,
-	})
+	// Initialize Redis-backed download and playback queue services only when enabled.
+	var downloadService *download.Service
+	var downloadHandlers *api.DownloadHandlers
+	var queueHandlers *queue.Handlers
 
-	// Initialize queue service
-	queueService, err := queue.NewService(cfg.RedisURL)
-	if err != nil {
-		log.Error(ctx, "Failed to initialize queue service", nil, err)
-		os.Exit(1)
-	}
-	defer queueService.Close()
-	queueHandlers := queue.NewHandlers(queueService)
+	if cfg.RedisEnabled {
+		downloadService, err = download.NewService(&download.ServiceConfig{
+			RedisURL:    cfg.RedisURL,
+			WorkerCount: cfg.WorkerCount,
+		}, jobProcessor.Process)
+		if err != nil {
+			log.Error(ctx, "Failed to initialize download service", nil, err)
+			os.Exit(1)
+		}
+		downloadService.Start()
+		log.Info(ctx, "Started download service", map[string]interface{}{
+			"workers": cfg.WorkerCount,
+		})
+		downloadHandlers = api.NewDownloadHandlers(downloadService)
 
-	// Initialize download handlers
-	downloadHandlers := api.NewDownloadHandlers(downloadService)
+		queueService, err := queue.NewService(cfg.RedisURL)
+		if err != nil {
+			log.Error(ctx, "Failed to initialize queue service", nil, err)
+			os.Exit(1)
+		}
+		defer queueService.Close()
+		queueHandlers = queue.NewHandlers(queueService)
+	}
 
 	// Initialize metrics
 	appMetrics := metrics.New()
 
+	var redisClient *redis.Client
+	if redisCache != nil {
+		redisClient = redisCache.Client()
+	}
+
 	// Initialize health checker
 	healthChecker := health.NewChecker(&health.CheckerConfig{
 		DB:    database.DB,
-		Redis: redisCache.Client(),
+		Redis: redisClient,
 		StorageCheck: func(ctx context.Context) error {
 			return storageClient.Ping(ctx)
 		},
@@ -223,8 +238,10 @@ func main() {
 		}
 
 		// Stop download workers (waits for current jobs to finish)
-		if err := downloadService.Stop(shutdownCtx); err != nil {
-			log.Error(ctx, "Download service shutdown error", nil, err)
+		if downloadService != nil {
+			if err := downloadService.Stop(shutdownCtx); err != nil {
+				log.Error(ctx, "Download service shutdown error", nil, err)
+			}
 		}
 
 		log.Info(ctx, "Server shutdown complete", nil)

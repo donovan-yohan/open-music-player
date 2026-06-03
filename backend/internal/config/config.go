@@ -8,16 +8,17 @@ import (
 )
 
 type Config struct {
-	ServerAddr  string
-	DBHost      string
-	DBPort      string
-	DBUser      string
-	DBPassword  string
-	DBName      string
-	JWTSecret   string
-	RedisAddr   string
-	RedisURL    string
-	WorkerCount int
+	ServerAddr   string
+	DBHost       string
+	DBPort       string
+	DBUser       string
+	DBPassword   string
+	DBName       string
+	JWTSecret    string
+	RedisEnabled bool
+	RedisAddr    string
+	RedisURL     string
+	WorkerCount  int
 
 	// S3/MinIO storage configuration
 	S3Endpoint       string
@@ -37,24 +38,23 @@ type Config struct {
 }
 
 func Load() *Config {
-	workerCount, _ := strconv.Atoi(getEnvOrDefault("WORKER_COUNT", "3"))
-	if workerCount <= 0 {
-		workerCount = 3
-	}
+	workerCount := parseWorkerCount()
 
 	minioUseSSL, _ := strconv.ParseBool(getEnvOrDefault("MINIO_USE_SSL", "false"))
+	redisEnabled := parseBoolEnv("REDIS_ENABLED", true)
 
 	return &Config{
-		ServerAddr:  getEnvOrDefault("SERVER_ADDR", ":8080"),
-		DBHost:      getEnvOrDefault("DB_HOST", "localhost"),
-		DBPort:      getEnvOrDefault("DB_PORT", "5432"),
-		DBUser:      getEnvOrDefault("DB_USER", "omp"),
-		DBPassword:  getEnvOrDefault("DB_PASSWORD", "omp_dev_password"),
-		DBName:      getEnvOrDefault("DB_NAME", "openmusicplayer"),
-		JWTSecret:   getEnvOrDefault("JWT_SECRET", generateDefaultSecret()),
-		RedisAddr:   getEnvOrDefault("REDIS_ADDR", "localhost:6380"),
-		RedisURL:    getEnvOrDefault("REDIS_URL", "redis://localhost:6380"),
-		WorkerCount: workerCount,
+		ServerAddr:   getEnvOrDefault("SERVER_ADDR", ":8080"),
+		DBHost:       getEnvOrDefault("DB_HOST", "localhost"),
+		DBPort:       getEnvOrDefault("DB_PORT", "5432"),
+		DBUser:       getEnvOrDefault("DB_USER", "omp"),
+		DBPassword:   getEnvOrDefault("DB_PASSWORD", "omp_dev_password"),
+		DBName:       getEnvOrDefault("DB_NAME", "openmusicplayer"),
+		JWTSecret:    getEnvOrDefault("JWT_SECRET", generateDefaultSecret()),
+		RedisEnabled: redisEnabled,
+		RedisAddr:    getEnvOrDefault("REDIS_ADDR", "localhost:6380"),
+		RedisURL:     getEnvOrDefault("REDIS_URL", "redis://localhost:6380"),
+		WorkerCount:  workerCount,
 
 		// S3/MinIO configuration
 		S3Endpoint:       getEnvOrDefault("MINIO_ENDPOINT", "http://localhost:9000"),
@@ -79,6 +79,32 @@ func getEnvOrDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func parseWorkerCount() int {
+	value := os.Getenv("WORKER_COUNT")
+	if value == "" {
+		return 1
+	}
+
+	workerCount, err := strconv.Atoi(value)
+	if err != nil || workerCount < 0 {
+		return 1
+	}
+	return workerCount
+}
+
+func parseBoolEnv(key string, defaultValue bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return defaultValue
+	}
+	return parsed
 }
 
 func generateDefaultSecret() string {

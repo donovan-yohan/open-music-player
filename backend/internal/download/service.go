@@ -27,8 +27,9 @@ func NewService(config *ServiceConfig, processor JobProcessor) (*Service, error)
 		return nil, err
 	}
 
+	workerCount := config.WorkerCount
 	workerPool := NewWorkerPool(queue, processor, &WorkerPoolConfig{
-		WorkerCount: config.WorkerCount,
+		WorkerCount: &workerCount,
 		MaxRetries:  config.MaxRetries,
 		JobTimeout:  config.JobTimeout,
 	})

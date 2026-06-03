@@ -112,8 +112,8 @@ func (c *Checker) CheckRedis(ctx context.Context) ComponentHealth {
 
 	if c.redis == nil {
 		return ComponentHealth{
-			Status:  StatusUnhealthy,
-			Message: "redis not configured",
+			Status:  StatusDegraded,
+			Message: "redis disabled for this local mode",
 		}
 	}
 

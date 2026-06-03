@@ -3,10 +3,15 @@ import 'package:http/http.dart' as http;
 import '../models/queue_state.dart';
 
 class ApiClient {
+  static const String defaultBaseUrl = String.fromEnvironment(
+    'OMP_API_BASE_URL',
+    defaultValue: 'http://localhost:8080/api/v1',
+  );
+
   final String baseUrl;
   String? _accessToken;
 
-  ApiClient({this.baseUrl = 'http://localhost:8000/api/v1'});
+  ApiClient({this.baseUrl = defaultBaseUrl});
 
   void setAccessToken(String token) {
     _accessToken = token;
