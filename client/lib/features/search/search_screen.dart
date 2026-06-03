@@ -11,7 +11,13 @@ import '../../core/discovery/discovery_models.dart';
 import '../../core/discovery/discovery_service.dart';
 
 class SearchScreen extends StatefulWidget {
-  const SearchScreen({super.key});
+  const SearchScreen({
+    super.key,
+    @visibleForTesting this.initialQueue = const [],
+  });
+
+  @visibleForTesting
+  final List<DiscoveryQueueItem> initialQueue;
 
   @override
   State<SearchScreen> createState() => _SearchScreenState();
@@ -24,7 +30,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
   late DiscoveryService _discoveryService;
   DiscoverySearchResponse? _response;
-  final List<DiscoveryQueueItem> _queue = [];
+  late final List<DiscoveryQueueItem> _queue = List.of(widget.initialQueue);
 
   int _searchRequestSerial = 0;
   bool _isPollingQueue = false;
@@ -37,6 +43,7 @@ class _SearchScreenState extends State<SearchScreen> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _discoveryService = DiscoveryService(context.read<ApiClient>());
+    _ensurePolling();
   }
 
   @override
@@ -164,6 +171,12 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   void _ensurePolling() {
+    if (!mounted) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+      return;
+    }
+
     final hasActive = _queue.any((item) => item.isActive);
     if (!hasActive) {
       _pollTimer?.cancel();
@@ -172,12 +185,13 @@ class _SearchScreenState extends State<SearchScreen> {
     }
 
     _pollTimer ??= Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted) return;
       _pollActiveJobs();
     });
   }
 
   Future<void> _pollActiveJobs({bool force = false}) async {
-    if (_isPollingQueue) return;
+    if (!mounted || _isPollingQueue) return;
     if (!force && !_queue.any((item) => item.isActive)) {
       _ensurePolling();
       return;
@@ -186,6 +200,7 @@ class _SearchScreenState extends State<SearchScreen> {
     _isPollingQueue = true;
     try {
       final queue = await _discoveryService.getQueue();
+      if (!mounted) return;
       _replaceQueue(queue.items);
     } catch (error) {
       if (mounted) {
@@ -195,7 +210,12 @@ class _SearchScreenState extends State<SearchScreen> {
       }
     } finally {
       _isPollingQueue = false;
-      _ensurePolling();
+      if (mounted) {
+        _ensurePolling();
+      } else {
+        _pollTimer?.cancel();
+        _pollTimer = null;
+      }
     }
   }
 
