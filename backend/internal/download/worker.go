@@ -151,10 +151,25 @@ func (wp *WorkerPool) worker(id int) {
 
 // processNextJob dequeues and processes the next available job
 func (wp *WorkerPool) processNextJob(workerID int) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-wp.stopChan:
+			cancel()
+		case <-done:
+		}
+	}()
+	defer func() {
+		close(done)
+		cancel()
+	}()
 
 	job, err := wp.queue.Dequeue(ctx, 5*time.Second)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
 		if errors.Is(err, ErrQueueEmpty) {
 			return
 		}
