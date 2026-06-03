@@ -241,6 +241,63 @@ func TestAddQueueItemRejectsNonHTTPSourceCandidateBeforeEnqueue(t *testing.T) {
 	}
 }
 
+func TestAddQueueItemRejectsInvalidSourceCandidatePositionBeforeEnqueue(t *testing.T) {
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		redisURL = "redis://localhost:6380"
+	}
+	queueService, err := NewService(redisURL)
+	if err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
+	defer queueService.Close()
+	downloadService, err := download.NewService(&download.ServiceConfig{RedisURL: redisURL, WorkerCount: 0, MaxRetries: 0, JobTimeout: time.Second}, func(context.Context, *download.DownloadJob, func(int)) error {
+		return nil
+	})
+	if err != nil {
+		t.Skipf("download service Redis not available: %v", err)
+	}
+	defer downloadService.Stop(context.Background())
+
+	ctx := context.Background()
+	userID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	beforeJobs, err := downloadService.GetUserJobs(ctx, userID.String())
+	if err != nil {
+		t.Fatalf("download jobs before request: %v", err)
+	}
+	h := NewHandlers(queueService, downloadService)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/queue/items", strings.NewReader(`{
+		"position": "definitely-not-a-position",
+		"sourceCandidate": {
+			"provider": "youtube",
+			"sourceUrl": "https://example.test/watch?v=1",
+			"title": "bad position"
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.UserContext{
+		UserID: userID,
+		Email:  "user@example.test",
+	}))
+	rec := httptest.NewRecorder()
+
+	h.AddQueueItem(rec, req)
+
+	afterJobs, err := downloadService.GetUserJobs(ctx, userID.String())
+	if err != nil {
+		t.Fatalf("download jobs after request: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("AddQueueItem invalid position status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_POSITION") {
+		t.Fatalf("AddQueueItem invalid position response should name INVALID_POSITION, got %s", rec.Body.String())
+	}
+	if len(afterJobs) != len(beforeJobs) {
+		t.Fatalf("download job count for user changed from %d to %d for invalid queue position", len(beforeJobs), len(afterJobs))
+	}
+}
+
 func jsonContainsField(body []byte, field string) bool {
 	var decoded map[string]any
 	if err := json.Unmarshal(body, &decoded); err != nil {

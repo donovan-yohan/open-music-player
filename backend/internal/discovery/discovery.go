@@ -128,9 +128,7 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 	if limit > 25 {
 		limit = 25
 	}
-	if len(requested) == 0 {
-		requested = s.defaultProviders
-	}
+	requested = s.normalizeRequestedProviders(requested)
 
 	ctx, cancel := context.WithTimeout(ctx, s.overallTimeout)
 	defer cancel()
@@ -191,6 +189,26 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 		resp.Providers = append(resp.Providers, summary)
 	}
 	return resp
+}
+
+func (s *Service) normalizeRequestedProviders(requested []string) []string {
+	if len(requested) == 0 {
+		requested = s.defaultProviders
+	}
+	seen := make(map[string]struct{}, len(requested))
+	normalized := make([]string, 0, len(requested))
+	for _, providerName := range requested {
+		name := strings.TrimSpace(providerName)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		normalized = append(normalized, name)
+	}
+	return normalized
 }
 
 type Handlers struct{ service *Service }

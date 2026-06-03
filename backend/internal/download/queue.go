@@ -87,7 +87,15 @@ func (q *Queue) Enqueue(ctx context.Context, userID, url, sourceType string, mbR
 // EnqueueCandidate adds a discovery source candidate to the queue with enough
 // metadata for the worker to create a local playable track.
 func (q *Queue) EnqueueCandidate(ctx context.Context, userID string, candidate SourceCandidate, mbRecordingID *string) (*DownloadJob, error) {
+	return q.EnqueueCandidateWithID(ctx, "", userID, candidate, mbRecordingID)
+}
+
+// EnqueueCandidateWithID adds a discovery source candidate with a caller-provided
+// job ID. This lets API handlers persist a visible queue item before publishing
+// the job to workers.
+func (q *Queue) EnqueueCandidateWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string) (*DownloadJob, error) {
 	return q.enqueueJob(ctx, &DownloadJob{
+		ID:            jobID,
 		UserID:        userID,
 		URL:           candidate.SourceURL,
 		SourceType:    candidate.Provider,
@@ -105,7 +113,9 @@ func (q *Queue) EnqueueCandidate(ctx context.Context, userID string, candidate S
 
 func (q *Queue) enqueueJob(ctx context.Context, job *DownloadJob) (*DownloadJob, error) {
 	now := time.Now()
-	job.ID = uuid.New().String()
+	if job.ID == "" {
+		job.ID = uuid.New().String()
+	}
 	job.Status = StatusQueued
 	job.Progress = 0
 	job.RetryCount = 0
@@ -117,6 +127,7 @@ func (q *Queue) enqueueJob(ctx context.Context, job *DownloadJob) (*DownloadJob,
 	}
 
 	if err := q.client.LPush(ctx, keyJobQueue, job.ID).Err(); err != nil {
+		_ = q.client.Del(ctx, keyJobStatus+job.ID).Err()
 		return nil, fmt.Errorf("failed to enqueue job: %w", err)
 	}
 

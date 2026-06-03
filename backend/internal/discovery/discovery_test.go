@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -77,5 +78,30 @@ func TestServiceSearchUnknownProvider(t *testing.T) {
 	resp := svc.Search(context.Background(), "x", []string{"bogus"}, 10)
 	if len(resp.Providers) != 1 || resp.Providers[0].Status != ProviderStatusUnsupported {
 		t.Fatalf("expected unsupported provider summary, got %#v", resp.Providers)
+	}
+}
+
+type countingProvider struct {
+	name  string
+	calls atomic.Int32
+}
+
+func (p *countingProvider) Name() string { return p.name }
+func (p *countingProvider) Search(ctx context.Context, query string, limit int) ([]Candidate, error) {
+	p.calls.Add(1)
+	return []Candidate{{CandidateID: p.name + ":1", Provider: p.name, SourceURL: "https://example.invalid/1", Title: query, Downloadable: true}}, nil
+}
+
+func TestServiceSearchDedupesRepeatedRequestedProviders(t *testing.T) {
+	youtube := &countingProvider{name: "youtube"}
+	svc := NewService(ServiceConfig{Providers: []Provider{youtube}, DefaultProviders: []string{"youtube"}})
+
+	resp := svc.Search(context.Background(), "same", []string{"youtube", " youtube ", "youtube"}, 10)
+
+	if calls := youtube.calls.Load(); calls != 1 {
+		t.Fatalf("youtube Search calls = %d, want 1", calls)
+	}
+	if len(resp.Providers) != 1 || resp.Providers[0].Provider != "youtube" {
+		t.Fatalf("provider summaries = %#v, want exactly one youtube summary", resp.Providers)
 	}
 }

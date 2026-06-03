@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/download"
 )
@@ -205,11 +206,33 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_SOURCE_URL", "sourceCandidate.sourceUrl must be an absolute http(s) URL")
 		return
 	}
+	if h.service == nil {
+		writeError(w, http.StatusServiceUnavailable, "SERVICE_DISABLED", "queue processing is disabled")
+		return
+	}
+	if err := h.service.ValidateInsertPosition(r.Context(), userCtx.UserID.String(), req.Position); err != nil {
+		if err == ErrInvalidPosition {
+			writeError(w, http.StatusBadRequest, "INVALID_POSITION", "invalid position")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to validate queue position")
+		return
+	}
 	if h.downloadService == nil {
 		writeError(w, http.StatusServiceUnavailable, "SERVICE_DISABLED", "download processing is disabled")
 		return
 	}
-	job, err := h.downloadService.EnqueueSourceCandidate(r.Context(), userCtx.UserID.String(), download.SourceCandidate{
+	jobID := uuid.NewString()
+	state, err := h.service.AddSourceCandidate(r.Context(), userCtx.UserID.String(), *candidate, jobID, req.Position)
+	if err != nil {
+		if err == ErrInvalidPosition {
+			writeError(w, http.StatusBadRequest, "INVALID_POSITION", "invalid position")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to add source candidate to queue")
+		return
+	}
+	job, err := h.downloadService.EnqueueSourceCandidateWithID(r.Context(), jobID, userCtx.UserID.String(), download.SourceCandidate{
 		CandidateID:  candidate.CandidateID,
 		Provider:     candidate.Provider,
 		SourceID:     candidate.SourceID,
@@ -223,11 +246,6 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 	}, req.MBRecordingID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create download job")
-		return
-	}
-	state, err := h.service.AddSourceCandidate(r.Context(), userCtx.UserID.String(), *candidate, job.ID, req.Position)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to add source candidate to queue")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{

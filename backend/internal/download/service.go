@@ -68,6 +68,12 @@ func (s *Service) EnqueueSourceCandidate(ctx context.Context, userID string, can
 	return s.queue.EnqueueCandidate(ctx, userID, candidate, mbRecordingID)
 }
 
+// EnqueueSourceCandidateWithID queues a normalized discovery candidate using a
+// job ID already persisted in the playback queue item.
+func (s *Service) EnqueueSourceCandidateWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string) (*DownloadJob, error) {
+	return s.queue.EnqueueCandidateWithID(ctx, jobID, userID, candidate, mbRecordingID)
+}
+
 // GetJob retrieves a job by ID
 func (s *Service) GetJob(ctx context.Context, jobID string) (*DownloadJob, error) {
 	return s.queue.GetJob(ctx, jobID)
