@@ -25,6 +25,7 @@ void main() async {
   final apiClient = ApiClient(storage: storage);
   final authService = AuthService(api: apiClient, storage: storage);
   final authState = AuthState(authService: authService);
+  await authState.checkAuthStatus();
 
   final audioService = await AudioPlayerService.init();
   final playbackState = PlaybackState(audioService);
@@ -44,6 +45,7 @@ void main() async {
       ],
       child: provider.MultiProvider(
         providers: [
+          provider.Provider.value(value: storage),
           provider.Provider.value(value: offlineDb),
           provider.ChangeNotifierProvider.value(value: connectivityService),
           provider.Provider.value(value: downloadService),
