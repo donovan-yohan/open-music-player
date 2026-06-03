@@ -30,6 +30,7 @@ type Router struct {
 	matcherHandlers     *matcher.Handler
 	libraryHandlers     *LibraryHandlers
 	streamHandler       *stream.Handler
+	playbackHandlers    *PlaybackHandlers
 	queueHandlers       *queue.Handlers
 	playlistHandlers    *PlaylistHandlers
 	downloadHandlers    *DownloadHandlers
@@ -48,6 +49,7 @@ type RouterConfig struct {
 	MatcherHandlers  *matcher.Handler
 	LibraryHandlers  *LibraryHandlers
 	StreamHandler    *stream.Handler
+	PlaybackHandlers *PlaybackHandlers
 	QueueHandlers    *queue.Handlers
 	PlaylistHandlers *PlaylistHandlers
 	DownloadHandlers *DownloadHandlers
@@ -92,6 +94,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		matcherHandlers:     cfg.MatcherHandlers,
 		libraryHandlers:     cfg.LibraryHandlers,
 		streamHandler:       cfg.StreamHandler,
+		playbackHandlers:    cfg.PlaybackHandlers,
 		queueHandlers:       cfg.QueueHandlers,
 		playlistHandlers:    cfg.PlaylistHandlers,
 		downloadHandlers:    cfg.DownloadHandlers,
@@ -172,6 +175,13 @@ func (r *Router) setupRoutes() {
 
 	// Audio streaming route (auth required)
 	r.mux.HandleFunc("GET /api/v1/stream/{track_id}", r.withAuth(r.streamHandler.Stream))
+
+	// Direct playback/download URL issuance (auth required)
+	if r.playbackHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/playback/urls", r.withAuth(r.playbackHandlers.CreatePlaybackURLs))
+	} else {
+		r.mux.HandleFunc("POST /api/v1/playback/urls", r.withAuth(unavailableHandler("Playback URL issuance is unavailable")))
+	}
 
 	// Queue routes (auth required, Redis-backed)
 	if r.queueHandlers != nil {
