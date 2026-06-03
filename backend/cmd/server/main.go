@@ -26,7 +26,6 @@ import (
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
 	"github.com/openmusicplayer/backend/internal/storage"
-	"github.com/openmusicplayer/backend/internal/stream"
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
 
@@ -114,8 +113,9 @@ func main() {
 		"bucket":   cfg.MinioBucket,
 	})
 
-	// Initialize stream and playback URL handlers
-	streamHandler := stream.NewHandler(trackRepo, storageClient)
+	// Initialize playback URL handlers. Normal audio bytes are served by object
+	// storage/CDN through short-lived signed URLs; the backend does not register a
+	// byte-proxy streaming route in the normal playback path.
 	playbackHandlers := api.NewPlaybackHandlers(trackRepo, libraryRepo, storageClient)
 
 	// Initialize WebSocket hub and handler
@@ -194,7 +194,6 @@ func main() {
 		WSHandler:        wsHandler,
 		MatcherHandlers:  matcherHandlers,
 		LibraryHandlers:  libraryHandlers,
-		StreamHandler:    streamHandler,
 		PlaybackHandlers: playbackHandlers,
 		QueueHandlers:    queueHandlers,
 		PlaylistHandlers: playlistHandlers,

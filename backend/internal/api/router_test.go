@@ -37,3 +37,18 @@ func TestDisabledDownloadRoutesRequireAuth(t *testing.T) {
 		t.Fatalf("GET /api/v1/downloads without auth = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
+
+func TestStreamProxyRouteRemovedFromNormalPath(t *testing.T) {
+	router := NewRouterWithConfig(&RouterConfig{
+		AuthHandlers: auth.NewHandlers(nil),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stream/42", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /api/v1/stream/42 = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
