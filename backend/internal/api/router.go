@@ -208,8 +208,8 @@ func (r *Router) setupRoutes() {
 	// playback/rendering state stays client-side.
 	r.mux.HandleFunc("GET /api/v1/mix-plans", r.withAuth(r.mixPlanHandlers.ListMixPlans))
 	r.mux.HandleFunc("POST /api/v1/mix-plans", r.withAuth(r.mixPlanHandlers.CreateMixPlan))
-	r.mux.HandleFunc("GET /api/v1/mix-plans/{id}", r.withAuth(r.mixPlanHandlers.GetMixPlan))
-	r.mux.HandleFunc("PUT /api/v1/mix-plans/{id}", r.withAuth(r.mixPlanHandlers.UpdateMixPlan))
+	r.mux.HandleFunc("GET /api/v1/mix-plans/{mixPlanId}", r.withAuth(r.mixPlanHandlers.GetMixPlan))
+	r.mux.HandleFunc("PUT /api/v1/mix-plans/{mixPlanId}", r.withAuth(r.mixPlanHandlers.UpdateMixPlan))
 
 	// Download routes (auth required, Redis/worker-backed)
 	if r.downloadHandlers != nil {

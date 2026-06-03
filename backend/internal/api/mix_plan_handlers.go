@@ -408,9 +408,9 @@ func mixPlanResponseFromDB(plan *db.MixPlan) (MixPlanResponse, error) {
 }
 
 func parseMixPlanID(r *http.Request) (uuid.UUID, error) {
-	idStr := r.PathValue("id")
+	idStr := r.PathValue("mixPlanId")
 	if idStr == "" {
-		idStr = r.PathValue("mixPlanId")
+		idStr = r.PathValue("id")
 	}
 	if idStr == "" {
 		return uuid.Nil, errors.New("missing mix plan ID")

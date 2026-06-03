@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/openmusicplayer/backend/internal/auth"
@@ -50,5 +52,25 @@ func TestStreamProxyRouteRemovedFromNormalPath(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GET /api/v1/stream/42 = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestSavedMixPlanItemRoutesUseOpenAPIPathParam(t *testing.T) {
+	source, err := os.ReadFile("router.go")
+	if err != nil {
+		t.Fatalf("read router.go: %v", err)
+	}
+
+	text := string(source)
+	for _, route := range []string{
+		`"GET /api/v1/mix-plans/{mixPlanId}"`,
+		`"PUT /api/v1/mix-plans/{mixPlanId}"`,
+	} {
+		if !strings.Contains(text, route) {
+			t.Fatalf("router.go missing saved mix-plan route %s", route)
+		}
+	}
+	if strings.Contains(text, "/api/v1/mix-plans/{id}") {
+		t.Fatal("saved mix-plan routes must use OpenAPI path parameter {mixPlanId}, not {id}")
 	}
 }
