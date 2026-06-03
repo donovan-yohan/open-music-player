@@ -101,19 +101,22 @@ func main() {
 
 	// Initialize storage client
 	storageClient, err := storage.New(&storage.Config{
-		Endpoint:  cfg.MinioEndpoint,
-		AccessKey: cfg.MinioAccessKey,
-		SecretKey: cfg.MinioSecretKey,
-		Bucket:    cfg.MinioBucket,
-		UseSSL:    cfg.MinioUseSSL,
+		Endpoint:       cfg.MinioEndpoint,
+		PublicEndpoint: cfg.MinioPublicEndpoint,
+		Region:         cfg.S3Region,
+		AccessKey:      cfg.MinioAccessKey,
+		SecretKey:      cfg.MinioSecretKey,
+		Bucket:         cfg.MinioBucket,
+		UseSSL:         cfg.MinioUseSSL,
 	})
 	if err != nil {
 		log.Error(ctx, "Failed to initialize storage client", nil, err)
 		os.Exit(1)
 	}
 	log.Info(ctx, "Initialized storage client", map[string]interface{}{
-		"endpoint": cfg.MinioEndpoint,
-		"bucket":   cfg.MinioBucket,
+		"endpoint":        cfg.MinioEndpoint,
+		"public_endpoint": cfg.MinioPublicEndpoint,
+		"bucket":          cfg.MinioBucket,
 	})
 
 	// Initialize stream and playback URL handlers
