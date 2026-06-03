@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart'
     hide Provider, ChangeNotifierProvider;
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import '../core/api/api_client.dart';
 import '../core/audio/playback_state.dart';
 import '../core/auth/auth_state.dart';
 import '../core/models/settings_model.dart';
@@ -14,12 +15,14 @@ import 'router.dart';
 import 'theme.dart';
 
 class OpenMusicPlayerApp extends ConsumerWidget {
+  final ApiClient apiClient;
   final AuthState authState;
   final PlaybackState playbackState;
   final GoRouter router;
 
   OpenMusicPlayerApp({
     super.key,
+    required this.apiClient,
     required this.authState,
     required this.playbackState,
   }) : router = createRouter(authState);
@@ -30,6 +33,7 @@ class OpenMusicPlayerApp extends ConsumerWidget {
 
     return MultiProvider(
       providers: [
+        Provider<ApiClient>.value(value: apiClient),
         ChangeNotifierProvider.value(value: authState),
         ChangeNotifierProvider.value(value: playbackState),
         Provider<queue_api.ApiClient>(

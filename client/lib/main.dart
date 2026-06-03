@@ -60,6 +60,7 @@ void main() async {
           provider.ChangeNotifierProvider.value(value: downloadState),
         ],
         child: OpenMusicPlayerApp(
+          apiClient: apiClient,
           authState: authState,
           playbackState: playbackState,
         ),
