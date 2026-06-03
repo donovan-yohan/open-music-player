@@ -55,6 +55,55 @@ func TestStreamProxyRouteRemovedFromNormalPath(t *testing.T) {
 	}
 }
 
+func TestLocalFlutterAuthPreflightGetsCORSHeaders(t *testing.T) {
+	router := NewRouterWithConfig(&RouterConfig{})
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/auth/login", nil)
+	req.Header.Set("Origin", "http://localhost:18145")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	req.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("OPTIONS /api/v1/auth/login = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:18145" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want local Flutter origin", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, http.MethodPost) {
+		t.Fatalf("Access-Control-Allow-Methods = %q, want %s", got, http.MethodPost)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Authorization") {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want Authorization", got)
+	}
+	if got := rec.Header().Get("Vary"); !strings.Contains(got, "Origin") {
+		t.Fatalf("Vary = %q, want Origin", got)
+	}
+}
+
+func TestNonLocalAuthPreflightGetsNoAllowOrigin(t *testing.T) {
+	router := NewRouterWithConfig(&RouterConfig{})
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/auth/login", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("OPTIONS /api/v1/auth/login = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want empty for non-local origin", got)
+	}
+	if got := rec.Header().Get("Vary"); !strings.Contains(got, "Origin") {
+		t.Fatalf("Vary = %q, want Origin", got)
+	}
+}
+
 func TestSavedMixPlanItemRoutesUseOpenAPIPathParam(t *testing.T) {
 	source, err := os.ReadFile("router.go")
 	if err != nil {

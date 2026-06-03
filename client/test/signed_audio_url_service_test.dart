@@ -12,7 +12,10 @@ void main() {
             {
               'trackId': 42,
               'url': 'https://objects.example/signed-track-42',
-              'expiresAt': DateTime.now().toUtc().add(const Duration(minutes: 5)).toIso8601String(),
+              'expiresAt': DateTime.now()
+                  .toUtc()
+                  .add(const Duration(minutes: 5))
+                  .toIso8601String(),
               'contentType': 'audio/mpeg',
               'sizeBytes': 1234,
               'etag': 'etag-42',
@@ -33,7 +36,7 @@ void main() {
       expect(descriptor.contentType, 'audio/mpeg');
       expect(descriptor.sizeBytes, 1234);
       expect(descriptor.etag, 'etag-42');
-      expect(descriptor.storageVersion, 'v7');
+      expect(descriptor.storageKeyVersion, 'v7');
     });
 
     test('throws explicit unavailable errors instead of returning stream fallback', () async {
@@ -72,7 +75,10 @@ void main() {
             {
               'trackId': 9,
               'url': 'https://objects.example/expired',
-              'expiresAt': DateTime.now().toUtc().subtract(const Duration(seconds: 1)).toIso8601String(),
+              'expiresAt': DateTime.now()
+                  .toUtc()
+                  .subtract(const Duration(seconds: 1))
+                  .toIso8601String(),
             },
           ],
         };
@@ -87,6 +93,71 @@ void main() {
             'PLAYBACK_URL_EXPIRED',
           ),
         ),
+      );
+    });
+
+    test('signed playback URL response maps storageKeyVersion', () {
+      final response = SignedAudioUrlResponse.fromJson({
+        'urls': [
+          {
+            'trackId': 123,
+            'url': 'https://objects.example/audio.mp3?sig=abc',
+            'expiresAt': '2026-06-03T04:12:00Z',
+            'contentType': 'audio/mpeg',
+            'sizeBytes': 1234567,
+            'etag': 'abc123',
+            'storageKeyVersion': 'v7',
+          },
+        ],
+        'unavailable': [],
+      });
+
+      final descriptor = response.byTrackId[123]!;
+      expect(descriptor.storageKeyVersion, 'v7');
+      expect(descriptor.url, contains('sig=abc'));
+    });
+
+    test('signed playback descriptor parses backend storageKeyVersion', () {
+      final descriptor = SignedAudioDescriptor.fromJson({
+        'trackId': 42,
+        'url': 'http://localhost:9000/audio.mp3',
+        'expiresAt': DateTime.now()
+            .toUtc()
+            .add(const Duration(minutes: 5))
+            .toIso8601String(),
+        'contentType': 'audio/mpeg',
+        'sizeBytes': 44,
+        'etag': 'etag-1',
+        'storageKeyVersion': 'qa-version-d69a-d1fe-2ed82',
+      });
+
+      expect(descriptor.storageKeyVersion, 'qa-version-d69a-d1fe-2ed82');
+    });
+
+    test('signed playback descriptor still accepts legacy storageVersion', () {
+      final descriptor = SignedAudioDescriptor.fromJson({
+        'trackId': 42,
+        'url': 'http://localhost:9000/audio.mp3',
+        'expiresAt': DateTime.now()
+            .toUtc()
+            .add(const Duration(minutes: 5))
+            .toIso8601String(),
+        'storageVersion': 'legacy-version',
+      });
+
+      expect(descriptor.storageKeyVersion, 'legacy-version');
+    });
+
+    test('signed playback descriptor flags URLs close to expiry', () {
+      final descriptor = SignedAudioDescriptor(
+        trackId: 123,
+        url: 'https://objects.example/audio.mp3?sig=old',
+        expiresAt: DateTime.utc(2026, 6, 3, 4, 0, 45),
+      );
+
+      expect(
+        descriptor.shouldRefreshSoon(now: DateTime.utc(2026, 6, 3, 4, 0, 0)),
+        isTrue,
       );
     });
   });

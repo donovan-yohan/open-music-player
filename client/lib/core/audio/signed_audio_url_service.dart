@@ -6,8 +6,7 @@ import '../api/api_client.dart';
 const int defaultSignedAudioTtlSeconds = 5 * 60;
 
 typedef PlaybackUrlRequester = Future<Map<String, dynamic>> Function(
-  Map<String, dynamic> body,
-);
+    Map<String, dynamic> body);
 
 class SignedAudioDescriptor {
   final int trackId;
@@ -16,7 +15,7 @@ class SignedAudioDescriptor {
   final String? contentType;
   final int? sizeBytes;
   final String? etag;
-  final String? storageVersion;
+  final String? storageKeyVersion;
 
   const SignedAudioDescriptor({
     required this.trackId,
@@ -25,7 +24,7 @@ class SignedAudioDescriptor {
     this.contentType,
     this.sizeBytes,
     this.etag,
-    this.storageVersion,
+    this.storageKeyVersion,
   });
 
   factory SignedAudioDescriptor.fromJson(Map<String, dynamic> json) {
@@ -50,12 +49,22 @@ class SignedAudioDescriptor {
       contentType: json['contentType'] as String?,
       sizeBytes: json['sizeBytes'] as int?,
       etag: json['etag'] as String?,
-      storageVersion: json['storageVersion'] as String?,
+      storageKeyVersion: json['storageKeyVersion'] as String? ??
+          json['storage_key_version'] as String? ??
+          json['storageVersion'] as String?,
     );
   }
 
   bool isExpired({DateTime? now}) {
     return !(now ?? DateTime.now().toUtc()).isBefore(expiresAt);
+  }
+
+  bool shouldRefreshSoon({
+    DateTime? now,
+    Duration threshold = const Duration(seconds: 60),
+  }) {
+    final current = now ?? DateTime.now().toUtc();
+    return !current.add(threshold).isBefore(expiresAt);
   }
 }
 
@@ -83,10 +92,7 @@ class SignedAudioUrlResponse {
   final List<SignedAudioDescriptor> urls;
   final List<SignedAudioUnavailable> unavailable;
 
-  const SignedAudioUrlResponse({
-    required this.urls,
-    required this.unavailable,
-  });
+  const SignedAudioUrlResponse({required this.urls, required this.unavailable});
 
   factory SignedAudioUrlResponse.fromJson(Map<String, dynamic> json) {
     final urlsJson = json['urls'] as List<dynamic>? ?? const [];
@@ -94,12 +100,16 @@ class SignedAudioUrlResponse {
 
     return SignedAudioUrlResponse(
       urls: urlsJson
-          .map((item) =>
-              SignedAudioDescriptor.fromJson(item as Map<String, dynamic>))
+          .map(
+            (item) =>
+                SignedAudioDescriptor.fromJson(item as Map<String, dynamic>),
+          )
           .toList(),
       unavailable: unavailableJson
-          .map((item) =>
-              SignedAudioUnavailable.fromJson(item as Map<String, dynamic>))
+          .map(
+            (item) =>
+                SignedAudioUnavailable.fromJson(item as Map<String, dynamic>),
+          )
           .toList(),
     );
   }
@@ -202,8 +212,9 @@ class SignedAudioUrlService {
     int trackId, {
     int? ttlSeconds,
   }) async {
-    final response =
-        await requestDescriptors([trackId], ttlSeconds: ttlSeconds);
+    final response = await requestDescriptors([
+      trackId,
+    ], ttlSeconds: ttlSeconds);
     final descriptor = response.byTrackId[trackId];
     if (descriptor != null) {
       if (descriptor.isExpired()) {
@@ -238,8 +249,10 @@ class SignedAudioUrlService {
     int? ttlSeconds,
   }) async {
     final normalizedIds = _normalizeTrackIds(trackIds);
-    final response =
-        await requestDescriptors(normalizedIds, ttlSeconds: ttlSeconds);
+    final response = await requestDescriptors(
+      normalizedIds,
+      ttlSeconds: ttlSeconds,
+    );
     final descriptors = response.byTrackId;
 
     for (final unavailable in response.unavailable) {

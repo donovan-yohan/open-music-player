@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import '../api/api_client.dart';
 import '../storage/secure_storage.dart';
+import 'auth_tokens.dart';
 
 class AuthResult {
   final bool success;
@@ -14,11 +15,9 @@ class AuthService {
   final ApiClient _api;
   final SecureStorage _storage;
 
-  AuthService({
-    required ApiClient api,
-    required SecureStorage storage,
-  })  : _api = api,
-        _storage = storage;
+  AuthService({required ApiClient api, required SecureStorage storage})
+    : _api = api,
+      _storage = storage;
 
   Future<AuthResult> register({
     required String email,
@@ -28,18 +27,14 @@ class AuthService {
     try {
       final response = await _api.post(
         '/auth/register',
-        data: {
-          'email': email,
-          'password': password,
-          'username': username,
-        },
+        data: {'email': email, 'password': password, 'username': username},
       );
 
       if (response.statusCode == 201) {
-        final data = response.data;
+        final tokens = parseAuthTokens(response.data);
         await _storage.saveTokens(
-          accessToken: data['access_token'],
-          refreshToken: data['refresh_token'],
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
         );
         return const AuthResult.success();
       }
@@ -58,17 +53,14 @@ class AuthService {
     try {
       final response = await _api.post(
         '/auth/login',
-        data: {
-          'email': email,
-          'password': password,
-        },
+        data: {'email': email, 'password': password},
       );
 
       if (response.statusCode == 200) {
-        final data = response.data;
+        final tokens = parseAuthTokens(response.data);
         await _storage.saveTokens(
-          accessToken: data['access_token'],
-          refreshToken: data['refresh_token'],
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
         );
         return const AuthResult.success();
       }

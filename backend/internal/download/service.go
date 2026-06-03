@@ -84,6 +84,11 @@ func (s *Service) GetUserJobs(ctx context.Context, userID string) ([]*DownloadJo
 	return s.queue.GetUserJobs(ctx, userID)
 }
 
+// RetryJob increments retry metadata and places a failed job back on the queue.
+func (s *Service) RetryJob(ctx context.Context, jobID string) error {
+	return s.queue.IncrementRetry(ctx, jobID)
+}
+
 // GetQueueLength returns the number of pending jobs
 func (s *Service) GetQueueLength(ctx context.Context) (int64, error) {
 	return s.queue.QueueLength(ctx)
