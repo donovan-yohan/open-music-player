@@ -54,11 +54,27 @@ type MixPlanPayload struct {
 
 type MixPlanClip struct {
 	ClipID          string  `json:"clipId"`
+	QueueItemID     string  `json:"queueItemId"`
 	TrackID         int64   `json:"trackId"`
 	SourceStartMs   int64   `json:"sourceStartMs"`
 	SourceEndMs     int64   `json:"sourceEndMs"`
 	TimelineStartMs int64   `json:"timelineStartMs"`
 	GainDB          float64 `json:"gainDb"`
+	FadeInMs        *int64  `json:"fadeInMs,omitempty"`
+	FadeOutMs       *int64  `json:"fadeOutMs,omitempty"`
+}
+
+type MixPlanClipResponse struct {
+	ClipID          string  `json:"clipId"`
+	QueueItemID     string  `json:"queueItemId"`
+	TrackID         int64   `json:"trackId"`
+	SourceStartMs   int64   `json:"sourceStartMs"`
+	SourceEndMs     int64   `json:"sourceEndMs"`
+	TimelineStartMs int64   `json:"timelineStartMs"`
+	TimelineEndMs   int64   `json:"timelineEndMs"`
+	GainDB          float64 `json:"gainDb"`
+	FadeInMs        *int64  `json:"fadeInMs,omitempty"`
+	FadeOutMs       *int64  `json:"fadeOutMs,omitempty"`
 }
 
 type MixPlanSummary struct {
@@ -68,14 +84,14 @@ type MixPlanSummary struct {
 }
 
 type MixPlanResponse struct {
-	ID            uuid.UUID      `json:"id"`
-	SchemaVersion int            `json:"schemaVersion"`
-	Name          string         `json:"name"`
-	Clips         []MixPlanClip  `json:"clips"`
-	Summary       MixPlanSummary `json:"summary"`
-	Version       int            `json:"version"`
-	CreatedAt     time.Time      `json:"createdAt"`
-	UpdatedAt     time.Time      `json:"updatedAt"`
+	ID            uuid.UUID             `json:"id"`
+	SchemaVersion int                   `json:"schemaVersion"`
+	Name          string                `json:"name"`
+	Clips         []MixPlanClipResponse `json:"clips"`
+	Summary       MixPlanSummary        `json:"summary"`
+	Version       int                   `json:"version"`
+	CreatedAt     time.Time             `json:"createdAt"`
+	UpdatedAt     time.Time             `json:"updatedAt"`
 }
 
 type PaginatedMixPlanResponse struct {
@@ -346,6 +362,10 @@ func buildMixPlanPayload(req *SaveMixPlanRequest) (MixPlanPayload, MixPlanSummar
 			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].clipId must be unique", i)
 		}
 		seenClipIDs[clip.ClipID] = true
+		clip.QueueItemID = strings.TrimSpace(clip.QueueItemID)
+		if clip.QueueItemID == "" {
+			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].queueItemId is required", i)
+		}
 		if clip.TrackID <= 0 {
 			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].trackId must be positive", i)
 		}
@@ -360,6 +380,12 @@ func buildMixPlanPayload(req *SaveMixPlanRequest) (MixPlanPayload, MixPlanSummar
 		}
 		if math.IsNaN(clip.GainDB) || math.IsInf(clip.GainDB, 0) {
 			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].gainDb must be finite", i)
+		}
+		if clip.FadeInMs != nil && *clip.FadeInMs < 0 {
+			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].fadeInMs must be non-negative", i)
+		}
+		if clip.FadeOutMs != nil && *clip.FadeOutMs < 0 {
+			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].fadeOutMs must be non-negative", i)
 		}
 		if !trackSeen[clip.TrackID] {
 			trackSeen[clip.TrackID] = true
@@ -399,12 +425,31 @@ func mixPlanResponseFromDB(plan *db.MixPlan) (MixPlanResponse, error) {
 		ID:            plan.ID,
 		SchemaVersion: payload.SchemaVersion,
 		Name:          payload.Name,
-		Clips:         payload.Clips,
+		Clips:         mixPlanClipResponses(payload.Clips),
 		Summary:       summary,
 		Version:       plan.Version,
 		CreatedAt:     plan.CreatedAt,
 		UpdatedAt:     plan.UpdatedAt,
 	}, nil
+}
+
+func mixPlanClipResponses(clips []MixPlanClip) []MixPlanClipResponse {
+	responses := make([]MixPlanClipResponse, 0, len(clips))
+	for _, clip := range clips {
+		responses = append(responses, MixPlanClipResponse{
+			ClipID:          clip.ClipID,
+			QueueItemID:     clip.QueueItemID,
+			TrackID:         clip.TrackID,
+			SourceStartMs:   clip.SourceStartMs,
+			SourceEndMs:     clip.SourceEndMs,
+			TimelineStartMs: clip.TimelineStartMs,
+			TimelineEndMs:   clip.TimelineStartMs + (clip.SourceEndMs - clip.SourceStartMs),
+			GainDB:          clip.GainDB,
+			FadeInMs:        clip.FadeInMs,
+			FadeOutMs:       clip.FadeOutMs,
+		})
+	}
+	return responses
 }
 
 func parseMixPlanID(r *http.Request) (uuid.UUID, error) {
