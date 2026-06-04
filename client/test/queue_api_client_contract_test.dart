@@ -84,7 +84,7 @@ void main() {
   });
 
   test(
-    'addSourceCandidateToQueue posts search candidates to queue items',
+    'addSourceCandidateToQueue accepts backend 202 source candidate enqueue response',
     () async {
       http.Request? seen;
       final client = ApiClient(
@@ -97,6 +97,7 @@ void main() {
                 'items': [
                   {
                     'queueItemId': 'q_source',
+                    'downloadJobId': 'job_source_1',
                     'playbackState': 'queued',
                     'sourceCandidate': {
                       'candidateId': 'soundcloud:123',
@@ -107,9 +108,12 @@ void main() {
                     },
                   },
                 ],
+                'currentPosition': 0,
+                'updatedAt': '2026-06-04T00:00:00Z',
               },
+              'downloadJobId': 'job_source_1',
             }),
-            200,
+            202,
           );
         }),
       );
@@ -142,8 +146,13 @@ void main() {
           'downloadable': true,
         },
       });
-      expect(state.tracks.single.sourceCandidateId, 'soundcloud:123');
-      expect(state.tracks.single.queueStatus.name, 'pending');
+      final track = state.tracks.single;
+      expect(track.id, 'q_source');
+      expect(track.queueItemId, 'q_source');
+      expect(track.sourceCandidateId, 'soundcloud:123');
+      expect(track.sourceUrl, 'https://soundcloud.test/track');
+      expect(track.queueStatus.name, 'pending');
+      expect(track.canPlay, isFalse);
     },
   );
 

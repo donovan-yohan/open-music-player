@@ -94,7 +94,9 @@ class ApiClient {
       }),
     );
 
-    if (response.statusCode == 200 || response.statusCode == 201) {
+    if (response.statusCode == 200 ||
+        response.statusCode == 201 ||
+        response.statusCode == 202) {
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       final queue = data['queue'];
       return QueueState.fromJson(queue is Map<String, dynamic> ? queue : data);
