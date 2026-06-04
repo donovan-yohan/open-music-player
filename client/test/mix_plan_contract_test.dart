@@ -3,14 +3,17 @@ import 'package:open_music_player/models/mix_plan.dart';
 
 void main() {
   MixPlanClip clip({
+    String clipId = 'clip-a',
+    String queueItemId = 'queue-a',
+    String trackId = '42',
     int sourceStartMs = 1000,
     int sourceEndMs = 5000,
     int timelineStartMs = 12000,
   }) =>
       MixPlanClip(
-        clipId: 'clip-a',
-        queueItemId: 'queue-a',
-        trackId: '42',
+        clipId: clipId,
+        queueItemId: queueItemId,
+        trackId: trackId,
         sourceStartMs: sourceStartMs,
         sourceEndMs: sourceEndMs,
         timelineStartMs: timelineStartMs,
@@ -55,14 +58,36 @@ void main() {
     final json = clip().toJson();
     expect(json['queueItemId'], 'queue-a');
     expect(json['trackId'], 42);
+    expect(json['trackId'], isA<int>());
     expect(json.containsKey('timelineEndMs'), isFalse);
 
-    final fromResponse = MixPlanClip.fromJson({
+    final fromNumericResponse = MixPlanClip.fromJson({
       ...json,
       'timelineEndMs': 999999,
     });
+    final fromStringResponse = MixPlanClip.fromJson({
+      ...json,
+      'trackId': '42',
+      'timelineEndMs': 999999,
+    });
 
-    expect(fromResponse.timelineEndMs, 16000);
+    expect(fromNumericResponse.timelineEndMs, 16000);
+    expect(fromStringResponse.trackId, '42');
+    expect(fromStringResponse.toJson()['trackId'], 42);
+  });
+
+  test('debug assertions reject invalid client request identities', () {
+    expect(() => clip(clipId: '   '), throwsAssertionError);
+    expect(() => clip(queueItemId: '   '), throwsAssertionError);
+    expect(() => clip(trackId: 'abc'), throwsAssertionError);
+    expect(() => clip(trackId: '0'), throwsAssertionError);
+    expect(() => clip(trackId: '-1'), throwsAssertionError);
+    expect(() => clip(trackId: ' 42 '), throwsAssertionError);
+  });
+
+  test('request serialization never emits a string trackId', () {
+    expect(clip(trackId: '123').toJson()['trackId'], 123);
+    expect(() => clip(trackId: 'abc').toJson(), throwsAssertionError);
   });
 
   test('mix plan response carries version and update metadata', () {

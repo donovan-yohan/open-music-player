@@ -7,7 +7,7 @@ Schema version: 1
 
 MVP timing persistence lives in the lightweight saved mix-plan store (`mix_plans.payload` JSONB, exposed by `/api/v1/mix-plans`). Do not put trim or placement on Redis queue items.
 
-Why, because Redis queue state is operational download/playback state: it can be reordered, retried, dropped, or rebuilt. Trim/placement is user-authored arrangement state and must survive queue churn, reloads, and future editor sessions. The SQL-backed mix-plan row gives us ownership scoping, optimistic versioning, timestamps, and a future migration path without turning the queue into a cursed document database.
+Redis queue state is operational download/playback state: it can be reordered, retried, dropped, or rebuilt. Trim/placement is user-authored arrangement state and must survive queue churn, reloads, and future editor sessions. The SQL-backed mix-plan row gives us ownership scoping, optimistic versioning, timestamps, and a future migration path without turning the queue into a cursed document database.
 
 Future normalized SQL tables can split clips out of `mix_plans.payload` when we need cross-plan search, collaborative editing, or partial clip updates. That is not required for v1.
 

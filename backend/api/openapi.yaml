@@ -1765,7 +1765,7 @@ components:
         queueItemId:
           type: string
           minLength: 1
-          description: Durable queue item identity this clip was planned from; timeline timing is saved here instead of mutating Redis queue order/download state.
+          description: Durable queue item identity this clip was planned from. Timing is persisted in the mix plan payload; queueItemId is only the stable link back to queue/download state.
         trackId:
           type: integer
           format: int64

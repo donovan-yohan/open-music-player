@@ -1,3 +1,18 @@
+bool _isNonBlank(String value) => value.trim().isNotEmpty;
+
+bool _isPositiveIntString(String value) {
+  final parsed = int.tryParse(value);
+  return parsed != null && parsed > 0 && parsed.toString() == value;
+}
+
+int _parsePositiveTrackId(String value) {
+  final parsed = int.parse(value);
+  if (parsed <= 0) {
+    throw FormatException('trackId must be a positive integer', value);
+  }
+  return parsed;
+}
+
 class MixPlanClip {
   final String clipId;
   final String queueItemId;
@@ -9,7 +24,7 @@ class MixPlanClip {
   final int? fadeInMs;
   final int? fadeOutMs;
 
-  const MixPlanClip({
+  MixPlanClip({
     required this.clipId,
     required this.queueItemId,
     required this.trackId,
@@ -19,8 +34,9 @@ class MixPlanClip {
     this.gainDb = 0,
     this.fadeInMs,
     this.fadeOutMs,
-  })  : assert(clipId != ''),
-        assert(queueItemId != ''),
+  })  : assert(_isNonBlank(clipId)),
+        assert(_isNonBlank(queueItemId)),
+        assert(_isPositiveIntString(trackId)),
         assert(sourceStartMs >= 0),
         assert(sourceEndMs > sourceStartMs),
         assert(timelineStartMs >= 0),
@@ -63,7 +79,7 @@ class MixPlanClip {
     final json = <String, dynamic>{
       'clipId': clipId,
       'queueItemId': queueItemId,
-      'trackId': int.tryParse(trackId) ?? trackId,
+      'trackId': _parsePositiveTrackId(trackId),
       'sourceStartMs': sourceStartMs,
       'sourceEndMs': sourceEndMs,
       'timelineStartMs': timelineStartMs,
