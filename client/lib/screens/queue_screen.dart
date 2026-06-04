@@ -1,9 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../core/audio/playback_state.dart';
 import '../models/track.dart';
 import '../providers/queue_provider.dart';
 import '../widgets/queue_item.dart';
 import '../widgets/stacked_waveform_timeline.dart';
+
+enum _QueueViewMode { list, timeline }
+
+(int, int) queueListReorderIndices({
+  required int relativeOldIndex,
+  required int relativeNewIndex,
+  required int currentIndex,
+  required bool hasActiveTrack,
+}) {
+  final firstMovableIndex = hasActiveTrack ? currentIndex + 1 : 0;
+  return (
+    firstMovableIndex + relativeOldIndex,
+    firstMovableIndex + relativeNewIndex
+  );
+}
 
 class QueueScreen extends StatefulWidget {
   const QueueScreen({super.key});
@@ -13,6 +29,8 @@ class QueueScreen extends StatefulWidget {
 }
 
 class _QueueScreenState extends State<QueueScreen> {
+  _QueueViewMode _viewMode = _QueueViewMode.list;
+
   @override
   void initState() {
     super.initState();
@@ -58,21 +76,25 @@ class _QueueScreenState extends State<QueueScreen> {
 
           if (provider.error != null) {
             return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    'Error loading queue',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(provider.error!),
-                  const SizedBox(height: 16),
-                  ElevatedButton(
-                    onPressed: () => provider.loadQueue(),
-                    child: const Text('Retry'),
-                  ),
-                ],
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      'Error loading queue',
+                      style: Theme.of(context).textTheme.titleMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(provider.error!, textAlign: TextAlign.center),
+                    const SizedBox(height: 16),
+                    ElevatedButton(
+                      onPressed: () => provider.loadQueue(),
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
               ),
             );
           }
@@ -98,107 +120,162 @@ class _QueueScreenState extends State<QueueScreen> {
             );
           }
 
-          return _buildQueueContent(context, provider);
+          return Column(
+            children: [
+              _buildViewSwitch(context),
+              Expanded(
+                child: _viewMode == _QueueViewMode.list
+                    ? _buildListView(context, provider)
+                    : _buildTimelineView(context, provider),
+              ),
+            ],
+          );
         },
       ),
     );
   }
 
-  Widget _buildQueueContent(BuildContext context, QueueProvider provider) {
+  Widget _buildViewSwitch(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      child: SizedBox(
+        width: double.infinity,
+        child: SegmentedButton<_QueueViewMode>(
+          key: const ValueKey('queue_view_switch'),
+          segments: const [
+            ButtonSegment(
+              value: _QueueViewMode.list,
+              icon: Icon(Icons.format_list_bulleted),
+              label: Text('List'),
+            ),
+            ButtonSegment(
+              value: _QueueViewMode.timeline,
+              icon: Icon(Icons.timeline),
+              label: Text('Timeline'),
+            ),
+          ],
+          selected: {_viewMode},
+          showSelectedIcon: false,
+          onSelectionChanged: (selection) {
+            setState(() => _viewMode = selection.single);
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTimelineView(BuildContext context, QueueProvider provider) {
+    final currentTrack = provider.currentTrack;
+    final currentIndex = provider.queue.currentIndex;
+    final tracks = provider.queue.tracks;
+    final upNext = currentTrack != null ? provider.upNext : tracks;
+    final previousTrack = currentIndex > 0 ? tracks[currentIndex - 1] : null;
+
+    if (currentTrack == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.timeline, size: 48, color: Colors.grey),
+              const SizedBox(height: 12),
+              Text(
+                'Start playback to use Timeline view',
+                style: Theme.of(context).textTheme.titleMedium,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'List view is still available for reorder and remove actions.',
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return CustomScrollView(
+      key: const ValueKey('queue_timeline_view'),
+      slivers: [
+        SliverToBoxAdapter(
+          child: SizedBox(
+            height: 420,
+            child: StackedWaveformTimeline(
+              key: const ValueKey('queue_surface'),
+              previousTrack: previousTrack,
+              currentTrack: currentTrack,
+              upcomingTracks: upNext,
+              peaksFor: provider.waveformPeaksFor,
+              trimRangeFor: provider.trimRangeFor,
+              onMoveEarlier: (track) => _moveTimelineTrack(
+                provider,
+                upNext,
+                currentIndex,
+                track,
+                -1,
+              ),
+              onMoveLater: (track) => _moveTimelineTrack(
+                provider,
+                upNext,
+                currentIndex,
+                track,
+                1,
+              ),
+            ),
+          ),
+        ),
+        const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
+      ],
+    );
+  }
+
+  Widget _buildListView(BuildContext context, QueueProvider provider) {
     final currentTrack = provider.currentTrack;
     final currentIndex = provider.queue.currentIndex;
     final tracks = provider.queue.tracks;
     final hasActiveTrack = currentTrack != null;
     final upNext = hasActiveTrack ? provider.upNext : tracks;
-    final previousTrack = currentIndex > 0 ? tracks[currentIndex - 1] : null;
 
     return CustomScrollView(
+      key: const ValueKey('queue_list_view'),
       slivers: [
-        // Stacked timeline prototype (issue #19) is a visual arranger preview.
-        // The existing queue rows below remain the source of reorder/remove and
-        // interactive waveform trim controls added on main.
-        if (currentTrack != null)
-          SliverToBoxAdapter(
-            child: SizedBox(
-              height: 420,
-              child: StackedWaveformTimeline(
-                key: const ValueKey('queue_surface'),
-                previousTrack: previousTrack,
-                currentTrack: currentTrack,
-                upcomingTracks: upNext,
-                peaksFor: provider.waveformPeaksFor,
-                trimRangeFor: provider.trimRangeFor,
-                onMoveEarlier: (track) => _moveTimelineTrack(
-                  provider,
-                  upNext,
-                  currentIndex,
-                  track,
-                  -1,
-                ),
-                onMoveLater: (track) => _moveTimelineTrack(
-                  provider,
-                  upNext,
-                  currentIndex,
-                  track,
-                  1,
-                ),
-              ),
-            ),
-          ),
-
-        // Now Playing section
         if (currentTrack != null) ...[
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                'Now Playing',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-              ),
-            ),
-          ),
+          _buildSectionHeader(context, 'Current'),
           SliverToBoxAdapter(
             child: QueueItem(
+              key: ValueKey('queue_current_${currentTrack.id}'),
               track: currentTrack,
               isPlaying: true,
-              onRemove: null, // Can't remove currently playing track
+              onPlay: currentTrack.canPlay
+                  ? () => _playFromQueue(context, provider, currentTrack)
+                  : null,
+              onRetry: currentTrack.canRetry
+                  ? () => provider.retryTrack(currentTrack)
+                  : null,
+              onRemove: null,
             ),
           ),
         ],
-
-        // Next Up section. If the backend has queued tracks but no active track
-        // yet (currentIndex == -1), surface the whole queue instead of rendering
-        // an apparently blank route.
         if (upNext.isNotEmpty) ...[
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
-              child: Text(
-                hasActiveTrack ? 'Next Up' : 'Queue',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-              ),
-            ),
-          ),
+          _buildSectionHeader(context, hasActiveTrack ? 'Up Next' : 'Queue'),
           SliverReorderableList(
             itemCount: upNext.length,
             onReorderItem: (oldIndex, newIndex) {
-              // Convert to absolute queue indices. onReorderItem already
-              // adjusts newIndex when the dragged item moves downward.
-              final firstMovableIndex = hasActiveTrack ? currentIndex + 1 : 0;
-              final absoluteOldIndex = firstMovableIndex + oldIndex;
-              final absoluteNewIndex = firstMovableIndex + newIndex;
+              final (absoluteOldIndex, absoluteNewIndex) =
+                  queueListReorderIndices(
+                relativeOldIndex: oldIndex,
+                relativeNewIndex: newIndex,
+                currentIndex: currentIndex,
+                hasActiveTrack: hasActiveTrack,
+              );
               provider.reorderQueue(absoluteOldIndex, absoluteNewIndex);
             },
             itemBuilder: (context, index) {
               final track = upNext[index];
               final absoluteIndex =
                   (hasActiveTrack ? currentIndex + 1 : 0) + index;
-              // Keep horizontal waveform drags unambiguous: remove stays on the
-              // explicit row button instead of a full-row Dismissible swipe.
               return QueueItem(
                 key: ValueKey(track.id),
                 track: track,
@@ -210,15 +287,34 @@ class _QueueScreenState extends State<QueueScreen> {
                 onTrimStartChanged: (ms) =>
                     provider.setStartOffsetMs(track, ms),
                 onTrimEndChanged: (ms) => provider.setEndOffsetMs(track, ms),
+                onPlay: track.queueStatus == TrackQueueStatus.playable &&
+                        track.canPlay
+                    ? () => _playFromQueue(context, provider, track)
+                    : null,
+                onRetry:
+                    track.canRetry ? () => provider.retryTrack(track) : null,
                 onRemove: () => provider.removeFromQueue(absoluteIndex),
               );
             },
           ),
         ],
-
-        // Bottom padding
         const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
       ],
+    );
+  }
+
+  SliverToBoxAdapter _buildSectionHeader(BuildContext context, String title) {
+    return SliverToBoxAdapter(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+        child: Text(
+          title,
+          style: Theme.of(context)
+              .textTheme
+              .titleMedium
+              ?.copyWith(fontWeight: FontWeight.bold),
+        ),
+      ),
     );
   }
 
@@ -244,6 +340,37 @@ class _QueueScreenState extends State<QueueScreen> {
     if (newIndex == oldIndex) return;
 
     provider.reorderQueue(oldIndex, newIndex);
+  }
+
+  Future<void> _playFromQueue(
+    BuildContext context,
+    QueueProvider provider,
+    Track selectedTrack,
+  ) async {
+    final playback = context.read<PlaybackState>();
+    final playableTracks = provider.queue.tracks
+        .where(
+          (track) =>
+              track.queueStatus == TrackQueueStatus.playable && track.canPlay,
+        )
+        .toList(growable: false);
+    final startIndex = playableTracks.indexWhere(
+      (track) => track.id == selectedTrack.id,
+    );
+    if (startIndex < 0) return;
+
+    try {
+      await playback.playQueue(
+        playableTracks.map((track) => track.toPlaybackJson()).toList(),
+        startIndex: startIndex,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      final message = playback.playbackError ?? 'Playback failed to start.';
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    }
   }
 
   /// Left-edge vertical grip. Only this widget starts a reorder drag, keeping
