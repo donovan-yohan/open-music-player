@@ -47,10 +47,14 @@ void main() {
       expect(find.byKey(const ValueKey('right_future_teaser')), findsOneWidget);
       expect(find.byKey(const ValueKey('timeline_clip_t1')), findsOneWidget);
       expect(
-          find.byKey(const ValueKey('timeline_waveform_t1')), findsOneWidget);
+        find.byKey(const ValueKey('timeline_waveform_t1')),
+        findsOneWidget,
+      );
       expect(find.byKey(const ValueKey('timeline_clip_t2')), findsOneWidget);
       expect(
-          find.byKey(const ValueKey('timeline_move_later_t2')), findsOneWidget);
+        find.byKey(const ValueKey('timeline_move_later_t2')),
+        findsOneWidget,
+      );
       expect(find.byKey(const ValueKey('timeline_zoom_in')), findsOneWidget);
 
       // Current main queue affordances are preserved below the preview.
@@ -113,8 +117,9 @@ void main() {
 
     await pumpQueueScreen(tester);
 
-    final provider =
-        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+    final provider = tester
+        .element(find.byType(QueueScreen))
+        .read<QueueProvider>();
     final track = provider.upNext.first;
 
     await provider.setStartOffsetMs(track, 42000);
@@ -133,6 +138,25 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(apiClient.reorders, [const (1, 2)]);
+  });
+
+  testWidgets('renders queued tracks when there is no active track', (
+    tester,
+  ) async {
+    apiClient.moveBeforePlaybackStarts();
+
+    await pumpQueueScreen(tester);
+
+    expect(find.text('Now Playing'), findsNothing);
+    expect(find.text('Queue'), findsWidgets);
+    expect(find.text('Current Song'), findsOneWidget);
+    expect(find.text('Paper Planes'), findsOneWidget);
+    expect(find.byKey(const ValueKey('reorder_handle_t1')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('remove_t1')));
+    await tester.pumpAndSettle();
+
+    expect(apiClient.removedPositions, [0]);
   });
 }
 
@@ -166,6 +190,15 @@ class _FakeQueueApiClient extends ApiClient {
 
   final List<int> removedPositions = [];
   final List<(int, int)> reorders = [];
+
+  void moveBeforePlaybackStarts() {
+    _state = QueueState(
+      tracks: _state.tracks,
+      currentIndex: -1,
+      repeatMode: _state.repeatMode,
+      shuffled: _state.shuffled,
+    );
+  }
 
   @override
   Future<QueueState> getQueue() async => _state;
