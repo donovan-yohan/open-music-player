@@ -79,6 +79,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   _TimelineMode _mode = _TimelineMode.browse;
   int _zoomIndex = 1;
+  int? _manualOffsetMs;
+  TimelineViewport? _lastViewport;
 
   double get _zoom => _zoomLevels[_zoomIndex];
 
@@ -149,7 +151,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       TimelineViewport.minPixelsPerSecond,
       TimelineViewport.maxPixelsPerSecond,
     );
-    final viewportOffsetMs =
+    final viewportOffsetMs = _manualOffsetMs ??
         (currentClip.timelineStartMs - 60000).clamp(0, totalMs);
     final viewport = TimelineViewport.clamped(
       durationMs: totalMs,
@@ -157,38 +159,45 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       pixelsPerSecond: pps,
       offsetMs: viewportOffsetMs,
     );
+    _lastViewport = viewport;
 
     // --- Build lane models in stack order (history → future, top to bottom). ---
     final lanes = <_LaneModel>[];
     if (widget.previousTrack != null) {
-      lanes.add(_LaneModel(
-        track: widget.previousTrack!,
-        clip: placed[widget.previousTrack!]!,
-        role: LaneRole.previous,
-        accent: StackedWaveformTimeline.previousAccent,
-        status: 'Played',
-        height: 114,
-      ));
+      lanes.add(
+        _LaneModel(
+          track: widget.previousTrack!,
+          clip: placed[widget.previousTrack!]!,
+          role: LaneRole.previous,
+          accent: StackedWaveformTimeline.previousAccent,
+          status: 'Played',
+          height: 114,
+        ),
+      );
     }
-    lanes.add(_LaneModel(
-      track: widget.currentTrack,
-      clip: currentClip,
-      role: LaneRole.current,
-      accent: StackedWaveformTimeline.currentAccent,
-      status: 'Now playing',
-      height: 146,
-    ));
+    lanes.add(
+      _LaneModel(
+        track: widget.currentTrack,
+        clip: currentClip,
+        role: LaneRole.current,
+        accent: StackedWaveformTimeline.currentAccent,
+        status: 'Now playing',
+        height: 146,
+      ),
+    );
     final upcoming = widget.upcomingTracks.take(2).toList();
     for (var i = 0; i < upcoming.length; i++) {
       final collapsed = i == 1;
-      lanes.add(_LaneModel(
-        track: upcoming[i],
-        clip: placed[upcoming[i]]!,
-        role: collapsed ? LaneRole.collapsed : LaneRole.upcoming,
-        accent: StackedWaveformTimeline.upcomingAccent,
-        status: i == 0 ? 'Up next' : 'Later',
-        height: collapsed ? 84 : 114,
-      ));
+      lanes.add(
+        _LaneModel(
+          track: upcoming[i],
+          clip: placed[upcoming[i]]!,
+          role: collapsed ? LaneRole.collapsed : LaneRole.upcoming,
+          accent: StackedWaveformTimeline.upcomingAccent,
+          status: i == 0 ? 'Up next' : 'Later',
+          height: collapsed ? 84 : 114,
+        ),
+      );
     }
 
     final playheadX =
@@ -199,14 +208,20 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     if (upcoming.isNotEmpty) {
       final nextClip = placed[upcoming.first]!;
       final overlap = currentClip.overlapInterval(
-          nextClip.timelineStartMs, nextClip.timelineEndMs);
+        nextClip.timelineStartMs,
+        nextClip.timelineEndMs,
+      );
       if (overlap != null) {
-        final left =
-            StackedWaveformTimeline.railWidth + viewport.msToX(overlap.startMs);
+        final overlapStartX = viewport.msToX(overlap.startMs);
+        final overlapEndX = viewport.msToX(overlap.endMs);
+        final visibleStartX = overlapStartX.clamp(0.0, paneWidth).toDouble();
+        final visibleEndX = overlapEndX.clamp(0.0, paneWidth).toDouble();
+        final left = StackedWaveformTimeline.railWidth + visibleStartX;
         final minBandWidth = math.min(2.0, paneWidth);
-        final width =
-            (viewport.msToX(overlap.endMs) - viewport.msToX(overlap.startMs))
-                .clamp(minBandWidth, paneWidth);
+        final width = (visibleEndX - visibleStartX).clamp(
+          minBandWidth,
+          paneWidth,
+        );
         transitionBand = Positioned(
           key: const ValueKey('transition_window'),
           left: left,
@@ -225,76 +240,94 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             : playheadMs) -
         playheadMs;
 
-    return Stack(
-      children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildRuler(context, viewport),
-            Expanded(
-              child: SingleChildScrollView(
-                child: Column(
-                  children: [
-                    for (final lane in lanes)
-                      _buildLane(context, lane, viewport),
-                  ],
+    return GestureDetector(
+      key: const ValueKey('timeline_pan_surface'),
+      behavior: HitTestBehavior.opaque,
+      onHorizontalDragUpdate: _mode == _TimelineMode.browse
+          ? (details) => _panViewport(viewport, -(details.primaryDelta ?? 0))
+          : null,
+      child: Stack(
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _buildRuler(context, viewport),
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    children: [
+                      for (final lane in lanes)
+                        _buildLane(context, lane, viewport),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          if (transitionBand != null) transitionBand,
+
+          // Global playhead crossing the ruler + every lane.
+          Positioned(
+            key: const ValueKey('timeline_playhead'),
+            top: 0,
+            bottom: 0,
+            left: playheadX.clamp(
+              StackedWaveformTimeline.railWidth,
+              double.infinity,
+            ),
+            width: 2,
+            child: Semantics(
+              label: 'Mix playhead at ${_formatClock(playheadMs)}',
+              child: const ColoredBox(color: Color(0xFFD32F2F)),
+            ),
+          ),
+
+          // Left-edge history teaser for the offscreen played clip.
+          if (widget.previousTrack != null)
+            Positioned(
+              key: const ValueKey('left_history_teaser'),
+              left: StackedWaveformTimeline.railWidth + 4,
+              top: 6,
+              child: _edgeTeaser(
+                context,
+                icon: Icons.history,
+                label: '${widget.previousTrack!.title} · ended '
+                    '${_formatClock(historyAgoMs.abs())} ago',
+                accent: StackedWaveformTimeline.previousAccent,
+                onTap: () => _jumpToClip(
+                  placed[widget.previousTrack!]!,
+                  viewport,
+                  alignEnd: true,
                 ),
               ),
             ),
-          ],
-        ),
 
-        if (transitionBand != null) transitionBand,
-
-        // Global playhead crossing the ruler + every lane.
-        Positioned(
-          key: const ValueKey('timeline_playhead'),
-          top: 0,
-          bottom: 0,
-          left: playheadX.clamp(
-              StackedWaveformTimeline.railWidth, double.infinity),
-          width: 2,
-          child: Semantics(
-            label: 'Mix playhead at ${_formatClock(playheadMs)}',
-            child: const ColoredBox(color: Color(0xFFD32F2F)),
-          ),
-        ),
-
-        // Left-edge history teaser for the offscreen played clip.
-        if (widget.previousTrack != null)
-          Positioned(
-            key: const ValueKey('left_history_teaser'),
-            left: StackedWaveformTimeline.railWidth + 4,
-            top: 6,
-            child: _edgeTeaser(
-              context,
-              icon: Icons.history,
-              label: '${widget.previousTrack!.title} · ended '
-                  '${_formatClock(historyAgoMs.abs())} ago',
-              accent: StackedWaveformTimeline.previousAccent,
+          // Right-edge future teaser / countdown for the offscreen next clip.
+          if (upcoming.isNotEmpty)
+            Positioned(
+              key: const ValueKey('right_future_teaser'),
+              right: 4,
+              top: 6,
+              child: _edgeTeaser(
+                context,
+                icon: Icons.fast_forward,
+                label: '${upcoming.first.title} · starts in '
+                    '${_formatClock(futureInMs.abs())}',
+                accent: StackedWaveformTimeline.upcomingAccent,
+                onTap: () => _jumpToClip(placed[upcoming.first]!, viewport),
+              ),
             ),
-          ),
-
-        // Right-edge future teaser / countdown for the offscreen next clip.
-        if (upcoming.isNotEmpty)
-          Positioned(
-            key: const ValueKey('right_future_teaser'),
-            right: 4,
-            top: 6,
-            child: _edgeTeaser(
-              context,
-              icon: Icons.fast_forward,
-              label: '${upcoming.first.title} · starts in '
-                  '${_formatClock(futureInMs.abs())}',
-              accent: StackedWaveformTimeline.upcomingAccent,
-            ),
-          ),
-      ],
+        ],
+      ),
     );
   }
 
   Widget _buildLane(
-      BuildContext context, _LaneModel lane, TimelineViewport viewport) {
+    BuildContext context,
+    _LaneModel lane,
+    TimelineViewport viewport,
+  ) {
     final left = viewport.msToX(lane.clip.timelineStartMs);
     final width = (viewport.msToX(lane.clip.timelineEndMs) -
             viewport.msToX(lane.clip.timelineStartMs))
@@ -394,9 +427,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           SizedBox(
             width: StackedWaveformTimeline.railWidth,
             child: Center(
-              child: Text('Mix time',
-                  style: theme.textTheme.labelSmall
-                      ?.copyWith(fontWeight: FontWeight.bold)),
+              child: Text(
+                'Mix time',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ),
           Expanded(
@@ -443,31 +479,89 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
   }
 
-  Widget _edgeTeaser(BuildContext context,
-      {required IconData icon, required String label, required Color accent}) {
-    return Container(
-      constraints: const BoxConstraints(maxWidth: 150),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
+  Widget _edgeTeaser(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required Color accent,
+    VoidCallback? onTap,
+  }) {
+    return Semantics(
+      button: onTap != null,
+      label: label,
+      child: Material(
         color: accent.withValues(alpha: 0.92),
         borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 12, color: Colors.white),
-          const SizedBox(width: 4),
-          Flexible(
-            child: Text(
-              label,
-              style: const TextStyle(color: Colors.white, fontSize: 11),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 150, minHeight: 32),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 12, color: Colors.white),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    label,
+                    style: const TextStyle(color: Colors.white, fontSize: 11),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
             ),
           ),
-        ],
+        ),
       ),
     );
+  }
+
+  void _panViewport(TimelineViewport viewport, double deltaXPx) {
+    if (!deltaXPx.isFinite || deltaXPx == 0) return;
+    final next = viewport.panByPixels(deltaXPx);
+    if (next.offsetMs == viewport.offsetMs && _manualOffsetMs != null) return;
+    setState(() => _manualOffsetMs = next.offsetMs);
+  }
+
+  void _jumpToClip(
+    TimelineClip clip,
+    TimelineViewport viewport, {
+    bool alignEnd = false,
+  }) {
+    final target = alignEnd
+        ? clip.timelineEndMs - viewport.visibleDurationMs
+        : clip.timelineStartMs;
+    final next = viewport.panToOffsetMs(target);
+    setState(() => _manualOffsetMs = next.offsetMs);
+  }
+
+  void _setZoomIndex(int newIndex) {
+    final clampedIndex = newIndex.clamp(0, _zoomLevels.length - 1).toInt();
+    if (clampedIndex == _zoomIndex) return;
+
+    final viewport = _lastViewport;
+    final oldZoom = _zoom;
+    final newZoom = _zoomLevels[clampedIndex];
+    setState(() {
+      _zoomIndex = clampedIndex;
+      if (viewport != null) {
+        final nextPps = (viewport.pixelsPerSecond * (newZoom / oldZoom))
+            .clamp(
+              TimelineViewport.minPixelsPerSecond,
+              TimelineViewport.maxPixelsPerSecond,
+            )
+            .toDouble();
+        _manualOffsetMs = viewport
+            .zoomAround(
+              newPixelsPerSecond: nextPps,
+              focalXPx: viewport.widthPx / 2,
+            )
+            .offsetMs;
+      }
+    });
   }
 
   Widget _buildModeBar(BuildContext context) {
@@ -494,7 +588,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         tooltip: 'Zoom out timeline',
         constraints: const BoxConstraints.tightFor(width: 36, height: 36),
         padding: EdgeInsets.zero,
-        onPressed: _zoomIndex == 0 ? null : () => setState(() => _zoomIndex--),
+        onPressed: _zoomIndex == 0 ? null : () => _setZoomIndex(_zoomIndex - 1),
       ),
       Container(
         key: const ValueKey('timeline_zoom_label'),
@@ -505,8 +599,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         ),
         child: Text(
           '${_zoom.toStringAsFixed(1)}x',
-          style:
-              theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.bold),
+          style: theme.textTheme.labelSmall?.copyWith(
+            fontWeight: FontWeight.bold,
+          ),
         ),
       ),
       IconButton(
@@ -517,7 +612,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         padding: EdgeInsets.zero,
         onPressed: _zoomIndex == _zoomLevels.length - 1
             ? null
-            : () => setState(() => _zoomIndex++),
+            : () => _setZoomIndex(_zoomIndex + 1),
       ),
       IconButton(
         key: const ValueKey('timeline_zoom_reset'),
@@ -525,8 +620,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         tooltip: 'Reset timeline zoom',
         constraints: const BoxConstraints.tightFor(width: 36, height: 36),
         padding: EdgeInsets.zero,
-        onPressed:
-            _zoomIndex == 1 ? null : () => setState(() => _zoomIndex = 1),
+        onPressed: _zoomIndex == 1 ? null : () => _setZoomIndex(1),
       ),
     ];
 
@@ -538,20 +632,22 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         color: theme.colorScheme.surface,
         border: Border(top: BorderSide(color: theme.dividerColor)),
       ),
-      child: LayoutBuilder(builder: (context, constraints) {
-        return FittedBox(
-          fit: BoxFit.scaleDown,
-          alignment: Alignment.center,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ...leadingControls,
-              const SizedBox(width: 16),
-              ...trailingControls,
-            ],
-          ),
-        );
-      }),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          return FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.center,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ...leadingControls,
+                const SizedBox(width: 16),
+                ...trailingControls,
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -669,8 +765,9 @@ class TimelineEmptySurface extends StatelessWidget {
             color: theme.dividerColor,
             style: BorderStyle.solid,
           ),
-          color:
-              theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.2),
+          color: theme.colorScheme.surfaceContainerHighest.withValues(
+            alpha: 0.2,
+          ),
         ),
         child: Center(
           child: Column(
@@ -678,8 +775,10 @@ class TimelineEmptySurface extends StatelessWidget {
             children: [
               Icon(Icons.add, color: theme.disabledColor),
               const SizedBox(height: 4),
-              Text('Empty timeline — search above to add tracks',
-                  style: theme.textTheme.bodySmall),
+              Text(
+                'Empty timeline — search above to add tracks',
+                style: theme.textTheme.bodySmall,
+              ),
             ],
           ),
         ),
@@ -712,8 +811,10 @@ class TimelineErrorSurface extends StatelessWidget {
             padding: const EdgeInsets.all(12),
             child: Row(
               children: [
-                Icon(Icons.error_outline,
-                    color: theme.colorScheme.onErrorContainer),
+                Icon(
+                  Icons.error_outline,
+                  color: theme.colorScheme.onErrorContainer,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -763,15 +864,19 @@ class _TimelineChrome extends StatelessWidget {
         Container(
           height: 40,
           decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest
-                .withValues(alpha: 0.4),
+            color: theme.colorScheme.surfaceContainerHighest.withValues(
+              alpha: 0.4,
+            ),
             border: Border(bottom: BorderSide(color: theme.dividerColor)),
           ),
           alignment: Alignment.centerLeft,
           padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Text('Mix time',
-              style: theme.textTheme.labelSmall
-                  ?.copyWith(fontWeight: FontWeight.bold)),
+          child: Text(
+            'Mix time',
+            style: theme.textTheme.labelSmall?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
         ),
         Expanded(
           child: Column(
@@ -787,8 +892,8 @@ class _TimelineChrome extends StatelessWidget {
                         decoration: BoxDecoration(
                           border: Border(
                             right: BorderSide(
-                                color:
-                                    theme.dividerColor.withValues(alpha: 0.4)),
+                              color: theme.dividerColor.withValues(alpha: 0.4),
+                            ),
                           ),
                         ),
                       ),
