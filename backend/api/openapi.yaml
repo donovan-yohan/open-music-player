@@ -1751,6 +1751,7 @@ components:
       type: object
       required:
         - clipId
+        - queueItemId
         - trackId
         - sourceStartMs
         - sourceEndMs
@@ -1761,6 +1762,10 @@ components:
           type: string
           minLength: 1
           description: Stable client-owned clip identifier within the plan.
+        queueItemId:
+          type: string
+          minLength: 1
+          description: Durable queue item identity this clip was planned from. Timing is persisted in the mix plan payload; queueItemId is only the stable link back to queue/download state.
         trackId:
           type: integer
           format: int64
@@ -1779,11 +1784,35 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Timeline start offset in milliseconds. timelineEndMs is derived as timelineStartMs + sourceEndMs - sourceStartMs and is not stored as playback state.
+          description: Timeline start offset in milliseconds. timelineEndMs is derived as timelineStartMs + sourceEndMs - sourceStartMs and is not accepted as request state.
         gainDb:
           type: number
           format: double
-          description: Static clip gain in decibels. Realtime fades/effects are not executed by the backend.
+          description: Static clip gain hook in decibels. The backend stores the value but does not execute audio gain.
+        fadeInMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Future fade-in hook in milliseconds. Stored as plan metadata only; no backend audio engine behavior in v1.
+        fadeOutMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Future fade-out hook in milliseconds. Stored as plan metadata only; no backend audio engine behavior in v1.
+
+    MixPlanClipResponse:
+      allOf:
+        - $ref: '#/components/schemas/MixPlanClip'
+        - type: object
+          required:
+            - timelineEndMs
+          properties:
+            timelineEndMs:
+              type: integer
+              format: int64
+              minimum: 0
+              readOnly: true
+              description: Derived timeline end offset in milliseconds; equal to timelineStartMs + sourceEndMs - sourceStartMs and never persisted independently.
 
     SaveMixPlanRequest:
       type: object
@@ -1795,7 +1824,7 @@ components:
         schemaVersion:
           type: integer
           enum: [1]
-          description: MVP schema version. Future BPM/key/cue/stems/time-stretch fields must use a future schema version and are not required behavior in v1.
+          description: MVP schema version. Timing persists in the lightweight mix_plans store; Redis queue items remain download/playback state. Future BPM/key/cue/stems/time-stretch fields must use a future schema version and are not required behavior in v1.
         name:
           type: string
           minLength: 1
@@ -1863,7 +1892,7 @@ components:
         clips:
           type: array
           items:
-            $ref: '#/components/schemas/MixPlanClip'
+            $ref: '#/components/schemas/MixPlanClipResponse'
         summary:
           $ref: '#/components/schemas/MixPlanSummary'
         version:

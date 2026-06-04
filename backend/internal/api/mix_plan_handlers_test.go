@@ -86,8 +86,8 @@ func TestCreateMixPlanAcceptsDuplicateTrackClipsAndStoresDerivedSummary(t *testi
 		"schemaVersion":1,
 		"name":"Road trip mix",
 		"clips":[
-			{"clipId":"intro","trackId":42,"sourceStartMs":1000,"sourceEndMs":5000,"timelineStartMs":0,"gainDb":-3.5},
-			{"clipId":"drop","trackId":42,"sourceStartMs":6000,"sourceEndMs":9000,"timelineStartMs":4500,"gainDb":1.25}
+			{"clipId":"intro","queueItemId":"queue-intro","trackId":42,"sourceStartMs":1000,"sourceEndMs":5000,"timelineStartMs":0,"gainDb":-3.5,"fadeInMs":250},
+			{"clipId":"drop","queueItemId":"queue-drop","trackId":42,"sourceStartMs":6000,"sourceEndMs":9000,"timelineStartMs":4500,"gainDb":1.25,"fadeOutMs":500}
 		]
 	}`)
 	req := authedRequest(userID, http.MethodPost, "/api/v1/mix-plans", body)
@@ -112,6 +112,12 @@ func TestCreateMixPlanAcceptsDuplicateTrackClipsAndStoresDerivedSummary(t *testi
 	if len(storedPayload.Clips) != 2 || storedPayload.Clips[0].TrackID != 42 || storedPayload.Clips[1].TrackID != 42 {
 		t.Fatalf("stored clips = %+v, want duplicate track refs preserved", storedPayload.Clips)
 	}
+	if storedPayload.Clips[0].QueueItemID != "queue-intro" || storedPayload.Clips[1].QueueItemID != "queue-drop" {
+		t.Fatalf("stored queue item ids = %+v, want queue ids preserved", storedPayload.Clips)
+	}
+	if storedPayload.Clips[0].FadeInMs == nil || *storedPayload.Clips[0].FadeInMs != 250 {
+		t.Fatalf("stored fadeInMs = %+v, want 250", storedPayload.Clips[0].FadeInMs)
+	}
 
 	var storedSummary MixPlanSummary
 	if err := json.Unmarshal(store.created.Summary, &storedSummary); err != nil {
@@ -134,6 +140,34 @@ func TestCreateMixPlanAcceptsDuplicateTrackClipsAndStoresDerivedSummary(t *testi
 	if resp.SchemaVersion != 1 || resp.Name != "Road trip mix" || resp.Version != 1 {
 		t.Fatalf("response = %+v, want schemaVersion/name/version", resp)
 	}
+	if resp.Clips[0].QueueItemID != "queue-intro" || resp.Clips[0].TimelineEndMs != 4000 {
+		t.Fatalf("response first clip = %+v, want queueItemId and derived timelineEndMs", resp.Clips[0])
+	}
+	if resp.Clips[1].TimelineEndMs != 7500 {
+		t.Fatalf("response second timelineEndMs = %d, want 7500", resp.Clips[1].TimelineEndMs)
+	}
+}
+
+func TestCreateMixPlanRejectsMissingQueueItemIDBeforePersisting(t *testing.T) {
+	store := &fakeMixPlanStore{}
+	h := NewMixPlanHandlers(store)
+
+	body := []byte(`{
+		"schemaVersion":1,
+		"name":"Missing queue item",
+		"clips":[{"clipId":"clip-a","trackId":42,"sourceStartMs":0,"sourceEndMs":1000,"timelineStartMs":0,"gainDb":0}]
+	}`)
+	req := authedRequest(uuid.New(), http.MethodPost, "/api/v1/mix-plans", body)
+	w := httptest.NewRecorder()
+
+	h.CreateMixPlan(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if store.created != nil {
+		t.Fatal("clip without queueItemId should not be persisted")
+	}
 }
 
 func TestCreateMixPlanRejectsInvalidClipRangeBeforePersisting(t *testing.T) {
@@ -143,7 +177,7 @@ func TestCreateMixPlanRejectsInvalidClipRangeBeforePersisting(t *testing.T) {
 	body := []byte(`{
 		"schemaVersion":1,
 		"name":"Broken mix",
-		"clips":[{"clipId":"bad","trackId":42,"sourceStartMs":5000,"sourceEndMs":5000,"timelineStartMs":0,"gainDb":0}]
+		"clips":[{"clipId":"bad","queueItemId":"queue-bad","trackId":42,"sourceStartMs":5000,"sourceEndMs":5000,"timelineStartMs":0,"gainDb":0}]
 	}`)
 	req := authedRequest(uuid.New(), http.MethodPost, "/api/v1/mix-plans", body)
 	w := httptest.NewRecorder()
@@ -165,7 +199,7 @@ func TestCreateMixPlanRejectsClipTimelineEndOverflowBeforePersisting(t *testing.
 	body := []byte(`{
 		"schemaVersion":1,
 		"name":"Overflow mix",
-		"clips":[{"clipId":"overflow","trackId":42,"sourceStartMs":0,"sourceEndMs":2,"timelineStartMs":` + strconv.FormatInt(math.MaxInt64, 10) + `,"gainDb":0}]
+		"clips":[{"clipId":"overflow","queueItemId":"queue-overflow","trackId":42,"sourceStartMs":0,"sourceEndMs":2,"timelineStartMs":` + strconv.FormatInt(math.MaxInt64, 10) + `,"gainDb":0}]
 	}`)
 	req := authedRequest(uuid.New(), http.MethodPost, "/api/v1/mix-plans", body)
 	w := httptest.NewRecorder()
@@ -187,7 +221,7 @@ func TestCreateMixPlanRejectsOversizedBodyBeforePersisting(t *testing.T) {
 	body := []byte(`{
 		"schemaVersion":1,
 		"name":"Huge mix",
-		"clips":[{"clipId":"clip-a","trackId":42,"sourceStartMs":0,"sourceEndMs":1000,"timelineStartMs":0,"gainDb":0}],
+		"clips":[{"clipId":"clip-a","queueItemId":"queue-huge","trackId":42,"sourceStartMs":0,"sourceEndMs":1000,"timelineStartMs":0,"gainDb":0}],
 		"padding":"` + strings.Repeat("a", 1024*1024+1) + `"
 	}`)
 	req := authedRequest(uuid.New(), http.MethodPost, "/api/v1/mix-plans", body)
@@ -211,6 +245,7 @@ func TestCreateMixPlanRejectsTooManyClipsBeforePersisting(t *testing.T) {
 	for i := range clips {
 		clips[i] = MixPlanClip{
 			ClipID:          "clip-" + strconv.Itoa(i),
+			QueueItemID:     "queue-" + strconv.Itoa(i),
 			TrackID:         int64(i + 1),
 			SourceStartMs:   0,
 			SourceEndMs:     1000,
@@ -242,7 +277,7 @@ func TestCreateMixPlanRejectsTracksOutsideUserLibrary(t *testing.T) {
 	body := []byte(`{
 		"schemaVersion":1,
 		"name":"Missing track mix",
-		"clips":[{"clipId":"missing","trackId":99,"sourceStartMs":0,"sourceEndMs":1000,"timelineStartMs":0,"gainDb":0}]
+		"clips":[{"clipId":"missing","queueItemId":"queue-missing","trackId":99,"sourceStartMs":0,"sourceEndMs":1000,"timelineStartMs":0,"gainDb":0}]
 	}`)
 	req := authedRequest(uuid.New(), http.MethodPost, "/api/v1/mix-plans", body)
 	w := httptest.NewRecorder()
@@ -269,7 +304,7 @@ func TestUpdateMixPlanUsesOptimisticVersion(t *testing.T) {
 		"schemaVersion":1,
 		"name":"Updated mix",
 		"version":3,
-		"clips":[{"clipId":"clip-a","trackId":7,"sourceStartMs":100,"sourceEndMs":200,"timelineStartMs":50,"gainDb":0}]
+		"clips":[{"clipId":"clip-a","queueItemId":"queue-clip-a","trackId":7,"sourceStartMs":100,"sourceEndMs":200,"timelineStartMs":50,"gainDb":0}]
 	}`)
 	req := authedRequest(userID, http.MethodPut, "/api/v1/mix-plans/"+planID.String(), body)
 	req.SetPathValue("id", planID.String())
@@ -304,7 +339,7 @@ func TestUpdateMixPlanReturnsConflictOnStaleVersion(t *testing.T) {
 		"schemaVersion":1,
 		"name":"Stale mix",
 		"version":3,
-		"clips":[{"clipId":"clip-a","trackId":7,"sourceStartMs":100,"sourceEndMs":200,"timelineStartMs":50,"gainDb":0}]
+		"clips":[{"clipId":"clip-a","queueItemId":"queue-clip-a","trackId":7,"sourceStartMs":100,"sourceEndMs":200,"timelineStartMs":50,"gainDb":0}]
 	}`)
 	req := authedRequest(userID, http.MethodPut, "/api/v1/mix-plans/"+planID.String(), body)
 	req.SetPathValue("id", planID.String())
@@ -391,7 +426,7 @@ func TestUpdateMixPlanRejectsMissingVersion(t *testing.T) {
 	body := []byte(`{
 		"schemaVersion":1,
 		"name":"No version mix",
-		"clips":[{"clipId":"clip-a","trackId":7,"sourceStartMs":100,"sourceEndMs":200,"timelineStartMs":50,"gainDb":0}]
+		"clips":[{"clipId":"clip-a","queueItemId":"queue-clip-a","trackId":7,"sourceStartMs":100,"sourceEndMs":200,"timelineStartMs":50,"gainDb":0}]
 	}`)
 	req := authedRequest(userID, http.MethodPut, "/api/v1/mix-plans/"+planID.String(), body)
 	req.SetPathValue("id", planID.String())
@@ -417,7 +452,7 @@ func TestUpdateMixPlanUnexpectedStoreError(t *testing.T) {
 		"schemaVersion":1,
 		"name":"Updated mix",
 		"version":3,
-		"clips":[{"clipId":"clip-a","trackId":7,"sourceStartMs":100,"sourceEndMs":200,"timelineStartMs":50,"gainDb":0}]
+		"clips":[{"clipId":"clip-a","queueItemId":"queue-clip-a","trackId":7,"sourceStartMs":100,"sourceEndMs":200,"timelineStartMs":50,"gainDb":0}]
 	}`)
 	req := authedRequest(userID, http.MethodPut, "/api/v1/mix-plans/"+planID.String(), body)
 	req.SetPathValue("id", planID.String())
