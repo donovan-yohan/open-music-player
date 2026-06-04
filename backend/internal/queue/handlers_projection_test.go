@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -140,17 +141,32 @@ func TestQueueResponseProjectsFailedJobErrorAndRetryMetadata(t *testing.T) {
 	}
 }
 
+func redisURLWithDB(rawURL, db string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	parsed.Path = "/" + db
+	return parsed.String()
+}
+
 func TestGetQueueHandlerProjectsLiveDownloadJobState(t *testing.T) {
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
 		redisURL = "redis://localhost:6380"
 	}
+	redisURL = redisURLWithDB(redisURL, "14")
+	ctx := context.Background()
 
 	queueService, err := NewService(redisURL)
 	if err != nil {
 		t.Skipf("Redis not available: %v", err)
 	}
 	defer queueService.Close()
+	if err := queueService.client.FlushDB(ctx).Err(); err != nil {
+		t.Fatalf("flush isolated redis db: %v", err)
+	}
+	defer queueService.client.FlushDB(context.Background())
 
 	downloadService, err := download.NewService(&download.ServiceConfig{RedisURL: redisURL, WorkerCount: 0}, nil)
 	if err != nil {
