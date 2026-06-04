@@ -26,14 +26,8 @@ GoRouter createRouter(AuthState authState) {
     refreshListenable: authState,
     redirect: (context, state) => _authRedirect(authState, state),
     routes: [
-      GoRoute(
-        path: '/',
-        builder: (context, state) => const SplashScreen(),
-      ),
-      GoRoute(
-        path: '/login',
-        builder: (context, state) => const LoginScreen(),
-      ),
+      GoRoute(path: '/', builder: (context, state) => const SplashScreen()),
+      GoRoute(path: '/login', builder: (context, state) => const LoginScreen()),
       GoRoute(
         path: '/register',
         builder: (context, state) => const RegisterScreen(),
@@ -44,13 +38,16 @@ GoRouter createRouter(AuthState authState) {
           child: const PlayerScreen(),
           transitionsBuilder: (context, animation, secondaryAnimation, child) {
             return SlideTransition(
-              position: Tween<Offset>(
-                begin: const Offset(0, 1),
-                end: Offset.zero,
-              ).animate(CurvedAnimation(
-                parent: animation,
-                curve: Curves.easeOutCubic,
-              )),
+              position:
+                  Tween<Offset>(
+                    begin: const Offset(0, 1),
+                    end: Offset.zero,
+                  ).animate(
+                    CurvedAnimation(
+                      parent: animation,
+                      curve: Curves.easeOutCubic,
+                    ),
+                  ),
               child: child,
             );
           },
@@ -59,10 +56,6 @@ GoRouter createRouter(AuthState authState) {
       GoRoute(
         path: '/downloads',
         builder: (context, state) => const DownloadsScreen(),
-      ),
-      GoRoute(
-        path: '/queue',
-        builder: (context, state) => const QueueScreen(),
       ),
       GoRoute(
         path: '/playlists',
@@ -83,27 +76,28 @@ GoRouter createRouter(AuthState authState) {
         routes: [
           GoRoute(
             path: '/home',
-            pageBuilder: (context, state) => const NoTransitionPage(
-              child: HomeScreen(),
-            ),
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: HomeScreen()),
           ),
           GoRoute(
             path: '/search',
-            pageBuilder: (context, state) => const NoTransitionPage(
-              child: SearchScreen(),
-            ),
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: SearchScreen()),
           ),
           GoRoute(
             path: '/library',
-            pageBuilder: (context, state) => const NoTransitionPage(
-              child: LibraryScreen(),
-            ),
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: LibraryScreen()),
+          ),
+          GoRoute(
+            path: '/queue',
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: QueueScreen()),
           ),
           GoRoute(
             path: '/settings',
-            pageBuilder: (context, state) => const NoTransitionPage(
-              child: SettingsScreen(),
-            ),
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: SettingsScreen()),
           ),
         ],
       ),
@@ -134,9 +128,14 @@ String get _initialRoute {
 }
 
 class ScaffoldWithNavBar extends StatelessWidget {
-  const ScaffoldWithNavBar({super.key, required this.child});
+  const ScaffoldWithNavBar({
+    super.key,
+    required this.child,
+    this.miniPlayer = const MiniPlayer(),
+  });
 
   final Widget child;
+  final Widget miniPlayer;
 
   @override
   Widget build(BuildContext context) {
@@ -144,7 +143,7 @@ class ScaffoldWithNavBar extends StatelessWidget {
       body: Column(
         children: [
           Expanded(child: child),
-          const MiniPlayer(),
+          miniPlayer,
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -167,6 +166,11 @@ class ScaffoldWithNavBar extends StatelessWidget {
             label: 'Library',
           ),
           NavigationDestination(
+            icon: Icon(Icons.queue_music_outlined),
+            selectedIcon: Icon(Icons.queue_music),
+            label: 'Queue',
+          ),
+          NavigationDestination(
             icon: Icon(Icons.settings_outlined),
             selectedIcon: Icon(Icons.settings),
             label: 'Settings',
@@ -181,7 +185,8 @@ class ScaffoldWithNavBar extends StatelessWidget {
     if (location.startsWith('/home')) return 0;
     if (location.startsWith('/search')) return 1;
     if (location.startsWith('/library')) return 2;
-    if (location.startsWith('/settings')) return 3;
+    if (location.startsWith('/queue')) return 3;
+    if (location.startsWith('/settings')) return 4;
     return 0;
   }
 
@@ -197,6 +202,9 @@ class ScaffoldWithNavBar extends StatelessWidget {
         context.go('/library');
         break;
       case 3:
+        context.go('/queue');
+        break;
+      case 4:
         context.go('/settings');
         break;
     }

@@ -106,9 +106,10 @@ class _QueueScreenState extends State<QueueScreen> {
 
   Widget _buildQueueContent(BuildContext context, QueueProvider provider) {
     final currentTrack = provider.currentTrack;
-    final upNext = provider.upNext;
     final currentIndex = provider.queue.currentIndex;
     final tracks = provider.queue.tracks;
+    final hasActiveTrack = currentTrack != null;
+    final upNext = hasActiveTrack ? provider.upNext : tracks;
     final previousTrack = currentIndex > 0 ? tracks[currentIndex - 1] : null;
 
     return CustomScrollView(
@@ -167,13 +168,15 @@ class _QueueScreenState extends State<QueueScreen> {
           ),
         ],
 
-        // Next Up section
+        // Next Up section. If the backend has queued tracks but no active track
+        // yet (currentIndex == -1), surface the whole queue instead of rendering
+        // an apparently blank route.
         if (upNext.isNotEmpty) ...[
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
               child: Text(
-                'Next Up',
+                hasActiveTrack ? 'Next Up' : 'Queue',
                 style: Theme.of(
                   context,
                 ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
@@ -185,13 +188,15 @@ class _QueueScreenState extends State<QueueScreen> {
             onReorderItem: (oldIndex, newIndex) {
               // Convert to absolute queue indices. onReorderItem already
               // adjusts newIndex when the dragged item moves downward.
-              final absoluteOldIndex = currentIndex + 1 + oldIndex;
-              final absoluteNewIndex = currentIndex + 1 + newIndex;
+              final firstMovableIndex = hasActiveTrack ? currentIndex + 1 : 0;
+              final absoluteOldIndex = firstMovableIndex + oldIndex;
+              final absoluteNewIndex = firstMovableIndex + newIndex;
               provider.reorderQueue(absoluteOldIndex, absoluteNewIndex);
             },
             itemBuilder: (context, index) {
               final track = upNext[index];
-              final absoluteIndex = currentIndex + 1 + index;
+              final absoluteIndex =
+                  (hasActiveTrack ? currentIndex + 1 : 0) + index;
               // Keep horizontal waveform drags unambiguous: remove stays on the
               // explicit row button instead of a full-row Dismissible swipe.
               return QueueItem(
@@ -224,15 +229,18 @@ class _QueueScreenState extends State<QueueScreen> {
     Track track,
     int delta,
   ) {
-    final relativeIndex =
-        upNext.indexWhere((candidate) => candidate.id == track.id);
+    final relativeIndex = upNext.indexWhere(
+      (candidate) => candidate.id == track.id,
+    );
     if (relativeIndex < 0) return;
 
     final oldIndex = currentIndex + 1 + relativeIndex;
     final firstMovableIndex = currentIndex + 1;
     final lastMovableIndex = currentIndex + upNext.length;
-    final newIndex =
-        (oldIndex + delta).clamp(firstMovableIndex, lastMovableIndex);
+    final newIndex = (oldIndex + delta).clamp(
+      firstMovableIndex,
+      lastMovableIndex,
+    );
     if (newIndex == oldIndex) return;
 
     provider.reorderQueue(oldIndex, newIndex);

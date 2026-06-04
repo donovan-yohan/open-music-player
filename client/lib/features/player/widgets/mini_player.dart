@@ -17,7 +17,8 @@ class MiniPlayer extends StatelessWidget {
 
         final item = playback.currentItem!;
         final progress = playback.duration.inMilliseconds > 0
-            ? playback.position.inMilliseconds / playback.duration.inMilliseconds
+            ? playback.position.inMilliseconds /
+                playback.duration.inMilliseconds
             : 0.0;
 
         return GestureDetector(
@@ -28,7 +29,7 @@ class MiniPlayer extends StatelessWidget {
               color: AppTheme.darkCard,
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.3),
+                  color: Colors.black.withValues(alpha: 0.3),
                   blurRadius: 8,
                   offset: const Offset(0, -2),
                 ),
@@ -40,7 +41,9 @@ class MiniPlayer extends StatelessWidget {
                   value: progress.clamp(0.0, 1.0),
                   minHeight: 2,
                   backgroundColor: AppTheme.darkSurface,
-                  valueColor: const AlwaysStoppedAnimation<Color>(AppTheme.primaryGreen),
+                  valueColor: const AlwaysStoppedAnimation<Color>(
+                    AppTheme.primaryGreen,
+                  ),
                 ),
                 Expanded(
                   child: Padding(
@@ -55,7 +58,8 @@ class MiniPlayer extends StatelessWidget {
                                   width: 48,
                                   height: 48,
                                   fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) => _buildPlaceholder(),
+                                  errorBuilder: (_, __, ___) =>
+                                      _buildPlaceholder(),
                                 )
                               : _buildPlaceholder(),
                         ),
@@ -93,7 +97,16 @@ class MiniPlayer extends StatelessWidget {
                             playback.isPlaying ? Icons.pause : Icons.play_arrow,
                             color: AppTheme.lightText,
                           ),
+                          tooltip: playback.isPlaying ? 'Pause' : 'Play',
                           onPressed: playback.togglePlayPause,
+                        ),
+                        IconButton(
+                          icon: const Icon(
+                            Icons.queue_music,
+                            color: AppTheme.lightText,
+                          ),
+                          tooltip: 'Open queue',
+                          onPressed: () => context.go('/queue'),
                         ),
                       ],
                     ),
@@ -112,11 +125,7 @@ class MiniPlayer extends StatelessWidget {
       width: 48,
       height: 48,
       color: AppTheme.darkSurface,
-      child: const Icon(
-        Icons.music_note,
-        color: AppTheme.greyText,
-        size: 24,
-      ),
+      child: const Icon(Icons.music_note, color: AppTheme.greyText, size: 24),
     );
   }
 }
