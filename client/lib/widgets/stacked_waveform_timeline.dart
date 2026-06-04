@@ -24,6 +24,8 @@ class StackedWaveformTimeline extends StatefulWidget {
   final List<Track> upcomingTracks;
   final List<double> Function(Track) peaksFor;
   final TrimRange Function(Track) trimRangeFor;
+  final ValueChanged<Track>? onMoveEarlier;
+  final ValueChanged<Track>? onMoveLater;
 
   const StackedWaveformTimeline({
     super.key,
@@ -32,6 +34,8 @@ class StackedWaveformTimeline extends StatefulWidget {
     required this.upcomingTracks,
     required this.peaksFor,
     required this.trimRangeFor,
+    this.onMoveEarlier,
+    this.onMoveLater,
   });
 
   /// Synthetic crossfade/transition window between adjacent clips (ms). Visual
@@ -71,7 +75,12 @@ class _LaneModel {
 }
 
 class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
+  static const _zoomLevels = [0.5, 1.0, 1.5, 2.0, 3.0];
+
   _TimelineMode _mode = _TimelineMode.browse;
+  int _zoomIndex = 1;
+
+  double get _zoom => _zoomLevels[_zoomIndex];
 
   @override
   Widget build(BuildContext context) {
@@ -133,9 +142,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         StackedWaveformTimeline.transitionMs +
         8000;
 
-    final pps = totalMs <= 0
+    final basePps = totalMs <= 0
         ? TimelineViewport.minPixelsPerSecond
         : (paneWidth / (totalMs / 1000));
+    final pps = (basePps * _zoom).clamp(
+      TimelineViewport.minPixelsPerSecond,
+      TimelineViewport.maxPixelsPerSecond,
+    );
     final viewportOffsetMs =
         (currentClip.timelineStartMs - 60000).clamp(0, totalMs);
     final viewport = TimelineViewport.clamped(
@@ -317,9 +330,51 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                       stateLabel: lane.status,
                     ),
                   ),
+                  if (lane.role == LaneRole.upcoming ||
+                      lane.role == LaneRole.collapsed)
+                    Positioned(
+                      right: 6,
+                      top: 12,
+                      child: _timelineMoveControls(context, lane.track),
+                    ),
                 ],
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _timelineMoveControls(BuildContext context, Track track) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surface.withValues(alpha: 0.88),
+      borderRadius: BorderRadius.circular(12),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            key: ValueKey('timeline_move_earlier_${track.id}'),
+            tooltip: 'Move ${track.title} earlier',
+            icon: const Icon(Icons.keyboard_arrow_up),
+            iconSize: 20,
+            constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+            padding: EdgeInsets.zero,
+            onPressed: widget.onMoveEarlier == null
+                ? null
+                : () => widget.onMoveEarlier!(track),
+          ),
+          IconButton(
+            key: ValueKey('timeline_move_later_${track.id}'),
+            tooltip: 'Move ${track.title} later',
+            icon: const Icon(Icons.keyboard_arrow_down),
+            iconSize: 20,
+            constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+            padding: EdgeInsets.zero,
+            onPressed: widget.onMoveLater == null
+                ? null
+                : () => widget.onMoveLater!(track),
           ),
         ],
       ),
@@ -434,22 +489,44 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     ];
     final trailingControls = [
       IconButton(
-        key: const ValueKey('timeline_zoom_reset'),
-        icon: const Icon(Icons.zoom_out_map),
-        tooltip: 'Reset zoom',
-        constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+        key: const ValueKey('timeline_zoom_out'),
+        icon: const Icon(Icons.zoom_out),
+        tooltip: 'Zoom out timeline',
+        constraints: const BoxConstraints.tightFor(width: 36, height: 36),
         padding: EdgeInsets.zero,
-        onPressed: () {},
+        onPressed: _zoomIndex == 0 ? null : () => setState(() => _zoomIndex--),
       ),
       Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        key: const ValueKey('timeline_zoom_label'),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
           color: theme.colorScheme.tertiaryContainer,
           borderRadius: BorderRadius.circular(8),
         ),
-        child: Text('mock',
-            style: theme.textTheme.labelSmall
-                ?.copyWith(fontWeight: FontWeight.bold)),
+        child: Text(
+          '${_zoom.toStringAsFixed(1)}x',
+          style:
+              theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.bold),
+        ),
+      ),
+      IconButton(
+        key: const ValueKey('timeline_zoom_in'),
+        icon: const Icon(Icons.zoom_in),
+        tooltip: 'Zoom in timeline',
+        constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+        padding: EdgeInsets.zero,
+        onPressed: _zoomIndex == _zoomLevels.length - 1
+            ? null
+            : () => setState(() => _zoomIndex++),
+      ),
+      IconButton(
+        key: const ValueKey('timeline_zoom_reset'),
+        icon: const Icon(Icons.zoom_out_map),
+        tooltip: 'Reset timeline zoom',
+        constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+        padding: EdgeInsets.zero,
+        onPressed:
+            _zoomIndex == 1 ? null : () => setState(() => _zoomIndex = 1),
       ),
     ];
 
@@ -462,25 +539,17 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         border: Border(top: BorderSide(color: theme.dividerColor)),
       ),
       child: LayoutBuilder(builder: (context, constraints) {
-        if (constraints.maxWidth < 280) {
-          return SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ...leadingControls,
-                const SizedBox(width: 12),
-                ...trailingControls
-              ],
-            ),
-          );
-        }
-        return Row(
-          children: [
-            ...leadingControls,
-            const Spacer(),
-            ...trailingControls,
-          ],
+        return FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.center,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ...leadingControls,
+              const SizedBox(width: 16),
+              ...trailingControls,
+            ],
+          ),
         );
       }),
     );
@@ -600,7 +669,8 @@ class TimelineEmptySurface extends StatelessWidget {
             color: theme.dividerColor,
             style: BorderStyle.solid,
           ),
-          color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.2),
+          color:
+              theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.2),
         ),
         child: Center(
           child: Column(
@@ -693,7 +763,8 @@ class _TimelineChrome extends StatelessWidget {
         Container(
           height: 40,
           decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+            color: theme.colorScheme.surfaceContainerHighest
+                .withValues(alpha: 0.4),
             border: Border(bottom: BorderSide(color: theme.dividerColor)),
           ),
           alignment: Alignment.centerLeft,
@@ -716,7 +787,8 @@ class _TimelineChrome extends StatelessWidget {
                         decoration: BoxDecoration(
                           border: Border(
                             right: BorderSide(
-                                color: theme.dividerColor.withValues(alpha: 0.4)),
+                                color:
+                                    theme.dividerColor.withValues(alpha: 0.4)),
                           ),
                         ),
                       ),

@@ -11,10 +11,15 @@ class ApiClient {
 
   final String baseUrl;
   final SecureStorage? _storage;
+  final http.Client _httpClient;
   String? _accessToken;
 
-  ApiClient({this.baseUrl = defaultBaseUrl, SecureStorage? storage})
-      : _storage = storage;
+  ApiClient({
+    this.baseUrl = defaultBaseUrl,
+    SecureStorage? storage,
+    http.Client? httpClient,
+  })  : _storage = storage,
+        _httpClient = httpClient ?? http.Client();
 
   void setAccessToken(String token) {
     _accessToken = token;
@@ -32,7 +37,7 @@ class ApiClient {
   }
 
   Future<QueueState> getQueue() async {
-    final response = await http.get(
+    final response = await _httpClient.get(
       Uri.parse('$baseUrl/queue'),
       headers: await _headers,
     );
@@ -47,28 +52,43 @@ class ApiClient {
     required List<String> trackIds,
     String position = 'last',
   }) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/queue/tracks'),
-      headers: await _headers,
-      body: jsonEncode({
-        'trackIds': trackIds,
-        'position': position,
-      }),
-    );
-
-    if (response.statusCode == 200) {
-      return QueueState.fromJson(jsonDecode(response.body));
+    if (trackIds.isEmpty) {
+      throw ApiException('No track IDs supplied', 400);
     }
-    throw ApiException('Failed to add to queue', response.statusCode);
+
+    QueueState? latest;
+    for (var i = 0; i < trackIds.length; i++) {
+      final trackId = int.tryParse(trackIds[i]);
+      if (trackId == null) {
+        throw ApiException('Track ID must be numeric', 400);
+      }
+
+      final response = await _httpClient.post(
+        Uri.parse('$baseUrl/queue'),
+        headers: await _headers,
+        body: jsonEncode({
+          'type': 'track',
+          'id': trackId,
+          'position': i == 0 ? position : 'last',
+        }),
+      );
+
+      if (response.statusCode != 200) {
+        throw ApiException('Failed to add to queue', response.statusCode);
+      }
+      latest = QueueState.fromJson(jsonDecode(response.body));
+    }
+
+    return latest!;
   }
 
   Future<void> removeFromQueue(int position) async {
-    final response = await http.delete(
-      Uri.parse('$baseUrl/queue/tracks/$position'),
+    final response = await _httpClient.delete(
+      Uri.parse('$baseUrl/queue/$position'),
       headers: await _headers,
     );
 
-    if (response.statusCode != 204) {
+    if (response.statusCode != 200 && response.statusCode != 204) {
       throw ApiException('Failed to remove from queue', response.statusCode);
     }
   }
@@ -77,12 +97,12 @@ class ApiClient {
     required int fromIndex,
     required int toIndex,
   }) async {
-    final response = await http.post(
+    final response = await _httpClient.put(
       Uri.parse('$baseUrl/queue/reorder'),
       headers: await _headers,
       body: jsonEncode({
-        'fromIndex': fromIndex,
-        'toIndex': toIndex,
+        'from_position': fromIndex,
+        'to_position': toIndex,
       }),
     );
 
@@ -93,18 +113,18 @@ class ApiClient {
   }
 
   Future<void> clearQueue() async {
-    final response = await http.delete(
+    final response = await _httpClient.delete(
       Uri.parse('$baseUrl/queue'),
       headers: await _headers,
     );
 
-    if (response.statusCode != 204) {
+    if (response.statusCode != 200 && response.statusCode != 204) {
       throw ApiException('Failed to clear queue', response.statusCode);
     }
   }
 
   Future<QueueState> shuffleQueue() async {
-    final response = await http.post(
+    final response = await _httpClient.post(
       Uri.parse('$baseUrl/queue/shuffle'),
       headers: await _headers,
     );
@@ -119,7 +139,7 @@ class ApiClient {
     required List<String> trackIds,
     int startIndex = 0,
   }) async {
-    final response = await http.put(
+    final response = await _httpClient.put(
       Uri.parse('$baseUrl/queue'),
       headers: await _headers,
       body: jsonEncode({

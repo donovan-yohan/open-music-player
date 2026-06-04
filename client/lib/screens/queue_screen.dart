@@ -127,6 +127,20 @@ class _QueueScreenState extends State<QueueScreen> {
                 upcomingTracks: upNext,
                 peaksFor: provider.waveformPeaksFor,
                 trimRangeFor: provider.trimRangeFor,
+                onMoveEarlier: (track) => _moveTimelineTrack(
+                  provider,
+                  upNext,
+                  currentIndex,
+                  track,
+                  -1,
+                ),
+                onMoveLater: (track) => _moveTimelineTrack(
+                  provider,
+                  upNext,
+                  currentIndex,
+                  track,
+                  1,
+                ),
               ),
             ),
           ),
@@ -201,6 +215,27 @@ class _QueueScreenState extends State<QueueScreen> {
         const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
       ],
     );
+  }
+
+  void _moveTimelineTrack(
+    QueueProvider provider,
+    List<Track> upNext,
+    int currentIndex,
+    Track track,
+    int delta,
+  ) {
+    final relativeIndex =
+        upNext.indexWhere((candidate) => candidate.id == track.id);
+    if (relativeIndex < 0) return;
+
+    final oldIndex = currentIndex + 1 + relativeIndex;
+    final firstMovableIndex = currentIndex + 1;
+    final lastMovableIndex = currentIndex + upNext.length;
+    final newIndex =
+        (oldIndex + delta).clamp(firstMovableIndex, lastMovableIndex);
+    if (newIndex == oldIndex) return;
+
+    provider.reorderQueue(oldIndex, newIndex);
   }
 
   /// Left-edge vertical grip. Only this widget starts a reorder drag, keeping
