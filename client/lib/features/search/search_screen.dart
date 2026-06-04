@@ -354,7 +354,10 @@ class _SearchScreenState extends State<SearchScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Mobile Discovery'),
+        title: const Text(
+          'Mobile Discovery',
+          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+        ),
         actions: [
           IconButton(
             tooltip: 'Refresh queue',
@@ -460,30 +463,114 @@ class _SearchScreenState extends State<SearchScreen> {
   Widget _buildResultTile(DiscoveryCandidate candidate) {
     final queued = _isCandidateQueued(candidate);
     return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      child: ListTile(
-        minVerticalPadding: 12,
-        leading: _buildThumb(candidate.thumbnailUrl),
-        title: Text(
-          candidate.title,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Text(
-          candidate.displaySubtitle,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
-        trailing: SizedBox(
-          width: 96,
-          child: FilledButton.tonalIcon(
-            onPressed: !candidate.downloadable || queued
-                ? null
-                : () => _queueCandidate(candidate),
-            icon: Icon(queued ? Icons.check : Icons.playlist_add),
-            label: Text(queued ? 'Queued' : 'Queue'),
+      margin: const EdgeInsets.only(bottom: 8),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final mobile = constraints.maxWidth < 520;
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                _buildThumb(candidate.thumbnailUrl, size: mobile ? 42 : 48),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        candidate.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          height: 1.18,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        candidate.displaySubtitle,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          fontSize: 12,
+                          height: 1.16,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _buildQueueAction(candidate, queued, mobile: mobile),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildQueueAction(
+    DiscoveryCandidate candidate,
+    bool queued, {
+    required bool mobile,
+  }) {
+    final onPressed = !candidate.downloadable || queued
+        ? null
+        : () => _queueCandidate(candidate);
+    final icon = queued ? Icons.check : Icons.playlist_add;
+    final label = queued ? 'Queued' : 'Queue';
+
+    if (mobile) {
+      return IconButton.filledTonal(
+        tooltip: label,
+        onPressed: onPressed,
+        visualDensity: VisualDensity.compact,
+        constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+        padding: EdgeInsets.zero,
+        iconSize: 20,
+        icon: Icon(icon),
+      );
+    }
+
+    return FilledButton.tonalIcon(
+      onPressed: onPressed,
+      style: FilledButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        minimumSize: const Size(84, 36),
+      ),
+      icon: Icon(icon, size: 18),
+      label: Text(label, style: const TextStyle(fontSize: 13)),
+    );
+  }
+
+  Widget _buildCompactTile({
+    required Widget leading,
+    required Widget title,
+    required Widget subtitle,
+    required Widget trailing,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          leading,
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [title, const SizedBox(height: 3), subtitle],
+            ),
           ),
-        ),
+          const SizedBox(width: 8),
+          trailing,
+        ],
       ),
     );
   }
@@ -561,11 +648,19 @@ class _SearchScreenState extends State<SearchScreen> {
 
     return Card(
       key: ValueKey(item.localId),
-      margin: const EdgeInsets.only(bottom: 10),
-      child: ListTile(
-        minVerticalPadding: 12,
+      margin: const EdgeInsets.only(bottom: 8),
+      child: _buildCompactTile(
         leading: _buildStatusLeading(item),
-        title: Text(item.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+        title: Text(
+          item.title,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            fontSize: 14,
+            height: 1.18,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -573,8 +668,13 @@ class _SearchScreenState extends State<SearchScreen> {
               item.error ?? item.candidate.displaySubtitle,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontSize: 12,
+                height: 1.16,
+              ),
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 5),
             _buildStatusPill(item),
           ],
         ),
@@ -608,21 +708,21 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _buildStatusLeading(DiscoveryQueueItem item) {
     if (item.isPlayable) {
-      return _buildThumb(item.thumbnailUrl, overlay: Icons.check);
+      return _buildThumb(item.thumbnailUrl, overlay: Icons.check, size: 42);
     }
     if (item.isFailed) {
-      return _buildThumb(item.thumbnailUrl, overlay: Icons.error);
+      return _buildThumb(item.thumbnailUrl, overlay: Icons.error, size: 42);
     }
     return SizedBox(
-      width: 56,
-      height: 56,
+      width: 42,
+      height: 42,
       child: Stack(
         alignment: Alignment.center,
         children: [
-          _buildThumb(item.thumbnailUrl),
+          _buildThumb(item.thumbnailUrl, size: 42),
           CircularProgressIndicator(
             value: item.progress > 0 ? item.progress / 100 : null,
-            strokeWidth: 3,
+            strokeWidth: 2.5,
           ),
         ],
       ),
@@ -689,12 +789,12 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildThumb(String? url, {IconData? overlay}) {
+  Widget _buildThumb(String? url, {IconData? overlay, double size = 48}) {
     return SizedBox(
-      width: 56,
-      height: 56,
+      width: size,
+      height: size,
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(8),
         child: Stack(
           fit: StackFit.expand,
           children: [
@@ -702,16 +802,16 @@ class _SearchScreenState extends State<SearchScreen> {
               Image.network(
                 url,
                 fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => _thumbPlaceholder(),
+                errorBuilder: (_, __, ___) => _thumbPlaceholder(size: size),
               )
             else
-              _thumbPlaceholder(),
+              _thumbPlaceholder(size: size),
             if (overlay != null)
               DecoratedBox(
                 decoration: BoxDecoration(
                   color: Colors.black.withValues(alpha: 0.42),
                 ),
-                child: Icon(overlay, color: Colors.white),
+                child: Icon(overlay, color: Colors.white, size: size * 0.48),
               ),
           ],
         ),
@@ -719,11 +819,12 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _thumbPlaceholder() {
+  Widget _thumbPlaceholder({double size = 48}) {
     return Container(
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: Icon(
         Icons.music_note,
+        size: size * 0.46,
         color: Theme.of(context).colorScheme.onSurfaceVariant,
       ),
     );
