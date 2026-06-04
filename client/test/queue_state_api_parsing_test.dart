@@ -76,4 +76,60 @@ void main() {
     expect(state.tracks[3].queueStatus, TrackQueueStatus.playable);
     expect(state.tracks[3].toPlaybackJson()['id'], '4');
   });
+
+  test('QueueState parses real backend playbackState contract fields', () {
+    final state = QueueState.fromJson({
+      'items': [
+        {
+          'id': 'q_uploading',
+          'queueItemId': 'q_uploading',
+          'trackId': 12,
+          'title': 'Uploading Should Not Be Playable',
+          'duration': 180,
+          'playbackState': 'uploading',
+        },
+        {
+          'id': 'q_failed',
+          'queueItemId': 'q_failed',
+          'trackId': 13,
+          'title': 'Failed Retry Track',
+          'duration': 195,
+          'playback_state': 'failed',
+        },
+        {
+          'id': 'q_queued',
+          'queueItemId': 'q_queued',
+          'title': 'Queued Pending Track',
+          'duration': 120,
+          'playbackState': 'queued',
+        },
+        {
+          'id': 'q_playable',
+          'queueItemId': 'q_playable',
+          'trackId': 14,
+          'title': 'Playable Track',
+          'duration': 200,
+          'playback_state': 'playable',
+        },
+      ],
+    });
+
+    expect(state.tracks[0].queueStatus, TrackQueueStatus.downloading);
+    expect(state.tracks[0].canPlay, isFalse);
+    expect(state.tracks[0].queueItemId, 'q_uploading');
+    expect(state.tracks[0].toPlaybackJson()['id'], '12');
+
+    expect(state.tracks[1].queueStatus, TrackQueueStatus.failed);
+    expect(state.tracks[1].canPlay, isFalse);
+    expect(state.tracks[1].canRetry, isTrue);
+    expect(state.tracks[1].queueItemId, 'q_failed');
+    expect(state.tracks[1].toPlaybackJson()['id'], '13');
+
+    expect(state.tracks[2].queueStatus, TrackQueueStatus.pending);
+    expect(state.tracks[2].canPlay, isFalse);
+
+    expect(state.tracks[3].queueStatus, TrackQueueStatus.playable);
+    expect(state.tracks[3].canPlay, isTrue);
+    expect(state.tracks[3].toPlaybackJson()['id'], '14');
+  });
 }

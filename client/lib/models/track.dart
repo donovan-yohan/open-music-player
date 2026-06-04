@@ -45,6 +45,7 @@ class Track {
         json['trackId']?.toString() ?? json['track_id']?.toString();
     final id = json['id']?.toString() ?? queueItemId ?? playbackTrackId ?? '';
     final status = _parseQueueStatus(json);
+    final canPlayOverride = json['canPlay'] as bool? ?? json['can_play'] as bool?;
 
     return Track(
       id: id,
@@ -57,9 +58,7 @@ class Track {
       coverUrl: json['coverUrl'] as String? ?? json['cover_url'] as String?,
       addedAt: _parseDate(json['addedAt'] ?? json['added_at']),
       queueStatus: status,
-      canPlay: json['canPlay'] as bool? ??
-          json['can_play'] as bool? ??
-          status == TrackQueueStatus.playable,
+      canPlay: status == TrackQueueStatus.playable && (canPlayOverride ?? true),
       canRetry: json['canRetry'] as bool? ??
           json['can_retry'] as bool? ??
           status == TrackQueueStatus.failed,
@@ -90,9 +89,16 @@ class Track {
     final raw = json['status'] ??
         json['download_status'] ??
         json['downloadStatus'] ??
+        json['playback_state'] ??
+        json['playbackState'] ??
         json['playback_status'] ??
         json['playbackStatus'];
-    final status = raw?.toString().trim().toLowerCase().replaceAll('-', '_');
+    final status = raw
+        ?.toString()
+        .trim()
+        .toLowerCase()
+        .replaceAll('-', '_')
+        .replaceAll(' ', '_');
 
     switch (status) {
       case 'pending':
@@ -100,6 +106,7 @@ class Track {
       case 'waiting':
         return TrackQueueStatus.pending;
       case 'downloading':
+      case 'uploading':
       case 'processing':
       case 'in_progress':
         return TrackQueueStatus.downloading;
