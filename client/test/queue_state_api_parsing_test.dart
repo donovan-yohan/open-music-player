@@ -45,12 +45,23 @@ void main() {
           'download_status': 'downloading',
         },
         {
-          'id': 3,
+          'id': 'q_failed',
+          'queueItemId': 'q_failed',
+          'trackId': 3,
           'title': 'Failed',
           'duration': 1,
           'playbackStatus': 'failed',
+          'canRetry': true,
         },
-        {'id': 4, 'title': 'Ready', 'duration': 1, 'status': 'completed'},
+        {
+          'id': 'q_ready',
+          'queueItemId': 'q_ready',
+          'trackId': 4,
+          'title': 'Ready',
+          'duration': 1,
+          'status': 'completed',
+          'canPlay': true,
+        },
       ],
       'currentPosition': 0,
     });
@@ -58,6 +69,11 @@ void main() {
     expect(state.tracks[0].queueStatus, TrackQueueStatus.pending);
     expect(state.tracks[1].queueStatus, TrackQueueStatus.downloading);
     expect(state.tracks[2].queueStatus, TrackQueueStatus.failed);
+    expect(state.tracks[2].id, 'q_failed');
+    expect(state.tracks[2].queueItemId, 'q_failed');
+    expect(state.tracks[2].playbackTrackId, '3');
+    expect(state.tracks[2].canRetry, isTrue);
     expect(state.tracks[3].queueStatus, TrackQueueStatus.playable);
+    expect(state.tracks[3].toPlaybackJson()['id'], '4');
   });
 }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../core/audio/playback_state.dart';
 import '../models/track.dart';
 import '../providers/queue_provider.dart';
 import '../widgets/queue_item.dart';
@@ -247,8 +248,12 @@ class _QueueScreenState extends State<QueueScreen> {
               key: ValueKey('queue_current_${currentTrack.id}'),
               track: currentTrack,
               isPlaying: true,
-              onPlay: () {},
-              onRetry: () => provider.loadQueue(),
+              onPlay: currentTrack.canPlay
+                  ? () => _playFromQueue(context, provider, currentTrack)
+                  : null,
+              onRetry: currentTrack.canRetry
+                  ? () => provider.retryTrack(currentTrack)
+                  : null,
               onRemove: null,
             ),
           ),
@@ -282,10 +287,12 @@ class _QueueScreenState extends State<QueueScreen> {
                 onTrimStartChanged: (ms) =>
                     provider.setStartOffsetMs(track, ms),
                 onTrimEndChanged: (ms) => provider.setEndOffsetMs(track, ms),
-                onPlay: track.queueStatus == TrackQueueStatus.playable
-                    ? () {}
+                onPlay: track.queueStatus == TrackQueueStatus.playable &&
+                        track.canPlay
+                    ? () => _playFromQueue(context, provider, track)
                     : null,
-                onRetry: () => provider.loadQueue(),
+                onRetry:
+                    track.canRetry ? () => provider.retryTrack(track) : null,
                 onRemove: () => provider.removeFromQueue(absoluteIndex),
               );
             },
@@ -333,6 +340,37 @@ class _QueueScreenState extends State<QueueScreen> {
     if (newIndex == oldIndex) return;
 
     provider.reorderQueue(oldIndex, newIndex);
+  }
+
+  Future<void> _playFromQueue(
+    BuildContext context,
+    QueueProvider provider,
+    Track selectedTrack,
+  ) async {
+    final playback = context.read<PlaybackState>();
+    final playableTracks = provider.queue.tracks
+        .where(
+          (track) =>
+              track.queueStatus == TrackQueueStatus.playable && track.canPlay,
+        )
+        .toList(growable: false);
+    final startIndex = playableTracks.indexWhere(
+      (track) => track.id == selectedTrack.id,
+    );
+    if (startIndex < 0) return;
+
+    try {
+      await playback.playQueue(
+        playableTracks.map((track) => track.toPlaybackJson()).toList(),
+        startIndex: startIndex,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      final message = playback.playbackError ?? 'Playback failed to start.';
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    }
   }
 
   /// Left-edge vertical grip. Only this widget starts a reorder drag, keeping

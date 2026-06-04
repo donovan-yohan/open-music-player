@@ -93,6 +93,23 @@ class ApiClient {
     }
   }
 
+  Future<QueueState> retryQueueItem(String queueItemId) async {
+    if (queueItemId.isEmpty) {
+      throw ApiException('Queue item ID is required', 400);
+    }
+
+    final response = await _httpClient.post(
+      Uri.parse(
+          '$baseUrl/queue/items/${Uri.encodeComponent(queueItemId)}/retry'),
+      headers: await _headers,
+    );
+
+    if (response.statusCode == 200) {
+      return QueueState.fromJson(jsonDecode(response.body));
+    }
+    throw ApiException('Failed to retry queue item', response.statusCode);
+  }
+
   Future<QueueState> reorderQueue({
     required int fromIndex,
     required int toIndex,

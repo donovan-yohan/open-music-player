@@ -100,6 +100,20 @@ class QueueProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> retryTrack(Track track) async {
+    _error = null;
+    notifyListeners();
+
+    try {
+      _queue = await _apiClient.retryQueueItem(track.queueItemId);
+      _pruneTrimRanges();
+      notifyListeners();
+    } catch (e) {
+      _error = e.toString();
+      notifyListeners();
+    }
+  }
+
   Future<void> reorderQueue(int oldIndex, int newIndex) async {
     if (oldIndex == newIndex) return;
 

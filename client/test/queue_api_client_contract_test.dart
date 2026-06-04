@@ -74,4 +74,21 @@ void main() {
     expect(jsonDecode(seen!.body),
         {'type': 'track', 'id': 42, 'position': 'next'});
   });
+
+  test('retryQueueItem posts to the backend queue-item retry endpoint',
+      () async {
+    http.Request? seen;
+    final client = ApiClient(
+      baseUrl: 'http://api.test/api/v1',
+      httpClient: MockClient((request) async {
+        seen = request;
+        return http.Response(queueJson, 200);
+      }),
+    );
+
+    await client.retryQueueItem('queue item/1');
+
+    expect(seen!.method, 'POST');
+    expect(seen!.url.path, '/api/v1/queue/items/queue%20item%2F1/retry');
+  });
 }

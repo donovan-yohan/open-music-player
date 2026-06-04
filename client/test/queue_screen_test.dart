@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
+import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
@@ -12,15 +13,22 @@ import 'package:open_music_player/services/api_client.dart';
 
 void main() {
   late _FakeQueueApiClient apiClient;
+  late _FakePlaybackState playbackState;
 
   setUp(() {
     apiClient = _FakeQueueApiClient();
+    playbackState = _FakePlaybackState();
   });
 
   Future<void> pumpQueueScreen(WidgetTester tester) async {
     await tester.pumpWidget(
-      ChangeNotifierProvider<QueueProvider>(
-        create: (_) => QueueProvider(apiClient),
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<QueueProvider>(
+            create: (_) => QueueProvider(apiClient),
+          ),
+          ListenableProvider<PlaybackState>.value(value: playbackState),
+        ],
         child: const MaterialApp(home: QueueScreen()),
       ),
     );
@@ -114,6 +122,43 @@ void main() {
     expect(find.text('Playable'), findsWidgets);
     expect(find.byKey(const ValueKey('queue_retry_t3')), findsOneWidget);
     expect(find.byKey(const ValueKey('queue_play_t5')), findsOneWidget);
+  });
+
+  testWidgets('play button starts the playable queue at the tapped item',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    apiClient.useStatusFixture();
+
+    await pumpQueueScreen(tester);
+    await tester.tap(find.byKey(const ValueKey('queue_play_t5')));
+    await tester.pumpAndSettle();
+
+    expect(playbackState.playQueueCalls, hasLength(1));
+    expect(playbackState.playQueueCalls.single.startIndex, 1);
+    expect(
+      playbackState.playQueueCalls.single.tracks
+          .map((track) => track['id'])
+          .toList(),
+      ['101', '505'],
+    );
+  });
+
+  testWidgets('retry button posts the failed queue item retry action',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    apiClient.useStatusFixture();
+
+    await pumpQueueScreen(tester);
+    await tester.tap(find.byKey(const ValueKey('queue_retry_t3')));
+    await tester.pumpAndSettle();
+
+    expect(apiClient.retriedQueueItemIds, ['t3']);
   });
 
   testWidgets('dragging trim handles updates the queued track label', (
@@ -244,6 +289,28 @@ void main() {
   });
 }
 
+class _FakePlaybackState extends Fake implements PlaybackState {
+  final List<({List<Map<String, dynamic>> tracks, int startIndex})>
+      playQueueCalls = [];
+
+  @override
+  void addListener(VoidCallback listener) {}
+
+  @override
+  void removeListener(VoidCallback listener) {}
+
+  @override
+  String? get playbackError => null;
+
+  @override
+  Future<void> playQueue(
+    List<Map<String, dynamic>> tracks, {
+    int startIndex = 0,
+  }) async {
+    playQueueCalls.add((tracks: tracks, startIndex: startIndex));
+  }
+}
+
 class _FakeQueueApiClient extends ApiClient {
   QueueState _state = QueueState(
     tracks: [
@@ -274,6 +341,7 @@ class _FakeQueueApiClient extends ApiClient {
 
   final List<int> removedPositions = [];
   final List<(int, int)> reorders = [];
+  final List<String> retriedQueueItemIds = [];
   bool failLoads = false;
   bool deferLoad = false;
   Completer<QueueState>? _loadCompleter;
@@ -296,6 +364,7 @@ class _FakeQueueApiClient extends ApiClient {
       tracks: [
         Track(
           id: 't1',
+          playbackTrackId: '101',
           title: 'Ready Now',
           artist: 'Queue Artist',
           duration: 185,
@@ -328,6 +397,7 @@ class _FakeQueueApiClient extends ApiClient {
         ),
         Track(
           id: 't5',
+          playbackTrackId: '505',
           title: 'Playable Later',
           artist: 'Queue Artist',
           duration: 201,
@@ -371,6 +441,12 @@ class _FakeQueueApiClient extends ApiClient {
       repeatMode: _state.repeatMode,
       shuffled: _state.shuffled,
     );
+  }
+
+  @override
+  Future<QueueState> retryQueueItem(String queueItemId) async {
+    retriedQueueItemIds.add(queueItemId);
+    return _state;
   }
 
   @override
