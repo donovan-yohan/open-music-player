@@ -49,14 +49,12 @@ class Track {
         json['queueItemId']?.toString() ?? json['queue_item_id']?.toString();
     final playbackTrackId =
         json['trackId']?.toString() ?? json['track_id']?.toString();
-    final sourceCandidateId = _readString(sourceCandidate, const [
-      'candidateId',
-      'candidate_id',
-    ]);
-    final sourceUrl = _readString(sourceCandidate, const [
-      'sourceUrl',
-      'source_url',
-    ]);
+    final sourceCandidateId =
+        _readString(sourceCandidate, const ['candidateId', 'candidate_id']) ??
+        _readString(json, const ['sourceCandidateId', 'source_candidate_id']);
+    final sourceUrl =
+        _readString(sourceCandidate, const ['sourceUrl', 'source_url']) ??
+        _readString(json, const ['sourceUrl', 'source_url']);
     final id =
         json['id']?.toString() ??
         queueItemId ??

@@ -114,6 +114,45 @@ void main() {
     expect(track.canPlay, isFalse);
   });
 
+  test('Track round-trips top-level source candidate fields', () {
+    final track = Track(
+      id: 'queue-item-1',
+      queueItemId: 'queue-item-1',
+      sourceCandidateId: 'yt:lofi-study-1',
+      sourceUrl: 'https://youtube.example/watch?v=lofi-study-1',
+      title: 'lofi study mix',
+      artist: 'QA Turtle',
+      duration: 185,
+      addedAt: DateTime.utc(2026, 6, 4),
+      queueStatus: TrackQueueStatus.pending,
+    );
+
+    final restored = Track.fromJson(track.toJson());
+
+    expect(restored.sourceCandidateId, 'yt:lofi-study-1');
+    expect(restored.sourceUrl, 'https://youtube.example/watch?v=lofi-study-1');
+    expect(restored.queueStatus, TrackQueueStatus.pending);
+    expect(restored.canPlay, isFalse);
+  });
+
+  test('Track parses snake_case top-level source candidate fields', () {
+    final track = Track.fromJson({
+      'queue_item_id': 'queue-item-2',
+      'source_candidate_id': 'sc:ambient-2',
+      'source_url': 'https://soundcloud.example/ambient-2',
+      'title': 'ambient drift',
+      'duration': 240,
+      'added_at': '2026-06-04T00:00:00.000Z',
+      'playback_state': 'queued',
+    });
+
+    expect(track.id, 'queue-item-2');
+    expect(track.sourceCandidateId, 'sc:ambient-2');
+    expect(track.sourceUrl, 'https://soundcloud.example/ambient-2');
+    expect(track.queueStatus, TrackQueueStatus.pending);
+    expect(track.canPlay, isFalse);
+  });
+
   test('QueueState parses real backend playbackState contract fields', () {
     final state = QueueState.fromJson({
       'items': [
