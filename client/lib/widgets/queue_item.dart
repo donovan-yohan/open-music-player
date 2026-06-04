@@ -138,6 +138,7 @@ class QueueItem extends StatelessWidget {
                   // Remove button
                   if (onRemove != null)
                     IconButton(
+                      key: ValueKey('remove_${track.id}'),
                       icon: const Icon(Icons.close, size: 20),
                       onPressed: onRemove,
                       color: Colors.grey[600],

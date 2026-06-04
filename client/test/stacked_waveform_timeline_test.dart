@@ -22,6 +22,8 @@ Future<void> _pump(
   required Track current,
   required List<Track> upcoming,
   Size size = const Size(390, 844),
+  ValueChanged<Track>? onMoveEarlier,
+  ValueChanged<Track>? onMoveLater,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
@@ -37,6 +39,8 @@ Future<void> _pump(
           upcomingTracks: upcoming,
           peaksFor: (t) => mockWaveformPeaks(t.id),
           trimRangeFor: (t) => TrimRange.full(t.durationMs),
+          onMoveEarlier: onMoveEarlier,
+          onMoveLater: onMoveLater,
         ),
       ),
     ),
@@ -198,11 +202,51 @@ void main() {
 
     expect(find.text('Browse'), findsOneWidget);
     expect(find.text('Edit'), findsOneWidget);
-    expect(find.text('mock'), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_zoom_out')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_zoom_in')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_zoom_reset')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_zoom_label')), findsOneWidget);
+    expect(find.text('1.0x'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('timeline_zoom_in')));
+    await tester.pumpAndSettle();
+    expect(find.text('1.5x'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('timeline_zoom_reset')));
+    await tester.pumpAndSettle();
+    expect(find.text('1.0x'), findsOneWidget);
 
     await tester.tap(find.text('Edit'));
     await tester.pumpAndSettle();
     // No throw, mode bar still present.
     expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
+  });
+
+  testWidgets('shows timeline move controls for upcoming clips',
+      (tester) async {
+    final movedEarlier = <String>[];
+    final movedLater = <String>[];
+
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 214),
+      upcoming: [_track('t2', 'Paper Planes', 188), _track('t3', 'Glass', 241)],
+      onMoveEarlier: (track) => movedEarlier.add(track.id),
+      onMoveLater: (track) => movedLater.add(track.id),
+    );
+
+    expect(
+        find.byKey(const ValueKey('timeline_move_earlier_t2')), findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('timeline_move_later_t2')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('timeline_move_later_t2')));
+    await tester.pumpAndSettle();
+    expect(movedLater, ['t2']);
+
+    await tester.tap(find.byKey(const ValueKey('timeline_move_earlier_t2')));
+    await tester.pumpAndSettle();
+    expect(movedEarlier, ['t2']);
   });
 }

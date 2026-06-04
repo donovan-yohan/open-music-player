@@ -46,8 +46,12 @@ void main() {
       expect(find.byKey(const ValueKey('transition_window')), findsOneWidget);
       expect(find.byKey(const ValueKey('right_future_teaser')), findsOneWidget);
       expect(find.byKey(const ValueKey('timeline_clip_t1')), findsOneWidget);
-      expect(find.byKey(const ValueKey('timeline_waveform_t1')), findsOneWidget);
+      expect(
+          find.byKey(const ValueKey('timeline_waveform_t1')), findsOneWidget);
       expect(find.byKey(const ValueKey('timeline_clip_t2')), findsOneWidget);
+      expect(
+          find.byKey(const ValueKey('timeline_move_later_t2')), findsOneWidget);
+      expect(find.byKey(const ValueKey('timeline_zoom_in')), findsOneWidget);
 
       // Current main queue affordances are preserved below the preview.
       expect(find.text('Now Playing'), findsOneWidget);
@@ -102,23 +106,33 @@ void main() {
   });
 
   testWidgets('removing a queued track clears its trim state', (tester) async {
+    tester.view.physicalSize = const Size(390, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
     await pumpQueueScreen(tester);
 
-    final provider = tester
-        .element(find.byType(QueueScreen))
-        .read<QueueProvider>();
-    final track = provider.upNext.single;
+    final provider =
+        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+    final track = provider.upNext.first;
 
     await provider.setStartOffsetMs(track, 42000);
     expect(provider.trimRanges.containsKey(track.id), isTrue);
 
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, -500));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byIcon(Icons.close));
+    await tester.tap(find.byKey(ValueKey('remove_${track.id}')));
     await tester.pumpAndSettle();
 
     expect(provider.trimRanges.containsKey(track.id), isFalse);
     expect(apiClient.removedPositions, [1]);
+  });
+  testWidgets('timeline move buttons reorder upcoming tracks', (tester) async {
+    await pumpQueueScreen(tester);
+
+    await tester.tap(find.byKey(const ValueKey('timeline_move_later_t2')));
+    await tester.pumpAndSettle();
+
+    expect(apiClient.reorders, [const (1, 2)]);
   });
 }
 
@@ -139,11 +153,19 @@ class _FakeQueueApiClient extends ApiClient {
         duration: 215,
         addedAt: DateTime(2026),
       ),
+      Track(
+        id: 't3',
+        title: 'Glass',
+        artist: 'Queue Artist',
+        duration: 241,
+        addedAt: DateTime(2026),
+      ),
     ],
     currentIndex: 0,
   );
 
   final List<int> removedPositions = [];
+  final List<(int, int)> reorders = [];
 
   @override
   Future<QueueState> getQueue() async => _state;
@@ -171,6 +193,7 @@ class _FakeQueueApiClient extends ApiClient {
     required int fromIndex,
     required int toIndex,
   }) async {
+    reorders.add((fromIndex, toIndex));
     final tracks = List<Track>.from(_state.tracks);
     final track = tracks.removeAt(fromIndex);
     tracks.insert(toIndex, track);
