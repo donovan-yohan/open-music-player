@@ -6,10 +6,14 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/search/search_screen.dart';
+import 'package:open_music_player/providers/queue_provider.dart';
+import 'package:open_music_player/services/api_client.dart' as queue_api;
 import 'package:provider/provider.dart';
 
 void main() {
@@ -20,57 +24,70 @@ void main() {
   });
 
   testWidgets(
-      'mobile discovery result tiles use compact media and icon-only queue action',
-      (tester) async {
-    tester.view.physicalSize = const Size(390, 844);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+    'mobile discovery result tiles use compact media and icon-only queue action',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
 
-    final apiClient = ApiClient(
-      storage: SecureStorage(),
-      dio: Dio()..httpClientAdapter = _SearchResultAdapter(),
-    );
+      final apiClient = ApiClient(
+        storage: SecureStorage(),
+        dio: Dio()..httpClientAdapter = _SearchResultAdapter(),
+      );
 
-    await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          Provider<ApiClient>.value(value: apiClient),
-          ListenableProvider<PlaybackState>.value(value: _FakePlaybackState()),
-        ],
-        child: const MaterialApp(home: SearchScreen()),
-      ),
-    );
+      final queueApiClient = queue_api.ApiClient(
+        httpClient: _emptyQueueClient(),
+      );
 
-    await tester.tap(find.byType(TextField));
-    await tester.enterText(find.byType(TextField), 'porter robinson');
-    await tester.pump(const Duration(milliseconds: 400));
-    await tester.pump();
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            Provider<ApiClient>.value(value: apiClient),
+            Provider<queue_api.ApiClient>.value(value: queueApiClient),
+            ChangeNotifierProvider<QueueProvider>(
+              create: (_) => QueueProvider(queueApiClient),
+            ),
+            ListenableProvider<PlaybackState>.value(
+              value: _FakePlaybackState(),
+            ),
+          ],
+          child: const MaterialApp(home: SearchScreen()),
+        ),
+      );
 
-    expect(find.text('Porter Robinson - Sad Machine'), findsOneWidget);
-    expect(find.byType(FilledButton), findsNothing);
-    expect(find.byIcon(Icons.playlist_add), findsOneWidget);
+      await tester.tap(find.byType(TextField));
+      await tester.enterText(find.byType(TextField), 'porter robinson');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump();
 
-    final queueButton = find.ancestor(
-      of: find.byIcon(Icons.playlist_add),
-      matching: find.byType(IconButton),
-    );
-    expect(tester.getSize(queueButton), const Size(40, 40));
+      expect(find.text('Porter Robinson - Sad Machine'), findsOneWidget);
+      expect(find.byType(FilledButton), findsNothing);
+      expect(find.byIcon(Icons.playlist_add), findsOneWidget);
 
-    final thumbBox = find.ancestor(
-      of: find.byIcon(Icons.music_note),
-      matching: find.byType(SizedBox),
-    );
-    expect(tester.getSize(thumbBox.first), const Size(42, 42));
+      final queueButton = find.ancestor(
+        of: find.byIcon(Icons.playlist_add),
+        matching: find.byType(IconButton),
+      );
+      expect(tester.getSize(queueButton), const Size(40, 40));
 
-    final title =
-        tester.widget<Text>(find.text('Porter Robinson - Sad Machine'));
-    expect(title.style?.fontSize, 14);
+      final thumbBox = find.ancestor(
+        of: find.byIcon(Icons.music_note),
+        matching: find.byType(SizedBox),
+      );
+      expect(tester.getSize(thumbBox.first), const Size(42, 42));
 
-    final subtitle =
-        tester.widget<Text>(find.text('Porter Robinson • soundcloud • 4:32'));
-    expect(subtitle.style?.fontSize, 12);
-  });
+      final title = tester.widget<Text>(
+        find.text('Porter Robinson - Sad Machine'),
+      );
+      expect(title.style?.fontSize, 14);
+
+      final subtitle = tester.widget<Text>(
+        find.text('Porter Robinson • soundcloud • 4:32'),
+      );
+      expect(subtitle.style?.fontSize, 12);
+    },
+  );
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
@@ -85,6 +102,20 @@ class _FakePlaybackState extends Fake implements PlaybackState {
 
   @override
   String? get playbackError => null;
+}
+
+MockClient _emptyQueueClient() {
+  return MockClient((request) async {
+    if (request.method == 'GET' && request.url.path == '/api/v1/queue') {
+      return http.Response(jsonEncode({'items': []}), 200);
+    }
+    return http.Response(
+      jsonEncode({
+        'message': 'unexpected ${request.method} ${request.url.path}',
+      }),
+      404,
+    );
+  });
 }
 
 class _SearchResultAdapter implements HttpClientAdapter {
@@ -121,20 +152,16 @@ class _SearchResultAdapter implements HttpClientAdapter {
       });
     }
 
-    return _jsonResponse(
-      {'message': 'unexpected ${options.method} ${options.path}'},
-      statusCode: 404,
-    );
+    return _jsonResponse({
+      'message': 'unexpected ${options.method} ${options.path}',
+    }, statusCode: 404);
   }
 
   @override
   void close({bool force = false}) {}
 }
 
-ResponseBody _jsonResponse(
-  Map<String, dynamic> data, {
-  int statusCode = 200,
-}) {
+ResponseBody _jsonResponse(Map<String, dynamic> data, {int statusCode = 200}) {
   return ResponseBody.fromString(
     jsonEncode(data),
     statusCode,

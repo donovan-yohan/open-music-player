@@ -1,16 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:open_music_player/core/api/api_client.dart';
-import 'package:open_music_player/core/audio/playback_state.dart';
-import 'package:open_music_player/core/discovery/discovery_models.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/search/search_screen.dart';
+import 'package:open_music_player/providers/queue_provider.dart';
+import 'package:open_music_player/services/api_client.dart' as queue_api;
 import 'package:provider/provider.dart';
 
 void main() {
@@ -20,65 +21,44 @@ void main() {
     FlutterSecureStorage.setMockInitialValues({});
   });
 
-  testWidgets(
-    'does not restart queue polling after SearchScreen is disposed',
-    (tester) async {
-      final adapter = _QueuePollingAdapter();
-      final apiClient = ApiClient(
-        storage: SecureStorage(),
-        dio: Dio()..httpClientAdapter = adapter,
-      );
+  testWidgets('does not restart queue polling after SearchScreen is disposed', (
+    tester,
+  ) async {
+    final queueClient = _QueuePollingClient();
+    final apiClient = ApiClient(storage: SecureStorage(), dio: Dio());
+    final queueApiClient = queue_api.ApiClient(httpClient: queueClient.client);
 
-      await tester.pumpWidget(
-        MultiProvider(
-          providers: [
-            Provider<ApiClient>.value(value: apiClient),
-            ListenableProvider<PlaybackState>.value(value: _FakePlaybackState()),
-          ],
-          child: MaterialApp(
-            home: SearchScreen(initialQueue: [_activeQueueItem(progress: 1)]),
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          Provider<ApiClient>.value(value: apiClient),
+          Provider<queue_api.ApiClient>.value(value: queueApiClient),
+          ChangeNotifierProvider<QueueProvider>(
+            create: (_) => QueueProvider(queueApiClient),
           ),
-        ),
-      );
+        ],
+        child: const MaterialApp(home: SearchScreen()),
+      ),
+    );
+    await tester.pump();
+    expect(queueClient.queuePollRequests, 1);
 
-      await tester.pump(const Duration(seconds: 3));
-      expect(adapter.queuePollRequests, 1);
+    await tester.pumpWidget(const SizedBox.shrink());
+    queueClient.completeFirstQueuePoll();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 3));
 
-      await tester.pumpWidget(const SizedBox.shrink());
-      adapter.completeFirstQueuePoll();
-      await tester.pump();
-      await tester.pump(const Duration(seconds: 3));
-
-      expect(adapter.queuePollRequests, 1);
-    },
-  );
+    expect(queueClient.queuePollRequests, 1);
+  });
 }
 
-class _FakePlaybackState extends Fake implements PlaybackState {
-  @override
-  void addListener(VoidCallback listener) {}
-
-  @override
-  void removeListener(VoidCallback listener) {}
-
-  @override
-  bool get isResolvingSignedUrl => false;
-
-  @override
-  String? get playbackError => null;
-}
-
-class _QueuePollingAdapter implements HttpClientAdapter {
-  final Completer<ResponseBody> _firstQueuePoll = Completer<ResponseBody>();
+class _QueuePollingClient {
+  final Completer<http.Response> _firstQueuePoll = Completer<http.Response>();
+  late final MockClient client = MockClient(_handle);
   int queuePollRequests = 0;
 
-  @override
-  Future<ResponseBody> fetch(
-    RequestOptions options,
-    Stream<Uint8List>? requestStream,
-    Future<void>? cancelFuture,
-  ) async {
-    if (options.method == 'GET' && options.path == '/queue') {
+  Future<http.Response> _handle(http.Request request) async {
+    if (request.method == 'GET' && request.url.path == '/api/v1/queue') {
       queuePollRequests++;
       if (queuePollRequests == 1) {
         return _firstQueuePoll.future;
@@ -86,10 +66,9 @@ class _QueuePollingAdapter implements HttpClientAdapter {
       return _jsonResponse(_activeQueueJson(progress: 2));
     }
 
-    return _jsonResponse(
-      {'message': 'unexpected ${options.method} ${options.path}'},
-      statusCode: 404,
-    );
+    return _jsonResponse({
+      'message': 'unexpected ${request.method} ${request.url.path}',
+    }, statusCode: 404);
   }
 
   void completeFirstQueuePoll() {
@@ -97,21 +76,13 @@ class _QueuePollingAdapter implements HttpClientAdapter {
       _firstQueuePoll.complete(_jsonResponse(_activeQueueJson(progress: 2)));
     }
   }
-
-  @override
-  void close({bool force = false}) {}
 }
 
-ResponseBody _jsonResponse(
-  Map<String, dynamic> data, {
-  int statusCode = 200,
-}) {
-  return ResponseBody.fromString(
+http.Response _jsonResponse(Map<String, dynamic> data, {int statusCode = 200}) {
+  return http.Response(
     jsonEncode(data),
     statusCode,
-    headers: {
-      Headers.contentTypeHeader: [Headers.jsonContentType],
-    },
+    headers: {'content-type': 'application/json'},
   );
 }
 
@@ -135,12 +106,6 @@ Map<String, dynamic> _activeQueueJson({required int progress}) {
     ],
     'currentPosition': 0,
   };
-}
-
-DiscoveryQueueItem _activeQueueItem({required int progress}) {
-  return DiscoveryQueueItem.fromJson(
-    _activeQueueJson(progress: progress)['items'].single as Map<String, dynamic>,
-  );
 }
 
 Map<String, dynamic> _candidateJson() {

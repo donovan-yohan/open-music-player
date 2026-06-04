@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import '../core/discovery/discovery_models.dart';
 import '../models/queue_state.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
@@ -10,6 +11,7 @@ class QueueProvider extends ChangeNotifier {
   QueueState _queue = QueueState.empty();
   bool _isLoading = false;
   String? _error;
+  bool _disposed = false;
 
   Map<String, TrimRange> _trimRanges = {};
 
@@ -36,16 +38,20 @@ class QueueProvider extends ChangeNotifier {
   Future<void> loadQueue() async {
     _isLoading = true;
     _error = null;
-    notifyListeners();
+    _notifyListeners();
 
     try {
       _queue = await _apiClient.getQueue();
+      if (_disposed) return;
       _pruneTrimRanges();
     } catch (e) {
+      if (_disposed) return;
       _error = e.toString();
     } finally {
-      _isLoading = false;
-      notifyListeners();
+      if (!_disposed) {
+        _isLoading = false;
+        _notifyListeners();
+      }
     }
   }
 
@@ -54,15 +60,35 @@ class QueueProvider extends ChangeNotifier {
     bool playNext = false,
   }) async {
     try {
+      _error = null;
       _queue = await _apiClient.addToQueue(
         trackIds: trackIds,
         position: playNext ? 'next' : 'last',
       );
       _pruneTrimRanges();
-      notifyListeners();
+      _notifyListeners();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _notifyListeners();
+    }
+  }
+
+  Future<void> addSourceCandidate(
+    DiscoveryCandidate candidate, {
+    bool playNext = false,
+  }) async {
+    try {
+      _error = null;
+      _queue = await _apiClient.addSourceCandidateToQueue(
+        candidate: candidate,
+        position: playNext ? 'next' : 'last',
+      );
+      _pruneTrimRanges();
+      _notifyListeners();
+    } catch (e) {
+      _error = e.toString();
+      _notifyListeners();
+      rethrow;
     }
   }
 
@@ -88,7 +114,7 @@ class QueueProvider extends ChangeNotifier {
       repeatMode: _queue.repeatMode,
       shuffled: _queue.shuffled,
     );
-    notifyListeners();
+    _notifyListeners();
 
     try {
       await _apiClient.removeFromQueue(position);
@@ -96,21 +122,21 @@ class QueueProvider extends ChangeNotifier {
       _queue = previousQueue;
       _trimRanges = previousTrimRanges;
       _error = e.toString();
-      notifyListeners();
+      _notifyListeners();
     }
   }
 
   Future<void> retryTrack(Track track) async {
     _error = null;
-    notifyListeners();
+    _notifyListeners();
 
     try {
       _queue = await _apiClient.retryQueueItem(track.queueItemId);
       _pruneTrimRanges();
-      notifyListeners();
+      _notifyListeners();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _notifyListeners();
     }
   }
 
@@ -141,14 +167,14 @@ class QueueProvider extends ChangeNotifier {
       repeatMode: _queue.repeatMode,
       shuffled: _queue.shuffled,
     );
-    notifyListeners();
+    _notifyListeners();
 
     try {
       await _apiClient.reorderQueue(fromIndex: oldIndex, toIndex: newIndex);
     } catch (e) {
       _queue = previousQueue;
       _error = e.toString();
-      notifyListeners();
+      _notifyListeners();
     }
   }
 
@@ -158,7 +184,7 @@ class QueueProvider extends ChangeNotifier {
 
     _queue = QueueState.empty();
     _trimRanges = {};
-    notifyListeners();
+    _notifyListeners();
 
     try {
       await _apiClient.clearQueue();
@@ -166,7 +192,7 @@ class QueueProvider extends ChangeNotifier {
       _queue = previousQueue;
       _trimRanges = previousTrimRanges;
       _error = e.toString();
-      notifyListeners();
+      _notifyListeners();
     }
   }
 
@@ -174,10 +200,10 @@ class QueueProvider extends ChangeNotifier {
     try {
       _queue = await _apiClient.shuffleQueue();
       _pruneTrimRanges();
-      notifyListeners();
+      _notifyListeners();
     } catch (e) {
       _error = e.toString();
-      notifyListeners();
+      _notifyListeners();
     }
   }
 
@@ -191,12 +217,12 @@ class QueueProvider extends ChangeNotifier {
 
   Future<void> setTrimRange(Track track, TrimRange range) async {
     _trimRanges = Map<String, TrimRange>.from(_trimRanges)..[track.id] = range;
-    notifyListeners();
+    _notifyListeners();
   }
 
   void clearError() {
     _error = null;
-    notifyListeners();
+    _notifyListeners();
   }
 
   void _pruneTrimRanges() {
@@ -205,5 +231,15 @@ class QueueProvider extends ChangeNotifier {
       for (final entry in _trimRanges.entries)
         if (trackIds.contains(entry.key)) entry.key: entry.value,
     };
+  }
+
+  void _notifyListeners() {
+    if (!_disposed) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
   }
 }

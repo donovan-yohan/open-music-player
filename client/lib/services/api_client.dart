@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import '../core/discovery/discovery_models.dart';
 import '../core/storage/secure_storage.dart';
 import '../models/queue_state.dart';
 
@@ -18,17 +19,15 @@ class ApiClient {
     this.baseUrl = defaultBaseUrl,
     SecureStorage? storage,
     http.Client? httpClient,
-  })  : _storage = storage,
-        _httpClient = httpClient ?? http.Client();
+  }) : _storage = storage,
+       _httpClient = httpClient ?? http.Client();
 
   void setAccessToken(String token) {
     _accessToken = token;
   }
 
   Future<Map<String, String>> get _headers async {
-    final headers = <String, String>{
-      'Content-Type': 'application/json',
-    };
+    final headers = <String, String>{'Content-Type': 'application/json'};
     final accessToken = _accessToken ?? await _storage?.getAccessToken();
     if (accessToken != null && accessToken.isNotEmpty) {
       headers['Authorization'] = 'Bearer $accessToken';
@@ -82,6 +81,27 @@ class ApiClient {
     return latest!;
   }
 
+  Future<QueueState> addSourceCandidateToQueue({
+    required DiscoveryCandidate candidate,
+    String position = 'last',
+  }) async {
+    final response = await _httpClient.post(
+      Uri.parse('$baseUrl/queue/items'),
+      headers: await _headers,
+      body: jsonEncode({
+        'position': position,
+        'sourceCandidate': candidate.toQueueJson(),
+      }),
+    );
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      final queue = data['queue'];
+      return QueueState.fromJson(queue is Map<String, dynamic> ? queue : data);
+    }
+    throw ApiException('Failed to add source to queue', response.statusCode);
+  }
+
   Future<void> removeFromQueue(int position) async {
     final response = await _httpClient.delete(
       Uri.parse('$baseUrl/queue/$position'),
@@ -100,7 +120,8 @@ class ApiClient {
 
     final response = await _httpClient.post(
       Uri.parse(
-          '$baseUrl/queue/items/${Uri.encodeComponent(queueItemId)}/retry'),
+        '$baseUrl/queue/items/${Uri.encodeComponent(queueItemId)}/retry',
+      ),
       headers: await _headers,
     );
 
@@ -117,10 +138,7 @@ class ApiClient {
     final response = await _httpClient.put(
       Uri.parse('$baseUrl/queue/reorder'),
       headers: await _headers,
-      body: jsonEncode({
-        'from_position': fromIndex,
-        'to_position': toIndex,
-      }),
+      body: jsonEncode({'from_position': fromIndex, 'to_position': toIndex}),
     );
 
     if (response.statusCode == 200) {
@@ -159,10 +177,7 @@ class ApiClient {
     final response = await _httpClient.put(
       Uri.parse('$baseUrl/queue'),
       headers: await _headers,
-      body: jsonEncode({
-        'trackIds': trackIds,
-        'startIndex': startIndex,
-      }),
+      body: jsonEncode({'trackIds': trackIds, 'startIndex': startIndex}),
     );
 
     if (response.statusCode == 200) {

@@ -2,22 +2,17 @@ import 'dart:async';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/api/api_client.dart';
-import '../../core/audio/playback_state.dart';
-import '../../core/audio/signed_audio_url_service.dart';
 import '../../core/discovery/discovery_models.dart';
 import '../../core/discovery/discovery_service.dart';
+import '../../models/track.dart';
+import '../../providers/queue_provider.dart';
 
 class SearchScreen extends StatefulWidget {
-  const SearchScreen({
-    super.key,
-    @visibleForTesting this.initialQueue = const [],
-  });
-
-  @visibleForTesting
-  final List<DiscoveryQueueItem> initialQueue;
+  const SearchScreen({super.key});
 
   @override
   State<SearchScreen> createState() => _SearchScreenState();
@@ -25,16 +20,16 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   final TextEditingController _queryController = TextEditingController();
+  final Set<String> _pendingCandidateKeys = <String>{};
   Timer? _debounceTimer;
   Timer? _pollTimer;
 
   late DiscoveryService _discoveryService;
-  DiscoverySearchResponse? _response;
-  late final List<DiscoveryQueueItem> _queue = List.of(widget.initialQueue);
-
-  int _searchRequestSerial = 0;
+  bool _didPrimeQueue = false;
   bool _isPollingQueue = false;
 
+  DiscoverySearchResponse? _response;
+  int _searchRequestSerial = 0;
   bool _isSearching = false;
   String _query = '';
   String? _searchError;
@@ -43,7 +38,13 @@ class _SearchScreenState extends State<SearchScreen> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _discoveryService = DiscoveryService(context.read<ApiClient>());
-    _ensurePolling();
+    if (!_didPrimeQueue) {
+      _didPrimeQueue = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _refreshQueue(force: true);
+      });
+    }
   }
 
   @override
@@ -125,89 +126,48 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Future<void> _queueCandidate(DiscoveryCandidate candidate) async {
-    if (!candidate.downloadable || _isCandidateQueued(candidate)) return;
-
-    final localId = candidate.candidateId.isNotEmpty
-        ? candidate.candidateId
-        : candidate.sourceUrl;
-    final pending = DiscoveryQueueItem(
-      localId: localId,
-      candidate: candidate,
-      playbackState: 'queued',
-      canPlay: false,
-      canRetry: false,
-      canRemove: false,
-    );
+    final key = _candidateKey(candidate);
+    final provider = context.read<QueueProvider>();
+    if (!candidate.downloadable ||
+        _pendingCandidateKeys.contains(key) ||
+        _queuedTrackFor(provider, candidate) != null) {
+      return;
+    }
 
     setState(() {
-      _queue.insert(0, pending);
+      _pendingCandidateKeys.add(key);
+      _searchError = null;
     });
+    _ensurePolling();
 
     try {
-      final queue = await _discoveryService.addQueueItem(candidate);
-      _replaceQueue(queue.items);
+      await provider.addSourceCandidate(candidate);
     } catch (error) {
-      _replaceQueueItem(
-        localId,
-        (current) => current.copyWith(
-          playbackState: 'failed',
-          error: _friendlyApiError(error),
-          canRetry: true,
-          canRemove: true,
-        ),
-      );
-    } finally {
-      _ensurePolling();
-    }
-  }
-
-  void _replaceQueue(List<DiscoveryQueueItem> items) {
-    if (!mounted) return;
-    setState(() {
-      _queue
-        ..clear()
-        ..addAll(items);
-    });
-  }
-
-  void _ensurePolling() {
-    if (!mounted) {
-      _pollTimer?.cancel();
-      _pollTimer = null;
-      return;
-    }
-
-    final hasActive = _queue.any((item) => item.isActive);
-    if (!hasActive) {
-      _pollTimer?.cancel();
-      _pollTimer = null;
-      return;
-    }
-
-    _pollTimer ??= Timer.periodic(const Duration(seconds: 2), (_) {
       if (!mounted) return;
-      _pollActiveJobs();
-    });
+      setState(() {
+        _searchError = _friendlyApiError(error);
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _pendingCandidateKeys.remove(key);
+        });
+        _ensurePolling();
+      }
+    }
   }
 
-  Future<void> _pollActiveJobs({bool force = false}) async {
+  Future<void> _refreshQueue({bool force = false}) async {
     if (!mounted || _isPollingQueue) return;
-    if (!force && !_queue.any((item) => item.isActive)) {
+    final provider = context.read<QueueProvider>();
+    if (!force && !_queueHasActiveWork(provider)) {
       _ensurePolling();
       return;
     }
 
     _isPollingQueue = true;
     try {
-      final queue = await _discoveryService.getQueue();
-      if (!mounted) return;
-      _replaceQueue(queue.items);
-    } catch (error) {
-      if (mounted) {
-        setState(() {
-          _searchError = _friendlyApiError(error);
-        });
-      }
+      await provider.loadQueue();
     } finally {
       _isPollingQueue = false;
       if (mounted) {
@@ -219,138 +179,57 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
-  Future<void> _retryItem(DiscoveryQueueItem item) async {
-    final queueItemId = item.queueItemId;
-    if (queueItemId == null || !item.canRetry) return;
-
-    _replaceQueueItem(
-      item.localId,
-      (current) => current.copyWith(
-        playbackState: 'queued',
-        progress: 0,
-        clearError: true,
-        canRetry: false,
-      ),
-    );
-
-    try {
-      final queue = await _discoveryService.retryQueueItem(queueItemId);
-      _replaceQueue(queue.items);
-    } catch (error) {
-      _replaceQueueItem(
-        item.localId,
-        (current) => current.copyWith(
-          playbackState: 'failed',
-          error: _friendlyApiError(error),
-          canRetry: true,
-        ),
-      );
-    } finally {
-      _ensurePolling();
-    }
-  }
-
-  Future<void> _playItem(DiscoveryQueueItem item) async {
-    final trackId = item.trackId;
-    if (trackId == null) return;
-
-    try {
-      await context.read<PlaybackState>().playTrack({
-        'id': trackId,
-        'title': item.title,
-        'artist': item.artist,
-        'album': item.candidate.album ?? item.candidate.provider,
-        'duration': item.candidate.durationSeconds,
-        'artwork_url': item.thumbnailUrl,
-      });
-    } on SignedAudioUrlException {
-      // PlaybackState exposes the user-facing error. Pressing play again asks
-      // the backend for a fresh signed URL, so expired MinIO links recover here.
-    } catch (_) {
-      // Keep the queue usable even if just_audio rejects the object URL.
-    }
-  }
-
-  void _replaceQueueItem(
-    String localId,
-    DiscoveryQueueItem Function(DiscoveryQueueItem current) update,
-  ) {
-    if (!mounted) return;
-    final index = _queue.indexWhere((item) => item.localId == localId);
-    if (index == -1) return;
-    setState(() {
-      _queue[index] = update(_queue[index]);
-    });
-  }
-
-  Future<void> _removeItem(DiscoveryQueueItem item) async {
-    final previousQueue = List<DiscoveryQueueItem>.from(_queue);
-    setState(() {
-      _queue.removeWhere((queued) => queued.localId == item.localId);
-    });
-
-    final queueItemId = item.queueItemId;
-    if (queueItemId == null) {
-      _ensurePolling();
+  void _ensurePolling() {
+    if (!mounted) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
       return;
     }
 
-    try {
-      final queue = await _discoveryService.removeQueueItem(queueItemId);
-      _replaceQueue(queue.items);
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _queue
-          ..clear()
-          ..addAll(previousQueue);
-        _searchError = _friendlyApiError(error);
-      });
-    } finally {
-      _ensurePolling();
+    final provider = context.read<QueueProvider>();
+    if (!_queueHasActiveWork(provider)) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+      return;
     }
+
+    _pollTimer ??= Timer.periodic(const Duration(seconds: 2), (_) {
+      _refreshQueue();
+    });
   }
 
-  bool _isCandidateQueued(DiscoveryCandidate candidate) {
-    final key = candidate.candidateId.isNotEmpty
+  bool _queueHasActiveWork(QueueProvider provider) {
+    if (_pendingCandidateKeys.isNotEmpty) return true;
+    return provider.queue.tracks.any(
+      (track) =>
+          track.queueStatus == TrackQueueStatus.pending ||
+          track.queueStatus == TrackQueueStatus.downloading,
+    );
+  }
+
+  Track? _queuedTrackFor(QueueProvider provider, DiscoveryCandidate candidate) {
+    final key = _candidateKey(candidate);
+    for (final track in provider.queue.tracks) {
+      if (track.sourceCandidateId != null && track.sourceCandidateId == key) {
+        return track;
+      }
+      if (track.sourceUrl != null && track.sourceUrl == candidate.sourceUrl) {
+        return track;
+      }
+    }
+    return null;
+  }
+
+  String _candidateKey(DiscoveryCandidate candidate) {
+    return candidate.candidateId.isNotEmpty
         ? candidate.candidateId
         : candidate.sourceUrl;
-    return _queue.any((item) => item.localId == key);
-  }
-
-  Future<void> _onReorder(int oldIndex, int newIndex) async {
-    if (oldIndex == newIndex) return;
-    final previousQueue = List<DiscoveryQueueItem>.from(_queue);
-    final item = _queue[oldIndex];
-    final queueItemId = item.queueItemId;
-
-    setState(() {
-      final moved = _queue.removeAt(oldIndex);
-      _queue.insert(newIndex, moved);
-    });
-
-    if (queueItemId == null) return;
-
-    try {
-      final queue = await _discoveryService.reorderQueueItem(
-        queueItemId: queueItemId,
-        toPosition: newIndex,
-      );
-      _replaceQueue(queue.items);
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _queue
-          ..clear()
-          ..addAll(previousQueue);
-        _searchError = _friendlyApiError(error);
-      });
-    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final playback = context.watch<PlaybackState>();
+    final queueProvider = context.watch<QueueProvider>();
+    final queueError = queueProvider.error;
 
     return Scaffold(
       appBar: AppBar(
@@ -360,9 +239,8 @@ class _SearchScreenState extends State<SearchScreen> {
         ),
         actions: [
           IconButton(
-            tooltip: 'Refresh queue',
-            onPressed:
-                _queue.isNotEmpty ? () => _pollActiveJobs(force: true) : null,
+            tooltip: 'Refresh queue status',
+            onPressed: () => _refreshQueue(force: true),
             icon: const Icon(Icons.refresh),
           ),
         ],
@@ -371,7 +249,7 @@ class _SearchScreenState extends State<SearchScreen> {
         onRefresh: () async {
           await Future.wait([
             if (_query.isNotEmpty) _runSearch(),
-            _pollActiveJobs(force: true),
+            _refreshQueue(force: true),
           ]);
         },
         child: ListView(
@@ -380,12 +258,14 @@ class _SearchScreenState extends State<SearchScreen> {
           children: [
             _buildSearchBox(),
             if (_searchError != null)
-              _buildErrorCard(_searchError!, _runSearch),
+              _buildErrorCard(_searchError!, _runSearch)
+            else if (queueError != null)
+              _buildErrorCard(queueError, () => _refreshQueue(force: true)),
             if (_response != null) _buildProviderRow(_response!.providers),
             const SizedBox(height: 12),
-            _buildResultsSection(),
-            const SizedBox(height: 24),
-            _buildQueueSection(playback),
+            _buildResultsSection(queueProvider),
+            const SizedBox(height: 16),
+            _buildQueueAffordance(queueProvider),
           ],
         ),
       ),
@@ -418,13 +298,13 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildResultsSection() {
+  Widget _buildResultsSection(QueueProvider queueProvider) {
     if (_query.isEmpty) {
       return _buildEmptyPanel(
         icon: Icons.search,
         title: 'Find external tracks',
         body:
-            'Results queue into local download jobs before playback. yes, the control plane has to do its little dance.',
+            'Search results add to the same Queue screen now. finally, one queue instead of two tiny tyrants.',
       );
     }
 
@@ -455,13 +335,19 @@ class _SearchScreenState extends State<SearchScreen> {
           ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 8),
-        ...results.map(_buildResultTile),
+        ...results.map(
+          (candidate) => _buildResultTile(queueProvider, candidate),
+        ),
       ],
     );
   }
 
-  Widget _buildResultTile(DiscoveryCandidate candidate) {
-    final queued = _isCandidateQueued(candidate);
+  Widget _buildResultTile(
+    QueueProvider queueProvider,
+    DiscoveryCandidate candidate,
+  ) {
+    final queuedTrack = _queuedTrackFor(queueProvider, candidate);
+    final pending = _pendingCandidateKeys.contains(_candidateKey(candidate));
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: LayoutBuilder(
@@ -472,7 +358,11 @@ class _SearchScreenState extends State<SearchScreen> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                _buildThumb(candidate.thumbnailUrl, size: mobile ? 42 : 48),
+                _buildThumb(
+                  candidate.thumbnailUrl,
+                  overlay: _queuedOverlay(queuedTrack, pending),
+                  size: mobile ? 42 : 48,
+                ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
@@ -504,7 +394,13 @@ class _SearchScreenState extends State<SearchScreen> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                _buildQueueAction(candidate, queued, mobile: mobile),
+                _buildQueueAction(
+                  queueProvider,
+                  candidate,
+                  queuedTrack,
+                  pending: pending,
+                  mobile: mobile,
+                ),
               ],
             ),
           );
@@ -514,25 +410,50 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Widget _buildQueueAction(
+    QueueProvider queueProvider,
     DiscoveryCandidate candidate,
-    bool queued, {
+    Track? queuedTrack, {
+    required bool pending,
     required bool mobile,
   }) {
-    final onPressed = !candidate.downloadable || queued
-        ? null
-        : () => _queueCandidate(candidate);
-    final icon = queued ? Icons.check : Icons.playlist_add;
-    final label = queued ? 'Queued' : 'Queue';
+    final queued = queuedTrack != null || pending;
+    if (queued) {
+      return ConstrainedBox(
+        constraints: BoxConstraints(maxWidth: mobile ? 92 : 120),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            _buildResultStatusPill(candidate, queuedTrack, pending),
+            const SizedBox(height: 4),
+            TextButton(
+              key: ValueKey('search_view_queue_${_candidateKey(candidate)}'),
+              onPressed: _goToQueue,
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 32),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('View Queue', style: TextStyle(fontSize: 12)),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final onPressed =
+        !candidate.downloadable ? null : () => _queueCandidate(candidate);
 
     if (mobile) {
       return IconButton.filledTonal(
-        tooltip: label,
+        tooltip: 'Queue',
         onPressed: onPressed,
         visualDensity: VisualDensity.compact,
         constraints: const BoxConstraints.tightFor(width: 40, height: 40),
         padding: EdgeInsets.zero,
         iconSize: 20,
-        icon: Icon(icon),
+        icon: const Icon(Icons.playlist_add),
       );
     }
 
@@ -543,161 +464,70 @@ class _SearchScreenState extends State<SearchScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 10),
         minimumSize: const Size(84, 36),
       ),
-      icon: Icon(icon, size: 18),
-      label: Text(label, style: const TextStyle(fontSize: 13)),
+      icon: const Icon(Icons.playlist_add, size: 18),
+      label: const Text('Queue', style: TextStyle(fontSize: 13)),
     );
   }
 
-  Widget _buildCompactTile({
-    required Widget leading,
-    required Widget title,
-    required Widget subtitle,
-    required Widget trailing,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          leading,
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [title, const SizedBox(height: 3), subtitle],
-            ),
-          ),
-          const SizedBox(width: 8),
-          trailing,
-        ],
+  Widget _buildResultStatusPill(
+    DiscoveryCandidate candidate,
+    Track? queuedTrack,
+    bool pending,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final status = pending
+        ? TrackQueueStatus.pending
+        : queuedTrack?.queueStatus ?? TrackQueueStatus.pending;
+    final (label, icon, background, foreground) = switch (status) {
+      TrackQueueStatus.playable => (
+          'Playable',
+          Icons.check_circle,
+          colorScheme.primaryContainer,
+          colorScheme.onPrimaryContainer,
+        ),
+      TrackQueueStatus.failed => (
+          'Needs retry',
+          Icons.error,
+          colorScheme.errorContainer,
+          colorScheme.onErrorContainer,
+        ),
+      TrackQueueStatus.downloading => (
+          'Downloading',
+          Icons.downloading,
+          colorScheme.secondaryContainer,
+          colorScheme.onSecondaryContainer,
+        ),
+      TrackQueueStatus.pending => (
+          pending ? 'Pending' : 'Queued',
+          Icons.schedule,
+          colorScheme.secondaryContainer,
+          colorScheme.onSecondaryContainer,
+        ),
+    };
+
+    return DecoratedBox(
+      key: ValueKey('search_queue_status_${_candidateKey(candidate)}'),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
       ),
-    );
-  }
-
-  Widget _buildQueueSection(PlaybackState playback) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Download queue',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-              ),
-            ),
-            Text('${_queue.length} item${_queue.length == 1 ? '' : 's'}'),
-          ],
-        ),
-        if (playback.isResolvingSignedUrl)
-          const Padding(
-            padding: EdgeInsets.only(top: 8),
-            child: LinearProgressIndicator(),
-          ),
-        if (playback.playbackError != null)
-          _buildErrorCard(playback.playbackError!, () async {
-            final playable = _queue.where((item) => item.isPlayable);
-            if (playable.isNotEmpty) await _playItem(playable.first);
-          }, label: 'Try first playable'),
-        const SizedBox(height: 8),
-        if (_queue.isEmpty)
-          _buildEmptyPanel(
-            icon: Icons.queue_music,
-            title: 'Nothing queued',
-            body:
-                'Tap Queue on a result. Pending, downloading, failed, and playable states show up here.',
-          )
-        else
-          ReorderableListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: _queue.length,
-            onReorderItem: _onReorder,
-            itemBuilder: (context, index) {
-              final item = _queue[index];
-              return Dismissible(
-                key: ValueKey('dismiss-${item.localId}'),
-                direction: item.canRemove
-                    ? DismissDirection.endToStart
-                    : DismissDirection.none,
-                onDismissed: (_) => _removeItem(item),
-                background: Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  alignment: Alignment.centerRight,
-                  padding: const EdgeInsets.only(right: 20),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.error,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(Icons.delete, color: Colors.white),
-                ),
-                child: _buildQueueTile(item, index),
-              );
-            },
-          ),
-      ],
-    );
-  }
-
-  Widget _buildQueueTile(DiscoveryQueueItem item, int index) {
-    final canPlay = item.canPlay;
-    final canRetry = item.canRetry;
-
-    return Card(
-      key: ValueKey(item.localId),
-      margin: const EdgeInsets.only(bottom: 8),
-      child: _buildCompactTile(
-        leading: _buildStatusLeading(item),
-        title: Text(
-          item.title,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(
-            fontSize: 14,
-            height: 1.18,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              item.error ?? item.candidate.displaySubtitle,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontSize: 12,
-                height: 1.16,
-              ),
-            ),
-            const SizedBox(height: 5),
-            _buildStatusPill(item),
-          ],
-        ),
-        trailing: Row(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (canPlay)
-              IconButton.filled(
-                tooltip: 'Play from signed URL',
-                onPressed: () => _playItem(item),
-                icon: const Icon(Icons.play_arrow),
-              )
-            else if (canRetry)
-              IconButton.filledTonal(
-                tooltip: 'Retry download',
-                onPressed: () => _retryItem(item),
-                icon: const Icon(Icons.refresh),
-              ),
-            ReorderableDragStartListener(
-              index: index,
-              child: const Padding(
-                padding: EdgeInsets.all(8),
-                child: Icon(Icons.drag_handle),
+            Icon(icon, size: 14, color: foreground),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: foreground,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
           ],
@@ -706,62 +536,48 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildStatusLeading(DiscoveryQueueItem item) {
-    if (item.isPlayable) {
-      return _buildThumb(item.thumbnailUrl, overlay: Icons.check, size: 42);
-    }
-    if (item.isFailed) {
-      return _buildThumb(item.thumbnailUrl, overlay: Icons.error, size: 42);
-    }
-    return SizedBox(
-      width: 42,
-      height: 42,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          _buildThumb(item.thumbnailUrl, size: 42),
-          CircularProgressIndicator(
-            value: item.progress > 0 ? item.progress / 100 : null,
-            strokeWidth: 2.5,
-          ),
-        ],
+  Widget _buildQueueAffordance(QueueProvider provider) {
+    final count = provider.queue.length + _pendingCandidateKeys.length;
+    if (count == 0) return const SizedBox.shrink();
+
+    return Card(
+      key: const ValueKey('search_queue_affordance'),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            const Icon(Icons.queue_music),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '$count item${count == 1 ? '' : 's'} in Queue',
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+            TextButton.icon(
+              onPressed: _goToQueue,
+              icon: const Icon(Icons.open_in_new, size: 18),
+              label: const Text('View Queue'),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildStatusPill(DiscoveryQueueItem item) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final color = item.isFailed
-        ? colorScheme.errorContainer
-        : item.isPlayable
-            ? colorScheme.primaryContainer
-            : colorScheme.secondaryContainer;
-    final textColor = item.isFailed
-        ? colorScheme.onErrorContainer
-        : item.isPlayable
-            ? colorScheme.onPrimaryContainer
-            : colorScheme.onSecondaryContainer;
+  IconData? _queuedOverlay(Track? track, bool pending) {
+    if (pending) return Icons.schedule;
+    return switch (track?.queueStatus) {
+      TrackQueueStatus.playable => Icons.check,
+      TrackQueueStatus.failed => Icons.error,
+      TrackQueueStatus.downloading => Icons.downloading,
+      TrackQueueStatus.pending => Icons.schedule,
+      null => null,
+    };
+  }
 
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          child: Text(
-            '${item.statusLabel}${item.isActive && item.progress > 0 ? ' • ${item.progress}%' : ''}',
-            style: TextStyle(
-              color: textColor,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-      ),
-    );
+  void _goToQueue() {
+    context.go('/queue');
   }
 
   Widget _buildProviderRow(List<DiscoveryProviderSummary> providers) {
@@ -901,6 +717,6 @@ class _SearchScreenState extends State<SearchScreen> {
       return error.message ?? 'Request failed.';
     }
     if (error is DiscoveryException) return error.message;
-    return 'Something failed. naturally.';
+    return error.toString();
   }
 }

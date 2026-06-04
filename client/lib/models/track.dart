@@ -11,6 +11,8 @@ class Track {
   /// Numeric backend track ID used to issue signed playback URLs. This differs
   /// from [id] for source-backed queue items, where [id] is the queue item UUID.
   final String? playbackTrackId;
+  final String? sourceCandidateId;
+  final String? sourceUrl;
   final String title;
   final String? artist;
   final String? album;
@@ -25,6 +27,8 @@ class Track {
     required this.id,
     String? queueItemId,
     this.playbackTrackId,
+    this.sourceCandidateId,
+    this.sourceUrl,
     required this.title,
     this.artist,
     this.album,
@@ -34,43 +38,80 @@ class Track {
     this.queueStatus = TrackQueueStatus.playable,
     bool? canPlay,
     bool? canRetry,
-  })  : queueItemId = queueItemId ?? id,
-        canPlay = canPlay ?? queueStatus == TrackQueueStatus.playable,
-        canRetry = canRetry ?? queueStatus == TrackQueueStatus.failed;
+  }) : queueItemId = queueItemId ?? id,
+       canPlay = canPlay ?? queueStatus == TrackQueueStatus.playable,
+       canRetry = canRetry ?? queueStatus == TrackQueueStatus.failed;
 
   factory Track.fromJson(Map<String, dynamic> json) {
+    final sourceCandidate =
+        _readMap(json['sourceCandidate']) ?? _readMap(json['source_candidate']);
     final queueItemId =
         json['queueItemId']?.toString() ?? json['queue_item_id']?.toString();
     final playbackTrackId =
         json['trackId']?.toString() ?? json['track_id']?.toString();
-    final id = json['id']?.toString() ?? queueItemId ?? playbackTrackId ?? '';
+    final sourceCandidateId = _readString(sourceCandidate, const [
+      'candidateId',
+      'candidate_id',
+    ]);
+    final sourceUrl = _readString(sourceCandidate, const [
+      'sourceUrl',
+      'source_url',
+    ]);
+    final id =
+        json['id']?.toString() ??
+        queueItemId ??
+        playbackTrackId ??
+        sourceCandidateId ??
+        sourceUrl ??
+        '';
     final status = _parseQueueStatus(json);
-    final canPlayOverride = json['canPlay'] as bool? ?? json['can_play'] as bool?;
+    final canPlayOverride =
+        json['canPlay'] as bool? ?? json['can_play'] as bool?;
 
     return Track(
       id: id,
       queueItemId: queueItemId ?? id,
       playbackTrackId: playbackTrackId,
-      title: json['title'] as String? ?? 'Unknown track',
-      artist: json['artist'] as String?,
-      album: json['album'] as String?,
-      duration: _parseDuration(json),
-      coverUrl: json['coverUrl'] as String? ?? json['cover_url'] as String?,
+      sourceCandidateId: sourceCandidateId,
+      sourceUrl: sourceUrl,
+      title:
+          json['title'] as String? ??
+          _readString(sourceCandidate, const ['title']) ??
+          'Unknown track',
+      artist:
+          json['artist'] as String? ??
+          _readString(sourceCandidate, const ['artist', 'uploader']),
+      album:
+          json['album'] as String? ??
+          _readString(sourceCandidate, const ['album', 'provider']),
+      duration: _parseDuration(json, sourceCandidate),
+      coverUrl:
+          json['coverUrl'] as String? ??
+          json['cover_url'] as String? ??
+          _readString(sourceCandidate, const ['thumbnailUrl', 'thumbnail_url']),
       addedAt: _parseDate(json['addedAt'] ?? json['added_at']),
       queueStatus: status,
       canPlay: status == TrackQueueStatus.playable && (canPlayOverride ?? true),
-      canRetry: json['canRetry'] as bool? ??
+      canRetry:
+          json['canRetry'] as bool? ??
           json['can_retry'] as bool? ??
           status == TrackQueueStatus.failed,
     );
   }
 
-  static int _parseDuration(Map<String, dynamic> json) {
-    final duration = json['duration'];
+  static int _parseDuration(
+    Map<String, dynamic> json,
+    Map<String, dynamic>? sourceCandidate,
+  ) {
+    final duration = json['duration'] ?? sourceCandidate?['duration'];
     if (duration is int) return duration;
     if (duration is num) return duration.round();
 
-    final durationMs = json['duration_ms'];
+    final durationMs =
+        json['duration_ms'] ??
+        json['durationMs'] ??
+        sourceCandidate?['duration_ms'] ??
+        sourceCandidate?['durationMs'];
     if (durationMs is int) return durationMs ~/ 1000;
     if (durationMs is num) return (durationMs / 1000).round();
 
@@ -85,8 +126,29 @@ class Track {
     return DateTime.fromMillisecondsSinceEpoch(0);
   }
 
+  static Map<String, dynamic>? _readMap(Object? value) {
+    if (value is Map<String, dynamic>) return value;
+    if (value is Map) return Map<String, dynamic>.from(value);
+    return null;
+  }
+
+  static String? _readString(
+    Map<String, dynamic>? json,
+    Iterable<String> keys,
+  ) {
+    if (json == null) return null;
+    for (final key in keys) {
+      final value = json[key];
+      if (value == null) continue;
+      final text = value.toString().trim();
+      if (text.isNotEmpty) return text;
+    }
+    return null;
+  }
+
   static TrackQueueStatus _parseQueueStatus(Map<String, dynamic> json) {
-    final raw = json['status'] ??
+    final raw =
+        json['status'] ??
         json['download_status'] ??
         json['downloadStatus'] ??
         json['playback_state'] ??
@@ -128,6 +190,8 @@ class Track {
       'id': id,
       'queueItemId': queueItemId,
       if (playbackTrackId != null) 'trackId': playbackTrackId,
+      if (sourceCandidateId != null) 'sourceCandidateId': sourceCandidateId,
+      if (sourceUrl != null) 'sourceUrl': sourceUrl,
       'title': title,
       'artist': artist,
       'album': album,
