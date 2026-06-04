@@ -1,3 +1,5 @@
+enum TrackQueueStatus { pending, downloading, failed, playable }
+
 class Track {
   final String id;
   final String title;
@@ -6,6 +8,7 @@ class Track {
   final int duration;
   final String? coverUrl;
   final DateTime addedAt;
+  final TrackQueueStatus queueStatus;
 
   Track({
     required this.id,
@@ -15,6 +18,7 @@ class Track {
     required this.duration,
     this.coverUrl,
     required this.addedAt,
+    this.queueStatus = TrackQueueStatus.playable,
   });
 
   factory Track.fromJson(Map<String, dynamic> json) {
@@ -26,6 +30,7 @@ class Track {
       duration: _parseDuration(json),
       coverUrl: json['coverUrl'] as String? ?? json['cover_url'] as String?,
       addedAt: _parseDate(json['addedAt'] ?? json['added_at']),
+      queueStatus: _parseQueueStatus(json),
     );
   }
 
@@ -49,6 +54,36 @@ class Track {
     return DateTime.fromMillisecondsSinceEpoch(0);
   }
 
+  static TrackQueueStatus _parseQueueStatus(Map<String, dynamic> json) {
+    final raw = json['status'] ??
+        json['download_status'] ??
+        json['downloadStatus'] ??
+        json['playback_status'] ??
+        json['playbackStatus'];
+    final status = raw?.toString().trim().toLowerCase().replaceAll('-', '_');
+
+    switch (status) {
+      case 'pending':
+      case 'queued':
+      case 'waiting':
+        return TrackQueueStatus.pending;
+      case 'downloading':
+      case 'processing':
+      case 'in_progress':
+        return TrackQueueStatus.downloading;
+      case 'failed':
+      case 'error':
+        return TrackQueueStatus.failed;
+      case 'completed':
+      case 'complete':
+      case 'ready':
+      case 'available':
+      case 'playable':
+      default:
+        return TrackQueueStatus.playable;
+    }
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'id': id,
@@ -58,6 +93,7 @@ class Track {
       'duration': duration,
       'coverUrl': coverUrl,
       'addedAt': addedAt.toIso8601String(),
+      'status': queueStatus.name,
     };
   }
 

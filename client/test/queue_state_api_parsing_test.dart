@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/models/queue_state.dart';
+import 'package:open_music_player/models/track.dart';
 
 void main() {
   test(
@@ -30,5 +31,33 @@ void main() {
     expect(state.tracks.single.title, 'Seed Track');
     expect(state.tracks.single.duration, 185);
     expect(state.tracks.single.coverUrl, 'https://example.test/cover.png');
+  });
+
+  test('QueueState parses queue item status aliases into track queue statuses',
+      () {
+    final state = QueueState.fromJson({
+      'items': [
+        {'id': 1, 'title': 'Queued', 'duration': 1, 'status': 'pending'},
+        {
+          'id': 2,
+          'title': 'Downloading',
+          'duration': 1,
+          'download_status': 'downloading',
+        },
+        {
+          'id': 3,
+          'title': 'Failed',
+          'duration': 1,
+          'playbackStatus': 'failed',
+        },
+        {'id': 4, 'title': 'Ready', 'duration': 1, 'status': 'completed'},
+      ],
+      'currentPosition': 0,
+    });
+
+    expect(state.tracks[0].queueStatus, TrackQueueStatus.pending);
+    expect(state.tracks[1].queueStatus, TrackQueueStatus.downloading);
+    expect(state.tracks[2].queueStatus, TrackQueueStatus.failed);
+    expect(state.tracks[3].queueStatus, TrackQueueStatus.playable);
   });
 }

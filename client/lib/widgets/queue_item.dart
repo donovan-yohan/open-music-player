@@ -8,6 +8,8 @@ class QueueItem extends StatelessWidget {
   final bool isPlaying;
   final VoidCallback? onRemove;
   final VoidCallback? onTap;
+  final VoidCallback? onPlay;
+  final VoidCallback? onRetry;
 
   /// Left-edge vertical reorder grip. Supplied by the screen so it can wrap the
   /// grip — and only the grip — in a drag listener. Visually distinct from the
@@ -35,6 +37,8 @@ class QueueItem extends StatelessWidget {
     this.isPlaying = false,
     this.onRemove,
     this.onTap,
+    this.onPlay,
+    this.onRetry,
     this.reorderHandle,
     this.showTrimControls = false,
     this.trimRange,
@@ -123,27 +127,43 @@ class QueueItem extends StatelessWidget {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
+                        const SizedBox(height: 2),
+                        Text(
+                          track.formattedDuration,
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: Colors.grey[600]),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ],
                     ),
                   ),
-
-                  // Duration
-                  Text(
-                    track.formattedDuration,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
-                  ),
-
-                  // Remove button
-                  if (onRemove != null)
-                    IconButton(
-                      key: ValueKey('remove_${track.id}'),
-                      icon: const Icon(Icons.close, size: 20),
-                      onPressed: onRemove,
-                      color: Colors.grey[600],
-                    ),
                 ],
+              ),
+              Padding(
+                padding: EdgeInsets.only(
+                  top: 8,
+                  left: reorderHandle != null ? 52 : 0,
+                ),
+                child: Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    _buildStatusChip(context),
+                    _buildQueueAction(context),
+                    if (onRemove != null)
+                      IconButton(
+                        key: ValueKey('remove_${track.id}'),
+                        icon: const Icon(Icons.close, size: 20),
+                        tooltip: 'Remove ${track.title}',
+                        onPressed: onRemove,
+                        color: Colors.grey[600],
+                      ),
+                  ],
+                ),
               ),
               if (showTrimControls && trimRange != null)
                 _buildTrimControls(context),
@@ -151,6 +171,82 @@ class QueueItem extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildStatusChip(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final (label, color, icon) = switch (track.queueStatus) {
+      TrackQueueStatus.pending => (
+          'Pending',
+          Colors.orange,
+          Icons.hourglass_top
+        ),
+      TrackQueueStatus.downloading => (
+          'Downloading',
+          Colors.blue,
+          Icons.downloading,
+        ),
+      TrackQueueStatus.failed => (
+          'Failed',
+          colorScheme.error,
+          Icons.error_outline
+        ),
+      TrackQueueStatus.playable => (
+          'Playable',
+          Colors.green,
+          Icons.check_circle
+        ),
+    };
+
+    return Semantics(
+      label: '$label status',
+      child: Container(
+        key: ValueKey('queue_status_${track.id}'),
+        constraints: const BoxConstraints(minHeight: 32),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: color.withValues(alpha: 0.5)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQueueAction(BuildContext context) {
+    if (track.queueStatus == TrackQueueStatus.failed) {
+      return IconButton(
+        key: ValueKey('queue_retry_${track.id}'),
+        icon: const Icon(Icons.refresh, size: 20),
+        tooltip: 'Retry ${track.title}',
+        onPressed: onRetry,
+        color: Theme.of(context).colorScheme.error,
+      );
+    }
+
+    final playable = track.queueStatus == TrackQueueStatus.playable;
+    return IconButton(
+      key: ValueKey('queue_play_${track.id}'),
+      icon: Icon(isPlaying ? Icons.equalizer : Icons.play_arrow, size: 20),
+      tooltip: isPlaying ? 'Playing ${track.title}' : 'Play ${track.title}',
+      onPressed: playable ? onPlay : null,
+      color:
+          isPlaying ? Theme.of(context).colorScheme.primary : Colors.grey[700],
     );
   }
 
