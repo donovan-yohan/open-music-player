@@ -328,20 +328,23 @@ class QueueProvider extends ChangeNotifier {
       return;
     }
 
-    final trackIds = _queue.tracks.expand(_trackTimingKeys).toSet();
+    final timingKeys = _queue.tracks.expand(_trackTimingKeys).toSet();
+    final queueItemIds = _queue.tracks
+        .map((track) => track.queueItemId)
+        .where((id) => id.isNotEmpty)
+        .toSet();
     _trimRanges = {
       for (final entry in _trimRanges.entries)
-        if (trackIds.contains(entry.key)) entry.key: entry.value,
+        if (timingKeys.contains(entry.key)) entry.key: entry.value,
     };
     _timelineStartOverrides = {
       for (final entry in _timelineStartOverrides.entries)
-        if (trackIds.contains(entry.key)) entry.key: entry.value,
+        if (timingKeys.contains(entry.key)) entry.key: entry.value,
     };
     final clips = _mixPlanClips.values.toSet();
     _mixPlanClips = {};
     for (final clip in clips) {
-      if (trackIds.contains(clip.queueItemId) ||
-          trackIds.contains(clip.trackId)) {
+      if (queueItemIds.contains(clip.queueItemId)) {
         _storeMixPlanClip(clip);
       }
     }

@@ -183,6 +183,65 @@ void main() {
         2000,
       );
     });
+
+    test('removing one duplicate prunes its stale mix plan aliases', () async {
+      final first = _track(id: '7', queueItemId: 'queue-a');
+      final second = _track(id: '7', queueItemId: 'queue-b');
+      final provider = QueueProvider(
+        ApiClient(
+          httpClient: MockClient((request) async {
+            if (request.method == 'GET' &&
+                request.url.path.endsWith('/queue')) {
+              return http.Response(
+                jsonEncode({
+                  'tracks': [first.toJson(), second.toJson()],
+                  'currentIndex': 0,
+                }),
+                200,
+              );
+            }
+            if (request.method == 'DELETE' &&
+                request.url.path.endsWith('/queue/0')) {
+              return http.Response('', 204);
+            }
+            return http.Response('', 404);
+          }),
+        ),
+      );
+
+      await provider.loadQueue();
+      provider.applyMixPlanClips([
+        MixPlanClip(
+          clipId: 'clip-a',
+          queueItemId: first.queueItemId,
+          trackId: first.playbackTrackId!,
+          sourceStartMs: 10000,
+          sourceEndMs: 100000,
+          timelineStartMs: 1000,
+        ),
+        MixPlanClip(
+          clipId: 'clip-b',
+          queueItemId: second.queueItemId,
+          trackId: second.playbackTrackId!,
+          sourceStartMs: 20000,
+          sourceEndMs: 120000,
+          timelineStartMs: 2000,
+        ),
+      ]);
+
+      await provider.removeFromQueue(0);
+
+      expect(provider.queue.tracks, hasLength(1));
+      expect(provider.queue.tracks.single.queueItemId, 'queue-b');
+      expect(provider.mixPlanClips.containsKey('queue-a'), isFalse);
+      expect(provider.mixPlanClips.containsKey('clip-a'), isFalse);
+      expect(provider.mixPlanClips['queue-b']?.queueItemId, 'queue-b');
+      expect(provider.mixPlanClips['7']?.queueItemId, 'queue-b');
+      expect(
+        provider.timelineClipFor(second, _fallback(second)).timelineStartMs,
+        2000,
+      );
+    });
   });
 
   test('loading an empty queue prunes stale timing and mix-plan state',
