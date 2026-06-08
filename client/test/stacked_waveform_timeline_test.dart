@@ -530,6 +530,39 @@ void main() {
     );
   });
 
+  testWidgets('disabled trim handles pass through to clip body drag', (
+    tester,
+  ) async {
+    final starts = <int>[];
+
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+      onTimelineStartChanged: (track, ms) {
+        if (track.id == 't1') starts.add(ms);
+      },
+      onTrimStartChanged: null,
+      onTrimEndChanged: null,
+    );
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+
+    final clip = tester.getRect(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.dragFrom(
+      Offset(clip.left + 20, clip.center.dy),
+      const Offset(80, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      starts,
+      isNotEmpty,
+      reason: 'disabled trim hit target must not block the clip body drag',
+    );
+  });
+
   testWidgets('edited placement and trim keep transition display accurate', (
     tester,
   ) async {

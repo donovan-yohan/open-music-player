@@ -34,7 +34,7 @@ class QueueProvider extends ChangeNotifier {
 
   /// Trim range for a track, defaulting to the full track when untrimmed.
   TrimRange trimRangeFor(Track track) {
-    final local = _trimRanges[track.id] ?? _trimRanges[track.queueItemId];
+    final local = _firstTrimRange(track);
     if (local != null) return local;
 
     final clip = _mixPlanClipFor(track);
@@ -75,7 +75,7 @@ class QueueProvider extends ChangeNotifier {
     for (final clip in clips) {
       _storeMixPlanClip(clip);
     }
-    _pruneTimingState();
+    _pruneTimingState(clearWhenEmpty: false);
     _notifyListeners();
   }
 
@@ -318,8 +318,15 @@ class QueueProvider extends ChangeNotifier {
     _notifyListeners();
   }
 
-  void _pruneTimingState() {
-    if (_queue.tracks.isEmpty) return;
+  void _pruneTimingState({bool clearWhenEmpty = true}) {
+    if (_queue.tracks.isEmpty) {
+      if (clearWhenEmpty) {
+        _trimRanges = {};
+        _timelineStartOverrides = {};
+        _mixPlanClips = {};
+      }
+      return;
+    }
 
     final trackIds = _queue.tracks.expand(_trackTimingKeys).toSet();
     _trimRanges = {
@@ -341,10 +348,17 @@ class QueueProvider extends ChangeNotifier {
   }
 
   Iterable<String> _trackTimingKeys(Track track) sync* {
-    yield track.id;
-    yield track.queueItemId;
+    final seen = <String>{};
+    if (track.queueItemId.isNotEmpty && seen.add(track.queueItemId)) {
+      yield track.queueItemId;
+    }
+    if (track.id.isNotEmpty && seen.add(track.id)) {
+      yield track.id;
+    }
     final playbackTrackId = track.playbackTrackId;
-    if (playbackTrackId != null && playbackTrackId.isNotEmpty) {
+    if (playbackTrackId != null &&
+        playbackTrackId.isNotEmpty &&
+        seen.add(playbackTrackId)) {
       yield playbackTrackId;
     }
   }
@@ -352,6 +366,14 @@ class QueueProvider extends ChangeNotifier {
   int? _firstTimelineStart(Track track) {
     for (final key in _trackTimingKeys(track)) {
       final value = _timelineStartOverrides[key];
+      if (value != null) return value;
+    }
+    return null;
+  }
+
+  TrimRange? _firstTrimRange(Track track) {
+    for (final key in _trackTimingKeys(track)) {
+      final value = _trimRanges[key];
       if (value != null) return value;
     }
     return null;

@@ -484,22 +484,27 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       width: 44,
       child: Semantics(
         label: alignStart ? 'Trim start handle' : 'Trim end handle',
-        child: GestureDetector(
-          key: key,
-          behavior: HitTestBehavior.opaque,
-          onHorizontalDragUpdate: enabled
-              ? (details) => onDragUpdate(details.primaryDelta ?? 0)
-              : null,
-          child: Align(
-            alignment:
-                alignStart ? Alignment.centerLeft : Alignment.centerRight,
-            child: Container(
-              width: 10,
-              margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
-              decoration: BoxDecoration(
-                color: accent.withValues(alpha: enabled ? 0.88 : 0.35),
-                borderRadius: BorderRadius.circular(5),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.75)),
+        child: IgnorePointer(
+          ignoring: !enabled,
+          child: GestureDetector(
+            key: key,
+            behavior: HitTestBehavior.opaque,
+            onHorizontalDragUpdate: enabled
+                ? (details) => onDragUpdate(details.primaryDelta ?? 0)
+                : null,
+            child: Align(
+              alignment:
+                  alignStart ? Alignment.centerLeft : Alignment.centerRight,
+              child: Container(
+                width: 10,
+                margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: enabled ? 0.88 : 0.35),
+                  borderRadius: BorderRadius.circular(5),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.75),
+                  ),
+                ),
               ),
             ),
           ),

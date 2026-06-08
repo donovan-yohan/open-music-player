@@ -1,8 +1,13 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/track.dart';
+import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:open_music_player/services/api_client.dart';
 
@@ -20,6 +25,15 @@ Track _track({
       artist: 'Artist $id',
       duration: duration,
       addedAt: DateTime.utc(2026, 1, 1),
+    );
+
+TimelineClip _fallback(Track track) => TimelineClip.clamped(
+      id: 'clip_${track.queueItemId}',
+      trackId: track.id,
+      sourceDurationMs: track.durationMs,
+      sourceStartMs: 0,
+      sourceEndMs: track.durationMs,
+      timelineStartMs: 0,
     );
 
 void main() {
@@ -88,5 +102,131 @@ void main() {
     expect(edited.sourceEndMs, 190000);
     expect(provider.trimRangeFor(track).startOffsetMs, 30000);
     expect(provider.trimRangeFor(track).endOffsetMs, 190000);
+  });
+
+  group('duplicate queue item timing isolation', () {
+    test('trim ranges prefer unique queueItemId over shared track id',
+        () async {
+      final provider = QueueProvider(ApiClient());
+      final first = _track(id: '7', queueItemId: 'queue-a');
+      final second = _track(id: '7', queueItemId: 'queue-b');
+
+      await provider.setTrimRange(
+        first,
+        TrimRange.clamped(
+          trackDurationMs: first.durationMs,
+          startOffsetMs: 10000,
+          endOffsetMs: 100000,
+        ),
+      );
+      await provider.setTrimRange(
+        second,
+        TrimRange.clamped(
+          trackDurationMs: second.durationMs,
+          startOffsetMs: 20000,
+          endOffsetMs: 120000,
+        ),
+      );
+
+      expect(provider.trimRangeFor(first).startOffsetMs, 10000);
+      expect(provider.trimRangeFor(second).startOffsetMs, 20000);
+    });
+
+    test('timeline starts prefer unique queueItemId over shared track id', () {
+      final provider = QueueProvider(ApiClient());
+      final first = _track(id: '7', queueItemId: 'queue-a');
+      final second = _track(id: '7', queueItemId: 'queue-b');
+
+      provider.setTimelineStartMs(first, 1000);
+      provider.setTimelineStartMs(second, 2000);
+
+      expect(
+        provider.timelineClipFor(first, _fallback(first)).timelineStartMs,
+        1000,
+      );
+      expect(
+        provider.timelineClipFor(second, _fallback(second)).timelineStartMs,
+        2000,
+      );
+    });
+
+    test('mix plan clips prefer unique queueItemId over shared track id', () {
+      final provider = QueueProvider(ApiClient());
+      final first = _track(id: '7', queueItemId: 'queue-a');
+      final second = _track(id: '7', queueItemId: 'queue-b');
+
+      provider.applyMixPlanClips([
+        MixPlanClip(
+          clipId: 'clip-a',
+          queueItemId: first.queueItemId,
+          trackId: first.playbackTrackId!,
+          sourceStartMs: 10000,
+          sourceEndMs: 100000,
+          timelineStartMs: 1000,
+        ),
+        MixPlanClip(
+          clipId: 'clip-b',
+          queueItemId: second.queueItemId,
+          trackId: second.playbackTrackId!,
+          sourceStartMs: 20000,
+          sourceEndMs: 120000,
+          timelineStartMs: 2000,
+        ),
+      ]);
+
+      expect(
+        provider.timelineClipFor(first, _fallback(first)).timelineStartMs,
+        1000,
+      );
+      expect(
+        provider.timelineClipFor(second, _fallback(second)).timelineStartMs,
+        2000,
+      );
+    });
+  });
+
+  test('loading an empty queue prunes stale timing and mix-plan state',
+      () async {
+    final track = _track();
+    final provider = QueueProvider(
+      ApiClient(
+        httpClient: MockClient(
+          (request) async => http.Response(
+            jsonEncode(
+                {'tracks': <Map<String, Object?>>[], 'currentIndex': -1}),
+            200,
+          ),
+        ),
+      ),
+    );
+
+    await provider.setTrimRange(
+      track,
+      TrimRange.clamped(
+        trackDurationMs: track.durationMs,
+        startOffsetMs: 10000,
+        endOffsetMs: 100000,
+      ),
+    );
+    provider.setTimelineStartMs(track, 4000);
+    provider.applyMixPlanClips([
+      MixPlanClip(
+        clipId: 'clip-7',
+        queueItemId: track.queueItemId,
+        trackId: track.playbackTrackId!,
+        sourceStartMs: 10000,
+        sourceEndMs: 100000,
+        timelineStartMs: 4000,
+      ),
+    ]);
+
+    await provider.loadQueue();
+
+    expect(provider.queue.isEmpty, isTrue);
+    expect(provider.trimRanges, isEmpty);
+    expect(provider.mixPlanClips, isEmpty);
+    expect(
+        provider.timelineClipFor(track, _fallback(track)).timelineStartMs, 0);
+    expect(provider.trimRangeFor(track).isFullTrack, isTrue);
   });
 }
