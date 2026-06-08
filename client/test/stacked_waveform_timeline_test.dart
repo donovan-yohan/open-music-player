@@ -184,7 +184,11 @@ void main() {
       find.byKey(const ValueKey('stacked_waveform_timeline')),
       findsOneWidget,
     );
-    expect(find.byKey(const ValueKey('timeline_playhead')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('timeline_playhead')),
+      findsNothing,
+      reason: 'the synthetic playhead is outside this short clip viewport',
+    );
   });
 
   testWidgets(
@@ -265,6 +269,113 @@ void main() {
       lessThan(before.left),
       reason: 'dragging left should pan later in shared mix time',
     );
+  });
+
+  testWidgets('current track changes clear manual pan and auto-follow', (
+    tester,
+  ) async {
+    final first = _track('t1', 'Midnight Drive', 240);
+    final second = _track('t2', 'Paper Planes', 240);
+    final third = _track('t3', 'Glass', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: first,
+      upcoming: [second, third],
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_zoom_in')));
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+      const Offset(-300, 0),
+    );
+    await tester.pumpAndSettle();
+
+    await _pump(
+      tester,
+      previous: first,
+      current: second,
+      upcoming: [third],
+    );
+
+    final currentRect = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    expect(
+      currentRect.left,
+      inInclusiveRange(
+        StackedWaveformTimeline.railWidth + 40,
+        StackedWaveformTimeline.railWidth + 100,
+      ),
+      reason: 'new current clip should auto-follow after playback advances',
+    );
+    expect(find.byKey(const ValueKey('timeline_playhead')), findsOneWidget);
+  });
+
+  testWidgets('no-op edge pan does not create a manual offset lock', (
+    tester,
+  ) async {
+    final previous = _track('t0', 'Opening', 240);
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    final later = _track('t3', 'Glass', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next, later],
+    );
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+      const Offset(160, 0),
+    );
+    await tester.pumpAndSettle();
+
+    await _pump(
+      tester,
+      previous: previous,
+      current: current,
+      upcoming: [next],
+    );
+
+    final currentRect = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t1')),
+    );
+    expect(
+      currentRect.left,
+      lessThan(StackedWaveformTimeline.railWidth + 110),
+      reason:
+          'a clamped no-op drag at the left edge should leave auto-follow on',
+    );
+    expect(
+      currentRect.left,
+      greaterThan(StackedWaveformTimeline.railWidth),
+      reason: 'auto-follow keeps the current clip inside the visible pane',
+    );
+  });
+
+  testWidgets('hides the playhead when it is outside the visible pane', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240), _track('t3', 'Glass', 240)],
+    );
+    expect(find.byKey(const ValueKey('timeline_playhead')), findsOneWidget);
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+      const Offset(-320, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('timeline_playhead')), findsNothing);
   });
 
   testWidgets(

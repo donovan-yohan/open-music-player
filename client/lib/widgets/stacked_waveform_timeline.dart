@@ -85,6 +85,15 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   double get _zoom => _zoomLevels[_zoomIndex];
 
   @override
+  void didUpdateWidget(covariant StackedWaveformTimeline oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.currentTrack.id != widget.currentTrack.id) {
+      _manualOffsetMs = null;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Column(
       key: const ValueKey('stacked_waveform_timeline'),
@@ -200,8 +209,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       );
     }
 
-    final playheadX =
-        StackedWaveformTimeline.railWidth + viewport.msToX(playheadMs);
+    final playheadPaneX = viewport.msToX(playheadMs);
+    final isPlayheadVisible = playheadPaneX.isFinite &&
+        playheadPaneX >= 0 &&
+        playheadPaneX <= paneWidth;
 
     // Transition window = overlap of current clip and the first upcoming clip.
     Widget? transitionBand;
@@ -267,21 +278,21 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
           if (transitionBand != null) transitionBand,
 
-          // Global playhead crossing the ruler + every lane.
-          Positioned(
-            key: const ValueKey('timeline_playhead'),
-            top: 0,
-            bottom: 0,
-            left: playheadX.clamp(
-              StackedWaveformTimeline.railWidth,
-              double.infinity,
+          // Global playhead crossing the ruler + every lane. Hide it when it is
+          // outside the visible pane instead of pinning it to an edge, which
+          // would misleadingly imply the playhead is visible at that boundary.
+          if (isPlayheadVisible)
+            Positioned(
+              key: const ValueKey('timeline_playhead'),
+              top: 0,
+              bottom: 0,
+              left: StackedWaveformTimeline.railWidth + playheadPaneX,
+              width: 2,
+              child: Semantics(
+                label: 'Mix playhead at ${_formatClock(playheadMs)}',
+                child: const ColoredBox(color: Color(0xFFD32F2F)),
+              ),
             ),
-            width: 2,
-            child: Semantics(
-              label: 'Mix playhead at ${_formatClock(playheadMs)}',
-              child: const ColoredBox(color: Color(0xFFD32F2F)),
-            ),
-          ),
 
           // Left-edge history teaser for the offscreen played clip.
           if (widget.previousTrack != null)
@@ -522,7 +533,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   void _panViewport(TimelineViewport viewport, double deltaXPx) {
     if (!deltaXPx.isFinite || deltaXPx == 0) return;
     final next = viewport.panByPixels(deltaXPx);
-    if (next.offsetMs == viewport.offsetMs && _manualOffsetMs != null) return;
+    if (next.offsetMs == viewport.offsetMs) return;
     setState(() => _manualOffsetMs = next.offsetMs);
   }
 
