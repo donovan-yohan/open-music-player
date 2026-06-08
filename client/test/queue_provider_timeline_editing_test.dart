@@ -184,6 +184,63 @@ void main() {
       );
     });
 
+    test('loadQueue prunes stale shared local timing aliases', () async {
+      final first = _track(id: '7', queueItemId: 'queue-a');
+      final second = _track(id: '7', queueItemId: 'queue-b');
+      final fresh = _track(id: '7', queueItemId: 'queue-c');
+      var queueRequests = 0;
+      final provider = QueueProvider(
+        ApiClient(
+          httpClient: MockClient((request) async {
+            if (request.method == 'GET' &&
+                request.url.path.endsWith('/queue')) {
+              queueRequests++;
+              final tracks = switch (queueRequests) {
+                1 => [first.toJson(), second.toJson()],
+                2 => [first.toJson()],
+                _ => [first.toJson(), fresh.toJson()],
+              };
+              return http.Response(
+                jsonEncode({'tracks': tracks, 'currentIndex': 0}),
+                200,
+              );
+            }
+            return http.Response('', 404);
+          }),
+        ),
+      );
+
+      await provider.loadQueue();
+      await provider.setTrimRange(
+        first,
+        TrimRange.clamped(
+          trackDurationMs: first.durationMs,
+          startOffsetMs: 10000,
+          endOffsetMs: 100000,
+        ),
+      );
+      provider.setTimelineStartMs(first, 1000);
+      await provider.setTrimRange(
+        second,
+        TrimRange.clamped(
+          trackDurationMs: second.durationMs,
+          startOffsetMs: 20000,
+          endOffsetMs: 120000,
+        ),
+      );
+      provider.setTimelineStartMs(second, 2000);
+
+      await provider.loadQueue();
+      await provider.loadQueue();
+
+      expect(provider.trimRangeFor(first).startOffsetMs, 10000);
+      expect(provider.timelineClipFor(first, _fallback(first)).timelineStartMs,
+          1000);
+      expect(provider.trimRangeFor(fresh).isFullTrack, isTrue);
+      expect(
+          provider.timelineClipFor(fresh, _fallback(fresh)).timelineStartMs, 0);
+    });
+
     test('removing one duplicate prunes its stale mix plan aliases', () async {
       final first = _track(id: '7', queueItemId: 'queue-a');
       final second = _track(id: '7', queueItemId: 'queue-b');

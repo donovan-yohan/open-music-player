@@ -284,7 +284,7 @@ class QueueProvider extends ChangeNotifier {
   void setTimelineStartMs(Track track, int ms) {
     final start = ms < 0 ? 0 : ms;
     _timelineStartOverrides = Map<String, int>.from(_timelineStartOverrides);
-    for (final key in _trackTimingKeys(track)) {
+    for (final key in _localTimingKeys(track)) {
       _timelineStartOverrides[key] = start;
     }
 
@@ -297,7 +297,7 @@ class QueueProvider extends ChangeNotifier {
 
   Future<void> setTrimRange(Track track, TrimRange range) async {
     _trimRanges = Map<String, TrimRange>.from(_trimRanges);
-    for (final key in _trackTimingKeys(track)) {
+    for (final key in _localTimingKeys(track)) {
       _trimRanges[key] = range;
     }
 
@@ -328,18 +328,18 @@ class QueueProvider extends ChangeNotifier {
       return;
     }
 
-    final timingKeys = _queue.tracks.expand(_trackTimingKeys).toSet();
+    final localTimingKeys = _queue.tracks.expand(_localTimingKeys).toSet();
     final queueItemIds = _queue.tracks
         .map((track) => track.queueItemId)
         .where((id) => id.isNotEmpty)
         .toSet();
     _trimRanges = {
       for (final entry in _trimRanges.entries)
-        if (timingKeys.contains(entry.key)) entry.key: entry.value,
+        if (localTimingKeys.contains(entry.key)) entry.key: entry.value,
     };
     _timelineStartOverrides = {
       for (final entry in _timelineStartOverrides.entries)
-        if (timingKeys.contains(entry.key)) entry.key: entry.value,
+        if (localTimingKeys.contains(entry.key)) entry.key: entry.value,
     };
     final clips = _mixPlanClips.values.toSet();
     _mixPlanClips = {};
@@ -348,6 +348,14 @@ class QueueProvider extends ChangeNotifier {
         _storeMixPlanClip(clip);
       }
     }
+  }
+
+  Iterable<String> _localTimingKeys(Track track) sync* {
+    if (track.queueItemId.isNotEmpty) {
+      yield track.queueItemId;
+      return;
+    }
+    yield* _trackTimingKeys(track);
   }
 
   Iterable<String> _trackTimingKeys(Track track) sync* {
