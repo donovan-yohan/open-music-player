@@ -20,6 +20,8 @@ class QueueProvider extends ChangeNotifier {
   String? _activeMixPlanId;
   int? _activeMixPlanVersion;
   String _activeMixPlanName = queueTimingMixPlanName;
+  Future<void>? _mixPlanSaveFuture;
+  bool _mixPlanSaveQueued = false;
 
   Map<String, TrimRange> _trimRanges = {};
   Map<String, int> _timelineStartOverrides = {};
@@ -301,7 +303,7 @@ class QueueProvider extends ChangeNotifier {
       _storeMixPlanClip(mixClip.withTimelineStartMs(start));
     }
     _notifyListeners();
-    _saveQueueTimingMixPlan();
+    _enqueueQueueTimingMixPlanSave();
   }
 
   Future<void> setTrimRange(Track track, TrimRange range) async {
@@ -320,7 +322,7 @@ class QueueProvider extends ChangeNotifier {
       );
     }
     _notifyListeners();
-    await _saveQueueTimingMixPlan();
+    await _enqueueQueueTimingMixPlanSave();
   }
 
   void clearError() {
@@ -362,6 +364,29 @@ class QueueProvider extends ChangeNotifier {
       // Mix-plan persistence is progressive enhancement for queue editing. Queue
       // loading should not fail just because an older backend/proxy lacks the
       // durable timing endpoint.
+    }
+  }
+
+  Future<void> _enqueueQueueTimingMixPlanSave() {
+    final activeSave = _mixPlanSaveFuture;
+    if (activeSave != null) {
+      _mixPlanSaveQueued = true;
+      return activeSave;
+    }
+
+    final saveFuture = _drainQueueTimingMixPlanSaves();
+    _mixPlanSaveFuture = saveFuture;
+    return saveFuture;
+  }
+
+  Future<void> _drainQueueTimingMixPlanSaves() async {
+    try {
+      do {
+        _mixPlanSaveQueued = false;
+        await _saveQueueTimingMixPlan();
+      } while (_mixPlanSaveQueued && !_disposed);
+    } finally {
+      _mixPlanSaveFuture = null;
     }
   }
 
@@ -451,6 +476,8 @@ class QueueProvider extends ChangeNotifier {
         .map((track) => track.queueItemId)
         .where((id) => id.isNotEmpty)
         .toSet();
+    final playbackTrackIds =
+        _queue.tracks.map(_mixPlanTrackId).whereType<String>().toSet();
     _trimRanges = {
       for (final entry in _trimRanges.entries)
         if (localTimingKeys.contains(entry.key)) entry.key: entry.value,
@@ -462,7 +489,10 @@ class QueueProvider extends ChangeNotifier {
     final clips = _mixPlanClips.values.toSet();
     _mixPlanClips = {};
     for (final clip in clips) {
-      if (queueItemIds.contains(clip.queueItemId)) {
+      final hasQueueItemIdentity = queueItemIds.contains(clip.queueItemId);
+      final hasLegacyTrackIdentity = clip.queueItemId == clip.clipId &&
+          playbackTrackIds.contains(clip.trackId);
+      if (hasQueueItemIdentity || hasLegacyTrackIdentity) {
         _storeMixPlanClip(clip);
       }
     }

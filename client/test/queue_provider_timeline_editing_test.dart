@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -445,6 +446,190 @@ void main() {
         'gainDb': 0.0,
       },
     ]);
+  });
+
+  test('overlapping timing edits create one plan then coalesce into update',
+      () async {
+    final first =
+        _track(id: '42', queueItemId: 'queue-a', playbackTrackId: '42');
+    final second =
+        _track(id: '43', queueItemId: 'queue-b', playbackTrackId: '43');
+    var createCount = 0;
+    var updateCount = 0;
+    final createCompleter = Completer<http.Response>();
+    final provider = QueueProvider(
+      ApiClient(
+        httpClient: MockClient((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              jsonEncode({
+                'tracks': [first.toJson(), second.toJson()],
+                'currentIndex': 0,
+              }),
+              200,
+            );
+          }
+          if (request.method == 'GET' &&
+              request.url.path.endsWith('/mix-plans')) {
+            return http.Response(
+              jsonEncode({'data': [], 'total': 0, 'limit': 50, 'offset': 0}),
+              200,
+            );
+          }
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/mix-plans')) {
+            createCount += 1;
+            return createCompleter.future;
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.endsWith('/mix-plans/plan-queue-timing')) {
+            updateCount += 1;
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              jsonEncode({
+                'id': 'plan-queue-timing',
+                'schemaVersion': 1,
+                'name': body['name'],
+                'clips': body['clips'],
+                'summary': {
+                  'clipCount': 2,
+                  'trackIds': [42, 43],
+                  'durationMs': 240000,
+                },
+                'version': 2,
+                'createdAt': '2026-06-03T01:02:03Z',
+                'updatedAt': '2026-06-03T02:03:05Z',
+              }),
+              200,
+            );
+          }
+          return http.Response('', 404);
+        }),
+      ),
+    );
+
+    await provider.loadQueue();
+    provider.setTimelineStartMs(second, 12000);
+    provider.setTimelineStartMs(second, 24000);
+
+    await Future<void>.delayed(Duration.zero);
+    expect(createCount, 1);
+    expect(updateCount, 0);
+
+    createCompleter.complete(http.Response(
+      jsonEncode({
+        'id': 'plan-queue-timing',
+        'schemaVersion': 1,
+        'name': 'Queue timing',
+        'clips': [
+          {
+            'clipId': 'queue-a',
+            'queueItemId': 'queue-a',
+            'trackId': 42,
+            'sourceStartMs': 0,
+            'sourceEndMs': first.durationMs,
+            'timelineStartMs': 0,
+            'gainDb': 0,
+          },
+          {
+            'clipId': 'queue-b',
+            'queueItemId': 'queue-b',
+            'trackId': 43,
+            'sourceStartMs': 0,
+            'sourceEndMs': second.durationMs,
+            'timelineStartMs': 12000,
+            'gainDb': 0,
+          },
+        ],
+        'summary': {
+          'clipCount': 2,
+          'trackIds': [42, 43],
+          'durationMs': 240000,
+        },
+        'version': 1,
+        'createdAt': '2026-06-03T01:02:03Z',
+        'updatedAt': '2026-06-03T02:03:04Z',
+      }),
+      201,
+    ));
+
+    await provider.setTrimRange(
+      second,
+      TrimRange.clamped(
+        trackDurationMs: second.durationMs,
+        startOffsetMs: 8000,
+        endOffsetMs: second.durationMs,
+      ),
+    );
+
+    expect(createCount, 1);
+    expect(updateCount, 1);
+  });
+
+  test(
+      'loadQueue hydrates legacy mix-plan clips without queueItemId by track id',
+      () async {
+    final track =
+        _track(id: '42', queueItemId: 'queue-a', playbackTrackId: '42');
+    final provider = QueueProvider(
+      ApiClient(
+        httpClient: MockClient((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              jsonEncode({
+                'tracks': [track.toJson()],
+                'currentIndex': 0,
+              }),
+              200,
+            );
+          }
+          if (request.method == 'GET' &&
+              request.url.path.endsWith('/mix-plans')) {
+            return http.Response(
+              jsonEncode({
+                'data': [
+                  {
+                    'id': 'plan-legacy',
+                    'schemaVersion': 1,
+                    'name': 'Queue timing',
+                    'clips': [
+                      {
+                        'clipId': 'legacy-clip-a',
+                        'trackId': 42,
+                        'sourceStartMs': 5000,
+                        'sourceEndMs': 90000,
+                        'timelineStartMs': 30000,
+                        'gainDb': 0,
+                      },
+                    ],
+                    'summary': {
+                      'clipCount': 1,
+                      'trackIds': [42],
+                      'durationMs': 85000,
+                    },
+                    'version': 2,
+                    'createdAt': '2026-06-03T01:02:03Z',
+                    'updatedAt': '2026-06-03T02:03:04Z',
+                  },
+                ],
+                'total': 1,
+                'limit': 50,
+                'offset': 0,
+              }),
+              200,
+            );
+          }
+          return http.Response('', 404);
+        }),
+      ),
+    );
+
+    await provider.loadQueue();
+
+    expect(provider.trimRangeFor(track).startOffsetMs, 5000);
+    expect(provider.trimRangeFor(track).endOffsetMs, 90000);
+    expect(provider.timelineClipFor(track, _fallback(track)).timelineStartMs,
+        30000);
   });
 
   test('loading an empty queue prunes stale timing and mix-plan state',

@@ -94,17 +94,20 @@ class MixPlanClip {
     return json;
   }
 
-  factory MixPlanClip.fromJson(Map<String, dynamic> json) => MixPlanClip(
-        clipId: json['clipId'] as String,
-        queueItemId: json['queueItemId'] as String,
-        trackId: json['trackId'].toString(),
-        sourceStartMs: (json['sourceStartMs'] as num).toInt(),
-        sourceEndMs: (json['sourceEndMs'] as num).toInt(),
-        timelineStartMs: (json['timelineStartMs'] as num).toInt(),
-        gainDb: (json['gainDb'] as num?)?.toDouble() ?? 0,
-        fadeInMs: (json['fadeInMs'] as num?)?.toInt(),
-        fadeOutMs: (json['fadeOutMs'] as num?)?.toInt(),
-      );
+  factory MixPlanClip.fromJson(Map<String, dynamic> json) {
+    final clipId = json['clipId'] as String;
+    return MixPlanClip(
+      clipId: clipId,
+      queueItemId: json['queueItemId'] as String? ?? clipId,
+      trackId: json['trackId'].toString(),
+      sourceStartMs: (json['sourceStartMs'] as num).toInt(),
+      sourceEndMs: (json['sourceEndMs'] as num).toInt(),
+      timelineStartMs: (json['timelineStartMs'] as num).toInt(),
+      gainDb: (json['gainDb'] as num?)?.toDouble() ?? 0,
+      fadeInMs: (json['fadeInMs'] as num?)?.toInt(),
+      fadeOutMs: (json['fadeOutMs'] as num?)?.toInt(),
+    );
+  }
 }
 
 class MixPlanSummary {
