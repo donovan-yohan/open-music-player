@@ -209,6 +209,10 @@ class _QueueScreenState extends State<QueueScreen> {
               upcomingTracks: upNext,
               peaksFor: provider.waveformPeaksFor,
               trimRangeFor: provider.trimRangeFor,
+              clipFor: provider.timelineClipFor,
+              onTimelineStartChanged: provider.setTimelineStartMs,
+              onTrimStartChanged: provider.setStartOffsetMs,
+              onTrimEndChanged: provider.setEndOffsetMs,
               onMoveEarlier: (track) => _moveTimelineTrack(
                 provider,
                 upNext,

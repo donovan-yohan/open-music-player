@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 import '../core/discovery/discovery_models.dart';
+import '../models/mix_plan.dart';
 import '../models/queue_state.dart';
+import '../models/timeline_clip.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
 import '../models/waveform.dart';
@@ -14,6 +16,8 @@ class QueueProvider extends ChangeNotifier {
   bool _disposed = false;
 
   Map<String, TrimRange> _trimRanges = {};
+  Map<String, int> _timelineStartOverrides = {};
+  Map<String, MixPlanClip> _mixPlanClips = {};
 
   QueueProvider(this._apiClient);
 
@@ -26,10 +30,54 @@ class QueueProvider extends ChangeNotifier {
   bool get isEmpty => _queue.isEmpty;
 
   Map<String, TrimRange> get trimRanges => Map.unmodifiable(_trimRanges);
+  Map<String, MixPlanClip> get mixPlanClips => Map.unmodifiable(_mixPlanClips);
 
   /// Trim range for a track, defaulting to the full track when untrimmed.
-  TrimRange trimRangeFor(Track track) =>
-      _trimRanges[track.id] ?? TrimRange.full(track.durationMs);
+  TrimRange trimRangeFor(Track track) {
+    final local = _trimRanges[track.id] ?? _trimRanges[track.queueItemId];
+    if (local != null) return local;
+
+    final clip = _mixPlanClipFor(track);
+    if (clip != null) {
+      return TrimRange.clamped(
+        trackDurationMs: track.durationMs,
+        startOffsetMs: clip.sourceStartMs,
+        endOffsetMs: clip.sourceEndMs,
+      );
+    }
+
+    return TrimRange.full(track.durationMs);
+  }
+
+  /// Timeline placement for a track, using the durable mix-plan timing contract
+  /// when one has been loaded and falling back to the caller's synthesized clip.
+  TimelineClip timelineClipFor(Track track, TimelineClip fallback) {
+    final range = trimRangeFor(track);
+    final mixClip = _mixPlanClipFor(track);
+    final localStart = _firstTimelineStart(track);
+    final timelineStartMs =
+        localStart ?? mixClip?.timelineStartMs ?? fallback.timelineStartMs;
+
+    return TimelineClip.clamped(
+      id: fallback.id,
+      trackId: fallback.trackId,
+      sourceDurationMs: fallback.sourceDurationMs,
+      sourceStartMs: range.startOffsetMs,
+      sourceEndMs: range.endOffsetMs,
+      timelineStartMs: timelineStartMs,
+    );
+  }
+
+  /// Load durable #57 mix-plan clip timing into the queue editing surface.
+  /// The UI can still edit optimistically when no saved plan is present.
+  void applyMixPlanClips(Iterable<MixPlanClip> clips) {
+    _mixPlanClips = {};
+    for (final clip in clips) {
+      _storeMixPlanClip(clip);
+    }
+    _pruneTimingState();
+    _notifyListeners();
+  }
 
   /// Deterministic mock waveform peaks for a track until backend peak data is
   /// available.
@@ -43,7 +91,7 @@ class QueueProvider extends ChangeNotifier {
     try {
       _queue = await _apiClient.getQueue();
       if (_disposed) return;
-      _pruneTrimRanges();
+      _pruneTimingState();
     } catch (e) {
       if (_disposed) return;
       _error = e.toString();
@@ -65,7 +113,7 @@ class QueueProvider extends ChangeNotifier {
         trackIds: trackIds,
         position: playNext ? 'next' : 'last',
       );
-      _pruneTrimRanges();
+      _pruneTimingState();
       _notifyListeners();
     } catch (e) {
       _error = e.toString();
@@ -83,7 +131,7 @@ class QueueProvider extends ChangeNotifier {
         candidate: candidate,
         position: playNext ? 'next' : 'last',
       );
-      _pruneTrimRanges();
+      _pruneTimingState();
       _notifyListeners();
     } catch (e) {
       _error = e.toString();
@@ -95,12 +143,19 @@ class QueueProvider extends ChangeNotifier {
   Future<void> removeFromQueue(int position) async {
     final previousQueue = _queue;
     final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
+    final previousTimelineStarts =
+        Map<String, int>.from(_timelineStartOverrides);
+    final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
 
     // Optimistic update
     final newTracks = List<Track>.from(_queue.tracks);
     final removedTrack = newTracks.removeAt(position);
-    _trimRanges = Map<String, TrimRange>.from(_trimRanges)
-      ..remove(removedTrack.id);
+    _trimRanges = Map<String, TrimRange>.from(_trimRanges);
+    _timelineStartOverrides = Map<String, int>.from(_timelineStartOverrides);
+    for (final key in _trackTimingKeys(removedTrack)) {
+      _trimRanges.remove(key);
+      _timelineStartOverrides.remove(key);
+    }
 
     int newCurrentIndex = _queue.currentIndex;
     if (position < _queue.currentIndex) {
@@ -114,6 +169,7 @@ class QueueProvider extends ChangeNotifier {
       repeatMode: _queue.repeatMode,
       shuffled: _queue.shuffled,
     );
+    _pruneTimingState();
     _notifyListeners();
 
     try {
@@ -121,6 +177,8 @@ class QueueProvider extends ChangeNotifier {
     } catch (e) {
       _queue = previousQueue;
       _trimRanges = previousTrimRanges;
+      _timelineStartOverrides = previousTimelineStarts;
+      _mixPlanClips = previousMixPlanClips;
       _error = e.toString();
       _notifyListeners();
     }
@@ -132,7 +190,7 @@ class QueueProvider extends ChangeNotifier {
 
     try {
       _queue = await _apiClient.retryQueueItem(track.queueItemId);
-      _pruneTrimRanges();
+      _pruneTimingState();
       _notifyListeners();
     } catch (e) {
       _error = e.toString();
@@ -181,9 +239,14 @@ class QueueProvider extends ChangeNotifier {
   Future<void> clearQueue() async {
     final previousQueue = _queue;
     final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
+    final previousTimelineStarts =
+        Map<String, int>.from(_timelineStartOverrides);
+    final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
 
     _queue = QueueState.empty();
     _trimRanges = {};
+    _timelineStartOverrides = {};
+    _mixPlanClips = {};
     _notifyListeners();
 
     try {
@@ -191,6 +254,8 @@ class QueueProvider extends ChangeNotifier {
     } catch (e) {
       _queue = previousQueue;
       _trimRanges = previousTrimRanges;
+      _timelineStartOverrides = previousTimelineStarts;
+      _mixPlanClips = previousMixPlanClips;
       _error = e.toString();
       _notifyListeners();
     }
@@ -199,7 +264,7 @@ class QueueProvider extends ChangeNotifier {
   Future<void> shuffleQueue() async {
     try {
       _queue = await _apiClient.shuffleQueue();
-      _pruneTrimRanges();
+      _pruneTimingState();
       _notifyListeners();
     } catch (e) {
       _error = e.toString();
@@ -215,8 +280,36 @@ class QueueProvider extends ChangeNotifier {
   Future<void> setEndOffsetMs(Track track, int ms) =>
       setTrimRange(track, trimRangeFor(track).withEnd(ms));
 
+  /// Move a clip along the timeline without changing source trim.
+  void setTimelineStartMs(Track track, int ms) {
+    final start = ms < 0 ? 0 : ms;
+    _timelineStartOverrides = Map<String, int>.from(_timelineStartOverrides);
+    for (final key in _trackTimingKeys(track)) {
+      _timelineStartOverrides[key] = start;
+    }
+
+    final mixClip = _mixPlanClipFor(track);
+    if (mixClip != null) {
+      _storeMixPlanClip(mixClip.withTimelineStartMs(start));
+    }
+    _notifyListeners();
+  }
+
   Future<void> setTrimRange(Track track, TrimRange range) async {
-    _trimRanges = Map<String, TrimRange>.from(_trimRanges)..[track.id] = range;
+    _trimRanges = Map<String, TrimRange>.from(_trimRanges);
+    for (final key in _trackTimingKeys(track)) {
+      _trimRanges[key] = range;
+    }
+
+    final mixClip = _mixPlanClipFor(track);
+    if (mixClip != null) {
+      _storeMixPlanClip(
+        mixClip.withSourceRange(
+          sourceStartMs: range.startOffsetMs,
+          sourceEndMs: range.endOffsetMs,
+        ),
+      );
+    }
     _notifyListeners();
   }
 
@@ -225,12 +318,57 @@ class QueueProvider extends ChangeNotifier {
     _notifyListeners();
   }
 
-  void _pruneTrimRanges() {
-    final trackIds = _queue.tracks.map((track) => track.id).toSet();
+  void _pruneTimingState() {
+    if (_queue.tracks.isEmpty) return;
+
+    final trackIds = _queue.tracks.expand(_trackTimingKeys).toSet();
     _trimRanges = {
       for (final entry in _trimRanges.entries)
         if (trackIds.contains(entry.key)) entry.key: entry.value,
     };
+    _timelineStartOverrides = {
+      for (final entry in _timelineStartOverrides.entries)
+        if (trackIds.contains(entry.key)) entry.key: entry.value,
+    };
+    final clips = _mixPlanClips.values.toSet();
+    _mixPlanClips = {};
+    for (final clip in clips) {
+      if (trackIds.contains(clip.queueItemId) ||
+          trackIds.contains(clip.trackId)) {
+        _storeMixPlanClip(clip);
+      }
+    }
+  }
+
+  Iterable<String> _trackTimingKeys(Track track) sync* {
+    yield track.id;
+    yield track.queueItemId;
+    final playbackTrackId = track.playbackTrackId;
+    if (playbackTrackId != null && playbackTrackId.isNotEmpty) {
+      yield playbackTrackId;
+    }
+  }
+
+  int? _firstTimelineStart(Track track) {
+    for (final key in _trackTimingKeys(track)) {
+      final value = _timelineStartOverrides[key];
+      if (value != null) return value;
+    }
+    return null;
+  }
+
+  MixPlanClip? _mixPlanClipFor(Track track) {
+    for (final key in _trackTimingKeys(track)) {
+      final clip = _mixPlanClips[key];
+      if (clip != null) return clip;
+    }
+    return null;
+  }
+
+  void _storeMixPlanClip(MixPlanClip clip) {
+    _mixPlanClips[clip.queueItemId] = clip;
+    _mixPlanClips[clip.trackId] = clip;
+    _mixPlanClips[clip.clipId] = clip;
   }
 
   void _notifyListeners() {

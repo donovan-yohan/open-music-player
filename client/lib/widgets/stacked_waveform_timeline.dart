@@ -24,6 +24,10 @@ class StackedWaveformTimeline extends StatefulWidget {
   final List<Track> upcomingTracks;
   final List<double> Function(Track) peaksFor;
   final TrimRange Function(Track) trimRangeFor;
+  final TimelineClip Function(Track, TimelineClip)? clipFor;
+  final void Function(Track, int)? onTimelineStartChanged;
+  final void Function(Track, int)? onTrimStartChanged;
+  final void Function(Track, int)? onTrimEndChanged;
   final ValueChanged<Track>? onMoveEarlier;
   final ValueChanged<Track>? onMoveLater;
 
@@ -34,6 +38,10 @@ class StackedWaveformTimeline extends StatefulWidget {
     required this.upcomingTracks,
     required this.peaksFor,
     required this.trimRangeFor,
+    this.clipFor,
+    this.onTimelineStartChanged,
+    this.onTrimStartChanged,
+    this.onTrimEndChanged,
     this.onMoveEarlier,
     this.onMoveLater,
   });
@@ -125,7 +133,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     var cursor = 0;
     for (final track in ordered) {
       final trim = widget.trimRangeFor(track);
-      final clip = TimelineClip.clamped(
+      final defaultClip = TimelineClip.clamped(
         id: 'clip_${track.id}',
         trackId: track.id,
         sourceDurationMs: track.durationMs,
@@ -133,6 +141,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         sourceEndMs: trim.endOffsetMs,
         timelineStartMs: cursor,
       );
+      final clip = widget.clipFor?.call(track, defaultClip) ?? defaultClip;
       placed[track] = clip;
       // Next clip overlaps the tail by one transition window. A zero-duration
       // clip has timelineEndMs == timelineStartMs, so the naive lower bound
@@ -365,14 +374,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                     top: 8,
                     bottom: 8,
                     width: width,
-                    child: TimelineClipWidget(
-                      track: lane.track,
-                      peaks: widget.peaksFor(lane.track),
-                      trim: widget.trimRangeFor(lane.track),
-                      role: lane.role,
-                      accent: lane.accent,
-                      stateLabel: lane.status,
-                    ),
+                    child: _buildClipSurface(context, lane, viewport),
                   ),
                   if (lane.role == LaneRole.upcoming ||
                       lane.role == LaneRole.collapsed)
@@ -388,6 +390,127 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         ],
       ),
     );
+  }
+
+  Widget _buildClipSurface(
+    BuildContext context,
+    _LaneModel lane,
+    TimelineViewport viewport,
+  ) {
+    final editMode = _mode == _TimelineMode.edit;
+    final trim = TrimRange.clamped(
+      trackDurationMs: lane.clip.sourceDurationMs,
+      startOffsetMs: lane.clip.sourceStartMs,
+      endOffsetMs: lane.clip.sourceEndMs,
+    );
+    final body = TimelineClipWidget(
+      track: lane.track,
+      peaks: widget.peaksFor(lane.track),
+      trim: trim,
+      role: lane.role,
+      accent: lane.accent,
+      stateLabel: lane.status,
+    );
+
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: GestureDetector(
+            key: ValueKey('timeline_clip_body_drag_${lane.track.id}'),
+            behavior: HitTestBehavior.opaque,
+            onHorizontalDragUpdate:
+                editMode && widget.onTimelineStartChanged != null
+                    ? (details) {
+                        final deltaMs = _timelineDeltaMs(
+                          viewport,
+                          details.primaryDelta ?? 0,
+                        );
+                        if (deltaMs == 0) return;
+                        widget.onTimelineStartChanged!(
+                          lane.track,
+                          math.max(0, lane.clip.timelineStartMs + deltaMs),
+                        );
+                      }
+                    : null,
+            child: body,
+          ),
+        ),
+        if (editMode) ...[
+          _trimHandle(
+            key: ValueKey('timeline_trim_start_${lane.track.id}'),
+            alignStart: true,
+            accent: lane.accent,
+            enabled: widget.onTrimStartChanged != null,
+            onDragUpdate: (deltaPx) {
+              final deltaMs = _timelineDeltaMs(viewport, deltaPx);
+              if (deltaMs == 0) return;
+              widget.onTrimStartChanged!(
+                lane.track,
+                lane.clip.sourceStartMs + deltaMs,
+              );
+            },
+          ),
+          _trimHandle(
+            key: ValueKey('timeline_trim_end_${lane.track.id}'),
+            alignStart: false,
+            accent: lane.accent,
+            enabled: widget.onTrimEndChanged != null,
+            onDragUpdate: (deltaPx) {
+              final deltaMs = _timelineDeltaMs(viewport, deltaPx);
+              if (deltaMs == 0) return;
+              widget.onTrimEndChanged!(
+                lane.track,
+                lane.clip.sourceEndMs + deltaMs,
+              );
+            },
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _trimHandle({
+    required Key key,
+    required bool alignStart,
+    required Color accent,
+    required bool enabled,
+    required ValueChanged<double> onDragUpdate,
+  }) {
+    return Positioned(
+      left: alignStart ? 0 : null,
+      right: alignStart ? null : 0,
+      top: 0,
+      bottom: 0,
+      width: 44,
+      child: Semantics(
+        label: alignStart ? 'Trim start handle' : 'Trim end handle',
+        child: GestureDetector(
+          key: key,
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragUpdate: enabled
+              ? (details) => onDragUpdate(details.primaryDelta ?? 0)
+              : null,
+          child: Align(
+            alignment:
+                alignStart ? Alignment.centerLeft : Alignment.centerRight,
+            child: Container(
+              width: 10,
+              margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+              decoration: BoxDecoration(
+                color: accent.withValues(alpha: enabled ? 0.88 : 0.35),
+                borderRadius: BorderRadius.circular(5),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.75)),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  int _timelineDeltaMs(TimelineViewport viewport, double deltaXPx) {
+    if (!deltaXPx.isFinite || deltaXPx == 0) return 0;
+    return ((deltaXPx / viewport.pixelsPerSecond) * 1000).round();
   }
 
   Widget _timelineMoveControls(BuildContext context, Track track) {

@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/models/waveform.dart';
@@ -24,6 +25,10 @@ Future<void> _pump(
   Size size = const Size(390, 844),
   ValueChanged<Track>? onMoveEarlier,
   ValueChanged<Track>? onMoveLater,
+  TimelineClip Function(Track, TimelineClip)? clipFor,
+  void Function(Track, int)? onTimelineStartChanged,
+  void Function(Track, int)? onTrimStartChanged,
+  void Function(Track, int)? onTrimEndChanged,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
@@ -39,6 +44,10 @@ Future<void> _pump(
           upcomingTracks: upcoming,
           peaksFor: (t) => mockWaveformPeaks(t.id),
           trimRangeFor: (t) => TrimRange.full(t.durationMs),
+          clipFor: clipFor,
+          onTimelineStartChanged: onTimelineStartChanged,
+          onTrimStartChanged: onTrimStartChanged,
+          onTrimEndChanged: onTrimEndChanged,
           onMoveEarlier: onMoveEarlier,
           onMoveLater: onMoveLater,
         ),
@@ -447,5 +456,128 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('timeline_move_earlier_t2')));
     await tester.pumpAndSettle();
     expect(movedEarlier, ['t2']);
+  });
+
+  testWidgets('edit-mode clip body drag updates timeline placement, not pan', (
+    tester,
+  ) async {
+    final starts = <int>[];
+
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+      onTimelineStartChanged: (track, ms) {
+        if (track.id == 't1') starts.add(ms);
+      },
+    );
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+
+    final playheadBefore = tester.getRect(
+      find.byKey(const ValueKey('timeline_playhead')),
+    );
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+      const Offset(90, 0),
+    );
+    await tester.pumpAndSettle();
+    final playheadAfter = tester.getRect(
+      find.byKey(const ValueKey('timeline_playhead')),
+    );
+
+    expect(starts, isNotEmpty);
+    expect(starts.last, greaterThan(0));
+    expect(
+      playheadAfter.left,
+      playheadBefore.left,
+      reason: 'edit body drag should not fall through into browse pan',
+    );
+  });
+
+  testWidgets('trim handles beat body drag hit-testing in edit mode', (
+    tester,
+  ) async {
+    final trimStarts = <int>[];
+    final placements = <int>[];
+
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+      onTimelineStartChanged: (track, ms) => placements.add(ms),
+      onTrimStartChanged: (track, ms) {
+        if (track.id == 't1') trimStarts.add(ms);
+      },
+    );
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_trim_start_t1')),
+      const Offset(70, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(trimStarts, isNotEmpty);
+    expect(trimStarts.last, greaterThan(0));
+    expect(
+      placements,
+      isEmpty,
+      reason: 'a trim handle drag must not also move the clip body',
+    );
+  });
+
+  testWidgets('edited placement and trim keep transition display accurate', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    var nextStartMs = 222000;
+    var currentEndMs = current.durationMs;
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next],
+      clipFor: (track, fallback) {
+        if (track.id == 't1') {
+          return fallback.withSourceRange(
+            sourceStartMs: fallback.sourceStartMs,
+            sourceEndMs: currentEndMs,
+          );
+        }
+        if (track.id == 't2') return fallback.withTimelineStartMs(nextStartMs);
+        return fallback;
+      },
+    );
+    expect(find.byKey(const ValueKey('transition_window')), findsOneWidget);
+
+    nextStartMs = 250000;
+    currentEndMs = 200000;
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next],
+      clipFor: (track, fallback) {
+        if (track.id == 't1') {
+          return fallback.withSourceRange(
+            sourceStartMs: fallback.sourceStartMs,
+            sourceEndMs: currentEndMs,
+          );
+        }
+        if (track.id == 't2') return fallback.withTimelineStartMs(nextStartMs);
+        return fallback;
+      },
+    );
+    expect(
+      find.byKey(const ValueKey('transition_window')),
+      findsNothing,
+      reason: 'moving/trimming clips apart should remove stale overlap chrome',
+    );
   });
 }
