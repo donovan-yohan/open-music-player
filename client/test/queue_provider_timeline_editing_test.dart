@@ -301,6 +301,152 @@ void main() {
     });
   });
 
+  test('loadQueue hydrates queue timing from the saved Queue timing mix plan',
+      () async {
+    final track =
+        _track(id: '42', queueItemId: 'queue-a', playbackTrackId: '42');
+    final provider = QueueProvider(
+      ApiClient(
+        httpClient: MockClient((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              jsonEncode({
+                'tracks': [track.toJson()],
+                'currentIndex': 0,
+              }),
+              200,
+            );
+          }
+          if (request.method == 'GET' &&
+              request.url.path.endsWith('/mix-plans')) {
+            return http.Response(
+              jsonEncode({
+                'data': [
+                  {
+                    'id': 'plan-queue-timing',
+                    'schemaVersion': 1,
+                    'name': 'Queue timing',
+                    'clips': [
+                      {
+                        'clipId': 'clip-a',
+                        'queueItemId': 'queue-a',
+                        'trackId': 42,
+                        'sourceStartMs': 12000,
+                        'sourceEndMs': 90000,
+                        'timelineStartMs': 30000,
+                        'gainDb': 0,
+                      },
+                    ],
+                    'summary': {
+                      'clipCount': 1,
+                      'trackIds': [42],
+                      'durationMs': 108000,
+                    },
+                    'version': 2,
+                    'createdAt': '2026-06-03T01:02:03Z',
+                    'updatedAt': '2026-06-03T02:03:04Z',
+                  },
+                ],
+                'total': 1,
+                'limit': 50,
+                'offset': 0,
+              }),
+              200,
+            );
+          }
+          return http.Response('', 404);
+        }),
+      ),
+    );
+
+    await provider.loadQueue();
+
+    expect(provider.trimRangeFor(track).startOffsetMs, 12000);
+    expect(provider.trimRangeFor(track).endOffsetMs, 90000);
+    expect(provider.timelineClipFor(track, _fallback(track)).timelineStartMs,
+        30000);
+  });
+
+  test('trim edits save the current queue timing to the mix-plan API',
+      () async {
+    final first =
+        _track(id: '42', queueItemId: 'queue-a', playbackTrackId: '42');
+    final second =
+        _track(id: '43', queueItemId: 'queue-b', playbackTrackId: '43');
+    Map<String, dynamic>? savedBody;
+    final provider = QueueProvider(
+      ApiClient(
+        httpClient: MockClient((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              jsonEncode({
+                'tracks': [first.toJson(), second.toJson()],
+                'currentIndex': 0,
+              }),
+              200,
+            );
+          }
+          if (request.method == 'GET' &&
+              request.url.path.endsWith('/mix-plans')) {
+            return http.Response(
+              jsonEncode({'data': [], 'total': 0, 'limit': 50, 'offset': 0}),
+              200,
+            );
+          }
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/mix-plans')) {
+            savedBody = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              jsonEncode({
+                'id': 'plan-queue-timing',
+                'schemaVersion': 1,
+                'name': savedBody!['name'],
+                'clips': savedBody!['clips'],
+                'summary': {
+                  'clipCount': 2,
+                  'trackIds': [42, 43],
+                  'durationMs': 240000,
+                },
+                'version': 1,
+                'createdAt': '2026-06-03T01:02:03Z',
+                'updatedAt': '2026-06-03T02:03:04Z',
+              }),
+              201,
+            );
+          }
+          return http.Response('', 404);
+        }),
+      ),
+    );
+
+    await provider.loadQueue();
+    await provider.setStartOffsetMs(second, 10000);
+
+    expect(savedBody, isNotNull);
+    expect(savedBody!['name'], 'Queue timing');
+    expect(savedBody!['schemaVersion'], 1);
+    expect(savedBody!['clips'], [
+      {
+        'clipId': 'queue-a',
+        'queueItemId': 'queue-a',
+        'trackId': 42,
+        'sourceStartMs': 0,
+        'sourceEndMs': first.durationMs,
+        'timelineStartMs': 0,
+        'gainDb': 0.0,
+      },
+      {
+        'clipId': 'queue-b',
+        'queueItemId': 'queue-b',
+        'trackId': 43,
+        'sourceStartMs': 10000,
+        'sourceEndMs': second.durationMs,
+        'timelineStartMs': 0,
+        'gainDb': 0.0,
+      },
+    ]);
+  });
+
   test('loading an empty queue prunes stale timing and mix-plan state',
       () async {
     final track = _track();

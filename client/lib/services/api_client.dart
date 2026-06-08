@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../core/discovery/discovery_models.dart';
 import '../core/storage/secure_storage.dart';
+import '../models/mix_plan.dart';
 import '../models/queue_state.dart';
 
 class ApiClient {
@@ -19,8 +20,8 @@ class ApiClient {
     this.baseUrl = defaultBaseUrl,
     SecureStorage? storage,
     http.Client? httpClient,
-  }) : _storage = storage,
-       _httpClient = httpClient ?? http.Client();
+  })  : _storage = storage,
+        _httpClient = httpClient ?? http.Client();
 
   void setAccessToken(String token) {
     _accessToken = token;
@@ -170,6 +171,69 @@ class ApiClient {
       return QueueState.fromJson(jsonDecode(response.body));
     }
     throw ApiException('Failed to shuffle queue', response.statusCode);
+  }
+
+  Future<List<MixPlan>> listMixPlans({int limit = 50, int offset = 0}) async {
+    final uri = Uri.parse('$baseUrl/mix-plans').replace(
+      queryParameters: {
+        'limit': limit.toString(),
+        'offset': offset.toString(),
+      },
+    );
+    final response = await _httpClient.get(uri, headers: await _headers);
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return (data['data'] as List? ?? const [])
+          .map((plan) => MixPlan.fromJson(plan as Map<String, dynamic>))
+          .toList();
+    }
+    throw ApiException('Failed to list mix plans', response.statusCode);
+  }
+
+  Future<MixPlan> createMixPlan({
+    required String name,
+    required List<MixPlanClip> clips,
+  }) async {
+    final response = await _httpClient.post(
+      Uri.parse('$baseUrl/mix-plans'),
+      headers: await _headers,
+      body: jsonEncode({
+        'schemaVersion': 1,
+        'name': name,
+        'clips': clips.map((clip) => clip.toJson()).toList(),
+      }),
+    );
+
+    if (response.statusCode == 201) {
+      return MixPlan.fromJson(
+          jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    throw ApiException('Failed to create mix plan', response.statusCode);
+  }
+
+  Future<MixPlan> updateMixPlan({
+    required String id,
+    required int version,
+    required String name,
+    required List<MixPlanClip> clips,
+  }) async {
+    final response = await _httpClient.put(
+      Uri.parse('$baseUrl/mix-plans/${Uri.encodeComponent(id)}'),
+      headers: await _headers,
+      body: jsonEncode({
+        'schemaVersion': 1,
+        'name': name,
+        'version': version,
+        'clips': clips.map((clip) => clip.toJson()).toList(),
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      return MixPlan.fromJson(
+          jsonDecode(response.body) as Map<String, dynamic>);
+    }
+    throw ApiException('Failed to update mix plan', response.statusCode);
   }
 
   Future<QueueState> replaceQueue({
