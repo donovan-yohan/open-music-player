@@ -66,6 +66,41 @@ void main() {
     );
   });
 
+  test('drag target follows multi-slot vertical drag distance', () {
+    expect(
+      queueListDragTargetIndex(
+        relativeIndex: 0,
+        itemCount: 4,
+        dragDeltaY: 20,
+      ),
+      0,
+    );
+    expect(
+      queueListDragTargetIndex(
+        relativeIndex: 0,
+        itemCount: 4,
+        dragDeltaY: 140,
+      ),
+      2,
+    );
+    expect(
+      queueListDragTargetIndex(
+        relativeIndex: 3,
+        itemCount: 4,
+        dragDeltaY: -140,
+      ),
+      1,
+    );
+    expect(
+      queueListDragTargetIndex(
+        relativeIndex: 2,
+        itemCount: 4,
+        dragDeltaY: 500,
+      ),
+      3,
+    );
+  });
+
   testWidgets(
     'defaults to 390px list view with a one tap Timeline switch',
     (tester) async {
@@ -91,7 +126,10 @@ void main() {
       expect(find.byKey(const ValueKey('queue_play_t2')), findsOneWidget);
       expect(
         tester.getSemantics(find.byKey(const ValueKey('reorder_handle_t2'))),
-        matchesSemantics(label: 'Reorder Paper Planes', isButton: true),
+        matchesSemantics(
+          label: 'Reorder Paper Planes',
+          hint: 'Drag vertically to move this queued track',
+        ),
       );
 
       await tester.tap(find.text('Timeline'));
@@ -241,7 +279,7 @@ void main() {
 
     await tester.drag(
       find.byKey(const ValueKey('reorder_handle_t2')),
-      const Offset(0, 140),
+      const Offset(0, 80),
     );
     await tester.pumpAndSettle();
 

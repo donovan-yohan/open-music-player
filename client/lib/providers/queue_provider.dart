@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import '../core/discovery/discovery_models.dart';
 import '../models/mix_plan.dart';
@@ -303,7 +305,7 @@ class QueueProvider extends ChangeNotifier {
       _storeMixPlanClip(mixClip.withTimelineStartMs(start));
     }
     _notifyListeners();
-    _enqueueQueueTimingMixPlanSave();
+    unawaited(_enqueueQueueTimingMixPlanSave());
   }
 
   Future<void> setTrimRange(Track track, TrimRange range) async {
@@ -432,10 +434,15 @@ class QueueProvider extends ChangeNotifier {
       if (trackId == null) continue;
 
       final existing = _mixPlanClipFor(track);
+      final existingClipId = existing != null &&
+              existing.hasExplicitQueueItemId &&
+              existing.queueItemId == track.queueItemId
+          ? existing.clipId
+          : track.queueItemId;
       final range = trimRangeFor(track);
       clips.add(
         MixPlanClip(
-          clipId: existing?.clipId ?? track.queueItemId,
+          clipId: existingClipId,
           queueItemId: track.queueItemId,
           trackId: trackId,
           sourceStartMs: range.startOffsetMs,
@@ -476,8 +483,6 @@ class QueueProvider extends ChangeNotifier {
         .map((track) => track.queueItemId)
         .where((id) => id.isNotEmpty)
         .toSet();
-    final playbackTrackIds =
-        _queue.tracks.map(_mixPlanTrackId).whereType<String>().toSet();
     _trimRanges = {
       for (final entry in _trimRanges.entries)
         if (localTimingKeys.contains(entry.key)) entry.key: entry.value,
@@ -488,10 +493,15 @@ class QueueProvider extends ChangeNotifier {
     };
     final clips = _mixPlanClips.values.toSet();
     _mixPlanClips = {};
+    Set<String>? playbackTrackIds;
     for (final clip in clips) {
       final hasQueueItemIdentity = queueItemIds.contains(clip.queueItemId);
-      final hasLegacyTrackIdentity = clip.queueItemId == clip.clipId &&
-          playbackTrackIds.contains(clip.trackId);
+      final hasLegacyTrackIdentity = !clip.hasExplicitQueueItemId &&
+          (playbackTrackIds ??= _queue.tracks
+                  .map(_mixPlanTrackId)
+                  .whereType<String>()
+                  .toSet())
+              .contains(clip.trackId);
       if (hasQueueItemIdentity || hasLegacyTrackIdentity) {
         _storeMixPlanClip(clip);
       }
@@ -548,8 +558,12 @@ class QueueProvider extends ChangeNotifier {
 
   void _storeMixPlanClip(MixPlanClip clip) {
     _mixPlanClips[clip.queueItemId] = clip;
-    _mixPlanClips[clip.trackId] = clip;
-    _mixPlanClips[clip.clipId] = clip;
+    if (!clip.hasExplicitQueueItemId) {
+      _mixPlanClips[clip.trackId] = clip;
+    }
+    if (clip.clipId != clip.queueItemId) {
+      _mixPlanClips[clip.clipId] = clip;
+    }
   }
 
   void _notifyListeners() {

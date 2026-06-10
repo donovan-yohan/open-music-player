@@ -294,7 +294,7 @@ void main() {
       expect(provider.mixPlanClips.containsKey('queue-a'), isFalse);
       expect(provider.mixPlanClips.containsKey('clip-a'), isFalse);
       expect(provider.mixPlanClips['queue-b']?.queueItemId, 'queue-b');
-      expect(provider.mixPlanClips['7']?.queueItemId, 'queue-b');
+      expect(provider.mixPlanClips.containsKey('7'), isFalse);
       expect(
         provider.timelineClipFor(second, _fallback(second)).timelineStartMs,
         2000,
@@ -365,6 +365,231 @@ void main() {
     expect(provider.trimRangeFor(track).startOffsetMs, 12000);
     expect(provider.trimRangeFor(track).endOffsetMs, 90000);
     expect(provider.timelineClipFor(track, _fallback(track)).timelineStartMs,
+        30000);
+  });
+
+  test(
+      'loadQueue does not hydrate stale queue-item-aware clips through shared track id',
+      () async {
+    final fresh =
+        _track(id: '42', queueItemId: 'queue-new', playbackTrackId: '42');
+    final provider = QueueProvider(
+      ApiClient(
+        httpClient: MockClient((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              jsonEncode({
+                'tracks': [fresh.toJson()],
+                'currentIndex': 0,
+              }),
+              200,
+            );
+          }
+          if (request.method == 'GET' &&
+              request.url.path.endsWith('/mix-plans')) {
+            return http.Response(
+              jsonEncode({
+                'data': [
+                  {
+                    'id': 'plan-queue-timing',
+                    'schemaVersion': 1,
+                    'name': 'Queue timing',
+                    'clips': [
+                      {
+                        'clipId': 'queue-old',
+                        'queueItemId': 'queue-old',
+                        'trackId': 42,
+                        'sourceStartMs': 12000,
+                        'sourceEndMs': 90000,
+                        'timelineStartMs': 30000,
+                        'gainDb': 0,
+                      },
+                    ],
+                    'summary': {
+                      'clipCount': 1,
+                      'trackIds': [42],
+                      'durationMs': 78000,
+                    },
+                    'version': 2,
+                    'createdAt': '2026-06-03T01:02:03Z',
+                    'updatedAt': '2026-06-03T02:03:04Z',
+                  },
+                ],
+                'total': 1,
+                'limit': 50,
+                'offset': 0,
+              }),
+              200,
+            );
+          }
+          return http.Response('', 404);
+        }),
+      ),
+    );
+
+    await provider.loadQueue();
+
+    expect(provider.trimRangeFor(fresh).isFullTrack, isTrue);
+    expect(
+        provider.timelineClipFor(fresh, _fallback(fresh)).timelineStartMs, 0);
+    expect(provider.mixPlanClips, isEmpty);
+  });
+
+  test('legacy fallback save writes unique queue-item clip ids for duplicates',
+      () async {
+    final first =
+        _track(id: '42', queueItemId: 'queue-a', playbackTrackId: '42');
+    final second =
+        _track(id: '42', queueItemId: 'queue-b', playbackTrackId: '42');
+    Map<String, dynamic>? savedBody;
+    final provider = QueueProvider(
+      ApiClient(
+        httpClient: MockClient((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              jsonEncode({
+                'tracks': [first.toJson(), second.toJson()],
+                'currentIndex': 0,
+              }),
+              200,
+            );
+          }
+          if (request.method == 'GET' &&
+              request.url.path.endsWith('/mix-plans')) {
+            return http.Response(
+              jsonEncode({
+                'data': [
+                  {
+                    'id': 'plan-queue-timing',
+                    'schemaVersion': 1,
+                    'name': 'Queue timing',
+                    'clips': [
+                      {
+                        'clipId': 'legacy-clip-42',
+                        'queueItemId': '',
+                        'trackId': 42,
+                        'sourceStartMs': 12000,
+                        'sourceEndMs': 90000,
+                        'timelineStartMs': 30000,
+                        'gainDb': 0,
+                      },
+                    ],
+                    'summary': {
+                      'clipCount': 1,
+                      'trackIds': [42],
+                      'durationMs': 78000,
+                    },
+                    'version': 2,
+                    'createdAt': '2026-06-03T01:02:03Z',
+                    'updatedAt': '2026-06-03T02:03:04Z',
+                  },
+                ],
+                'total': 1,
+                'limit': 50,
+                'offset': 0,
+              }),
+              200,
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.endsWith('/mix-plans/plan-queue-timing')) {
+            savedBody = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              jsonEncode({
+                'id': 'plan-queue-timing',
+                'schemaVersion': 1,
+                'name': savedBody!['name'],
+                'clips': savedBody!['clips'],
+                'summary': {
+                  'clipCount': 2,
+                  'trackIds': [42],
+                  'durationMs': 78000,
+                },
+                'version': 3,
+                'createdAt': '2026-06-03T01:02:03Z',
+                'updatedAt': '2026-06-03T02:03:05Z',
+              }),
+              200,
+            );
+          }
+          return http.Response('', 404);
+        }),
+      ),
+    );
+
+    await provider.loadQueue();
+    await provider.setStartOffsetMs(second, 10000);
+
+    final clips = savedBody!['clips'] as List<dynamic>;
+    expect(
+        clips.map((clip) => clip['clipId']).toList(), ['queue-a', 'queue-b']);
+    expect(clips.map((clip) => clip['queueItemId']).toList(),
+        ['queue-a', 'queue-b']);
+  });
+
+  test('loadQueue keeps legacy clips without queueItemId as track-id fallback',
+      () async {
+    final fresh =
+        _track(id: '42', queueItemId: 'queue-new', playbackTrackId: '42');
+    final provider = QueueProvider(
+      ApiClient(
+        httpClient: MockClient((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              jsonEncode({
+                'tracks': [fresh.toJson()],
+                'currentIndex': 0,
+              }),
+              200,
+            );
+          }
+          if (request.method == 'GET' &&
+              request.url.path.endsWith('/mix-plans')) {
+            return http.Response(
+              jsonEncode({
+                'data': [
+                  {
+                    'id': 'plan-queue-timing',
+                    'schemaVersion': 1,
+                    'name': 'Queue timing',
+                    'clips': [
+                      {
+                        'clipId': 'legacy-clip-42',
+                        'queueItemId': '',
+                        'trackId': 42,
+                        'sourceStartMs': 12000,
+                        'sourceEndMs': 90000,
+                        'timelineStartMs': 30000,
+                        'gainDb': 0,
+                      },
+                    ],
+                    'summary': {
+                      'clipCount': 1,
+                      'trackIds': [42],
+                      'durationMs': 78000,
+                    },
+                    'version': 2,
+                    'createdAt': '2026-06-03T01:02:03Z',
+                    'updatedAt': '2026-06-03T02:03:04Z',
+                  },
+                ],
+                'total': 1,
+                'limit': 50,
+                'offset': 0,
+              }),
+              200,
+            );
+          }
+          return http.Response('', 404);
+        }),
+      ),
+    );
+
+    await provider.loadQueue();
+
+    expect(provider.trimRangeFor(fresh).startOffsetMs, 12000);
+    expect(provider.trimRangeFor(fresh).endOffsetMs, 90000);
+    expect(provider.timelineClipFor(fresh, _fallback(fresh)).timelineStartMs,
         30000);
   });
 
@@ -595,6 +820,7 @@ void main() {
                     'clips': [
                       {
                         'clipId': 'legacy-clip-a',
+                        'queueItemId': '',
                         'trackId': 42,
                         'sourceStartMs': 5000,
                         'sourceEndMs': 90000,

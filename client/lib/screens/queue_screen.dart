@@ -8,6 +8,8 @@ import '../widgets/stacked_waveform_timeline.dart';
 
 enum _QueueViewMode { list, timeline }
 
+const double _queueReorderItemExtentPx = 64.0;
+
 (int, int) queueListReorderIndices({
   required int relativeOldIndex,
   required int relativeNewIndex,
@@ -26,12 +28,12 @@ int queueListDragTargetIndex({
   required int itemCount,
   required double dragDeltaY,
 }) {
-  const dragThresholdPx = 48.0;
+  const dragThresholdPx = 24.0;
   if (dragDeltaY.abs() < dragThresholdPx || itemCount <= 1) {
     return relativeIndex;
   }
 
-  final delta = dragDeltaY > 0 ? 1 : -1;
+  final delta = (dragDeltaY / _queueReorderItemExtentPx).round();
   return (relativeIndex + delta).clamp(0, itemCount - 1);
 }
 
@@ -404,7 +406,7 @@ class _QueueScreenState extends State<QueueScreen> {
   /// reorder distinct from the waveform trim surface.
   Widget _buildReorderHandle(
     Track track,
-    int index, {
+    int _, {
     required ValueChanged<double> onDragReorder,
   }) {
     return Semantics(
@@ -412,7 +414,7 @@ class _QueueScreenState extends State<QueueScreen> {
       container: true,
       explicitChildNodes: true,
       label: 'Reorder ${track.title}',
-      button: true,
+      hint: 'Drag vertically to move this queued track',
       child: _QueueReorderHandle(onDragReorder: onDragReorder),
     );
   }
@@ -480,7 +482,7 @@ class _QueueReorderHandleState extends State<_QueueReorderHandle> {
       onVerticalDragCancel: () => _dragDeltaY = 0,
       child: SizedBox(
         width: 44,
-        height: 64,
+        height: _queueReorderItemExtentPx,
         child: Center(
           child: Icon(Icons.drag_indicator, color: Colors.grey[500]),
         ),
