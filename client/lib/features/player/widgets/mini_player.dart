@@ -18,15 +18,18 @@ class MiniPlayer extends StatelessWidget {
         final item = playback.currentItem!;
         final progress = playback.duration.inMilliseconds > 0
             ? playback.position.inMilliseconds /
-                playback.duration.inMilliseconds
+                  playback.duration.inMilliseconds
             : 0.0;
 
         return GestureDetector(
           onTap: () => context.push('/player'),
           child: Container(
+            key: const ValueKey('spotify_like_mini_player'),
             height: 64,
+            margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
             decoration: BoxDecoration(
               color: AppTheme.darkCard,
+              borderRadius: BorderRadius.circular(12),
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withValues(alpha: 0.3),
@@ -35,6 +38,7 @@ class MiniPlayer extends StatelessWidget {
                 ),
               ],
             ),
+            clipBehavior: Clip.antiAlias,
             child: Column(
               children: [
                 LinearProgressIndicator(

@@ -142,6 +142,27 @@ void main() {
     expect(find.byKey(const ValueKey('left_history_teaser')), findsNothing);
   });
 
+  testWidgets('renders every upcoming track as a vertically scrollable lane', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 214),
+      upcoming: [
+        _track('t2', 'Paper Planes', 188),
+        _track('t3', 'Glass', 241),
+        _track('t4', 'Late Static', 199),
+        _track('t5', 'Soft Exit', 220),
+      ],
+    );
+
+    for (final id in ['t1', 't2', 't3', 't4', 't5']) {
+      expect(find.byKey(ValueKey('timeline_lane_header_$id')), findsOneWidget);
+      expect(find.byKey(ValueKey('timeline_clip_$id')), findsOneWidget);
+    }
+  });
+
   testWidgets('renders left history teaser when a previous clip exists', (
     tester,
   ) async {
@@ -249,6 +270,42 @@ void main() {
     expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
   });
 
+  testWidgets('floating options panel controls snap marker mode and zoom', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 214),
+      upcoming: [_track('t2', 'Paper Planes', 188)],
+    );
+
+    expect(find.byKey(const ValueKey('timeline_options_fab')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('timeline_options_fab')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('timeline_options_panel')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('timeline_snap_1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_snap_4')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_snap_16')), findsOneWidget);
+    expect(find.text('4 beats'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('timeline_snap_16')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('16 beats'), findsWidgets);
+
+    await tester.tap(find.byKey(const ValueKey('timeline_options_zoom_in')));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('timeline_options_zoom_label')),
+      findsOneWidget,
+    );
+    expect(find.text('1.5x'), findsWidgets);
+  });
+
   testWidgets('browse drag pans the zoomed timeline viewport', (tester) async {
     await _pump(
       tester,
@@ -302,12 +359,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await _pump(
-      tester,
-      previous: first,
-      current: second,
-      upcoming: [third],
-    );
+    await _pump(tester, previous: first, current: second, upcoming: [third]);
 
     final currentRect = tester.getRect(
       find.byKey(const ValueKey('timeline_clip_t2')),
@@ -344,12 +396,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await _pump(
-      tester,
-      previous: previous,
-      current: current,
-      upcoming: [next],
-    );
+    await _pump(tester, previous: previous, current: current, upcoming: [next]);
 
     final currentRect = tester.getRect(
       find.byKey(const ValueKey('timeline_clip_t1')),
@@ -483,6 +530,20 @@ void main() {
       const Offset(90, 0),
     );
     await tester.pumpAndSettle();
+
+    expect(
+      starts,
+      isEmpty,
+      reason: 'clip placement drag must be armed by a tap-hold first',
+    );
+
+    final clipBody = find.byKey(const ValueKey('timeline_clip_body_drag_t1'));
+    final gesture = await tester.startGesture(tester.getCenter(clipBody));
+    await tester.pump(const Duration(milliseconds: 600));
+    await gesture.moveBy(const Offset(90, 0));
+    await tester.pumpAndSettle();
+    await gesture.up();
+    await tester.pumpAndSettle();
     final playheadAfter = tester.getRect(
       find.byKey(const ValueKey('timeline_playhead')),
     );
@@ -550,11 +611,12 @@ void main() {
     await tester.pumpAndSettle();
 
     final clip = tester.getRect(find.byKey(const ValueKey('timeline_clip_t1')));
-    await tester.dragFrom(
-      Offset(clip.left + 20, clip.center.dy),
-      const Offset(80, 0),
-    );
+    final gesture =
+        await tester.startGesture(Offset(clip.left + 20, clip.center.dy));
+    await tester.pump(const Duration(milliseconds: 600));
+    await gesture.moveBy(const Offset(80, 0));
     await tester.pumpAndSettle();
+    await gesture.up();
 
     expect(
       starts,
