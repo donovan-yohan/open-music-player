@@ -287,11 +287,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             : playheadMs) -
         playheadMs;
 
-    return Listener(
+    return GestureDetector(
       key: const ValueKey('timeline_pan_surface'),
       behavior: HitTestBehavior.opaque,
-      onPointerMove: _mode == _TimelineMode.browse
-          ? (details) => _panViewport(viewport, -details.delta.dx)
+      onHorizontalDragUpdate: _mode == _TimelineMode.browse
+          ? (details) => _panViewport(viewport, -(details.primaryDelta ?? 0))
           : null,
       child: Stack(
         children: [
@@ -778,11 +778,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       builder: (context) => StatefulBuilder(
         builder: (context, setSheetState) {
           void updateSnap(SnapMarkerMode mode) {
+            if (!mounted) return;
             setState(() => _snapMode = mode);
             setSheetState(() {});
           }
 
           void updateZoom(int index) {
+            if (!mounted) return;
             _setZoomIndex(index);
             setSheetState(() {});
           }
