@@ -583,7 +583,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   int _snapTimelineMs(int ms) {
     final snapMs = _snapMode.snapMs;
     if (snapMs <= 1) return ms;
-    return ((ms / snapMs).round() * snapMs).clamp(0, 1 << 31).toInt();
+    return ((ms / snapMs).round() * snapMs).clamp(0, 2147483647).toInt();
   }
 
   Widget _timelineMoveControls(BuildContext context, Track track) {
