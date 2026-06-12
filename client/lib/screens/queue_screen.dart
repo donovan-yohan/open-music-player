@@ -8,6 +8,8 @@ import '../widgets/stacked_waveform_timeline.dart';
 
 enum _QueueViewMode { list, timeline }
 
+const double _queueReorderItemExtentPx = 64.0;
+
 (int, int) queueListReorderIndices({
   required int relativeOldIndex,
   required int relativeNewIndex,
@@ -19,6 +21,20 @@ enum _QueueViewMode { list, timeline }
     firstMovableIndex + relativeOldIndex,
     firstMovableIndex + relativeNewIndex
   );
+}
+
+int queueListDragTargetIndex({
+  required int relativeIndex,
+  required int itemCount,
+  required double dragDeltaY,
+}) {
+  const dragThresholdPx = 24.0;
+  if (dragDeltaY.abs() < dragThresholdPx || itemCount <= 1) {
+    return relativeIndex;
+  }
+
+  final delta = (dragDeltaY / _queueReorderItemExtentPx).round();
+  return (relativeIndex + delta).clamp(0, itemCount - 1);
 }
 
 class QueueScreen extends StatefulWidget {
@@ -264,18 +280,8 @@ class _QueueScreenState extends State<QueueScreen> {
         ],
         if (upNext.isNotEmpty) ...[
           _buildSectionHeader(context, hasActiveTrack ? 'Up Next' : 'Queue'),
-          SliverReorderableList(
+          SliverList.builder(
             itemCount: upNext.length,
-            onReorderItem: (oldIndex, newIndex) {
-              final (absoluteOldIndex, absoluteNewIndex) =
-                  queueListReorderIndices(
-                relativeOldIndex: oldIndex,
-                relativeNewIndex: newIndex,
-                currentIndex: currentIndex,
-                hasActiveTrack: hasActiveTrack,
-              );
-              provider.reorderQueue(absoluteOldIndex, absoluteNewIndex);
-            },
             itemBuilder: (context, index) {
               final track = upNext[index];
               final absoluteIndex =
@@ -284,7 +290,26 @@ class _QueueScreenState extends State<QueueScreen> {
                 key: ValueKey(track.id),
                 track: track,
                 isPlaying: false,
-                reorderHandle: _buildReorderHandle(track, index),
+                reorderHandle: _buildReorderHandle(
+                  track,
+                  index,
+                  onDragReorder: (dragDeltaY) {
+                    final relativeNewIndex = queueListDragTargetIndex(
+                      relativeIndex: index,
+                      itemCount: upNext.length,
+                      dragDeltaY: dragDeltaY,
+                    );
+                    if (relativeNewIndex == index) return;
+                    final (absoluteOldIndex, absoluteNewIndex) =
+                        queueListReorderIndices(
+                      relativeOldIndex: index,
+                      relativeNewIndex: relativeNewIndex,
+                      currentIndex: currentIndex,
+                      hasActiveTrack: hasActiveTrack,
+                    );
+                    provider.reorderQueue(absoluteOldIndex, absoluteNewIndex);
+                  },
+                ),
                 showTrimControls: true,
                 trimRange: provider.trimRangeFor(track),
                 waveformPeaks: provider.waveformPeaksFor(track),
@@ -379,23 +404,18 @@ class _QueueScreenState extends State<QueueScreen> {
 
   /// Left-edge vertical grip. Only this widget starts a reorder drag, keeping
   /// reorder distinct from the waveform trim surface.
-  Widget _buildReorderHandle(Track track, int index) {
-    return ReorderableDragStartListener(
-      index: index,
-      child: Semantics(
-        key: ValueKey('reorder_handle_${track.id}'),
-        container: true,
-        explicitChildNodes: true,
-        label: 'Reorder ${track.title}',
-        button: true,
-        child: SizedBox(
-          width: 44,
-          height: 64,
-          child: Center(
-            child: Icon(Icons.drag_indicator, color: Colors.grey[500]),
-          ),
-        ),
-      ),
+  Widget _buildReorderHandle(
+    Track track,
+    int _, {
+    required ValueChanged<double> onDragReorder,
+  }) {
+    return Semantics(
+      key: ValueKey('reorder_handle_${track.id}'),
+      container: true,
+      explicitChildNodes: true,
+      label: 'Reorder ${track.title}',
+      hint: 'Drag vertically to move this queued track',
+      child: _QueueReorderHandle(onDragReorder: onDragReorder),
     );
   }
 
@@ -430,6 +450,42 @@ class _QueueScreenState extends State<QueueScreen> {
             child: const Text('Clear'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _QueueReorderHandle extends StatefulWidget {
+  final ValueChanged<double> onDragReorder;
+
+  const _QueueReorderHandle({required this.onDragReorder});
+
+  @override
+  State<_QueueReorderHandle> createState() => _QueueReorderHandleState();
+}
+
+class _QueueReorderHandleState extends State<_QueueReorderHandle> {
+  double _dragDeltaY = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragStart: (_) => _dragDeltaY = 0,
+      onVerticalDragUpdate: (details) {
+        _dragDeltaY += details.delta.dy;
+      },
+      onVerticalDragEnd: (_) {
+        widget.onDragReorder(_dragDeltaY);
+        _dragDeltaY = 0;
+      },
+      onVerticalDragCancel: () => _dragDeltaY = 0,
+      child: SizedBox(
+        width: 44,
+        height: _queueReorderItemExtentPx,
+        child: Center(
+          child: Icon(Icons.drag_indicator, color: Colors.grey[500]),
+        ),
       ),
     );
   }

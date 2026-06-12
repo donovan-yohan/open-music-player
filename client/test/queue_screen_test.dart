@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
@@ -65,6 +66,41 @@ void main() {
     );
   });
 
+  test('drag target follows multi-slot vertical drag distance', () {
+    expect(
+      queueListDragTargetIndex(
+        relativeIndex: 0,
+        itemCount: 4,
+        dragDeltaY: 20,
+      ),
+      0,
+    );
+    expect(
+      queueListDragTargetIndex(
+        relativeIndex: 0,
+        itemCount: 4,
+        dragDeltaY: 140,
+      ),
+      2,
+    );
+    expect(
+      queueListDragTargetIndex(
+        relativeIndex: 3,
+        itemCount: 4,
+        dragDeltaY: -140,
+      ),
+      1,
+    );
+    expect(
+      queueListDragTargetIndex(
+        relativeIndex: 2,
+        itemCount: 4,
+        dragDeltaY: 500,
+      ),
+      3,
+    );
+  });
+
   testWidgets(
     'defaults to 390px list view with a one tap Timeline switch',
     (tester) async {
@@ -90,7 +126,10 @@ void main() {
       expect(find.byKey(const ValueKey('queue_play_t2')), findsOneWidget);
       expect(
         tester.getSemantics(find.byKey(const ValueKey('reorder_handle_t2'))),
-        matchesSemantics(label: 'Reorder Paper Planes', isButton: true),
+        matchesSemantics(
+          label: 'Reorder Paper Planes',
+          hint: 'Drag vertically to move this queued track',
+        ),
       );
 
       await tester.tap(find.text('Timeline'));
@@ -224,6 +263,24 @@ void main() {
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('timeline_move_later_t2')));
+    await tester.pumpAndSettle();
+
+    expect(apiClient.reorders, [const (1, 2)]);
+  });
+
+  testWidgets('touch-dragging the list reorder handle reorders Up Next',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpQueueScreen(tester);
+
+    await tester.drag(
+      find.byKey(const ValueKey('reorder_handle_t2')),
+      const Offset(0, 80),
+    );
     await tester.pumpAndSettle();
 
     expect(apiClient.reorders, [const (1, 2)]);
@@ -474,4 +531,48 @@ class _FakeQueueApiClient extends ApiClient {
 
   @override
   Future<QueueState> shuffleQueue() async => _state;
+
+  @override
+  Future<List<MixPlan>> listMixPlans({int limit = 50, int offset = 0}) async =>
+      const [];
+
+  @override
+  Future<MixPlan> createMixPlan({
+    required String name,
+    required List<MixPlanClip> clips,
+  }) async =>
+      _fakeMixPlan(name: name, clips: clips, version: 1);
+
+  @override
+  Future<MixPlan> updateMixPlan({
+    required String id,
+    required int version,
+    required String name,
+    required List<MixPlanClip> clips,
+  }) async =>
+      _fakeMixPlan(id: id, name: name, clips: clips, version: version + 1);
+
+  MixPlan _fakeMixPlan({
+    String id = 'queue-timing-plan',
+    required String name,
+    required List<MixPlanClip> clips,
+    required int version,
+  }) =>
+      MixPlan(
+        id: id,
+        schemaVersion: 1,
+        name: name,
+        clips: clips,
+        summary: MixPlanSummary(
+          clipCount: clips.length,
+          trackIds: clips.map((clip) => clip.trackId).toList(),
+          durationMs: clips.fold<int>(
+            0,
+            (max, clip) => clip.timelineEndMs > max ? clip.timelineEndMs : max,
+          ),
+        ),
+        version: version,
+        createdAt: DateTime(2026),
+        updatedAt: DateTime(2026),
+      );
 }

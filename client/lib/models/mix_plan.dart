@@ -16,6 +16,7 @@ int _parsePositiveTrackId(String value) {
 class MixPlanClip {
   final String clipId;
   final String queueItemId;
+  final bool hasExplicitQueueItemId;
   final String trackId;
   final int sourceStartMs;
   final int sourceEndMs;
@@ -27,6 +28,7 @@ class MixPlanClip {
   MixPlanClip({
     required this.clipId,
     required this.queueItemId,
+    this.hasExplicitQueueItemId = true,
     required this.trackId,
     required this.sourceStartMs,
     required this.sourceEndMs,
@@ -50,6 +52,7 @@ class MixPlanClip {
   MixPlanClip withTimelineStartMs(int ms) => MixPlanClip(
         clipId: clipId,
         queueItemId: queueItemId,
+        hasExplicitQueueItemId: hasExplicitQueueItemId,
         trackId: trackId,
         sourceStartMs: sourceStartMs,
         sourceEndMs: sourceEndMs,
@@ -66,6 +69,7 @@ class MixPlanClip {
       MixPlanClip(
         clipId: clipId,
         queueItemId: queueItemId,
+        hasExplicitQueueItemId: hasExplicitQueueItemId,
         trackId: trackId,
         sourceStartMs: sourceStartMs,
         sourceEndMs: sourceEndMs,
@@ -94,17 +98,23 @@ class MixPlanClip {
     return json;
   }
 
-  factory MixPlanClip.fromJson(Map<String, dynamic> json) => MixPlanClip(
-        clipId: json['clipId'] as String,
-        queueItemId: json['queueItemId'] as String,
-        trackId: json['trackId'].toString(),
-        sourceStartMs: (json['sourceStartMs'] as num).toInt(),
-        sourceEndMs: (json['sourceEndMs'] as num).toInt(),
-        timelineStartMs: (json['timelineStartMs'] as num).toInt(),
-        gainDb: (json['gainDb'] as num?)?.toDouble() ?? 0,
-        fadeInMs: (json['fadeInMs'] as num?)?.toInt(),
-        fadeOutMs: (json['fadeOutMs'] as num?)?.toInt(),
-      );
+  factory MixPlanClip.fromJson(Map<String, dynamic> json) {
+    final clipId = json['clipId'] as String;
+    final rawQueueItemId = (json['queueItemId'] as String?)?.trim();
+    final hasExplicitQueueItemId = rawQueueItemId?.isNotEmpty ?? false;
+    return MixPlanClip(
+      clipId: clipId,
+      queueItemId: hasExplicitQueueItemId ? rawQueueItemId! : clipId,
+      hasExplicitQueueItemId: hasExplicitQueueItemId,
+      trackId: json['trackId'].toString(),
+      sourceStartMs: (json['sourceStartMs'] as num).toInt(),
+      sourceEndMs: (json['sourceEndMs'] as num).toInt(),
+      timelineStartMs: (json['timelineStartMs'] as num).toInt(),
+      gainDb: (json['gainDb'] as num?)?.toDouble() ?? 0,
+      fadeInMs: (json['fadeInMs'] as num?)?.toInt(),
+      fadeOutMs: (json['fadeOutMs'] as num?)?.toInt(),
+    );
+  }
 }
 
 class MixPlanSummary {

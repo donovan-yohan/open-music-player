@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import '../core/discovery/discovery_models.dart';
 import '../models/mix_plan.dart';
@@ -9,11 +11,19 @@ import '../models/waveform.dart';
 import '../services/api_client.dart';
 
 class QueueProvider extends ChangeNotifier {
+  static const String queueTimingMixPlanName = 'Queue timing';
+
   final ApiClient _apiClient;
   QueueState _queue = QueueState.empty();
   bool _isLoading = false;
   String? _error;
   bool _disposed = false;
+
+  String? _activeMixPlanId;
+  int? _activeMixPlanVersion;
+  String _activeMixPlanName = queueTimingMixPlanName;
+  Future<void>? _mixPlanSaveFuture;
+  bool _mixPlanSaveQueued = false;
 
   Map<String, TrimRange> _trimRanges = {};
   Map<String, int> _timelineStartOverrides = {};
@@ -92,6 +102,8 @@ class QueueProvider extends ChangeNotifier {
       _queue = await _apiClient.getQueue();
       if (_disposed) return;
       _pruneTimingState();
+      await _loadQueueTimingMixPlan();
+      if (_disposed) return;
     } catch (e) {
       if (_disposed) return;
       _error = e.toString();
@@ -293,6 +305,7 @@ class QueueProvider extends ChangeNotifier {
       _storeMixPlanClip(mixClip.withTimelineStartMs(start));
     }
     _notifyListeners();
+    unawaited(_enqueueQueueTimingMixPlanSave());
   }
 
   Future<void> setTrimRange(Track track, TrimRange range) async {
@@ -311,11 +324,148 @@ class QueueProvider extends ChangeNotifier {
       );
     }
     _notifyListeners();
+    await _enqueueQueueTimingMixPlanSave();
   }
 
   void clearError() {
     _error = null;
     _notifyListeners();
+  }
+
+  Future<void> _loadQueueTimingMixPlan() async {
+    if (_queue.tracks.isEmpty) {
+      _activeMixPlanId = null;
+      _activeMixPlanVersion = null;
+      _activeMixPlanName = queueTimingMixPlanName;
+      return;
+    }
+
+    try {
+      final plans = await _apiClient.listMixPlans();
+      if (_disposed) return;
+      final plan = plans.cast<MixPlan?>().firstWhere(
+            (plan) => plan?.name == queueTimingMixPlanName,
+            orElse: () => null,
+          );
+      if (plan == null) {
+        _activeMixPlanId = null;
+        _activeMixPlanVersion = null;
+        _activeMixPlanName = queueTimingMixPlanName;
+        return;
+      }
+
+      _activeMixPlanId = plan.id;
+      _activeMixPlanVersion = plan.version;
+      _activeMixPlanName = plan.name;
+      _mixPlanClips = {};
+      for (final clip in plan.clips) {
+        _storeMixPlanClip(clip);
+      }
+      _pruneTimingState(clearWhenEmpty: false);
+    } catch (_) {
+      // Mix-plan persistence is progressive enhancement for queue editing. Queue
+      // loading should not fail just because an older backend/proxy lacks the
+      // durable timing endpoint.
+    }
+  }
+
+  Future<void> _enqueueQueueTimingMixPlanSave() {
+    final activeSave = _mixPlanSaveFuture;
+    if (activeSave != null) {
+      _mixPlanSaveQueued = true;
+      return activeSave;
+    }
+
+    final saveFuture = _drainQueueTimingMixPlanSaves();
+    _mixPlanSaveFuture = saveFuture;
+    return saveFuture;
+  }
+
+  Future<void> _drainQueueTimingMixPlanSaves() async {
+    try {
+      do {
+        _mixPlanSaveQueued = false;
+        await _saveQueueTimingMixPlan();
+      } while (_mixPlanSaveQueued && !_disposed);
+    } finally {
+      _mixPlanSaveFuture = null;
+    }
+  }
+
+  Future<void> _saveQueueTimingMixPlan() async {
+    if (_queue.tracks.isEmpty) return;
+
+    final clips = _queueTimingClips();
+    if (clips.isEmpty) return;
+
+    try {
+      final planId = _activeMixPlanId;
+      final version = _activeMixPlanVersion;
+      final saved = planId == null || version == null
+          ? await _apiClient.createMixPlan(
+              name: _activeMixPlanName,
+              clips: clips,
+            )
+          : await _apiClient.updateMixPlan(
+              id: planId,
+              version: version,
+              name: _activeMixPlanName,
+              clips: clips,
+            );
+      if (_disposed) return;
+      _activeMixPlanId = saved.id;
+      _activeMixPlanVersion = saved.version;
+      _activeMixPlanName = saved.name;
+      _mixPlanClips = {};
+      for (final clip in saved.clips) {
+        _storeMixPlanClip(clip);
+      }
+      _pruneTimingState(clearWhenEmpty: false);
+    } catch (_) {
+      // Keep the optimistic UI edit even when persistence is unavailable. The
+      // next explicit edit or reload can retry against the durable API.
+    }
+  }
+
+  List<MixPlanClip> _queueTimingClips() {
+    final clips = <MixPlanClip>[];
+    for (final track in _queue.tracks) {
+      final trackId = _mixPlanTrackId(track);
+      if (trackId == null) continue;
+
+      final existing = _mixPlanClipFor(track);
+      final existingClipId = existing != null &&
+              existing.hasExplicitQueueItemId &&
+              existing.queueItemId == track.queueItemId
+          ? existing.clipId
+          : track.queueItemId;
+      final range = trimRangeFor(track);
+      clips.add(
+        MixPlanClip(
+          clipId: existingClipId,
+          queueItemId: track.queueItemId,
+          trackId: trackId,
+          sourceStartMs: range.startOffsetMs,
+          sourceEndMs: range.endOffsetMs,
+          timelineStartMs:
+              _firstTimelineStart(track) ?? existing?.timelineStartMs ?? 0,
+          gainDb: existing?.gainDb ?? 0,
+          fadeInMs: existing?.fadeInMs,
+          fadeOutMs: existing?.fadeOutMs,
+        ),
+      );
+    }
+    return clips;
+  }
+
+  String? _mixPlanTrackId(Track track) {
+    final candidates = [track.playbackTrackId, track.id];
+    for (final candidate in candidates) {
+      if (candidate == null) continue;
+      final parsed = int.tryParse(candidate);
+      if (parsed != null && parsed > 0) return parsed.toString();
+    }
+    return null;
   }
 
   void _pruneTimingState({bool clearWhenEmpty = true}) {
@@ -343,8 +493,16 @@ class QueueProvider extends ChangeNotifier {
     };
     final clips = _mixPlanClips.values.toSet();
     _mixPlanClips = {};
+    Set<String>? playbackTrackIds;
     for (final clip in clips) {
-      if (queueItemIds.contains(clip.queueItemId)) {
+      final hasQueueItemIdentity = queueItemIds.contains(clip.queueItemId);
+      final hasLegacyTrackIdentity = !clip.hasExplicitQueueItemId &&
+          (playbackTrackIds ??= _queue.tracks
+                  .map(_mixPlanTrackId)
+                  .whereType<String>()
+                  .toSet())
+              .contains(clip.trackId);
+      if (hasQueueItemIdentity || hasLegacyTrackIdentity) {
         _storeMixPlanClip(clip);
       }
     }
@@ -400,8 +558,12 @@ class QueueProvider extends ChangeNotifier {
 
   void _storeMixPlanClip(MixPlanClip clip) {
     _mixPlanClips[clip.queueItemId] = clip;
-    _mixPlanClips[clip.trackId] = clip;
-    _mixPlanClips[clip.clipId] = clip;
+    if (!clip.hasExplicitQueueItemId) {
+      _mixPlanClips[clip.trackId] = clip;
+    }
+    if (clip.clipId != clip.queueItemId) {
+      _mixPlanClips[clip.clipId] = clip;
+    }
   }
 
   void _notifyListeners() {
