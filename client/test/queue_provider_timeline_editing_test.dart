@@ -38,6 +38,16 @@ TimelineClip _fallback(Track track) => TimelineClip.clamped(
     );
 
 void main() {
+  test('waveform peaks are stable between UI rebuilds', () {
+    final provider = QueueProvider(ApiClient());
+    final track = _track();
+
+    expect(
+        identical(
+            provider.waveformPeaksFor(track), provider.waveformPeaksFor(track)),
+        isTrue);
+  });
+
   test('mix plan clips feed timeline placement and trim state when available',
       () {
     final provider = QueueProvider(ApiClient());

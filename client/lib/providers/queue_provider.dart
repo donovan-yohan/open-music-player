@@ -28,6 +28,7 @@ class QueueProvider extends ChangeNotifier {
   Map<String, TrimRange> _trimRanges = {};
   Map<String, int> _timelineStartOverrides = {};
   Map<String, MixPlanClip> _mixPlanClips = {};
+  final Map<String, List<double>> _waveformPeaks = {};
 
   QueueProvider(this._apiClient);
 
@@ -91,7 +92,8 @@ class QueueProvider extends ChangeNotifier {
 
   /// Deterministic mock waveform peaks for a track until backend peak data is
   /// available.
-  List<double> waveformPeaksFor(Track track) => mockWaveformPeaks(track.id);
+  List<double> waveformPeaksFor(Track track) =>
+      _waveformPeaks.putIfAbsent(track.id, () => mockWaveformPeaks(track.id));
 
   Future<void> loadQueue() async {
     _isLoading = true;
@@ -474,11 +476,13 @@ class QueueProvider extends ChangeNotifier {
         _trimRanges = {};
         _timelineStartOverrides = {};
         _mixPlanClips = {};
+        _waveformPeaks.clear();
       }
       return;
     }
 
     final localTimingKeys = _queue.tracks.expand(_localTimingKeys).toSet();
+    final trackIds = _queue.tracks.map((track) => track.id).toSet();
     final queueItemIds = _queue.tracks
         .map((track) => track.queueItemId)
         .where((id) => id.isNotEmpty)
@@ -506,6 +510,7 @@ class QueueProvider extends ChangeNotifier {
         _storeMixPlanClip(clip);
       }
     }
+    _waveformPeaks.removeWhere((trackId, _) => !trackIds.contains(trackId));
   }
 
   Iterable<String> _localTimingKeys(Track track) sync* {

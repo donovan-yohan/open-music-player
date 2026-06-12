@@ -13,16 +13,20 @@ class TimelineWaveformPainter extends CustomPainter {
   final Color color;
   final Color dimColor;
   final Color handleColor;
+  final Color? snapMarkerColor;
   final double trimStartFraction;
   final double trimEndFraction;
+  final int snapMarkerCount;
 
   const TimelineWaveformPainter({
     required this.peaks,
     required this.color,
     required this.dimColor,
     required this.handleColor,
+    this.snapMarkerColor,
     this.trimStartFraction = 0.0,
     this.trimEndFraction = 1.0,
+    this.snapMarkerCount = 0,
   });
 
   @override
@@ -31,8 +35,9 @@ class TimelineWaveformPainter extends CustomPainter {
 
     final midY = size.height / 2;
     final slot = size.width / peaks.length;
-    final barWidth =
-        slot < 1.0 ? slot : (slot * 0.66).clamp(1.0, slot).toDouble();
+    final barWidth = slot < 1.0
+        ? slot
+        : (slot * 0.66).clamp(1.0, slot).toDouble();
     final paint = Paint()..style = PaintingStyle.fill;
 
     for (var i = 0; i < peaks.length; i++) {
@@ -42,16 +47,29 @@ class TimelineWaveformPainter extends CustomPainter {
 
       final h = (peaks[i].clamp(0.0, 1.0)) * (size.height - 2);
       final cx = i * slot + slot / 2;
-      final rect = Rect.fromLTWH(
-        cx - barWidth / 2,
-        midY - h / 2,
-        barWidth,
-        h,
-      );
+      final rect = Rect.fromLTWH(cx - barWidth / 2, midY - h / 2, barWidth, h);
       canvas.drawRRect(
         RRect.fromRectAndRadius(rect, const Radius.circular(1)),
         paint,
       );
+    }
+
+    // Beat-snap notches are painted over the granular waveform so the timeline
+    // can advertise where clip moves will lock without needing a full beat-grid
+    // engine. Counts intentionally match the prototype controls: 1, 4, 16.
+    if (snapMarkerCount > 0) {
+      final marker = Paint()
+        ..color = snapMarkerColor ?? handleColor.withValues(alpha: 0.48)
+        ..strokeWidth = 1;
+      for (var i = 1; i <= snapMarkerCount; i++) {
+        final x = (i / (snapMarkerCount + 1)) * size.width;
+        canvas.drawLine(Offset(x, 0), Offset(x, 6), marker);
+        canvas.drawLine(
+          Offset(x, size.height - 6),
+          Offset(x, size.height),
+          marker,
+        );
+      }
     }
 
     // Trim boundary handles.
@@ -70,6 +88,8 @@ class TimelineWaveformPainter extends CustomPainter {
       old.color != color ||
       old.dimColor != dimColor ||
       old.handleColor != handleColor ||
+      old.snapMarkerColor != snapMarkerColor ||
       old.trimStartFraction != trimStartFraction ||
-      old.trimEndFraction != trimEndFraction;
+      old.trimEndFraction != trimEndFraction ||
+      old.snapMarkerCount != snapMarkerCount;
 }

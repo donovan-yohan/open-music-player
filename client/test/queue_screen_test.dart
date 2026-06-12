@@ -68,19 +68,11 @@ void main() {
 
   test('drag target follows multi-slot vertical drag distance', () {
     expect(
-      queueListDragTargetIndex(
-        relativeIndex: 0,
-        itemCount: 4,
-        dragDeltaY: 20,
-      ),
+      queueListDragTargetIndex(relativeIndex: 0, itemCount: 4, dragDeltaY: 20),
       0,
     );
     expect(
-      queueListDragTargetIndex(
-        relativeIndex: 0,
-        itemCount: 4,
-        dragDeltaY: 140,
-      ),
+      queueListDragTargetIndex(relativeIndex: 0, itemCount: 4, dragDeltaY: 140),
       2,
     );
     expect(
@@ -92,79 +84,106 @@ void main() {
       1,
     );
     expect(
-      queueListDragTargetIndex(
-        relativeIndex: 2,
-        itemCount: 4,
-        dragDeltaY: 500,
-      ),
+      queueListDragTargetIndex(relativeIndex: 2, itemCount: 4, dragDeltaY: 500),
       3,
     );
   });
 
-  testWidgets(
-    'defaults to 390px list view with a one tap Timeline switch',
-    (tester) async {
-      tester.view.physicalSize = const Size(390, 844);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-
-      await pumpQueueScreen(tester);
-
-      expect(find.byKey(const ValueKey('queue_view_switch')), findsOneWidget);
-      expect(find.text('List'), findsOneWidget);
-      expect(find.text('Timeline'), findsOneWidget);
-      expect(find.byKey(const ValueKey('queue_list_view')), findsOneWidget);
-      expect(find.byKey(const ValueKey('queue_surface')), findsNothing);
-
-      expect(find.text('Current'), findsOneWidget);
-      expect(find.text('Up Next'), findsOneWidget);
-      expect(find.text('Paper Planes'), findsOneWidget);
-      expect(find.byKey(const ValueKey('reorder_handle_t2')), findsOneWidget);
-      expect(find.byKey(const ValueKey('remove_t2')), findsOneWidget);
-      expect(find.byKey(const ValueKey('queue_status_t2')), findsOneWidget);
-      expect(find.byKey(const ValueKey('queue_play_t2')), findsOneWidget);
-      expect(
-        tester.getSemantics(find.byKey(const ValueKey('reorder_handle_t2'))),
-        matchesSemantics(
-          label: 'Reorder Paper Planes',
-          hint: 'Drag vertically to move this queued track',
-        ),
-      );
-
-      await tester.tap(find.text('Timeline'));
-      await tester.pumpAndSettle();
-
-      expect(find.byKey(const ValueKey('queue_surface')), findsOneWidget);
-      expect(
-        find.byKey(const ValueKey('stacked_waveform_timeline')),
-        findsOneWidget,
-      );
-      expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
-    },
-  );
-
-  testWidgets(
-      'list view renders pending, downloading, failed, and playable states',
-      (tester) async {
-    tester.view.physicalSize = const Size(390, 1600);
+  testWidgets('defaults to 390px list view with a one tap Timeline switch', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    apiClient.useStatusFixture();
 
     await pumpQueueScreen(tester);
 
-    expect(find.text('Pending'), findsOneWidget);
-    expect(find.text('Downloading'), findsOneWidget);
-    expect(find.text('Failed'), findsOneWidget);
-    expect(find.text('Playable'), findsWidgets);
-    expect(find.byKey(const ValueKey('queue_retry_t3')), findsOneWidget);
-    expect(find.byKey(const ValueKey('queue_play_t5')), findsOneWidget);
+    expect(find.byKey(const ValueKey('queue_view_switch')), findsOneWidget);
+    expect(find.text('List'), findsOneWidget);
+    expect(find.text('Timeline'), findsOneWidget);
+    expect(find.byKey(const PageStorageKey('queue_list_view')), findsOneWidget);
+    expect(find.byKey(const ValueKey('queue_surface')), findsNothing);
+    expect(find.byKey(const ValueKey('queue_summary_pill')), findsOneWidget);
+    expect(find.text('3 tracks · 10:41 remaining'), findsOneWidget);
+
+    expect(find.text('Current'), findsOneWidget);
+    expect(find.text('Up Next'), findsOneWidget);
+    expect(find.text('Paper Planes'), findsOneWidget);
+    expect(find.byKey(const ValueKey('reorder_handle_t2')), findsOneWidget);
+    expect(find.byKey(const ValueKey('remove_t2')), findsOneWidget);
+    expect(find.byKey(const ValueKey('queue_status_t2')), findsOneWidget);
+    expect(find.byKey(const ValueKey('queue_play_t2')), findsOneWidget);
+    expect(
+      tester.getSemantics(find.byKey(const ValueKey('reorder_handle_t2'))),
+      matchesSemantics(
+        label: 'Reorder Paper Planes',
+        hint: 'Drag vertically to move this queued track',
+      ),
+    );
+
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('queue_surface')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('stacked_waveform_timeline')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
   });
 
-  testWidgets('play button starts the playable queue at the tapped item',
-      (tester) async {
+  testWidgets('queue summary subtracts elapsed playback from remaining runtime',
+      (
+    tester,
+  ) async {
+    playbackState.fakePosition = const Duration(seconds: 30);
+
+    await pumpQueueScreen(tester);
+
+    expect(find.text('3 tracks · 10:11 remaining'), findsOneWidget);
+  });
+
+  testWidgets(
+      'queue summary uses source-relative playback for trimmed current track', (
+    tester,
+  ) async {
+    playbackState.fakePosition = const Duration(seconds: 45);
+
+    await pumpQueueScreen(tester);
+    final provider =
+        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+    final currentTrack = provider.currentTrack!;
+    await provider.setStartOffsetMs(currentTrack, 30000);
+    await provider.setEndOffsetMs(currentTrack, 90000);
+    await tester.pumpAndSettle();
+
+    expect(find.text('3 tracks · 8:21 remaining'), findsOneWidget);
+  });
+
+  testWidgets(
+    'list view renders pending, downloading, failed, and playable states',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      apiClient.useStatusFixture();
+
+      await pumpQueueScreen(tester);
+
+      expect(find.text('Pending'), findsOneWidget);
+      expect(find.text('Downloading'), findsOneWidget);
+      expect(find.text('Failed'), findsOneWidget);
+      expect(find.text('Playable'), findsWidgets);
+      expect(find.byKey(const ValueKey('queue_retry_t3')), findsOneWidget);
+      expect(find.byKey(const ValueKey('queue_play_t5')), findsOneWidget);
+    },
+  );
+
+  testWidgets('play button starts the playable queue at the tapped item', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(390, 1600);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -185,8 +204,9 @@ void main() {
     );
   });
 
-  testWidgets('retry button posts the failed queue item retry action',
-      (tester) async {
+  testWidgets('retry button posts the failed queue item retry action', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(390, 1600);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -256,20 +276,22 @@ void main() {
   });
 
   testWidgets(
-      'timeline move buttons reorder upcoming tracks after switching modes',
-      (tester) async {
-    await pumpQueueScreen(tester);
+    'timeline move buttons reorder upcoming tracks after switching modes',
+    (tester) async {
+      await pumpQueueScreen(tester);
 
-    await tester.tap(find.text('Timeline'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('timeline_move_later_t2')));
-    await tester.pumpAndSettle();
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('timeline_move_later_t2')));
+      await tester.pumpAndSettle();
 
-    expect(apiClient.reorders, [const (1, 2)]);
-  });
+      expect(apiClient.reorders, [const (1, 2)]);
+    },
+  );
 
-  testWidgets('touch-dragging the list reorder handle reorders Up Next',
-      (tester) async {
+  testWidgets('touch-dragging the list reorder handle reorders Up Next', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -324,13 +346,19 @@ void main() {
     expect(find.text('Retry'), findsOneWidget);
   });
 
-  testWidgets('renders loading state while queue load is pending',
-      (tester) async {
+  testWidgets('renders loading state while queue load is pending', (
+    tester,
+  ) async {
     apiClient.deferLoad = true;
 
     await tester.pumpWidget(
-      ChangeNotifierProvider<QueueProvider>(
-        create: (_) => QueueProvider(apiClient),
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<QueueProvider>(
+            create: (_) => QueueProvider(apiClient),
+          ),
+          ListenableProvider<PlaybackState>.value(value: playbackState),
+        ],
         child: const MaterialApp(home: QueueScreen()),
       ),
     );
@@ -342,13 +370,18 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(CircularProgressIndicator), findsNothing);
-    expect(find.byKey(const ValueKey('queue_list_view')), findsOneWidget);
+    expect(find.byKey(const PageStorageKey('queue_list_view')), findsOneWidget);
   });
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
   final List<({List<Map<String, dynamic>> tracks, int startIndex})>
       playQueueCalls = [];
+
+  Duration fakePosition = Duration.zero;
+
+  @override
+  Duration get position => fakePosition;
 
   @override
   void addListener(VoidCallback listener) {}
