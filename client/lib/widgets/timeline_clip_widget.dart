@@ -129,6 +129,7 @@ class TimelineClipWidget extends StatelessWidget {
   final LaneRole role;
   final Color accent;
   final String stateLabel;
+  final int snapMarkerCount;
 
   const TimelineClipWidget({
     super.key,
@@ -138,6 +139,7 @@ class TimelineClipWidget extends StatelessWidget {
     required this.role,
     required this.accent,
     required this.stateLabel,
+    this.snapMarkerCount = 0,
   });
 
   bool get _active => role == LaneRole.current;
@@ -169,17 +171,14 @@ class TimelineClipWidget extends StatelessWidget {
                 color: waveColor,
                 dimColor: theme.disabledColor.withValues(alpha: 0.35),
                 handleColor: accent.withValues(alpha: 0.9),
+                snapMarkerColor: accent.withValues(alpha: 0.62),
                 trimStartFraction: trim.startFraction,
                 trimEndFraction: trim.endFraction,
+                snapMarkerCount: snapMarkerCount,
               ),
             ),
           ),
-          Positioned(
-            left: 4,
-            top: 4,
-            right: 4,
-            child: _inLaneChip(theme),
-          ),
+          Positioned(left: 4, top: 4, right: 4, child: _inLaneChip(theme)),
         ],
       ),
     );

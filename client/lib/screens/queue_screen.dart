@@ -19,7 +19,7 @@ const double _queueReorderItemExtentPx = 64.0;
   final firstMovableIndex = hasActiveTrack ? currentIndex + 1 : 0;
   return (
     firstMovableIndex + relativeOldIndex,
-    firstMovableIndex + relativeNewIndex
+    firstMovableIndex + relativeNewIndex,
   );
 }
 
@@ -58,10 +58,93 @@ class _QueueScreenState extends State<QueueScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Queue'),
-        actions: [
+      body: SafeArea(
+        bottom: false,
+        child: Consumer<QueueProvider>(
+          builder: (context, provider, _) {
+            if (provider.isLoading) {
+              return const Center(child: CircularProgressIndicator());
+            }
+
+            if (provider.error != null) {
+              return Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        'Error loading queue',
+                        style: Theme.of(context).textTheme.titleMedium,
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(provider.error!, textAlign: TextAlign.center),
+                      const SizedBox(height: 16),
+                      ElevatedButton(
+                        onPressed: () => provider.loadQueue(),
+                        child: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            if (provider.isEmpty) {
+              return const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.queue_music, size: 64, color: Colors.grey),
+                    SizedBox(height: 16),
+                    Text(
+                      'Your queue is empty',
+                      style: TextStyle(fontSize: 18, color: Colors.grey),
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      'Add songs to start playing',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            return Column(
+              children: [
+                _buildQueueHeader(context, provider),
+                Expanded(
+                  child: _viewMode == _QueueViewMode.list
+                      ? _buildListView(context, provider)
+                      : _buildTimelineView(context, provider),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildQueueHeader(BuildContext context, QueueProvider provider) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Consumer<PlaybackState>(
+              builder: (context, playback, _) {
+                return _buildQueueStatusPill(context, provider, playback);
+              },
+            ),
+          ),
+          const SizedBox(width: 8),
+          _buildViewSwitch(context),
           PopupMenuButton<String>(
+            key: const ValueKey('queue_header_menu'),
+            tooltip: 'Queue actions',
             onSelected: (value) => _handleMenuAction(context, value),
             itemBuilder: (context) => [
               const PopupMenuItem(
@@ -84,98 +167,86 @@ class _QueueScreenState extends State<QueueScreen> {
           ),
         ],
       ),
-      body: Consumer<QueueProvider>(
-        builder: (context, provider, _) {
-          if (provider.isLoading) {
-            return const Center(child: CircularProgressIndicator());
-          }
+    );
+  }
 
-          if (provider.error != null) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      'Error loading queue',
-                      style: Theme.of(context).textTheme.titleMedium,
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(provider.error!, textAlign: TextAlign.center),
-                    const SizedBox(height: 16),
-                    ElevatedButton(
-                      onPressed: () => provider.loadQueue(),
-                      child: const Text('Retry'),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
+  Widget _buildQueueStatusPill(
+    BuildContext context,
+    QueueProvider provider,
+    PlaybackState playback,
+  ) {
+    final tracks = provider.queue.tracks;
+    final currentIndex = provider.queue.currentIndex;
+    final firstRemainingIndex = currentIndex >= 0 ? currentIndex : 0;
+    var totalMs = 0;
+    for (var i = firstRemainingIndex; i < tracks.length; i++) {
+      final track = tracks[i];
+      final trim = provider.trimRangeFor(track);
+      if (i == firstRemainingIndex && currentIndex >= 0) {
+        final currentRemainingMs =
+            trim.endOffsetMs - playback.position.inMilliseconds;
+        totalMs += currentRemainingMs.clamp(0, trim.selectedDurationMs).toInt();
+      } else {
+        totalMs += trim.selectedDurationMs;
+      }
+    }
+    final count = tracks.length - firstRemainingIndex;
+    final countLabel = count == 1 ? '1 track' : '$count tracks';
+    final runtimeLabel = _formatQueueRuntime(totalMs);
+    final suffix = currentIndex >= 0 ? 'remaining' : 'until silence';
 
-          if (provider.isEmpty) {
-            return const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.queue_music, size: 64, color: Colors.grey),
-                  SizedBox(height: 16),
-                  Text(
-                    'Your queue is empty',
-                    style: TextStyle(fontSize: 18, color: Colors.grey),
-                  ),
-                  SizedBox(height: 8),
-                  Text(
-                    'Add songs to start playing',
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                ],
+    return Semantics(
+      label: '$countLabel, $runtimeLabel $suffix',
+      child: Container(
+        key: const ValueKey('queue_summary_pill'),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.secondaryContainer,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.graphic_eq, size: 16),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                '$countLabel · $runtimeLabel $suffix',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(
+                  context,
+                ).textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w700),
               ),
-            );
-          }
-
-          return Column(
-            children: [
-              _buildViewSwitch(context),
-              Expanded(
-                child: _viewMode == _QueueViewMode.list
-                    ? _buildListView(context, provider)
-                    : _buildTimelineView(context, provider),
-              ),
-            ],
-          );
-        },
+            ),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildViewSwitch(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-      child: SizedBox(
-        width: double.infinity,
-        child: SegmentedButton<_QueueViewMode>(
-          key: const ValueKey('queue_view_switch'),
-          segments: const [
-            ButtonSegment(
-              value: _QueueViewMode.list,
-              icon: Icon(Icons.format_list_bulleted),
-              label: Text('List'),
-            ),
-            ButtonSegment(
-              value: _QueueViewMode.timeline,
-              icon: Icon(Icons.timeline),
-              label: Text('Timeline'),
-            ),
-          ],
-          selected: {_viewMode},
-          showSelectedIcon: false,
-          onSelectionChanged: (selection) {
-            setState(() => _viewMode = selection.single);
-          },
-        ),
+    return SizedBox(
+      width: 176,
+      child: SegmentedButton<_QueueViewMode>(
+        key: const ValueKey('queue_view_switch'),
+        segments: const [
+          ButtonSegment(
+            value: _QueueViewMode.list,
+            icon: Icon(Icons.format_list_bulleted),
+            label: Text('List'),
+          ),
+          ButtonSegment(
+            value: _QueueViewMode.timeline,
+            icon: Icon(Icons.timeline),
+            label: Text('Timeline'),
+          ),
+        ],
+        selected: {_viewMode},
+        showSelectedIcon: false,
+        onSelectionChanged: (selection) {
+          setState(() => _viewMode = selection.single);
+        },
       ),
     );
   }
@@ -212,42 +283,21 @@ class _QueueScreenState extends State<QueueScreen> {
       );
     }
 
-    return CustomScrollView(
-      key: const ValueKey('queue_timeline_view'),
-      slivers: [
-        SliverToBoxAdapter(
-          child: SizedBox(
-            height: 420,
-            child: StackedWaveformTimeline(
-              key: const ValueKey('queue_surface'),
-              previousTrack: previousTrack,
-              currentTrack: currentTrack,
-              upcomingTracks: upNext,
-              peaksFor: provider.waveformPeaksFor,
-              trimRangeFor: provider.trimRangeFor,
-              clipFor: provider.timelineClipFor,
-              onTimelineStartChanged: provider.setTimelineStartMs,
-              onTrimStartChanged: provider.setStartOffsetMs,
-              onTrimEndChanged: provider.setEndOffsetMs,
-              onMoveEarlier: (track) => _moveTimelineTrack(
-                provider,
-                upNext,
-                currentIndex,
-                track,
-                -1,
-              ),
-              onMoveLater: (track) => _moveTimelineTrack(
-                provider,
-                upNext,
-                currentIndex,
-                track,
-                1,
-              ),
-            ),
-          ),
-        ),
-        const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
-      ],
+    return StackedWaveformTimeline(
+      key: const ValueKey('queue_surface'),
+      previousTrack: previousTrack,
+      currentTrack: currentTrack,
+      upcomingTracks: upNext,
+      peaksFor: provider.waveformPeaksFor,
+      trimRangeFor: provider.trimRangeFor,
+      clipFor: provider.timelineClipFor,
+      onTimelineStartChanged: provider.setTimelineStartMs,
+      onTrimStartChanged: provider.setStartOffsetMs,
+      onTrimEndChanged: provider.setEndOffsetMs,
+      onMoveEarlier: (track) =>
+          _moveTimelineTrack(provider, upNext, currentIndex, track, -1),
+      onMoveLater: (track) =>
+          _moveTimelineTrack(provider, upNext, currentIndex, track, 1),
     );
   }
 
@@ -259,7 +309,7 @@ class _QueueScreenState extends State<QueueScreen> {
     final upNext = hasActiveTrack ? provider.upNext : tracks;
 
     return CustomScrollView(
-      key: const ValueKey('queue_list_view'),
+      key: const PageStorageKey('queue_list_view'),
       slivers: [
         if (currentTrack != null) ...[
           _buildSectionHeader(context, 'Current'),
@@ -300,8 +350,10 @@ class _QueueScreenState extends State<QueueScreen> {
                       dragDeltaY: dragDeltaY,
                     );
                     if (relativeNewIndex == index) return;
-                    final (absoluteOldIndex, absoluteNewIndex) =
-                        queueListReorderIndices(
+                    final (
+                      absoluteOldIndex,
+                      absoluteNewIndex,
+                    ) = queueListReorderIndices(
                       relativeOldIndex: index,
                       relativeNewIndex: relativeNewIndex,
                       currentIndex: currentIndex,
@@ -338,10 +390,9 @@ class _QueueScreenState extends State<QueueScreen> {
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
         child: Text(
           title,
-          style: Theme.of(context)
-              .textTheme
-              .titleMedium
-              ?.copyWith(fontWeight: FontWeight.bold),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
         ),
       ),
     );
@@ -359,15 +410,16 @@ class _QueueScreenState extends State<QueueScreen> {
     );
     if (relativeIndex < 0) return;
 
-    final oldIndex = currentIndex + 1 + relativeIndex;
-    final firstMovableIndex = currentIndex + 1;
-    final lastMovableIndex = currentIndex + upNext.length;
-    final newIndex = (oldIndex + delta).clamp(
-      firstMovableIndex,
-      lastMovableIndex,
-    );
-    if (newIndex == oldIndex) return;
+    final relativeNewIndex =
+        (relativeIndex + delta).clamp(0, upNext.length - 1);
+    if (relativeNewIndex == relativeIndex) return;
 
+    final (oldIndex, newIndex) = queueListReorderIndices(
+      relativeOldIndex: relativeIndex,
+      relativeNewIndex: relativeNewIndex,
+      currentIndex: currentIndex,
+      hasActiveTrack: true,
+    );
     provider.reorderQueue(oldIndex, newIndex);
   }
 
@@ -396,9 +448,9 @@ class _QueueScreenState extends State<QueueScreen> {
     } catch (_) {
       if (!mounted) return;
       final message = playback.playbackError ?? 'Playback failed to start.';
-      ScaffoldMessenger.of(this.context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
+      ScaffoldMessenger.of(
+        this.context,
+      ).showSnackBar(SnackBar(content: Text(message)));
     }
   }
 
@@ -453,6 +505,17 @@ class _QueueScreenState extends State<QueueScreen> {
       ),
     );
   }
+}
+
+String _formatQueueRuntime(int ms) {
+  final totalSeconds = (ms / 1000).round();
+  final hours = totalSeconds ~/ 3600;
+  final minutes = (totalSeconds % 3600) ~/ 60;
+  final seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return '$hours:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  }
+  return '$minutes:${seconds.toString().padLeft(2, '0')}';
 }
 
 class _QueueReorderHandle extends StatefulWidget {

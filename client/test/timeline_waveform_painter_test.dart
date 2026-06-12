@@ -4,12 +4,16 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
 
-TimelineWaveformPainter _painter(List<double> peaks) => TimelineWaveformPainter(
-      peaks: peaks,
-      color: const Color(0xFF2E7D32),
-      dimColor: const Color(0xFF90A4AE),
-      handleColor: const Color(0xFFFFFFFF),
-    );
+TimelineWaveformPainter _painter(
+  List<double> peaks, {
+  int snapMarkerCount = 0,
+}) => TimelineWaveformPainter(
+  peaks: peaks,
+  color: const Color(0xFF2E7D32),
+  dimColor: const Color(0xFF90A4AE),
+  handleColor: const Color(0xFFFFFFFF),
+  snapMarkerCount: snapMarkerCount,
+);
 
 void _paint(TimelineWaveformPainter painter, Size size) {
   final recorder = PictureRecorder();
@@ -34,6 +38,16 @@ void main() {
     test('still renders normally for wide slots', () {
       final painter = _painter(List<double>.filled(8, 0.5));
       expect(() => _paint(painter, const Size(320, 40)), returnsNormally);
+    });
+
+    test('draws prototype snap marker counts without throwing', () {
+      for (final count in [1, 4, 16]) {
+        final painter = _painter(
+          List<double>.filled(32, 0.5),
+          snapMarkerCount: count,
+        );
+        expect(() => _paint(painter, const Size(320, 40)), returnsNormally);
+      }
     });
   });
 }
