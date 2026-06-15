@@ -32,12 +32,80 @@ void main() {
     expect(response.query, 'city pop');
     expect(response.results, hasLength(1));
     expect(response.results.single.sourceType, 'youtube');
+    expect(response.sections.single.kind, 'sources');
+    expect(
+      response.sections.single.items.single.candidate?.candidateId,
+      'youtube:abc',
+    );
     expect(response.results.single.formattedDuration, '4:13');
     expect(
       response.results.single.displaySubtitle,
       'mariya channel • youtube • 4:13',
     );
     expect(response.providers.single.status, 'ok');
+  });
+
+  test('grouped search response parses entity and source sections', () {
+    final response = DiscoverySearchResponse.fromJson({
+      'query': 'ninajirachi ipod touch',
+      'results': [
+        {
+          'candidateId': 'youtube:source-1',
+          'provider': 'youtube',
+          'sourceUrl': 'https://youtube.com/watch?v=source-1',
+          'title': 'Ninajirachi - iPod Touch',
+          'artist': 'Ninajirachi',
+          'durationMs': 185000,
+          'downloadable': true,
+        },
+      ],
+      'sections': [
+        {
+          'kind': 'tracks',
+          'title': 'Songs',
+          'items': [
+            {
+              'kind': 'track',
+              'id': 'mb-track-1',
+              'title': 'iPod Touch',
+              'artist': 'Ninajirachi',
+              'album': 'iPod Touch',
+              'durationMs': 185000,
+              'score': 100,
+            },
+          ],
+        },
+        {
+          'kind': 'sources',
+          'title': 'Sources',
+          'items': [
+            {
+              'kind': 'source',
+              'id': 'youtube:source-1',
+              'title': 'Ninajirachi - iPod Touch',
+              'candidate': {
+                'candidateId': 'youtube:source-1',
+                'provider': 'youtube',
+                'sourceUrl': 'https://youtube.com/watch?v=source-1',
+                'title': 'Ninajirachi - iPod Touch',
+                'artist': 'Ninajirachi',
+                'durationMs': 185000,
+                'downloadable': true,
+              },
+            },
+          ],
+        },
+      ],
+      'providers': const [],
+    });
+
+    expect(response.sections, hasLength(2));
+    expect(response.sections.first.kind, 'tracks');
+    expect(
+      response.sections.first.items.single.displaySubtitle,
+      'Ninajirachi • iPod Touch • 3:05',
+    );
+    expect(response.sections.last.items.single.candidate?.downloadable, isTrue);
   });
 
   test('download job snapshot accepts queue API camelCase fields', () {

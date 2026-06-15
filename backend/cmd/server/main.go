@@ -92,13 +92,12 @@ func main() {
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
 	authHandlers := auth.NewHandlers(authService)
 	searchHandlers := search.NewHandlers(trackRepo)
-	discoveryHandlers := discovery.NewHandlers(discovery.NewDefaultService())
+	mbClient := musicbrainz.NewClient(redisCache)
+	mbHandlers := musicbrainz.NewHandlers(mbClient)
+	discoveryHandlers := discovery.NewHandlers(discovery.NewDefaultServiceWithCatalog(mbClient))
 	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
 	playlistHandlers := api.NewPlaylistHandlers(playlistRepo, trackRepo)
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
-
-	mbClient := musicbrainz.NewClient(redisCache)
-	mbHandlers := musicbrainz.NewHandlers(mbClient)
 
 	// Initialize storage client
 	storageClient, err := storage.New(&storage.Config{

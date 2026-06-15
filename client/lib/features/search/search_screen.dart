@@ -280,8 +280,8 @@ class _SearchScreenState extends State<SearchScreen> {
       onChanged: _onQueryChanged,
       onSubmitted: (value) => _runSearch(query: value),
       decoration: InputDecoration(
-        labelText: 'Search YouTube / SoundCloud',
-        hintText: 'lofi study mix, live set, bootleg...',
+        labelText: 'Search songs, artists, albums, or sources',
+        hintText: 'iPod Touch, Ninajirachi, live set...',
         prefixIcon: const Icon(Icons.travel_explore),
         suffixIcon: _queryController.text.isNotEmpty
             ? IconButton(
@@ -304,7 +304,7 @@ class _SearchScreenState extends State<SearchScreen> {
         icon: Icons.search,
         title: 'Find external tracks',
         body:
-            'Search results add to the same Queue screen now. finally, one queue instead of two tiny tyrants.',
+            'Search now groups songs, artists, albums, and queueable sources instead of dumping one cursed provider soup.',
       );
     }
 
@@ -315,31 +315,137 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
 
-    final results = _response?.results ?? const <DiscoveryCandidate>[];
-    if (results.isEmpty) {
+    final sections = _response?.sections ?? const <DiscoverySearchSection>[];
+    if (sections.isEmpty) {
       return _buildEmptyPanel(
         icon: Icons.search_off,
         title: 'No results',
         body:
-            'Try a different query or provider once yt-dlp stops being dramatic.',
+            'Try a different query. MusicBrainz or yt-dlp may also be acting possessed.',
       );
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'Results',
-          style: Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 8),
-        ...results.map(
-          (candidate) => _buildResultTile(queueProvider, candidate),
-        ),
+        for (final section in sections) ...[
+          _buildSearchSection(queueProvider, section),
+          const SizedBox(height: 16),
+        ],
       ],
     );
+  }
+
+  Widget _buildSearchSection(
+    QueueProvider queueProvider,
+    DiscoverySearchSection section,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(_sectionIcon(section.kind), size: 18),
+            const SizedBox(width: 6),
+            Text(
+              section.title,
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        ...section.items.map((item) {
+          final candidate = item.candidate;
+          if (candidate != null) {
+            return _buildResultTile(queueProvider, candidate);
+          }
+          return _buildEntityTile(item);
+        }),
+      ],
+    );
+  }
+
+  IconData _sectionIcon(String kind) {
+    return switch (kind) {
+      'tracks' => Icons.music_note,
+      'artists' => Icons.person,
+      'albums' => Icons.album,
+      'sources' => Icons.cloud_download,
+      _ => Icons.search,
+    };
+  }
+
+  Widget _buildEntityTile(DiscoverySearchItem item) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 22,
+              child: Icon(_entityIcon(item.kind), size: 22),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      height: 1.18,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (item.displaySubtitle.isNotEmpty) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      item.displaySubtitle,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        fontSize: 12,
+                        height: 1.16,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            TextButton(
+              onPressed: () {
+                _queryController.text = item.title;
+                _runSearch(query: item.title);
+              },
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                minimumSize: const Size(0, 32),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('Search', style: TextStyle(fontSize: 12)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _entityIcon(String kind) {
+    return switch (kind) {
+      'track' => Icons.music_note,
+      'artist' => Icons.person,
+      'album' => Icons.album,
+      _ => Icons.search,
+    };
   }
 
   Widget _buildResultTile(
