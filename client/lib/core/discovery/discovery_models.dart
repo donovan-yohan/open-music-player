@@ -1,22 +1,46 @@
 class DiscoverySearchResponse {
   final String query;
   final List<DiscoveryCandidate> results;
+  final List<DiscoverySearchSection> sections;
   final List<DiscoveryProviderSummary> providers;
 
   const DiscoverySearchResponse({
     required this.query,
     required this.results,
+    required this.sections,
     required this.providers,
   });
 
   factory DiscoverySearchResponse.fromJson(Map<String, dynamic> json) {
+    final results = (json['results'] as List<dynamic>? ?? const [])
+        .map(
+          (item) => DiscoveryCandidate.fromJson(item as Map<String, dynamic>),
+        )
+        .toList();
+    final sections = (json['sections'] as List<dynamic>? ?? const [])
+        .map(
+          (item) =>
+              DiscoverySearchSection.fromJson(item as Map<String, dynamic>),
+        )
+        .where((section) => section.items.isNotEmpty)
+        .toList();
+    final parsedSections = [...sections];
+    if (results.isNotEmpty &&
+        !parsedSections.any((section) => section.isSources)) {
+      parsedSections.add(
+        DiscoverySearchSection(
+          kind: 'sources',
+          title: 'Sources',
+          items: results
+              .map((candidate) => DiscoverySearchItem.fromCandidate(candidate))
+              .toList(),
+        ),
+      );
+    }
     return DiscoverySearchResponse(
       query: json['query'] as String? ?? '',
-      results: (json['results'] as List<dynamic>? ?? const [])
-          .map(
-            (item) => DiscoveryCandidate.fromJson(item as Map<String, dynamic>),
-          )
-          .toList(),
+      results: results,
+      sections: parsedSections,
       providers: (json['providers'] as List<dynamic>? ?? const [])
           .map(
             (item) =>
@@ -24,6 +48,107 @@ class DiscoverySearchResponse {
           )
           .toList(),
     );
+  }
+}
+
+class DiscoverySearchSection {
+  final String kind;
+  final String title;
+  final List<DiscoverySearchItem> items;
+
+  const DiscoverySearchSection({
+    required this.kind,
+    required this.title,
+    required this.items,
+  });
+
+  factory DiscoverySearchSection.fromJson(Map<String, dynamic> json) {
+    return DiscoverySearchSection(
+      kind: json['kind'] as String? ?? 'unknown',
+      title: json['title'] as String? ?? 'Results',
+      items: (json['items'] as List<dynamic>? ?? const [])
+          .map(
+            (item) =>
+                DiscoverySearchItem.fromJson(item as Map<String, dynamic>),
+          )
+          .toList(),
+    );
+  }
+
+  bool get isSources => kind == 'sources';
+}
+
+class DiscoverySearchItem {
+  final String kind;
+  final String id;
+  final String title;
+  final String? subtitle;
+  final String? artist;
+  final String? album;
+  final int? durationMs;
+  final int? score;
+  final DiscoveryCandidate? candidate;
+
+  const DiscoverySearchItem({
+    required this.kind,
+    required this.id,
+    required this.title,
+    this.subtitle,
+    this.artist,
+    this.album,
+    this.durationMs,
+    this.score,
+    this.candidate,
+  });
+
+  factory DiscoverySearchItem.fromJson(Map<String, dynamic> json) {
+    final candidateJson = json['candidate'];
+    return DiscoverySearchItem(
+      kind: json['kind'] as String? ?? 'unknown',
+      id: json['id'] as String? ?? '',
+      title: json['title'] as String? ?? 'Untitled result',
+      subtitle: _blankToNull(json['subtitle'] as String?),
+      artist: _blankToNull(json['artist'] as String?),
+      album: _blankToNull(json['album'] as String?),
+      durationMs: _readInt(json['durationMs']) ?? _readInt(json['duration_ms']),
+      score: _readInt(json['score']),
+      candidate: candidateJson is Map<String, dynamic>
+          ? DiscoveryCandidate.fromJson(candidateJson)
+          : null,
+    );
+  }
+
+  factory DiscoverySearchItem.fromCandidate(DiscoveryCandidate candidate) {
+    return DiscoverySearchItem(
+      kind: 'source',
+      id: candidate.candidateId,
+      title: candidate.title,
+      subtitle: candidate.displaySubtitle,
+      artist: candidate.artist,
+      album: candidate.album,
+      durationMs: candidate.durationMs,
+      candidate: candidate,
+    );
+  }
+
+  String get displaySubtitle {
+    final value = subtitle;
+    if (value != null && value.isNotEmpty) return value;
+    final parts = [
+      artist,
+      album,
+      formattedDuration,
+    ].where((part) => part != null && part.isNotEmpty).cast<String>();
+    return parts.join(' • ');
+  }
+
+  String get formattedDuration {
+    final value = durationMs;
+    if (value == null || value <= 0) return '';
+    final totalSeconds = value ~/ 1000;
+    final minutes = totalSeconds ~/ 60;
+    final seconds = totalSeconds % 60;
+    return '$minutes:${seconds.toString().padLeft(2, '0')}';
   }
 }
 
@@ -216,10 +341,12 @@ class DownloadJobSnapshot {
 
   factory DownloadJobSnapshot.fromJson(Map<String, dynamic> json) {
     return DownloadJobSnapshot(
-      jobId: _stringFromJson(
-            json,
-            const ['jobId', 'job_id', 'downloadJobId', 'download_job_id'],
-          ) ??
+      jobId: _stringFromJson(json, const [
+            'jobId',
+            'job_id',
+            'downloadJobId',
+            'download_job_id',
+          ]) ??
           '',
       status: json['status'] as String? ?? 'queued',
       progress: _readInt(json['progress']) ?? 0,

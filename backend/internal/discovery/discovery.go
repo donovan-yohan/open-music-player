@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/openmusicplayer/backend/internal/musicbrainz"
 )
 
 const (
@@ -61,12 +64,40 @@ type ProviderSummary struct {
 type SearchResponse struct {
 	Query     string            `json:"query"`
 	Results   []Candidate       `json:"results"`
+	Sections  []SearchSection   `json:"sections"`
 	Providers []ProviderSummary `json:"providers"`
+}
+
+type SearchSection struct {
+	Kind  string       `json:"kind"`
+	Title string       `json:"title"`
+	Items []SearchItem `json:"items"`
+}
+
+type SearchItem struct {
+	Kind        string     `json:"kind"`
+	ID          string     `json:"id,omitempty"`
+	Title       string     `json:"title"`
+	Subtitle    string     `json:"subtitle,omitempty"`
+	Artist      string     `json:"artist,omitempty"`
+	ArtistMBID  string     `json:"artistMbid,omitempty"`
+	Album       string     `json:"album,omitempty"`
+	AlbumMBID   string     `json:"albumMbid,omitempty"`
+	DurationMs  int        `json:"durationMs,omitempty"`
+	ReleaseDate string     `json:"releaseDate,omitempty"`
+	Score       int        `json:"score,omitempty"`
+	Candidate   *Candidate `json:"candidate,omitempty"`
 }
 
 type Provider interface {
 	Name() string
 	Search(ctx context.Context, query string, limit int) ([]Candidate, error)
+}
+
+type MusicCatalog interface {
+	SearchTracks(ctx context.Context, query string, limit, offset int, skipCache bool) (*musicbrainz.SearchResponse[musicbrainz.TrackResult], error)
+	SearchArtists(ctx context.Context, query string, limit, offset int, skipCache bool) (*musicbrainz.SearchResponse[musicbrainz.ArtistResult], error)
+	SearchAlbums(ctx context.Context, query string, limit, offset int, skipCache bool) (*musicbrainz.SearchResponse[musicbrainz.AlbumResult], error)
 }
 
 type providerFailure struct {
@@ -81,6 +112,7 @@ func (e *providerFailure) Unwrap() error { return e.err }
 type Service struct {
 	providers          map[string]Provider
 	defaultProviders   []string
+	musicCatalog       MusicCatalog
 	overallTimeout     time.Duration
 	perProviderTimeout time.Duration
 }
@@ -88,6 +120,7 @@ type Service struct {
 type ServiceConfig struct {
 	Providers          []Provider
 	DefaultProviders   []string
+	MusicCatalog       MusicCatalog
 	OverallTimeout     time.Duration
 	PerProviderTimeout time.Duration
 }
@@ -110,15 +143,19 @@ func NewService(cfg ServiceConfig) *Service {
 	if cfg.PerProviderTimeout <= 0 {
 		cfg.PerProviderTimeout = 3 * time.Second
 	}
-	return &Service{providers: providers, defaultProviders: defaults, overallTimeout: cfg.OverallTimeout, perProviderTimeout: cfg.PerProviderTimeout}
+	return &Service{providers: providers, defaultProviders: defaults, musicCatalog: cfg.MusicCatalog, overallTimeout: cfg.OverallTimeout, perProviderTimeout: cfg.PerProviderTimeout}
 }
 
 func NewDefaultService() *Service {
+	return NewDefaultServiceWithCatalog(nil)
+}
+
+func NewDefaultServiceWithCatalog(catalog MusicCatalog) *Service {
 	providers := []Provider{
 		NewYTDLPProvider("youtube", "ytsearch", "https://www.youtube.com/watch?v="),
 		NewYTDLPProvider("soundcloud", "scsearch", ""),
 	}
-	return NewService(ServiceConfig{Providers: providers, DefaultProviders: []string{"youtube", "soundcloud"}})
+	return NewService(ServiceConfig{Providers: providers, DefaultProviders: []string{"youtube", "soundcloud"}, MusicCatalog: catalog})
 }
 
 func (s *Service) Search(ctx context.Context, query string, requested []string, limit int) SearchResponse {
@@ -166,7 +203,8 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 		close(ch)
 	}()
 
-	resp := SearchResponse{Query: query, Results: []Candidate{}, Providers: []ProviderSummary{}}
+	resp := SearchResponse{Query: query, Results: []Candidate{}, Sections: []SearchSection{}, Providers: []ProviderSummary{}}
+	providerItems := make(map[string][]Candidate, len(requested))
 	for res := range ch {
 		summary := ProviderSummary{Provider: res.provider, ResultCount: len(res.items), ElapsedMs: res.elapsed.Milliseconds()}
 		if res.err != nil {
@@ -184,11 +222,162 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 			summary.Error = &ProviderError{Code: code, Message: res.err.Error()}
 		} else {
 			summary.Status = ProviderStatusOK
-			resp.Results = append(resp.Results, res.items...)
+			providerItems[res.provider] = res.items
 		}
 		resp.Providers = append(resp.Providers, summary)
 	}
+	for _, providerName := range requested {
+		resp.Results = append(resp.Results, providerItems[providerName]...)
+	}
+	sections, catalogSummary := s.buildSections(ctx, query, limit, resp.Results)
+	resp.Sections = sections
+	if catalogSummary != nil {
+		resp.Providers = append(resp.Providers, *catalogSummary)
+	}
 	return resp
+}
+
+func (s *Service) buildSections(ctx context.Context, query string, limit int, sourceCandidates []Candidate) ([]SearchSection, *ProviderSummary) {
+	sections := []SearchSection{}
+	var catalogSummary *ProviderSummary
+	if s.musicCatalog != nil {
+		tracks, artists, albums, summary := s.searchMusicCatalog(ctx, query, limit)
+		catalogSummary = &summary
+		if len(tracks) > 0 {
+			sections = append(sections, SearchSection{Kind: "tracks", Title: "Songs", Items: tracks})
+		}
+		if len(artists) > 0 {
+			sections = append(sections, SearchSection{Kind: "artists", Title: "Artists", Items: artists})
+		}
+		if len(albums) > 0 {
+			sections = append(sections, SearchSection{Kind: "albums", Title: "Albums", Items: albums})
+		}
+	}
+	if len(sourceCandidates) > 0 {
+		items := make([]SearchItem, 0, len(sourceCandidates))
+		for _, candidate := range sourceCandidates {
+			candidateCopy := candidate
+			items = append(items, SearchItem{
+				Kind:       "source",
+				ID:         candidate.CandidateID,
+				Title:      candidate.Title,
+				Subtitle:   candidateSubtitle(candidate),
+				Artist:     candidate.Artist,
+				DurationMs: candidate.DurationMs,
+				Candidate:  &candidateCopy,
+			})
+		}
+		sections = append(sections, SearchSection{Kind: "sources", Title: "Sources", Items: items})
+	}
+	return sections, catalogSummary
+}
+
+func (s *Service) searchMusicCatalog(ctx context.Context, query string, limit int) ([]SearchItem, []SearchItem, []SearchItem, ProviderSummary) {
+	entityLimit := limit
+	if entityLimit > 8 {
+		entityLimit = 8
+	}
+	if entityLimit <= 0 {
+		entityLimit = 8
+	}
+	summary := ProviderSummary{Provider: "musicbrainz", Status: ProviderStatusOK}
+	start := time.Now()
+	var errMessages []string
+	var errs []error
+
+	tracksResp, err := s.musicCatalog.SearchTracks(ctx, query, entityLimit, 0, false)
+	if err != nil {
+		errMessages = append(errMessages, "tracks: "+err.Error())
+		errs = append(errs, err)
+	}
+	artistsResp, err := s.musicCatalog.SearchArtists(ctx, query, entityLimit, 0, false)
+	if err != nil {
+		errMessages = append(errMessages, "artists: "+err.Error())
+		errs = append(errs, err)
+	}
+	albumsResp, err := s.musicCatalog.SearchAlbums(ctx, query, entityLimit, 0, false)
+	if err != nil {
+		errMessages = append(errMessages, "albums: "+err.Error())
+		errs = append(errs, err)
+	}
+
+	tracks := trackItems(tracksResp)
+	artists := artistItems(artistsResp)
+	albums := albumItems(albumsResp)
+	summary.ResultCount = len(tracks) + len(artists) + len(albums)
+	summary.ElapsedMs = time.Since(start).Milliseconds()
+	if len(errMessages) > 0 {
+		summary.Status = ProviderStatusFailed
+		code := ErrProviderUnavailable
+		for _, err := range errs {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				code = ErrProviderTimeout
+				summary.Status = ProviderStatusTimeout
+				break
+			}
+		}
+		summary.Error = &ProviderError{Code: code, Message: strings.Join(errMessages, "; ")}
+	}
+	return tracks, artists, albums, summary
+}
+
+func trackItems(resp *musicbrainz.SearchResponse[musicbrainz.TrackResult]) []SearchItem {
+	if resp == nil {
+		return nil
+	}
+	items := make([]SearchItem, 0, len(resp.Results))
+	for _, track := range resp.Results {
+		items = append(items, SearchItem{Kind: "track", ID: track.MBID, Title: track.Title, Subtitle: joinParts(track.Artist, track.Album), Artist: track.Artist, ArtistMBID: track.ArtistMBID, Album: track.Album, AlbumMBID: track.AlbumMBID, DurationMs: track.Duration, ReleaseDate: track.ReleaseDate, Score: track.Score})
+	}
+	sortItems(items)
+	return items
+}
+
+func artistItems(resp *musicbrainz.SearchResponse[musicbrainz.ArtistResult]) []SearchItem {
+	if resp == nil {
+		return nil
+	}
+	items := make([]SearchItem, 0, len(resp.Results))
+	for _, artist := range resp.Results {
+		items = append(items, SearchItem{Kind: "artist", ID: artist.MBID, Title: artist.Name, Subtitle: joinParts(artist.Type, artist.Country, artist.Disambiguation), Score: artist.Score})
+	}
+	sortItems(items)
+	return items
+}
+
+func albumItems(resp *musicbrainz.SearchResponse[musicbrainz.AlbumResult]) []SearchItem {
+	if resp == nil {
+		return nil
+	}
+	items := make([]SearchItem, 0, len(resp.Results))
+	for _, album := range resp.Results {
+		items = append(items, SearchItem{Kind: "album", ID: album.MBID, Title: album.Title, Subtitle: joinParts(album.Artist, album.PrimaryType, album.ReleaseDate), Artist: album.Artist, ArtistMBID: album.ArtistMBID, ReleaseDate: album.ReleaseDate, Score: album.Score})
+	}
+	sortItems(items)
+	return items
+}
+
+func sortItems(items []SearchItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Score != items[j].Score {
+			return items[i].Score > items[j].Score
+		}
+		return strings.ToLower(items[i].Title) < strings.ToLower(items[j].Title)
+	})
+}
+
+func candidateSubtitle(candidate Candidate) string {
+	return joinParts(firstNonEmpty(candidate.Artist, candidate.Uploader), candidate.Provider)
+}
+
+func joinParts(parts ...string) string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return strings.Join(out, " • ")
 }
 
 func (s *Service) normalizeRequestedProviders(requested []string) []string {
