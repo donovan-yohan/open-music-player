@@ -1,11 +1,12 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../../shared/models/models.dart';
+import 'offline_download_store.dart';
 
-class OfflineDatabase {
+class OfflineDatabase implements OfflineDownloadStore {
   static Database? _database;
   static const String _dbName = 'open_music_player.db';
-  static const int _dbVersion = 1;
+  static const int _dbVersion = 2;
 
   Future<Database> get database async {
     _database ??= await _initDatabase();
@@ -79,6 +80,9 @@ class OfflineDatabase {
         progress REAL,
         error TEXT,
         downloaded_at TEXT NOT NULL,
+        expected_size_bytes INTEGER,
+        etag TEXT,
+        storage_key_version TEXT,
         FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
       )
     ''');
@@ -96,10 +100,23 @@ class OfflineDatabase {
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // Handle future migrations here
+    // v2: record signed descriptor identity on offline downloads so stale or
+    // missing artifacts can be detected without trusting the completed flag.
+    if (oldVersion < 2) {
+      await db.execute(
+        'ALTER TABLE downloaded_tracks ADD COLUMN expected_size_bytes INTEGER',
+      );
+      await db.execute(
+        'ALTER TABLE downloaded_tracks ADD COLUMN etag TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE downloaded_tracks ADD COLUMN storage_key_version TEXT',
+      );
+    }
   }
 
   // Track operations
+  @override
   Future<void> insertTrack(Track track) async {
     final db = await database;
     await db.insert(
@@ -136,6 +153,7 @@ class OfflineDatabase {
   }
 
   // Downloaded track operations
+  @override
   Future<void> insertDownloadedTrack(DownloadedTrack download) async {
     final db = await database;
     await db.insert(
@@ -145,6 +163,7 @@ class OfflineDatabase {
     );
   }
 
+  @override
   Future<void> updateDownloadStatus(
     int trackId,
     DownloadStatus status, {
@@ -164,6 +183,32 @@ class OfflineDatabase {
     );
   }
 
+  @override
+  Future<void> markDownloadCompleted(
+    int trackId, {
+    required int fileSizeBytes,
+    int? expectedSizeBytes,
+    String? etag,
+    String? storageKeyVersion,
+  }) async {
+    final db = await database;
+    await db.update(
+      'downloaded_tracks',
+      {
+        'status': DownloadStatus.completed.name,
+        'progress': 1.0,
+        'error': null,
+        'file_size_bytes': fileSizeBytes,
+        'expected_size_bytes': expectedSizeBytes,
+        'etag': etag,
+        'storage_key_version': storageKeyVersion,
+      },
+      where: 'track_id = ?',
+      whereArgs: [trackId],
+    );
+  }
+
+  @override
   Future<DownloadedTrack?> getDownloadedTrack(int trackId) async {
     final db = await database;
     final maps = await db.query(
@@ -177,10 +222,15 @@ class OfflineDatabase {
     return DownloadedTrack.fromDbMap(maps.first, track: track);
   }
 
+  @override
   Future<List<DownloadedTrack>> getAllDownloadedTracks() async {
     final db = await database;
+    // Re-select the download row's file_size_bytes last: it collides with
+    // tracks.file_size_bytes, and we want the validated on-disk size (and to
+    // avoid a NULL from the nullable tracks column) rather than the advertised
+    // library size.
     final maps = await db.rawQuery('''
-      SELECT d.*, t.* FROM downloaded_tracks d
+      SELECT d.*, t.*, d.file_size_bytes AS file_size_bytes FROM downloaded_tracks d
       INNER JOIN tracks t ON d.track_id = t.id
       WHERE d.status = 'completed'
       ORDER BY d.downloaded_at DESC
@@ -192,10 +242,11 @@ class OfflineDatabase {
     }).toList();
   }
 
+  @override
   Future<List<DownloadedTrack>> getDownloadingTracks() async {
     final db = await database;
     final maps = await db.rawQuery('''
-      SELECT d.*, t.* FROM downloaded_tracks d
+      SELECT d.*, t.*, d.file_size_bytes AS file_size_bytes FROM downloaded_tracks d
       INNER JOIN tracks t ON d.track_id = t.id
       WHERE d.status IN ('pending', 'downloading')
       ORDER BY d.downloaded_at ASC
@@ -207,6 +258,7 @@ class OfflineDatabase {
     }).toList();
   }
 
+  @override
   Future<bool> isTrackDownloaded(int trackId) async {
     final db = await database;
     final result = await db.query(
@@ -217,6 +269,7 @@ class OfflineDatabase {
     return result.isNotEmpty;
   }
 
+  @override
   Future<void> deleteDownloadedTrack(int trackId) async {
     final db = await database;
     await db.delete(
@@ -226,6 +279,7 @@ class OfflineDatabase {
     );
   }
 
+  @override
   Future<void> deleteAllDownloads() async {
     final db = await database;
     await db.delete('downloaded_tracks');
