@@ -1,12 +1,14 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../../shared/models/models.dart';
+import '../cache/playback_cache_entry.dart';
+import '../cache/playback_cache_store.dart';
 import 'offline_download_store.dart';
 
-class OfflineDatabase implements OfflineDownloadStore {
+class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   static Database? _database;
   static const String _dbName = 'open_music_player.db';
-  static const int _dbVersion = 2;
+  static const int _dbVersion = 3;
 
   Future<Database> get database async {
     _database ??= await _initDatabase();
@@ -97,6 +99,8 @@ class OfflineDatabase implements OfflineDownloadStore {
 
     await db.execute('CREATE INDEX idx_tracks_identity_hash ON tracks(identity_hash)');
     await db.execute('CREATE INDEX idx_downloaded_tracks_status ON downloaded_tracks(status)');
+
+    await _createPlaybackCacheTable(db);
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -113,6 +117,32 @@ class OfflineDatabase implements OfflineDownloadStore {
         'ALTER TABLE downloaded_tracks ADD COLUMN storage_key_version TEXT',
       );
     }
+
+    // v3: bounded, evictable playback cache. Its own table (no FK to tracks):
+    // cached playback artifacts are independent of the library/download rows so
+    // eviction and clear can never reach an explicit download.
+    if (oldVersion < 3) {
+      await _createPlaybackCacheTable(db);
+    }
+  }
+
+  Future<void> _createPlaybackCacheTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE playback_cache (
+        track_id INTEGER PRIMARY KEY,
+        local_path TEXT NOT NULL,
+        file_size_bytes INTEGER NOT NULL,
+        etag TEXT,
+        storage_key_version TEXT,
+        expected_size_bytes INTEGER,
+        url_identity TEXT,
+        last_accessed_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX idx_playback_cache_last_accessed '
+      'ON playback_cache(last_accessed_at)',
+    );
   }
 
   // Track operations
@@ -303,6 +333,75 @@ class OfflineDatabase implements OfflineDownloadStore {
       WHERE status = 'completed'
     ''');
     return (result.first['count'] as int?) ?? 0;
+  }
+
+  // Playback cache operations (bounded, evictable; separate from downloads).
+  @override
+  Future<void> upsertEntry(PlaybackCacheEntry entry) async {
+    final db = await database;
+    await db.insert(
+      'playback_cache',
+      entry.toDbMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  @override
+  Future<PlaybackCacheEntry?> getEntry(int trackId) async {
+    final db = await database;
+    final maps = await db.query(
+      'playback_cache',
+      where: 'track_id = ?',
+      whereArgs: [trackId],
+    );
+    if (maps.isEmpty) return null;
+    return PlaybackCacheEntry.fromDbMap(maps.first);
+  }
+
+  @override
+  Future<List<PlaybackCacheEntry>> getAllEntries() async {
+    final db = await database;
+    final maps = await db.query(
+      'playback_cache',
+      orderBy: 'last_accessed_at ASC',
+    );
+    return maps.map(PlaybackCacheEntry.fromDbMap).toList();
+  }
+
+  @override
+  Future<void> touchEntry(int trackId, DateTime accessedAt) async {
+    final db = await database;
+    await db.update(
+      'playback_cache',
+      {'last_accessed_at': accessedAt.toIso8601String()},
+      where: 'track_id = ?',
+      whereArgs: [trackId],
+    );
+  }
+
+  @override
+  Future<void> deleteEntry(int trackId) async {
+    final db = await database;
+    await db.delete(
+      'playback_cache',
+      where: 'track_id = ?',
+      whereArgs: [trackId],
+    );
+  }
+
+  @override
+  Future<void> deleteAll() async {
+    final db = await database;
+    await db.delete('playback_cache');
+  }
+
+  @override
+  Future<int> totalSizeBytes() async {
+    final db = await database;
+    final result = await db.rawQuery(
+      'SELECT COALESCE(SUM(file_size_bytes), 0) AS total FROM playback_cache',
+    );
+    return (result.first['total'] as int?) ?? 0;
   }
 
   // Playlist operations

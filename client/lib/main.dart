@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:provider/provider.dart' as provider;
@@ -8,6 +9,7 @@ import 'core/api/api_client.dart';
 import 'core/audio/audio_player_service.dart';
 import 'core/audio/playback_state.dart';
 import 'core/audio/signed_audio_url_service.dart';
+import 'core/cache/playback_cache_manager.dart';
 import 'core/auth/auth_service.dart';
 import 'core/auth/auth_state.dart';
 import 'core/providers/settings_provider.dart';
@@ -42,12 +44,24 @@ void main() async {
     db: offlineDb,
   );
 
-  // Prefer a validated local download over a signed remote URL during
-  // playback (works offline / after restart).
+  // Bounded, evictable playback cache: bandwidth-saving copies of recent/near
+  // playback artifacts, separate from explicit downloads. Mobile-only — it
+  // needs a real filesystem, so (like explicit downloads) it stays disabled on
+  // web, where playback falls back to signed URLs.
+  final playbackCacheManager = kIsWeb
+      ? null
+      : PlaybackCacheManager(
+          store: offlineDb,
+          explicitDownloads: downloadService,
+        );
+
+  // Resolution prefers a validated explicit download (offline / after restart),
+  // then a matching cache artifact, then a freshly signed remote URL.
   final playbackState = PlaybackState(
     audioService,
     signedAudioUrlService: signedAudioUrlService,
     localResolver: downloadService,
+    cacheManager: playbackCacheManager,
   );
 
   runApp(
