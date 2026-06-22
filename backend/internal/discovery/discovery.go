@@ -443,10 +443,34 @@ func (s *Service) normalizeRequestedProviders(requested []string) []string {
 type Handlers struct {
 	service  *Service
 	resolver *URLResolver
+	assist   *AssistService
 }
 
+// NewHandlers builds discovery handlers with a disabled-but-functional assist
+// service: the direct-URL assist path still resolves user-pasted links without a
+// model, and non-URL prompts return a disabled envelope. Use NewHandlersWithAssist
+// to enable the model-driven assist path.
 func NewHandlers(service *Service) *Handlers {
-	return &Handlers{service: service, resolver: NewURLResolver(nil)}
+	return NewHandlersWithAssist(service, nil)
+}
+
+// NewHandlersWithAssist builds discovery handlers wired to the given assist
+// service (typically model-enabled). A nil assist falls back to a
+// disabled-but-functional service that still resolves direct URLs without a
+// model. One resolver is shared between the resolve-url endpoint and the assist
+// service so both validate pasted URLs identically; a future custom validator
+// registry then applies to both at once.
+func NewHandlersWithAssist(service *Service, assist *AssistService) *Handlers {
+	resolver := NewURLResolver(nil)
+	if assist == nil {
+		assist = NewAssistService(AssistConfig{Search: service})
+	}
+	assist.resolver = resolver
+	return &Handlers{
+		service:  service,
+		resolver: resolver,
+		assist:   assist,
+	}
 }
 
 func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {

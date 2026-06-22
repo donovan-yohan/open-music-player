@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -38,6 +39,16 @@ type Config struct {
 	MinioSecretKey      string
 	MinioBucket         string
 	MinioUseSSL         bool
+
+	// AI assist (OpenAI-compatible) configuration for the grounded search assist
+	// endpoint. Disabled unless fully configured; absence must never break normal
+	// discovery search or direct URL resolution. The API key is a secret and must
+	// never be logged.
+	AIAssistEnabled bool
+	AIAssistBaseURL string
+	AIAssistAPIKey  string
+	AIAssistModel   string
+	AIAssistTimeout time.Duration
 }
 
 func Load() *Config {
@@ -45,6 +56,13 @@ func Load() *Config {
 
 	minioUseSSL, _ := strconv.ParseBool(getEnvOrDefault("MINIO_USE_SSL", "false"))
 	redisEnabled := parseBoolEnv("REDIS_ENABLED", true)
+
+	aiBaseURL := strings.TrimSpace(os.Getenv("AI_ASSIST_BASE_URL"))
+	aiAPIKey := strings.TrimSpace(os.Getenv("AI_ASSIST_API_KEY"))
+	aiModel := strings.TrimSpace(os.Getenv("AI_ASSIST_MODEL"))
+	// Default-enabled only when fully configured; an operator can force it off
+	// with AI_ASSIST_ENABLED=false. A partial config stays disabled.
+	aiEnabled := parseBoolEnv("AI_ASSIST_ENABLED", aiBaseURL != "" && aiAPIKey != "" && aiModel != "")
 
 	return &Config{
 		ServerAddr:         getEnvOrDefault("SERVER_ADDR", ":8080"),
@@ -76,7 +94,28 @@ func Load() *Config {
 		MinioSecretKey:      getEnvOrDefault("MINIO_SECRET_KEY", "minioadmin"),
 		MinioBucket:         getEnvOrDefault("MINIO_BUCKET", "audio-files"),
 		MinioUseSSL:         minioUseSSL,
+
+		// AI assist configuration
+		AIAssistEnabled: aiEnabled,
+		AIAssistBaseURL: aiBaseURL,
+		AIAssistAPIKey:  aiAPIKey,
+		AIAssistModel:   aiModel,
+		AIAssistTimeout: parseDurationMsEnv("AI_ASSIST_TIMEOUT_MS", 8*time.Second),
 	}
+}
+
+// parseDurationMsEnv reads a millisecond integer env var into a Duration,
+// falling back to defaultValue when unset, malformed, or non-positive.
+func parseDurationMsEnv(key string, defaultValue time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	ms, err := strconv.Atoi(value)
+	if err != nil || ms <= 0 {
+		return defaultValue
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func parseCORSAllowedOrigins() []string {

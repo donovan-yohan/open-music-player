@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLoadPreservesWorkerCountDefaults(t *testing.T) {
@@ -72,6 +73,70 @@ func TestLoadFallsBackToLegacyCORSAllowedOrigins(t *testing.T) {
 		if cfg.CORSAllowedOrigins[i] != want[i] {
 			t.Fatalf("CORSAllowedOrigins = %#v, want %#v", cfg.CORSAllowedOrigins, want)
 		}
+	}
+}
+
+func TestLoadAIAssistDisabledByDefault(t *testing.T) {
+	for _, key := range []string{"AI_ASSIST_ENABLED", "AI_ASSIST_BASE_URL", "AI_ASSIST_API_KEY", "AI_ASSIST_MODEL", "AI_ASSIST_TIMEOUT_MS"} {
+		withUnsetEnv(t, key)
+	}
+	cfg := Load()
+	if cfg.AIAssistEnabled {
+		t.Fatal("AIAssistEnabled = true with no config, want disabled")
+	}
+	if cfg.AIAssistTimeout != 8*time.Second {
+		t.Fatalf("AIAssistTimeout = %s, want default 8s", cfg.AIAssistTimeout)
+	}
+}
+
+func TestLoadAIAssistEnabledWhenFullyConfigured(t *testing.T) {
+	withUnsetEnv(t, "AI_ASSIST_ENABLED")
+	t.Setenv("AI_ASSIST_BASE_URL", "https://api.example/v1")
+	t.Setenv("AI_ASSIST_API_KEY", "sk-secret")
+	t.Setenv("AI_ASSIST_MODEL", "test-model")
+	t.Setenv("AI_ASSIST_TIMEOUT_MS", "1500")
+
+	cfg := Load()
+	if !cfg.AIAssistEnabled {
+		t.Fatal("AIAssistEnabled = false with full config, want enabled")
+	}
+	if cfg.AIAssistBaseURL != "https://api.example/v1" || cfg.AIAssistModel != "test-model" {
+		t.Fatalf("AI assist config not loaded: %#v", cfg.AIAssistBaseURL)
+	}
+	if cfg.AIAssistTimeout != 1500*time.Millisecond {
+		t.Fatalf("AIAssistTimeout = %s, want 1500ms", cfg.AIAssistTimeout)
+	}
+}
+
+func TestLoadAIAssistStaysDisabledWhenPartiallyConfigured(t *testing.T) {
+	withUnsetEnv(t, "AI_ASSIST_ENABLED")
+	withUnsetEnv(t, "AI_ASSIST_MODEL")
+	t.Setenv("AI_ASSIST_BASE_URL", "https://api.example/v1")
+	t.Setenv("AI_ASSIST_API_KEY", "sk-secret")
+
+	cfg := Load()
+	if cfg.AIAssistEnabled {
+		t.Fatal("AIAssistEnabled = true with missing model, want disabled")
+	}
+}
+
+func TestLoadAIAssistRespectsExplicitDisable(t *testing.T) {
+	t.Setenv("AI_ASSIST_ENABLED", "false")
+	t.Setenv("AI_ASSIST_BASE_URL", "https://api.example/v1")
+	t.Setenv("AI_ASSIST_API_KEY", "sk-secret")
+	t.Setenv("AI_ASSIST_MODEL", "test-model")
+
+	cfg := Load()
+	if cfg.AIAssistEnabled {
+		t.Fatal("AIAssistEnabled = true despite AI_ASSIST_ENABLED=false")
+	}
+}
+
+func TestLoadAIAssistDefaultsMalformedTimeout(t *testing.T) {
+	t.Setenv("AI_ASSIST_TIMEOUT_MS", "nope")
+	cfg := Load()
+	if cfg.AIAssistTimeout != 8*time.Second {
+		t.Fatalf("AIAssistTimeout = %s, want default 8s for malformed value", cfg.AIAssistTimeout)
 	}
 }
 
