@@ -9,7 +9,10 @@ class DiscoveryService {
   Future<DiscoverySearchResponse> search(
     String query, {
     int limit = 12,
-    List<String> providers = const ['youtube', 'soundcloud'],
+    // 'musicbrainz' opts this request into grouped catalog sections. Source-only
+    // callers can omit it so fast provider results are not held behind catalog
+    // lookups.
+    List<String> providers = const ['youtube', 'soundcloud', 'musicbrainz'],
   }) async {
     final response = await _apiClient.get<Map<String, dynamic>>(
       '/discovery/search',
