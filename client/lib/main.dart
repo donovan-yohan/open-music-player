@@ -30,10 +30,6 @@ void main() async {
 
   final signedAudioUrlService = SignedAudioUrlService(apiClient);
   final audioService = await AudioPlayerService.init();
-  final playbackState = PlaybackState(
-    audioService,
-    signedAudioUrlService: signedAudioUrlService,
-  );
 
   final offlineDb = OfflineDatabase();
   final connectivityService = ConnectivityService();
@@ -44,6 +40,14 @@ void main() async {
   final downloadState = DownloadState(
     downloadService: downloadService,
     db: offlineDb,
+  );
+
+  // Prefer a validated local download over a signed remote URL during
+  // playback (works offline / after restart).
+  final playbackState = PlaybackState(
+    audioService,
+    signedAudioUrlService: signedAudioUrlService,
+    localResolver: downloadService,
   );
 
   runApp(

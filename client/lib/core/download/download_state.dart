@@ -69,6 +69,10 @@ class DownloadState extends ChangeNotifier {
     notifyListeners();
 
     try {
+      // Reconcile stored state with the filesystem first so a completed row
+      // whose file vanished (or an interrupted download) never surfaces as a
+      // usable download.
+      await _downloadService.validateStoredArtifacts();
       _downloads = await _db.getAllDownloadedTracks();
       _totalSizeBytes = await _db.getTotalDownloadedSize();
     } finally {
@@ -79,6 +83,10 @@ class DownloadState extends ChangeNotifier {
 
   Future<void> downloadTrack(Track track) async {
     await _downloadService.downloadTrack(track);
+  }
+
+  Future<void> retryDownload(Track track) async {
+    await _downloadService.retryDownload(track);
   }
 
   Future<void> downloadPlaylist(Playlist playlist) async {
@@ -119,7 +127,7 @@ class DownloadState extends ChangeNotifier {
   }
 
   Future<String?> getLocalPath(int trackId) async {
-    return _downloadService.getLocalPath(trackId);
+    return _downloadService.localAudioPath(trackId);
   }
 
   @override

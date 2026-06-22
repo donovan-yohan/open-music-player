@@ -3,11 +3,14 @@ import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'audio_player_service.dart';
+import 'local_audio_artifact_resolver.dart';
+import 'playback_source_resolver.dart';
 import 'signed_audio_url_service.dart';
 
 class PlaybackState extends ChangeNotifier {
   final AudioPlayerService _audioService;
   final SignedAudioUrlService _signedAudioUrlService;
+  final PlaybackSourceResolver _sourceResolver;
 
   List<StreamSubscription> _subscriptions = [];
 
@@ -39,7 +42,12 @@ class PlaybackState extends ChangeNotifier {
   PlaybackState(
     this._audioService, {
     required SignedAudioUrlService signedAudioUrlService,
-  }) : _signedAudioUrlService = signedAudioUrlService {
+    LocalAudioArtifactResolver? localResolver,
+  })  : _signedAudioUrlService = signedAudioUrlService,
+        _sourceResolver = PlaybackSourceResolver(
+          signedAudioUrlService: signedAudioUrlService,
+          localResolver: localResolver,
+        ) {
     _init();
   }
 
@@ -86,15 +94,11 @@ class PlaybackState extends ChangeNotifier {
 
   Future<void> playTrack(Map<String, dynamic> track) async {
     await _resolveSignedUrls(() async {
-      final trackId = _readTrackId(track);
-      await _playWithFreshSignedUrlRetry(
-        trackId: trackId,
-        start: (descriptor) async {
-          final mediaItem = _buildMediaItem(track, descriptor);
-          await _audioService.setQueue([mediaItem]);
-          await _audioService.play();
-        },
-      );
+      await _startWithRecovery(() async {
+        final item = await _sourceResolver.resolveTrack(track);
+        await _audioService.setQueue([item]);
+        await _audioService.play();
+      });
     });
   }
 
@@ -105,47 +109,19 @@ class PlaybackState extends ChangeNotifier {
     if (tracks.isEmpty) return;
 
     await _resolveSignedUrls(() async {
-      final trackIds = tracks.map(_readTrackId).toList();
-      await _playQueueWithFreshSignedUrlRetry(
-        tracks: tracks,
-        trackIds: trackIds,
-        startIndex: startIndex,
-      );
+      await _startWithRecovery(() async {
+        final items = await _sourceResolver.resolveQueue(tracks);
+        await _audioService.setQueue(items, initialIndex: startIndex);
+        await _audioService.play();
+      });
     });
   }
 
-  Future<void> _playWithFreshSignedUrlRetry({
-    required int trackId,
-    required Future<void> Function(SignedAudioDescriptor descriptor) start,
-  }) async {
-    final descriptor = await _signedAudioUrlService.requireDescriptor(trackId);
-    try {
-      await start(descriptor);
-    } catch (error) {
-      if (!_isRecoverableObjectUrlFailure(error)) rethrow;
-      final refreshed = await _signedAudioUrlService.requireDescriptor(trackId);
-      await start(refreshed);
-    }
-  }
-
-  Future<void> _playQueueWithFreshSignedUrlRetry({
-    required List<Map<String, dynamic>> tracks,
-    required List<int> trackIds,
-    required int startIndex,
-  }) async {
-    Future<void> start() async {
-      final descriptors = await _signedAudioUrlService.requireDescriptors(
-        trackIds,
-      );
-      final items = tracks.map((track) {
-        final trackId = _readTrackId(track);
-        return _buildMediaItem(track, descriptors[trackId]!);
-      }).toList();
-
-      await _audioService.setQueue(items, initialIndex: startIndex);
-      await _audioService.play();
-    }
-
+  /// Runs [start], retrying it once if the failure looks like a stale/expired
+  /// signed URL. The retry re-runs [start], which re-resolves the queue from
+  /// scratch — re-validating local artifacts and re-requesting fresh signed
+  /// descriptors for the remote tracks.
+  Future<void> _startWithRecovery(Future<void> Function() start) async {
     try {
       await start();
     } catch (error) {
@@ -162,45 +138,6 @@ class PlaybackState extends ChangeNotifier {
         message.contains('signature') ||
         message.contains('accessdenied') ||
         message.contains('access denied');
-  }
-
-  MediaItem _buildMediaItem(
-    Map<String, dynamic> track,
-    SignedAudioDescriptor descriptor,
-  ) {
-    return MediaItem(
-      id: descriptor.trackId.toString(),
-      title: track['title'] as String? ?? 'Unknown',
-      artist: track['artist'] as String? ?? 'Unknown Artist',
-      album: track['album'] as String? ?? 'Unknown Album',
-      duration: Duration(seconds: track['duration'] as int? ?? 0),
-      artUri: track['artwork_url'] != null
-          ? Uri.parse(track['artwork_url'] as String)
-          : null,
-      extras: {
-        'url': descriptor.url,
-        'expiresAt': descriptor.expiresAt.toIso8601String(),
-        if (descriptor.contentType != null)
-          'contentType': descriptor.contentType,
-        if (descriptor.sizeBytes != null) 'sizeBytes': descriptor.sizeBytes,
-        if (descriptor.etag != null) 'etag': descriptor.etag,
-        if (descriptor.storageKeyVersion != null)
-          'storageKeyVersion': descriptor.storageKeyVersion,
-      },
-    );
-  }
-
-  int _readTrackId(Map<String, dynamic> track) {
-    final id = track['id'];
-    if (id is int && id > 0) return id;
-    if (id is String) {
-      final parsed = int.tryParse(id);
-      if (parsed != null && parsed > 0) return parsed;
-    }
-    throw const SignedAudioUrlException(
-      code: 'INVALID_TRACK_ID',
-      message: 'Track is missing a numeric ID for playback URL issuance.',
-    );
   }
 
   Future<void> _resolveSignedUrls(Future<void> Function() action) async {
@@ -261,6 +198,10 @@ class PlaybackState extends ChangeNotifier {
   Future<void> _refreshCurrentSignedUrlIfNeeded() async {
     final item = _currentItem;
     if (item == null) return;
+    // A local-backed item plays from an on-device file and never expires, so it
+    // must never trigger a signed-URL refresh (which would hit the network and,
+    // when offline, mask the real failure).
+    if (localArtifactPath(item) != null) return;
     final expiresAt = item.extras?['expiresAt'];
     if (expiresAt is! String) return;
     final parsed = DateTime.tryParse(expiresAt)?.toUtc();
@@ -280,6 +221,7 @@ class PlaybackState extends ChangeNotifier {
     if (index == null || item == null || index < 0 || index >= _queue.length) {
       return;
     }
+    if (localArtifactPath(item) != null) return;
     final trackId = int.tryParse(item.id);
     if (trackId == null || trackId <= 0) return;
     if (!force) return;
