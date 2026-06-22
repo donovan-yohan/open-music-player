@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import '../audio/local_audio_artifact_resolver.dart';
 import '../audio/signed_audio_url_service.dart';
 import '../storage/offline_download_store.dart';
+import '../utils/file_utils.dart';
 import '../../shared/models/models.dart';
 
 /// Fetches the bytes for [url] into [destinationPath]. Injected so tests can
@@ -20,6 +21,29 @@ typedef AudioArtifactDownloader = Future<void> Function(
 /// Resolves the on-device directory explicit downloads are stored in. Injected
 /// so tests can target a temp directory instead of `path_provider`.
 typedef DownloadDirectoryProvider = Future<String> Function();
+
+/// The default Dio-backed [AudioArtifactDownloader]. Shared by the explicit
+/// download pipeline and the playback cache so byte fetching behaves
+/// identically (timeouts, range/bytes response) in both.
+AudioArtifactDownloader defaultAudioArtifactDownloader() {
+  final dio = Dio()
+    ..options.receiveTimeout = const Duration(minutes: 30)
+    ..options.connectTimeout = const Duration(seconds: 30);
+  return (
+    String url,
+    String destinationPath, {
+    CancelToken? cancelToken,
+    void Function(int received, int total)? onProgress,
+  }) async {
+    await dio.download(
+      url,
+      destinationPath,
+      cancelToken: cancelToken,
+      onReceiveProgress: onProgress,
+      options: Options(responseType: ResponseType.bytes),
+    );
+  };
+}
 
 class DownloadService implements LocalAudioArtifactResolver {
   final OfflineDownloadStore _db;
@@ -39,29 +63,9 @@ class DownloadService implements LocalAudioArtifactResolver {
     DownloadDirectoryProvider? downloadDirectoryProvider,
   })  : _db = db,
         _signedAudioUrlService = signedAudioUrlService,
-        _downloader = downloader ?? _defaultDownloader(),
+        _downloader = downloader ?? defaultAudioArtifactDownloader(),
         _downloadDirectoryProvider =
             downloadDirectoryProvider ?? _defaultDownloadDirectoryProvider;
-
-  static AudioArtifactDownloader _defaultDownloader() {
-    final dio = Dio()
-      ..options.receiveTimeout = const Duration(minutes: 30)
-      ..options.connectTimeout = const Duration(seconds: 30);
-    return (
-      String url,
-      String destinationPath, {
-      CancelToken? cancelToken,
-      void Function(int received, int total)? onProgress,
-    }) async {
-      await dio.download(
-        url,
-        destinationPath,
-        cancelToken: cancelToken,
-        onReceiveProgress: onProgress,
-        options: Options(responseType: ResponseType.bytes),
-      );
-    };
-  }
 
   static Future<String> _defaultDownloadDirectoryProvider() async {
     final appDir = await getApplicationDocumentsDirectory();
@@ -275,14 +279,7 @@ class DownloadService implements LocalAudioArtifactResolver {
     // Remove every file in the downloads directory, including artifacts left by
     // failed/interrupted rows that the completed-only query would skip.
     try {
-      final dir = Directory(await _downloadDirectoryProvider());
-      if (await dir.exists()) {
-        await for (final entity in dir.list()) {
-          if (entity is File) {
-            await _deleteFileQuietly(entity.path);
-          }
-        }
-      }
+      await sweepDirectoryFiles(await _downloadDirectoryProvider());
     } catch (_) {
       // Best-effort directory sweep; fall through to clearing the table.
     }
@@ -449,16 +446,7 @@ class DownloadService implements LocalAudioArtifactResolver {
     );
   }
 
-  Future<void> _deleteFileQuietly(String path) async {
-    try {
-      final file = File(path);
-      if (await file.exists()) {
-        await file.delete();
-      }
-    } catch (_) {
-      // Best-effort cleanup; a failed unlink must not break the flow.
-    }
-  }
+  Future<void> _deleteFileQuietly(String path) => deleteFileQuietly(path);
 
   String _downloadErrorMessage(SignedAudioUrlException error) {
     switch (error.code) {

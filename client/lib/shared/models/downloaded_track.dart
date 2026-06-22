@@ -1,3 +1,4 @@
+import 'descriptor_identity.dart';
 import 'track.dart';
 
 enum DownloadStatus {
@@ -124,19 +125,13 @@ class DownloadedTrack {
     String? storageKeyVersion,
     int? sizeBytes,
   }) {
-    if (this.etag != null && etag != null && this.etag != etag) {
-      return true;
-    }
-    if (this.storageKeyVersion != null &&
-        storageKeyVersion != null &&
-        this.storageKeyVersion != storageKeyVersion) {
-      return true;
-    }
-    if (expectedSizeBytes != null &&
-        sizeBytes != null &&
-        expectedSizeBytes != sizeBytes) {
-      return true;
-    }
-    return false;
+    return descriptorIdentityStale(
+      storedEtag: this.etag,
+      etag: etag,
+      storedStorageKeyVersion: this.storageKeyVersion,
+      storageKeyVersion: storageKeyVersion,
+      storedSizeBytes: expectedSizeBytes,
+      sizeBytes: sizeBytes,
+    );
   }
 }

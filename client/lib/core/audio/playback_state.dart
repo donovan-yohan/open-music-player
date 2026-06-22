@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
+import '../cache/playback_cache_manager.dart';
 import 'audio_player_service.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'playback_source_resolver.dart';
@@ -43,10 +44,12 @@ class PlaybackState extends ChangeNotifier {
     this._audioService, {
     required SignedAudioUrlService signedAudioUrlService,
     LocalAudioArtifactResolver? localResolver,
+    PlaybackCacheManager? cacheManager,
   })  : _signedAudioUrlService = signedAudioUrlService,
         _sourceResolver = PlaybackSourceResolver(
           signedAudioUrlService: signedAudioUrlService,
           localResolver: localResolver,
+          cacheManager: cacheManager,
         ) {
     _init();
   }
