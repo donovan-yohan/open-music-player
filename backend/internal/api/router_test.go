@@ -55,6 +55,37 @@ func TestStreamProxyRouteRemovedFromNormalPath(t *testing.T) {
 	}
 }
 
+func TestDiscoveryAssistRouteRequiresAuth(t *testing.T) {
+	router := NewRouterWithConfig(&RouterConfig{
+		AuthHandlers: auth.NewHandlers(nil),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/discovery/assist", strings.NewReader(`{"prompt":"x"}`))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /api/v1/discovery/assist without auth = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestDiscoveryAssistRouteIsRegisteredWhenDisabled(t *testing.T) {
+	// With no discovery handlers wired the assist route must still exist (not 404)
+	// so it can surface SERVICE_DISABLED after auth, mirroring search/resolve-url.
+	router := NewRouterWithConfig(&RouterConfig{
+		AuthHandlers: auth.NewHandlers(nil),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/discovery/assist", strings.NewReader(`{"prompt":"x"}`))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound {
+		t.Fatalf("POST /api/v1/discovery/assist = 404, route should be registered")
+	}
+}
+
 func TestLocalFlutterAuthPreflightGetsCORSHeaders(t *testing.T) {
 	router := NewRouterWithConfig(&RouterConfig{})
 

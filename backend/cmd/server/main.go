@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/openmusicplayer/backend/internal/aiassist"
 	"github.com/openmusicplayer/backend/internal/api"
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/cache"
@@ -94,7 +95,26 @@ func main() {
 	searchHandlers := search.NewHandlers(trackRepo)
 	mbClient := musicbrainz.NewClient(redisCache)
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
-	discoveryHandlers := discovery.NewHandlers(discovery.NewDefaultServiceWithCatalog(mbClient))
+	discoveryService := discovery.NewDefaultServiceWithCatalog(mbClient)
+	// AI assist is grounded against discovery/resolution; a nil client (unset or
+	// disabled config) degrades to the disabled envelope without breaking search.
+	assistClient := aiassist.NewClient(aiassist.Config{
+		Enabled: cfg.AIAssistEnabled,
+		BaseURL: cfg.AIAssistBaseURL,
+		APIKey:  cfg.AIAssistAPIKey,
+		Model:   cfg.AIAssistModel,
+		Timeout: cfg.AIAssistTimeout,
+	})
+	assistService := discovery.NewAssistService(discovery.AssistConfig{
+		Client:  assistClient,
+		Search:  discoveryService,
+		Timeout: cfg.AIAssistTimeout,
+	})
+	discoveryHandlers := discovery.NewHandlersWithAssist(discoveryService, assistService)
+	log.Info(ctx, "Initialized discovery assist", map[string]interface{}{
+		"ai_assist_enabled": assistClient != nil,
+		"ai_assist_model":   cfg.AIAssistModel,
+	})
 	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
 	playlistHandlers := api.NewPlaylistHandlers(playlistRepo, trackRepo)
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
