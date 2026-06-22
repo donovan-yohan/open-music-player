@@ -198,6 +198,104 @@ func TestServiceSearchMusicBrainzFailureDoesNotHideSourceResults(t *testing.T) {
 	}
 }
 
+// slowMusicCatalog records how many times it is consulted and blocks on each
+// call so a regression can prove that a source-only search never touches the
+// catalog (call count stays at zero) instead of merely returning before the
+// catalog finishes.
+type slowMusicCatalog struct {
+	calls atomic.Int32
+	delay time.Duration
+}
+
+func (c *slowMusicCatalog) block(ctx context.Context) error {
+	c.calls.Add(1)
+	select {
+	case <-time.After(c.delay):
+	case <-ctx.Done():
+	}
+	return errors.New("musicbrainz unavailable")
+}
+
+func (c *slowMusicCatalog) SearchTracks(ctx context.Context, query string, limit, offset int, skipCache bool) (*musicbrainz.SearchResponse[musicbrainz.TrackResult], error) {
+	return nil, c.block(ctx)
+}
+
+func (c *slowMusicCatalog) SearchArtists(ctx context.Context, query string, limit, offset int, skipCache bool) (*musicbrainz.SearchResponse[musicbrainz.ArtistResult], error) {
+	return nil, c.block(ctx)
+}
+
+func (c *slowMusicCatalog) SearchAlbums(ctx context.Context, query string, limit, offset int, skipCache bool) (*musicbrainz.SearchResponse[musicbrainz.AlbumResult], error) {
+	return nil, c.block(ctx)
+}
+
+func TestServiceSearchSourceOnlySkipsMusicBrainzCatalog(t *testing.T) {
+	catalog := &slowMusicCatalog{delay: 2 * time.Second}
+	svc := NewService(ServiceConfig{
+		Providers: []Provider{
+			fakeProvider{name: "youtube", items: []Candidate{{CandidateID: "youtube:1", Provider: "youtube", SourceURL: "https://example.invalid/1", Title: "Source", Downloadable: true}}},
+		},
+		DefaultProviders: []string{"youtube", "soundcloud"},
+		MusicCatalog:     catalog,
+		OverallTimeout:   3 * time.Second,
+	})
+
+	start := time.Now()
+	resp := svc.Search(context.Background(), "source", []string{"youtube"}, 10)
+	elapsed := time.Since(start)
+
+	if calls := catalog.calls.Load(); calls != 0 {
+		t.Fatalf("source-only search consulted the catalog %d time(s); it must not wait on MusicBrainz", calls)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("source-only search took %s; it should return promptly without the %s catalog delay", elapsed, catalog.delay)
+	}
+	if len(resp.Results) != 1 {
+		t.Fatalf("flat source results = %d, want 1", len(resp.Results))
+	}
+	if len(resp.Sections) != 1 || resp.Sections[0].Kind != "sources" {
+		t.Fatalf("expected only a sources section for source-only search, got %#v", resp.Sections)
+	}
+	for _, provider := range resp.Providers {
+		if provider.Provider == CatalogProvider {
+			t.Fatalf("source-only search must not emit a %s provider summary: %#v", CatalogProvider, resp.Providers)
+		}
+	}
+}
+
+func TestServiceSearchCatalogOptInRunsMusicBrainz(t *testing.T) {
+	svc := NewService(ServiceConfig{
+		Providers: []Provider{
+			fakeProvider{name: "youtube", items: []Candidate{{CandidateID: "youtube:1", Provider: "youtube", SourceURL: "https://example.invalid/1", Title: "Source", Artist: "Artist", Downloadable: true}}},
+		},
+		DefaultProviders: []string{"youtube"},
+		MusicCatalog:     fakeMusicCatalog{},
+	})
+
+	resp := svc.Search(context.Background(), "artist source", []string{"youtube", CatalogProvider}, 10)
+
+	if len(resp.Results) != 1 {
+		t.Fatalf("flat source results = %d, want 1", len(resp.Results))
+	}
+	if len(resp.Sections) != 4 {
+		t.Fatalf("sections = %#v, want tracks/artists/albums/sources when catalog is opted in", resp.Sections)
+	}
+	var sawCatalog bool
+	for _, provider := range resp.Providers {
+		if provider.Provider == CatalogProvider {
+			if provider.Status != ProviderStatusOK {
+				t.Fatalf("catalog summary status = %s, want ok", provider.Status)
+			}
+			sawCatalog = true
+		}
+		if provider.Status == ProviderStatusUnsupported {
+			t.Fatalf("%q must be treated as a catalog opt-in, not an unsupported provider: %#v", CatalogProvider, resp.Providers)
+		}
+	}
+	if !sawCatalog {
+		t.Fatalf("missing musicbrainz provider summary after catalog opt-in: %#v", resp.Providers)
+	}
+}
+
 func TestServiceSearchMusicBrainzTimeoutUsesTimeoutSummary(t *testing.T) {
 	svc := NewService(ServiceConfig{
 		Providers:        []Provider{},

@@ -28,6 +28,12 @@ const (
 	ErrProviderUnsupported = "PROVIDER_UNSUPPORTED"
 	ErrProviderUnavailable = "PROVIDER_UNAVAILABLE"
 	ErrProviderBadResponse = "PROVIDER_BAD_RESPONSE"
+
+	// CatalogProvider is the pseudo-provider name callers include to opt into
+	// MusicBrainz catalog grouping. Provider-scoped, source-only searches omit
+	// it so fast source results are never held behind a slow or failing catalog
+	// lookup.
+	CatalogProvider = "musicbrainz"
 )
 
 // Candidate is the normalized source result returned to mobile clients. It is
@@ -165,7 +171,7 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 	if limit > 25 {
 		limit = 25
 	}
-	requested = s.normalizeRequestedProviders(requested)
+	sourceProviders, includeCatalog := s.resolveRequest(requested)
 
 	ctx, cancel := context.WithTimeout(ctx, s.overallTimeout)
 	defer cancel()
@@ -176,9 +182,9 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 		err      error
 		elapsed  time.Duration
 	}
-	ch := make(chan result, len(requested))
+	ch := make(chan result, len(sourceProviders))
 	var wg sync.WaitGroup
-	for _, providerName := range requested {
+	for _, providerName := range sourceProviders {
 		name := strings.TrimSpace(providerName)
 		if name == "" {
 			continue
@@ -204,7 +210,7 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 	}()
 
 	resp := SearchResponse{Query: query, Results: []Candidate{}, Sections: []SearchSection{}, Providers: []ProviderSummary{}}
-	providerItems := make(map[string][]Candidate, len(requested))
+	providerItems := make(map[string][]Candidate, len(sourceProviders))
 	for res := range ch {
 		summary := ProviderSummary{Provider: res.provider, ResultCount: len(res.items), ElapsedMs: res.elapsed.Milliseconds()}
 		if res.err != nil {
@@ -226,10 +232,10 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 		}
 		resp.Providers = append(resp.Providers, summary)
 	}
-	for _, providerName := range requested {
+	for _, providerName := range sourceProviders {
 		resp.Results = append(resp.Results, providerItems[providerName]...)
 	}
-	sections, catalogSummary := s.buildSections(ctx, query, limit, resp.Results)
+	sections, catalogSummary := s.buildSections(ctx, query, limit, resp.Results, includeCatalog)
 	resp.Sections = sections
 	if catalogSummary != nil {
 		resp.Providers = append(resp.Providers, *catalogSummary)
@@ -237,10 +243,10 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 	return resp
 }
 
-func (s *Service) buildSections(ctx context.Context, query string, limit int, sourceCandidates []Candidate) ([]SearchSection, *ProviderSummary) {
+func (s *Service) buildSections(ctx context.Context, query string, limit int, sourceCandidates []Candidate, includeCatalog bool) ([]SearchSection, *ProviderSummary) {
 	sections := []SearchSection{}
 	var catalogSummary *ProviderSummary
-	if s.musicCatalog != nil {
+	if includeCatalog && s.musicCatalog != nil {
 		tracks, artists, albums, summary := s.searchMusicCatalog(ctx, query, limit)
 		catalogSummary = &summary
 		if len(tracks) > 0 {
@@ -280,7 +286,7 @@ func (s *Service) searchMusicCatalog(ctx context.Context, query string, limit in
 	if entityLimit <= 0 {
 		entityLimit = 8
 	}
-	summary := ProviderSummary{Provider: "musicbrainz", Status: ProviderStatusOK}
+	summary := ProviderSummary{Provider: CatalogProvider, Status: ProviderStatusOK}
 	start := time.Now()
 	var errMessages []string
 	var errs []error
@@ -378,6 +384,40 @@ func joinParts(parts ...string) string {
 		}
 	}
 	return strings.Join(out, " • ")
+}
+
+// resolveRequest splits the requested entries into concrete source providers
+// and a flag for whether the MusicBrainz catalog grouping should run. Callers
+// opt into the catalog explicitly via CatalogProvider, so a provider-scoped,
+// source-only request (e.g. providers=youtube) returns promptly without waiting
+// on catalog lookups. An empty request falls back to the default providers and
+// includes the catalog so the full grouped discovery experience is preserved.
+func (s *Service) resolveRequest(requested []string) ([]string, bool) {
+	trimmed := make([]string, 0, len(requested))
+	for _, providerName := range requested {
+		if name := strings.TrimSpace(providerName); name != "" {
+			trimmed = append(trimmed, name)
+		}
+	}
+	if len(trimmed) == 0 {
+		return s.normalizeRequestedProviders(nil), true
+	}
+
+	includeCatalog := false
+	seen := make(map[string]struct{}, len(trimmed))
+	sources := make([]string, 0, len(trimmed))
+	for _, name := range trimmed {
+		if strings.EqualFold(name, CatalogProvider) {
+			includeCatalog = true
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		sources = append(sources, name)
+	}
+	return sources, includeCatalog
 }
 
 func (s *Service) normalizeRequestedProviders(requested []string) []string {
