@@ -32,10 +32,14 @@ class PlaybackSourceResolver {
     final localPaths = <int, String>{};
     final resolver = _localResolver;
     if (resolver != null) {
-      for (final id in trackIds) {
-        final path = await resolver.localAudioPath(id);
+      final resolved = await Future.wait(
+        trackIds
+            .map((id) async => MapEntry(id, await resolver.localAudioPath(id))),
+      );
+      for (final entry in resolved) {
+        final path = entry.value;
         if (path != null) {
-          localPaths[id] = path;
+          localPaths[entry.key] = path;
         }
       }
     }

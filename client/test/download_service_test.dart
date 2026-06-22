@@ -110,7 +110,34 @@ void main() {
       expect(await svc.isDownloaded(1), isTrue);
     });
 
-    test('a missing file downgrades the completed row and stops reporting '
+    test('throttles persisted progress updates while preserving completion',
+        () async {
+      final svc = service(
+        downloader: (
+          String url,
+          String destinationPath, {
+          CancelToken? cancelToken,
+          void Function(int received, int total)? onProgress,
+        }) async {
+          for (var received = 1; received <= 100; received++) {
+            onProgress?.call(received, 100);
+          }
+          await File(destinationPath).writeAsBytes(List.filled(100, 0x41));
+        },
+      );
+
+      await svc.downloadTrack(makeTrack(1, fileSizeBytes: 100));
+
+      expect(store.downloads[1]!.status, DownloadStatus.completed);
+      expect(store.downloads[1]!.progress, 1.0);
+      // 100 raw callbacks should not become 100 SQLite writes. The exact count
+      // is intentionally loose to avoid coupling this test to floating point
+      // threshold boundaries; the contract is bounded write amplification.
+      expect(store.statusUpdateCount, lessThan(30));
+    });
+
+    test(
+        'a missing file downgrades the completed row and stops reporting '
         'it as downloaded', () async {
       final svc = service(downloader: writeBytes(100));
       await svc.downloadTrack(makeTrack(1, fileSizeBytes: 100));
@@ -236,7 +263,8 @@ void main() {
       // them. Nothing to compare, so the artifact stays valid.
       final svc = service(
         downloader: writeBytes(100),
-        signed: signedService(sizeBytes: null, etag: null, storageKeyVersion: null),
+        signed:
+            signedService(sizeBytes: null, etag: null, storageKeyVersion: null),
       );
       await svc.downloadTrack(makeTrack(1));
 
@@ -396,7 +424,8 @@ void main() {
       expect(await File('$localPath.part').exists(), isFalse);
     });
 
-    test('validateStoredArtifacts downgrades completed rows whose file vanished',
+    test(
+        'validateStoredArtifacts downgrades completed rows whose file vanished',
         () async {
       final svc = service(downloader: writeBytes(100));
       await svc.downloadTrack(makeTrack(1, fileSizeBytes: 100));

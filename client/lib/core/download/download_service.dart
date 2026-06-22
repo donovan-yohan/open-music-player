@@ -90,6 +90,19 @@ class DownloadService implements LocalAudioArtifactResolver {
     final dir = await _downloadDirectoryProvider();
     final localPath = p.join(dir, '${track.id}.mp3');
     final partPath = '$localPath.part';
+    var lastPersistedProgress = 0.0;
+    var progressPersistence = Future<void>.value();
+    void persistProgress(double progress) {
+      if (!_shouldPersistProgress(lastPersistedProgress, progress)) return;
+      lastPersistedProgress = progress;
+      progressPersistence = progressPersistence.then(
+        (_) => _db.updateDownloadStatus(
+          track.id,
+          DownloadStatus.downloading,
+          progress: progress,
+        ),
+      );
+    }
 
     try {
       // Persist the track and a fresh in-progress row. Replacing any prior row
@@ -126,16 +139,14 @@ class DownloadService implements LocalAudioArtifactResolver {
             final progress =
                 (received / expectedTotal).clamp(0.0, 1.0).toDouble();
             _emitProgress(track.id, progress, DownloadStatus.downloading);
-            unawaited(
-              _db.updateDownloadStatus(
-                track.id,
-                DownloadStatus.downloading,
-                progress: progress,
-              ),
-            );
+            persistProgress(progress);
           }
         },
       );
+      // Drain any queued throttled progress write before writing the terminal
+      // completed/failed/cancelled state, otherwise a delayed progress write can
+      // race after completion and lie about the row state.
+      await progressPersistence;
 
       // The transfer can complete its bytes even after a cooperative cancel
       // (no DioException is thrown). Re-check before promoting so a cancel
@@ -147,16 +158,20 @@ class DownloadService implements LocalAudioArtifactResolver {
 
       await _promoteValidatedArtifact(track, descriptor, partPath, localPath);
     } on SignedAudioUrlException catch (e) {
+      await progressPersistence;
       await _failDownload(track.id, partPath, _downloadErrorMessage(e));
     } on _DownloadValidationException catch (e) {
+      await progressPersistence;
       await _failDownload(track.id, partPath, e.message);
     } on DioException catch (e) {
+      await progressPersistence;
       if (e.type == DioExceptionType.cancel) {
         await _abandonCancelled(track.id, partPath);
       } else {
         await _failDownload(track.id, partPath, e.message ?? 'Download failed');
       }
     } catch (e) {
+      await progressPersistence;
       await _failDownload(track.id, partPath, e.toString());
     } finally {
       _active.remove(track.id);
@@ -182,7 +197,9 @@ class DownloadService implements LocalAudioArtifactResolver {
     // Prefer the descriptor size, falling back to the library track's known
     // size, so truncation is caught whenever any expected size is known.
     final expectedSize = descriptor.sizeBytes ?? track.fileSizeBytes;
-    if (expectedSize != null && expectedSize > 0 && actualSize != expectedSize) {
+    if (expectedSize != null &&
+        expectedSize > 0 &&
+        actualSize != expectedSize) {
       throw const _DownloadValidationException(
         'Downloaded file was incomplete. Download it again.',
       );
@@ -314,6 +331,11 @@ class DownloadService implements LocalAudioArtifactResolver {
   /// Returns true only when the recorded identity still matches and the file is
   /// present; a mismatch downgrades the row and removes the stale artifact so
   /// the next play forces a redownload instead of serving stale bytes.
+  static bool _shouldPersistProgress(double lastPersisted, double progress) {
+    if (progress >= 1.0) return true;
+    return progress - lastPersisted >= 0.05;
+  }
+
   Future<bool> validateAgainstDescriptor(
     int trackId,
     SignedAudioDescriptor descriptor,
@@ -344,20 +366,21 @@ class DownloadService implements LocalAudioArtifactResolver {
   /// failed (their `.part` file removed). Safe to call on load; offline-safe.
   Future<void> validateStoredArtifacts() async {
     final completed = await _db.getAllDownloadedTracks();
-    for (final download in completed) {
-      await _validateCompleted(download);
-    }
+    await Future.wait(completed.map(_validateCompleted));
 
     final inProgress = await _db.getDownloadingTracks();
-    for (final download in inProgress) {
-      if (!_active.containsKey(download.trackId)) {
-        await _downgrade(
-          download.trackId,
-          'Download was interrupted. Download it again.',
-          deleteArtifact: true,
-        );
-      }
-    }
+    await Future.wait(
+      inProgress.map((download) async {
+        if (!_active.containsKey(download.trackId)) {
+          await _downgrade(
+            download.trackId,
+            'Download was interrupted. Download it again.',
+            deleteArtifact: true,
+            localPath: download.localPath,
+          );
+        }
+      }),
+    );
   }
 
   Future<bool> isDownloaded(int trackId) async {
@@ -409,12 +432,14 @@ class DownloadService implements LocalAudioArtifactResolver {
     int trackId,
     String error, {
     required bool deleteArtifact,
+    String? localPath,
   }) async {
     if (deleteArtifact) {
-      final download = await _db.getDownloadedTrack(trackId);
-      if (download != null) {
-        await _deleteFileQuietly(download.localPath);
-        await _deleteFileQuietly('${download.localPath}.part');
+      final path =
+          localPath ?? (await _db.getDownloadedTrack(trackId))?.localPath;
+      if (path != null) {
+        await _deleteFileQuietly(path);
+        await _deleteFileQuietly('$path.part');
       }
     }
     await _db.updateDownloadStatus(

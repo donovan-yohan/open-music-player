@@ -11,6 +11,7 @@ import 'package:open_music_player/shared/models/models.dart';
 class FakeOfflineDownloadStore implements OfflineDownloadStore {
   final Map<int, Track> tracks = {};
   final Map<int, DownloadedTrack> downloads = {};
+  int statusUpdateCount = 0;
 
   @override
   Future<void> insertTrack(Track track) async {
@@ -29,6 +30,7 @@ class FakeOfflineDownloadStore implements OfflineDownloadStore {
     double? progress,
     String? error,
   }) async {
+    statusUpdateCount++;
     final existing = downloads[trackId];
     if (existing == null) return;
     downloads[trackId] = existing.copyWith(
