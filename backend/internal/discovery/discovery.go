@@ -440,9 +440,14 @@ func (s *Service) normalizeRequestedProviders(requested []string) []string {
 	return normalized
 }
 
-type Handlers struct{ service *Service }
+type Handlers struct {
+	service  *Service
+	resolver *URLResolver
+}
 
-func NewHandlers(service *Service) *Handlers { return &Handlers{service: service} }
+func NewHandlers(service *Service) *Handlers {
+	return &Handlers{service: service, resolver: NewURLResolver(nil)}
+}
 
 func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -530,12 +535,8 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 			sourceURL = stringValue(raw, "webpage_url")
 		}
 		title := stringValue(raw, "title")
-		candidateID := p.name + ":" + id
-		if id == "" {
-			candidateID = p.name + ":" + sourceURL
-		}
 		items = append(items, Candidate{
-			CandidateID:  candidateID,
+			CandidateID:  buildCandidateID(p.name, id, sourceURL),
 			Provider:     p.name,
 			SourceID:     id,
 			SourceURL:    sourceURL,
@@ -577,4 +578,15 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// buildCandidateID derives the stable candidate identifier shared by source
+// search results and the direct-URL resolver. Keeping one format means both
+// paths dedupe consistently in the queue and library. It prefers the source ID
+// and falls back to the source URL when the provider yields no ID.
+func buildCandidateID(provider, sourceID, sourceURL string) string {
+	if sourceID != "" {
+		return provider + ":" + sourceID
+	}
+	return provider + ":" + sourceURL
 }
