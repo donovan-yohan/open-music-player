@@ -170,8 +170,10 @@ func (r *Router) setupRoutes() {
 	// Browse/discovery routes (auth required)
 	if r.discoveryHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/discovery/search", r.withAuth(r.discoveryHandlers.Search))
+		r.mux.HandleFunc("POST /api/v1/discovery/resolve-url", r.withAuth(r.discoveryHandlers.ResolveURL))
 	} else {
 		r.mux.HandleFunc("GET /api/v1/discovery/search", r.withAuth(unavailableHandler("Discovery search is unavailable")))
+		r.mux.HandleFunc("POST /api/v1/discovery/resolve-url", r.withAuth(unavailableHandler("Discovery URL resolver is unavailable")))
 	}
 	r.mux.HandleFunc("GET /api/v1/artists/{mb_id}", r.withAuth(r.browseHandlers.GetArtist))
 	r.mux.HandleFunc("GET /api/v1/albums/{mb_id}", r.withAuth(r.browseHandlers.GetAlbum))
