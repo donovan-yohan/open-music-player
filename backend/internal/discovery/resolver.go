@@ -10,6 +10,11 @@ import (
 	"github.com/openmusicplayer/backend/internal/validators"
 )
 
+// resolveURLMaxRequestBodyBytes caps the resolve-url request body before JSON
+// decoding. The body is a single pasted URL, so 64 KiB is generous while still
+// rejecting abusive payloads.
+const resolveURLMaxRequestBodyBytes = 64 * 1024
+
 // Resolver failure codes. They are deliberately distinct from the provider
 // search codes (ErrProvider*) so callers such as #75 assist and #76 UI can
 // branch on resolver-specific outcomes without colliding with search errors.
@@ -53,6 +58,16 @@ func NewURLResolver(registry *validators.Registry) *URLResolver {
 	return &URLResolver{registry: registry}
 }
 
+// validatorRegistry returns the configured registry, falling back to the default
+// registry when the resolver is zero-valued (registry nil). This keeps a
+// var-declared URLResolver safe to call without NewURLResolver.
+func (r *URLResolver) validatorRegistry() *validators.Registry {
+	if r.registry != nil {
+		return r.registry
+	}
+	return validators.DefaultRegistry()
+}
+
 // Resolve normalizes a pasted URL into one non-playable, downloadable candidate.
 // The candidate is queueable through the existing POST /api/v1/queue/items
 // contract but is never queued here. Failures are typed *ResolveError values.
@@ -68,7 +83,7 @@ func (r *URLResolver) Resolve(rawURL string) (Candidate, error) {
 		return Candidate{}, newResolveError(ErrResolveInvalidURL, "url must be an absolute http(s) URL")
 	}
 
-	result := r.registry.Validate(trimmed)
+	result := r.validatorRegistry().Validate(trimmed)
 	if result.SourceType == validators.SourceUnknown {
 		return Candidate{}, newResolveError(ErrResolveUnsupportedURL, "url is not a supported source")
 	}
@@ -160,6 +175,7 @@ func (h *Handlers) ResolveURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "RESOLVER_DISABLED", "url resolver is unavailable")
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, resolveURLMaxRequestBodyBytes)
 	var req ResolveURLRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")

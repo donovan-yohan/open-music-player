@@ -149,6 +149,47 @@ func TestURLResolverRejectsBadURLsWithTypedErrors(t *testing.T) {
 	}
 }
 
+func TestZeroValueURLResolverFallsBackToDefaultRegistry(t *testing.T) {
+	// A var-declared resolver has a nil registry; Resolve must not panic and must
+	// behave like a default resolver.
+	var resolver URLResolver
+
+	candidate, err := resolver.Resolve("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+	if err != nil {
+		t.Fatalf("zero-value Resolve returned error: %v", err)
+	}
+	if candidate.Provider != "youtube" || candidate.SourceID != "dQw4w9WgXcQ" {
+		t.Fatalf("unexpected candidate from zero-value resolver: %#v", candidate)
+	}
+
+	if _, err := resolver.Resolve("https://example.com/not-supported"); err == nil {
+		t.Fatalf("zero-value Resolve accepted an unsupported URL")
+	}
+}
+
+func TestResolveURLHandlerRejectsOversizedBody(t *testing.T) {
+	handlers := NewHandlers(NewService(ServiceConfig{}))
+	// Build a body comfortably larger than the cap.
+	body := `{"url":"https://www.youtube.com/watch?v=` + strings.Repeat("a", resolveURLMaxRequestBodyBytes+1) + `"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/discovery/resolve-url", strings.NewReader(body))
+
+	handlers.ResolveURL(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for oversized body; body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if payload.Code != "INVALID_REQUEST" {
+		t.Fatalf("error code = %q, want INVALID_REQUEST", payload.Code)
+	}
+}
+
 func TestResolveURLHandlerReturnsQueueableCandidate(t *testing.T) {
 	handlers := NewHandlers(NewService(ServiceConfig{}))
 	body := `{"url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ"}`
