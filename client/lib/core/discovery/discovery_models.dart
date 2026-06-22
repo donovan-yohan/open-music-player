@@ -290,6 +290,149 @@ class DiscoveryProviderSummary {
   }
 }
 
+/// Grounded AI-assist envelope returned by `POST /api/v1/discovery/assist`.
+///
+/// The backend returns HTTP 200 for every orchestrated outcome and encodes the
+/// real state in [status] (`ok` / `disabled` / `clarification` / `error`), so a
+/// disabled model or an upstream failure is first-class data the UI branches on
+/// rather than a transport error. [candidates] holds only resolver-grounded
+/// direct-URL candidates; provider-backed results live in [search]. No field
+/// ever carries a model-fabricated URL — the backend scrubs free text — so the
+/// UI can render every string and candidate as-is without re-validating.
+class DiscoveryAssistResponse {
+  final String status;
+  final String assistantText;
+  final DiscoveryAssistIntent? intent;
+  final DiscoveryAssistClarification? clarification;
+  final DiscoverySearchResponse? search;
+  final List<DiscoveryCandidate> candidates;
+  final List<String> caveats;
+  final DiscoveryAssistError? error;
+
+  const DiscoveryAssistResponse({
+    required this.status,
+    this.assistantText = '',
+    this.intent,
+    this.clarification,
+    this.search,
+    this.candidates = const [],
+    this.caveats = const [],
+    this.error,
+  });
+
+  factory DiscoveryAssistResponse.fromJson(Map<String, dynamic> json) {
+    final searchJson = json['search'];
+    final intentJson = json['intent'];
+    final clarificationJson = json['clarification'];
+    final errorJson = json['error'];
+    final rawStatus = (json['status'] as String? ?? '').trim();
+    return DiscoveryAssistResponse(
+      // A missing/blank status is treated as an error so the UI never silently
+      // renders an unlabelled envelope as a success.
+      status: rawStatus.isEmpty ? 'error' : rawStatus,
+      assistantText: json['assistantText'] as String? ?? '',
+      intent: intentJson is Map<String, dynamic>
+          ? DiscoveryAssistIntent.fromJson(intentJson)
+          : null,
+      clarification: clarificationJson is Map<String, dynamic>
+          ? DiscoveryAssistClarification.fromJson(clarificationJson)
+          : null,
+      search: searchJson is Map<String, dynamic>
+          ? DiscoverySearchResponse.fromJson(searchJson)
+          : null,
+      candidates: (json['candidates'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(DiscoveryCandidate.fromJson)
+          .toList(),
+      caveats: (json['caveats'] as List<dynamic>? ?? const [])
+          .map((value) => value?.toString().trim() ?? '')
+          .where((value) => value.isNotEmpty)
+          .toList(),
+      error: errorJson is Map<String, dynamic>
+          ? DiscoveryAssistError.fromJson(errorJson)
+          : null,
+    );
+  }
+
+  bool get isOk => status == 'ok';
+  bool get isDisabled => status == 'disabled';
+  bool get isClarification => status == 'clarification';
+  bool get isError => status == 'error';
+
+  bool get hasCandidates => candidates.isNotEmpty;
+  bool get hasSearchResults => search?.sections.isNotEmpty ?? false;
+
+  /// Whether anything queueable/searchable was grounded. Drives the
+  /// "no results" empty state independently of the disabled/error banners.
+  bool get hasGroundedResults => hasCandidates || hasSearchResults;
+}
+
+/// Grounded echo of how OMP interpreted the request. [detectedUrl] is only ever
+/// a URL the user pasted that the resolver accepted, never a model-emitted one.
+class DiscoveryAssistIntent {
+  final String kind;
+  final String? searchQuery;
+  final List<String> providers;
+  final String? detectedUrl;
+
+  const DiscoveryAssistIntent({
+    required this.kind,
+    this.searchQuery,
+    this.providers = const [],
+    this.detectedUrl,
+  });
+
+  factory DiscoveryAssistIntent.fromJson(Map<String, dynamic> json) {
+    return DiscoveryAssistIntent(
+      kind: json['kind'] as String? ?? 'unknown',
+      searchQuery: _blankToNull(json['searchQuery'] as String?),
+      providers: (json['providers'] as List<dynamic>? ?? const [])
+          .map((value) => value?.toString().trim() ?? '')
+          .where((value) => value.isNotEmpty)
+          .toList(),
+      detectedUrl: _blankToNull(json['detectedUrl'] as String?),
+    );
+  }
+
+  bool get isDirectUrl => kind == 'direct_url';
+}
+
+/// A follow-up question the assistant surfaced when the request was ambiguous.
+class DiscoveryAssistClarification {
+  final String question;
+  final List<String> options;
+
+  const DiscoveryAssistClarification({
+    required this.question,
+    this.options = const [],
+  });
+
+  factory DiscoveryAssistClarification.fromJson(Map<String, dynamic> json) {
+    return DiscoveryAssistClarification(
+      question: json['question'] as String? ?? '',
+      options: (json['options'] as List<dynamic>? ?? const [])
+          .map((value) => value?.toString().trim() ?? '')
+          .where((value) => value.isNotEmpty)
+          .toList(),
+    );
+  }
+}
+
+/// Stable error descriptor for disabled/upstream/timeout assist outcomes.
+class DiscoveryAssistError {
+  final String code;
+  final String message;
+
+  const DiscoveryAssistError({required this.code, required this.message});
+
+  factory DiscoveryAssistError.fromJson(Map<String, dynamic> json) {
+    return DiscoveryAssistError(
+      code: json['code'] as String? ?? '',
+      message: json['message'] as String? ?? '',
+    );
+  }
+}
+
 class DiscoveryQueueState {
   final List<DiscoveryQueueItem> items;
   final int currentPosition;

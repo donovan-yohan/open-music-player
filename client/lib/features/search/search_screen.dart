@@ -34,6 +34,22 @@ class _SearchScreenState extends State<SearchScreen> {
   String _query = '';
   String? _searchError;
 
+  // Assistive mode: the same search entry, switched to call the grounded AI
+  // assist endpoint. Default stays plain discovery search so the fallback path
+  // is always one tap away and never depends on the model being configured.
+  bool _assistMode = false;
+  DiscoveryAssistResponse? _assistResponse;
+  int _assistRequestSerial = 0;
+  bool _isAsking = false;
+  String _askedPrompt = '';
+  String? _assistError;
+
+  // A prompt that begins with an absolute http(s) URL is routed to the assist
+  // endpoint even from Search mode: its direct-URL resolver grounds the link
+  // into a queueable candidate without the user rewriting it, and that path
+  // works even when the model is disabled.
+  static final RegExp _urlPrompt = RegExp(r'^https?://', caseSensitive: false);
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -56,16 +72,25 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   void _onQueryChanged(String value) {
+    if (_assistMode) {
+      // Assist calls cost a model round-trip, so they never fire on keystroke
+      // debounce — only on explicit submit. Clearing the field clears the
+      // grounded result so a stale answer never lingers under an empty prompt,
+      // and bumps the serial so any in-flight request can neither resurrect a
+      // result nor leave the spinner stuck under the now-empty box.
+      _debounceTimer?.cancel();
+      if (value.trim().isEmpty) {
+        setState(_resetAssist);
+      } else {
+        setState(() {});
+      }
+      return;
+    }
+
     final next = value.trim();
     _debounceTimer?.cancel();
     if (next.isEmpty) {
-      _searchRequestSerial++;
-      setState(() {
-        _query = '';
-        _response = null;
-        _searchError = null;
-        _isSearching = false;
-      });
+      setState(_resetSearch);
       return;
     }
 
@@ -120,6 +145,118 @@ class _SearchScreenState extends State<SearchScreen> {
       if (mounted && requestId == _searchRequestSerial) {
         setState(() {
           _isSearching = false;
+        });
+      }
+    }
+  }
+
+  // Tear down a mode's transient view state in one place: bump its request
+  // serial so any in-flight response is ignored on completion, then clear its
+  // result/error/prompt/spinner. Callers wrap these in setState. This is the
+  // single source of truth the mode toggle, clear, and fallback paths all route
+  // through, so the "inactive mode is fully reset" invariant cannot drift.
+  void _resetAssist() {
+    _assistRequestSerial++;
+    _assistResponse = null;
+    _assistError = null;
+    _askedPrompt = '';
+    _isAsking = false;
+  }
+
+  void _resetSearch() {
+    _searchRequestSerial++;
+    _response = null;
+    _searchError = null;
+    _query = '';
+    _isSearching = false;
+  }
+
+  /// Route an explicit submit. Assist mode (or a pasted URL from search mode)
+  /// goes to the grounded assist endpoint; everything else is plain discovery
+  /// search. Switching to assist on a pasted URL is the only implicit mode
+  /// change, and it never queues/downloads — it only resolves a candidate.
+  void _onSubmit(String value) {
+    final text = value.trim();
+    if (text.isEmpty) return;
+    if (_assistMode || _urlPrompt.hasMatch(text)) {
+      if (!_assistMode) setState(() => _assistMode = true);
+      _runAssist(prompt: text);
+    } else {
+      _runSearch(query: text);
+    }
+  }
+
+  void _setAssistMode(bool enabled) {
+    if (enabled == _assistMode) return;
+    _debounceTimer?.cancel();
+    setState(() {
+      _assistMode = enabled;
+      // Drop the now-inactive mode's results so a stale answer can never render
+      // under the other mode's input, and invalidate its in-flight request. The
+      // typed prompt is intentionally carried across; only results are cleared,
+      // so the box and what is shown can never contradict each other.
+      if (enabled) {
+        _resetSearch();
+      } else {
+        _resetAssist();
+      }
+    });
+  }
+
+  /// Fall back from a disabled/failing assistant to normal discovery search,
+  /// reusing the prompt the user already typed. This is the guarantee that AI
+  /// being off or erroring never strands the user.
+  void _searchDirectly() {
+    final prompt =
+        _askedPrompt.isNotEmpty ? _askedPrompt : _queryController.text.trim();
+    setState(() {
+      _assistMode = false;
+      _resetAssist();
+    });
+    if (prompt.isNotEmpty) {
+      _queryController.text = prompt;
+      _runSearch(query: prompt);
+    }
+  }
+
+  Future<void> _runAssist({String? prompt}) async {
+    final text = (prompt ?? _queryController.text).trim();
+    _debounceTimer?.cancel();
+    if (text.isEmpty) {
+      setState(_resetAssist);
+      return;
+    }
+    // A monotonic serial (mirroring _runSearch) is the completion guard, not
+    // prompt equality: it guarantees a superseded request always releases the
+    // spinner and can never overwrite a newer result, even on resubmit of the
+    // same prompt or a clear mid-flight.
+    final requestId = ++_assistRequestSerial;
+
+    setState(() {
+      _askedPrompt = text;
+      _isAsking = true;
+      _assistError = null;
+    });
+
+    try {
+      final response = await _discoveryService.assist(text);
+      if (!mounted || requestId != _assistRequestSerial) return;
+      setState(() {
+        _assistResponse = response;
+      });
+    } catch (error) {
+      if (!mounted || requestId != _assistRequestSerial) return;
+      // A transport failure (network/older backend without the route) is not a
+      // model "disabled" envelope: surface it as an assist error that still
+      // offers the search-directly fallback.
+      setState(() {
+        _assistResponse = null;
+        _assistError = _friendlyApiError(error);
+      });
+    } finally {
+      if (mounted && requestId == _assistRequestSerial) {
+        setState(() {
+          _isAsking = false;
         });
       }
     }
@@ -230,6 +367,7 @@ class _SearchScreenState extends State<SearchScreen> {
   Widget build(BuildContext context) {
     final queueProvider = context.watch<QueueProvider>();
     final queueError = queueProvider.error;
+    final modeError = _assistMode ? _assistError : _searchError;
 
     return Scaffold(
       appBar: AppBar(
@@ -248,7 +386,10 @@ class _SearchScreenState extends State<SearchScreen> {
       body: RefreshIndicator(
         onRefresh: () async {
           await Future.wait([
-            if (_query.isNotEmpty) _runSearch(),
+            if (_assistMode && _askedPrompt.isNotEmpty)
+              _runAssist(prompt: _askedPrompt)
+            else if (!_assistMode && _query.isNotEmpty)
+              _runSearch(),
             _refreshQueue(force: true),
           ]);
         },
@@ -257,13 +398,17 @@ class _SearchScreenState extends State<SearchScreen> {
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 120),
           children: [
             _buildSearchBox(),
-            if (_searchError != null)
-              _buildErrorCard(_searchError!, _runSearch)
-            else if (queueError != null)
+            const SizedBox(height: 10),
+            _buildModeToggle(),
+            // A queue-load error is only shown when the active mode is otherwise
+            // clean, so the mode's own error card stays the primary message.
+            if (modeError == null && queueError != null)
               _buildErrorCard(queueError, () => _refreshQueue(force: true)),
-            if (_response != null) _buildProviderRow(_response!.providers),
             const SizedBox(height: 12),
-            _buildResultsSection(queueProvider),
+            if (_assistMode)
+              ..._buildAssistBody(queueProvider)
+            else
+              ..._buildSearchModeBody(queueProvider),
             const SizedBox(height: 16),
             _buildQueueAffordance(queueProvider),
           ],
@@ -272,20 +417,64 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
+  List<Widget> _buildSearchModeBody(QueueProvider queueProvider) {
+    return [
+      if (_searchError != null) _buildErrorCard(_searchError!, _runSearch),
+      if (_response != null) _buildProviderRow(_response!.providers),
+      const SizedBox(height: 12),
+      _buildResultsSection(queueProvider),
+    ];
+  }
+
+  Widget _buildModeToggle() {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SegmentedButton<bool>(
+        showSelectedIcon: false,
+        style: const ButtonStyle(
+          visualDensity: VisualDensity.compact,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        segments: const [
+          ButtonSegment<bool>(
+            value: false,
+            icon: Icon(Icons.travel_explore, size: 18),
+            label: Text('Search'),
+          ),
+          ButtonSegment<bool>(
+            value: true,
+            icon: Icon(Icons.auto_awesome, size: 18),
+            label: Text('Assist'),
+          ),
+        ],
+        selected: {_assistMode},
+        onSelectionChanged: (selection) => _setAssistMode(selection.first),
+      ),
+    );
+  }
+
   Widget _buildSearchBox() {
     return TextField(
+      key: const ValueKey('search_assist_input'),
       controller: _queryController,
       minLines: 1,
-      textInputAction: TextInputAction.search,
+      maxLines: _assistMode ? 3 : 1,
+      textInputAction:
+          _assistMode ? TextInputAction.go : TextInputAction.search,
       onChanged: _onQueryChanged,
-      onSubmitted: (value) => _runSearch(query: value),
+      onSubmitted: _onSubmit,
       decoration: InputDecoration(
-        labelText: 'Search songs, artists, albums, or sources',
-        hintText: 'iPod Touch, Ninajirachi, live set...',
-        prefixIcon: const Icon(Icons.travel_explore),
+        labelText: _assistMode
+            ? 'Ask for a song or paste a link'
+            : 'Search songs, artists, albums, or sources',
+        hintText: _assistMode
+            ? 'that live Porter Robinson Shelter from YouTube...'
+            : 'iPod Touch, Ninajirachi, live set...',
+        prefixIcon:
+            Icon(_assistMode ? Icons.auto_awesome : Icons.travel_explore),
         suffixIcon: _queryController.text.isNotEmpty
             ? IconButton(
-                tooltip: 'Clear search',
+                tooltip: _assistMode ? 'Clear prompt' : 'Clear search',
                 onPressed: () {
                   _queryController.clear();
                   _onQueryChanged('');
@@ -295,6 +484,328 @@ class _SearchScreenState extends State<SearchScreen> {
             : null,
         border: const OutlineInputBorder(),
       ),
+    );
+  }
+
+  List<Widget> _buildAssistBody(QueueProvider queueProvider) {
+    if (_assistError != null) {
+      return [
+        _buildAssistStatusBanner(
+          icon: Icons.error_outline,
+          message: _assistError!,
+          tone: _AssistTone.error,
+          showRetry: true,
+        ),
+      ];
+    }
+
+    if (_isAsking) {
+      return const [
+        Padding(
+          padding: EdgeInsets.symmetric(vertical: 48),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      ];
+    }
+
+    final response = _assistResponse;
+    if (response == null) {
+      return [
+        _buildEmptyPanel(
+          icon: Icons.auto_awesome,
+          title: 'Ask for a song or paste a link',
+          body:
+              'Describe what you want — "that live Porter Robinson Shelter from YouTube" — or paste a YouTube/SoundCloud link. Results are grounded in your real sources, never invented by the model.',
+        ),
+      ];
+    }
+
+    final widgets = <Widget>[];
+
+    // Status banners explain a degraded model and always keep a one-tap path
+    // back to normal discovery search.
+    if (response.isDisabled) {
+      widgets.add(
+        _buildAssistStatusBanner(
+          icon: Icons.info_outline,
+          message: response.assistantText.isNotEmpty
+              ? response.assistantText
+              : 'AI assist is not configured. You can still search directly or paste a YouTube/SoundCloud link.',
+          tone: _AssistTone.info,
+        ),
+      );
+    } else if (response.isError) {
+      widgets.add(
+        _buildAssistStatusBanner(
+          icon: Icons.error_outline,
+          message: response.assistantText.isNotEmpty
+              ? response.assistantText
+              : 'The assistant is unavailable right now. You can still search directly or paste a link.',
+          tone: _AssistTone.error,
+          showRetry: true,
+        ),
+      );
+    } else if (response.assistantText.isNotEmpty) {
+      widgets.add(
+        _buildAssistantTextCard(
+          response.assistantText,
+          showProvenanceNote: response.hasGroundedResults,
+        ),
+      );
+    }
+
+    final clarification = response.clarification;
+    if (clarification != null && clarification.question.isNotEmpty) {
+      widgets.add(_buildClarificationCard(clarification));
+    }
+
+    if (response.caveats.isNotEmpty) {
+      widgets.add(_buildCaveatsCard(response.caveats));
+    }
+
+    final providers =
+        response.search?.providers ?? const <DiscoveryProviderSummary>[];
+    if (providers.isNotEmpty) {
+      widgets.add(_buildProviderRow(providers));
+    }
+
+    // Grounded direct-URL candidates (resolver output). Each reuses the same
+    // result tile and its explicit queue control as normal search — nothing is
+    // ever auto-queued.
+    if (response.candidates.isNotEmpty) {
+      widgets.add(const SizedBox(height: 8));
+      widgets.add(_buildSectionHeader(Icons.link, 'Direct link'));
+      for (final candidate in response.candidates) {
+        widgets.add(_buildResultTile(queueProvider, candidate));
+      }
+    }
+
+    // Grounded provider search sections (tracks / artists / albums / sources).
+    final sections =
+        response.search?.sections ?? const <DiscoverySearchSection>[];
+    for (final section in sections) {
+      widgets.add(const SizedBox(height: 8));
+      widgets.add(_buildSearchSection(queueProvider, section));
+    }
+
+    // Honest empty state: the assistant ran but could ground nothing actionable.
+    if (response.isOk &&
+        !response.hasGroundedResults &&
+        clarification == null) {
+      widgets.add(
+        _buildEmptyPanel(
+          icon: Icons.search_off,
+          title: 'No grounded sources',
+          body:
+              'The assistant could not find queueable sources for that. Try adding an artist, title, or a direct link.',
+        ),
+      );
+    }
+
+    return widgets;
+  }
+
+  Widget _buildAssistantTextCard(
+    String text, {
+    required bool showProvenanceNote,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      key: const ValueKey('assist_text_card'),
+      margin: const EdgeInsets.only(bottom: 4),
+      color: colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.auto_awesome, size: 20, color: colorScheme.primary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(text, style: const TextStyle(height: 1.3)),
+                  // The provenance note only appears when grounded candidates
+                  // actually follow, so it never promises results that the
+                  // honest "no grounded sources" empty state then contradicts.
+                  if (showProvenanceNote) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'AI-assisted. Candidates below come from your sources, not the model.',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAssistStatusBanner({
+    required IconData icon,
+    required String message,
+    required _AssistTone tone,
+    bool showRetry = false,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final background = tone == _AssistTone.error
+        ? colorScheme.errorContainer
+        : colorScheme.secondaryContainer;
+    final foreground = tone == _AssistTone.error
+        ? colorScheme.onErrorContainer
+        : colorScheme.onSecondaryContainer;
+    return Card(
+      key: const ValueKey('assist_status_banner'),
+      color: background,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon, color: foreground),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(message, style: TextStyle(color: foreground)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            // Wrap (not Row) so Retry + Search directly reflow instead of
+            // overflowing the narrow mobile-web viewport when both are present.
+            Wrap(
+              alignment: WrapAlignment.end,
+              spacing: 8,
+              children: [
+                if (showRetry)
+                  TextButton(
+                    onPressed: () => _runAssist(prompt: _askedPrompt),
+                    child: const Text('Retry'),
+                  ),
+                TextButton(
+                  key: const ValueKey('assist_search_directly'),
+                  onPressed: _searchDirectly,
+                  child: const Text('Search directly'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildClarificationCard(DiscoveryAssistClarification clarification) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      key: const ValueKey('assist_clarification_card'),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.help_outline, size: 20, color: colorScheme.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    clarification.question,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+            if (clarification.options.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: clarification.options.map((option) {
+                  return ActionChip(
+                    label: Text(option),
+                    onPressed: () {
+                      _queryController.text = option;
+                      _runAssist(prompt: option);
+                    },
+                  );
+                }).toList(),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCaveatsCard(List<String> caveats) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      key: const ValueKey('assist_caveats_card'),
+      color: colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.info_outline,
+                  size: 18,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Heads up',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            ...caveats.map(
+              (caveat) => Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  '• $caveat',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(IconData icon, String title) {
+    return Row(
+      children: [
+        Icon(icon, size: 18),
+        const SizedBox(width: 6),
+        Text(
+          title,
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+        ),
+      ],
     );
   }
 
@@ -343,18 +854,7 @@ class _SearchScreenState extends State<SearchScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Icon(_sectionIcon(section.kind), size: 18),
-            const SizedBox(width: 6),
-            Text(
-              section.title,
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-            ),
-          ],
-        ),
+        _buildSectionHeader(_sectionIcon(section.kind), section.title),
         const SizedBox(height: 8),
         ...section.items.map((item) {
           final candidate = item.candidate;
@@ -826,3 +1326,7 @@ class _SearchScreenState extends State<SearchScreen> {
     return error.toString();
   }
 }
+
+/// Tone for an assist status banner: an informational disabled state versus a
+/// recoverable error. Both keep the search-directly fallback.
+enum _AssistTone { info, error }
