@@ -28,6 +28,9 @@ func (c *fakeAssistClient) ExtractIntent(ctx context.Context, prompt string) (*a
 	if c.err != nil {
 		return nil, c.err
 	}
+	if c.intent == nil {
+		return nil, nil
+	}
 	clone := *c.intent
 	return &clone, nil
 }
@@ -74,6 +77,22 @@ func TestAssistDirectURLFromPromptResolvesWithoutModel(t *testing.T) {
 	}
 	if len(resp.SuggestedActions) != 1 || resp.SuggestedActions[0].Kind != "queue" {
 		t.Fatalf("expected a single non-destructive queue action: %#v", resp.SuggestedActions)
+	}
+}
+
+func TestAssistNilModelIntentReturnsBadResponse(t *testing.T) {
+	svc := newAssistService(&fakeAssistClient{}, fakeProvider{name: "youtube"})
+
+	resp := svc.Assist(context.Background(), "find shelter live", 0)
+
+	if resp.Status != AssistStatusError {
+		t.Fatalf("status = %q, want error", resp.Status)
+	}
+	if resp.Error == nil || resp.Error.Code != aiassist.CodeBadResponse {
+		t.Fatalf("error envelope = %#v, want bad response", resp.Error)
+	}
+	if len(resp.Candidates) != 0 {
+		t.Fatalf("nil model intent must not produce candidates: %#v", resp.Candidates)
 	}
 }
 

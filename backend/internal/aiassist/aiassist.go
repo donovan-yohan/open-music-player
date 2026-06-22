@@ -224,7 +224,13 @@ func (c *openAIClient) ExtractIntent(ctx context.Context, prompt string) (*Inten
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
+			return nil, &Error{Code: CodeTimeout, Message: "ai assist request timed out"}
+		}
+		return nil, &Error{Code: CodeUpstream, Message: c.redact(err.Error())}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Deliberately do not echo the upstream body: it could repeat the request
 		// (and thus the key) and adds no machine-actionable signal beyond status.

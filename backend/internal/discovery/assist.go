@@ -165,6 +165,9 @@ func (s *AssistService) Assist(ctx context.Context, prompt string, limit int) As
 	if err != nil {
 		return assistErrorResponse(err)
 	}
+	if rawIntent == nil {
+		return assistErrorResponse(&aiassist.Error{Code: aiassist.CodeBadResponse, Message: "ai assist returned nil intent"})
+	}
 	// Strip any URL the model embedded in free text (assistantText, caveats,
 	// clarification, even the search query). This makes the boundary airtight:
 	// no model-originated URL can reach the client in any field, so a UI cannot

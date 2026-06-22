@@ -3,6 +3,7 @@ package aiassist
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -157,6 +158,35 @@ func TestExtractIntentMapsTimeout(t *testing.T) {
 	assertTypedError(t, err, CodeTimeout)
 	assertNoSecret(t, err)
 }
+
+func TestExtractIntentMapsBodyReadErrors(t *testing.T) {
+	client := &openAIClient{
+		httpClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       errReadCloser{err: context.DeadlineExceeded},
+			}, nil
+		})},
+		baseURL: "http://assist.invalid",
+		apiKey:  testAPIKey,
+		model:   "m",
+	}
+
+	_, err := client.ExtractIntent(context.Background(), "x")
+	assertTypedError(t, err, CodeTimeout)
+	assertNoSecret(t, err)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type errReadCloser struct{ err error }
+
+func (r errReadCloser) Read([]byte) (int, error) { return 0, r.err }
+func (r errReadCloser) Close() error             { return nil }
+
+var _ io.ReadCloser = errReadCloser{}
 
 func TestNewClientDisabledWhenNotReady(t *testing.T) {
 	cases := []struct {
