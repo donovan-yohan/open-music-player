@@ -17,6 +17,18 @@ class _FakeLocalResolver implements LocalAudioArtifactResolver {
   Future<String?> localAudioPath(int trackId) async => paths[trackId];
 }
 
+class _MissingDescriptorService extends SignedAudioUrlService {
+  _MissingDescriptorService() : super.withRequester((_) async => {'urls': []});
+
+  @override
+  Future<Map<int, SignedAudioDescriptor>> requireDescriptors(
+    Iterable<int> trackIds, {
+    int? ttlSeconds,
+  }) async {
+    return const {};
+  }
+}
+
 Map<String, dynamic> trackMap(int id) => {
       'id': id,
       'title': 'Track $id',
@@ -227,5 +239,25 @@ void main() {
     final second = await resolver.resolveQueue([trackMap(5)]);
     expect(second.single.extras?['localPath'], store.entries[5]!.localPath);
     expect(second.single.extras?.containsKey('url'), isFalse);
+  });
+
+  test('a missing descriptor throws a clear unavailable playback error',
+      () async {
+    final resolver = PlaybackSourceResolver(
+      signedAudioUrlService: _MissingDescriptorService(),
+    );
+
+    await expectLater(
+      resolver.resolveQueue([trackMap(9)]),
+      throwsA(
+        isA<SignedAudioUrlException>()
+            .having((error) => error.code, 'code', 'AUDIO_UNAVAILABLE')
+            .having(
+              (error) => error.message,
+              'message',
+              contains('No playback descriptor found for track 9'),
+            ),
+      ),
+    );
   });
 }

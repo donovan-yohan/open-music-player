@@ -52,9 +52,9 @@ String playbackCacheKey(SignedAudioDescriptor descriptor) {
 String? audioObjectIdentity(String url) {
   final uri = Uri.tryParse(url);
   if (uri == null) return null;
-  if (uri.host.isEmpty && uri.path.isEmpty) return null;
+  if (uri.authority.isEmpty && uri.path.isEmpty) return null;
   final scheme = uri.scheme.isEmpty ? '' : '${uri.scheme}://';
-  return '$scheme${uri.host}${uri.path}';
+  return '$scheme${uri.authority}${uri.path}';
 }
 
 /// Bounded, evictable cache of recently/near-future playback artifacts.
@@ -118,34 +118,43 @@ class PlaybackCacheManager {
   /// the signed URL instead of playing stale bytes. A hit bumps the entry's
   /// recency so it survives eviction longer.
   Future<String?> get(int trackId, SignedAudioDescriptor descriptor) async {
-    final entry = await _store.getEntry(trackId);
-    if (entry == null) return null;
+    try {
+      final entry = await _store.getEntry(trackId);
+      if (entry == null) return null;
 
-    if (entry.isStaleAgainstDescriptor(
-      etag: descriptor.etag,
-      storageKeyVersion: descriptor.storageKeyVersion,
-      sizeBytes: descriptor.sizeBytes,
-      urlIdentity: audioObjectIdentity(descriptor.url),
-    )) {
-      await _invalidate(entry);
-      return null;
-    }
-
-    final file = File(entry.localPath);
-    if (!await file.exists()) {
-      await _invalidate(entry);
-      return null;
-    }
-    if (entry.fileSizeBytes > 0) {
-      final actualSize = await file.length();
-      if (actualSize != entry.fileSizeBytes) {
+      if (entry.isStaleAgainstDescriptor(
+        etag: descriptor.etag,
+        storageKeyVersion: descriptor.storageKeyVersion,
+        sizeBytes: descriptor.sizeBytes,
+        urlIdentity: audioObjectIdentity(descriptor.url),
+      )) {
         await _invalidate(entry);
         return null;
       }
-    }
 
-    await _store.touchEntry(trackId, _clock().toUtc());
-    return entry.localPath;
+      final file = File(entry.localPath);
+      if (!await file.exists()) {
+        await _invalidate(entry);
+        return null;
+      }
+      if (entry.fileSizeBytes > 0) {
+        final actualSize = await file.length();
+        if (actualSize != entry.fileSizeBytes) {
+          await _invalidate(entry);
+          return null;
+        }
+      }
+
+      await _store.touchEntry(trackId, _clock().toUtc());
+      return entry.localPath;
+    } catch (error) {
+      // Cache hits are an optimization. If disk or store access fails, degrade
+      // to normal signed-URL playback rather than crashing resolution.
+      if (kDebugMode) {
+        debugPrint('Playback cache get failed for track $trackId: $error');
+      }
+      return null;
+    }
   }
 
   /// Populates the cache for [trackId] from [descriptor] for a future play.
@@ -174,6 +183,7 @@ class PlaybackCacheManager {
     SignedAudioDescriptor descriptor,
     Set<int> protect,
   ) async {
+    String? partPath;
     try {
       // Explicit download wins: never duplicate user-owned bytes into the cache.
       if (await _explicitDownloads?.localAudioPath(trackId) != null) return;
@@ -184,7 +194,7 @@ class PlaybackCacheManager {
       final dir = await _cacheDirectoryProvider();
       await Directory(dir).create(recursive: true);
       final localPath = p.join(dir, '$trackId.audio');
-      final partPath = '$localPath.part';
+      partPath = '$localPath.part';
 
       // Stage into `.part` so an aborted transfer never lands at the final path
       // where `get` could mistake it for a complete artifact.
@@ -234,6 +244,9 @@ class PlaybackCacheManager {
         await _enforceCap(protect: protect);
       });
     } catch (error) {
+      if (partPath != null) {
+        await deleteFileQuietly(partPath);
+      }
       // Cache warming must never break playback.
       if (kDebugMode) {
         debugPrint('Playback cache warm failed for track $trackId: $error');

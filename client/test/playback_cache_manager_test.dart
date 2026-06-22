@@ -18,6 +18,13 @@ class _FakeLocalResolver implements LocalAudioArtifactResolver {
   Future<String?> localAudioPath(int trackId) async => paths[trackId];
 }
 
+class _ThrowingPlaybackCacheStore extends FakePlaybackCacheStore {
+  @override
+  Future<PlaybackCacheEntry?> getEntry(int trackId) async {
+    throw StateError('store unavailable');
+  }
+}
+
 SignedAudioDescriptor descriptor(
   int id, {
   String? url,
@@ -40,7 +47,8 @@ void main() {
     test('is stable across signed-URL re-issuance (query differs, object same)',
         () {
       final a = descriptor(1, url: 'https://cdn.example/obj/1?sig=AAA&exp=1');
-      final b = descriptor(1, url: 'https://cdn.example/obj/1?sig=ZZZ&exp=9999');
+      final b =
+          descriptor(1, url: 'https://cdn.example/obj/1?sig=ZZZ&exp=9999');
       expect(playbackCacheKey(a), playbackCacheKey(b));
     });
 
@@ -61,13 +69,16 @@ void main() {
     test('changes when the object path changes', () {
       expect(
         playbackCacheKey(descriptor(1, url: 'https://cdn.example/obj/1?x=1')),
-        isNot(playbackCacheKey(descriptor(1, url: 'https://cdn.example/obj/2?x=1'))),
+        isNot(playbackCacheKey(
+            descriptor(1, url: 'https://cdn.example/obj/2?x=1'))),
       );
     });
 
     test('omits absent descriptor identity fields', () {
       final key = playbackCacheKey(
-        descriptor(7, etag: null, storageKeyVersion: null,
+        descriptor(7,
+            etag: null,
+            storageKeyVersion: null,
             url: 'https://cdn.example/o/7?sig=1'),
       );
       expect(key, 'track:7|obj:https://cdn.example/o/7');
@@ -82,12 +93,20 @@ void main() {
       );
     });
 
+    test('audioObjectIdentity preserves custom ports', () {
+      expect(
+        audioObjectIdentity('https://h.example:8443/p/a.mp3?sig=1'),
+        'https://h.example:8443/p/a.mp3',
+      );
+    });
+
     test('audioObjectIdentity returns null for an unusable url', () {
       expect(audioObjectIdentity(''), isNull);
     });
   });
 
-  group('PlaybackCacheEntry.isStaleAgainstDescriptor (metadata validation)', () {
+  group('PlaybackCacheEntry.isStaleAgainstDescriptor (metadata validation)',
+      () {
     PlaybackCacheEntry entry({
       String? etag,
       String? storageKeyVersion,
@@ -214,6 +233,17 @@ void main() {
       expect(store.entries[1]!.lastAccessedAt, clock().toUtc());
     });
 
+    test('get degrades to a miss when cache store access throws', () async {
+      final mgr = PlaybackCacheManager(
+        store: _ThrowingPlaybackCacheStore(),
+        downloader: writer(),
+        cacheDirectoryProvider: () async => cacheDir.path,
+        clock: clock,
+      );
+
+      expect(await mgr.get(1, descriptor(1)), isNull);
+    });
+
     test('a metadata mismatch invalidates the artifact and misses', () async {
       final mgr = manager();
       await mgr.warm(1, descriptor(1, etag: 'etag-1'));
@@ -309,6 +339,29 @@ void main() {
 
       expect(store.entries.containsKey(1), isFalse);
       expect(await File('${cacheDir.path}/1.audio').exists(), isFalse);
+    });
+
+    test('a failed warm deletes its orphan .part file', () async {
+      final mgr = manager(
+        downloader: (
+          String url,
+          String destinationPath, {
+          CancelToken? cancelToken,
+          void Function(int received, int total)? onProgress,
+        }) async {
+          await File(destinationPath).writeAsBytes(List.filled(42, 0x41));
+          throw DioException(
+            requestOptions: RequestOptions(path: url),
+            error: 'network down',
+          );
+        },
+      );
+
+      await mgr.warm(1, descriptor(1));
+
+      expect(store.entries.containsKey(1), isFalse);
+      expect(await File('${cacheDir.path}/1.audio').exists(), isFalse);
+      expect(await File('${cacheDir.path}/1.audio.part').exists(), isFalse);
     });
 
     test('cap enforcement evicts the least-recently-used entry', () async {

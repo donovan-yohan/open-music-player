@@ -104,7 +104,14 @@ class PlaybackSourceResolver {
       if (localPath != null) {
         items.add(buildLocalMediaItem(track, id, localPath));
       } else {
-        items.add(buildRemoteMediaItem(track, descriptors[id]!));
+        final descriptor = descriptors[id];
+        if (descriptor == null) {
+          throw SignedAudioUrlException(
+            code: 'AUDIO_UNAVAILABLE',
+            message: 'No playback descriptor found for track $id.',
+          );
+        }
+        items.add(buildRemoteMediaItem(track, descriptor));
       }
     }
 
