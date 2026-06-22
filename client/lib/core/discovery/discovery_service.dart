@@ -30,6 +30,29 @@ class DiscoveryService {
     return DiscoverySearchResponse.fromJson(data);
   }
 
+  /// Ask the grounded AI-assist endpoint to turn a natural-language prompt (or a
+  /// pasted source URL embedded in it) into a [DiscoveryAssistResponse].
+  ///
+  /// The endpoint returns HTTP 200 for every orchestrated outcome and encodes
+  /// disabled/error states inside the envelope, so those are parsed and returned
+  /// — not thrown. Only a transport failure (network down, an older backend
+  /// without the route) raises, which lets the caller fall back to plain search.
+  Future<DiscoveryAssistResponse> assist(String prompt, {int? limit}) async {
+    final response = await _apiClient.post<Map<String, dynamic>>(
+      '/discovery/assist',
+      data: {
+        'prompt': prompt,
+        if (limit != null) 'limit': limit,
+      },
+    );
+
+    final data = response.data;
+    if (data == null) {
+      throw const DiscoveryException('AI assist returned no data.');
+    }
+    return DiscoveryAssistResponse.fromJson(data);
+  }
+
   Future<DiscoveryQueueState> getQueue() async {
     final response = await _apiClient.get<Map<String, dynamic>>('/queue');
     final data = response.data;
