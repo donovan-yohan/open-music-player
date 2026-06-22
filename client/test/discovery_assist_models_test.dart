@@ -146,6 +146,19 @@ void main() {
     expect(response.search, isNull);
   });
 
+  test('defaults unknown statuses to error', () {
+    final response = DiscoveryAssistResponse.fromJson({
+      'status': 'surprise-computer-garbage',
+      'assistantText': 'unknown backend status',
+    });
+
+    expect(response.isError, isTrue);
+    expect(response.isOk, isFalse);
+    expect(response.isDisabled, isFalse);
+    expect(response.isClarification, isFalse);
+    expect(response.hasGroundedResults, isFalse);
+  });
+
   test('defaults a fully absent status key to error', () {
     final response = DiscoveryAssistResponse.fromJson({
       'assistantText': 'no status field at all',

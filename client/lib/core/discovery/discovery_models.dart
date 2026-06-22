@@ -326,10 +326,18 @@ class DiscoveryAssistResponse {
     final clarificationJson = json['clarification'];
     final errorJson = json['error'];
     final rawStatus = (json['status'] as String? ?? '').trim();
+    final status = const {
+      'ok',
+      'disabled',
+      'clarification',
+      'error',
+    }.contains(rawStatus)
+        ? rawStatus
+        : 'error';
     return DiscoveryAssistResponse(
       // A missing/blank status is treated as an error so the UI never silently
-      // renders an unlabelled envelope as a success.
-      status: rawStatus.isEmpty ? 'error' : rawStatus,
+      // renders an unlabelled/unknown envelope as a success or empty screen.
+      status: status,
       assistantText: json['assistantText'] as String? ?? '',
       intent: intentJson is Map<String, dynamic>
           ? DiscoveryAssistIntent.fromJson(intentJson)

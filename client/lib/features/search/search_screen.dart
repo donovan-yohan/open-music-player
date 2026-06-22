@@ -191,15 +191,11 @@ class _SearchScreenState extends State<SearchScreen> {
     _debounceTimer?.cancel();
     setState(() {
       _assistMode = enabled;
-      // Drop the now-inactive mode's results so a stale answer can never render
-      // under the other mode's input, and invalidate its in-flight request. The
-      // typed prompt is intentionally carried across; only results are cleared,
-      // so the box and what is shown can never contradict each other.
-      if (enabled) {
-        _resetSearch();
-      } else {
-        _resetAssist();
-      }
+      // Drop both modes' results because the typed prompt is carried across. A
+      // previous result from either mode would contradict the current input as
+      // soon as the user flips the Search/Assist toggle.
+      _resetSearch();
+      _resetAssist();
     });
   }
 
@@ -682,21 +678,24 @@ class _SearchScreenState extends State<SearchScreen> {
             const SizedBox(height: 6),
             // Wrap (not Row) so Retry + Search directly reflow instead of
             // overflowing the narrow mobile-web viewport when both are present.
-            Wrap(
-              alignment: WrapAlignment.end,
-              spacing: 8,
-              children: [
-                if (showRetry)
+            Align(
+              alignment: Alignment.centerRight,
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                children: [
+                  if (showRetry)
+                    TextButton(
+                      onPressed: () => _runAssist(prompt: _askedPrompt),
+                      child: const Text('Retry'),
+                    ),
                   TextButton(
-                    onPressed: () => _runAssist(prompt: _askedPrompt),
-                    child: const Text('Retry'),
+                    key: const ValueKey('assist_search_directly'),
+                    onPressed: _searchDirectly,
+                    child: const Text('Search directly'),
                   ),
-                TextButton(
-                  key: const ValueKey('assist_search_directly'),
-                  onPressed: _searchDirectly,
-                  child: const Text('Search directly'),
-                ),
-              ],
+                ],
+              ),
             ),
           ],
         ),
