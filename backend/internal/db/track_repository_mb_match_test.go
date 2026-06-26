@@ -135,7 +135,7 @@ func TestUpdateMBMatchUserEditedGuardCoversAutomaticEnrichmentFields(t *testing.
 	query := latestCapturedUpdate(t).query
 	for _, fragment := range []string{
 		"mb_recording_id = CASE WHEN $15 AND (metadata_user_edited = FALSE OR $16 = FALSE)",
-		"mb_verified = CASE WHEN $5 IS NOT NULL AND (metadata_user_edited = FALSE OR $16 = FALSE)",
+		"mb_verified = CASE WHEN $5::boolean IS NOT NULL AND (metadata_user_edited = FALSE OR $16 = FALSE)",
 		"metadata_status = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE",
 		"metadata_confidence = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE",
 		"metadata_provenance = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE",
