@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,9 @@ import (
 const SchemaVersion = 1
 
 var ErrUnsupported = errors.New("audio analysis unsupported")
+
+//go:embed testdata/synthetic_analysis.json
+var syntheticAnalysisFixture []byte
 
 type Request struct {
 	TrackID       int64
@@ -52,12 +56,13 @@ func (c *FixtureClient) Analyze(ctx context.Context, req Request) (*Result, erro
 		return nil, fmt.Errorf("%w: missing storage key/source url", ErrUnsupported)
 	}
 	path := c.fixturePath
-	if path == "" {
-		path = "internal/analyzer/testdata/synthetic_analysis.json"
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read analysis fixture: %w", err)
+	data := syntheticAnalysisFixture
+	if path != "" {
+		var err error
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read analysis fixture: %w", err)
+		}
 	}
 	var fixture struct {
 		SchemaVersion int             `json:"schema_version"`

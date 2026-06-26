@@ -29,6 +29,15 @@ type ObjectStorage interface {
 	PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
 }
 
+// AnalysisStore is the audio-analysis persistence surface used by Processor.
+type AnalysisStore interface {
+	RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error
+	MarkAnalyzing(ctx context.Context, trackID int64, provenance json.RawMessage) error
+	StoreResult(ctx context.Context, trackID int64, result db.AnalysisResult) error
+	MarkFailed(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error
+	MarkUnsupported(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error
+}
+
 const (
 	maxYTDLPOutputBytes = 256 * 1024 * 1024
 	maxYTDLPLogBytes    = 64 * 1024
@@ -39,7 +48,7 @@ type Processor struct {
 	matcher        *matcher.Matcher
 	trackRepo      *db.TrackRepository
 	libraryRepo    *db.LibraryRepository
-	analysisRepo   *db.AnalysisRepository
+	analysisRepo   AnalysisStore
 	analyzerClient analyzer.Client
 	storage        ObjectStorage
 }
@@ -49,7 +58,7 @@ type ProcessorConfig struct {
 	Matcher        *matcher.Matcher
 	TrackRepo      *db.TrackRepository
 	LibraryRepo    *db.LibraryRepository
-	AnalysisRepo   *db.AnalysisRepository
+	AnalysisRepo   AnalysisStore
 	AnalyzerClient analyzer.Client
 	Storage        ObjectStorage
 }
@@ -638,7 +647,7 @@ func (p *Processor) addToLibrary(ctx context.Context, userID string, trackID int
 }
 
 func (p *Processor) enqueueAnalysis(ctx context.Context, track *db.Track, metadata *TrackMetadata) {
-	if p.analysisRepo == nil || track == nil || metadata == nil {
+	if p.analysisRepo == nil || p.analyzerClient == nil || track == nil || metadata == nil {
 		return
 	}
 	provenance, _ := json.Marshal(map[string]interface{}{
@@ -651,9 +660,6 @@ func (p *Processor) enqueueAnalysis(ctx context.Context, track *db.Track, metada
 	})
 	if err := p.analysisRepo.RequestAnalysis(ctx, track.ID, provenance); err != nil {
 		log.Printf("Warning: failed to request audio analysis for track %d: %v", track.ID, err)
-		return
-	}
-	if p.analyzerClient == nil {
 		return
 	}
 	req := analyzer.Request{

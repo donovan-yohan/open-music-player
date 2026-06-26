@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/matcher"
 )
@@ -26,6 +27,46 @@ func (s *fakeObjectStorage) PutObject(ctx context.Context, key string, reader io
 	s.contentType = contentType
 	s.data, _ = io.ReadAll(reader)
 	return nil
+}
+
+type fakeAnalysisStore struct {
+	requestCount int
+}
+
+func (s *fakeAnalysisStore) RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error {
+	s.requestCount++
+	return nil
+}
+
+func (s *fakeAnalysisStore) MarkAnalyzing(ctx context.Context, trackID int64, provenance json.RawMessage) error {
+	return nil
+}
+
+func (s *fakeAnalysisStore) StoreResult(ctx context.Context, trackID int64, result db.AnalysisResult) error {
+	return nil
+}
+
+func (s *fakeAnalysisStore) MarkFailed(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
+	return nil
+}
+
+func (s *fakeAnalysisStore) MarkUnsupported(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
+	return nil
+}
+
+func TestEnqueueAnalysisSkipsPendingRowWhenAnalyzerClientMissing(t *testing.T) {
+	store := &fakeAnalysisStore{}
+	processor := &Processor{analysisRepo: store}
+
+	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42}, &TrackMetadata{
+		StorageKey: "tracks/fixture/job-fixture.wav",
+		SourceURL:  "fixture://silence",
+		SourceType: "fixture",
+	})
+
+	if store.requestCount != 0 {
+		t.Fatalf("RequestAnalysis called %d time(s) without analyzer client; would leave an unprocessable pending row", store.requestCount)
+	}
 }
 
 func TestApplyDeterministicCleanupPorterRobinsonOfficialVideo(t *testing.T) {

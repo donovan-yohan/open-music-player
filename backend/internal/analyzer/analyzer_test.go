@@ -45,3 +45,17 @@ func TestFixtureClientReturnsSyntheticContract(t *testing.T) {
 		t.Fatalf("provenance analyzer = %#v, want fixture", provenance["analyzer"])
 	}
 }
+
+func TestFixtureClientDefaultUsesEmbeddedSyntheticContract(t *testing.T) {
+	client := NewFixtureClient("")
+	result, err := client.Analyze(context.Background(), Request{TrackID: 42, StorageKey: "tracks/fixture/song.wav"})
+	if err != nil {
+		t.Fatalf("Analyze with embedded default returned error: %v", err)
+	}
+	if result.SchemaVersion != SchemaVersion {
+		t.Fatalf("schema version = %d, want %d", result.SchemaVersion, SchemaVersion)
+	}
+	if len(result.SummaryJSON) == 0 || len(result.ArtifactsJSON) == 0 || len(result.ProvenanceJSON) == 0 {
+		t.Fatalf("embedded default returned empty contract payload: %#v", result)
+	}
+}
