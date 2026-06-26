@@ -87,16 +87,17 @@ func TestUpdateMBMatchAutomaticFallbackDoesNotClearExistingIdentity(t *testing.T
 	repo := newCaptureUpdateRepo(t)
 
 	if err := repo.UpdateMBMatch(context.Background(), 42, &MBMatchUpdate{
-		RespectUserEdits:   true,
-		MetadataStatus:     "failed",
-		MetadataProvenance: []byte(`{"musicbrainz":{"status":"failed"}}`),
+		RespectUserEdits:        true,
+		MetadataStatus:          "failed",
+		ClearMetadataConfidence: true,
+		MetadataProvenance:      []byte(`{"musicbrainz":{"status":"failed"}}`),
 	}); err != nil {
 		t.Fatalf("UpdateMBMatch failed: %v", err)
 	}
 
 	capture := latestCapturedUpdate(t)
-	if len(capture.args) != 16 {
-		t.Fatalf("arg count = %d, want 16", len(capture.args))
+	if len(capture.args) != 17 {
+		t.Fatalf("arg count = %d, want 17", len(capture.args))
 	}
 	if !isNilValue(capture.args[4].Value) {
 		t.Fatalf("MBVerified arg = %#v, want nil so existing verification is left unchanged", capture.args[4].Value)
@@ -106,6 +107,9 @@ func TestUpdateMBMatchAutomaticFallbackDoesNotClearExistingIdentity(t *testing.T
 	}
 	if capture.args[15].Value != true {
 		t.Fatalf("RespectUserEdits arg = %#v, want true", capture.args[15].Value)
+	}
+	if capture.args[16].Value != true {
+		t.Fatalf("ClearMetadataConfidence arg = %#v, want true", capture.args[16].Value)
 	}
 }
 
@@ -137,7 +141,8 @@ func TestUpdateMBMatchUserEditedGuardCoversAutomaticEnrichmentFields(t *testing.
 		"mb_recording_id = CASE WHEN $15 AND (metadata_user_edited = FALSE OR $16 = FALSE)",
 		"mb_verified = CASE WHEN $5::boolean IS NOT NULL AND (metadata_user_edited = FALSE OR $16 = FALSE)",
 		"metadata_status = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE",
-		"metadata_confidence = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE",
+		"metadata_confidence = CASE",
+		"WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN",
 		"metadata_provenance = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE",
 		"cover_art_url = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE",
 		"title = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE",

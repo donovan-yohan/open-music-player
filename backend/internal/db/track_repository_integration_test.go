@@ -126,6 +126,56 @@ func TestUpdateMBMatchPersistsJSONBAndPreservesStickyFieldsAgainstPostgres(t *te
 	if _, ok := provenance["musicbrainz"].(map[string]any); !ok {
 		t.Fatalf("MusicBrainz provenance not persisted: %#v", provenance)
 	}
+
+	if err := repo.UpdateMBMatch(ctx, track.ID, &MBMatchUpdate{
+		ApplyMBIdentity:    false,
+		RespectUserEdits:   true,
+		MetadataStatus:     "suggested",
+		MetadataProvenance: json.RawMessage(`{"musicbrainz":{"status":"still_suggested","source":"status-only"}}`),
+	}); err != nil {
+		t.Fatalf("UpdateMBMatch status-only preservation failed: %v", err)
+	}
+
+	track, err = repo.GetByID(ctx, track.ID)
+	if err != nil {
+		t.Fatalf("reload track after status-only update: %v", err)
+	}
+	if !track.MetadataConfidence.Valid || track.MetadataConfidence.Float64 != lowConfidence {
+		t.Fatalf("metadata confidence = %#v, want preserved %v", track.MetadataConfidence, lowConfidence)
+	}
+
+	if err := repo.UpdateMBMatch(ctx, track.ID, &MBMatchUpdate{
+		ApplyMBIdentity:         false,
+		RespectUserEdits:        true,
+		MetadataStatus:          "failed",
+		ClearMetadataConfidence: true,
+		MetadataProvenance:      json.RawMessage(`{"musicbrainz":{"status":"failed","error":"temporary outage"}}`),
+	}); err != nil {
+		t.Fatalf("UpdateMBMatch failed confidence clearing failed: %v", err)
+	}
+
+	track, err = repo.GetByID(ctx, track.ID)
+	if err != nil {
+		t.Fatalf("reload track after failed update: %v", err)
+	}
+	if track.MBRecordingID == nil || *track.MBRecordingID != existingRecordingID {
+		t.Fatalf("recording ID changed on failed update: %#v", track.MBRecordingID)
+	}
+	if track.MBReleaseID == nil || *track.MBReleaseID != existingReleaseID {
+		t.Fatalf("release ID changed on failed update: %#v", track.MBReleaseID)
+	}
+	if track.MBArtistID == nil || *track.MBArtistID != existingArtistID {
+		t.Fatalf("artist ID changed on failed update: %#v", track.MBArtistID)
+	}
+	if !track.MBVerified {
+		t.Fatal("failed update cleared existing verification")
+	}
+	if !track.MetadataStatus.Valid || track.MetadataStatus.String != "failed" {
+		t.Fatalf("metadata status = %#v, want failed", track.MetadataStatus)
+	}
+	if track.MetadataConfidence.Valid {
+		t.Fatalf("metadata confidence = %#v, want NULL after failed update", track.MetadataConfidence)
+	}
 }
 
 func decodeJSONRawMessage(t *testing.T, raw json.RawMessage) map[string]any {
