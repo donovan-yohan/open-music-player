@@ -7,12 +7,24 @@ import 'offline_download_store.dart';
 
 class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   static Database? _database;
+  static Future<Database>? _openingDatabase;
   static const String _dbName = 'open_music_player.db';
   static const int _dbVersion = 3;
 
   Future<Database> get database async {
-    _database ??= await _initDatabase();
-    return _database!;
+    final existing = _database;
+    if (existing != null) return existing;
+
+    final opening = _openingDatabase ??= _initDatabase();
+    try {
+      final db = await opening;
+      _database = db;
+      return db;
+    } finally {
+      if (identical(_openingDatabase, opening)) {
+        _openingDatabase = null;
+      }
+    }
   }
 
   Future<Database> _initDatabase() async {
@@ -29,7 +41,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
 
   Future<void> _onCreate(Database db, int version) async {
     await db.execute('''
-      CREATE TABLE tracks (
+      CREATE TABLE IF NOT EXISTS tracks (
         id INTEGER PRIMARY KEY,
         identity_hash TEXT NOT NULL,
         title TEXT NOT NULL,
@@ -51,7 +63,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     ''');
 
     await db.execute('''
-      CREATE TABLE playlists (
+      CREATE TABLE IF NOT EXISTS playlists (
         id INTEGER PRIMARY KEY,
         user_id INTEGER NOT NULL,
         name TEXT NOT NULL,
@@ -62,7 +74,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     ''');
 
     await db.execute('''
-      CREATE TABLE playlist_tracks (
+      CREATE TABLE IF NOT EXISTS playlist_tracks (
         playlist_id INTEGER NOT NULL,
         track_id INTEGER NOT NULL,
         position INTEGER NOT NULL,
@@ -74,7 +86,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     ''');
 
     await db.execute('''
-      CREATE TABLE downloaded_tracks (
+      CREATE TABLE IF NOT EXISTS downloaded_tracks (
         track_id INTEGER PRIMARY KEY,
         local_path TEXT NOT NULL,
         file_size_bytes INTEGER NOT NULL,
@@ -90,15 +102,21 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     ''');
 
     await db.execute('''
-      CREATE TABLE library_tracks (
+      CREATE TABLE IF NOT EXISTS library_tracks (
         track_id INTEGER PRIMARY KEY,
         added_at TEXT NOT NULL,
         FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
       )
     ''');
 
-    await db.execute('CREATE INDEX idx_tracks_identity_hash ON tracks(identity_hash)');
-    await db.execute('CREATE INDEX idx_downloaded_tracks_status ON downloaded_tracks(status)');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_tracks_identity_hash '
+      'ON tracks(identity_hash)',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_downloaded_tracks_status '
+      'ON downloaded_tracks(status)',
+    );
 
     await _createPlaybackCacheTable(db);
   }
@@ -128,7 +146,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
 
   Future<void> _createPlaybackCacheTable(Database db) async {
     await db.execute('''
-      CREATE TABLE playback_cache (
+      CREATE TABLE IF NOT EXISTS playback_cache (
         track_id INTEGER PRIMARY KEY,
         local_path TEXT NOT NULL,
         file_size_bytes INTEGER NOT NULL,
@@ -140,7 +158,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
       )
     ''');
     await db.execute(
-      'CREATE INDEX idx_playback_cache_last_accessed '
+      'CREATE INDEX IF NOT EXISTS idx_playback_cache_last_accessed '
       'ON playback_cache(last_accessed_at)',
     );
   }
@@ -457,9 +475,8 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
         break;
     }
 
-    final whereClause = conditions.isNotEmpty
-        ? 'WHERE ${conditions.join(' AND ')}'
-        : '';
+    final whereClause =
+        conditions.isNotEmpty ? 'WHERE ${conditions.join(' AND ')}' : '';
 
     final limitClause = limit != null ? 'LIMIT $limit OFFSET $offset' : '';
 
@@ -501,9 +518,8 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
         break;
     }
 
-    final whereClause = conditions.isNotEmpty
-        ? 'WHERE ${conditions.join(' AND ')}'
-        : '';
+    final whereClause =
+        conditions.isNotEmpty ? 'WHERE ${conditions.join(' AND ')}' : '';
 
     // Get count and data in parallel
     final countQuery = '''

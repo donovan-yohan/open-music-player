@@ -158,6 +158,37 @@ void main() {
   );
 
   test(
+    'createDownload posts a background library download request',
+    () async {
+      http.Request? seen;
+      final client = ApiClient(
+        baseUrl: 'http://api.test/api/v1',
+        httpClient: MockClient((request) async {
+          seen = request;
+          return http.Response(
+            jsonEncode({'job_id': 'job_library_1', 'status': 'queued'}),
+            201,
+          );
+        }),
+      );
+
+      final job = await client.createDownload(
+        url: 'https://youtu.be/abc123',
+        sourceType: 'youtube',
+      );
+
+      expect(seen!.method, 'POST');
+      expect(seen!.url.path, '/api/v1/downloads');
+      expect(jsonDecode(seen!.body), {
+        'url': 'https://youtu.be/abc123',
+        'source_type': 'youtube',
+      });
+      expect(job.jobId, 'job_library_1');
+      expect(job.status, 'queued');
+    },
+  );
+
+  test(
     'retryQueueItem posts to the backend queue-item retry endpoint',
     () async {
       http.Request? seen;

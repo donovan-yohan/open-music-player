@@ -11,6 +11,7 @@ import '../features/library/library_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/player/player_screen.dart';
 import '../features/player/widgets/mini_player.dart';
+import '../features/share/share_import_screen.dart';
 import '../features/downloads/downloads_screen.dart';
 import '../features/playlists/playlists_screen.dart';
 import '../features/playlists/playlist_detail_screen.dart';
@@ -38,16 +39,15 @@ GoRouter createRouter(AuthState authState) {
           child: const PlayerScreen(),
           transitionsBuilder: (context, animation, secondaryAnimation, child) {
             return SlideTransition(
-              position:
-                  Tween<Offset>(
-                    begin: const Offset(0, 1),
-                    end: Offset.zero,
-                  ).animate(
-                    CurvedAnimation(
-                      parent: animation,
-                      curve: Curves.easeOutCubic,
-                    ),
-                  ),
+              position: Tween<Offset>(
+                begin: const Offset(0, 1),
+                end: Offset.zero,
+              ).animate(
+                CurvedAnimation(
+                  parent: animation,
+                  curve: Curves.easeOutCubic,
+                ),
+              ),
               child: child,
             );
           },
@@ -67,6 +67,13 @@ GoRouter createRouter(AuthState authState) {
           final id = int.parse(state.pathParameters['id']!);
           return PlaylistDetailScreen(playlistId: id);
         },
+      ),
+      GoRoute(
+        path: '/share',
+        builder: (context, state) => ShareImportScreen(
+          sharedText: state.uri.queryParameters['text'] ?? '',
+          autoSubmit: state.uri.queryParameters['auto'] == '1',
+        ),
       ),
       ShellRoute(
         navigatorKey: _shellNavigatorKey,
@@ -107,7 +114,7 @@ GoRouter createRouter(AuthState authState) {
 
 String? _authRedirect(AuthState authState, GoRouterState state) {
   final path = state.uri.path;
-  const publicPaths = {'/', '/login', '/register'};
+  const publicPaths = {'/', '/login', '/register', '/share'};
   final isPublicPath = publicPaths.contains(path);
 
   if (!authState.isAuthenticated && !isPublicPath) {
@@ -116,10 +123,20 @@ String? _authRedirect(AuthState authState, GoRouterState state) {
   }
 
   if (authState.isAuthenticated && (path == '/login' || path == '/register')) {
-    return '/home';
+    return safeLoginRedirectNext(state.uri.queryParameters['next']) ?? '/home';
   }
 
   return null;
+}
+
+@visibleForTesting
+String? safeLoginRedirectNext(String? next) {
+  if (next == null || next.isEmpty) return null;
+  if (!next.startsWith('/') || next.startsWith('//')) return null;
+  final uri = Uri.tryParse(next);
+  if (uri == null || uri.hasScheme || uri.hasAuthority) return null;
+  if (uri.path == '/login' || uri.path == '/register') return null;
+  return next;
 }
 
 String get _initialRoute {

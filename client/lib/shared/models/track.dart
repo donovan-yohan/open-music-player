@@ -153,6 +153,39 @@ class Track {
     );
   }
 
+  factory Track.fromLibraryJson(Map<String, dynamic> json) {
+    final addedAt =
+        DateTime.tryParse(json['added_at'] as String? ?? '') ?? DateTime.now();
+    final suggestionsJson = json['mb_suggestions'] as List<dynamic>?;
+
+    return Track(
+      id: json['id'] as int,
+      identityHash: json['identity_hash'] as String? ?? 'library-${json['id']}',
+      title: json['title'] as String,
+      artist: json['artist'] as String?,
+      album: json['album'] as String?,
+      durationMs: json['duration_ms'] as int?,
+      version: json['version'] as String?,
+      mbRecordingId: json['mb_recording_id'] as String?,
+      mbReleaseId: json['mb_release_id'] as String?,
+      mbArtistId: json['mb_artist_id'] as String?,
+      mbVerified: json['mb_verified'] as bool? ?? false,
+      sourceUrl: json['source_url'] as String?,
+      sourceType: json['source_type'] as String?,
+      storageKey: json['storage_key'] as String?,
+      fileSizeBytes: json['file_size_bytes'] as int?,
+      metadata: json['metadata_json'] as Map<String, dynamic>?,
+      mbSuggestions: suggestionsJson
+              ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
+              .toList() ??
+          [],
+      createdAt:
+          DateTime.tryParse(json['created_at'] as String? ?? '') ?? addedAt,
+      updatedAt:
+          DateTime.tryParse(json['updated_at'] as String? ?? '') ?? addedAt,
+    );
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'id': id,

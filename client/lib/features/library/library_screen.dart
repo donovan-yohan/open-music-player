@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 import '../../core/storage/offline_database.dart';
 import '../../core/network/connectivity_service.dart';
 import '../../core/audio/playback_state.dart';
-import '../../core/services/library_service.dart';
-import '../../core/services/api_client.dart';
+import '../../core/api/api_client.dart';
 import '../../shared/models/models.dart';
 import '../../shared/widgets/widgets.dart';
 
@@ -56,26 +56,34 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _tracks = [];
       _hasMore = true;
     });
+
     try {
-      final db = context.read<OfflineDatabase>();
-      final results = await Future.wait([
-        db.getLibraryTracksWithCount(
-          downloadedOnly: _downloadedOnly,
-          verificationFilter: _verificationFilter,
-          limit: _pageSize,
-          offset: 0,
-        ),
-        db.getLibraryTrackCounts(),
-      ]);
-      final trackResult = results[0] as ({List<Track> tracks, int total});
+      if (!_downloadedOnly && context.read<ConnectivityService>().isOnline) {
+        try {
+          final remote = await _loadRemoteTracks(offset: 0);
+          setState(() {
+            _tracks = remote.tracks;
+            _totalCount = remote.total;
+            _hasMore = _tracks.length < _totalCount;
+            _counts = remote.counts;
+            _isLoading = false;
+          });
+          return;
+        } catch (_) {
+          // Connectivity can report online while the API is unavailable. Keep
+          // the Library useful by falling back to cached/offline tracks.
+        }
+      }
+
+      final local = await _loadLocalTracks(offset: 0, includeCounts: true);
       setState(() {
-        _tracks = trackResult.tracks;
-        _totalCount = trackResult.total;
+        _tracks = local.tracks;
+        _totalCount = local.total;
         _hasMore = _tracks.length < _totalCount;
-        _counts = results[1] as Map<VerificationFilter, int>;
+        _counts = local.counts ?? _counts;
         _isLoading = false;
       });
-    } catch (e) {
+    } catch (_) {
       setState(() => _isLoading = false);
     }
   }
@@ -85,21 +93,130 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
     setState(() => _isLoadingMore = true);
     try {
-      final db = context.read<OfflineDatabase>();
-      final result = await db.getLibraryTracksWithCount(
-        downloadedOnly: _downloadedOnly,
-        verificationFilter: _verificationFilter,
-        limit: _pageSize,
+      if (!_downloadedOnly && context.read<ConnectivityService>().isOnline) {
+        final remote = await _loadRemoteTracks(offset: _tracks.length);
+        setState(() {
+          _tracks.addAll(remote.tracks);
+          _hasMore = _tracks.length < remote.total;
+          _isLoadingMore = false;
+        });
+        return;
+      }
+
+      final local = await _loadLocalTracks(
         offset: _tracks.length,
+        includeCounts: false,
       );
       setState(() {
-        _tracks.addAll(result.tracks);
-        _hasMore = _tracks.length < result.total;
+        _tracks.addAll(local.tracks);
+        _hasMore = _tracks.length < local.total;
         _isLoadingMore = false;
       });
-    } catch (e) {
+    } catch (_) {
       setState(() => _isLoadingMore = false);
     }
+  }
+
+  Future<
+      ({
+        List<Track> tracks,
+        int total,
+        Map<VerificationFilter, int>? counts,
+      })> _loadLocalTracks({
+    required int offset,
+    required bool includeCounts,
+  }) async {
+    final db = context.read<OfflineDatabase>();
+    final trackResult = await db.getLibraryTracksWithCount(
+      downloadedOnly: _downloadedOnly,
+      verificationFilter: _verificationFilter,
+      limit: _pageSize,
+      offset: offset,
+    );
+    final counts = includeCounts ? await db.getLibraryTrackCounts() : null;
+    return (
+      tracks: trackResult.tracks,
+      total: trackResult.total,
+      counts: counts,
+    );
+  }
+
+  Future<
+      ({
+        List<Track> tracks,
+        int total,
+        Map<VerificationFilter, int> counts,
+      })> _loadRemoteTracks({required int offset}) async {
+    final apiClient = context.read<ApiClient>();
+    final query = <String, String>{
+      'limit': _pageSize.toString(),
+      'offset': offset.toString(),
+      'fields': [
+        'id',
+        'title',
+        'artist',
+        'album',
+        'duration_ms',
+        'mb_verified',
+        'added_at',
+        'cover_art_url',
+        'mb_recording_id',
+        'mb_suggestions',
+      ].join(','),
+    };
+
+    switch (_verificationFilter) {
+      case VerificationFilter.verifiedOnly:
+        query['mb_verified'] = 'true';
+        break;
+      case VerificationFilter.unverifiedOnly:
+        query['mb_verified'] = 'false';
+        break;
+      case VerificationFilter.all:
+        break;
+    }
+
+    final response = await apiClient.get<Map<String, dynamic>>(
+      '/library',
+      queryParameters: query,
+    );
+    final data = response.data ?? <String, dynamic>{};
+    final tracks = (data['tracks'] as List<dynamic>? ?? [])
+        .map((track) => Track.fromLibraryJson(track as Map<String, dynamic>))
+        .toList();
+    final total = data['total'] as int? ?? tracks.length;
+    final counts = offset == 0
+        ? await _loadRemoteCounts(apiClient)
+        : Map<VerificationFilter, int>.from(_counts);
+
+    return (tracks: tracks, total: total, counts: counts);
+  }
+
+  Future<Map<VerificationFilter, int>> _loadRemoteCounts(
+      ApiClient apiClient) async {
+    Future<int> count({String? verified}) async {
+      final response = await apiClient.get<Map<String, dynamic>>(
+        '/library',
+        queryParameters: {
+          'limit': '1',
+          'offset': '0',
+          if (verified != null) 'mb_verified': verified,
+        },
+      );
+      return response.data?['total'] as int? ?? 0;
+    }
+
+    final totals = await Future.wait([
+      count(),
+      count(verified: 'true'),
+      count(verified: 'false'),
+    ]);
+
+    return {
+      VerificationFilter.all: totals[0],
+      VerificationFilter.verifiedOnly: totals[1],
+      VerificationFilter.unverifiedOnly: totals[2],
+    };
   }
 
   @override
@@ -355,8 +472,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
         controller: _scrollController,
         // Add 1 for loading indicator if has more
         itemCount: _tracks.length + (_hasMore ? 1 : 0),
-        // Use cacheExtent for smooth scrolling
-        cacheExtent: 200,
+        // Use scrollCacheExtent for smooth scrolling
+        scrollCacheExtent: const ScrollCacheExtent.pixels(200),
         itemBuilder: (context, index) {
           // Loading indicator at the bottom
           if (index >= _tracks.length) {
@@ -397,12 +514,15 @@ class _TrackListTile extends StatelessWidget {
       onSelectSuggestion: (suggestion) async {
         try {
           final apiClient = context.read<ApiClient>();
-          final libraryService = LibraryService(apiClient);
-          await libraryService.confirmMatchSuggestion(
-            trackId: track.id,
-            recordingMbid: suggestion.mbRecordingId,
-            artistMbid: suggestion.artistMbid,
-            releaseMbid: suggestion.albumMbid,
+          await apiClient.post(
+            '/tracks/${track.id}/confirm-match',
+            data: {
+              'recordingMbid': suggestion.mbRecordingId,
+              if (suggestion.artistMbid != null)
+                'artistMbid': suggestion.artistMbid,
+              if (suggestion.albumMbid != null)
+                'releaseMbid': suggestion.albumMbid,
+            },
           );
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
