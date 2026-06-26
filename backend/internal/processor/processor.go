@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -12,9 +13,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/openmusicplayer/backend/internal/analyzer"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/matcher"
@@ -33,27 +36,33 @@ const (
 
 // Processor handles the full download and matching pipeline
 type Processor struct {
-	matcher     *matcher.Matcher
-	trackRepo   *db.TrackRepository
-	libraryRepo *db.LibraryRepository
-	storage     ObjectStorage
+	matcher        *matcher.Matcher
+	trackRepo      *db.TrackRepository
+	libraryRepo    *db.LibraryRepository
+	analysisRepo   *db.AnalysisRepository
+	analyzerClient analyzer.Client
+	storage        ObjectStorage
 }
 
 // ProcessorConfig holds configuration for the processor
 type ProcessorConfig struct {
-	Matcher     *matcher.Matcher
-	TrackRepo   *db.TrackRepository
-	LibraryRepo *db.LibraryRepository
-	Storage     ObjectStorage
+	Matcher        *matcher.Matcher
+	TrackRepo      *db.TrackRepository
+	LibraryRepo    *db.LibraryRepository
+	AnalysisRepo   *db.AnalysisRepository
+	AnalyzerClient analyzer.Client
+	Storage        ObjectStorage
 }
 
 // New creates a new Processor instance
 func New(config *ProcessorConfig) *Processor {
 	return &Processor{
-		matcher:     config.Matcher,
-		trackRepo:   config.TrackRepo,
-		libraryRepo: config.LibraryRepo,
-		storage:     config.Storage,
+		matcher:        config.Matcher,
+		trackRepo:      config.TrackRepo,
+		libraryRepo:    config.LibraryRepo,
+		analysisRepo:   config.AnalysisRepo,
+		analyzerClient: config.AnalyzerClient,
+		storage:        config.Storage,
 	}
 }
 
@@ -97,6 +106,7 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 	if err := p.addToLibrary(ctx, job.UserID, track.ID); err != nil {
 		log.Printf("Warning: failed to add track %d to library: %v", track.ID, err)
 	}
+	p.enqueueAnalysis(ctx, track, metadata)
 	progress(95)
 
 	log.Printf("Processing job %s: complete (track_id=%d, is_new=%v)", job.ID, track.ID, isNew)
@@ -625,6 +635,65 @@ func (p *Processor) addToLibrary(ctx context.Context, userID string, trackID int
 		return err
 	}
 	return nil
+}
+
+func (p *Processor) enqueueAnalysis(ctx context.Context, track *db.Track, metadata *TrackMetadata) {
+	if p.analysisRepo == nil || track == nil || metadata == nil {
+		return
+	}
+	provenance, _ := json.Marshal(map[string]interface{}{
+		"trigger": "post_download",
+		"source": map[string]interface{}{
+			"storage_key": metadata.StorageKey,
+			"source_type": metadata.SourceType,
+			"duration_ms": metadata.DurationMs,
+		},
+	})
+	if err := p.analysisRepo.RequestAnalysis(ctx, track.ID, provenance); err != nil {
+		log.Printf("Warning: failed to request audio analysis for track %d: %v", track.ID, err)
+		return
+	}
+	if p.analyzerClient == nil {
+		return
+	}
+	req := analyzer.Request{
+		TrackID:       track.ID,
+		StorageKey:    metadata.StorageKey,
+		SourceURL:     metadata.SourceURL,
+		SourceType:    metadata.SourceType,
+		DurationMs:    metadata.DurationMs,
+		Title:         metadata.Title,
+		Artist:        metadata.Artist,
+		SchemaVersion: analyzer.SchemaVersion,
+	}
+	go p.runAnalysis(req)
+}
+
+func (p *Processor) runAnalysis(req analyzer.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	provenance, _ := json.Marshal(map[string]interface{}{"trigger": "analyzer_client"})
+	if err := p.analysisRepo.MarkAnalyzing(ctx, req.TrackID, provenance); err != nil {
+		log.Printf("Warning: failed to mark track %d analyzing: %v", req.TrackID, err)
+		return
+	}
+	result, err := p.analyzerClient.Analyze(ctx, req)
+	if err != nil {
+		if errors.Is(err, analyzer.ErrUnsupported) {
+			_ = p.analysisRepo.MarkUnsupported(ctx, req.TrackID, err.Error(), provenance)
+			return
+		}
+		_ = p.analysisRepo.MarkFailed(ctx, req.TrackID, err.Error(), provenance)
+		return
+	}
+	if err := p.analysisRepo.StoreResult(ctx, req.TrackID, db.AnalysisResult{
+		SchemaVersion:  result.SchemaVersion,
+		SummaryJSON:    result.SummaryJSON,
+		ArtifactsJSON:  result.ArtifactsJSON,
+		ProvenanceJSON: result.ProvenanceJSON,
+	}); err != nil {
+		log.Printf("Warning: failed to store analysis result for track %d: %v", req.TrackID, err)
+	}
 }
 
 func firstNonEmpty(values ...string) string {

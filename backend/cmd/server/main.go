@@ -86,6 +86,7 @@ func main() {
 	tokenRepo := db.NewTokenRepository(database)
 	trackRepo := db.NewTrackRepository(database)
 	libraryRepo := db.NewLibraryRepository(database)
+	analysisRepo := db.NewAnalysisRepository(database)
 	playlistRepo := db.NewPlaylistRepository(database)
 	mixPlanRepo := db.NewMixPlanRepository(database)
 
@@ -116,6 +117,7 @@ func main() {
 		"ai_assist_model":   cfg.AIAssistModel,
 	})
 	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
+	analysisHandlers := api.NewAnalysisHandlers(analysisRepo, libraryRepo)
 	playlistHandlers := api.NewPlaylistHandlers(playlistRepo, trackRepo)
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
 
@@ -155,10 +157,11 @@ func main() {
 
 	// Initialize job processor with matching integration
 	jobProcessor := processor.New(&processor.ProcessorConfig{
-		Matcher:     matcherService,
-		TrackRepo:   trackRepo,
-		LibraryRepo: libraryRepo,
-		Storage:     storageClient,
+		Matcher:      matcherService,
+		TrackRepo:    trackRepo,
+		LibraryRepo:  libraryRepo,
+		AnalysisRepo: analysisRepo,
+		Storage:      storageClient,
 	})
 
 	// Initialize Redis-backed download and playback queue services only when enabled.
@@ -187,7 +190,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer queueService.Close()
-		queueHandlers = queue.NewHandlers(queueService, downloadService)
+		queueHandlers = queue.NewHandlersWithAnalysis(queueService, downloadService, analysisRepo)
 	}
 
 	// Initialize metrics
@@ -220,6 +223,7 @@ func main() {
 		WSHandler:          wsHandler,
 		MatcherHandlers:    matcherHandlers,
 		LibraryHandlers:    libraryHandlers,
+		AnalysisHandlers:   analysisHandlers,
 		PlaybackHandlers:   playbackHandlers,
 		QueueHandlers:      queueHandlers,
 		DiscoveryHandlers:  discoveryHandlers,
