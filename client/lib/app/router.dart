@@ -123,10 +123,20 @@ String? _authRedirect(AuthState authState, GoRouterState state) {
   }
 
   if (authState.isAuthenticated && (path == '/login' || path == '/register')) {
-    return '/home';
+    return safeLoginRedirectNext(state.uri.queryParameters['next']) ?? '/home';
   }
 
   return null;
+}
+
+@visibleForTesting
+String? safeLoginRedirectNext(String? next) {
+  if (next == null || next.isEmpty) return null;
+  if (!next.startsWith('/') || next.startsWith('//')) return null;
+  final uri = Uri.tryParse(next);
+  if (uri == null || uri.hasScheme || uri.hasAuthority) return null;
+  if (uri.path == '/login' || uri.path == '/register') return null;
+  return next;
 }
 
 String get _initialRoute {

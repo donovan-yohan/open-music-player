@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 import '../../core/storage/offline_database.dart';
 import '../../core/network/connectivity_service.dart';
@@ -55,38 +56,34 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _tracks = [];
       _hasMore = true;
     });
+
     try {
       if (!_downloadedOnly && context.read<ConnectivityService>().isOnline) {
-        final remote = await _loadRemoteTracks(offset: 0);
-        setState(() {
-          _tracks = remote.tracks;
-          _totalCount = remote.total;
-          _hasMore = _tracks.length < _totalCount;
-          _counts = remote.counts;
-          _isLoading = false;
-        });
-        return;
+        try {
+          final remote = await _loadRemoteTracks(offset: 0);
+          setState(() {
+            _tracks = remote.tracks;
+            _totalCount = remote.total;
+            _hasMore = _tracks.length < _totalCount;
+            _counts = remote.counts;
+            _isLoading = false;
+          });
+          return;
+        } catch (_) {
+          // Connectivity can report online while the API is unavailable. Keep
+          // the Library useful by falling back to cached/offline tracks.
+        }
       }
 
-      final db = context.read<OfflineDatabase>();
-      final results = await Future.wait([
-        db.getLibraryTracksWithCount(
-          downloadedOnly: _downloadedOnly,
-          verificationFilter: _verificationFilter,
-          limit: _pageSize,
-          offset: 0,
-        ),
-        db.getLibraryTrackCounts(),
-      ]);
-      final trackResult = results[0] as ({List<Track> tracks, int total});
+      final local = await _loadLocalTracks(offset: 0, includeCounts: true);
       setState(() {
-        _tracks = trackResult.tracks;
-        _totalCount = trackResult.total;
+        _tracks = local.tracks;
+        _totalCount = local.total;
         _hasMore = _tracks.length < _totalCount;
-        _counts = results[1] as Map<VerificationFilter, int>;
+        _counts = local.counts ?? _counts;
         _isLoading = false;
       });
-    } catch (e) {
+    } catch (_) {
       setState(() => _isLoading = false);
     }
   }
@@ -106,21 +103,42 @@ class _LibraryScreenState extends State<LibraryScreen> {
         return;
       }
 
-      final db = context.read<OfflineDatabase>();
-      final result = await db.getLibraryTracksWithCount(
-        downloadedOnly: _downloadedOnly,
-        verificationFilter: _verificationFilter,
-        limit: _pageSize,
+      final local = await _loadLocalTracks(
         offset: _tracks.length,
+        includeCounts: false,
       );
       setState(() {
-        _tracks.addAll(result.tracks);
-        _hasMore = _tracks.length < result.total;
+        _tracks.addAll(local.tracks);
+        _hasMore = _tracks.length < local.total;
         _isLoadingMore = false;
       });
-    } catch (e) {
+    } catch (_) {
       setState(() => _isLoadingMore = false);
     }
+  }
+
+  Future<
+      ({
+        List<Track> tracks,
+        int total,
+        Map<VerificationFilter, int>? counts,
+      })> _loadLocalTracks({
+    required int offset,
+    required bool includeCounts,
+  }) async {
+    final db = context.read<OfflineDatabase>();
+    final trackResult = await db.getLibraryTracksWithCount(
+      downloadedOnly: _downloadedOnly,
+      verificationFilter: _verificationFilter,
+      limit: _pageSize,
+      offset: offset,
+    );
+    final counts = includeCounts ? await db.getLibraryTrackCounts() : null;
+    return (
+      tracks: trackResult.tracks,
+      total: trackResult.total,
+      counts: counts,
+    );
   }
 
   Future<
@@ -454,8 +472,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
         controller: _scrollController,
         // Add 1 for loading indicator if has more
         itemCount: _tracks.length + (_hasMore ? 1 : 0),
-        // Use cacheExtent for smooth scrolling
-        cacheExtent: 200,
+        // Use scrollCacheExtent for smooth scrolling
+        scrollCacheExtent: const ScrollCacheExtent.pixels(200),
         itemBuilder: (context, index) {
           // Loading indicator at the bottom
           if (index >= _tracks.length) {

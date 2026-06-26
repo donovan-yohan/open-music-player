@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/api/api_client.dart';
 import '../../core/auth/auth_state.dart';
 import '../../core/share/shared_url_parser.dart';
 import '../../services/api_client.dart' as queue_api;
@@ -128,10 +130,7 @@ class _ShareImportScreenState extends State<ShareImportScreen> {
     });
 
     try {
-      final job = await context.read<queue_api.ApiClient>().createDownload(
-            url: sharedUrl.url,
-            sourceType: sharedUrl.downloadSourceType,
-          );
+      final job = await _createDownload(sharedUrl);
       if (!mounted) return;
       setState(() {
         _submitted = true;
@@ -145,9 +144,9 @@ class _ShareImportScreenState extends State<ShareImportScreen> {
       setState(() {
         _error = 'Could not reach the server. The request timed out.';
       });
-    } on queue_api.ApiException catch (error) {
+    } on DioException catch (error) {
       if (!mounted) return;
-      if (error.statusCode == 401) {
+      if (error.response?.statusCode == 401) {
         await context.read<AuthState>().logout();
         if (!mounted) return;
         setState(() {
@@ -155,7 +154,8 @@ class _ShareImportScreenState extends State<ShareImportScreen> {
         });
       } else {
         setState(() {
-          _error = 'Could not add this link to library: $error';
+          _error =
+              'Could not add this link to library: ${_apiErrorMessage(error)}';
         });
       }
     } catch (error) {
@@ -170,6 +170,31 @@ class _ShareImportScreenState extends State<ShareImportScreen> {
         });
       }
     }
+  }
+
+  Future<queue_api.DownloadJobResponse> _createDownload(
+    SharedUrlCandidate sharedUrl,
+  ) async {
+    final response = await context.read<ApiClient>().post<Map<String, dynamic>>(
+      '/downloads',
+      data: {
+        'url': sharedUrl.url,
+        'source_type': sharedUrl.downloadSourceType,
+      },
+    ).timeout(const Duration(seconds: 8));
+
+    return queue_api.DownloadJobResponse.fromJson(
+      response.data ?? <String, dynamic>{},
+    );
+  }
+
+  String _apiErrorMessage(DioException error) {
+    final data = error.response?.data;
+    if (data is Map<String, dynamic>) {
+      final message = data['message'] ?? data['error'];
+      if (message is String && message.isNotEmpty) return message;
+    }
+    return error.message ?? 'server request failed';
   }
 
   String _shareRoute({bool autoSubmit = false}) {
