@@ -8,6 +8,7 @@ import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/track.dart';
+import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:open_music_player/screens/queue_screen.dart';
 import 'package:open_music_player/services/api_client.dart';
@@ -133,33 +134,33 @@ void main() {
     expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
   });
 
-  testWidgets('queue summary subtracts elapsed playback from remaining runtime',
-      (
-    tester,
-  ) async {
-    playbackState.fakePosition = const Duration(seconds: 30);
+  testWidgets(
+    'queue summary subtracts elapsed playback from remaining runtime',
+    (tester) async {
+      playbackState.fakePosition = const Duration(seconds: 30);
 
-    await pumpQueueScreen(tester);
+      await pumpQueueScreen(tester);
 
-    expect(find.text('3 tracks · 10:11 remaining'), findsOneWidget);
-  });
+      expect(find.text('3 tracks · 10:11 remaining'), findsOneWidget);
+    },
+  );
 
   testWidgets(
-      'queue summary uses source-relative playback for trimmed current track', (
-    tester,
-  ) async {
-    playbackState.fakePosition = const Duration(seconds: 45);
+    'queue summary uses source-relative playback for trimmed current track',
+    (tester) async {
+      playbackState.fakePosition = const Duration(seconds: 45);
 
-    await pumpQueueScreen(tester);
-    final provider =
-        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
-    final currentTrack = provider.currentTrack!;
-    await provider.setStartOffsetMs(currentTrack, 30000);
-    await provider.setEndOffsetMs(currentTrack, 90000);
-    await tester.pumpAndSettle();
+      await pumpQueueScreen(tester);
+      final provider =
+          tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+      final currentTrack = provider.currentTrack!;
+      await provider.setStartOffsetMs(currentTrack, 30000);
+      await provider.setEndOffsetMs(currentTrack, 90000);
+      await tester.pumpAndSettle();
 
-    expect(find.text('3 tracks · 8:21 remaining'), findsOneWidget);
-  });
+      expect(find.text('3 tracks · 8:21 remaining'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'list view renders pending, downloading, failed, and playable states',
@@ -178,6 +179,34 @@ void main() {
       expect(find.text('Playable'), findsWidgets);
       expect(find.byKey(const ValueKey('queue_retry_t3')), findsOneWidget);
       expect(find.byKey(const ValueKey('queue_play_t5')), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'list view renders queue analysis metadata and non-success states',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 2000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      apiClient.useAnalysisFixture();
+
+      await pumpQueueScreen(tester);
+
+      expect(find.text('124 BPM'), findsOneWidget);
+      expect(find.text('A minor · 8A'), findsOneWidget);
+      expect(find.text('Energy 73%'), findsOneWidget);
+      expect(find.text('Waveform 6 samples'), findsOneWidget);
+      expect(find.text('Intro 0:00-0:16'), findsOneWidget);
+      expect(find.text('Outro 3:00-3:18'), findsOneWidget);
+      expect(find.text('2 sections'), findsOneWidget);
+      expect(find.text('Cue in 0:16'), findsOneWidget);
+      expect(find.text('Cue out 3:00'), findsOneWidget);
+      expect(find.text('Analysis pending'), findsOneWidget);
+      expect(find.text('Analyzing'), findsOneWidget);
+      expect(find.text('Analysis failed'), findsOneWidget);
+      expect(find.text('Analysis unsupported'), findsOneWidget);
+      expect(find.byKey(const ValueKey('queue_play_t1')), findsOneWidget);
     },
   );
 
@@ -493,6 +522,78 @@ class _FakeQueueApiClient extends ApiClient {
           duration: 201,
           addedAt: DateTime(2026),
           queueStatus: TrackQueueStatus.playable,
+        ),
+      ],
+      currentIndex: 0,
+    );
+  }
+
+  void useAnalysisFixture() {
+    final summary = TrackAnalysisSummary.fromJson({
+      'bpm': {'value': 124.0},
+      'key': {'value': 'A minor'},
+      'camelot': {'value': '8A'},
+      'energy': {'value': 0.73},
+      'waveform': {'sample_count': 6},
+      'intro': {'start_ms': 320, 'end_ms': 16000},
+      'outro': {'start_ms': 180000, 'end_ms': 197500},
+      'sections': [
+        {'label': 'intro', 'start_ms': 320, 'end_ms': 16000},
+        {'label': 'drop', 'start_ms': 64000, 'end_ms': 128000},
+      ],
+      'cue_candidates': [
+        {'kind': 'mix_in', 'start_ms': 16000},
+        {'kind': 'mix_out', 'start_ms': 180000},
+      ],
+    });
+    _state = QueueState(
+      tracks: [
+        Track(
+          id: 't1',
+          playbackTrackId: '101',
+          title: 'Analyzed Track',
+          artist: 'Queue Artist',
+          duration: 198,
+          addedAt: DateTime(2026),
+          queueStatus: TrackQueueStatus.playable,
+          analysis: TrackAnalysis(
+            status: TrackAnalysisStatus.analyzed,
+            summary: summary,
+          ),
+        ),
+        Track(
+          id: 't2',
+          title: 'Pending Analysis',
+          artist: 'Queue Artist',
+          duration: 215,
+          addedAt: DateTime(2026),
+          analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+        ),
+        Track(
+          id: 't3',
+          title: 'Analyzing Track',
+          artist: 'Queue Artist',
+          duration: 241,
+          addedAt: DateTime(2026),
+          analysis: const TrackAnalysis(status: TrackAnalysisStatus.analyzing),
+        ),
+        Track(
+          id: 't4',
+          title: 'Failed Analysis',
+          artist: 'Queue Artist',
+          duration: 201,
+          addedAt: DateTime(2026),
+          analysis: const TrackAnalysis(status: TrackAnalysisStatus.failed),
+        ),
+        Track(
+          id: 't5',
+          title: 'Unsupported Analysis',
+          artist: 'Queue Artist',
+          duration: 201,
+          addedAt: DateTime(2026),
+          analysis: const TrackAnalysis(
+            status: TrackAnalysisStatus.unsupported,
+          ),
         ),
       ],
       currentIndex: 0,
