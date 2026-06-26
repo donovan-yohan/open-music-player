@@ -49,6 +49,13 @@ type Config struct {
 	AIAssistAPIKey  string
 	AIAssistModel   string
 	AIAssistTimeout time.Duration
+
+	// Optional local Ollama metadata disambiguator. Disabled by default; when
+	// enabled it only selects among existing MusicBrainz candidates.
+	MetadataLLMEnabled bool
+	MetadataLLMBaseURL string
+	MetadataLLMModel   string
+	MetadataLLMTimeout time.Duration
 }
 
 func Load() *Config {
@@ -63,6 +70,9 @@ func Load() *Config {
 	// Default-enabled only when fully configured; an operator can force it off
 	// with AI_ASSIST_ENABLED=false. A partial config stays disabled.
 	aiEnabled := parseBoolEnv("AI_ASSIST_ENABLED", aiBaseURL != "" && aiAPIKey != "" && aiModel != "")
+	metadataLLMBaseURL := strings.TrimSpace(getEnvOrDefault("METADATA_LLM_BASE_URL", getEnvOrDefault("OLLAMA_BASE_URL", "http://localhost:11434")))
+	metadataLLMModel := strings.TrimSpace(getEnvOrDefault("METADATA_LLM_MODEL", os.Getenv("OLLAMA_MODEL")))
+	metadataLLMEnabled := parseBoolEnv("METADATA_LLM_ENABLED", false)
 
 	return &Config{
 		ServerAddr:         getEnvOrDefault("SERVER_ADDR", ":8080"),
@@ -101,6 +111,12 @@ func Load() *Config {
 		AIAssistAPIKey:  aiAPIKey,
 		AIAssistModel:   aiModel,
 		AIAssistTimeout: parseDurationMsEnv("AI_ASSIST_TIMEOUT_MS", 8*time.Second),
+
+		// Metadata LLM disambiguator configuration
+		MetadataLLMEnabled: metadataLLMEnabled,
+		MetadataLLMBaseURL: metadataLLMBaseURL,
+		MetadataLLMModel:   metadataLLMModel,
+		MetadataLLMTimeout: parseDurationMsEnv("METADATA_LLM_TIMEOUT_MS", 5*time.Second),
 	}
 }
 

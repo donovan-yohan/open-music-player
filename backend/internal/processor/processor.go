@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,6 +137,7 @@ type TrackMetadata struct {
 	FileSizeBytes   int64
 	PreselectedMBID string
 	Raw             map[string]interface{}
+	Cleanup         deterministicCleanup
 }
 
 func (p *Processor) downloadAndStore(ctx context.Context, job *download.DownloadJob) (*TrackMetadata, error) {
@@ -503,6 +505,7 @@ func sanitizeKeyPart(value string) string {
 // createTrack creates or retrieves the track record
 func (p *Processor) createTrack(ctx context.Context, job *download.DownloadJob, metadata *TrackMetadata) (*db.Track, bool, error) {
 	cleanup := applyDeterministicCleanup(metadata)
+	metadata.Cleanup = cleanup
 	provenance := metadataProvenance(metadata, cleanup)
 	status := "provider"
 	var confidence *float64
@@ -536,9 +539,17 @@ func (p *Processor) runMatching(ctx context.Context, track *db.Track, metadata *
 	if track.MBVerified || metadata.PreselectedMBID != "" || p.matcher == nil {
 		return nil
 	}
-	matchMetadata := matcher.TrackMetadata{Title: metadata.Title}
-	if metadata.Artist != "" {
-		matchMetadata.Uploader = metadata.Artist
+	provider := providerMetadata(metadata)
+	matchMetadata := matcher.TrackMetadata{
+		Title:         metadata.Title,
+		Artist:        metadata.Artist,
+		Album:         metadata.Album,
+		Uploader:      metadata.Uploader,
+		SourceType:    metadata.SourceType,
+		SourceDomain:  sourceDomain(metadata.SourceURL),
+		ThumbnailURL:  stringValueFromMap(provider, "thumbnail_url"),
+		RawProvider:   provider,
+		Deterministic: deterministicCleanupMetadata(metadata.Cleanup),
 	}
 	if metadata.DurationMs > 0 {
 		matchMetadata.DurationMs = metadata.DurationMs
@@ -615,6 +626,7 @@ func automaticMBMatchUpdate(output *matcher.MatchOutput) *db.MBMatchUpdate {
 			"best_match":   output.BestMatch,
 			"suggestions":  output.Suggestions,
 			"parsed_title": output.ParsedTitle,
+			"ollama":       output.Disambiguation,
 		},
 	})
 	update.MetadataProvenance = mbProvenance
@@ -716,6 +728,33 @@ func stringValue(raw map[string]interface{}, key string) string {
 		return v
 	}
 	return ""
+}
+
+func stringValueFromMap(raw map[string]interface{}, key string) string {
+	if v, ok := raw[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func deterministicCleanupMetadata(cleanup deterministicCleanup) map[string]interface{} {
+	return map[string]interface{}{
+		"raw_title":  cleanup.RawTitle,
+		"raw_artist": cleanup.RawArtist,
+		"title":      cleanup.Title,
+		"artist":     cleanup.Artist,
+		"method":     cleanup.Method,
+		"applied":    cleanup.Applied,
+		"confidence": cleanup.Confidence,
+	}
+}
+
+func sourceDomain(sourceURL string) string {
+	parsed, err := url.Parse(sourceURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
 }
 
 func floatValue(raw map[string]interface{}, key string) float64 {

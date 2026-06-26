@@ -140,6 +140,40 @@ func TestLoadAIAssistDefaultsMalformedTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadMetadataLLMDisabledByDefault(t *testing.T) {
+	for _, key := range []string{"METADATA_LLM_ENABLED", "METADATA_LLM_BASE_URL", "METADATA_LLM_MODEL", "METADATA_LLM_TIMEOUT_MS", "OLLAMA_BASE_URL", "OLLAMA_MODEL"} {
+		withUnsetEnv(t, key)
+	}
+	cfg := Load()
+	if cfg.MetadataLLMEnabled {
+		t.Fatal("MetadataLLMEnabled = true with no config, want disabled")
+	}
+	if cfg.MetadataLLMBaseURL != "http://localhost:11434" {
+		t.Fatalf("MetadataLLMBaseURL = %q, want local Ollama default", cfg.MetadataLLMBaseURL)
+	}
+	if cfg.MetadataLLMTimeout != 5*time.Second {
+		t.Fatalf("MetadataLLMTimeout = %s, want default 5s", cfg.MetadataLLMTimeout)
+	}
+}
+
+func TestLoadMetadataLLMExplicitEnable(t *testing.T) {
+	t.Setenv("METADATA_LLM_ENABLED", "true")
+	t.Setenv("METADATA_LLM_BASE_URL", "http://ollama.example:11434")
+	t.Setenv("METADATA_LLM_MODEL", "llama3.1")
+	t.Setenv("METADATA_LLM_TIMEOUT_MS", "1200")
+
+	cfg := Load()
+	if !cfg.MetadataLLMEnabled {
+		t.Fatal("MetadataLLMEnabled = false despite explicit enable")
+	}
+	if cfg.MetadataLLMBaseURL != "http://ollama.example:11434" || cfg.MetadataLLMModel != "llama3.1" {
+		t.Fatalf("metadata LLM config not loaded: base=%q model=%q", cfg.MetadataLLMBaseURL, cfg.MetadataLLMModel)
+	}
+	if cfg.MetadataLLMTimeout != 1200*time.Millisecond {
+		t.Fatalf("MetadataLLMTimeout = %s, want 1200ms", cfg.MetadataLLMTimeout)
+	}
+}
+
 func withUnsetCORSAllowedOrigins(t *testing.T) {
 	t.Helper()
 	withUnsetEnv(t, "OMP_CORS_ALLOWED_ORIGINS")
