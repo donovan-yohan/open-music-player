@@ -15,7 +15,7 @@ FLUTTER_API_BASE_URL="${OMP_FLUTTER_API_BASE_URL:-${OMP_API_BASE_URL:-$BACKEND_B
 
 usage() {
   cat <<'USAGE'
-usage: scripts/local-low-memory.sh <start|start-downloads|stop|status|smoke|flutter-web-command>
+usage: scripts/local-low-memory.sh <start|start-downloads|stop|status|smoke|playback-smoke|flutter-web-command>
 
 commands:
   start                 start backend + PostgreSQL + MinIO, with Redis off and WORKER_COUNT=0
@@ -23,6 +23,7 @@ commands:
   stop                  stop the low-memory compose stack
   status                show compose service status
   smoke                 check backend health, MinIO bucket access, and Flutter Web API base URL wiring
+  playback-smoke        seed a tiny MinIO audio fixture and verify signed playback URL range reads
   flutter-web-command   print the Flutter Web command with the dart-define API base URL
 USAGE
 }
@@ -66,6 +67,25 @@ case "$cmd" in
       echo "Flutter Web API base URL wiring missing" >&2
       exit 1
     fi
+    ;;
+  playback-smoke)
+    wait_for_backend
+    log_path="${OMP_PLAYBACK_SMOKE_LOG:-/tmp/omp-lowmem-playback-smoke-$(date +%Y%m%d-%H%M%S).log}"
+    mkdir -p "$(dirname "$log_path")"
+    set +e
+    (
+      cd "$ROOT/backend"
+      OMP_SMOKE_BACKEND_BASE_URL="$BACKEND_BASE_URL" \
+      OMP_SMOKE_DB_HOST="${OMP_SMOKE_DB_HOST:-localhost}" \
+      OMP_SMOKE_DB_PORT="${OMP_SMOKE_DB_PORT:-${POSTGRES_PORT:-5434}}" \
+      OMP_SMOKE_MINIO_ENDPOINT="${OMP_SMOKE_MINIO_ENDPOINT:-localhost:${MINIO_PORT:-9000}}" \
+      OMP_SMOKE_MINIO_PUBLIC_ENDPOINT="${OMP_SMOKE_MINIO_PUBLIC_ENDPOINT:-http://localhost:${MINIO_PORT:-9000}}" \
+      go run ./cmd/local-playback-smoke
+    ) 2>&1 | tee "$log_path"
+    smoke_status=${PIPESTATUS[0]}
+    set -e
+    echo "playback smoke log: $log_path"
+    exit "$smoke_status"
     ;;
   flutter-web-command)
     printf 'cd client && flutter run -d chrome --dart-define=OMP_API_BASE_URL=%q\n' "$FLUTTER_API_BASE_URL"
