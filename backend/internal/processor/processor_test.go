@@ -3,6 +3,7 @@ package processor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,6 +24,73 @@ func (s *fakeObjectStorage) PutObject(ctx context.Context, key string, reader io
 	s.contentType = contentType
 	s.data, _ = io.ReadAll(reader)
 	return nil
+}
+
+func TestApplyDeterministicCleanupPorterRobinsonOfficialVideo(t *testing.T) {
+	metadata := &TrackMetadata{
+		Title:  "Porter Robinson - Cheerleader (Official Music Video)",
+		Artist: "Porter RobinsonVEVO",
+	}
+
+	cleanup := applyDeterministicCleanup(metadata)
+
+	if !cleanup.Applied {
+		t.Fatalf("expected deterministic cleanup to apply")
+	}
+	if metadata.Artist != "Porter Robinson" || metadata.Title != "Cheerleader" {
+		t.Fatalf("metadata = artist %q title %q, want Porter Robinson/Cheerleader", metadata.Artist, metadata.Title)
+	}
+	if cleanup.Method != "separator" || cleanup.Confidence <= 0 {
+		t.Fatalf("cleanup = method %q confidence %v, want separator with confidence", cleanup.Method, cleanup.Confidence)
+	}
+}
+
+func TestApplyDeterministicCleanupDoesNotUseUploaderWhenTitleIsWeak(t *testing.T) {
+	metadata := &TrackMetadata{
+		Title:    "Cheerleader (Official Music Video)",
+		Artist:   "Porter RobinsonVEVO",
+		Uploader: "Porter RobinsonVEVO",
+	}
+
+	cleanup := applyDeterministicCleanup(metadata)
+
+	if cleanup.Applied {
+		t.Fatalf("weak non-separator title should not rewrite provider metadata")
+	}
+	if metadata.Artist != "Porter RobinsonVEVO" || metadata.Title != "Cheerleader (Official Music Video)" {
+		t.Fatalf("metadata changed on weak parse: artist %q title %q", metadata.Artist, metadata.Title)
+	}
+}
+
+func TestMetadataProvenanceRetainsRawProviderAndCleanup(t *testing.T) {
+	metadata := &TrackMetadata{
+		Title:      "Madeon // All My Friends (Visualizer) [HD]",
+		Artist:     "madeonofficial",
+		Uploader:   "madeonofficial",
+		DurationMs: 190000,
+		SourceURL:  "https://youtu.be/example",
+		SourceType: "youtube",
+		Raw: map[string]interface{}{
+			"title":         "Madeon // All My Friends (Visualizer) [HD]",
+			"uploader":      "madeonofficial",
+			"thumbnail_url": "https://img.example/front.jpg",
+		},
+	}
+	cleanup := applyDeterministicCleanup(metadata)
+	provenance := metadataProvenance(metadata, cleanup)
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(provenance, &decoded); err != nil {
+		t.Fatalf("provenance is invalid JSON: %v", err)
+	}
+	provider := decoded["raw_provider"].(map[string]interface{})
+	if provider["title"] != "Madeon // All My Friends (Visualizer) [HD]" {
+		t.Fatalf("raw provider title = %v", provider["title"])
+	}
+	deterministic := decoded["deterministic"].(map[string]interface{})
+	if deterministic["artist"] != "Madeon" || deterministic["title"] != "All My Friends" || deterministic["applied"] != true {
+		t.Fatalf("deterministic provenance = %#v", deterministic)
+	}
 }
 
 func TestDownloadAndStoreFixtureCreatesPlayableWAVObject(t *testing.T) {

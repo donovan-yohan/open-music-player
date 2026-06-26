@@ -109,6 +109,7 @@ type TrackMetadata struct {
 	Title           string
 	Artist          string
 	Album           string
+	Uploader        string
 	DurationMs      int
 	SourceURL       string
 	SourceType      string
@@ -127,12 +128,20 @@ func (p *Processor) downloadAndStore(ctx context.Context, job *download.Download
 		Title:      firstNonEmpty(job.Title, job.URL),
 		Artist:     firstNonEmpty(job.Artist, job.Uploader),
 		Album:      job.Album,
+		Uploader:   job.Uploader,
 		DurationMs: job.DurationMs,
 		SourceURL:  job.URL,
 		SourceType: job.SourceType,
 		Raw: map[string]interface{}{
 			"candidate_id":  job.CandidateID,
 			"source_id":     job.SourceID,
+			"title":         job.Title,
+			"artist":        job.Artist,
+			"album":         job.Album,
+			"uploader":      job.Uploader,
+			"duration_ms":   job.DurationMs,
+			"source_url":    job.URL,
+			"source_type":   job.SourceType,
 			"thumbnail_url": job.ThumbnailURL,
 		},
 	}
@@ -364,9 +373,82 @@ func populateMetadataFromInfo(path string, metadata *TrackMetadata) {
 	metadata.Raw = raw
 	metadata.Title = firstNonEmpty(stringValue(raw, "title"), metadata.Title)
 	metadata.Artist = firstNonEmpty(stringValue(raw, "artist"), stringValue(raw, "uploader"), metadata.Artist)
+	metadata.Uploader = firstNonEmpty(stringValue(raw, "uploader"), metadata.Uploader)
 	if duration := int(floatValue(raw, "duration") * 1000); duration > 0 {
 		metadata.DurationMs = duration
 	}
+}
+
+type deterministicCleanup struct {
+	RawTitle   string  `json:"raw_title,omitempty"`
+	RawArtist  string  `json:"raw_artist,omitempty"`
+	Title      string  `json:"title,omitempty"`
+	Artist     string  `json:"artist,omitempty"`
+	Method     string  `json:"method,omitempty"`
+	Applied    bool    `json:"applied"`
+	Confidence float64 `json:"confidence,omitempty"`
+}
+
+func applyDeterministicCleanup(metadata *TrackMetadata) deterministicCleanup {
+	cleanup := deterministicCleanup{
+		RawTitle:  metadata.Title,
+		RawArtist: metadata.Artist,
+	}
+	parsed := matcher.ParseTitle(metadata.Title)
+	cleanup.Method = parsed.Method
+	cleanup.Title = parsed.Track
+	cleanup.Artist = parsed.Artist
+
+	if parsed.Method != "separator" || parsed.Artist == "" || parsed.Track == "" {
+		return cleanup
+	}
+
+	metadata.Title = parsed.Track
+	metadata.Artist = parsed.Artist
+	cleanup.Applied = true
+	cleanup.Confidence = 0.65
+	return cleanup
+}
+
+func providerMetadata(metadata *TrackMetadata) map[string]interface{} {
+	provider := make(map[string]interface{})
+	keys := []string{"id", "title", "fulltitle", "artist", "album", "uploader", "channel", "duration", "duration_ms", "webpage_url", "source_url", "source_type", "thumbnail", "thumbnail_url", "candidate_id", "source_id"}
+	for _, key := range keys {
+		if value, ok := metadata.Raw[key]; ok && value != nil && value != "" {
+			provider[key] = value
+		}
+	}
+	if _, ok := provider["title"]; !ok && metadata.Title != "" {
+		provider["title"] = metadata.Title
+	}
+	if _, ok := provider["artist"]; !ok && metadata.Artist != "" {
+		provider["artist"] = metadata.Artist
+	}
+	if metadata.Album != "" {
+		provider["album"] = metadata.Album
+	}
+	if metadata.Uploader != "" {
+		provider["uploader"] = metadata.Uploader
+	}
+	if metadata.DurationMs > 0 {
+		provider["duration_ms"] = metadata.DurationMs
+	}
+	if metadata.SourceURL != "" {
+		provider["source_url"] = metadata.SourceURL
+	}
+	if metadata.SourceType != "" {
+		provider["source_type"] = metadata.SourceType
+	}
+	return provider
+}
+
+func metadataProvenance(metadata *TrackMetadata, cleanup deterministicCleanup) json.RawMessage {
+	payload := map[string]interface{}{
+		"raw_provider":  providerMetadata(metadata),
+		"deterministic": cleanup,
+	}
+	encoded, _ := json.Marshal(payload)
+	return encoded
 }
 
 func storageKey(job *download.DownloadJob, path string) string {
@@ -391,11 +473,19 @@ func sanitizeKeyPart(value string) string {
 
 // createTrack creates or retrieves the track record
 func (p *Processor) createTrack(ctx context.Context, job *download.DownloadJob, metadata *TrackMetadata) (*db.Track, bool, error) {
-	rawMetadata, _ := json.Marshal(metadata.Raw)
+	cleanup := applyDeterministicCleanup(metadata)
+	provenance := metadataProvenance(metadata, cleanup)
+	status := "provider"
+	var confidence *float64
+	if cleanup.Applied {
+		status = "cleaned"
+		confidence = &cleanup.Confidence
+	}
 	opts := []db.TrackOption{
 		db.WithSource(metadata.SourceURL, metadata.SourceType),
 		db.WithStorage(metadata.StorageKey, metadata.FileSizeBytes),
-		db.WithMetadata(rawMetadata),
+		db.WithMetadata(provenance),
+		db.WithMetadataEnrichment(status, confidence, provenance, ""),
 	}
 
 	if metadata.PreselectedMBID != "" {
@@ -430,26 +520,58 @@ func (p *Processor) runMatching(ctx context.Context, track *db.Track, metadata *
 	}
 	output, err := p.matcher.Match(ctx, matchMetadata)
 	if err != nil {
+		failedProvenance, _ := json.Marshal(map[string]interface{}{
+			"musicbrainz": map[string]interface{}{
+				"status": "failed",
+				"error":  err.Error(),
+			},
+		})
+		_ = p.trackRepo.UpdateMBMatch(ctx, track.ID, &db.MBMatchUpdate{
+			MetadataStatus:     "failed",
+			MetadataProvenance: failedProvenance,
+		})
 		return fmt.Errorf("matching failed: %w", err)
 	}
 	update := &db.MBMatchUpdate{MBVerified: output.Verified}
 	if output.BestMatch != nil {
-		if output.BestMatch.MBID != "" {
-			if mbid, err := uuid.Parse(output.BestMatch.MBID); err == nil {
-				update.MBRecordingID = &mbid
+		confidence := output.BestMatch.Confidence
+		update.MetadataConfidence = &confidence
+		if output.Verified {
+			if output.BestMatch.MBID != "" {
+				if mbid, err := uuid.Parse(output.BestMatch.MBID); err == nil {
+					update.MBRecordingID = &mbid
+				}
 			}
-		}
-		if output.BestMatch.ArtistMBID != "" {
-			if mbid, err := uuid.Parse(output.BestMatch.ArtistMBID); err == nil {
-				update.MBArtistID = &mbid
+			if output.BestMatch.ArtistMBID != "" {
+				if mbid, err := uuid.Parse(output.BestMatch.ArtistMBID); err == nil {
+					update.MBArtistID = &mbid
+				}
 			}
-		}
-		if output.BestMatch.AlbumMBID != "" {
-			if mbid, err := uuid.Parse(output.BestMatch.AlbumMBID); err == nil {
-				update.MBReleaseID = &mbid
+			if output.BestMatch.ReleaseID != "" {
+				if mbid, err := uuid.Parse(output.BestMatch.ReleaseID); err == nil {
+					update.MBReleaseID = &mbid
+				}
 			}
+			update.MetadataStatus = "enriched"
+			update.Title = output.BestMatch.Title
+			update.Artist = output.BestMatch.Artist
+			update.Album = output.BestMatch.Album
+			update.DurationMs = output.BestMatch.Duration
+			update.CoverArtURL = output.BestMatch.CoverArtURL
+		} else {
+			update.MetadataStatus = "suggested"
 		}
 	}
+	mbProvenance, _ := json.Marshal(map[string]interface{}{
+		"musicbrainz": map[string]interface{}{
+			"status":       update.MetadataStatus,
+			"verified":     output.Verified,
+			"best_match":   output.BestMatch,
+			"suggestions":  output.Suggestions,
+			"parsed_title": output.ParsedTitle,
+		},
+	})
+	update.MetadataProvenance = mbProvenance
 	if !output.Verified && len(output.Suggestions) > 0 {
 		suggestions := matcher.BuildSuggestionsJSON(output.Suggestions)
 		if suggestionsJSON, err := json.Marshal(suggestions); err == nil {

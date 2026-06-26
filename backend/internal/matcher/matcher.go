@@ -15,6 +15,8 @@ type MatchResult struct {
 	ArtistMBID   string      `json:"artist_mbid,omitempty"`
 	Album        string      `json:"album,omitempty"`
 	AlbumMBID    string      `json:"album_mbid,omitempty"`
+	ReleaseID    string      `json:"release_id,omitempty"`
+	CoverArtURL  string      `json:"cover_art_url,omitempty"`
 	Duration     int         `json:"duration,omitempty"`
 	Score        *MatchScore `json:"score,omitempty"`
 	MatchReasons []string    `json:"match_reasons,omitempty"`
@@ -30,6 +32,8 @@ type MBSuggestion struct {
 	ArtistMBID    string   `json:"artist_mbid,omitempty"`
 	Album         string   `json:"album,omitempty"`
 	AlbumMBID     string   `json:"album_mbid,omitempty"`
+	ReleaseID     string   `json:"release_id,omitempty"`
+	CoverArtURL   string   `json:"cover_art_url,omitempty"`
 	Duration      int      `json:"duration,omitempty"`
 	Confidence    float64  `json:"confidence"`
 	MatchReasons  []string `json:"match_reasons,omitempty"`
@@ -47,6 +51,8 @@ func BuildSuggestionsJSON(suggestions []MatchResult) map[string]interface{} {
 			ArtistMBID:    s.ArtistMBID,
 			Album:         s.Album,
 			AlbumMBID:     s.AlbumMBID,
+			ReleaseID:     s.ReleaseID,
+			CoverArtURL:   s.CoverArtURL,
 			Duration:      s.Duration,
 			Confidence:    s.Confidence,
 			MatchReasons:  s.MatchReasons,
@@ -152,6 +158,8 @@ func (m *Matcher) Match(ctx context.Context, metadata TrackMetadata) (*MatchOutp
 			ArtistMBID:   mbTrack.ArtistMBID,
 			Album:        mbTrack.Album,
 			AlbumMBID:    mbTrack.AlbumMBID,
+			ReleaseID:    mbTrack.ReleaseID,
+			CoverArtURL:  mbTrack.CoverArtURL,
 			Duration:     mbTrack.Duration,
 			Score:        score,
 			MatchReasons: score.MatchReasons,

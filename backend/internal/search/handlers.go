@@ -85,10 +85,16 @@ func (h *Handlers) SearchRecordings(w http.ResponseWriter, r *http.Request) {
 
 	recordings := make([]RecordingResponse, 0, len(tracks))
 	for _, t := range tracks {
+		coverArtURL := ""
+		if t.CoverArtURL.Valid {
+			coverArtURL = t.CoverArtURL.String
+		} else {
+			coverArtURL = getCoverArtURL(t.MBReleaseID)
+		}
 		rec := RecordingResponse{
 			ID:            t.ID,
 			Title:         t.Title,
-			CoverArtUrl:   getCoverArtURL(t.MBReleaseID),
+			CoverArtUrl:   coverArtURL,
 			MBRecordingID: t.MBRecordingID,
 			MBReleaseID:   t.MBReleaseID,
 			MBArtistID:    t.MBArtistID,
@@ -164,10 +170,16 @@ func (h *Handlers) SearchReleases(w http.ResponseWriter, r *http.Request) {
 
 	responses := make([]ReleaseResponse, 0, len(releases))
 	for _, rel := range releases {
+		coverArtURL := ""
+		if rel.CoverArtURL.Valid {
+			coverArtURL = rel.CoverArtURL.String
+		} else {
+			coverArtURL = getCoverArtURL(rel.MBReleaseID)
+		}
 		responses = append(responses, ReleaseResponse{
 			Name:        rel.Name,
 			Artist:      rel.Artist,
-			CoverArtUrl: getCoverArtURL(rel.MBReleaseID),
+			CoverArtUrl: coverArtURL,
 			MBReleaseID: rel.MBReleaseID,
 			TrackCount:  rel.TrackCount,
 		})

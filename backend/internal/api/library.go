@@ -27,16 +27,19 @@ func NewLibraryHandlers(trackRepo *db.TrackRepository, libraryRepo *db.LibraryRe
 }
 
 type LibraryTrackResponse struct {
-	ID            int64                  `json:"id"`
-	Title         string                 `json:"title"`
-	Artist        string                 `json:"artist,omitempty"`
-	Album         string                 `json:"album,omitempty"`
-	DurationMs    int                    `json:"duration_ms,omitempty"`
-	MBVerified    bool                   `json:"mb_verified"`
-	AddedAt       string                 `json:"added_at"`
-	CoverArtURL   string                 `json:"cover_art_url,omitempty"`
-	MBRecordingID *uuid.UUID             `json:"mb_recording_id,omitempty"`
-	MBSuggestions []matcher.MBSuggestion `json:"mb_suggestions,omitempty"`
+	ID                 int64                  `json:"id"`
+	Title              string                 `json:"title"`
+	Artist             string                 `json:"artist,omitempty"`
+	Album              string                 `json:"album,omitempty"`
+	DurationMs         int                    `json:"duration_ms,omitempty"`
+	MBVerified         bool                   `json:"mb_verified"`
+	AddedAt            string                 `json:"added_at"`
+	CoverArtURL        string                 `json:"cover_art_url,omitempty"`
+	MetadataStatus     string                 `json:"metadata_status,omitempty"`
+	MetadataConfidence *float64               `json:"metadata_confidence,omitempty"`
+	MetadataProvenance json.RawMessage        `json:"metadata_provenance,omitempty"`
+	MBRecordingID      *uuid.UUID             `json:"mb_recording_id,omitempty"`
+	MBSuggestions      []matcher.MBSuggestion `json:"mb_suggestions,omitempty"`
 }
 
 type LibraryListResponse struct {
@@ -84,7 +87,7 @@ func (s *FieldSelector) Include(field string) bool {
 
 // GetLibrary handles GET /api/v1/library
 // Supports field selection via ?fields=id,title,artist (comma-separated)
-// Available fields: id, title, artist, album, duration_ms, mb_verified, added_at, cover_art_url, mb_recording_id, mb_suggestions
+// Available fields: id, title, artist, album, duration_ms, mb_verified, added_at, cover_art_url, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions
 func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 	userCtx := auth.GetUserFromContext(r.Context())
 	if userCtx == nil {
@@ -164,8 +167,24 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 		if fields.Include("added_at") {
 			track["added_at"] = t.AddedAt.Format("2006-01-02T15:04:05Z")
 		}
-		if fields.Include("cover_art_url") && t.MBReleaseID != nil {
-			track["cover_art_url"] = "https://coverartarchive.org/release/" + t.MBReleaseID.String() + "/front-250"
+		if fields.Include("cover_art_url") {
+			if t.CoverArtURL.Valid {
+				track["cover_art_url"] = t.CoverArtURL.String
+			} else if t.MBReleaseID != nil {
+				track["cover_art_url"] = "https://coverartarchive.org/release/" + t.MBReleaseID.String() + "/front-250"
+			}
+		}
+		if fields.Include("metadata_status") && t.MetadataStatus.Valid {
+			track["metadata_status"] = t.MetadataStatus.String
+		}
+		if fields.Include("metadata_confidence") && t.MetadataConfidence.Valid {
+			track["metadata_confidence"] = t.MetadataConfidence.Float64
+		}
+		if fields.Include("metadata_provenance") && len(t.MetadataProvenance) > 0 {
+			var provenance map[string]interface{}
+			if err := json.Unmarshal(t.MetadataProvenance, &provenance); err == nil {
+				track["metadata_provenance"] = provenance
+			}
 		}
 		if fields.Include("mb_recording_id") && t.MBRecordingID != nil {
 			track["mb_recording_id"] = t.MBRecordingID.String()

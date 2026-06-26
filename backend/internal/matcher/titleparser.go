@@ -13,11 +13,12 @@ type ParsedTitle struct {
 	IsRemix     bool     `json:"is_remix"`
 	RemixArtist string   `json:"remix_artist,omitempty"`
 	Raw         string   `json:"raw"`
+	Method      string   `json:"method,omitempty"`
 }
 
 var (
-	// Patterns for "Artist - Track" format (most common)
-	dashPattern = regexp.MustCompile(`^(.+?)\s*[-–—]\s*(.+)$`)
+	// Patterns for "Artist - Track" / "Artist | Track" / "Artist // Track" format (most common)
+	separatorPattern = regexp.MustCompile(`^(.+?)\s*(?:[-–—]|\||//)\s*(.+)$`)
 
 	// Patterns for "Track by Artist" format
 	byPattern = regexp.MustCompile(`(?i)^(.+?)\s+by\s+(.+)$`)
@@ -29,7 +30,7 @@ var (
 	}
 
 	// Patterns for video suffixes to remove
-	videoSuffixes = regexp.MustCompile(`(?i)(?:\s*[\(\[]\s*(?:official\s*(?:video|audio|music\s*video|lyric\s*video|visualizer)|lyric\s*video|lyrics?|audio|video|hd|hq|4k|1080p|720p|m/v|mv)\s*[\)\]]|\s+(?:hd|hq|4k|1080p|720p))\s*$`)
+	videoSuffixes = regexp.MustCompile(`(?i)(?:\s*[\(\[]\s*(?:official\s*(?:video|audio|music\s*video|lyric\s*video|visualizer)|lyric\s*video|lyrics?|visualizer|audio|video|hd|hq|4k|1080p|720p|m/v|mv)\s*[\)\]]|\s+(?:hd|hq|4k|1080p|720p))\s*$`)
 
 	// Patterns for remix detection
 	remixPattern = regexp.MustCompile(`(?i)[\(\[]\s*(.+?)\s*(?:remix|edit|mix|bootleg|flip|rework)\s*[\)\]]`)
@@ -65,8 +66,8 @@ func ParseTitle(title string) *ParsedTitle {
 
 	// Try different parsing strategies in order of reliability
 
-	// 1. Try "Artist - Track" format (most common for music)
-	if match := dashPattern.FindStringSubmatch(cleaned); match != nil {
+	// 1. Try "Artist - Track"/pipe/double-slash format (most common for music)
+	if match := separatorPattern.FindStringSubmatch(cleaned); match != nil {
 		artist := strings.TrimSpace(match[1])
 		track := strings.TrimSpace(match[2])
 
@@ -79,6 +80,7 @@ func ParseTitle(title string) *ParsedTitle {
 
 		result.Artist = cleanArtist(artist)
 		result.Track = cleanTrack(track)
+		result.Method = "separator"
 		return result
 	}
 
@@ -86,6 +88,7 @@ func ParseTitle(title string) *ParsedTitle {
 	if match := quotedPattern.FindStringSubmatch(cleaned); match != nil {
 		result.Artist = cleanArtist(strings.TrimSpace(match[1]))
 		result.Track = cleanTrack(strings.TrimSpace(match[2]))
+		result.Method = "quoted"
 		return result
 	}
 
@@ -93,19 +96,29 @@ func ParseTitle(title string) *ParsedTitle {
 	if match := byPattern.FindStringSubmatch(cleaned); match != nil {
 		result.Track = cleanTrack(strings.TrimSpace(match[1]))
 		result.Artist = cleanArtist(strings.TrimSpace(match[2]))
+		result.Method = "by"
 		return result
 	}
 
 	// 4. Fallback: use entire cleaned title as track, no artist
 	result.Track = cleanTrack(cleaned)
+	result.Method = "fallback"
 
 	return result
 }
 
 // cleanTitle removes common video suffixes and normalizes whitespace
 func cleanTitle(title string) string {
-	// Remove video-related suffixes
-	cleaned := videoSuffixes.ReplaceAllString(title, "")
+	cleaned := strings.TrimSpace(title)
+	// Remove chained video-related suffixes: "(Official Video) [HD]" etc.
+	for {
+		next := videoSuffixes.ReplaceAllString(cleaned, "")
+		next = strings.TrimSpace(next)
+		if next == cleaned {
+			break
+		}
+		cleaned = next
+	}
 
 	// Normalize whitespace
 	cleaned = multiSpace.ReplaceAllString(cleaned, " ")

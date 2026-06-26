@@ -15,24 +15,29 @@ var ErrTrackNotFound = errors.New("track not found")
 var ErrDuplicateTrack = errors.New("track with this identity hash already exists")
 
 type Track struct {
-	ID            int64
-	IdentityHash  string
-	Title         string
-	Artist        sql.NullString
-	Album         sql.NullString
-	DurationMs    sql.NullInt32
-	Version       sql.NullString
-	MBRecordingID *uuid.UUID
-	MBReleaseID   *uuid.UUID
-	MBArtistID    *uuid.UUID
-	MBVerified    bool
-	SourceURL     sql.NullString
-	SourceType    sql.NullString
-	StorageKey    sql.NullString
-	FileSizeBytes sql.NullInt64
-	MetadataJSON  json.RawMessage
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                 int64
+	IdentityHash       string
+	Title              string
+	Artist             sql.NullString
+	Album              sql.NullString
+	DurationMs         sql.NullInt32
+	Version            sql.NullString
+	MBRecordingID      *uuid.UUID
+	MBReleaseID        *uuid.UUID
+	MBArtistID         *uuid.UUID
+	MBVerified         bool
+	SourceURL          sql.NullString
+	SourceType         sql.NullString
+	StorageKey         sql.NullString
+	FileSizeBytes      sql.NullInt64
+	MetadataJSON       json.RawMessage
+	MetadataStatus     sql.NullString
+	MetadataConfidence sql.NullFloat64
+	MetadataProvenance json.RawMessage
+	CoverArtURL        sql.NullString
+	MetadataUserEdited bool
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 type Artist struct {
@@ -45,6 +50,7 @@ type Release struct {
 	Name        string
 	Artist      string
 	MBReleaseID *uuid.UUID
+	CoverArtURL sql.NullString
 	TrackCount  int
 }
 
@@ -78,7 +84,8 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 			SELECT id, identity_hash, title, artist, album, duration_ms, version,
 				   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
 				   source_url, source_type, storage_key, file_size_bytes,
-				   metadata_json, created_at, updated_at,
+				   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
+			   cover_art_url, metadata_user_edited, created_at, updated_at,
 				   ts_rank(to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(artist, '') || ' ' || COALESCE(album, '')), to_tsquery('english', $1)) as rank,
 				   COUNT(*) OVER() as total_count
 			FROM tracks
@@ -87,7 +94,8 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 		SELECT id, identity_hash, title, artist, album, duration_ms, version,
 			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
 			   source_url, source_type, storage_key, file_size_bytes,
-			   metadata_json, created_at, updated_at, total_count
+			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
+			   cover_art_url, metadata_user_edited, created_at, updated_at, total_count
 		FROM search_results
 		ORDER BY rank DESC, title ASC
 		LIMIT $2 OFFSET $3
@@ -107,7 +115,8 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
-			&t.MetadataJSON, &t.CreatedAt, &t.UpdatedAt, &total,
+			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
+			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt, &total,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -198,7 +207,7 @@ func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limi
 	// Single query with window function for total count
 	selectQuery := `
 		WITH release_results AS (
-			SELECT album, artist, mb_release_id, COUNT(*) as track_count,
+			SELECT album, artist, mb_release_id, MAX(cover_art_url) as cover_art_url, COUNT(*) as track_count,
 				   ts_rank(to_tsvector('english', album), to_tsquery('english', $1)) as rank,
 				   COUNT(*) OVER() as total_groups
 			FROM tracks
@@ -206,7 +215,7 @@ func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limi
 				AND to_tsvector('english', album) @@ to_tsquery('english', $1)
 			GROUP BY album, artist, mb_release_id
 		)
-		SELECT album, artist, mb_release_id, track_count, total_groups
+		SELECT album, artist, mb_release_id, cover_art_url, track_count, total_groups
 		FROM release_results
 		ORDER BY rank DESC, track_count DESC, album ASC
 		LIMIT $2 OFFSET $3
@@ -223,7 +232,7 @@ func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limi
 	for rows.Next() {
 		var release Release
 		var artist sql.NullString
-		err := rows.Scan(&release.Name, &artist, &release.MBReleaseID, &release.TrackCount, &total)
+		err := rows.Scan(&release.Name, &artist, &release.MBReleaseID, &release.CoverArtURL, &release.TrackCount, &total)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -246,7 +255,8 @@ func (r *TrackRepository) GetByID(ctx context.Context, id int64) (*Track, error)
 		SELECT id, identity_hash, title, artist, album, duration_ms, version,
 			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
 			   source_url, source_type, storage_key, file_size_bytes,
-			   metadata_json, created_at, updated_at
+			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
+			   cover_art_url, metadata_user_edited, created_at, updated_at
 		FROM tracks
 		WHERE id = $1
 	`
@@ -256,7 +266,8 @@ func (r *TrackRepository) GetByID(ctx context.Context, id int64) (*Track, error)
 		&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 		&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 		&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
-		&t.MetadataJSON, &t.CreatedAt, &t.UpdatedAt,
+		&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
+		&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -270,11 +281,19 @@ func (r *TrackRepository) GetByID(ctx context.Context, id int64) (*Track, error)
 
 // MBMatchUpdate contains the MusicBrainz match data to update
 type MBMatchUpdate struct {
-	MBRecordingID *uuid.UUID
-	MBReleaseID   *uuid.UUID
-	MBArtistID    *uuid.UUID
-	MBVerified    bool
-	MetadataJSON  json.RawMessage // For storing suggestions when unverified
+	MBRecordingID      *uuid.UUID
+	MBReleaseID        *uuid.UUID
+	MBArtistID         *uuid.UUID
+	MBVerified         bool
+	MetadataJSON       json.RawMessage // For storing suggestions/provenance without replacing raw provider metadata
+	MetadataStatus     string
+	MetadataConfidence *float64
+	MetadataProvenance json.RawMessage
+	CoverArtURL        string
+	Title              string
+	Artist             string
+	Album              string
+	DurationMs         int
 }
 
 // UpdateMBMatch updates a track's MusicBrainz identifiers and verification status
@@ -285,7 +304,15 @@ func (r *TrackRepository) UpdateMBMatch(ctx context.Context, trackID int64, matc
 			mb_release_id = $3,
 			mb_artist_id = $4,
 			mb_verified = $5,
-			metadata_json = COALESCE($6, metadata_json),
+			metadata_json = COALESCE(metadata_json, '{}'::jsonb) || COALESCE($6, '{}'::jsonb),
+			metadata_status = COALESCE(NULLIF($7, ''), metadata_status),
+			metadata_confidence = COALESCE($8, metadata_confidence),
+			metadata_provenance = COALESCE(metadata_provenance, '{}'::jsonb) || COALESCE($9, '{}'::jsonb),
+			cover_art_url = COALESCE(NULLIF($10, ''), cover_art_url),
+			title = CASE WHEN metadata_user_edited = FALSE THEN COALESCE(NULLIF($11, ''), title) ELSE title END,
+			artist = CASE WHEN metadata_user_edited = FALSE THEN COALESCE(NULLIF($12, ''), artist) ELSE artist END,
+			album = CASE WHEN metadata_user_edited = FALSE THEN COALESCE(NULLIF($13, ''), album) ELSE album END,
+			duration_ms = CASE WHEN metadata_user_edited = FALSE AND $14 > 0 THEN $14 ELSE duration_ms END,
 			updated_at = NOW()
 		WHERE id = $1
 	`
@@ -297,6 +324,14 @@ func (r *TrackRepository) UpdateMBMatch(ctx context.Context, trackID int64, matc
 		match.MBArtistID,
 		match.MBVerified,
 		match.MetadataJSON,
+		match.MetadataStatus,
+		match.MetadataConfidence,
+		match.MetadataProvenance,
+		match.CoverArtURL,
+		match.Title,
+		match.Artist,
+		match.Album,
+		match.DurationMs,
 	)
 	if err != nil {
 		return err
@@ -329,6 +364,7 @@ func (r *TrackRepository) UpdateMetadata(ctx context.Context, trackID int64, upd
 			artist = COALESCE(NULLIF($3, ''), artist),
 			album = COALESCE(NULLIF($4, ''), album),
 			duration_ms = CASE WHEN $5 > 0 THEN $5 ELSE duration_ms END,
+			metadata_user_edited = TRUE,
 			updated_at = NOW()
 		WHERE id = $1
 	`
@@ -361,7 +397,8 @@ func (r *TrackRepository) GetByIdentityHash(ctx context.Context, identityHash st
 		SELECT id, identity_hash, title, artist, album, duration_ms, version,
 			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
 			   source_url, source_type, storage_key, file_size_bytes,
-			   metadata_json, created_at, updated_at
+			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
+			   cover_art_url, metadata_user_edited, created_at, updated_at
 		FROM tracks
 		WHERE identity_hash = $1
 	`
@@ -371,7 +408,8 @@ func (r *TrackRepository) GetByIdentityHash(ctx context.Context, identityHash st
 		&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 		&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 		&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
-		&t.MetadataJSON, &t.CreatedAt, &t.UpdatedAt,
+		&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
+		&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -390,8 +428,9 @@ func (r *TrackRepository) Create(ctx context.Context, track *Track) error {
 		INSERT INTO tracks (
 			identity_hash, title, artist, album, duration_ms, version,
 			mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
-			source_url, source_type, storage_key, file_size_bytes, metadata_json
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+			source_url, source_type, storage_key, file_size_bytes, metadata_json,
+			metadata_status, metadata_confidence, metadata_provenance, cover_art_url, metadata_user_edited
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, COALESCE($16, 'provider'), $17, $18, $19, $20)
 		RETURNING id, created_at, updated_at
 	`
 
@@ -399,6 +438,7 @@ func (r *TrackRepository) Create(ctx context.Context, track *Track) error {
 		track.IdentityHash, track.Title, track.Artist, track.Album, track.DurationMs, track.Version,
 		track.MBRecordingID, track.MBReleaseID, track.MBArtistID, track.MBVerified,
 		track.SourceURL, track.SourceType, track.StorageKey, track.FileSizeBytes, track.MetadataJSON,
+		track.MetadataStatus, track.MetadataConfidence, track.MetadataProvenance, track.CoverArtURL, track.MetadataUserEdited,
 	).Scan(&track.ID, &track.CreatedAt, &track.UpdatedAt)
 
 	if err != nil {
@@ -512,6 +552,18 @@ func WithMetadata(metadata json.RawMessage) TrackOption {
 	}
 }
 
+// WithMetadataEnrichment sets deterministic/enrichment metadata on the track.
+func WithMetadataEnrichment(status string, confidence *float64, provenance json.RawMessage, coverArtURL string) TrackOption {
+	return func(t *Track) {
+		t.MetadataStatus = sql.NullString{String: status, Valid: status != ""}
+		if confidence != nil {
+			t.MetadataConfidence = sql.NullFloat64{Float64: *confidence, Valid: true}
+		}
+		t.MetadataProvenance = provenance
+		t.CoverArtURL = sql.NullString{String: coverArtURL, Valid: coverArtURL != ""}
+	}
+}
+
 // GetUnverifiedTracks returns tracks without MB verification for batch processing
 func (r *TrackRepository) GetUnverifiedTracks(ctx context.Context, limit, offset int) ([]Track, int, error) {
 	if limit <= 0 {
@@ -531,7 +583,8 @@ func (r *TrackRepository) GetUnverifiedTracks(ctx context.Context, limit, offset
 		SELECT id, identity_hash, title, artist, album, duration_ms, version,
 			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
 			   source_url, source_type, storage_key, file_size_bytes,
-			   metadata_json, created_at, updated_at
+			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
+			   cover_art_url, metadata_user_edited, created_at, updated_at
 		FROM tracks
 		WHERE mb_verified = FALSE
 		ORDER BY created_at DESC
@@ -551,7 +604,8 @@ func (r *TrackRepository) GetUnverifiedTracks(ctx context.Context, limit, offset
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
-			&t.MetadataJSON, &t.CreatedAt, &t.UpdatedAt,
+			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
+			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 		)
 		if err != nil {
 			return nil, 0, err
