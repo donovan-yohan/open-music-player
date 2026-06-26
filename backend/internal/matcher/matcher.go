@@ -66,23 +66,18 @@ func BuildSuggestionsJSON(suggestions []MatchResult) map[string]interface{} {
 
 // MatchOutput is the result of the matching process
 type MatchOutput struct {
-	Verified    bool          `json:"verified"`               // True if auto-matched with high confidence
-	BestMatch   *MatchResult  `json:"best_match,omitempty"`   // The best match (if any)
-	Suggestions []MatchResult `json:"suggestions,omitempty"`  // Top 3 suggestions for uncertain matches
-	ParsedTitle *ParsedTitle  `json:"parsed_title,omitempty"` // How the title was parsed
-}
-
-// TrackMetadata contains the input metadata for matching
-type TrackMetadata struct {
-	Title      string `json:"title"`      // Video/track title
-	Uploader   string `json:"uploader"`   // Channel/uploader name (fallback for artist)
-	DurationMs int    `json:"durationMs"` // Duration in milliseconds
+	Verified       bool                    `json:"verified"`                 // True if auto-matched with high confidence
+	BestMatch      *MatchResult            `json:"best_match,omitempty"`     // The best match (if any)
+	Suggestions    []MatchResult           `json:"suggestions,omitempty"`    // Top 3 suggestions for uncertain matches
+	ParsedTitle    *ParsedTitle            `json:"parsed_title,omitempty"`   // How the title was parsed
+	Disambiguation *DisambiguationDecision `json:"disambiguation,omitempty"` // Optional validated local-LLM decision
 }
 
 // Matcher handles automatic MusicBrainz matching
 type Matcher struct {
-	mbClient *musicbrainz.Client
-	weights  ScoreWeights
+	mbClient      *musicbrainz.Client
+	weights       ScoreWeights
+	disambiguator Disambiguator
 }
 
 // NewMatcher creates a new Matcher instance
@@ -101,6 +96,16 @@ func NewMatcherWithWeights(mbClient *musicbrainz.Client, weights ScoreWeights) *
 	}
 }
 
+// NewMatcherWithDisambiguator creates a Matcher with an optional local-LLM
+// candidate disambiguator. A nil disambiguator preserves deterministic matching.
+func NewMatcherWithDisambiguator(mbClient *musicbrainz.Client, disambiguator Disambiguator) *Matcher {
+	return &Matcher{
+		mbClient:      mbClient,
+		weights:       DefaultWeights,
+		disambiguator: disambiguator,
+	}
+}
+
 // MBClient returns the MusicBrainz client for direct access
 func (m *Matcher) MBClient() *musicbrainz.Client {
 	return m.mbClient
@@ -111,9 +116,14 @@ func (m *Matcher) Match(ctx context.Context, metadata TrackMetadata) (*MatchOutp
 	// Parse the title to extract artist and track info
 	parsed := ParseTitle(metadata.Title)
 
-	// If no artist was parsed from title, try using the uploader name
-	if parsed.Artist == "" && metadata.Uploader != "" {
-		parsed.Artist = cleanArtist(metadata.Uploader)
+	// If no artist was parsed from title, prefer the provider/deterministic artist
+	// and then fall back to the channel/uploader name.
+	if parsed.Artist == "" {
+		if metadata.Artist != "" {
+			parsed.Artist = cleanArtist(metadata.Artist)
+		} else if metadata.Uploader != "" {
+			parsed.Artist = cleanArtist(metadata.Uploader)
+		}
 	}
 
 	// Build the search query
@@ -194,6 +204,11 @@ func (m *Matcher) Match(ctx context.Context, metadata TrackMetadata) (*MatchOutp
 			}
 			output.Suggestions = scoredResults[:maxSuggestions]
 		}
+	}
+
+	if m.disambiguator != nil && !output.Verified && len(output.Suggestions) > 0 {
+		input := buildDisambiguationInput(metadata, parsed, output.Suggestions)
+		tryApplyDisambiguation(ctx, m.disambiguator, input, output)
 	}
 
 	return output, nil

@@ -149,8 +149,20 @@ func main() {
 	go wsHub.Run()
 	wsHandler := websocket.NewHandler(wsHub, authService)
 
-	// Initialize matcher service
-	matcherService := matcher.NewMatcher(mbClient)
+	// Initialize matcher service. The Ollama disambiguator is optional and only
+	// selects among MusicBrainz candidates; unavailable local providers fall back
+	// to normal deterministic matching.
+	metadataDisambiguator := matcher.NewOllamaDisambiguator(matcher.OllamaConfig{
+		Enabled: cfg.MetadataLLMEnabled,
+		BaseURL: cfg.MetadataLLMBaseURL,
+		Model:   cfg.MetadataLLMModel,
+		Timeout: cfg.MetadataLLMTimeout,
+	})
+	matcherService := matcher.NewMatcherWithDisambiguator(mbClient, metadataDisambiguator)
+	log.Info(ctx, "Initialized metadata disambiguator", map[string]interface{}{
+		"metadata_llm_enabled": metadataDisambiguator != nil,
+		"metadata_llm_model":   cfg.MetadataLLMModel,
+	})
 	matcherHandlers := matcher.NewHandler(matcherService, trackRepo)
 
 	// Initialize job processor with matching integration
