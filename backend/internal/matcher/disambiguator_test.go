@@ -61,6 +61,35 @@ func TestValidateDisambiguationDecisionRejectsHallucinatedCandidate(t *testing.T
 	}
 }
 
+func TestApplyDisambiguationCandidateIDOnlySelectionToleratesEchoDrift(t *testing.T) {
+	suggestions := testSuggestions()
+	output := &MatchOutput{BestMatch: &suggestions[0], Suggestions: suggestions}
+	decision := &DisambiguationDecision{
+		Match:       true,
+		CandidateID: "33333333-3333-3333-3333-333333333333",
+		Confidence:  0.91,
+		Evidence:    "provider title and artist match the second candidate",
+		Title:       "cheer leader",
+		Artist:      "PORTER ROBINSON",
+		Album:       "",
+		ReleaseID:   "release id drift",
+		CoverArtURL: "https://example.com/drift.jpg",
+	}
+
+	if err := applyDisambiguation(output, decision); err != nil {
+		t.Fatalf("applyDisambiguation rejected echoed-field drift: %v", err)
+	}
+	if output.BestMatch.MBID != decision.CandidateID || output.Suggestions[0].MBID != decision.CandidateID {
+		t.Fatalf("grounded candidate was not promoted: best=%q first=%q", output.BestMatch.MBID, output.Suggestions[0].MBID)
+	}
+	if output.Disambiguation.Title != "Cheerleader" || output.Disambiguation.Artist != "Porter Robinson" || output.Disambiguation.Album != "Cheerleader" {
+		t.Fatalf("disambiguation output was not grounded from selected candidate: %#v", output.Disambiguation)
+	}
+	if output.Disambiguation.ReleaseID != "44444444-4444-4444-4444-444444444444" || output.Disambiguation.CoverArtURL != "https://coverartarchive.org/release/44444444-4444-4444-4444-444444444444/front-250" {
+		t.Fatalf("disambiguation release fields were not grounded from selected candidate: %#v", output.Disambiguation)
+	}
+}
+
 func TestApplyDisambiguationNoMatchLeavesIdentityUnverified(t *testing.T) {
 	suggestions := testSuggestions()
 	output := &MatchOutput{BestMatch: &suggestions[0], Suggestions: suggestions}
@@ -105,6 +134,53 @@ func TestApplyDisambiguationHighConfidencePromotesGroundedCandidate(t *testing.T
 	}
 	if output.BestMatch.MBID != decision.CandidateID || output.Suggestions[0].MBID != decision.CandidateID {
 		t.Fatalf("grounded candidate was not promoted: best=%q first=%q", output.BestMatch.MBID, output.Suggestions[0].MBID)
+	}
+}
+
+func TestApplyDisambiguationLowConfidencePromotesButDoesNotVerify(t *testing.T) {
+	suggestions := testSuggestions()
+	output := &MatchOutput{BestMatch: &suggestions[0], Suggestions: suggestions}
+	decision := &DisambiguationDecision{
+		Match:       true,
+		CandidateID: "33333333-3333-3333-3333-333333333333",
+		Confidence:  0.72,
+		Evidence:    "weak title match",
+		Title:       "Cheerleader",
+		Artist:      "Porter Robinson",
+		Album:       "Cheerleader",
+		ReleaseID:   "44444444-4444-4444-4444-444444444444",
+		CoverArtURL: "https://coverartarchive.org/release/44444444-4444-4444-4444-444444444444/front-250",
+	}
+	if err := applyDisambiguation(output, decision); err != nil {
+		t.Fatalf("applyDisambiguation error: %v", err)
+	}
+	if output.Verified {
+		t.Fatal("low-confidence grounded candidate was incorrectly verified")
+	}
+	if output.BestMatch.MBID != decision.CandidateID || output.Suggestions[0].MBID != decision.CandidateID {
+		t.Fatalf("low-confidence grounded candidate was not promoted: best=%q first=%q", output.BestMatch.MBID, output.Suggestions[0].MBID)
+	}
+}
+
+func TestBoundedMetadataMapDoesNotResetDepthForNestedMaps(t *testing.T) {
+	bounded := boundedMetadataMap(map[string]interface{}{
+		"level0": map[string]interface{}{
+			"level1": map[string]interface{}{
+				"level2": "should be removed",
+			},
+			"kept": "value",
+		},
+	})
+
+	level0, ok := bounded["level0"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("level0 map was not retained: %#v", bounded["level0"])
+	}
+	if level0["kept"] != "value" {
+		t.Fatalf("expected primitive value in first nested map to survive, got %#v", level0["kept"])
+	}
+	if nested, ok := level0["level1"].(map[string]interface{}); ok {
+		t.Fatalf("nested map survived depth bound: %#v", nested)
 	}
 }
 
