@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/openmusicplayer/backend/internal/aiassist"
+	"github.com/openmusicplayer/backend/internal/analyzer"
 	"github.com/openmusicplayer/backend/internal/api"
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/cache"
@@ -166,14 +167,31 @@ func main() {
 		"metadata_llm_model":   cfg.MetadataLLMModel,
 	})
 	matcherHandlers := matcher.NewHandler(matcherService, trackRepo)
+	analyzerClient, err := analyzer.NewServiceClient(analyzer.ServiceConfig{
+		Enabled:   cfg.AnalyzerEnabled,
+		BaseURL:   cfg.AnalyzerBaseURL,
+		AuthToken: cfg.AnalyzerAuthToken,
+		Timeout:   cfg.AnalyzerTimeout,
+	})
+	if err != nil {
+		log.Error(ctx, "Failed to initialize analyzer client", map[string]interface{}{
+			"base_url": cfg.AnalyzerBaseURL,
+		}, err)
+		os.Exit(1)
+	}
+	log.Info(ctx, "Initialized audio analyzer client", map[string]interface{}{
+		"analyzer_enabled": analyzerClient != nil,
+		"base_url":         cfg.AnalyzerBaseURL,
+	})
 
 	// Initialize job processor with matching integration
 	jobProcessor := processor.New(&processor.ProcessorConfig{
-		Matcher:      matcherService,
-		TrackRepo:    trackRepo,
-		LibraryRepo:  libraryRepo,
-		AnalysisRepo: analysisRepo,
-		Storage:      storageClient,
+		Matcher:        matcherService,
+		TrackRepo:      trackRepo,
+		LibraryRepo:    libraryRepo,
+		AnalysisRepo:   analysisRepo,
+		AnalyzerClient: analyzerClient,
+		Storage:        storageClient,
 	})
 
 	// Initialize Redis-backed download and playback queue services only when enabled.
