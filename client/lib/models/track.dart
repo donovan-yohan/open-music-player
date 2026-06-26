@@ -1,3 +1,5 @@
+import 'track_analysis.dart';
+
 enum TrackQueueStatus { pending, downloading, failed, playable }
 
 class Track {
@@ -22,6 +24,7 @@ class Track {
   final TrackQueueStatus queueStatus;
   final bool canPlay;
   final bool canRetry;
+  final TrackAnalysis? analysis;
 
   Track({
     required this.id,
@@ -38,9 +41,10 @@ class Track {
     this.queueStatus = TrackQueueStatus.playable,
     bool? canPlay,
     bool? canRetry,
-  }) : queueItemId = queueItemId ?? id,
-       canPlay = canPlay ?? queueStatus == TrackQueueStatus.playable,
-       canRetry = canRetry ?? queueStatus == TrackQueueStatus.failed;
+    this.analysis,
+  })  : queueItemId = queueItemId ?? id,
+        canPlay = canPlay ?? queueStatus == TrackQueueStatus.playable,
+        canRetry = canRetry ?? queueStatus == TrackQueueStatus.failed;
 
   factory Track.fromJson(Map<String, dynamic> json) {
     final sourceCandidate =
@@ -49,14 +53,13 @@ class Track {
         json['queueItemId']?.toString() ?? json['queue_item_id']?.toString();
     final playbackTrackId =
         json['trackId']?.toString() ?? json['track_id']?.toString();
-    final sourceCandidateId =
-        _readString(sourceCandidate, const ['candidateId', 'candidate_id']) ??
+    final sourceCandidateId = _readString(
+            sourceCandidate, const ['candidateId', 'candidate_id']) ??
         _readString(json, const ['sourceCandidateId', 'source_candidate_id']);
     final sourceUrl =
         _readString(sourceCandidate, const ['sourceUrl', 'source_url']) ??
-        _readString(json, const ['sourceUrl', 'source_url']);
-    final id =
-        json['id']?.toString() ??
+            _readString(json, const ['sourceUrl', 'source_url']);
+    final id = json['id']?.toString() ??
         queueItemId ??
         playbackTrackId ??
         sourceCandidateId ??
@@ -65,6 +68,7 @@ class Track {
     final status = _parseQueueStatus(json);
     final canPlayOverride =
         json['canPlay'] as bool? ?? json['can_play'] as bool?;
+    final analysis = _parseAnalysis(json);
 
     return Track(
       id: id,
@@ -72,29 +76,41 @@ class Track {
       playbackTrackId: playbackTrackId,
       sourceCandidateId: sourceCandidateId,
       sourceUrl: sourceUrl,
-      title:
-          json['title'] as String? ??
+      title: json['title'] as String? ??
           _readString(sourceCandidate, const ['title']) ??
           'Unknown track',
-      artist:
-          json['artist'] as String? ??
+      artist: json['artist'] as String? ??
           _readString(sourceCandidate, const ['artist', 'uploader']),
-      album:
-          json['album'] as String? ??
+      album: json['album'] as String? ??
           _readString(sourceCandidate, const ['album', 'provider']),
       duration: _parseDuration(json, sourceCandidate),
-      coverUrl:
-          json['coverUrl'] as String? ??
+      coverUrl: json['coverUrl'] as String? ??
           json['cover_url'] as String? ??
           _readString(sourceCandidate, const ['thumbnailUrl', 'thumbnail_url']),
       addedAt: _parseDate(json['addedAt'] ?? json['added_at']),
       queueStatus: status,
       canPlay: status == TrackQueueStatus.playable && (canPlayOverride ?? true),
-      canRetry:
-          json['canRetry'] as bool? ??
+      canRetry: json['canRetry'] as bool? ??
           json['can_retry'] as bool? ??
           status == TrackQueueStatus.failed,
+      analysis: analysis,
     );
+  }
+
+  static TrackAnalysis? _parseAnalysis(Map<String, dynamic> json) {
+    final rawStatus = json['analysisStatus'] ?? json['analysis_status'];
+    final rawSummary = json['analysisSummary'] ?? json['analysis_summary'];
+    if (rawStatus == null && rawSummary == null) return null;
+
+    final analysis = TrackAnalysis.fromJson(
+      status: rawStatus,
+      summary: rawSummary,
+    );
+    if (analysis.status == TrackAnalysisStatus.unknown &&
+        !analysis.hasDisplayableSummary) {
+      return null;
+    }
+    return analysis;
   }
 
   static int _parseDuration(
@@ -105,8 +121,7 @@ class Track {
     if (duration is int) return duration;
     if (duration is num) return duration.round();
 
-    final durationMs =
-        json['duration_ms'] ??
+    final durationMs = json['duration_ms'] ??
         json['durationMs'] ??
         sourceCandidate?['duration_ms'] ??
         sourceCandidate?['durationMs'];
@@ -145,8 +160,7 @@ class Track {
   }
 
   static TrackQueueStatus _parseQueueStatus(Map<String, dynamic> json) {
-    final raw =
-        json['status'] ??
+    final raw = json['status'] ??
         json['download_status'] ??
         json['downloadStatus'] ??
         json['playback_state'] ??
@@ -199,6 +213,9 @@ class Track {
       'status': queueStatus.name,
       'canPlay': canPlay,
       'canRetry': canRetry,
+      if (analysis != null) 'analysisStatus': analysis!.status.name,
+      if (analysis?.summary != null)
+        'analysisSummary': analysis!.summary!.toJson(),
     };
   }
 

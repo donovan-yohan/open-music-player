@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../models/track_analysis.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
 import 'queue_waveform_trim_control.dart';
@@ -153,6 +154,7 @@ class QueueItem extends StatelessWidget {
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     _buildStatusChip(context),
+                    ..._buildAnalysisChips(context),
                     _buildQueueAction(context),
                     if (onRemove != null)
                       IconButton(
@@ -180,7 +182,7 @@ class QueueItem extends StatelessWidget {
       TrackQueueStatus.pending => (
           'Pending',
           Colors.orange,
-          Icons.hourglass_top
+          Icons.hourglass_top,
         ),
       TrackQueueStatus.downloading => (
           'Downloading',
@@ -190,12 +192,12 @@ class QueueItem extends StatelessWidget {
       TrackQueueStatus.failed => (
           'Failed',
           colorScheme.error,
-          Icons.error_outline
+          Icons.error_outline,
         ),
       TrackQueueStatus.playable => (
           'Playable',
           Colors.green,
-          Icons.check_circle
+          Icons.check_circle,
         ),
     };
 
@@ -250,6 +252,88 @@ class QueueItem extends StatelessWidget {
     );
   }
 
+  List<Widget> _buildAnalysisChips(BuildContext context) {
+    final analysis = track.analysis;
+    if (analysis == null) return const [];
+
+    if (analysis.status == TrackAnalysisStatus.analyzed &&
+        analysis.hasDisplayableSummary) {
+      return analysis.summary!.displayLabels.take(10).map((label) {
+        return _AnalysisChip(
+          key: ValueKey('analysis_${track.id}_${label.hashCode}'),
+          label: label,
+          icon: _analysisIconForLabel(label),
+          color: Theme.of(context).colorScheme.primary,
+        );
+      }).toList(growable: false);
+    }
+
+    if (analysis.status == TrackAnalysisStatus.analyzed) {
+      return [
+        _AnalysisChip(
+          key: ValueKey('analysis_status_${track.id}'),
+          label: 'Analysis ready',
+          icon: Icons.analytics_outlined,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+      ];
+    }
+
+    final colorScheme = Theme.of(context).colorScheme;
+    final (label, icon, color) = switch (analysis.status) {
+      TrackAnalysisStatus.pending => (
+          'Analysis pending',
+          Icons.hourglass_empty,
+          Colors.orange,
+        ),
+      TrackAnalysisStatus.analyzing => (
+          'Analyzing',
+          Icons.auto_graph,
+          Colors.blue,
+        ),
+      TrackAnalysisStatus.failed => (
+          'Analysis failed',
+          Icons.error_outline,
+          colorScheme.error,
+        ),
+      TrackAnalysisStatus.unsupported => (
+          'Analysis unsupported',
+          Icons.block,
+          Colors.grey,
+        ),
+      TrackAnalysisStatus.unknown => (
+          'Analysis unavailable',
+          Icons.analytics_outlined,
+          Colors.grey,
+        ),
+      TrackAnalysisStatus.analyzed => (
+          'Analysis ready',
+          Icons.analytics_outlined,
+          colorScheme.primary,
+        ),
+    };
+    return [
+      _AnalysisChip(
+        key: ValueKey('analysis_status_${track.id}'),
+        label: label,
+        icon: icon,
+        color: color,
+      ),
+    ];
+  }
+
+  IconData _analysisIconForLabel(String label) {
+    if (label.endsWith('BPM')) return Icons.speed;
+    if (label.startsWith('Energy')) return Icons.bolt;
+    if (label.startsWith('Waveform')) return Icons.graphic_eq;
+    if (label.startsWith('Intro') || label.startsWith('Outro')) {
+      return Icons.content_cut;
+    }
+    if (label.contains('sections')) return Icons.segment;
+    if (label.startsWith('Cue')) return Icons.flag_outlined;
+    return Icons.music_note;
+  }
+
   /// Inline waveform trim surface (skipped intro / playable / cut tail) with
   /// draggable entry + exit handles and a selected-duration label.
   Widget _buildTrimControls(BuildContext context) {
@@ -269,6 +353,49 @@ class QueueItem extends StatelessWidget {
     return Container(
       color: Colors.grey[300],
       child: Icon(Icons.music_note, color: Colors.grey[500], size: 24),
+    );
+  }
+}
+
+class _AnalysisChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+
+  const _AnalysisChip({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: label,
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 32),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: color.withValues(alpha: 0.38)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

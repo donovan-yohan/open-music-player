@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/track.dart';
+import 'package:open_music_player/models/track_analysis.dart';
 
 void main() {
   test(
@@ -207,5 +208,112 @@ void main() {
     expect(state.tracks[3].queueStatus, TrackQueueStatus.playable);
     expect(state.tracks[3].canPlay, isTrue);
     expect(state.tracks[3].toPlaybackJson()['id'], '14');
+  });
+
+  test('QueueState parses queue analysis summary contract fields', () {
+    final state = QueueState.fromJson({
+      'items': [
+        {
+          'id': 'q_analysis',
+          'queueItemId': 'q_analysis',
+          'trackId': 42,
+          'title': 'Analyzed Track',
+          'duration': 198,
+          'playbackState': 'playable',
+          'analysisStatus': 'analyzed',
+          'analysisSummary': {
+            'bpm': {'value': 124.0, 'confidence': 0.94},
+            'key': {'value': 'A minor'},
+            'camelot': {'value': '8A'},
+            'energy': {'value': 0.73},
+            'waveform': {'sample_count': 6, 'confidence': 0.99},
+            'intro': {'start_ms': 320, 'end_ms': 16000},
+            'outro': {'start_ms': 180000, 'end_ms': 197500},
+            'sections': [
+              {'label': 'intro', 'start_ms': 320, 'end_ms': 16000},
+              {'label': 'drop', 'start_ms': 64000, 'end_ms': 128000},
+            ],
+            'cue_candidates': [
+              {'kind': 'mix_in', 'start_ms': 16000},
+              {'kind': 'mix_out', 'start_ms': 180000},
+            ],
+          },
+        },
+      ],
+    });
+
+    final analysis = state.tracks.single.analysis!;
+    expect(analysis.status, TrackAnalysisStatus.analyzed);
+    expect(analysis.summary!.bpm!.numericValue, 124.0);
+    expect(analysis.summary!.camelot!.textValue, '8A');
+    expect(analysis.summary!.energy!.numericValue, 0.73);
+    expect(analysis.summary!.waveform!.sampleCount, 6);
+    expect(analysis.summary!.sections, hasLength(2));
+    expect(analysis.summary!.cueCandidates, hasLength(2));
+    expect(
+      analysis.summary!.displayLabels,
+      containsAll([
+        '124 BPM',
+        'A minor · 8A',
+        'Energy 73%',
+        'Waveform 6 samples',
+        'Intro 0:00-0:16',
+        'Outro 3:00-3:18',
+        '2 sections',
+        'Cue in 0:16',
+        'Cue out 3:00',
+      ]),
+    );
+  });
+
+  test('QueueState parses non-success queue analysis states', () {
+    final state = QueueState.fromJson({
+      'items': [
+        {'id': 'pending', 'title': 'Pending', 'analysisStatus': 'pending'},
+        {
+          'id': 'analyzing',
+          'title': 'Analyzing',
+          'analysisStatus': 'analyzing',
+        },
+        {'id': 'failed', 'title': 'Failed', 'analysisStatus': 'failed'},
+        {
+          'id': 'unsupported',
+          'title': 'Unsupported',
+          'analysisStatus': 'unsupported',
+        },
+      ],
+    });
+
+    expect(state.tracks[0].analysis!.status, TrackAnalysisStatus.pending);
+    expect(state.tracks[1].analysis!.status, TrackAnalysisStatus.analyzing);
+    expect(state.tracks[2].analysis!.status, TrackAnalysisStatus.failed);
+    expect(state.tracks[3].analysis!.status, TrackAnalysisStatus.unsupported);
+  });
+
+  test('Track keeps status-only analysis metadata summary absent', () {
+    final track = Track.fromJson({
+      'id': 'pending-analysis',
+      'title': 'Pending Analysis',
+      'analysisStatus': 'pending',
+    });
+
+    expect(track.analysis, isNotNull);
+    expect(track.analysis!.status, TrackAnalysisStatus.pending);
+    expect(track.analysis!.summary, isNull);
+    expect(track.toJson(), isNot(contains('analysisSummary')));
+  });
+
+  test('Analysis metadata time labels clamp negative milliseconds', () {
+    final range = AnalysisRange.fromJson({
+      'start_ms': -5000,
+      'end_ms': 1000,
+    });
+    final cue = CueCandidate.fromJson({
+      'kind': 'mix_in',
+      'start_ms': -900,
+    });
+
+    expect(range!.formattedRange, '0:00-0:01');
+    expect(cue!.displayLabel, 'Cue in 0:00');
   });
 }
