@@ -15,7 +15,8 @@ class TrackAnalysis {
 
   factory TrackAnalysis.fromJson({Object? status, Object? summary}) {
     final parsedStatus = parseTrackAnalysisStatus(status);
-    final parsedSummary = TrackAnalysisSummary.fromJson(summary);
+    final parsedSummary =
+        summary == null ? null : TrackAnalysisSummary.fromJson(summary);
     return TrackAnalysis(status: parsedStatus, summary: parsedSummary);
   }
 
@@ -359,7 +360,8 @@ double? _readDouble(Object? value) {
 }
 
 String _formatMs(int ms) {
-  final totalSeconds = (ms / 1000).round();
+  final clampedMs = ms < 0 ? 0 : ms;
+  final totalSeconds = (clampedMs / 1000).round();
   final minutes = totalSeconds ~/ 60;
   final seconds = totalSeconds % 60;
   return '$minutes:${seconds.toString().padLeft(2, '0')}';

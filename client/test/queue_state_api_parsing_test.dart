@@ -289,4 +289,31 @@ void main() {
     expect(state.tracks[2].analysis!.status, TrackAnalysisStatus.failed);
     expect(state.tracks[3].analysis!.status, TrackAnalysisStatus.unsupported);
   });
+
+  test('Track keeps status-only analysis metadata summary absent', () {
+    final track = Track.fromJson({
+      'id': 'pending-analysis',
+      'title': 'Pending Analysis',
+      'analysisStatus': 'pending',
+    });
+
+    expect(track.analysis, isNotNull);
+    expect(track.analysis!.status, TrackAnalysisStatus.pending);
+    expect(track.analysis!.summary, isNull);
+    expect(track.toJson(), isNot(contains('analysisSummary')));
+  });
+
+  test('Analysis metadata time labels clamp negative milliseconds', () {
+    final range = AnalysisRange.fromJson({
+      'start_ms': -5000,
+      'end_ms': 1000,
+    });
+    final cue = CueCandidate.fromJson({
+      'kind': 'mix_in',
+      'start_ms': -900,
+    });
+
+    expect(range!.formattedRange, '0:00-0:01');
+    expect(cue!.displayLabel, 'Cue in 0:00');
+  });
 }
