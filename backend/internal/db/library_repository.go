@@ -92,7 +92,8 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 		SELECT t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
 			   t.mb_recording_id, t.mb_release_id, t.mb_artist_id, t.mb_verified,
 			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
-			   t.metadata_json, t.created_at, t.updated_at, ul.added_at,
+			   t.metadata_json, t.metadata_status, t.metadata_confidence, t.metadata_provenance,
+			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at, ul.added_at,
 			   COUNT(*) OVER() as total_count
 		FROM user_library ul
 		JOIN tracks t ON ul.track_id = t.id
@@ -116,7 +117,8 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			&lt.ID, &lt.IdentityHash, &lt.Title, &lt.Artist, &lt.Album, &lt.DurationMs, &lt.Version,
 			&lt.MBRecordingID, &lt.MBReleaseID, &lt.MBArtistID, &lt.MBVerified,
 			&lt.SourceURL, &lt.SourceType, &lt.StorageKey, &lt.FileSizeBytes,
-			&lt.MetadataJSON, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt, &total,
+			&lt.MetadataJSON, &lt.MetadataStatus, &lt.MetadataConfidence, &lt.MetadataProvenance,
+			&lt.CoverArtURL, &lt.MetadataUserEdited, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt, &total,
 		)
 		if err != nil {
 			return nil, 0, err

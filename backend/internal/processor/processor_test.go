@@ -3,6 +3,8 @@ package processor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/openmusicplayer/backend/internal/download"
+	"github.com/openmusicplayer/backend/internal/matcher"
 )
 
 type fakeObjectStorage struct {
@@ -23,6 +26,162 @@ func (s *fakeObjectStorage) PutObject(ctx context.Context, key string, reader io
 	s.contentType = contentType
 	s.data, _ = io.ReadAll(reader)
 	return nil
+}
+
+func TestApplyDeterministicCleanupPorterRobinsonOfficialVideo(t *testing.T) {
+	metadata := &TrackMetadata{
+		Title:  "Porter Robinson - Cheerleader (Official Music Video)",
+		Artist: "Porter RobinsonVEVO",
+	}
+
+	cleanup := applyDeterministicCleanup(metadata)
+
+	if !cleanup.Applied {
+		t.Fatalf("expected deterministic cleanup to apply")
+	}
+	if metadata.Artist != "Porter Robinson" || metadata.Title != "Cheerleader" {
+		t.Fatalf("metadata = artist %q title %q, want Porter Robinson/Cheerleader", metadata.Artist, metadata.Title)
+	}
+	if cleanup.Method != "separator" || cleanup.Confidence <= 0 {
+		t.Fatalf("cleanup = method %q confidence %v, want separator with confidence", cleanup.Method, cleanup.Confidence)
+	}
+}
+
+func TestApplyDeterministicCleanupDoesNotUseUploaderWhenTitleIsWeak(t *testing.T) {
+	metadata := &TrackMetadata{
+		Title:    "Cheerleader (Official Music Video)",
+		Artist:   "Porter RobinsonVEVO",
+		Uploader: "Porter RobinsonVEVO",
+	}
+
+	cleanup := applyDeterministicCleanup(metadata)
+
+	if cleanup.Applied {
+		t.Fatalf("weak non-separator title should not rewrite provider metadata")
+	}
+	if metadata.Artist != "Porter RobinsonVEVO" || metadata.Title != "Cheerleader (Official Music Video)" {
+		t.Fatalf("metadata changed on weak parse: artist %q title %q", metadata.Artist, metadata.Title)
+	}
+}
+
+func TestMetadataProvenanceRetainsRawProviderAndCleanup(t *testing.T) {
+	metadata := &TrackMetadata{
+		Title:      "Madeon // All My Friends (Visualizer) [HD]",
+		Artist:     "madeonofficial",
+		Uploader:   "madeonofficial",
+		DurationMs: 190000,
+		SourceURL:  "https://youtu.be/example",
+		SourceType: "youtube",
+		Raw: map[string]interface{}{
+			"title":         "Madeon // All My Friends (Visualizer) [HD]",
+			"uploader":      "madeonofficial",
+			"thumbnail_url": "https://img.example/front.jpg",
+		},
+	}
+	cleanup := applyDeterministicCleanup(metadata)
+	provenance := metadataProvenance(metadata, cleanup)
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(provenance, &decoded); err != nil {
+		t.Fatalf("provenance is invalid JSON: %v", err)
+	}
+	provider := decoded["raw_provider"].(map[string]interface{})
+	if provider["title"] != "Madeon // All My Friends (Visualizer) [HD]" {
+		t.Fatalf("raw provider title = %v", provider["title"])
+	}
+	deterministic := decoded["deterministic"].(map[string]interface{})
+	if deterministic["artist"] != "Madeon" || deterministic["title"] != "All My Friends" || deterministic["applied"] != true {
+		t.Fatalf("deterministic provenance = %#v", deterministic)
+	}
+}
+
+func TestProviderMetadataSkipsOnlyEmptyStrings(t *testing.T) {
+	metadata := &TrackMetadata{
+		Title: "Fallback Title",
+		Raw: map[string]interface{}{
+			"title":         "",
+			"thumbnail":     []interface{}{"https://img.example/front.jpg"},
+			"thumbnail_url": map[string]interface{}{"url": "https://img.example/front.jpg"},
+			"duration":      float64(180),
+		},
+	}
+
+	provider := providerMetadata(metadata)
+	if provider["title"] != "Fallback Title" {
+		t.Fatalf("empty raw title should fall back to metadata title, got %#v", provider["title"])
+	}
+	if _, ok := provider["thumbnail"]; !ok {
+		t.Fatalf("non-string thumbnail array was incorrectly skipped")
+	}
+	if _, ok := provider["thumbnail_url"]; !ok {
+		t.Fatalf("non-string thumbnail_url object was incorrectly skipped")
+	}
+}
+
+func TestFailedMBMatchUpdateLeavesIdentityAndRespectsUserEdits(t *testing.T) {
+	update := failedMBMatchUpdate(errors.New("musicbrainz unavailable"))
+
+	if update.MBVerified != nil || update.ApplyMBIdentity {
+		t.Fatalf("failure fallback should not alter MB identity: %#v", update)
+	}
+	if !update.RespectUserEdits {
+		t.Fatalf("automatic failure update must respect sticky user edits")
+	}
+	if update.MetadataStatus != "failed" {
+		t.Fatalf("status = %q, want failed", update.MetadataStatus)
+	}
+	if !update.ClearMetadataConfidence {
+		t.Fatalf("automatic failure update must clear stale confidence")
+	}
+}
+
+func TestAutomaticMBMatchUpdateLowConfidenceLeavesIdentityUnchanged(t *testing.T) {
+	output := &matcher.MatchOutput{
+		Verified: false,
+		BestMatch: &matcher.MatchResult{
+			MBID:        "11111111-1111-1111-1111-111111111111",
+			ArtistMBID:  "22222222-2222-2222-2222-222222222222",
+			ReleaseID:   "33333333-3333-3333-3333-333333333333",
+			Title:       "Suggested Title",
+			Artist:      "Suggested Artist",
+			Confidence:  0.63,
+			CoverArtURL: "https://coverartarchive.org/release/33333333-3333-3333-3333-333333333333/front-250",
+		},
+		Suggestions: []matcher.MatchResult{
+			{MBID: "11111111-1111-1111-1111-111111111111", Title: "Suggested Title", Artist: "Suggested Artist", Confidence: 0.63},
+		},
+	}
+
+	update := automaticMBMatchUpdate(output)
+	if update.MBVerified != nil || update.ApplyMBIdentity || update.MBRecordingID != nil || update.MBArtistID != nil || update.MBReleaseID != nil {
+		t.Fatalf("low-confidence suggestion should not alter MB identity: %#v", update)
+	}
+	if !update.RespectUserEdits {
+		t.Fatalf("automatic suggestion update must respect sticky user edits")
+	}
+	if update.MetadataStatus != "suggested" || update.MetadataJSON == nil {
+		t.Fatalf("low-confidence suggestion metadata not persisted correctly: status=%q json=%s", update.MetadataStatus, string(update.MetadataJSON))
+	}
+	if update.ClearMetadataConfidence {
+		t.Fatalf("low-confidence suggestion should keep its current confidence")
+	}
+}
+
+func TestAutomaticMBMatchUpdateNoMatchLeavesIdentityUnchanged(t *testing.T) {
+	update := automaticMBMatchUpdate(&matcher.MatchOutput{Verified: false})
+
+	if update.MBVerified != nil || update.ApplyMBIdentity || update.MBRecordingID != nil || update.MBArtistID != nil || update.MBReleaseID != nil {
+		t.Fatalf("no-match fallback should not alter MB identity: %#v", update)
+	}
+	if !update.RespectUserEdits {
+		t.Fatalf("automatic no-match update must respect sticky user edits")
+	}
+	if update.MetadataStatus != "no_match" {
+		t.Fatalf("status = %q, want no_match", update.MetadataStatus)
+	}
+	if !update.ClearMetadataConfidence {
+		t.Fatalf("automatic no-match update must clear stale confidence")
+	}
 }
 
 func TestDownloadAndStoreFixtureCreatesPlayableWAVObject(t *testing.T) {

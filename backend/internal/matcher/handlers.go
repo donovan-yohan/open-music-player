@@ -144,24 +144,26 @@ func (h *Handler) HandleMatchTrack(w http.ResponseWriter, r *http.Request) {
 
 	// Update the track with match results
 	if output.BestMatch != nil {
-		update := &db.MBMatchUpdate{
-			MBVerified: output.Verified,
-		}
+		update := &db.MBMatchUpdate{RespectUserEdits: true}
 
-		// Parse MBIDs
-		if output.BestMatch.MBID != "" {
-			if mbid, err := uuid.Parse(output.BestMatch.MBID); err == nil {
-				update.MBRecordingID = &mbid
+		// Only verified automatic matches can alter MusicBrainz identity fields.
+		if output.Verified {
+			update.ApplyMBIdentity = true
+			update.MBVerified = boolPtr(true)
+			if output.BestMatch.MBID != "" {
+				if mbid, err := uuid.Parse(output.BestMatch.MBID); err == nil {
+					update.MBRecordingID = &mbid
+				}
 			}
-		}
-		if output.BestMatch.ArtistMBID != "" {
-			if mbid, err := uuid.Parse(output.BestMatch.ArtistMBID); err == nil {
-				update.MBArtistID = &mbid
+			if output.BestMatch.ArtistMBID != "" {
+				if mbid, err := uuid.Parse(output.BestMatch.ArtistMBID); err == nil {
+					update.MBArtistID = &mbid
+				}
 			}
-		}
-		if output.BestMatch.AlbumMBID != "" {
-			if mbid, err := uuid.Parse(output.BestMatch.AlbumMBID); err == nil {
-				update.MBReleaseID = &mbid
+			if output.BestMatch.AlbumMBID != "" {
+				if mbid, err := uuid.Parse(output.BestMatch.AlbumMBID); err == nil {
+					update.MBReleaseID = &mbid
+				}
 			}
 		}
 
@@ -235,7 +237,8 @@ func (h *Handler) HandleConfirmMatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	update := &db.MBMatchUpdate{
-		MBVerified: true,
+		MBVerified:      boolPtr(true),
+		ApplyMBIdentity: true,
 	}
 
 	// Parse and set MBIDs
@@ -354,8 +357,9 @@ func (h *Handler) HandleLinkMB(w http.ResponseWriter, r *http.Request) {
 
 	// Build update with MB IDs
 	update := &db.MBMatchUpdate{
-		MBRecordingID: &recordingID,
-		MBVerified:    true,
+		MBRecordingID:   &recordingID,
+		MBVerified:      boolPtr(true),
+		ApplyMBIdentity: true,
 	}
 
 	// Extract artist and release IDs from MB response
@@ -443,4 +447,8 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{
 		"error": message,
 	})
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }

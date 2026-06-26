@@ -59,16 +59,19 @@ func (c *Client) cacheSet(ctx context.Context, key string, value string, ttl tim
 
 // Search result types
 type TrackResult struct {
-	MBID        string `json:"mbid"`
-	Title       string `json:"title"`
-	Artist      string `json:"artist,omitempty"`
-	ArtistMBID  string `json:"artistMbid,omitempty"`
-	Album       string `json:"album,omitempty"`
-	AlbumMBID   string `json:"albumMbid,omitempty"`
-	Duration    int    `json:"duration,omitempty"`
-	TrackNumber int    `json:"trackNumber,omitempty"`
-	ReleaseDate string `json:"releaseDate,omitempty"`
-	Score       int    `json:"score"`
+	MBID             string `json:"mbid"`
+	Title            string `json:"title"`
+	Artist           string `json:"artist,omitempty"`
+	ArtistMBID       string `json:"artistMbid,omitempty"`
+	Album            string `json:"album,omitempty"`
+	AlbumMBID        string `json:"albumMbid,omitempty"` // Release-group ID for legacy callers.
+	ReleaseID        string `json:"releaseId,omitempty"` // Concrete release ID; use this for Cover Art Archive.
+	ReleaseGroupMBID string `json:"releaseGroupMbid,omitempty"`
+	CoverArtURL      string `json:"coverArtUrl,omitempty"`
+	Duration         int    `json:"duration,omitempty"`
+	TrackNumber      int    `json:"trackNumber,omitempty"`
+	ReleaseDate      string `json:"releaseDate,omitempty"`
+	Score            int    `json:"score"`
 }
 
 type ArtistResult struct {
@@ -321,6 +324,9 @@ func (c *Client) SearchTracks(ctx context.Context, query string, limit, offset i
 			release := rec.Releases[0]
 			track.Album = release.Title
 			track.AlbumMBID = release.ReleaseGroup.ID
+			track.ReleaseID = release.ID
+			track.ReleaseGroupMBID = release.ReleaseGroup.ID
+			track.CoverArtURL = c.GetCoverArtURL(release.ID)
 			track.ReleaseDate = release.Date
 			if len(release.Media) > 0 && len(release.Media[0].Tracks) > 0 {
 				track.TrackNumber = release.Media[0].Tracks[0].Position

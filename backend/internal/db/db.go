@@ -73,6 +73,11 @@ func (db *DB) Migrate() error {
 		storage_key VARCHAR(500),
 		file_size_bytes BIGINT,
 		metadata_json JSONB,
+		metadata_status VARCHAR(50) NOT NULL DEFAULT 'provider',
+		metadata_confidence DOUBLE PRECISION,
+		metadata_provenance JSONB,
+		cover_art_url TEXT,
+		metadata_user_edited BOOLEAN NOT NULL DEFAULT FALSE,
 		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 	);
@@ -153,6 +158,11 @@ func (db *DB) Migrate() error {
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS storage_key VARCHAR(500);
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT;
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_json JSONB;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_status VARCHAR(50) NOT NULL DEFAULT 'provider';
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_confidence DOUBLE PRECISION;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_provenance JSONB;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS cover_art_url TEXT;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_user_edited BOOLEAN NOT NULL DEFAULT FALSE;
 
 	CREATE TABLE IF NOT EXISTS mix_plans (
 		id UUID PRIMARY KEY,
