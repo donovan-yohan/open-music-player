@@ -84,9 +84,6 @@ func TestQueueResponseProjectsDownloadJobStatusesForMobile(t *testing.T) {
 		if item.PlaybackState != want {
 			t.Fatalf("item %d playbackState = %q, want %q", i, item.PlaybackState, want)
 		}
-		if item.LegacyPlaybackState != want {
-			t.Fatalf("item %d playback_state = %q, want %q", i, item.LegacyPlaybackState, want)
-		}
 		if item.Progress != wantProgress[i] {
 			t.Fatalf("item %d progress = %d, want %d", i, item.Progress, wantProgress[i])
 		}
@@ -117,8 +114,8 @@ func TestQueueResponseProjectsFailedJobErrorAndRetryMetadata(t *testing.T) {
 
 	resp := buildQueueResponse(state, jobs)
 	item := resp.Items[0]
-	if item.PlaybackState != "failed" || item.LegacyPlaybackState != "failed" {
-		t.Fatalf("failed states = playbackState %q playback_state %q", item.PlaybackState, item.LegacyPlaybackState)
+	if item.PlaybackState != "failed" {
+		t.Fatalf("playbackState = %q, want failed", item.PlaybackState)
 	}
 	if item.Error == nil || *item.Error != "yt-dlp failed: nope" {
 		t.Fatalf("error = %v, want job error", item.Error)
@@ -134,9 +131,14 @@ func TestQueueResponseProjectsFailedJobErrorAndRetryMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"queueItemId", "playbackState", "downloadJobId", "progress", "error", "canPlay", "canRetry", "canRemove", "playback_state", "download_job_id"} {
+	for _, field := range []string{"queueItemId", "playbackState", "downloadJobId", "progress", "error", "canPlay", "canRetry", "canRemove"} {
 		if !jsonContainsField(body, field) {
 			t.Fatalf("marshaled response missing field %q: %s", field, body)
+		}
+	}
+	for _, field := range []string{"playback_state", "download_job_id", "source_candidate"} {
+		if jsonContainsField(body, field) {
+			t.Fatalf("marshaled response should not include legacy field %q: %s", field, body)
 		}
 	}
 }
@@ -217,8 +219,8 @@ func TestGetQueueHandlerProjectsLiveDownloadJobState(t *testing.T) {
 		t.Fatalf("items len = %d, want 1", len(resp.Items))
 	}
 	item := resp.Items[0]
-	if item.PlaybackState != "downloading" || item.LegacyPlaybackState != "downloading" {
-		t.Fatalf("states = playbackState %q playback_state %q, want downloading", item.PlaybackState, item.LegacyPlaybackState)
+	if item.PlaybackState != "downloading" {
+		t.Fatalf("playbackState = %q, want downloading", item.PlaybackState)
 	}
 	if item.Progress != 37 {
 		t.Fatalf("progress = %d, want 37", item.Progress)

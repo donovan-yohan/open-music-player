@@ -617,7 +617,10 @@ class _FakeQueueApiClient extends ApiClient {
   }
 
   @override
-  Future<void> removeFromQueue(int position) async {
+  Future<QueueState> removeQueueItem(String queueItemId) async {
+    final position = _state.tracks.indexWhere(
+      (track) => track.queueItemId == queueItemId,
+    );
     removedPositions.add(position);
     final tracks = List<Track>.from(_state.tracks)..removeAt(position);
     var currentIndex = _state.currentIndex;
@@ -632,6 +635,7 @@ class _FakeQueueApiClient extends ApiClient {
       repeatMode: _state.repeatMode,
       shuffled: _state.shuffled,
     );
+    return _state;
   }
 
   @override
@@ -642,9 +646,13 @@ class _FakeQueueApiClient extends ApiClient {
 
   @override
   Future<QueueState> reorderQueue({
-    required int fromIndex,
-    required int toIndex,
+    required String queueItemId,
+    required int toPosition,
   }) async {
+    final fromIndex = _state.tracks.indexWhere(
+      (track) => track.queueItemId == queueItemId,
+    );
+    final toIndex = toPosition;
     reorders.add((fromIndex, toIndex));
     final tracks = List<Track>.from(_state.tracks);
     final track = tracks.removeAt(fromIndex);

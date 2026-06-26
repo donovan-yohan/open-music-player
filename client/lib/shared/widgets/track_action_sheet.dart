@@ -30,7 +30,6 @@ class TrackActionSheet extends StatefulWidget {
 
 class _TrackActionSheetState extends State<TrackActionSheet> {
   late final LibraryService _libraryService;
-  late final QueueService _queueService;
 
   bool _isLoading = false;
 
@@ -38,7 +37,6 @@ class _TrackActionSheetState extends State<TrackActionSheet> {
   void initState() {
     super.initState();
     _libraryService = LibraryService(widget.apiClient);
-    _queueService = QueueService(widget.apiClient);
   }
 
   Future<void> _addToLibrary() async {
@@ -55,48 +53,6 @@ class _TrackActionSheetState extends State<TrackActionSheet> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to add to library: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _addToQueue() async {
-    setState(() => _isLoading = true);
-    try {
-      await _queueService.addToQueue([widget.trackMbid]);
-      if (mounted) {
-        Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Added to queue')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to add to queue: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _playNext() async {
-    setState(() => _isLoading = true);
-    try {
-      await _queueService.addToQueue([widget.trackMbid], position: 'next');
-      if (mounted) {
-        Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Playing next')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to add to queue: $e')),
         );
       }
     } finally {
@@ -171,16 +127,6 @@ class _TrackActionSheetState extends State<TrackActionSheet> {
               leading: const Icon(Icons.library_add),
               title: const Text('Add to library'),
               onTap: _addToLibrary,
-            ),
-            ListTile(
-              leading: const Icon(Icons.queue_music),
-              title: const Text('Add to queue'),
-              onTap: _addToQueue,
-            ),
-            ListTile(
-              leading: const Icon(Icons.playlist_play),
-              title: const Text('Play next'),
-              onTap: _playNext,
             ),
             ListTile(
               leading: const Icon(Icons.playlist_add),

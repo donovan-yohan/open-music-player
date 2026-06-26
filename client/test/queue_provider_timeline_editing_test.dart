@@ -212,7 +212,7 @@ void main() {
                 _ => [first.toJson(), fresh.toJson()],
               };
               return http.Response(
-                jsonEncode({'tracks': tracks, 'currentIndex': 0}),
+                jsonEncode({'items': tracks, 'currentPosition': 0}),
                 200,
               );
             }
@@ -262,15 +262,21 @@ void main() {
                 request.url.path.endsWith('/queue')) {
               return http.Response(
                 jsonEncode({
-                  'tracks': [first.toJson(), second.toJson()],
-                  'currentIndex': 0,
+                  'items': [first.toJson(), second.toJson()],
+                  'currentPosition': 0,
                 }),
                 200,
               );
             }
             if (request.method == 'DELETE' &&
-                request.url.path.endsWith('/queue/0')) {
-              return http.Response('', 204);
+                request.url.path.endsWith('/queue/items/queue-a')) {
+              return http.Response(
+                jsonEncode({
+                  'items': [second.toJson()],
+                  'currentPosition': 0,
+                }),
+                200,
+              );
             }
             return http.Response('', 404);
           }),
@@ -322,8 +328,8 @@ void main() {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
-                'tracks': [track.toJson()],
-                'currentIndex': 0,
+                'items': [track.toJson()],
+                'currentPosition': 0,
               }),
               200,
             );
@@ -389,8 +395,8 @@ void main() {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
-                'tracks': [fresh.toJson()],
-                'currentIndex': 0,
+                'items': [fresh.toJson()],
+                'currentPosition': 0,
               }),
               200,
             );
@@ -458,8 +464,8 @@ void main() {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
-                'tracks': [first.toJson(), second.toJson()],
-                'currentIndex': 0,
+                'items': [first.toJson(), second.toJson()],
+                'currentPosition': 0,
               }),
               200,
             );
@@ -547,8 +553,8 @@ void main() {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
-                'tracks': [fresh.toJson()],
-                'currentIndex': 0,
+                'items': [fresh.toJson()],
+                'currentPosition': 0,
               }),
               200,
             );
@@ -616,8 +622,8 @@ void main() {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
-                'tracks': [first.toJson(), second.toJson()],
-                'currentIndex': 0,
+                'items': [first.toJson(), second.toJson()],
+                'currentPosition': 0,
               }),
               200,
             );
@@ -698,8 +704,8 @@ void main() {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
-                'tracks': [first.toJson(), second.toJson()],
-                'currentIndex': 0,
+                'items': [first.toJson(), second.toJson()],
+                'currentPosition': 0,
               }),
               200,
             );
@@ -812,8 +818,8 @@ void main() {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
-                'tracks': [track.toJson()],
-                'currentIndex': 0,
+                'items': [track.toJson()],
+                'currentPosition': 0,
               }),
               200,
             );
@@ -876,7 +882,7 @@ void main() {
         httpClient: MockClient(
           (request) async => http.Response(
             jsonEncode(
-                {'tracks': <Map<String, Object?>>[], 'currentIndex': -1}),
+                {'items': <Map<String, Object?>>[], 'currentPosition': -1}),
             200,
           ),
         ),
