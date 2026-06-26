@@ -40,6 +40,8 @@ type LibraryTrackResponse struct {
 	MetadataProvenance json.RawMessage        `json:"metadata_provenance,omitempty"`
 	MBRecordingID      *uuid.UUID             `json:"mb_recording_id,omitempty"`
 	MBSuggestions      []matcher.MBSuggestion `json:"mb_suggestions,omitempty"`
+	AnalysisStatus     string                 `json:"analysis_status,omitempty"`
+	AnalysisSummary    json.RawMessage        `json:"analysis_summary,omitempty"`
 }
 
 type LibraryListResponse struct {
@@ -87,7 +89,7 @@ func (s *FieldSelector) Include(field string) bool {
 
 // GetLibrary handles GET /api/v1/library
 // Supports field selection via ?fields=id,title,artist (comma-separated)
-// Available fields: id, title, artist, album, duration_ms, mb_verified, added_at, cover_art_url, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions
+// Available fields: id, title, artist, album, duration_ms, mb_verified, added_at, cover_art_url, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, analysis_status, analysis_summary
 func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 	userCtx := auth.GetUserFromContext(r.Context())
 	if userCtx == nil {
@@ -188,6 +190,15 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 		}
 		if fields.Include("mb_recording_id") && t.MBRecordingID != nil {
 			track["mb_recording_id"] = t.MBRecordingID.String()
+		}
+		if fields.Include("analysis_status") && t.AnalysisStatus.Valid {
+			track["analysis_status"] = t.AnalysisStatus.String
+		}
+		if fields.Include("analysis_summary") && t.AnalysisStatus.Valid && len(t.AnalysisSummary) > 0 {
+			var summary map[string]interface{}
+			if err := json.Unmarshal(t.AnalysisSummary, &summary); err == nil {
+				track["analysis_summary"] = summary
+			}
 		}
 		// Include suggestions for unverified tracks
 		if fields.Include("mb_suggestions") && !t.MBVerified && len(t.MetadataJSON) > 0 {

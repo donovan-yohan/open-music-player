@@ -30,6 +30,7 @@ type Router struct {
 	validatorHandlers   *validators.Handlers
 	matcherHandlers     *matcher.Handler
 	libraryHandlers     *LibraryHandlers
+	analysisHandlers    *AnalysisHandlers
 	playbackHandlers    *PlaybackHandlers
 	queueHandlers       *queue.Handlers
 	discoveryHandlers   *discovery.Handlers
@@ -56,6 +57,7 @@ type RouterConfig struct {
 	WSHandler          *websocket.Handler
 	MatcherHandlers    *matcher.Handler
 	LibraryHandlers    *LibraryHandlers
+	AnalysisHandlers   *AnalysisHandlers
 	PlaybackHandlers   *PlaybackHandlers
 	QueueHandlers      *queue.Handlers
 	DiscoveryHandlers  *discovery.Handlers
@@ -107,6 +109,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		validatorHandlers:   validators.NewHandlers(validatorRegistry),
 		matcherHandlers:     cfg.MatcherHandlers,
 		libraryHandlers:     cfg.LibraryHandlers,
+		analysisHandlers:    cfg.AnalysisHandlers,
 		playbackHandlers:    cfg.PlaybackHandlers,
 		queueHandlers:       cfg.QueueHandlers,
 		discoveryHandlers:   cfg.DiscoveryHandlers,
@@ -199,6 +202,11 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /api/v1/library", r.withAuth(r.libraryHandlers.GetLibrary))
 	r.mux.HandleFunc("POST /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.AddTrackToLibrary))
 	r.mux.HandleFunc("DELETE /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.RemoveTrackFromLibrary))
+	if r.analysisHandlers != nil {
+		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/analysis", r.withAuth(r.analysisHandlers.GetTrackAnalysis))
+	} else {
+		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/analysis", r.withAuth(unavailableHandler("Track analysis is unavailable")))
+	}
 
 	// Direct playback/download URL issuance (auth required)
 	if r.playbackHandlers != nil {

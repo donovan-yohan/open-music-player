@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
 )
 
@@ -18,6 +20,7 @@ import (
 type Handlers struct {
 	service         *Service
 	downloadService *download.Service
+	analysisRepo    *db.AnalysisRepository
 }
 
 // NewHandlers creates a new Handlers instance
@@ -27,6 +30,10 @@ func NewHandlers(service *Service, downloadServices ...*download.Service) *Handl
 		downloadService = downloadServices[0]
 	}
 	return &Handlers{service: service, downloadService: downloadService}
+}
+
+func NewHandlersWithAnalysis(service *Service, downloadService *download.Service, analysisRepo *db.AnalysisRepository) *Handlers {
+	return &Handlers{service: service, downloadService: downloadService, analysisRepo: analysisRepo}
 }
 
 // ErrorResponse represents an error response
@@ -67,6 +74,8 @@ type QueueItemResponse struct {
 	ThumbnailURL          string           `json:"thumbnailUrl,omitempty"`
 	Progress              int              `json:"progress"`
 	Error                 *string          `json:"error"`
+	AnalysisStatus        string           `json:"analysisStatus,omitempty"`
+	AnalysisSummary       json.RawMessage  `json:"analysisSummary,omitempty"`
 	CanPlay               bool             `json:"canPlay"`
 	CanRetry              bool             `json:"canRetry"`
 	CanRemove             bool             `json:"canRemove"`
@@ -115,7 +124,7 @@ func (h *Handlers) GetQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	jobs := h.resolveDownloadBackedItems(r, userCtx.UserID.String(), state)
 
-	writeJSON(w, http.StatusOK, buildQueueResponse(state, jobs))
+	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, jobs))
 }
 
 // AddToQueue handles POST /api/v1/queue
@@ -161,7 +170,7 @@ func (h *Handlers) AddToQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, buildQueueResponse(state, nil))
+	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, nil))
 }
 
 // AddQueueItem handles POST /api/v1/queue/items.
@@ -192,7 +201,7 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to add track to queue")
 			return
 		}
-		writeJSON(w, http.StatusOK, buildQueueResponse(state, nil))
+		writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, nil))
 		return
 	}
 
@@ -253,7 +262,7 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{
-		"queue":         buildQueueResponse(state, map[string]*download.DownloadJob{job.ID: job}),
+		"queue":         h.buildQueueResponse(r.Context(), state, map[string]*download.DownloadJob{job.ID: job}),
 		"downloadJobId": job.ID,
 	})
 }
@@ -283,7 +292,7 @@ func (h *Handlers) RemoveFromQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, buildQueueResponse(state, nil))
+	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, nil))
 }
 
 // RemoveQueueItem handles DELETE /api/v1/queue/items/{queueItemId}
@@ -310,7 +319,7 @@ func (h *Handlers) RemoveQueueItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, buildQueueResponse(state, nil))
+	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, nil))
 }
 
 // RetryQueueItem handles POST /api/v1/queue/items/{queueItemId}/retry
@@ -359,7 +368,7 @@ func (h *Handlers) RetryQueueItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, buildQueueResponse(state, nil))
+	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, nil))
 }
 
 // ReorderQueue handles PUT /api/v1/queue/reorder
@@ -396,7 +405,7 @@ func (h *Handlers) ReorderQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, buildQueueResponse(state, nil))
+	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, nil))
 }
 
 // ClearQueue handles DELETE /api/v1/queue
@@ -412,7 +421,7 @@ func (h *Handlers) ClearQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, buildQueueResponse(&QueueState{Items: []QueueItem{}, CurrentPosition: 0, UpdatedAt: time.Now()}, nil))
+	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), &QueueState{Items: []QueueItem{}, CurrentPosition: 0, UpdatedAt: time.Now()}, nil))
 }
 
 func (h *Handlers) resolveDownloadBackedItems(r *http.Request, userID string, state *QueueState) map[string]*download.DownloadJob {
@@ -464,13 +473,45 @@ func (h *Handlers) resolveDownloadBackedItems(r *http.Request, userID string, st
 	return jobs
 }
 
+func (h *Handlers) buildQueueResponse(ctx context.Context, state *QueueState, jobs map[string]*download.DownloadJob) QueueResponse {
+	return buildQueueResponseWithAnalysis(state, jobs, h.compactAnalysisForState(ctx, state, jobs))
+}
+
+func (h *Handlers) compactAnalysisForState(ctx context.Context, state *QueueState, jobs map[string]*download.DownloadJob) map[int64]db.AnalysisCompact {
+	if h.analysisRepo == nil || state == nil {
+		return nil
+	}
+	seen := map[int64]bool{}
+	for _, item := range state.Items {
+		if item.TrackID != nil {
+			seen[*item.TrackID] = true
+		}
+		if job := jobs[item.DownloadJobID]; job != nil && job.TrackID != nil {
+			seen[*job.TrackID] = true
+		}
+	}
+	trackIDs := make([]int64, 0, len(seen))
+	for id := range seen {
+		trackIDs = append(trackIDs, id)
+	}
+	analysis, err := h.analysisRepo.GetCompactByTrackIDs(ctx, trackIDs)
+	if err != nil {
+		return nil
+	}
+	return analysis
+}
+
 func buildQueueResponse(state *QueueState, jobs map[string]*download.DownloadJob) QueueResponse {
+	return buildQueueResponseWithAnalysis(state, jobs, nil)
+}
+
+func buildQueueResponseWithAnalysis(state *QueueState, jobs map[string]*download.DownloadJob, analysis map[int64]db.AnalysisCompact) QueueResponse {
 	if state == nil {
 		state = &QueueState{Items: []QueueItem{}, UpdatedAt: time.Now()}
 	}
 	items := make([]QueueItemResponse, len(state.Items))
 	for i, item := range state.Items {
-		items[i] = buildQueueItemResponse(item, state.UpdatedAt, jobs[item.DownloadJobID])
+		items[i] = buildQueueItemResponse(item, state.UpdatedAt, jobs[item.DownloadJobID], analysis)
 	}
 	return QueueResponse{
 		Items:                items,
@@ -481,7 +522,7 @@ func buildQueueResponse(state *QueueState, jobs map[string]*download.DownloadJob
 	}
 }
 
-func buildQueueItemResponse(item QueueItem, updatedAt time.Time, job *download.DownloadJob) QueueItemResponse {
+func buildQueueItemResponse(item QueueItem, updatedAt time.Time, job *download.DownloadJob, analysis map[int64]db.AnalysisCompact) QueueItemResponse {
 	trackID := item.TrackID
 	state := projectedPlaybackState(item.PlaybackState)
 	progress := 0
@@ -562,6 +603,12 @@ func buildQueueItemResponse(item QueueItem, updatedAt time.Time, job *download.D
 		response.Uploader = item.Source.Uploader
 		response.DurationMs = item.Source.DurationMs
 		response.ThumbnailURL = item.Source.ThumbnailURL
+	}
+	if trackID != nil && analysis != nil {
+		if compact, ok := analysis[*trackID]; ok {
+			response.AnalysisStatus = compact.Status
+			response.AnalysisSummary = compact.SummaryJSON
+		}
 	}
 	return response
 }

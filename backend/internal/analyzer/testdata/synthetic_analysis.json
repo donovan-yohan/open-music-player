@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "summary": {
+    "bpm": { "value": 124.0, "confidence": 0.94, "provenance": "fixture:beat_grid" },
+    "key": { "value": "A minor", "confidence": 0.82, "provenance": "fixture:chroma" },
+    "camelot": { "value": "8A", "confidence": 0.82, "provenance": "fixture:chroma" },
+    "energy": { "value": 0.73, "confidence": 0.88, "provenance": "fixture:rms_spectral_flux" },
+    "genre_hints": [
+      { "value": "house", "confidence": 0.67, "provenance": "fixture:tagger" }
+    ],
+    "tag_hints": [
+      { "value": "danceable", "confidence": 0.79, "provenance": "fixture:tagger" },
+      { "value": "four-on-the-floor", "confidence": 0.71, "provenance": "fixture:beat_grid" }
+    ],
+    "waveform": {
+      "peaks": [0.0, 0.21, 0.65, 0.78, 0.58, 0.22],
+      "rms": [0.0, 0.14, 0.41, 0.49, 0.37, 0.11],
+      "sample_count": 6,
+      "confidence": 0.99,
+      "provenance": "fixture:waveform"
+    },
+    "transients": {
+      "count": 48,
+      "density_per_second": 1.6,
+      "strongest_ms": [10120, 20180, 30240],
+      "confidence": 0.9,
+      "provenance": "fixture:onsets"
+    },
+    "silence": {
+      "leading_ms": 320,
+      "trailing_ms": 610,
+      "ranges": [{ "start_ms": 0, "end_ms": 320 }],
+      "confidence": 0.97,
+      "provenance": "fixture:rms_gate"
+    },
+    "intro": { "start_ms": 320, "end_ms": 16000, "confidence": 0.74, "provenance": "fixture:sections" },
+    "outro": { "start_ms": 180000, "end_ms": 197500, "confidence": 0.69, "provenance": "fixture:sections" },
+    "trim": { "start_ms": 320, "end_ms": 197500, "confidence": 0.96, "provenance": "fixture:silence" },
+    "sections": [
+      { "label": "intro", "start_ms": 320, "end_ms": 16000, "confidence": 0.74, "provenance": "fixture:sections" },
+      { "label": "drop", "start_ms": 64000, "end_ms": 128000, "confidence": 0.81, "provenance": "fixture:sections" }
+    ],
+    "cue_candidates": [
+      { "kind": "mix_in", "start_ms": 16000, "confidence": 0.78, "provenance": "fixture:phrases" },
+      { "kind": "mix_out", "start_ms": 180000, "confidence": 0.72, "provenance": "fixture:phrases" }
+    ]
+  },
+  "artifacts": {
+    "waveform_resolution": "coarse_fixture",
+    "section_model": "fixture-v1",
+    "raw_feature_refs": []
+  },
+  "provenance": {
+    "analyzer": "fixture",
+    "analyzer_version": "fixture-v1",
+    "model_versions": {
+      "tempo": "fixture-tempo-v1",
+      "key": "fixture-key-v1",
+      "sections": "fixture-sections-v1"
+    }
+  }
+}

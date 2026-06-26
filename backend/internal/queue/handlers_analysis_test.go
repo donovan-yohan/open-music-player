@@ -1,0 +1,37 @@
+package queue
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/openmusicplayer/backend/internal/db"
+)
+
+func TestBuildQueueResponseWithAnalysisCompact(t *testing.T) {
+	trackID := int64(42)
+	state := &QueueState{
+		UpdatedAt: time.Date(2026, 6, 26, 8, 0, 0, 0, time.UTC),
+		Items: []QueueItem{{
+			ID:            "q_analysis",
+			Position:      0,
+			TrackID:       &trackID,
+			PlaybackState: "playable",
+			AddedAt:       time.Date(2026, 6, 26, 7, 59, 0, 0, time.UTC),
+		}},
+	}
+	summary := json.RawMessage(`{"bpm":{"value":124,"confidence":0.94,"provenance":"fixture"}}`)
+	resp := buildQueueResponseWithAnalysis(state, nil, map[int64]db.AnalysisCompact{
+		trackID: {TrackID: trackID, Status: db.AnalysisStatusAnalyzed, SummaryJSON: summary},
+	})
+	if len(resp.Items) != 1 {
+		t.Fatalf("items len = %d, want 1", len(resp.Items))
+	}
+	item := resp.Items[0]
+	if item.AnalysisStatus != db.AnalysisStatusAnalyzed {
+		t.Fatalf("analysis status = %q, want %q", item.AnalysisStatus, db.AnalysisStatusAnalyzed)
+	}
+	if string(item.AnalysisSummary) != string(summary) {
+		t.Fatalf("analysis summary = %s, want %s", item.AnalysisSummary, summary)
+	}
+}

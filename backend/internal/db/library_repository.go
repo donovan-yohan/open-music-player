@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -21,7 +22,9 @@ type LibraryEntry struct {
 
 type LibraryTrack struct {
 	Track
-	AddedAt time.Time
+	AddedAt         time.Time
+	AnalysisStatus  sql.NullString
+	AnalysisSummary json.RawMessage
 }
 
 type LibraryRepository struct {
@@ -94,9 +97,11 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
 			   t.metadata_json, t.metadata_status, t.metadata_confidence, t.metadata_provenance,
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at, ul.added_at,
+			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb) AS analysis_summary,
 			   COUNT(*) OVER() as total_count
 		FROM user_library ul
 		JOIN tracks t ON ul.track_id = t.id
+		LEFT JOIN track_analysis ta ON ta.track_id = t.id
 		WHERE ` + baseCondition + `
 		ORDER BY ` + orderBy + `
 		LIMIT $` + itoa(argIndex) + ` OFFSET $` + itoa(argIndex+1)
@@ -118,7 +123,8 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			&lt.MBRecordingID, &lt.MBReleaseID, &lt.MBArtistID, &lt.MBVerified,
 			&lt.SourceURL, &lt.SourceType, &lt.StorageKey, &lt.FileSizeBytes,
 			&lt.MetadataJSON, &lt.MetadataStatus, &lt.MetadataConfidence, &lt.MetadataProvenance,
-			&lt.CoverArtURL, &lt.MetadataUserEdited, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt, &total,
+			&lt.CoverArtURL, &lt.MetadataUserEdited, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt,
+			&lt.AnalysisStatus, &lt.AnalysisSummary, &total,
 		)
 		if err != nil {
 			return nil, 0, err
