@@ -414,7 +414,7 @@ func providerMetadata(metadata *TrackMetadata) map[string]interface{} {
 	provider := make(map[string]interface{})
 	keys := []string{"id", "title", "fulltitle", "artist", "album", "uploader", "channel", "duration", "duration_ms", "webpage_url", "source_url", "source_type", "thumbnail", "thumbnail_url", "candidate_id", "source_id"}
 	for _, key := range keys {
-		if value, ok := metadata.Raw[key]; ok && value != nil && value != "" {
+		if value, ok := metadata.Raw[key]; ok && providerValueIsPresent(value) {
 			provider[key] = value
 		}
 	}
@@ -440,6 +440,16 @@ func providerMetadata(metadata *TrackMetadata) map[string]interface{} {
 		provider["source_type"] = metadata.SourceType
 	}
 	return provider
+}
+
+func providerValueIsPresent(value interface{}) bool {
+	if value == nil {
+		return false
+	}
+	if s, ok := value.(string); ok {
+		return s != ""
+	}
+	return true
 }
 
 func metadataProvenance(metadata *TrackMetadata, cleanup deterministicCleanup) json.RawMessage {
@@ -520,23 +530,36 @@ func (p *Processor) runMatching(ctx context.Context, track *db.Track, metadata *
 	}
 	output, err := p.matcher.Match(ctx, matchMetadata)
 	if err != nil {
-		failedProvenance, _ := json.Marshal(map[string]interface{}{
-			"musicbrainz": map[string]interface{}{
-				"status": "failed",
-				"error":  err.Error(),
-			},
-		})
-		_ = p.trackRepo.UpdateMBMatch(ctx, track.ID, &db.MBMatchUpdate{
-			MetadataStatus:     "failed",
-			MetadataProvenance: failedProvenance,
-		})
+		_ = p.trackRepo.UpdateMBMatch(ctx, track.ID, failedMBMatchUpdate(err))
 		return fmt.Errorf("matching failed: %w", err)
 	}
-	update := &db.MBMatchUpdate{MBVerified: output.Verified}
+	update := automaticMBMatchUpdate(output)
+	return p.trackRepo.UpdateMBMatch(ctx, track.ID, update)
+}
+
+func failedMBMatchUpdate(matchErr error) *db.MBMatchUpdate {
+	failedProvenance, _ := json.Marshal(map[string]interface{}{
+		"musicbrainz": map[string]interface{}{
+			"status": "failed",
+			"error":  matchErr.Error(),
+		},
+	})
+	return &db.MBMatchUpdate{
+		RespectUserEdits:   true,
+		MetadataStatus:     "failed",
+		MetadataProvenance: failedProvenance,
+	}
+}
+
+func automaticMBMatchUpdate(output *matcher.MatchOutput) *db.MBMatchUpdate {
+	update := &db.MBMatchUpdate{RespectUserEdits: true}
 	if output.BestMatch != nil {
 		confidence := output.BestMatch.Confidence
 		update.MetadataConfidence = &confidence
 		if output.Verified {
+			verified := true
+			update.MBVerified = &verified
+			update.ApplyMBIdentity = true
 			if output.BestMatch.MBID != "" {
 				if mbid, err := uuid.Parse(output.BestMatch.MBID); err == nil {
 					update.MBRecordingID = &mbid
@@ -578,7 +601,7 @@ func (p *Processor) runMatching(ctx context.Context, track *db.Track, metadata *
 			update.MetadataJSON = suggestionsJSON
 		}
 	}
-	return p.trackRepo.UpdateMBMatch(ctx, track.ID, update)
+	return update
 }
 
 // addToLibrary adds the track to the user's library

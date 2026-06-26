@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/openmusicplayer/backend/internal/download"
+	"github.com/openmusicplayer/backend/internal/matcher"
 )
 
 type fakeObjectStorage struct {
@@ -90,6 +92,83 @@ func TestMetadataProvenanceRetainsRawProviderAndCleanup(t *testing.T) {
 	deterministic := decoded["deterministic"].(map[string]interface{})
 	if deterministic["artist"] != "Madeon" || deterministic["title"] != "All My Friends" || deterministic["applied"] != true {
 		t.Fatalf("deterministic provenance = %#v", deterministic)
+	}
+}
+
+func TestProviderMetadataSkipsOnlyEmptyStrings(t *testing.T) {
+	metadata := &TrackMetadata{
+		Title: "Fallback Title",
+		Raw: map[string]interface{}{
+			"title":         "",
+			"thumbnail":     []interface{}{"https://img.example/front.jpg"},
+			"thumbnail_url": map[string]interface{}{"url": "https://img.example/front.jpg"},
+			"duration":      float64(180),
+		},
+	}
+
+	provider := providerMetadata(metadata)
+	if provider["title"] != "Fallback Title" {
+		t.Fatalf("empty raw title should fall back to metadata title, got %#v", provider["title"])
+	}
+	if _, ok := provider["thumbnail"]; !ok {
+		t.Fatalf("non-string thumbnail array was incorrectly skipped")
+	}
+	if _, ok := provider["thumbnail_url"]; !ok {
+		t.Fatalf("non-string thumbnail_url object was incorrectly skipped")
+	}
+}
+
+func TestFailedMBMatchUpdateLeavesIdentityAndRespectsUserEdits(t *testing.T) {
+	update := failedMBMatchUpdate(errors.New("musicbrainz unavailable"))
+
+	if update.MBVerified != nil || update.ApplyMBIdentity {
+		t.Fatalf("failure fallback should not alter MB identity: %#v", update)
+	}
+	if !update.RespectUserEdits {
+		t.Fatalf("automatic failure update must respect sticky user edits")
+	}
+	if update.MetadataStatus != "failed" {
+		t.Fatalf("status = %q, want failed", update.MetadataStatus)
+	}
+}
+
+func TestAutomaticMBMatchUpdateLowConfidenceLeavesIdentityUnchanged(t *testing.T) {
+	output := &matcher.MatchOutput{
+		Verified: false,
+		BestMatch: &matcher.MatchResult{
+			MBID:        "11111111-1111-1111-1111-111111111111",
+			ArtistMBID:  "22222222-2222-2222-2222-222222222222",
+			ReleaseID:   "33333333-3333-3333-3333-333333333333",
+			Title:       "Suggested Title",
+			Artist:      "Suggested Artist",
+			Confidence:  0.63,
+			CoverArtURL: "https://coverartarchive.org/release/33333333-3333-3333-3333-333333333333/front-250",
+		},
+		Suggestions: []matcher.MatchResult{
+			{MBID: "11111111-1111-1111-1111-111111111111", Title: "Suggested Title", Artist: "Suggested Artist", Confidence: 0.63},
+		},
+	}
+
+	update := automaticMBMatchUpdate(output)
+	if update.MBVerified != nil || update.ApplyMBIdentity || update.MBRecordingID != nil || update.MBArtistID != nil || update.MBReleaseID != nil {
+		t.Fatalf("low-confidence suggestion should not alter MB identity: %#v", update)
+	}
+	if !update.RespectUserEdits {
+		t.Fatalf("automatic suggestion update must respect sticky user edits")
+	}
+	if update.MetadataStatus != "suggested" || update.MetadataJSON == nil {
+		t.Fatalf("low-confidence suggestion metadata not persisted correctly: status=%q json=%s", update.MetadataStatus, string(update.MetadataJSON))
+	}
+}
+
+func TestAutomaticMBMatchUpdateNoMatchLeavesIdentityUnchanged(t *testing.T) {
+	update := automaticMBMatchUpdate(&matcher.MatchOutput{Verified: false})
+
+	if update.MBVerified != nil || update.ApplyMBIdentity || update.MBRecordingID != nil || update.MBArtistID != nil || update.MBReleaseID != nil {
+		t.Fatalf("no-match fallback should not alter MB identity: %#v", update)
+	}
+	if !update.RespectUserEdits {
+		t.Fatalf("automatic no-match update must respect sticky user edits")
 	}
 }
 

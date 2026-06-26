@@ -284,7 +284,9 @@ type MBMatchUpdate struct {
 	MBRecordingID      *uuid.UUID
 	MBReleaseID        *uuid.UUID
 	MBArtistID         *uuid.UUID
-	MBVerified         bool
+	MBVerified         *bool
+	ApplyMBIdentity    bool
+	RespectUserEdits   bool
 	MetadataJSON       json.RawMessage // For storing suggestions/provenance without replacing raw provider metadata
 	MetadataStatus     string
 	MetadataConfidence *float64
@@ -300,19 +302,19 @@ type MBMatchUpdate struct {
 func (r *TrackRepository) UpdateMBMatch(ctx context.Context, trackID int64, match *MBMatchUpdate) error {
 	query := `
 		UPDATE tracks
-		SET mb_recording_id = $2,
-			mb_release_id = $3,
-			mb_artist_id = $4,
-			mb_verified = $5,
-			metadata_json = COALESCE(metadata_json, '{}'::jsonb) || COALESCE($6, '{}'::jsonb),
-			metadata_status = COALESCE(NULLIF($7, ''), metadata_status),
-			metadata_confidence = COALESCE($8, metadata_confidence),
-			metadata_provenance = COALESCE(metadata_provenance, '{}'::jsonb) || COALESCE($9, '{}'::jsonb),
-			cover_art_url = COALESCE(NULLIF($10, ''), cover_art_url),
-			title = CASE WHEN metadata_user_edited = FALSE THEN COALESCE(NULLIF($11, ''), title) ELSE title END,
-			artist = CASE WHEN metadata_user_edited = FALSE THEN COALESCE(NULLIF($12, ''), artist) ELSE artist END,
-			album = CASE WHEN metadata_user_edited = FALSE THEN COALESCE(NULLIF($13, ''), album) ELSE album END,
-			duration_ms = CASE WHEN metadata_user_edited = FALSE AND $14 > 0 THEN $14 ELSE duration_ms END,
+		SET mb_recording_id = CASE WHEN $15 AND (metadata_user_edited = FALSE OR $16 = FALSE) THEN $2 ELSE mb_recording_id END,
+			mb_release_id = CASE WHEN $15 AND (metadata_user_edited = FALSE OR $16 = FALSE) THEN $3 ELSE mb_release_id END,
+			mb_artist_id = CASE WHEN $15 AND (metadata_user_edited = FALSE OR $16 = FALSE) THEN $4 ELSE mb_artist_id END,
+			mb_verified = CASE WHEN $5 IS NOT NULL AND (metadata_user_edited = FALSE OR $16 = FALSE) THEN $5 ELSE mb_verified END,
+			metadata_json = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(metadata_json, '{}'::jsonb) || COALESCE($6, '{}'::jsonb) ELSE metadata_json END,
+			metadata_status = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(NULLIF($7, ''), metadata_status) ELSE metadata_status END,
+			metadata_confidence = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE($8, metadata_confidence) ELSE metadata_confidence END,
+			metadata_provenance = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(metadata_provenance, '{}'::jsonb) || COALESCE($9, '{}'::jsonb) ELSE metadata_provenance END,
+			cover_art_url = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(NULLIF($10, ''), cover_art_url) ELSE cover_art_url END,
+			title = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(NULLIF($11, ''), title) ELSE title END,
+			artist = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(NULLIF($12, ''), artist) ELSE artist END,
+			album = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(NULLIF($13, ''), album) ELSE album END,
+			duration_ms = CASE WHEN (metadata_user_edited = FALSE OR $16 = FALSE) AND $14 > 0 THEN $14 ELSE duration_ms END,
 			updated_at = NOW()
 		WHERE id = $1
 	`
@@ -332,6 +334,8 @@ func (r *TrackRepository) UpdateMBMatch(ctx context.Context, trackID int64, matc
 		match.Artist,
 		match.Album,
 		match.DurationMs,
+		match.ApplyMBIdentity,
+		match.RespectUserEdits,
 	)
 	if err != nil {
 		return err
