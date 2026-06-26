@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart'
     hide Provider, ChangeNotifierProvider;
@@ -8,34 +10,61 @@ import '../core/audio/playback_state.dart';
 import '../core/auth/auth_state.dart';
 import '../core/models/settings_model.dart';
 import '../core/providers/settings_provider.dart';
+import '../core/share/shared_intent_receiver.dart';
+import '../core/share/shared_url_parser.dart';
 import '../core/storage/secure_storage.dart';
 import '../providers/queue_provider.dart';
 import '../services/api_client.dart' as queue_api;
 import 'router.dart';
 import 'theme.dart';
 
-class OpenMusicPlayerApp extends ConsumerWidget {
+class OpenMusicPlayerApp extends ConsumerStatefulWidget {
   final ApiClient apiClient;
   final AuthState authState;
   final PlaybackState playbackState;
   final GoRouter router;
+  final SharedIntentReceiver sharedIntentReceiver;
 
   OpenMusicPlayerApp({
     super.key,
     required this.apiClient,
     required this.authState,
     required this.playbackState,
-  }) : router = createRouter(authState);
+    SharedIntentReceiver? sharedIntentReceiver,
+  })  : router = createRouter(authState),
+        sharedIntentReceiver = sharedIntentReceiver ?? SharedIntentReceiver();
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<OpenMusicPlayerApp> createState() => _OpenMusicPlayerAppState();
+}
+
+class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp> {
+  StreamSubscription<String>? _sharedTextSubscription;
+  String? _pendingSharedText;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.authState.addListener(_handleAuthStateChanged);
+    _startShareIntentListener();
+  }
+
+  @override
+  void dispose() {
+    widget.authState.removeListener(_handleAuthStateChanged);
+    _sharedTextSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
 
     return MultiProvider(
       providers: [
-        Provider<ApiClient>.value(value: apiClient),
-        ChangeNotifierProvider.value(value: authState),
-        ChangeNotifierProvider.value(value: playbackState),
+        Provider<ApiClient>.value(value: widget.apiClient),
+        ChangeNotifierProvider.value(value: widget.authState),
+        ChangeNotifierProvider.value(value: widget.playbackState),
         Provider<queue_api.ApiClient>(
           create: (context) => queue_api.ApiClient(
             storage: context.read<SecureStorage>(),
@@ -53,10 +82,51 @@ class OpenMusicPlayerApp extends ConsumerWidget {
         theme: AppTheme.lightTheme,
         darkTheme: AppTheme.darkTheme,
         themeMode: _getThemeMode(settings.themeMode),
-        routerConfig: router,
+        routerConfig: widget.router,
         debugShowCheckedModeBanner: false,
       ),
     );
+  }
+
+  void _startShareIntentListener() {
+    widget.sharedIntentReceiver.initialSharedText().then(_handleSharedText);
+    _sharedTextSubscription = widget.sharedIntentReceiver
+        .sharedTextStream()
+        .listen(_handleSharedText, onError: (_) {});
+  }
+
+  void _handleSharedText(String? sharedText) {
+    if (!mounted) return;
+    if (parseSharedUrlCandidate(sharedText) == null) return;
+
+    final normalizedText = sharedText!.trim();
+    if (_isAuthCheckInFlight) {
+      _pendingSharedText = normalizedText;
+      return;
+    }
+
+    _goToShareImport(normalizedText);
+  }
+
+  bool get _isAuthCheckInFlight =>
+      widget.authState.status == AuthStatus.initial ||
+      widget.authState.status == AuthStatus.checking;
+
+  void _handleAuthStateChanged() {
+    if (!mounted || _isAuthCheckInFlight) return;
+    final sharedText = _pendingSharedText;
+    if (sharedText == null) return;
+
+    _pendingSharedText = null;
+    _goToShareImport(sharedText);
+  }
+
+  void _goToShareImport(String sharedText) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final encoded = Uri.encodeComponent(sharedText);
+      widget.router.go('/share?text=$encoded');
+    });
   }
 
   ThemeMode _getThemeMode(AppThemeMode appThemeMode) {

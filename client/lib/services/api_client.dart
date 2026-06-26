@@ -105,6 +105,33 @@ class ApiClient {
     throw ApiException('Failed to add source to queue', response.statusCode);
   }
 
+  Future<DownloadJobResponse> createDownload({
+    required String url,
+    required String sourceType,
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    final response = await _httpClient
+        .post(
+          Uri.parse('$baseUrl/downloads'),
+          headers: await _headers,
+          body: jsonEncode({
+            'url': url,
+            'source_type': sourceType,
+          }),
+        )
+        .timeout(timeout);
+
+    if (response.statusCode == 200 ||
+        response.statusCode == 201 ||
+        response.statusCode == 202) {
+      return DownloadJobResponse.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>,
+      );
+    }
+    throw ApiException(
+        'Failed to add download to library', response.statusCode);
+  }
+
   Future<void> removeFromQueue(int position) async {
     final response = await _httpClient.delete(
       Uri.parse('$baseUrl/queue/$position'),
@@ -250,6 +277,20 @@ class ApiClient {
       return QueueState.fromJson(jsonDecode(response.body));
     }
     throw ApiException('Failed to replace queue', response.statusCode);
+  }
+}
+
+class DownloadJobResponse {
+  final String jobId;
+  final String status;
+
+  const DownloadJobResponse({required this.jobId, required this.status});
+
+  factory DownloadJobResponse.fromJson(Map<String, dynamic> json) {
+    return DownloadJobResponse(
+      jobId: json['job_id'] as String? ?? json['jobId'] as String? ?? '',
+      status: json['status'] as String? ?? 'queued',
+    );
   }
 }
 
