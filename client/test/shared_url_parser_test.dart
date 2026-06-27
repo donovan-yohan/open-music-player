@@ -102,5 +102,16 @@ void main() {
       );
       expect(isYouTubePlaylistUrl('not a url'), isFalse);
     });
+
+    test('rejects malformed playlist query encodings without throwing', () {
+      const malformedPlaylistUrl =
+          'https://www.youtube.com/playlist?list=%E0%A4%A';
+
+      expect(
+        () => isYouTubePlaylistUrl(malformedPlaylistUrl),
+        returnsNormally,
+      );
+      expect(isYouTubePlaylistUrl(malformedPlaylistUrl), isFalse);
+    });
   });
 }
