@@ -148,14 +148,6 @@ class _QueueScreenState extends State<QueueScreen> {
             onSelected: (value) => _handleMenuAction(context, value),
             itemBuilder: (context) => [
               const PopupMenuItem(
-                value: 'shuffle',
-                child: ListTile(
-                  leading: Icon(Icons.shuffle),
-                  title: Text('Shuffle'),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-              const PopupMenuItem(
                 value: 'clear',
                 child: ListTile(
                   leading: Icon(Icons.clear_all),
@@ -368,12 +360,14 @@ class _QueueScreenState extends State<QueueScreen> {
                 onTrimStartChanged: (ms) =>
                     provider.setStartOffsetMs(track, ms),
                 onTrimEndChanged: (ms) => provider.setEndOffsetMs(track, ms),
-                onPlay: track.queueStatus == TrackQueueStatus.playable &&
+                onPlay:
+                    track.queueStatus == TrackQueueStatus.playable &&
                         track.canPlay
                     ? () => _playFromQueue(context, provider, track)
                     : null,
-                onRetry:
-                    track.canRetry ? () => provider.retryTrack(track) : null,
+                onRetry: track.canRetry
+                    ? () => provider.retryTrack(track)
+                    : null,
                 onRemove: () => provider.removeFromQueue(absoluteIndex),
               );
             },
@@ -410,8 +404,10 @@ class _QueueScreenState extends State<QueueScreen> {
     );
     if (relativeIndex < 0) return;
 
-    final relativeNewIndex =
-        (relativeIndex + delta).clamp(0, upNext.length - 1);
+    final relativeNewIndex = (relativeIndex + delta).clamp(
+      0,
+      upNext.length - 1,
+    );
     if (relativeNewIndex == relativeIndex) return;
 
     final (oldIndex, newIndex) = queueListReorderIndices(
@@ -472,11 +468,7 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   void _handleMenuAction(BuildContext context, String action) {
-    final provider = context.read<QueueProvider>();
     switch (action) {
-      case 'shuffle':
-        provider.shuffleQueue();
-        break;
       case 'clear':
         _showClearQueueDialog(context);
         break;

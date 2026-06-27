@@ -10,17 +10,31 @@ import (
 func getTestRedisURL() string {
 	url := os.Getenv("REDIS_URL")
 	if url == "" {
-		url = "redis://localhost:6380"
+		url = "redis://localhost:6380/15"
 	}
 	return url
 }
 
-func TestQueue_EnqueueDequeue(t *testing.T) {
+func newTestQueue(t *testing.T) *Queue {
+	t.Helper()
 	queue, err := NewQueue(getTestRedisURL())
 	if err != nil {
 		t.Skipf("Redis not available: %v", err)
 	}
-	defer queue.Close()
+	ctx := context.Background()
+	if err := queue.client.FlushDB(ctx).Err(); err != nil {
+		_ = queue.Close()
+		t.Fatalf("failed to clear test Redis DB: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = queue.client.FlushDB(context.Background()).Err()
+		_ = queue.Close()
+	})
+	return queue
+}
+
+func TestQueue_EnqueueDequeue(t *testing.T) {
+	queue := newTestQueue(t)
 
 	ctx := context.Background()
 
@@ -52,11 +66,7 @@ func TestQueue_EnqueueDequeue(t *testing.T) {
 }
 
 func TestQueue_GetJob(t *testing.T) {
-	queue, err := NewQueue(getTestRedisURL())
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	ctx := context.Background()
 
@@ -81,11 +91,7 @@ func TestQueue_GetJob(t *testing.T) {
 }
 
 func TestQueue_UpdateStatus(t *testing.T) {
-	queue, err := NewQueue(getTestRedisURL())
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	ctx := context.Background()
 
@@ -122,11 +128,7 @@ func TestQueue_UpdateStatus(t *testing.T) {
 }
 
 func TestQueue_IncrementRetry(t *testing.T) {
-	queue, err := NewQueue(getTestRedisURL())
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	ctx := context.Background()
 
@@ -172,11 +174,7 @@ func TestQueue_IncrementRetry(t *testing.T) {
 }
 
 func TestQueue_QueueLength(t *testing.T) {
-	queue, err := NewQueue(getTestRedisURL())
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer queue.Close()
+	queue := newTestQueue(t)
 
 	ctx := context.Background()
 

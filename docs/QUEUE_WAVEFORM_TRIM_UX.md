@@ -15,20 +15,20 @@ User job: On a phone-width queue screen, a user can decide where the next song s
 Emotional tone: tactile, precise, and low-drama. The row should feel like a tiny audio strip in the queue: obvious enough to use while scanning, but not so feature-heavy that it turns every track into a workstation.
 
 Primary action for this slice: trim the playable portion of an upcoming queue item.
-Secondary actions that must keep working: search/add, vertical reorder, remove, and save/stubbed mix plan.
-Non-goals: real waveform extraction, beat detection, crossfade previews, desktop timeline editing, backend trim persistence, and audio preview scrubbing.
+Secondary actions that must keep working: search/add, vertical reorder, remove, and save persisted queue timing mix plan.
+Non-goals: real waveform extraction, beat detection, crossfade previews, desktop timeline editing, separate per-track backend trim persistence, and audio preview scrubbing.
 
 ## Existing app baseline
 
 Relevant current files:
 
-- `client/lib/screens/queue_screen.dart`: queue surface, search/add, `SliverReorderableList`, dismiss-to-remove, save mix-plan FAB.
-- `client/lib/widgets/queue_item.dart`: queue row, current horizontal `cueOffset` controls, drag handle icon, 48 px artwork.
-- `client/lib/providers/queue_provider.dart`: queue state, search/add/remove/reorder, current `Map<String, double> _cueOffsets`.
-- `client/lib/services/queue_repository.dart`: queue repository interface with cue offset stubs.
-- `client/lib/services/mock_queue_repository.dart`: deterministic in-memory queue/catalog used by tests and staging web.
-- `client/lib/models/track.dart`: track duration is stored in seconds.
-- `client/test/queue_screen_test.dart`: current widget coverage for phone-first queue surface and cue controls.
+- `client/lib/screens/queue_screen.dart`: queue surface, vertical reorder handle, trim/timeline gestures, remove, queue timing save.
+- `client/lib/widgets/queue_item.dart`: reusable queue row shell.
+- `client/lib/widgets/queue_waveform_trim_control.dart`: deterministic waveform/trim interaction surface.
+- `client/lib/providers/queue_provider.dart`: queue state, `TrimRange` maps, waveform peaks, optimistic reorder/remove, and queue timing mix-plan persistence.
+- `client/lib/services/api_client.dart`: backend queue and mix-plan API client.
+- `client/lib/models/track.dart`: track duration is stored in milliseconds.
+- `client/test/queue_screen_test.dart`: widget coverage for phone-first queue surface, reorder, trim, and mix-plan persistence.
 - `client/lib/app/theme.dart`: Spotify-inspired dark Material 3 theme (`#121212`, `#181818`, `#282828`, `#1DB954`).
 
 Design implication: replace the abstract cue chip with an inline trim strip on upcoming rows. Do not introduce a separate waveform editor screen.
@@ -238,35 +238,28 @@ Keep generated peaks cheap:
 - Normalize bar heights to a minimum visible height so quiet tracks do not disappear.
 - Derive deterministic peaks from `track.id.hashCode`, track index, or a fixed seed. Tests should not depend on randomness.
 
-## Likely Flutter files touched
+## Current Flutter files
 
-Small PR target:
+The waveform/trim slice has landed; keep future changes aligned with the current files instead of the old stubbed repository plan:
 
-- `client/lib/models/queue_state.dart` or new `client/lib/models/queue_item_trim.dart`
-  - Add `QueueItemTrim`, `full(durationMs)`, `selectedDurationMs`, `copyWith`, and clamp helpers.
 - `client/lib/models/track.dart`
-  - Optional `durationMs` getter.
+  - Track duration is stored in milliseconds.
+- `client/lib/models/mix_plan.dart`
+  - Durable queue timing clip contract.
 - `client/lib/providers/queue_provider.dart`
-  - Replace or supersede `_cueOffsets` with `_trimsByTrackId`.
-  - Add `trimFor(track)`, `setTrim(trackId, trim)`, `adjustStartOffset`, `adjustEndOffset`, and normalization on queue load/clear/remove.
-- `client/lib/services/queue_repository.dart`
-  - Update stub interface from cue offsets to trim map or add trim-specific methods alongside cue offset during transition.
-- `client/lib/services/mock_queue_repository.dart`
-  - Store trim state and clamp using track duration. Keep deterministic behavior.
+  - Owns `TrimRange`, waveform peaks, timeline offsets, optimistic queue mutations, and queue timing mix-plan persistence.
+- `client/lib/services/api_client.dart`
+  - Calls backend queue reorder/remove and mix-plan APIs.
 - `client/lib/widgets/queue_item.dart`
-  - Move reorder grip to the left edge and reserve it for reorder only.
-  - Replace cue chip/plus-minus controls with inline waveform trim control for upcoming rows.
-- New `client/lib/widgets/queue_waveform_trim_control.dart`
-  - Render bars, crop lines/handles, shaded skipped/cut regions, playable highlight, label, semantics, and gesture handling.
+  - Queue row shell with left-edge reorder grip.
+- `client/lib/widgets/queue_waveform_trim_control.dart`
+  - Renders bars, crop lines/handles, shaded skipped/cut regions, playable highlight, label, semantics, and gesture handling.
 - `client/lib/screens/queue_screen.dart`
-  - Pass trim state/callbacks into `QueueItem`; wrap only the left grip in reorder listener.
-  - Revisit `Dismissible` gesture area so waveform horizontal drag does not delete.
+  - Passes trim state/callbacks into `QueueItem`; wraps only the left grip in reorder handling.
 - `client/test/queue_screen_test.dart`
-  - Update current cue-control expectations to waveform/trim expectations.
-- Optional new `client/test/queue_trim_test.dart`
-  - Pure Dart tests for clamp and label formatting.
+  - Covers phone-first queue surface, trim gestures, reorder, remove, and queue timing save behavior.
 
-Files not in scope:
+Files intentionally not in scope:
 
 - Backend waveform extraction/download workers.
 - Android/Gradle/APK config.

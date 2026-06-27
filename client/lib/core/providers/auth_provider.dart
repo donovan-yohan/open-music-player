@@ -50,7 +50,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
       final email = _prefs.getString(_userEmailKey);
       final userId = _prefs.getString(_userIdKey);
       if (email != null && userId != null) {
-        state = AuthState(user: User(id: userId, email: email));
+        state = AuthState(
+          user: User(id: userId, email: email),
+        );
       } else {
         state = const AuthState();
       }
@@ -80,14 +82,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
 
     state = const AuthState(user: null);
-  }
-
-  // Mock method for demo - in real app this would verify with backend
-  Future<void> setMockUser(String email) async {
-    await _secureStorage.write(key: _tokenKey, value: 'mock_token');
-    await _prefs.setString(_userEmailKey, email);
-    await _prefs.setString(_userIdKey, 'mock_user_id');
-    state = AuthState(user: User(id: 'mock_user_id', email: email));
   }
 }
 

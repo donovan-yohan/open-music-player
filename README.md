@@ -4,29 +4,29 @@ A self-hosted music library management system that allows you to save, organize,
 
 ## Architecture
 
-Open Music Player consists of four main components:
+Open Music Player consists of three main components:
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Chrome/Firefox │     │  Flutter Client │     │   Rust Tools    │
-│   Extension     │     │  (Mobile/Web)   │     │ (DB/MusicBrainz)│
-└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-         │                       │                       │
-         └───────────────────────┼───────────────────────┘
-                                 │
-                                 ▼
-                    ┌────────────────────────┐
-                    │    Go Backend API      │
-                    │    (Port 8080)         │
-                    └────────────┬───────────┘
-                                 │
-         ┌───────────────────────┼───────────────────────┐
-         │                       │                       │
-         ▼                       ▼                       ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   PostgreSQL    │     │     Redis       │     │     MinIO       │
-│   (Port 5434)   │     │   (Port 6380)   │     │  (Port 9000)    │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
+┌─────────────────┐     ┌─────────────────┐
+│  Chrome/Firefox │     │  Flutter Client │
+│   Extension     │     │  (Mobile/Web)   │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         └───────────┬───────────┘
+                     │
+                     ▼
+        ┌────────────────────────┐
+        │    Go Backend API      │
+        │    (Port 8080)         │
+        └────────────┬───────────┘
+                     │
+        ┌────────────┼────────────┐
+        │            │            │
+        ▼            ▼            ▼
+┌────────────┐ ┌────────────┐ ┌────────────┐
+│ PostgreSQL │ │   Redis    │ │   MinIO    │
+│ Port 5434  │ │ Port 6380  │ │ Port 9000  │
+└────────────┘ └────────────┘ └────────────┘
 ```
 
 **Components:**
@@ -34,7 +34,6 @@ Open Music Player consists of four main components:
 - **Backend (Go)**: REST API server handling authentication, track management, playlists, downloads, and signed audio URL issuance
 - **Client (Flutter)**: Cross-platform client for iOS, Android, macOS, Windows, Linux, and web
 - **Extension (TypeScript)**: Browser extension for Chrome/Firefox to save tracks from YouTube and SoundCloud
-- **Rust Tools**: Database migrations, MusicBrainz API client, and utilities
 
 **Infrastructure:**
 
@@ -48,7 +47,6 @@ Open Music Player consists of four main components:
 - [Go 1.25+](https://golang.org/dl/)
 - [Flutter 3.0+](https://docs.flutter.dev/get-started/install) (for client development)
 - [Node.js 20+](https://nodejs.org/) (for extension development)
-- [Rust](https://rustup.rs/) (optional, for database migrations CLI)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) (required on the server for downloading)
 
 ## Local Development Setup
@@ -188,40 +186,16 @@ The backend exposes the following API groups:
 | `GET /api/v1/discovery/search` | Search external source providers |
 | `POST /api/v1/queue/items` | Queue a playable track or downloadable source candidate |
 | `GET /api/v1/queue` | Read the Redis-backed playback queue |
-| `POST /api/v1/downloads` | Queue a direct supported source URL for download |
-| `GET /api/v1/downloads/{job_id}` | Inspect a download job |
+| `POST /api/v1/downloads` | Queue a direct supported source URL for background library import |
+| `GET /api/v1/downloads/{job_id}` | Inspect a background library-import download job |
 | `GET /api/v1/musicbrainz/search/tracks` | Search MusicBrainz for metadata |
 | `GET /api/v1/ws/progress` | WebSocket for real-time progress updates |
 
 ## Database Migrations
 
-Migrations are managed in two locations:
+The Go backend owns schema creation and repair through the idempotent startup path in `backend/internal/db/db.go`. Starting `backend/cmd/server` or the Docker Compose backend brings a fresh local database to the current dogfood schema without a separate Rust/sqlx or SQL-file migration authority.
 
-**Backend migrations (Go/SQL):**
-```bash
-cd backend
-
-# Run migrations
-make migrate-up
-
-# Rollback
-make migrate-down
-
-# Create new migration
-make migrate-create
-# Enter migration name when prompted
-```
-
-**Rust tools (migrations and MusicBrainz client):**
-```bash
-# Run database migrations via Rust
-cargo run
-
-# The Rust crate also provides:
-# - Database connection pool with health checks
-# - MusicBrainz API client with rate limiting
-# - Data models for tracks, users, playlists
-```
+When changing schema, update `backend/internal/db/db.go` and the repository tests that exercise the affected tables. Do not add a second migration path unless the project deliberately reintroduces one and makes it the only authority.
 
 ## Project Structure
 
@@ -244,7 +218,6 @@ openmusicplayer/
 │   │   ├── storage/        # MinIO/S3 storage and signed reads
 │   │   ├── validators/     # Input validation
 │   │   └── websocket/      # WebSocket handlers
-│   └── Makefile            # Migration commands
 ├── client/                  # Flutter cross-platform client
 │   ├── lib/                # Dart source code
 │   └── pubspec.yaml        # Flutter dependencies
@@ -252,9 +225,8 @@ openmusicplayer/
 │   ├── src/                # TypeScript source
 │   ├── manifest.json       # Extension manifest (MV3)
 │   └── webpack.config.js   # Build configuration
-├── migrations/             # SQL migrations (used by Rust tooling)
-├── src/                    # Rust tools (DB client, MusicBrainz API)
-├── docker-compose.yml      # Infrastructure services
+├── docker-compose.yml      # Full local infrastructure stack
+├── docker-compose.local-low-memory.yml # Low-memory dogfood stack and e2e smoke
 ├── .env.example            # Environment template
 └── README.md               # This file
 ```

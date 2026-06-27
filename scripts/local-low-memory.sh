@@ -45,10 +45,10 @@ wait_for_backend() {
 cmd="${1:-}"
 case "$cmd" in
   start)
-    REDIS_ENABLED=false WORKER_COUNT=0 "${COMPOSE[@]}" up -d postgres minio minio-init backend
+    REDIS_ENABLED=false WORKER_COUNT=0 "${COMPOSE[@]}" up -d --build postgres minio minio-init backend
     ;;
   start-downloads)
-    REDIS_ENABLED=true WORKER_COUNT="${WORKER_COUNT:-1}" "${COMPOSE[@]}" --profile downloads up -d postgres minio minio-init redis backend
+    REDIS_ENABLED=true WORKER_COUNT="${WORKER_COUNT:-1}" "${COMPOSE[@]}" --profile downloads up -d --build postgres minio minio-init redis backend
     ;;
   stop)
     "${COMPOSE[@]}" --profile downloads --profile smoke down
@@ -93,7 +93,7 @@ case "$cmd" in
     exit "$smoke_status"
     ;;
   e2e-smoke)
-    REDIS_ENABLED=true WORKER_COUNT="${WORKER_COUNT:-1}" "${COMPOSE[@]}" --profile downloads up -d postgres minio minio-init redis backend
+    REDIS_ENABLED=true WORKER_COUNT="${WORKER_COUNT:-1}" "${COMPOSE[@]}" --profile downloads up -d --build postgres minio minio-init redis backend
     wait_for_backend
     log_path="${OMP_E2E_SMOKE_LOG:-/tmp/omp-lowmem-e2e-smoke-$(date +%Y%m%d-%H%M%S).log}"
     mkdir -p "$(dirname "$log_path")"
