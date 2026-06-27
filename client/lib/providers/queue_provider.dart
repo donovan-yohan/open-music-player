@@ -155,6 +155,8 @@ class QueueProvider extends ChangeNotifier {
   }
 
   Future<void> removeFromQueue(int position) async {
+    if (position < 0 || position >= _queue.tracks.length) return;
+
     final previousQueue = _queue;
     final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
     final previousTimelineStarts =
@@ -187,7 +189,9 @@ class QueueProvider extends ChangeNotifier {
     _notifyListeners();
 
     try {
-      await _apiClient.removeFromQueue(position);
+      _queue = await _apiClient.removeQueueItem(removedTrack.queueItemId);
+      _pruneTimingState();
+      _notifyListeners();
     } catch (e) {
       _queue = previousQueue;
       _trimRanges = previousTrimRanges;
@@ -214,6 +218,7 @@ class QueueProvider extends ChangeNotifier {
 
   Future<void> reorderQueue(int oldIndex, int newIndex) async {
     if (oldIndex == newIndex) return;
+    if (oldIndex < 0 || oldIndex >= _queue.tracks.length) return;
 
     final previousQueue = _queue;
 
@@ -242,7 +247,12 @@ class QueueProvider extends ChangeNotifier {
     _notifyListeners();
 
     try {
-      await _apiClient.reorderQueue(fromIndex: oldIndex, toIndex: newIndex);
+      _queue = await _apiClient.reorderQueue(
+        queueItemId: track.queueItemId,
+        toPosition: newIndex,
+      );
+      _pruneTimingState();
+      _notifyListeners();
     } catch (e) {
       _queue = previousQueue;
       _error = e.toString();

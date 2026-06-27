@@ -218,21 +218,17 @@ func (r *Router) setupRoutes() {
 	// Queue routes (auth required, Redis-backed)
 	if r.queueHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/queue", r.withAuth(r.queueHandlers.GetQueue))
-		r.mux.HandleFunc("POST /api/v1/queue", r.withAuth(r.queueHandlers.AddToQueue))
 		r.mux.HandleFunc("POST /api/v1/queue/items", r.withAuth(r.queueHandlers.AddQueueItem))
 		r.mux.HandleFunc("POST /api/v1/queue/items/{queueItemId}/retry", r.withAuth(r.queueHandlers.RetryQueueItem))
 		r.mux.HandleFunc("DELETE /api/v1/queue/items/{queueItemId}", r.withAuth(r.queueHandlers.RemoveQueueItem))
-		r.mux.HandleFunc("DELETE /api/v1/queue/{position}", r.withAuth(r.queueHandlers.RemoveFromQueue))
 		r.mux.HandleFunc("PUT /api/v1/queue/reorder", r.withAuth(r.queueHandlers.ReorderQueue))
 		r.mux.HandleFunc("DELETE /api/v1/queue", r.withAuth(r.queueHandlers.ClearQueue))
 	} else {
 		queueUnavailable := r.withAuth(unavailableHandler("Redis queue support is disabled for this local mode"))
 		r.mux.HandleFunc("GET /api/v1/queue", queueUnavailable)
-		r.mux.HandleFunc("POST /api/v1/queue", queueUnavailable)
 		r.mux.HandleFunc("POST /api/v1/queue/items", queueUnavailable)
 		r.mux.HandleFunc("POST /api/v1/queue/items/{queueItemId}/retry", queueUnavailable)
 		r.mux.HandleFunc("DELETE /api/v1/queue/items/{queueItemId}", queueUnavailable)
-		r.mux.HandleFunc("DELETE /api/v1/queue/{position}", queueUnavailable)
 		r.mux.HandleFunc("PUT /api/v1/queue/reorder", queueUnavailable)
 		r.mux.HandleFunc("DELETE /api/v1/queue", queueUnavailable)
 	}

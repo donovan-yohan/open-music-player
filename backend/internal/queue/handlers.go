@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -42,54 +41,38 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
-// QueueResponse represents the queue state response.
+// QueueResponse represents the canonical camelCase queue state response.
 type QueueResponse struct {
-	Items                []QueueItemResponse `json:"items"`
-	CurrentPosition      int                 `json:"current_position"`
-	CurrentPositionCamel int                 `json:"currentPosition"`
-	UpdatedAt            time.Time           `json:"updated_at"`
-	UpdatedAtCamel       time.Time           `json:"updatedAt"`
+	Items           []QueueItemResponse `json:"items"`
+	CurrentPosition int                 `json:"currentPosition"`
+	UpdatedAt       time.Time           `json:"updatedAt"`
 }
 
-// QueueItemResponse is the API projection of a queue item. It keeps the legacy
-// snake_case fields while adding the camelCase mobile contract from #42.
+// QueueItemResponse is the canonical camelCase API projection of a queue item.
 type QueueItemResponse struct {
-	ID                    string           `json:"id"`
-	QueueItemID           string           `json:"queueItemId"`
-	Position              int              `json:"position"`
-	Kind                  string           `json:"kind"`
-	LegacyTrackID         *int64           `json:"track_id,omitempty"`
-	TrackID               *int64           `json:"trackId"`
-	LegacyPlaybackState   string           `json:"playback_state"`
-	PlaybackState         string           `json:"playbackState"`
-	LegacyDownloadJobID   string           `json:"download_job_id,omitempty"`
-	DownloadJobID         *string          `json:"downloadJobId"`
-	LegacySourceCandidate *SourceCandidate `json:"source_candidate,omitempty"`
-	SourceCandidate       *SourceCandidate `json:"sourceCandidate"`
-	Title                 string           `json:"title,omitempty"`
-	Artist                string           `json:"artist,omitempty"`
-	Album                 string           `json:"album,omitempty"`
-	Uploader              string           `json:"uploader,omitempty"`
-	DurationMs            int              `json:"durationMs,omitempty"`
-	ThumbnailURL          string           `json:"thumbnailUrl,omitempty"`
-	Progress              int              `json:"progress"`
-	Error                 *string          `json:"error"`
-	AnalysisStatus        string           `json:"analysisStatus,omitempty"`
-	AnalysisSummary       json.RawMessage  `json:"analysisSummary,omitempty"`
-	CanPlay               bool             `json:"canPlay"`
-	CanRetry              bool             `json:"canRetry"`
-	CanRemove             bool             `json:"canRemove"`
-	LegacyAddedAt         time.Time        `json:"added_at"`
-	AddedAt               time.Time        `json:"addedAt"`
-	LegacyUpdatedAt       time.Time        `json:"updated_at"`
-	UpdatedAt             time.Time        `json:"updatedAt"`
-}
-
-// AddToQueueRequest represents a request to add to queue
-type AddToQueueRequest struct {
-	Type     string `json:"type"`     // "track" or "playlist"
-	ID       int64  `json:"id"`       // track or playlist ID
-	Position string `json:"position"` // "next", "last", or specific index
+	ID              string           `json:"id"`
+	QueueItemID     string           `json:"queueItemId"`
+	Position        int              `json:"position"`
+	Kind            string           `json:"kind"`
+	TrackID         *int64           `json:"trackId"`
+	PlaybackState   string           `json:"playbackState"`
+	DownloadJobID   *string          `json:"downloadJobId"`
+	SourceCandidate *SourceCandidate `json:"sourceCandidate"`
+	Title           string           `json:"title,omitempty"`
+	Artist          string           `json:"artist,omitempty"`
+	Album           string           `json:"album,omitempty"`
+	Uploader        string           `json:"uploader,omitempty"`
+	DurationMs      int              `json:"durationMs,omitempty"`
+	ThumbnailURL    string           `json:"thumbnailUrl,omitempty"`
+	Progress        int              `json:"progress"`
+	Error           *string          `json:"error"`
+	AnalysisStatus  string           `json:"analysisStatus,omitempty"`
+	AnalysisSummary json.RawMessage  `json:"analysisSummary,omitempty"`
+	CanPlay         bool             `json:"canPlay"`
+	CanRetry        bool             `json:"canRetry"`
+	CanRemove       bool             `json:"canRemove"`
+	AddedAt         time.Time        `json:"addedAt"`
+	UpdatedAt       time.Time        `json:"updatedAt"`
 }
 
 // AddQueueItemRequest is the mobile-facing queue insertion contract. It accepts
@@ -101,12 +84,10 @@ type AddQueueItemRequest struct {
 	MBRecordingID   *string          `json:"mbRecordingId,omitempty"`
 }
 
-// ReorderQueueRequest represents a request to reorder the queue
+// ReorderQueueRequest represents the item-id based queue reorder contract.
 type ReorderQueueRequest struct {
-	FromPosition int    `json:"from_position"`
-	ToPosition   int    `json:"to_position"`
-	QueueItemID  string `json:"queueItemId"`
-	ToPositionV2 int    `json:"toPosition"`
+	QueueItemID string `json:"queueItemId"`
+	ToPosition  int    `json:"toPosition"`
 }
 
 // GetQueue handles GET /api/v1/queue
@@ -125,52 +106,6 @@ func (h *Handlers) GetQueue(w http.ResponseWriter, r *http.Request) {
 	jobs := h.resolveDownloadBackedItems(r, userCtx.UserID.String(), state)
 
 	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, jobs))
-}
-
-// AddToQueue handles POST /api/v1/queue
-func (h *Handlers) AddToQueue(w http.ResponseWriter, r *http.Request) {
-	userCtx := auth.GetUserFromContext(r.Context())
-	if userCtx == nil {
-		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "user not authenticated")
-		return
-	}
-
-	var req AddToQueueRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
-		return
-	}
-
-	if req.ID <= 0 {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "id is required")
-		return
-	}
-
-	var state *QueueState
-	var err error
-
-	switch req.Type {
-	case "track", "":
-		state, err = h.service.AddToQueue(r.Context(), userCtx.UserID.String(), req.ID, req.Position)
-	case "playlist":
-		// For playlist, we would need to fetch track IDs from the playlist
-		// For now, treat it as a single track (playlist expansion can be added later)
-		state, err = h.service.AddToQueue(r.Context(), userCtx.UserID.String(), req.ID, req.Position)
-	default:
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "type must be 'track' or 'playlist'")
-		return
-	}
-
-	if err != nil {
-		if err == ErrInvalidPosition {
-			writeError(w, http.StatusBadRequest, "INVALID_POSITION", "invalid position")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to add to queue")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, nil))
 }
 
 // AddQueueItem handles POST /api/v1/queue/items.
@@ -267,34 +202,6 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// RemoveFromQueue handles DELETE /api/v1/queue/{position}
-func (h *Handlers) RemoveFromQueue(w http.ResponseWriter, r *http.Request) {
-	userCtx := auth.GetUserFromContext(r.Context())
-	if userCtx == nil {
-		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "user not authenticated")
-		return
-	}
-
-	positionStr := r.PathValue("position")
-	position, err := strconv.Atoi(positionStr)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_POSITION", "position must be a number")
-		return
-	}
-
-	state, err := h.service.RemoveFromQueue(r.Context(), userCtx.UserID.String(), position)
-	if err != nil {
-		if err == ErrInvalidPosition {
-			writeError(w, http.StatusBadRequest, "INVALID_POSITION", "invalid position")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to remove from queue")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, h.buildQueueResponse(r.Context(), state, nil))
-}
-
 // RemoveQueueItem handles DELETE /api/v1/queue/items/{queueItemId}
 func (h *Handlers) RemoveQueueItem(w http.ResponseWriter, r *http.Request) {
 	userCtx := auth.GetUserFromContext(r.Context())
@@ -385,13 +292,12 @@ func (h *Handlers) ReorderQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var state *QueueState
-	var err error
-	if req.QueueItemID != "" {
-		state, err = h.service.ReorderQueueItem(r.Context(), userCtx.UserID.String(), req.QueueItemID, req.ToPositionV2)
-	} else {
-		state, err = h.service.ReorderQueue(r.Context(), userCtx.UserID.String(), req.FromPosition, req.ToPosition)
+	if req.QueueItemID == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "queueItemId is required")
+		return
 	}
+
+	state, err := h.service.ReorderQueueItem(r.Context(), userCtx.UserID.String(), req.QueueItemID, req.ToPosition)
 	if err != nil {
 		if err == ErrInvalidPosition {
 			writeError(w, http.StatusBadRequest, "INVALID_POSITION", "invalid position")
@@ -514,11 +420,9 @@ func buildQueueResponseWithAnalysis(state *QueueState, jobs map[string]*download
 		items[i] = buildQueueItemResponse(item, state.UpdatedAt, jobs[item.DownloadJobID], analysis)
 	}
 	return QueueResponse{
-		Items:                items,
-		CurrentPosition:      state.CurrentPosition,
-		CurrentPositionCamel: state.CurrentPosition,
-		UpdatedAt:            state.UpdatedAt,
-		UpdatedAtCamel:       state.UpdatedAt,
+		Items:           items,
+		CurrentPosition: state.CurrentPosition,
+		UpdatedAt:       state.UpdatedAt,
 	}
 }
 
@@ -574,27 +478,21 @@ func buildQueueItemResponse(item QueueItem, updatedAt time.Time, job *download.D
 	}
 
 	response := QueueItemResponse{
-		ID:                    item.ID,
-		QueueItemID:           item.ID,
-		Position:              item.Position,
-		Kind:                  kind,
-		LegacyTrackID:         trackID,
-		TrackID:               trackID,
-		LegacyPlaybackState:   state,
-		PlaybackState:         state,
-		LegacyDownloadJobID:   item.DownloadJobID,
-		DownloadJobID:         downloadJobID,
-		LegacySourceCandidate: item.Source,
-		SourceCandidate:       item.Source,
-		Progress:              progress,
-		Error:                 errText,
-		CanPlay:               state == "playable" && trackID != nil,
-		CanRetry:              state == "failed" && item.DownloadJobID != "",
-		CanRemove:             true,
-		LegacyAddedAt:         item.AddedAt,
-		AddedAt:               item.AddedAt,
-		LegacyUpdatedAt:       updatedAt,
-		UpdatedAt:             updatedAt,
+		ID:              item.ID,
+		QueueItemID:     item.ID,
+		Position:        item.Position,
+		Kind:            kind,
+		TrackID:         trackID,
+		PlaybackState:   state,
+		DownloadJobID:   downloadJobID,
+		SourceCandidate: item.Source,
+		Progress:        progress,
+		Error:           errText,
+		CanPlay:         state == "playable" && trackID != nil,
+		CanRetry:        state == "failed" && item.DownloadJobID != "",
+		CanRemove:       true,
+		AddedAt:         item.AddedAt,
+		UpdatedAt:       updatedAt,
 	}
 	if item.Source != nil {
 		response.Title = item.Source.Title

@@ -5,22 +5,24 @@ import 'package:open_music_player/models/track_analysis.dart';
 
 void main() {
   test(
-    'QueueState parses API queue tracks with numeric ids and snake_case fields',
+    'QueueState parses canonical queue items with camelCase fields',
     () {
       final state = QueueState.fromJson({
-        'tracks': [
+        'items': [
           {
-            'id': 42,
+            'id': 'q_42',
+            'queueItemId': 'q_42',
+            'trackId': 42,
             'title': 'Seed Track',
             'artist': 'Seed Artist',
             'album': 'QA Queue',
-            'duration_ms': 185000,
-            'cover_url': 'https://example.test/cover.png',
-            'added_at': '2026-06-03T00:00:00Z',
+            'durationMs': 185000,
+            'coverUrl': 'https://example.test/cover.png',
+            'addedAt': '2026-06-03T00:00:00Z',
           },
         ],
-        'current_position': 0,
-        'repeat_mode': 'all',
+        'currentPosition': 0,
+        'repeatMode': 'all',
         'shuffled': true,
       });
 
@@ -28,7 +30,8 @@ void main() {
       expect(state.repeatMode, RepeatMode.all);
       expect(state.shuffled, isTrue);
       expect(state.tracks, hasLength(1));
-      expect(state.tracks.single.id, '42');
+      expect(state.tracks.single.id, 'q_42');
+      expect(state.tracks.single.playbackTrackId, '42');
       expect(state.tracks.single.title, 'Seed Track');
       expect(state.tracks.single.duration, 185);
       expect(state.tracks.single.coverUrl, 'https://example.test/cover.png');
@@ -45,7 +48,7 @@ void main() {
             'id': 2,
             'title': 'Downloading',
             'duration': 1,
-            'download_status': 'downloading',
+            'downloadStatus': 'downloading',
           },
           {
             'id': 'q_failed',
@@ -53,7 +56,7 @@ void main() {
             'trackId': 3,
             'title': 'Failed',
             'duration': 1,
-            'playbackStatus': 'failed',
+            'playbackState': 'failed',
             'canRetry': true,
           },
           {
@@ -136,24 +139,6 @@ void main() {
     expect(restored.canPlay, isFalse);
   });
 
-  test('Track parses snake_case top-level source candidate fields', () {
-    final track = Track.fromJson({
-      'queue_item_id': 'queue-item-2',
-      'source_candidate_id': 'sc:ambient-2',
-      'source_url': 'https://soundcloud.example/ambient-2',
-      'title': 'ambient drift',
-      'duration': 240,
-      'added_at': '2026-06-04T00:00:00.000Z',
-      'playback_state': 'queued',
-    });
-
-    expect(track.id, 'queue-item-2');
-    expect(track.sourceCandidateId, 'sc:ambient-2');
-    expect(track.sourceUrl, 'https://soundcloud.example/ambient-2');
-    expect(track.queueStatus, TrackQueueStatus.pending);
-    expect(track.canPlay, isFalse);
-  });
-
   test('QueueState parses real backend playbackState contract fields', () {
     final state = QueueState.fromJson({
       'items': [
@@ -171,7 +156,7 @@ void main() {
           'trackId': 13,
           'title': 'Failed Retry Track',
           'duration': 195,
-          'playback_state': 'failed',
+          'playbackState': 'failed',
         },
         {
           'id': 'q_queued',
@@ -186,7 +171,7 @@ void main() {
           'trackId': 14,
           'title': 'Playable Track',
           'duration': 200,
-          'playback_state': 'playable',
+          'playbackState': 'playable',
         },
       ],
     });

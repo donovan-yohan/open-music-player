@@ -864,91 +864,112 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-    put:
-      tags:
-        - Queue
-      summary: Replace the entire queue
-      operationId: replaceQueue
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ReplaceQueueRequest'
-      responses:
-        '200':
-          description: Queue replaced
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/QueueResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
     delete:
       tags:
         - Queue
       summary: Clear the queue
       operationId: clearQueue
       responses:
-        '204':
+        '200':
           description: Queue cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /queue/tracks:
+  /queue/items:
     post:
       tags:
         - Queue
-      summary: Add tracks to queue
-      operationId: addTracksToQueue
+      summary: Add a playable track or source candidate to the queue
+      operationId: addQueueItem
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AddToQueueRequest'
+              $ref: '#/components/schemas/AddQueueItemRequest'
       responses:
         '200':
-          description: Tracks added to queue
+          description: Playable track added to queue
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/QueueResponse'
+        '202':
+          description: Source candidate queued for download
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - queue
+                  - downloadJobId
+                properties:
+                  queue:
+                    $ref: '#/components/schemas/QueueResponse'
+                  downloadJobId:
+                    type: string
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /queue/tracks/{position}:
+  /queue/items/{queueItemId}:
     delete:
       tags:
         - Queue
-      summary: Remove track at position from queue
-      operationId: removeFromQueue
+      summary: Remove a queue item by durable queue item ID
+      operationId: removeQueueItem
       parameters:
-        - name: position
+        - name: queueItemId
           in: path
           required: true
-          description: Position in queue (0-indexed)
           schema:
-            type: integer
-            minimum: 0
+            type: string
       responses:
-        '204':
-          description: Track removed from queue
+        '200':
+          description: Queue item removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /queue/items/{queueItemId}/retry:
+    post:
+      tags:
+        - Queue
+      summary: Retry a failed download-backed queue item
+      operationId: retryQueueItem
+      parameters:
+        - name: queueItemId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Queue item retry started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
 
   /queue/reorder:
-    post:
+    put:
       tags:
         - Queue
-      summary: Reorder tracks in queue
+      summary: Reorder a queue item by durable item ID
       operationId: reorderQueue
       requestBody:
         required: true
@@ -965,22 +986,6 @@ paths:
                 $ref: '#/components/schemas/QueueResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /queue/shuffle:
-    post:
-      tags:
-        - Queue
-      summary: Shuffle the queue
-      operationId: shuffleQueue
-      responses:
-        '200':
-          description: Queue shuffled
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/QueueResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -2011,66 +2016,153 @@ components:
     QueueResponse:
       type: object
       required:
-        - tracks
-        - currentIndex
+        - items
+        - currentPosition
+        - updatedAt
       properties:
-        tracks:
+        items:
           type: array
           items:
-            $ref: '#/components/schemas/Track'
-        currentIndex:
+            $ref: '#/components/schemas/QueueItem'
+        currentPosition:
           type: integer
-          description: Index of currently playing track (-1 if queue is empty)
-        repeatMode:
+          description: Index of the current queue item.
+        updatedAt:
           type: string
-          enum: [off, one, all]
-          default: off
-        shuffled:
-          type: boolean
-          default: false
+          format: date-time
 
-    ReplaceQueueRequest:
+    QueueItem:
       type: object
       required:
-        - trackIds
+        - id
+        - queueItemId
+        - position
+        - kind
+        - playbackState
+        - progress
+        - canPlay
+        - canRetry
+        - canRemove
+        - addedAt
+        - updatedAt
       properties:
-        trackIds:
-          type: array
-          items:
-            type: string
-            format: uuid
-        startIndex:
+        id:
+          type: string
+        queueItemId:
+          type: string
+        position:
           type: integer
-          description: Index to start playback from
-          default: 0
+        kind:
+          type: string
+          enum: [track, source]
+        trackId:
+          type: integer
+          format: int64
+          nullable: true
+        playbackState:
+          type: string
+          enum: [queued, downloading, processing, uploading, playable, failed]
+        downloadJobId:
+          type: string
+          nullable: true
+        sourceCandidate:
+          $ref: '#/components/schemas/QueueSourceCandidate'
+          nullable: true
+        title:
+          type: string
+        artist:
+          type: string
+        album:
+          type: string
+        uploader:
+          type: string
+        durationMs:
+          type: integer
+        thumbnailUrl:
+          type: string
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        error:
+          type: string
+          nullable: true
+        analysisStatus:
+          type: string
+        analysisSummary:
+          type: object
+          additionalProperties: true
+        canPlay:
+          type: boolean
+        canRetry:
+          type: boolean
+        canRemove:
+          type: boolean
+        addedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
 
-    AddToQueueRequest:
+    QueueSourceCandidate:
       type: object
       required:
-        - trackIds
+        - provider
+        - sourceUrl
+        - title
       properties:
-        trackIds:
-          type: array
-          items:
-            type: string
-            format: uuid
-          minItems: 1
+        candidateId:
+          type: string
+        provider:
+          type: string
+        sourceUrl:
+          type: string
+          format: uri
+        title:
+          type: string
+        artist:
+          type: string
+        album:
+          type: string
+        uploader:
+          type: string
+        durationMs:
+          type: integer
+        thumbnailUrl:
+          type: string
+          format: uri
+
+    AddQueueItemRequest:
+      type: object
+      properties:
         position:
           type: string
-          enum: [next, last]
           default: last
-          description: Add tracks after current or at end of queue
+          description: Add item after current, at end, or at a numeric queue index.
+        trackId:
+          type: integer
+          format: int64
+          description: Existing playable track ID to enqueue.
+        sourceCandidate:
+          $ref: '#/components/schemas/QueueSourceCandidate'
+        mbRecordingId:
+          type: string
+          description: Optional MusicBrainz recording ID attached to a source-candidate download.
+      oneOf:
+        - required: [trackId]
+        - required: [sourceCandidate]
 
     ReorderQueueRequest:
       type: object
       required:
-        - fromIndex
-        - toIndex
+        - queueItemId
+        - toPosition
       properties:
-        fromIndex:
-          type: integer
-          minimum: 0
-        toIndex:
+        queueItemId:
+          type: string
+          minLength: 1
+        toPosition:
           type: integer
           minimum: 0
 

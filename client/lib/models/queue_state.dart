@@ -25,25 +25,13 @@ class QueueState {
   factory QueueState.fromJson(Map<String, dynamic> json) {
     return QueueState(
       tracks: _parseTracks(json),
-      currentIndex: json['currentIndex'] as int? ??
-          json['current_position'] as int? ??
-          json['currentPosition'] as int? ??
-          0,
-      repeatMode: _parseRepeatMode(
-        json['repeatMode'] as String? ?? json['repeat_mode'] as String?,
-      ),
+      currentIndex: json['currentPosition'] as int? ?? 0,
+      repeatMode: _parseRepeatMode(json['repeatMode'] as String?),
       shuffled: json['shuffled'] as bool? ?? false,
     );
   }
 
   static List<Track> _parseTracks(Map<String, dynamic> json) {
-    final tracks = json['tracks'];
-    if (tracks is List) {
-      return tracks
-          .map((t) => Track.fromJson(t as Map<String, dynamic>))
-          .toList();
-    }
-
     final items = json['items'];
     if (items is List) {
       return items

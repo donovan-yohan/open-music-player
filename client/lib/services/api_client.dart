@@ -64,11 +64,10 @@ class ApiClient {
       }
 
       final response = await _httpClient.post(
-        Uri.parse('$baseUrl/queue'),
+        Uri.parse('$baseUrl/queue/items'),
         headers: await _headers,
         body: jsonEncode({
-          'type': 'track',
-          'id': trackId,
+          'trackId': trackId,
           'position': i == 0 ? position : 'last',
         }),
       );
@@ -132,15 +131,20 @@ class ApiClient {
         'Failed to add download to library', response.statusCode);
   }
 
-  Future<void> removeFromQueue(int position) async {
+  Future<QueueState> removeQueueItem(String queueItemId) async {
+    if (queueItemId.isEmpty) {
+      throw ApiException('Queue item ID is required', 400);
+    }
+
     final response = await _httpClient.delete(
-      Uri.parse('$baseUrl/queue/$position'),
+      Uri.parse('$baseUrl/queue/items/${Uri.encodeComponent(queueItemId)}'),
       headers: await _headers,
     );
 
-    if (response.statusCode != 200 && response.statusCode != 204) {
-      throw ApiException('Failed to remove from queue', response.statusCode);
+    if (response.statusCode == 200) {
+      return QueueState.fromJson(jsonDecode(response.body));
     }
+    throw ApiException('Failed to remove from queue', response.statusCode);
   }
 
   Future<QueueState> retryQueueItem(String queueItemId) async {
@@ -162,13 +166,17 @@ class ApiClient {
   }
 
   Future<QueueState> reorderQueue({
-    required int fromIndex,
-    required int toIndex,
+    required String queueItemId,
+    required int toPosition,
   }) async {
+    if (queueItemId.isEmpty) {
+      throw ApiException('Queue item ID is required', 400);
+    }
+
     final response = await _httpClient.put(
       Uri.parse('$baseUrl/queue/reorder'),
       headers: await _headers,
-      body: jsonEncode({'from_position': fromIndex, 'to_position': toIndex}),
+      body: jsonEncode({'queueItemId': queueItemId, 'toPosition': toPosition}),
     );
 
     if (response.statusCode == 200) {

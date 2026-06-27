@@ -47,18 +47,16 @@ class Track {
         canRetry = canRetry ?? queueStatus == TrackQueueStatus.failed;
 
   factory Track.fromJson(Map<String, dynamic> json) {
-    final sourceCandidate =
-        _readMap(json['sourceCandidate']) ?? _readMap(json['source_candidate']);
-    final queueItemId =
-        json['queueItemId']?.toString() ?? json['queue_item_id']?.toString();
+    final sourceCandidate = _readMap(json['sourceCandidate']);
+    final queueItemId = json['queueItemId']?.toString();
     final playbackTrackId =
         json['trackId']?.toString() ?? json['track_id']?.toString();
-    final sourceCandidateId = _readString(
-            sourceCandidate, const ['candidateId', 'candidate_id']) ??
-        _readString(json, const ['sourceCandidateId', 'source_candidate_id']);
+    final sourceCandidateId =
+        _readString(sourceCandidate, const ['candidateId', 'candidate_id']) ??
+            _readString(json, const ['sourceCandidateId']);
     final sourceUrl =
         _readString(sourceCandidate, const ['sourceUrl', 'source_url']) ??
-            _readString(json, const ['sourceUrl', 'source_url']);
+            _readString(json, const ['sourceUrl']);
     final id = json['id']?.toString() ??
         queueItemId ??
         playbackTrackId ??
@@ -66,8 +64,7 @@ class Track {
         sourceUrl ??
         '';
     final status = _parseQueueStatus(json);
-    final canPlayOverride =
-        json['canPlay'] as bool? ?? json['can_play'] as bool?;
+    final canPlayOverride = json['canPlay'] as bool?;
     final analysis = _parseAnalysis(json);
 
     return Track(
@@ -90,9 +87,7 @@ class Track {
       addedAt: _parseDate(json['addedAt'] ?? json['added_at']),
       queueStatus: status,
       canPlay: status == TrackQueueStatus.playable && (canPlayOverride ?? true),
-      canRetry: json['canRetry'] as bool? ??
-          json['can_retry'] as bool? ??
-          status == TrackQueueStatus.failed,
+      canRetry: json['canRetry'] as bool? ?? status == TrackQueueStatus.failed,
       analysis: analysis,
     );
   }
@@ -160,13 +155,8 @@ class Track {
   }
 
   static TrackQueueStatus _parseQueueStatus(Map<String, dynamic> json) {
-    final raw = json['status'] ??
-        json['download_status'] ??
-        json['downloadStatus'] ??
-        json['playback_state'] ??
-        json['playbackState'] ??
-        json['playback_status'] ??
-        json['playbackStatus'];
+    final raw =
+        json['status'] ?? json['downloadStatus'] ?? json['playbackState'];
     final status = raw
         ?.toString()
         .trim()

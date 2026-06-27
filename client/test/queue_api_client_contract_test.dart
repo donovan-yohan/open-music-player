@@ -12,7 +12,7 @@ void main() {
       '{"items":[],"currentPosition":0,"updatedAt":"2026-06-04T00:00:00Z"}';
 
   test(
-    'removeFromQueue uses the backend DELETE /queue/{position} contract',
+    'removeQueueItem uses the backend DELETE /queue/items/{queueItemId} contract',
     () async {
       http.Request? seen;
       final client = ApiClient(
@@ -23,15 +23,15 @@ void main() {
         }),
       );
 
-      await client.removeFromQueue(2);
+      await client.removeQueueItem('queue item/2');
 
       expect(seen!.method, 'DELETE');
-      expect(seen!.url.path, '/api/v1/queue/2');
+      expect(seen!.url.path, '/api/v1/queue/items/queue%20item%2F2');
     },
   );
 
   test(
-    'reorderQueue uses PUT /queue/reorder with backend field names',
+    'reorderQueue uses item-id based camelCase backend field names',
     () async {
       http.Request? seen;
       final client = ApiClient(
@@ -42,11 +42,12 @@ void main() {
         }),
       );
 
-      await client.reorderQueue(fromIndex: 3, toIndex: 1);
+      await client.reorderQueue(queueItemId: 'queue-3', toPosition: 1);
 
       expect(seen!.method, 'PUT');
       expect(seen!.url.path, '/api/v1/queue/reorder');
-      expect(jsonDecode(seen!.body), {'from_position': 3, 'to_position': 1});
+      expect(
+          jsonDecode(seen!.body), {'queueItemId': 'queue-3', 'toPosition': 1});
     },
   );
 
@@ -63,7 +64,7 @@ void main() {
     await client.clearQueue();
   });
 
-  test('addToQueue posts playable track IDs to POST /queue', () async {
+  test('addToQueue posts playable track IDs to POST /queue/items', () async {
     http.Request? seen;
     final client = ApiClient(
       baseUrl: 'http://api.test/api/v1',
@@ -76,10 +77,9 @@ void main() {
     await client.addToQueue(trackIds: ['42'], position: 'next');
 
     expect(seen!.method, 'POST');
-    expect(seen!.url.path, '/api/v1/queue');
+    expect(seen!.url.path, '/api/v1/queue/items');
     expect(jsonDecode(seen!.body), {
-      'type': 'track',
-      'id': 42,
+      'trackId': 42,
       'position': 'next',
     });
   });

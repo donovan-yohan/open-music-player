@@ -74,12 +74,6 @@ type AddRequest struct {
 	Position string `json:"position"` // "next", "last", or specific index
 }
 
-// ReorderRequest represents a request to reorder the queue
-type ReorderRequest struct {
-	FromPosition int `json:"from_position"`
-	ToPosition   int `json:"to_position"`
-}
-
 // Service manages playback queues using Redis
 type Service struct {
 	client *redis.Client
