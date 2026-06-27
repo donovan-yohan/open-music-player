@@ -24,6 +24,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/metrics"
 	"github.com/openmusicplayer/backend/internal/middleware"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
+	"github.com/openmusicplayer/backend/internal/playlistimport"
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
@@ -88,6 +89,8 @@ func main() {
 	libraryRepo := db.NewLibraryRepository(database)
 	analysisRepo := db.NewAnalysisRepository(database)
 	playlistRepo := db.NewPlaylistRepository(database)
+	playlistImportRepo := playlistimport.NewImportRepository(database)
+	trackSourceRepo := playlistimport.NewTrackSourceRepository(database)
 	mixPlanRepo := db.NewMixPlanRepository(database)
 
 	// Initialize services
@@ -172,6 +175,9 @@ func main() {
 		Matcher:      matcherService,
 		TrackRepo:    trackRepo,
 		LibraryRepo:  libraryRepo,
+		PlaylistRepo: playlistRepo,
+		ImportRepo:   playlistImportRepo,
+		SourceRepo:   trackSourceRepo,
 		AnalysisRepo: analysisRepo,
 		Storage:      storageClient,
 	})
@@ -180,6 +186,7 @@ func main() {
 	var downloadService *download.Service
 	var downloadHandlers *api.DownloadHandlers
 	var queueHandlers *queue.Handlers
+	var playlistImportHandlers *api.PlaylistImportHandlers
 
 	if cfg.RedisEnabled {
 		downloadService, err = download.NewService(&download.ServiceConfig{
@@ -195,6 +202,15 @@ func main() {
 			"workers": cfg.WorkerCount,
 		})
 		downloadHandlers = api.NewDownloadHandlers(downloadService)
+		playlistImportService := playlistimport.NewService(playlistimport.Config{
+			Store:      playlistImportRepo,
+			Playlists:  playlistRepo,
+			Tracks:     trackSourceRepo,
+			Library:    libraryRepo,
+			Downloader: downloadService,
+			Enumerator: playlistimport.NewYTDLPEnumerator(),
+		})
+		playlistImportHandlers = api.NewPlaylistImportHandlers(playlistImportService)
 
 		queueService, err := queue.NewService(cfg.RedisURL)
 		if err != nil {
@@ -227,24 +243,25 @@ func main() {
 
 	// Create router with all handlers
 	router := api.NewRouterWithConfig(&api.RouterConfig{
-		AuthHandlers:       authHandlers,
-		AuthService:        authService,
-		SearchHandlers:     searchHandlers,
-		MBClient:           mbClient,
-		MBHandlers:         mbHandlers,
-		WSHandler:          wsHandler,
-		MatcherHandlers:    matcherHandlers,
-		LibraryHandlers:    libraryHandlers,
-		AnalysisHandlers:   analysisHandlers,
-		PlaybackHandlers:   playbackHandlers,
-		QueueHandlers:      queueHandlers,
-		DiscoveryHandlers:  discoveryHandlers,
-		PlaylistHandlers:   playlistHandlers,
-		MixPlanHandlers:    mixPlanHandlers,
-		DownloadHandlers:   downloadHandlers,
-		HealthHandler:      healthHandler,
-		Metrics:            appMetrics,
-		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
+		AuthHandlers:           authHandlers,
+		AuthService:            authService,
+		SearchHandlers:         searchHandlers,
+		MBClient:               mbClient,
+		MBHandlers:             mbHandlers,
+		WSHandler:              wsHandler,
+		MatcherHandlers:        matcherHandlers,
+		LibraryHandlers:        libraryHandlers,
+		AnalysisHandlers:       analysisHandlers,
+		PlaybackHandlers:       playbackHandlers,
+		QueueHandlers:          queueHandlers,
+		DiscoveryHandlers:      discoveryHandlers,
+		PlaylistHandlers:       playlistHandlers,
+		PlaylistImportHandlers: playlistImportHandlers,
+		MixPlanHandlers:        mixPlanHandlers,
+		DownloadHandlers:       downloadHandlers,
+		HealthHandler:          healthHandler,
+		Metrics:                appMetrics,
+		CORSAllowedOrigins:     cfg.CORSAllowedOrigins,
 	})
 
 	// Apply middleware chain

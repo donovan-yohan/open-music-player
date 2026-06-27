@@ -20,26 +20,27 @@ import (
 )
 
 type Router struct {
-	mux                 *http.ServeMux
-	authHandlers        *auth.Handlers
-	authService         *auth.Service
-	searchHandlers      *search.Handlers
-	browseHandlers      *BrowseHandlers
-	musicbrainzHandlers *musicbrainz.Handlers
-	wsHandler           *websocket.Handler
-	validatorHandlers   *validators.Handlers
-	matcherHandlers     *matcher.Handler
-	libraryHandlers     *LibraryHandlers
-	analysisHandlers    *AnalysisHandlers
-	playbackHandlers    *PlaybackHandlers
-	queueHandlers       *queue.Handlers
-	discoveryHandlers   *discovery.Handlers
-	playlistHandlers    *PlaylistHandlers
-	mixPlanHandlers     *MixPlanHandlers
-	downloadHandlers    *DownloadHandlers
-	healthHandler       *health.Handler
-	metricsHandler      http.HandlerFunc
-	corsAllowedOrigins  []string
+	mux                    *http.ServeMux
+	authHandlers           *auth.Handlers
+	authService            *auth.Service
+	searchHandlers         *search.Handlers
+	browseHandlers         *BrowseHandlers
+	musicbrainzHandlers    *musicbrainz.Handlers
+	wsHandler              *websocket.Handler
+	validatorHandlers      *validators.Handlers
+	matcherHandlers        *matcher.Handler
+	libraryHandlers        *LibraryHandlers
+	analysisHandlers       *AnalysisHandlers
+	playbackHandlers       *PlaybackHandlers
+	queueHandlers          *queue.Handlers
+	discoveryHandlers      *discovery.Handlers
+	playlistHandlers       *PlaylistHandlers
+	playlistImportHandlers *PlaylistImportHandlers
+	mixPlanHandlers        *MixPlanHandlers
+	downloadHandlers       *DownloadHandlers
+	healthHandler          *health.Handler
+	metricsHandler         http.HandlerFunc
+	corsAllowedOrigins     []string
 }
 
 var defaultCORSAllowedOrigins = []string{
@@ -49,24 +50,25 @@ var defaultCORSAllowedOrigins = []string{
 
 // RouterConfig holds configuration for creating a new router
 type RouterConfig struct {
-	AuthHandlers       *auth.Handlers
-	AuthService        *auth.Service
-	SearchHandlers     *search.Handlers
-	MBClient           *musicbrainz.Client
-	MBHandlers         *musicbrainz.Handlers
-	WSHandler          *websocket.Handler
-	MatcherHandlers    *matcher.Handler
-	LibraryHandlers    *LibraryHandlers
-	AnalysisHandlers   *AnalysisHandlers
-	PlaybackHandlers   *PlaybackHandlers
-	QueueHandlers      *queue.Handlers
-	DiscoveryHandlers  *discovery.Handlers
-	PlaylistHandlers   *PlaylistHandlers
-	MixPlanHandlers    *MixPlanHandlers
-	DownloadHandlers   *DownloadHandlers
-	HealthHandler      *health.Handler
-	Metrics            *metrics.Metrics
-	CORSAllowedOrigins []string
+	AuthHandlers           *auth.Handlers
+	AuthService            *auth.Service
+	SearchHandlers         *search.Handlers
+	MBClient               *musicbrainz.Client
+	MBHandlers             *musicbrainz.Handlers
+	WSHandler              *websocket.Handler
+	MatcherHandlers        *matcher.Handler
+	LibraryHandlers        *LibraryHandlers
+	AnalysisHandlers       *AnalysisHandlers
+	PlaybackHandlers       *PlaybackHandlers
+	QueueHandlers          *queue.Handlers
+	DiscoveryHandlers      *discovery.Handlers
+	PlaylistHandlers       *PlaylistHandlers
+	PlaylistImportHandlers *PlaylistImportHandlers
+	MixPlanHandlers        *MixPlanHandlers
+	DownloadHandlers       *DownloadHandlers
+	HealthHandler          *health.Handler
+	Metrics                *metrics.Metrics
+	CORSAllowedOrigins     []string
 }
 
 func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
@@ -99,26 +101,27 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 	}
 
 	r := &Router{
-		mux:                 http.NewServeMux(),
-		authHandlers:        cfg.AuthHandlers,
-		authService:         cfg.AuthService,
-		searchHandlers:      cfg.SearchHandlers,
-		browseHandlers:      NewBrowseHandlers(cfg.MBClient),
-		musicbrainzHandlers: cfg.MBHandlers,
-		wsHandler:           cfg.WSHandler,
-		validatorHandlers:   validators.NewHandlers(validatorRegistry),
-		matcherHandlers:     cfg.MatcherHandlers,
-		libraryHandlers:     cfg.LibraryHandlers,
-		analysisHandlers:    cfg.AnalysisHandlers,
-		playbackHandlers:    cfg.PlaybackHandlers,
-		queueHandlers:       cfg.QueueHandlers,
-		discoveryHandlers:   cfg.DiscoveryHandlers,
-		playlistHandlers:    cfg.PlaylistHandlers,
-		mixPlanHandlers:     cfg.MixPlanHandlers,
-		downloadHandlers:    cfg.DownloadHandlers,
-		healthHandler:       cfg.HealthHandler,
-		metricsHandler:      metricsHandler,
-		corsAllowedOrigins:  corsAllowedOrigins,
+		mux:                    http.NewServeMux(),
+		authHandlers:           cfg.AuthHandlers,
+		authService:            cfg.AuthService,
+		searchHandlers:         cfg.SearchHandlers,
+		browseHandlers:         NewBrowseHandlers(cfg.MBClient),
+		musicbrainzHandlers:    cfg.MBHandlers,
+		wsHandler:              cfg.WSHandler,
+		validatorHandlers:      validators.NewHandlers(validatorRegistry),
+		matcherHandlers:        cfg.MatcherHandlers,
+		libraryHandlers:        cfg.LibraryHandlers,
+		analysisHandlers:       cfg.AnalysisHandlers,
+		playbackHandlers:       cfg.PlaybackHandlers,
+		queueHandlers:          cfg.QueueHandlers,
+		discoveryHandlers:      cfg.DiscoveryHandlers,
+		playlistHandlers:       cfg.PlaylistHandlers,
+		playlistImportHandlers: cfg.PlaylistImportHandlers,
+		mixPlanHandlers:        cfg.MixPlanHandlers,
+		downloadHandlers:       cfg.DownloadHandlers,
+		healthHandler:          cfg.HealthHandler,
+		metricsHandler:         metricsHandler,
+		corsAllowedOrigins:     corsAllowedOrigins,
 	}
 	r.setupRoutes()
 	return r
@@ -242,6 +245,14 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/playlists/{id}/tracks", r.withAuth(r.playlistHandlers.AddTracks))
 	r.mux.HandleFunc("DELETE /api/v1/playlists/{id}/tracks/{trackId}", r.withAuth(r.playlistHandlers.RemoveTrack))
 	r.mux.HandleFunc("PUT /api/v1/playlists/{id}/tracks/reorder", r.withAuth(r.playlistHandlers.ReorderTracks))
+	if r.playlistImportHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/playlist-imports", r.withAuth(r.playlistImportHandlers.CreateImport))
+		r.mux.HandleFunc("GET /api/v1/playlist-imports/{importJobId}", r.withAuth(r.playlistImportHandlers.GetImport))
+	} else {
+		playlistImportUnavailable := r.withAuth(unavailableHandler("Playlist import processing is disabled for this local mode"))
+		r.mux.HandleFunc("POST /api/v1/playlist-imports", playlistImportUnavailable)
+		r.mux.HandleFunc("GET /api/v1/playlist-imports/{importJobId}", playlistImportUnavailable)
+	}
 
 	// Saved mix plan routes (auth required). The server stores durable plan state only;
 	// playback/rendering state stays client-side.
