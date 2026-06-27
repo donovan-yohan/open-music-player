@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,10 +90,71 @@ func TestStartImportRejectsPlaylistsOverLimitBeforeQueueing(t *testing.T) {
 	}
 }
 
+func TestValidatePlaylistURLRejectsCousinHosts(t *testing.T) {
+	tests := []struct {
+		name    string
+		rawURL  string
+		wantErr bool
+	}{
+		{name: "youtube exact", rawURL: "https://youtube.com/playlist?list=PLfixture"},
+		{name: "youtube subdomain", rawURL: "https://www.youtube.com/playlist?list=PLfixture"},
+		{name: "music youtube", rawURL: "https://music.youtube.com/playlist?list=PLfixture"},
+		{name: "youtu be exact", rawURL: "https://youtu.be/fixture"},
+		{name: "youtu be subdomain", rawURL: "https://m.youtu.be/fixture"},
+		{name: "youtube substring attacker", rawURL: "https://youtube.com.attacker.example/playlist?list=PLfixture", wantErr: true},
+		{name: "youtu be substring attacker", rawURL: "https://youtu.be.attacker.example/fixture", wantErr: true},
+		{name: "youtube cousin", rawURL: "https://evil-youtube.com/playlist?list=PLfixture", wantErr: true},
+		{name: "non youtube", rawURL: "https://example.com/playlist?list=PLfixture", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePlaylistURL(tt.rawURL)
+			if tt.wantErr && !errors.Is(err, ErrInvalidURL) {
+				t.Fatalf("validatePlaylistURL(%q) error = %v, want ErrInvalidURL", tt.rawURL, err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validatePlaylistURL(%q) returned error: %v", tt.rawURL, err)
+			}
+		})
+	}
+}
+
+func TestStartImportMarksJobFailedWhenCreateItemFails(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	store.createItemErr = errors.New("insert import item failed")
+	service := NewService(Config{
+		Store:      store,
+		Playlists:  &fakePlaylists{},
+		Tracks:     &fakeTrackSources{bySourceID: map[string]*db.Track{}},
+		Downloader: &fakeDownloader{},
+		Enumerator: &fakeEnumerator{entries: []Entry{{SourceID: "new", SourceURL: "https://www.youtube.com/watch?v=new", Title: "New"}}},
+		MaxItems:   10,
+	})
+
+	_, err := service.StartImport(ctx, uuid.MustParse("11111111-1111-1111-1111-111111111111"), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if err == nil || !strings.Contains(err.Error(), "create playlist import item") {
+		t.Fatalf("StartImport error = %v, want create item failure", err)
+	}
+	if len(store.jobs) != 1 {
+		t.Fatalf("jobs created = %d, want 1", len(store.jobs))
+	}
+	for _, job := range store.jobs {
+		if job.Status != JobStatusFailed {
+			t.Fatalf("job status = %q, want %q", job.Status, JobStatusFailed)
+		}
+		if !job.Error.Valid || !strings.Contains(job.Error.String, "create playlist import item") {
+			t.Fatalf("job error = %+v, want create item failure", job.Error)
+		}
+	}
+}
+
 type fakeStore struct {
-	jobs  map[uuid.UUID]*ImportJob
-	items map[int64]*ImportItem
-	next  int64
+	jobs          map[uuid.UUID]*ImportJob
+	items         map[int64]*ImportItem
+	next          int64
+	createItemErr error
 }
 
 func newFakeStore() *fakeStore {
@@ -128,6 +190,9 @@ func (s *fakeStore) ListItems(_ context.Context, jobID uuid.UUID) ([]ImportItem,
 }
 
 func (s *fakeStore) CreateItem(_ context.Context, item *ImportItem) error {
+	if s.createItemErr != nil {
+		return s.createItemErr
+	}
 	item.ID = s.next
 	s.next++
 	copy := *item

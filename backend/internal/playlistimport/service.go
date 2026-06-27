@@ -97,7 +97,7 @@ func NewService(cfg Config) *Service {
 	}
 }
 
-func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportRequest) (*ImportResult, error) {
+func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportRequest) (result *ImportResult, err error) {
 	if err := validatePlaylistURL(req.URL); err != nil {
 		return nil, err
 	}
@@ -118,17 +118,27 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 	if err := s.store.CreateJob(ctx, job); err != nil {
 		return nil, fmt.Errorf("create playlist import job: %w", err)
 	}
+	jobFailed := false
+	markJobFailed := func(message string) {
+		jobFailed = true
+		_ = s.store.MarkJobFailed(ctx, job.ID, message)
+	}
+	defer func() {
+		if err != nil && !jobFailed {
+			_ = s.store.MarkJobFailed(ctx, job.ID, err.Error())
+		}
+	}()
 
 	metadata, entries, err := s.enumerator.Enumerate(ctx, job.SourceURL, limit+1)
 	if err != nil {
-		_ = s.store.MarkJobFailed(ctx, job.ID, err.Error())
+		markJobFailed(err.Error())
 		return nil, fmt.Errorf("enumerate playlist: %w", err)
 	}
 	if metadata.Title != "" {
 		job.SourceTitle = sql.NullString{String: metadata.Title, Valid: true}
 	}
 	if len(entries) > limit {
-		_ = s.store.MarkJobFailed(ctx, job.ID, ErrLimitExceeded.Error())
+		markJobFailed(ErrLimitExceeded.Error())
 		return nil, ErrLimitExceeded
 	}
 
@@ -171,7 +181,7 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 		items = append(items, item)
 	}
 	if len(items) == 0 {
-		_ = s.store.MarkJobFailed(ctx, job.ID, ErrNoImportableItem.Error())
+		markJobFailed(ErrNoImportableItem.Error())
 		return nil, ErrNoImportableItem
 	}
 
@@ -305,10 +315,15 @@ func validatePlaylistURL(raw string) error {
 		return ErrInvalidURL
 	}
 	host := strings.ToLower(parsed.Hostname())
-	if !strings.Contains(host, "youtube.com") && !strings.Contains(host, "youtu.be") {
+	if !isAllowedPlaylistHost(host) {
 		return ErrInvalidURL
 	}
 	return nil
+}
+
+func isAllowedPlaylistHost(host string) bool {
+	return host == "youtube.com" || strings.HasSuffix(host, ".youtube.com") ||
+		host == "youtu.be" || strings.HasSuffix(host, ".youtu.be")
 }
 
 func firstNonEmpty(values ...string) string {
