@@ -55,16 +55,22 @@ Open Music Player consists of four main components:
 
 ### Low-memory backend + Flutter Web mode
 
-For backend control-plane development and Flutter Web mobile/responsive QA, prefer the low-memory stack instead of the full queue/download pipeline:
+For backend control-plane development and Flutter Web mobile/responsive QA, prefer the low-memory stack instead of the full queue/download pipeline. Turn on the downloads profile only for the #44 discovery-to-playback smoke:
 
 ```bash
 scripts/local-low-memory.sh start
 scripts/local-low-memory.sh smoke
+scripts/local-low-memory.sh playback-smoke
+
+# Heavier e2e gate: enables Redis and one download worker, then verifies
+# discovery -> queue -> worker -> MinIO -> signed playback URL.
+scripts/local-low-memory.sh e2e-smoke
+
 cd client
 flutter run -d chrome --dart-define=OMP_API_BASE_URL=http://localhost:8080/api/v1
 ```
 
-This mode starts only the backend, PostgreSQL, and MinIO. Redis is disabled by default (`REDIS_ENABLED=false`) and download workers are disabled (`WORKER_COUNT=0`), so Redis-backed queue/download endpoints return `503 SERVICE_DISABLED` until you intentionally enable the downloads profile. See [`docs/LOW_MEMORY_LOCAL_DEV.md`](docs/LOW_MEMORY_LOCAL_DEV.md) for smoke checks, Redis/worker guidance, and the no-Android/no-Gradle workflow.
+Default `start` mode runs only the backend, PostgreSQL, and MinIO. Redis is disabled by default (`REDIS_ENABLED=false`) and download workers are disabled (`WORKER_COUNT=0`), so Redis-backed queue/download endpoints return `503 SERVICE_DISABLED` until you intentionally enable the downloads profile. `e2e-smoke` starts that profile with `WORKER_COUNT=1` and writes compact evidence under `/tmp`. Use `scripts/local-low-memory.sh clean` when you need to reap the low-memory containers, network, and volumes. See [`docs/LOW_MEMORY_LOCAL_DEV.md`](docs/LOW_MEMORY_LOCAL_DEV.md) for smoke checks, Redis/worker guidance, and the no-Android/no-Gradle workflow.
 
 Audio analysis is optional and disabled unless an analyzer service is configured. See [`docs/AUDIO_ANALYZER_SERVICE.md`](docs/AUDIO_ANALYZER_SERVICE.md) for local service configuration, request/response shape, and failure behavior.
 
@@ -172,19 +178,20 @@ The backend exposes the following API groups:
 
 | Endpoint Group | Description |
 |----------------|-------------|
-| `POST /api/auth/register` | User registration |
-| `POST /api/auth/login` | User login |
-| `POST /api/auth/refresh` | Refresh access token |
-| `GET /api/tracks` | List user's tracks |
-| `POST /api/tracks` | Add track to library |
-| `GET /api/library` | Get user's library |
-| `GET /api/playlists` | List playlists |
-| `POST /api/playlists` | Create playlist |
+| `POST /api/v1/auth/register` | User registration |
+| `POST /api/v1/auth/login` | User login |
+| `POST /api/v1/auth/refresh` | Refresh access token |
+| `GET /api/v1/search/recordings` | Search local tracks |
+| `GET /api/v1/library` | Get user's library |
+| `POST /api/v1/playlists` | Create playlist |
 | `POST /api/v1/playback/urls` | Issue signed audio URL descriptors for playback/download |
-| `POST /api/download` | Queue track for download |
-| `GET /api/search` | Search tracks |
-| `GET /api/musicbrainz/search` | Search MusicBrainz for metadata |
-| `WS /api/ws` | WebSocket for real-time updates |
+| `GET /api/v1/discovery/search` | Search external source providers |
+| `POST /api/v1/queue/items` | Queue a playable track or downloadable source candidate |
+| `GET /api/v1/queue` | Read the Redis-backed playback queue |
+| `POST /api/v1/downloads` | Queue a direct supported source URL for download |
+| `GET /api/v1/downloads/{job_id}` | Inspect a download job |
+| `GET /api/v1/musicbrainz/search/tracks` | Search MusicBrainz for metadata |
+| `GET /api/v1/ws/progress` | WebSocket for real-time progress updates |
 
 ## Database Migrations
 
