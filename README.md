@@ -397,6 +397,10 @@ For production extension distribution:
 2. Create a ZIP of the `dist` directory
 3. Submit to Chrome Web Store and Firefox Add-ons
 
+### Android PR artifacts
+
+Pull request CI builds a debug Android APK after Flutter analyze and tests pass. See [`docs/ANDROID_PR_ARTIFACTS.md`](docs/ANDROID_PR_ARTIFACTS.md) for download, install, and real-device smoke steps.
+
 ### Client Distribution
 
 Build release versions of the Flutter client:
