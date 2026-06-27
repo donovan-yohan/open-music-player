@@ -40,6 +40,21 @@ func TestDisabledDownloadRoutesRequireAuth(t *testing.T) {
 	}
 }
 
+func TestDisabledPlaylistImportRoutesRequireAuth(t *testing.T) {
+	router := NewRouterWithConfig(&RouterConfig{
+		AuthHandlers: auth.NewHandlers(nil),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/playlist-imports", strings.NewReader(`{"url":"https://www.youtube.com/playlist?list=PLx"}`))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /api/v1/playlist-imports without auth = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
 func TestStreamProxyRouteRemovedFromNormalPath(t *testing.T) {
 	router := NewRouterWithConfig(&RouterConfig{
 		AuthHandlers: auth.NewHandlers(nil),

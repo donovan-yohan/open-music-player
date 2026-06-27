@@ -74,6 +74,10 @@ func (s *Service) EnqueueSourceCandidateWithID(ctx context.Context, jobID, userI
 	return s.queue.EnqueueCandidateWithID(ctx, jobID, userID, candidate, mbRecordingID)
 }
 
+func (s *Service) EnqueuePlaylistImportItem(ctx context.Context, userID string, candidate SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*DownloadJob, error) {
+	return s.queue.EnqueuePlaylistImportItem(ctx, userID, candidate, importJobID, importItemID, playlistID, playlistPosition)
+}
+
 // GetJob retrieves a job by ID
 func (s *Service) GetJob(ctx context.Context, jobID string) (*DownloadJob, error) {
 	return s.queue.GetJob(ctx, jobID)
