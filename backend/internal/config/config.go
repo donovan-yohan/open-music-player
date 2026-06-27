@@ -56,6 +56,13 @@ type Config struct {
 	MetadataLLMBaseURL string
 	MetadataLLMModel   string
 	MetadataLLMTimeout time.Duration
+
+	// Optional out-of-process audio analyzer. Disabled unless configured so the
+	// processor never creates unserviceable pending analysis rows by default.
+	AnalyzerEnabled   bool
+	AnalyzerBaseURL   string
+	AnalyzerAuthToken string
+	AnalyzerTimeout   time.Duration
 }
 
 func Load() *Config {
@@ -73,6 +80,8 @@ func Load() *Config {
 	metadataLLMBaseURL := strings.TrimSpace(getEnvOrDefault("METADATA_LLM_BASE_URL", getEnvOrDefault("OLLAMA_BASE_URL", "http://localhost:11434")))
 	metadataLLMModel := strings.TrimSpace(getEnvOrDefault("METADATA_LLM_MODEL", os.Getenv("OLLAMA_MODEL")))
 	metadataLLMEnabled := parseBoolEnv("METADATA_LLM_ENABLED", false)
+	analyzerBaseURL := strings.TrimSpace(os.Getenv("ANALYZER_BASE_URL"))
+	analyzerEnabled := parseBoolEnv("ANALYZER_ENABLED", analyzerBaseURL != "")
 
 	return &Config{
 		ServerAddr:         getEnvOrDefault("SERVER_ADDR", ":8080"),
@@ -117,6 +126,12 @@ func Load() *Config {
 		MetadataLLMBaseURL: metadataLLMBaseURL,
 		MetadataLLMModel:   metadataLLMModel,
 		MetadataLLMTimeout: parseDurationMsEnv("METADATA_LLM_TIMEOUT_MS", 5*time.Second),
+
+		// Audio analyzer service configuration
+		AnalyzerEnabled:   analyzerEnabled,
+		AnalyzerBaseURL:   analyzerBaseURL,
+		AnalyzerAuthToken: strings.TrimSpace(os.Getenv("ANALYZER_AUTH_TOKEN")),
+		AnalyzerTimeout:   parseDurationMsEnv("ANALYZER_TIMEOUT_MS", 90*time.Second),
 	}
 }
 

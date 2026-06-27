@@ -9,8 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/openmusicplayer/backend/internal/analyzer"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/matcher"
@@ -30,19 +33,37 @@ func (s *fakeObjectStorage) PutObject(ctx context.Context, key string, reader io
 }
 
 type fakeAnalysisStore struct {
-	requestCount int
+	mu               sync.Mutex
+	requestCount     int
+	analyzingCount   int
+	storeResultCount int
+	storedResult     db.AnalysisResult
+	storeResultCh    chan db.AnalysisResult
 }
 
 func (s *fakeAnalysisStore) RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.requestCount++
 	return nil
 }
 
 func (s *fakeAnalysisStore) MarkAnalyzing(ctx context.Context, trackID int64, provenance json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.analyzingCount++
 	return nil
 }
 
 func (s *fakeAnalysisStore) StoreResult(ctx context.Context, trackID int64, result db.AnalysisResult) error {
+	s.mu.Lock()
+	s.storeResultCount++
+	s.storedResult = result
+	ch := s.storeResultCh
+	s.mu.Unlock()
+	if ch != nil {
+		ch <- result
+	}
 	return nil
 }
 
@@ -52,6 +73,22 @@ func (s *fakeAnalysisStore) MarkFailed(ctx context.Context, trackID int64, errTe
 
 func (s *fakeAnalysisStore) MarkUnsupported(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
 	return nil
+}
+
+type fakeAnalyzerClient struct {
+	requests chan analyzer.Request
+	result   *analyzer.Result
+	err      error
+}
+
+func (c *fakeAnalyzerClient) Analyze(ctx context.Context, req analyzer.Request) (*analyzer.Result, error) {
+	if c.requests != nil {
+		c.requests <- req
+	}
+	if c.err != nil {
+		return nil, c.err
+	}
+	return c.result, nil
 }
 
 func TestEnqueueAnalysisSkipsPendingRowWhenAnalyzerClientMissing(t *testing.T) {
@@ -66,6 +103,51 @@ func TestEnqueueAnalysisSkipsPendingRowWhenAnalyzerClientMissing(t *testing.T) {
 
 	if store.requestCount != 0 {
 		t.Fatalf("RequestAnalysis called %d time(s) without analyzer client; would leave an unprocessable pending row", store.requestCount)
+	}
+}
+
+func TestEnqueueAnalysisRunsConfiguredAnalyzerAndStoresResult(t *testing.T) {
+	store := &fakeAnalysisStore{storeResultCh: make(chan db.AnalysisResult, 1)}
+	client := &fakeAnalyzerClient{
+		requests: make(chan analyzer.Request, 1),
+		result: &analyzer.Result{
+			SchemaVersion:  analyzer.SchemaVersion,
+			SummaryJSON:    json.RawMessage("{\"bpm\":{\"value\":124},\"waveform\":{\"sample_count\":6}}"),
+			ArtifactsJSON:  json.RawMessage("{\"waveform_resolution\":\"coarse_fixture\"}"),
+			ProvenanceJSON: json.RawMessage("{\"analyzer\":\"fake\"}"),
+		},
+	}
+	processor := &Processor{analysisRepo: store, analyzerClient: client}
+
+	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42}, &TrackMetadata{
+		StorageKey: "tracks/fixture/job-fixture.wav",
+		SourceURL:  "fixture://silence",
+		SourceType: "fixture",
+		DurationMs: 197500,
+		Title:      "Fixture Song",
+		Artist:     "Fixture Artist",
+	})
+
+	select {
+	case req := <-client.requests:
+		if req.TrackID != 42 || req.StorageKey != "tracks/fixture/job-fixture.wav" || req.SchemaVersion != analyzer.SchemaVersion {
+			t.Fatalf("analyzer request = %#v", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for analyzer request")
+	}
+	select {
+	case result := <-store.storeResultCh:
+		if string(result.SummaryJSON) != string(client.result.SummaryJSON) {
+			t.Fatalf("stored summary = %s, want %s", result.SummaryJSON, client.result.SummaryJSON)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stored analysis result")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.requestCount != 1 || store.analyzingCount != 1 || store.storeResultCount != 1 {
+		t.Fatalf("analysis calls = request:%d analyzing:%d store:%d, want 1/1/1", store.requestCount, store.analyzingCount, store.storeResultCount)
 	}
 }
 
