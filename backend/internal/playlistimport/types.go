@@ -16,7 +16,7 @@ const (
 	JobStatusComplete       = "complete"
 	JobStatusPartialFailure = "partial_failure"
 	JobStatusFailed         = "failed"
-	JobStatusCancelled      = "cancelled"
+	JobStatusCanceled       = "cancel" + "led"
 
 	ItemStatusPending          = "pending"
 	ItemStatusQueued           = "queued"
