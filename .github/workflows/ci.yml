@@ -109,17 +109,28 @@ jobs:
       - name: Run tests
         run: flutter test --coverage
 
-      # APK build disabled - android platform not configured
-      # TODO: Run `flutter create --platforms=android .` in client/ to enable
-      # - name: Build APK
-      #   run: flutter build apk --release
-      #
-      # - name: Upload APK artifact
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: android-apk
-      #     path: client/build/app/outputs/flutter-apk/app-release.apk
-      #     retention-days: 7
+      - name: Tune Gradle for CI APK build
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          cat >> android/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -Xms512m -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          org.gradle.workers.max=2
+          kotlin.daemon.jvmargs=-Xmx1g -XX:MaxMetaspaceSize=512m
+          EOF
+
+      - name: Build debug APK
+        if: ${{ github.event_name == 'pull_request' }}
+        timeout-minutes: 30
+        run: flutter build apk --debug --no-pub --target-platform android-arm64
+
+      - name: Upload debug APK artifact
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-music-player-pr-${{ github.event.pull_request.number }}-debug-apk
+          path: client/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
