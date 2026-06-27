@@ -401,6 +401,10 @@ For production extension distribution:
 
 For mobile/web staging on a Tailnet, use [`docs/TAILNET_STAGING.md`](docs/TAILNET_STAGING.md): it starts the low-memory backend, serves Flutter Web on `0.0.0.0`, documents health/API URLs, and links the Android PR APK smoke flow.
 
+### Backend maintenance repair
+
+Use [`docs/MAINTENANCE_REPAIR.md`](docs/MAINTENANCE_REPAIR.md) to safely re-run metadata matching and audio analysis backfills/retries without hand-editing database rows.
+
 ### Android PR artifacts
 
 Pull request CI builds a debug Android APK after Flutter analyze and tests pass. See [`docs/ANDROID_PR_ARTIFACTS.md`](docs/ANDROID_PR_ARTIFACTS.md) for download, install, and real-device smoke steps.

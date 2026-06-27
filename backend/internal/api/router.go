@@ -37,6 +37,7 @@ type Router struct {
 	playlistHandlers    *PlaylistHandlers
 	mixPlanHandlers     *MixPlanHandlers
 	downloadHandlers    *DownloadHandlers
+	maintenanceHandlers *MaintenanceHandlers
 	healthHandler       *health.Handler
 	metricsHandler      http.HandlerFunc
 	corsAllowedOrigins  []string
@@ -49,24 +50,25 @@ var defaultCORSAllowedOrigins = []string{
 
 // RouterConfig holds configuration for creating a new router
 type RouterConfig struct {
-	AuthHandlers       *auth.Handlers
-	AuthService        *auth.Service
-	SearchHandlers     *search.Handlers
-	MBClient           *musicbrainz.Client
-	MBHandlers         *musicbrainz.Handlers
-	WSHandler          *websocket.Handler
-	MatcherHandlers    *matcher.Handler
-	LibraryHandlers    *LibraryHandlers
-	AnalysisHandlers   *AnalysisHandlers
-	PlaybackHandlers   *PlaybackHandlers
-	QueueHandlers      *queue.Handlers
-	DiscoveryHandlers  *discovery.Handlers
-	PlaylistHandlers   *PlaylistHandlers
-	MixPlanHandlers    *MixPlanHandlers
-	DownloadHandlers   *DownloadHandlers
-	HealthHandler      *health.Handler
-	Metrics            *metrics.Metrics
-	CORSAllowedOrigins []string
+	AuthHandlers        *auth.Handlers
+	AuthService         *auth.Service
+	SearchHandlers      *search.Handlers
+	MBClient            *musicbrainz.Client
+	MBHandlers          *musicbrainz.Handlers
+	WSHandler           *websocket.Handler
+	MatcherHandlers     *matcher.Handler
+	LibraryHandlers     *LibraryHandlers
+	AnalysisHandlers    *AnalysisHandlers
+	PlaybackHandlers    *PlaybackHandlers
+	QueueHandlers       *queue.Handlers
+	DiscoveryHandlers   *discovery.Handlers
+	PlaylistHandlers    *PlaylistHandlers
+	MixPlanHandlers     *MixPlanHandlers
+	DownloadHandlers    *DownloadHandlers
+	MaintenanceHandlers *MaintenanceHandlers
+	HealthHandler       *health.Handler
+	Metrics             *metrics.Metrics
+	CORSAllowedOrigins  []string
 }
 
 func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
@@ -116,6 +118,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		playlistHandlers:    cfg.PlaylistHandlers,
 		mixPlanHandlers:     cfg.MixPlanHandlers,
 		downloadHandlers:    cfg.DownloadHandlers,
+		maintenanceHandlers: cfg.MaintenanceHandlers,
 		healthHandler:       cfg.HealthHandler,
 		metricsHandler:      metricsHandler,
 		corsAllowedOrigins:  corsAllowedOrigins,
@@ -260,6 +263,13 @@ func (r *Router) setupRoutes() {
 		r.mux.HandleFunc("POST /api/v1/downloads", downloadUnavailable)
 		r.mux.HandleFunc("GET /api/v1/downloads", downloadUnavailable)
 		r.mux.HandleFunc("GET /api/v1/downloads/{job_id}", downloadUnavailable)
+	}
+
+	// Maintenance repair routes (auth required)
+	if r.maintenanceHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/maintenance/repair", r.withAuth(r.maintenanceHandlers.RepairTracks))
+	} else {
+		r.mux.HandleFunc("POST /api/v1/maintenance/repair", r.withAuth(unavailableHandler("Maintenance repair is unavailable")))
 	}
 }
 

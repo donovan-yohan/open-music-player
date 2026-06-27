@@ -68,6 +68,14 @@ type AnalysisResult struct {
 	ProvenanceJSON json.RawMessage
 }
 
+type AnalysisRepairRequest struct {
+	TrackID        int64
+	PreviousStatus string
+	Status         string
+	Queued         bool
+	Reason         string
+}
+
 type AnalysisRepository struct {
 	db *DB
 }
@@ -94,6 +102,96 @@ func (r *AnalysisRepository) RequestAnalysis(ctx context.Context, trackID int64,
 	`
 	_, err := r.db.ExecContext(ctx, query, trackID, AnalysisStatusPending, nullableRawJSON(provenance))
 	return err
+}
+
+func (r *AnalysisRepository) RequestRepairAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage, force bool, staleAfter time.Duration) (AnalysisRepairRequest, error) {
+	if staleAfter <= 0 {
+		staleAfter = 30 * time.Minute
+	}
+	result := AnalysisRepairRequest{TrackID: trackID}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	defer tx.Rollback()
+
+	var status string
+	var updatedAt time.Time
+	err = tx.QueryRowContext(ctx, `
+		SELECT status, updated_at
+		FROM track_analysis
+		WHERE track_id = $1
+		FOR UPDATE
+	`, trackID).Scan(&status, &updatedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
+
+	if errors.Is(err, sql.ErrNoRows) {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO track_analysis (track_id, status, provenance_json, requested_at, updated_at)
+			VALUES ($1, $2, COALESCE($3::jsonb, '{}'::jsonb), NOW(), NOW())
+		`, trackID, AnalysisStatusPending, nullableRawJSON(provenance))
+		if err != nil {
+			return result, err
+		}
+		if err := tx.Commit(); err != nil {
+			return result, err
+		}
+		result.Status = AnalysisStatusPending
+		result.Queued = true
+		result.Reason = "missing_analysis_row"
+		return result, nil
+	}
+
+	result.PreviousStatus = status
+	result.Status = status
+	stale := time.Since(updatedAt) >= staleAfter
+	if !force {
+		switch status {
+		case AnalysisStatusAnalyzed:
+			result.Reason = "already_analyzed"
+			return result, tx.Commit()
+		case AnalysisStatusUnsupported:
+			result.Reason = "unsupported_requires_force"
+			return result, tx.Commit()
+		case AnalysisStatusPending, AnalysisStatusAnalyzing:
+			if !stale {
+				result.Reason = "active_not_stale"
+				return result, tx.Commit()
+			}
+		}
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE track_analysis
+		SET status = $2,
+			error = NULL,
+			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || COALESCE($3::jsonb, '{}'::jsonb),
+			requested_at = NOW(),
+			started_at = NULL,
+			completed_at = NULL,
+			updated_at = NOW()
+		WHERE track_id = $1
+	`, trackID, AnalysisStatusPending, nullableRawJSON(provenance))
+	if err != nil {
+		return result, err
+	}
+	if err := tx.Commit(); err != nil {
+		return result, err
+	}
+	result.Status = AnalysisStatusPending
+	result.Queued = true
+	if force {
+		result.Reason = "forced_repair"
+	} else if status == AnalysisStatusFailed {
+		result.Reason = "failed_retry"
+	} else if stale {
+		result.Reason = "stale_active_repair"
+	} else {
+		result.Reason = "repair_requested"
+	}
+	return result, nil
 }
 
 func (r *AnalysisRepository) MarkAnalyzing(ctx context.Context, trackID int64, provenance json.RawMessage) error {

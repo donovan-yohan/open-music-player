@@ -193,6 +193,7 @@ func main() {
 		AnalyzerClient: analyzerClient,
 		Storage:        storageClient,
 	})
+	maintenanceHandlers := api.NewMaintenanceHandlers(trackRepo, jobProcessor)
 
 	// Initialize Redis-backed download and playback queue services only when enabled.
 	var downloadService *download.Service
@@ -245,24 +246,25 @@ func main() {
 
 	// Create router with all handlers
 	router := api.NewRouterWithConfig(&api.RouterConfig{
-		AuthHandlers:       authHandlers,
-		AuthService:        authService,
-		SearchHandlers:     searchHandlers,
-		MBClient:           mbClient,
-		MBHandlers:         mbHandlers,
-		WSHandler:          wsHandler,
-		MatcherHandlers:    matcherHandlers,
-		LibraryHandlers:    libraryHandlers,
-		AnalysisHandlers:   analysisHandlers,
-		PlaybackHandlers:   playbackHandlers,
-		QueueHandlers:      queueHandlers,
-		DiscoveryHandlers:  discoveryHandlers,
-		PlaylistHandlers:   playlistHandlers,
-		MixPlanHandlers:    mixPlanHandlers,
-		DownloadHandlers:   downloadHandlers,
-		HealthHandler:      healthHandler,
-		Metrics:            appMetrics,
-		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
+		AuthHandlers:        authHandlers,
+		AuthService:         authService,
+		SearchHandlers:      searchHandlers,
+		MBClient:            mbClient,
+		MBHandlers:          mbHandlers,
+		WSHandler:           wsHandler,
+		MatcherHandlers:     matcherHandlers,
+		LibraryHandlers:     libraryHandlers,
+		AnalysisHandlers:    analysisHandlers,
+		PlaybackHandlers:    playbackHandlers,
+		QueueHandlers:       queueHandlers,
+		DiscoveryHandlers:   discoveryHandlers,
+		PlaylistHandlers:    playlistHandlers,
+		MixPlanHandlers:     mixPlanHandlers,
+		DownloadHandlers:    downloadHandlers,
+		MaintenanceHandlers: maintenanceHandlers,
+		HealthHandler:       healthHandler,
+		Metrics:             appMetrics,
+		CORSAllowedOrigins:  cfg.CORSAllowedOrigins,
 	})
 
 	// Apply middleware chain
