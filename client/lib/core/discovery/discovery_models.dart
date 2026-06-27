@@ -284,8 +284,9 @@ class DiscoveryProviderSummary {
       status: json['status'] as String? ?? 'unknown',
       resultCount: json['resultCount'] as int? ?? 0,
       elapsedMs: json['elapsedMs'] as int? ?? 0,
-      errorMessage:
-          error is Map<String, dynamic> ? error['message'] as String? : null,
+      errorMessage: error is Map<String, dynamic>
+          ? error['message'] as String?
+          : null,
     );
   }
 }
@@ -326,12 +327,8 @@ class DiscoveryAssistResponse {
     final clarificationJson = json['clarification'];
     final errorJson = json['error'];
     final rawStatus = (json['status'] as String? ?? '').trim();
-    final status = const {
-      'ok',
-      'disabled',
-      'clarification',
-      'error',
-    }.contains(rawStatus)
+    final status =
+        const {'ok', 'disabled', 'clarification', 'error'}.contains(rawStatus)
         ? rawStatus
         : 'error';
     return DiscoveryAssistResponse(
@@ -463,63 +460,10 @@ class DiscoveryQueueState {
             (item) => DiscoveryQueueItem.fromJson(item as Map<String, dynamic>),
           )
           .toList(),
-      currentPosition: _readInt(json['currentPosition']) ??
-          _readInt(json['current_position']) ??
-          0,
-      updatedAt: _readDate(json['updatedAt']) ?? _readDate(json['updated_at']),
+      currentPosition: _readInt(json['currentPosition']) ?? 0,
+      updatedAt: _readDate(json['updatedAt']),
     );
   }
-}
-
-class DownloadJobSnapshot {
-  final String jobId;
-  final String status;
-  final int progress;
-  final String? error;
-  final String url;
-  final String sourceType;
-  final int? trackId;
-
-  const DownloadJobSnapshot({
-    required this.jobId,
-    required this.status,
-    required this.progress,
-    this.error,
-    required this.url,
-    required this.sourceType,
-    this.trackId,
-  });
-
-  factory DownloadJobSnapshot.fromJson(Map<String, dynamic> json) {
-    return DownloadJobSnapshot(
-      jobId: _stringFromJson(json, const [
-            'jobId',
-            'job_id',
-            'downloadJobId',
-            'download_job_id',
-          ]) ??
-          '',
-      status: json['status'] as String? ?? 'queued',
-      progress: _readInt(json['progress']) ?? 0,
-      error: _blankToNull(json['error'] as String?),
-      url:
-          _stringFromJson(json, const ['url', 'sourceUrl', 'source_url']) ?? '',
-      sourceType:
-          _stringFromJson(json, const ['sourceType', 'source_type']) ?? '',
-      trackId: _readInt(json['trackId']) ?? _readInt(json['track_id']),
-    );
-  }
-
-  bool get isTerminal => isPlayable || isFailed;
-  bool get isFailed => status.toLowerCase() == 'failed' || error != null;
-  bool get isPlayable =>
-      trackId != null &&
-      const {
-        'completed',
-        'complete',
-        'ready',
-        'playable',
-      }.contains(status.toLowerCase());
 }
 
 class DiscoveryQueueItem {
@@ -556,36 +500,37 @@ class DiscoveryQueueItem {
     bool? canRemove,
     this.addedAt,
     this.updatedAt,
-  })  : playbackState = playbackState ?? status ?? 'queued',
-        canPlay = canPlay ??
-            ((playbackState ?? status ?? '') == 'playable' && trackId != null),
-        canRetry = canRetry ?? ((playbackState ?? status ?? '') == 'failed'),
-        canRemove = canRemove ?? true;
+  }) : playbackState = playbackState ?? status ?? 'queued',
+       canPlay =
+           canPlay ??
+           ((playbackState ?? status ?? '') == 'playable' && trackId != null),
+       canRetry = canRetry ?? ((playbackState ?? status ?? '') == 'failed'),
+       canRemove = canRemove ?? true;
 
   factory DiscoveryQueueItem.fromJson(Map<String, dynamic> json) {
-    final sourceJson = json['sourceCandidate'] ?? json['source_candidate'];
+    final sourceJson = json['sourceCandidate'];
     final candidate = sourceJson is Map<String, dynamic>
         ? DiscoveryCandidate.fromJson(sourceJson)
         : DiscoveryCandidate.fromQueueItemJson(json);
-    final queueItemId = json['queueItemId'] as String? ?? json['id'] as String?;
-    final trackId = _readInt(json['trackId']) ?? _readInt(json['track_id']);
-    final rawState = json['playbackState'] as String? ??
-        json['playback_state'] as String? ??
-        json['status'] as String? ??
+    final queueItemId = json['queueItemId'] as String?;
+    final trackId = _readInt(json['trackId']);
+    final rawState =
+        json['playbackState'] as String? ??
         (trackId != null ? 'playable' : 'queued');
     final playbackState = _normalizePlaybackState(rawState);
-    final progress = _readInt(json['progress']) ??
+    final progress =
+        _readInt(json['progress']) ??
         (playbackState == 'playable'
             ? 100
             : playbackState == 'failed'
-                ? 0
-                : 0);
+            ? 0
+            : 0);
     final error = _blankToNull(json['error'] as String?);
-    final downloadJobId =
-        json['downloadJobId'] as String? ?? json['download_job_id'] as String?;
+    final downloadJobId = json['downloadJobId'] as String?;
 
     return DiscoveryQueueItem(
-      localId: queueItemId ??
+      localId:
+          queueItemId ??
           candidate.candidateId.ifNotEmpty ??
           downloadJobId ??
           candidate.sourceUrl,
@@ -599,12 +544,13 @@ class DiscoveryQueueItem {
       progress: progress,
       trackId: trackId,
       error: error,
-      canPlay: json['canPlay'] as bool? ??
+      canPlay:
+          json['canPlay'] as bool? ??
           (playbackState == 'playable' && trackId != null),
       canRetry: json['canRetry'] as bool? ?? playbackState == 'failed',
       canRemove: json['canRemove'] as bool? ?? true,
-      addedAt: _readDate(json['addedAt']) ?? _readDate(json['added_at']),
-      updatedAt: _readDate(json['updatedAt']) ?? _readDate(json['updated_at']),
+      addedAt: _readDate(json['addedAt']),
+      updatedAt: _readDate(json['updatedAt']),
     );
   }
 
@@ -643,18 +589,6 @@ class DiscoveryQueueItem {
       canRemove: canRemove ?? this.canRemove,
       addedAt: addedAt,
       updatedAt: updatedAt,
-    );
-  }
-
-  DiscoveryQueueItem withSnapshot(DownloadJobSnapshot snapshot) {
-    final nextState = snapshot.isPlayable ? 'playable' : snapshot.status;
-    return copyWith(
-      downloadJobId: snapshot.jobId,
-      playbackState: nextState,
-      progress: snapshot.isPlayable ? 100 : snapshot.progress,
-      trackId: snapshot.trackId,
-      error: snapshot.error,
-      clearError: snapshot.error == null,
     );
   }
 
@@ -727,12 +661,4 @@ DateTime? _readDate(Object? value) {
 String? _blankToNull(String? value) {
   if (value == null || value.trim().isEmpty) return null;
   return value;
-}
-
-String? _stringFromJson(Map<String, dynamic> json, Iterable<String> keys) {
-  for (final key in keys) {
-    final value = json[key];
-    if (value is String && value.trim().isNotEmpty) return value;
-  }
-  return null;
 }

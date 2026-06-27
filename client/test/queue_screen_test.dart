@@ -151,8 +151,9 @@ void main() {
       playbackState.fakePosition = const Duration(seconds: 45);
 
       await pumpQueueScreen(tester);
-      final provider =
-          tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+      final provider = tester
+          .element(find.byType(QueueScreen))
+          .read<QueueProvider>();
       final currentTrack = provider.currentTrack!;
       await provider.setStartOffsetMs(currentTrack, 30000);
       await provider.setEndOffsetMs(currentTrack, 90000);
@@ -290,8 +291,9 @@ void main() {
 
     await pumpQueueScreen(tester);
 
-    final provider =
-        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+    final provider = tester
+        .element(find.byType(QueueScreen))
+        .read<QueueProvider>();
     final track = provider.upNext.first;
 
     await provider.setStartOffsetMs(track, 42000);
@@ -405,7 +407,7 @@ void main() {
 
 class _FakePlaybackState extends Fake implements PlaybackState {
   final List<({List<Map<String, dynamic>> tracks, int startIndex})>
-      playQueueCalls = [];
+  playQueueCalls = [];
 
   Duration fakePosition = Duration.zero;
 
@@ -672,9 +674,6 @@ class _FakeQueueApiClient extends ApiClient {
   }
 
   @override
-  Future<QueueState> shuffleQueue() async => _state;
-
-  @override
   Future<List<MixPlan>> listMixPlans({int limit = 50, int offset = 0}) async =>
       const [];
 
@@ -682,8 +681,7 @@ class _FakeQueueApiClient extends ApiClient {
   Future<MixPlan> createMixPlan({
     required String name,
     required List<MixPlanClip> clips,
-  }) async =>
-      _fakeMixPlan(name: name, clips: clips, version: 1);
+  }) async => _fakeMixPlan(name: name, clips: clips, version: 1);
 
   @override
   Future<MixPlan> updateMixPlan({
@@ -699,22 +697,21 @@ class _FakeQueueApiClient extends ApiClient {
     required String name,
     required List<MixPlanClip> clips,
     required int version,
-  }) =>
-      MixPlan(
-        id: id,
-        schemaVersion: 1,
-        name: name,
-        clips: clips,
-        summary: MixPlanSummary(
-          clipCount: clips.length,
-          trackIds: clips.map((clip) => clip.trackId).toList(),
-          durationMs: clips.fold<int>(
-            0,
-            (max, clip) => clip.timelineEndMs > max ? clip.timelineEndMs : max,
-          ),
-        ),
-        version: version,
-        createdAt: DateTime(2026),
-        updatedAt: DateTime(2026),
-      );
+  }) => MixPlan(
+    id: id,
+    schemaVersion: 1,
+    name: name,
+    clips: clips,
+    summary: MixPlanSummary(
+      clipCount: clips.length,
+      trackIds: clips.map((clip) => clip.trackId).toList(),
+      durationMs: clips.fold<int>(
+        0,
+        (max, clip) => clip.timelineEndMs > max ? clip.timelineEndMs : max,
+      ),
+    ),
+    version: version,
+    createdAt: DateTime(2026),
+    updatedAt: DateTime(2026),
+  );
 }

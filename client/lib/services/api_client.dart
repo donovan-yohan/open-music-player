@@ -20,8 +20,8 @@ class ApiClient {
     this.baseUrl = defaultBaseUrl,
     SecureStorage? storage,
     http.Client? httpClient,
-  })  : _storage = storage,
-        _httpClient = httpClient ?? http.Client();
+  }) : _storage = storage,
+       _httpClient = httpClient ?? http.Client();
 
   void setAccessToken(String token) {
     _accessToken = token;
@@ -113,10 +113,7 @@ class ApiClient {
         .post(
           Uri.parse('$baseUrl/downloads'),
           headers: await _headers,
-          body: jsonEncode({
-            'url': url,
-            'source_type': sourceType,
-          }),
+          body: jsonEncode({'url': url, 'source_type': sourceType}),
         )
         .timeout(timeout);
 
@@ -128,7 +125,9 @@ class ApiClient {
       );
     }
     throw ApiException(
-        'Failed to add download to library', response.statusCode);
+      'Failed to add download to library',
+      response.statusCode,
+    );
   }
 
   Future<QueueState> removeQueueItem(String queueItemId) async {
@@ -196,24 +195,9 @@ class ApiClient {
     }
   }
 
-  Future<QueueState> shuffleQueue() async {
-    final response = await _httpClient.post(
-      Uri.parse('$baseUrl/queue/shuffle'),
-      headers: await _headers,
-    );
-
-    if (response.statusCode == 200) {
-      return QueueState.fromJson(jsonDecode(response.body));
-    }
-    throw ApiException('Failed to shuffle queue', response.statusCode);
-  }
-
   Future<List<MixPlan>> listMixPlans({int limit = 50, int offset = 0}) async {
     final uri = Uri.parse('$baseUrl/mix-plans').replace(
-      queryParameters: {
-        'limit': limit.toString(),
-        'offset': offset.toString(),
-      },
+      queryParameters: {'limit': limit.toString(), 'offset': offset.toString()},
     );
     final response = await _httpClient.get(uri, headers: await _headers);
 
@@ -242,7 +226,8 @@ class ApiClient {
 
     if (response.statusCode == 201) {
       return MixPlan.fromJson(
-          jsonDecode(response.body) as Map<String, dynamic>);
+        jsonDecode(response.body) as Map<String, dynamic>,
+      );
     }
     throw ApiException('Failed to create mix plan', response.statusCode);
   }
@@ -266,25 +251,10 @@ class ApiClient {
 
     if (response.statusCode == 200) {
       return MixPlan.fromJson(
-          jsonDecode(response.body) as Map<String, dynamic>);
+        jsonDecode(response.body) as Map<String, dynamic>,
+      );
     }
     throw ApiException('Failed to update mix plan', response.statusCode);
-  }
-
-  Future<QueueState> replaceQueue({
-    required List<String> trackIds,
-    int startIndex = 0,
-  }) async {
-    final response = await _httpClient.put(
-      Uri.parse('$baseUrl/queue'),
-      headers: await _headers,
-      body: jsonEncode({'trackIds': trackIds, 'startIndex': startIndex}),
-    );
-
-    if (response.statusCode == 200) {
-      return QueueState.fromJson(jsonDecode(response.body));
-    }
-    throw ApiException('Failed to replace queue', response.statusCode);
   }
 }
 

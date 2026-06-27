@@ -30,11 +30,20 @@ scripts/local-low-memory.sh start
 # Check backend health, MinIO bucket access, and Flutter API base URL wiring.
 scripts/local-low-memory.sh smoke
 
+# Seed a tiny deterministic audio fixture into MinIO and verify signed playback.
+scripts/local-low-memory.sh playback-smoke
+
+# Run the full local discovery -> queue -> download -> MinIO -> signed playback gate.
+scripts/local-low-memory.sh e2e-smoke
+
 # Show services.
 scripts/local-low-memory.sh status
 
-# Stop services.
+# Stop services, keeping low-memory PostgreSQL/MinIO volumes for fast reruns.
 scripts/local-low-memory.sh stop
+
+# Destructive cleanup: stop services and remove low-memory containers, network, and volumes.
+scripts/local-low-memory.sh clean
 ```
 
 The compose file is `docker-compose.local-low-memory.yml` if you need to run Docker Compose directly:
@@ -58,6 +67,8 @@ You can print the exact command for the current port settings with:
 scripts/local-low-memory.sh flutter-web-command
 ```
 
+For Tailnet/mobile-device staging, use [`docs/TAILNET_STAGING.md`](TAILNET_STAGING.md) and `scripts/tailnet-staging.sh` to bind the backend and Flutter Web server to Tailnet-reachable URLs.
+
 The helper treats `OMP_API_BASE_URL` as the Flutter `/api/v1` base URL. If you customize the backend root used by smoke checks, set `OMP_BACKEND_BASE_URL` separately, for example `OMP_BACKEND_BASE_URL=http://localhost:18080`.
 
 Use browser devtools responsive/mobile viewport modes for this pass. Do not run Android, Gradle, APK, emulators, or Android SDK commands on the devbox for this workflow.
@@ -70,6 +81,58 @@ Use browser devtools responsive/mobile viewport modes for this pass. Do not run 
 2. `GET /health?deep=true` responds. With Redis disabled, readiness is expected to be `degraded` rather than failed because Redis is intentionally absent.
 3. MinIO bucket access works through the `minio-smoke` service.
 4. Flutter client code is wired to accept `--dart-define=OMP_API_BASE_URL=...`.
+
+`scripts/local-low-memory.sh playback-smoke` runs after `start` without Redis or
+download workers. It generates a tiny deterministic WAV fixture, uploads it to
+the local MinIO bucket, creates a smoke user plus `tracks` and `user_library`
+rows in PostgreSQL, calls `POST /api/v1/playback/urls`, and verifies the signed
+URL returns bytes for `Range: bytes=0-15`. The command prints the created track
+id and compact pass/fail evidence, then writes the full run log under `/tmp` (or
+the path in `OMP_PLAYBACK_SMOKE_LOG`).
+
+`scripts/local-low-memory.sh e2e-smoke` is the heavier #44 gate. It starts the
+downloads profile with Redis enabled and `WORKER_COUNT=1`, then runs
+`scripts/local-e2e-smoke.py`. The smoke:
+
+1. registers/logs in as a deterministic smoke user;
+2. clears that user's queue;
+3. searches `GET /api/v1/discovery/search` for a downloadable source candidate;
+4. queues the candidate through `POST /api/v1/queue/items`;
+5. polls the worker-backed download job until it completes;
+6. verifies the queue item projects as `playable` with a `trackId`;
+7. requests `POST /api/v1/playback/urls` and reads bytes from the signed MinIO URL;
+8. looks up the stored `tracks.storage_key` and runs `mc stat` against the MinIO bucket;
+9. adds the playable track again and reorders the duplicate queue item while the signed playback URL is still live.
+
+Default source discovery is intentionally configurable because live YouTube or
+SoundCloud availability changes. For a stable dogfood run, pin a known small
+source/query in the environment:
+
+```bash
+# Provider search path, exercises discovery/search.
+OMP_E2E_PROVIDER=youtube \
+OMP_E2E_QUERY='known short downloadable test source' \
+scripts/local-low-memory.sh e2e-smoke
+
+# Direct URL fallback, useful when you already picked a known tiny supported URL.
+OMP_E2E_SOURCE_URL='https://www.youtube.com/watch?v=...' \
+scripts/local-low-memory.sh e2e-smoke
+```
+
+The direct URL fallback uses `POST /api/v1/discovery/resolve-url`; use the search
+path above when you need to prove the provider search leg specifically.
+
+Mobile web playback remains the human-visible part of the gate. After the script
+prints `local e2e smoke: ok`, run:
+
+```bash
+scripts/local-low-memory.sh flutter-web-command
+```
+
+Open that Flutter Web app in a mobile viewport or Tailnet phone browser, sign in
+with the smoke user shown by the script defaults, and confirm the printed track
+plays while queue items can still be reordered/slid. Tailnet device staging uses
+[`docs/TAILNET_STAGING.md`](TAILNET_STAGING.md).
 
 If you only need to check the API manually:
 

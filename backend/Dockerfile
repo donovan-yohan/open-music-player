@@ -43,9 +43,6 @@ RUN mkdir -p /app/data /app/tmp && chown -R appuser:appuser /app
 # Copy binary from builder
 COPY --from=builder /server /app/server
 
-# Copy migrations
-COPY --from=builder /app/internal/db/migrations /app/migrations
-
 # Use non-root user
 USER appuser
 

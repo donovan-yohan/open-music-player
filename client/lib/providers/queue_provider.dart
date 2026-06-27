@@ -159,8 +159,9 @@ class QueueProvider extends ChangeNotifier {
 
     final previousQueue = _queue;
     final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
-    final previousTimelineStarts =
-        Map<String, int>.from(_timelineStartOverrides);
+    final previousTimelineStarts = Map<String, int>.from(
+      _timelineStartOverrides,
+    );
     final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
 
     // Optimistic update
@@ -263,8 +264,9 @@ class QueueProvider extends ChangeNotifier {
   Future<void> clearQueue() async {
     final previousQueue = _queue;
     final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
-    final previousTimelineStarts =
-        Map<String, int>.from(_timelineStartOverrides);
+    final previousTimelineStarts = Map<String, int>.from(
+      _timelineStartOverrides,
+    );
     final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
 
     _queue = QueueState.empty();
@@ -280,17 +282,6 @@ class QueueProvider extends ChangeNotifier {
       _trimRanges = previousTrimRanges;
       _timelineStartOverrides = previousTimelineStarts;
       _mixPlanClips = previousMixPlanClips;
-      _error = e.toString();
-      _notifyListeners();
-    }
-  }
-
-  Future<void> shuffleQueue() async {
-    try {
-      _queue = await _apiClient.shuffleQueue();
-      _pruneTimingState();
-      _notifyListeners();
-    } catch (e) {
       _error = e.toString();
       _notifyListeners();
     }
@@ -356,9 +347,9 @@ class QueueProvider extends ChangeNotifier {
       final plans = await _apiClient.listMixPlans();
       if (_disposed) return;
       final plan = plans.cast<MixPlan?>().firstWhere(
-            (plan) => plan?.name == queueTimingMixPlanName,
-            orElse: () => null,
-          );
+        (plan) => plan?.name == queueTimingMixPlanName,
+        orElse: () => null,
+      );
       if (plan == null) {
         _activeMixPlanId = null;
         _activeMixPlanVersion = null;
@@ -446,7 +437,8 @@ class QueueProvider extends ChangeNotifier {
       if (trackId == null) continue;
 
       final existing = _mixPlanClipFor(track);
-      final existingClipId = existing != null &&
+      final existingClipId =
+          existing != null &&
               existing.hasExplicitQueueItemId &&
               existing.queueItemId == track.queueItemId
           ? existing.clipId
@@ -510,7 +502,8 @@ class QueueProvider extends ChangeNotifier {
     Set<String>? playbackTrackIds;
     for (final clip in clips) {
       final hasQueueItemIdentity = queueItemIds.contains(clip.queueItemId);
-      final hasLegacyTrackIdentity = !clip.hasExplicitQueueItemId &&
+      final hasLegacyTrackIdentity =
+          !clip.hasExplicitQueueItemId &&
           (playbackTrackIds ??= _queue.tracks
                   .map(_mixPlanTrackId)
                   .whereType<String>()

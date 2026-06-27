@@ -3,14 +3,18 @@ package processor
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/openmusicplayer/backend/internal/analyzer"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/matcher"
@@ -30,19 +34,49 @@ func (s *fakeObjectStorage) PutObject(ctx context.Context, key string, reader io
 }
 
 type fakeAnalysisStore struct {
-	requestCount int
+	mu               sync.Mutex
+	requestCount     int
+	repairCount      int
+	repairResult     db.AnalysisRepairRequest
+	analyzingCount   int
+	storeResultCount int
+	storedResult     db.AnalysisResult
+	storeResultCh    chan db.AnalysisResult
 }
 
 func (s *fakeAnalysisStore) RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.requestCount++
 	return nil
 }
 
+func (s *fakeAnalysisStore) RequestRepairAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage, force bool, staleAfter time.Duration) (db.AnalysisRepairRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repairCount++
+	if s.repairResult.TrackID == 0 {
+		s.repairResult.TrackID = trackID
+	}
+	return s.repairResult, nil
+}
+
 func (s *fakeAnalysisStore) MarkAnalyzing(ctx context.Context, trackID int64, provenance json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.analyzingCount++
 	return nil
 }
 
 func (s *fakeAnalysisStore) StoreResult(ctx context.Context, trackID int64, result db.AnalysisResult) error {
+	s.mu.Lock()
+	s.storeResultCount++
+	s.storedResult = result
+	ch := s.storeResultCh
+	s.mu.Unlock()
+	if ch != nil {
+		ch <- result
+	}
 	return nil
 }
 
@@ -52,6 +86,30 @@ func (s *fakeAnalysisStore) MarkFailed(ctx context.Context, trackID int64, errTe
 
 func (s *fakeAnalysisStore) MarkUnsupported(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
 	return nil
+}
+
+type fakeAnalyzerClient struct {
+	requests chan analyzer.Request
+	result   *analyzer.Result
+	err      error
+}
+
+func sqlNullString(value string) sql.NullString {
+	return sql.NullString{String: value, Valid: value != ""}
+}
+
+func sqlNullInt32(value int32) sql.NullInt32 {
+	return sql.NullInt32{Int32: value, Valid: value != 0}
+}
+
+func (c *fakeAnalyzerClient) Analyze(ctx context.Context, req analyzer.Request) (*analyzer.Result, error) {
+	if c.requests != nil {
+		c.requests <- req
+	}
+	if c.err != nil {
+		return nil, c.err
+	}
+	return c.result, nil
 }
 
 func TestEnqueueAnalysisSkipsPendingRowWhenAnalyzerClientMissing(t *testing.T) {
@@ -66,6 +124,161 @@ func TestEnqueueAnalysisSkipsPendingRowWhenAnalyzerClientMissing(t *testing.T) {
 
 	if store.requestCount != 0 {
 		t.Fatalf("RequestAnalysis called %d time(s) without analyzer client; would leave an unprocessable pending row", store.requestCount)
+	}
+}
+
+func TestRepairMetadataSkipsUserEditedWithoutForce(t *testing.T) {
+	processor := &Processor{}
+	result, err := processor.RepairMetadata(context.Background(), &db.Track{
+		ID:                 42,
+		Title:              "Human Fixed Title",
+		MetadataUserEdited: true,
+	}, MetadataRepairOptions{})
+	if err != nil {
+		t.Fatalf("RepairMetadata returned error: %v", err)
+	}
+	if result.Status != "skipped" || result.Reason != "user_edited_metadata" {
+		t.Fatalf("result = %+v, want user-edited skip", result)
+	}
+}
+
+func TestRequestAnalysisRepairSkipsWhenAnalyzerClientMissing(t *testing.T) {
+	store := &fakeAnalysisStore{}
+	processor := &Processor{analysisRepo: store}
+
+	result, err := processor.RequestAnalysisRepair(context.Background(), &db.Track{
+		ID:         42,
+		StorageKey: sqlNullString("tracks/fixture/job-fixture.wav"),
+	}, AnalysisRepairOptions{})
+	if err != nil {
+		t.Fatalf("RequestAnalysisRepair returned error: %v", err)
+	}
+	if result.Status != "skipped" || result.Reason != "analyzer_client_disabled" {
+		t.Fatalf("result = %+v, want analyzer disabled skip", result)
+	}
+	if store.repairCount != 0 {
+		t.Fatalf("repair store called %d time(s) without analyzer client", store.repairCount)
+	}
+}
+
+func TestRequestAnalysisRepairDoesNotRunActiveNonStaleRequest(t *testing.T) {
+	store := &fakeAnalysisStore{repairResult: db.AnalysisRepairRequest{
+		TrackID:        42,
+		PreviousStatus: db.AnalysisStatusAnalyzing,
+		Status:         db.AnalysisStatusAnalyzing,
+		Queued:         false,
+		Reason:         "active_not_stale",
+	}}
+	client := &fakeAnalyzerClient{requests: make(chan analyzer.Request, 1)}
+	processor := &Processor{analysisRepo: store, analyzerClient: client}
+
+	result, err := processor.RequestAnalysisRepair(context.Background(), &db.Track{
+		ID:         42,
+		Title:      "Fixture Song",
+		StorageKey: sqlNullString("tracks/fixture/job-fixture.wav"),
+		SourceType: sqlNullString("fixture"),
+		DurationMs: sqlNullInt32(1000),
+	}, AnalysisRepairOptions{})
+	if err != nil {
+		t.Fatalf("RequestAnalysisRepair returned error: %v", err)
+	}
+	if result.Queued || result.Reason != "active_not_stale" {
+		t.Fatalf("result = %+v, want active non-stale skip", result)
+	}
+	select {
+	case req := <-client.requests:
+		t.Fatalf("unexpected analyzer request: %+v", req)
+	default:
+	}
+}
+
+func TestRequestAnalysisRepairQueuesAndRunsAnalyzer(t *testing.T) {
+	store := &fakeAnalysisStore{
+		repairResult:  db.AnalysisRepairRequest{TrackID: 42, Status: db.AnalysisStatusPending, Queued: true, Reason: "failed_retry"},
+		storeResultCh: make(chan db.AnalysisResult, 1),
+	}
+	client := &fakeAnalyzerClient{
+		requests: make(chan analyzer.Request, 1),
+		result: &analyzer.Result{
+			SchemaVersion:  analyzer.SchemaVersion,
+			SummaryJSON:    json.RawMessage(`{"bpm":{"value":124}}`),
+			ArtifactsJSON:  json.RawMessage(`{"waveform_resolution":"coarse_fixture"}`),
+			ProvenanceJSON: json.RawMessage(`{"analyzer":"fake"}`),
+		},
+	}
+	processor := &Processor{analysisRepo: store, analyzerClient: client}
+
+	result, err := processor.RequestAnalysisRepair(context.Background(), &db.Track{
+		ID:         42,
+		Title:      "Fixture Song",
+		Artist:     sqlNullString("Fixture Artist"),
+		StorageKey: sqlNullString("tracks/fixture/job-fixture.wav"),
+		SourceURL:  sqlNullString("fixture://silence"),
+		SourceType: sqlNullString("fixture"),
+	}, AnalysisRepairOptions{})
+	if err != nil {
+		t.Fatalf("RequestAnalysisRepair returned error: %v", err)
+	}
+	if !result.Queued || result.Reason != "failed_retry" {
+		t.Fatalf("result = %+v, want queued retry", result)
+	}
+	select {
+	case req := <-client.requests:
+		if req.TrackID != 42 || req.StorageKey != "tracks/fixture/job-fixture.wav" {
+			t.Fatalf("request = %+v", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for analyzer request")
+	}
+	select {
+	case <-store.storeResultCh:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stored result")
+	}
+}
+
+func TestEnqueueAnalysisRunsConfiguredAnalyzerAndStoresResult(t *testing.T) {
+	store := &fakeAnalysisStore{storeResultCh: make(chan db.AnalysisResult, 1)}
+	client := &fakeAnalyzerClient{
+		requests: make(chan analyzer.Request, 1),
+		result: &analyzer.Result{
+			SchemaVersion:  analyzer.SchemaVersion,
+			SummaryJSON:    json.RawMessage("{\"bpm\":{\"value\":124},\"waveform\":{\"sample_count\":6}}"),
+			ArtifactsJSON:  json.RawMessage("{\"waveform_resolution\":\"coarse_fixture\"}"),
+			ProvenanceJSON: json.RawMessage("{\"analyzer\":\"fake\"}"),
+		},
+	}
+	processor := &Processor{analysisRepo: store, analyzerClient: client}
+
+	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42}, &TrackMetadata{
+		StorageKey: "tracks/fixture/job-fixture.wav",
+		SourceURL:  "fixture://silence",
+		SourceType: "fixture",
+		DurationMs: 197500,
+		Title:      "Fixture Song",
+		Artist:     "Fixture Artist",
+	})
+
+	select {
+	case req := <-client.requests:
+		if req.TrackID != 42 || req.StorageKey != "tracks/fixture/job-fixture.wav" || req.SchemaVersion != analyzer.SchemaVersion {
+			t.Fatalf("analyzer request = %#v", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for analyzer request")
+	}
+	select {
+	case result := <-store.storeResultCh:
+		if string(result.SummaryJSON) != string(client.result.SummaryJSON) {
+			t.Fatalf("stored summary = %s, want %s", result.SummaryJSON, client.result.SummaryJSON)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stored analysis result")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.requestCount != 1 || store.analyzingCount != 1 || store.storeResultCount != 1 {
+		t.Fatalf("analysis calls = request:%d analyzing:%d store:%d, want 1/1/1", store.requestCount, store.analyzingCount, store.storeResultCount)
 	}
 }
 

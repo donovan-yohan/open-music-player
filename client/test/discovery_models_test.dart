@@ -108,53 +108,6 @@ void main() {
     expect(response.sections.last.items.single.candidate?.downloadable, isTrue);
   });
 
-  test('download job snapshot accepts queue API camelCase fields', () {
-    final snapshot = DownloadJobSnapshot.fromJson({
-      'downloadJobId': 'job-camel',
-      'status': 'completed',
-      'progress': 100,
-      'url': 'https://soundcloud.com/demo/track',
-      'sourceType': 'soundcloud',
-      'trackId': 17,
-    });
-
-    expect(snapshot.jobId, 'job-camel');
-    expect(snapshot.sourceType, 'soundcloud');
-    expect(snapshot.trackId, 17);
-    expect(snapshot.isPlayable, isTrue);
-  });
-
-  test('download queue item transitions to playable from completed job', () {
-    const candidate = DiscoveryCandidate(
-      candidateId: 'soundcloud:def',
-      provider: 'soundcloud',
-      sourceId: 'def',
-      sourceUrl: 'https://soundcloud.com/demo/track',
-      title: 'Demo Track',
-      durationMs: 61000,
-      downloadable: true,
-      playable: false,
-    );
-    const item = DiscoveryQueueItem(
-      localId: 'soundcloud:def',
-      candidate: candidate,
-    );
-
-    final updated = item.withSnapshot(
-      const DownloadJobSnapshot(
-        jobId: 'job-1',
-        status: 'completed',
-        progress: 100,
-        url: 'https://soundcloud.com/demo/track',
-        sourceType: 'soundcloud',
-        trackId: 17,
-      ),
-    );
-
-    expect(updated.isPlayable, isTrue);
-    expect(updated.statusLabel, 'playable');
-    expect(updated.trackId, 17);
-  });
   test('queue projection parses server-backed source state', () {
     final state = DiscoveryQueueState.fromJson({
       'items': [
@@ -200,33 +153,31 @@ void main() {
     expect(item.candidate.title, 'Plastic Love');
   });
 
-  test(
-    'queue projection accepts legacy snake case from backend while normalizing states',
-    () {
-      final state = DiscoveryQueueState.fromJson({
-        'items': [
-          {
-            'id': 'legacy-q',
-            'position': 1,
-            'playback_state': 'pendingDownload',
-            'download_job_id': 'job-2',
-            'source_candidate': {
-              'candidateId': 'soundcloud:def',
-              'provider': 'soundcloud',
-              'sourceUrl': 'https://soundcloud.com/demo/track',
-              'title': 'Demo Track',
-              'downloadable': true,
-            },
+  test('queue projection ignores obsolete snake_case queue fields', () {
+    final state = DiscoveryQueueState.fromJson({
+      'items': [
+        {
+          'id': 'legacy-q',
+          'position': 1,
+          'playback_state': 'pendingDownload',
+          'download_job_id': 'job-2',
+          'source_candidate': {
+            'candidateId': 'soundcloud:def',
+            'provider': 'soundcloud',
+            'sourceUrl': 'https://soundcloud.com/demo/track',
+            'title': 'Demo Track',
+            'downloadable': true,
           },
-        ],
-        'current_position': 0,
-      });
+        },
+      ],
+      'current_position': 7,
+    });
 
-      final item = state.items.single;
-      expect(item.queueItemId, 'legacy-q');
-      expect(item.playbackState, 'queued');
-      expect(item.downloadJobId, 'job-2');
-      expect(item.isActive, isTrue);
-    },
-  );
+    final item = state.items.single;
+    expect(state.currentPosition, 0);
+    expect(item.queueItemId, isNull);
+    expect(item.playbackState, 'queued');
+    expect(item.downloadJobId, isNull);
+    expect(item.candidate.title, 'Queued track');
+  });
 }

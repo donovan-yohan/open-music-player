@@ -3,7 +3,6 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: omp-lowmem-backend
     restart: unless-stopped
     ports:
       - "${SERVER_PORT:-8080}:8080"
@@ -23,7 +22,7 @@ services:
       REDIS_URL: redis://redis:6379
 
       MINIO_ENDPOINT: minio:9000
-      MINIO_PUBLIC_ENDPOINT: http://localhost:${MINIO_PORT:-9000}
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:${MINIO_PORT:-9000}}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-audio-files}
@@ -50,7 +49,6 @@ services:
 
   postgres:
     image: postgres:15-alpine
-    container_name: omp-lowmem-postgres
     restart: unless-stopped
     ports:
       - "${POSTGRES_PORT:-5434}:5432"
@@ -71,7 +69,6 @@ services:
 
   minio:
     image: minio/minio:latest
-    container_name: omp-lowmem-minio
     restart: unless-stopped
     ports:
       - "${MINIO_PORT:-9000}:9000"
@@ -93,7 +90,6 @@ services:
 
   minio-init:
     image: minio/mc:latest
-    container_name: omp-lowmem-minio-init
     depends_on:
       minio:
         condition: service_healthy
@@ -113,7 +109,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: omp-lowmem-redis
     restart: unless-stopped
     profiles:
       - downloads
