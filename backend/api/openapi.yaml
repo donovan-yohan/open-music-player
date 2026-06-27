@@ -685,7 +685,7 @@ paths:
           in: query
           schema:
             type: string
-            enum: [pending, downloading, completed, failed, cancelled]
+            enum: [queued, downloading, processing, uploading, complete, failed]
       responses:
         '200':
           description: List of download jobs
@@ -699,7 +699,7 @@ paths:
     post:
       tags:
         - Downloads
-      summary: Initiate a new download
+      summary: Queue a direct source URL for background library import
       operationId: initiateDownload
       requestBody:
         required: true
@@ -708,8 +708,8 @@ paths:
             schema:
               $ref: '#/components/schemas/InitiateDownloadRequest'
       responses:
-        '202':
-          description: Download initiated
+        '201':
+          description: Download job created
           content:
             application/json:
               schema:
@@ -719,14 +719,14 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /downloads/{downloadId}:
+  /downloads/{job_id}:
     get:
       tags:
         - Downloads
       summary: Get download job status
       operationId: getDownloadStatus
       parameters:
-        - $ref: '#/components/parameters/DownloadIdParam'
+        - $ref: '#/components/parameters/DownloadJobIdParam'
       responses:
         '200':
           description: Download job details
@@ -739,20 +739,6 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
-    delete:
-      tags:
-        - Downloads
-      summary: Cancel a download job
-      operationId: cancelDownload
-      parameters:
-        - $ref: '#/components/parameters/DownloadIdParam'
-      responses:
-        '204':
-          description: Download cancelled
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
 
   /ws/progress:
     get:
@@ -779,7 +765,7 @@ paths:
         }
         ```
 
-        **Status values:** `pending`, `downloading`, `processing`, `completed`, `failed`
+        **Status values:** `queued`, `downloading`, `processing`, `uploading`, `complete`, `failed`
 
         The connection will automatically receive ping/pong messages every 54 seconds
         to keep the connection alive.
@@ -1061,8 +1047,8 @@ components:
         type: string
         format: uuid
 
-    DownloadIdParam:
-      name: downloadId
+    DownloadJobIdParam:
+      name: job_id
       in: path
       required: true
       description: Download job unique identifier
@@ -1936,79 +1922,74 @@ components:
     DownloadJob:
       type: object
       required:
-        - id
-        - trackId
+        - job_id
         - status
-        - createdAt
+        - progress
+        - url
+        - source_type
+        - created_at
       properties:
-        id:
+        job_id:
           type: string
           format: uuid
-        trackId:
-          type: string
-          format: uuid
-        trackTitle:
-          type: string
         status:
           type: string
-          enum: [pending, downloading, completed, failed, cancelled]
+          enum: [queued, downloading, processing, uploading, complete, failed]
         progress:
-          type: number
-          format: float
+          type: integer
           minimum: 0
           maximum: 100
           description: Download progress percentage
-        downloadedBytes:
-          type: integer
-        totalBytes:
-          type: integer
-        speed:
-          type: integer
-          description: Download speed in bytes per second
         error:
           type: string
           description: Error message if status is failed
-        filePath:
+        url:
           type: string
-          description: Local file path when completed
-        createdAt:
+          format: uri
+        source_type:
+          type: string
+          enum: [youtube, soundcloud]
+        track_id:
+          type: integer
+          format: int64
+          nullable: true
+        created_at:
           type: string
           format: date-time
-        completedAt:
+        started_at:
           type: string
           format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
 
     DownloadListResponse:
       type: object
       required:
-        - downloads
-        - total
-        - limit
-        - offset
+        - jobs
       properties:
-        downloads:
+        jobs:
           type: array
           items:
             $ref: '#/components/schemas/DownloadJob'
-        total:
-          type: integer
-        limit:
-          type: integer
-        offset:
-          type: integer
 
     InitiateDownloadRequest:
       type: object
       required:
-        - trackId
+        - url
+        - source_type
       properties:
-        trackId:
+        url:
           type: string
-          format: uuid
-        quality:
+          format: uri
+        source_type:
           type: string
-          enum: [low, medium, high, lossless]
-          default: high
+          enum: [youtube, soundcloud]
+        page_metadata:
+          type: object
+          additionalProperties: true
 
     # ========================================================================
     # Queue Schemas

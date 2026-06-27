@@ -4,23 +4,21 @@ This document provides context and guidelines for AI assistants working on the O
 
 ## Project Overview
 
-Open Music Player is a self-hosted music library management system with four main components:
+Open Music Player is a self-hosted music library management system with three main components:
 
 | Component | Language | Location | Purpose |
 |-----------|----------|----------|---------|
-| Backend | Go | `backend/` | REST API server |
+| Backend | Go | `backend/` | REST API server, migrations, download workers, MusicBrainz matching |
 | Client | Flutter/Dart | `client/` | Cross-platform mobile/desktop/web app |
 | Extension | TypeScript | `extension/` | Browser extension for Chrome/Firefox |
-| Tools | Rust | `src/` | Database migrations and MusicBrainz API client |
 
 ## Development Commands
 
 ### Backend (Go)
 ```bash
 cd backend
-go run ./cmd/server          # Start server
+go run ./cmd/server          # Start server; startup runs the idempotent schema in internal/db/db.go
 go test ./...                # Run tests
-make migrate-up              # Run migrations
 ```
 
 ### Client (Flutter)
@@ -37,12 +35,6 @@ cd extension
 npm install                  # Install dependencies
 npm run dev                  # Development build with watch
 npm run build                # Production build
-```
-
-### Rust Tools
-```bash
-cargo run                    # Run migrations
-cargo test                   # Run tests (requires DATABASE_URL)
 ```
 
 ### Infrastructure
@@ -69,7 +61,7 @@ docker compose down          # Stop services
 ### Database Schema
 Key tables: `users`, `tracks`, `user_library`, `playlists`, `playlist_tracks`, `download_jobs`
 
-Migrations are in `migrations/` directory using sqlx.
+Migrations are owned by the Go backend startup path in `backend/internal/db/db.go`. Keep schema changes there until the project reintroduces a single external migration authority.
 
 ## Code Conventions
 
@@ -91,12 +83,6 @@ Migrations are in `migrations/` directory using sqlx.
 - Webpack for bundling
 - Content scripts inject into YouTube/SoundCloud pages
 
-### Rust (Tools)
-- Async with Tokio runtime
-- sqlx for database access with compile-time query checking
-- MusicBrainz client respects 1 req/sec rate limit
-- Error handling with `thiserror` and `anyhow`
-
 ## Testing
 
 ### Running Tests
@@ -109,9 +95,6 @@ cd client && flutter test
 
 # Extension
 cd extension && npm run type-check
-
-# Rust (requires DATABASE_URL)
-cargo test
 ```
 
 ### Test Database
@@ -143,14 +126,11 @@ Key variables (see `.env.example` for full list):
 3. Create provider if state management needed
 4. Write widget tests
 
-### Adding a database migration
-```bash
-cd backend
-make migrate-create
-# Enter migration name when prompted
-# Edit the generated up/down SQL files
-make migrate-up
-```
+### Adding database fields
+1. Update the idempotent schema in `backend/internal/db/db.go`
+2. Update repository models/helpers in `backend/internal/db/`
+3. Add or update repository/API tests that exercise a fresh migrated database
+4. Run targeted backend tests from `backend/`
 
 ## CI/CD
 

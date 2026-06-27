@@ -167,7 +167,7 @@ func main() {
 		"metadata_llm_model":   cfg.MetadataLLMModel,
 	})
 	matcherHandlers := matcher.NewHandler(matcherService, trackRepo)
-	analyzerClient, err := analyzer.NewServiceClient(analyzer.ServiceConfig{
+	serviceAnalyzerClient, err := analyzer.NewServiceClient(analyzer.ServiceConfig{
 		Enabled:   cfg.AnalyzerEnabled,
 		BaseURL:   cfg.AnalyzerBaseURL,
 		AuthToken: cfg.AnalyzerAuthToken,
@@ -178,6 +178,10 @@ func main() {
 			"base_url": cfg.AnalyzerBaseURL,
 		}, err)
 		os.Exit(1)
+	}
+	var analyzerClient analyzer.Client
+	if serviceAnalyzerClient != nil {
+		analyzerClient = serviceAnalyzerClient
 	}
 	log.Info(ctx, "Initialized audio analyzer client", map[string]interface{}{
 		"analyzer_enabled": analyzerClient != nil,
