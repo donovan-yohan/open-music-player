@@ -30,6 +30,9 @@ scripts/local-low-memory.sh start
 # Check backend health, MinIO bucket access, and Flutter API base URL wiring.
 scripts/local-low-memory.sh smoke
 
+# Seed a tiny deterministic audio fixture into MinIO and verify signed playback.
+scripts/local-low-memory.sh playback-smoke
+
 # Show services.
 scripts/local-low-memory.sh status
 
@@ -70,6 +73,14 @@ Use browser devtools responsive/mobile viewport modes for this pass. Do not run 
 2. `GET /health?deep=true` responds. With Redis disabled, readiness is expected to be `degraded` rather than failed because Redis is intentionally absent.
 3. MinIO bucket access works through the `minio-smoke` service.
 4. Flutter client code is wired to accept `--dart-define=OMP_API_BASE_URL=...`.
+
+`scripts/local-low-memory.sh playback-smoke` runs after `start` without Redis or
+download workers. It generates a tiny deterministic WAV fixture, uploads it to
+the local MinIO bucket, creates a smoke user plus `tracks` and `user_library`
+rows in PostgreSQL, calls `POST /api/v1/playback/urls`, and verifies the signed
+URL returns bytes for `Range: bytes=0-15`. The command prints the created track
+id and compact pass/fail evidence, then writes the full run log under `/tmp` (or
+the path in `OMP_PLAYBACK_SMOKE_LOG`).
 
 If you only need to check the API manually:
 
