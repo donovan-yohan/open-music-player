@@ -200,33 +200,31 @@ void main() {
     expect(item.candidate.title, 'Plastic Love');
   });
 
-  test(
-    'queue projection accepts legacy snake case from backend while normalizing states',
-    () {
-      final state = DiscoveryQueueState.fromJson({
-        'items': [
-          {
-            'id': 'legacy-q',
-            'position': 1,
-            'playback_state': 'pendingDownload',
-            'download_job_id': 'job-2',
-            'source_candidate': {
-              'candidateId': 'soundcloud:def',
-              'provider': 'soundcloud',
-              'sourceUrl': 'https://soundcloud.com/demo/track',
-              'title': 'Demo Track',
-              'downloadable': true,
-            },
+  test('queue projection ignores obsolete snake_case queue fields', () {
+    final state = DiscoveryQueueState.fromJson({
+      'items': [
+        {
+          'id': 'legacy-q',
+          'position': 1,
+          'playback_state': 'pendingDownload',
+          'download_job_id': 'job-2',
+          'source_candidate': {
+            'candidateId': 'soundcloud:def',
+            'provider': 'soundcloud',
+            'sourceUrl': 'https://soundcloud.com/demo/track',
+            'title': 'Demo Track',
+            'downloadable': true,
           },
-        ],
-        'current_position': 0,
-      });
+        },
+      ],
+      'current_position': 7,
+    });
 
-      final item = state.items.single;
-      expect(item.queueItemId, 'legacy-q');
-      expect(item.playbackState, 'queued');
-      expect(item.downloadJobId, 'job-2');
-      expect(item.isActive, isTrue);
-    },
-  );
+    final item = state.items.single;
+    expect(state.currentPosition, 0);
+    expect(item.queueItemId, isNull);
+    expect(item.playbackState, 'queued');
+    expect(item.downloadJobId, isNull);
+    expect(item.candidate.title, 'Queued track');
+  });
 }
