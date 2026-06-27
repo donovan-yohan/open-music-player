@@ -101,6 +101,18 @@ String inferSharedUrlSourceId(Uri uri, String provider) {
   return uri.toString();
 }
 
+bool isYouTubePlaylistUrl(String? text) {
+  final url = extractFirstHttpUrl(text);
+  if (url == null) return false;
+
+  final uri = Uri.tryParse(url);
+  if (uri == null || !uri.hasScheme || uri.host.isEmpty) return false;
+  if (inferSharedUrlProvider(uri) != 'youtube') return false;
+
+  final playlistId = uri.queryParameters['list']?.trim();
+  return playlistId != null && playlistId.isNotEmpty;
+}
+
 Uri _normalizeUri(Uri uri) {
   final withoutFragment = uri.toString().split('#').first;
   return Uri.parse(withoutFragment);
