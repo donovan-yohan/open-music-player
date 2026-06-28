@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../core/storage/offline_database.dart';
 import '../../core/network/connectivity_service.dart';
@@ -225,6 +226,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
       appBar: AppBar(
         title: const Text('Library'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.video_library_outlined),
+            onPressed: () => context.push('/playlists/import'),
+            tooltip: 'Import YouTube playlist',
+          ),
           _buildVerificationFilter(context),
           _buildFilterChip(context),
         ],

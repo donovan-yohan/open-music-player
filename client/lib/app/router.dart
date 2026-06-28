@@ -15,6 +15,7 @@ import '../features/share/share_import_screen.dart';
 import '../features/downloads/downloads_screen.dart';
 import '../features/playlists/playlists_screen.dart';
 import '../features/playlists/playlist_detail_screen.dart';
+import '../features/playlists/playlist_import_screen.dart';
 import '../screens/queue_screen.dart';
 
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
@@ -60,6 +61,10 @@ GoRouter createRouter(AuthState authState) {
       GoRoute(
         path: '/playlists',
         builder: (context, state) => const PlaylistsScreen(),
+      ),
+      GoRoute(
+        path: '/playlists/import',
+        builder: (context, state) => const PlaylistImportScreen(),
       ),
       GoRoute(
         path: '/playlists/:id',

@@ -89,7 +89,7 @@ String inferSharedUrlSourceId(Uri uri, String provider) {
     if (uri.host.toLowerCase() == 'youtu.be' && uri.pathSegments.isNotEmpty) {
       return uri.pathSegments.first;
     }
-    final videoId = uri.queryParameters['v'];
+    final videoId = _queryParameter(uri, 'v');
     if (videoId != null && videoId.isNotEmpty) return videoId;
     if (uri.pathSegments.isNotEmpty) return uri.pathSegments.join('/');
   }
@@ -99,6 +99,26 @@ String inferSharedUrlSourceId(Uri uri, String provider) {
   }
 
   return uri.toString();
+}
+
+bool isYouTubePlaylistUrl(String? text) {
+  final url = extractFirstHttpUrl(text);
+  if (url == null) return false;
+
+  final uri = Uri.tryParse(url);
+  if (uri == null || !uri.hasScheme || uri.host.isEmpty) return false;
+  if (inferSharedUrlProvider(uri) != 'youtube') return false;
+
+  final playlistId = _queryParameter(uri, 'list')?.trim();
+  return playlistId != null && playlistId.isNotEmpty;
+}
+
+String? _queryParameter(Uri uri, String name) {
+  try {
+    return uri.queryParameters[name];
+  } on FormatException {
+    return null;
+  }
 }
 
 Uri _normalizeUri(Uri uri) {
