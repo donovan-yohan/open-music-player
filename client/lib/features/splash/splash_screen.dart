@@ -23,7 +23,9 @@ class _SplashScreenState extends State<SplashScreen> {
 
   Future<void> _checkAuth() async {
     final authState = context.read<AuthState>();
-    await authState.checkAuthStatus();
+    if (authState.status == AuthStatus.initial) {
+      await authState.checkAuthStatus();
+    }
 
     if (!mounted) return;
 

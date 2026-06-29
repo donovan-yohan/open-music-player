@@ -7,7 +7,9 @@ class AuthResult {
   final bool success;
   final String? error;
 
-  const AuthResult.success() : success = true, error = null;
+  const AuthResult.success()
+      : success = true,
+        error = null;
   const AuthResult.failure(this.error) : success = false;
 }
 
@@ -16,8 +18,8 @@ class AuthService {
   final SecureStorage _storage;
 
   AuthService({required ApiClient api, required SecureStorage storage})
-    : _api = api,
-      _storage = storage;
+      : _api = api,
+        _storage = storage;
 
   Future<AuthResult> register({
     required String email,
@@ -83,19 +85,12 @@ class AuthService {
   }
 
   Future<bool> isAuthenticated() async {
-    return _storage.hasTokens();
+    return _api.refreshSession();
   }
 
   String _extractErrorMessage(DioException e) {
-    if (e.response?.data is Map) {
-      final data = e.response!.data as Map;
-      if (data.containsKey('message')) {
-        return data['message'] as String;
-      }
-      if (data.containsKey('error')) {
-        return data['error'] as String;
-      }
-    }
+    final responseMessage = _messageFromPayload(e.response?.data);
+    if (responseMessage != null) return responseMessage;
 
     switch (e.response?.statusCode) {
       case 400:
@@ -118,5 +113,23 @@ class AuthService {
         }
         return 'An error occurred. Please try again.';
     }
+  }
+
+  String? _messageFromPayload(dynamic payload) {
+    if (payload is! Map) return null;
+
+    final message = payload['message'];
+    if (message is String && message.isNotEmpty) return message;
+
+    final error = payload['error'];
+    if (error is String && error.isNotEmpty) return error;
+    if (error is Map) {
+      final nestedMessage = error['message'];
+      if (nestedMessage is String && nestedMessage.isNotEmpty) {
+        return nestedMessage;
+      }
+    }
+
+    return null;
   }
 }
