@@ -130,26 +130,37 @@ class Track {
             .toList() ??
         [];
 
+    final id = _intValue(json['id']);
+
     return Track(
-      id: json['id'] as int,
-      identityHash: json['identity_hash'] as String,
+      id: id,
+      identityHash:
+          _optionalString(json['identityHash'] ?? json['identity_hash']) ??
+              'track-$id',
       title: json['title'] as String,
       artist: json['artist'] as String?,
       album: json['album'] as String?,
-      durationMs: json['duration_ms'] as int?,
+      durationMs: _optionalInt(json['durationMs'] ?? json['duration_ms']),
       version: json['version'] as String?,
-      mbRecordingId: json['mb_recording_id'] as String?,
-      mbReleaseId: json['mb_release_id'] as String?,
-      mbArtistId: json['mb_artist_id'] as String?,
-      mbVerified: json['mb_verified'] as bool? ?? false,
-      sourceUrl: json['source_url'] as String?,
-      sourceType: json['source_type'] as String?,
-      storageKey: json['storage_key'] as String?,
-      fileSizeBytes: json['file_size_bytes'] as int?,
+      mbRecordingId: json['mbRecordingId'] as String? ??
+          json['mb_recording_id'] as String?,
+      mbReleaseId:
+          json['mbReleaseId'] as String? ?? json['mb_release_id'] as String?,
+      mbArtistId:
+          json['mbArtistId'] as String? ?? json['mb_artist_id'] as String?,
+      mbVerified:
+          json['mbVerified'] as bool? ?? json['mb_verified'] as bool? ?? false,
+      sourceUrl: json['sourceUrl'] as String? ?? json['source_url'] as String?,
+      sourceType:
+          json['sourceType'] as String? ?? json['source_type'] as String?,
+      storageKey:
+          json['storageKey'] as String? ?? json['storage_key'] as String?,
+      fileSizeBytes:
+          _optionalInt(json['fileSizeBytes'] ?? json['file_size_bytes']),
       metadata: json['metadata_json'] as Map<String, dynamic>?,
       mbSuggestions: suggestions,
-      createdAt: DateTime.parse(json['created_at'] as String),
-      updatedAt: DateTime.parse(json['updated_at'] as String),
+      createdAt: _dateTimeValue(json['createdAt'] ?? json['created_at']),
+      updatedAt: _dateTimeValue(json['updatedAt'] ?? json['updated_at']),
     );
   }
 
@@ -332,4 +343,28 @@ class Track {
       updatedAt: updatedAt ?? this.updatedAt,
     );
   }
+}
+
+String? _optionalString(dynamic value) {
+  if (value is! String) return null;
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+int _intValue(dynamic value, {int fallback = 0}) =>
+    _optionalInt(value) ?? fallback;
+
+int? _optionalInt(dynamic value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value);
+  return null;
+}
+
+DateTime _dateTimeValue(dynamic value) {
+  if (value is String) {
+    final parsed = DateTime.tryParse(value);
+    if (parsed != null) return parsed;
+  }
+  return DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
 }

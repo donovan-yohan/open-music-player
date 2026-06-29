@@ -32,7 +32,8 @@ class PlaylistService {
     );
 
     final data = response.data!;
-    final playlistsJson = data['playlists'] as List? ?? [];
+    final playlistsJson =
+        data['playlists'] as List? ?? data['data'] as List? ?? [];
     final playlists = playlistsJson.map((p) => Playlist.fromJson(p)).toList();
 
     return PlaylistsResponse(
@@ -85,7 +86,7 @@ class PlaylistService {
   Future<void> addTracks(int playlistId, List<int> trackIds) async {
     await _api.post(
       '/playlists/$playlistId/tracks',
-      data: {'track_ids': trackIds},
+      data: {'trackIds': trackIds},
     );
   }
 
@@ -101,8 +102,8 @@ class PlaylistService {
     await _api.put(
       '/playlists/$playlistId/tracks/reorder',
       data: {
-        'track_id': trackId,
-        'new_position': newPosition,
+        'trackId': trackId,
+        'newPosition': newPosition,
       },
     );
   }
