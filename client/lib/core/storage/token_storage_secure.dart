@@ -16,6 +16,7 @@ TokenStorageBackend createTokenStorageBackend({FlutterSecureStorage? storage}) {
 class SecureTokenStorage implements TokenStorageBackend {
   static const _accessTokenKey = 'access_token';
   static const _refreshTokenKey = 'refresh_token';
+  static const _biometricUnlockKey = 'biometric_unlock_enabled';
 
   final FlutterSecureStorage _storage;
 
@@ -48,6 +49,7 @@ class SecureTokenStorage implements TokenStorageBackend {
     await Future.wait([
       _storage.delete(key: _accessTokenKey),
       _storage.delete(key: _refreshTokenKey),
+      _storage.delete(key: _biometricUnlockKey),
     ]);
   }
 
@@ -55,5 +57,19 @@ class SecureTokenStorage implements TokenStorageBackend {
   Future<bool> hasTokens() async {
     final refreshToken = await getRefreshToken();
     return refreshToken != null && refreshToken.isNotEmpty;
+  }
+
+  @override
+  Future<void> setBiometricUnlockEnabled(bool enabled) async {
+    if (enabled) {
+      await _storage.write(key: _biometricUnlockKey, value: 'true');
+    } else {
+      await _storage.delete(key: _biometricUnlockKey);
+    }
+  }
+
+  @override
+  Future<bool> isBiometricUnlockEnabled() async {
+    return await _storage.read(key: _biometricUnlockKey) == 'true';
   }
 }

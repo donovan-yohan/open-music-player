@@ -164,11 +164,24 @@ class _MemoryTokenStorage implements TokenStorageBackend {
   Future<void> clearTokens() async {
     accessToken = null;
     refreshToken = null;
+    biometricUnlockEnabled = false;
   }
 
   @override
   Future<bool> hasTokens() async {
-    return accessToken != null && accessToken!.isNotEmpty;
+    return refreshToken != null && refreshToken!.isNotEmpty;
+  }
+
+  bool biometricUnlockEnabled = false;
+
+  @override
+  Future<void> setBiometricUnlockEnabled(bool enabled) async {
+    biometricUnlockEnabled = enabled;
+  }
+
+  @override
+  Future<bool> isBiometricUnlockEnabled() async {
+    return biometricUnlockEnabled;
   }
 }
 

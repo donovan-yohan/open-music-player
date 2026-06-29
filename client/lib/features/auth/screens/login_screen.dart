@@ -116,6 +116,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     controller: _emailController,
                     keyboardType: TextInputType.emailAddress,
                     textInputAction: TextInputAction.next,
+                    autofillHints: const [AutofillHints.email],
                     autocorrect: false,
                     enabled: !authState.isLoading,
                     decoration: const InputDecoration(
@@ -130,6 +131,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     controller: _passwordController,
                     obscureText: _obscurePassword,
                     textInputAction: TextInputAction.done,
+                    autofillHints: const [AutofillHints.password],
                     enabled: !authState.isLoading,
                     onFieldSubmitted: (_) => _handleLogin(),
                     decoration: InputDecoration(

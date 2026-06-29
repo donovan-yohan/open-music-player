@@ -36,4 +36,12 @@ class SecureStorage {
   Future<bool> hasTokens() {
     return _tokens.hasTokens();
   }
+
+  Future<void> setBiometricUnlockEnabled(bool enabled) {
+    return _tokens.setBiometricUnlockEnabled(enabled);
+  }
+
+  Future<bool> isBiometricUnlockEnabled() {
+    return _tokens.isBiometricUnlockEnabled();
+  }
 }

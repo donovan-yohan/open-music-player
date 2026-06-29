@@ -8,4 +8,6 @@ abstract interface class TokenStorageBackend {
   Future<String?> getRefreshToken();
   Future<void> clearTokens();
   Future<bool> hasTokens();
+  Future<void> setBiometricUnlockEnabled(bool enabled);
+  Future<bool> isBiometricUnlockEnabled();
 }

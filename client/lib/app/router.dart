@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/auth/auth_state.dart';
+import '../features/auth/screens/biometric_unlock_screen.dart';
 import '../features/auth/screens/login_screen.dart';
 import '../features/auth/screens/register_screen.dart';
 import '../features/splash/splash_screen.dart';
@@ -29,6 +30,10 @@ GoRouter createRouter(AuthState authState) {
     redirect: (context, state) => _authRedirect(authState, state),
     routes: [
       GoRoute(path: '/', builder: (context, state) => const SplashScreen()),
+      GoRoute(
+        path: '/unlock',
+        builder: (context, state) => const BiometricUnlockScreen(),
+      ),
       GoRoute(path: '/login', builder: (context, state) => const LoginScreen()),
       GoRoute(
         path: '/register',
@@ -119,10 +124,19 @@ GoRouter createRouter(AuthState authState) {
 
 String? _authRedirect(AuthState authState, GoRouterState state) {
   final path = state.uri.path;
-  const publicPaths = {'/', '/login', '/register', '/share'};
+  const publicPaths = {'/', '/unlock', '/login', '/register', '/share'};
   final isPublicPath = publicPaths.contains(path);
 
-  if (!authState.isAuthenticated && !isPublicPath) {
+  if (authState.isBiometricLocked && path != '/unlock') {
+    final next = Uri.encodeComponent(state.uri.toString());
+    return '/unlock?next=$next';
+  }
+
+  if (!authState.hasLocalSession && path == '/unlock') {
+    return '/login';
+  }
+
+  if (!authState.hasLocalSession && !isPublicPath) {
     final next = Uri.encodeComponent(state.uri.toString());
     return '/login?next=$next';
   }

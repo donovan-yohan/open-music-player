@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/auth/auth_service.dart';
 import 'package:open_music_player/core/auth/auth_state.dart';
+import 'package:open_music_player/core/auth/biometric_unlock_service.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/core/storage/token_storage_backend.dart';
 
@@ -100,27 +101,90 @@ void main() {
       expect(authState.status, AuthStatus.unauthenticated);
       expect(adapter.requests, isEmpty);
     });
+
+    test('gates a restored session when biometric unlock is enabled', () async {
+      final storage = _MemoryTokenStorage(
+        accessToken: 'expired-access-token',
+        refreshToken: 'valid-refresh-token',
+        biometricUnlockEnabled: true,
+      );
+      final biometric = _FakeBiometricUnlockService(authenticates: true);
+      final adapter = _DioAdapter((options) {
+        return const _JsonReply({
+          'accessToken': 'fresh-access-token',
+          'refreshToken': 'fresh-refresh-token',
+        });
+      });
+      final authState = _authState(
+        storage: storage,
+        adapter: adapter,
+        biometricUnlockService: biometric,
+      );
+
+      await authState.checkAuthStatus();
+
+      expect(authState.status, AuthStatus.biometricLocked);
+      expect(authState.hasLocalSession, isTrue);
+
+      final unlocked = await authState.unlockWithBiometrics();
+
+      expect(unlocked, isTrue);
+      expect(authState.status, AuthStatus.authenticated);
+      expect(biometric.authenticateCalls, 1);
+    });
+
+    test('password fallback clears tokens and biometric enrollment', () async {
+      final storage = _MemoryTokenStorage(
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        biometricUnlockEnabled: true,
+      );
+      final authState = _authState(
+        storage: storage,
+        adapter: _DioAdapter((_) {
+          fail('fallback should not call the API');
+        }),
+      );
+
+      await authState.usePasswordLoginFallback();
+
+      expect(authState.status, AuthStatus.unauthenticated);
+      expect(storage.accessToken, isNull);
+      expect(storage.refreshToken, isNull);
+      expect(storage.biometricUnlockEnabled, isFalse);
+    });
   });
 }
 
 AuthState _authState({
   required _MemoryTokenStorage storage,
   required HttpClientAdapter adapter,
+  BiometricUnlockService? biometricUnlockService,
 }) {
   final secureStorage = SecureStorage(tokenStorage: storage);
   final apiClient = ApiClient(
     storage: secureStorage,
     dio: Dio()..httpClientAdapter = adapter,
   );
-  final authService = AuthService(api: apiClient, storage: secureStorage);
+  final authService = AuthService(
+    api: apiClient,
+    storage: secureStorage,
+    biometricUnlockService:
+        biometricUnlockService ?? _FakeBiometricUnlockService(),
+  );
   return AuthState(authService: authService);
 }
 
 class _MemoryTokenStorage implements TokenStorageBackend {
-  _MemoryTokenStorage({this.accessToken, this.refreshToken});
+  _MemoryTokenStorage({
+    this.accessToken,
+    this.refreshToken,
+    this.biometricUnlockEnabled = false,
+  });
 
   String? accessToken;
   String? refreshToken;
+  bool biometricUnlockEnabled;
 
   @override
   Future<void> saveTokens({
@@ -141,11 +205,40 @@ class _MemoryTokenStorage implements TokenStorageBackend {
   Future<void> clearTokens() async {
     accessToken = null;
     refreshToken = null;
+    biometricUnlockEnabled = false;
   }
 
   @override
   Future<bool> hasTokens() async {
-    return accessToken != null && accessToken!.isNotEmpty;
+    return refreshToken != null && refreshToken!.isNotEmpty;
+  }
+
+  @override
+  Future<void> setBiometricUnlockEnabled(bool enabled) async {
+    biometricUnlockEnabled = enabled;
+  }
+
+  @override
+  Future<bool> isBiometricUnlockEnabled() async {
+    return biometricUnlockEnabled;
+  }
+}
+
+class _FakeBiometricUnlockService implements BiometricUnlockService {
+  _FakeBiometricUnlockService({
+    this.authenticates = true,
+  });
+
+  final bool authenticates;
+  int authenticateCalls = 0;
+
+  @override
+  Future<bool> isDeviceUnlockAvailable() async => true;
+
+  @override
+  Future<bool> authenticate({required String reason}) async {
+    authenticateCalls += 1;
+    return authenticates;
   }
 }
 

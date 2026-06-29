@@ -10,6 +10,7 @@ TokenStorageBackend createTokenStorageBackend({FlutterSecureStorage? storage}) {
 class WebSessionTokenStorage implements TokenStorageBackend {
   static const _accessTokenKey = 'access_token';
   static const _refreshTokenKey = 'refresh_token';
+  static const _biometricUnlockKey = 'biometric_unlock_enabled';
 
   @override
   Future<void> saveTokens({
@@ -37,6 +38,7 @@ class WebSessionTokenStorage implements TokenStorageBackend {
   Future<void> clearTokens() async {
     web.window.sessionStorage.removeItem(_accessTokenKey);
     web.window.sessionStorage.removeItem(_refreshTokenKey);
+    web.window.sessionStorage.removeItem(_biometricUnlockKey);
     _clearLegacyDurableTokens();
   }
 
@@ -44,6 +46,20 @@ class WebSessionTokenStorage implements TokenStorageBackend {
   Future<bool> hasTokens() async {
     final refreshToken = await getRefreshToken();
     return refreshToken != null && refreshToken.isNotEmpty;
+  }
+
+  @override
+  Future<void> setBiometricUnlockEnabled(bool enabled) async {
+    if (enabled) {
+      web.window.sessionStorage.setItem(_biometricUnlockKey, 'true');
+    } else {
+      web.window.sessionStorage.removeItem(_biometricUnlockKey);
+    }
+  }
+
+  @override
+  Future<bool> isBiometricUnlockEnabled() async {
+    return web.window.sessionStorage.getItem(_biometricUnlockKey) == 'true';
   }
 
   void _clearLegacyDurableTokens() {
