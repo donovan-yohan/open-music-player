@@ -29,6 +29,7 @@ dependencies:
   path_provider: ^2.1.1
   path: ^1.8.3
   connectivity_plus: ^6.0.0
+  local_auth: ^2.3.0
   # Direct pin: just_audio 0.9.x otherwise resolves just_audio_web 0.4.11,
   # which fails Flutter 3.44 web compilation under Dart 3.12.
   just_audio_web: ^0.4.16

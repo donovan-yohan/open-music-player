@@ -1,10 +1,14 @@
+// ignore_for_file: deprecated_member_use
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:provider/provider.dart' as legacy_provider;
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/auth/auth_state.dart' as session_auth;
 import '../../core/models/settings_model.dart';
-import '../../core/providers/auth_provider.dart';
 import '../../core/providers/cache_provider.dart';
 import '../../core/providers/settings_provider.dart';
 
@@ -57,22 +61,41 @@ class _AccountSection extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final authState = ref.watch(authProvider);
-    final user = authState.user;
+    final authState = legacy_provider.Provider.of<session_auth.AuthState>(
+      context,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader('Account'),
-        if (user != null) ...[
-          ListTile(
-            leading: const Icon(Icons.email_outlined),
-            title: const Text('Email'),
-            subtitle: Text(user.email),
+        if (authState.hasLocalSession) ...[
+          const ListTile(
+            leading: Icon(Icons.account_circle_outlined),
+            title: Text('Signed in'),
+            subtitle: Text(
+              'Your session stays on this installed app until logout.',
+            ),
+          ),
+          SwitchListTile(
+            secondary: const Icon(Icons.fingerprint),
+            title: const Text('Biometric/PIN unlock'),
+            subtitle: Text(
+              authState.biometricUnlockAvailable
+                  ? 'Protect this installed app session with device unlock. This does not survive reinstall.'
+                  : 'Device biometric or screen lock is not available on this platform.',
+            ),
+            value: authState.biometricUnlockEnabled,
+            onChanged: authState.isLoading ||
+                    !authState.biometricUnlockAvailable
+                ? null
+                : (enabled) => _setBiometricUnlock(context, authState, enabled),
           ),
           ListTile(
             leading: const Icon(Icons.logout),
             title: const Text('Log out'),
+            subtitle:
+                const Text('Clears tokens and biometric unlock enrollment'),
             onTap: () => _showLogoutDialog(context, ref),
           ),
         ] else
@@ -80,15 +103,11 @@ class _AccountSection extends ConsumerWidget {
             leading: const Icon(Icons.login),
             title: const Text('Log in'),
             subtitle: const Text('Sign in to your account'),
-            onTap: () {
-              // Navigate to login screen
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Login screen not yet implemented')),
-              );
-            },
+            onTap: () => context.go('/login'),
           ),
         ListTile(
-          leading: Icon(Icons.delete_forever, color: Theme.of(context).colorScheme.error),
+          leading: Icon(Icons.delete_forever,
+              color: Theme.of(context).colorScheme.error),
           title: Text(
             'Delete account',
             style: TextStyle(color: Theme.of(context).colorScheme.error),
@@ -100,21 +119,45 @@ class _AccountSection extends ConsumerWidget {
     );
   }
 
+  Future<void> _setBiometricUnlock(
+    BuildContext context,
+    session_auth.AuthState authState,
+    bool enabled,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final success = await authState.setBiometricUnlockEnabled(enabled);
+
+    if (!context.mounted) return;
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          success
+              ? enabled
+                  ? 'Biometric unlock enabled for this installed app session.'
+                  : 'Biometric unlock disabled.'
+              : authState.error ?? 'Could not update biometric unlock.',
+        ),
+        backgroundColor: success ? null : Theme.of(context).colorScheme.error,
+      ),
+    );
+  }
+
   void _showLogoutDialog(BuildContext context, WidgetRef ref) {
+    final parentContext = context;
     showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
+      context: parentContext,
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Log out'),
         content: const Text('Are you sure you want to log out?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           TextButton(
             onPressed: () {
-              Navigator.pop(context);
-              _showLogoutOptionsDialog(context, ref);
+              Navigator.pop(dialogContext);
+              _showLogoutOptionsDialog(parentContext, ref);
             },
             child: const Text('Log out'),
           ),
@@ -124,36 +167,47 @@ class _AccountSection extends ConsumerWidget {
   }
 
   void _showLogoutOptionsDialog(BuildContext context, WidgetRef ref) {
+    final parentContext = context;
     bool clearCache = false;
 
     showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
+      context: parentContext,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setState) => AlertDialog(
           title: const Text('Logout options'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               CheckboxListTile(
                 title: const Text('Clear cached data'),
-                subtitle: const Text('Remove downloaded music and cached content'),
+                subtitle:
+                    const Text('Remove downloaded music and cached content'),
                 value: clearCache,
-                onChanged: (value) => setState(() => clearCache = value ?? false),
+                onChanged: (value) =>
+                    setState(() => clearCache = value ?? false),
                 contentPadding: EdgeInsets.zero,
               ),
             ],
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.pop(dialogContext),
               child: const Text('Cancel'),
             ),
             FilledButton(
               onPressed: () async {
-                Navigator.pop(context);
-                await ref.read(authProvider.notifier).logout(clearCache: clearCache);
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                Navigator.pop(dialogContext);
+                if (clearCache) {
+                  await ref.read(cacheProvider.notifier).clearCache();
+                }
+                if (parentContext.mounted) {
+                  await legacy_provider.Provider.of<session_auth.AuthState>(
+                    parentContext,
+                    listen: false,
+                  ).logout();
+                }
+                if (parentContext.mounted) {
+                  ScaffoldMessenger.of(parentContext).showSnackBar(
                     const SnackBar(content: Text('Logged out successfully')),
                   );
                 }
@@ -240,7 +294,8 @@ class _PlaybackSection extends ConsumerWidget {
                   label: settings.crossfadeDuration == 0
                       ? 'Off'
                       : '${settings.crossfadeDuration}s',
-                  onChanged: (value) => settingsNotifier.setCrossfadeDuration(value.toInt()),
+                  onChanged: (value) =>
+                      settingsNotifier.setCrossfadeDuration(value.toInt()),
                 ),
               ),
               const Text('12s'),
@@ -298,7 +353,9 @@ class _StorageSection extends ConsumerWidget {
           leading: const Icon(Icons.folder_outlined),
           title: const Text('Cache size'),
           subtitle: Text(
-            cacheInfo.isCalculating ? 'Calculating...' : cacheInfo.formattedSize,
+            cacheInfo.isCalculating
+                ? 'Calculating...'
+                : cacheInfo.formattedSize,
           ),
           trailing: TextButton(
             onPressed: cacheInfo.isCalculating
@@ -314,7 +371,8 @@ class _StorageSection extends ConsumerWidget {
           trailing: const Icon(Icons.chevron_right),
           onTap: () {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Downloads screen not yet implemented')),
+              const SnackBar(
+                  content: Text('Downloads screen not yet implemented')),
             );
           },
         ),
@@ -406,7 +464,8 @@ class _AppearanceSection extends ConsumerWidget {
           leading: const Icon(Icons.palette_outlined),
           title: const Text('Theme'),
           subtitle: Text(settings.themeMode.displayName),
-          onTap: () => _showThemePicker(context, settings.themeMode, settingsNotifier),
+          onTap: () =>
+              _showThemePicker(context, settings.themeMode, settingsNotifier),
         ),
       ],
     );
@@ -457,7 +516,8 @@ class _AboutSection extends StatelessWidget {
             return ListTile(
               leading: const Icon(Icons.info_outline),
               title: const Text('Version'),
-              subtitle: Text('$version${buildNumber.isNotEmpty ? ' ($buildNumber)' : ''}'),
+              subtitle: Text(
+                  '$version${buildNumber.isNotEmpty ? ' ($buildNumber)' : ''}'),
             );
           },
         ),

@@ -31,6 +31,8 @@ class _SplashScreenState extends State<SplashScreen> {
 
     if (authState.isAuthenticated) {
       context.go('/home');
+    } else if (authState.isBiometricLocked) {
+      context.go('/unlock');
     } else {
       context.go('/login');
     }
@@ -59,6 +61,13 @@ class _SplashScreenState extends State<SplashScreen> {
             ),
             const SizedBox(height: 48),
             const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Text(
+              'Restoring your session...',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
           ],
         ),
       ),

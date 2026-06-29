@@ -26,8 +26,8 @@ class ApiClient {
   };
 
   ApiClient({required SecureStorage storage, Dio? dio})
-      : _storage = storage,
-        _dio = dio ?? Dio() {
+    : _storage = storage,
+      _dio = dio ?? Dio() {
     _dio.options.baseUrl = baseUrl;
     _dio.options.connectTimeout = const Duration(seconds: 10);
     _dio.options.receiveTimeout = const Duration(seconds: 10);
@@ -56,7 +56,8 @@ class ApiClient {
     ErrorInterceptorHandler handler,
   ) async {
     final requestOptions = error.requestOptions;
-    final shouldRefresh = error.response?.statusCode == 401 &&
+    final shouldRefresh =
+        error.response?.statusCode == 401 &&
         !_isAuthEndpoint(requestOptions) &&
         requestOptions.extra[_authRetryExtraKey] != true;
 

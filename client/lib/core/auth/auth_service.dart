@@ -2,24 +2,29 @@ import 'package:dio/dio.dart';
 import '../api/api_client.dart';
 import '../storage/secure_storage.dart';
 import 'auth_tokens.dart';
+import 'biometric_unlock_service.dart';
 
 class AuthResult {
   final bool success;
   final String? error;
 
-  const AuthResult.success()
-      : success = true,
-        error = null;
+  const AuthResult.success() : success = true, error = null;
   const AuthResult.failure(this.error) : success = false;
 }
 
 class AuthService {
   final ApiClient _api;
   final SecureStorage _storage;
+  final BiometricUnlockService _biometricUnlockService;
 
-  AuthService({required ApiClient api, required SecureStorage storage})
-      : _api = api,
-        _storage = storage;
+  AuthService({
+    required ApiClient api,
+    required SecureStorage storage,
+    BiometricUnlockService? biometricUnlockService,
+  }) : _api = api,
+       _storage = storage,
+       _biometricUnlockService =
+           biometricUnlockService ?? LocalAuthBiometricUnlockService();
 
   Future<AuthResult> register({
     required String email,
@@ -86,6 +91,54 @@ class AuthService {
 
   Future<bool> isAuthenticated() async {
     return _api.refreshSession();
+  }
+
+  Future<bool> isBiometricUnlockAvailable() {
+    return _biometricUnlockService.isDeviceUnlockAvailable();
+  }
+
+  Future<bool> isBiometricUnlockEnabled() {
+    return _storage.isBiometricUnlockEnabled();
+  }
+
+  Future<AuthResult> setBiometricUnlockEnabled(bool enabled) async {
+    if (!enabled) {
+      await _storage.setBiometricUnlockEnabled(false);
+      return const AuthResult.success();
+    }
+
+    if (!await _storage.hasTokens()) {
+      return const AuthResult.failure(
+        'Sign in before enabling biometric unlock.',
+      );
+    }
+
+    if (!await isBiometricUnlockAvailable()) {
+      return const AuthResult.failure(
+        'Device biometric or screen lock is not available.',
+      );
+    }
+
+    final authenticated = await _biometricUnlockService.authenticate(
+      reason:
+          'Confirm this is you to protect this installed app session with device unlock.',
+    );
+    if (!authenticated) {
+      return const AuthResult.failure('Biometric unlock was not enabled.');
+    }
+
+    await _storage.setBiometricUnlockEnabled(true);
+    return const AuthResult.success();
+  }
+
+  Future<bool> unlockWithBiometrics() {
+    return _biometricUnlockService.authenticate(
+      reason: 'Unlock Open Music Player with your device credential.',
+    );
+  }
+
+  Future<void> clearLocalSession() {
+    return _storage.clearTokens();
   }
 
   String _extractErrorMessage(DioException e) {

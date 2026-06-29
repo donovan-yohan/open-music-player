@@ -38,22 +38,32 @@ class OpenMusicPlayerApp extends ConsumerStatefulWidget {
   ConsumerState<OpenMusicPlayerApp> createState() => _OpenMusicPlayerAppState();
 }
 
-class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp> {
+class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
+    with WidgetsBindingObserver {
   StreamSubscription<String>? _sharedTextSubscription;
   String? _pendingSharedText;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.authState.addListener(_handleAuthStateChanged);
     _startShareIntentListener();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.authState.removeListener(_handleAuthStateChanged);
     _sharedTextSubscription?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (shouldLockForBiometricLifecycleState(state)) {
+      widget.authState.lockIfBiometricRequired();
+    }
   }
 
   @override
@@ -139,4 +149,8 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp> {
         return ThemeMode.dark;
     }
   }
+}
+
+bool shouldLockForBiometricLifecycleState(AppLifecycleState state) {
+  return state == AppLifecycleState.paused || state == AppLifecycleState.hidden;
 }

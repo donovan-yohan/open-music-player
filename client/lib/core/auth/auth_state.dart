@@ -5,6 +5,7 @@ enum AuthStatus {
   initial,
   checking,
   authenticated,
+  biometricLocked,
   unauthenticated,
 }
 
@@ -14,6 +15,8 @@ class AuthState extends ChangeNotifier {
   AuthStatus _status = AuthStatus.initial;
   String? _error;
   bool _isLoading = false;
+  bool _biometricUnlockEnabled = false;
+  bool _biometricUnlockAvailable = false;
 
   AuthState({required AuthService authService}) : _authService = authService;
 
@@ -21,35 +24,44 @@ class AuthState extends ChangeNotifier {
   String? get error => _error;
   bool get isLoading => _isLoading;
   bool get isAuthenticated => _status == AuthStatus.authenticated;
+  bool get isBiometricLocked => _status == AuthStatus.biometricLocked;
+  bool get hasLocalSession => isAuthenticated || isBiometricLocked;
+  bool get biometricUnlockEnabled => _biometricUnlockEnabled;
+  bool get biometricUnlockAvailable => _biometricUnlockAvailable;
 
   Future<void> checkAuthStatus() async {
     _status = AuthStatus.checking;
+    _error = null;
     notifyListeners();
 
     try {
       final isAuth = await _authService.isAuthenticated();
-      _status = isAuth ? AuthStatus.authenticated : AuthStatus.unauthenticated;
+      if (isAuth) {
+        await _refreshBiometricState();
+        _status = _biometricUnlockEnabled
+            ? AuthStatus.biometricLocked
+            : AuthStatus.authenticated;
+      } else {
+        _status = AuthStatus.unauthenticated;
+        _biometricUnlockEnabled = false;
+      }
     } catch (_) {
       _status = AuthStatus.unauthenticated;
+      _biometricUnlockEnabled = false;
     }
     notifyListeners();
   }
 
-  Future<bool> login({
-    required String email,
-    required String password,
-  }) async {
+  Future<bool> login({required String email, required String password}) async {
     _isLoading = true;
     _error = null;
     notifyListeners();
 
     try {
-      final result = await _authService.login(
-        email: email,
-        password: password,
-      );
+      final result = await _authService.login(email: email, password: password);
 
       if (result.success) {
+        await _refreshBiometricState();
         _status = AuthStatus.authenticated;
         return true;
       } else {
@@ -79,6 +91,7 @@ class AuthState extends ChangeNotifier {
       );
 
       if (result.success) {
+        await _refreshBiometricState();
         _status = AuthStatus.authenticated;
         return true;
       } else {
@@ -98,8 +111,79 @@ class AuthState extends ChangeNotifier {
     try {
       await _authService.logout();
       _status = AuthStatus.unauthenticated;
+      _biometricUnlockEnabled = false;
     } finally {
       _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> setBiometricUnlockEnabled(bool enabled) async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final result = await _authService.setBiometricUnlockEnabled(enabled);
+      if (result.success) {
+        await _refreshBiometricState();
+        _biometricUnlockEnabled = enabled;
+        return true;
+      }
+
+      _error = result.error;
+      await _refreshBiometricState();
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> unlockWithBiometrics() async {
+    if (!_biometricUnlockEnabled) {
+      _status = AuthStatus.authenticated;
+      notifyListeners();
+      return true;
+    }
+
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final unlocked = await _authService.unlockWithBiometrics();
+      if (unlocked) {
+        _status = AuthStatus.authenticated;
+        return true;
+      }
+
+      _error = 'Unlock canceled. Sign in with your password to continue.';
+      return false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> usePasswordLoginFallback() async {
+    _isLoading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      await _authService.clearLocalSession();
+      _status = AuthStatus.unauthenticated;
+      _biometricUnlockEnabled = false;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  void lockIfBiometricRequired() {
+    if (_status == AuthStatus.authenticated && _biometricUnlockEnabled) {
+      _status = AuthStatus.biometricLocked;
       notifyListeners();
     }
   }
@@ -107,5 +191,12 @@ class AuthState extends ChangeNotifier {
   void clearError() {
     _error = null;
     notifyListeners();
+  }
+
+  Future<void> _refreshBiometricState() async {
+    final available = await _authService.isBiometricUnlockAvailable();
+    final enabled = await _authService.isBiometricUnlockEnabled();
+    _biometricUnlockAvailable = available;
+    _biometricUnlockEnabled = enabled;
   }
 }
