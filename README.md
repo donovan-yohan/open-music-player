@@ -4,29 +4,29 @@ A self-hosted music library management system that allows you to save, organize,
 
 ## Architecture
 
-Open Music Player consists of four main components:
+Open Music Player consists of three main components:
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Chrome/Firefox │     │  Flutter Client │     │   Rust Tools    │
-│   Extension     │     │  (Mobile/Web)   │     │ (DB/MusicBrainz)│
-└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-         │                       │                       │
-         └───────────────────────┼───────────────────────┘
-                                 │
-                                 ▼
-                    ┌────────────────────────┐
-                    │    Go Backend API      │
-                    │    (Port 8080)         │
-                    └────────────┬───────────┘
-                                 │
-         ┌───────────────────────┼───────────────────────┐
-         │                       │                       │
-         ▼                       ▼                       ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   PostgreSQL    │     │     Redis       │     │     MinIO       │
-│   (Port 5434)   │     │   (Port 6380)   │     │  (Port 9000)    │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
+┌─────────────────┐     ┌─────────────────┐
+│  Chrome/Firefox │     │  Flutter Client │
+│   Extension     │     │  (Mobile/Web)   │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         └───────────┬───────────┘
+                     │
+                     ▼
+        ┌────────────────────────┐
+        │    Go Backend API      │
+        │    (Port 8080)         │
+        └────────────┬───────────┘
+                     │
+        ┌────────────┼────────────┐
+        │            │            │
+        ▼            ▼            ▼
+┌────────────┐ ┌────────────┐ ┌────────────┐
+│ PostgreSQL │ │   Redis    │ │   MinIO    │
+│ Port 5434  │ │ Port 6380  │ │ Port 9000  │
+└────────────┘ └────────────┘ └────────────┘
 ```
 
 **Components:**
@@ -34,7 +34,6 @@ Open Music Player consists of four main components:
 - **Backend (Go)**: REST API server handling authentication, track management, playlists, downloads, and signed audio URL issuance
 - **Client (Flutter)**: Cross-platform client for iOS, Android, macOS, Windows, Linux, and web
 - **Extension (TypeScript)**: Browser extension for Chrome/Firefox to save tracks from YouTube and SoundCloud
-- **Rust Tools**: Database migrations, MusicBrainz API client, and utilities
 
 **Infrastructure:**
 
@@ -48,23 +47,30 @@ Open Music Player consists of four main components:
 - [Go 1.25+](https://golang.org/dl/)
 - [Flutter 3.0+](https://docs.flutter.dev/get-started/install) (for client development)
 - [Node.js 20+](https://nodejs.org/) (for extension development)
-- [Rust](https://rustup.rs/) (optional, for database migrations CLI)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) (required on the server for downloading)
 
 ## Local Development Setup
 
 ### Low-memory backend + Flutter Web mode
 
-For backend control-plane development and Flutter Web mobile/responsive QA, prefer the low-memory stack instead of the full queue/download pipeline:
+For backend control-plane development and Flutter Web mobile/responsive QA, prefer the low-memory stack instead of the full queue/download pipeline. Turn on the downloads profile only for the #44 discovery-to-playback smoke:
 
 ```bash
 scripts/local-low-memory.sh start
 scripts/local-low-memory.sh smoke
+scripts/local-low-memory.sh playback-smoke
+
+# Heavier e2e gate: enables Redis and one download worker, then verifies
+# discovery -> queue -> worker -> MinIO -> signed playback URL.
+scripts/local-low-memory.sh e2e-smoke
+
 cd client
 flutter run -d chrome --dart-define=OMP_API_BASE_URL=http://localhost:8080/api/v1
 ```
 
-This mode starts only the backend, PostgreSQL, and MinIO. Redis is disabled by default (`REDIS_ENABLED=false`) and download workers are disabled (`WORKER_COUNT=0`), so Redis-backed queue/download endpoints return `503 SERVICE_DISABLED` until you intentionally enable the downloads profile. See [`docs/LOW_MEMORY_LOCAL_DEV.md`](docs/LOW_MEMORY_LOCAL_DEV.md) for smoke checks, Redis/worker guidance, and the no-Android/no-Gradle workflow.
+Default `start` mode runs only the backend, PostgreSQL, and MinIO. Redis is disabled by default (`REDIS_ENABLED=false`) and download workers are disabled (`WORKER_COUNT=0`), so Redis-backed queue/download endpoints return `503 SERVICE_DISABLED` until you intentionally enable the downloads profile. `e2e-smoke` starts that profile with `WORKER_COUNT=1` and writes compact evidence under `/tmp`. Use `scripts/local-low-memory.sh clean` when you need to reap the low-memory containers, network, and volumes. See [`docs/LOW_MEMORY_LOCAL_DEV.md`](docs/LOW_MEMORY_LOCAL_DEV.md) for smoke checks, Redis/worker guidance, and the no-Android/no-Gradle workflow.
+
+Audio analysis is optional and disabled unless an analyzer service is configured. See [`docs/AUDIO_ANALYZER_SERVICE.md`](docs/AUDIO_ANALYZER_SERVICE.md) for local service configuration, request/response shape, and failure behavior.
 
 ### 1. Clone and Configure Environment
 
@@ -170,49 +176,26 @@ The backend exposes the following API groups:
 
 | Endpoint Group | Description |
 |----------------|-------------|
-| `POST /api/auth/register` | User registration |
-| `POST /api/auth/login` | User login |
-| `POST /api/auth/refresh` | Refresh access token |
-| `GET /api/tracks` | List user's tracks |
-| `POST /api/tracks` | Add track to library |
-| `GET /api/library` | Get user's library |
-| `GET /api/playlists` | List playlists |
-| `POST /api/playlists` | Create playlist |
+| `POST /api/v1/auth/register` | User registration |
+| `POST /api/v1/auth/login` | User login |
+| `POST /api/v1/auth/refresh` | Refresh access token |
+| `GET /api/v1/search/recordings` | Search local tracks |
+| `GET /api/v1/library` | Get user's library |
+| `POST /api/v1/playlists` | Create playlist |
 | `POST /api/v1/playback/urls` | Issue signed audio URL descriptors for playback/download |
-| `POST /api/download` | Queue track for download |
-| `GET /api/search` | Search tracks |
-| `GET /api/musicbrainz/search` | Search MusicBrainz for metadata |
-| `WS /api/ws` | WebSocket for real-time updates |
+| `GET /api/v1/discovery/search` | Search external source providers |
+| `POST /api/v1/queue/items` | Queue a playable track or downloadable source candidate |
+| `GET /api/v1/queue` | Read the Redis-backed playback queue |
+| `POST /api/v1/downloads` | Queue a direct supported source URL for background library import |
+| `GET /api/v1/downloads/{job_id}` | Inspect a background library-import download job |
+| `GET /api/v1/musicbrainz/search/tracks` | Search MusicBrainz for metadata |
+| `GET /api/v1/ws/progress` | WebSocket for real-time progress updates |
 
 ## Database Migrations
 
-Migrations are managed in two locations:
+The Go backend owns schema creation and repair through the idempotent startup path in `backend/internal/db/db.go`. Starting `backend/cmd/server` or the Docker Compose backend brings a fresh local database to the current dogfood schema without a separate Rust/sqlx or SQL-file migration authority.
 
-**Backend migrations (Go/SQL):**
-```bash
-cd backend
-
-# Run migrations
-make migrate-up
-
-# Rollback
-make migrate-down
-
-# Create new migration
-make migrate-create
-# Enter migration name when prompted
-```
-
-**Rust tools (migrations and MusicBrainz client):**
-```bash
-# Run database migrations via Rust
-cargo run
-
-# The Rust crate also provides:
-# - Database connection pool with health checks
-# - MusicBrainz API client with rate limiting
-# - Data models for tracks, users, playlists
-```
+When changing schema, update `backend/internal/db/db.go` and the repository tests that exercise the affected tables. Do not add a second migration path unless the project deliberately reintroduces one and makes it the only authority.
 
 ## Project Structure
 
@@ -235,7 +218,6 @@ openmusicplayer/
 │   │   ├── storage/        # MinIO/S3 storage and signed reads
 │   │   ├── validators/     # Input validation
 │   │   └── websocket/      # WebSocket handlers
-│   └── Makefile            # Migration commands
 ├── client/                  # Flutter cross-platform client
 │   ├── lib/                # Dart source code
 │   └── pubspec.yaml        # Flutter dependencies
@@ -243,9 +225,8 @@ openmusicplayer/
 │   ├── src/                # TypeScript source
 │   ├── manifest.json       # Extension manifest (MV3)
 │   └── webpack.config.js   # Build configuration
-├── migrations/             # SQL migrations (used by Rust tooling)
-├── src/                    # Rust tools (DB client, MusicBrainz API)
-├── docker-compose.yml      # Infrastructure services
+├── docker-compose.yml      # Full local infrastructure stack
+├── docker-compose.local-low-memory.yml # Low-memory dogfood stack and e2e smoke
 ├── .env.example            # Environment template
 └── README.md               # This file
 ```
@@ -394,6 +375,18 @@ For production extension distribution:
 1. Build the extension: `cd extension && npm run build`
 2. Create a ZIP of the `dist` directory
 3. Submit to Chrome Web Store and Firefox Add-ons
+
+### Tailnet Staging
+
+For mobile/web staging on a Tailnet, use [`docs/TAILNET_STAGING.md`](docs/TAILNET_STAGING.md): it starts the low-memory backend, serves Flutter Web on `0.0.0.0`, documents health/API URLs, and links the Android PR APK smoke flow.
+
+### Backend maintenance repair
+
+Use [`docs/MAINTENANCE_REPAIR.md`](docs/MAINTENANCE_REPAIR.md) to safely re-run metadata matching and audio analysis backfills/retries without hand-editing database rows.
+
+### Android PR artifacts
+
+Pull request CI builds a debug Android APK after Flutter analyze and tests pass. See [`docs/ANDROID_PR_ARTIFACTS.md`](docs/ANDROID_PR_ARTIFACTS.md) for download, install, and real-device smoke steps.
 
 ### Client Distribution
 

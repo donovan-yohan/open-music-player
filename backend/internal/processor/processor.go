@@ -22,6 +22,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/matcher"
+	"github.com/openmusicplayer/backend/internal/playlistimport"
 )
 
 // ObjectStorage is the small MinIO surface the processor needs. storage.Client
@@ -49,6 +50,9 @@ type Processor struct {
 	matcher        *matcher.Matcher
 	trackRepo      *db.TrackRepository
 	libraryRepo    *db.LibraryRepository
+	playlistRepo   *db.PlaylistRepository
+	importRepo     *playlistimport.ImportRepository
+	sourceRepo     *playlistimport.TrackSourceRepository
 	analysisRepo   AnalysisStore
 	analyzerClient analyzer.Client
 	storage        ObjectStorage
@@ -59,6 +63,9 @@ type ProcessorConfig struct {
 	Matcher        *matcher.Matcher
 	TrackRepo      *db.TrackRepository
 	LibraryRepo    *db.LibraryRepository
+	PlaylistRepo   *db.PlaylistRepository
+	ImportRepo     *playlistimport.ImportRepository
+	SourceRepo     *playlistimport.TrackSourceRepository
 	AnalysisRepo   AnalysisStore
 	AnalyzerClient analyzer.Client
 	Storage        ObjectStorage
@@ -70,6 +77,9 @@ func New(config *ProcessorConfig) *Processor {
 		matcher:        config.Matcher,
 		trackRepo:      config.TrackRepo,
 		libraryRepo:    config.LibraryRepo,
+		playlistRepo:   config.PlaylistRepo,
+		importRepo:     config.ImportRepo,
+		sourceRepo:     config.SourceRepo,
 		analysisRepo:   config.AnalysisRepo,
 		analyzerClient: config.AnalyzerClient,
 		storage:        config.Storage,
@@ -84,7 +94,12 @@ type ProcessResult struct {
 }
 
 // Process handles a download job through the full pipeline
-func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, progress func(int)) error {
+func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, progress func(int)) (err error) {
+	defer func() {
+		if err != nil {
+			p.markPlaylistImportFailed(ctx, job, err)
+		}
+	}()
 	log.Printf("Processing job %s: downloading from %s", job.ID, job.URL)
 	progress(5)
 
@@ -101,6 +116,7 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 		return fmt.Errorf("track creation failed: %w", err)
 	}
 	job.TrackID = &track.ID
+	p.recordTrackSource(ctx, job, track.ID)
 	progress(65)
 
 	if p.matcher != nil {
@@ -115,6 +131,9 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 	job.Status = download.StatusUploading
 	if err := p.addToLibrary(ctx, job.UserID, track.ID); err != nil {
 		log.Printf("Warning: failed to add track %d to library: %v", track.ID, err)
+	}
+	if err := p.attachPlaylistImportTrack(ctx, job, track.ID); err != nil {
+		return fmt.Errorf("playlist import attach failed: %w", err)
 	}
 	p.enqueueAnalysis(ctx, track, metadata)
 	progress(95)
@@ -656,6 +675,55 @@ func (p *Processor) addToLibrary(ctx context.Context, userID string, trackID int
 		return err
 	}
 	return nil
+}
+
+func (p *Processor) recordTrackSource(ctx context.Context, job *download.DownloadJob, trackID int64) {
+	if p.sourceRepo == nil || job == nil {
+		return
+	}
+	if err := p.sourceRepo.UpsertTrackSource(ctx, trackID, job.SourceType, job.SourceID, job.URL); err != nil {
+		log.Printf("Warning: failed to record track source for track %d: %v", trackID, err)
+	}
+}
+
+func (p *Processor) attachPlaylistImportTrack(ctx context.Context, job *download.DownloadJob, trackID int64) error {
+	if job == nil || job.PlaylistImportItemID == 0 {
+		return nil
+	}
+	if p.playlistRepo != nil && job.PlaylistID != 0 {
+		if err := p.playlistRepo.AddTrackAtPosition(ctx, job.PlaylistID, trackID, job.PlaylistPosition); err != nil && !errors.Is(err, db.ErrTrackAlreadyInPlaylist) {
+			return err
+		}
+	}
+	if p.importRepo != nil {
+		if err := p.importRepo.MarkItemImported(ctx, job.PlaylistImportItemID, trackID); err != nil {
+			return err
+		}
+		if job.PlaylistImportJobID != "" {
+			if importJobID, err := uuid.Parse(job.PlaylistImportJobID); err == nil {
+				if err := p.importRepo.RefreshJobCounts(ctx, importJobID); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (p *Processor) markPlaylistImportFailed(ctx context.Context, job *download.DownloadJob, jobErr error) {
+	if p.importRepo == nil || job == nil || job.PlaylistImportItemID == 0 || jobErr == nil {
+		return
+	}
+	if err := p.importRepo.MarkItemFailed(ctx, job.PlaylistImportItemID, jobErr.Error()); err != nil {
+		log.Printf("Warning: failed to mark playlist import item %d failed: %v", job.PlaylistImportItemID, err)
+	}
+	if job.PlaylistImportJobID != "" {
+		if importJobID, err := uuid.Parse(job.PlaylistImportJobID); err == nil {
+			if err := p.importRepo.RefreshJobCounts(ctx, importJobID); err != nil {
+				log.Printf("Warning: failed to refresh playlist import job %s counts: %v", job.PlaylistImportJobID, err)
+			}
+		}
+	}
 }
 
 func (p *Processor) enqueueAnalysis(ctx context.Context, track *db.Track, metadata *TrackMetadata) {

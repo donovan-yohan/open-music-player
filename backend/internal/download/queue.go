@@ -112,6 +112,28 @@ func (q *Queue) EnqueueCandidateWithID(ctx context.Context, jobID, userID string
 	})
 }
 
+// EnqueuePlaylistImportItem queues a playlist import item with target playlist
+// placement metadata for the processor to attach the completed/reused track.
+func (q *Queue) EnqueuePlaylistImportItem(ctx context.Context, userID string, candidate SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*DownloadJob, error) {
+	return q.enqueueJob(ctx, &DownloadJob{
+		UserID:               userID,
+		URL:                  candidate.SourceURL,
+		SourceType:           candidate.Provider,
+		CandidateID:          candidate.CandidateID,
+		SourceID:             candidate.SourceID,
+		Title:                candidate.Title,
+		Artist:               candidate.Artist,
+		Album:                candidate.Album,
+		Uploader:             candidate.Uploader,
+		DurationMs:           candidate.DurationMs,
+		ThumbnailURL:         candidate.ThumbnailURL,
+		PlaylistImportJobID:  importJobID,
+		PlaylistImportItemID: importItemID,
+		PlaylistID:           playlistID,
+		PlaylistPosition:     playlistPosition,
+	})
+}
+
 func (q *Queue) enqueueJob(ctx context.Context, job *DownloadJob) (*DownloadJob, error) {
 	now := time.Now()
 	if job.ID == "" {

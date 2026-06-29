@@ -99,6 +99,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   }
 
   void _showCreatePlaylistDialog() {
+    final messenger = ScaffoldMessenger.of(context);
     showDialog(
       context: context,
       builder: (context) => PlaylistEditDialog(
@@ -108,18 +109,16 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               name: name,
               description: description,
             );
+            if (!mounted) return;
             setState(() => _playlists.insert(0, playlist));
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Created playlist "$name"')),
-              );
-            }
+            messenger.showSnackBar(
+              SnackBar(content: Text('Created playlist "$name"')),
+            );
           } catch (e) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Failed to create playlist: $e')),
-              );
-            }
+            if (!mounted) return;
+            messenger.showSnackBar(
+              SnackBar(content: Text('Failed to create playlist: $e')),
+            );
           }
         },
       ),
@@ -157,6 +156,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   }
 
   void _showEditPlaylistDialog(Playlist playlist) {
+    final messenger = ScaffoldMessenger.of(context);
     showDialog(
       context: context,
       builder: (context) => PlaylistEditDialog(
@@ -169,21 +169,19 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               name: name,
               description: description,
             );
+            if (!mounted) return;
             final index = _playlists.indexWhere((p) => p.id == playlist.id);
             if (index != -1) {
               setState(() => _playlists[index] = updated);
             }
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Playlist updated')),
-              );
-            }
+            messenger.showSnackBar(
+              const SnackBar(content: Text('Playlist updated')),
+            );
           } catch (e) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Failed to update playlist: $e')),
-              );
-            }
+            if (!mounted) return;
+            messenger.showSnackBar(
+              SnackBar(content: Text('Failed to update playlist: $e')),
+            );
           }
         },
       ),
@@ -191,6 +189,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   }
 
   void _showDeleteConfirmation(Playlist playlist) {
+    final messenger = ScaffoldMessenger.of(context);
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -208,18 +207,16 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               Navigator.pop(context);
               try {
                 await _playlistService.deletePlaylist(playlist.id);
+                if (!mounted) return;
                 setState(() => _playlists.removeWhere((p) => p.id == playlist.id));
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Deleted "${playlist.name}"')),
-                  );
-                }
+                messenger.showSnackBar(
+                  SnackBar(content: Text('Deleted "${playlist.name}"')),
+                );
               } catch (e) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Failed to delete playlist: $e')),
-                  );
-                }
+                if (!mounted) return;
+                messenger.showSnackBar(
+                  SnackBar(content: Text('Failed to delete playlist: $e')),
+                );
               }
             },
             style: FilledButton.styleFrom(
@@ -238,6 +235,11 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
       appBar: AppBar(
         title: const Text('Playlists'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.video_library_outlined),
+            onPressed: () => context.push('/playlists/import'),
+            tooltip: 'Import YouTube playlist',
+          ),
           IconButton(
             icon: Icon(_isGridView ? Icons.list : Icons.grid_view),
             onPressed: () => setState(() => _isGridView = !_isGridView),
@@ -290,6 +292,12 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               onPressed: _showCreatePlaylistDialog,
               icon: const Icon(Icons.add),
               label: const Text('Create Playlist'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () => context.push('/playlists/import'),
+              icon: const Icon(Icons.video_library_outlined),
+              label: const Text('Import YouTube playlist'),
             ),
           ],
         ),

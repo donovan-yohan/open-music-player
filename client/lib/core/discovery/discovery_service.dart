@@ -40,10 +40,7 @@ class DiscoveryService {
   Future<DiscoveryAssistResponse> assist(String prompt, {int? limit}) async {
     final response = await _apiClient.post<Map<String, dynamic>>(
       '/discovery/assist',
-      data: {
-        'prompt': prompt,
-        if (limit != null) 'limit': limit,
-      },
+      data: {'prompt': prompt, if (limit != null) 'limit': limit},
     );
 
     final data = response.data;
@@ -113,48 +110,6 @@ class DiscoveryService {
       throw const DiscoveryException('Queue reorder returned no data.');
     }
     return _parseQueueMutationResponse(data);
-  }
-
-  @Deprecated('Use addQueueItem; direct downloads do not update queue state.')
-  Future<DownloadJobSnapshot> createDownload(
-    DiscoveryCandidate candidate,
-  ) async {
-    final queue = await addQueueItem(candidate);
-    final item = queue.items.firstWhere(
-      (item) => item.candidate.sourceUrl == candidate.sourceUrl,
-      orElse: () => throw const DiscoveryException(
-        'Queue insertion did not return the requested source candidate.',
-      ),
-    );
-    return DownloadJobSnapshot(
-      jobId: item.downloadJobId ?? '',
-      status: item.playbackState,
-      progress: item.progress,
-      error: item.error,
-      url: item.candidate.sourceUrl,
-      sourceType: item.candidate.sourceType,
-      trackId: item.trackId,
-    );
-  }
-
-  @Deprecated('Use getQueue; queue state is the source of truth.')
-  Future<DownloadJobSnapshot> getJob(String jobId) async {
-    final queue = await getQueue();
-    final item = queue.items.firstWhere(
-      (item) => item.downloadJobId == jobId,
-      orElse: () => throw const DiscoveryException(
-        'Queue projection did not include the requested download job.',
-      ),
-    );
-    return DownloadJobSnapshot(
-      jobId: item.downloadJobId ?? jobId,
-      status: item.playbackState,
-      progress: item.progress,
-      error: item.error,
-      url: item.candidate.sourceUrl,
-      sourceType: item.candidate.sourceType,
-      trackId: item.trackId,
-    );
   }
 
   DiscoveryQueueState _parseQueueMutationResponse(Map<String, dynamic> data) {

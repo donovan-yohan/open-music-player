@@ -174,6 +174,47 @@ func TestLoadMetadataLLMExplicitEnable(t *testing.T) {
 	}
 }
 
+func TestLoadAnalyzerDisabledByDefault(t *testing.T) {
+	for _, key := range []string{"ANALYZER_ENABLED", "ANALYZER_BASE_URL", "ANALYZER_AUTH_TOKEN", "ANALYZER_TIMEOUT_MS"} {
+		withUnsetEnv(t, key)
+	}
+	cfg := Load()
+	if cfg.AnalyzerEnabled {
+		t.Fatal("AnalyzerEnabled = true with no config, want disabled")
+	}
+	if cfg.AnalyzerTimeout != 90*time.Second {
+		t.Fatalf("AnalyzerTimeout = %s, want default 90s", cfg.AnalyzerTimeout)
+	}
+}
+
+func TestLoadAnalyzerEnabledWhenBaseURLConfigured(t *testing.T) {
+	withUnsetEnv(t, "ANALYZER_ENABLED")
+	t.Setenv("ANALYZER_BASE_URL", "http://analyzer.local:18190")
+	t.Setenv("ANALYZER_AUTH_TOKEN", "secret-token")
+	t.Setenv("ANALYZER_TIMEOUT_MS", "2500")
+
+	cfg := Load()
+	if !cfg.AnalyzerEnabled {
+		t.Fatal("AnalyzerEnabled = false with base URL, want enabled")
+	}
+	if cfg.AnalyzerBaseURL != "http://analyzer.local:18190" || cfg.AnalyzerAuthToken != "secret-token" {
+		t.Fatalf("analyzer config not loaded: base=%q token=%q", cfg.AnalyzerBaseURL, cfg.AnalyzerAuthToken)
+	}
+	if cfg.AnalyzerTimeout != 2500*time.Millisecond {
+		t.Fatalf("AnalyzerTimeout = %s, want 2500ms", cfg.AnalyzerTimeout)
+	}
+}
+
+func TestLoadAnalyzerRespectsExplicitDisable(t *testing.T) {
+	t.Setenv("ANALYZER_ENABLED", "false")
+	t.Setenv("ANALYZER_BASE_URL", "http://analyzer.local:18190")
+
+	cfg := Load()
+	if cfg.AnalyzerEnabled {
+		t.Fatal("AnalyzerEnabled = true despite ANALYZER_ENABLED=false")
+	}
+}
+
 func withUnsetCORSAllowedOrigins(t *testing.T) {
 	t.Helper()
 	withUnsetEnv(t, "OMP_CORS_ALLOWED_ORIGINS")

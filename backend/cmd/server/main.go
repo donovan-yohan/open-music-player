@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/openmusicplayer/backend/internal/aiassist"
+	"github.com/openmusicplayer/backend/internal/analyzer"
 	"github.com/openmusicplayer/backend/internal/api"
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/cache"
@@ -24,6 +25,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/metrics"
 	"github.com/openmusicplayer/backend/internal/middleware"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
+	"github.com/openmusicplayer/backend/internal/playlistimport"
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/search"
@@ -88,6 +90,8 @@ func main() {
 	libraryRepo := db.NewLibraryRepository(database)
 	analysisRepo := db.NewAnalysisRepository(database)
 	playlistRepo := db.NewPlaylistRepository(database)
+	playlistImportRepo := playlistimport.NewImportRepository(database)
+	trackSourceRepo := playlistimport.NewTrackSourceRepository(database)
 	mixPlanRepo := db.NewMixPlanRepository(database)
 
 	// Initialize services
@@ -166,20 +170,46 @@ func main() {
 		"metadata_llm_model":   cfg.MetadataLLMModel,
 	})
 	matcherHandlers := matcher.NewHandler(matcherService, trackRepo)
+	serviceAnalyzerClient, err := analyzer.NewServiceClient(analyzer.ServiceConfig{
+		Enabled:   cfg.AnalyzerEnabled,
+		BaseURL:   cfg.AnalyzerBaseURL,
+		AuthToken: cfg.AnalyzerAuthToken,
+		Timeout:   cfg.AnalyzerTimeout,
+	})
+	if err != nil {
+		log.Error(ctx, "Failed to initialize analyzer client", map[string]interface{}{
+			"base_url": cfg.AnalyzerBaseURL,
+		}, err)
+		os.Exit(1)
+	}
+	var analyzerClient analyzer.Client
+	if serviceAnalyzerClient != nil {
+		analyzerClient = serviceAnalyzerClient
+	}
+	log.Info(ctx, "Initialized audio analyzer client", map[string]interface{}{
+		"analyzer_enabled": analyzerClient != nil,
+		"base_url":         cfg.AnalyzerBaseURL,
+	})
 
 	// Initialize job processor with matching integration
 	jobProcessor := processor.New(&processor.ProcessorConfig{
-		Matcher:      matcherService,
-		TrackRepo:    trackRepo,
-		LibraryRepo:  libraryRepo,
-		AnalysisRepo: analysisRepo,
-		Storage:      storageClient,
+		Matcher:        matcherService,
+		TrackRepo:      trackRepo,
+		LibraryRepo:    libraryRepo,
+		PlaylistRepo:   playlistRepo,
+		ImportRepo:     playlistImportRepo,
+		SourceRepo:     trackSourceRepo,
+		AnalysisRepo:   analysisRepo,
+		AnalyzerClient: analyzerClient,
+		Storage:        storageClient,
 	})
+	maintenanceHandlers := api.NewMaintenanceHandlers(trackRepo, jobProcessor)
 
 	// Initialize Redis-backed download and playback queue services only when enabled.
 	var downloadService *download.Service
 	var downloadHandlers *api.DownloadHandlers
 	var queueHandlers *queue.Handlers
+	var playlistImportHandlers *api.PlaylistImportHandlers
 
 	if cfg.RedisEnabled {
 		downloadService, err = download.NewService(&download.ServiceConfig{
@@ -195,6 +225,15 @@ func main() {
 			"workers": cfg.WorkerCount,
 		})
 		downloadHandlers = api.NewDownloadHandlers(downloadService)
+		playlistImportService := playlistimport.NewService(playlistimport.Config{
+			Store:      playlistImportRepo,
+			Playlists:  playlistRepo,
+			Tracks:     trackSourceRepo,
+			Library:    libraryRepo,
+			Downloader: downloadService,
+			Enumerator: playlistimport.NewYTDLPEnumerator(),
+		})
+		playlistImportHandlers = api.NewPlaylistImportHandlers(playlistImportService)
 
 		queueService, err := queue.NewService(cfg.RedisURL)
 		if err != nil {
@@ -227,24 +266,26 @@ func main() {
 
 	// Create router with all handlers
 	router := api.NewRouterWithConfig(&api.RouterConfig{
-		AuthHandlers:       authHandlers,
-		AuthService:        authService,
-		SearchHandlers:     searchHandlers,
-		MBClient:           mbClient,
-		MBHandlers:         mbHandlers,
-		WSHandler:          wsHandler,
-		MatcherHandlers:    matcherHandlers,
-		LibraryHandlers:    libraryHandlers,
-		AnalysisHandlers:   analysisHandlers,
-		PlaybackHandlers:   playbackHandlers,
-		QueueHandlers:      queueHandlers,
-		DiscoveryHandlers:  discoveryHandlers,
-		PlaylistHandlers:   playlistHandlers,
-		MixPlanHandlers:    mixPlanHandlers,
-		DownloadHandlers:   downloadHandlers,
-		HealthHandler:      healthHandler,
-		Metrics:            appMetrics,
-		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
+		AuthHandlers:           authHandlers,
+		AuthService:            authService,
+		SearchHandlers:         searchHandlers,
+		MBClient:               mbClient,
+		MBHandlers:             mbHandlers,
+		WSHandler:              wsHandler,
+		MatcherHandlers:        matcherHandlers,
+		LibraryHandlers:        libraryHandlers,
+		AnalysisHandlers:       analysisHandlers,
+		PlaybackHandlers:       playbackHandlers,
+		QueueHandlers:          queueHandlers,
+		DiscoveryHandlers:      discoveryHandlers,
+		PlaylistHandlers:       playlistHandlers,
+		PlaylistImportHandlers: playlistImportHandlers,
+		MixPlanHandlers:        mixPlanHandlers,
+		DownloadHandlers:       downloadHandlers,
+		MaintenanceHandlers:    maintenanceHandlers,
+		HealthHandler:          healthHandler,
+		Metrics:                appMetrics,
+		CORSAllowedOrigins:     cfg.CORSAllowedOrigins,
 	})
 
 	// Apply middleware chain

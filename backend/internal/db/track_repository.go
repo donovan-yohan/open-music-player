@@ -642,3 +642,66 @@ func (r *TrackRepository) GetUnverifiedTracks(ctx context.Context, limit, offset
 
 	return tracks, total, nil
 }
+
+func (r *TrackRepository) GetMaintenanceCandidates(ctx context.Context, includeMetadata, includeAnalysis bool, staleAfter time.Duration, limit int) ([]Track, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if staleAfter <= 0 {
+		staleAfter = 30 * time.Minute
+	}
+
+	query := `
+		SELECT DISTINCT t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
+			   t.mb_recording_id, t.mb_release_id, t.mb_artist_id, t.mb_verified,
+			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
+			   t.metadata_json, t.metadata_status, t.metadata_confidence, t.metadata_provenance,
+			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at
+		FROM tracks t
+		LEFT JOIN track_analysis ta ON ta.track_id = t.id
+		WHERE (
+			$1::boolean
+			AND t.mb_verified = FALSE
+			AND t.metadata_user_edited = FALSE
+			AND COALESCE(t.metadata_status, 'provider') IN ('provider', 'cleaned', 'failed', 'no_match', 'suggested')
+		) OR (
+			$2::boolean
+			AND t.storage_key IS NOT NULL
+			AND (
+				ta.track_id IS NULL
+				OR ta.status = 'failed'
+				OR (ta.status IN ('pending', 'analyzing') AND ta.updated_at < NOW() - ($3::bigint * INTERVAL '1 second'))
+			)
+		)
+		ORDER BY t.updated_at ASC, t.id ASC
+		LIMIT $4
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, includeMetadata, includeAnalysis, int64(staleAfter.Seconds()), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tracks []Track
+	for rows.Next() {
+		var t Track
+		if err := rows.Scan(
+			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
+			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
+			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
+			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
+			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		tracks = append(tracks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tracks, nil
+}

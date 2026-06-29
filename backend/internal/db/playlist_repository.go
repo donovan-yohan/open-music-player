@@ -281,6 +281,33 @@ func (r *PlaylistRepository) AddTrack(ctx context.Context, playlistID, trackID i
 	return err
 }
 
+// AddTrackAtPosition adds a track to a playlist at a specific source-order
+// position. Existing playlist membership is left intact so duplicate playlist
+// imports do not reshuffle user-curated tracks.
+func (r *PlaylistRepository) AddTrackAtPosition(ctx context.Context, playlistID, trackID int64, position int) error {
+	if position < 0 {
+		position = 0
+	}
+	query := `
+		INSERT INTO playlist_tracks (playlist_id, track_id, position)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (playlist_id, track_id) DO NOTHING
+	`
+	result, err := r.db.ExecContext(ctx, query, playlistID, trackID, position)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrTrackAlreadyInPlaylist
+	}
+	_, err = r.db.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID)
+	return err
+}
+
 // AddTracks adds multiple tracks to a playlist.
 func (r *PlaylistRepository) AddTracks(ctx context.Context, playlistID int64, trackIDs []int64) error {
 	if len(trackIDs) == 0 {
