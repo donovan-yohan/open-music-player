@@ -8,9 +8,7 @@ class AuthResult {
   final bool success;
   final String? error;
 
-  const AuthResult.success()
-      : success = true,
-        error = null;
+  const AuthResult.success() : success = true, error = null;
   const AuthResult.failure(this.error) : success = false;
 }
 
@@ -23,10 +21,10 @@ class AuthService {
     required ApiClient api,
     required SecureStorage storage,
     BiometricUnlockService? biometricUnlockService,
-  })  : _api = api,
-        _storage = storage,
-        _biometricUnlockService =
-            biometricUnlockService ?? LocalAuthBiometricUnlockService();
+  }) : _api = api,
+       _storage = storage,
+       _biometricUnlockService =
+           biometricUnlockService ?? LocalAuthBiometricUnlockService();
 
   Future<AuthResult> register({
     required String email,

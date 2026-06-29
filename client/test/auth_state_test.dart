@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -12,31 +13,32 @@ import 'package:open_music_player/core/storage/token_storage_backend.dart';
 
 void main() {
   group('AuthState.login', () {
-    test('clears loading and shows nested backend invalid credentials',
-        () async {
-      final storage = _MemoryTokenStorage();
-      final adapter = _DioAdapter((options) {
-        expect(options.uri.path, endsWith('/auth/login'));
-        return const _JsonReply(
-          {
+    test(
+      'clears loading and shows nested backend invalid credentials',
+      () async {
+        final storage = _MemoryTokenStorage();
+        final adapter = _DioAdapter((options) {
+          expect(options.uri.path, endsWith('/auth/login'));
+          return const _JsonReply({
             'error': {'message': 'invalid email or password'},
-          },
-          401,
+          }, 401);
+        });
+        final authState = _authState(storage: storage, adapter: adapter);
+
+        final success = await authState.login(
+          email: 'user@example.com',
+          password: 'wrong-password',
         );
-      });
-      final authState = _authState(storage: storage, adapter: adapter);
 
-      final success = await authState.login(
-        email: 'user@example.com',
-        password: 'wrong-password',
-      );
-
-      expect(success, isFalse);
-      expect(authState.isLoading, isFalse);
-      expect(authState.error, 'invalid email or password');
-      expect(adapter.requests.where((path) => path.endsWith('/auth/refresh')),
-          isEmpty);
-    });
+        expect(success, isFalse);
+        expect(authState.isLoading, isFalse);
+        expect(authState.error, 'invalid email or password');
+        expect(
+          adapter.requests.where((path) => path.endsWith('/auth/refresh')),
+          isEmpty,
+        );
+      },
+    );
   });
 
   group('AuthState.checkAuthStatus', () {
@@ -60,47 +62,50 @@ void main() {
       expect(authState.status, AuthStatus.authenticated);
       expect(storage.accessToken, 'fresh-access-token');
       expect(storage.refreshToken, 'fresh-refresh-token');
-      expect(adapter.requests.where((path) => path.endsWith('/auth/refresh')),
-          hasLength(1));
-    });
-
-    test('clears tokens and stays unauthenticated when startup refresh fails',
-        () async {
-      final storage = _MemoryTokenStorage(
-        accessToken: 'expired-access-token',
-        refreshToken: 'invalid-refresh-token',
+      expect(
+        adapter.requests.where((path) => path.endsWith('/auth/refresh')),
+        hasLength(1),
       );
-      final adapter = _DioAdapter((options) {
-        expect(options.uri.path, endsWith('/auth/refresh'));
-        return const _JsonReply(
-          {
-            'error': {'message': 'refresh token invalid'},
-          },
-          401,
+    });
+
+    test(
+      'clears tokens and stays unauthenticated when startup refresh fails',
+      () async {
+        final storage = _MemoryTokenStorage(
+          accessToken: 'expired-access-token',
+          refreshToken: 'invalid-refresh-token',
         );
-      });
-      final authState = _authState(storage: storage, adapter: adapter);
+        final adapter = _DioAdapter((options) {
+          expect(options.uri.path, endsWith('/auth/refresh'));
+          return const _JsonReply({
+            'error': {'message': 'refresh token invalid'},
+          }, 401);
+        });
+        final authState = _authState(storage: storage, adapter: adapter);
 
-      await authState.checkAuthStatus();
+        await authState.checkAuthStatus();
 
-      expect(authState.status, AuthStatus.unauthenticated);
-      expect(storage.accessToken, isNull);
-      expect(storage.refreshToken, isNull);
-    });
+        expect(authState.status, AuthStatus.unauthenticated);
+        expect(storage.accessToken, isNull);
+        expect(storage.refreshToken, isNull);
+      },
+    );
 
-    test('does not call the API on a fresh install with no refresh token',
-        () async {
-      final storage = _MemoryTokenStorage();
-      final adapter = _DioAdapter((options) {
-        fail('fresh installs should not call ${options.uri}');
-      });
-      final authState = _authState(storage: storage, adapter: adapter);
+    test(
+      'does not call the API on a fresh install with no refresh token',
+      () async {
+        final storage = _MemoryTokenStorage();
+        final adapter = _DioAdapter((options) {
+          fail('fresh installs should not call ${options.uri}');
+        });
+        final authState = _authState(storage: storage, adapter: adapter);
 
-      await authState.checkAuthStatus();
+        await authState.checkAuthStatus();
 
-      expect(authState.status, AuthStatus.unauthenticated);
-      expect(adapter.requests, isEmpty);
-    });
+        expect(authState.status, AuthStatus.unauthenticated);
+        expect(adapter.requests, isEmpty);
+      },
+    );
 
     test('gates a restored session when biometric unlock is enabled', () async {
       final storage = _MemoryTokenStorage(
@@ -225,9 +230,7 @@ class _MemoryTokenStorage implements TokenStorageBackend {
 }
 
 class _FakeBiometricUnlockService implements BiometricUnlockService {
-  _FakeBiometricUnlockService({
-    this.authenticates = true,
-  });
+  _FakeBiometricUnlockService({this.authenticates = true});
 
   final bool authenticates;
   int authenticateCalls = 0;
@@ -252,7 +255,7 @@ class _JsonReply {
 class _DioAdapter implements HttpClientAdapter {
   _DioAdapter(this.responder);
 
-  final _JsonReply Function(RequestOptions options) responder;
+  final FutureOr<_JsonReply> Function(RequestOptions options) responder;
   final List<String> requests = [];
 
   @override
@@ -262,7 +265,7 @@ class _DioAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     requests.add(options.uri.path);
-    final reply = responder(options);
+    final reply = await responder(options);
     return ResponseBody.fromString(
       jsonEncode(reply.body),
       reply.statusCode,
