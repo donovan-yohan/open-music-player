@@ -53,7 +53,7 @@ class SecureTokenStorage implements TokenStorageBackend {
 
   @override
   Future<bool> hasTokens() async {
-    final accessToken = await getAccessToken();
-    return accessToken != null && accessToken.isNotEmpty;
+    final refreshToken = await getRefreshToken();
+    return refreshToken != null && refreshToken.isNotEmpty;
   }
 }

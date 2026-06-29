@@ -10,10 +10,24 @@ class ApiClient {
 
   final Dio _dio;
   final SecureStorage _storage;
+  Future<bool>? _refreshInFlight;
+
+  static const _authRetryExtraKey = 'authRetryAttempted';
+  static const _authRefreshBypassPaths = {
+    '/auth/login',
+    '/auth/register',
+    '/auth/refresh',
+    '/auth/logout',
+  };
+  static const _anonymousAuthPaths = {
+    '/auth/login',
+    '/auth/register',
+    '/auth/refresh',
+  };
 
   ApiClient({required SecureStorage storage, Dio? dio})
-    : _storage = storage,
-      _dio = dio ?? Dio() {
+      : _storage = storage,
+        _dio = dio ?? Dio() {
     _dio.options.baseUrl = baseUrl;
     _dio.options.connectTimeout = const Duration(seconds: 10);
     _dio.options.receiveTimeout = const Duration(seconds: 10);
@@ -28,9 +42,11 @@ class ApiClient {
     RequestOptions options,
     RequestInterceptorHandler handler,
   ) async {
-    final token = await _storage.getAccessToken();
-    if (token != null && token.isNotEmpty) {
-      options.headers['Authorization'] = 'Bearer $token';
+    if (!_matchesAnyPath(options, _anonymousAuthPaths)) {
+      final token = await _storage.getAccessToken();
+      if (token != null && token.isNotEmpty) {
+        options.headers['Authorization'] = 'Bearer $token';
+      }
     }
     handler.next(options);
   }
@@ -39,25 +55,47 @@ class ApiClient {
     DioException error,
     ErrorInterceptorHandler handler,
   ) async {
-    if (error.response?.statusCode == 401) {
-      final refreshed = await _tryRefreshToken();
+    final requestOptions = error.requestOptions;
+    final shouldRefresh = error.response?.statusCode == 401 &&
+        !_isAuthEndpoint(requestOptions) &&
+        requestOptions.extra[_authRetryExtraKey] != true;
+
+    if (shouldRefresh) {
+      final refreshed = await refreshSession();
       if (refreshed) {
-        final retryResponse = await _retryRequest(error.requestOptions);
+        final retryResponse = await _retryRequest(requestOptions);
         return handler.resolve(retryResponse);
       }
     }
     handler.next(error);
   }
 
-  Future<bool> _tryRefreshToken() async {
+  Future<bool> refreshSession() {
+    final inFlight = _refreshInFlight;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    late final Future<bool> refresh;
+    refresh = _performRefreshSession().whenComplete(() {
+      if (identical(_refreshInFlight, refresh)) {
+        _refreshInFlight = null;
+      }
+    });
+    _refreshInFlight = refresh;
+    return refresh;
+  }
+
+  Future<bool> _performRefreshSession() async {
     final refreshToken = await _storage.getRefreshToken();
     if (refreshToken == null || refreshToken.isEmpty) {
+      await _clearTokensIfRefreshTokenUnchanged(refreshToken);
       return false;
     }
 
     try {
-      final response = await Dio().post(
-        '$baseUrl/auth/refresh',
+      final response = await _dio.post(
+        '/auth/refresh',
         data: refreshTokenPayload(refreshToken),
       );
 
@@ -69,16 +107,43 @@ class ApiClient {
         );
         return true;
       }
+      await _clearTokensIfRefreshTokenUnchanged(refreshToken);
     } catch (_) {
-      await _storage.clearTokens();
+      await _clearTokensIfRefreshTokenUnchanged(refreshToken);
     }
     return false;
   }
 
+  Future<void> _clearTokensIfRefreshTokenUnchanged(
+    String? attemptedRefreshToken,
+  ) async {
+    final currentRefreshToken = await _storage.getRefreshToken();
+    if (currentRefreshToken == attemptedRefreshToken) {
+      await _storage.clearTokens();
+    }
+  }
+
   Future<Response<dynamic>> _retryRequest(RequestOptions options) async {
     final token = await _storage.getAccessToken();
-    options.headers['Authorization'] = 'Bearer $token';
+    options.extra[_authRetryExtraKey] = true;
+    if (token != null && token.isNotEmpty) {
+      options.headers['Authorization'] = 'Bearer $token';
+    } else {
+      options.headers.remove('Authorization');
+    }
     return _dio.fetch(options);
+  }
+
+  bool _isAuthEndpoint(RequestOptions options) {
+    return _matchesAnyPath(options, _authRefreshBypassPaths);
+  }
+
+  bool _matchesAnyPath(RequestOptions options, Set<String> paths) {
+    final uriPath = options.uri.path;
+    final rawPath = Uri.tryParse(options.path)?.path ?? options.path;
+    return paths.any(
+      (path) => uriPath.endsWith(path) || rawPath.endsWith(path),
+    );
   }
 
   Future<Response<T>> get<T>(

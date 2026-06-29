@@ -26,8 +26,12 @@ class AuthState extends ChangeNotifier {
     _status = AuthStatus.checking;
     notifyListeners();
 
-    final isAuth = await _authService.isAuthenticated();
-    _status = isAuth ? AuthStatus.authenticated : AuthStatus.unauthenticated;
+    try {
+      final isAuth = await _authService.isAuthenticated();
+      _status = isAuth ? AuthStatus.authenticated : AuthStatus.unauthenticated;
+    } catch (_) {
+      _status = AuthStatus.unauthenticated;
+    }
     notifyListeners();
   }
 
@@ -39,20 +43,22 @@ class AuthState extends ChangeNotifier {
     _error = null;
     notifyListeners();
 
-    final result = await _authService.login(
-      email: email,
-      password: password,
-    );
+    try {
+      final result = await _authService.login(
+        email: email,
+        password: password,
+      );
 
-    _isLoading = false;
-    if (result.success) {
-      _status = AuthStatus.authenticated;
+      if (result.success) {
+        _status = AuthStatus.authenticated;
+        return true;
+      } else {
+        _error = result.error;
+        return false;
+      }
+    } finally {
+      _isLoading = false;
       notifyListeners();
-      return true;
-    } else {
-      _error = result.error;
-      notifyListeners();
-      return false;
     }
   }
 
@@ -65,21 +71,23 @@ class AuthState extends ChangeNotifier {
     _error = null;
     notifyListeners();
 
-    final result = await _authService.register(
-      email: email,
-      password: password,
-      username: username,
-    );
+    try {
+      final result = await _authService.register(
+        email: email,
+        password: password,
+        username: username,
+      );
 
-    _isLoading = false;
-    if (result.success) {
-      _status = AuthStatus.authenticated;
+      if (result.success) {
+        _status = AuthStatus.authenticated;
+        return true;
+      } else {
+        _error = result.error;
+        return false;
+      }
+    } finally {
+      _isLoading = false;
       notifyListeners();
-      return true;
-    } else {
-      _error = result.error;
-      notifyListeners();
-      return false;
     }
   }
 
@@ -87,11 +95,13 @@ class AuthState extends ChangeNotifier {
     _isLoading = true;
     notifyListeners();
 
-    await _authService.logout();
-
-    _isLoading = false;
-    _status = AuthStatus.unauthenticated;
-    notifyListeners();
+    try {
+      await _authService.logout();
+      _status = AuthStatus.unauthenticated;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
   }
 
   void clearError() {
