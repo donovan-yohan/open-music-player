@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -127,6 +128,96 @@ void main() {
     expect(adapter.requests.where((path) => path.endsWith('/auth/refresh')),
         hasLength(1));
   });
+
+  test('coalesces concurrent non-auth 401 refresh attempts', () async {
+    final storage = _MemoryTokenStorage(
+      accessToken: 'expired-access-token',
+      refreshToken: 'valid-refresh-token',
+    );
+    var libraryAttempts = 0;
+    var refreshAttempts = 0;
+    final seenAuthorizationHeaders = <String?>[];
+    final adapter = _DioAdapter((options) async {
+      if (options.uri.path.endsWith('/library')) {
+        libraryAttempts += 1;
+        seenAuthorizationHeaders
+            .add(options.headers['Authorization'] as String?);
+        if (libraryAttempts <= 2) {
+          return const _JsonReply(
+            {
+              'error': {'message': 'expired token'},
+            },
+            401,
+          );
+        }
+        return const _JsonReply({'tracks': []});
+      }
+      if (options.uri.path.endsWith('/auth/refresh')) {
+        refreshAttempts += 1;
+        expect(options.data, {'refreshToken': 'valid-refresh-token'});
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        return const _JsonReply({
+          'accessToken': 'fresh-access-token',
+          'refreshToken': 'fresh-refresh-token',
+        });
+      }
+      fail('unexpected request to ${options.uri.path}');
+    });
+    final api = _apiClient(storage: storage, adapter: adapter);
+
+    final responses = await Future.wait([
+      api.get('/library'),
+      api.get('/library'),
+    ]);
+
+    expect(responses.map((response) => response.statusCode), [200, 200]);
+    expect(libraryAttempts, 4);
+    expect(refreshAttempts, 1);
+    expect(seenAuthorizationHeaders, [
+      'Bearer expired-access-token',
+      'Bearer expired-access-token',
+      'Bearer fresh-access-token',
+      'Bearer fresh-access-token',
+    ]);
+    expect(storage.accessToken, 'fresh-access-token');
+    expect(storage.refreshToken, 'fresh-refresh-token');
+    expect(adapter.requests.where((path) => path.endsWith('/auth/refresh')),
+        hasLength(1));
+  });
+
+  test(
+      'does not clear tokens rotated by another refresh when stale refresh fails',
+      () async {
+    final storage = _MemoryTokenStorage(
+      accessToken: 'expired-access-token',
+      refreshToken: 'stale-refresh-token',
+    );
+    final adapter = _DioAdapter((options) async {
+      if (options.uri.path.endsWith('/auth/refresh')) {
+        expect(options.data, {'refreshToken': 'stale-refresh-token'});
+        await storage.saveTokens(
+          accessToken: 'fresh-access-token',
+          refreshToken: 'fresh-refresh-token',
+        );
+        return const _JsonReply(
+          {
+            'error': {'message': 'refresh token revoked'},
+          },
+          401,
+        );
+      }
+      fail('unexpected request to ${options.uri.path}');
+    });
+    final api = _apiClient(storage: storage, adapter: adapter);
+
+    final refreshed = await api.refreshSession();
+
+    expect(refreshed, isFalse);
+    expect(storage.accessToken, 'fresh-access-token');
+    expect(storage.refreshToken, 'fresh-refresh-token');
+    expect(adapter.requests.where((path) => path.endsWith('/auth/refresh')),
+        hasLength(1));
+  });
 }
 
 ApiClient _apiClient({
@@ -182,7 +273,7 @@ class _JsonReply {
 class _DioAdapter implements HttpClientAdapter {
   _DioAdapter(this.responder);
 
-  final _JsonReply Function(RequestOptions options) responder;
+  final FutureOr<_JsonReply> Function(RequestOptions options) responder;
   final List<String> requests = [];
 
   @override
@@ -192,7 +283,7 @@ class _DioAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     requests.add(options.uri.path);
-    final reply = responder(options);
+    final reply = await responder(options);
     return ResponseBody.fromString(
       jsonEncode(reply.body),
       reply.statusCode,

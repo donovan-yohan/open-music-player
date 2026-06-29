@@ -10,6 +10,7 @@ class ApiClient {
 
   final Dio _dio;
   final SecureStorage _storage;
+  Future<bool>? _refreshInFlight;
 
   static const _authRetryExtraKey = 'authRetryAttempted';
   static const _authRefreshBypassPaths = {
@@ -69,10 +70,26 @@ class ApiClient {
     handler.next(error);
   }
 
-  Future<bool> refreshSession() async {
+  Future<bool> refreshSession() {
+    final inFlight = _refreshInFlight;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    late final Future<bool> refresh;
+    refresh = _performRefreshSession().whenComplete(() {
+      if (identical(_refreshInFlight, refresh)) {
+        _refreshInFlight = null;
+      }
+    });
+    _refreshInFlight = refresh;
+    return refresh;
+  }
+
+  Future<bool> _performRefreshSession() async {
     final refreshToken = await _storage.getRefreshToken();
     if (refreshToken == null || refreshToken.isEmpty) {
-      await _storage.clearTokens();
+      await _clearTokensIfRefreshTokenUnchanged(refreshToken);
       return false;
     }
 
@@ -90,10 +107,20 @@ class ApiClient {
         );
         return true;
       }
+      await _clearTokensIfRefreshTokenUnchanged(refreshToken);
     } catch (_) {
-      await _storage.clearTokens();
+      await _clearTokensIfRefreshTokenUnchanged(refreshToken);
     }
     return false;
+  }
+
+  Future<void> _clearTokensIfRefreshTokenUnchanged(
+    String? attemptedRefreshToken,
+  ) async {
+    final currentRefreshToken = await _storage.getRefreshToken();
+    if (currentRefreshToken == attemptedRefreshToken) {
+      await _storage.clearTokens();
+    }
   }
 
   Future<Response<dynamic>> _retryRequest(RequestOptions options) async {
