@@ -61,9 +61,7 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.hidden) {
+    if (shouldLockForBiometricLifecycleState(state)) {
       widget.authState.lockIfBiometricRequired();
     }
   }
@@ -151,4 +149,8 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
         return ThemeMode.dark;
     }
   }
+}
+
+bool shouldLockForBiometricLifecycleState(AppLifecycleState state) {
+  return state == AppLifecycleState.paused || state == AppLifecycleState.hidden;
 }

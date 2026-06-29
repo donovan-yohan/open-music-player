@@ -143,20 +143,21 @@ class _AccountSection extends ConsumerWidget {
   }
 
   void _showLogoutDialog(BuildContext context, WidgetRef ref) {
+    final parentContext = context;
     showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
+      context: parentContext,
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Log out'),
         content: const Text('Are you sure you want to log out?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           TextButton(
             onPressed: () {
-              Navigator.pop(context);
-              _showLogoutOptionsDialog(context, ref);
+              Navigator.pop(dialogContext);
+              _showLogoutOptionsDialog(parentContext, ref);
             },
             child: const Text('Log out'),
           ),
@@ -166,12 +167,13 @@ class _AccountSection extends ConsumerWidget {
   }
 
   void _showLogoutOptionsDialog(BuildContext context, WidgetRef ref) {
+    final parentContext = context;
     bool clearCache = false;
 
     showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
+      context: parentContext,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setState) => AlertDialog(
           title: const Text('Logout options'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -189,23 +191,23 @@ class _AccountSection extends ConsumerWidget {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.pop(dialogContext),
               child: const Text('Cancel'),
             ),
             FilledButton(
               onPressed: () async {
-                Navigator.pop(context);
+                Navigator.pop(dialogContext);
                 if (clearCache) {
                   await ref.read(cacheProvider.notifier).clearCache();
                 }
-                if (context.mounted) {
+                if (parentContext.mounted) {
                   await legacy_provider.Provider.of<session_auth.AuthState>(
-                    context,
+                    parentContext,
                     listen: false,
                   ).logout();
                 }
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                if (parentContext.mounted) {
+                  ScaffoldMessenger.of(parentContext).showSnackBar(
                     const SnackBar(content: Text('Logged out successfully')),
                   );
                 }
