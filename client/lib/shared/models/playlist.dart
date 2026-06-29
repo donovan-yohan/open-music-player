@@ -8,28 +8,38 @@ class Playlist {
   final DateTime createdAt;
   final DateTime updatedAt;
   final List<Track>? tracks;
+  final int? _trackCount;
+  final int? totalDurationMs;
 
   Playlist({
     required this.id,
-    required this.userId,
+    this.userId = 0,
     required this.name,
     this.description,
     required this.createdAt,
     required this.updatedAt,
     this.tracks,
-  });
+    int? trackCount,
+    this.totalDurationMs,
+  }) : _trackCount = trackCount;
 
   factory Playlist.fromJson(Map<String, dynamic> json) {
+    final tracks = json['tracks'] != null
+        ? (json['tracks'] as List).map((t) => Track.fromJson(t)).toList()
+        : null;
+
     return Playlist(
-      id: json['id'] as int,
-      userId: json['user_id'] as int,
+      id: _intValue(json['id']),
+      userId: _intValue(json['userId'] ?? json['user_id'], fallback: 0),
       name: json['name'] as String,
       description: json['description'] as String?,
-      createdAt: DateTime.parse(json['created_at'] as String),
-      updatedAt: DateTime.parse(json['updated_at'] as String),
-      tracks: json['tracks'] != null
-          ? (json['tracks'] as List).map((t) => Track.fromJson(t)).toList()
-          : null,
+      createdAt: _dateTimeValue(json['createdAt'] ?? json['created_at']),
+      updatedAt: _dateTimeValue(json['updatedAt'] ?? json['updated_at']),
+      tracks: tracks,
+      trackCount: _optionalInt(json['trackCount'] ?? json['track_count']),
+      totalDurationMs: _optionalInt(
+        json['durationMs'] ?? json['totalDuration'] ?? json['total_duration'],
+      ),
     );
   }
 
@@ -66,16 +76,17 @@ class Playlist {
     );
   }
 
-  int get trackCount => tracks?.length ?? 0;
+  int get trackCount => tracks?.length ?? _trackCount ?? 0;
 
   /// Returns total duration of all tracks formatted as "Xh Ym" or "Xm Ys"
   String get formattedDuration {
-    if (tracks == null || tracks!.isEmpty) return '0m';
+    if ((tracks == null || tracks!.isEmpty) && totalDurationMs == null) {
+      return '0m';
+    }
 
-    final totalMs = tracks!.fold<int>(
-      0,
-      (sum, track) => sum + (track.durationMs ?? 0),
-    );
+    final totalMs = tracks != null && tracks!.isNotEmpty
+        ? tracks!.fold<int>(0, (sum, track) => sum + (track.durationMs ?? 0))
+        : totalDurationMs!;
 
     final totalSeconds = totalMs ~/ 1000;
     final hours = totalSeconds ~/ 3600;
@@ -96,7 +107,8 @@ class Playlist {
     DateTime? createdAt,
     DateTime? updatedAt,
     List<Track>? tracks,
-    int? trackCount, // Ignored - computed from tracks
+    int? trackCount,
+    int? totalDurationMs,
   }) {
     return Playlist(
       id: id ?? this.id,
@@ -106,6 +118,26 @@ class Playlist {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       tracks: tracks ?? this.tracks,
+      trackCount: trackCount ?? _trackCount,
+      totalDurationMs: totalDurationMs ?? this.totalDurationMs,
     );
   }
+}
+
+int _intValue(dynamic value, {int fallback = 0}) =>
+    _optionalInt(value) ?? fallback;
+
+int? _optionalInt(dynamic value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value);
+  return null;
+}
+
+DateTime _dateTimeValue(dynamic value) {
+  if (value is String) {
+    final parsed = DateTime.tryParse(value);
+    if (parsed != null) return parsed;
+  }
+  return DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
 }
