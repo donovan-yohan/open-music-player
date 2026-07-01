@@ -24,6 +24,10 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   bool _isGridView = true;
 
   final _scrollController = ScrollController();
+  final _searchController = TextEditingController();
+  String _query = '';
+  String _sort = 'name';
+  String _order = 'asc';
 
   @override
   void initState() {
@@ -39,6 +43,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   @override
   void dispose() {
     _scrollController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -58,7 +63,12 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     });
 
     try {
-      final response = await _playlistService.getPlaylists(offset: 0);
+      final response = await _playlistService.getPlaylists(
+        offset: 0,
+        q: _query,
+        sort: _sort,
+        order: _order,
+      );
 
       setState(() {
         _playlists.clear();
@@ -82,6 +92,9 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     try {
       final response = await _playlistService.getPlaylists(
         offset: _playlists.length,
+        q: _query,
+        sort: _sort,
+        order: _order,
       );
 
       setState(() {
@@ -98,21 +111,117 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     await _loadPlaylists();
   }
 
+  void _onSearchChanged(String value) {
+    final trimmed = value.trim();
+    if (trimmed == _query) return;
+    setState(() => _query = trimmed);
+    _loadPlaylists();
+  }
+
+  void _onSortSelected(String sort) {
+    setState(() {
+      if (_sort == sort) {
+        _order = _order == 'asc' ? 'desc' : 'asc';
+      } else {
+        _sort = sort;
+        _order = 'asc';
+      }
+    });
+    _loadPlaylists();
+  }
+
+  /// Playlists visible after applying the local text filter. The server also
+  /// filters via `q`, but this keeps the list responsive while typing.
+  List<Playlist> get _visiblePlaylists {
+    if (_query.isEmpty) return _playlists;
+    final lower = _query.toLowerCase();
+    return _playlists
+        .where((p) => p.name.toLowerCase().contains(lower))
+        .toList();
+  }
+
+  Widget _buildSearchAndSort() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _searchController,
+              onChanged: _onSearchChanged,
+              textInputAction: TextInputAction.search,
+              decoration: InputDecoration(
+                isDense: true,
+                hintText: 'Search playlists',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _query.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          _searchController.clear();
+                          _onSearchChanged('');
+                        },
+                      )
+                    : null,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.sort),
+            tooltip: 'Sort playlists',
+            onSelected: _onSortSelected,
+            itemBuilder: (context) => [
+              _buildSortItem('name', 'Name'),
+              _buildSortItem('track_count', 'Track count'),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  PopupMenuItem<String> _buildSortItem(String value, String label) {
+    final isActive = _sort == value;
+    return PopupMenuItem<String>(
+      value: value,
+      child: Row(
+        children: [
+          Icon(
+            isActive
+                ? (_order == 'asc'
+                    ? Icons.arrow_upward
+                    : Icons.arrow_downward)
+                : Icons.sort,
+            size: 18,
+          ),
+          const SizedBox(width: 12),
+          Text(label),
+        ],
+      ),
+    );
+  }
+
   void _showCreatePlaylistDialog() {
     final messenger = ScaffoldMessenger.of(context);
     showDialog(
       context: context,
       builder: (context) => PlaylistEditDialog(
-        onSave: (name, description) async {
+        onSave: (result) async {
           try {
             final playlist = await _playlistService.createPlaylist(
-              name: name,
-              description: description,
+              name: result.name,
+              description: result.description,
+              coverUrl: result.coverUrl,
+              isPublic: result.isPublic,
             );
             if (!mounted) return;
             setState(() => _playlists.insert(0, playlist));
             messenger.showSnackBar(
-              SnackBar(content: Text('Created playlist "$name"')),
+              SnackBar(content: Text('Created playlist "${result.name}"')),
             );
           } catch (e) {
             if (!mounted) return;
@@ -162,12 +271,16 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
       builder: (context) => PlaylistEditDialog(
         initialName: playlist.name,
         initialDescription: playlist.description,
-        onSave: (name, description) async {
+        initialCoverUrl: playlist.coverUrl,
+        initialIsPublic: playlist.isPublic,
+        onSave: (result) async {
           try {
             final updated = await _playlistService.updatePlaylist(
               playlist.id,
-              name: name,
-              description: description,
+              name: result.name,
+              description: result.description,
+              coverUrl: result.coverUrl ?? '',
+              isPublic: result.isPublic,
             );
             if (!mounted) return;
             final index = _playlists.indexWhere((p) => p.id == playlist.id);
@@ -247,7 +360,13 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
           ),
         ],
       ),
-      body: _buildBody(),
+      body: Column(
+        children: [
+          if (_error == null && (_playlists.isNotEmpty || _query.isNotEmpty))
+            _buildSearchAndSort(),
+          Expanded(child: _buildBody()),
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: _showCreatePlaylistDialog,
         child: const Icon(Icons.add),
@@ -269,6 +388,19 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               onPressed: _loadPlaylists,
               child: const Text('Retry'),
             ),
+          ],
+        ),
+      );
+    }
+
+    if (!_isLoading && _playlists.isNotEmpty && _visiblePlaylists.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.search_off, size: 48, color: Colors.grey),
+            const SizedBox(height: 16),
+            Text('No playlists match "$_query"'),
           ],
         ),
       );
@@ -311,6 +443,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   }
 
   Widget _buildGridView() {
+    final playlists = _visiblePlaylists;
     return GridView.builder(
       controller: _scrollController,
       padding: const EdgeInsets.all(16),
@@ -320,13 +453,13 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         crossAxisSpacing: 16,
         mainAxisSpacing: 16,
       ),
-      itemCount: _playlists.length + (_isLoading ? 1 : 0),
+      itemCount: playlists.length + (_isLoading ? 1 : 0),
       itemBuilder: (context, index) {
-        if (index == _playlists.length) {
+        if (index == playlists.length) {
           return const Center(child: CircularProgressIndicator());
         }
 
-        final playlist = _playlists[index];
+        final playlist = playlists[index];
         return PlaylistCard(
           playlist: playlist,
           onTap: () => context.push('/playlists/${playlist.id}'),
@@ -337,11 +470,12 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   }
 
   Widget _buildListView() {
+    final playlists = _visiblePlaylists;
     return ListView.builder(
       controller: _scrollController,
-      itemCount: _playlists.length + (_isLoading ? 1 : 0),
+      itemCount: playlists.length + (_isLoading ? 1 : 0),
       itemBuilder: (context, index) {
-        if (index == _playlists.length) {
+        if (index == playlists.length) {
           return const Center(
             child: Padding(
               padding: EdgeInsets.all(16),
@@ -350,7 +484,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
           );
         }
 
-        final playlist = _playlists[index];
+        final playlist = playlists[index];
         return PlaylistListTile(
           playlist: playlist,
           onTap: () => context.push('/playlists/${playlist.id}'),
