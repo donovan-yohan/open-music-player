@@ -88,8 +88,15 @@ func (s *FieldSelector) Include(field string) bool {
 }
 
 // GetLibrary handles GET /api/v1/library
-// Supports field selection via ?fields=id,title,artist (comma-separated)
-// Available fields: id, title, artist, album, duration_ms, mb_verified, added_at, cover_art_url, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, analysis_status, analysis_summary
+// Query params: limit, offset, sort (added_at|title|artist), order (asc|desc),
+// q (full-text search), mb_verified (bool), liked (true -> only liked tracks),
+// fields (comma-separated field selection).
+// Available fields: id, title, artist, album, duration_ms, mb_verified, added_at, cover_art_url, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, is_liked, analysis_status, analysis_summary
+//
+// Note: liked/is_liked here are scoped to the caller's library — this endpoint
+// lists the library, optionally filtered to liked tracks. A standalone "Liked
+// Songs" collection returning every favorite regardless of library membership is
+// a separate future endpoint (roadmap C11b); see docs/UX_GAP_ANALYSIS.md.
 func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 	userCtx := auth.GetUserFromContext(r.Context())
 	if userCtx == nil {

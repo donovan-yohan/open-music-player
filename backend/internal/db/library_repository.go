@@ -68,7 +68,12 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 		argIndex++
 	}
 
-	// Liked-only filter (favorites are independent of library membership).
+	// Liked-only filter. This narrows the library listing to liked tracks; because
+	// GetUserLibrary is scoped to user_library, a liked track that is not in the
+	// library is intentionally not returned here. The standalone "Liked Songs"
+	// collection (every favorite regardless of membership) is a separate endpoint
+	// (roadmap C11b). Ordering still follows the library sort (added_at/title/artist);
+	// like-time ordering via idx_track_favorites_user_created lands with that endpoint.
 	if opts.Liked {
 		baseCondition += " AND EXISTS (SELECT 1 FROM track_favorites tf WHERE tf.user_id = ul.user_id AND tf.track_id = t.id)"
 	}
