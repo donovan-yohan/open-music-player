@@ -97,6 +97,10 @@ class Track {
   final int? fileSizeBytes;
   final Map<String, dynamic>? metadata;
   final List<MBSuggestion> mbSuggestions;
+
+  /// Whether the current user has liked (favorited) this track. Sourced from
+  /// the `is_liked` flag on the GET /library response.
+  final bool isLiked;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -118,6 +122,7 @@ class Track {
     this.fileSizeBytes,
     this.metadata,
     this.mbSuggestions = const [],
+    this.isLiked = false,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -170,6 +175,7 @@ class Track {
           _optionalInt(json['fileSizeBytes'] ?? json['file_size_bytes']),
       metadata: json['metadata_json'] as Map<String, dynamic>?,
       mbSuggestions: suggestions,
+      isLiked: json['isLiked'] as bool? ?? json['is_liked'] as bool? ?? false,
       createdAt: _dateTimeValue(json['createdAt'] ?? json['created_at']),
       updatedAt: _dateTimeValue(json['updatedAt'] ?? json['updated_at']),
     );
@@ -201,6 +207,7 @@ class Track {
               ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
               .toList() ??
           [],
+      isLiked: json['is_liked'] as bool? ?? false,
       createdAt:
           DateTime.tryParse(json['created_at'] as String? ?? '') ?? addedAt,
       updatedAt:
@@ -227,6 +234,7 @@ class Track {
       'file_size_bytes': fileSizeBytes,
       'metadata_json': metadata,
       'mb_suggestions': mbSuggestions.map((s) => s.toJson()).toList(),
+      'is_liked': isLiked,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
     };
@@ -329,6 +337,7 @@ class Track {
     int? fileSizeBytes,
     Map<String, dynamic>? metadata,
     List<MBSuggestion>? mbSuggestions,
+    bool? isLiked,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -350,6 +359,7 @@ class Track {
       fileSizeBytes: fileSizeBytes ?? this.fileSizeBytes,
       metadata: metadata ?? this.metadata,
       mbSuggestions: mbSuggestions ?? this.mbSuggestions,
+      isLiked: isLiked ?? this.isLiked,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );

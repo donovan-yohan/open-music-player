@@ -62,6 +62,16 @@ class LibraryService {
     await _apiClient.delete('/library/tracks/$trackId');
   }
 
+  /// Likes (favorites) a library track. Idempotent server-side.
+  Future<void> like(int trackId) async {
+    await _apiClient.post('/library/tracks/$trackId/like');
+  }
+
+  /// Removes the like (favorite) from a library track.
+  Future<void> unlike(int trackId) async {
+    await _apiClient.delete('/library/tracks/$trackId/like');
+  }
+
   Future<List<Playlist>> getPlaylists({int limit = 20, int offset = 0}) async {
     final response = await _apiClient.get<Map<String, dynamic>>(
       '/playlists',

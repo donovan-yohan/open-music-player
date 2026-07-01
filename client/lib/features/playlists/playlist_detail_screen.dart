@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/services/playlist_service.dart';
 import '../../core/api/api_client.dart';
@@ -209,7 +210,20 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     if (tracks.isEmpty) return;
     if (shuffle) tracks.shuffle();
     final playback = context.read<PlaybackState>();
-    await playback.playQueue(tracks.map((t) => t.toPlaybackJson()).toList());
+    await playback.playQueue(
+      tracks.map((t) => t.toPlaybackJson()).toList(),
+      context: _playlistContext(),
+    );
+  }
+
+  PlaybackContext? _playlistContext() {
+    final playlist = _playlist;
+    if (playlist == null) return null;
+    return PlaybackContext(
+      kind: PlaybackContextKind.playlist,
+      label: playlist.name,
+      id: playlist.id.toString(),
+    );
   }
 
   /// Plays the playlist starting from the tapped track (context = the playlist).
@@ -220,6 +234,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     await playback.playQueue(
       tracks.map((t) => t.toPlaybackJson()).toList(),
       startIndex: index,
+      context: _playlistContext(),
     );
   }
 
