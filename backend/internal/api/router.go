@@ -252,6 +252,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("DELETE /api/v1/playlists/{id}", r.withAuth(r.playlistHandlers.DeletePlaylist))
 	r.mux.HandleFunc("POST /api/v1/playlists/{id}/tracks", r.withAuth(r.playlistHandlers.AddTracks))
 	r.mux.HandleFunc("DELETE /api/v1/playlists/{id}/tracks/{trackId}", r.withAuth(r.playlistHandlers.RemoveTrack))
+	r.mux.HandleFunc("POST /api/v1/playlists/{id}/tracks/batch-remove", r.withAuth(r.playlistHandlers.BatchRemoveTracks))
 	r.mux.HandleFunc("PUT /api/v1/playlists/{id}/tracks/reorder", r.withAuth(r.playlistHandlers.ReorderTracks))
 	if r.playlistImportHandlers != nil {
 		r.mux.HandleFunc("POST /api/v1/playlist-imports", r.withAuth(r.playlistImportHandlers.CreateImport))
