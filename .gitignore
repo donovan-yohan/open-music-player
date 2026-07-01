@@ -1,6 +1,3 @@
-# Gas Town internal
-.beads/
-
 # Environment variables
 .env
 .env.local
@@ -47,7 +44,7 @@ build/
 # SQLx offline mode cache (regenerate with `cargo sqlx prepare`)
 .sqlx/
 
-# Gas Town (added by gt)
+# Local runtime/log dirs
 .runtime/
 .claude/
 .logs/
