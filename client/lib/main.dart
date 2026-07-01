@@ -8,6 +8,7 @@ import 'app/app.dart';
 import 'core/api/api_client.dart';
 import 'core/audio/audio_player_service.dart';
 import 'core/audio/playback_state.dart';
+import 'core/audio/play_recorder_service.dart';
 import 'core/audio/signed_audio_url_service.dart';
 import 'core/cache/playback_cache_manager.dart';
 import 'core/auth/auth_service.dart';
@@ -63,6 +64,19 @@ void main() async {
     localResolver: downloadService,
     cacheManager: playbackCacheManager,
   );
+
+  // Records exactly one play per continuous listen (>=30s or completion) to
+  // /me/plays, tagged with the current playback context. Pending state is
+  // cleared whenever the session drops so a play can't cross accounts.
+  final playRecorder = PlayRecorderService(
+    playbackState,
+    ApiPlayEventSink(apiClient),
+  )..start();
+  authState.addListener(() {
+    if (!authState.isAuthenticated) {
+      playRecorder.reset();
+    }
+  });
 
   runApp(
     ProviderScope(
