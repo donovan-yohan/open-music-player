@@ -71,12 +71,11 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 		limit = 100
 	}
 
-	// Convert query to tsquery format (split words and join with &)
-	tsQuery := strings.Join(strings.Fields(query), " & ")
+	// Sanitize free-form input into a safe prefix-matching tsquery (see buildPrefixTSQuery).
+	tsQuery := buildPrefixTSQuery(query)
 	if tsQuery == "" {
 		return []Track{}, 0, nil
 	}
-	tsQuery = tsQuery + ":*" // Prefix matching for partial words
 
 	// Single query with window function to get both results and total count
 	selectQuery := `
@@ -140,12 +139,11 @@ func (r *TrackRepository) SearchArtists(ctx context.Context, query string, limit
 		limit = 100
 	}
 
-	// Convert query to tsquery format
-	tsQuery := strings.Join(strings.Fields(query), " & ")
+	// Sanitize free-form input into a safe prefix-matching tsquery (see buildPrefixTSQuery).
+	tsQuery := buildPrefixTSQuery(query)
 	if tsQuery == "" {
 		return []Artist{}, 0, nil
 	}
-	tsQuery = tsQuery + ":*"
 
 	// Single query with window function for total count
 	selectQuery := `
@@ -197,12 +195,11 @@ func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limi
 		limit = 100
 	}
 
-	// Convert query to tsquery format
-	tsQuery := strings.Join(strings.Fields(query), " & ")
+	// Sanitize free-form input into a safe prefix-matching tsquery (see buildPrefixTSQuery).
+	tsQuery := buildPrefixTSQuery(query)
 	if tsQuery == "" {
 		return []Release{}, 0, nil
 	}
-	tsQuery = tsQuery + ":*"
 
 	// Single query with window function for total count
 	selectQuery := `

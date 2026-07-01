@@ -12,7 +12,7 @@ class SearchService {
     int offset = 0,
   }) async {
     return _apiClient.get(
-      '/search/tracks',
+      '/search/recordings',
       queryParams: {
         'q': query,
         'limit': limit.toString(),
@@ -44,7 +44,7 @@ class SearchService {
     int offset = 0,
   }) async {
     return _apiClient.get(
-      '/search/albums',
+      '/search/releases',
       queryParams: {
         'q': query,
         'limit': limit.toString(),

@@ -7,6 +7,9 @@ class ArtistResult {
   final String? type;
   final String? country;
   final String? disambiguation;
+
+  /// Number of local library tracks by this artist (from /search/artists).
+  final int? trackCount;
   final int? score;
 
   const ArtistResult({
@@ -16,18 +19,22 @@ class ArtistResult {
     this.type,
     this.country,
     this.disambiguation,
+    this.trackCount,
     this.score,
   });
 
   factory ArtistResult.fromJson(Map<String, dynamic> json) {
+    // Maps the backend ArtistResponse shape (name, mbArtistId, trackCount);
+    // falls back to MusicBrainz field names. mbid may be empty for local artists.
     return ArtistResult(
-      mbid: json['mbid'] as String,
-      name: json['name'] as String,
+      mbid: (json['mbArtistId'] ?? json['mbid'] ?? '') as String,
+      name: (json['name'] ?? '') as String,
       sortName: json['sortName'] as String?,
       type: json['type'] as String?,
       country: json['country'] as String?,
       disambiguation: json['disambiguation'] as String?,
-      score: json['score'] as int?,
+      trackCount: (json['trackCount'] as num?)?.toInt(),
+      score: (json['score'] as num?)?.toInt(),
     );
   }
 }

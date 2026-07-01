@@ -224,6 +224,12 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   void _navigateToArtist(String mbid) {
+    // Local results with no MusicBrainz match carry an empty mbid; the MB-backed
+    // detail screen can't resolve one, so surface that instead of a broken fetch.
+    if (mbid.isEmpty) {
+      _showNoDetailSnack('artist');
+      return;
+    }
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => ArtistDetailScreen(
@@ -235,6 +241,10 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   void _navigateToAlbum(String mbid) {
+    if (mbid.isEmpty) {
+      _showNoDetailSnack('album');
+      return;
+    }
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => AlbumDetailScreen(
@@ -242,6 +252,12 @@ class _SearchScreenState extends State<SearchScreen>
           apiClient: widget.apiClient,
         ),
       ),
+    );
+  }
+
+  void _showNoDetailSnack(String kind) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('No $kind details available for this local result')),
     );
   }
 
