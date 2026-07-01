@@ -120,6 +120,15 @@ func (db *DB) Migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist_id ON playlist_tracks(playlist_id);
 	CREATE INDEX IF NOT EXISTS idx_playlist_tracks_track_id ON playlist_tracks(track_id);
 
+	CREATE TABLE IF NOT EXISTS track_favorites (
+		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		track_id BIGINT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (user_id, track_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_track_favorites_user_created ON track_favorites(user_id, created_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_track_favorites_track_id ON track_favorites(track_id);
+
 	CREATE TABLE IF NOT EXISTS download_jobs (
 		id UUID PRIMARY KEY,
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

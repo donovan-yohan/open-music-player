@@ -208,6 +208,8 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("GET /api/v1/library", r.withAuth(r.libraryHandlers.GetLibrary))
 	r.mux.HandleFunc("POST /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.AddTrackToLibrary))
 	r.mux.HandleFunc("DELETE /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.RemoveTrackFromLibrary))
+	r.mux.HandleFunc("POST /api/v1/library/tracks/{track_id}/like", r.withAuth(r.libraryHandlers.LikeTrack))
+	r.mux.HandleFunc("DELETE /api/v1/library/tracks/{track_id}/like", r.withAuth(r.libraryHandlers.UnlikeTrack))
 	if r.analysisHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/analysis", r.withAuth(r.analysisHandlers.GetTrackAnalysis))
 	} else {
