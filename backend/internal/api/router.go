@@ -39,6 +39,7 @@ type Router struct {
 	mixPlanHandlers        *MixPlanHandlers
 	downloadHandlers       *DownloadHandlers
 	maintenanceHandlers    *MaintenanceHandlers
+	playEventHandlers      *PlayEventHandlers
 	healthHandler          *health.Handler
 	metricsHandler         http.HandlerFunc
 	corsAllowedOrigins     []string
@@ -68,6 +69,7 @@ type RouterConfig struct {
 	MixPlanHandlers        *MixPlanHandlers
 	DownloadHandlers       *DownloadHandlers
 	MaintenanceHandlers    *MaintenanceHandlers
+	PlayEventHandlers      *PlayEventHandlers
 	HealthHandler          *health.Handler
 	Metrics                *metrics.Metrics
 	CORSAllowedOrigins     []string
@@ -122,6 +124,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		mixPlanHandlers:        cfg.MixPlanHandlers,
 		downloadHandlers:       cfg.DownloadHandlers,
 		maintenanceHandlers:    cfg.MaintenanceHandlers,
+		playEventHandlers:      cfg.PlayEventHandlers,
 		healthHandler:          cfg.HealthHandler,
 		metricsHandler:         metricsHandler,
 		corsAllowedOrigins:     corsAllowedOrigins,
@@ -276,6 +279,18 @@ func (r *Router) setupRoutes() {
 		r.mux.HandleFunc("POST /api/v1/downloads", downloadUnavailable)
 		r.mux.HandleFunc("GET /api/v1/downloads", downloadUnavailable)
 		r.mux.HandleFunc("GET /api/v1/downloads/{job_id}", downloadUnavailable)
+	}
+
+	// Play event routes (auth required): record a play and read personal history.
+	if r.playEventHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/me/plays", r.withAuth(r.playEventHandlers.RecordPlay))
+		r.mux.HandleFunc("GET /api/v1/me/plays/recent", r.withAuth(r.playEventHandlers.RecentlyPlayed))
+		r.mux.HandleFunc("GET /api/v1/me/plays/top", r.withAuth(r.playEventHandlers.TopTracks))
+	} else {
+		playEventUnavailable := r.withAuth(unavailableHandler("Play history is unavailable"))
+		r.mux.HandleFunc("POST /api/v1/me/plays", playEventUnavailable)
+		r.mux.HandleFunc("GET /api/v1/me/plays/recent", playEventUnavailable)
+		r.mux.HandleFunc("GET /api/v1/me/plays/top", playEventUnavailable)
 	}
 
 	// Maintenance repair routes (auth required)
