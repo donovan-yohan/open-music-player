@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -50,15 +49,18 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	args := []interface{}{userID}
 	argIndex := 2
 
-	// Use full-text search for search queries
+	// Use full-text search for search queries (sanitized; see buildPrefixTSQuery).
 	if opts.Search != "" {
-		tsQuery := strings.Join(strings.Fields(opts.Search), " & ")
-		if tsQuery != "" {
-			tsQuery = tsQuery + ":*"
-			baseCondition += " AND to_tsvector('english', COALESCE(t.title, '') || ' ' || COALESCE(t.artist, '') || ' ' || COALESCE(t.album, '')) @@ to_tsquery('english', $" + itoa(argIndex) + ")"
-			args = append(args, tsQuery)
-			argIndex++
+		tsQuery := buildPrefixTSQuery(opts.Search)
+		if tsQuery == "" {
+			// The search term had no searchable lexemes (e.g. punctuation only). Return
+			// no matches rather than silently dropping the filter and listing the whole
+			// library — this mirrors the track/artist/release search paths.
+			return []LibraryTrack{}, 0, nil
 		}
+		baseCondition += " AND to_tsvector('english', COALESCE(t.title, '') || ' ' || COALESCE(t.artist, '') || ' ' || COALESCE(t.album, '')) @@ to_tsquery('english', $" + itoa(argIndex) + ")"
+		args = append(args, tsQuery)
+		argIndex++
 	}
 
 	if opts.MBVerified != nil {
