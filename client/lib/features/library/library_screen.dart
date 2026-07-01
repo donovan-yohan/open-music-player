@@ -12,6 +12,8 @@ import '../../shared/models/models.dart';
 import '../../shared/widgets/widgets.dart';
 import '../discovery/screens/album_detail_screen.dart';
 import '../discovery/screens/artist_detail_screen.dart';
+import 'library_filter_logic.dart';
+import 'liked_songs_screen.dart';
 import 'library_sort_logic.dart';
 import 'library_track_actions.dart';
 
@@ -27,6 +29,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   bool _downloadedOnly = false;
   VerificationFilter _verificationFilter = VerificationFilter.all;
+  LibraryFilterState _filter = LibraryFilterState.cleared;
   LibrarySortOption _sortOption = LibrarySortOption.defaultOption;
   List<Track> _tracks = [];
   Map<VerificationFilter, int> _counts = {};
@@ -38,9 +41,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   final LibrarySortStore _sortStore = LibrarySortStore();
   final ScrollController _scrollController = ScrollController();
+  final TextEditingController _searchController = TextEditingController();
 
   bool get _hasActiveFilters =>
-      _downloadedOnly || _verificationFilter != VerificationFilter.all;
+      _downloadedOnly ||
+      _verificationFilter != VerificationFilter.all ||
+      _filter.hasActiveFilters;
 
   // Library mutations (like/unlike, remove, playlists) and MusicBrainz-backed
   // detail navigation run through the parser-based services client, mirroring
@@ -72,6 +78,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   void dispose() {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -206,6 +213,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
       sort: _sortOption.field.apiValue,
       order: _sortOption.order.apiValue,
       mbVerified: mbVerified,
+      liked: _filter.liked,
+      genre: _filter.genre,
+      query: _filter.query,
       fields: const [
         'id',
         'title',
@@ -273,7 +283,92 @@ class _LibraryScreenState extends State<LibraryScreen> {
       body: Column(
         children: [
           _buildOfflineBanner(context),
+          _buildLikedSongsCard(context),
+          _buildSearchField(context),
+          _buildFilterChips(context),
           Expanded(child: _buildBody(context)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLikedSongsCard(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: Card(
+        margin: EdgeInsets.zero,
+        child: ListTile(
+          leading: CircleAvatar(
+            backgroundColor: theme.colorScheme.primaryContainer,
+            child: Icon(
+              Icons.favorite,
+              color: theme.colorScheme.onPrimaryContainer,
+            ),
+          ),
+          title: const Text('Liked Songs'),
+          subtitle: const Text('Your favorites'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: _openLikedSongs,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchField(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      child: TextField(
+        controller: _searchController,
+        textInputAction: TextInputAction.search,
+        onSubmitted: _onSearchSubmitted,
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: 'Search your library',
+          prefixIcon: const Icon(Icons.search),
+          suffixIcon: _filter.query.isEmpty
+              ? null
+              : IconButton(
+                  icon: const Icon(Icons.clear),
+                  tooltip: 'Clear search',
+                  onPressed: () {
+                    _searchController.clear();
+                    _onSearchSubmitted('');
+                  },
+                ),
+          border: const OutlineInputBorder(),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFilterChips(BuildContext context) {
+    return SizedBox(
+      height: 48,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        children: [
+          FilterChip(
+            label: const Text('Liked'),
+            selected: _filter.liked,
+            avatar: Icon(
+              _filter.liked ? Icons.favorite : Icons.favorite_border,
+              size: 18,
+            ),
+            onSelected: (_) => _onLikedToggled(),
+          ),
+          const SizedBox(width: 8),
+          const VerticalDivider(width: 1),
+          const SizedBox(width: 8),
+          for (final genre in LibraryFilterState.genreChips) ...[
+            FilterChip(
+              label: Text(genre),
+              selected: _filter.genre == genre,
+              onSelected: (_) => _onGenreSelected(genre),
+            ),
+            const SizedBox(width: 8),
+          ],
         ],
       ),
     );
@@ -351,8 +446,33 @@ class _LibraryScreenState extends State<LibraryScreen> {
     setState(() {
       _downloadedOnly = false;
       _verificationFilter = VerificationFilter.all;
+      _filter = LibraryFilterState.cleared;
+      _searchController.clear();
     });
     _loadTracks();
+  }
+
+  void _onLikedToggled() {
+    setState(() => _filter = _filter.toggleLiked());
+    _loadTracks();
+  }
+
+  void _onGenreSelected(String genre) {
+    setState(() => _filter = _filter.selectGenre(genre));
+    _loadTracks();
+  }
+
+  void _onSearchSubmitted(String value) {
+    final next = _filter.withQuery(value);
+    if (next == _filter) return;
+    setState(() => _filter = next);
+    _loadTracks();
+  }
+
+  void _openLikedSongs() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const LikedSongsScreen()),
+    );
   }
 
   Widget _buildVerificationFilter(BuildContext context) {
@@ -591,6 +711,22 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   (IconData, String, String) _getEmptyStateContent() {
+    if (_filter.query.trim().isNotEmpty) {
+      return (
+        Icons.search_off,
+        'No matches',
+        'No tracks match "${_filter.query.trim()}"'
+      );
+    }
+
+    if (_filter.liked || _filter.genre != null) {
+      return (
+        Icons.filter_alt,
+        'No tracks match your filters',
+        'Try clearing a filter to see more of your library'
+      );
+    }
+
     if (_downloadedOnly) {
       return (
         Icons.download_done,
