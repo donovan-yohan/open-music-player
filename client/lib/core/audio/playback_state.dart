@@ -5,6 +5,7 @@ import 'package:just_audio/just_audio.dart';
 import '../cache/playback_cache_manager.dart';
 import 'audio_player_service.dart';
 import 'local_audio_artifact_resolver.dart';
+import 'playback_context.dart';
 import 'playback_source_resolver.dart';
 import 'queue_ordering.dart';
 import 'signed_audio_url_service.dart';
@@ -27,6 +28,7 @@ class PlaybackState extends ChangeNotifier {
   LoopMode _loopMode = LoopMode.off;
   String? _playbackError;
   bool _isResolvingSignedUrl = false;
+  PlaybackContext? _playbackContext;
 
   bool get isPlaying => _isPlaying;
   Duration get position => _position;
@@ -40,6 +42,11 @@ class PlaybackState extends ChangeNotifier {
   bool get hasTrack => _currentItem != null;
   String? get playbackError => _playbackError;
   bool get isResolvingSignedUrl => _isResolvingSignedUrl;
+
+  /// Where the current listening queue was launched from (album, playlist, ...),
+  /// or null when the queue was started without a context. Drives the
+  /// "Playing from <label>" attribution in the mini/full player.
+  PlaybackContext? get playbackContext => _playbackContext;
 
   PlaybackState(
     this._audioService, {
@@ -109,8 +116,14 @@ class PlaybackState extends ChangeNotifier {
   Future<void> playQueue(
     List<Map<String, dynamic>> tracks, {
     int startIndex = 0,
+    PlaybackContext? context,
   }) async {
     if (tracks.isEmpty) return;
+
+    // Stamp (or clear) the attribution before playback starts so the player
+    // updates immediately and a context-less play never leaves a stale label.
+    _playbackContext = context;
+    notifyListeners();
 
     await _resolveSignedUrls(() async {
       await _startWithRecovery(() async {
