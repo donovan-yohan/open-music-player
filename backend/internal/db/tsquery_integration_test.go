@@ -81,3 +81,44 @@ func TestSearchSanitizesSpecialCharactersAgainstPostgres(t *testing.T) {
 		t.Fatalf("prefix search 'High' matched nothing; want the seeded 'Highway to Hell'")
 	}
 }
+
+// TestLibrarySearchEmptyTSQueryReturnsNoRows proves a lexeme-less library search
+// (e.g. punctuation only) returns no matches rather than silently dropping the
+// filter and listing the whole library.
+func TestLibrarySearchEmptyTSQueryReturnsNoRows(t *testing.T) {
+	database, ctx := newSearchTestDB(t)
+	trackRepo := NewTrackRepository(database)
+	libRepo := NewLibraryRepository(database)
+
+	userID := uuid.New()
+	if _, err := database.Exec(
+		`INSERT INTO users (id, email, username, password_hash) VALUES ($1, $2, $3, $4)`,
+		userID, userID.String()+"@test.local", "user", "x"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	for i, title := range []string{"Song One", "Song Two"} {
+		tr, _, err := trackRepo.CreateTrackFromMetadata(ctx, "Artist", title, "Album", 200000+i,
+			WithMetadata(json.RawMessage(`{}`)),
+			WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""))
+		if err != nil {
+			t.Fatalf("seed track %q: %v", title, err)
+		}
+		if _, err := libRepo.AddTrackToLibrary(ctx, userID, tr.ID); err != nil {
+			t.Fatalf("add %q to library: %v", title, err)
+		}
+	}
+
+	// Baseline: no filter returns both tracks.
+	if _, total, err := libRepo.GetUserLibrary(ctx, userID, LibraryQueryOptions{}); err != nil || total != 2 {
+		t.Fatalf("baseline library total = %d, err %v; want 2", total, err)
+	}
+
+	// Punctuation-only search yields no lexemes -> must return zero rows, not the library.
+	rows, total, err := libRepo.GetUserLibrary(ctx, userID, LibraryQueryOptions{Search: "!!!"})
+	if err != nil {
+		t.Fatalf("punctuation library search error: %v", err)
+	}
+	if total != 0 || len(rows) != 0 {
+		t.Fatalf("punctuation library search returned %d rows (total %d); want 0, not the full library", len(rows), total)
+	}
+}
