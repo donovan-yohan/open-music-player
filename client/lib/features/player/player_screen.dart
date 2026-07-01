@@ -1,9 +1,14 @@
+import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import '../../app/theme.dart';
 import '../../core/audio/playback_state.dart';
+import '../../core/services/analysis_service.dart';
+import '../../core/services/api_client.dart';
+import '../../models/track_analysis.dart';
+import 'widgets/song_info_sheet.dart';
 
 class PlayerScreen extends StatelessWidget {
   const PlayerScreen({super.key});
@@ -45,6 +50,12 @@ class PlayerScreen extends StatelessWidget {
             ),
             centerTitle: true,
             actions: [
+              IconButton(
+                icon: const Icon(Icons.info_outline),
+                tooltip: 'Song info',
+                onPressed:
+                    item == null ? null : () => _showSongInfo(context, item),
+              ),
               IconButton(
                 icon: const Icon(Icons.queue_music),
                 onPressed: () => context.push('/queue'),
@@ -88,6 +99,30 @@ class PlayerScreen extends StatelessWidget {
                 ),
         );
       },
+    );
+  }
+
+  void _showSongInfo(BuildContext context, MediaItem item) {
+    final trackId = int.tryParse(item.id);
+    final analysisService = AnalysisService(context.read<ApiClient>());
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.darkSurface,
+      showDragHandle: false,
+      builder: (_) => SongInfoSheet(
+        title: item.title,
+        artist: item.artist,
+        analysisLoader: () {
+          if (trackId == null || trackId <= 0) {
+            // No numeric track id (e.g. a placeholder item) — surface the
+            // read-only "unavailable" state without hitting the API.
+            return Future<TrackAnalysis>.error(
+              StateError('missing track id'),
+            );
+          }
+          return analysisService.getTrackAnalysis(trackId);
+        },
+      ),
     );
   }
 
