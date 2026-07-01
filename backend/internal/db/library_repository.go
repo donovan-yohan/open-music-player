@@ -25,6 +25,7 @@ type LibraryTrack struct {
 	AnalysisStatus  sql.NullString
 	AnalysisSummary json.RawMessage
 	IsLiked         bool
+	Genre           sql.NullString
 }
 
 type LibraryRepository struct {
@@ -70,6 +71,31 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 		argIndex++
 	}
 
+	// Genre filter. The literal "Unknown" is the display bucket for tracks with no
+	// stored genre, so it matches rows where genre IS NULL OR genre = ''. Any other
+	// value is an exact match against t.genre.
+	if opts.Genre != "" {
+		if opts.Genre == "Unknown" {
+			baseCondition += " AND (t.genre IS NULL OR t.genre = '')"
+		} else {
+			baseCondition += " AND t.genre = $" + itoa(argIndex)
+			args = append(args, opts.Genre)
+			argIndex++
+		}
+	}
+
+	// Exact-match artist/album filters back the local artist/album listing pages.
+	if opts.Artist != "" {
+		baseCondition += " AND t.artist = $" + itoa(argIndex)
+		args = append(args, opts.Artist)
+		argIndex++
+	}
+	if opts.Album != "" {
+		baseCondition += " AND t.album = $" + itoa(argIndex)
+		args = append(args, opts.Album)
+		argIndex++
+	}
+
 	// Liked-only filter. This narrows the library listing to liked tracks; because
 	// GetUserLibrary is scoped to user_library, a liked track that is not in the
 	// library is intentionally not returned here. The standalone "Liked Songs"
@@ -101,6 +127,12 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 		} else {
 			orderBy = "t.artist ASC NULLS LAST"
 		}
+	case "duration":
+		if opts.SortOrder == "desc" {
+			orderBy = "t.duration_ms DESC NULLS LAST"
+		} else {
+			orderBy = "t.duration_ms ASC NULLS LAST"
+		}
 	}
 
 	// Single query with window function for total count (eliminates separate COUNT query)
@@ -112,6 +144,7 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at, ul.added_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb) AS analysis_summary,
 			   EXISTS(SELECT 1 FROM track_favorites tf WHERE tf.user_id = ul.user_id AND tf.track_id = t.id) AS is_liked,
+			   t.genre,
 			   COUNT(*) OVER() as total_count
 		FROM user_library ul
 		JOIN tracks t ON ul.track_id = t.id
@@ -138,7 +171,7 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			&lt.SourceURL, &lt.SourceType, &lt.StorageKey, &lt.FileSizeBytes,
 			&lt.MetadataJSON, &lt.MetadataStatus, &lt.MetadataConfidence, &lt.MetadataProvenance,
 			&lt.CoverArtURL, &lt.MetadataUserEdited, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt,
-			&lt.AnalysisStatus, &lt.AnalysisSummary, &lt.IsLiked, &total,
+			&lt.AnalysisStatus, &lt.AnalysisSummary, &lt.IsLiked, &lt.Genre, &total,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -251,11 +284,14 @@ func (r *LibraryRepository) IsFavorite(ctx context.Context, userID uuid.UUID, tr
 type LibraryQueryOptions struct {
 	Limit      int
 	Offset     int
-	SortBy     string // "added_at", "title", "artist"
+	SortBy     string // "added_at", "title", "artist", "duration"
 	SortOrder  string // "asc", "desc"
 	Search     string // Search query for title/artist/album
 	MBVerified *bool  // Filter by MusicBrainz verification status
 	Liked      bool   // When true, return only liked tracks
+	Genre      string // Exact genre match; "Unknown" matches NULL/empty genre
+	Artist     string // Exact artist match (local artist listing)
+	Album      string // Exact album match (local album listing)
 }
 
 // itoa converts an integer to a string (simple implementation to avoid importing strconv)

@@ -229,6 +229,9 @@ func (db *DB) Migrate() error {
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_provenance JSONB;
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS cover_art_url TEXT;
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_user_edited BOOLEAN NOT NULL DEFAULT FALSE;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS genre VARCHAR(200);
+
+	CREATE INDEX IF NOT EXISTS idx_tracks_genre ON tracks(genre);
 
 	CREATE TABLE IF NOT EXISTS mix_plans (
 		id UUID PRIMARY KEY,

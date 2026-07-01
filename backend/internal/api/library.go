@@ -88,10 +88,12 @@ func (s *FieldSelector) Include(field string) bool {
 }
 
 // GetLibrary handles GET /api/v1/library
-// Query params: limit, offset, sort (added_at|title|artist), order (asc|desc),
+// Query params: limit, offset, sort (added_at|title|artist|duration), order (asc|desc),
 // q (full-text search), mb_verified (bool), liked (true -> only liked tracks),
+// genre (exact match; "Unknown" matches tracks with no genre),
+// artist (exact match, local artist listing), album (exact match, local album listing),
 // fields (comma-separated field selection).
-// Available fields: id, title, artist, album, duration_ms, mb_verified, added_at, cover_art_url, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, is_liked, analysis_status, analysis_summary
+// Available fields: id, title, artist, album, duration_ms, mb_verified, genre, added_at, cover_art_url, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, is_liked, analysis_status, analysis_summary
 //
 // Note: liked/is_liked here are scoped to the caller's library — this endpoint
 // lists the library, optionally filtered to liked tracks. A standalone "Liked
@@ -115,10 +117,10 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 	// Parse sort parameters
 	if sortBy := r.URL.Query().Get("sort"); sortBy != "" {
 		switch sortBy {
-		case "added_at", "title", "artist":
+		case "added_at", "title", "artist", "duration":
 			opts.SortBy = sortBy
 		default:
-			writeLibraryError(w, http.StatusBadRequest, "INVALID_SORT", "sort must be one of: added_at, title, artist")
+			writeLibraryError(w, http.StatusBadRequest, "INVALID_SORT", "sort must be one of: added_at, title, artist, duration")
 			return
 		}
 	}
@@ -149,6 +151,17 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 		opts.Liked = true
 	}
 
+	// Parse genre / artist / album exact-match filters (local browse pages).
+	if genre := r.URL.Query().Get("genre"); genre != "" {
+		opts.Genre = genre
+	}
+	if artist := r.URL.Query().Get("artist"); artist != "" {
+		opts.Artist = artist
+	}
+	if album := r.URL.Query().Get("album"); album != "" {
+		opts.Album = album
+	}
+
 	tracks, total, err := h.libraryRepo.GetUserLibrary(r.Context(), userCtx.UserID, opts)
 	if err != nil {
 		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to retrieve library")
@@ -177,6 +190,13 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 		}
 		if fields.Include("mb_verified") {
 			track["mb_verified"] = t.MBVerified
+		}
+		if fields.Include("genre") {
+			if t.Genre.Valid && t.Genre.String != "" {
+				track["genre"] = t.Genre.String
+			} else {
+				track["genre"] = "Unknown"
+			}
 		}
 		if fields.Include("added_at") {
 			track["added_at"] = t.AddedAt.Format("2006-01-02T15:04:05Z")
