@@ -26,9 +26,12 @@ class AlbumResult {
   });
 
   factory AlbumResult.fromJson(Map<String, dynamic> json) {
+    // Maps the backend ReleaseResponse shape (name, artist, coverArtUrl,
+    // mbReleaseId, trackCount); falls back to MusicBrainz field names. The album
+    // title comes from "name"; mbid may be empty for local releases.
     return AlbumResult(
-      mbid: json['mbid'] as String,
-      title: json['title'] as String,
+      mbid: (json['mbReleaseId'] ?? json['mbid'] ?? '') as String,
+      title: (json['name'] ?? json['title'] ?? '') as String,
       artist: json['artist'] as String?,
       artistMbid: json['artistMbid'] as String?,
       releaseDate: json['releaseDate'] as String?,
@@ -36,9 +39,9 @@ class AlbumResult {
       secondaryTypes: (json['secondaryTypes'] as List<dynamic>?)
           ?.map((e) => e as String)
           .toList(),
-      trackCount: json['trackCount'] as int?,
-      coverUrl: json['coverArtUrl'] ?? json['coverUrl'] as String?,
-      score: json['score'] as int?,
+      trackCount: (json['trackCount'] as num?)?.toInt(),
+      coverUrl: (json['coverArtUrl'] ?? json['coverUrl']) as String?,
+      score: (json['score'] as num?)?.toInt(),
     );
   }
 

@@ -15,13 +15,16 @@ class SearchResponse<T> {
     Map<String, dynamic> json,
     T Function(Map<String, dynamic>) fromJsonT,
   ) {
+    // Backend wraps list results in a PaginatedResponse whose items live under
+    // "data" (not "results"). Parse "data" so the fix is proven by an envelope that
+    // only carries "results" failing to parse.
     return SearchResponse(
-      results: (json['results'] as List<dynamic>)
+      results: (json['data'] as List<dynamic>)
           .map((e) => fromJsonT(e as Map<String, dynamic>))
           .toList(),
-      total: json['total'] as int,
-      limit: json['limit'] as int,
-      offset: json['offset'] as int,
+      total: (json['total'] as num?)?.toInt() ?? 0,
+      limit: (json['limit'] as num?)?.toInt() ?? 0,
+      offset: (json['offset'] as num?)?.toInt() ?? 0,
     );
   }
 

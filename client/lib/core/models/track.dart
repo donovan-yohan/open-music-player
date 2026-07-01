@@ -134,6 +134,8 @@ class Track {
 }
 
 class TrackResult {
+  /// Local library track id (present for local /search/recordings results).
+  final int? id;
   final String mbid;
   final String title;
   final String? artist;
@@ -147,6 +149,7 @@ class TrackResult {
   final int? score;
 
   const TrackResult({
+    this.id,
     required this.mbid,
     required this.title,
     this.artist,
@@ -161,18 +164,23 @@ class TrackResult {
   });
 
   factory TrackResult.fromJson(Map<String, dynamic> json) {
+    // Maps the backend RecordingResponse shape (id, durationMs, coverArtUrl,
+    // mbRecordingId/mbReleaseId/mbArtistId). Falls back to the older MusicBrainz
+    // field names so a MB-shaped payload still parses. mbid may be empty for local
+    // tracks with no MusicBrainz match.
     return TrackResult(
-      mbid: json['mbid'] as String,
-      title: json['title'] as String,
+      id: (json['id'] as num?)?.toInt(),
+      mbid: (json['mbRecordingId'] ?? json['mbid'] ?? '') as String,
+      title: (json['title'] ?? '') as String,
       artist: json['artist'] as String?,
-      artistMbid: json['artistMbid'] as String?,
+      artistMbid: (json['mbArtistId'] ?? json['artistMbid']) as String?,
       album: json['album'] as String?,
-      albumMbid: json['albumMbid'] as String?,
-      duration: json['duration'] as int?,
+      albumMbid: (json['mbReleaseId'] ?? json['albumMbid']) as String?,
+      duration: (json['durationMs'] ?? json['duration']) as int?,
       trackNumber: json['trackNumber'] as int?,
       releaseDate: json['releaseDate'] as String?,
-      coverUrl: json['coverArtUrl'] ?? json['coverUrl'] as String?,
-      score: json['score'] as int?,
+      coverUrl: (json['coverArtUrl'] ?? json['coverUrl']) as String?,
+      score: (json['score'] as num?)?.toInt(),
     );
   }
 
