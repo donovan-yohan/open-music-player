@@ -6,13 +6,22 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/api/api_client.dart';
+import '../../core/audio/playback_state.dart';
 import '../../core/discovery/discovery_models.dart';
 import '../../core/discovery/discovery_service.dart';
+import '../../core/models/models.dart' as local;
+import '../../core/services/api_client.dart' as local_api;
+import '../../core/services/search_service.dart';
 import '../../models/track.dart';
 import '../../providers/queue_provider.dart';
+import 'search_local_logic.dart';
 
 class SearchScreen extends StatefulWidget {
-  const SearchScreen({super.key});
+  /// Optional injection seam for tests: supply a [SearchService] wired to a
+  /// capturing/fake ApiClient. Production builds construct one lazily.
+  final SearchService? searchService;
+
+  const SearchScreen({super.key, this.searchService});
 
   @override
   State<SearchScreen> createState() => _SearchScreenState();
@@ -20,6 +29,7 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   final TextEditingController _queryController = TextEditingController();
+  final FocusNode _queryFocusNode = FocusNode();
   final Set<String> _pendingCandidateKeys = <String>{};
   Timer? _debounceTimer;
   Timer? _pollTimer;
@@ -27,6 +37,23 @@ class _SearchScreenState extends State<SearchScreen> {
   late DiscoveryService _discoveryService;
   bool _didPrimeQueue = false;
   bool _isPollingQueue = false;
+
+  // Scope toggle: Catalog keeps the discovery/assist path; Library runs local
+  // library search via SearchService. Catalog stays the default so the existing
+  // discovery/AI-assist flow (and its tests) are untouched.
+  SearchScope _scope = SearchScope.catalog;
+
+  // Local (My Library) search state, kept fully separate from the discovery
+  // fields above so switching scope never crosses their view state.
+  SearchService? _searchService;
+  final RecentSearchesStore _recentSearches = RecentSearchesStore();
+  List<String> _recentQueries = const [];
+  SearchTypeFilter _typeFilter = SearchTypeFilter.all;
+  LocalSearchResults _localResults = const LocalSearchResults();
+  int _localRequestSerial = 0;
+  bool _isLocalSearching = false;
+  String _localQuery = '';
+  String? _localError;
 
   DiscoverySearchResponse? _response;
   int _searchRequestSerial = 0;
@@ -51,6 +78,13 @@ class _SearchScreenState extends State<SearchScreen> {
   static final RegExp _urlPrompt = RegExp(r'^https?://', caseSensitive: false);
 
   @override
+  void initState() {
+    super.initState();
+    _queryFocusNode.addListener(_onFocusChanged);
+    _loadRecentSearches();
+  }
+
+  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _discoveryService = DiscoveryService(context.read<ApiClient>());
@@ -67,11 +101,49 @@ class _SearchScreenState extends State<SearchScreen> {
   void dispose() {
     _debounceTimer?.cancel();
     _pollTimer?.cancel();
+    _queryFocusNode.removeListener(_onFocusChanged);
+    _queryFocusNode.dispose();
     _queryController.dispose();
     super.dispose();
   }
 
+  void _onFocusChanged() {
+    // Focus drives the focused-but-empty recent-searches panel in Library scope.
+    if (_scope == SearchScope.library) setState(() {});
+  }
+
+  /// Lazily built local-search service. Tests inject one via the widget; the
+  /// production default wraps the parser-based ApiClient (its own secure-storage
+  /// token read matches the app's stored access token).
+  SearchService get _localSearch =>
+      _searchService ??= widget.searchService ?? SearchService(local_api.ApiClient());
+
+  Future<void> _loadRecentSearches() async {
+    try {
+      final entries = await _recentSearches.load();
+      if (!mounted) return;
+      setState(() => _recentQueries = entries);
+    } catch (_) {
+      // A missing/broken prefs store just means no history yet — never fatal.
+    }
+  }
+
   void _onQueryChanged(String value) {
+    if (_scope == SearchScope.library) {
+      final next = value.trim();
+      _debounceTimer?.cancel();
+      if (next.isEmpty) {
+        setState(_resetLocalSearch);
+        return;
+      }
+      setState(() {});
+      _debounceTimer = Timer(const Duration(milliseconds: 350), () {
+        if (next == _localQuery) return;
+        _runLocalSearch(query: next);
+      });
+      return;
+    }
+
     if (_assistMode) {
       // Assist calls cost a model round-trip, so they never fire on keystroke
       // debounce — only on explicit submit. Clearing the field clears the
@@ -178,12 +250,146 @@ class _SearchScreenState extends State<SearchScreen> {
   void _onSubmit(String value) {
     final text = value.trim();
     if (text.isEmpty) return;
+    if (_scope == SearchScope.library) {
+      _runLocalSearch(query: text);
+      return;
+    }
     if (_assistMode || _urlPrompt.hasMatch(text)) {
       if (!_assistMode) setState(() => _assistMode = true);
       _runAssist(prompt: text);
     } else {
       _runSearch(query: text);
     }
+  }
+
+  /// Flip between Catalog (discovery/assist) and My Library (local search),
+  /// re-running the SAME typed query in the new scope so the user never retypes.
+  void _setScope(SearchScope scope) {
+    if (scope == _scope) return;
+    _debounceTimer?.cancel();
+    setState(() {
+      _scope = scope;
+      _resetLocalSearch();
+    });
+    final text = _queryController.text.trim();
+    if (text.isEmpty) return;
+    if (scope == SearchScope.library) {
+      _runLocalSearch(query: text);
+    } else if (!_assistMode) {
+      _runSearch(query: text);
+    }
+  }
+
+  void _resetLocalSearch() {
+    _localRequestSerial++;
+    _localResults = const LocalSearchResults();
+    _localError = null;
+    _localQuery = '';
+    _isLocalSearching = false;
+    _typeFilter = SearchTypeFilter.all;
+  }
+
+  /// Runs a local library search across recordings/artists/releases in parallel,
+  /// guarded by a monotonic serial so a superseded response can neither
+  /// overwrite a newer result nor strand the spinner. On success the query is
+  /// recorded in recent searches.
+  Future<void> _runLocalSearch({String? query}) async {
+    final text = (query ?? _queryController.text).trim();
+    _debounceTimer?.cancel();
+    final requestId = ++_localRequestSerial;
+
+    if (text.isEmpty) {
+      setState(_resetLocalSearch);
+      return;
+    }
+
+    setState(() {
+      _localQuery = text;
+      _isLocalSearching = true;
+      _localError = null;
+    });
+
+    try {
+      final results = await Future.wait([
+        _localSearch.searchTracks(text),
+        _localSearch.searchArtists(text),
+        _localSearch.searchAlbums(text),
+      ]);
+      if (!mounted || requestId != _localRequestSerial) return;
+      final tracks = results[0] as local.SearchResponse<local.TrackResult>;
+      final artists = results[1] as local.SearchResponse<local.ArtistResult>;
+      final albums = results[2] as local.SearchResponse<local.AlbumResult>;
+      setState(() {
+        _localResults = LocalSearchResults(
+          tracks: tracks.results,
+          artists: artists.results,
+          albums: albums.results,
+        );
+      });
+      unawaited(_recordRecentSearch(text));
+    } catch (error) {
+      if (!mounted || requestId != _localRequestSerial) return;
+      setState(() {
+        _localResults = const LocalSearchResults();
+        _localError = _friendlyLocalError(error);
+      });
+    } finally {
+      if (mounted && requestId == _localRequestSerial) {
+        setState(() => _isLocalSearching = false);
+      }
+    }
+  }
+
+  Future<void> _recordRecentSearch(String query) async {
+    try {
+      final entries = await _recentSearches.add(query);
+      if (!mounted) return;
+      setState(() => _recentQueries = entries);
+    } catch (_) {
+      // Persisting history is best-effort; never surface it to the user.
+    }
+  }
+
+  Future<void> _removeRecentSearch(String query) async {
+    final entries = await _recentSearches.remove(query);
+    if (!mounted) return;
+    setState(() => _recentQueries = entries);
+  }
+
+  Future<void> _clearRecentSearches() async {
+    final entries = await _recentSearches.clear();
+    if (!mounted) return;
+    setState(() => _recentQueries = entries);
+  }
+
+  void _runRecentSearch(String query) {
+    _queryController.text = query;
+    _queryController.selection = TextSelection.collapsed(offset: query.length);
+    _queryFocusNode.unfocus();
+    _runLocalSearch(query: query);
+  }
+
+  Future<void> _playLocalTrack(local.TrackResult track) async {
+    final id = track.id;
+    if (id == null) return;
+    await context.read<PlaybackState>().playQueue([
+      {
+        'id': id,
+        'title': track.title,
+        'artist': track.artist,
+        'album': track.album,
+        'duration': track.duration != null ? track.duration! ~/ 1000 : 0,
+        'artwork_url': track.coverUrl,
+      },
+    ]);
+  }
+
+  String _friendlyLocalError(Object error) {
+    if (error is local_api.ApiException) return error.message;
+    if (error is DioException) {
+      return error.message ?? 'Search failed. Please try again.';
+    }
+    return 'Search failed. Please try again.';
   }
 
   void _setAssistMode(bool enabled) {
@@ -362,8 +568,7 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     final queueProvider = context.watch<QueueProvider>();
-    final queueError = queueProvider.error;
-    final modeError = _assistMode ? _assistError : _searchError;
+    final library = _scope == SearchScope.library;
 
     return Scaffold(
       appBar: AppBar(
@@ -382,9 +587,11 @@ class _SearchScreenState extends State<SearchScreen> {
       body: RefreshIndicator(
         onRefresh: () async {
           await Future.wait([
-            if (_assistMode && _askedPrompt.isNotEmpty)
+            if (library && _localQuery.isNotEmpty)
+              _runLocalSearch()
+            else if (!library && _assistMode && _askedPrompt.isNotEmpty)
               _runAssist(prompt: _askedPrompt)
-            else if (!_assistMode && _query.isNotEmpty)
+            else if (!library && !_assistMode && _query.isNotEmpty)
               _runSearch(),
             _refreshQueue(force: true),
           ]);
@@ -395,20 +602,61 @@ class _SearchScreenState extends State<SearchScreen> {
           children: [
             _buildSearchBox(),
             const SizedBox(height: 10),
-            _buildModeToggle(),
-            // A queue-load error is only shown when the active mode is otherwise
-            // clean, so the mode's own error card stays the primary message.
-            if (modeError == null && queueError != null)
-              _buildErrorCard(queueError, () => _refreshQueue(force: true)),
-            const SizedBox(height: 12),
-            if (_assistMode)
-              ..._buildAssistBody(queueProvider)
+            _buildScopeToggle(),
+            const SizedBox(height: 10),
+            if (library)
+              ..._buildLibraryBody()
             else
-              ..._buildSearchModeBody(queueProvider),
+              ..._buildCatalogBody(queueProvider),
             const SizedBox(height: 16),
             _buildQueueAffordance(queueProvider),
           ],
         ),
+      ),
+    );
+  }
+
+  List<Widget> _buildCatalogBody(QueueProvider queueProvider) {
+    final queueError = queueProvider.error;
+    final modeError = _assistMode ? _assistError : _searchError;
+    return [
+      _buildModeToggle(),
+      // A queue-load error is only shown when the active mode is otherwise
+      // clean, so the mode's own error card stays the primary message.
+      if (modeError == null && queueError != null)
+        _buildErrorCard(queueError, () => _refreshQueue(force: true)),
+      const SizedBox(height: 12),
+      if (_assistMode)
+        ..._buildAssistBody(queueProvider)
+      else
+        ..._buildSearchModeBody(queueProvider),
+    ];
+  }
+
+  Widget _buildScopeToggle() {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SegmentedButton<SearchScope>(
+        key: const ValueKey('search_scope_toggle'),
+        showSelectedIcon: false,
+        style: const ButtonStyle(
+          visualDensity: VisualDensity.compact,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        segments: const [
+          ButtonSegment<SearchScope>(
+            value: SearchScope.catalog,
+            icon: Icon(Icons.public, size: 18),
+            label: Text('Catalog'),
+          ),
+          ButtonSegment<SearchScope>(
+            value: SearchScope.library,
+            icon: Icon(Icons.library_music, size: 18),
+            label: Text('My Library'),
+          ),
+        ],
+        selected: {_scope},
+        onSelectionChanged: (selection) => _setScope(selection.first),
       ),
     );
   }
@@ -449,25 +697,250 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
+  List<Widget> _buildLibraryBody() {
+    final fieldEmpty = _queryController.text.trim().isEmpty;
+    // Focused-but-empty surfaces recent searches for one-tap re-run.
+    if (_queryFocusNode.hasFocus && fieldEmpty && _recentQueries.isNotEmpty) {
+      return [_buildRecentSearches()];
+    }
+
+    final hasActiveQuery = _localQuery.isNotEmpty || _isLocalSearching;
+    return [
+      if (hasActiveQuery) ...[
+        _buildTypeChips(),
+        const SizedBox(height: 12),
+      ],
+      _buildLocalResultsSection(),
+    ];
+  }
+
+  Widget _buildRecentSearches() {
+    return Column(
+      key: const ValueKey('search_recent_searches'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(
+              Icons.history,
+              size: 18,
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                'Recent searches',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context)
+                    .textTheme
+                    .titleSmall
+                    ?.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ),
+            TextButton(
+              key: const ValueKey('search_recent_clear_all'),
+              onPressed: _clearRecentSearches,
+              child: const Text('Clear all'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        for (final query in _recentQueries)
+          ListTile(
+            key: ValueKey('search_recent_$query'),
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.history),
+            title: Text(query, maxLines: 1, overflow: TextOverflow.ellipsis),
+            trailing: IconButton(
+              key: ValueKey('search_recent_remove_$query'),
+              tooltip: 'Remove',
+              icon: const Icon(Icons.close, size: 18),
+              onPressed: () => _removeRecentSearch(query),
+            ),
+            onTap: () => _runRecentSearch(query),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildTypeChips() {
+    return Wrap(
+      key: const ValueKey('search_type_chips'),
+      spacing: 8,
+      children: SearchTypeFilter.values.map((filter) {
+        return ChoiceChip(
+          key: ValueKey('search_type_chip_${filter.name}'),
+          label: Text(filter.label),
+          selected: _typeFilter == filter,
+          onSelected: (_) => setState(() => _typeFilter = filter),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildLocalResultsSection() {
+    if (_localError != null) {
+      return _buildErrorCard(_localError!, _runLocalSearch);
+    }
+
+    if (_isLocalSearching) {
+      return const Padding(
+        key: ValueKey('search_local_loading'),
+        padding: EdgeInsets.symmetric(vertical: 48),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_localQuery.isEmpty) {
+      return _buildEmptyPanel(
+        icon: Icons.library_music,
+        title: 'Search your library',
+        body:
+            'Find the songs, artists, and albums already in your library. Switch to Catalog to discover new sources.',
+      );
+    }
+
+    final filtered = _localResults.filtered(_typeFilter);
+    if (filtered.isEmpty) {
+      // Distinguish "nothing matched at all" from "this type is empty" so a
+      // chip that hides every result never looks like a failed search.
+      final scoped = _localResults.isEmpty
+          ? 'No results for "$_localQuery"'
+          : 'No ${_typeFilter.label.toLowerCase()} for "$_localQuery"';
+      return _buildEmptyPanel(
+        key: const ValueKey('search_local_empty'),
+        icon: Icons.search_off,
+        title: 'No results',
+        body: scoped,
+      );
+    }
+
+    return Column(
+      key: const ValueKey('search_local_results'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (filtered.tracks.isNotEmpty) ...[
+          _buildSectionHeader(Icons.music_note, 'Songs'),
+          const SizedBox(height: 8),
+          ...filtered.tracks.map(_buildLocalTrackTile),
+          const SizedBox(height: 12),
+        ],
+        if (filtered.artists.isNotEmpty) ...[
+          _buildSectionHeader(Icons.person, 'Artists'),
+          const SizedBox(height: 8),
+          ...filtered.artists.map(_buildLocalArtistTile),
+          const SizedBox(height: 12),
+        ],
+        if (filtered.albums.isNotEmpty) ...[
+          _buildSectionHeader(Icons.album, 'Albums'),
+          const SizedBox(height: 8),
+          ...filtered.albums.map(_buildLocalAlbumTile),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildLocalTrackTile(local.TrackResult track) {
+    final playable = track.id != null;
+    final subtitle = [track.artist, track.album]
+        .where((value) => value != null && value.isNotEmpty)
+        .join(' • ');
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        key: ValueKey('local_track_${track.id ?? track.title}'),
+        leading: _buildThumb(track.coverUrl, size: 44),
+        title: Text(
+          track.title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        subtitle: subtitle.isEmpty
+            ? null
+            : Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+        trailing: playable
+            ? IconButton(
+                tooltip: 'Play',
+                icon: const Icon(Icons.play_arrow),
+                onPressed: () => _playLocalTrack(track),
+              )
+            : null,
+        onTap: playable ? () => _playLocalTrack(track) : null,
+      ),
+    );
+  }
+
+  Widget _buildLocalArtistTile(local.ArtistResult artist) {
+    final count = artist.trackCount;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: const CircleAvatar(child: Icon(Icons.person)),
+        title: Text(
+          artist.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        subtitle: count != null
+            ? Text('$count track${count == 1 ? '' : 's'} in library')
+            : null,
+      ),
+    );
+  }
+
+  Widget _buildLocalAlbumTile(local.AlbumResult album) {
+    final subtitle = [album.artist, album.releaseYear]
+        .where((value) => value != null && value.isNotEmpty)
+        .join(' • ');
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: _buildThumb(album.coverUrl, size: 44),
+        title: Text(
+          album.title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        subtitle: subtitle.isEmpty
+            ? null
+            : Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+      ),
+    );
+  }
+
   Widget _buildSearchBox() {
+    final library = _scope == SearchScope.library;
+    final assist = !library && _assistMode;
     return TextField(
       key: const ValueKey('search_assist_input'),
       controller: _queryController,
+      focusNode: _queryFocusNode,
       minLines: 1,
-      maxLines: _assistMode ? 3 : 1,
-      textInputAction:
-          _assistMode ? TextInputAction.go : TextInputAction.search,
+      maxLines: assist ? 3 : 1,
+      textInputAction: assist ? TextInputAction.go : TextInputAction.search,
       onChanged: _onQueryChanged,
       onSubmitted: _onSubmit,
       decoration: InputDecoration(
-        labelText: _assistMode
-            ? 'Ask for a song or paste a link'
-            : 'Search songs, artists, albums, or sources',
-        hintText: _assistMode
-            ? 'that live Porter Robinson Shelter from YouTube...'
-            : 'iPod Touch, Ninajirachi, live set...',
-        prefixIcon:
-            Icon(_assistMode ? Icons.auto_awesome : Icons.travel_explore),
+        labelText: library
+            ? 'Search your library'
+            : assist
+                ? 'Ask for a song or paste a link'
+                : 'Search songs, artists, albums, or sources',
+        hintText: library
+            ? 'Songs, artists, albums in your library...'
+            : assist
+                ? 'that live Porter Robinson Shelter from YouTube...'
+                : 'iPod Touch, Ninajirachi, live set...',
+        prefixIcon: Icon(library
+            ? Icons.library_music
+            : assist
+                ? Icons.auto_awesome
+                : Icons.travel_explore),
         suffixIcon: _queryController.text.isNotEmpty
             ? IconButton(
                 tooltip: _assistMode ? 'Clear prompt' : 'Clear search',
@@ -1288,8 +1761,10 @@ class _SearchScreenState extends State<SearchScreen> {
     required IconData icon,
     required String title,
     required String body,
+    Key? key,
   }) {
     return Container(
+      key: key,
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         border: Border.all(color: Theme.of(context).dividerColor),
