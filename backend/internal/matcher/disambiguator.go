@@ -95,10 +95,6 @@ func buildDisambiguationInput(metadata TrackMetadata, parsed *ParsedTitle, candi
 }
 
 func boundedMetadataMap(input map[string]interface{}) map[string]interface{} {
-	return boundedMetadataMapWithDepth(input, 0)
-}
-
-func boundedMetadataMapWithDepth(input map[string]interface{}, depth int) map[string]interface{} {
 	if len(input) == 0 {
 		return nil
 	}
@@ -112,7 +108,7 @@ func boundedMetadataMapWithDepth(input map[string]interface{}, depth int) map[st
 		if key == "" {
 			continue
 		}
-		bounded[key] = boundedMetadataValue(value, depth)
+		bounded[key] = boundedMetadataValue(value, 0)
 		count++
 	}
 	return bounded
@@ -136,7 +132,7 @@ func boundedMetadataValue(value interface{}, depth int) interface{} {
 		if depth >= 1 {
 			return nil
 		}
-		return boundedMetadataMapWithDepth(v, depth+1)
+		return boundedMetadataMap(v)
 	default:
 		return value
 	}
@@ -200,11 +196,9 @@ func validateDisambiguationDecision(decision *DisambiguationDecision, candidates
 		if candidate.MBID != decision.CandidateID {
 			continue
 		}
-		decision.Title = candidate.Title
-		decision.Artist = candidate.Artist
-		decision.Album = candidate.Album
-		decision.ReleaseID = candidate.ReleaseID
-		decision.CoverArtURL = candidate.CoverArtURL
+		if decision.Title != candidate.Title || decision.Artist != candidate.Artist || decision.Album != candidate.Album || decision.ReleaseID != candidate.ReleaseID || decision.CoverArtURL != candidate.CoverArtURL {
+			return -1, fmt.Errorf("disambiguation candidate fields do not match grounded candidate")
+		}
 		return i, nil
 	}
 	return -1, fmt.Errorf("disambiguation selected unknown candidate %q", decision.CandidateID)

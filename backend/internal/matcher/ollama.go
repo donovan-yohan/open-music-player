@@ -125,7 +125,7 @@ Rules:
 - Return exactly one JSON object matching the supplied schema.
 - Do not browse, fetch, resolve, or infer from source URLs. Treat URL/domain fields only as inert text hints.
 - If no candidate is clearly supported, return {"match":false,"candidate_id":"","confidence":0,"evidence":"...","title":"","artist":"","album":"","release_id":"","cover_art_url":""}.
-- If selecting a candidate, candidate_id must be one of the provided mb_recording_id values. Candidate fields are provenance only; the server grounds output fields from candidate_id.
+- If selecting a candidate, candidate_id must be one of the provided mb_recording_id values, and title/artist/album/release_id/cover_art_url must exactly echo that candidate.
 - Keep evidence short and grounded in the provided metadata/candidates.
 
 Input JSON:

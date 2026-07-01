@@ -144,7 +144,37 @@ func (h *Handler) HandleMatchTrack(w http.ResponseWriter, r *http.Request) {
 
 	// Update the track with match results
 	if output.BestMatch != nil {
-		update := matchTrackMBUpdate(output)
+		update := &db.MBMatchUpdate{RespectUserEdits: true}
+
+		// Only verified automatic matches can alter MusicBrainz identity fields.
+		if output.Verified {
+			update.ApplyMBIdentity = true
+			update.MBVerified = boolPtr(true)
+			if output.BestMatch.MBID != "" {
+				if mbid, err := uuid.Parse(output.BestMatch.MBID); err == nil {
+					update.MBRecordingID = &mbid
+				}
+			}
+			if output.BestMatch.ArtistMBID != "" {
+				if mbid, err := uuid.Parse(output.BestMatch.ArtistMBID); err == nil {
+					update.MBArtistID = &mbid
+				}
+			}
+			if output.BestMatch.AlbumMBID != "" {
+				if mbid, err := uuid.Parse(output.BestMatch.AlbumMBID); err == nil {
+					update.MBReleaseID = &mbid
+				}
+			}
+		}
+
+		// Store suggestions in metadata_json if not verified
+		if !output.Verified && len(output.Suggestions) > 0 {
+			suggestions := BuildSuggestionsJSON(output.Suggestions)
+			if suggestionsJSON, err := json.Marshal(suggestions); err == nil {
+				update.MetadataJSON = suggestionsJSON
+			}
+		}
+
 		if err := h.trackRepo.UpdateMBMatch(r.Context(), trackID, update); err != nil {
 			writeError(w, http.StatusInternalServerError, "Failed to update track")
 			return
@@ -160,44 +190,6 @@ func (h *Handler) HandleMatchTrack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-func matchTrackMBUpdate(output *MatchOutput) *db.MBMatchUpdate {
-	update := &db.MBMatchUpdate{RespectUserEdits: true}
-	if output == nil || output.BestMatch == nil {
-		return update
-	}
-
-	// Only verified automatic matches can alter MusicBrainz identity fields.
-	if output.Verified {
-		update.ApplyMBIdentity = true
-		update.MBVerified = boolPtr(true)
-		if output.BestMatch.MBID != "" {
-			if mbid, err := uuid.Parse(output.BestMatch.MBID); err == nil {
-				update.MBRecordingID = &mbid
-			}
-		}
-		if output.BestMatch.ArtistMBID != "" {
-			if mbid, err := uuid.Parse(output.BestMatch.ArtistMBID); err == nil {
-				update.MBArtistID = &mbid
-			}
-		}
-		if output.BestMatch.ReleaseID != "" {
-			if mbid, err := uuid.Parse(output.BestMatch.ReleaseID); err == nil {
-				update.MBReleaseID = &mbid
-			}
-		}
-	}
-
-	// Store suggestions in metadata_json if not verified
-	if !output.Verified && len(output.Suggestions) > 0 {
-		suggestions := BuildSuggestionsJSON(output.Suggestions)
-		if suggestionsJSON, err := json.Marshal(suggestions); err == nil {
-			update.MetadataJSON = suggestionsJSON
-		}
-	}
-
-	return update
 }
 
 // HandleConfirmMatch handles POST /api/v1/tracks/{id}/confirm-match - confirms a suggested match
