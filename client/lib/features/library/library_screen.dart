@@ -1092,7 +1092,7 @@ class _TrackListTileState extends State<_TrackListTile> {
 
     final selected = await showModalBottomSheet<core_models.Playlist>(
       context: context,
-      builder: (context) => _PlaylistPicker(playlists: playlists),
+      builder: (context) => PlaylistPickerSheet(playlists: playlists),
     );
     if (selected == null) return;
 
@@ -1306,43 +1306,3 @@ class _UnverifiedTrackSheet extends StatelessWidget {
   }
 }
 
-class _PlaylistPicker extends StatelessWidget {
-  final List<core_models.Playlist> playlists;
-
-  const _PlaylistPicker({required this.playlists});
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              'Add to playlist',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-          ),
-          const Divider(height: 1),
-          if (playlists.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('No playlists found'),
-            )
-          else
-            ...playlists.map(
-              (playlist) => ListTile(
-                leading: const Icon(Icons.playlist_play),
-                title: Text(playlist.name),
-                subtitle: Text('${playlist.trackCount} tracks'),
-                onTap: () => Navigator.of(context).pop(playlist),
-              ),
-            ),
-          const SizedBox(height: 8),
-        ],
-      ),
-    );
-  }
-}
