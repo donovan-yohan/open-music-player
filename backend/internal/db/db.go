@@ -267,6 +267,16 @@ func (db *DB) Migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_track_analysis_status ON track_analysis(status);
 	CREATE INDEX IF NOT EXISTS idx_track_analysis_updated_at ON track_analysis(updated_at DESC);
+
+	CREATE TABLE IF NOT EXISTS play_events (
+		id BIGSERIAL PRIMARY KEY,
+		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		track_id BIGINT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+		played_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		context_type VARCHAR(32),
+		context_id TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_play_events_user_played_at ON play_events(user_id, played_at DESC);
 	`
 
 	_, err := db.Exec(schema)
