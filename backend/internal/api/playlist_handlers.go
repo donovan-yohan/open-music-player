@@ -31,15 +31,29 @@ func NewPlaylistHandlers(playlistRepo *db.PlaylistRepository, trackRepo *db.Trac
 type CreatePlaylistRequest struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	CoverURL    string `json:"coverUrl,omitempty"`
+	IsPublic    bool   `json:"isPublic,omitempty"`
 }
 
 type UpdatePlaylistRequest struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	CoverURL    string `json:"coverUrl,omitempty"`
+	IsPublic    bool   `json:"isPublic,omitempty"`
 }
 
 type AddTracksRequest struct {
 	TrackIDs []int64 `json:"trackIds"`
+}
+
+type BatchRemoveTracksRequest struct {
+	TrackIDs []int64 `json:"trackIds"`
+}
+
+type AddTracksResponse struct {
+	Added    []int64          `json:"added"`
+	Skipped  []int64          `json:"skipped"`
+	Playlist PlaylistResponse `json:"playlist"`
 }
 
 type ReorderTrackRequest struct {
@@ -51,6 +65,8 @@ type PlaylistResponse struct {
 	ID          int64     `json:"id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description,omitempty"`
+	CoverURL    string    `json:"coverUrl,omitempty"`
+	IsPublic    bool      `json:"isPublic"`
 	TrackCount  int       `json:"trackCount"`
 	DurationMs  int64     `json:"durationMs"`
 	CreatedAt   time.Time `json:"createdAt"`
@@ -61,6 +77,8 @@ type PlaylistWithTracksResponse struct {
 	ID          int64           `json:"id"`
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
+	CoverURL    string          `json:"coverUrl,omitempty"`
+	IsPublic    bool            `json:"isPublic"`
 	TrackCount  int             `json:"trackCount"`
 	DurationMs  int64           `json:"durationMs"`
 	CreatedAt   time.Time       `json:"createdAt"`
@@ -96,7 +114,15 @@ func (h *PlaylistHandlers) ListPlaylists(w http.ResponseWriter, r *http.Request)
 
 	limit, offset := parsePlaylistPagination(r)
 
-	playlists, total, err := h.playlistRepo.GetByUserID(r.Context(), userCtx.UserID, limit, offset)
+	params := db.ListPlaylistsParams{
+		Query:  r.URL.Query().Get("q"),
+		Sort:   r.URL.Query().Get("sort"),
+		Order:  r.URL.Query().Get("order"),
+		Limit:  limit,
+		Offset: offset,
+	}
+
+	playlists, total, err := h.playlistRepo.GetByUserID(r.Context(), userCtx.UserID, params)
 	if err != nil {
 		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to list playlists")
 		return
@@ -104,18 +130,7 @@ func (h *PlaylistHandlers) ListPlaylists(w http.ResponseWriter, r *http.Request)
 
 	responses := make([]PlaylistResponse, 0, len(playlists))
 	for _, p := range playlists {
-		resp := PlaylistResponse{
-			ID:         p.ID,
-			Name:       p.Name,
-			TrackCount: p.TrackCount,
-			DurationMs: p.DurationMs,
-			CreatedAt:  p.CreatedAt,
-			UpdatedAt:  p.UpdatedAt,
-		}
-		if p.Description.Valid {
-			resp.Description = p.Description.String
-		}
-		responses = append(responses, resp)
+		responses = append(responses, newPlaylistResponse(p.Playlist, p.TrackCount, p.DurationMs))
 	}
 
 	writePlaylistJSON(w, http.StatusOK, PaginatedPlaylistResponse{
@@ -149,6 +164,8 @@ func (h *PlaylistHandlers) CreatePlaylist(w http.ResponseWriter, r *http.Request
 		UserID:      userCtx.UserID,
 		Name:        req.Name,
 		Description: sql.NullString{String: req.Description, Valid: req.Description != ""},
+		CoverURL:    sql.NullString{String: req.CoverURL, Valid: req.CoverURL != ""},
+		IsPublic:    req.IsPublic,
 	}
 
 	if err := h.playlistRepo.Create(r.Context(), playlist); err != nil {
@@ -156,19 +173,7 @@ func (h *PlaylistHandlers) CreatePlaylist(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	resp := PlaylistResponse{
-		ID:         playlist.ID,
-		Name:       playlist.Name,
-		TrackCount: 0,
-		DurationMs: 0,
-		CreatedAt:  playlist.CreatedAt,
-		UpdatedAt:  playlist.UpdatedAt,
-	}
-	if playlist.Description.Valid {
-		resp.Description = playlist.Description.String
-	}
-
-	writePlaylistJSON(w, http.StatusCreated, resp)
+	writePlaylistJSON(w, http.StatusCreated, newPlaylistResponse(*playlist, 0, 0))
 }
 
 // GetPlaylist handles GET /api/v1/playlists/{id}
@@ -201,41 +206,7 @@ func (h *PlaylistHandlers) GetPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tracks := make([]TrackResponse, 0, len(playlist.Tracks))
-	for _, t := range playlist.Tracks {
-		track := TrackResponse{
-			ID:            t.ID,
-			Title:         t.Title,
-			MBRecordingID: t.MBRecordingID,
-			MBReleaseID:   t.MBReleaseID,
-			MBArtistID:    t.MBArtistID,
-		}
-		if t.Artist.Valid {
-			track.Artist = t.Artist.String
-		}
-		if t.Album.Valid {
-			track.Album = t.Album.String
-		}
-		if t.DurationMs.Valid {
-			track.DurationMs = int(t.DurationMs.Int32)
-		}
-		tracks = append(tracks, track)
-	}
-
-	resp := PlaylistWithTracksResponse{
-		ID:         playlist.ID,
-		Name:       playlist.Name,
-		TrackCount: playlist.TrackCount,
-		DurationMs: playlist.DurationMs,
-		CreatedAt:  playlist.CreatedAt,
-		UpdatedAt:  playlist.UpdatedAt,
-		Tracks:     tracks,
-	}
-	if playlist.Description.Valid {
-		resp.Description = playlist.Description.String
-	}
-
-	writePlaylistJSON(w, http.StatusOK, resp)
+	writePlaylistJSON(w, http.StatusOK, newPlaylistWithTracksResponse(playlist, mapTrackResponses(playlist.Tracks)))
 }
 
 // UpdatePlaylist handles PUT /api/v1/playlists/{id}
@@ -281,6 +252,8 @@ func (h *PlaylistHandlers) UpdatePlaylist(w http.ResponseWriter, r *http.Request
 
 	playlist.Name = req.Name
 	playlist.Description = sql.NullString{String: req.Description, Valid: req.Description != ""}
+	playlist.CoverURL = sql.NullString{String: req.CoverURL, Valid: req.CoverURL != ""}
+	playlist.IsPublic = req.IsPublic
 
 	if err := h.playlistRepo.Update(r.Context(), playlist); err != nil {
 		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to update playlist")
@@ -294,19 +267,7 @@ func (h *PlaylistHandlers) UpdatePlaylist(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	resp := PlaylistResponse{
-		ID:         updatedPlaylist.ID,
-		Name:       updatedPlaylist.Name,
-		TrackCount: updatedPlaylist.TrackCount,
-		DurationMs: updatedPlaylist.DurationMs,
-		CreatedAt:  updatedPlaylist.CreatedAt,
-		UpdatedAt:  updatedPlaylist.UpdatedAt,
-	}
-	if updatedPlaylist.Description.Valid {
-		resp.Description = updatedPlaylist.Description.String
-	}
-
-	writePlaylistJSON(w, http.StatusOK, resp)
+	writePlaylistJSON(w, http.StatusOK, newPlaylistResponse(updatedPlaylist.Playlist, updatedPlaylist.TrackCount, updatedPlaylist.DurationMs))
 }
 
 // DeletePlaylist handles DELETE /api/v1/playlists/{id}
@@ -401,31 +362,80 @@ func (h *PlaylistHandlers) AddTracks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.playlistRepo.AddTracks(r.Context(), playlistID, req.TrackIDs); err != nil {
+	report, err := h.playlistRepo.AddTracks(r.Context(), playlistID, req.TrackIDs)
+	if err != nil {
 		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to add tracks")
 		return
 	}
 
-	// Return updated playlist
+	// Return updated playlist alongside the added/skipped report
 	updatedPlaylist, err := h.playlistRepo.GetByIDWithTracks(r.Context(), playlistID)
 	if err != nil {
 		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to get updated playlist")
 		return
 	}
 
-	resp := PlaylistResponse{
-		ID:         updatedPlaylist.ID,
-		Name:       updatedPlaylist.Name,
-		TrackCount: updatedPlaylist.TrackCount,
-		DurationMs: updatedPlaylist.DurationMs,
-		CreatedAt:  updatedPlaylist.CreatedAt,
-		UpdatedAt:  updatedPlaylist.UpdatedAt,
-	}
-	if updatedPlaylist.Description.Valid {
-		resp.Description = updatedPlaylist.Description.String
+	writePlaylistJSON(w, http.StatusOK, AddTracksResponse{
+		Added:    report.Added,
+		Skipped:  report.Skipped,
+		Playlist: newPlaylistResponse(updatedPlaylist.Playlist, updatedPlaylist.TrackCount, updatedPlaylist.DurationMs),
+	})
+}
+
+// BatchRemoveTracks handles POST /api/v1/playlists/{id}/tracks/batch-remove
+func (h *PlaylistHandlers) BatchRemoveTracks(w http.ResponseWriter, r *http.Request) {
+	userCtx := auth.GetUserFromContext(r.Context())
+	if userCtx == nil {
+		writePlaylistError(w, http.StatusUnauthorized, "UNAUTHORIZED", "not authenticated")
+		return
 	}
 
-	writePlaylistJSON(w, http.StatusOK, resp)
+	playlistID, err := parsePlaylistID(r)
+	if err != nil {
+		writePlaylistError(w, http.StatusBadRequest, "VALIDATION_ERROR", "invalid playlist ID")
+		return
+	}
+
+	// Check ownership
+	playlist, err := h.playlistRepo.GetByID(r.Context(), playlistID)
+	if err != nil {
+		if errors.Is(err, db.ErrPlaylistNotFound) {
+			writePlaylistError(w, http.StatusNotFound, "NOT_FOUND", "playlist not found")
+			return
+		}
+		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to get playlist")
+		return
+	}
+
+	if playlist.UserID != userCtx.UserID {
+		writePlaylistError(w, http.StatusForbidden, "FORBIDDEN", "not authorized to modify this playlist")
+		return
+	}
+
+	var req BatchRemoveTracksRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writePlaylistError(w, http.StatusBadRequest, "VALIDATION_ERROR", "invalid request body")
+		return
+	}
+
+	if len(req.TrackIDs) == 0 {
+		writePlaylistError(w, http.StatusBadRequest, "VALIDATION_ERROR", "trackIds is required")
+		return
+	}
+
+	if err := h.playlistRepo.RemoveTracks(r.Context(), playlistID, req.TrackIDs); err != nil {
+		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to remove tracks")
+		return
+	}
+
+	// Return updated playlist with tracks
+	updatedPlaylist, err := h.playlistRepo.GetByIDWithTracks(r.Context(), playlistID)
+	if err != nil {
+		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to get updated playlist")
+		return
+	}
+
+	writePlaylistJSON(w, http.StatusOK, newPlaylistWithTracksResponse(updatedPlaylist, mapTrackResponses(updatedPlaylist.Tracks)))
 }
 
 // RemoveTrack handles DELETE /api/v1/playlists/{id}/tracks/{trackId}
@@ -538,8 +548,58 @@ func (h *PlaylistHandlers) ReorderTracks(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	tracks := make([]TrackResponse, 0, len(updatedPlaylist.Tracks))
-	for _, t := range updatedPlaylist.Tracks {
+	writePlaylistJSON(w, http.StatusOK, newPlaylistWithTracksResponse(updatedPlaylist, mapTrackResponses(updatedPlaylist.Tracks)))
+}
+
+// Helper functions
+
+// newPlaylistResponse builds a PlaylistResponse from a base playlist plus its
+// aggregate track count and duration.
+func newPlaylistResponse(p db.Playlist, trackCount int, durationMs int64) PlaylistResponse {
+	resp := PlaylistResponse{
+		ID:         p.ID,
+		Name:       p.Name,
+		IsPublic:   p.IsPublic,
+		TrackCount: trackCount,
+		DurationMs: durationMs,
+		CreatedAt:  p.CreatedAt,
+		UpdatedAt:  p.UpdatedAt,
+	}
+	if p.Description.Valid {
+		resp.Description = p.Description.String
+	}
+	if p.CoverURL.Valid {
+		resp.CoverURL = p.CoverURL.String
+	}
+	return resp
+}
+
+// newPlaylistWithTracksResponse builds a PlaylistWithTracksResponse from a
+// playlist and its already-mapped track responses.
+func newPlaylistWithTracksResponse(p *db.PlaylistWithTracks, tracks []TrackResponse) PlaylistWithTracksResponse {
+	resp := PlaylistWithTracksResponse{
+		ID:         p.ID,
+		Name:       p.Name,
+		IsPublic:   p.IsPublic,
+		TrackCount: p.TrackCount,
+		DurationMs: p.DurationMs,
+		CreatedAt:  p.CreatedAt,
+		UpdatedAt:  p.UpdatedAt,
+		Tracks:     tracks,
+	}
+	if p.Description.Valid {
+		resp.Description = p.Description.String
+	}
+	if p.CoverURL.Valid {
+		resp.CoverURL = p.CoverURL.String
+	}
+	return resp
+}
+
+// mapTrackResponses converts repository tracks into API track responses.
+func mapTrackResponses(in []db.Track) []TrackResponse {
+	tracks := make([]TrackResponse, 0, len(in))
+	for _, t := range in {
 		track := TrackResponse{
 			ID:            t.ID,
 			Title:         t.Title,
@@ -558,24 +618,8 @@ func (h *PlaylistHandlers) ReorderTracks(w http.ResponseWriter, r *http.Request)
 		}
 		tracks = append(tracks, track)
 	}
-
-	resp := PlaylistWithTracksResponse{
-		ID:         updatedPlaylist.ID,
-		Name:       updatedPlaylist.Name,
-		TrackCount: updatedPlaylist.TrackCount,
-		DurationMs: updatedPlaylist.DurationMs,
-		CreatedAt:  updatedPlaylist.CreatedAt,
-		UpdatedAt:  updatedPlaylist.UpdatedAt,
-		Tracks:     tracks,
-	}
-	if updatedPlaylist.Description.Valid {
-		resp.Description = updatedPlaylist.Description.String
-	}
-
-	writePlaylistJSON(w, http.StatusOK, resp)
+	return tracks
 }
-
-// Helper functions
 
 func parsePlaylistID(r *http.Request) (int64, error) {
 	idStr := r.PathValue("id")

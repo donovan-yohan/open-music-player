@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 var ErrPlaylistNotFound = errors.New("playlist not found")
@@ -19,8 +21,21 @@ type Playlist struct {
 	UserID      uuid.UUID
 	Name        string
 	Description sql.NullString
+	CoverURL    sql.NullString
+	IsPublic    bool
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+// ListPlaylistsParams controls search, sorting, and pagination for
+// GetByUserID. Sort/Order values are validated against a whitelist so callers
+// can safely forward untrusted query parameters.
+type ListPlaylistsParams struct {
+	Query  string
+	Sort   string // "name" | "track_count"; anything else falls back to updated_at
+	Order  string // "asc" | "desc"; anything else falls back to the sort default
+	Limit  int
+	Offset int
 }
 
 type PlaylistTrack struct {
@@ -48,13 +63,13 @@ func NewPlaylistRepository(db *DB) *PlaylistRepository {
 // Create inserts a new playlist into the database.
 func (r *PlaylistRepository) Create(ctx context.Context, playlist *Playlist) error {
 	query := `
-		INSERT INTO playlists (user_id, name, description)
-		VALUES ($1, $2, $3)
+		INSERT INTO playlists (user_id, name, description, cover_url, is_public)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, created_at, updated_at
 	`
 
 	err := r.db.QueryRowContext(ctx, query,
-		playlist.UserID, playlist.Name, playlist.Description,
+		playlist.UserID, playlist.Name, playlist.Description, playlist.CoverURL, playlist.IsPublic,
 	).Scan(&playlist.ID, &playlist.CreatedAt, &playlist.UpdatedAt)
 
 	return err
@@ -63,14 +78,14 @@ func (r *PlaylistRepository) Create(ctx context.Context, playlist *Playlist) err
 // GetByID retrieves a playlist by its ID.
 func (r *PlaylistRepository) GetByID(ctx context.Context, id int64) (*Playlist, error) {
 	query := `
-		SELECT id, user_id, name, description, created_at, updated_at
+		SELECT id, user_id, name, description, cover_url, is_public, created_at, updated_at
 		FROM playlists
 		WHERE id = $1
 	`
 
 	var p Playlist
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&p.ID, &p.UserID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt,
+		&p.ID, &p.UserID, &p.Name, &p.Description, &p.CoverURL, &p.IsPublic, &p.CreatedAt, &p.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -86,7 +101,7 @@ func (r *PlaylistRepository) GetByID(ctx context.Context, id int64) (*Playlist, 
 func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*PlaylistWithTracks, error) {
 	// Single query to get playlist info and all tracks
 	query := `
-		SELECT p.id, p.user_id, p.name, p.description, p.created_at, p.updated_at,
+		SELECT p.id, p.user_id, p.name, p.description, p.cover_url, p.is_public, p.created_at, p.updated_at,
 			   t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
 			   t.mb_recording_id, t.mb_release_id, t.mb_artist_id, t.mb_verified,
 			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
@@ -114,7 +129,7 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 		var trackID sql.NullInt64
 
 		err := rows.Scan(
-			&p.ID, &p.UserID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt,
+			&p.ID, &p.UserID, &p.Name, &p.Description, &p.CoverURL, &p.IsPublic, &p.CreatedAt, &p.UpdatedAt,
 			&trackID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
@@ -154,18 +169,51 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 	return result, nil
 }
 
-// GetByUserID retrieves all playlists for a user with a single optimized query.
-func (r *PlaylistRepository) GetByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]PlaylistWithTracks, int, error) {
+// GetByUserID retrieves playlists for a user with optional case-insensitive
+// name search and sorting. Sort and order are validated against a whitelist;
+// invalid values fall back to the default (updated_at DESC).
+func (r *PlaylistRepository) GetByUserID(ctx context.Context, userID uuid.UUID, params ListPlaylistsParams) ([]PlaylistWithTracks, int, error) {
+	limit := params.Limit
 	if limit <= 0 {
 		limit = 20
 	}
 	if limit > 100 {
 		limit = 100
 	}
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
 
-	// Single query with window function for total count (eliminates separate COUNT query)
+	// Resolve ORDER BY from a whitelist so untrusted query params can never be
+	// concatenated into SQL. track_count aliases the aggregate expression.
+	orderColumn := "p.updated_at"
+	defaultDesc := true
+	switch strings.ToLower(params.Sort) {
+	case "name":
+		orderColumn = "LOWER(p.name)"
+		defaultDesc = false
+	case "track_count":
+		orderColumn = "track_count"
+		defaultDesc = true
+	}
+
+	desc := defaultDesc
+	switch strings.ToLower(params.Order) {
+	case "asc":
+		desc = false
+	case "desc":
+		desc = true
+	}
+	direction := "ASC"
+	if desc {
+		direction = "DESC"
+	}
+
+	// Single query with window function for total count (eliminates separate COUNT query).
+	// $2 is the case-insensitive name filter ("" => match all).
 	selectQuery := `
-		SELECT p.id, p.user_id, p.name, p.description, p.created_at, p.updated_at,
+		SELECT p.id, p.user_id, p.name, p.description, p.cover_url, p.is_public, p.created_at, p.updated_at,
 			   COALESCE(COUNT(pt.track_id), 0) as track_count,
 			   COALESCE(SUM(t.duration_ms), 0) as total_duration,
 			   COUNT(*) OVER() as total_playlists
@@ -173,12 +221,13 @@ func (r *PlaylistRepository) GetByUserID(ctx context.Context, userID uuid.UUID, 
 		LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
 		LEFT JOIN tracks t ON pt.track_id = t.id
 		WHERE p.user_id = $1
+		  AND ($2 = '' OR p.name ILIKE '%' || $2 || '%')
 		GROUP BY p.id
-		ORDER BY p.updated_at DESC
-		LIMIT $2 OFFSET $3
+		ORDER BY ` + orderColumn + ` ` + direction + `, p.id ASC
+		LIMIT $3 OFFSET $4
 	`
 
-	rows, err := r.db.QueryContext(ctx, selectQuery, userID, limit, offset)
+	rows, err := r.db.QueryContext(ctx, selectQuery, userID, params.Query, limit, offset)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -189,7 +238,7 @@ func (r *PlaylistRepository) GetByUserID(ctx context.Context, userID uuid.UUID, 
 	for rows.Next() {
 		var p PlaylistWithTracks
 		err := rows.Scan(
-			&p.ID, &p.UserID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt,
+			&p.ID, &p.UserID, &p.Name, &p.Description, &p.CoverURL, &p.IsPublic, &p.CreatedAt, &p.UpdatedAt,
 			&p.TrackCount, &p.DurationMs, &total,
 		)
 		if err != nil {
@@ -209,13 +258,13 @@ func (r *PlaylistRepository) GetByUserID(ctx context.Context, userID uuid.UUID, 
 func (r *PlaylistRepository) Update(ctx context.Context, playlist *Playlist) error {
 	query := `
 		UPDATE playlists
-		SET name = $1, description = $2, updated_at = NOW()
-		WHERE id = $3
+		SET name = $1, description = $2, cover_url = $3, is_public = $4, updated_at = NOW()
+		WHERE id = $5
 		RETURNING updated_at
 	`
 
 	err := r.db.QueryRowContext(ctx, query,
-		playlist.Name, playlist.Description, playlist.ID,
+		playlist.Name, playlist.Description, playlist.CoverURL, playlist.IsPublic, playlist.ID,
 	).Scan(&playlist.UpdatedAt)
 
 	if err != nil {
@@ -308,17 +357,36 @@ func (r *PlaylistRepository) AddTrackAtPosition(ctx context.Context, playlistID,
 	return err
 }
 
-// AddTracks adds multiple tracks to a playlist.
-func (r *PlaylistRepository) AddTracks(ctx context.Context, playlistID int64, trackIDs []int64) error {
+// AddTracksResult reports which track IDs were newly appended to the playlist
+// versus which were skipped because they were already present (or duplicated
+// within the request). The union is the playlist membership with no duplicate
+// rows, since the schema PK forbids duplicates.
+type AddTracksResult struct {
+	Added   []int64
+	Skipped []int64
+}
+
+// AddTracks appends multiple tracks to a playlist in a single transaction,
+// skipping any that are already members (the playlist_tracks PK forbids
+// duplicate rows). It reports the added and skipped IDs rather than erroring on
+// duplicates.
+func (r *PlaylistRepository) AddTracks(ctx context.Context, playlistID int64, trackIDs []int64) (AddTracksResult, error) {
+	result := AddTracksResult{Added: []int64{}, Skipped: []int64{}}
 	if len(trackIDs) == 0 {
-		return nil
+		return result, nil
 	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, err
+	}
+	defer tx.Rollback()
 
 	// Get the next position
 	var maxPosition sql.NullInt32
 	posQuery := `SELECT MAX(position) FROM playlist_tracks WHERE playlist_id = $1`
-	if err := r.db.QueryRowContext(ctx, posQuery, playlistID).Scan(&maxPosition); err != nil {
-		return err
+	if err := tx.QueryRowContext(ctx, posQuery, playlistID).Scan(&maxPosition); err != nil {
+		return result, err
 	}
 
 	nextPosition := 0
@@ -326,22 +394,93 @@ func (r *PlaylistRepository) AddTracks(ctx context.Context, playlistID int64, tr
 		nextPosition = int(maxPosition.Int32) + 1
 	}
 
-	// Insert all tracks
-	for i, trackID := range trackIDs {
+	// Insert tracks one by one; RowsAffected distinguishes an insert (added)
+	// from an ON CONFLICT no-op (skipped). Repeated IDs within the same request
+	// also collapse to a single row and are reported as skipped after the first.
+	seen := make(map[int64]bool, len(trackIDs))
+	pos := nextPosition
+	for _, trackID := range trackIDs {
+		if seen[trackID] {
+			result.Skipped = append(result.Skipped, trackID)
+			continue
+		}
+		seen[trackID] = true
+
 		query := `
 			INSERT INTO playlist_tracks (playlist_id, track_id, position)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (playlist_id, track_id) DO NOTHING
 		`
-		_, err := r.db.ExecContext(ctx, query, playlistID, trackID, nextPosition+i)
+		res, err := tx.ExecContext(ctx, query, playlistID, trackID, pos)
 		if err != nil {
-			return err
+			return AddTracksResult{Added: []int64{}, Skipped: []int64{}}, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return AddTracksResult{Added: []int64{}, Skipped: []int64{}}, err
+		}
+		if affected > 0 {
+			result.Added = append(result.Added, trackID)
+			pos++
+		} else {
+			result.Skipped = append(result.Skipped, trackID)
 		}
 	}
 
 	// Update playlist's updated_at
-	_, err := r.db.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID)
-	return err
+	if _, err := tx.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID); err != nil {
+		return AddTracksResult{Added: []int64{}, Skipped: []int64{}}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return AddTracksResult{Added: []int64{}, Skipped: []int64{}}, err
+	}
+
+	return result, nil
+}
+
+// RemoveTracks removes multiple tracks from a playlist in a single transaction
+// and renumbers the remaining rows so positions are contiguous starting at 0.
+func (r *PlaylistRepository) RemoveTracks(ctx context.Context, playlistID int64, trackIDs []int64) error {
+	if len(trackIDs) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	deleteQuery := `DELETE FROM playlist_tracks WHERE playlist_id = $1 AND track_id = ANY($2)`
+	if _, err := tx.ExecContext(ctx, deleteQuery, playlistID, pq.Array(trackIDs)); err != nil {
+		return err
+	}
+
+	// Renumber remaining rows to contiguous positions starting at 0, preserving
+	// their existing relative order.
+	renumberQuery := `
+		WITH ordered AS (
+			SELECT track_id, (ROW_NUMBER() OVER (ORDER BY position ASC) - 1) AS new_position
+			FROM playlist_tracks
+			WHERE playlist_id = $1
+		)
+		UPDATE playlist_tracks pt
+		SET position = ordered.new_position
+		FROM ordered
+		WHERE pt.playlist_id = $1
+		  AND pt.track_id = ordered.track_id
+		  AND pt.position <> ordered.new_position
+	`
+	if _, err := tx.ExecContext(ctx, renumberQuery, playlistID); err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // RemoveTrack removes a track from a playlist and reorders remaining tracks.
