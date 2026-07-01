@@ -173,6 +173,7 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("POST /api/v1/auth/logout", r.withAuth(r.authHandlers.Logout))
 
 	// Search routes - local database (auth required)
+	r.mux.HandleFunc("GET /api/v1/search", r.withAuth(r.searchHandlers.Search))
 	r.mux.HandleFunc("GET /api/v1/search/recordings", r.withAuth(r.searchHandlers.SearchRecordings))
 	r.mux.HandleFunc("GET /api/v1/search/artists", r.withAuth(r.searchHandlers.SearchArtists))
 	r.mux.HandleFunc("GET /api/v1/search/releases", r.withAuth(r.searchHandlers.SearchReleases))

@@ -54,6 +54,16 @@ type PaginatedResponse struct {
 	Offset int         `json:"offset"`
 }
 
+// UnifiedSearchResponse is the sectioned body returned by GET /api/v1/search. It
+// reuses the same per-item shapes as the split endpoints so clients can share
+// decoders.
+type UnifiedSearchResponse struct {
+	Tracks  []RecordingResponse `json:"tracks"`
+	Artists []ArtistResponse    `json:"artists"`
+	Albums  []ReleaseResponse   `json:"albums"`
+	Query   string              `json:"query"`
+}
+
 type ErrorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -83,6 +93,107 @@ func (h *Handlers) SearchRecordings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	recordings := toRecordingResponses(tracks)
+
+	writeJSON(w, http.StatusOK, PaginatedResponse{
+		Data:   recordings,
+		Total:  total,
+		Limit:  limit,
+		Offset: offset,
+	})
+}
+
+// SearchArtists handles GET /api/v1/search/artists
+func (h *Handlers) SearchArtists(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "query parameter 'q' is required")
+		return
+	}
+
+	limit, offset := parsePagination(r)
+
+	artists, total, err := h.trackRepo.SearchArtists(r.Context(), query, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to search artists")
+		return
+	}
+
+	responses := toArtistResponses(artists)
+
+	writeJSON(w, http.StatusOK, PaginatedResponse{
+		Data:   responses,
+		Total:  total,
+		Limit:  limit,
+		Offset: offset,
+	})
+}
+
+// SearchReleases handles GET /api/v1/search/releases
+func (h *Handlers) SearchReleases(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "query parameter 'q' is required")
+		return
+	}
+
+	limit, offset := parsePagination(r)
+
+	releases, total, err := h.trackRepo.SearchReleases(r.Context(), query, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to search releases")
+		return
+	}
+
+	responses := toReleaseResponses(releases)
+
+	writeJSON(w, http.StatusOK, PaginatedResponse{
+		Data:   responses,
+		Total:  total,
+		Limit:  limit,
+		Offset: offset,
+	})
+}
+
+// Search handles GET /api/v1/search and returns tracks, artists, and albums for
+// a single query in one sectioned body. It runs the same local searches as the
+// split /search/recordings|artists|releases endpoints.
+func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "query parameter 'q' is required")
+		return
+	}
+
+	limit, offset := parsePagination(r)
+
+	tracks, _, err := h.trackRepo.SearchRecordings(r.Context(), query, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to search recordings")
+		return
+	}
+
+	artists, _, err := h.trackRepo.SearchArtists(r.Context(), query, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to search artists")
+		return
+	}
+
+	releases, _, err := h.trackRepo.SearchReleases(r.Context(), query, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to search releases")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, UnifiedSearchResponse{
+		Tracks:  toRecordingResponses(tracks),
+		Artists: toArtistResponses(artists),
+		Albums:  toReleaseResponses(releases),
+		Query:   query,
+	})
+}
+
+func toRecordingResponses(tracks []db.Track) []RecordingResponse {
 	recordings := make([]RecordingResponse, 0, len(tracks))
 	for _, t := range tracks {
 		coverArtURL := ""
@@ -110,31 +221,10 @@ func (h *Handlers) SearchRecordings(w http.ResponseWriter, r *http.Request) {
 		}
 		recordings = append(recordings, rec)
 	}
-
-	writeJSON(w, http.StatusOK, PaginatedResponse{
-		Data:   recordings,
-		Total:  total,
-		Limit:  limit,
-		Offset: offset,
-	})
+	return recordings
 }
 
-// SearchArtists handles GET /api/v1/search/artists
-func (h *Handlers) SearchArtists(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("q")
-	if query == "" {
-		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "query parameter 'q' is required")
-		return
-	}
-
-	limit, offset := parsePagination(r)
-
-	artists, total, err := h.trackRepo.SearchArtists(r.Context(), query, limit, offset)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to search artists")
-		return
-	}
-
+func toArtistResponses(artists []db.Artist) []ArtistResponse {
 	responses := make([]ArtistResponse, 0, len(artists))
 	for _, a := range artists {
 		responses = append(responses, ArtistResponse{
@@ -143,31 +233,10 @@ func (h *Handlers) SearchArtists(w http.ResponseWriter, r *http.Request) {
 			TrackCount: a.TrackCount,
 		})
 	}
-
-	writeJSON(w, http.StatusOK, PaginatedResponse{
-		Data:   responses,
-		Total:  total,
-		Limit:  limit,
-		Offset: offset,
-	})
+	return responses
 }
 
-// SearchReleases handles GET /api/v1/search/releases
-func (h *Handlers) SearchReleases(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("q")
-	if query == "" {
-		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "query parameter 'q' is required")
-		return
-	}
-
-	limit, offset := parsePagination(r)
-
-	releases, total, err := h.trackRepo.SearchReleases(r.Context(), query, limit, offset)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to search releases")
-		return
-	}
-
+func toReleaseResponses(releases []db.Release) []ReleaseResponse {
 	responses := make([]ReleaseResponse, 0, len(releases))
 	for _, rel := range releases {
 		coverArtURL := ""
@@ -184,13 +253,7 @@ func (h *Handlers) SearchReleases(w http.ResponseWriter, r *http.Request) {
 			TrackCount:  rel.TrackCount,
 		})
 	}
-
-	writeJSON(w, http.StatusOK, PaginatedResponse{
-		Data:   responses,
-		Total:  total,
-		Limit:  limit,
-		Offset: offset,
-	})
+	return responses
 }
 
 func parsePagination(r *http.Request) (limit, offset int) {
