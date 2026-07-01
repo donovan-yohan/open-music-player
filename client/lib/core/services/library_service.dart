@@ -54,7 +54,11 @@ class LibraryService {
     String? order,
     bool? mbVerified,
     List<String>? fields,
+    bool liked = false,
+    String? genre,
+    String? query,
   }) async {
+    final trimmedQuery = query?.trim();
     final params = <String, String>{
       'limit': limit.toString(),
       'offset': offset.toString(),
@@ -62,6 +66,9 @@ class LibraryService {
       if (order != null) 'order': order,
       if (mbVerified != null) 'mb_verified': mbVerified.toString(),
       if (fields != null && fields.isNotEmpty) 'fields': fields.join(','),
+      if (liked) 'liked': 'true',
+      if (genre != null && genre.isNotEmpty) 'genre': genre,
+      if (trimmedQuery != null && trimmedQuery.isNotEmpty) 'q': trimmedQuery,
     };
     return _apiClient.get<({List<lib.Track> tracks, int total})>(
       '/library',
@@ -71,6 +78,37 @@ class LibraryService {
         final total = json['total'] as int? ?? tracks.length;
         return (tracks: tracks, total: total);
       },
+    );
+  }
+
+  /// Loads the caller's Liked Songs collection via `GET /library?liked=true`,
+  /// ordered newest-liked-first by default. Thin convenience over
+  /// [getLibraryPage] so the Liked Songs screen doesn't have to remember the
+  /// `liked` flag or the projection it needs to render + play rows.
+  Future<({List<lib.Track> tracks, int total})> getLikedSongs({
+    int limit = 200,
+    int offset = 0,
+    String? sort,
+    String? order,
+  }) {
+    return getLibraryPage(
+      limit: limit,
+      offset: offset,
+      sort: sort,
+      order: order,
+      liked: true,
+      fields: const [
+        'id',
+        'title',
+        'artist',
+        'album',
+        'duration_ms',
+        'mb_verified',
+        'added_at',
+        'cover_art_url',
+        'mb_recording_id',
+        'is_liked',
+      ],
     );
   }
 

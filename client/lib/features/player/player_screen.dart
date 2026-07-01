@@ -257,7 +257,7 @@ class PlayerScreen extends StatelessWidget {
       shuffleEnabled: playback.shuffleEnabled,
       loopMode: playback.loopMode,
       onShuffle: playback.toggleShuffle,
-      onPrevious: playback.skipToPrevious,
+      onPrevious: playback.previous,
       onPlayPause: playback.togglePlayPause,
       onNext: playback.skipToNext,
       onLoop: playback.cycleLoopMode,
