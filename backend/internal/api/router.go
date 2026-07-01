@@ -36,6 +36,7 @@ type Router struct {
 	discoveryHandlers      *discovery.Handlers
 	playlistHandlers       *PlaylistHandlers
 	playlistImportHandlers *PlaylistImportHandlers
+	playlistMixHandlers    *PlaylistMixHandlers
 	mixPlanHandlers        *MixPlanHandlers
 	downloadHandlers       *DownloadHandlers
 	maintenanceHandlers    *MaintenanceHandlers
@@ -66,6 +67,7 @@ type RouterConfig struct {
 	DiscoveryHandlers      *discovery.Handlers
 	PlaylistHandlers       *PlaylistHandlers
 	PlaylistImportHandlers *PlaylistImportHandlers
+	PlaylistMixHandlers    *PlaylistMixHandlers
 	MixPlanHandlers        *MixPlanHandlers
 	DownloadHandlers       *DownloadHandlers
 	MaintenanceHandlers    *MaintenanceHandlers
@@ -121,6 +123,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		discoveryHandlers:      cfg.DiscoveryHandlers,
 		playlistHandlers:       cfg.PlaylistHandlers,
 		playlistImportHandlers: cfg.PlaylistImportHandlers,
+		playlistMixHandlers:    cfg.PlaylistMixHandlers,
 		mixPlanHandlers:        cfg.MixPlanHandlers,
 		downloadHandlers:       cfg.DownloadHandlers,
 		maintenanceHandlers:    cfg.MaintenanceHandlers,
@@ -254,6 +257,12 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("DELETE /api/v1/playlists/{id}/tracks/{trackId}", r.withAuth(r.playlistHandlers.RemoveTrack))
 	r.mux.HandleFunc("POST /api/v1/playlists/{id}/tracks/batch-remove", r.withAuth(r.playlistHandlers.BatchRemoveTracks))
 	r.mux.HandleFunc("PUT /api/v1/playlists/{id}/tracks/reorder", r.withAuth(r.playlistHandlers.ReorderTracks))
+	// Flag-gated save-playlist-as-mix seam. The handler itself returns 404 when
+	// the feature is disabled (ENABLE_PLAYLIST_MIX); when the handler is not wired
+	// at all (legacy router construction) the route stays unregistered.
+	if r.playlistMixHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/playlists/{id}/mix", r.withAuth(r.playlistMixHandlers.CreateMixFromPlaylist))
+	}
 	if r.playlistImportHandlers != nil {
 		r.mux.HandleFunc("POST /api/v1/playlist-imports", r.withAuth(r.playlistImportHandlers.CreateImport))
 		r.mux.HandleFunc("GET /api/v1/playlist-imports/{importJobId}", r.withAuth(r.playlistImportHandlers.GetImport))
