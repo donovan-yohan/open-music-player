@@ -1,4 +1,5 @@
 export 'api_client.dart';
+export 'analysis_service.dart';
 export 'search_service.dart';
 export 'browse_service.dart';
 export 'library_service.dart';
