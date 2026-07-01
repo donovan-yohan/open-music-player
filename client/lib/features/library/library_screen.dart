@@ -6,8 +6,13 @@ import '../../core/storage/offline_database.dart';
 import '../../core/network/connectivity_service.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/api/api_client.dart';
+import '../../core/models/models.dart' as core_models;
+import '../../core/services/services.dart' as services;
 import '../../shared/models/models.dart';
 import '../../shared/widgets/widgets.dart';
+import '../discovery/screens/album_detail_screen.dart';
+import '../discovery/screens/artist_detail_screen.dart';
+import 'library_track_actions.dart';
 
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({super.key});
@@ -29,6 +34,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
   int _totalCount = 0;
 
   final ScrollController _scrollController = ScrollController();
+
+  // Library mutations (like/unlike, remove, playlists) and MusicBrainz-backed
+  // detail navigation run through the parser-based services client, mirroring
+  // the search/discovery screens.
+  final services.ApiClient _servicesApiClient = services.ApiClient();
+  late final services.LibraryService _libraryService =
+      services.LibraryService(_servicesApiClient);
 
   @override
   void initState() {
@@ -493,6 +505,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
           return _TrackListTile(
             key: ValueKey(track.id),
             track: track,
+            libraryService: _libraryService,
+            detailApiClient: _servicesApiClient,
             onTrackUpdated: _loadTracks,
           );
         },
@@ -501,15 +515,31 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 }
 
-class _TrackListTile extends StatelessWidget {
+class _TrackListTile extends StatefulWidget {
   final Track track;
+  final services.LibraryService libraryService;
+  final services.ApiClient detailApiClient;
   final VoidCallback? onTrackUpdated;
 
   const _TrackListTile({
     super.key,
     required this.track,
+    required this.libraryService,
+    required this.detailApiClient,
     this.onTrackUpdated,
   });
+
+  @override
+  State<_TrackListTile> createState() => _TrackListTileState();
+}
+
+class _TrackListTileState extends State<_TrackListTile> {
+  late bool _liked = widget.track.isLiked;
+  bool _likeInFlight = false;
+
+  Track get track => widget.track;
+  VoidCallback? get onTrackUpdated => widget.onTrackUpdated;
+  services.LibraryService get _libraryService => widget.libraryService;
 
   void _showMatchSuggestions(BuildContext context) {
     if (!track.needsVerification) return;
@@ -651,13 +681,211 @@ class _TrackListTile extends StatelessWidget {
             track.formattedDuration,
             style: theme.textTheme.bodySmall,
           ),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            icon: Icon(
+              _liked ? Icons.favorite : Icons.favorite_border,
+              color: _liked ? theme.colorScheme.primary : null,
+            ),
+            tooltip: _liked ? 'Unlike' : 'Like',
+            onPressed: _likeInFlight ? null : _toggleLike,
+          ),
           DownloadButton(track: track),
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.more_vert),
+            tooltip: 'More actions',
+            onPressed: () => _showActions(context),
+          ),
         ],
       ),
       onTap: () => _playTrack(context),
-      onLongPress:
-          track.needsVerification ? () => _showMatchSuggestions(context) : null,
+      onLongPress: track.needsVerification
+          ? () => _showMatchSuggestions(context)
+          : () => _showActions(context),
     );
+  }
+
+  Future<void> _toggleLike() async {
+    if (_likeInFlight) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _likeInFlight = true);
+    try {
+      await runOptimisticLikeToggle(
+        current: _liked,
+        like: () => _libraryService.like(track.id),
+        unlike: () => _libraryService.unlike(track.id),
+        applyOptimistic: (liked) {
+          if (mounted) setState(() => _liked = liked);
+        },
+      );
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not update liked status')),
+      );
+    } finally {
+      if (mounted) setState(() => _likeInFlight = false);
+    }
+  }
+
+  void _showActions(BuildContext context) {
+    final playback = context.read<PlaybackState>();
+    final messenger = ScaffoldMessenger.of(context);
+
+    showModalBottomSheet(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.queue_music),
+              title: const Text('Add to queue'),
+              onTap: () async {
+                Navigator.of(sheetContext).pop();
+                await addTrackToQueue(playback.enqueue, track);
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Added to queue')),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.playlist_play),
+              title: const Text('Play next'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                playTrackNext(playback.playNext, track);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.playlist_add),
+              title: const Text('Add to playlist'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _addToPlaylist();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.person),
+              title: const Text('Go to artist'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _goToArtist();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.album),
+              title: const Text('Go to album'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _goToAlbum();
+              },
+            ),
+            ListTile(
+              leading: Icon(_liked ? Icons.favorite : Icons.favorite_border),
+              title: Text(_liked ? 'Unlike' : 'Like'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _toggleLike();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Remove from library'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _removeFromLibrary();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addToPlaylist() async {
+    final messenger = ScaffoldMessenger.of(context);
+    List<core_models.Playlist> playlists;
+    try {
+      playlists = await _libraryService.getPlaylists();
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Failed to load playlists')),
+      );
+      return;
+    }
+    if (!mounted) return;
+
+    final selected = await showModalBottomSheet<core_models.Playlist>(
+      context: context,
+      builder: (context) => _PlaylistPicker(playlists: playlists),
+    );
+    if (selected == null) return;
+
+    try {
+      await _libraryService.addTrackToPlaylist(
+        selected.id,
+        track.id.toString(),
+      );
+      messenger.showSnackBar(
+        SnackBar(content: Text('Added to ${selected.name}')),
+      );
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Failed to add to playlist')),
+      );
+    }
+  }
+
+  void _goToArtist() {
+    final mbid = track.mbArtistId;
+    if (mbid == null || mbid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No artist details for this track')),
+      );
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ArtistDetailScreen(
+          artistMbid: mbid,
+          apiClient: widget.detailApiClient,
+        ),
+      ),
+    );
+  }
+
+  void _goToAlbum() {
+    final mbid = track.mbReleaseId;
+    if (mbid == null || mbid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No album details for this track')),
+      );
+      return;
+    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => AlbumDetailScreen(
+          albumMbid: mbid,
+          apiClient: widget.detailApiClient,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _removeFromLibrary() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await _libraryService.removeTrackFromLibrary(track.id.toString());
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Removed from library')),
+      );
+      onTrackUpdated?.call();
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Failed to remove from library')),
+      );
+    }
   }
 
   void _showUnverifiedTrackSheet(BuildContext context) {
@@ -801,5 +1029,46 @@ class _UnverifiedTrackSheet extends StatelessWidget {
     }
 
     return (name: name, url: sourceUrl);
+  }
+}
+
+class _PlaylistPicker extends StatelessWidget {
+  final List<core_models.Playlist> playlists;
+
+  const _PlaylistPicker({required this.playlists});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              'Add to playlist',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+          ),
+          const Divider(height: 1),
+          if (playlists.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('No playlists found'),
+            )
+          else
+            ...playlists.map(
+              (playlist) => ListTile(
+                leading: const Icon(Icons.playlist_play),
+                title: Text(playlist.name),
+                subtitle: Text('${playlist.trackCount} tracks'),
+                onTap: () => Navigator.of(context).pop(playlist),
+              ),
+            ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
   }
 }
