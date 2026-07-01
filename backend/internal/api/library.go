@@ -137,6 +137,11 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 		opts.MBVerified = &val
 	}
 
+	// Parse liked filter (Liked Songs)
+	if r.URL.Query().Get("liked") == "true" {
+		opts.Liked = true
+	}
+
 	tracks, total, err := h.libraryRepo.GetUserLibrary(r.Context(), userCtx.UserID, opts)
 	if err != nil {
 		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to retrieve library")
@@ -190,6 +195,9 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 		}
 		if fields.Include("mb_recording_id") && t.MBRecordingID != nil {
 			track["mb_recording_id"] = t.MBRecordingID.String()
+		}
+		if fields.Include("is_liked") {
+			track["is_liked"] = t.IsLiked
 		}
 		if fields.Include("analysis_status") && t.AnalysisStatus.Valid {
 			track["analysis_status"] = t.AnalysisStatus.String
@@ -294,6 +302,81 @@ func (h *LibraryHandlers) RemoveTrackFromLibrary(w http.ResponseWriter, r *http.
 			return
 		}
 		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to remove track from library")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// parseTrackIDPath extracts and validates the {track_id} path value, writing an
+// error response and returning ok=false when it is missing or malformed.
+func parseTrackIDPath(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	trackIDStr := r.PathValue("track_id")
+	if trackIDStr == "" {
+		writeLibraryError(w, http.StatusBadRequest, "INVALID_REQUEST", "track_id is required")
+		return 0, false
+	}
+	trackID, err := strconv.ParseInt(trackIDStr, 10, 64)
+	if err != nil {
+		writeLibraryError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid track_id format")
+		return 0, false
+	}
+	return trackID, true
+}
+
+// LikeTrack handles POST /api/v1/library/tracks/{track_id}/like.
+// Idempotent: liking an already-liked track still returns 201. Liking does not
+// add the track to the library (favorites are independent of membership).
+func (h *LibraryHandlers) LikeTrack(w http.ResponseWriter, r *http.Request) {
+	userCtx := auth.GetUserFromContext(r.Context())
+	if userCtx == nil {
+		writeLibraryError(w, http.StatusUnauthorized, "UNAUTHORIZED", "user not authenticated")
+		return
+	}
+
+	trackID, ok := parseTrackIDPath(w, r)
+	if !ok {
+		return
+	}
+
+	// Verify the track exists so an unknown track is a clean 404, not a silent like.
+	if _, err := h.trackRepo.GetByID(r.Context(), trackID); err != nil {
+		if errors.Is(err, db.ErrTrackNotFound) {
+			writeLibraryError(w, http.StatusNotFound, "TRACK_NOT_FOUND", "track not found")
+			return
+		}
+		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to verify track")
+		return
+	}
+
+	if err := h.libraryRepo.AddFavorite(r.Context(), userCtx.UserID, trackID); err != nil {
+		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to like track")
+		return
+	}
+
+	writeLibraryJSON(w, http.StatusCreated, map[string]interface{}{
+		"track_id": trackID,
+		"liked":    true,
+	})
+}
+
+// UnlikeTrack handles DELETE /api/v1/library/tracks/{track_id}/like.
+// Idempotent: unliking a track that is not liked still returns 204. Unliking does
+// not remove the track from the library.
+func (h *LibraryHandlers) UnlikeTrack(w http.ResponseWriter, r *http.Request) {
+	userCtx := auth.GetUserFromContext(r.Context())
+	if userCtx == nil {
+		writeLibraryError(w, http.StatusUnauthorized, "UNAUTHORIZED", "user not authenticated")
+		return
+	}
+
+	trackID, ok := parseTrackIDPath(w, r)
+	if !ok {
+		return
+	}
+
+	if err := h.libraryRepo.RemoveFavorite(r.Context(), userCtx.UserID, trackID); err != nil {
+		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to unlike track")
 		return
 	}
 

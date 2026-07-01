@@ -25,6 +25,7 @@ type LibraryTrack struct {
 	AddedAt         time.Time
 	AnalysisStatus  sql.NullString
 	AnalysisSummary json.RawMessage
+	IsLiked         bool
 }
 
 type LibraryRepository struct {
@@ -67,6 +68,11 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 		argIndex++
 	}
 
+	// Liked-only filter (favorites are independent of library membership).
+	if opts.Liked {
+		baseCondition += " AND EXISTS (SELECT 1 FROM track_favorites tf WHERE tf.user_id = ul.user_id AND tf.track_id = t.id)"
+	}
+
 	// Determine sort order
 	orderBy := "ul.added_at DESC" // default
 	switch opts.SortBy {
@@ -98,6 +104,7 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			   t.metadata_json, t.metadata_status, t.metadata_confidence, t.metadata_provenance,
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at, ul.added_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb) AS analysis_summary,
+			   EXISTS(SELECT 1 FROM track_favorites tf WHERE tf.user_id = ul.user_id AND tf.track_id = t.id) AS is_liked,
 			   COUNT(*) OVER() as total_count
 		FROM user_library ul
 		JOIN tracks t ON ul.track_id = t.id
@@ -124,7 +131,7 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			&lt.SourceURL, &lt.SourceType, &lt.StorageKey, &lt.FileSizeBytes,
 			&lt.MetadataJSON, &lt.MetadataStatus, &lt.MetadataConfidence, &lt.MetadataProvenance,
 			&lt.CoverArtURL, &lt.MetadataUserEdited, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt,
-			&lt.AnalysisStatus, &lt.AnalysisSummary, &total,
+			&lt.AnalysisStatus, &lt.AnalysisSummary, &lt.IsLiked, &total,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -203,6 +210,36 @@ func (r *LibraryRepository) IsTrackInLibrary(ctx context.Context, userID uuid.UU
 	return exists, nil
 }
 
+// AddFavorite marks a track as liked ("Liked Songs") for a user. Idempotent:
+// liking an already-liked track is a no-op success. Favorites are membership +
+// timestamp only and do NOT change user_library membership.
+func (r *LibraryRepository) AddFavorite(ctx context.Context, userID uuid.UUID, trackID int64) error {
+	query := `
+		INSERT INTO track_favorites (user_id, track_id, created_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (user_id, track_id) DO NOTHING
+	`
+	_, err := r.db.ExecContext(ctx, query, userID, trackID)
+	return err
+}
+
+// RemoveFavorite unlikes a track for a user. Idempotent: unliking a track that
+// is not liked is a no-op success. Does NOT change user_library membership.
+func (r *LibraryRepository) RemoveFavorite(ctx context.Context, userID uuid.UUID, trackID int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`DELETE FROM track_favorites WHERE user_id = $1 AND track_id = $2`, userID, trackID)
+	return err
+}
+
+// IsFavorite reports whether a track is liked by a user.
+func (r *LibraryRepository) IsFavorite(ctx context.Context, userID uuid.UUID, trackID int64) (bool, error) {
+	var exists bool
+	err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM track_favorites WHERE user_id = $1 AND track_id = $2)`,
+		userID, trackID).Scan(&exists)
+	return exists, err
+}
+
 // LibraryQueryOptions contains options for querying the user library.
 type LibraryQueryOptions struct {
 	Limit      int
@@ -211,6 +248,7 @@ type LibraryQueryOptions struct {
 	SortOrder  string // "asc", "desc"
 	Search     string // Search query for title/artist/album
 	MBVerified *bool  // Filter by MusicBrainz verification status
+	Liked      bool   // When true, return only liked tracks
 }
 
 // itoa converts an integer to a string (simple implementation to avoid importing strconv)
