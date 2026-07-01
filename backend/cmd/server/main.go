@@ -93,6 +93,7 @@ func main() {
 	playlistImportRepo := playlistimport.NewImportRepository(database)
 	trackSourceRepo := playlistimport.NewTrackSourceRepository(database)
 	mixPlanRepo := db.NewMixPlanRepository(database)
+	playEventRepo := db.NewPlayEventRepository(database)
 
 	// Initialize services
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
@@ -124,6 +125,7 @@ func main() {
 	analysisHandlers := api.NewAnalysisHandlers(analysisRepo, libraryRepo)
 	playlistHandlers := api.NewPlaylistHandlers(playlistRepo, trackRepo)
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
+	playEventHandlers := api.NewPlayEventHandlers(playEventRepo, trackRepo)
 
 	// Initialize storage client
 	storageClient, err := storage.New(&storage.Config{
@@ -283,6 +285,7 @@ func main() {
 		MixPlanHandlers:        mixPlanHandlers,
 		DownloadHandlers:       downloadHandlers,
 		MaintenanceHandlers:    maintenanceHandlers,
+		PlayEventHandlers:      playEventHandlers,
 		HealthHandler:          healthHandler,
 		Metrics:                appMetrics,
 		CORSAllowedOrigins:     cfg.CORSAllowedOrigins,
