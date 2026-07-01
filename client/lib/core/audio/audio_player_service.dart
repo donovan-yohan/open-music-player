@@ -3,6 +3,8 @@ import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 
+import 'queue_ordering.dart';
+
 class AudioPlayerService {
   static AudioPlayerService? _instance;
   static AudioPlayerService get instance => _instance!;
@@ -80,10 +82,14 @@ class AudioPlayerService {
       );
 
   Future<void> setQueue(List<MediaItem> items, {int initialIndex = 0}) async {
-    _queue.add(items);
+    // Items played as a collection are the "context" queue; manual enqueues are
+    // inserted ahead of them (see queue_ordering.dart).
+    final marked =
+        items.map((item) => markOrigin(item, queueOriginContext)).toList();
+    _queue.add(marked);
     await _playlist.clear();
 
-    final sources = items
+    final sources = marked
         .map((item) => AudioSource.uri(
               audioSourceUriForItem(item),
               tag: item,
@@ -102,6 +108,23 @@ class AudioPlayerService {
       audioSourceUriForItem(item),
       tag: item,
     ));
+  }
+
+  /// Inserts [item] at [index] (clamped to the current queue bounds) without
+  /// disturbing the rest of the queue or the current playback position.
+  Future<void> insertIntoQueue(int index, MediaItem item) async {
+    final queue = List<MediaItem>.from(_queue.value);
+    final i = index.clamp(0, queue.length);
+    queue.insert(i, item);
+    _queue.add(queue);
+
+    await _playlist.insert(
+      i,
+      AudioSource.uri(
+        audioSourceUriForItem(item),
+        tag: item,
+      ),
+    );
   }
 
   Future<void> removeFromQueue(int index) async {
