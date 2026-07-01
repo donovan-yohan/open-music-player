@@ -14,6 +14,13 @@ import (
 var ErrTrackNotFound = errors.New("track not found")
 var ErrDuplicateTrack = errors.New("track with this identity hash already exists")
 
+// trigramSearchThreshold is the minimum pg_trgm similarity() score a row must reach
+// to be considered a fuzzy match. It is deliberately loose enough that a single-character
+// typo of a stored title/artist still clears it, while filtering out unrelated rows. Exact
+// matches score ~1.0 and therefore always rank first. Only used on the fuzzy fallback path
+// (FTS returned nothing AND pg_trgm is installed); the FTS path is unaffected.
+const trigramSearchThreshold = 0.3
+
 type Track struct {
 	ID                 int64
 	IdentityHash       string
@@ -127,6 +134,83 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 		return nil, 0, err
 	}
 
+	// Fuzzy fallback: when exact prefix FTS matched nothing and pg_trgm is available,
+	// retry with a trigram similarity() match so a typo still surfaces the track. When
+	// the extension is absent we return the (empty) FTS result unchanged.
+	if total == 0 && r.db.TrigramEnabled {
+		return r.searchRecordingsTrigram(ctx, query, limit, offset)
+	}
+
+	return tracks, total, nil
+}
+
+// searchRecordingsTrigram is the pg_trgm fuzzy fallback for SearchRecordings. It ranks
+// tracks by the best similarity() across title/artist/album against the raw query and
+// keeps only rows at or above trigramSearchThreshold. Callers must gate this on
+// r.db.TrigramEnabled; it assumes the extension is installed.
+func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query string, limit, offset int) ([]Track, int, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return []Track{}, 0, nil
+	}
+
+	selectQuery := `
+		WITH search_results AS (
+			SELECT id, identity_hash, title, artist, album, duration_ms, version,
+				   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
+				   source_url, source_type, storage_key, file_size_bytes,
+				   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
+				   cover_art_url, metadata_user_edited, created_at, updated_at,
+				   GREATEST(
+					   similarity(COALESCE(title, ''), $1),
+					   similarity(COALESCE(artist, ''), $1),
+					   similarity(COALESCE(album, ''), $1)
+				   ) as rank,
+				   COUNT(*) OVER() as total_count
+			FROM tracks
+			WHERE GREATEST(
+					  similarity(COALESCE(title, ''), $1),
+					  similarity(COALESCE(artist, ''), $1),
+					  similarity(COALESCE(album, ''), $1)
+				  ) >= $4
+		)
+		SELECT id, identity_hash, title, artist, album, duration_ms, version,
+			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
+			   source_url, source_type, storage_key, file_size_bytes,
+			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
+			   cover_art_url, metadata_user_edited, created_at, updated_at, total_count
+		FROM search_results
+		ORDER BY rank DESC, title ASC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := r.db.QueryContext(ctx, selectQuery, q, limit, offset, trigramSearchThreshold)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var tracks []Track
+	var total int
+	for rows.Next() {
+		var t Track
+		err := rows.Scan(
+			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
+			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
+			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
+			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
+			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt, &total,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+		tracks = append(tracks, t)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
 	return tracks, total, nil
 }
 
@@ -174,6 +258,58 @@ func (r *TrackRepository) SearchArtists(ctx context.Context, query string, limit
 		var a Artist
 		err := rows.Scan(&a.Name, &a.MBArtistID, &a.TrackCount, &total)
 		if err != nil {
+			return nil, 0, err
+		}
+		artists = append(artists, a)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	if total == 0 && r.db.TrigramEnabled {
+		return r.searchArtistsTrigram(ctx, query, limit, offset)
+	}
+
+	return artists, total, nil
+}
+
+// searchArtistsTrigram is the pg_trgm fuzzy fallback for SearchArtists, ranking distinct
+// artists by similarity() against the raw query. Callers must gate this on
+// r.db.TrigramEnabled.
+func (r *TrackRepository) searchArtistsTrigram(ctx context.Context, query string, limit, offset int) ([]Artist, int, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return []Artist{}, 0, nil
+	}
+
+	selectQuery := `
+		WITH artist_results AS (
+			SELECT artist, mb_artist_id, COUNT(*) as track_count,
+				   MAX(similarity(artist, $1)) as rank,
+				   COUNT(*) OVER() as total_groups
+			FROM tracks
+			WHERE artist IS NOT NULL
+				AND similarity(artist, $1) >= $4
+			GROUP BY artist, mb_artist_id
+		)
+		SELECT artist, mb_artist_id, track_count, total_groups
+		FROM artist_results
+		ORDER BY rank DESC, track_count DESC, artist ASC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := r.db.QueryContext(ctx, selectQuery, q, limit, offset, trigramSearchThreshold)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var artists []Artist
+	var total int
+	for rows.Next() {
+		var a Artist
+		if err := rows.Scan(&a.Name, &a.MBArtistID, &a.TrackCount, &total); err != nil {
 			return nil, 0, err
 		}
 		artists = append(artists, a)
@@ -231,6 +367,62 @@ func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limi
 		var artist sql.NullString
 		err := rows.Scan(&release.Name, &artist, &release.MBReleaseID, &release.CoverArtURL, &release.TrackCount, &total)
 		if err != nil {
+			return nil, 0, err
+		}
+		if artist.Valid {
+			release.Artist = artist.String
+		}
+		releases = append(releases, release)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	if total == 0 && r.db.TrigramEnabled {
+		return r.searchReleasesTrigram(ctx, query, limit, offset)
+	}
+
+	return releases, total, nil
+}
+
+// searchReleasesTrigram is the pg_trgm fuzzy fallback for SearchReleases, ranking distinct
+// albums by similarity() against the raw query. Callers must gate this on
+// r.db.TrigramEnabled.
+func (r *TrackRepository) searchReleasesTrigram(ctx context.Context, query string, limit, offset int) ([]Release, int, error) {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return []Release{}, 0, nil
+	}
+
+	selectQuery := `
+		WITH release_results AS (
+			SELECT album, artist, mb_release_id, MAX(cover_art_url) as cover_art_url, COUNT(*) as track_count,
+				   MAX(similarity(album, $1)) as rank,
+				   COUNT(*) OVER() as total_groups
+			FROM tracks
+			WHERE album IS NOT NULL
+				AND similarity(album, $1) >= $4
+			GROUP BY album, artist, mb_release_id
+		)
+		SELECT album, artist, mb_release_id, cover_art_url, track_count, total_groups
+		FROM release_results
+		ORDER BY rank DESC, track_count DESC, album ASC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := r.db.QueryContext(ctx, selectQuery, q, limit, offset, trigramSearchThreshold)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var releases []Release
+	var total int
+	for rows.Next() {
+		var release Release
+		var artist sql.NullString
+		if err := rows.Scan(&release.Name, &artist, &release.MBReleaseID, &release.CoverArtURL, &release.TrackCount, &total); err != nil {
 			return nil, 0, err
 		}
 		if artist.Valid {

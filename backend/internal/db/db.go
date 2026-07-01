@@ -3,12 +3,19 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"log"
 
 	_ "github.com/lib/pq"
 )
 
 type DB struct {
 	*sql.DB
+
+	// TrigramEnabled reports whether the pg_trgm extension is installed on this
+	// database. Migrate() populates it as a best-effort step; when false, search
+	// stays on the FTS path only. Repositories read this flag to decide whether the
+	// similarity() typo-tolerance fallback is available.
+	TrigramEnabled bool
 }
 
 func New(host, port, user, password, dbname string) (*DB, error) {
@@ -26,7 +33,7 @@ func New(host, port, user, password, dbname string) (*DB, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	return &DB{db}, nil
+	return &DB{DB: db}, nil
 }
 
 func (db *DB) Migrate() error {
@@ -284,5 +291,36 @@ func (db *DB) Migrate() error {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
+	// Best-effort: enable pg_trgm for fuzzy/typo-tolerant local search. This is
+	// intentionally OUTSIDE the required schema above and MUST NOT be fatal:
+	// CREATE EXTENSION can require privileges (superuser) the runtime user may not
+	// have. If it fails, we log it and keep TrigramEnabled false so search degrades
+	// gracefully to the FTS path — the server still starts and search still works.
+	db.TrigramEnabled = db.tryEnableTrigram()
+
 	return nil
+}
+
+// tryEnableTrigram installs the pg_trgm extension and its supporting trigram GIN
+// indexes on tracks(title)/tracks(artist). Every step is best-effort: any failure
+// is logged and results in a false return so callers know the fuzzy fallback is
+// unavailable. It never returns an error, so it can never abort startup.
+func (db *DB) tryEnableTrigram() bool {
+	if _, err := db.Exec(`CREATE EXTENSION IF NOT EXISTS pg_trgm`); err != nil {
+		log.Printf("db: pg_trgm extension unavailable; fuzzy search disabled, FTS still works: %v", err)
+		return false
+	}
+
+	// Trigram GIN indexes accelerate the similarity() fallback. If index creation
+	// fails the fallback still works (just slower), so we only log and continue.
+	for _, stmt := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_tracks_title_trgm ON tracks USING GIN (title gin_trgm_ops)`,
+		`CREATE INDEX IF NOT EXISTS idx_tracks_artist_trgm ON tracks USING GIN (artist gin_trgm_ops)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			log.Printf("db: failed to create trigram index (fuzzy search may be slower): %v", err)
+		}
+	}
+
+	return true
 }
