@@ -48,6 +48,14 @@ class PlaybackState extends ChangeNotifier {
   /// "Playing from <label>" attribution in the mini/full player.
   PlaybackContext? get playbackContext => _playbackContext;
 
+  /// Raw playback streams, exposed so the play-event recorder can observe
+  /// position/track-change/completion without reaching into the audio service
+  /// directly. These forward the underlying just_audio streams unchanged.
+  Stream<Duration> get positionStream => _audioService.positionStream;
+  Stream<MediaItem?> get currentMediaItemStream =>
+      _audioService.currentMediaItemStream;
+  Stream<PlayerState> get playerStateStream => _audioService.playerStateStream;
+
   PlaybackState(
     this._audioService, {
     required SignedAudioUrlService signedAudioUrlService,
@@ -144,8 +152,8 @@ class PlaybackState extends ChangeNotifier {
       await playQueue([track]);
       return;
     }
-    final item =
-        markOrigin(await _sourceResolver.resolveTrack(track), queueOriginManual);
+    final item = markOrigin(
+        await _sourceResolver.resolveTrack(track), queueOriginManual);
     await _audioService.insertIntoQueue(
       manualEnqueueIndex(_queue, _currentIndex),
       item,
@@ -159,8 +167,8 @@ class PlaybackState extends ChangeNotifier {
       await playQueue([track]);
       return;
     }
-    final item =
-        markOrigin(await _sourceResolver.resolveTrack(track), queueOriginManual);
+    final item = markOrigin(
+        await _sourceResolver.resolveTrack(track), queueOriginManual);
     await _audioService.insertIntoQueue((_currentIndex ?? -1) + 1, item);
   }
 
