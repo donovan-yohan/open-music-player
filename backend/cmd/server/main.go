@@ -125,6 +125,7 @@ func main() {
 	analysisHandlers := api.NewAnalysisHandlers(analysisRepo, libraryRepo)
 	playlistHandlers := api.NewPlaylistHandlers(playlistRepo, trackRepo)
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
+	playlistMixHandlers := api.NewPlaylistMixHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
 	playEventHandlers := api.NewPlayEventHandlers(playEventRepo, trackRepo)
 
 	// Initialize storage client
@@ -282,6 +283,7 @@ func main() {
 		DiscoveryHandlers:      discoveryHandlers,
 		PlaylistHandlers:       playlistHandlers,
 		PlaylistImportHandlers: playlistImportHandlers,
+		PlaylistMixHandlers:    playlistMixHandlers,
 		MixPlanHandlers:        mixPlanHandlers,
 		DownloadHandlers:       downloadHandlers,
 		MaintenanceHandlers:    maintenanceHandlers,
