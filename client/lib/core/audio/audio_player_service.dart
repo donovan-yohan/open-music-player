@@ -155,8 +155,15 @@ class AudioPlayerService {
   Future<void> skipToIndex(int index) =>
       _player.seek(Duration.zero, index: index);
 
-  Future<void> setShuffleMode(bool enabled) =>
-      _player.setShuffleModeEnabled(enabled);
+  Future<void> setShuffleMode(bool enabled) async {
+    // Regenerate a fresh shuffle order (keeping the current item in place)
+    // before enabling so the upcoming order is actually non-linear; disabling
+    // restores the natural order relative to the current item.
+    if (enabled) {
+      await _player.shuffle();
+    }
+    await _player.setShuffleModeEnabled(enabled);
+  }
 
   Future<void> setLoopMode(LoopMode mode) => _player.setLoopMode(mode);
 

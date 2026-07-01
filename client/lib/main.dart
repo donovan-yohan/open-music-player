@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -9,6 +11,7 @@ import 'core/api/api_client.dart';
 import 'core/audio/audio_player_service.dart';
 import 'core/audio/playback_state.dart';
 import 'core/audio/play_recorder_service.dart';
+import 'core/audio/queue_persistence.dart';
 import 'core/audio/signed_audio_url_service.dart';
 import 'core/cache/playback_cache_manager.dart';
 import 'core/auth/auth_service.dart';
@@ -63,7 +66,12 @@ void main() async {
     signedAudioUrlService: signedAudioUrlService,
     localResolver: downloadService,
     cacheManager: playbackCacheManager,
+    persistence: QueuePersistenceStore(prefs: Future.value(sharedPreferences)),
   );
+  // Rebuild the last listening queue (paused, at the saved position) so a
+  // restart resumes where the user left off. Best-effort: failures are
+  // swallowed inside restore() and never block startup.
+  unawaited(playbackState.restore());
 
   // Records exactly one play per continuous listen (>=30s or completion) to
   // /me/plays, tagged with the current playback context. Pending state is
