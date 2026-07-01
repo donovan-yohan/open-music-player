@@ -106,6 +106,12 @@ void main() {
       expect(t.title, 'Local Only');
     });
 
+    test('TrackResult coerces a double-valued duration instead of throwing', () {
+      final t = TrackResult.fromJson(
+          {'id': 1, 'title': 'X', 'durationMs': 208000.0});
+      expect(t.duration, 208000);
+    });
+
     test('ArtistResult maps name/mbArtistId/trackCount', () {
       final a = ArtistResult.fromJson(
           {'name': 'AC/DC', 'mbArtistId': 'a-1', 'trackCount': 3});
