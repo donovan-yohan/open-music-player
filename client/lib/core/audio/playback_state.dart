@@ -8,12 +8,18 @@ import 'local_audio_artifact_resolver.dart';
 import 'playback_context.dart';
 import 'playback_source_resolver.dart';
 import 'queue_ordering.dart';
+import 'queue_persistence.dart';
 import 'signed_audio_url_service.dart';
 
 class PlaybackState extends ChangeNotifier {
   final AudioPlayerService _audioService;
   final SignedAudioUrlService _signedAudioUrlService;
   final PlaybackSourceResolver _sourceResolver;
+
+  /// Local store for the resumable queue snapshot. Null disables persistence
+  /// entirely (used in tests and on platforms without a store), keeping every
+  /// save/restore a no-op.
+  final QueuePersistenceStore? _persistence;
 
   List<StreamSubscription> _subscriptions = [];
 
@@ -61,7 +67,9 @@ class PlaybackState extends ChangeNotifier {
     required SignedAudioUrlService signedAudioUrlService,
     LocalAudioArtifactResolver? localResolver,
     PlaybackCacheManager? cacheManager,
+    QueuePersistenceStore? persistence,
   })  : _signedAudioUrlService = signedAudioUrlService,
+        _persistence = persistence,
         _sourceResolver = PlaybackSourceResolver(
           signedAudioUrlService: signedAudioUrlService,
           localResolver: localResolver,
@@ -73,7 +81,11 @@ class PlaybackState extends ChangeNotifier {
   void _init() {
     _subscriptions = [
       _audioService.playerStateStream.listen((state) {
+        final wasPlaying = _isPlaying;
         _isPlaying = state.playing;
+        // Persist the resting position whenever playback pauses so a resume
+        // picks up where the listener left off.
+        if (wasPlaying && !_isPlaying) _persistQueue();
         notifyListeners();
       }),
       _audioService.positionStream.listen((pos) {
@@ -94,10 +106,12 @@ class PlaybackState extends ChangeNotifier {
       }),
       _audioService.queueStream.listen((q) {
         _queue = q;
+        _persistQueue();
         notifyListeners();
       }),
       _audioService.currentIndexStream.listen((index) {
         _currentIndex = index;
+        _persistQueue();
         notifyListeners();
       }),
       _audioService.shuffleEnabledStream.listen((enabled) {
@@ -308,6 +322,65 @@ class PlaybackState extends ChangeNotifier {
   Future<void> seek(Duration position) => _audioService.seek(position);
   Future<void> skipToNext() => _audioService.skipToNext();
   Future<void> skipToPrevious() => _audioService.skipToPrevious();
+
+  /// Previous-button behavior: restart the current track when more than 3s in,
+  /// otherwise skip to the previous track (see [previousAction]).
+  Future<void> previous() async {
+    switch (previousAction(_position.inMilliseconds)) {
+      case PreviousAction.restart:
+        await seek(Duration.zero);
+      case PreviousAction.skip:
+        await skipToPrevious();
+    }
+  }
+
+  /// Rebuilds the last persisted listening queue on startup: it restores the
+  /// queue at the saved index, seeks to the saved position, and stays PAUSED
+  /// (never auto-plays). Remote items are re-resolved through the source
+  /// resolver so their signed URLs are fresh. Empty/absent saved state is a
+  /// no-op ([hasTrack] stays false) and any restore failure is swallowed so it
+  /// can never surface as a [playbackError] or crash startup.
+  Future<void> restore() async {
+    final store = _persistence;
+    if (store == null) return;
+
+    final snapshot = await store.load();
+    if (snapshot.isEmpty) return;
+
+    try {
+      final items = await _sourceResolver.resolveQueue(snapshot.tracks);
+      if (items.isEmpty) return;
+      final index = snapshot.currentIndex.clamp(0, items.length - 1);
+      await _audioService.setQueue(items, initialIndex: index);
+      if (snapshot.positionMs > 0) {
+        await _audioService.seek(Duration(milliseconds: snapshot.positionMs));
+      }
+      // Deliberately stay paused: restore never auto-plays.
+    } catch (error) {
+      // A failed restore leaves the player empty; the queue is re-resolved on
+      // the next explicit play. Never turn this into a user-facing error.
+      if (kDebugMode) {
+        debugPrint('Queue restore failed: $error');
+      }
+    }
+  }
+
+  /// Fire-and-forget persistence of the current queue/index/position. A no-op
+  /// when no store is configured or when nothing is queued (which clears any
+  /// stale saved state).
+  void _persistQueue() {
+    final store = _persistence;
+    if (store == null) return;
+
+    final snapshot = _queue.isEmpty
+        ? const QueueSnapshot()
+        : QueueSnapshot(
+            tracks: _queue.map(mediaItemToPlaybackJson).toList(),
+            currentIndex: _currentIndex ?? 0,
+            positionMs: _position.inMilliseconds,
+          );
+    unawaited(store.save(snapshot));
+  }
   Future<void> skipToIndex(int index) => _audioService.skipToIndex(index);
   Future<void> toggleShuffle() => _audioService.toggleShuffle();
   Future<void> cycleLoopMode() => _audioService.cycleLoopMode();
