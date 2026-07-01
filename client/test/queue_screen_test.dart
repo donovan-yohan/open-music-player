@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
+import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/queue_state.dart';
@@ -427,6 +428,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   Future<void> playQueue(
     List<Map<String, dynamic>> tracks, {
     int startIndex = 0,
+    PlaybackContext? context,
   }) async {
     playQueueCalls.add((tracks: tracks, startIndex: startIndex));
   }

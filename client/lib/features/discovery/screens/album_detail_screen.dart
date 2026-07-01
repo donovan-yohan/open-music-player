@@ -1,8 +1,56 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../../core/audio/playback_context.dart';
+import '../../../core/audio/playback_state.dart';
 import '../../../core/models/models.dart';
 import '../../../core/services/services.dart';
 import '../../../shared/widgets/track_action_sheet.dart';
 import 'artist_detail_screen.dart';
+
+/// Whether an album-detail track can be played into the listening queue.
+///
+/// Album-detail tracks are MusicBrainz catalog results keyed by recording MBID;
+/// only tracks that arrive with a numeric library id can be issued a signed
+/// playback URL, so those are the only ones we play.
+bool isAlbumTrackPlayable(TrackDetail track) {
+  final id = int.tryParse(track.id);
+  return id != null && id > 0;
+}
+
+/// The playback-json shape [PlaybackState.playQueue] expects for one album
+/// track (numeric id for signed-URL issuance, whole-second duration).
+Map<String, dynamic> albumTrackToPlaybackJson(
+  AlbumDetail album,
+  TrackDetail track,
+) {
+  final durationMs = track.duration ?? 0;
+  return {
+    'id': int.parse(track.id),
+    'title': track.title,
+    'artist': track.artist ?? album.artist,
+    'album': album.title,
+    'duration': durationMs ~/ 1000,
+    'artwork_url': album.coverArtUrl,
+  };
+}
+
+/// Builds the ordered playback queue for the playable tracks of [album],
+/// optionally shuffled. Non-playable (catalog-only) tracks are dropped, so the
+/// result contains only tracks that can actually stream.
+List<Map<String, dynamic>> albumPlaybackQueue(
+  AlbumDetail album, {
+  bool shuffle = false,
+  Random? random,
+}) {
+  final queue = album.tracks
+      .where(isAlbumTrackPlayable)
+      .map((track) => albumTrackToPlaybackJson(album, track))
+      .toList();
+  if (shuffle) queue.shuffle(random);
+  return queue;
+}
 
 class AlbumDetailScreen extends StatefulWidget {
   final String albumMbid;
@@ -92,6 +140,36 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
     }
   }
 
+  bool get _hasPlayableTracks =>
+      _album?.tracks.any(isAlbumTrackPlayable) ?? false;
+
+  /// Plays the album's playable tracks into the listening queue, tagged with an
+  /// 'album' context so the player shows "Playing from <album>".
+  Future<void> _playAll({bool shuffle = false}) async {
+    final album = _album;
+    if (album == null) return;
+
+    final queue = albumPlaybackQueue(album, shuffle: shuffle);
+    if (queue.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No playable tracks in this album yet')),
+        );
+      }
+      return;
+    }
+
+    final playback = context.read<PlaybackState>();
+    await playback.playQueue(
+      queue,
+      context: PlaybackContext(
+        kind: PlaybackContextKind.album,
+        label: album.title,
+        id: album.id,
+      ),
+    );
+  }
+
   void _showTrackActions(TrackDetail track) {
     showModalBottomSheet(
       context: context,
@@ -159,6 +237,7 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
       slivers: [
         _buildAppBar(),
         _buildAlbumInfo(),
+        _buildPlayActions(),
         _buildAddAllButton(),
         _buildTrackList(),
       ],
@@ -237,6 +316,34 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
               ].join(' | '),
               style: TextStyle(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlayActions() {
+    final hasPlayable = _hasPlayableTracks;
+    return SliverToBoxAdapter(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        child: Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: hasPlayable ? () => _playAll() : null,
+                icon: const Icon(Icons.play_arrow),
+                label: const Text('Play'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: hasPlayable ? () => _playAll(shuffle: true) : null,
+                icon: const Icon(Icons.shuffle),
+                label: const Text('Shuffle'),
               ),
             ),
           ],
