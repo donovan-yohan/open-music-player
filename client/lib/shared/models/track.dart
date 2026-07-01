@@ -122,6 +122,17 @@ class Track {
     required this.updatedAt,
   });
 
+  /// Serializes this library track into the map shape `PlaybackState.playQueue`
+  /// expects: numeric `id` for signed-URL issuance, `duration` in whole seconds.
+  Map<String, dynamic> toPlaybackJson() => {
+        'id': id,
+        'title': title,
+        'artist': artist,
+        'album': album,
+        'duration': durationMs != null ? durationMs! ~/ 1000 : 0,
+        'artwork_url': metadata?['cover_art_url'],
+      };
+
   factory Track.fromJson(Map<String, dynamic> json) {
     // Parse MB suggestions from the mb_suggestions field
     final suggestionsJson = json['mb_suggestions'] as List<dynamic>?;

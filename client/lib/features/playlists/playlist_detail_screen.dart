@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
+import '../../core/audio/playback_state.dart';
 import '../../core/services/playlist_service.dart';
 import '../../core/api/api_client.dart';
 import '../../core/storage/secure_storage.dart';
@@ -199,6 +201,28 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
+  bool get _hasPlayableTracks => _playlist?.tracks?.isNotEmpty ?? false;
+
+  /// Plays the whole playlist into the listening queue, optionally shuffled.
+  Future<void> _playAll({bool shuffle = false}) async {
+    final tracks = List<Track>.from(_playlist?.tracks ?? const []);
+    if (tracks.isEmpty) return;
+    if (shuffle) tracks.shuffle();
+    final playback = context.read<PlaybackState>();
+    await playback.playQueue(tracks.map((t) => t.toPlaybackJson()).toList());
+  }
+
+  /// Plays the playlist starting from the tapped track (context = the playlist).
+  Future<void> _playFromIndex(int index) async {
+    final tracks = _playlist?.tracks ?? const [];
+    if (index < 0 || index >= tracks.length) return;
+    final playback = context.read<PlaybackState>();
+    await playback.playQueue(
+      tracks.map((t) => t.toPlaybackJson()).toList(),
+      startIndex: index,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -335,9 +359,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               children: [
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: () {
-                      // TODO: Play all
-                    },
+                    onPressed: _hasPlayableTracks ? () => _playAll() : null,
                     icon: const Icon(Icons.play_arrow),
                     label: const Text('Play'),
                   ),
@@ -345,9 +367,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () {
-                      // TODO: Shuffle play
-                    },
+                    onPressed:
+                        _hasPlayableTracks ? () => _playAll(shuffle: true) : null,
                     icon: const Icon(Icons.shuffle),
                     label: const Text('Shuffle'),
                   ),
@@ -428,9 +449,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             onDismissed: (_) => _removeTrack(track),
             child: TrackTile.fromTrack(
               track,
-              onTap: () {
-                // TODO: Play track
-              },
+              onTap: () => _playFromIndex(index),
             ),
           );
         },
