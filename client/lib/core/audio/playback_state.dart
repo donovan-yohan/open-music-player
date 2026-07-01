@@ -6,6 +6,7 @@ import '../cache/playback_cache_manager.dart';
 import 'audio_player_service.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'playback_source_resolver.dart';
+import 'queue_ordering.dart';
 import 'signed_audio_url_service.dart';
 
 class PlaybackState extends ChangeNotifier {
@@ -118,6 +119,36 @@ class PlaybackState extends ChangeNotifier {
         await _audioService.play();
       });
     });
+  }
+
+  /// Adds [track] to the active listening queue after the current item and any
+  /// already-queued manual items, before the context tail. If nothing is
+  /// playing yet, starts a fresh queue with just this track. This is the
+  /// "Add to queue" action; it operates on the real playing queue, not the
+  /// separate Redis edit-queue.
+  Future<void> enqueue(Map<String, dynamic> track) async {
+    if (_queue.isEmpty) {
+      await playQueue([track]);
+      return;
+    }
+    final item =
+        markOrigin(await _sourceResolver.resolveTrack(track), queueOriginManual);
+    await _audioService.insertIntoQueue(
+      manualEnqueueIndex(_queue, _currentIndex),
+      item,
+    );
+  }
+
+  /// Inserts [track] to play immediately after the current item ("Play next").
+  /// Starts a fresh queue when nothing is playing.
+  Future<void> playNext(Map<String, dynamic> track) async {
+    if (_queue.isEmpty) {
+      await playQueue([track]);
+      return;
+    }
+    final item =
+        markOrigin(await _sourceResolver.resolveTrack(track), queueOriginManual);
+    await _audioService.insertIntoQueue((_currentIndex ?? -1) + 1, item);
   }
 
   /// Runs [start], retrying it once if the failure looks like a stale/expired
