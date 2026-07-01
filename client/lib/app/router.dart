@@ -9,6 +9,7 @@ import '../features/splash/splash_screen.dart';
 import '../features/home/home_screen.dart';
 import '../features/search/search_screen.dart';
 import '../features/library/library_screen.dart';
+import '../features/library/local_browse_screens.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/player/player_screen.dart';
 import '../features/player/widgets/mini_player.dart';
@@ -77,6 +78,18 @@ GoRouter createRouter(AuthState authState) {
           final id = int.parse(state.pathParameters['id']!);
           return PlaylistDetailScreen(playlistId: id);
         },
+      ),
+      GoRoute(
+        path: '/library/artist/:name',
+        builder: (context, state) => LocalArtistScreen(
+          artist: Uri.decodeComponent(state.pathParameters['name']!),
+        ),
+      ),
+      GoRoute(
+        path: '/library/album/:name',
+        builder: (context, state) => LocalAlbumScreen(
+          album: Uri.decodeComponent(state.pathParameters['name']!),
+        ),
       ),
       GoRoute(
         path: '/share',
