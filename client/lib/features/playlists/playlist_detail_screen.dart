@@ -10,6 +10,7 @@ import '../../shared/models/playlist.dart';
 import '../../shared/models/track.dart';
 import '../../shared/widgets/track_tile.dart';
 import 'playlist_edit_dialog.dart';
+import 'playlist_selection.dart';
 
 class PlaylistDetailScreen extends StatefulWidget {
   final int playlistId;
@@ -27,6 +28,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   bool _isLoading = true;
   String? _error;
   bool _isEditMode = false;
+  bool _isSelectMode = false;
+  PlaylistSelection _selection = const PlaylistSelection();
 
   @override
   void initState() {
@@ -81,7 +84,16 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             action: SnackBarAction(
               label: 'Undo',
               onPressed: () async {
-                await _playlistService.addTracks(_playlist!.id, [track.id]);
+                final messenger = ScaffoldMessenger.of(context);
+                final result =
+                    await _playlistService.addTracks(_playlist!.id, [track.id]);
+                if (mounted && result.hasSkipped && !result.hasAdded) {
+                  messenger.showSnackBar(
+                    SnackBar(
+                      content: Text(result.feedbackMessage(_playlist!.name)),
+                    ),
+                  );
+                }
                 _loadPlaylist();
               },
             ),
@@ -95,6 +107,46 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           SnackBar(content: Text('Failed to remove track: $e')),
         );
       }
+    }
+  }
+
+  void _toggleSelectMode() {
+    setState(() {
+      _isSelectMode = !_isSelectMode;
+      _selection = const PlaylistSelection();
+      if (_isSelectMode) _isEditMode = false;
+    });
+  }
+
+  void _toggleTrackSelection(int trackId) {
+    setState(() => _selection = _selection.toggle(trackId));
+  }
+
+  /// Removes every selected track in a single batch-remove request.
+  Future<void> _removeSelectedTracks() async {
+    if (_playlist == null || _selection.isEmpty) return;
+
+    final ids = _selection.selectedIds.toList();
+    final messenger = ScaffoldMessenger.of(context);
+    final label = _selection.removeLabel.toLowerCase();
+
+    try {
+      final updated =
+          await _playlistService.batchRemoveTracks(_playlist!.id, ids);
+      if (!mounted) return;
+      setState(() {
+        _playlist = updated;
+        _isSelectMode = false;
+        _selection = const PlaylistSelection();
+      });
+      messenger.showSnackBar(
+        SnackBar(content: Text('Removed ${ids.length} tracks')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('Failed to $label: $e')),
+      );
     }
   }
 
@@ -135,12 +187,16 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       builder: (context) => PlaylistEditDialog(
         initialName: _playlist!.name,
         initialDescription: _playlist!.description,
-        onSave: (name, description) async {
+        initialCoverUrl: _playlist!.coverUrl,
+        initialIsPublic: _playlist!.isPublic,
+        onSave: (result) async {
           try {
             final updated = await _playlistService.updatePlaylist(
               _playlist!.id,
-              name: name,
-              description: description,
+              name: result.name,
+              description: result.description,
+              coverUrl: result.coverUrl ?? '',
+              isPublic: result.isPublic,
             );
             setState(() => _playlist = updated.copyWith(tracks: _playlist!.tracks));
             if (mounted) {
@@ -282,6 +338,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   Widget _buildAppBar() {
+    if (_isSelectMode) return _buildSelectionAppBar();
     return SliverAppBar(
       expandedHeight: 200,
       pinned: true,
@@ -322,6 +379,14 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         PopupMenuButton(
           itemBuilder: (context) => [
             const PopupMenuItem(
+              value: 'select',
+              child: ListTile(
+                leading: Icon(Icons.checklist),
+                title: Text('Select tracks'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            const PopupMenuItem(
               value: 'edit',
               child: ListTile(
                 leading: Icon(Icons.edit),
@@ -339,11 +404,57 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             ),
           ],
           onSelected: (value) {
+            if (value == 'select') _toggleSelectMode();
             if (value == 'edit') _showEditDialog();
             if (value == 'delete') _showDeleteConfirmation();
           },
         ),
       ],
+    );
+  }
+
+  Widget _buildSelectionAppBar() {
+    return SliverAppBar(
+      pinned: true,
+      leading: IconButton(
+        icon: const Icon(Icons.close),
+        onPressed: _toggleSelectMode,
+        tooltip: 'Cancel selection',
+      ),
+      title: Text(
+        _selection.isEmpty ? 'Select tracks' : '${_selection.count} selected',
+      ),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.delete_outline),
+          tooltip: _selection.removeLabel,
+          onPressed: _selection.isEmpty ? null : _confirmRemoveSelected,
+        ),
+      ],
+    );
+  }
+
+  void _confirmRemoveSelected() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove tracks?'),
+        content: Text('Remove ${_selection.count} tracks from this playlist?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _removeSelectedTracks();
+            },
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -416,6 +527,26 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               ),
             ],
           ),
+        ),
+      );
+    }
+
+    if (_isSelectMode) {
+      return SliverList(
+        delegate: SliverChildBuilderDelegate(
+          (context, index) {
+            final track = tracks[index];
+            final selected = _selection.contains(track.id);
+            return TrackTile.fromTrack(
+              track,
+              onTap: () => _toggleTrackSelection(track.id),
+              trailing: Checkbox(
+                value: selected,
+                onChanged: (_) => _toggleTrackSelection(track.id),
+              ),
+            );
+          },
+          childCount: tracks.length,
         ),
       );
     }

@@ -5,6 +5,8 @@ class Playlist {
   final int userId;
   final String name;
   final String? description;
+  final String? coverUrl;
+  final bool isPublic;
   final DateTime createdAt;
   final DateTime updatedAt;
   final List<Track>? tracks;
@@ -16,6 +18,8 @@ class Playlist {
     this.userId = 0,
     required this.name,
     this.description,
+    this.coverUrl,
+    this.isPublic = false,
     required this.createdAt,
     required this.updatedAt,
     this.tracks,
@@ -33,6 +37,8 @@ class Playlist {
       userId: _intValue(json['userId'] ?? json['user_id'], fallback: 0),
       name: json['name'] as String,
       description: json['description'] as String?,
+      coverUrl: json['coverUrl'] as String? ?? json['cover_url'] as String?,
+      isPublic: _boolValue(json['isPublic'] ?? json['is_public']),
       createdAt: _dateTimeValue(json['createdAt'] ?? json['created_at']),
       updatedAt: _dateTimeValue(json['updatedAt'] ?? json['updated_at']),
       tracks: tracks,
@@ -104,6 +110,8 @@ class Playlist {
     int? userId,
     String? name,
     String? description,
+    String? coverUrl,
+    bool? isPublic,
     DateTime? createdAt,
     DateTime? updatedAt,
     List<Track>? tracks,
@@ -115,6 +123,8 @@ class Playlist {
       userId: userId ?? this.userId,
       name: name ?? this.name,
       description: description ?? this.description,
+      coverUrl: coverUrl ?? this.coverUrl,
+      isPublic: isPublic ?? this.isPublic,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       tracks: tracks ?? this.tracks,
@@ -126,6 +136,13 @@ class Playlist {
 
 int _intValue(dynamic value, {int fallback = 0}) =>
     _optionalInt(value) ?? fallback;
+
+bool _boolValue(dynamic value) {
+  if (value is bool) return value;
+  if (value is num) return value != 0;
+  if (value is String) return value.toLowerCase() == 'true' || value == '1';
+  return false;
+}
 
 int? _optionalInt(dynamic value) {
   if (value is int) return value;
