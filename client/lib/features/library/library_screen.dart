@@ -12,6 +12,7 @@ import '../../shared/models/models.dart';
 import '../../shared/widgets/widgets.dart';
 import '../discovery/screens/album_detail_screen.dart';
 import '../discovery/screens/artist_detail_screen.dart';
+import 'library_sort_logic.dart';
 import 'library_track_actions.dart';
 
 class LibraryScreen extends StatefulWidget {
@@ -26,14 +27,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   bool _downloadedOnly = false;
   VerificationFilter _verificationFilter = VerificationFilter.all;
+  LibrarySortOption _sortOption = LibrarySortOption.defaultOption;
   List<Track> _tracks = [];
   Map<VerificationFilter, int> _counts = {};
   bool _isLoading = true;
   bool _isLoadingMore = false;
   bool _hasMore = true;
+  bool _hasError = false;
   int _totalCount = 0;
 
+  final LibrarySortStore _sortStore = LibrarySortStore();
   final ScrollController _scrollController = ScrollController();
+
+  bool get _hasActiveFilters =>
+      _downloadedOnly || _verificationFilter != VerificationFilter.all;
 
   // Library mutations (like/unlike, remove, playlists) and MusicBrainz-backed
   // detail navigation run through the parser-based services client, mirroring
@@ -46,7 +53,19 @@ class _LibraryScreenState extends State<LibraryScreen> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
-    _loadTracks();
+    _restoreSortThenLoad();
+  }
+
+  /// Restores the persisted sort selection (so it survives re-open) before the
+  /// first fetch, then loads the initial page.
+  Future<void> _restoreSortThenLoad() async {
+    final restored = await _sortStore.load();
+    if (mounted) {
+      setState(() => _sortOption = restored);
+    } else {
+      _sortOption = restored;
+    }
+    await _loadTracks();
   }
 
   @override
@@ -64,8 +83,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<void> _loadTracks() async {
+    // Reset to page 0 and clear the prior rows up-front so a sort/filter change
+    // shows the loading state instead of briefly flashing the old ordering.
     setState(() {
       _isLoading = true;
+      _hasError = false;
       _tracks = [];
       _hasMore = true;
     });
@@ -97,7 +119,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
         _isLoading = false;
       });
     } catch (_) {
-      setState(() => _isLoading = false);
+      setState(() {
+        _isLoading = false;
+        _hasError = true;
+      });
     }
   }
 
@@ -160,11 +185,28 @@ class _LibraryScreenState extends State<LibraryScreen> {
         int total,
         Map<VerificationFilter, int> counts,
       })> _loadRemoteTracks({required int offset}) async {
+    // Capture the counts client before any await so we don't reach through
+    // BuildContext across an async gap.
     final apiClient = context.read<ApiClient>();
-    final query = <String, String>{
-      'limit': _pageSize.toString(),
-      'offset': offset.toString(),
-      'fields': [
+    bool? mbVerified;
+    switch (_verificationFilter) {
+      case VerificationFilter.verifiedOnly:
+        mbVerified = true;
+        break;
+      case VerificationFilter.unverifiedOnly:
+        mbVerified = false;
+        break;
+      case VerificationFilter.all:
+        break;
+    }
+
+    final page = await _libraryService.getLibraryPage(
+      limit: _pageSize,
+      offset: offset,
+      sort: _sortOption.field.apiValue,
+      order: _sortOption.order.apiValue,
+      mbVerified: mbVerified,
+      fields: const [
         'id',
         'title',
         'artist',
@@ -175,34 +217,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
         'cover_art_url',
         'mb_recording_id',
         'mb_suggestions',
-      ].join(','),
-    };
-
-    switch (_verificationFilter) {
-      case VerificationFilter.verifiedOnly:
-        query['mb_verified'] = 'true';
-        break;
-      case VerificationFilter.unverifiedOnly:
-        query['mb_verified'] = 'false';
-        break;
-      case VerificationFilter.all:
-        break;
-    }
-
-    final response = await apiClient.get<Map<String, dynamic>>(
-      '/library',
-      queryParameters: query,
+      ],
     );
-    final data = response.data ?? <String, dynamic>{};
-    final tracks = (data['tracks'] as List<dynamic>? ?? [])
-        .map((track) => Track.fromLibraryJson(track as Map<String, dynamic>))
-        .toList();
-    final total = data['total'] as int? ?? tracks.length;
+
     final counts = offset == 0
         ? await _loadRemoteCounts(apiClient)
         : Map<VerificationFilter, int>.from(_counts);
 
-    return (tracks: tracks, total: total, counts: counts);
+    return (tracks: page.tracks, total: page.total, counts: counts);
   }
 
   Future<Map<VerificationFilter, int>> _loadRemoteCounts(
@@ -243,6 +265,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
             onPressed: () => context.push('/playlists/import'),
             tooltip: 'Import YouTube playlist',
           ),
+          _buildSortControl(context),
           _buildVerificationFilter(context),
           _buildFilterChip(context),
         ],
@@ -250,16 +273,86 @@ class _LibraryScreenState extends State<LibraryScreen> {
       body: Column(
         children: [
           _buildOfflineBanner(context),
-          Expanded(
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _tracks.isEmpty
-                    ? _buildEmptyState()
-                    : _buildTrackList(),
-          ),
+          Expanded(child: _buildBody(context)),
         ],
       ),
     );
+  }
+
+  Widget _buildBody(BuildContext context) {
+    final state = resolveLibraryVisualState(
+      isLoading: _isLoading,
+      hasError: _hasError,
+      isEmpty: _tracks.isEmpty,
+      hasActiveFilters: _hasActiveFilters,
+    );
+
+    switch (state) {
+      case LibraryVisualState.loading:
+        return const Center(child: CircularProgressIndicator());
+      case LibraryVisualState.error:
+        return _buildErrorState();
+      case LibraryVisualState.filteredEmpty:
+        return _buildEmptyState(showClearFilters: true);
+      case LibraryVisualState.empty:
+        return _buildEmptyState();
+      case LibraryVisualState.content:
+        return _buildTrackList();
+    }
+  }
+
+  Widget _buildSortControl(BuildContext context) {
+    return PopupMenuButton<LibrarySortField>(
+      tooltip: 'Sort library',
+      icon: const Icon(Icons.sort),
+      onSelected: _onSortFieldSelected,
+      itemBuilder: (context) => LibrarySortField.values.map((field) {
+        final selected = field == _sortOption.field;
+        return PopupMenuItem(
+          value: field,
+          child: Row(
+            children: [
+              Icon(
+                selected
+                    ? (_sortOption.order == SortOrder.asc
+                        ? Icons.arrow_upward
+                        : Icons.arrow_downward)
+                    : Icons.sort,
+                size: 20,
+                color:
+                    selected ? Theme.of(context).colorScheme.primary : null,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  field.label,
+                  style: TextStyle(
+                    fontWeight:
+                        selected ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  void _onSortFieldSelected(LibrarySortField field) {
+    final next = _sortOption.selecting(field);
+    if (next == _sortOption) return;
+    setState(() => _sortOption = next);
+    _sortStore.save(next);
+    _loadTracks();
+  }
+
+  void _clearFilters() {
+    setState(() {
+      _downloadedOnly = false;
+      _verificationFilter = VerificationFilter.all;
+    });
+    _loadTracks();
   }
 
   Widget _buildVerificationFilter(BuildContext context) {
@@ -419,7 +512,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
-  Widget _buildEmptyState() {
+  Widget _buildEmptyState({bool showClearFilters = false}) {
     final (icon, title, subtitle) = _getEmptyStateContent();
 
     return Center(
@@ -446,6 +539,51 @@ class _LibraryScreenState extends State<LibraryScreen> {
               color: Colors.grey[500],
             ),
             textAlign: TextAlign.center,
+          ),
+          if (showClearFilters) ...[
+            const SizedBox(height: 16),
+            TextButton.icon(
+              onPressed: _clearFilters,
+              icon: const Icon(Icons.filter_alt_off),
+              label: const Text('Clear filters'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.error_outline,
+            size: 64,
+            color: Colors.grey[600],
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Something went wrong',
+            style: TextStyle(
+              fontSize: 18,
+              color: Colors.grey[600],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            "We couldn't load your library.",
+            style: TextStyle(
+              color: Colors.grey[500],
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: _loadTracks,
+            icon: const Icon(Icons.refresh),
+            label: const Text('Retry'),
           ),
         ],
       ),
