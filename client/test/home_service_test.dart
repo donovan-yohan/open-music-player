@@ -1,0 +1,97 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/services/home_service.dart';
+
+/// Captures the endpoint/params a service asked for and returns a canned parsed
+/// body, so we can assert routing + parsing without a real HTTP call.
+class _CapturingApiClient extends ApiClient {
+  _CapturingApiClient(this.body) : super();
+
+  final Map<String, dynamic> body;
+  String? capturedEndpoint;
+  Map<String, String>? capturedParams;
+
+  @override
+  Future<T> get<T>(
+    String endpoint, {
+    T Function(Map<String, dynamic>)? parser,
+    T Function(List<dynamic>)? listParser,
+    Map<String, String>? queryParams,
+    bool requiresAuth = true,
+  }) async {
+    capturedEndpoint = endpoint;
+    capturedParams = queryParams;
+    return parser!(body);
+  }
+}
+
+void main() {
+  group('HomeService routes the play-history + playlists endpoints', () {
+    test('recentlyPlayed -> GET /me/plays/recent with limit', () async {
+      final api = _CapturingApiClient({
+        'tracks': [
+          {'id': 1, 'title': 'Highway to Hell', 'coverArtUrl': 'http://c/1.jpg'},
+        ],
+        'limit': 5,
+        'offset': 0,
+      });
+
+      final tracks = await HomeService(api).recentlyPlayed(limit: 5);
+
+      expect(api.capturedEndpoint, '/me/plays/recent');
+      expect(api.capturedParams?['limit'], '5');
+      expect(tracks, hasLength(1));
+      expect(tracks.first.title, 'Highway to Hell');
+      // coverArtUrl is folded into playback artwork so it survives.
+      expect(tracks.first.toPlaybackJson()['artwork_url'], 'http://c/1.jpg');
+    });
+
+    test('topTracks -> GET /me/plays/top with days + limit', () async {
+      final api = _CapturingApiClient({
+        'tracks': [
+          {'id': 2, 'title': 'Thunderstruck'},
+        ],
+        'days': 7,
+        'limit': 3,
+      });
+
+      final tracks = await HomeService(api).topTracks(days: 7, limit: 3);
+
+      expect(api.capturedEndpoint, '/me/plays/top');
+      expect(api.capturedParams?['days'], '7');
+      expect(api.capturedParams?['limit'], '3');
+      expect(tracks.single.title, 'Thunderstruck');
+    });
+
+    test('playlists -> GET /playlists and parses the playlists envelope',
+        () async {
+      final api = _CapturingApiClient({
+        'playlists': [
+          {
+            'id': 1,
+            'name': 'Chill',
+            'trackCount': 2,
+            'createdAt': '2024-01-01T00:00:00Z',
+            'updatedAt': '2024-01-02T00:00:00Z',
+          },
+        ],
+        'total': 1,
+        'limit': 20,
+        'offset': 0,
+      });
+
+      final playlists = await HomeService(api).playlists();
+
+      expect(api.capturedEndpoint, '/playlists');
+      expect(playlists, hasLength(1));
+      expect(playlists.single.name, 'Chill');
+      expect(playlists.single.trackCount, 2);
+    });
+
+    test('recentlyPlayed tolerates an empty feed', () async {
+      final api = _CapturingApiClient({'tracks': <dynamic>[]});
+      final tracks = await HomeService(api).recentlyPlayed();
+      expect(tracks, isEmpty);
+    });
+  });
+}
