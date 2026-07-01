@@ -63,6 +63,11 @@ type Config struct {
 	AnalyzerBaseURL   string
 	AnalyzerAuthToken string
 	AnalyzerTimeout   time.Duration
+
+	// Optional "save playlist as mix" seam. Disabled by default; when enabled,
+	// POST /api/v1/playlists/{id}/mix creates a mix_plan from a playlist's
+	// ordered tracks. Backend seam only (no DJ/waveform UI or mixing logic).
+	EnablePlaylistMix bool
 }
 
 func Load() *Config {
@@ -132,6 +137,9 @@ func Load() *Config {
 		AnalyzerBaseURL:   analyzerBaseURL,
 		AnalyzerAuthToken: strings.TrimSpace(os.Getenv("ANALYZER_AUTH_TOKEN")),
 		AnalyzerTimeout:   parseDurationMsEnv("ANALYZER_TIMEOUT_MS", 90*time.Second),
+
+		// Save-playlist-as-mix seam (default OFF)
+		EnablePlaylistMix: parseBoolEnv("ENABLE_PLAYLIST_MIX", false),
 	}
 }
 
