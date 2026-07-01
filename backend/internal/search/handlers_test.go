@@ -97,6 +97,30 @@ func TestSearchRecordingsValidation(t *testing.T) {
 	})
 }
 
+func TestUnifiedSearchValidation(t *testing.T) {
+	h := NewHandlers(nil)
+
+	t.Run("missing query parameter returns error", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/search", nil)
+		w := httptest.NewRecorder()
+
+		h.Search(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected status %d, got %d", http.StatusBadRequest, w.Code)
+		}
+
+		var resp ErrorResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if resp.Code != "VALIDATION_ERROR" {
+			t.Errorf("expected code VALIDATION_ERROR, got %s", resp.Code)
+		}
+	})
+}
+
 func TestSearchArtistsValidation(t *testing.T) {
 	h := NewHandlers(nil)
 
