@@ -290,15 +290,12 @@ type MBMatchUpdate struct {
 	MetadataJSON       json.RawMessage // For storing suggestions/provenance without replacing raw provider metadata
 	MetadataStatus     string
 	MetadataConfidence *float64
-	// ClearMetadataConfidence explicitly clears stale confidence when a new
-	// automatic match result has no current score.
-	ClearMetadataConfidence bool
-	MetadataProvenance      json.RawMessage
-	CoverArtURL             string
-	Title                   string
-	Artist                  string
-	Album                   string
-	DurationMs              int
+	MetadataProvenance json.RawMessage
+	CoverArtURL        string
+	Title              string
+	Artist             string
+	Album              string
+	DurationMs         int
 }
 
 // UpdateMBMatch updates a track's MusicBrainz identifiers and verification status
@@ -308,19 +305,11 @@ func (r *TrackRepository) UpdateMBMatch(ctx context.Context, trackID int64, matc
 		SET mb_recording_id = CASE WHEN $15 AND (metadata_user_edited = FALSE OR $16 = FALSE) THEN $2 ELSE mb_recording_id END,
 			mb_release_id = CASE WHEN $15 AND (metadata_user_edited = FALSE OR $16 = FALSE) THEN $3 ELSE mb_release_id END,
 			mb_artist_id = CASE WHEN $15 AND (metadata_user_edited = FALSE OR $16 = FALSE) THEN $4 ELSE mb_artist_id END,
-			mb_verified = CASE WHEN $5::boolean IS NOT NULL AND (metadata_user_edited = FALSE OR $16 = FALSE) THEN $5::boolean ELSE mb_verified END,
-			metadata_json = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(metadata_json, '{}'::jsonb) || COALESCE($6::jsonb, '{}'::jsonb) ELSE metadata_json END,
+			mb_verified = CASE WHEN $5 IS NOT NULL AND (metadata_user_edited = FALSE OR $16 = FALSE) THEN $5 ELSE mb_verified END,
+			metadata_json = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(metadata_json, '{}'::jsonb) || COALESCE($6, '{}'::jsonb) ELSE metadata_json END,
 			metadata_status = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(NULLIF($7, ''), metadata_status) ELSE metadata_status END,
-			metadata_confidence = CASE
-				WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN
-					CASE
-						WHEN $17 THEN NULL
-						WHEN $8::double precision IS NOT NULL THEN $8::double precision
-						ELSE metadata_confidence
-					END
-				ELSE metadata_confidence
-			END,
-			metadata_provenance = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(metadata_provenance, '{}'::jsonb) || COALESCE($9::jsonb, '{}'::jsonb) ELSE metadata_provenance END,
+			metadata_confidence = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE($8, metadata_confidence) ELSE metadata_confidence END,
+			metadata_provenance = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(metadata_provenance, '{}'::jsonb) || COALESCE($9, '{}'::jsonb) ELSE metadata_provenance END,
 			cover_art_url = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(NULLIF($10, ''), cover_art_url) ELSE cover_art_url END,
 			title = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(NULLIF($11, ''), title) ELSE title END,
 			artist = CASE WHEN metadata_user_edited = FALSE OR $16 = FALSE THEN COALESCE(NULLIF($12, ''), artist) ELSE artist END,
@@ -336,10 +325,10 @@ func (r *TrackRepository) UpdateMBMatch(ctx context.Context, trackID int64, matc
 		match.MBReleaseID,
 		match.MBArtistID,
 		match.MBVerified,
-		nullableRawJSON(match.MetadataJSON),
+		match.MetadataJSON,
 		match.MetadataStatus,
 		match.MetadataConfidence,
-		nullableRawJSON(match.MetadataProvenance),
+		match.MetadataProvenance,
 		match.CoverArtURL,
 		match.Title,
 		match.Artist,
@@ -347,7 +336,6 @@ func (r *TrackRepository) UpdateMBMatch(ctx context.Context, trackID int64, matc
 		match.DurationMs,
 		match.ApplyMBIdentity,
 		match.RespectUserEdits,
-		match.ClearMetadataConfidence,
 	)
 	if err != nil {
 		return err
@@ -362,13 +350,6 @@ func (r *TrackRepository) UpdateMBMatch(ctx context.Context, trackID int64, matc
 	}
 
 	return nil
-}
-
-func nullableRawJSON(raw json.RawMessage) any {
-	if len(raw) == 0 {
-		return nil
-	}
-	return string(raw)
 }
 
 // MetadataUpdate contains the metadata fields to update from MusicBrainz

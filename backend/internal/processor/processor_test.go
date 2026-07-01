@@ -130,9 +130,6 @@ func TestFailedMBMatchUpdateLeavesIdentityAndRespectsUserEdits(t *testing.T) {
 	if update.MetadataStatus != "failed" {
 		t.Fatalf("status = %q, want failed", update.MetadataStatus)
 	}
-	if !update.ClearMetadataConfidence {
-		t.Fatalf("automatic failure update must clear stale confidence")
-	}
 }
 
 func TestAutomaticMBMatchUpdateLowConfidenceLeavesIdentityUnchanged(t *testing.T) {
@@ -162,9 +159,6 @@ func TestAutomaticMBMatchUpdateLowConfidenceLeavesIdentityUnchanged(t *testing.T
 	if update.MetadataStatus != "suggested" || update.MetadataJSON == nil {
 		t.Fatalf("low-confidence suggestion metadata not persisted correctly: status=%q json=%s", update.MetadataStatus, string(update.MetadataJSON))
 	}
-	if update.ClearMetadataConfidence {
-		t.Fatalf("low-confidence suggestion should keep its current confidence")
-	}
 }
 
 func TestAutomaticMBMatchUpdateNoMatchLeavesIdentityUnchanged(t *testing.T) {
@@ -175,12 +169,6 @@ func TestAutomaticMBMatchUpdateNoMatchLeavesIdentityUnchanged(t *testing.T) {
 	}
 	if !update.RespectUserEdits {
 		t.Fatalf("automatic no-match update must respect sticky user edits")
-	}
-	if update.MetadataStatus != "no_match" {
-		t.Fatalf("status = %q, want no_match", update.MetadataStatus)
-	}
-	if !update.ClearMetadataConfidence {
-		t.Fatalf("automatic no-match update must clear stale confidence")
 	}
 }
 

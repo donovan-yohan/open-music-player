@@ -545,10 +545,9 @@ func failedMBMatchUpdate(matchErr error) *db.MBMatchUpdate {
 		},
 	})
 	return &db.MBMatchUpdate{
-		RespectUserEdits:        true,
-		MetadataStatus:          "failed",
-		ClearMetadataConfidence: true,
-		MetadataProvenance:      failedProvenance,
+		RespectUserEdits:   true,
+		MetadataStatus:     "failed",
+		MetadataProvenance: failedProvenance,
 	}
 }
 
@@ -585,9 +584,6 @@ func automaticMBMatchUpdate(output *matcher.MatchOutput) *db.MBMatchUpdate {
 		} else {
 			update.MetadataStatus = "suggested"
 		}
-	} else {
-		update.MetadataStatus = "no_match"
-		update.ClearMetadataConfidence = true
 	}
 	mbProvenance, _ := json.Marshal(map[string]interface{}{
 		"musicbrainz": map[string]interface{}{
