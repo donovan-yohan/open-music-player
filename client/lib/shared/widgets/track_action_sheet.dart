@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../core/models/models.dart';
 import '../../core/services/services.dart';
+import 'playlist_picker_sheet.dart';
 
 class TrackActionSheet extends StatefulWidget {
   final String trackTitle;
@@ -67,7 +68,7 @@ class _TrackActionSheetState extends State<TrackActionSheet> {
 
     final selected = await showModalBottomSheet<Playlist>(
       context: context,
-      builder: (context) => _PlaylistPickerSheet(playlists: playlists),
+      builder: (context) => PlaylistPickerSheet(playlists: playlists),
     );
 
     if (selected != null && mounted) {
@@ -152,47 +153,6 @@ class _TrackActionSheetState extends State<TrackActionSheet> {
                 },
               ),
           ],
-          const SizedBox(height: 8),
-        ],
-      ),
-    );
-  }
-}
-
-class _PlaylistPickerSheet extends StatelessWidget {
-  final List<Playlist> playlists;
-
-  const _PlaylistPickerSheet({required this.playlists});
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text(
-              'Add to playlist',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-          ),
-          const Divider(height: 1),
-          if (playlists.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text('No playlists found'),
-            )
-          else
-            ...playlists.map(
-              (playlist) => ListTile(
-                leading: const Icon(Icons.playlist_play),
-                title: Text(playlist.name),
-                subtitle: Text('${playlist.trackCount} tracks'),
-                onTap: () => Navigator.of(context).pop(playlist),
-              ),
-            ),
           const SizedBox(height: 8),
         ],
       ),
