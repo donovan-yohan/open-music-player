@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import '../storage/secure_storage.dart';
 
 class ApiException implements Exception {
   final String code;
@@ -33,31 +34,36 @@ class ApiClient {
     'OMP_API_BASE_URL',
     defaultValue: 'http://localhost:8080/api/v1',
   );
-  static const String _accessTokenKey = 'access_token';
-  static const String _refreshTokenKey = 'refresh_token';
 
   final http.Client _httpClient;
-  final FlutterSecureStorage _storage;
+
+  // Platform-aware token store, shared with the canonical Dio [ApiClient]:
+  // secure storage on mobile, sessionStorage on web. Previously this client
+  // read/wrote `FlutterSecureStorage` directly, which resolves to localStorage
+  // on web — the store the app actively clears — so these services silently ran
+  // unauthenticated on web. Sharing [SecureStorage] keeps one token authority.
+  final SecureStorage _storage;
 
   ApiClient({
     http.Client? httpClient,
-    FlutterSecureStorage? storage,
+    SecureStorage? storage,
   })  : _httpClient = httpClient ?? http.Client(),
-        _storage = storage ?? const FlutterSecureStorage();
+        _storage = storage ?? SecureStorage();
 
-  Future<String?> get accessToken => _storage.read(key: _accessTokenKey);
+  Future<String?> get accessToken => _storage.getAccessToken();
 
   Future<void> setTokens({
     required String accessToken,
     required String refreshToken,
   }) async {
-    await _storage.write(key: _accessTokenKey, value: accessToken);
-    await _storage.write(key: _refreshTokenKey, value: refreshToken);
+    await _storage.saveTokens(
+      accessToken: accessToken,
+      refreshToken: refreshToken,
+    );
   }
 
   Future<void> clearTokens() async {
-    await _storage.delete(key: _accessTokenKey);
-    await _storage.delete(key: _refreshTokenKey);
+    await _storage.clearTokens();
   }
 
   Future<Map<String, String>> _getHeaders({bool requiresAuth = true}) async {

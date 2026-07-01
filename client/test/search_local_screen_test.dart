@@ -5,17 +5,16 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/api_client.dart' as local_api;
 import 'package:open_music_player/core/services/search_service.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/search/search_screen.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
-import 'package:open_music_player/services/api_client.dart' as queue_api;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/mock_dio_client.dart';
 
 /// Local-search ApiClient stub: routes the three /search/* endpoints to canned
 /// envelopes so the screen's local-search wiring is exercised end-to-end
@@ -86,14 +85,6 @@ class _NoopDiscoveryAdapter implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
-http.Response _emptyQueue(http.Request request) {
-  return http.Response(
-    jsonEncode({'items': <dynamic>[], 'currentPosition': 0}),
-    200,
-    headers: {'content-type': 'application/json'},
-  );
-}
-
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -112,16 +103,13 @@ void main() {
       storage: SecureStorage(),
       dio: Dio()..httpClientAdapter = _NoopDiscoveryAdapter(),
     );
-    final queueApiClient = queue_api.ApiClient(httpClient: MockClient(
-      (req) async => _emptyQueue(req),
-    ));
+    final queueApiClient = EmptyQueueApiClient();
     final searchApi = _FakeSearchApi();
 
     await tester.pumpWidget(
       MultiProvider(
         providers: [
           Provider<ApiClient>.value(value: discoveryClient),
-          Provider<queue_api.ApiClient>.value(value: queueApiClient),
           ChangeNotifierProvider<QueueProvider>(
             create: (_) => QueueProvider(queueApiClient),
           ),

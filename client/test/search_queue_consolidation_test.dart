@@ -6,13 +6,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:open_music_player/core/api/api_client.dart';
+import 'package:open_music_player/core/discovery/discovery_models.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/search/search_screen.dart';
+import 'package:open_music_player/models/mix_plan.dart';
+import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
-import 'package:open_music_player/services/api_client.dart' as queue_api;
 import 'package:provider/provider.dart';
 
 void main() {
@@ -30,10 +30,7 @@ void main() {
         dio: Dio()..httpClientAdapter = _SearchResultAdapter(),
       );
       final queueClient = _QueueMutationClient();
-      final queueApiClient = queue_api.ApiClient(
-        httpClient: queueClient.client,
-      );
-      final queueProvider = QueueProvider(queueApiClient);
+      final queueProvider = QueueProvider(queueClient);
       final router = GoRouter(
         initialLocation: '/search',
         routes: [
@@ -49,7 +46,6 @@ void main() {
         MultiProvider(
           providers: [
             Provider<ApiClient>.value(value: searchApiClient),
-            Provider<queue_api.ApiClient>.value(value: queueApiClient),
             ChangeNotifierProvider<QueueProvider>.value(value: queueProvider),
           ],
           child: MaterialApp.router(routerConfig: router),
@@ -87,25 +83,29 @@ void main() {
   );
 }
 
-class _QueueMutationClient {
-  late final MockClient client = MockClient(_handle);
+/// Drives [QueueProvider] through the unified [ApiClient] surface (method
+/// override) so the Search → Queue write-through is exercised without a live
+/// transport. The POST body contract itself is covered by
+/// queue_api_client_contract_test.dart.
+class _QueueMutationClient extends ApiClient {
   int postedSourceCandidates = 0;
 
-  Future<http.Response> _handle(http.Request request) async {
-    if (request.method == 'GET' && request.url.path == '/api/v1/queue') {
-      return _jsonResponse(
+  @override
+  Future<QueueState> getQueue() async => QueueState.fromJson(
         postedSourceCandidates == 0 ? _emptyQueue() : _queuedSourceQueue(),
       );
-    }
-    if (request.method == 'POST' && request.url.path == '/api/v1/queue/items') {
-      final body = jsonDecode(request.body) as Map<String, dynamic>;
-      expect(body['sourceCandidate'], isA<Map<String, dynamic>>());
-      postedSourceCandidates++;
-      return _jsonResponse({'queue': _queuedSourceQueue()});
-    }
-    return _jsonResponse({
-      'message': 'unexpected ${request.method} ${request.url.path}',
-    }, statusCode: 404);
+
+  @override
+  Future<List<MixPlan>> listMixPlans({int limit = 50, int offset = 0}) async =>
+      const [];
+
+  @override
+  Future<QueueState> addSourceCandidateToQueue({
+    required DiscoveryCandidate candidate,
+    String position = 'last',
+  }) async {
+    postedSourceCandidates++;
+    return QueueState.fromJson(_queuedSourceQueue());
   }
 }
 
@@ -148,14 +148,6 @@ class _SearchResultAdapter implements HttpClientAdapter {
 
   @override
   void close({bool force = false}) {}
-}
-
-http.Response _jsonResponse(Map<String, dynamic> data, {int statusCode = 200}) {
-  return http.Response(
-    jsonEncode(data),
-    statusCode,
-    headers: {'content-type': 'application/json'},
-  );
 }
 
 Map<String, dynamic> _emptyQueue() => {'items': [], 'currentPosition': 0};

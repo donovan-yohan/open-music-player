@@ -12,9 +12,7 @@ import '../core/models/settings_model.dart';
 import '../core/providers/settings_provider.dart';
 import '../core/share/shared_intent_receiver.dart';
 import '../core/share/shared_url_parser.dart';
-import '../core/storage/secure_storage.dart';
 import '../providers/queue_provider.dart';
-import '../services/api_client.dart' as queue_api;
 import 'router.dart';
 import 'theme.dart';
 
@@ -75,14 +73,8 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
         Provider<ApiClient>.value(value: widget.apiClient),
         ChangeNotifierProvider.value(value: widget.authState),
         ChangeNotifierProvider.value(value: widget.playbackState),
-        Provider<queue_api.ApiClient>(
-          create: (context) => queue_api.ApiClient(
-            storage: context.read<SecureStorage>(),
-          ),
-        ),
-        ChangeNotifierProxyProvider<queue_api.ApiClient, QueueProvider>(
-          create: (context) =>
-              QueueProvider(context.read<queue_api.ApiClient>()),
+        ChangeNotifierProxyProvider<ApiClient, QueueProvider>(
+          create: (context) => QueueProvider(context.read<ApiClient>()),
           update: (_, apiClient, previous) =>
               previous ?? QueueProvider(apiClient),
         ),

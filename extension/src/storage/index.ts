@@ -8,18 +8,53 @@ const STORAGE_KEYS = {
   NOTIFICATIONS_ENABLED: 'notifications_enabled',
 } as const;
 
+// Legacy key previously written by the background service worker, which stored
+// only a bare access-token string. Kept so an already-signed-in user is
+// migrated to the canonical `auth_tokens` shape instead of being logged out.
+const LEGACY_AUTH_TOKEN_KEY = 'auth_token';
+
+// Sentinel expiry for tokens whose real lifetime is unknown (legacy migrations
+// and SET_AUTH_TOKEN, which only ever carried an access token). The unified
+// ApiClient refreshes reactively on 401, so proactive expiry gating is not
+// required for these to remain usable.
+const UNKNOWN_TOKEN_EXPIRY = Number.MAX_SAFE_INTEGER;
+
 const DEFAULT_API_BASE_URL = 'ws://localhost:8080/api/v1';
 
 export async function getAuthTokens(): Promise<AuthTokens | null> {
   return new Promise((resolve) => {
-    chrome.storage.local.get([STORAGE_KEYS.AUTH_TOKENS], (result) => {
-      const tokens = result[STORAGE_KEYS.AUTH_TOKENS] as AuthTokens | undefined;
-      if (tokens && tokens.expiresAt > Date.now()) {
-        resolve(tokens);
-      } else {
+    chrome.storage.local.get(
+      [STORAGE_KEYS.AUTH_TOKENS, LEGACY_AUTH_TOKEN_KEY],
+      (result) => {
+        const tokens = result[STORAGE_KEYS.AUTH_TOKENS] as AuthTokens | undefined;
+        if (tokens) {
+          resolve(tokens.expiresAt > Date.now() ? tokens : null);
+          return;
+        }
+
+        // No canonical tokens: migrate a legacy bare access token if present so
+        // existing sessions survive the storage-shape unification.
+        const legacy = result[LEGACY_AUTH_TOKEN_KEY] as string | undefined;
+        if (legacy) {
+          const migrated: AuthTokens = {
+            accessToken: legacy,
+            refreshToken: '',
+            expiresAt: UNKNOWN_TOKEN_EXPIRY,
+          };
+          chrome.storage.local.set(
+            { [STORAGE_KEYS.AUTH_TOKENS]: migrated },
+            () => {
+              chrome.storage.local.remove(LEGACY_AUTH_TOKEN_KEY, () => {
+                resolve(migrated);
+              });
+            }
+          );
+          return;
+        }
+
         resolve(null);
       }
-    });
+    );
   });
 }
 
@@ -31,11 +66,33 @@ export async function setAuthTokens(tokens: AuthTokens): Promise<void> {
   });
 }
 
+/**
+ * Persists a bare access token into the canonical `auth_tokens` shape,
+ * preserving any existing refresh token. Backs the legacy SET_AUTH_TOKEN
+ * message which only ever carried an access token.
+ */
+export async function saveAccessToken(accessToken: string): Promise<void> {
+  const existing = await getAuthTokens();
+  await setAuthTokens({
+    accessToken,
+    refreshToken: existing?.refreshToken ?? '',
+    expiresAt: UNKNOWN_TOKEN_EXPIRY,
+  });
+}
+
 export async function clearAuthTokens(): Promise<void> {
   return new Promise((resolve) => {
-    chrome.storage.local.remove([STORAGE_KEYS.AUTH_TOKENS, STORAGE_KEYS.USER_EMAIL, STORAGE_KEYS.REFRESH_TOKEN], () => {
-      resolve();
-    });
+    chrome.storage.local.remove(
+      [
+        STORAGE_KEYS.AUTH_TOKENS,
+        STORAGE_KEYS.USER_EMAIL,
+        STORAGE_KEYS.REFRESH_TOKEN,
+        LEGACY_AUTH_TOKEN_KEY,
+      ],
+      () => {
+        resolve();
+      }
+    );
   });
 }
 

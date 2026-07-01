@@ -12,97 +12,25 @@ import type {
   UpdateMetadataResponse,
 } from './types';
 import { AppError, ErrorCodes, toAppError, type ApiErrorResponse } from './errors';
+import { apiClient } from './utils/api';
+import { getAuthTokens, saveAccessToken, clearAuthTokens } from './storage';
 
 const API_BASE_URL = 'http://localhost:8080/api/v1';
 const CONTEXT_MENU_ID = 'add-to-omp';
-const DEFAULT_TIMEOUT = 30000;
-const MAX_RETRIES = 3;
-const INITIAL_BACKOFF = 1000;
-
-// Storage keys
-const AUTH_TOKEN_KEY = 'auth_token';
 
 // Backend availability state
 let backendAvailable = true;
 let lastBackendCheck = 0;
 const BACKEND_CHECK_INTERVAL = 30000; // 30 seconds
 
-// Calculate exponential backoff with jitter
-function calculateBackoff(attempt: number): number {
-  const maxBackoff = 30000;
-  const backoff = Math.min(INITIAL_BACKOFF * Math.pow(2, attempt), maxBackoff);
-  const jitter = backoff * 0.25 * (Math.random() * 2 - 1);
-  return Math.floor(backoff + jitter);
-}
-
-// Sleep helper
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Fetch with timeout and retry
-async function fetchWithRetry(
-  url: string,
-  options: RequestInit,
-  maxRetries = MAX_RETRIES
-): Promise<Response> {
-  let lastError: Error | null = null;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT);
-
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      // Update backend availability
-      backendAvailable = true;
-      lastBackendCheck = Date.now();
-
-      // Don't retry client errors (4xx except 429)
-      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
-        return response;
-      }
-
-      // Retry server errors (5xx) and rate limiting (429)
-      if (response.status >= 500 || response.status === 429) {
-        lastError = new Error(`Server error: ${response.status}`);
-        if (attempt < maxRetries) {
-          const backoff = calculateBackoff(attempt);
-          console.log(`Retrying request in ${backoff}ms (attempt ${attempt + 1}/${maxRetries})`);
-          await sleep(backoff);
-          continue;
-        }
-      }
-
-      return response;
-    } catch (err) {
-      clearTimeout(timeoutId);
-
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        lastError = new Error('Request timed out');
-      } else {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        // Mark backend as potentially unavailable
-        backendAvailable = false;
-        lastBackendCheck = Date.now();
-      }
-
-      if (attempt < maxRetries) {
-        const backoff = calculateBackoff(attempt);
-        console.log(`Retrying after error in ${backoff}ms (attempt ${attempt + 1}/${maxRetries})`);
-        await sleep(backoff);
-        continue;
-      }
-    }
-  }
-
-  throw lastError ?? new Error('Request failed after all retries');
+/**
+ * Records the outcome of a request against the backend so the cached
+ * availability probe stays fresh (mirrors the tracking the previous inline
+ * fetch/retry helper performed).
+ */
+function markBackendReachable(reachable: boolean): void {
+  backendAvailable = reachable;
+  lastBackendCheck = Date.now();
 }
 
 // Check backend availability
@@ -148,49 +76,16 @@ function parseApiError(response: Response, body?: unknown): { code: string; mess
   return { code: 'UNKNOWN_ERROR', message: defaultMessage };
 }
 
-// Get auth token from storage
-async function getAuthToken(): Promise<string | null> {
-  const result = await chrome.storage.local.get(AUTH_TOKEN_KEY);
-  return result[AUTH_TOKEN_KEY] || null;
-}
-
-// Set auth token in storage
-async function setAuthToken(token: string): Promise<void> {
-  await chrome.storage.local.set({ [AUTH_TOKEN_KEY]: token });
-}
-
-// Clear auth token from storage
-async function clearAuthToken(): Promise<void> {
-  await chrome.storage.local.remove(AUTH_TOKEN_KEY);
-}
-
-// Check if user is logged in
+// Check if user is logged in. Token storage + validity now live in the unified
+// ApiClient/storage layer; a stored access token means "logged in". Actual
+// staleness is resolved lazily by the ApiClient's refresh-on-401 on the next
+// authenticated request, so no separate /auth/validate probe is needed.
 async function checkAuth(): Promise<AuthState> {
-  const token = await getAuthToken();
-  if (!token) {
+  const tokens = await getAuthTokens();
+  if (!tokens?.accessToken) {
     return { isLoggedIn: false };
   }
-
-  // Optionally validate token with backend
-  try {
-    const response = await fetch(`${API_BASE_URL}/auth/validate`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-      },
-    });
-
-    if (response.ok) {
-      return { isLoggedIn: true, token };
-    } else {
-      // Token invalid, clear it
-      await clearAuthToken();
-      return { isLoggedIn: false };
-    }
-  } catch {
-    // Network error, assume logged in if we have a token
-    return { isLoggedIn: true, token };
-  }
+  return { isLoggedIn: true, token: tokens.accessToken };
 }
 
 // Add track to library via API
@@ -228,14 +123,11 @@ async function addToLibrary(
   };
 
   try {
-    const response = await fetchWithRetry(`${API_BASE_URL}/downloads`, {
+    const response = await apiClient.authorizedFetch('/api/v1/downloads', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${auth.token}`,
-      },
       body: JSON.stringify(requestBody),
     });
+    markBackendReachable(true);
 
     if (response.ok) {
       const data: DownloadResponse = await response.json();
@@ -252,7 +144,7 @@ async function addToLibrary(
 
     // Handle specific error codes
     if (response.status === 401 || code === ErrorCodes.UNAUTHORIZED || code === ErrorCodes.INVALID_TOKEN) {
-      await clearAuthToken();
+      await clearAuthTokens();
       return {
         type: 'ADD_TO_LIBRARY_RESULT',
         success: false,
@@ -275,6 +167,7 @@ async function addToLibrary(
       errorCode: code,
     } as AddToLibraryResponse & { errorCode?: string };
   } catch (err) {
+    markBackendReachable(false);
     const appError = toAppError(err);
     return {
       type: 'ADD_TO_LIBRARY_RESULT',
@@ -323,14 +216,14 @@ async function updateMetadata(
   }
 
   try {
-    const response = await fetchWithRetry(`${API_BASE_URL}/tracks/${message.trackId}/metadata`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${auth.token}`,
-      },
-      body: JSON.stringify(requestBody),
-    });
+    const response = await apiClient.authorizedFetch(
+      `/api/v1/tracks/${message.trackId}/metadata`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(requestBody),
+      }
+    );
+    markBackendReachable(true);
 
     if (response.ok) {
       const data: UpdateMetadataResponse = await response.json();
@@ -348,7 +241,7 @@ async function updateMetadata(
 
     // Handle specific error codes
     if (response.status === 401 || code === ErrorCodes.UNAUTHORIZED) {
-      await clearAuthToken();
+      await clearAuthTokens();
       return {
         type: 'UPDATE_METADATA_RESULT',
         success: false,
@@ -382,6 +275,7 @@ async function updateMetadata(
       error: errorMessage,
     };
   } catch (err) {
+    markBackendReachable(false);
     const appError = toAppError(err);
     return {
       type: 'UPDATE_METADATA_RESULT',
@@ -415,14 +309,14 @@ async function mergeTracks(
   }
 
   try {
-    const response = await fetchWithRetry(`${API_BASE_URL}/tracks/${targetTrackId}/merge`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${auth.token}`,
-      },
-      body: JSON.stringify({ source_track_id: sourceTrackId }),
-    });
+    const response = await apiClient.authorizedFetch(
+      `/api/v1/tracks/${targetTrackId}/merge`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ source_track_id: sourceTrackId }),
+      }
+    );
+    markBackendReachable(true);
 
     if (response.ok) {
       return { success: true };
@@ -433,7 +327,7 @@ async function mergeTracks(
     const { code, message: errorMessage } = parseApiError(response, errorBody);
 
     if (response.status === 401 || code === ErrorCodes.UNAUTHORIZED) {
-      await clearAuthToken();
+      await clearAuthTokens();
       return {
         success: false,
         error: 'not_logged_in',
@@ -445,6 +339,7 @@ async function mergeTracks(
       error: errorMessage,
     };
   } catch (err) {
+    markBackendReachable(false);
     const appError = toAppError(err);
     return {
       success: false,
@@ -572,14 +467,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'SET_AUTH_TOKEN') {
-    setAuthToken(message.token).then(() => {
+    saveAccessToken(message.token).then(() => {
       sendResponse({ success: true });
     });
     return true;
   }
 
   if (message.type === 'LOGOUT') {
-    clearAuthToken().then(() => {
+    clearAuthTokens().then(() => {
       sendResponse({ success: true });
     });
     return true;

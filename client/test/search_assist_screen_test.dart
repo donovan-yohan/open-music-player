@@ -6,13 +6,13 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:open_music_player/core/api/api_client.dart';
+import 'package:open_music_player/core/discovery/discovery_models.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/search/search_screen.dart';
+import 'package:open_music_player/models/mix_plan.dart';
+import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
-import 'package:open_music_player/services/api_client.dart' as queue_api;
 import 'package:provider/provider.dart';
 
 void main() {
@@ -43,15 +43,13 @@ void main() {
         ),
     );
     final queueClient = _QueueClient();
-    final queueApiClient = queue_api.ApiClient(httpClient: queueClient.client);
 
     await tester.pumpWidget(
       MultiProvider(
         providers: [
           Provider<ApiClient>.value(value: discoveryClient),
-          Provider<queue_api.ApiClient>.value(value: queueApiClient),
           ChangeNotifierProvider<QueueProvider>(
-            create: (_) => QueueProvider(queueApiClient),
+            create: (_) => QueueProvider(queueClient),
           ),
         ],
         child: const MaterialApp(home: SearchScreen()),
@@ -471,27 +469,30 @@ class _DiscoveryAdapter implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
-class _QueueClient {
-  late final MockClient client = MockClient(_handle);
+class _QueueClient extends ApiClient {
   int addItemRequests = 0;
   Map<String, dynamic>? lastAddBody;
   bool _queued = false;
 
-  Future<http.Response> _handle(http.Request request) async {
-    if (request.method == 'GET' && request.url.path == '/api/v1/queue') {
-      return _response(_queueJson());
-    }
-    if (request.method == 'POST' &&
-        request.url.path == '/api/v1/queue/items') {
-      addItemRequests++;
-      lastAddBody = jsonDecode(request.body) as Map<String, dynamic>;
-      _queued = true;
-      return _response({'queue': _queueJson()});
-    }
-    return _response(
-      {'message': 'unexpected ${request.method} ${request.url.path}'},
-      statusCode: 404,
-    );
+  @override
+  Future<QueueState> getQueue() async => QueueState.fromJson(_queueJson());
+
+  @override
+  Future<List<MixPlan>> listMixPlans({int limit = 50, int offset = 0}) async =>
+      const [];
+
+  @override
+  Future<QueueState> addSourceCandidateToQueue({
+    required DiscoveryCandidate candidate,
+    String position = 'last',
+  }) async {
+    addItemRequests++;
+    lastAddBody = {
+      'position': position,
+      'sourceCandidate': candidate.toQueueJson(),
+    };
+    _queued = true;
+    return QueueState.fromJson(_queueJson());
   }
 
   Map<String, dynamic> _queueJson() {
@@ -516,13 +517,5 @@ class _QueueClient {
           : <Map<String, dynamic>>[],
       'currentPosition': 0,
     };
-  }
-
-  http.Response _response(Map<String, dynamic> data, {int statusCode = 200}) {
-    return http.Response(
-      jsonEncode(data),
-      statusCode,
-      headers: {'content-type': 'application/json'},
-    );
   }
 }

@@ -11,8 +11,8 @@ import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/screens/queue_screen.dart';
-import 'package:open_music_player/services/api_client.dart';
 
 void main() {
   late _FakeQueueApiClient apiClient;

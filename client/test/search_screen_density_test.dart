@@ -6,15 +6,14 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/search/search_screen.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
-import 'package:open_music_player/services/api_client.dart' as queue_api;
 import 'package:provider/provider.dart';
+
+import 'support/mock_dio_client.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -36,15 +35,12 @@ void main() {
         dio: Dio()..httpClientAdapter = _SearchResultAdapter(),
       );
 
-      final queueApiClient = queue_api.ApiClient(
-        httpClient: _emptyQueueClient(),
-      );
+      final queueApiClient = EmptyQueueApiClient();
 
       await tester.pumpWidget(
         MultiProvider(
           providers: [
             Provider<ApiClient>.value(value: apiClient),
-            Provider<queue_api.ApiClient>.value(value: queueApiClient),
             ChangeNotifierProvider<QueueProvider>(
               create: (_) => QueueProvider(queueApiClient),
             ),
@@ -102,20 +98,6 @@ class _FakePlaybackState extends Fake implements PlaybackState {
 
   @override
   String? get playbackError => null;
-}
-
-MockClient _emptyQueueClient() {
-  return MockClient((request) async {
-    if (request.method == 'GET' && request.url.path == '/api/v1/queue') {
-      return http.Response(jsonEncode({'items': []}), 200);
-    }
-    return http.Response(
-      jsonEncode({
-        'message': 'unexpected ${request.method} ${request.url.path}',
-      }),
-      404,
-    );
-  });
 }
 
 class _SearchResultAdapter implements HttpClientAdapter {
