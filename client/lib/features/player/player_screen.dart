@@ -33,7 +33,9 @@ class PlayerScreen extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  item?.album ?? 'Unknown Album',
+                  playback.playbackContext?.label ??
+                      item?.album ??
+                      'Unknown Album',
                   style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
