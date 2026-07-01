@@ -42,6 +42,38 @@ class LibraryService {
     );
   }
 
+  /// Loads one page of the library list via `GET /library`, forwarding paging
+  /// plus the optional `sort=`/`order=` ordering and the `mb_verified` /
+  /// `fields` projection the Library screen relies on. Returns the parsed
+  /// tracks alongside the envelope's `total` so callers can drive infinite
+  /// scroll.
+  Future<({List<lib.Track> tracks, int total})> getLibraryPage({
+    int limit = 20,
+    int offset = 0,
+    String? sort,
+    String? order,
+    bool? mbVerified,
+    List<String>? fields,
+  }) async {
+    final params = <String, String>{
+      'limit': limit.toString(),
+      'offset': offset.toString(),
+      if (sort != null) 'sort': sort,
+      if (order != null) 'order': order,
+      if (mbVerified != null) 'mb_verified': mbVerified.toString(),
+      if (fields != null && fields.isNotEmpty) 'fields': fields.join(','),
+    };
+    return _apiClient.get<({List<lib.Track> tracks, int total})>(
+      '/library',
+      queryParams: params,
+      parser: (json) {
+        final tracks = _parseLibraryTracks(json);
+        final total = json['total'] as int? ?? tracks.length;
+        return (tracks: tracks, total: total);
+      },
+    );
+  }
+
   /// Parses the `{tracks: [...], total, limit, offset}` library envelope into
   /// shared [lib.Track]s, tolerating a missing/empty `tracks` list.
   List<lib.Track> _parseLibraryTracks(Map<String, dynamic> json) {
