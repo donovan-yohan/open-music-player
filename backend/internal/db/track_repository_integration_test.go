@@ -214,6 +214,53 @@ func TestSearchReleasesReturnsStableNumericIDAgainstPostgres(t *testing.T) {
 	}
 }
 
+func TestApplyAnalysisGenreHintAgainstPostgres(t *testing.T) {
+	repo, ctx := newPostgresTestRepository(t)
+
+	legacyTrack, created, err := repo.CreateTrackFromMetadata(ctx, "Legacy Artist", "Legacy Title", "", 120000,
+		WithMetadata(json.RawMessage(`{}`)),
+		WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""))
+	if err != nil {
+		t.Fatalf("create legacy track: %v", err)
+	}
+	if !created {
+		t.Fatal("expected new legacy track")
+	}
+	assertTrackGenre(t, repo.db, legacyTrack.ID, sql.NullString{})
+
+	newTrack, created, err := repo.CreateTrackFromMetadata(ctx, "Analyzer Artist", "Analyzer Title", "", 180000,
+		WithMetadata(json.RawMessage(`{}`)),
+		WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""))
+	if err != nil {
+		t.Fatalf("create analyzer track: %v", err)
+	}
+	if !created {
+		t.Fatal("expected new analyzer track")
+	}
+	if err := repo.ApplyAnalysisGenreHint(ctx, newTrack.ID, json.RawMessage(`{"genre_hints":[{"value":"ambient","confidence":0.21},{"value":"house","confidence":0.87}]}`)); err != nil {
+		t.Fatalf("apply genre hint: %v", err)
+	}
+	assertTrackGenre(t, repo.db, newTrack.ID, sql.NullString{String: "house", Valid: true})
+
+	editedTrack, created, err := repo.CreateTrackFromMetadata(ctx, "Edited Artist", "Edited Title", "", 181000,
+		WithMetadata(json.RawMessage(`{}`)),
+		WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""))
+	if err != nil {
+		t.Fatalf("create edited track: %v", err)
+	}
+	if !created {
+		t.Fatal("expected new edited track")
+	}
+	if _, err := repo.db.ExecContext(ctx, `UPDATE tracks SET genre = 'human pick', metadata_user_edited = TRUE WHERE id = $1`, editedTrack.ID); err != nil {
+		t.Fatalf("mark edited track: %v", err)
+	}
+	if err := repo.ApplyAnalysisGenreHint(ctx, editedTrack.ID, json.RawMessage(`{"genre_hints":[{"value":"techno","confidence":0.99}]}`)); err != nil {
+		t.Fatalf("apply edited genre hint: %v", err)
+	}
+	assertTrackGenre(t, repo.db, editedTrack.ID, sql.NullString{String: "human pick", Valid: true})
+	assertTrackGenre(t, repo.db, legacyTrack.ID, sql.NullString{})
+}
+
 func decodeJSONRawMessage(t *testing.T, raw json.RawMessage) map[string]any {
 	t.Helper()
 	var decoded map[string]any
@@ -221,4 +268,15 @@ func decodeJSONRawMessage(t *testing.T, raw json.RawMessage) map[string]any {
 		t.Fatalf("decode JSON %s: %v", string(raw), err)
 	}
 	return decoded
+}
+
+func assertTrackGenre(t *testing.T, database *DB, trackID int64, want sql.NullString) {
+	t.Helper()
+	var got sql.NullString
+	if err := database.QueryRow(`SELECT genre FROM tracks WHERE id = $1`, trackID).Scan(&got); err != nil {
+		t.Fatalf("query genre for track %d: %v", trackID, err)
+	}
+	if got.Valid != want.Valid || got.String != want.String {
+		t.Fatalf("track %d genre = %#v, want %#v", trackID, got, want)
+	}
 }

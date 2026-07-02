@@ -561,6 +561,46 @@ func nullableRawJSON(raw json.RawMessage) any {
 	return string(raw)
 }
 
+// ApplyAnalysisGenreHint stores the top analyzer genre hint on a track.
+// It intentionally ignores MusicBrainz data and skips user-edited tracks so
+// automatic analysis cannot overwrite sticky human metadata.
+func (r *TrackRepository) ApplyAnalysisGenreHint(ctx context.Context, trackID int64, summary json.RawMessage) error {
+	query := `
+		WITH genre_hint AS (
+			SELECT LEFT(NULLIF(btrim(CASE
+					WHEN jsonb_typeof(hint) = 'object' THEN hint->>'value'
+					WHEN jsonb_typeof(hint) = 'string' THEN hint #>> '{}'
+					ELSE ''
+				END), ''), 200) AS genre
+			FROM jsonb_array_elements(CASE
+				WHEN jsonb_typeof($2::jsonb->'genre_hints') = 'array' THEN $2::jsonb->'genre_hints'
+				ELSE '[]'::jsonb
+			END) WITH ORDINALITY AS hints(hint, ordinality)
+			WHERE NULLIF(btrim(CASE
+					WHEN jsonb_typeof(hint) = 'object' THEN hint->>'value'
+					WHEN jsonb_typeof(hint) = 'string' THEN hint #>> '{}'
+					ELSE ''
+				END), '') IS NOT NULL
+			ORDER BY CASE
+				WHEN jsonb_typeof(hint) = 'object'
+					AND (hint->>'confidence') ~ '^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)$'
+				THEN (hint->>'confidence')::double precision
+			END DESC NULLS LAST, ordinality ASC
+			LIMIT 1
+		)
+		UPDATE tracks
+		SET genre = genre_hint.genre,
+			updated_at = NOW()
+		FROM genre_hint
+		WHERE tracks.id = $1
+			AND tracks.metadata_user_edited = FALSE
+			AND genre_hint.genre IS NOT NULL
+			AND tracks.genre IS DISTINCT FROM genre_hint.genre
+	`
+	_, err := r.db.ExecContext(ctx, query, trackID, nullableRawJSON(summary))
+	return err
+}
+
 // MetadataUpdate contains the metadata fields to update from MusicBrainz
 type MetadataUpdate struct {
 	Title      string

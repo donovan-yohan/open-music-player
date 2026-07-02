@@ -779,6 +779,12 @@ func (p *Processor) runAnalysis(req analyzer.Request) {
 		ProvenanceJSON: result.ProvenanceJSON,
 	}); err != nil {
 		log.Printf("Warning: failed to store analysis result for track %d: %v", req.TrackID, err)
+		return
+	}
+	if p.trackRepo != nil {
+		if err := p.trackRepo.ApplyAnalysisGenreHint(ctx, req.TrackID, result.SummaryJSON); err != nil {
+			log.Printf("Warning: failed to apply analysis genre hint for track %d: %v", req.TrackID, err)
+		}
 	}
 }
 
