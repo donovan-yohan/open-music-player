@@ -47,14 +47,25 @@ class _SplashScreenState extends State<SplashScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              Icons.music_note,
-              size: 100,
-              color: theme.colorScheme.primary,
+            ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: Image.asset(
+                'assets/brand/soundq-placeholder-logo.png',
+                width: 132,
+                height: 132,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) {
+                  return Icon(
+                    Icons.music_note,
+                    size: 100,
+                    color: theme.colorScheme.primary,
+                  );
+                },
+              ),
             ),
             const SizedBox(height: 24),
             Text(
-              'Open Music Player',
+              'Sound Q',
               style: theme.textTheme.headlineMedium?.copyWith(
                 fontWeight: FontWeight.bold,
               ),

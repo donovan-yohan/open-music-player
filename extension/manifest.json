@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Open Music Player",
+  "name": "Sound Q",
   "version": "1.0.0",
-  "description": "Open Music Player browser extension",
+  "description": "Sound Q browser extension",
   "permissions": [
     "activeTab",
     "storage",
@@ -52,7 +52,7 @@
         "default": "Ctrl+Shift+M",
         "mac": "Command+Shift+M"
       },
-      "description": "Add current page to Open Music Player library"
+      "description": "Add current page to Sound Q library"
     }
   }
 }

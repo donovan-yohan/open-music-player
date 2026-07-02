@@ -7,7 +7,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
-        android:label="Open Music Player"
+        android:label="Sound Q"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -31,7 +31,7 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <intent-filter android:label="Add to Open Music Player">
+            <intent-filter android:label="Add to Sound Q">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />

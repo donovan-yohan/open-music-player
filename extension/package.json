@@ -1,7 +1,7 @@
 {
   "name": "open-music-player-extension",
   "version": "1.0.0",
-  "description": "Open Music Player browser extension",
+  "description": "Sound Q browser extension",
   "scripts": {
     "build": "webpack --mode production",
     "dev": "webpack --mode development --watch",
