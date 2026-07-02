@@ -1,10 +1,13 @@
 package search
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/openmusicplayer/backend/internal/db"
 )
 
 func TestParsePagination(t *testing.T) {
@@ -167,4 +170,35 @@ func TestSearchReleasesValidation(t *testing.T) {
 			t.Errorf("expected code VALIDATION_ERROR, got %s", resp.Code)
 		}
 	})
+}
+
+func TestToReleaseResponsesIncludesNumericID(t *testing.T) {
+	responses := toReleaseResponses([]db.Release{
+		{
+			ID:          42,
+			Name:        "Catalog Album",
+			Artist:      "Catalog Artist",
+			CoverArtURL: sql.NullString{String: "https://example.test/cover.jpg", Valid: true},
+			TrackCount:  2,
+		},
+	})
+
+	if len(responses) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(responses))
+	}
+	if responses[0].ID != 42 {
+		t.Fatalf("release response ID = %d, want 42", responses[0].ID)
+	}
+
+	encoded, err := json.Marshal(responses[0])
+	if err != nil {
+		t.Fatalf("marshal release response: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatalf("unmarshal release response: %v", err)
+	}
+	if payload["id"] != float64(42) {
+		t.Fatalf("json id = %#v, want 42", payload["id"])
+	}
 }

@@ -22,9 +22,10 @@ func TestTrigramFuzzySearchAgainstPostgres(t *testing.T) {
 	repo := NewTrackRepository(database)
 
 	// Seed a track with a distinctive artist/title/album.
-	if _, _, err := repo.CreateTrackFromMetadata(ctx, "Radiohead", "Paranoid Android", "OK Computer", 383000,
+	radioheadTrack, _, err := repo.CreateTrackFromMetadata(ctx, "Radiohead", "Paranoid Android", "OK Computer", 383000,
 		WithMetadata(json.RawMessage(`{}`)),
-		WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), "")); err != nil {
+		WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""))
+	if err != nil {
 		t.Fatalf("seed track: %v", err)
 	}
 	// A second, unrelated track so the fuzzy match has to discriminate, not just return all.
@@ -91,5 +92,18 @@ func TestTrigramFuzzySearchAgainstPostgres(t *testing.T) {
 	}
 	if len(exact) == 0 || exact[0].Title != "Paranoid Android" {
 		t.Fatalf("exact-title search first result = %+v; want Paranoid Android first", exact)
+	}
+
+	// Typo via SearchReleases must preserve the stable numeric album id selected
+	// by the trigram fallback query.
+	releases, releaseTotal, err := repo.SearchReleases(ctx, "OK Compoter", 20, 0)
+	if err != nil {
+		t.Fatalf("SearchReleases typo: %v", err)
+	}
+	if releaseTotal == 0 || len(releases) == 0 {
+		t.Fatalf("SearchReleases typo matched nothing; want fuzzy album match")
+	}
+	if releases[0].ID != radioheadTrack.ID {
+		t.Fatalf("SearchReleases typo ID = %d; want seeded track ID %d", releases[0].ID, radioheadTrack.ID)
 	}
 }

@@ -58,10 +58,11 @@ func TestUnifiedSearchReturnsSectionedBody(t *testing.T) {
 	h, trackRepo, ctx := newUnifiedSearchTestHandlers(t)
 
 	// A single shared token so prefix matching lights up all three sections.
-	if _, _, err := trackRepo.CreateTrackFromMetadata(ctx,
+	track, _, err := trackRepo.CreateTrackFromMetadata(ctx,
 		"Novaquest Band", "Novaquest Anthem", "Novaquest Sessions", 211000,
 		db.WithMetadata(json.RawMessage(`{}`)),
-		db.WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), "")); err != nil {
+		db.WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""))
+	if err != nil {
 		t.Fatalf("seed track: %v", err)
 	}
 
@@ -90,6 +91,9 @@ func TestUnifiedSearchReturnsSectionedBody(t *testing.T) {
 	if len(resp.Albums) == 0 {
 		t.Errorf("expected albums section populated, got empty")
 	}
+	if len(resp.Albums) > 0 && resp.Albums[0].ID != track.ID {
+		t.Errorf("album id = %d, want seeded track id %d", resp.Albums[0].ID, track.ID)
+	}
 
 	if len(resp.Tracks) > 0 {
 		if resp.Tracks[0].Title != "Novaquest Anthem" {
@@ -101,6 +105,42 @@ func TestUnifiedSearchReturnsSectionedBody(t *testing.T) {
 		if resp.Tracks[0].Album != "Novaquest Sessions" {
 			t.Errorf("unexpected track album: %q", resp.Tracks[0].Album)
 		}
+	}
+}
+
+func TestSearchReleasesReturnsNumericAlbumID(t *testing.T) {
+	h, trackRepo, ctx := newUnifiedSearchTestHandlers(t)
+
+	track, _, err := trackRepo.CreateTrackFromMetadata(ctx,
+		"Release API Band", "Release API Song", "Release API Album", 211000,
+		db.WithMetadata(json.RawMessage(`{}`)),
+		db.WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""))
+	if err != nil {
+		t.Fatalf("seed track: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search/releases?q=Release+API", nil)
+	w := httptest.NewRecorder()
+	h.SearchReleases(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body: %s)", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Data   []ReleaseResponse `json:"data"`
+		Total  int               `json:"total"`
+		Limit  int               `json:"limit"`
+		Offset int               `json:"offset"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode release search response: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Data) != 1 {
+		t.Fatalf("release search returned len=%d total=%d, want one album", len(resp.Data), resp.Total)
+	}
+	if resp.Data[0].ID != track.ID {
+		t.Fatalf("release response id = %d, want seeded track id %d", resp.Data[0].ID, track.ID)
 	}
 }
 
