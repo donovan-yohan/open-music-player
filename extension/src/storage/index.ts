@@ -28,7 +28,7 @@ export async function getAuthTokens(): Promise<AuthTokens | null> {
       (result) => {
         const tokens = result[STORAGE_KEYS.AUTH_TOKENS] as AuthTokens | undefined;
         if (tokens) {
-          resolve(tokens.expiresAt > Date.now() ? tokens : null);
+          resolve(tokens);
           return;
         }
 

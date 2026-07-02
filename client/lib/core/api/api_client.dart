@@ -210,17 +210,24 @@ class ApiClient {
       throw ApiException('No track IDs supplied', 400);
     }
 
-    QueueState? latest;
-    for (var i = 0; i < trackIds.length; i++) {
-      final trackId = int.tryParse(trackIds[i]);
-      if (trackId == null) {
+    final parsedTrackIds = <int>[];
+    for (final trackId in trackIds) {
+      final parsedTrackId = int.tryParse(trackId);
+      if (parsedTrackId == null) {
         throw ApiException('Track ID must be numeric', 400);
       }
+      parsedTrackIds.add(parsedTrackId);
+    }
 
+    QueueState? latest;
+    for (var i = 0; i < parsedTrackIds.length; i++) {
       try {
         final response = await _dio.post(
           '/queue/items',
-          data: {'trackId': trackId, 'position': i == 0 ? position : 'last'},
+          data: {
+            'trackId': parsedTrackIds[i],
+            'position': i == 0 ? position : 'last',
+          },
         );
         latest = QueueState.fromJson(_asMap(response.data));
       } on DioException catch (e) {
@@ -258,6 +265,8 @@ class ApiClient {
           .post('/downloads', data: {'url': url, 'source_type': sourceType})
           .timeout(timeout);
       return DownloadJobResponse.fromJson(_asMap(response.data));
+    } on TimeoutException {
+      throw ApiException('Download request timeout', 408);
     } on DioException catch (e) {
       throw ApiException('Failed to add download to library', _statusCodeOf(e));
     }

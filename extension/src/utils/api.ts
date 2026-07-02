@@ -296,7 +296,9 @@ export class ApiClient {
       );
 
       if (!response.ok) {
-        await clearAuthTokens();
+        if (response.status >= 400 && response.status < 500) {
+          await clearAuthTokens();
+        }
         return null;
       }
 
@@ -310,7 +312,6 @@ export class ApiClient {
       });
       return data.accessToken;
     } catch {
-      await clearAuthTokens();
       return null;
     }
   }

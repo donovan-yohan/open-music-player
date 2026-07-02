@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/discovery/discovery_models.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 
@@ -70,6 +71,25 @@ void main() {
       'trackId': 42,
       'position': 'next',
     });
+  });
+
+  test('addToQueue validates all track IDs before posting', () async {
+    var requestCount = 0;
+    final client = mockQueueApiClient((request) async {
+      requestCount += 1;
+      return http.Response(queueJson, 200);
+    });
+
+    await expectLater(
+      client.addToQueue(trackIds: ['42', 'not-a-number'], position: 'next'),
+      throwsA(
+        isA<ApiException>()
+            .having((error) => error.statusCode, 'statusCode', 400)
+            .having((error) => error.message, 'message', contains('numeric')),
+      ),
+    );
+
+    expect(requestCount, 0);
   });
 
   test(
@@ -169,6 +189,29 @@ void main() {
       expect(job.status, 'queued');
     },
   );
+
+  test('createDownload maps client-side timeout to ApiException', () async {
+    final client = mockQueueApiClient((request) async {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      return http.Response(
+        jsonEncode({'job_id': 'job_library_1', 'status': 'queued'}),
+        201,
+      );
+    });
+
+    await expectLater(
+      client.createDownload(
+        url: 'https://youtu.be/abc123',
+        sourceType: 'youtube',
+        timeout: const Duration(milliseconds: 1),
+      ),
+      throwsA(
+        isA<ApiException>()
+            .having((error) => error.statusCode, 'statusCode', 408)
+            .having((error) => error.message, 'message', contains('timeout')),
+      ),
+    );
+  });
 
   test(
     'retryQueueItem posts to the backend queue-item retry endpoint',
