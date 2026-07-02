@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:provider/provider.dart' as provider;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 
 import 'app/app.dart';
 import 'core/api/api_client.dart';
@@ -25,6 +26,18 @@ import 'core/download/download_state.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Surface a media-style now-playing notification (lock screen + shade) with
+  // transport controls while audio plays. Must run before any AudioPlayer is
+  // constructed (AudioPlayerService.init below). Mobile-only — not on web.
+  if (!kIsWeb) {
+    await JustAudioBackground.init(
+      androidNotificationChannelId: 'com.openmusicplayer.app.channel.audio',
+      androidNotificationChannelName: 'Playback',
+      androidNotificationOngoing: true,
+      androidStopForegroundOnPause: true,
+    );
+  }
 
   final sharedPreferences = await SharedPreferences.getInstance();
 
