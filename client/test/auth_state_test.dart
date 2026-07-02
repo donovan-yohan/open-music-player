@@ -41,6 +41,55 @@ void main() {
     );
   });
 
+  group('AuthState.logout', () {
+    test('clears biometric enrollment before a fresh password login', () async {
+      final storage = _MemoryTokenStorage(
+        accessToken: 'access-token',
+        refreshToken: 'refresh-token',
+        biometricUnlockEnabled: true,
+      );
+      final biometric = _FakeBiometricUnlockService();
+      final adapter = _DioAdapter((options) {
+        if (options.uri.path.endsWith('/auth/logout')) {
+          return const _JsonReply({});
+        }
+        if (options.uri.path.endsWith('/auth/login')) {
+          return const _JsonReply({
+            'accessToken': 'fresh-access-token',
+            'refreshToken': 'fresh-refresh-token',
+          });
+        }
+        fail('unexpected request to ${options.uri.path}');
+      });
+      final authState = _authState(
+        storage: storage,
+        adapter: adapter,
+        biometricUnlockService: biometric,
+      );
+
+      await authState.logout();
+      final loggedIn = await authState.login(
+        email: 'user@example.com',
+        password: 'password',
+      );
+
+      expect(loggedIn, isTrue);
+      expect(authState.status, AuthStatus.authenticated);
+      expect(authState.biometricUnlockEnabled, isFalse);
+      expect(storage.biometricUnlockEnabled, isFalse);
+      expect(storage.biometricUnlockChanges, contains(false));
+      expect(biometric.authenticateCalls, 0);
+      expect(
+        adapter.requests.where((path) => path.endsWith('/auth/logout')),
+        hasLength(1),
+      );
+      expect(
+        adapter.requests.where((path) => path.endsWith('/auth/login')),
+        hasLength(1),
+      );
+    });
+  });
+
   group('AuthState.checkAuthStatus', () {
     test('restores a session by refreshing the stored refresh token', () async {
       final storage = _MemoryTokenStorage(
@@ -190,6 +239,7 @@ class _MemoryTokenStorage implements TokenStorageBackend {
   String? accessToken;
   String? refreshToken;
   bool biometricUnlockEnabled;
+  final List<bool> biometricUnlockChanges = [];
 
   @override
   Future<void> saveTokens({
@@ -220,6 +270,7 @@ class _MemoryTokenStorage implements TokenStorageBackend {
 
   @override
   Future<void> setBiometricUnlockEnabled(bool enabled) async {
+    biometricUnlockChanges.add(enabled);
     biometricUnlockEnabled = enabled;
   }
 
