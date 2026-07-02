@@ -68,6 +68,30 @@ void main() {
     await engine.dispose();
     await clock.dispose();
   });
+
+  test('natural completion emits the final clip once', () async {
+    var now = DateTime.utc(2026);
+    final clock = DefaultTimelineClock(
+        now: () => now, uiTickInterval: const Duration(hours: 1));
+    final engine = PlaybackEngine.withClock(
+        clock: clock, voiceFactory: () => _FakeVoice('v'));
+    final events = <ClipCompletionEvent>[];
+    final sub = engine.clipCompletionStream.listen(events.add);
+    await engine.start();
+    await engine.loadMix(_model());
+
+    await engine.play();
+    now = now.add(const Duration(milliseconds: 10000));
+    clock.tickForTest();
+    await Future<void>.delayed(Duration.zero);
+
+    final finalClipEvents = events.where((event) => event.clipId == 'b');
+    expect(finalClipEvents, hasLength(1));
+    expect(finalClipEvents.single.wasSkipped, isFalse);
+    await sub.cancel();
+    await engine.dispose();
+    await clock.dispose();
+  });
 }
 
 TimelineModel _model() => TimelineModel(

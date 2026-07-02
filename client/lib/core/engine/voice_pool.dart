@@ -45,6 +45,7 @@ class VoicePool {
   final List<StreamSubscription> _subscriptions = [];
   final Map<Voice, StreamSubscription<VoiceEvent>> _voiceSubscriptions = {};
   final Map<String, VoiceEventKind> _voiceStatus = {};
+  final Set<String> _capacityEvictedClipIds = {};
   final _voiceStatusController =
       StreamController<Map<String, VoiceEventKind>>.broadcast();
 
@@ -68,12 +69,14 @@ class VoicePool {
   Future<void> start() async {
     if (_started) return;
     _started = true;
-    final poolSize = _maxVoices + _warmSpareVoices;
-    for (var i = 0; i < poolSize; i++) {
-      final voice = _voiceFactory();
-      _attachVoice(voice);
-      _allVoices.add(voice);
-      _idleVoices.add(voice);
+    if (_allVoices.isEmpty) {
+      final poolSize = _maxVoices + _warmSpareVoices;
+      for (var i = 0; i < poolSize; i++) {
+        final voice = _voiceFactory();
+        _attachVoice(voice);
+        _allVoices.add(voice);
+        _idleVoices.add(voice);
+      }
     }
     _subscriptions
       ..add(_clock.positionMsStream.listen((ms) {
@@ -113,6 +116,7 @@ class VoicePool {
   Future<void> _syncAt(int globalMs, {bool forceSeek = false}) async {
     if (!_started) return;
     final generation = ++_generation;
+    _capacityEvictedClipIds.clear();
     final active =
         _model.activeClipsAt(globalMs).take(_maxVoices).toList(growable: false);
     final activeIds = active.map((clip) => clip.id).toSet();
@@ -127,7 +131,6 @@ class VoicePool {
     await _releaseLeaving(activeIds);
     if (generation != _generation) return;
 
-    final newlyPrepared = <_PreparedVoice>[];
     final prepareTasks = <Future<_PreparedVoice?>>[];
     for (final clip in active) {
       final existing = _activeVoices[clip.id];
@@ -142,15 +145,14 @@ class VoicePool {
     }
 
     if (prepareTasks.isNotEmpty) {
-      final results = await Future.wait(
+      await Future.wait(
         prepareTasks.map(
             (future) => future.timeout(_prepareTimeout, onTimeout: () => null)),
       );
       if (generation != _generation) return;
-      newlyPrepared.addAll(results.whereType<_PreparedVoice>());
     }
 
-    await _commitReady(active, newlyPrepared, globalMs, generation);
+    await _commitReady(active, globalMs, generation);
     _lateJoinTimedOut(active, globalMs, generation);
     _updateBufferingHold(active);
     _warmLookAhead(globalMs, activeIds);
@@ -204,11 +206,27 @@ class VoicePool {
 
   Future<_PreparedVoice?> _prepareNewVoice(
       MixClip clip, int globalMs, int generation) async {
-    var voice = _acquireIdleVoice();
-    voice ??=
-        await _dropLowestGainActive(globalMs, excludingClipIds: {clip.id});
+    final voice = _acquireIdleVoice();
     if (voice == null) return null;
 
+    var result = await _prepareWithVoice(clip, globalMs, generation, voice);
+    if (result.prepared != null || !result.shouldRetryAfterFreeingActive) {
+      return result.prepared;
+    }
+
+    final fallback =
+        await _dropLowestGainActive(globalMs, excludingClipIds: {clip.id});
+    if (fallback == null) return null;
+    result = await _prepareWithVoice(clip, globalMs, generation, fallback);
+    return result.prepared;
+  }
+
+  Future<_PrepareResult> _prepareWithVoice(
+    MixClip clip,
+    int globalMs,
+    int generation,
+    Voice voice,
+  ) async {
     _activeVoices[clip.id] = voice;
     _activeClips[clip.id] = clip;
     _voiceStatus[clip.id] = VoiceEventKind.buffering;
@@ -220,42 +238,41 @@ class VoicePool {
       await voice.load(source.uri,
           initialLocalPositionMs: _localPosition(clip, globalMs));
       if (generation != _generation || _activeVoices[clip.id] != voice) {
-        await voice.setVolume(0);
-        await voice.release();
-        if (!_idleVoices.contains(voice)) _idleVoices.add(voice);
-        return null;
+        await _retirePreparedVoice(clip.id, voice);
+        return const _PrepareResult();
       }
       _voiceStatus[clip.id] = VoiceEventKind.ready;
       _publishStatus();
       _updateBufferingHold(_model.activeClipsAt(_clock.positionMs));
-      return _PreparedVoice(clip, voice);
+      return _PrepareResult(prepared: _PreparedVoice(clip, voice));
     } catch (error) {
-      if (generation != _generation) return null;
+      if (generation != _generation) {
+        await _retirePreparedVoice(clip.id, voice);
+        return const _PrepareResult();
+      }
       _voiceStatus[clip.id] = VoiceEventKind.error;
       _publishStatus();
-      await _releaseClip(clip.id, voice);
-      final fallback =
-          await _dropLowestGainActive(globalMs, excludingClipIds: {clip.id});
-      if (fallback == null) return null;
-      try {
-        _activeVoices[clip.id] = fallback;
-        _activeClips[clip.id] = clip;
-        _voiceStatus[clip.id] = VoiceEventKind.buffering;
-        await fallback.setVolume(0);
-        final source = await _resolver.resolve(clip);
-        await fallback.load(source.uri,
-            initialLocalPositionMs: _localPosition(clip, globalMs));
-        if (generation != _generation || _activeVoices[clip.id] != fallback) {
-          return null;
-        }
-        _voiceStatus[clip.id] = VoiceEventKind.ready;
-        _publishStatus();
-        return _PreparedVoice(clip, fallback);
-      } catch (_) {
-        await _releaseClip(clip.id, fallback);
-        return null;
-      }
+      await _retirePreparedVoice(clip.id, voice);
+      return _PrepareResult(
+        shouldRetryAfterFreeingActive: error is VoiceCapacityException,
+      );
     }
+  }
+
+  Future<void> _retirePreparedVoice(String clipId, Voice voice) async {
+    if (_activeVoices[clipId] == voice) {
+      _activeVoices.remove(clipId);
+      _activeClips.remove(clipId);
+      _voiceStatus.remove(clipId);
+    }
+    if (_activeVoices.containsValue(voice) || _idleVoices.contains(voice)) {
+      _publishStatus();
+      return;
+    }
+    await voice.setVolume(0);
+    await voice.release();
+    _idleVoices.add(voice);
+    _publishStatus();
   }
 
   Voice? _acquireIdleVoice() {
@@ -277,13 +294,13 @@ class VoicePool {
     if (quietest == null) return _acquireIdleVoice();
     final voice = _activeVoices[quietest.key];
     if (voice == null) return _acquireIdleVoice();
+    _capacityEvictedClipIds.add(quietest.key);
     await _releaseClip(quietest.key, voice);
     return _acquireIdleVoice();
   }
 
   Future<void> _commitReady(
     List<MixClip> active,
-    List<_PreparedVoice> newlyPrepared,
     int globalMs,
     int generation,
   ) async {
@@ -306,6 +323,7 @@ class VoicePool {
 
   void _lateJoinTimedOut(List<MixClip> active, int globalMs, int generation) {
     for (final clip in active) {
+      if (_capacityEvictedClipIds.contains(clip.id)) continue;
       final voice = _activeVoices[clip.id];
       if (voice != null) {
         if (!voice.isReady) {
@@ -327,11 +345,7 @@ class VoicePool {
     Voice voice,
     int generation,
   ) async {
-    if (!voice.isReady) {
-      for (var i = 0; i < 40 && !voice.isReady; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 10));
-      }
-    }
+    if (!voice.isReady) await _waitUntilReady(voice);
     if (!voice.isReady) return;
     if (_activeVoices[clip.id] != voice) return;
     final currentMs = _clock.positionMs;
@@ -343,6 +357,22 @@ class VoicePool {
     _publishStatus();
     _updateBufferingHold(_model.activeClipsAt(currentMs));
   }
+
+  Future<void> _waitUntilReady(Voice voice) async {
+    try {
+      await voice.events
+          .firstWhere((event) =>
+              event.kind == VoiceEventKind.ready ||
+              event.kind == VoiceEventKind.error)
+          .timeout(_lateJoinTimeout);
+    } on TimeoutException {
+      return;
+    }
+  }
+
+  Duration get _lateJoinTimeout => Duration(
+        milliseconds: math.max(_prepareTimeout.inMilliseconds * 4, 1000),
+      );
 
   Future<void> _setActivePlayback(bool playing) async {
     final voices = _activeVoices.values.toList(growable: false);
@@ -435,6 +465,16 @@ class _PreparedVoice {
   final Voice voice;
 
   const _PreparedVoice(this.clip, this.voice);
+}
+
+class _PrepareResult {
+  final _PreparedVoice? prepared;
+  final bool shouldRetryAfterFreeingActive;
+
+  const _PrepareResult({
+    this.prepared,
+    this.shouldRetryAfterFreeingActive = false,
+  });
 }
 
 extension _FirstOrNull<T> on Iterable<T> {

@@ -9,7 +9,6 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   MixAudioHandler({required PlaybackEngine engine}) : _engine = engine {
     mediaItem.add(_mediaItem());
     _subscriptions
-      ..add(_engine.positionMsStream.listen((_) => _publishState()))
       ..add(_engine.isPlayingStream.listen((_) => _publishState()))
       ..add(_engine.nowPlayingStream.listen((_) {
         mediaItem.add(_mediaItem());
@@ -28,7 +27,10 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   Future<void> pause() => _engine.pause();
 
   @override
-  Future<void> seek(Duration position) => _engine.seek(position.inMilliseconds);
+  Future<void> seek(Duration position) async {
+    await _engine.seek(position.inMilliseconds);
+    _publishState();
+  }
 
   @override
   Future<void> stop() async {

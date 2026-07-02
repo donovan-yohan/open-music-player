@@ -13,6 +13,7 @@ void main() {
   late DefaultTimelineClock clock;
   late List<FakeVoice> voices;
   late FakeResolver resolver;
+  late Set<String> capacityFailures;
   late VoicePool pool;
 
   setUp(() async {
@@ -22,13 +23,14 @@ void main() {
     );
     voices = [];
     resolver = FakeResolver();
+    capacityFailures = {};
     pool = VoicePool(
       clock: clock,
       maxVoices: 4,
       warmSpareVoices: 1,
       prepareTimeout: const Duration(milliseconds: 30),
       voiceFactory: () {
-        final voice = FakeVoice('v${voices.length}');
+        final voice = FakeVoice('v${voices.length}', capacityFailures);
         voices.add(voice);
         return voice;
       },
@@ -131,12 +133,33 @@ void main() {
     final loud = _clip('loud', 0);
     final mid = _clip('mid', 0, gainDb: -6);
     await pool.loadMix(TimelineModel(clips: [quiet, loud, mid]));
-    resolver.failClipIds.add('enter');
+    final quietVoice = pool.activeVoices['quiet'] as FakeVoice;
+    capacityFailures.add('enter');
     await pool
         .loadMix(TimelineModel(clips: [quiet, loud, mid, _clip('enter', 0)]));
 
     expect(pool.activeVoices.containsKey('enter'), isTrue);
+    expect(pool.activeVoices.containsKey('quiet'), isFalse);
+    expect(quietVoice.releaseCount, 1);
     expect(pool.activeVoices.length, lessThanOrEqualTo(4));
+  });
+
+  test('permanent entering source failure does not evict active voices',
+      () async {
+    final quiet = _clip('quiet', 0, gainDb: -24);
+    final loud = _clip('loud', 0);
+    final mid = _clip('mid', 0, gainDb: -6);
+    await pool.loadMix(TimelineModel(clips: [quiet, loud, mid]));
+    final quietVoice = pool.activeVoices['quiet'] as FakeVoice;
+    resolver.permanentFailClipIds.add('enter');
+
+    await pool
+        .loadMix(TimelineModel(clips: [quiet, loud, mid, _clip('enter', 0)]));
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+
+    expect(pool.activeVoices.keys, containsAll(['quiet', 'loud', 'mid']));
+    expect(pool.activeVoices.containsKey('enter'), isFalse);
+    expect(quietVoice.releaseCount, 0);
   });
 }
 
@@ -173,12 +196,16 @@ MixClip _clip(String id, int startMs,
 class FakeResolver implements EngineAudioSourceResolver {
   final delayByClip = <String, Duration>{};
   final failClipIds = <String>{};
+  final permanentFailClipIds = <String>{};
   final warmed = <String>[];
 
   @override
   Future<ResolvedAudioSource> resolve(MixClip clip) async {
     final delay = delayByClip[clip.id];
     if (delay != null) await Future<void>.delayed(delay);
+    if (permanentFailClipIds.contains(clip.id)) {
+      throw StateError('source unavailable for ${clip.id}');
+    }
     if (failClipIds.remove(clip.id)) {
       throw StateError('decoder exhausted for ${clip.id}');
     }
@@ -193,12 +220,13 @@ class FakeResolver implements EngineAudioSourceResolver {
 }
 
 class FakeVoice implements Voice {
-  FakeVoice(this.debugId);
+  FakeVoice(this.debugId, this.capacityFailures);
 
   static int _playCounter = 0;
 
   @override
   final String debugId;
+  final Set<String> capacityFailures;
   final loadedSources = <Uri>[];
   final seekLog = <int>[];
   final volumeLog = <double>[];
@@ -221,6 +249,17 @@ class FakeVoice implements Voice {
 
   @override
   Future<void> load(Uri source, {int initialLocalPositionMs = 0}) async {
+    String? exhaustedClipId;
+    for (final clipId in capacityFailures) {
+      if (source.toString().contains('/$clipId.mp3')) {
+        exhaustedClipId = clipId;
+        break;
+      }
+    }
+    if (exhaustedClipId != null) {
+      capacityFailures.remove(exhaustedClipId);
+      throw VoiceCapacityException('decoder exhausted for $exhaustedClipId');
+    }
     loadedSources.add(source);
     _positionMs = initialLocalPositionMs;
     _loaded = true;

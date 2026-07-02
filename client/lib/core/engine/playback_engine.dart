@@ -98,7 +98,9 @@ class PlaybackEngine implements PlaybackEngineControls {
 
   TimelineModel _model = TimelineModel();
   String? _lastDominantClipId;
+  int? _lastActiveVoiceCount;
   int _lastPositionMs = 0;
+  final Set<String> _completedClipIds = {};
 
   VoicePool get pool => _pool;
   TimelineClock get clock => _clock;
@@ -124,7 +126,9 @@ class PlaybackEngine implements PlaybackEngineControls {
   Future<void> loadMix(TimelineModel model) async {
     _model = model;
     _lastDominantClipId = null;
+    _lastActiveVoiceCount = null;
     _lastPositionMs = 0;
+    _completedClipIds.clear();
     await _pool.loadMix(model);
     _publishNowPlaying();
   }
@@ -169,11 +173,14 @@ class PlaybackEngine implements PlaybackEngineControls {
     for (final clip in _model.clips) {
       if (_lastPositionMs < clip.timelineEndMs &&
           positionMs >= clip.timelineEndMs) {
-        _clipCompletionController.add(ClipCompletionEvent(
-          clipId: clip.id,
-          trackId: clip.trackId,
+        if (clip.timelineEndMs == _clock.durationMs &&
+            positionMs >= _clock.durationMs) {
+          continue;
+        }
+        _emitCompletionForClip(
+          clip,
           wasSkipped: positionMs - _lastPositionMs > 1500,
-        ));
+        );
       }
     }
     _lastPositionMs = positionMs;
@@ -182,24 +189,32 @@ class PlaybackEngine implements PlaybackEngineControls {
 
   void _emitNaturalCompletions() {
     for (final clip in _model.activeClipsAt(_clock.durationMs - 1)) {
-      _clipCompletionController.add(ClipCompletionEvent(
-        clipId: clip.id,
-        trackId: clip.trackId,
-        wasSkipped: false,
-      ));
+      _emitCompletionForClip(clip, wasSkipped: false);
     }
+  }
+
+  void _emitCompletionForClip(MixClip clip, {required bool wasSkipped}) {
+    if (!_completedClipIds.add(clip.id)) return;
+    _clipCompletionController.add(ClipCompletionEvent(
+      clipId: clip.id,
+      trackId: clip.trackId,
+      wasSkipped: wasSkipped,
+    ));
   }
 
   void _publishNowPlaying() {
     final dominant = _model.dominantClipAt(_clock.positionMs);
-    if (dominant?.id == _lastDominantClipId && _pool.activeVoiceCount == 0) {
+    final activeVoiceCount = _pool.activeVoiceCount;
+    if (dominant?.id == _lastDominantClipId &&
+        activeVoiceCount == _lastActiveVoiceCount) {
       return;
     }
     _lastDominantClipId = dominant?.id;
+    _lastActiveVoiceCount = activeVoiceCount;
     _nowPlayingController.add(MixNowPlayingInfo(
       clipId: dominant?.id,
       trackId: dominant?.trackId,
-      activeVoiceCount: _pool.activeVoiceCount,
+      activeVoiceCount: activeVoiceCount,
     ));
   }
 }
