@@ -47,7 +47,7 @@ class MiniPlayer extends StatelessWidget {
                   minHeight: 2,
                   backgroundColor: AppTheme.darkSurface,
                   valueColor: const AlwaysStoppedAnimation<Color>(
-                    AppTheme.primaryGreen,
+                    AppTheme.brandColor,
                   ),
                 ),
                 Expanded(
@@ -77,7 +77,7 @@ class MiniPlayer extends StatelessWidget {
                               PlaybackContextLabel(
                                 playback.playbackContext,
                                 style: const TextStyle(
-                                  color: AppTheme.primaryGreen,
+                                  color: AppTheme.brandColor,
                                   fontSize: 10,
                                   fontWeight: FontWeight.w600,
                                   letterSpacing: 0.2,
