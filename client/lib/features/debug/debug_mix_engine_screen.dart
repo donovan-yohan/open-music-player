@@ -22,6 +22,11 @@ class DebugMixEngineScreen extends StatefulWidget {
 }
 
 class _DebugMixEngineScreenState extends State<DebugMixEngineScreen> {
+  static const _productionBackgroundEnabled = bool.fromEnvironment(
+    'OMP_ENABLE_JUST_AUDIO_BACKGROUND',
+    defaultValue: true,
+  );
+
   static const _defaults = [
     'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
     'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
@@ -245,6 +250,13 @@ class _DebugMixEngineScreenState extends State<DebugMixEngineScreen> {
       setState(() => _status = 'web: background handler/focus session skipped');
       return;
     }
+    if (_productionBackgroundEnabled) {
+      setState(
+        () => _status =
+            'mix proof disabled: rebuild with OMP_ENABLE_JUST_AUDIO_BACKGROUND=false',
+      );
+      return;
+    }
     try {
       _handler = await audio_service.AudioService.init<MixAudioHandler>(
         builder: () => MixAudioHandler(engine: _engine),
@@ -266,6 +278,13 @@ class _DebugMixEngineScreenState extends State<DebugMixEngineScreen> {
   }
 
   Future<void> _loadProof() async {
+    if (!kIsWeb && _productionBackgroundEnabled) {
+      _showSnack(
+        'Phase 2 mix proof requires OMP_ENABLE_JUST_AUDIO_BACKGROUND=false',
+      );
+      return;
+    }
+
     final uris = _trackControllers
         .map((controller) => Uri.tryParse(controller.text.trim()))
         .toList();
