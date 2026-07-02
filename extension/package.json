@@ -5,7 +5,7 @@
   "scripts": {
     "build": "webpack --mode production",
     "dev": "webpack --mode development --watch",
-    "test:auth-refresh": "tsc -p test/tsconfig.json && node test/dist/test/auth_refresh_regression.js",
+    "test:auth-refresh": "tsc -p test/tsconfig.json && node test/dist/test/auth_refresh_regression.js && node test/dist/test/background_auth_regression.js",
     "type-check": "tsc --noEmit"
   },
   "devDependencies": {

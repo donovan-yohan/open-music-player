@@ -251,6 +251,12 @@ interface AuthTokenResponse {
   expiresIn?: number;
 }
 
+type RefreshFailureReason = 'auth' | 'transient';
+
+type RefreshResult =
+  | { accessToken: string; failureReason?: never }
+  | { accessToken: null; failureReason: RefreshFailureReason };
+
 /**
  * Single source of truth for authenticated requests across the extension.
  *
@@ -261,14 +267,15 @@ interface AuthTokenResponse {
  * spent once.
  */
 export class ApiClient {
-  private refreshInFlight: Promise<string | null> | null = null;
+  private refreshInFlight: Promise<RefreshResult> | null = null;
+  private transientRefreshFailures = new WeakSet<Response>();
 
   private async getAccessToken(): Promise<string | null> {
     return (await getAuthTokens())?.accessToken ?? null;
   }
 
   /** Coalesces concurrent refreshes onto one in-flight rotation. */
-  private async refreshAccessToken(): Promise<string | null> {
+  private async refreshAccessToken(): Promise<RefreshResult> {
     if (!this.refreshInFlight) {
       this.refreshInFlight = this.performRefresh().finally(() => {
         this.refreshInFlight = null;
@@ -277,11 +284,11 @@ export class ApiClient {
     return this.refreshInFlight;
   }
 
-  private async performRefresh(): Promise<string | null> {
+  private async performRefresh(): Promise<RefreshResult> {
     const refreshToken = await getRefreshToken();
     if (!refreshToken) {
       await clearAuthTokens();
-      return null;
+      return { accessToken: null, failureReason: 'auth' };
     }
 
     try {
@@ -298,8 +305,9 @@ export class ApiClient {
       if (!response.ok) {
         if (response.status >= 400 && response.status < 500) {
           await clearAuthTokens();
+          return { accessToken: null, failureReason: 'auth' };
         }
-        return null;
+        return { accessToken: null, failureReason: 'transient' };
       }
 
       const data = (await response.json()) as AuthTokenResponse;
@@ -310,9 +318,9 @@ export class ApiClient {
           Date.now() +
           (data.expiresIn ?? DEFAULT_ACCESS_TOKEN_TTL_SECONDS) * 1000,
       });
-      return data.accessToken;
+      return { accessToken: data.accessToken };
     } catch {
-      return null;
+      return { accessToken: null, failureReason: 'transient' };
     }
   }
 
@@ -341,16 +349,27 @@ export class ApiClient {
     let response = await fetchWithRetry(url, this.buildInit(options, accessToken));
 
     if (response.status === 401) {
-      const refreshedToken = await this.refreshAccessToken();
-      if (refreshedToken) {
+      const refreshResult = await this.refreshAccessToken();
+      if (refreshResult.accessToken) {
         response = await fetchWithRetry(
           url,
-          this.buildInit(options, refreshedToken)
+          this.buildInit(options, refreshResult.accessToken)
         );
+      } else if (refreshResult.failureReason === 'transient') {
+        this.transientRefreshFailures.add(response);
       }
     }
 
     return response;
+  }
+
+  /**
+   * Returns true when `authorizedFetch` returned the original 401 only because
+   * the refresh endpoint temporarily failed (5xx/network/timeout). Callers that
+   * normally clear auth on 401 must preserve tokens for this case.
+   */
+  wasRefreshFailureTransient(response: Response): boolean {
+    return this.transientRefreshFailures.has(response);
   }
 
   private async requestJson<T>(

@@ -76,6 +76,28 @@ function parseApiError(response: Response, body?: unknown): { code: string; mess
   return { code: 'UNKNOWN_ERROR', message: defaultMessage };
 }
 
+const TRANSIENT_REFRESH_ERROR = 'Authentication refresh temporarily unavailable. Please try again.';
+
+function isAuthInvalidResponse(response: Response, code: string): boolean {
+  return response.status === 401 ||
+    code === ErrorCodes.UNAUTHORIZED ||
+    code === ErrorCodes.INVALID_TOKEN ||
+    code === ErrorCodes.TOKEN_EXPIRED;
+}
+
+function isAuthInvalidDueToTransientRefresh(response: Response, code: string): boolean {
+  return isAuthInvalidResponse(response, code) && apiClient.wasRefreshFailureTransient(response);
+}
+
+async function clearAuthTokensForInvalidSession(response: Response, code: string): Promise<boolean> {
+  if (!isAuthInvalidResponse(response, code) || apiClient.wasRefreshFailureTransient(response)) {
+    return false;
+  }
+
+  await clearAuthTokens();
+  return true;
+}
+
 // Check if user is logged in. Token storage + validity now live in the unified
 // ApiClient/storage layer; a stored access token means "logged in". Actual
 // staleness is resolved lazily by the ApiClient's refresh-on-401 on the next
@@ -143,8 +165,16 @@ async function addToLibrary(
     const { code, message: errorMessage } = parseApiError(response, errorBody);
 
     // Handle specific error codes
-    if (response.status === 401 || code === ErrorCodes.UNAUTHORIZED || code === ErrorCodes.INVALID_TOKEN) {
-      await clearAuthTokens();
+    if (isAuthInvalidDueToTransientRefresh(response, code)) {
+      return {
+        type: 'ADD_TO_LIBRARY_RESULT',
+        success: false,
+        error: TRANSIENT_REFRESH_ERROR,
+        errorCode: ErrorCodes.NETWORK_ERROR,
+      } as AddToLibraryResponse & { errorCode?: string };
+    }
+
+    if (await clearAuthTokensForInvalidSession(response, code)) {
       return {
         type: 'ADD_TO_LIBRARY_RESULT',
         success: false,
@@ -240,8 +270,15 @@ async function updateMetadata(
     const { code, message: errorMessage } = parseApiError(response, errorBody);
 
     // Handle specific error codes
-    if (response.status === 401 || code === ErrorCodes.UNAUTHORIZED) {
-      await clearAuthTokens();
+    if (isAuthInvalidDueToTransientRefresh(response, code)) {
+      return {
+        type: 'UPDATE_METADATA_RESULT',
+        success: false,
+        error: TRANSIENT_REFRESH_ERROR,
+      };
+    }
+
+    if (await clearAuthTokensForInvalidSession(response, code)) {
       return {
         type: 'UPDATE_METADATA_RESULT',
         success: false,
@@ -326,8 +363,14 @@ async function mergeTracks(
     const errorBody = await response.json().catch(() => undefined);
     const { code, message: errorMessage } = parseApiError(response, errorBody);
 
-    if (response.status === 401 || code === ErrorCodes.UNAUTHORIZED) {
-      await clearAuthTokens();
+    if (isAuthInvalidDueToTransientRefresh(response, code)) {
+      return {
+        success: false,
+        error: TRANSIENT_REFRESH_ERROR,
+      };
+    }
+
+    if (await clearAuthTokensForInvalidSession(response, code)) {
       return {
         success: false,
         error: 'not_logged_in',
