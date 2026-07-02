@@ -1,17 +1,15 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/search/search_screen.dart';
+import 'package:open_music_player/models/mix_plan.dart';
+import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
-import 'package:open_music_player/services/api_client.dart' as queue_api;
 import 'package:provider/provider.dart';
 
 void main() {
@@ -24,17 +22,15 @@ void main() {
   testWidgets('does not restart queue polling after SearchScreen is disposed', (
     tester,
   ) async {
-    final queueClient = _QueuePollingClient();
+    final queueClient = _FakeQueueApiClient();
     final apiClient = ApiClient(storage: SecureStorage(), dio: Dio());
-    final queueApiClient = queue_api.ApiClient(httpClient: queueClient.client);
 
     await tester.pumpWidget(
       MultiProvider(
         providers: [
           Provider<ApiClient>.value(value: apiClient),
-          Provider<queue_api.ApiClient>.value(value: queueApiClient),
           ChangeNotifierProvider<QueueProvider>(
-            create: (_) => QueueProvider(queueApiClient),
+            create: (_) => QueueProvider(queueClient),
           ),
         ],
         child: const MaterialApp(home: SearchScreen()),
@@ -52,39 +48,34 @@ void main() {
   });
 }
 
-class _QueuePollingClient {
-  final Completer<http.Response> _firstQueuePoll = Completer<http.Response>();
-  late final MockClient client = MockClient(_handle);
+/// Counts queue polls via the unified [ApiClient] surface (method override), so
+/// the SearchScreen polling lifecycle is exercised without a live transport.
+class _FakeQueueApiClient extends ApiClient {
+  final Completer<QueueState> _firstQueuePoll = Completer<QueueState>();
   int queuePollRequests = 0;
 
-  Future<http.Response> _handle(http.Request request) async {
-    if (request.method == 'GET' && request.url.path == '/api/v1/queue') {
-      queuePollRequests++;
-      if (queuePollRequests == 1) {
-        return _firstQueuePoll.future;
-      }
-      return _jsonResponse(_activeQueueJson(progress: 2));
+  @override
+  Future<QueueState> getQueue() async {
+    queuePollRequests++;
+    if (queuePollRequests == 1) {
+      return _firstQueuePoll.future;
     }
-
-    return _jsonResponse({
-      'message': 'unexpected ${request.method} ${request.url.path}',
-    }, statusCode: 404);
+    return _activeQueueState(progress: 2);
   }
+
+  @override
+  Future<List<MixPlan>> listMixPlans({int limit = 50, int offset = 0}) async =>
+      const [];
 
   void completeFirstQueuePoll() {
     if (!_firstQueuePoll.isCompleted) {
-      _firstQueuePoll.complete(_jsonResponse(_activeQueueJson(progress: 2)));
+      _firstQueuePoll.complete(_activeQueueState(progress: 2));
     }
   }
 }
 
-http.Response _jsonResponse(Map<String, dynamic> data, {int statusCode = 200}) {
-  return http.Response(
-    jsonEncode(data),
-    statusCode,
-    headers: {'content-type': 'application/json'},
-  );
-}
+QueueState _activeQueueState({required int progress}) =>
+    QueueState.fromJson(_activeQueueJson(progress: progress));
 
 Map<String, dynamic> _activeQueueJson({required int progress}) {
   return {

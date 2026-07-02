@@ -2,10 +2,11 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/discovery/discovery_models.dart';
 import 'package:open_music_player/models/mix_plan.dart';
-import 'package:open_music_player/services/api_client.dart';
+
+import 'support/mock_dio_client.dart';
 
 void main() {
   const queueJson =
@@ -15,13 +16,10 @@ void main() {
     'removeQueueItem uses the backend DELETE /queue/items/{queueItemId} contract',
     () async {
       http.Request? seen;
-      final client = ApiClient(
-        baseUrl: 'http://api.test/api/v1',
-        httpClient: MockClient((request) async {
-          seen = request;
-          return http.Response(queueJson, 200);
-        }),
-      );
+      final client = mockQueueApiClient((request) async {
+        seen = request;
+        return http.Response(queueJson, 200);
+      });
 
       await client.removeQueueItem('queue item/2');
 
@@ -34,13 +32,10 @@ void main() {
     'reorderQueue uses item-id based camelCase backend field names',
     () async {
       http.Request? seen;
-      final client = ApiClient(
-        baseUrl: 'http://api.test/api/v1',
-        httpClient: MockClient((request) async {
-          seen = request;
-          return http.Response(queueJson, 200);
-        }),
-      );
+      final client = mockQueueApiClient((request) async {
+        seen = request;
+        return http.Response(queueJson, 200);
+      });
 
       await client.reorderQueue(queueItemId: 'queue-3', toPosition: 1);
 
@@ -52,27 +47,21 @@ void main() {
   );
 
   test('clearQueue accepts the backend JSON 200 response', () async {
-    final client = ApiClient(
-      baseUrl: 'http://api.test/api/v1',
-      httpClient: MockClient((request) async {
-        expect(request.method, 'DELETE');
-        expect(request.url.path, '/api/v1/queue');
-        return http.Response(queueJson, 200);
-      }),
-    );
+    final client = mockQueueApiClient((request) async {
+      expect(request.method, 'DELETE');
+      expect(request.url.path, '/api/v1/queue');
+      return http.Response(queueJson, 200);
+    });
 
     await client.clearQueue();
   });
 
   test('addToQueue posts playable track IDs to POST /queue/items', () async {
     http.Request? seen;
-    final client = ApiClient(
-      baseUrl: 'http://api.test/api/v1',
-      httpClient: MockClient((request) async {
-        seen = request;
-        return http.Response(queueJson, 200);
-      }),
-    );
+    final client = mockQueueApiClient((request) async {
+      seen = request;
+      return http.Response(queueJson, 200);
+    });
 
     await client.addToQueue(trackIds: ['42'], position: 'next');
 
@@ -84,40 +73,56 @@ void main() {
     });
   });
 
+  test('addToQueue validates all track IDs before posting', () async {
+    var requestCount = 0;
+    final client = mockQueueApiClient((request) async {
+      requestCount += 1;
+      return http.Response(queueJson, 200);
+    });
+
+    await expectLater(
+      client.addToQueue(trackIds: ['42', 'not-a-number'], position: 'next'),
+      throwsA(
+        isA<ApiException>()
+            .having((error) => error.statusCode, 'statusCode', 400)
+            .having((error) => error.message, 'message', contains('numeric')),
+      ),
+    );
+
+    expect(requestCount, 0);
+  });
+
   test(
     'addSourceCandidateToQueue accepts backend 202 source candidate enqueue response',
     () async {
       http.Request? seen;
-      final client = ApiClient(
-        baseUrl: 'http://api.test/api/v1',
-        httpClient: MockClient((request) async {
-          seen = request;
-          return http.Response(
-            jsonEncode({
-              'queue': {
-                'items': [
-                  {
-                    'queueItemId': 'q_source',
-                    'downloadJobId': 'job_source_1',
-                    'playbackState': 'queued',
-                    'sourceCandidate': {
-                      'candidateId': 'soundcloud:123',
-                      'provider': 'soundcloud',
-                      'sourceUrl': 'https://soundcloud.test/track',
-                      'title': 'Queued Source',
-                      'durationMs': 61000,
-                    },
+      final client = mockQueueApiClient((request) async {
+        seen = request;
+        return http.Response(
+          jsonEncode({
+            'queue': {
+              'items': [
+                {
+                  'queueItemId': 'q_source',
+                  'downloadJobId': 'job_source_1',
+                  'playbackState': 'queued',
+                  'sourceCandidate': {
+                    'candidateId': 'soundcloud:123',
+                    'provider': 'soundcloud',
+                    'sourceUrl': 'https://soundcloud.test/track',
+                    'title': 'Queued Source',
+                    'durationMs': 61000,
                   },
-                ],
-                'currentPosition': 0,
-                'updatedAt': '2026-06-04T00:00:00Z',
-              },
-              'downloadJobId': 'job_source_1',
-            }),
-            202,
-          );
-        }),
-      );
+                },
+              ],
+              'currentPosition': 0,
+              'updatedAt': '2026-06-04T00:00:00Z',
+            },
+            'downloadJobId': 'job_source_1',
+          }),
+          202,
+        );
+      });
 
       final state = await client.addSourceCandidateToQueue(
         candidate: const DiscoveryCandidate(
@@ -161,16 +166,13 @@ void main() {
     'createDownload posts a background library download request',
     () async {
       http.Request? seen;
-      final client = ApiClient(
-        baseUrl: 'http://api.test/api/v1',
-        httpClient: MockClient((request) async {
-          seen = request;
-          return http.Response(
-            jsonEncode({'job_id': 'job_library_1', 'status': 'queued'}),
-            201,
-          );
-        }),
-      );
+      final client = mockQueueApiClient((request) async {
+        seen = request;
+        return http.Response(
+          jsonEncode({'job_id': 'job_library_1', 'status': 'queued'}),
+          201,
+        );
+      });
 
       final job = await client.createDownload(
         url: 'https://youtu.be/abc123',
@@ -188,17 +190,37 @@ void main() {
     },
   );
 
+  test('createDownload maps client-side timeout to ApiException', () async {
+    final client = mockQueueApiClient((request) async {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      return http.Response(
+        jsonEncode({'job_id': 'job_library_1', 'status': 'queued'}),
+        201,
+      );
+    });
+
+    await expectLater(
+      client.createDownload(
+        url: 'https://youtu.be/abc123',
+        sourceType: 'youtube',
+        timeout: const Duration(milliseconds: 1),
+      ),
+      throwsA(
+        isA<ApiException>()
+            .having((error) => error.statusCode, 'statusCode', 408)
+            .having((error) => error.message, 'message', contains('timeout')),
+      ),
+    );
+  });
+
   test(
     'retryQueueItem posts to the backend queue-item retry endpoint',
     () async {
       http.Request? seen;
-      final client = ApiClient(
-        baseUrl: 'http://api.test/api/v1',
-        httpClient: MockClient((request) async {
-          seen = request;
-          return http.Response(queueJson, 200);
-        }),
-      );
+      final client = mockQueueApiClient((request) async {
+        seen = request;
+        return http.Response(queueJson, 200);
+      });
 
       await client.retryQueueItem('queue item/1');
 
@@ -208,48 +230,45 @@ void main() {
   );
 
   test('listMixPlans reads the backend paginated mix-plan contract', () async {
-    final client = ApiClient(
-      baseUrl: 'http://api.test/api/v1',
-      httpClient: MockClient((request) async {
-        expect(request.method, 'GET');
-        expect(request.url.path, '/api/v1/mix-plans');
-        expect(request.url.queryParameters, {'limit': '50', 'offset': '0'});
-        return http.Response(
-          jsonEncode({
-            'data': [
-              {
-                'id': 'plan-1',
-                'schemaVersion': 1,
-                'name': 'Queue timing',
-                'clips': [
-                  {
-                    'clipId': 'clip-a',
-                    'queueItemId': 'queue-a',
-                    'trackId': 42,
-                    'sourceStartMs': 1000,
-                    'sourceEndMs': 42000,
-                    'timelineStartMs': 5000,
-                    'gainDb': 0,
-                  },
-                ],
-                'summary': {
-                  'clipCount': 1,
-                  'trackIds': [42],
-                  'durationMs': 46000,
+    final client = mockQueueApiClient((request) async {
+      expect(request.method, 'GET');
+      expect(request.url.path, '/api/v1/mix-plans');
+      expect(request.url.queryParameters, {'limit': '50', 'offset': '0'});
+      return http.Response(
+        jsonEncode({
+          'data': [
+            {
+              'id': 'plan-1',
+              'schemaVersion': 1,
+              'name': 'Queue timing',
+              'clips': [
+                {
+                  'clipId': 'clip-a',
+                  'queueItemId': 'queue-a',
+                  'trackId': 42,
+                  'sourceStartMs': 1000,
+                  'sourceEndMs': 42000,
+                  'timelineStartMs': 5000,
+                  'gainDb': 0,
                 },
-                'version': 3,
-                'createdAt': '2026-06-03T01:02:03Z',
-                'updatedAt': '2026-06-03T02:03:04Z',
+              ],
+              'summary': {
+                'clipCount': 1,
+                'trackIds': [42],
+                'durationMs': 46000,
               },
-            ],
-            'total': 1,
-            'limit': 50,
-            'offset': 0,
-          }),
-          200,
-        );
-      }),
-    );
+              'version': 3,
+              'createdAt': '2026-06-03T01:02:03Z',
+              'updatedAt': '2026-06-03T02:03:04Z',
+            },
+          ],
+          'total': 1,
+          'limit': 50,
+          'offset': 0,
+        }),
+        200,
+      );
+    });
 
     final plans = await client.listMixPlans();
 
@@ -263,30 +282,27 @@ void main() {
   test('saveMixPlan creates and updates with the backend clip field names',
       () async {
     final seen = <http.Request>[];
-    final client = ApiClient(
-      baseUrl: 'http://api.test/api/v1',
-      httpClient: MockClient((request) async {
-        seen.add(request);
-        final response = {
-          'id': request.method == 'POST' ? 'new-plan' : 'existing-plan',
-          'schemaVersion': 1,
-          'name': 'Queue timing',
-          'clips': jsonDecode(request.body)['clips'],
-          'summary': {
-            'clipCount': 1,
-            'trackIds': [42],
-            'durationMs': 46000,
-          },
-          'version': request.method == 'POST' ? 1 : 4,
-          'createdAt': '2026-06-03T01:02:03Z',
-          'updatedAt': '2026-06-03T02:03:04Z',
-        };
-        return http.Response(
-          jsonEncode(response),
-          request.method == 'POST' ? 201 : 200,
-        );
-      }),
-    );
+    final client = mockQueueApiClient((request) async {
+      seen.add(request);
+      final response = {
+        'id': request.method == 'POST' ? 'new-plan' : 'existing-plan',
+        'schemaVersion': 1,
+        'name': 'Queue timing',
+        'clips': jsonDecode(request.body)['clips'],
+        'summary': {
+          'clipCount': 1,
+          'trackIds': [42],
+          'durationMs': 46000,
+        },
+        'version': request.method == 'POST' ? 1 : 4,
+        'createdAt': '2026-06-03T01:02:03Z',
+        'updatedAt': '2026-06-03T02:03:04Z',
+      };
+      return http.Response(
+        jsonEncode(response),
+        request.method == 'POST' ? 201 : 200,
+      );
+    });
 
     final clips = [
       MixPlanClip(

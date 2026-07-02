@@ -1,16 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
-import 'package:open_music_player/services/api_client.dart';
+
+import 'support/mock_dio_client.dart';
 
 Track _track({
   String id = '7',
@@ -38,6 +40,15 @@ TimelineClip _fallback(Track track) => TimelineClip.clamped(
     );
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() {
+    // The unified ApiClient reads the access token from secure storage before
+    // each request; back it with an in-memory mock so queue loads don't hit the
+    // platform channel.
+    FlutterSecureStorage.setMockInitialValues({});
+  });
+
   test('waveform peaks are stable between UI rebuilds', () {
     final provider = QueueProvider(ApiClient());
     final track = _track();
@@ -202,7 +213,7 @@ void main() {
       var queueRequests = 0;
       final provider = QueueProvider(
         ApiClient(
-          httpClient: MockClient((request) async {
+          dio: mockQueueDio((request) async {
             if (request.method == 'GET' &&
                 request.url.path.endsWith('/queue')) {
               queueRequests++;
@@ -257,7 +268,7 @@ void main() {
       final second = _track(id: '7', queueItemId: 'queue-b');
       final provider = QueueProvider(
         ApiClient(
-          httpClient: MockClient((request) async {
+          dio: mockQueueDio((request) async {
             if (request.method == 'GET' &&
                 request.url.path.endsWith('/queue')) {
               return http.Response(
@@ -324,7 +335,7 @@ void main() {
         _track(id: '42', queueItemId: 'queue-a', playbackTrackId: '42');
     final provider = QueueProvider(
       ApiClient(
-        httpClient: MockClient((request) async {
+        dio: mockQueueDio((request) async {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
@@ -391,7 +402,7 @@ void main() {
         _track(id: '42', queueItemId: 'queue-new', playbackTrackId: '42');
     final provider = QueueProvider(
       ApiClient(
-        httpClient: MockClient((request) async {
+        dio: mockQueueDio((request) async {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
@@ -460,7 +471,7 @@ void main() {
     Map<String, dynamic>? savedBody;
     final provider = QueueProvider(
       ApiClient(
-        httpClient: MockClient((request) async {
+        dio: mockQueueDio((request) async {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
@@ -549,7 +560,7 @@ void main() {
         _track(id: '42', queueItemId: 'queue-new', playbackTrackId: '42');
     final provider = QueueProvider(
       ApiClient(
-        httpClient: MockClient((request) async {
+        dio: mockQueueDio((request) async {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
@@ -618,7 +629,7 @@ void main() {
     Map<String, dynamic>? savedBody;
     final provider = QueueProvider(
       ApiClient(
-        httpClient: MockClient((request) async {
+        dio: mockQueueDio((request) async {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
@@ -700,7 +711,7 @@ void main() {
     final createCompleter = Completer<http.Response>();
     final provider = QueueProvider(
       ApiClient(
-        httpClient: MockClient((request) async {
+        dio: mockQueueDio((request) async {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
@@ -753,7 +764,12 @@ void main() {
     provider.setTimelineStartMs(second, 12000);
     provider.setTimelineStartMs(second, 24000);
 
-    await Future<void>.delayed(Duration.zero);
+    // The unified client attaches auth through an async interceptor, so the
+    // POST reaches the mock transport a few event-loop turns later than the old
+    // synchronous http client did. Pump until the create is dispatched.
+    for (var i = 0; i < 5 && createCount == 0; i++) {
+      await Future<void>.delayed(Duration.zero);
+    }
     expect(createCount, 1);
     expect(updateCount, 0);
 
@@ -814,7 +830,7 @@ void main() {
         _track(id: '42', queueItemId: 'queue-a', playbackTrackId: '42');
     final provider = QueueProvider(
       ApiClient(
-        httpClient: MockClient((request) async {
+        dio: mockQueueDio((request) async {
           if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
             return http.Response(
               jsonEncode({
@@ -879,7 +895,7 @@ void main() {
     final track = _track();
     final provider = QueueProvider(
       ApiClient(
-        httpClient: MockClient(
+        dio: mockQueueDio(
           (request) async => http.Response(
             jsonEncode(
                 {'items': <Map<String, Object?>>[], 'currentPosition': -1}),

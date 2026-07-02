@@ -8,7 +8,7 @@ import '../models/timeline_clip.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
 import '../models/waveform.dart';
-import '../services/api_client.dart';
+import '../core/api/api_client.dart';
 
 class QueueProvider extends ChangeNotifier {
   static const String queueTimingMixPlanName = 'Queue timing';

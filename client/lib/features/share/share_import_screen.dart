@@ -8,7 +8,6 @@ import 'package:provider/provider.dart';
 import '../../core/api/api_client.dart';
 import '../../core/auth/auth_state.dart';
 import '../../core/share/shared_url_parser.dart';
-import '../../services/api_client.dart' as queue_api;
 
 class ShareImportScreen extends StatefulWidget {
   final String sharedText;
@@ -172,7 +171,7 @@ class _ShareImportScreenState extends State<ShareImportScreen> {
     }
   }
 
-  Future<queue_api.DownloadJobResponse> _createDownload(
+  Future<DownloadJobResponse> _createDownload(
     SharedUrlCandidate sharedUrl,
   ) async {
     final response = await context.read<ApiClient>().post<Map<String, dynamic>>(
@@ -183,7 +182,7 @@ class _ShareImportScreenState extends State<ShareImportScreen> {
       },
     ).timeout(const Duration(seconds: 8));
 
-    return queue_api.DownloadJobResponse.fromJson(
+    return DownloadJobResponse.fromJson(
       response.data ?? <String, dynamic>{},
     );
   }

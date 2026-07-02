@@ -1,4 +1,10 @@
 import { AppError, type ApiErrorResponse, ErrorCodes, toAppError } from '../errors';
+import {
+  getAuthTokens,
+  getRefreshToken,
+  setAuthTokens,
+  clearAuthTokens,
+} from '../storage';
 
 const API_BASE_URL = 'http://localhost:8080';
 const DEFAULT_TIMEOUT = 30000; // 30 seconds
@@ -69,6 +75,55 @@ async function fetchWithTimeout(
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+/**
+ * Raw fetch with the same exponential-backoff retry policy as {@link fetchApi}
+ * (retries 5xx/429 and network failures) but returns the {@link Response}
+ * untouched instead of parsing/throwing. Lets callers inspect status codes and
+ * response bodies for their own error handling (e.g. 401 refresh, 409 dedup).
+ */
+export async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  maxRetries: number = MAX_RETRIES
+): Promise<Response> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetchWithTimeout(url, options, DEFAULT_TIMEOUT);
+
+      // Don't retry client errors (4xx except 429).
+      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+        return response;
+      }
+
+      // Retry server errors (5xx) and rate limiting (429).
+      if (response.status >= 500 || response.status === 429) {
+        lastError = new Error(`Server error: ${response.status}`);
+        if (attempt < maxRetries) {
+          await sleep(calculateBackoff(attempt, defaultRetryConfig));
+          continue;
+        }
+      }
+
+      return response;
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        lastError = new Error('Request timed out');
+      } else {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+
+      if (attempt < maxRetries) {
+        await sleep(calculateBackoff(attempt, defaultRetryConfig));
+        continue;
+      }
+    }
+  }
+
+  throw lastError ?? new Error('Request failed after all retries');
 }
 
 /** Enhanced API fetch with retry logic and proper error handling */
@@ -184,75 +239,181 @@ export function sendMessage<T>(message: unknown): Promise<T> {
   });
 }
 
-/** API client for authenticated requests */
-export class ApiClient {
-  private authToken: string | null = null;
+/** Refresh endpoint (relative to {@link API_BASE_URL}). */
+const AUTH_REFRESH_ENDPOINT = '/api/v1/auth/refresh';
+/** Default access-token lifetime (seconds) when the backend omits expiresIn. */
+const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 
-  setAuthToken(token: string | null): void {
-    this.authToken = token;
+/** Shape of the backend auth response (login/register/refresh). */
+interface AuthTokenResponse {
+  accessToken: string;
+  refreshToken: string;
+  expiresIn?: number;
+}
+
+type RefreshFailureReason = 'auth' | 'transient';
+
+type RefreshResult =
+  | { accessToken: string; failureReason?: never }
+  | { accessToken: null; failureReason: RefreshFailureReason };
+
+/**
+ * Single source of truth for authenticated requests across the extension.
+ *
+ * Loads tokens from {@link module:storage}, attaches the access token, and on a
+ * 401 automatically calls the refresh endpoint (rotating tokens), persists the
+ * rotated pair, and retries the original request exactly once. Concurrent 401s
+ * coalesce onto a single in-flight refresh so the rotated refresh token is only
+ * spent once.
+ */
+export class ApiClient {
+  private refreshInFlight: Promise<RefreshResult> | null = null;
+  private transientRefreshFailures = new WeakSet<Response>();
+
+  private async getAccessToken(): Promise<string | null> {
+    return (await getAuthTokens())?.accessToken ?? null;
   }
 
-  private getAuthHeaders(): Record<string, string> {
-    if (!this.authToken) {
-      return {};
+  /** Coalesces concurrent refreshes onto one in-flight rotation. */
+  private async refreshAccessToken(): Promise<RefreshResult> {
+    if (!this.refreshInFlight) {
+      this.refreshInFlight = this.performRefresh().finally(() => {
+        this.refreshInFlight = null;
+      });
     }
+    return this.refreshInFlight;
+  }
+
+  private async performRefresh(): Promise<RefreshResult> {
+    const refreshToken = await getRefreshToken();
+    if (!refreshToken) {
+      await clearAuthTokens();
+      return { accessToken: null, failureReason: 'auth' };
+    }
+
+    try {
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}${AUTH_REFRESH_ENDPOINT}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+        },
+        DEFAULT_TIMEOUT
+      );
+
+      if (!response.ok) {
+        if (response.status >= 400 && response.status < 500) {
+          await clearAuthTokens();
+          return { accessToken: null, failureReason: 'auth' };
+        }
+        return { accessToken: null, failureReason: 'transient' };
+      }
+
+      const data = (await response.json()) as AuthTokenResponse;
+      await setAuthTokens({
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken,
+        expiresAt:
+          Date.now() +
+          (data.expiresIn ?? DEFAULT_ACCESS_TOKEN_TTL_SECONDS) * 1000,
+      });
+      return { accessToken: data.accessToken };
+    } catch {
+      return { accessToken: null, failureReason: 'transient' };
+    }
+  }
+
+  private buildInit(options: RequestInit, token: string | null): RequestInit {
     return {
-      Authorization: `Bearer ${this.authToken}`,
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers as Record<string, string> | undefined),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
     };
   }
 
-  async get<T>(endpoint: string, options?: Parameters<typeof fetchApi>[1]): Promise<T> {
-    return fetchApi<T>(endpoint, {
-      ...options,
-      method: 'GET',
-      headers: {
-        ...this.getAuthHeaders(),
-        ...options?.headers,
-      },
-    });
-  }
-
-  async post<T>(
+  /**
+   * Performs an authenticated request against `endpoint` (relative to the API
+   * host) and returns the raw {@link Response}. Retries 5xx/429/network errors
+   * with backoff and transparently refreshes-then-retries once on a 401.
+   */
+  async authorizedFetch(
     endpoint: string,
-    body?: unknown,
-    options?: Parameters<typeof fetchApi>[1]
-  ): Promise<T> {
-    return fetchApi<T>(endpoint, {
-      ...options,
-      method: 'POST',
-      body: body ? JSON.stringify(body) : undefined,
-      headers: {
-        ...this.getAuthHeaders(),
-        ...options?.headers,
-      },
-    });
+    options: RequestInit = {}
+  ): Promise<Response> {
+    const url = `${API_BASE_URL}${endpoint}`;
+    const accessToken = await this.getAccessToken();
+    let response = await fetchWithRetry(url, this.buildInit(options, accessToken));
+
+    if (response.status === 401) {
+      const refreshResult = await this.refreshAccessToken();
+      if (refreshResult.accessToken) {
+        response = await fetchWithRetry(
+          url,
+          this.buildInit(options, refreshResult.accessToken)
+        );
+      } else if (refreshResult.failureReason === 'transient') {
+        this.transientRefreshFailures.add(response);
+      }
+    }
+
+    return response;
   }
 
-  async put<T>(
+  /**
+   * Returns true when `authorizedFetch` returned the original 401 only because
+   * the refresh endpoint temporarily failed (5xx/network/timeout). Callers that
+   * normally clear auth on 401 must preserve tokens for this case.
+   */
+  wasRefreshFailureTransient(response: Response): boolean {
+    return this.transientRefreshFailures.has(response);
+  }
+
+  private async requestJson<T>(
     endpoint: string,
+    method: string,
     body?: unknown,
-    options?: Parameters<typeof fetchApi>[1]
+    options?: RequestInit
   ): Promise<T> {
-    return fetchApi<T>(endpoint, {
+    const response = await this.authorizedFetch(endpoint, {
       ...options,
-      method: 'PUT',
-      body: body ? JSON.stringify(body) : undefined,
-      headers: {
-        ...this.getAuthHeaders(),
-        ...options?.headers,
-      },
+      method,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
     });
+
+    if (!response.ok) {
+      let errorBody: ApiErrorResponse | undefined;
+      try {
+        errorBody = await response.json();
+      } catch {
+        // Couldn't parse error body
+      }
+      throw AppError.fromApiResponse(response, errorBody);
+    }
+
+    if (response.status === 204) {
+      return undefined as T;
+    }
+    return (await response.json()) as T;
   }
 
-  async delete<T>(endpoint: string, options?: Parameters<typeof fetchApi>[1]): Promise<T> {
-    return fetchApi<T>(endpoint, {
-      ...options,
-      method: 'DELETE',
-      headers: {
-        ...this.getAuthHeaders(),
-        ...options?.headers,
-      },
-    });
+  async get<T>(endpoint: string, options?: RequestInit): Promise<T> {
+    return this.requestJson<T>(endpoint, 'GET', undefined, options);
+  }
+
+  async post<T>(endpoint: string, body?: unknown, options?: RequestInit): Promise<T> {
+    return this.requestJson<T>(endpoint, 'POST', body, options);
+  }
+
+  async put<T>(endpoint: string, body?: unknown, options?: RequestInit): Promise<T> {
+    return this.requestJson<T>(endpoint, 'PUT', body, options);
+  }
+
+  async delete<T>(endpoint: string, options?: RequestInit): Promise<T> {
+    return this.requestJson<T>(endpoint, 'DELETE', undefined, options);
   }
 }
 
