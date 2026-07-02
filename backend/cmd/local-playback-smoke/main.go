@@ -28,6 +28,8 @@ const (
 	defaultSmokePassword  = "lowmem-smoke-password"
 	defaultSmokeUsername  = "lowmem-smoke"
 	defaultStorageKey     = "smoke/local-minio-playback-fixture.wav"
+	signedRangeHeader     = "bytes=0-15"
+	signedRangeBytes      = 16
 )
 
 type smokeConfig struct {
@@ -109,7 +111,7 @@ func parseConfig() smokeConfig {
 	flag.StringVar(&cfg.userPassword, "user-password", envDefault("OMP_SMOKE_USER_PASSWORD", defaultSmokePassword), "deterministic smoke user password")
 	flag.StringVar(&cfg.username, "username", envDefault("OMP_SMOKE_USERNAME", defaultSmokeUsername), "deterministic smoke username")
 	flag.StringVar(&cfg.storageKey, "storage-key", envDefault("OMP_SMOKE_STORAGE_KEY", defaultStorageKey), "deterministic fixture object key")
-	flag.DurationVar(&cfg.timeout, "timeout", envDurationDefault("OMP_SMOKE_TIMEOUT", 45*time.Second), "overall smoke timeout")
+	flag.DurationVar(&cfg.timeout, "timeout", envDurationDefault("OMP_SMOKE_TIMEOUT", 2*time.Minute), "overall smoke timeout")
 	flag.Parse()
 
 	cfg.backendBaseURL = strings.TrimRight(cfg.backendBaseURL, "/")
@@ -316,7 +318,7 @@ func getSignedRange(ctx context.Context, client *http.Client, signedURL string) 
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("build signed range request: %w", err)
 	}
-	req.Header.Set("Range", "bytes=0-15")
+	req.Header.Set("Range", signedRangeHeader)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -324,17 +326,18 @@ func getSignedRange(ctx context.Context, client *http.Client, signedURL string) 
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, signedRangeBytes+1))
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("read signed range response: %w", err)
 	}
-	if resp.StatusCode != http.StatusPartialContent && resp.StatusCode != http.StatusOK {
-		return resp.StatusCode, len(body), resp.Header.Get("Content-Range"), fmt.Errorf("signed range status %d", resp.StatusCode)
+	contentRange := resp.Header.Get("Content-Range")
+	if resp.StatusCode != http.StatusPartialContent {
+		return resp.StatusCode, len(body), contentRange, fmt.Errorf("signed range status %d: want %d", resp.StatusCode, http.StatusPartialContent)
 	}
-	if len(body) == 0 {
-		return resp.StatusCode, 0, resp.Header.Get("Content-Range"), errors.New("signed range returned no bytes")
+	if len(body) != signedRangeBytes {
+		return resp.StatusCode, len(body), contentRange, fmt.Errorf("signed range returned %d bytes: want %d", len(body), signedRangeBytes)
 	}
-	return resp.StatusCode, len(body), resp.Header.Get("Content-Range"), nil
+	return resp.StatusCode, len(body), contentRange, nil
 }
 
 func getOK(ctx context.Context, client *http.Client, url string) error {
