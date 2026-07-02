@@ -46,6 +46,10 @@ type fakeAnalysisStore struct {
 	unsupportedCount int
 }
 
+type legacyAnalysisStore struct {
+	requestCount int
+}
+
 func (s *fakeAnalysisStore) RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -93,6 +97,27 @@ func (s *fakeAnalysisStore) MarkUnsupported(ctx context.Context, trackID int64, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unsupportedCount++
+	return nil
+}
+
+func (s *legacyAnalysisStore) RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error {
+	s.requestCount++
+	return nil
+}
+
+func (s *legacyAnalysisStore) MarkAnalyzing(ctx context.Context, trackID int64, provenance json.RawMessage) error {
+	return nil
+}
+
+func (s *legacyAnalysisStore) StoreResult(ctx context.Context, trackID int64, result db.AnalysisResult) error {
+	return nil
+}
+
+func (s *legacyAnalysisStore) MarkFailed(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
+	return nil
+}
+
+func (s *legacyAnalysisStore) MarkUnsupported(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
 	return nil
 }
 
@@ -192,6 +217,31 @@ func TestRequestAnalysisRepairDoesNotRunActiveNonStaleRequest(t *testing.T) {
 	}
 	if result.Queued || result.Reason != "active_not_stale" {
 		t.Fatalf("result = %+v, want active non-stale skip", result)
+	}
+	select {
+	case req := <-client.requests:
+		t.Fatalf("unexpected analyzer request: %+v", req)
+	default:
+	}
+}
+
+func TestRequestAnalysisRepairSkipsLegacyStoreWithoutRequeue(t *testing.T) {
+	store := &legacyAnalysisStore{}
+	client := &fakeAnalyzerClient{requests: make(chan analyzer.Request, 1)}
+	processor := &Processor{analysisRepo: store, analyzerClient: client}
+
+	result, err := processor.RequestAnalysisRepair(context.Background(), &db.Track{
+		ID:         42,
+		StorageKey: sqlNullString("tracks/fixture/job-fixture.wav"),
+	}, AnalysisRepairOptions{})
+	if err != nil {
+		t.Fatalf("RequestAnalysisRepair returned error: %v", err)
+	}
+	if result.Status != "skipped" || result.Reason != "analysis_repair_unsupported" || result.WaitingOn != "analysis_store" {
+		t.Fatalf("result = %+v, want repair-unsupported skip", result)
+	}
+	if store.requestCount != 0 {
+		t.Fatalf("legacy RequestAnalysis called %d time(s); repair should not use stale retry path", store.requestCount)
 	}
 	select {
 	case req := <-client.requests:

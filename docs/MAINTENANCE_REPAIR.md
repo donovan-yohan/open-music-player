@@ -40,7 +40,7 @@ Fields:
 - Analysis rows in `pending` or `analyzing` are skipped until they are stale, preventing duplicate concurrent analyzer work.
 - `failed` analysis rows are retryable by default.
 - `unsupported` and `analyzed` analysis rows require `forceAnalysis=true`.
-- Analysis repair requires configured analyzer client and a track `storage_key`; otherwise the response reports the missing dependency.
+- Analysis repair requires a repair-capable analysis store, a configured analyzer client, and a track `storage_key`; otherwise the response reports the missing dependency.
 
 ## Response
 
@@ -84,7 +84,14 @@ Fields:
 }
 ```
 
-`waitingOn` values identify blockers such as `metadata_verifier`, `ollama`, `analyzer_config`, `analyzer`, or `storage`.
+`waitingOn` values identify the operator dependency that must be fixed before a skipped repair can proceed:
+
+- `metadata_verifier`: metadata matching is disabled or failed outside Ollama.
+- `ollama`: the metadata verifier is waiting on Ollama availability.
+- `analysis_store`: the configured analysis store is missing repair support, such as a legacy store that only exposes the older enqueue API. Repair skips these rows without calling `RequestAnalysis` or dispatching analyzer work.
+- `analyzer_config`: analyzer client configuration is missing.
+- `analyzer`: analyzer work is already pending/analyzing, or analysis repair cannot be queued until analyzer-side dependencies are available.
+- `storage`: the track has no stored audio key to analyze.
 
 ## Examples
 
