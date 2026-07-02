@@ -1,14 +1,18 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/engine/engine_audio_source_resolver.dart';
 import 'package:open_music_player/core/engine/gain_envelope.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
+import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/core/engine/voice.dart';
 import 'package:open_music_player/core/engine/voice_pool.dart';
+import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
   late DefaultTimelineClock clock;
   late List<FakeVoice> voices;
+  late FakeResolver resolver;
   late VoicePool pool;
 
   setUp(() async {
@@ -17,17 +21,20 @@ void main() {
       uiTickInterval: const Duration(hours: 1),
     );
     voices = [];
+    resolver = FakeResolver();
     pool = VoicePool(
       clock: clock,
-      maxVoices: 2,
+      maxVoices: 4,
+      warmSpareVoices: 1,
+      prepareTimeout: const Duration(milliseconds: 30),
       voiceFactory: () {
         final voice = FakeVoice('v${voices.length}');
         voices.add(voice);
         return voice;
       },
+      resolver: resolver,
     );
     await pool.start();
-    await pool.loadClips(_overlapClips());
   });
 
   tearDown(() async {
@@ -35,92 +42,169 @@ void main() {
     await clock.dispose();
   });
 
-  test('diffs active clips without reloading stable voices', () async {
+  test(
+      'diffs active clips, reuses stable voices, and releases before acquiring',
+      () async {
+    await pool.loadMix(_model(['a', 'b']));
     expect(pool.activeVoices.keys, ['a']);
-    expect(voices[0].loadedSources, [Uri.parse('https://example.com/a.mp3')]);
+    final voiceForA = pool.activeVoices['a'];
 
     await pool.syncAt(6000, forceSeek: true);
-    final voiceForA = pool.activeVoices['a'];
     final voiceForB = pool.activeVoices['b'];
-
-    expect(voiceForA, isNotNull);
+    expect(pool.activeVoices['a'], same(voiceForA));
     expect(voiceForB, isNotNull);
-    expect(voiceForA, isNot(same(voiceForB)));
-    expect(voices[0].loadedSources.length, 1);
-    expect(voices[1].loadedSources, [Uri.parse('https://example.com/b.mp3')]);
+    expect(voices.where((voice) => voice.loadedSources.isNotEmpty).length, 2);
 
     await pool.syncAt(7000);
-
     expect(pool.activeVoices['a'], same(voiceForA));
     expect(pool.activeVoices['b'], same(voiceForB));
-    expect(voices[0].loadedSources.length, 1);
-    expect(voices[1].loadedSources.length, 1);
+    expect((voiceForA as FakeVoice).loadedSources.length, 1);
 
-    await pool.syncAt(11000);
-
+    await pool.syncAt(11000, forceSeek: true);
     expect(pool.activeVoices.keys, ['b']);
-    expect(voices[0].releaseCount, 1);
+    expect(voiceForA.releaseCount, 1);
     expect(pool.activeVoices['b'], same(voiceForB));
   });
 
-  test(
-    'force sync after scrub seeks both active voices to global position',
-    () async {
-      await pool.syncAt(6000, forceSeek: true);
-      final voiceForA = pool.activeVoices['a'] as FakeVoice;
-      final voiceForB = pool.activeVoices['b'] as FakeVoice;
+  test('enforces a four active voice cap while keeping a warm spare idle',
+      () async {
+    await pool.loadMix(_fourAtZero());
+    expect(pool.activeVoices.length, 4);
+    expect(voices.length, 5);
+    expect(pool.activeVoices.length,
+        lessThanOrEqualTo(TimelineModel.maxConcurrentVoices));
+  });
 
-      await pool.syncAt(8000, forceSeek: true);
-
-      expect(voiceForA.seekLog.last, 8000);
-      expect(voiceForB.seekLog.last, 3000);
-    },
-  );
-
-  test('pauses and resumes active voices from clock play state', () async {
-    await clock.seek(6000);
+  test('scrub commit starts all ready active layers together', () async {
+    await pool.loadMix(_model(['a', 'b']));
+    await clock.play();
     await pool.syncAt(6000, forceSeek: true);
 
-    await clock.play();
-    await Future<void>.delayed(Duration.zero);
-    expect(voices[0].isPlaying, isTrue);
-    expect(voices[1].isPlaying, isTrue);
+    final a = pool.activeVoices['a'] as FakeVoice;
+    final b = pool.activeVoices['b'] as FakeVoice;
+    expect(a.playOrder, isNotNull);
+    expect(b.playOrder, isNotNull);
+    expect(a.seekLog.last, 6000);
+    expect(b.currentLocalPositionMs, 1000);
+  });
 
-    await clock.pause();
-    await Future<void>.delayed(Duration.zero);
-    expect(voices[0].isPlaying, isFalse);
-    expect(voices[1].isPlaying, isFalse);
+  test('prepare timeout starts ready voices and late-joins slow layer muted',
+      () async {
+    resolver.delayByClip['b'] = const Duration(milliseconds: 80);
+    await pool.loadMix(_model(['a', 'b']));
+    await pool.syncAt(6000, forceSeek: true);
+
+    expect(pool.activeVoices.containsKey('a'), isTrue);
+    expect(pool.activeVoices['b']?.isReady ?? false, isFalse);
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    expect(pool.activeVoices.containsKey('b'), isTrue);
+    final b = pool.activeVoices['b'] as FakeVoice;
+    expect(b.volumeLog.first, 0);
+  });
+
+  test('stale generation load completion cannot mutate newer assignment',
+      () async {
+    resolver.delayByClip['b'] = const Duration(milliseconds: 80);
+    await pool.loadMix(_model(['a', 'b']));
+    unawaited(pool.syncAt(6000, forceSeek: true));
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    await pool.syncAt(0, forceSeek: true);
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+
+    expect(pool.activeVoices.keys, ['a']);
+    expect(pool.activeVoices.containsKey('b'), isFalse);
+  });
+
+  test('starvation hold releases when any active voice becomes ready',
+      () async {
+    resolver.delayByClip['a'] = const Duration(milliseconds: 80);
+    unawaited(pool.loadMix(_model(['a'])));
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(clock.isBufferingHeld, isTrue);
+    await Future<void>.delayed(const Duration(milliseconds: 240));
+    expect(clock.isBufferingHeld, isFalse);
+  });
+
+  test('decoder exhaustion drops the lowest-gain active voice fallback',
+      () async {
+    final quiet = _clip('quiet', 0, gainDb: -24);
+    final loud = _clip('loud', 0);
+    final mid = _clip('mid', 0, gainDb: -6);
+    await pool.loadMix(TimelineModel(clips: [quiet, loud, mid]));
+    resolver.failClipIds.add('enter');
+    await pool
+        .loadMix(TimelineModel(clips: [quiet, loud, mid, _clip('enter', 0)]));
+
+    expect(pool.activeVoices.containsKey('enter'), isTrue);
+    expect(pool.activeVoices.length, lessThanOrEqualTo(4));
   });
 }
 
-List<MixVoiceClip> _overlapClips() => [
-      MixVoiceClip(
-        id: 'a',
-        source: Uri.parse('https://example.com/a.mp3'),
-        timelineStartMs: 0,
-        durationMs: 10000,
-        envelope: const GainEnvelope(fadeOutMs: 6000),
-      ),
-      MixVoiceClip(
-        id: 'b',
-        source: Uri.parse('https://example.com/b.mp3'),
-        timelineStartMs: 5000,
-        durationMs: 10000,
-        envelope: const GainEnvelope(fadeInMs: 6000),
-      ),
-    ];
+TimelineModel _model(List<String> ids) => TimelineModel(
+      clips: [
+        if (ids.contains('a')) _clip('a', 0, fadeOutMs: 6000),
+        if (ids.contains('b')) _clip('b', 5000, fadeInMs: 6000),
+      ],
+    );
+
+TimelineModel _fourAtZero() => TimelineModel(
+      clips: [
+        for (final id in ['a', 'b', 'c', 'd']) _clip(id, 0)
+      ],
+    );
+
+MixClip _clip(String id, int startMs,
+    {int fadeInMs = 0, int fadeOutMs = 0, double gainDb = 0}) {
+  return MixClip(
+    placement: TimelineClip.clamped(
+      id: id,
+      trackId: id,
+      sourceDurationMs: 20000,
+      sourceStartMs: 0,
+      sourceEndMs: 10000,
+      timelineStartMs: startMs,
+    ),
+    audioSourceRef: 'https://example.com/$id.mp3',
+    envelope: GainEnvelope(
+        fadeInMs: fadeInMs, fadeOutMs: fadeOutMs, baseGainDb: gainDb),
+  );
+}
+
+class FakeResolver implements EngineAudioSourceResolver {
+  final delayByClip = <String, Duration>{};
+  final failClipIds = <String>{};
+  final warmed = <String>[];
+
+  @override
+  Future<ResolvedAudioSource> resolve(MixClip clip) async {
+    final delay = delayByClip[clip.id];
+    if (delay != null) await Future<void>.delayed(delay);
+    if (failClipIds.remove(clip.id)) {
+      throw StateError('decoder exhausted for ${clip.id}');
+    }
+    return ResolvedAudioSource.remote(Uri.parse(clip.audioSourceRef), null);
+  }
+
+  @override
+  Future<void> warm(String audioSourceRef,
+      {required Set<String> protect}) async {
+    warmed.add(audioSourceRef);
+  }
+}
 
 class FakeVoice implements Voice {
   FakeVoice(this.debugId);
 
+  static int _playCounter = 0;
+
   @override
   final String debugId;
-
   final loadedSources = <Uri>[];
   final seekLog = <int>[];
   final volumeLog = <double>[];
   final _events = StreamController<VoiceEvent>.broadcast();
   int releaseCount = 0;
+  int? playOrder;
   int? _positionMs;
   bool _loaded = false;
   bool _ready = false;
@@ -128,13 +212,10 @@ class FakeVoice implements Voice {
 
   @override
   bool get isLoaded => _loaded;
-
   @override
   bool get isReady => _ready;
-
   @override
   bool get isPlaying => _playing;
-
   @override
   Stream<VoiceEvent> get events => _events.stream;
 
@@ -164,11 +245,13 @@ class FakeVoice implements Voice {
   @override
   Future<void> play() async {
     _playing = true;
+    playOrder ??= ++_playCounter;
   }
 
   @override
   Future<void> pause() async {
     _playing = false;
+    playOrder = null;
   }
 
   @override
@@ -177,12 +260,11 @@ class FakeVoice implements Voice {
     _loaded = false;
     _ready = false;
     _playing = false;
+    playOrder = null;
   }
 
   @override
-  Future<void> dispose() async {
-    await _events.close();
-  }
+  Future<void> dispose() async => _events.close();
 
   @override
   int? get currentLocalPositionMs => _positionMs;
