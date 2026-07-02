@@ -17,8 +17,8 @@ Open Music Player is a self-hosted music library management system with three ma
 ### Backend (Go)
 ```bash
 cd backend
-go run ./cmd/server          # Start server; startup runs the idempotent schema in internal/db/db.go
-go test ./...                # Run tests
+make run                     # Start server; startup runs the idempotent schema in internal/db/db.go
+make test                    # Run tests
 ```
 
 ### Client (Flutter)
@@ -59,9 +59,9 @@ docker compose down          # Stop services
 6. Track added to user's library
 
 ### Database Schema
-Key tables: `users`, `tracks`, `user_library`, `playlists`, `playlist_tracks`, `download_jobs`
+Key tables: `users`, `tracks`, `user_library`, `playlists`, `playlist_tracks`, `download_jobs`, `track_sources`, `track_analysis`
 
-Migrations are owned by the Go backend startup path in `backend/internal/db/db.go`. Keep schema changes there until the project reintroduces a single external migration authority.
+Migrations are owned by the Go backend startup path in `backend/internal/db/db.go`, with backend commands in `backend/Makefile`. The SQL files under `backend/internal/db/migrations/` are reference notes only; root Rust/sqlx migration paths such as `migrations/` or `src/db/models.rs` are retired and should not be reintroduced as a second authority.
 
 ## Code Conventions
 
@@ -129,8 +129,9 @@ Key variables (see `.env.example` for full list):
 ### Adding database fields
 1. Update the idempotent schema in `backend/internal/db/db.go`
 2. Update repository models/helpers in `backend/internal/db/`
-3. Add or update repository/API tests that exercise a fresh migrated database
-4. Run targeted backend tests from `backend/`
+3. Add or update SQL reference notes under `backend/internal/db/migrations/` only when they match the Go startup schema
+4. Add or update repository/API tests that exercise a fresh migrated database
+5. Run targeted backend tests from `backend/`
 
 ## CI/CD
 
