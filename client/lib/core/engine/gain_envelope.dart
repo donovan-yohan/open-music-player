@@ -86,10 +86,8 @@ class GainEnvelope {
       return _EffectiveFades(requestedIn, requestedOut);
     }
 
-    return _EffectiveFades(
-      (requestedIn * clipDurationMs / total).round(),
-      (requestedOut * clipDurationMs / total).round(),
-    );
+    final effectiveIn = (requestedIn * clipDurationMs / total).floor();
+    return _EffectiveFades(effectiveIn, clipDurationMs - effectiveIn);
   }
 
   double _shape(double progress) {
