@@ -58,7 +58,12 @@ class PlayerScreen extends StatelessWidget {
               ),
               IconButton(
                 icon: const Icon(Icons.queue_music),
-                onPressed: () => context.push('/queue'),
+                // Queue lives inside the ShellRoute (_shellNavigatorKey). Using
+                // push() from this root-level player route re-instantiates the
+                // shell navigator, reserving that GlobalKey twice and tripping
+                // navigator.dart's keyReservation assertion. go() switches to
+                // the queue tab on the single shell, matching the mini-player.
+                onPressed: () => context.go('/queue'),
               ),
             ],
           ),
