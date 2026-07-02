@@ -121,27 +121,24 @@ func (p *Processor) RequestAnalysisRepair(ctx context.Context, track *db.Track, 
 
 	repairer, ok := p.analysisRepo.(analysisRepairStore)
 	if !ok {
-		if err := p.analysisRepo.RequestAnalysis(ctx, track.ID, provenance); err != nil {
-			return result, err
+		result.Status = "skipped"
+		result.Reason = "analysis_repair_unsupported"
+		result.WaitingOn = "analysis_store"
+		return result, nil
+	}
+	repair, err := repairer.RequestRepairAnalysis(ctx, track.ID, provenance, opts.Force, staleAfter)
+	if err != nil {
+		return result, err
+	}
+	result.PreviousStatus = repair.PreviousStatus
+	result.Queued = repair.Queued
+	result.Status = repair.Status
+	result.Reason = repair.Reason
+	if !repair.Queued {
+		if result.WaitingOn == "" && (repair.Status == db.AnalysisStatusPending || repair.Status == db.AnalysisStatusAnalyzing) {
+			result.WaitingOn = "analyzer"
 		}
-		result.Queued = true
-		result.Status = "queued"
-		result.Reason = "legacy_request_analysis"
-	} else {
-		repair, err := repairer.RequestRepairAnalysis(ctx, track.ID, provenance, opts.Force, staleAfter)
-		if err != nil {
-			return result, err
-		}
-		result.PreviousStatus = repair.PreviousStatus
-		result.Queued = repair.Queued
-		result.Status = repair.Status
-		result.Reason = repair.Reason
-		if !repair.Queued {
-			if result.WaitingOn == "" && (repair.Status == db.AnalysisStatusPending || repair.Status == db.AnalysisStatusAnalyzing) {
-				result.WaitingOn = "analyzer"
-			}
-			return result, nil
-		}
+		return result, nil
 	}
 
 	req := analyzer.Request{

@@ -40,7 +40,7 @@ Fields:
 - Analysis rows in `pending` or `analyzing` are skipped until they are stale, preventing duplicate concurrent analyzer work.
 - `failed` analysis rows are retryable by default.
 - `unsupported` and `analyzed` analysis rows require `forceAnalysis=true`.
-- Analysis repair requires configured analyzer client and a track `storage_key`; otherwise the response reports the missing dependency.
+- Analysis repair requires a repair-capable analysis store, a configured analyzer client, and a track `storage_key`; otherwise the response reports the missing dependency.
 
 ## Response
 
