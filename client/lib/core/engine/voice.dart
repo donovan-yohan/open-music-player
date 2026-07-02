@@ -8,6 +8,15 @@ typedef VoiceFactory = Voice Function();
 
 enum VoiceEventKind { ready, buffering, stalled, completed, error }
 
+class VoiceCapacityException implements Exception {
+  const VoiceCapacityException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'VoiceCapacityException: $message';
+}
+
 class VoiceEvent {
   final VoiceEventKind kind;
   final Object? error;
@@ -42,7 +51,7 @@ abstract class Voice {
 
 class JustAudioVoice implements Voice {
   JustAudioVoice({required this.debugId, AudioPlayer? player})
-    : _player = player ?? AudioPlayer() {
+      : _player = player ?? AudioPlayer() {
     _player.playerStateStream.listen(
       (state) {
         switch (state.processingState) {
