@@ -340,6 +340,66 @@ func TestEnqueueAnalysisRunsConfiguredAnalyzerAndStoresResult(t *testing.T) {
 	}
 }
 
+func TestRunAnalysisAppliesGenreHintAgainstPostgres(t *testing.T) {
+	database, ctx := newProcessorPostgresTestDB(t)
+	repo := db.NewTrackRepository(database)
+	track, created, err := repo.CreateTrackFromMetadata(ctx, "Fixture Artist", "Fixture Song", "", 197500,
+		db.WithMetadata(json.RawMessage(`{}`)),
+		db.WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""))
+	if err != nil {
+		t.Fatalf("create track: %v", err)
+	}
+	if !created {
+		t.Fatal("expected new track")
+	}
+
+	store := &fakeAnalysisStore{}
+	client := &fakeAnalyzerClient{result: &analyzer.Result{
+		SchemaVersion:  analyzer.SchemaVersion,
+		SummaryJSON:    json.RawMessage(`{"genre_hints":[{"value":"breakbeat","confidence":0.41},{"value":"house","confidence":0.88}]}`),
+		ArtifactsJSON:  json.RawMessage(`{}`),
+		ProvenanceJSON: json.RawMessage(`{"analyzer":"fake"}`),
+	}}
+	processor := &Processor{analysisRepo: store, analyzerClient: client, trackRepo: repo}
+
+	processor.runAnalysis(analyzer.Request{TrackID: track.ID, StorageKey: "tracks/fixture/song.wav"})
+
+	var genre sql.NullString
+	if err := database.QueryRowContext(ctx, `SELECT genre FROM tracks WHERE id = $1`, track.ID).Scan(&genre); err != nil {
+		t.Fatalf("query genre: %v", err)
+	}
+	if !genre.Valid || genre.String != "house" {
+		t.Fatalf("genre = %#v, want house", genre)
+	}
+}
+
+func newProcessorPostgresTestDB(t *testing.T) (*db.DB, context.Context) {
+	t.Helper()
+	dsn := os.Getenv("OMP_POSTGRES_TEST_DSN")
+	if dsn == "" {
+		dsn = os.Getenv("QA_DATABASE_URL")
+	}
+	if dsn == "" {
+		t.Skip("set OMP_POSTGRES_TEST_DSN or QA_DATABASE_URL to run Postgres processor integration tests")
+	}
+	rawDB, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	t.Cleanup(func() { _ = rawDB.Close() })
+	database := &db.DB{DB: rawDB}
+	if err := database.Ping(); err != nil {
+		t.Fatalf("ping test database: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
+	if _, err := database.ExecContext(context.Background(), `TRUNCATE TABLE tracks RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatalf("truncate test database: %v", err)
+	}
+	return database, context.Background()
+}
+
 func TestRunAnalysisMapsAnalyzerErrorsToTerminalStates(t *testing.T) {
 	tests := []struct {
 		name            string
