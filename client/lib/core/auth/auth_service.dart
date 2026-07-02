@@ -85,7 +85,13 @@ class AuthService {
     } catch (_) {
       // Logout even if the API call fails
     } finally {
-      await _storage.clearTokens();
+      // Biometric unlock protects an existing saved session; it is not
+      // passwordless login. Logging out removes the saved session and its
+      // unlock enrollment so the next login requires the account password.
+      await Future.wait([
+        _storage.clearTokens(),
+        _storage.setBiometricUnlockEnabled(false),
+      ]);
     }
   }
 
