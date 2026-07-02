@@ -100,6 +100,7 @@ class PlaybackEngine implements PlaybackEngineControls {
   String? _lastDominantClipId;
   int? _lastActiveVoiceCount;
   int _lastPositionMs = 0;
+  bool _manualPositionJumpPending = false;
   final Set<String> _completedClipIds = {};
 
   VoicePool get pool => _pool;
@@ -128,6 +129,7 @@ class PlaybackEngine implements PlaybackEngineControls {
     _lastDominantClipId = null;
     _lastActiveVoiceCount = null;
     _lastPositionMs = 0;
+    _manualPositionJumpPending = false;
     _completedClipIds.clear();
     await _pool.loadMix(model);
     _publishNowPlaying();
@@ -146,10 +148,21 @@ class PlaybackEngine implements PlaybackEngineControls {
   @override
   Future<void> pause() => _clock.pause();
   void beginScrub() => _clock.beginScrub();
-  void updateScrub(int globalMs) => _clock.updateScrub(globalMs);
-  Future<void> endScrub(int globalMs) => _clock.endScrub(globalMs);
+  void updateScrub(int globalMs) {
+    _markManualPositionJump();
+    _clock.updateScrub(globalMs);
+  }
+
+  Future<void> endScrub(int globalMs) {
+    _markManualPositionJump();
+    return _clock.endScrub(globalMs);
+  }
+
   @override
-  Future<void> seek(int globalMs) => _clock.seek(globalMs);
+  Future<void> seek(int globalMs) {
+    _markManualPositionJump();
+    return _clock.seek(globalMs);
+  }
 
   Future<void> dispose() async {
     for (final sub in _subscriptions) {
@@ -169,19 +182,30 @@ class PlaybackEngine implements PlaybackEngineControls {
       ..add(_pool.voiceStatusStream.listen((_) => _publishNowPlaying()));
   }
 
+  void _markManualPositionJump() {
+    _manualPositionJumpPending = true;
+  }
+
   void _onPosition(int positionMs) {
+    final isManualPositionJump =
+        _manualPositionJumpPending || _clock.isScrubbing;
     for (final clip in _model.clips) {
       if (_lastPositionMs < clip.timelineEndMs &&
           positionMs >= clip.timelineEndMs) {
         if (clip.timelineEndMs == _clock.durationMs &&
-            positionMs >= _clock.durationMs) {
+            positionMs >= _clock.durationMs &&
+            !isManualPositionJump) {
           continue;
         }
         _emitCompletionForClip(
           clip,
-          wasSkipped: positionMs - _lastPositionMs > 1500,
+          wasSkipped:
+              isManualPositionJump || positionMs - _lastPositionMs > 1500,
         );
       }
+    }
+    if (positionMs != _lastPositionMs) {
+      _manualPositionJumpPending = false;
     }
     _lastPositionMs = positionMs;
     _publishNowPlaying();
