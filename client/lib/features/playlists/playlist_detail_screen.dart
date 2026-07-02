@@ -211,19 +211,17 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               coverUrl: result.coverUrl ?? '',
               isPublic: result.isPublic,
             );
+            if (!mounted) return;
             setState(
                 () => _playlist = updated.copyWith(tracks: _playlist!.tracks));
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Playlist updated')),
-              );
-            }
+            ScaffoldMessenger.of(this.context).showSnackBar(
+              const SnackBar(content: Text('Playlist updated')),
+            );
           } catch (e) {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Failed to update: $e')),
-              );
-            }
+            if (!mounted) return;
+            ScaffoldMessenger.of(this.context).showSnackBar(
+              SnackBar(content: Text('Failed to update: $e')),
+            );
           }
         },
       ),
