@@ -54,6 +54,7 @@ type Artist struct {
 }
 
 type Release struct {
+	ID          int64
 	Name        string
 	Artist      string
 	MBReleaseID *uuid.UUID
@@ -340,7 +341,7 @@ func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limi
 	// Single query with window function for total count
 	selectQuery := `
 		WITH release_results AS (
-			SELECT album, artist, mb_release_id, MAX(cover_art_url) as cover_art_url, COUNT(*) as track_count,
+			SELECT MIN(id) as id, album, artist, mb_release_id, MAX(cover_art_url) as cover_art_url, COUNT(*) as track_count,
 				   ts_rank(to_tsvector('english', album), to_tsquery('english', $1)) as rank,
 				   COUNT(*) OVER() as total_groups
 			FROM tracks
@@ -348,7 +349,7 @@ func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limi
 				AND to_tsvector('english', album) @@ to_tsquery('english', $1)
 			GROUP BY album, artist, mb_release_id
 		)
-		SELECT album, artist, mb_release_id, cover_art_url, track_count, total_groups
+		SELECT id, album, artist, mb_release_id, cover_art_url, track_count, total_groups
 		FROM release_results
 		ORDER BY rank DESC, track_count DESC, album ASC
 		LIMIT $2 OFFSET $3
@@ -365,7 +366,7 @@ func (r *TrackRepository) SearchReleases(ctx context.Context, query string, limi
 	for rows.Next() {
 		var release Release
 		var artist sql.NullString
-		err := rows.Scan(&release.Name, &artist, &release.MBReleaseID, &release.CoverArtURL, &release.TrackCount, &total)
+		err := rows.Scan(&release.ID, &release.Name, &artist, &release.MBReleaseID, &release.CoverArtURL, &release.TrackCount, &total)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -397,7 +398,7 @@ func (r *TrackRepository) searchReleasesTrigram(ctx context.Context, query strin
 
 	selectQuery := `
 		WITH release_results AS (
-			SELECT album, artist, mb_release_id, MAX(cover_art_url) as cover_art_url, COUNT(*) as track_count,
+			SELECT MIN(id) as id, album, artist, mb_release_id, MAX(cover_art_url) as cover_art_url, COUNT(*) as track_count,
 				   MAX(similarity(album, $1)) as rank,
 				   COUNT(*) OVER() as total_groups
 			FROM tracks
@@ -405,7 +406,7 @@ func (r *TrackRepository) searchReleasesTrigram(ctx context.Context, query strin
 				AND similarity(album, $1) >= $4
 			GROUP BY album, artist, mb_release_id
 		)
-		SELECT album, artist, mb_release_id, cover_art_url, track_count, total_groups
+		SELECT id, album, artist, mb_release_id, cover_art_url, track_count, total_groups
 		FROM release_results
 		ORDER BY rank DESC, track_count DESC, album ASC
 		LIMIT $2 OFFSET $3
@@ -422,7 +423,7 @@ func (r *TrackRepository) searchReleasesTrigram(ctx context.Context, query strin
 	for rows.Next() {
 		var release Release
 		var artist sql.NullString
-		if err := rows.Scan(&release.Name, &artist, &release.MBReleaseID, &release.CoverArtURL, &release.TrackCount, &total); err != nil {
+		if err := rows.Scan(&release.ID, &release.Name, &artist, &release.MBReleaseID, &release.CoverArtURL, &release.TrackCount, &total); err != nil {
 			return nil, 0, err
 		}
 		if artist.Valid {

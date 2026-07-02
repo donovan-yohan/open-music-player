@@ -178,6 +178,42 @@ func TestUpdateMBMatchPersistsJSONBAndPreservesStickyFieldsAgainstPostgres(t *te
 	}
 }
 
+func TestSearchReleasesReturnsStableNumericIDAgainstPostgres(t *testing.T) {
+	repo, ctx := newPostgresTestRepository(t)
+
+	first, _, err := repo.CreateTrackFromMetadata(ctx, "Catalog Artist", "First Song", "Catalog Numeric Album", 200000,
+		WithMetadata(json.RawMessage(`{}`)),
+		WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""))
+	if err != nil {
+		t.Fatalf("seed first track: %v", err)
+	}
+	second, _, err := repo.CreateTrackFromMetadata(ctx, "Catalog Artist", "Second Song", "Catalog Numeric Album", 210000,
+		WithMetadata(json.RawMessage(`{}`)),
+		WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""))
+	if err != nil {
+		t.Fatalf("seed second track: %v", err)
+	}
+
+	releases, total, err := repo.SearchReleases(ctx, "Catalog Numeric", 20, 0)
+	if err != nil {
+		t.Fatalf("SearchReleases: %v", err)
+	}
+	if total != 1 || len(releases) != 1 {
+		t.Fatalf("SearchReleases returned len=%d total=%d, want one album group", len(releases), total)
+	}
+
+	wantID := first.ID
+	if second.ID < wantID {
+		wantID = second.ID
+	}
+	if releases[0].ID != wantID {
+		t.Fatalf("release ID = %d, want stable MIN(id) %d", releases[0].ID, wantID)
+	}
+	if releases[0].TrackCount != 2 {
+		t.Fatalf("release TrackCount = %d, want 2", releases[0].TrackCount)
+	}
+}
+
 func decodeJSONRawMessage(t *testing.T, raw json.RawMessage) map[string]any {
 	t.Helper()
 	var decoded map[string]any

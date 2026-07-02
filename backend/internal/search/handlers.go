@@ -40,6 +40,7 @@ type ArtistResponse struct {
 }
 
 type ReleaseResponse struct {
+	ID          int64      `json:"id"`
 	Name        string     `json:"name"`
 	Artist      string     `json:"artist,omitempty"`
 	CoverArtUrl string     `json:"coverArtUrl,omitempty"`
@@ -246,6 +247,7 @@ func toReleaseResponses(releases []db.Release) []ReleaseResponse {
 			coverArtURL = getCoverArtURL(rel.MBReleaseID)
 		}
 		responses = append(responses, ReleaseResponse{
+			ID:          rel.ID,
 			Name:        rel.Name,
 			Artist:      rel.Artist,
 			CoverArtUrl: coverArtURL,
