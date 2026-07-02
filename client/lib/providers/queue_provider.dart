@@ -220,6 +220,7 @@ class QueueProvider extends ChangeNotifier {
   Future<void> reorderQueue(int oldIndex, int newIndex) async {
     if (oldIndex == newIndex) return;
     if (oldIndex < 0 || oldIndex >= _queue.tracks.length) return;
+    if (newIndex < 0 || newIndex >= _queue.tracks.length) return;
 
     final previousQueue = _queue;
 
