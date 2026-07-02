@@ -207,10 +207,10 @@ class PlayerScreen extends StatelessWidget {
             trackHeight: 4,
             thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
             overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
-            activeTrackColor: AppTheme.primaryGreen,
+            activeTrackColor: AppTheme.brandColor,
             inactiveTrackColor: AppTheme.darkCard,
             thumbColor: AppTheme.lightText,
-            overlayColor: AppTheme.primaryGreen.withOpacity(0.2),
+            overlayColor: AppTheme.brandColor.withOpacity(0.2),
           ),
           child: Slider(
             value: duration.inMilliseconds > 0
@@ -325,7 +325,7 @@ class PlaybackControls extends StatelessWidget {
           children: [
             _ControlIconButton(
               icon: Icons.shuffle,
-              color: shuffleEnabled ? AppTheme.primaryGreen : AppTheme.greyText,
+              color: shuffleEnabled ? AppTheme.brandColor : AppTheme.greyText,
               iconSize: 28,
               onPressed: onShuffle,
             ),
@@ -361,7 +361,7 @@ class PlaybackControls extends StatelessWidget {
             _ControlIconButton(
               icon: _loopIcon(loopMode),
               color: loopMode != LoopMode.off
-                  ? AppTheme.primaryGreen
+                  ? AppTheme.brandColor
                   : AppTheme.greyText,
               iconSize: 28,
               onPressed: onLoop,

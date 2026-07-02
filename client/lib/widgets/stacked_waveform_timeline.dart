@@ -53,7 +53,7 @@ class StackedWaveformTimeline extends StatefulWidget {
   /// Left pinned header rail width (matches design `x 0-88`).
   static const double railWidth = TimelineLaneHeader.railWidth;
 
-  static const Color currentAccent = Color(0xFF2E7D32); // high-contrast green
+  static const Color currentAccent = Color(0xFFE65100); // high-contrast orange
   static const Color previousAccent = Color(0xFF607D8B);
   static const Color upcomingAccent = Color(0xFF1565C0);
 

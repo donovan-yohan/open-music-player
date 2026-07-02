@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 class AppTheme {
   // Spotify-inspired dark theme colors
-  static const Color primaryGreen = Color(0xFF1DB954);
+  static const Color brandColor = Color(0xFFFF6D00);
   static const Color darkBackground = Color(0xFF121212);
   static const Color darkSurface = Color(0xFF181818);
   static const Color darkCard = Color(0xFF282828);
@@ -14,8 +14,8 @@ class AppTheme {
       useMaterial3: true,
       brightness: Brightness.dark,
       colorScheme: const ColorScheme.dark(
-        primary: primaryGreen,
-        secondary: primaryGreen,
+        primary: brandColor,
+        secondary: brandColor,
         surface: darkSurface,
         onPrimary: Colors.black,
         onSecondary: Colors.black,
@@ -72,7 +72,7 @@ class AppTheme {
       useMaterial3: true,
       brightness: Brightness.light,
       colorScheme: ColorScheme.fromSeed(
-        seedColor: primaryGreen,
+        seedColor: brandColor,
         brightness: Brightness.light,
       ),
     );
