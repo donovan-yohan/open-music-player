@@ -42,6 +42,8 @@ type fakeAnalysisStore struct {
 	storeResultCount int
 	storedResult     db.AnalysisResult
 	storeResultCh    chan db.AnalysisResult
+	failedCount      int
+	unsupportedCount int
 }
 
 func (s *fakeAnalysisStore) RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error {
@@ -81,10 +83,16 @@ func (s *fakeAnalysisStore) StoreResult(ctx context.Context, trackID int64, resu
 }
 
 func (s *fakeAnalysisStore) MarkFailed(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failedCount++
 	return nil
 }
 
 func (s *fakeAnalysisStore) MarkUnsupported(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unsupportedCount++
 	return nil
 }
 
@@ -279,6 +287,39 @@ func TestEnqueueAnalysisRunsConfiguredAnalyzerAndStoresResult(t *testing.T) {
 	defer store.mu.Unlock()
 	if store.requestCount != 1 || store.analyzingCount != 1 || store.storeResultCount != 1 {
 		t.Fatalf("analysis calls = request:%d analyzing:%d store:%d, want 1/1/1", store.requestCount, store.analyzingCount, store.storeResultCount)
+	}
+}
+
+func TestRunAnalysisMapsAnalyzerErrorsToTerminalStates(t *testing.T) {
+	tests := []struct {
+		name            string
+		err             error
+		wantFailed      int
+		wantUnsupported int
+	}{
+		{name: "unsupported", err: analyzer.ErrUnsupported, wantUnsupported: 1},
+		{name: "failure", err: errors.New("transport failed"), wantFailed: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeAnalysisStore{}
+			processor := &Processor{
+				analysisRepo:   store,
+				analyzerClient: &fakeAnalyzerClient{err: tt.err},
+			}
+
+			processor.runAnalysis(analyzer.Request{TrackID: 42, StorageKey: "tracks/fixture/job-fixture.wav"})
+
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			if store.analyzingCount != 1 {
+				t.Fatalf("MarkAnalyzing called %d time(s), want 1", store.analyzingCount)
+			}
+			if store.failedCount != tt.wantFailed || store.unsupportedCount != tt.wantUnsupported {
+				t.Fatalf("terminal calls = failed:%d unsupported:%d, want failed:%d unsupported:%d", store.failedCount, store.unsupportedCount, tt.wantFailed, tt.wantUnsupported)
+			}
+		})
 	}
 }
 

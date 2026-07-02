@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -109,9 +111,29 @@ func TestServiceClientAcceptsPersistenceJSONFieldNames(t *testing.T) {
 	}
 }
 
-func TestServiceClientMapsUnsupportedStatus(t *testing.T) {
+func TestServiceClientMapsUnsupportedStatuses(t *testing.T) {
+	for _, status := range []int{http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity} {
+		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "codec unsupported", status)
+			}))
+			defer server.Close()
+
+			client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+			if err != nil {
+				t.Fatalf("NewServiceClient returned error: %v", err)
+			}
+			_, err = client.Analyze(context.Background(), Request{TrackID: 1, StorageKey: "tracks/fixture.wav"})
+			if !errors.Is(err, ErrUnsupported) {
+				t.Fatalf("Analyze error = %v, want ErrUnsupported", err)
+			}
+		})
+	}
+}
+
+func TestServiceClientRejectsNonSuccessStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "codec unsupported", http.StatusUnsupportedMediaType)
+		http.Error(w, "analyzer exploded", http.StatusInternalServerError)
 	}))
 	defer server.Close()
 
@@ -120,7 +142,84 @@ func TestServiceClientMapsUnsupportedStatus(t *testing.T) {
 		t.Fatalf("NewServiceClient returned error: %v", err)
 	}
 	_, err = client.Analyze(context.Background(), Request{TrackID: 1, StorageKey: "tracks/fixture.wav"})
-	if !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("Analyze error = %v, want ErrUnsupported", err)
+	if err == nil || errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("Analyze error = %v, want non-unsupported 500 failure", err)
+	}
+}
+
+func TestServiceClientRejectsMalformedJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"schema_version":1,"summary":`))
+	}))
+	defer server.Close()
+
+	client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewServiceClient returned error: %v", err)
+	}
+	_, err = client.Analyze(context.Background(), Request{TrackID: 1, StorageKey: "tracks/fixture.wav"})
+	if err == nil || !strings.Contains(err.Error(), "parse analyzer response") {
+		t.Fatalf("Analyze error = %v, want parse analyzer response", err)
+	}
+}
+
+func TestServiceClientRejectsMissingSummary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"schema_version":1,"artifacts":{},"provenance":{}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewServiceClient returned error: %v", err)
+	}
+	_, err = client.Analyze(context.Background(), Request{TrackID: 1, StorageKey: "tracks/fixture.wav"})
+	if err == nil || !strings.Contains(err.Error(), "missing summary") {
+		t.Fatalf("Analyze error = %v, want missing summary", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestServiceClientReportsTransportFailure(t *testing.T) {
+	client, err := NewServiceClient(ServiceConfig{
+		Enabled: true,
+		BaseURL: "http://analyzer.invalid",
+		Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, errors.New("dial failed")
+		})},
+	})
+	if err != nil {
+		t.Fatalf("NewServiceClient returned error: %v", err)
+	}
+	_, err = client.Analyze(context.Background(), Request{TrackID: 1, StorageKey: "tracks/fixture.wav"})
+	if err == nil || !strings.Contains(err.Error(), "call analyzer service") {
+		t.Fatalf("Analyze error = %v, want transport failure", err)
+	}
+}
+
+func TestServiceClientRejectsOversizeResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"schema_version":1,"summary":{"bpm":{"value":128}}}` + strings.Repeat(" ", 1<<20)))
+	}))
+	defer server.Close()
+
+	client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewServiceClient returned error: %v", err)
+	}
+	result, err := client.Analyze(context.Background(), Request{TrackID: 1, StorageKey: "tracks/fixture.wav"})
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		if err == nil {
+			t.Fatalf("Analyze accepted oversize response; result summary = %s", result.SummaryJSON)
+		}
+		t.Fatalf("Analyze error = %v, want response size failure", err)
 	}
 }

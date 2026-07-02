@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-const defaultServiceTimeout = 90 * time.Second
+const (
+	defaultServiceTimeout    = 90 * time.Second
+	maxAnalyzerResponseBytes = 1 << 20
+)
 
 // ServiceConfig controls the optional out-of-process analyzer integration.
 // A nil service client means analysis is disabled; callers must not enqueue
@@ -117,9 +120,12 @@ func (c *ServiceClient) Analyze(ctx context.Context, req Request) (*Result, erro
 		return nil, fmt.Errorf("call analyzer service: %w", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAnalyzerResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read analyzer response: %w", err)
+	}
+	if len(body) > maxAnalyzerResponseBytes {
+		return nil, fmt.Errorf("analyzer service response exceeds %d byte limit", maxAnalyzerResponseBytes)
 	}
 	if resp.StatusCode == http.StatusUnsupportedMediaType || resp.StatusCode == http.StatusUnprocessableEntity {
 		return nil, fmt.Errorf("%w: analyzer service returned %d: %s", ErrUnsupported, resp.StatusCode, strings.TrimSpace(string(body)))
