@@ -12,6 +12,7 @@ import '../../core/engine/playback_engine.dart';
 import '../../core/engine/timeline_clock.dart';
 import '../../core/engine/timeline_model.dart';
 import '../../core/engine/voice.dart';
+import '../../core/engine/voice_pool.dart';
 import '../../models/timeline_clip.dart';
 
 class DebugMixEngineScreen extends StatefulWidget {
@@ -73,7 +74,19 @@ class _DebugMixEngineScreenState extends State<DebugMixEngineScreen> {
     super.initState();
     _clock =
         DefaultTimelineClock(uiTickInterval: const Duration(milliseconds: 100));
-    _engine = PlaybackEngine.withClock(clock: _clock, voiceFactory: _makeVoice);
+    _engine = PlaybackEngine(
+      clock: _clock,
+      // The physical proof should wait a little longer for all four voices at
+      // scrub commits and avoid tiny corrective seeks that sound like jitter.
+      voicePool: VoicePool(
+        clock: _clock,
+        voiceFactory: _makeVoice,
+        prepareTimeout: const Duration(milliseconds: 2500),
+        driftCheckInterval: const Duration(seconds: 3),
+        driftCorrectionThreshold: const Duration(milliseconds: 1200),
+        driftCorrectionCooldown: const Duration(seconds: 12),
+      ),
+    );
     _subscriptions
       ..add(_engine.positionMsStream.listen((positionMs) {
         if (!mounted) return;
