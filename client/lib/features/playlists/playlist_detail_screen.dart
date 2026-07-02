@@ -308,6 +308,26 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
+  bool _isCurrentPlaylistQueue(PlaybackContext? playbackContext) {
+    final playlist = _playlist;
+    if (playlist == null) return false;
+    return playbackContext?.kind == PlaybackContextKind.playlist &&
+        playbackContext?.id == playlist.id.toString();
+  }
+
+  bool _isCurrentTrackInThisPlaylist(
+    PlaybackContext? playbackContext,
+    String? currentItemId,
+    Track track,
+  ) {
+    if (!_isCurrentPlaylistQueue(playbackContext)) return false;
+    return int.tryParse(currentItemId ?? '') == track.id;
+  }
+
+  String _activeTrackLabel(bool isPlaying) {
+    return isPlaying ? 'Now playing' : 'Paused here';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -370,7 +390,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
               colors: [
-                Theme.of(context).colorScheme.primary.withOpacity(0.6),
+                Theme.of(context).colorScheme.primary.withValues(alpha: 0.6),
                 Theme.of(context).scaffoldBackgroundColor,
               ],
             ),
@@ -379,7 +399,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             child: Icon(
               Icons.queue_music,
               size: 80,
-              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+              color: Theme.of(
+                context,
+              ).colorScheme.onSurface.withValues(alpha: 0.5),
             ),
           ),
         ),
@@ -524,7 +546,15 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
   Widget _buildTracksList() {
     final tracks = _playlist!.tracks ?? [];
-    final currentTrackId = context.watch<PlaybackState>().currentItem?.id;
+    final playbackContext = context.select<PlaybackState, PlaybackContext?>(
+      (playback) => playback.playbackContext,
+    );
+    final currentItemId = context.select<PlaybackState, String?>(
+      (playback) => playback.currentItem?.id,
+    );
+    final isPlaying = context.select<PlaybackState, bool>(
+      (playback) => playback.isPlaying,
+    );
 
     if (tracks.isEmpty) {
       return const SliverFillRemaining(
@@ -553,9 +583,14 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           (context, index) {
             final track = tracks[index];
             final selected = _selection.contains(track.id);
+            final isCurrent = _isCurrentTrackInThisPlaylist(
+              playbackContext,
+              currentItemId,
+              track,
+            );
             return TrackTile.fromTrack(
               track,
-              isCurrent: currentTrackId == track.id.toString(),
+              isCurrent: isCurrent,
               onTap: () => _toggleTrackSelection(track.id),
               trailing: Checkbox(
                 value: selected,
@@ -574,12 +609,17 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         onReorder: _reorderTrack,
         itemBuilder: (context, index) {
           final track = tracks[index];
+          final isCurrent = _isCurrentTrackInThisPlaylist(
+            playbackContext,
+            currentItemId,
+            track,
+          );
           return ReorderableDragStartListener(
             key: Key('track_${track.id}'),
             index: index,
             child: TrackTile.fromTrack(
               track,
-              isCurrent: currentTrackId == track.id.toString(),
+              isCurrent: isCurrent,
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -601,14 +641,20 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       delegate: SliverChildBuilderDelegate(
         (context, index) {
           final track = tracks[index];
+          final isCurrent = _isCurrentTrackInThisPlaylist(
+            playbackContext,
+            currentItemId,
+            track,
+          );
           return QueueSwipeAction(
             actionKey:
                 Key('playlist_queue_${widget.playlistId}_${track.id}_$index'),
             onAddToQueue: () => _enqueueTrack(track),
             child: TrackTile.fromTrack(
               track,
-              isCurrent: currentTrackId == track.id.toString(),
+              isCurrent: isCurrent,
               onTap: () => _playFromIndex(index),
+              activeLabel: isCurrent ? _activeTrackLabel(isPlaying) : null,
             ),
           );
         },
