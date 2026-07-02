@@ -161,6 +161,48 @@ void main() {
     expect(pool.activeVoices.containsKey('enter'), isFalse);
     expect(quietVoice.releaseCount, 0);
   });
+
+  test('drift monitor ignores small player jitter before hard resyncing',
+      () async {
+    await pool.dispose();
+    await clock.dispose();
+
+    var now = DateTime.utc(2026, 1, 1);
+    clock = DefaultTimelineClock(
+      now: () => now,
+      uiTickInterval: const Duration(hours: 1),
+    );
+    voices = [];
+    resolver = FakeResolver();
+    capacityFailures = {};
+    pool = VoicePool(
+      clock: clock,
+      maxVoices: 4,
+      warmSpareVoices: 0,
+      prepareTimeout: const Duration(milliseconds: 30),
+      driftCheckInterval: const Duration(milliseconds: 10),
+      driftCorrectionThreshold: const Duration(milliseconds: 500),
+      driftCorrectionCooldown: const Duration(seconds: 8),
+      voiceFactory: () {
+        final voice = FakeVoice('v${voices.length}', capacityFailures);
+        voices.add(voice);
+        return voice;
+      },
+      resolver: resolver,
+    );
+    await pool.start();
+    await pool.loadMix(TimelineModel(clips: [_clip('a', 0), _clip('b', 0)]));
+    await clock.play();
+
+    final voice = pool.activeVoices['a'] as FakeVoice;
+    now = now.add(const Duration(milliseconds: 300));
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(voice.seekLog, isEmpty);
+
+    now = now.add(const Duration(milliseconds: 500));
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(voice.seekLog, isNotEmpty);
+  });
 }
 
 TimelineModel _model(List<String> ids) => TimelineModel(

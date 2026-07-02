@@ -17,6 +17,10 @@ class VoicePool {
     Duration prepareTimeout = const Duration(milliseconds: 900),
     Duration lookAhead = const Duration(seconds: 8),
     Duration driftCheckInterval = const Duration(seconds: 2),
+    // Resync is a hard player seek, so keep it for obvious drift only. Small
+    // per-player position jitter is less harmful than audible stop/start seeks.
+    Duration driftCorrectionThreshold = const Duration(milliseconds: 500),
+    Duration driftCorrectionCooldown = const Duration(seconds: 8),
     Duration gainUpdateInterval = const Duration(milliseconds: 100),
   })  : _clock = clock,
         _voiceFactory = voiceFactory,
@@ -26,6 +30,8 @@ class VoicePool {
         _prepareTimeout = prepareTimeout,
         _lookAhead = lookAhead,
         _driftCheckInterval = driftCheckInterval,
+        _driftCorrectionThreshold = driftCorrectionThreshold,
+        _driftCorrectionCooldown = driftCorrectionCooldown,
         _gainUpdateInterval = gainUpdateInterval;
 
   final TimelineClock _clock;
@@ -36,6 +42,8 @@ class VoicePool {
   final Duration _prepareTimeout;
   final Duration _lookAhead;
   final Duration _driftCheckInterval;
+  final Duration _driftCorrectionThreshold;
+  final Duration _driftCorrectionCooldown;
   final Duration _gainUpdateInterval;
 
   final Map<String, Voice> _activeVoices = {};
@@ -45,6 +53,7 @@ class VoicePool {
   final List<StreamSubscription> _subscriptions = [];
   final Map<Voice, StreamSubscription<VoiceEvent>> _voiceSubscriptions = {};
   final Map<String, VoiceEventKind> _voiceStatus = {};
+  final Map<String, int> _lastDriftCorrectionMs = {};
   final Set<String> _capacityEvictedClipIds = {};
   final _voiceStatusController =
       StreamController<Map<String, VoiceEventKind>>.broadcast();
@@ -198,6 +207,7 @@ class VoicePool {
     _activeVoices.remove(clipId);
     _activeClips.remove(clipId);
     _voiceStatus.remove(clipId);
+    _lastDriftCorrectionMs.remove(clipId);
     await voice.setVolume(0);
     await voice.release();
     if (!_idleVoices.contains(voice)) _idleVoices.add(voice);
@@ -399,10 +409,21 @@ class VoicePool {
     for (final entry in _activeClips.entries.toList()) {
       final voice = _activeVoices[entry.key];
       if (voice == null || !voice.isReady) continue;
+      if (_voiceStatus[entry.key] == VoiceEventKind.buffering) continue;
       final expected = _localPosition(entry.value, globalMs);
       final drift = voice.driftMs(expected)?.abs();
-      if (drift != null && drift > 90) {
+      final lastCorrectionMs = _lastDriftCorrectionMs[entry.key];
+      final cooldownElapsed = lastCorrectionMs == null ||
+          (globalMs - lastCorrectionMs).abs() >=
+              _driftCorrectionCooldown.inMilliseconds;
+      if (drift != null &&
+          drift > _driftCorrectionThreshold.inMilliseconds &&
+          cooldownElapsed) {
+        _lastDriftCorrectionMs[entry.key] = globalMs;
+        final targetGain = entry.value.gainAt(globalMs);
+        await voice.setVolume(0);
         await voice.resync(expected);
+        await voice.setVolume(targetGain);
       }
     }
   }
