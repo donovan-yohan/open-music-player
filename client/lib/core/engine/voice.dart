@@ -51,7 +51,22 @@ abstract class Voice {
 
 class JustAudioVoice implements Voice {
   JustAudioVoice({required this.debugId, AudioPlayer? player})
-      : _player = player ?? AudioPlayer() {
+      : _player = player ??
+            AudioPlayer(
+              audioLoadConfiguration: const AudioLoadConfiguration(
+                androidLoadControl: AndroidLoadControl(
+                  minBufferDuration: Duration(seconds: 20),
+                  maxBufferDuration: Duration(seconds: 60),
+                  bufferForPlaybackDuration: Duration(seconds: 2),
+                  bufferForPlaybackAfterRebufferDuration: Duration(seconds: 4),
+                  prioritizeTimeOverSizeThresholds: true,
+                ),
+                darwinLoadControl: DarwinLoadControl(
+                  automaticallyWaitsToMinimizeStalling: true,
+                  preferredForwardBufferDuration: Duration(seconds: 20),
+                ),
+              ),
+            ) {
     _player.playerStateStream.listen(
       (state) {
         switch (state.processingState) {
