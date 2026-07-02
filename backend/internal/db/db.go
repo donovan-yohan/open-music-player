@@ -38,9 +38,9 @@ func New(host, port, user, password, dbname string) (*DB, error) {
 
 func (db *DB) Migrate() error {
 	// Keep startup self-sufficient for local-first dogfood. The SQL files under
-	// internal/db/migrations still document the migration sequence, but a fresh
-	// server must be able to create every backend table needed by auth, library,
-	// playlists, queue/download, and playback without a separate migration CLI.
+	// internal/db/migrations are reference notes for backend-owned schema slices,
+	// but a fresh server must be able to create every backend table needed by auth,
+	// library, playlists, queue/download, and playback without a separate migration CLI.
 	schema := `
 	CREATE TABLE IF NOT EXISTS users (
 		id UUID PRIMARY KEY,

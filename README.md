@@ -121,7 +121,7 @@ cd backend
 go mod download
 
 # Run the server (migrations run automatically on startup)
-go run ./cmd/server
+make run
 
 # Server starts on http://localhost:8080
 ```
@@ -193,9 +193,11 @@ The backend exposes the following API groups:
 
 ## Database Migrations
 
-The Go backend owns schema creation and repair through the idempotent startup path in `backend/internal/db/db.go`. Starting `backend/cmd/server` or the Docker Compose backend brings a fresh local database to the current dogfood schema without a separate Rust/sqlx or SQL-file migration authority.
+The Go backend owns schema creation and repair through the idempotent startup path in `backend/internal/db/db.go`. Starting `backend/cmd/server`, running `make -C backend run`, or starting the Docker Compose backend brings a fresh local database to the current dogfood schema.
 
-When changing schema, update `backend/internal/db/db.go` and the repository tests that exercise the affected tables. Do not add a second migration path unless the project deliberately reintroduces one and makes it the only authority.
+There is no supported root Rust/sqlx migration crate in this repository. Root-level `migrations/` and `src/db/models.rs` are intentionally absent; do not reintroduce them as a second schema authority. The SQL files under `backend/internal/db/migrations/` are backend-owned reference notes for schema slices, not a standalone migration runner.
+
+When changing schema, update `backend/internal/db/db.go` first, then repository models/helpers and tests that exercise the affected tables. Add or update SQL reference files only when they match the Go startup schema.
 
 ## Project Structure
 
