@@ -28,10 +28,26 @@ class _DebugMixEngineScreenState extends State<DebugMixEngineScreen> {
   );
 
   static const _defaults = [
-    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
-    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
-    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
-    'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
+    String.fromEnvironment(
+      'OMP_MIX_PROOF_TRACK_1_URL',
+      defaultValue:
+          'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+    ),
+    String.fromEnvironment(
+      'OMP_MIX_PROOF_TRACK_2_URL',
+      defaultValue:
+          'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
+    ),
+    String.fromEnvironment(
+      'OMP_MIX_PROOF_TRACK_3_URL',
+      defaultValue:
+          'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
+    ),
+    String.fromEnvironment(
+      'OMP_MIX_PROOF_TRACK_4_URL',
+      defaultValue:
+          'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3',
+    ),
   ];
 
   late final DefaultTimelineClock _clock;
