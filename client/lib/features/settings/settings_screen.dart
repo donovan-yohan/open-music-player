@@ -527,7 +527,7 @@ class _AboutSection extends StatelessWidget {
           trailing: const Icon(Icons.chevron_right),
           onTap: () => showLicensePage(
             context: context,
-            applicationName: 'Open Music Player',
+            applicationName: 'Sound Q',
           ),
         ),
         ListTile(

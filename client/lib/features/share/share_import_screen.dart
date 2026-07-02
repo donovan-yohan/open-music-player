@@ -58,7 +58,7 @@ class _ShareImportScreenState extends State<ShareImportScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Shared to Open Music Player',
+              Text('Shared to Sound Q',
                   style: theme.textTheme.headlineSmall),
               const SizedBox(height: 12),
               if (candidate == null)

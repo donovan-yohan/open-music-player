@@ -90,20 +90,24 @@ class _LoginScreenState extends State<LoginScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: Image.asset(
-                      'assets/brand/soundq-placeholder-logo.png',
-                      width: 112,
-                      height: 112,
-                      fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) {
-                        return Icon(
-                          Icons.music_note,
-                          size: 80,
-                          color: theme.colorScheme.primary,
-                        );
-                      },
+                  Align(
+                    alignment: Alignment.center,
+                    child: SizedBox.square(
+                      dimension: 112,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(20),
+                        child: Image.asset(
+                          'assets/brand/soundq-placeholder-logo.png',
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return Icon(
+                              Icons.music_note,
+                              size: 80,
+                              color: theme.colorScheme.primary,
+                            );
+                          },
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 16),

@@ -1,7 +1,7 @@
-// Content script for Open Music Player extension
+// Content script for Sound Q extension
 import { PageMetadata, SourceType, MetadataResponse } from './types';
 
-console.log('Open Music Player content script loaded');
+console.log('Sound Q content script loaded');
 
 function getYouTubeMetadata(): { metadata: PageMetadata; sourceType: SourceType } {
   // Get video title
@@ -151,7 +151,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 function init(): void {
-  console.log('Open Music Player: Ready to extract metadata');
+  console.log('Sound Q: Ready to extract metadata');
 }
 
 init();

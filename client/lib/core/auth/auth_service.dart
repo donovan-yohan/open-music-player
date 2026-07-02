@@ -139,7 +139,7 @@ class AuthService {
 
   Future<bool> unlockWithBiometrics() {
     return _biometricUnlockService.authenticate(
-      reason: 'Unlock Open Music Player with your device credential.',
+      reason: 'Unlock Sound Q with your device credential.',
     );
   }
 
