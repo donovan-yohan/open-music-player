@@ -86,7 +86,8 @@ Use browser devtools responsive/mobile viewport modes for this pass. Do not run 
 download workers. It generates a tiny deterministic WAV fixture, uploads it to
 the local MinIO bucket, creates a smoke user plus `tracks` and `user_library`
 rows in PostgreSQL, calls `POST /api/v1/playback/urls`, and verifies the signed
-URL returns bytes for `Range: bytes=0-15`. The command prints the created track
+URL returns `206 Partial Content` with exactly 16 bytes for `Range: bytes=0-15`.
+The command prints the created track
 id and compact pass/fail evidence, then writes the full run log under `/tmp` (or
 the path in `OMP_PLAYBACK_SMOKE_LOG`).
 

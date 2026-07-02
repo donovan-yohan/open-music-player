@@ -2,11 +2,34 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ -f "$ROOT/.env" ]; then
+
+load_env_defaults() {
+  local env_file="$1"
+  local raw key i
+  local -a restore_keys=()
+  local -a restore_values=()
+
+  while IFS= read -r raw || [ -n "$raw" ]; do
+    raw="${raw#export }"
+    key="${raw%%=*}"
+    if [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [[ -v $key ]]; then
+      restore_keys+=("$key")
+      restore_values+=("${!key}")
+    fi
+  done < "$env_file"
+
   set -a
-  # shellcheck disable=SC1091
-  source "$ROOT/.env"
+  # shellcheck disable=SC1090
+  source "$env_file"
   set +a
+
+  for i in "${!restore_keys[@]}"; do
+    export "${restore_keys[$i]}=${restore_values[$i]}"
+  done
+}
+
+if [ -f "$ROOT/.env" ]; then
+  load_env_defaults "$ROOT/.env"
 fi
 COMPOSE_FILE="$ROOT/docker-compose.local-low-memory.yml"
 COMPOSE=(docker compose -f "$COMPOSE_FILE")
@@ -79,7 +102,7 @@ case "$cmd" in
     mkdir -p "$(dirname "$log_path")"
     set +e
     (
-      cd "$ROOT/backend"
+      cd "$ROOT/backend" &&
       OMP_SMOKE_BACKEND_BASE_URL="$BACKEND_BASE_URL" \
       OMP_SMOKE_DB_HOST="${OMP_SMOKE_DB_HOST:-localhost}" \
       OMP_SMOKE_DB_PORT="${OMP_SMOKE_DB_PORT:-${POSTGRES_PORT:-5434}}" \
