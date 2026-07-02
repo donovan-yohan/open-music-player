@@ -1,5 +1,5 @@
 name: open_music_player
-description: Open Music Player - Cross-platform music player client
+description: Sound Q - Cross-platform music player client
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -41,3 +41,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/brand/soundq-placeholder-logo.png

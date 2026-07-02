@@ -1,11 +1,11 @@
 {
-    "name": "Open Music Player",
-    "short_name": "OMP",
+    "name": "Sound Q",
+    "short_name": "Sound Q",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#121212",
-    "theme_color": "#1DB954",
-    "description": "Open Music Player mobile web client.",
+    "background_color": "#050505",
+    "theme_color": "#ff4a00",
+    "description": "Sound Q mobile web client.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

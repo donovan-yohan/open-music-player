@@ -1,4 +1,4 @@
-// Service worker for Open Music Player extension
+// Service worker for Sound Q extension
 import type {
   AddToLibraryMessage,
   AddToLibraryResponse,
@@ -451,12 +451,12 @@ async function handleAddFromContext(tab: chrome.tabs.Tab): Promise<void> {
 
 // Create context menu on install
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('Open Music Player extension installed');
+  console.log('Sound Q extension installed');
 
   // Create context menu item
   chrome.contextMenus.create({
     id: CONTEXT_MENU_ID,
-    title: 'Add to Open Music Player',
+    title: 'Add to Sound Q',
     contexts: ['page'],
     documentUrlPatterns: [
       'https://www.youtube.com/*',

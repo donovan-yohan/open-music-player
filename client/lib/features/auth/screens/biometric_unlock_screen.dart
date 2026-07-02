@@ -76,7 +76,7 @@ class _BiometricUnlockScreenState extends State<BiometricUnlockScreen> {
                   ),
                   const SizedBox(height: 24),
                   Text(
-                    'Unlock Open Music Player',
+                    'Unlock Sound Q',
                     style: theme.textTheme.headlineSmall?.copyWith(
                       fontWeight: FontWeight.bold,
                     ),
