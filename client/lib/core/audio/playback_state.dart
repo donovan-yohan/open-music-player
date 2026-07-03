@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import '../cache/playback_cache_manager.dart';
 import '../engine/playback_engine.dart';
+import '../engine/timeline_model.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'playback_media_item_source.dart';
 import 'playback_context.dart';
@@ -66,20 +67,33 @@ class PlaybackState extends ChangeNotifier {
   Stream<PlayerState> get playerStateStream =>
       _queueController.playerStateStream;
 
+  /// Live global mix timeline state for the waveform surface. This is the raw
+  /// engine clock/model contract, not the source-relative player position.
+  Stream<int> get timelinePositionMsStream =>
+      _queueController.engine.positionMsStream;
+  int get timelinePositionMs => _queueController.engine.positionMs;
+  TimelineModel get timelineModel => _queueController.engine.model;
+
+  void beginTimelineScrub() => _queueController.engine.beginScrub();
+  void updateTimelineScrub(int globalMs) =>
+      _queueController.engine.updateScrub(globalMs);
+  Future<void> endTimelineScrub(int globalMs) =>
+      _queueController.engine.endScrub(globalMs);
+
   PlaybackState(
     PlaybackEngine engine, {
     required SignedAudioUrlService signedAudioUrlService,
     LocalAudioArtifactResolver? localResolver,
     PlaybackCacheManager? cacheManager,
     QueuePersistenceStore? persistence,
-  })  : _queueController = QueueTimelineController(engine),
-        _signedAudioUrlService = signedAudioUrlService,
-        _persistence = persistence,
-        _sourceResolver = PlaybackSourceResolver(
-          signedAudioUrlService: signedAudioUrlService,
-          localResolver: localResolver,
-          cacheManager: cacheManager,
-        ) {
+  }) : _queueController = QueueTimelineController(engine),
+       _signedAudioUrlService = signedAudioUrlService,
+       _persistence = persistence,
+       _sourceResolver = PlaybackSourceResolver(
+         signedAudioUrlService: signedAudioUrlService,
+         localResolver: localResolver,
+         cacheManager: cacheManager,
+       ) {
     _init();
   }
 

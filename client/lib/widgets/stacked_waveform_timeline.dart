@@ -1,23 +1,26 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import '../core/engine/timeline_model.dart';
 import '../models/timeline_clip.dart';
 import '../models/timeline_viewport.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
 import 'timeline_clip_widget.dart';
 
-/// Static visual prototype of issue #19 phase 2: a stacked compact-waveform
-/// timeline for the phone-first mix planner (~390x844).
+/// Stacked compact-waveform timeline for the phone-first mix planner
+/// (~390x844), wired to the live mix engine when a [timelineModel] and
+/// [positionMsStream] are supplied.
 ///
 /// The dominant object is a stack of overlapping waveform lanes sharing a single
 /// global playhead — not list rows or cards. Previous / current / upcoming clips
 /// are placed on one timeline with synthetic transition windows so overlap is
 /// visible. Offscreen clips surface as left history / right future teasers.
 ///
-/// This is a prototype: there is no audio engine, BPM, key, beat grid or
-/// time-stretch. Placement is synthesised from queue order + source trim only,
-/// keeping source trim strictly separate from timeline placement.
+/// Source trim stays separate from timeline placement. Engine-backed callers
+/// provide real [TimelineModel] clips plus the raw global playhead stream;
+/// tests/empty states may still omit the engine contract and use the queue
+/// editing fallback geometry.
 class StackedWaveformTimeline extends StatefulWidget {
   final Track? previousTrack;
   final Track currentTrack;
@@ -30,6 +33,12 @@ class StackedWaveformTimeline extends StatefulWidget {
   final void Function(Track, int)? onTrimEndChanged;
   final ValueChanged<Track>? onMoveEarlier;
   final ValueChanged<Track>? onMoveLater;
+  final TimelineModel? timelineModel;
+  final int playheadPositionMs;
+  final Stream<int>? positionMsStream;
+  final VoidCallback? onScrubStart;
+  final ValueChanged<int>? onScrubUpdate;
+  final Future<void> Function(int globalMs)? onScrubEnd;
 
   const StackedWaveformTimeline({
     super.key,
@@ -44,6 +53,12 @@ class StackedWaveformTimeline extends StatefulWidget {
     this.onTrimEndChanged,
     this.onMoveEarlier,
     this.onMoveLater,
+    this.timelineModel,
+    this.playheadPositionMs = 0,
+    this.positionMsStream,
+    this.onScrubStart,
+    this.onScrubUpdate,
+    this.onScrubEnd,
   });
 
   /// Synthetic crossfade/transition window between adjacent clips (ms). Visual
@@ -88,7 +103,7 @@ extension on SnapMarkerMode {
 
 class _LaneModel {
   final Track track;
-  final TimelineClip clip;
+  final MixClip mixClip;
   final LaneRole role;
   final Color accent;
   final String status;
@@ -96,12 +111,14 @@ class _LaneModel {
 
   _LaneModel({
     required this.track,
-    required this.clip,
+    required this.mixClip,
     required this.role,
     required this.accent,
     required this.status,
     required this.height,
   });
+
+  TimelineClip get clip => mixClip.placement;
 }
 
 class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
@@ -114,6 +131,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   String? _activeClipDragTrackId;
   int? _activeClipDragStartMs;
   TimelineViewport? _lastViewport;
+  bool _isScrubbing = false;
+  int? _lastScrubMs;
 
   double get _zoom => _zoomLevels[_zoomIndex];
 
@@ -139,7 +158,15 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               final paneWidth =
                   (constraints.maxWidth - StackedWaveformTimeline.railWidth)
                       .clamp(1.0, double.infinity);
-              return _buildTimeline(context, paneWidth);
+              return StreamBuilder<int>(
+                stream: widget.positionMsStream,
+                initialData: widget.playheadPositionMs,
+                builder: (context, snapshot) => _buildTimeline(
+                  context,
+                  paneWidth,
+                  snapshot.data ?? widget.playheadPositionMs,
+                ),
+              );
             },
           ),
         ),
@@ -148,15 +175,20 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
   }
 
-  Widget _buildTimeline(BuildContext context, double paneWidth) {
-    // --- Synthesise global placement from queue order + source trim. ---
+  Widget _buildTimeline(
+    BuildContext context,
+    double paneWidth,
+    int livePlayheadMs,
+  ) {
+    // --- Resolve global placement from the live engine model when available. ---
     final ordered = <Track>[
       if (widget.previousTrack != null) widget.previousTrack!,
       widget.currentTrack,
       ...widget.upcomingTracks,
     ];
 
-    final placed = <Track, TimelineClip>{};
+    final placed = <Track, MixClip>{};
+    final usedLiveClipIds = <String>{};
     var cursor = 0;
     for (final track in ordered) {
       final trim = widget.trimRangeFor(track);
@@ -168,8 +200,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         sourceEndMs: trim.endOffsetMs,
         timelineStartMs: cursor,
       );
-      final clip = widget.clipFor?.call(track, defaultClip) ?? defaultClip;
-      placed[track] = clip;
+      final liveClip = _liveClipForTrack(track, usedLiveClipIds);
+      final clip = liveClip?.placement ??
+          widget.clipFor?.call(track, defaultClip) ??
+          defaultClip;
+      placed[track] = liveClip ?? MixClip(placement: clip);
       // Next clip overlaps the tail by one transition window. A zero-duration
       // clip has timelineEndMs == timelineStartMs, so the naive lower bound
       // (start + 1) can exceed the upper bound and invert the clamp; cap the
@@ -183,11 +218,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final totalMs = placed.values
         .map((c) => c.timelineEndMs)
         .fold<int>(0, (a, b) => a > b ? a : b);
-
-    // Playhead sits just past the incoming transition so history has "ended".
-    final playheadMs = currentClip.timelineStartMs +
-        StackedWaveformTimeline.transitionMs +
-        8000;
+    final engineBacked = widget.positionMsStream != null ||
+        (widget.timelineModel?.clips.isNotEmpty ?? false);
+    final playheadMs = engineBacked
+        ? livePlayheadMs.clamp(0, totalMs).toInt()
+        : currentClip.timelineStartMs +
+            StackedWaveformTimeline.transitionMs +
+            8000;
 
     final basePps = totalMs <= 0
         ? TimelineViewport.minPixelsPerSecond
@@ -212,7 +249,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       lanes.add(
         _LaneModel(
           track: widget.previousTrack!,
-          clip: placed[widget.previousTrack!]!,
+          mixClip: placed[widget.previousTrack!]!,
           role: LaneRole.previous,
           accent: StackedWaveformTimeline.previousAccent,
           status: 'Played',
@@ -223,7 +260,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     lanes.add(
       _LaneModel(
         track: widget.currentTrack,
-        clip: currentClip,
+        mixClip: currentClip,
         role: LaneRole.current,
         accent: StackedWaveformTimeline.currentAccent,
         status: 'Now playing',
@@ -236,7 +273,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       lanes.add(
         _LaneModel(
           track: upcoming[i],
-          clip: placed[upcoming[i]]!,
+          mixClip: placed[upcoming[i]]!,
           role: collapsed ? LaneRole.collapsed : LaneRole.upcoming,
           accent: StackedWaveformTimeline.upcomingAccent,
           status: i == 0 ? 'Up next' : 'Later',
@@ -250,35 +287,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         playheadPaneX >= 0 &&
         playheadPaneX <= paneWidth;
 
-    // Transition window = overlap of current clip and the first upcoming clip.
-    Widget? transitionBand;
-    if (upcoming.isNotEmpty) {
-      final nextClip = placed[upcoming.first]!;
-      final overlap = currentClip.overlapInterval(
-        nextClip.timelineStartMs,
-        nextClip.timelineEndMs,
-      );
-      if (overlap != null) {
-        final overlapStartX = viewport.msToX(overlap.startMs);
-        final overlapEndX = viewport.msToX(overlap.endMs);
-        final visibleStartX = overlapStartX.clamp(0.0, paneWidth).toDouble();
-        final visibleEndX = overlapEndX.clamp(0.0, paneWidth).toDouble();
-        final left = StackedWaveformTimeline.railWidth + visibleStartX;
-        final minBandWidth = math.min(2.0, paneWidth);
-        final width = (visibleEndX - visibleStartX).clamp(
-          minBandWidth,
-          paneWidth,
-        );
-        transitionBand = Positioned(
-          key: const ValueKey('transition_window'),
-          left: left,
-          top: 0,
-          bottom: 0,
-          width: width,
-          child: _transitionBand(context, overlap.durationMs),
-        );
-      }
-    }
+    final overlapBands = _buildOverlapBands(
+      context,
+      placed.values.toList(growable: false),
+      viewport,
+      paneWidth,
+    );
 
     final historyAgoMs = playheadMs -
         (placed[widget.previousTrack]?.timelineEndMs ?? playheadMs);
@@ -298,7 +312,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _buildRuler(context, viewport),
+              _buildRuler(context, viewport, paneWidth),
               Expanded(
                 child: SingleChildScrollView(
                   key: const PageStorageKey('timeline_lane_scroll'),
@@ -312,8 +326,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               ),
             ],
           ),
-
-          if (transitionBand != null) transitionBand,
+          ...overlapBands,
 
           // Global playhead crossing the ruler + every lane. Hide it when it is
           // outside the visible pane instead of pinning it to an edge, which
@@ -344,7 +357,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                     '${_formatClock(historyAgoMs.abs())} ago',
                 accent: StackedWaveformTimeline.previousAccent,
                 onTap: () => _jumpToClip(
-                  placed[widget.previousTrack!]!,
+                  placed[widget.previousTrack!]!.placement,
                   viewport,
                   alignEnd: true,
                 ),
@@ -363,7 +376,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                 label: '${upcoming.first.title} · starts in '
                     '${_formatClock(futureInMs.abs())}',
                 accent: StackedWaveformTimeline.upcomingAccent,
-                onTap: () => _jumpToClip(placed[upcoming.first]!, viewport),
+                onTap: () =>
+                    _jumpToClip(placed[upcoming.first]!.placement, viewport),
               ),
             ),
 
@@ -381,6 +395,85 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         ],
       ),
     );
+  }
+
+  MixClip? _liveClipForTrack(Track track, Set<String> usedClipIds) {
+    final model = widget.timelineModel;
+    if (model == null || model.clips.isEmpty) return null;
+
+    for (final clip in model.clips) {
+      if (usedClipIds.contains(clip.id)) continue;
+      if (!_clipMatchesTrack(clip, track)) continue;
+      usedClipIds.add(clip.id);
+      return clip;
+    }
+    return null;
+  }
+
+  bool _clipMatchesTrack(MixClip clip, Track track) {
+    final ids = <String>{
+      track.id,
+      track.queueItemId,
+      if (track.playbackTrackId != null) track.playbackTrackId!,
+      if (track.sourceCandidateId != null) track.sourceCandidateId!,
+      if (track.sourceUrl != null) track.sourceUrl!,
+    };
+    return ids.contains(clip.trackId) || ids.contains(clip.queueItemId);
+  }
+
+  List<Widget> _buildOverlapBands(
+    BuildContext context,
+    List<MixClip> clips,
+    TimelineViewport viewport,
+    double paneWidth,
+  ) {
+    final bands = <Widget>[];
+    for (var i = 0; i < clips.length; i++) {
+      for (var j = i + 1; j < clips.length; j++) {
+        final first = clips[i];
+        final second = clips[j];
+        final overlap = first.placement.overlapInterval(
+          second.timelineStartMs,
+          second.timelineEndMs,
+        );
+        if (overlap == null) continue;
+
+        final overlapStartX = viewport.msToX(overlap.startMs);
+        final overlapEndX = viewport.msToX(overlap.endMs);
+        final visibleStartX = overlapStartX.clamp(0.0, paneWidth).toDouble();
+        final visibleEndX = overlapEndX.clamp(0.0, paneWidth).toDouble();
+        final left = StackedWaveformTimeline.railWidth + visibleStartX;
+        final minBandWidth = math.min(2.0, paneWidth);
+        final width = (visibleEndX - visibleStartX).clamp(
+          minBandWidth,
+          paneWidth,
+        );
+        final midpointMs = overlap.startMs + (overlap.durationMs ~/ 2);
+        final averageGain =
+            ((first.gainAt(midpointMs) + second.gainAt(midpointMs)) / 2)
+                .clamp(0.0, 1.0)
+                .toDouble();
+        bands.add(
+          Positioned(
+            key: bands.isEmpty
+                ? const ValueKey('transition_window')
+                : ValueKey('timeline_overlap_band_${first.id}_${second.id}'),
+            left: left,
+            top: 0,
+            bottom: 0,
+            width: width,
+            child: _transitionBand(context, overlap.durationMs, averageGain),
+          ),
+        );
+      }
+    }
+    return bands;
+  }
+
+  double _clipDisplayGain(MixClip clip) {
+    if (clip.selectedDurationMs <= 0) return 0;
+    final midpointMs = clip.timelineStartMs + (clip.selectedDurationMs ~/ 2);
+    return clip.gainAt(midpointMs).clamp(0.0, 1.0).toDouble();
   }
 
   Widget _buildLane(
@@ -451,6 +544,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       accent: lane.accent,
       stateLabel: lane.status,
       snapMarkerCount: _snapMode.markerCount,
+      gain: _clipDisplayGain(lane.mixClip),
+      showGainBadge: widget.timelineModel?.clips.isNotEmpty ?? false,
     );
 
     return Stack(
@@ -621,9 +716,14 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
   }
 
-  Widget _buildRuler(BuildContext context, TimelineViewport viewport) {
+  Widget _buildRuler(
+    BuildContext context,
+    TimelineViewport viewport,
+    double paneWidth,
+  ) {
     final theme = Theme.of(context);
-    return Container(
+    final ruler = Container(
+      key: const ValueKey('timeline_ruler'),
       height: 40,
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
@@ -654,16 +754,35 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         ],
       ),
     );
+
+    if (_mode != _TimelineMode.browse || !_hasScrubHandlers) {
+      return ruler;
+    }
+
+    return GestureDetector(
+      key: const ValueKey('timeline_ruler_scrub_surface'),
+      behavior: HitTestBehavior.opaque,
+      onHorizontalDragStart: (details) =>
+          _beginScrubAt(viewport, paneWidth, details.localPosition.dx),
+      onHorizontalDragUpdate: (details) =>
+          _updateScrubAt(viewport, paneWidth, details.localPosition.dx),
+      onHorizontalDragEnd: (_) => _endScrub(),
+      onHorizontalDragCancel: _endScrub,
+      child: ruler,
+    );
   }
 
-  Widget _transitionBand(BuildContext context, int durationMs) {
+  Widget _transitionBand(BuildContext context, int durationMs, double gain) {
     const accent = StackedWaveformTimeline.currentAccent;
+    final alpha = (0.08 + gain * 0.18).clamp(0.08, 0.26).toDouble();
     return IgnorePointer(
       child: Container(
         decoration: BoxDecoration(
-          color: accent.withValues(alpha: 0.12),
+          color: accent.withValues(alpha: alpha),
           border: Border.symmetric(
-            vertical: BorderSide(color: accent.withValues(alpha: 0.5)),
+            vertical: BorderSide(
+              color: accent.withValues(alpha: 0.35 + gain * 0.35),
+            ),
           ),
         ),
         alignment: Alignment.topCenter,
@@ -677,7 +796,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               borderRadius: BorderRadius.circular(8),
             ),
             child: Text(
-              'transition ${_formatClock(durationMs)}',
+              'transition ${_formatClock(durationMs)} · gain ${(gain * 100).round()}%',
               style: const TextStyle(color: Colors.white, fontSize: 10),
             ),
           ),
@@ -731,6 +850,56 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final next = viewport.panByPixels(deltaXPx);
     if (next.offsetMs == viewport.offsetMs) return;
     setState(() => _manualOffsetMs = next.offsetMs);
+  }
+
+  bool get _hasScrubHandlers =>
+      widget.onScrubStart != null &&
+      widget.onScrubUpdate != null &&
+      widget.onScrubEnd != null;
+
+  int _timelineMsForPointer(
+    TimelineViewport viewport,
+    double paneWidth,
+    double localX,
+  ) {
+    final paneX = (localX - StackedWaveformTimeline.railWidth)
+        .clamp(0.0, paneWidth)
+        .toDouble();
+    return viewport.xToMs(paneX).clamp(0, viewport.durationMs).toInt();
+  }
+
+  void _beginScrubAt(
+    TimelineViewport viewport,
+    double paneWidth,
+    double localX,
+  ) {
+    final ms = _timelineMsForPointer(viewport, paneWidth, localX);
+    _isScrubbing = true;
+    _lastScrubMs = ms;
+    widget.onScrubStart?.call();
+  }
+
+  void _updateScrubAt(
+    TimelineViewport viewport,
+    double paneWidth,
+    double localX,
+  ) {
+    if (!_isScrubbing) {
+      _beginScrubAt(viewport, paneWidth, localX);
+    }
+    final ms = _timelineMsForPointer(viewport, paneWidth, localX);
+    _lastScrubMs = ms;
+    widget.onScrubUpdate?.call(ms);
+  }
+
+  void _endScrub() {
+    final ms = _lastScrubMs ?? widget.playheadPositionMs;
+    _isScrubbing = false;
+    _lastScrubMs = null;
+    final end = widget.onScrubEnd;
+    if (end != null) {
+      end(ms);
+    }
   }
 
   void _jumpToClip(

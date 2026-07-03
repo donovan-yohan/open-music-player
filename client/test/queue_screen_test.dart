@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/track.dart';
@@ -321,6 +322,28 @@ void main() {
     },
   );
 
+  testWidgets('timeline drag uses scrub lifecycle instead of direct seek', (
+    tester,
+  ) async {
+    await pumpQueueScreen(tester);
+
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+      const Offset(120, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(playbackState.scrubEvents.first, 'begin');
+    expect(
+      playbackState.scrubEvents.where((event) => event.startsWith('update:')),
+      isNotEmpty,
+    );
+    expect(playbackState.scrubEvents.last, startsWith('end:'));
+    expect(playbackState.seekCalls, 0);
+  });
+
   testWidgets('touch-dragging the list reorder handle reorders Up Next', (
     tester,
   ) async {
@@ -409,8 +432,35 @@ void main() {
 class _FakePlaybackState extends Fake implements PlaybackState {
   final List<({List<Map<String, dynamic>> tracks, int startIndex})>
   playQueueCalls = [];
+  final _timelinePositions = StreamController<int>.broadcast();
+  final List<String> scrubEvents = [];
+  int seekCalls = 0;
 
   Duration fakePosition = Duration.zero;
+
+  @override
+  Stream<int> get timelinePositionMsStream => _timelinePositions.stream;
+
+  @override
+  int get timelinePositionMs => 0;
+
+  @override
+  TimelineModel get timelineModel => TimelineModel();
+
+  @override
+  void beginTimelineScrub() => scrubEvents.add('begin');
+
+  @override
+  void updateTimelineScrub(int globalMs) => scrubEvents.add('update:$globalMs');
+
+  @override
+  Future<void> endTimelineScrub(int globalMs) async =>
+      scrubEvents.add('end:$globalMs');
+
+  @override
+  Future<void> seek(Duration position) async {
+    seekCalls++;
+  }
 
   @override
   Duration get position => fakePosition;

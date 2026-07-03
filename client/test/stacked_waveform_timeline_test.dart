@@ -1,8 +1,11 @@
 import 'dart:math' as math;
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:open_music_player/core/engine/gain_envelope.dart';
+import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/trim_range.dart';
@@ -17,6 +20,24 @@ Track _track(String id, String title, int duration) => Track(
       addedAt: DateTime.utc(2026, 1, 1),
     );
 
+MixClip _mixClip(
+  String id,
+  int startMs,
+  int durationMs, {
+  GainEnvelope envelope = const GainEnvelope.flat(),
+}) =>
+    MixClip(
+      placement: TimelineClip.clamped(
+        id: 'clip_$id',
+        trackId: id,
+        sourceDurationMs: durationMs,
+        sourceStartMs: 0,
+        sourceEndMs: durationMs,
+        timelineStartMs: startMs,
+      ),
+      envelope: envelope,
+    );
+
 Future<void> _pump(
   WidgetTester tester, {
   required Track? previous,
@@ -26,6 +47,12 @@ Future<void> _pump(
   ValueChanged<Track>? onMoveEarlier,
   ValueChanged<Track>? onMoveLater,
   TimelineClip Function(Track, TimelineClip)? clipFor,
+  TimelineModel? timelineModel,
+  int playheadPositionMs = 0,
+  Stream<int>? positionMsStream,
+  VoidCallback? onScrubStart,
+  ValueChanged<int>? onScrubUpdate,
+  Future<void> Function(int)? onScrubEnd,
   void Function(Track, int)? onTimelineStartChanged,
   void Function(Track, int)? onTrimStartChanged,
   void Function(Track, int)? onTrimEndChanged,
@@ -45,6 +72,12 @@ Future<void> _pump(
           peaksFor: (t) => mockWaveformPeaks(t.id),
           trimRangeFor: (t) => TrimRange.full(t.durationMs),
           clipFor: clipFor,
+          timelineModel: timelineModel,
+          playheadPositionMs: playheadPositionMs,
+          positionMsStream: positionMsStream,
+          onScrubStart: onScrubStart,
+          onScrubUpdate: onScrubUpdate,
+          onScrubEnd: onScrubEnd,
           onTimelineStartChanged: onTimelineStartChanged,
           onTrimStartChanged: onTrimStartChanged,
           onTrimEndChanged: onTrimEndChanged,
@@ -142,6 +175,109 @@ void main() {
     expect(find.byKey(const ValueKey('left_history_teaser')), findsNothing);
   });
 
+  testWidgets('binds the playhead to the live engine position stream', (
+    tester,
+  ) async {
+    final positions = StreamController<int>.broadcast();
+    addTearDown(positions.close);
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    final model = TimelineModel(
+      clips: [_mixClip('t1', 0, 240000), _mixClip('t2', 240000, 240000)],
+    );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next],
+      timelineModel: model,
+      playheadPositionMs: 0,
+      positionMsStream: positions.stream,
+    );
+
+    final before = tester.getRect(
+      find.byKey(const ValueKey('timeline_playhead')),
+    );
+    await tester.runAsync(() async {
+      positions.add(60000);
+      await Future<void>.delayed(Duration.zero);
+    });
+    await tester.pump();
+    final after = tester.getRect(
+      find.byKey(const ValueKey('timeline_playhead')),
+    );
+
+    expect(after.left, greaterThan(before.left));
+  });
+
+  testWidgets('browse drag scrubs through the engine lifecycle', (
+    tester,
+  ) async {
+    final events = <String>[];
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next],
+      timelineModel: TimelineModel(
+        clips: [_mixClip('t1', 0, 240000), _mixClip('t2', 240000, 240000)],
+      ),
+      onScrubStart: () => events.add('begin'),
+      onScrubUpdate: (ms) => events.add('update:$ms'),
+      onScrubEnd: (ms) async => events.add('end:$ms'),
+    );
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+      const Offset(140, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(events.first, 'begin');
+    expect(events.where((event) => event.startsWith('update:')), isNotEmpty);
+    expect(events.last, startsWith('end:'));
+  });
+
+  testWidgets('renders real model overlaps with gain-derived feedback', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next],
+      timelineModel: TimelineModel(
+        clips: [
+          _mixClip(
+            't1',
+            0,
+            240000,
+            envelope: const GainEnvelope(fadeOutMs: 60000),
+          ),
+          _mixClip(
+            't2',
+            180000,
+            240000,
+            envelope: const GainEnvelope(baseGainDb: -6, fadeInMs: 60000),
+          ),
+        ],
+      ),
+      playheadPositionMs: 190000,
+    );
+
+    expect(find.byKey(const ValueKey('transition_window')), findsOneWidget);
+    expect(find.textContaining('gain'), findsWidgets);
+    expect(find.byKey(const ValueKey('timeline_gain_t1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_gain_t2')), findsOneWidget);
+  });
+
   testWidgets('renders every upcoming track as a vertically scrollable lane', (
     tester,
   ) async {
@@ -217,7 +353,7 @@ void main() {
     expect(
       find.byKey(const ValueKey('timeline_playhead')),
       findsNothing,
-      reason: 'the synthetic playhead is outside this short clip viewport',
+      reason: 'the fallback playhead is outside this short clip viewport',
     );
   });
 
@@ -335,6 +471,52 @@ void main() {
       lessThan(before.left),
       reason: 'dragging left should pan later in shared mix time',
     );
+  });
+
+  testWidgets('browse drag pans zoomed engine timelines with scrub handlers', (
+    tester,
+  ) async {
+    final events = <String>[];
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    final later = _track('t3', 'Glass', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next, later],
+      timelineModel: TimelineModel.sequential(
+        [current.id, next.id, later.id],
+        sourceDurationMsFor: (_) => 240000,
+      ),
+      onScrubStart: () => events.add('begin'),
+      onScrubUpdate: (ms) => events.add('update:$ms'),
+      onScrubEnd: (ms) async => events.add('end:$ms'),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_zoom_in')));
+    await tester.pumpAndSettle();
+    expect(find.text('1.5x'), findsOneWidget);
+
+    final before = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+      const Offset(-160, 0),
+    );
+    await tester.pumpAndSettle();
+    final after = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+
+    expect(
+      after.left,
+      lessThan(before.left),
+      reason: 'lane drag should pan even when engine scrub handlers exist',
+    );
+    expect(events, isEmpty, reason: 'lane panning must not start scrubbing');
   });
 
   testWidgets('current track changes clear manual pan and auto-follow', (
@@ -611,8 +793,9 @@ void main() {
     await tester.pumpAndSettle();
 
     final clip = tester.getRect(find.byKey(const ValueKey('timeline_clip_t1')));
-    final gesture =
-        await tester.startGesture(Offset(clip.left + 20, clip.center.dy));
+    final gesture = await tester.startGesture(
+      Offset(clip.left + 20, clip.center.dy),
+    );
     await tester.pump(const Duration(milliseconds: 600));
     await gesture.moveBy(const Offset(80, 0));
     await tester.pumpAndSettle();
