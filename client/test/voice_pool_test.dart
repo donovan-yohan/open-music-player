@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/engine_audio_source_resolver.dart';
 import 'package:open_music_player/core/engine/gain_envelope.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
@@ -228,6 +229,62 @@ void main() {
     expect(newVoice.loadedSources, [second]);
   });
 
+  test('same descriptor-backed signed URL refresh keeps active voice',
+      () async {
+    const ref = '1';
+    final first = Uri.parse('https://cdn.example/audio/1.mp3?sig=old#old');
+    final refreshed = Uri.parse('https://cdn.example/audio/1.mp3?sig=new#new');
+
+    resolver.sourceByClipId['a'] = first;
+    resolver.descriptorByClipId['a'] = _descriptor(url: first.toString());
+    await pool.loadMix(
+      TimelineModel(clips: [_clip('a', 0, audioSourceRef: ref)]),
+    );
+
+    final voice = pool.activeVoices['a'] as FakeVoice;
+    expect(voice.loadedSources, [first]);
+
+    resolver.sourceByClipId['a'] = refreshed;
+    resolver.descriptorByClipId['a'] = _descriptor(url: refreshed.toString());
+    await pool.loadMix(
+      TimelineModel(clips: [_clip('a', 0, audioSourceRef: ref)]),
+    );
+
+    expect(pool.activeVoices['a'], same(voice));
+    expect(voice.releaseCount, 0);
+    expect(voice.loadedSources, [first]);
+  });
+
+  test(
+      'same descriptor-backed URL path reloads when descriptor metadata changes',
+      () async {
+    const ref = '1';
+    final first = Uri.parse('https://cdn.example/audio/1.mp3?sig=old#old');
+    final changed = Uri.parse('https://cdn.example/audio/1.mp3?sig=new#new');
+
+    resolver.sourceByClipId['a'] = first;
+    resolver.descriptorByClipId['a'] = _descriptor(url: first.toString());
+    await pool.loadMix(
+      TimelineModel(clips: [_clip('a', 0, audioSourceRef: ref)]),
+    );
+
+    final voice = pool.activeVoices['a'] as FakeVoice;
+
+    resolver.sourceByClipId['a'] = changed;
+    resolver.descriptorByClipId['a'] = _descriptor(
+      url: changed.toString(),
+      etag: 'etag-2',
+    );
+    await pool.loadMix(
+      TimelineModel(clips: [_clip('a', 0, audioSourceRef: ref)]),
+    );
+
+    final newVoice = pool.activeVoices['a'] as FakeVoice;
+    expect(voice.releaseCount, 1);
+    expect(newVoice, isNot(same(voice)));
+    expect(newVoice.loadedSources, [changed]);
+  });
+
   test('drift monitor ignores small player jitter before hard resyncing',
       () async {
     await pool.dispose();
@@ -362,6 +419,7 @@ class FakeResolver implements EngineAudioSourceResolver {
   final failClipIds = <String>{};
   final permanentFailClipIds = <String>{};
   final sourceByClipId = <String, Uri>{};
+  final descriptorByClipId = <String, SignedAudioDescriptor>{};
   final warmed = <String>[];
 
   @override
@@ -375,7 +433,9 @@ class FakeResolver implements EngineAudioSourceResolver {
       throw StateError('decoder exhausted for ${clip.id}');
     }
     return ResolvedAudioSource.remote(
-        sourceByClipId[clip.id] ?? Uri.parse(clip.audioSourceRef), null);
+      sourceByClipId[clip.id] ?? Uri.parse(clip.audioSourceRef),
+      descriptorByClipId[clip.id],
+    );
   }
 
   @override
@@ -383,6 +443,21 @@ class FakeResolver implements EngineAudioSourceResolver {
       {required Set<String> protect}) async {
     warmed.add(audioSourceRef);
   }
+}
+
+SignedAudioDescriptor _descriptor({
+  required String url,
+  String etag = 'etag-1',
+}) {
+  return SignedAudioDescriptor(
+    trackId: 1,
+    url: url,
+    expiresAt: DateTime.utc(2026, 1, 1, 0, 5),
+    contentType: 'audio/mpeg',
+    sizeBytes: 1024,
+    etag: etag,
+    storageKeyVersion: 'v1',
+  );
 }
 
 class FakeVoice implements Voice {
