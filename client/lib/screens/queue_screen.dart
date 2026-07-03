@@ -275,21 +275,29 @@ class _QueueScreenState extends State<QueueScreen> {
       );
     }
 
-    return StackedWaveformTimeline(
-      key: const ValueKey('queue_surface'),
-      previousTrack: previousTrack,
-      currentTrack: currentTrack,
-      upcomingTracks: upNext,
-      peaksFor: provider.waveformPeaksFor,
-      trimRangeFor: provider.trimRangeFor,
-      clipFor: provider.timelineClipFor,
-      onTimelineStartChanged: provider.setTimelineStartMs,
-      onTrimStartChanged: provider.setStartOffsetMs,
-      onTrimEndChanged: provider.setEndOffsetMs,
-      onMoveEarlier: (track) =>
-          _moveTimelineTrack(provider, upNext, currentIndex, track, -1),
-      onMoveLater: (track) =>
-          _moveTimelineTrack(provider, upNext, currentIndex, track, 1),
+    return Consumer<PlaybackState>(
+      builder: (context, playback, _) => StackedWaveformTimeline(
+        key: const ValueKey('queue_surface'),
+        previousTrack: previousTrack,
+        currentTrack: currentTrack,
+        upcomingTracks: upNext,
+        peaksFor: provider.waveformPeaksFor,
+        trimRangeFor: provider.trimRangeFor,
+        clipFor: provider.timelineClipFor,
+        timelineModel: playback.timelineModel,
+        playheadPositionMs: playback.timelinePositionMs,
+        positionMsStream: playback.timelinePositionMsStream,
+        onScrubStart: playback.beginTimelineScrub,
+        onScrubUpdate: playback.updateTimelineScrub,
+        onScrubEnd: playback.endTimelineScrub,
+        onTimelineStartChanged: provider.setTimelineStartMs,
+        onTrimStartChanged: provider.setStartOffsetMs,
+        onTrimEndChanged: provider.setEndOffsetMs,
+        onMoveEarlier: (track) =>
+            _moveTimelineTrack(provider, upNext, currentIndex, track, -1),
+        onMoveLater: (track) =>
+            _moveTimelineTrack(provider, upNext, currentIndex, track, 1),
+      ),
     );
   }
 

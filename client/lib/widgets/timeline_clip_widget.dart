@@ -130,6 +130,8 @@ class TimelineClipWidget extends StatelessWidget {
   final Color accent;
   final String stateLabel;
   final int snapMarkerCount;
+  final double gain;
+  final bool showGainBadge;
 
   const TimelineClipWidget({
     super.key,
@@ -140,6 +142,8 @@ class TimelineClipWidget extends StatelessWidget {
     required this.accent,
     required this.stateLabel,
     this.snapMarkerCount = 0,
+    this.gain = 1,
+    this.showGainBadge = false,
   });
 
   bool get _active => role == LaneRole.current;
@@ -148,16 +152,22 @@ class TimelineClipWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final waveColor = _muted ? accent.withValues(alpha: 0.45) : accent;
+    final gainScalar = gain.clamp(0.0, 1.0).toDouble();
+    final waveAlpha = (_muted ? 0.45 : 0.62 + (gainScalar * 0.38))
+        .clamp(0.0, 1.0)
+        .toDouble();
+    final waveColor = accent.withValues(alpha: waveAlpha);
 
     return Container(
       key: ValueKey('timeline_clip_${track.id}'),
       decoration: BoxDecoration(
-        color: accent.withValues(alpha: _active ? 0.10 : 0.05),
+        color: accent.withValues(
+          alpha: _active ? 0.10 + gainScalar * 0.08 : 0.05,
+        ),
         borderRadius: BorderRadius.circular(6),
         border: Border.all(
           color: _active ? accent : accent.withValues(alpha: 0.35),
-          width: _active ? 2 : 1,
+          width: _active ? 1.5 + gainScalar : 1,
         ),
       ),
       clipBehavior: Clip.antiAlias,
@@ -179,7 +189,32 @@ class TimelineClipWidget extends StatelessWidget {
             ),
           ),
           Positioned(left: 4, top: 4, right: 4, child: _inLaneChip(theme)),
+          if (showGainBadge)
+            Positioned(
+              key: ValueKey('timeline_gain_${track.id}'),
+              right: 6,
+              bottom: 6,
+              child: _gainBadge(theme, gainScalar),
+            ),
         ],
+      ),
+    );
+  }
+
+  Widget _gainBadge(ThemeData theme, double gainScalar) {
+    final gainPercent = (gainScalar * 100).round();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.inverseSurface.withValues(alpha: 0.78),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        'gain $gainPercent%',
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.onInverseSurface,
+          fontWeight: FontWeight.w700,
+        ),
       ),
     );
   }
