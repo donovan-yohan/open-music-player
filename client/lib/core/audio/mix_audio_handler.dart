@@ -9,6 +9,9 @@ import 'playback_state.dart' as app_audio;
 typedef MixMediaItemLookup = audio_service.MediaItem? Function(String trackId);
 
 const defaultNotificationStateThrottle = Duration(milliseconds: 750);
+const _fallbackMixIdentity = 'sound-q-mix';
+const _fallbackMixTitle = 'Sound Q mix';
+const _fallbackMixArtist = 'Sound Q';
 
 String mixIdentity(
   MixNowPlayingInfo info, {
@@ -19,7 +22,7 @@ String mixIdentity(
   if (info.activeVoiceCount > 1) {
     return 'mix:${info.clipId ?? dominantId ?? 'layered'}';
   }
-  return dominantId ?? 'open-music-player-mix';
+  return dominantId ?? _fallbackMixIdentity;
 }
 
 String mixTitle(
@@ -29,7 +32,7 @@ String mixTitle(
   final dominantTitle = dominantItem?.title.trim();
   final baseTitle = dominantTitle != null && dominantTitle.isNotEmpty
       ? dominantTitle
-      : 'Open Music Player mix';
+      : _fallbackMixTitle;
   if (info.activeVoiceCount > 1) {
     return '$baseTitle · ${info.activeVoiceCount} layered';
   }
@@ -172,7 +175,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     return audio_service.MediaItem(
       id: mixIdentity(info, dominantItem: dominant),
       title: mixTitle(info, dominantItem: dominant),
-      artist: dominant?.artist ?? 'Open Music Player',
+      artist: dominant?.artist ?? _fallbackMixArtist,
       album: dominant?.album,
       duration: _durationForNotification(dominant),
       artUri: dominant?.artUri,

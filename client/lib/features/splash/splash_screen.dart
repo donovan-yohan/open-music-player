@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import '../../app/theme.dart';
 import '../../core/auth/auth_state.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -48,12 +49,12 @@ class _SplashScreenState extends State<SplashScreen> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             ClipRRect(
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
               child: Image.asset(
-                'assets/brand/soundq-placeholder-logo.png',
+                AppTheme.brandLogoAsset,
                 width: 132,
                 height: 132,
-                fit: BoxFit.cover,
+                fit: BoxFit.contain,
                 errorBuilder: (context, error, stackTrace) {
                   return Icon(
                     Icons.music_note,
@@ -65,10 +66,15 @@ class _SplashScreenState extends State<SplashScreen> {
             ),
             const SizedBox(height: 24),
             Text(
-              'Sound Q',
+              AppTheme.brandName,
               style: theme.textTheme.headlineMedium?.copyWith(
-                fontWeight: FontWeight.bold,
+                fontWeight: FontWeight.w900,
               ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              AppTheme.brandGlyph,
+              style: theme.textTheme.labelLarge?.copyWith(letterSpacing: 4),
             ),
             const SizedBox(height: 48),
             const CircularProgressIndicator(),

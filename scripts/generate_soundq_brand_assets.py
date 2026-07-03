@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate platform placeholder logo PNGs from the checked-in Sound Q source asset."""
+"""Regenerate Sound Q logo/icon PNG assets from the checked-in SVG source."""
 from __future__ import annotations
 
 import argparse
@@ -8,9 +8,10 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SOURCE = ROOT / 'client/assets/brand/soundq-placeholder-logo.png'
+DEFAULT_SOURCE = ROOT / 'client/assets/brand/soundq-logo.svg'
 
 TARGETS = {
+    ROOT / 'client/assets/brand/soundq-logo.png': 1024,
     ROOT / 'client/web/favicon.png': 32,
     ROOT / 'client/web/icons/Icon-192.png': 192,
     ROOT / 'client/web/icons/Icon-512.png': 512,
@@ -36,7 +37,7 @@ def parse_args() -> argparse.Namespace:
         '--source',
         type=Path,
         default=DEFAULT_SOURCE,
-        help='Square source PNG to resize into platform icon assets.',
+        help='Square SVG source to render into platform icon assets.',
     )
     return parser.parse_args()
 
@@ -45,7 +46,7 @@ def main() -> None:
     if not shutil.which('ffmpeg'):
         raise SystemExit(
             "Error: 'ffmpeg' executable not found in PATH.\n"
-            'Install ffmpeg to regenerate the placeholder logo assets.'
+            'Install ffmpeg to regenerate the Sound Q brand assets.'
         )
 
     args = parse_args()
@@ -64,7 +65,7 @@ def main() -> None:
                 '-i',
                 str(source),
                 '-vf',
-                f'scale={size}:{size}:flags=lanczos',
+                f'scale={size}:{size}:flags=lanczos,format=rgba',
                 '-frames:v',
                 '1',
                 str(target),

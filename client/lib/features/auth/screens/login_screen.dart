@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import '../../../app/theme.dart';
 import '../../../core/auth/auth_state.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -95,10 +96,12 @@ class _LoginScreenState extends State<LoginScreen> {
                     child: SizedBox.square(
                       dimension: 112,
                       child: ClipRRect(
-                        borderRadius: BorderRadius.circular(20),
+                        borderRadius: BorderRadius.circular(
+                          AppTheme.radiusLarge,
+                        ),
                         child: Image.asset(
-                          'assets/brand/soundq-placeholder-logo.png',
-                          fit: BoxFit.cover,
+                          AppTheme.brandLogoAsset,
+                          fit: BoxFit.contain,
                           errorBuilder: (context, error, stackTrace) {
                             return Icon(
                               Icons.music_note,
@@ -112,9 +115,17 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'Sound Q',
+                    AppTheme.brandName,
                     style: theme.textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
+                      fontWeight: FontWeight.w900,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    AppTheme.brandGlyph,
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      letterSpacing: 4,
                     ),
                     textAlign: TextAlign.center,
                   ),

@@ -77,6 +77,17 @@ void main() {
       },
     );
 
+    test('fallback notification metadata uses Sound Q brand', () {
+      const emptyInfo = MixNowPlayingInfo(
+        clipId: null,
+        trackId: null,
+        activeVoiceCount: 0,
+      );
+
+      expect(mixIdentity(emptyInfo), 'sound-q-mix');
+      expect(mixTitle(emptyInfo), 'Sound Q mix');
+    });
+
     test('system stop keeps media-session subscriptions alive', () async {
       final harness = _Harness();
       final items = {

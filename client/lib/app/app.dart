@@ -80,7 +80,7 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
         ),
       ],
       child: MaterialApp.router(
-        title: 'Sound Q',
+        title: AppTheme.brandName,
         theme: AppTheme.lightTheme,
         darkTheme: AppTheme.darkTheme,
         themeMode: _getThemeMode(settings.themeMode),
