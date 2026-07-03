@@ -357,15 +357,23 @@ class VoicePool {
   ) async {
     if (!voice.isReady) await _waitUntilReady(voice);
     if (!voice.isReady) return;
-    if (_activeVoices[clip.id] != voice) return;
+    if (!_isCurrentVoice(clip.id, voice, generation)) return;
     final currentMs = _clock.positionMs;
     await voice.setVolume(0);
+    if (!_isCurrentVoice(clip.id, voice, generation)) return;
     await voice.seekLocal(_localPosition(clip, currentMs));
+    if (!_isCurrentVoice(clip.id, voice, generation)) return;
     if (_clock.isPlaying) await voice.play();
+    if (!_isCurrentVoice(clip.id, voice, generation)) return;
     await voice.setVolume(clip.gainAt(currentMs));
+    if (!_isCurrentVoice(clip.id, voice, generation)) return;
     _voiceStatus[clip.id] = VoiceEventKind.ready;
     _publishStatus();
     _updateBufferingHold(_model.activeClipsAt(currentMs));
+  }
+
+  bool _isCurrentVoice(String clipId, Voice voice, int generation) {
+    return generation == _generation && _activeVoices[clipId] == voice;
   }
 
   Future<void> _waitUntilReady(Voice voice) async {
@@ -406,6 +414,7 @@ class VoicePool {
   Future<void> _checkDrift() async {
     if (_model.isSingleClip || !_clock.isPlaying || _clock.isScrubbing) return;
     final globalMs = _clock.positionMs;
+    final generation = _generation;
     for (final entry in _activeClips.entries.toList()) {
       final voice = _activeVoices[entry.key];
       if (voice == null || !voice.isReady) continue;
@@ -422,7 +431,9 @@ class VoicePool {
         _lastDriftCorrectionMs[entry.key] = globalMs;
         final targetGain = entry.value.gainAt(globalMs);
         await voice.setVolume(0);
+        if (!_isCurrentVoice(entry.key, voice, generation)) continue;
         await voice.resync(expected);
+        if (!_isCurrentVoice(entry.key, voice, generation)) continue;
         await voice.setVolume(targetGain);
       }
     }

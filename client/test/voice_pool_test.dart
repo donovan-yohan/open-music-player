@@ -117,6 +117,28 @@ void main() {
     expect(pool.activeVoices.containsKey('b'), isFalse);
   });
 
+  test('late join stops if voice is released after mute yield', () async {
+    resolver.delayByClip['b'] = const Duration(milliseconds: 80);
+    await pool.loadMix(_model(['a', 'b']));
+    await clock.play();
+    await pool.syncAt(6000, forceSeek: true);
+
+    final b = pool.activeVoices['b'] as FakeVoice;
+    final muteGate = Completer<void>();
+    final muteStarted = b.blockNextSetVolume(muteGate);
+    await muteStarted;
+
+    final release = pool.syncAt(0, forceSeek: true);
+    await Future<void>.delayed(Duration.zero);
+    muteGate.complete();
+    await release;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(pool.activeVoices.keys, ['a']);
+    expect(b.seekLog, isEmpty);
+    expect(b.playOrder, isNull);
+  });
+
   test('starvation hold releases when any active voice becomes ready',
       () async {
     resolver.delayByClip['a'] = const Duration(milliseconds: 80);
@@ -203,6 +225,56 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 40));
     expect(voice.seekLog, isNotEmpty);
   });
+
+  test('drift correction stops if voice is released after mute yield',
+      () async {
+    await pool.dispose();
+    await clock.dispose();
+
+    var now = DateTime.utc(2026, 1, 1);
+    clock = DefaultTimelineClock(
+      now: () => now,
+      uiTickInterval: const Duration(hours: 1),
+    );
+    voices = [];
+    resolver = FakeResolver();
+    capacityFailures = {};
+    pool = VoicePool(
+      clock: clock,
+      maxVoices: 4,
+      warmSpareVoices: 0,
+      prepareTimeout: const Duration(milliseconds: 30),
+      driftCheckInterval: const Duration(milliseconds: 10),
+      driftCorrectionThreshold: const Duration(milliseconds: 50),
+      driftCorrectionCooldown: const Duration(seconds: 8),
+      gainUpdateInterval: const Duration(hours: 1),
+      voiceFactory: () {
+        final voice = FakeVoice('v${voices.length}', capacityFailures);
+        voices.add(voice);
+        return voice;
+      },
+      resolver: resolver,
+    );
+    await pool.start();
+    await pool.loadMix(TimelineModel(clips: [_clip('a', 0), _clip('b', 0)]));
+    await clock.play();
+    await pool.syncAt(0);
+
+    final a = pool.activeVoices['a'] as FakeVoice;
+    final muteGate = Completer<void>();
+    final muteStarted = a.blockNextSetVolume(muteGate);
+    now = now.add(const Duration(milliseconds: 1000));
+    await muteStarted;
+
+    final release = pool.syncAt(20000, forceSeek: true);
+    await Future<void>.delayed(Duration.zero);
+    muteGate.complete();
+    await release;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(pool.activeVoices.containsKey('a'), isFalse);
+    expect(a.seekLog, isEmpty);
+  });
 }
 
 TimelineModel _model(List<String> ids) => TimelineModel(
@@ -279,6 +351,15 @@ class FakeVoice implements Voice {
   bool _loaded = false;
   bool _ready = false;
   bool _playing = false;
+  Completer<void>? _setVolumeGate;
+  Completer<void>? _setVolumeStarted;
+
+  Future<void> blockNextSetVolume(Completer<void> gate) {
+    _setVolumeGate = gate;
+    final started = Completer<void>();
+    _setVolumeStarted = started;
+    return started.future;
+  }
 
   @override
   bool get isLoaded => _loaded;
@@ -318,6 +399,12 @@ class FakeVoice implements Voice {
   @override
   Future<void> setVolume(double linearGain) async {
     volumeLog.add(linearGain);
+    final gate = _setVolumeGate;
+    if (gate != null) {
+      _setVolumeGate = null;
+      _setVolumeStarted?.complete();
+      await gate.future;
+    }
   }
 
   @override

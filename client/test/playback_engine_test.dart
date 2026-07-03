@@ -69,6 +69,32 @@ void main() {
     await clock.dispose();
   });
 
+  test('clip completion re-emits after seeking backward before replay',
+      () async {
+    final clock = DefaultTimelineClock(
+        now: () => DateTime.utc(2026),
+        uiTickInterval: const Duration(hours: 1));
+    final engine = PlaybackEngine.withClock(
+        clock: clock, voiceFactory: () => _FakeVoice('v'));
+    final events = <ClipCompletionEvent>[];
+    final sub = engine.clipCompletionStream.listen(events.add);
+    await engine.start();
+    await engine.loadMix(_model());
+
+    await engine.seek(12000);
+    await Future<void>.delayed(Duration.zero);
+    await engine.seek(1000);
+    await Future<void>.delayed(Duration.zero);
+    await engine.seek(12000);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(events.map((event) => event.clipId), ['a', 'b', 'a', 'b']);
+    expect(events.every((event) => event.wasSkipped), isTrue);
+    await sub.cancel();
+    await engine.dispose();
+    await clock.dispose();
+  });
+
   test('natural completion emits the final clip once', () async {
     var now = DateTime.utc(2026);
     final clock = DefaultTimelineClock(

@@ -189,6 +189,9 @@ class PlaybackEngine implements PlaybackEngineControls {
   void _onPosition(int positionMs) {
     final isManualPositionJump =
         _manualPositionJumpPending || _clock.isScrubbing;
+    if (positionMs < _lastPositionMs) {
+      _forgetCompletionsAfter(positionMs);
+    }
     for (final clip in _model.clips) {
       if (_lastPositionMs < clip.timelineEndMs &&
           positionMs >= clip.timelineEndMs) {
@@ -209,6 +212,14 @@ class PlaybackEngine implements PlaybackEngineControls {
     }
     _lastPositionMs = positionMs;
     _publishNowPlaying();
+  }
+
+  void _forgetCompletionsAfter(int positionMs) {
+    for (final clip in _model.clips) {
+      if (positionMs < clip.timelineEndMs) {
+        _completedClipIds.remove(clip.id);
+      }
+    }
   }
 
   void _emitNaturalCompletions() {
