@@ -41,7 +41,7 @@ void main() {
         expect(latest?.extras?['dominantTrackId'], 'lead');
 
         await sub.cancel();
-        await handler.stop();
+        await handler.dispose();
         await harness.dispose();
       },
     );
@@ -77,6 +77,49 @@ void main() {
       },
     );
 
+    test('system stop keeps media-session subscriptions alive', () async {
+      final harness = _Harness();
+      final items = {
+        'lead': _item('lead', 'Lead voice'),
+        'pad': _item('pad', 'Pad voice'),
+      };
+      final handler = MixAudioHandler(
+        engine: harness.engine,
+        mediaItemForTrackId: (trackId) => items[trackId],
+        statePushThrottle: const Duration(hours: 1),
+        now: () => harness.now,
+      );
+      final states = <audio_service.PlaybackState>[];
+      final mediaItems = <audio_service.MediaItem?>[];
+      final sub = handler.playbackState.listen(states.add);
+      final mediaSub = handler.mediaItem.listen(mediaItems.add);
+
+      await harness.engine.start();
+      await harness.engine.loadMix(_singleModel());
+      await harness.engine.play();
+      await Future<void>.delayed(Duration.zero);
+
+      await handler.stop();
+      await Future<void>.delayed(Duration.zero);
+      states.clear();
+      mediaItems.clear();
+
+      await harness.engine.loadMix(_overlapModel());
+      await harness.engine.play();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(states.map((state) => state.playing), contains(true));
+      expect(
+        mediaItems.map((item) => item?.title),
+        contains('Lead voice · 2 layered'),
+      );
+
+      await sub.cancel();
+      await mediaSub.cancel();
+      await handler.dispose();
+      await harness.dispose();
+    });
+
     test('position-derived playback-state pushes are throttled', () async {
       final harness = _Harness();
       final handler = MixAudioHandler(
@@ -101,7 +144,7 @@ void main() {
       expect(states, isEmpty);
 
       await sub.cancel();
-      await handler.stop();
+      await handler.dispose();
       await harness.dispose();
     });
   });

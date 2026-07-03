@@ -26,8 +26,9 @@ String mixTitle(
   MixNowPlayingInfo info, {
   audio_service.MediaItem? dominantItem,
 }) {
-  final baseTitle = dominantItem?.title.trim().isNotEmpty == true
-      ? dominantItem!.title
+  final dominantTitle = dominantItem?.title.trim();
+  final baseTitle = dominantTitle != null && dominantTitle.isNotEmpty
+      ? dominantTitle
       : 'Open Music Player mix';
   if (info.activeVoiceCount > 1) {
     return '$baseTitle · ${info.activeVoiceCount} layered';
@@ -51,7 +52,6 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     _currentItem = playbackState?.currentItem;
     _position = Duration(milliseconds: engine.positionMs);
     _bufferedPosition = _position;
-    _duration = Duration(milliseconds: engine.durationMs);
     _isPlaying = playbackState?.isPlaying ?? engine.isPlaying;
     mediaItem.add(_mediaItem());
     _subscriptions
@@ -81,7 +81,6 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
           playbackState.timelinePositionMsStream.listen((positionMs) {
             _position = Duration(milliseconds: positionMs);
             _bufferedPosition = _position;
-            _duration = Duration(milliseconds: _engine.durationMs);
             _publishState();
           }),
         )
@@ -97,7 +96,6 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
         _engine.positionMsStream.listen((positionMs) {
           _position = Duration(milliseconds: positionMs);
           _bufferedPosition = _position;
-          _duration = Duration(milliseconds: _engine.durationMs);
           _publishState();
         }),
       );
@@ -115,7 +113,6 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   audio_service.MediaItem? _currentItem;
   Duration _position = Duration.zero;
   Duration _bufferedPosition = Duration.zero;
-  Duration _duration = Duration.zero;
   bool _isPlaying = false;
   audio_service.AudioProcessingState _processingState =
       audio_service.AudioProcessingState.ready;
@@ -138,17 +135,21 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   @override
   Future<void> stop() async {
     await _engine.pause();
+    _isPlaying = false;
+    _publishState(force: true);
+    return super.stop();
+  }
+
+  Future<void> dispose() async {
     for (final sub in _subscriptions) {
       await sub.cancel();
     }
     _subscriptions.clear();
     _pendingStateTimer?.cancel();
     _pendingStateTimer = null;
-    return super.stop();
   }
 
   void updateDuration() {
-    _duration = Duration(milliseconds: _engine.durationMs);
     _publishMediaItem();
     _publishState(force: true);
   }
@@ -197,12 +198,10 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     if (_engine.durationMs > 0) {
       return Duration(milliseconds: _engine.durationMs);
     }
-    if (_duration > Duration.zero) return _duration;
     return dominant?.duration ?? Duration.zero;
   }
 
   void _publishMediaItem() {
-    _duration = Duration(milliseconds: _engine.durationMs);
     mediaItem.add(_mediaItem());
   }
 
@@ -245,7 +244,6 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
 
   void _publishStateNow() {
     _lastStatePushAt = _now();
-    _duration = Duration(milliseconds: _engine.durationMs);
     playbackState.add(
       audio_service.PlaybackState(
         controls: [

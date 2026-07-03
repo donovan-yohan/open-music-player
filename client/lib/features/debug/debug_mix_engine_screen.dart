@@ -118,7 +118,7 @@ class _DebugMixEngineScreenState extends State<DebugMixEngineScreen> {
       unawaited(sub.cancel());
     }
     unawaited(_focusCoordinator?.dispose());
-    unawaited(_handler?.stop());
+    unawaited(_handler?.dispose());
     unawaited(_engine.dispose());
     for (final controller in _trackControllers) {
       controller.dispose();
