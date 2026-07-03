@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import '../audio/signed_audio_url_service.dart';
 import 'engine_audio_source_resolver.dart';
 import 'timeline_clock.dart';
 import 'timeline_model.dart';
@@ -48,6 +49,7 @@ class VoicePool {
 
   final Map<String, Voice> _activeVoices = {};
   final Map<String, MixClip> _activeClips = {};
+  final Map<String, _LoadedSourceIdentity> _activeSourceIdentities = {};
   final List<Voice> _idleVoices = [];
   final List<Voice> _allVoices = [];
   final List<StreamSubscription> _subscriptions = [];
@@ -207,17 +209,36 @@ class VoicePool {
 
   Future<void> _releaseChangedSources(List<MixClip> active) async {
     for (final clip in active) {
-      final currentClip = _activeClips[clip.id];
       final voice = _activeVoices[clip.id];
-      if (currentClip == null || voice == null) continue;
-      if (currentClip.audioSourceRef == clip.audioSourceRef) continue;
+      if (voice == null) continue;
+      if (!await _shouldReloadActiveClip(clip)) continue;
       await _releaseClip(clip.id, voice);
+    }
+  }
+
+  Future<bool> _shouldReloadActiveClip(MixClip clip) async {
+    final currentClip = _activeClips[clip.id];
+    final loadedIdentity = _activeSourceIdentities[clip.id];
+    if (currentClip == null || loadedIdentity == null) return true;
+    if (currentClip.audioSourceRef != clip.audioSourceRef) return true;
+    if (currentClip == clip) return false;
+
+    try {
+      final currentIdentity =
+          _LoadedSourceIdentity.from(clip, await _resolver.resolve(clip));
+      return currentIdentity != loadedIdentity;
+    } catch (_) {
+      // Keep the already-playing source when re-resolution of an otherwise
+      // unchanged source fails. A transient resolver failure should not evict a
+      // healthy active voice.
+      return false;
     }
   }
 
   Future<void> _releaseClip(String clipId, Voice voice) async {
     _activeVoices.remove(clipId);
     _activeClips.remove(clipId);
+    _activeSourceIdentities.remove(clipId);
     _voiceStatus.remove(clipId);
     _lastDriftCorrectionMs.remove(clipId);
     await voice.setVolume(0);
@@ -263,6 +284,8 @@ class VoicePool {
         await _retirePreparedVoice(clip.id, voice);
         return const _PrepareResult();
       }
+      _activeSourceIdentities[clip.id] =
+          _LoadedSourceIdentity.from(clip, source);
       _voiceStatus[clip.id] = VoiceEventKind.ready;
       _publishStatus();
       _updateBufferingHold(_model.activeClipsAt(_clock.positionMs));
@@ -285,6 +308,7 @@ class VoicePool {
     if (_activeVoices[clipId] == voice) {
       _activeVoices.remove(clipId);
       _activeClips.remove(clipId);
+      _activeSourceIdentities.remove(clipId);
       _voiceStatus.remove(clipId);
     }
     if (_activeVoices.containsValue(voice) || _idleVoices.contains(voice)) {
@@ -519,6 +543,71 @@ class _PrepareResult {
     this.prepared,
     this.shouldRetryAfterFreeingActive = false,
   });
+}
+
+class _LoadedSourceIdentity {
+  final String audioSourceRef;
+  final bool isLocal;
+  final String uriIdentity;
+  final int? descriptorTrackId;
+  final String? descriptorEtag;
+  final String? descriptorStorageKeyVersion;
+  final int? descriptorSizeBytes;
+  final String? descriptorContentType;
+
+  const _LoadedSourceIdentity({
+    required this.audioSourceRef,
+    required this.isLocal,
+    required this.uriIdentity,
+    required this.descriptorTrackId,
+    required this.descriptorEtag,
+    required this.descriptorStorageKeyVersion,
+    required this.descriptorSizeBytes,
+    required this.descriptorContentType,
+  });
+
+  factory _LoadedSourceIdentity.from(MixClip clip, ResolvedAudioSource source) {
+    final descriptor = source.descriptor;
+    return _LoadedSourceIdentity(
+      audioSourceRef: clip.audioSourceRef,
+      isLocal: source.isLocal,
+      uriIdentity: _stableUriIdentity(source.uri, descriptor),
+      descriptorTrackId: descriptor?.trackId,
+      descriptorEtag: descriptor?.etag,
+      descriptorStorageKeyVersion: descriptor?.storageKeyVersion,
+      descriptorSizeBytes: descriptor?.sizeBytes,
+      descriptorContentType: descriptor?.contentType,
+    );
+  }
+
+  static String _stableUriIdentity(Uri uri, SignedAudioDescriptor? descriptor) {
+    if (descriptor == null) return uri.toString();
+    return uri.replace(query: null, fragment: null).toString();
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is _LoadedSourceIdentity &&
+      other.audioSourceRef == audioSourceRef &&
+      other.isLocal == isLocal &&
+      other.uriIdentity == uriIdentity &&
+      other.descriptorTrackId == descriptorTrackId &&
+      other.descriptorEtag == descriptorEtag &&
+      other.descriptorStorageKeyVersion == descriptorStorageKeyVersion &&
+      other.descriptorSizeBytes == descriptorSizeBytes &&
+      other.descriptorContentType == descriptorContentType;
+
+  @override
+  int get hashCode => Object.hash(
+        audioSourceRef,
+        isLocal,
+        uriIdentity,
+        descriptorTrackId,
+        descriptorEtag,
+        descriptorStorageKeyVersion,
+        descriptorSizeBytes,
+        descriptorContentType,
+      );
 }
 
 extension _FirstOrNull<T> on Iterable<T> {

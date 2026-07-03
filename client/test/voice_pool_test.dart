@@ -202,6 +202,28 @@ void main() {
     expect(newVoice.loadedSources.map((uri) => uri.toString()), [second]);
   });
 
+  test('same clip id reloads when resolved source identity changes', () async {
+    const ref = 'track-a';
+    final first = Uri.parse('https://example.com/first.mp3');
+    final second = Uri.parse('https://example.com/second.mp3');
+    resolver.sourceByClipId['a'] = first;
+
+    await pool.loadMix(
+      TimelineModel(clips: [_clip('a', 0, audioSourceRef: ref)]),
+    );
+    final voice = pool.activeVoices['a'] as FakeVoice;
+    expect(voice.loadedSources, [first]);
+
+    resolver.sourceByClipId['a'] = second;
+    await pool.loadMix(
+      TimelineModel(clips: [_clip('a', 0, gainDb: -1, audioSourceRef: ref)]),
+    );
+
+    final newVoice = pool.activeVoices['a'] as FakeVoice;
+    expect(voice.releaseCount, 1);
+    expect(newVoice.loadedSources, [second]);
+  });
+
   test('drift monitor ignores small player jitter before hard resyncing',
       () async {
     await pool.dispose();
@@ -335,6 +357,7 @@ class FakeResolver implements EngineAudioSourceResolver {
   final delayByClip = <String, Duration>{};
   final failClipIds = <String>{};
   final permanentFailClipIds = <String>{};
+  final sourceByClipId = <String, Uri>{};
   final warmed = <String>[];
 
   @override
@@ -347,7 +370,8 @@ class FakeResolver implements EngineAudioSourceResolver {
     if (failClipIds.remove(clip.id)) {
       throw StateError('decoder exhausted for ${clip.id}');
     }
-    return ResolvedAudioSource.remote(Uri.parse(clip.audioSourceRef), null);
+    return ResolvedAudioSource.remote(
+        sourceByClipId[clip.id] ?? Uri.parse(clip.audioSourceRef), null);
   }
 
   @override
