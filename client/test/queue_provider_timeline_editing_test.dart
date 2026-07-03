@@ -694,7 +694,7 @@ void main() {
         'trackId': 43,
         'sourceStartMs': 10000,
         'sourceEndMs': second.durationMs,
-        'timelineStartMs': 0,
+        'timelineStartMs': 240000,
         'gainDb': 0.0,
       },
     ]);

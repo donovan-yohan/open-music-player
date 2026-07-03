@@ -9,6 +9,7 @@ import '../models/track.dart';
 import '../models/trim_range.dart';
 import '../models/waveform.dart';
 import '../core/api/api_client.dart';
+import '../core/engine/timeline_model.dart';
 
 class QueueProvider extends ChangeNotifier {
   static const String queueTimingMixPlanName = 'Queue timing';
@@ -348,9 +349,9 @@ class QueueProvider extends ChangeNotifier {
       final plans = await _apiClient.listMixPlans();
       if (_disposed) return;
       final plan = plans.cast<MixPlan?>().firstWhere(
-        (plan) => plan?.name == queueTimingMixPlanName,
-        orElse: () => null,
-      );
+            (plan) => plan?.name == queueTimingMixPlanName,
+            orElse: () => null,
+          );
       if (plan == null) {
         _activeMixPlanId = null;
         _activeMixPlanVersion = null;
@@ -362,7 +363,7 @@ class QueueProvider extends ChangeNotifier {
       _activeMixPlanVersion = plan.version;
       _activeMixPlanName = plan.name;
       _mixPlanClips = {};
-      for (final clip in plan.clips) {
+      for (final clip in _queueTimingClipsFromPlan(plan)) {
         _storeMixPlanClip(clip);
       }
       _pruneTimingState(clearWhenEmpty: false);
@@ -421,7 +422,7 @@ class QueueProvider extends ChangeNotifier {
       _activeMixPlanVersion = saved.version;
       _activeMixPlanName = saved.name;
       _mixPlanClips = {};
-      for (final clip in saved.clips) {
+      for (final clip in _queueTimingClipsFromPlan(saved)) {
         _storeMixPlanClip(clip);
       }
       _pruneTimingState(clearWhenEmpty: false);
@@ -438,8 +439,7 @@ class QueueProvider extends ChangeNotifier {
       if (trackId == null) continue;
 
       final existing = _mixPlanClipFor(track);
-      final existingClipId =
-          existing != null &&
+      final existingClipId = existing != null &&
               existing.hasExplicitQueueItemId &&
               existing.queueItemId == track.queueItemId
           ? existing.clipId
@@ -460,7 +460,85 @@ class QueueProvider extends ChangeNotifier {
         ),
       );
     }
-    return clips;
+    if (clips.isEmpty) return clips;
+    return _queueTimingModelFromPlan(_mixPlanShell(clips)).toMixPlanClips();
+  }
+
+  TimelineModel _queueTimingModelFromPlan(MixPlan plan) {
+    final trackOrder = _queue.tracks
+        .map(_mixPlanTrackId)
+        .whereType<String>()
+        .toList(growable: false);
+    return TimelineModel.fromQueuePlan(
+      plan,
+      trackOrder: trackOrder,
+      sourceDurationMsFor: _sourceDurationMsForTrackId,
+    );
+  }
+
+  List<MixPlanClip> _queueTimingClipsFromPlan(MixPlan plan) {
+    final normalized = _queueTimingModelFromPlan(plan).toMixPlanClips();
+    final legacyClips = plan.clips
+        .where((clip) => !clip.hasExplicitQueueItemId)
+        .toList(growable: true);
+    if (legacyClips.isEmpty) return normalized;
+
+    return [
+      for (final clip in normalized)
+        _restoreLegacyTrackFallback(clip, legacyClips) ?? clip,
+    ];
+  }
+
+  MixPlanClip? _restoreLegacyTrackFallback(
+    MixPlanClip normalized,
+    List<MixPlanClip> legacyClips,
+  ) {
+    final legacyIndex = legacyClips.indexWhere(
+      (clip) => clip.trackId == normalized.trackId,
+    );
+    if (legacyIndex == -1) return null;
+    legacyClips.removeAt(legacyIndex);
+    return MixPlanClip(
+      clipId: normalized.clipId,
+      queueItemId: normalized.queueItemId,
+      hasExplicitQueueItemId: false,
+      trackId: normalized.trackId,
+      sourceStartMs: normalized.sourceStartMs,
+      sourceEndMs: normalized.sourceEndMs,
+      timelineStartMs: normalized.timelineStartMs,
+      gainDb: normalized.gainDb,
+      fadeInMs: normalized.fadeInMs,
+      fadeOutMs: normalized.fadeOutMs,
+    );
+  }
+
+  MixPlan _mixPlanShell(List<MixPlanClip> clips) {
+    final now = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+    return MixPlan(
+      id: _activeMixPlanId ?? 'queue-timing-draft',
+      schemaVersion: 1,
+      name: _activeMixPlanName,
+      clips: clips,
+      summary: MixPlanSummary(
+        clipCount: clips.length,
+        trackIds: clips.map((clip) => clip.trackId).toList(),
+        durationMs: clips.fold<int>(
+          0,
+          (maxEnd, clip) =>
+              maxEnd > clip.timelineEndMs ? maxEnd : clip.timelineEndMs,
+        ),
+      ),
+      version: _activeMixPlanVersion ?? 1,
+      createdAt: now,
+      updatedAt: now,
+    );
+  }
+
+  int _sourceDurationMsForTrackId(String trackId) {
+    for (final track in _queue.tracks) {
+      if (_mixPlanTrackId(track) == trackId) return track.durationMs;
+    }
+    return 0;
   }
 
   String? _mixPlanTrackId(Track track) {
@@ -503,8 +581,7 @@ class QueueProvider extends ChangeNotifier {
     Set<String>? playbackTrackIds;
     for (final clip in clips) {
       final hasQueueItemIdentity = queueItemIds.contains(clip.queueItemId);
-      final hasLegacyTrackIdentity =
-          !clip.hasExplicitQueueItemId &&
+      final hasLegacyTrackIdentity = !clip.hasExplicitQueueItemId &&
           (playbackTrackIds ??= _queue.tracks
                   .map(_mixPlanTrackId)
                   .whereType<String>()

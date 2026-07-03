@@ -3,7 +3,7 @@ import 'package:audio_service/audio_service.dart';
 /// Origin of a listening-queue item.
 ///
 /// `context` items come from playing a whole collection (album / playlist /
-/// library) via [AudioPlayerService.setQueue]. `manual` items were explicitly
+/// library) via PlaybackState.playQueue. `manual` items were explicitly
 /// added by the user via enqueue / play-next and are consumed *before* the
 /// context tail, matching how a mainstream player treats "Add to queue".
 const String queueOriginContext = 'context';

@@ -66,6 +66,10 @@ class TimelineModel {
   factory TimelineModel.sequential(
     Iterable<String> trackIds, {
     required int Function(String trackId) sourceDurationMsFor,
+    int Function(String trackId, int index)? sourceDurationMsForEntry,
+    String Function(String trackId, int index)? audioSourceRefFor,
+    String Function(String trackId, int index)? queueItemIdFor,
+    String Function(String trackId, int index)? clipIdFor,
     int startAtMs = 0,
     GainEnvelope envelope = const GainEnvelope.flat(),
   }) {
@@ -73,16 +77,27 @@ class TimelineModel {
     final clips = <MixClip>[];
     var index = 0;
     for (final trackId in trackIds) {
-      final durationMs = math.max(0, sourceDurationMsFor(trackId));
+      final durationMs = math.max(
+        0,
+        sourceDurationMsForEntry?.call(trackId, index) ??
+            sourceDurationMsFor(trackId),
+      );
       final placement = TimelineClip.clamped(
-        id: 'clip_${index}_$trackId',
+        id: clipIdFor?.call(trackId, index) ?? 'clip_${index}_$trackId',
         trackId: trackId,
         sourceDurationMs: durationMs,
         sourceStartMs: 0,
         sourceEndMs: durationMs,
         timelineStartMs: cursor,
       );
-      clips.add(MixClip(placement: placement, envelope: envelope));
+      clips.add(
+        MixClip(
+          placement: placement,
+          envelope: envelope,
+          audioSourceRef: audioSourceRefFor?.call(trackId, index),
+          queueItemId: queueItemIdFor?.call(trackId, index),
+        ),
+      );
       cursor = placement.timelineEndMs;
       index++;
     }

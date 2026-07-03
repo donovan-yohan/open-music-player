@@ -9,11 +9,11 @@ import 'package:just_audio_background/just_audio_background.dart';
 
 import 'app/app.dart';
 import 'core/api/api_client.dart';
-import 'core/audio/audio_player_service.dart';
 import 'core/audio/playback_state.dart';
 import 'core/audio/play_recorder_service.dart';
 import 'core/audio/queue_persistence.dart';
 import 'core/audio/signed_audio_url_service.dart';
+import 'core/engine/playback_engine.dart';
 import 'core/cache/playback_cache_manager.dart';
 import 'core/auth/auth_service.dart';
 import 'core/auth/auth_state.dart';
@@ -34,7 +34,7 @@ void main() async {
 
   // Surface a media-style now-playing notification (lock screen + shade) with
   // transport controls while audio plays. Must run before any AudioPlayer is
-  // constructed (AudioPlayerService.init below). Mobile-only — not on web.
+  // constructed by the PlaybackEngine. Mobile-only — not on web.
   //
   // The Phase 2 mix-engine dogfood build disables this with
   // OMP_ENABLE_JUST_AUDIO_BACKGROUND=false because just_audio_background wraps
@@ -59,7 +59,7 @@ void main() async {
   await authState.checkAuthStatus();
 
   final signedAudioUrlService = SignedAudioUrlService(apiClient);
-  final audioService = await AudioPlayerService.init();
+  final playbackEngine = PlaybackEngine();
 
   final offlineDb = OfflineDatabase();
   final connectivityService = ConnectivityService();
@@ -86,7 +86,7 @@ void main() async {
   // Resolution prefers a validated explicit download (offline / after restart),
   // then a matching cache artifact, then a freshly signed remote URL.
   final playbackState = PlaybackState(
-    audioService,
+    playbackEngine,
     signedAudioUrlService: signedAudioUrlService,
     localResolver: downloadService,
     cacheManager: playbackCacheManager,

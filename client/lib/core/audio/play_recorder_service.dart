@@ -80,6 +80,7 @@ class PlayRecorderService {
       }),
       _playback.playerStateStream.listen((state) {
         if (state.processingState == ProcessingState.completed) {
+          _decider.onTrackChanged(_playback.currentItem?.id);
           _emit(_decider.onCompleted());
         }
       }),
