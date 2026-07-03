@@ -139,6 +139,8 @@ class VoicePool {
 
     await _releaseLeaving(activeIds);
     if (generation != _generation) return;
+    await _releaseChangedSources(active);
+    if (generation != _generation) return;
 
     final prepareTasks = <Future<_PreparedVoice?>>[];
     for (final clip in active) {
@@ -200,6 +202,16 @@ class VoicePool {
     for (final entry in _activeVoices.entries.toList()) {
       if (activeIds.contains(entry.key)) continue;
       await _releaseClip(entry.key, entry.value);
+    }
+  }
+
+  Future<void> _releaseChangedSources(List<MixClip> active) async {
+    for (final clip in active) {
+      final currentClip = _activeClips[clip.id];
+      final voice = _activeVoices[clip.id];
+      if (currentClip == null || voice == null) continue;
+      if (currentClip.audioSourceRef == clip.audioSourceRef) continue;
+      await _releaseClip(clip.id, voice);
     }
   }
 

@@ -184,6 +184,24 @@ void main() {
     expect(quietVoice.releaseCount, 0);
   });
 
+  test('same clip id reloads when audio source changes', () async {
+    const first = 'https://example.com/first.mp3';
+    const second = 'https://example.com/second.mp3';
+    await pool.loadMix(
+      TimelineModel(clips: [_clip('a', 0, audioSourceRef: first)]),
+    );
+    final voice = pool.activeVoices['a'] as FakeVoice;
+    expect(voice.loadedSources.map((uri) => uri.toString()), [first]);
+
+    await pool.loadMix(
+      TimelineModel(clips: [_clip('a', 0, audioSourceRef: second)]),
+    );
+
+    final newVoice = pool.activeVoices['a'] as FakeVoice;
+    expect(voice.releaseCount, 1);
+    expect(newVoice.loadedSources.map((uri) => uri.toString()), [second]);
+  });
+
   test('drift monitor ignores small player jitter before hard resyncing',
       () async {
     await pool.dispose();
@@ -290,8 +308,14 @@ TimelineModel _fourAtZero() => TimelineModel(
       ],
     );
 
-MixClip _clip(String id, int startMs,
-    {int fadeInMs = 0, int fadeOutMs = 0, double gainDb = 0}) {
+MixClip _clip(
+  String id,
+  int startMs, {
+  int fadeInMs = 0,
+  int fadeOutMs = 0,
+  double gainDb = 0,
+  String? audioSourceRef,
+}) {
   return MixClip(
     placement: TimelineClip.clamped(
       id: id,
@@ -301,7 +325,7 @@ MixClip _clip(String id, int startMs,
       sourceEndMs: 10000,
       timelineStartMs: startMs,
     ),
-    audioSourceRef: 'https://example.com/$id.mp3',
+    audioSourceRef: audioSourceRef ?? 'https://example.com/$id.mp3',
     envelope: GainEnvelope(
         fadeInMs: fadeInMs, fadeOutMs: fadeOutMs, baseGainDb: gainDb),
   );
