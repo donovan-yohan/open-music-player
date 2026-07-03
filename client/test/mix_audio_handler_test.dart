@@ -1,6 +1,8 @@
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/mix_audio_handler.dart';
+import 'package:open_music_player/core/audio/playback_state.dart' as app_audio;
+import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/gain_envelope.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
@@ -147,6 +149,154 @@ void main() {
       await handler.dispose();
       await harness.dispose();
     });
+
+    test(
+      'playback-backed notification uses source-relative position and duration',
+      () async {
+        final harness = _PlaybackHarness();
+        await harness.playback.playQueue([
+          _track(1, seconds: 5),
+          _track(2, seconds: 5),
+        ], startIndex: 1);
+        await Future<void>.delayed(Duration.zero);
+
+        final handler = MixAudioHandler(
+          engine: harness.engine,
+          playbackState: harness.playback,
+          statePushThrottle: Duration.zero,
+          now: () => harness.now,
+        );
+        final states = <audio_service.PlaybackState>[];
+        final mediaItems = <audio_service.MediaItem?>[];
+        final stateSub = handler.playbackState.listen(states.add);
+        final mediaSub = handler.mediaItem.listen(mediaItems.add);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(harness.engine.positionMs, 5000);
+        expect(harness.playback.currentItem?.id, '2');
+        expect(harness.playback.position, Duration.zero);
+        expect(mediaItems.last?.id, '2');
+        expect(mediaItems.last?.duration, const Duration(seconds: 5));
+        expect(states.last.updatePosition, Duration.zero);
+
+        await stateSub.cancel();
+        await mediaSub.cancel();
+        await handler.dispose();
+        await harness.dispose();
+      },
+    );
+
+    test(
+      'notification seek play and pause use the playback queue path',
+      () async {
+        final harness = _PlaybackHarness();
+        await harness.playback.playQueue([
+          _track(1, seconds: 5),
+          _track(2, seconds: 5),
+        ], startIndex: 1);
+        final handler = MixAudioHandler(
+          engine: harness.engine,
+          playbackState: harness.playback,
+          statePushThrottle: Duration.zero,
+          now: () => harness.now,
+        );
+        final states = <audio_service.PlaybackState>[];
+        final mediaItems = <audio_service.MediaItem?>[];
+        final stateSub = handler.playbackState.listen(states.add);
+        final mediaSub = handler.mediaItem.listen(mediaItems.add);
+
+        await handler.seek(const Duration(seconds: 2));
+        await Future<void>.delayed(Duration.zero);
+
+        expect(harness.engine.positionMs, 7000);
+        expect(harness.playback.currentItem?.id, '2');
+        expect(harness.playback.position, const Duration(seconds: 2));
+        expect(mediaItems.last?.id, '2');
+        expect(states.last.updatePosition, const Duration(seconds: 2));
+
+        await handler.pause();
+        await Future<void>.delayed(Duration.zero);
+        expect(harness.playback.isPlaying, isFalse);
+        expect(states.last.playing, isFalse);
+
+        await handler.play();
+        await Future<void>.delayed(Duration.zero);
+        expect(harness.playback.isPlaying, isTrue);
+        expect(states.last.playing, isTrue);
+
+        await stateSub.cancel();
+        await mediaSub.cancel();
+        await handler.dispose();
+        await harness.dispose();
+      },
+    );
+
+    test(
+      'notification skipToNext gives immediate app and media-session feedback',
+      () async {
+        final harness = _PlaybackHarness();
+        final handler = MixAudioHandler(
+          engine: harness.engine,
+          playbackState: harness.playback,
+          statePushThrottle: Duration.zero,
+          now: () => harness.now,
+        );
+        final mediaItems = <audio_service.MediaItem?>[];
+        final mediaSub = handler.mediaItem.listen(mediaItems.add);
+
+        await harness.playback.playQueue([
+          _track(1, seconds: 5),
+          _track(2, seconds: 5),
+        ]);
+        await handler.skipToNext();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(harness.engine.positionMs, 5000);
+        expect(harness.playback.currentItem?.id, '2');
+        expect(harness.playback.position, Duration.zero);
+        expect(mediaItems.last?.id, '2');
+
+        await mediaSub.cancel();
+        await handler.dispose();
+        await harness.dispose();
+      },
+    );
+
+    test(
+      'queue transition keeps app and notification metadata aligned with audio',
+      () async {
+        final harness = _PlaybackHarness();
+        final handler = MixAudioHandler(
+          engine: harness.engine,
+          playbackState: harness.playback,
+          statePushThrottle: Duration.zero,
+          now: () => harness.now,
+        );
+        final states = <audio_service.PlaybackState>[];
+        final mediaItems = <audio_service.MediaItem?>[];
+        final stateSub = handler.playbackState.listen(states.add);
+        final mediaSub = handler.mediaItem.listen(mediaItems.add);
+
+        await harness.playback.playQueue([
+          _track(1, seconds: 5),
+          _track(2, seconds: 5),
+        ]);
+        harness.advance(const Duration(seconds: 6));
+        await Future<void>.delayed(Duration.zero);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(harness.playback.currentItem?.id, '2');
+        expect(harness.playback.position, const Duration(seconds: 1));
+        expect(harness.engine.model.dominantClipAt(6000)?.trackId, '2');
+        expect(mediaItems.last?.id, '2');
+        expect(states.last.updatePosition, const Duration(seconds: 1));
+
+        await stateSub.cancel();
+        await mediaSub.cancel();
+        await handler.dispose();
+        await harness.dispose();
+      },
+    );
   });
 }
 
@@ -160,6 +310,13 @@ audio_service.MediaItem _item(String id, String title, {Uri? artUri}) =>
       artUri: artUri,
       extras: {'url': 'https://example.com/$id.mp3'},
     );
+
+Map<String, dynamic> _track(int id, {required int seconds}) => {
+      'id': id,
+      'title': 'Track $id',
+      'artist': 'Artist $id',
+      'duration': seconds,
+    };
 
 TimelineModel _overlapModel() => TimelineModel(
       clips: [
@@ -223,6 +380,51 @@ class _Harness {
 
   Future<void> dispose() async {
     await engine.dispose();
+    await clock.dispose();
+  }
+}
+
+class _PlaybackHarness {
+  _PlaybackHarness() {
+    clock = DefaultTimelineClock(
+      now: () => now,
+      uiTickInterval: const Duration(hours: 1),
+    );
+    engine = PlaybackEngine.withClock(
+      clock: clock,
+      voiceFactory: () => FakeVoice('v'),
+    );
+    playback = app_audio.PlaybackState(
+      engine,
+      signedAudioUrlService: SignedAudioUrlService.withRequester((body) async {
+        final ids = (body['trackIds'] as List).cast<int>();
+        return {
+          'urls': [
+            for (final id in ids)
+              {
+                'trackId': id,
+                'url': 'https://example.com/$id.mp3',
+                'expiresAt': DateTime.utc(2027, 1, 1).toIso8601String(),
+              },
+          ],
+          'unavailable': <Map<String, dynamic>>[],
+        };
+      }),
+    );
+  }
+
+  late final DefaultTimelineClock clock;
+  late final PlaybackEngine engine;
+  late final app_audio.PlaybackState playback;
+  DateTime now = DateTime.utc(2026);
+
+  void advance(Duration duration) {
+    now = now.add(duration);
+    clock.tickForTest();
+  }
+
+  Future<void> dispose() async {
+    playback.dispose();
     await clock.dispose();
   }
 }

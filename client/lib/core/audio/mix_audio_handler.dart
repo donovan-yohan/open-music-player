@@ -50,8 +50,9 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
         _statePushThrottle = statePushThrottle,
         _now = now ?? DateTime.now {
     _currentItem = playbackState?.currentItem;
-    _position = Duration(milliseconds: engine.positionMs);
-    _bufferedPosition = _position;
+    _position =
+        playbackState?.position ?? Duration(milliseconds: engine.positionMs);
+    _bufferedPosition = playbackState?.bufferedPosition ?? _position;
     _isPlaying = playbackState?.isPlaying ?? engine.isPlaying;
     mediaItem.add(_mediaItem());
     _subscriptions
@@ -78,9 +79,9 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
           }),
         )
         ..add(
-          playbackState.timelinePositionMsStream.listen((positionMs) {
-            _position = Duration(milliseconds: positionMs);
-            _bufferedPosition = _position;
+          playbackState.positionStream.listen((position) {
+            _position = position;
+            _bufferedPosition = playbackState.bufferedPosition;
             _publishState();
           }),
         )
@@ -120,21 +121,39 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   Timer? _pendingStateTimer;
 
   @override
-  Future<void> play() => _engine.play();
+  Future<void> play() => _playbackState?.play() ?? _engine.play();
 
   @override
-  Future<void> pause() => _engine.pause();
+  Future<void> pause() => _playbackState?.pause() ?? _engine.pause();
 
   @override
   Future<void> seek(Duration position) async {
-    await _engine.seek(position.inMilliseconds);
+    final playbackState = _playbackState;
+    if (playbackState != null) {
+      await playbackState.seek(position);
+    } else {
+      await _engine.seek(position.inMilliseconds);
+    }
     _position = position;
     _publishState(force: true);
   }
 
   @override
+  Future<void> skipToNext() =>
+      _playbackState?.skipToNext() ?? Future<void>.value();
+
+  @override
+  Future<void> skipToPrevious() =>
+      _playbackState?.skipToPrevious() ?? Future<void>.value();
+
+  @override
   Future<void> stop() async {
-    await _engine.pause();
+    final playbackState = _playbackState;
+    if (playbackState != null) {
+      await playbackState.stop();
+    } else {
+      await _engine.pause();
+    }
     _isPlaying = false;
     _publishState(force: true);
     return super.stop();
@@ -195,10 +214,14 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   }
 
   Duration _durationForNotification(audio_service.MediaItem? dominant) {
+    final dominantDuration = dominant?.duration;
+    if (dominantDuration != null) return dominantDuration;
+    final playbackState = _playbackState;
+    if (playbackState != null) return playbackState.duration;
     if (_engine.durationMs > 0) {
       return Duration(milliseconds: _engine.durationMs);
     }
-    return dominant?.duration ?? Duration.zero;
+    return Duration.zero;
   }
 
   void _publishMediaItem() {
@@ -247,10 +270,12 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     playbackState.add(
       audio_service.PlaybackState(
         controls: [
+          if (_playbackState != null) audio_service.MediaControl.skipToPrevious,
           if (_isPlaying)
             audio_service.MediaControl.pause
           else
             audio_service.MediaControl.play,
+          if (_playbackState != null) audio_service.MediaControl.skipToNext,
           audio_service.MediaControl.stop,
         ],
         systemActions: const {
