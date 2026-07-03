@@ -5,10 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:provider/provider.dart' as provider;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:just_audio_background/just_audio_background.dart';
+import 'package:audio_service/audio_service.dart' as audio_service;
 
 import 'app/app.dart';
 import 'core/api/api_client.dart';
+import 'core/audio/mix_audio_handler.dart';
 import 'core/audio/playback_state.dart';
 import 'core/audio/play_recorder_service.dart';
 import 'core/audio/queue_persistence.dart';
@@ -24,31 +25,13 @@ import 'core/network/connectivity_service.dart';
 import 'core/download/download_service.dart';
 import 'core/download/download_state.dart';
 
-const _enableJustAudioBackground = bool.fromEnvironment(
+const _enableProductionAudioService = bool.fromEnvironment(
   'OMP_ENABLE_JUST_AUDIO_BACKGROUND',
   defaultValue: true,
 );
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Surface a media-style now-playing notification (lock screen + shade) with
-  // transport controls while audio plays. Must run before any AudioPlayer is
-  // constructed by the PlaybackEngine. Mobile-only — not on web.
-  //
-  // The Phase 2 mix-engine dogfood build disables this with
-  // OMP_ENABLE_JUST_AUDIO_BACKGROUND=false because just_audio_background wraps
-  // the just_audio platform with a single-player background adapter. The debug
-  // mix proof intentionally creates up to four real AudioPlayers, then owns its
-  // own AudioService handler from the debug screen.
-  if (!kIsWeb && _enableJustAudioBackground) {
-    await JustAudioBackground.init(
-      androidNotificationChannelId: 'com.openmusicplayer.app.channel.audio',
-      androidNotificationChannelName: 'Playback',
-      androidNotificationOngoing: true,
-      androidStopForegroundOnPause: true,
-    );
-  }
 
   final sharedPreferences = await SharedPreferences.getInstance();
 
@@ -92,6 +75,22 @@ void main() async {
     cacheManager: playbackCacheManager,
     persistence: QueuePersistenceStore(prefs: Future.value(sharedPreferences)),
   );
+  // Surface the aggregate mix as one OS media session/notification. The handler
+  // derives metadata from PlaybackState but keeps all transport callbacks wired
+  // to the shared PlaybackEngine, so lock-screen seek/play/pause acts on the
+  // whole mix rather than whichever voice is currently dominant.
+  if (!kIsWeb && _enableProductionAudioService) {
+    await audio_service.AudioService.init<MixAudioHandler>(
+      builder: () =>
+          MixAudioHandler(engine: playbackEngine, playbackState: playbackState),
+      config: const audio_service.AudioServiceConfig(
+        androidNotificationChannelId: 'com.openmusicplayer.app.channel.audio',
+        androidNotificationChannelName: 'Playback',
+        androidNotificationOngoing: true,
+        androidStopForegroundOnPause: true,
+      ),
+    );
+  }
   // Rebuild the last listening queue (paused, at the saved position) so a
   // restart resumes where the user left off. Best-effort: failures are
   // swallowed inside restore() and never block startup.
