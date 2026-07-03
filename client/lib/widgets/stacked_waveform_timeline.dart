@@ -304,30 +304,15 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     return GestureDetector(
       key: const ValueKey('timeline_pan_surface'),
       behavior: HitTestBehavior.opaque,
-      onHorizontalDragStart: _mode == _TimelineMode.browse && _hasScrubHandlers
-          ? (details) =>
-              _beginScrubAt(viewport, paneWidth, details.localPosition.dx)
-          : null,
       onHorizontalDragUpdate: _mode == _TimelineMode.browse
-          ? (details) {
-              if (_hasScrubHandlers) {
-                _updateScrubAt(viewport, paneWidth, details.localPosition.dx);
-              } else {
-                _panViewport(viewport, -(details.primaryDelta ?? 0));
-              }
-            }
+          ? (details) => _panViewport(viewport, -(details.primaryDelta ?? 0))
           : null,
-      onHorizontalDragEnd: _mode == _TimelineMode.browse && _hasScrubHandlers
-          ? (_) => _endScrub()
-          : null,
-      onHorizontalDragCancel:
-          _mode == _TimelineMode.browse && _hasScrubHandlers ? _endScrub : null,
       child: Stack(
         children: [
           Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _buildRuler(context, viewport),
+              _buildRuler(context, viewport, paneWidth),
               Expanded(
                 child: SingleChildScrollView(
                   key: const PageStorageKey('timeline_lane_scroll'),
@@ -731,9 +716,14 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
   }
 
-  Widget _buildRuler(BuildContext context, TimelineViewport viewport) {
+  Widget _buildRuler(
+    BuildContext context,
+    TimelineViewport viewport,
+    double paneWidth,
+  ) {
     final theme = Theme.of(context);
-    return Container(
+    final ruler = Container(
+      key: const ValueKey('timeline_ruler'),
       height: 40,
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
@@ -763,6 +753,22 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           ),
         ],
       ),
+    );
+
+    if (_mode != _TimelineMode.browse || !_hasScrubHandlers) {
+      return ruler;
+    }
+
+    return GestureDetector(
+      key: const ValueKey('timeline_ruler_scrub_surface'),
+      behavior: HitTestBehavior.opaque,
+      onHorizontalDragStart: (details) =>
+          _beginScrubAt(viewport, paneWidth, details.localPosition.dx),
+      onHorizontalDragUpdate: (details) =>
+          _updateScrubAt(viewport, paneWidth, details.localPosition.dx),
+      onHorizontalDragEnd: (_) => _endScrub(),
+      onHorizontalDragCancel: _endScrub,
+      child: ruler,
     );
   }
 

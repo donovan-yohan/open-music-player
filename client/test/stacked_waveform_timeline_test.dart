@@ -232,7 +232,7 @@ void main() {
     );
 
     await tester.drag(
-      find.byKey(const ValueKey('timeline_pan_surface')),
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
       const Offset(140, 0),
     );
     await tester.pumpAndSettle();
@@ -471,6 +471,52 @@ void main() {
       lessThan(before.left),
       reason: 'dragging left should pan later in shared mix time',
     );
+  });
+
+  testWidgets('browse drag pans zoomed engine timelines with scrub handlers', (
+    tester,
+  ) async {
+    final events = <String>[];
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    final later = _track('t3', 'Glass', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next, later],
+      timelineModel: TimelineModel.sequential(
+        [current.id, next.id, later.id],
+        sourceDurationMsFor: (_) => 240000,
+      ),
+      onScrubStart: () => events.add('begin'),
+      onScrubUpdate: (ms) => events.add('update:$ms'),
+      onScrubEnd: (ms) async => events.add('end:$ms'),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_zoom_in')));
+    await tester.pumpAndSettle();
+    expect(find.text('1.5x'), findsOneWidget);
+
+    final before = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+      const Offset(-160, 0),
+    );
+    await tester.pumpAndSettle();
+    final after = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+
+    expect(
+      after.left,
+      lessThan(before.left),
+      reason: 'lane drag should pan even when engine scrub handlers exist',
+    );
+    expect(events, isEmpty, reason: 'lane panning must not start scrubbing');
   });
 
   testWidgets('current track changes clear manual pan and auto-follow', (

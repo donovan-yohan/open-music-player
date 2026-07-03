@@ -330,7 +330,7 @@ void main() {
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
     await tester.drag(
-      find.byKey(const ValueKey('timeline_pan_surface')),
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
       const Offset(120, 0),
     );
     await tester.pumpAndSettle();
