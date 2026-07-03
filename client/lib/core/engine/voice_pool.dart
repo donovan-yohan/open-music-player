@@ -114,17 +114,25 @@ class VoicePool {
     _suppressClockSync = true;
     _clock.durationMs = model.durationMs;
     _suppressClockSync = false;
-    await syncAt(_clock.positionMs, forceSeek: true);
+    await _enqueueSyncAt(_clock.positionMs,
+        forceSeek: true, validateResolvedIdentities: true);
   }
 
   Future<void> syncAt(int globalMs, {bool forceSeek = false}) {
-    final next =
-        _syncChain.then((_) => _syncAt(globalMs, forceSeek: forceSeek));
+    return _enqueueSyncAt(globalMs, forceSeek: forceSeek);
+  }
+
+  Future<void> _enqueueSyncAt(int globalMs,
+      {bool forceSeek = false, bool validateResolvedIdentities = false}) {
+    final next = _syncChain.then((_) => _syncAt(globalMs,
+        forceSeek: forceSeek,
+        validateResolvedIdentities: validateResolvedIdentities));
     _syncChain = next.then((_) {}, onError: (_) {});
     return next;
   }
 
-  Future<void> _syncAt(int globalMs, {bool forceSeek = false}) async {
+  Future<void> _syncAt(int globalMs,
+      {bool forceSeek = false, bool validateResolvedIdentities = false}) async {
     if (!_started) return;
     final generation = ++_generation;
     _capacityEvictedClipIds.clear();
@@ -141,7 +149,8 @@ class VoicePool {
 
     await _releaseLeaving(activeIds);
     if (generation != _generation) return;
-    await _releaseChangedSources(active);
+    await _releaseChangedSources(active,
+        validateResolvedIdentities: validateResolvedIdentities);
     if (generation != _generation) return;
 
     final prepareTasks = <Future<_PreparedVoice?>>[];
@@ -207,21 +216,26 @@ class VoicePool {
     }
   }
 
-  Future<void> _releaseChangedSources(List<MixClip> active) async {
+  Future<void> _releaseChangedSources(List<MixClip> active,
+      {required bool validateResolvedIdentities}) async {
     for (final clip in active) {
       final voice = _activeVoices[clip.id];
       if (voice == null) continue;
-      if (!await _shouldReloadActiveClip(clip)) continue;
+      if (!await _shouldReloadActiveClip(clip,
+          validateResolvedIdentity: validateResolvedIdentities)) {
+        continue;
+      }
       await _releaseClip(clip.id, voice);
     }
   }
 
-  Future<bool> _shouldReloadActiveClip(MixClip clip) async {
+  Future<bool> _shouldReloadActiveClip(MixClip clip,
+      {required bool validateResolvedIdentity}) async {
     final currentClip = _activeClips[clip.id];
     final loadedIdentity = _activeSourceIdentities[clip.id];
     if (currentClip == null || loadedIdentity == null) return true;
     if (currentClip.audioSourceRef != clip.audioSourceRef) return true;
-    if (currentClip == clip) return false;
+    if (currentClip == clip && !validateResolvedIdentity) return false;
 
     try {
       final currentIdentity =
@@ -582,7 +596,13 @@ class _LoadedSourceIdentity {
 
   static String _stableUriIdentity(Uri uri, SignedAudioDescriptor? descriptor) {
     if (descriptor == null) return uri.toString();
-    return uri.replace(query: null, fragment: null).toString();
+    return Uri(
+      scheme: uri.scheme,
+      userInfo: uri.userInfo,
+      host: uri.host,
+      port: uri.hasPort ? uri.port : null,
+      path: uri.path,
+    ).toString();
   }
 
   @override

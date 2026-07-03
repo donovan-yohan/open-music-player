@@ -206,17 +206,21 @@ void main() {
     const ref = 'track-a';
     final first = Uri.parse('https://example.com/first.mp3');
     final second = Uri.parse('https://example.com/second.mp3');
+    final firstClip = _clip('a', 0, audioSourceRef: ref);
+    final secondClip = _clip('a', 0, audioSourceRef: ref);
+    expect(secondClip, firstClip);
+
     resolver.sourceByClipId['a'] = first;
 
     await pool.loadMix(
-      TimelineModel(clips: [_clip('a', 0, audioSourceRef: ref)]),
+      TimelineModel(clips: [firstClip]),
     );
     final voice = pool.activeVoices['a'] as FakeVoice;
     expect(voice.loadedSources, [first]);
 
     resolver.sourceByClipId['a'] = second;
     await pool.loadMix(
-      TimelineModel(clips: [_clip('a', 0, gainDb: -1, audioSourceRef: ref)]),
+      TimelineModel(clips: [secondClip]),
     );
 
     final newVoice = pool.activeVoices['a'] as FakeVoice;
