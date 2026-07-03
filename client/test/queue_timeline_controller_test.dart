@@ -90,6 +90,38 @@ void main() {
         await harness.dispose();
       },
     );
+
+    test('loop one repeats a non-last item on natural completion', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([_item('1'), _item('2')]);
+      await harness.controller.setLoopMode(LoopMode.one);
+      await harness.controller.play();
+
+      harness.advance(const Duration(seconds: 5));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(harness.controller.currentIndex, 0);
+      expect(harness.engine.positionMs, 0);
+      expect(harness.engine.isPlaying, isTrue);
+      await harness.dispose();
+    });
+
+    test('position ticks do not republish static current index', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([_item('1'), _item('2')]);
+      await harness.controller.play();
+      final indices = <int?>[];
+      final sub = harness.controller.currentIndexStream.listen(indices.add);
+      await Future<void>.delayed(Duration.zero);
+      indices.clear();
+
+      harness.advance(const Duration(seconds: 1));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(indices, isEmpty);
+      await sub.cancel();
+      await harness.dispose();
+    });
   });
 }
 
@@ -103,7 +135,7 @@ MediaItem _item(String id, {int seconds = 5}) => MediaItem(
 class _Harness {
   _Harness() {
     clock = DefaultTimelineClock(
-      now: () => DateTime.utc(2026),
+      now: () => now,
       uiTickInterval: const Duration(hours: 1),
     );
     engine = PlaybackEngine.withClock(
@@ -116,6 +148,12 @@ class _Harness {
   late final DefaultTimelineClock clock;
   late final PlaybackEngine engine;
   late final QueueTimelineController controller;
+  DateTime now = DateTime.utc(2026);
+
+  void advance(Duration duration) {
+    now = now.add(duration);
+    clock.tickForTest();
+  }
 
   Future<void> dispose() async {
     await controller.dispose();

@@ -52,10 +52,48 @@ void main() {
       expect(playback.isPlaying, isTrue);
       playback.dispose();
     });
+
+    test('signed URL refresh preserves active local position', () async {
+      SharedPreferences.setMockInitialValues({});
+      var descriptorCalls = 0;
+      final playback = _playbackState(
+        signedAudioUrlService:
+            SignedAudioUrlService.withRequester((body) async {
+          descriptorCalls++;
+          final id = (body['trackIds'] as List).cast<int>().single;
+          return {
+            'urls': [
+              {
+                'trackId': id,
+                'url': 'https://example.com/$id-v$descriptorCalls.mp3',
+                'expiresAt': DateTime.now()
+                    .toUtc()
+                    .add(const Duration(seconds: 30))
+                    .toIso8601String(),
+              },
+            ],
+            'unavailable': <Map<String, dynamic>>[],
+          };
+        }),
+      );
+
+      await playback.playQueue([_track(1, seconds: 60)]);
+      await playback.seek(const Duration(seconds: 15));
+      await playback.play();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(descriptorCalls, 2);
+      expect(playback.position, const Duration(seconds: 15));
+      expect(
+        playback.currentItem?.extras?['url'],
+        'https://example.com/1-v2.mp3',
+      );
+      playback.dispose();
+    });
   });
 }
 
-PlaybackState _playbackState() {
+PlaybackState _playbackState({SignedAudioUrlService? signedAudioUrlService}) {
   final clock = DefaultTimelineClock(
     now: () => DateTime.utc(2026),
     uiTickInterval: const Duration(hours: 1),
@@ -66,20 +104,21 @@ PlaybackState _playbackState() {
   );
   return PlaybackState(
     engine,
-    signedAudioUrlService: SignedAudioUrlService.withRequester((body) async {
-      final ids = (body['trackIds'] as List).cast<int>();
-      return {
-        'urls': [
-          for (final id in ids)
-            {
-              'trackId': id,
-              'url': 'https://example.com/$id.mp3',
-              'expiresAt': DateTime.utc(2027, 1, 1).toIso8601String(),
-            },
-        ],
-        'unavailable': <Map<String, dynamic>>[],
-      };
-    }),
+    signedAudioUrlService: signedAudioUrlService ??
+        SignedAudioUrlService.withRequester((body) async {
+          final ids = (body['trackIds'] as List).cast<int>();
+          return {
+            'urls': [
+              for (final id in ids)
+                {
+                  'trackId': id,
+                  'url': 'https://example.com/$id.mp3',
+                  'expiresAt': DateTime.utc(2027, 1, 1).toIso8601String(),
+                },
+            ],
+            'unavailable': <Map<String, dynamic>>[],
+          };
+        }),
     persistence: QueuePersistenceStore(),
   );
 }

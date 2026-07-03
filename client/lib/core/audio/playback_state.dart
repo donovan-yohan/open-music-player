@@ -323,7 +323,11 @@ class PlaybackState extends ChangeNotifier {
 
     final refreshedQueue = List<MediaItem>.from(_queue);
     refreshedQueue[index] = item.copyWith(extras: extras);
-    await _queueController.setQueue(refreshedQueue, initialIndex: index);
+    await _queueController.setQueue(
+      refreshedQueue,
+      initialIndex: index,
+      initialPosition: _position,
+    );
   }
 
   Future<void> pause() => _queueController.pause();

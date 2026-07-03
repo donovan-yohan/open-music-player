@@ -82,7 +82,11 @@ class QueueTimelineController {
     await _engine.start();
   }
 
-  Future<void> setQueue(List<MediaItem> items, {int initialIndex = 0}) async {
+  Future<void> setQueue(
+    List<MediaItem> items, {
+    int initialIndex = 0,
+    Duration initialPosition = Duration.zero,
+  }) async {
     await start();
     _queue = List.unmodifiable(items);
     _playOrder = [for (var i = 0; i < _queue.length; i++) i];
@@ -91,7 +95,13 @@ class QueueTimelineController {
         : initialIndex.clamp(0, _queue.length - 1).toInt();
     _processingState =
         _queue.isEmpty ? ProcessingState.idle : ProcessingState.ready;
-    await _loadModel(seekToCurrent: true);
+    await _loadModel(
+      seekToCurrent: true,
+      localPositionMs: initialPosition.inMilliseconds,
+    );
+    _currentIndex = _queue.isEmpty
+        ? null
+        : initialIndex.clamp(0, _queue.length - 1).toInt();
     _publishQueueState();
   }
 
@@ -206,10 +216,14 @@ class QueueTimelineController {
 
   Future<void> setShuffleMode(bool enabled) async {
     if (_shuffleEnabled == enabled) return;
+    final current = _currentIndex;
     final localPosition = _positionSubject.value.inMilliseconds;
     _shuffleEnabled = enabled;
     _rebuildPlayOrderKeepCurrent();
     await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
+    if (current != null && current >= 0 && current < _queue.length) {
+      _currentIndex = current;
+    }
     _publishQueueState();
   }
 
@@ -247,6 +261,7 @@ class QueueTimelineController {
     _subscriptions
       ..add(_engine.positionMsStream.listen(_onGlobalPosition))
       ..add(_engine.isPlayingStream.listen((_) => _publishPlayerState()))
+      ..add(_engine.clipCompletionStream.listen(_onClipCompleted))
       ..add(_engine.clock.completedStream.listen((_) => _onCompleted()));
   }
 
@@ -277,6 +292,7 @@ class QueueTimelineController {
         await _engine.seek(_globalForCurrentLocal(localPositionMs));
       }
     } finally {
+      await Future<void>.delayed(Duration.zero);
       _suppressPositionSync = false;
     }
     _publishPosition(_engine.positionMs);
@@ -301,9 +317,21 @@ class QueueTimelineController {
 
   void _onGlobalPosition(int globalMs) {
     if (_suppressPositionSync) return;
-    _syncCurrentIndexFromGlobal(globalMs);
+    final previousIndex = _currentIndex;
+    if (!_shouldDeferCurrentIndexSync(globalMs)) {
+      _syncCurrentIndexFromGlobal(globalMs);
+    }
     _publishPosition(globalMs);
-    _publishQueueState(includeQueue: false);
+    if (_currentIndex != previousIndex) {
+      _publishQueueState(includeQueue: false);
+    }
+  }
+
+  bool _shouldDeferCurrentIndexSync(int globalMs) {
+    final currentClip = _currentClip();
+    return currentClip != null &&
+        currentClip.timelineEndMs < _engine.durationMs &&
+        globalMs >= currentClip.timelineEndMs;
   }
 
   void _syncCurrentIndexFromGlobal(int globalMs) {
@@ -375,9 +403,29 @@ class QueueTimelineController {
   int? _nextQueueIndex() {
     final current = _currentIndex;
     if (current == null) return null;
+    return _nextQueueIndexAfter(current);
+  }
+
+  int? _nextQueueIndexAfter(int current) {
     final orderIndex = _playOrder.indexOf(current);
     if (orderIndex == -1 || orderIndex + 1 >= _playOrder.length) return null;
     return _playOrder[orderIndex + 1];
+  }
+
+  MixClip? _clipForCompletion(ClipCompletionEvent event) {
+    for (final clip in _engine.model.clips) {
+      if (clip.id == event.clipId) return clip;
+    }
+    return null;
+  }
+
+  MixClip? _currentClip() {
+    final current = _currentIndex;
+    if (current == null) return null;
+    for (final clip in _engine.model.clips) {
+      if (clip.queueItemId == current.toString()) return clip;
+    }
+    return null;
   }
 
   int? _previousQueueIndex() {
@@ -403,6 +451,43 @@ class QueueTimelineController {
 
   void _publishPlayerState() {
     _playerStateSubject.add(PlayerState(_engine.isPlaying, _processingState));
+  }
+
+  Future<void> _onClipCompleted(ClipCompletionEvent event) async {
+    if (_queue.isEmpty) return;
+    final clip = _clipForCompletion(event);
+    if (clip == null || clip.timelineEndMs >= _engine.durationMs) return;
+    if (event.wasSkipped) {
+      _syncCurrentIndexFromGlobal(_engine.positionMs);
+      _publishPosition(_engine.positionMs);
+      _publishQueueState(includeQueue: false);
+      return;
+    }
+    final completedIndex = int.tryParse(clip.queueItemId ?? '');
+    if (completedIndex == null ||
+        completedIndex < 0 ||
+        completedIndex >= _queue.length) {
+      return;
+    }
+
+    _currentIndex = completedIndex;
+    _processingState = ProcessingState.completed;
+    _publishPosition(clip.timelineEndMs);
+    _publishQueueState(includeQueue: false);
+
+    if (_loopMode == LoopMode.one) {
+      await skipToIndex(completedIndex);
+      await _engine.play();
+      return;
+    }
+
+    final next = _nextQueueIndexAfter(completedIndex);
+    if (next != null) {
+      _currentIndex = next;
+      _processingState = ProcessingState.ready;
+      _publishPosition(_engine.positionMs);
+      _publishQueueState(includeQueue: false);
+    }
   }
 
   Future<void> _onCompleted() async {

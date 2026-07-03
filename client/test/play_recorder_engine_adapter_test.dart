@@ -60,6 +60,27 @@ void main() {
       harness.playback.dispose();
     });
 
+    test('records sub-threshold completion for first queue item', () async {
+      final harness = _Harness();
+      final sink = _Sink();
+      final recorder = PlayRecorderService(harness.playback, sink)..start();
+
+      await harness.playback.playQueue(
+        [_track(1, seconds: 5), _track(2, seconds: 60)],
+        context: const PlaybackContext(
+          kind: PlaybackContextKind.queue,
+          label: 'Queue',
+        ),
+      );
+      harness.advance(const Duration(seconds: 5));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(sink.events.map((event) => event.trackId), [1]);
+      expect(sink.events.single.contextType, 'queue');
+      recorder.dispose();
+      harness.playback.dispose();
+    });
+
     test('records threshold parity once even if completion follows', () async {
       final harness = _Harness();
       final sink = _Sink();

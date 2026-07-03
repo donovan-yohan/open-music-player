@@ -202,12 +202,11 @@ class PlaybackEngine implements PlaybackEngineControls {
         }
         _emitCompletionForClip(
           clip,
-          wasSkipped:
-              isManualPositionJump || positionMs - _lastPositionMs > 1500,
+          wasSkipped: isManualPositionJump,
         );
       }
     }
-    if (positionMs != _lastPositionMs) {
+    if (_manualPositionJumpPending || positionMs != _lastPositionMs) {
       _manualPositionJumpPending = false;
     }
     _lastPositionMs = positionMs;
