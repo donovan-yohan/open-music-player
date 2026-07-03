@@ -187,6 +187,37 @@ void main() {
     );
 
     test(
+      'playback-backed notification ignores raw engine now-playing metadata',
+      () async {
+        final harness = _PlaybackHarness();
+        await harness.playback.playQueue([_track(1, seconds: 5)]);
+        await Future<void>.delayed(Duration.zero);
+
+        final handler = MixAudioHandler(
+          engine: harness.engine,
+          playbackState: harness.playback,
+          statePushThrottle: Duration.zero,
+          now: () => harness.now,
+        );
+        final mediaItems = <audio_service.MediaItem?>[];
+        final mediaSub = handler.mediaItem.listen(mediaItems.add);
+        await Future<void>.delayed(Duration.zero);
+
+        await harness.engine.loadMix(_overlapModel());
+        await Future<void>.delayed(Duration.zero);
+
+        expect(harness.playback.snapshot.currentMediaItem?.id, '1');
+        expect(mediaItems.last?.id, '1');
+        expect(mediaItems.last?.title, 'Track 1');
+        expect(mediaItems.last?.extras?['dominantTrackId'], '1');
+
+        await mediaSub.cancel();
+        await handler.dispose();
+        await harness.dispose();
+      },
+    );
+
+    test(
       'notification seek play and pause use the playback queue path',
       () async {
         final harness = _PlaybackHarness();

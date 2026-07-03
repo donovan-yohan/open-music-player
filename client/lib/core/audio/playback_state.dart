@@ -2,11 +2,13 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:rxdart/rxdart.dart';
 import '../cache/playback_cache_manager.dart';
 import '../engine/playback_engine.dart';
 import '../engine/timeline_model.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'playback_media_item_source.dart';
+import 'playback_session.dart';
 import 'playback_context.dart';
 import 'playback_source_resolver.dart';
 import 'queue_timeline_controller.dart';
@@ -66,6 +68,9 @@ class PlaybackState extends ChangeNotifier {
       _queueController.currentMediaItemStream;
   Stream<PlayerState> get playerStateStream =>
       _queueController.playerStateStream;
+  ValueStream<PlaybackSnapshot> get snapshotStream =>
+      _queueController.snapshotStream;
+  PlaybackSnapshot get snapshot => _queueController.snapshot;
 
   /// Live global mix timeline state for the waveform surface. This is the raw
   /// engine clock/model contract, not the source-relative player position.
@@ -86,14 +91,14 @@ class PlaybackState extends ChangeNotifier {
     LocalAudioArtifactResolver? localResolver,
     PlaybackCacheManager? cacheManager,
     QueuePersistenceStore? persistence,
-  }) : _queueController = QueueTimelineController(engine),
-       _signedAudioUrlService = signedAudioUrlService,
-       _persistence = persistence,
-       _sourceResolver = PlaybackSourceResolver(
-         signedAudioUrlService: signedAudioUrlService,
-         localResolver: localResolver,
-         cacheManager: cacheManager,
-       ) {
+  })  : _queueController = QueueTimelineController(engine),
+        _signedAudioUrlService = signedAudioUrlService,
+        _persistence = persistence,
+        _sourceResolver = PlaybackSourceResolver(
+          signedAudioUrlService: signedAudioUrlService,
+          localResolver: localResolver,
+          cacheManager: cacheManager,
+        ) {
     _init();
   }
 

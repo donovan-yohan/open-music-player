@@ -23,6 +23,11 @@ void main() {
         '1',
         '2',
       ]);
+      expect(harness.engine.model.clips.map((clip) => clip.id), [
+        'session_1_queue_0',
+        'session_1_queue_1',
+        'session_1_queue_2',
+      ]);
       expect(harness.engine.positionMs, 5000);
 
       await harness.controller.skipToPrevious();
@@ -33,6 +38,34 @@ void main() {
       await harness.controller.skipToPrevious();
       expect(harness.controller.currentIndex, 0);
       expect(harness.engine.positionMs, 0);
+
+      await harness.dispose();
+    });
+
+    test('setQueue creates a canonical replacement session snapshot', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([_item('a')]);
+      await harness.controller.play();
+
+      final firstSession = harness.controller.snapshot.sessionId;
+      expect(harness.controller.snapshot.currentMediaItem?.id, 'a');
+      expect(harness.engine.model.clips.single.trackId, 'a');
+
+      await harness.controller.setQueue([_item('b', seconds: 7)]);
+      await Future<void>.delayed(Duration.zero);
+
+      final snapshot = harness.controller.snapshot;
+      expect(snapshot.sessionId, isNot(firstSession));
+      expect(snapshot.currentMediaItem?.id, 'b');
+      expect(snapshot.currentQueueIndex, 0);
+      expect(snapshot.localPosition, Duration.zero);
+      expect(snapshot.localDuration, const Duration(seconds: 7));
+      expect(snapshot.globalPosition, Duration.zero);
+      expect(snapshot.globalDuration, const Duration(seconds: 7));
+      expect(snapshot.cues.single.cueId, '${snapshot.sessionId}_queue_0');
+      expect(harness.engine.model.clips.map((clip) => clip.trackId), ['b']);
+      expect(harness.engine.model.clips.single.id,
+          '${snapshot.sessionId}_queue_0');
 
       await harness.dispose();
     });
@@ -86,6 +119,12 @@ void main() {
         await harness.controller.removeFromQueue(0);
         expect(harness.controller.queue.map((item) => item.id), ['2', '3']);
         expect(harness.controller.currentIndex, 0);
+
+        await harness.controller.removeFromQueue(0);
+        await harness.controller.removeFromQueue(0);
+        expect(harness.controller.queue, isEmpty);
+        expect(harness.controller.snapshot.cues, isEmpty);
+        expect(harness.controller.snapshot.currentMediaItem, isNull);
 
         await harness.dispose();
       },

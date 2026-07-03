@@ -4,6 +4,7 @@ import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:just_audio/just_audio.dart' as just_audio;
 
 import '../engine/playback_engine.dart';
+import 'playback_session.dart';
 import 'playback_state.dart' as app_audio;
 
 typedef MixMediaItemLookup = audio_service.MediaItem? Function(String trackId);
@@ -49,57 +50,44 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
         _mediaItemForTrackId = mediaItemForTrackId,
         _statePushThrottle = statePushThrottle,
         _now = now ?? DateTime.now {
-    _currentItem = playbackState?.currentItem;
-    _position =
-        playbackState?.position ?? Duration(milliseconds: engine.positionMs);
-    _bufferedPosition = playbackState?.bufferedPosition ?? _position;
-    _isPlaying = playbackState?.isPlaying ?? engine.isPlaying;
+    if (playbackState != null) {
+      _applySnapshot(playbackState.snapshot);
+    } else {
+      _position = Duration(milliseconds: engine.positionMs);
+      _bufferedPosition = _position;
+      _isPlaying = engine.isPlaying;
+    }
     mediaItem.add(_mediaItem());
-    _subscriptions
-      ..add(
-        _engine.isPlayingStream.listen((isPlaying) {
-          if (_playbackState == null) _isPlaying = isPlaying;
-          _publishState(force: true);
-        }),
-      )
-      ..add(
-        _engine.nowPlayingStream.listen((info) {
-          _nowPlaying = info;
+    if (playbackState != null) {
+      _subscriptions.add(
+        playbackState.snapshotStream.listen((snapshot) {
+          _applySnapshot(snapshot);
           _publishMediaItem();
           _publishState(force: true);
         }),
       );
-    if (playbackState != null) {
+    } else {
       _subscriptions
         ..add(
-          playbackState.playerStateStream.listen((state) {
-            _isPlaying = state.playing;
-            _processingState = _audioProcessingStateFor(state.processingState);
+          _engine.isPlayingStream.listen((isPlaying) {
+            _isPlaying = isPlaying;
             _publishState(force: true);
           }),
         )
         ..add(
-          playbackState.positionStream.listen((position) {
-            _position = position;
-            _bufferedPosition = playbackState.bufferedPosition;
-            _publishState();
-          }),
-        )
-        ..add(
-          playbackState.currentMediaItemStream.listen((item) {
-            _currentItem = item;
+          _engine.nowPlayingStream.listen((info) {
+            _nowPlaying = info;
             _publishMediaItem();
             _publishState(force: true);
           }),
+        )
+        ..add(
+          _engine.positionMsStream.listen((positionMs) {
+            _position = Duration(milliseconds: positionMs);
+            _bufferedPosition = _position;
+            _publishState();
+          }),
         );
-    } else {
-      _subscriptions.add(
-        _engine.positionMsStream.listen((positionMs) {
-          _position = Duration(milliseconds: positionMs);
-          _bufferedPosition = _position;
-          _publishState();
-        }),
-      );
     }
     _publishState(force: true);
   }
@@ -115,6 +103,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   Duration _position = Duration.zero;
   Duration _bufferedPosition = Duration.zero;
   bool _isPlaying = false;
+  int _activeVoiceCount = 0;
   audio_service.AudioProcessingState _processingState =
       audio_service.AudioProcessingState.ready;
   DateTime? _lastStatePushAt;
@@ -173,7 +162,18 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     _publishState(force: true);
   }
 
+  void _applySnapshot(PlaybackSnapshot snapshot) {
+    _currentItem = snapshot.currentMediaItem;
+    _position = snapshot.localPosition;
+    _bufferedPosition = snapshot.localDuration;
+    _isPlaying = snapshot.playing;
+    _activeVoiceCount = snapshot.activeVoiceCount;
+    _processingState = _audioProcessingStateFor(snapshot.processingState);
+  }
+
   audio_service.MediaItem _mediaItem() {
+    if (_playbackState != null) return _snapshotMediaItem();
+
     final info = _nowPlaying ??
         MixNowPlayingInfo(
           clipId: null,
@@ -195,6 +195,32 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
       album: dominant?.album,
       duration: _durationForNotification(dominant),
       artUri: dominant?.artUri,
+      extras: extras,
+    );
+  }
+
+  audio_service.MediaItem _snapshotMediaItem() {
+    final item = _currentItem;
+    final activeVoiceCount =
+        _activeVoiceCount == 0 && item != null ? 1 : _activeVoiceCount;
+    final extras = <String, dynamic>{
+      ...?item?.extras,
+      'activeVoiceCount': activeVoiceCount,
+      if (item?.id != null) 'dominantTrackId': item!.id,
+      'notificationKind': activeVoiceCount > 1 ? 'layered_mix' : 'single_voice',
+    };
+    final baseTitle = item?.title.trim();
+    final title = baseTitle != null && baseTitle.isNotEmpty
+        ? baseTitle
+        : 'Open Music Player mix';
+    return audio_service.MediaItem(
+      id: item?.id ?? 'open-music-player-session',
+      title:
+          activeVoiceCount > 1 ? '$title · $activeVoiceCount layered' : title,
+      artist: item?.artist ?? 'Open Music Player',
+      album: item?.album,
+      duration: item?.duration ?? _bufferedPosition,
+      artUri: item?.artUri,
       extras: extras,
     );
   }

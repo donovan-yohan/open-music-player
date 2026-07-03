@@ -75,10 +75,9 @@ void main() async {
     cacheManager: playbackCacheManager,
     persistence: QueuePersistenceStore(prefs: Future.value(sharedPreferences)),
   );
-  // Surface the aggregate mix as one OS media session/notification. The handler
-  // derives metadata from PlaybackState but keeps all transport callbacks wired
-  // to the shared PlaybackEngine, so lock-screen seek/play/pause acts on the
-  // whole mix rather than whichever voice is currently dominant.
+  // Surface the app playback session as one OS media session/notification. The
+  // handler consumes PlaybackState's canonical session snapshot so lock-screen
+  // metadata and transport controls stay aligned with the visible player.
   if (!kIsWeb && _enableProductionAudioService) {
     await audio_service.AudioService.init<MixAudioHandler>(
       builder: () =>
