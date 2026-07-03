@@ -25,11 +25,6 @@ import 'core/network/connectivity_service.dart';
 import 'core/download/download_service.dart';
 import 'core/download/download_state.dart';
 
-const _enableProductionAudioService = bool.fromEnvironment(
-  'OMP_ENABLE_JUST_AUDIO_BACKGROUND',
-  defaultValue: true,
-);
-
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -78,7 +73,7 @@ void main() async {
   // Surface the app playback session as one OS media session/notification. The
   // handler consumes PlaybackState's canonical session snapshot so lock-screen
   // metadata and transport controls stay aligned with the visible player.
-  if (!kIsWeb && _enableProductionAudioService) {
+  if (!kIsWeb) {
     await audio_service.AudioService.init<MixAudioHandler>(
       builder: () => MixAudioHandler(playbackState: playbackState),
       config: const audio_service.AudioServiceConfig(

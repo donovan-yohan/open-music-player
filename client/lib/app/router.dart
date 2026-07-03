@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -16,7 +15,6 @@ import '../features/player/player_screen.dart';
 import '../features/player/widgets/mini_player.dart';
 import '../features/share/share_import_screen.dart';
 import '../features/downloads/downloads_screen.dart';
-import '../features/debug/debug_mix_engine_screen.dart';
 import '../features/playlists/playlists_screen.dart';
 import '../features/playlists/playlist_detail_screen.dart';
 import '../features/playlists/playlist_import_screen.dart';
@@ -131,12 +129,6 @@ GoRouter createRouter(AuthState authState) {
             pageBuilder: (context, state) =>
                 const NoTransitionPage(child: SettingsScreen()),
           ),
-          if (kDebugMode)
-            GoRoute(
-              path: '/debug/mix-engine',
-              pageBuilder: (context, state) =>
-                  const NoTransitionPage(child: DebugMixEngineScreen()),
-            ),
         ],
       ),
     ],

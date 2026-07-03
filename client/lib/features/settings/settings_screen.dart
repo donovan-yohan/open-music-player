@@ -1,7 +1,6 @@
 // ignore_for_file: deprecated_member_use
 
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -28,7 +27,6 @@ class SettingsScreen extends ConsumerWidget {
           _PlaybackSection(),
           _StorageSection(),
           _AppearanceSection(),
-          if (kDebugMode) _DebugSection(),
           _AboutSection(),
         ],
       ),
@@ -496,28 +494,6 @@ class _AppearanceSection extends ConsumerWidget {
           );
         }).toList(),
       ),
-    );
-  }
-}
-
-/// Debug-only entry points that should not appear in the main nav.
-class _DebugSection extends StatelessWidget {
-  const _DebugSection();
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const _SectionHeader('Debug'),
-        ListTile(
-          leading: const Icon(Icons.multitrack_audio_outlined),
-          title: const Text('Mix engine Phase 0 proof'),
-          subtitle: const Text('Two voices, equal-power overlap, global scrub'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => context.push('/debug/mix-engine'),
-        ),
-      ],
     );
   }
 }
