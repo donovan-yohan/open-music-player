@@ -24,13 +24,24 @@ import 'core/network/connectivity_service.dart';
 import 'core/download/download_service.dart';
 import 'core/download/download_state.dart';
 
+const _enableJustAudioBackground = bool.fromEnvironment(
+  'OMP_ENABLE_JUST_AUDIO_BACKGROUND',
+  defaultValue: true,
+);
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Surface a media-style now-playing notification (lock screen + shade) with
   // transport controls while audio plays. Must run before any AudioPlayer is
   // constructed (AudioPlayerService.init below). Mobile-only — not on web.
-  if (!kIsWeb) {
+  //
+  // The Phase 2 mix-engine dogfood build disables this with
+  // OMP_ENABLE_JUST_AUDIO_BACKGROUND=false because just_audio_background wraps
+  // the just_audio platform with a single-player background adapter. The debug
+  // mix proof intentionally creates up to four real AudioPlayers, then owns its
+  // own AudioService handler from the debug screen.
+  if (!kIsWeb && _enableJustAudioBackground) {
     await JustAudioBackground.init(
       androidNotificationChannelId: 'com.openmusicplayer.app.channel.audio',
       androidNotificationChannelName: 'Playback',
