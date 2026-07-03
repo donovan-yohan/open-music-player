@@ -3,16 +3,18 @@ import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import '../cache/playback_cache_manager.dart';
-import 'audio_player_service.dart';
+import '../engine/playback_engine.dart';
 import 'local_audio_artifact_resolver.dart';
+import 'playback_media_item_source.dart';
 import 'playback_context.dart';
 import 'playback_source_resolver.dart';
+import 'queue_timeline_controller.dart';
 import 'queue_ordering.dart';
 import 'queue_persistence.dart';
 import 'signed_audio_url_service.dart';
 
 class PlaybackState extends ChangeNotifier {
-  final AudioPlayerService _audioService;
+  final QueueTimelineController _queueController;
   final SignedAudioUrlService _signedAudioUrlService;
   final PlaybackSourceResolver _sourceResolver;
 
@@ -55,20 +57,23 @@ class PlaybackState extends ChangeNotifier {
   PlaybackContext? get playbackContext => _playbackContext;
 
   /// Raw playback streams, exposed so the play-event recorder can observe
-  /// position/track-change/completion without reaching into the audio service
-  /// directly. These forward the underlying just_audio streams unchanged.
-  Stream<Duration> get positionStream => _audioService.positionStream;
+  /// position/track-change/completion without reaching into the mix engine
+  /// directly. These synthesize the previous just_audio stream contract from
+  /// the engine-backed queue timeline.
+  Stream<Duration> get positionStream => _queueController.positionStream;
   Stream<MediaItem?> get currentMediaItemStream =>
-      _audioService.currentMediaItemStream;
-  Stream<PlayerState> get playerStateStream => _audioService.playerStateStream;
+      _queueController.currentMediaItemStream;
+  Stream<PlayerState> get playerStateStream =>
+      _queueController.playerStateStream;
 
   PlaybackState(
-    this._audioService, {
+    PlaybackEngine engine, {
     required SignedAudioUrlService signedAudioUrlService,
     LocalAudioArtifactResolver? localResolver,
     PlaybackCacheManager? cacheManager,
     QueuePersistenceStore? persistence,
-  })  : _signedAudioUrlService = signedAudioUrlService,
+  })  : _queueController = QueueTimelineController(engine),
+        _signedAudioUrlService = signedAudioUrlService,
         _persistence = persistence,
         _sourceResolver = PlaybackSourceResolver(
           signedAudioUrlService: signedAudioUrlService,
@@ -80,7 +85,7 @@ class PlaybackState extends ChangeNotifier {
 
   void _init() {
     _subscriptions = [
-      _audioService.playerStateStream.listen((state) {
+      _queueController.playerStateStream.listen((state) {
         final wasPlaying = _isPlaying;
         _isPlaying = state.playing;
         // Persist the resting position whenever playback pauses so a resume
@@ -88,37 +93,37 @@ class PlaybackState extends ChangeNotifier {
         if (wasPlaying && !_isPlaying) _persistQueue();
         notifyListeners();
       }),
-      _audioService.positionStream.listen((pos) {
+      _queueController.positionStream.listen((pos) {
         _position = pos;
         notifyListeners();
       }),
-      _audioService.bufferedPositionStream.listen((pos) {
+      _queueController.bufferedPositionStream.listen((pos) {
         _bufferedPosition = pos;
         notifyListeners();
       }),
-      _audioService.durationStream.listen((dur) {
+      _queueController.durationStream.listen((dur) {
         _duration = dur ?? Duration.zero;
         notifyListeners();
       }),
-      _audioService.currentMediaItemStream.listen((item) {
+      _queueController.currentMediaItemStream.listen((item) {
         _currentItem = item;
         notifyListeners();
       }),
-      _audioService.queueStream.listen((q) {
+      _queueController.queueStream.listen((q) {
         _queue = q;
         _persistQueue();
         notifyListeners();
       }),
-      _audioService.currentIndexStream.listen((index) {
+      _queueController.currentIndexStream.listen((index) {
         _currentIndex = index;
         _persistQueue();
         notifyListeners();
       }),
-      _audioService.shuffleEnabledStream.listen((enabled) {
+      _queueController.shuffleEnabledStream.listen((enabled) {
         _shuffleEnabled = enabled;
         notifyListeners();
       }),
-      _audioService.loopModeStream.listen((mode) {
+      _queueController.loopModeStream.listen((mode) {
         _loopMode = mode;
         notifyListeners();
       }),
@@ -129,8 +134,8 @@ class PlaybackState extends ChangeNotifier {
     await _resolveSignedUrls(() async {
       await _startWithRecovery(() async {
         final item = await _sourceResolver.resolveTrack(track);
-        await _audioService.setQueue([item]);
-        await _audioService.play();
+        await _queueController.setQueue([item]);
+        await _queueController.play();
       });
     });
   }
@@ -150,8 +155,8 @@ class PlaybackState extends ChangeNotifier {
     await _resolveSignedUrls(() async {
       await _startWithRecovery(() async {
         final items = await _sourceResolver.resolveQueue(tracks);
-        await _audioService.setQueue(items, initialIndex: startIndex);
-        await _audioService.play();
+        await _queueController.setQueue(items, initialIndex: startIndex);
+        await _queueController.play();
       });
     });
   }
@@ -167,8 +172,10 @@ class PlaybackState extends ChangeNotifier {
       return;
     }
     final item = markOrigin(
-        await _sourceResolver.resolveTrack(track), queueOriginManual);
-    await _audioService.insertIntoQueue(
+      await _sourceResolver.resolveTrack(track),
+      queueOriginManual,
+    );
+    await _queueController.insertIntoQueue(
       manualEnqueueIndex(_queue, _currentIndex),
       item,
     );
@@ -182,8 +189,10 @@ class PlaybackState extends ChangeNotifier {
       return;
     }
     final item = markOrigin(
-        await _sourceResolver.resolveTrack(track), queueOriginManual);
-    await _audioService.insertIntoQueue((_currentIndex ?? -1) + 1, item);
+      await _sourceResolver.resolveTrack(track),
+      queueOriginManual,
+    );
+    await _queueController.insertIntoQueue((_currentIndex ?? -1) + 1, item);
   }
 
   /// Runs [start], retrying it once if the failure looks like a stale/expired
@@ -256,11 +265,11 @@ class PlaybackState extends ChangeNotifier {
   Future<void> play() async {
     await _refreshCurrentSignedUrlIfNeeded();
     try {
-      await _audioService.play();
+      await _queueController.play();
     } catch (error) {
       if (!_isRecoverableObjectUrlFailure(error)) rethrow;
       await _refreshCurrentSignedUrl(force: true);
-      await _audioService.play();
+      await _queueController.play();
     }
   }
 
@@ -314,14 +323,14 @@ class PlaybackState extends ChangeNotifier {
 
     final refreshedQueue = List<MediaItem>.from(_queue);
     refreshedQueue[index] = item.copyWith(extras: extras);
-    await _audioService.setQueue(refreshedQueue, initialIndex: index);
+    await _queueController.setQueue(refreshedQueue, initialIndex: index);
   }
 
-  Future<void> pause() => _audioService.pause();
-  Future<void> stop() => _audioService.stop();
-  Future<void> seek(Duration position) => _audioService.seek(position);
-  Future<void> skipToNext() => _audioService.skipToNext();
-  Future<void> skipToPrevious() => _audioService.skipToPrevious();
+  Future<void> pause() => _queueController.pause();
+  Future<void> stop() => _queueController.stop();
+  Future<void> seek(Duration position) => _queueController.seek(position);
+  Future<void> skipToNext() => _queueController.skipToNext();
+  Future<void> skipToPrevious() => _queueController.skipToPrevious();
 
   /// Previous-button behavior: restart the current track when more than 3s in,
   /// otherwise skip to the previous track (see [previousAction]).
@@ -351,9 +360,11 @@ class PlaybackState extends ChangeNotifier {
       final items = await _sourceResolver.resolveQueue(snapshot.tracks);
       if (items.isEmpty) return;
       final index = snapshot.currentIndex.clamp(0, items.length - 1);
-      await _audioService.setQueue(items, initialIndex: index);
+      await _queueController.setQueue(items, initialIndex: index);
       if (snapshot.positionMs > 0) {
-        await _audioService.seek(Duration(milliseconds: snapshot.positionMs));
+        await _queueController.seek(
+          Duration(milliseconds: snapshot.positionMs),
+        );
       }
       // Deliberately stay paused: restore never auto-plays.
     } catch (error) {
@@ -381,9 +392,10 @@ class PlaybackState extends ChangeNotifier {
           );
     unawaited(store.save(snapshot));
   }
-  Future<void> skipToIndex(int index) => _audioService.skipToIndex(index);
-  Future<void> toggleShuffle() => _audioService.toggleShuffle();
-  Future<void> cycleLoopMode() => _audioService.cycleLoopMode();
+
+  Future<void> skipToIndex(int index) => _queueController.skipToIndex(index);
+  Future<void> toggleShuffle() => _queueController.toggleShuffle();
+  Future<void> cycleLoopMode() => _queueController.cycleLoopMode();
 
   Future<void> togglePlayPause() async {
     if (_isPlaying) {
@@ -398,6 +410,7 @@ class PlaybackState extends ChangeNotifier {
     for (final sub in _subscriptions) {
       sub.cancel();
     }
+    unawaited(_queueController.dispose());
     super.dispose();
   }
 }
