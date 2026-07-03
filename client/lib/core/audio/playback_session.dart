@@ -170,35 +170,6 @@ class PlaybackSnapshot {
   final bool playing;
   final ProcessingState processingState;
   final int activeVoiceCount;
-
-  PlaybackSnapshot copyWith({
-    String? sessionId,
-    List<PlaybackCue>? cues,
-    String? currentCueId,
-    int? currentQueueIndex,
-    MediaItem? currentMediaItem,
-    Duration? localPosition,
-    Duration? localDuration,
-    Duration? globalPosition,
-    Duration? globalDuration,
-    bool? playing,
-    ProcessingState? processingState,
-    int? activeVoiceCount,
-  }) =>
-      PlaybackSnapshot(
-        sessionId: sessionId ?? this.sessionId,
-        cues: cues ?? this.cues,
-        currentCueId: currentCueId ?? this.currentCueId,
-        currentQueueIndex: currentQueueIndex ?? this.currentQueueIndex,
-        currentMediaItem: currentMediaItem ?? this.currentMediaItem,
-        localPosition: localPosition ?? this.localPosition,
-        localDuration: localDuration ?? this.localDuration,
-        globalPosition: globalPosition ?? this.globalPosition,
-        globalDuration: globalDuration ?? this.globalDuration,
-        playing: playing ?? this.playing,
-        processingState: processingState ?? this.processingState,
-        activeVoiceCount: activeVoiceCount ?? this.activeVoiceCount,
-      );
 }
 
 Duration _clampDuration(Duration value, Duration min, Duration max) {

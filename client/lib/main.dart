@@ -80,8 +80,7 @@ void main() async {
   // metadata and transport controls stay aligned with the visible player.
   if (!kIsWeb && _enableProductionAudioService) {
     await audio_service.AudioService.init<MixAudioHandler>(
-      builder: () =>
-          MixAudioHandler(engine: playbackEngine, playbackState: playbackState),
+      builder: () => MixAudioHandler(playbackState: playbackState),
       config: const audio_service.AudioServiceConfig(
         androidNotificationChannelId: 'com.openmusicplayer.app.channel.audio',
         androidNotificationChannelName: 'Playback',

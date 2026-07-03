@@ -99,18 +99,23 @@ class QueueTimelineController {
     _sessionId = 'session_$_sessionGeneration';
     _queue = List.unmodifiable(items);
     _playOrder = [for (var i = 0; i < _queue.length; i++) i];
-    _currentIndex = _queue.isEmpty
-        ? null
-        : initialIndex.clamp(0, _queue.length - 1).toInt();
-    _processingState =
-        _queue.isEmpty ? ProcessingState.idle : ProcessingState.ready;
+    if (_queue.isEmpty) {
+      _currentIndex = null;
+      _cueTimeline = CueTimeline.empty;
+      _processingState = ProcessingState.idle;
+      await _engine.pause();
+      await _engine.loadMix(TimelineModel());
+      await _engine.seek(0);
+      _publishQueueState();
+      return;
+    }
+    _currentIndex = initialIndex.clamp(0, _queue.length - 1).toInt();
+    _processingState = ProcessingState.ready;
     await _loadModel(
       seekToCurrent: true,
       localPositionMs: initialPosition.inMilliseconds,
     );
-    _currentIndex = _queue.isEmpty
-        ? null
-        : initialIndex.clamp(0, _queue.length - 1).toInt();
+    _currentIndex = initialIndex.clamp(0, _queue.length - 1).toInt();
     _publishQueueState();
   }
 
@@ -146,6 +151,7 @@ class QueueTimelineController {
       _playOrder = const [];
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
+      await _engine.pause();
       await _engine.loadMix(TimelineModel());
       await _engine.seek(0);
     } else if (previousCurrent == index) {

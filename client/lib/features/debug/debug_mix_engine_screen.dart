@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/audio/audio_focus_coordinator.dart';
-import '../../core/audio/mix_audio_handler.dart';
+import '../../core/audio/debug_mix_audio_handler.dart';
 import '../../core/engine/gain_envelope.dart';
 import '../../core/engine/playback_engine.dart';
 import '../../core/engine/timeline_clock.dart';
@@ -60,7 +60,7 @@ class _DebugMixEngineScreenState extends State<DebugMixEngineScreen> {
   final _fadeController = TextEditingController(text: '5');
   final List<StreamSubscription> _subscriptions = [];
 
-  MixAudioHandler? _handler;
+  DebugMixAudioHandler? _handler;
   AudioFocusCoordinator? _focusCoordinator;
   int _positionMs = 0;
   int _durationMs = 36000;
@@ -287,8 +287,8 @@ class _DebugMixEngineScreenState extends State<DebugMixEngineScreen> {
       return;
     }
     try {
-      _handler = await audio_service.AudioService.init<MixAudioHandler>(
-        builder: () => MixAudioHandler(engine: _engine),
+      _handler = await audio_service.AudioService.init<DebugMixAudioHandler>(
+        builder: () => DebugMixAudioHandler(clock: _clock),
         config: const audio_service.AudioServiceConfig(
           androidNotificationChannelId: 'open_music_player.mix_engine_phase_2',
           androidNotificationChannelName: 'Mix engine proof',

@@ -34,11 +34,15 @@ class DebugMixAudioHandler extends audio_service.BaseAudioHandler
   @override
   Future<void> stop() async {
     await _clock.pause();
+    await dispose();
+    return super.stop();
+  }
+
+  Future<void> dispose() async {
     for (final sub in _subscriptions) {
       await sub.cancel();
     }
     _subscriptions.clear();
-    return super.stop();
   }
 
   void updateDuration() {
@@ -47,11 +51,11 @@ class DebugMixAudioHandler extends audio_service.BaseAudioHandler
   }
 
   audio_service.MediaItem _mediaItem() => audio_service.MediaItem(
-    id: 'debug-mix-engine-phase-0',
-    title: 'Mix engine Phase 0 proof',
-    artist: 'Open Music Player debug',
-    duration: Duration(milliseconds: _clock.durationMs),
-  );
+        id: 'debug-mix-engine-phase-0',
+        title: 'Mix engine Phase 0 proof',
+        artist: 'Open Music Player debug',
+        duration: Duration(milliseconds: _clock.durationMs),
+      );
 
   void _publishState() {
     playbackState.add(

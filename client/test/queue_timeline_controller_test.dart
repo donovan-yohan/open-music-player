@@ -123,9 +123,17 @@ void main() {
         await harness.controller.removeFromQueue(0);
         await harness.controller.removeFromQueue(0);
         expect(harness.controller.queue, isEmpty);
+        expect(harness.engine.isPlaying, isFalse);
         expect(harness.controller.snapshot.cues, isEmpty);
         expect(harness.controller.snapshot.currentMediaItem, isNull);
+        expect(harness.controller.snapshot.playing, isFalse);
 
+        await harness.controller.setQueue([_item('z')]);
+        await harness.controller.play();
+        expect(harness.engine.isPlaying, isTrue);
+        await harness.controller.setQueue(const []);
+        expect(harness.engine.isPlaying, isFalse);
+        expect(harness.controller.snapshot.cues, isEmpty);
         await harness.dispose();
       },
     );

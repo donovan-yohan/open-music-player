@@ -3,103 +3,42 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:just_audio/just_audio.dart' as just_audio;
 
-import '../engine/playback_engine.dart';
 import 'playback_session.dart';
 import 'playback_state.dart' as app_audio;
 
-typedef MixMediaItemLookup = audio_service.MediaItem? Function(String trackId);
-
 const defaultNotificationStateThrottle = Duration(milliseconds: 750);
-
-String mixIdentity(
-  MixNowPlayingInfo info, {
-  audio_service.MediaItem? dominantItem,
-}) {
-  final dominantId = dominantItem?.id ?? info.trackId;
-  if (info.activeVoiceCount == 1 && dominantId != null) return dominantId;
-  if (info.activeVoiceCount > 1) {
-    return 'mix:${info.clipId ?? dominantId ?? 'layered'}';
-  }
-  return dominantId ?? 'open-music-player-mix';
-}
-
-String mixTitle(
-  MixNowPlayingInfo info, {
-  audio_service.MediaItem? dominantItem,
-}) {
-  final dominantTitle = dominantItem?.title.trim();
-  final baseTitle = dominantTitle != null && dominantTitle.isNotEmpty
-      ? dominantTitle
-      : 'Open Music Player mix';
-  if (info.activeVoiceCount > 1) {
-    return '$baseTitle · ${info.activeVoiceCount} layered';
-  }
-  return baseTitle;
-}
 
 class MixAudioHandler extends audio_service.BaseAudioHandler
     with audio_service.SeekHandler {
   MixAudioHandler({
-    required PlaybackEngine engine,
-    app_audio.PlaybackState? playbackState,
-    MixMediaItemLookup? mediaItemForTrackId,
+    required app_audio.PlaybackState playbackState,
     Duration statePushThrottle = defaultNotificationStateThrottle,
     DateTime Function()? now,
-  })  : _engine = engine,
-        _playbackState = playbackState,
-        _mediaItemForTrackId = mediaItemForTrackId,
+  })  : _playbackState = playbackState,
         _statePushThrottle = statePushThrottle,
         _now = now ?? DateTime.now {
-    if (playbackState != null) {
-      _applySnapshot(playbackState.snapshot);
-    } else {
-      _position = Duration(milliseconds: engine.positionMs);
-      _bufferedPosition = _position;
-      _isPlaying = engine.isPlaying;
-    }
+    _applySnapshot(playbackState.snapshot);
+    _publishQueue();
     mediaItem.add(_mediaItem());
-    if (playbackState != null) {
-      _subscriptions.add(
-        playbackState.snapshotStream.listen((snapshot) {
-          _applySnapshot(snapshot);
-          _publishMediaItem();
-          _publishState(force: true);
-        }),
-      );
-    } else {
-      _subscriptions
-        ..add(
-          _engine.isPlayingStream.listen((isPlaying) {
-            _isPlaying = isPlaying;
-            _publishState(force: true);
-          }),
-        )
-        ..add(
-          _engine.nowPlayingStream.listen((info) {
-            _nowPlaying = info;
-            _publishMediaItem();
-            _publishState(force: true);
-          }),
-        )
-        ..add(
-          _engine.positionMsStream.listen((positionMs) {
-            _position = Duration(milliseconds: positionMs);
-            _bufferedPosition = _position;
-            _publishState();
-          }),
-        );
-    }
+    _subscriptions.add(
+      playbackState.snapshotStream.listen((snapshot) {
+        _applySnapshot(snapshot);
+        _publishQueue();
+        _publishMediaItem();
+        _publishState(force: true);
+      }),
+    );
     _publishState(force: true);
   }
 
-  final PlaybackEngine _engine;
-  final app_audio.PlaybackState? _playbackState;
-  final MixMediaItemLookup? _mediaItemForTrackId;
+  final app_audio.PlaybackState _playbackState;
   final Duration _statePushThrottle;
   final DateTime Function() _now;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
-  MixNowPlayingInfo? _nowPlaying;
+
+  List<audio_service.MediaItem> _queueItems = const [];
   audio_service.MediaItem? _currentItem;
+  int? _queueIndex;
   Duration _position = Duration.zero;
   Duration _bufferedPosition = Duration.zero;
   bool _isPlaying = false;
@@ -110,39 +49,27 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   Timer? _pendingStateTimer;
 
   @override
-  Future<void> play() => _playbackState?.play() ?? _engine.play();
+  Future<void> play() => _playbackState.play();
 
   @override
-  Future<void> pause() => _playbackState?.pause() ?? _engine.pause();
+  Future<void> pause() => _playbackState.pause();
 
   @override
   Future<void> seek(Duration position) async {
-    final playbackState = _playbackState;
-    if (playbackState != null) {
-      await playbackState.seek(position);
-    } else {
-      await _engine.seek(position.inMilliseconds);
-    }
+    await _playbackState.seek(position);
     _position = position;
     _publishState(force: true);
   }
 
   @override
-  Future<void> skipToNext() =>
-      _playbackState?.skipToNext() ?? Future<void>.value();
+  Future<void> skipToNext() => _playbackState.skipToNext();
 
   @override
-  Future<void> skipToPrevious() =>
-      _playbackState?.skipToPrevious() ?? Future<void>.value();
+  Future<void> skipToPrevious() => _playbackState.skipToPrevious();
 
   @override
   Future<void> stop() async {
-    final playbackState = _playbackState;
-    if (playbackState != null) {
-      await playbackState.stop();
-    } else {
-      await _engine.pause();
-    }
+    await _playbackState.stop();
     _isPlaying = false;
     _publishState(force: true);
     return super.stop();
@@ -163,7 +90,9 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _applySnapshot(PlaybackSnapshot snapshot) {
+    _queueItems = [for (final cue in snapshot.cues) cue.mediaItem];
     _currentItem = snapshot.currentMediaItem;
+    _queueIndex = snapshot.currentQueueIndex;
     _position = snapshot.localPosition;
     _bufferedPosition = snapshot.localDuration;
     _isPlaying = snapshot.playing;
@@ -172,34 +101,6 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   }
 
   audio_service.MediaItem _mediaItem() {
-    if (_playbackState != null) return _snapshotMediaItem();
-
-    final info = _nowPlaying ??
-        MixNowPlayingInfo(
-          clipId: null,
-          trackId: _currentItem?.id,
-          activeVoiceCount: _currentItem == null ? 0 : 1,
-        );
-    final dominant = _dominantMediaItem(info);
-    final extras = <String, dynamic>{
-      ...?dominant?.extras,
-      'activeVoiceCount': info.activeVoiceCount,
-      if (info.trackId != null) 'dominantTrackId': info.trackId,
-      'notificationKind':
-          info.activeVoiceCount > 1 ? 'layered_mix' : 'single_voice',
-    };
-    return audio_service.MediaItem(
-      id: mixIdentity(info, dominantItem: dominant),
-      title: mixTitle(info, dominantItem: dominant),
-      artist: dominant?.artist ?? 'Open Music Player',
-      album: dominant?.album,
-      duration: _durationForNotification(dominant),
-      artUri: dominant?.artUri,
-      extras: extras,
-    );
-  }
-
-  audio_service.MediaItem _snapshotMediaItem() {
     final item = _currentItem;
     final activeVoiceCount =
         _activeVoiceCount == 0 && item != null ? 1 : _activeVoiceCount;
@@ -225,29 +126,8 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     );
   }
 
-  audio_service.MediaItem? _dominantMediaItem(MixNowPlayingInfo info) {
-    final trackId = info.trackId;
-    if (trackId != null) {
-      final explicit = _mediaItemForTrackId?.call(trackId);
-      if (explicit != null) return explicit;
-      for (final item
-          in _playbackState?.queue ?? const <audio_service.MediaItem>[]) {
-        if (item.id == trackId) return item;
-      }
-    }
-    if (_currentItem?.id == trackId || trackId == null) return _currentItem;
-    return null;
-  }
-
-  Duration _durationForNotification(audio_service.MediaItem? dominant) {
-    final dominantDuration = dominant?.duration;
-    if (dominantDuration != null) return dominantDuration;
-    final playbackState = _playbackState;
-    if (playbackState != null) return playbackState.duration;
-    if (_engine.durationMs > 0) {
-      return Duration(milliseconds: _engine.durationMs);
-    }
-    return Duration.zero;
+  void _publishQueue() {
+    queue.add(_queueItems);
   }
 
   void _publishMediaItem() {
@@ -296,12 +176,12 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     playbackState.add(
       audio_service.PlaybackState(
         controls: [
-          if (_playbackState != null) audio_service.MediaControl.skipToPrevious,
+          audio_service.MediaControl.skipToPrevious,
           if (_isPlaying)
             audio_service.MediaControl.pause
           else
             audio_service.MediaControl.play,
-          if (_playbackState != null) audio_service.MediaControl.skipToNext,
+          audio_service.MediaControl.skipToNext,
           audio_service.MediaControl.stop,
         ],
         systemActions: const {
@@ -315,6 +195,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
         bufferedPosition: _bufferedPosition,
         speed: 1,
         updateTime: _now(),
+        queueIndex: _queueIndex,
       ),
     );
   }
