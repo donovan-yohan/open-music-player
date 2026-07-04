@@ -1,4 +1,5 @@
 export 'download_button.dart';
+export 'queue_swipe_action.dart';
 export 'track_tile.dart';
 export 'playlist_card.dart';
 export 'playlist_picker_sheet.dart';

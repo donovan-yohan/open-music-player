@@ -14,6 +14,7 @@ import '../../core/services/api_client.dart' as local_api;
 import '../../core/services/search_service.dart';
 import '../../models/track.dart';
 import '../../providers/queue_provider.dart';
+import '../../shared/widgets/queue_swipe_action.dart';
 import 'search_local_logic.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -115,8 +116,8 @@ class _SearchScreenState extends State<SearchScreen> {
   /// Lazily built local-search service. Tests inject one via the widget; the
   /// production default wraps the parser-based ApiClient (its own secure-storage
   /// token read matches the app's stored access token).
-  SearchService get _localSearch =>
-      _searchService ??= widget.searchService ?? SearchService(local_api.ApiClient());
+  SearchService get _localSearch => _searchService ??=
+      widget.searchService ?? SearchService(local_api.ApiClient());
 
   Future<void> _loadRecentSearches() async {
     try {
@@ -382,6 +383,32 @@ class _SearchScreenState extends State<SearchScreen> {
         'artwork_url': track.coverUrl,
       },
     ]);
+  }
+
+  Future<void> _enqueueLocalTrack(local.TrackResult track) async {
+    final id = track.id;
+    if (id == null) return;
+    final playback = context.read<PlaybackState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await playback.enqueue({
+        'id': id,
+        'title': track.title,
+        'artist': track.artist,
+        'album': track.album,
+        'duration': track.duration != null ? track.duration! ~/ 1000 : 0,
+        'artwork_url': track.coverUrl,
+      });
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('Added "${track.title}" to queue')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not add to queue')),
+      );
+    }
   }
 
   String _friendlyLocalError(Object error) {
@@ -847,7 +874,7 @@ class _SearchScreenState extends State<SearchScreen> {
     final subtitle = [track.artist, track.album]
         .where((value) => value != null && value.isNotEmpty)
         .join(' • ');
-    return Card(
+    final tile = Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
         key: ValueKey('local_track_${track.id ?? track.title}'),
@@ -870,6 +897,12 @@ class _SearchScreenState extends State<SearchScreen> {
             : null,
         onTap: playable ? () => _playLocalTrack(track) : null,
       ),
+    );
+    if (!playable) return tile;
+    return QueueSwipeAction(
+      actionKey: ValueKey('search_local_queue_${track.id}_${track.title}'),
+      onAddToQueue: () => _enqueueLocalTrack(track),
+      child: tile,
     );
   }
 

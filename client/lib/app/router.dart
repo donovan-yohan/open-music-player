@@ -65,21 +65,6 @@ GoRouter createRouter(AuthState authState) {
         builder: (context, state) => const DownloadsScreen(),
       ),
       GoRoute(
-        path: '/playlists',
-        builder: (context, state) => const PlaylistsScreen(),
-      ),
-      GoRoute(
-        path: '/playlists/import',
-        builder: (context, state) => const PlaylistImportScreen(),
-      ),
-      GoRoute(
-        path: '/playlists/:id',
-        builder: (context, state) {
-          final id = int.parse(state.pathParameters['id']!);
-          return PlaylistDetailScreen(playlistId: id);
-        },
-      ),
-      GoRoute(
         path: '/library/artist/:name',
         builder: (context, state) => LocalArtistScreen(
           artist: Uri.decodeComponent(state.pathParameters['name']!),
@@ -118,6 +103,22 @@ GoRouter createRouter(AuthState authState) {
             path: '/library',
             pageBuilder: (context, state) =>
                 const NoTransitionPage(child: LibraryScreen()),
+          ),
+          GoRoute(
+            path: '/playlists',
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: PlaylistsScreen()),
+          ),
+          GoRoute(
+            path: '/playlists/import',
+            builder: (context, state) => const PlaylistImportScreen(),
+          ),
+          GoRoute(
+            path: '/playlists/:id',
+            builder: (context, state) {
+              final id = int.parse(state.pathParameters['id']!);
+              return PlaylistDetailScreen(playlistId: id);
+            },
           ),
           GoRoute(
             path: '/queue',
@@ -234,6 +235,7 @@ class ScaffoldWithNavBar extends StatelessWidget {
     if (location.startsWith('/home')) return 0;
     if (location.startsWith('/search')) return 1;
     if (location.startsWith('/library')) return 2;
+    if (location.startsWith('/playlists')) return 2;
     if (location.startsWith('/queue')) return 3;
     if (location.startsWith('/settings')) return 4;
     return 0;

@@ -7,6 +7,7 @@ import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/services/services.dart' as services;
 import '../../shared/models/track.dart';
+import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/track_tile.dart';
 
 /// The Liked Songs collection: every favorite track (`GET /library?liked=true`)
@@ -113,13 +114,36 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
         itemBuilder: (context, index) {
           if (index == 0) return _buildHeader(context);
           final track = _tracks[index - 1];
-          return TrackTile.fromTrack(
-            track,
-            onTap: () => _playFrom(index - 1),
+          final currentTrackId = context.watch<PlaybackState>().currentItem?.id;
+          return QueueSwipeAction(
+            actionKey: ValueKey('liked_queue_${track.id}_${index - 1}'),
+            onAddToQueue: () => _enqueueTrack(track),
+            child: TrackTile.fromTrack(
+              track,
+              isCurrent: currentTrackId == track.id.toString(),
+              onTap: () => _playFrom(index - 1),
+            ),
           );
         },
       ),
     );
+  }
+
+  Future<void> _enqueueTrack(Track track) async {
+    final playback = context.read<PlaybackState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await playback.enqueue(track.toPlaybackJson());
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('Added "${track.title}" to queue')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not add to queue')),
+      );
+    }
   }
 
   Future<void> _playFrom(int index) async {
@@ -135,8 +159,7 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content:
-              Text(playback.playbackError ?? 'Could not play this track.'),
+          content: Text(playback.playbackError ?? 'Could not play this track.'),
           backgroundColor: Colors.red,
         ),
       );
