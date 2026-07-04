@@ -41,6 +41,13 @@ class PlaybackState extends ChangeNotifier {
   bool _isResolvingSignedUrl = false;
   PlaybackContext? _playbackContext;
 
+  /// Monotonic user intent token for direct playback replacement.
+  ///
+  /// Direct play resolves URLs asynchronously. If the user taps B while A is
+  /// playing, A must stop immediately; and if the user then pauses/stops before
+  /// B finishes resolving, that stale pending request must not auto-start B.
+  int _playRequestGeneration = 0;
+
   bool get isPlaying => _isPlaying;
   Duration get position => _position;
   Duration get bufferedPosition => _bufferedPosition;
@@ -150,13 +157,16 @@ class PlaybackState extends ChangeNotifier {
   }
 
   Future<void> playTrack(Map<String, dynamic> track) async {
+    final generation = await _beginPlaybackReplacement(context: null);
     await _resolveSignedUrls(() async {
       await _startWithRecovery(() async {
         final item = await _sourceResolver.resolveTrack(track);
+        if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.setQueue([item]);
+        if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.play();
       });
-    });
+    }, generation: generation);
   }
 
   Future<void> playQueue(
@@ -168,16 +178,43 @@ class PlaybackState extends ChangeNotifier {
 
     // Stamp (or clear) the attribution before playback starts so the player
     // updates immediately and a context-less play never leaves a stale label.
-    _playbackContext = context;
-    notifyListeners();
+    final generation = await _beginPlaybackReplacement(context: context);
 
     await _resolveSignedUrls(() async {
       await _startWithRecovery(() async {
         final items = await _sourceResolver.resolveQueue(tracks);
+        if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.setQueue(items, initialIndex: startIndex);
+        if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.play();
       });
-    });
+    }, generation: generation);
+  }
+
+  Future<int> _beginPlaybackReplacement(
+      {required PlaybackContext? context}) async {
+    final generation = ++_playRequestGeneration;
+    _playbackContext = context;
+    _playbackError = null;
+
+    // Stop/release the old session before waiting on signed URL resolution.
+    // Otherwise Android keeps playing A while B is still preparing, which makes
+    // the pause button appear to "stop A and start B" once the pending request
+    // finally resolves.
+    await _queueController.setQueue(const []);
+    return generation;
+  }
+
+  bool _isCurrentPlayRequest(int generation) {
+    return generation == _playRequestGeneration;
+  }
+
+  void _cancelPendingPlayRequests() {
+    _playRequestGeneration += 1;
+    if (_isResolvingSignedUrl) {
+      _isResolvingSignedUrl = false;
+      notifyListeners();
+    }
   }
 
   /// Adds [track] to the active listening queue after the current item and any
@@ -237,28 +274,38 @@ class PlaybackState extends ChangeNotifier {
         message.contains('access denied');
   }
 
-  Future<void> _resolveSignedUrls(Future<void> Function() action) async {
+  Future<void> _resolveSignedUrls(
+    Future<void> Function() action, {
+    int? generation,
+  }) async {
     _isResolvingSignedUrl = true;
     _playbackError = null;
     notifyListeners();
 
+    bool requestIsCurrent() =>
+        generation == null || _isCurrentPlayRequest(generation);
+
     try {
       await action();
     } on SignedAudioUrlException catch (error) {
+      if (!requestIsCurrent()) return;
       _playbackError = _userFacingPlaybackError(error);
       if (kDebugMode) {
         debugPrint('Playback URL resolution failed: ${error.code}');
       }
       rethrow;
     } catch (error) {
+      if (!requestIsCurrent()) return;
       _playbackError = 'Playback failed before audio could start.';
       if (kDebugMode) {
         debugPrint('Playback start failed: $error');
       }
       rethrow;
     } finally {
-      _isResolvingSignedUrl = false;
-      notifyListeners();
+      if (requestIsCurrent()) {
+        _isResolvingSignedUrl = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -349,8 +396,16 @@ class PlaybackState extends ChangeNotifier {
     );
   }
 
-  Future<void> pause() => _queueController.pause();
-  Future<void> stop() => _queueController.stop();
+  Future<void> pause() async {
+    _cancelPendingPlayRequests();
+    await _queueController.pause();
+  }
+
+  Future<void> stop() async {
+    _cancelPendingPlayRequests();
+    await _queueController.stop();
+  }
+
   Future<void> seek(Duration position) => _queueController.seek(position);
   Future<void> skipToNext() => _queueController.skipToNext();
   Future<void> skipToPrevious() => _queueController.skipToPrevious();
