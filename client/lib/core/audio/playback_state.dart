@@ -29,12 +29,6 @@ class PlaybackState extends ChangeNotifier {
   List<StreamSubscription> _subscriptions = [];
 
   bool _isPlaying = false;
-  Duration _position = Duration.zero;
-  Duration _bufferedPosition = Duration.zero;
-  Duration _duration = Duration.zero;
-  MediaItem? _currentItem;
-  List<MediaItem> _queue = [];
-  int? _currentIndex;
   bool _shuffleEnabled = false;
   LoopMode _loopMode = LoopMode.off;
   String? _playbackError;
@@ -48,16 +42,16 @@ class PlaybackState extends ChangeNotifier {
   /// B finishes resolving, that stale pending request must not auto-start B.
   int _playRequestGeneration = 0;
 
-  bool get isPlaying => _isPlaying;
-  Duration get position => _position;
-  Duration get bufferedPosition => _bufferedPosition;
-  Duration get duration => _duration;
-  MediaItem? get currentItem => _currentItem;
-  List<MediaItem> get queue => _queue;
-  int? get currentIndex => _currentIndex;
+  bool get isPlaying => _queueController.snapshot.playing;
+  Duration get position => _queueController.snapshot.localPosition;
+  Duration get bufferedPosition => _queueController.bufferedPosition;
+  Duration get duration => _queueController.snapshot.localDuration;
+  MediaItem? get currentItem => _queueController.snapshot.currentMediaItem;
+  List<MediaItem> get queue => _queueController.queue;
+  int? get currentIndex => _queueController.currentIndex;
   bool get shuffleEnabled => _shuffleEnabled;
   LoopMode get loopMode => _loopMode;
-  bool get hasTrack => _currentItem != null;
+  bool get hasTrack => currentItem != null;
   String? get playbackError => _playbackError;
   bool get isResolvingSignedUrl => _isResolvingSignedUrl;
 
@@ -120,28 +114,22 @@ class PlaybackState extends ChangeNotifier {
         notifyListeners();
       }),
       _queueController.positionStream.listen((pos) {
-        _position = pos;
         notifyListeners();
       }),
       _queueController.bufferedPositionStream.listen((pos) {
-        _bufferedPosition = pos;
         notifyListeners();
       }),
       _queueController.durationStream.listen((dur) {
-        _duration = dur ?? Duration.zero;
         notifyListeners();
       }),
       _queueController.currentMediaItemStream.listen((item) {
-        _currentItem = item;
         notifyListeners();
       }),
       _queueController.queueStream.listen((q) {
-        _queue = q;
         _persistQueue();
         notifyListeners();
       }),
       _queueController.currentIndexStream.listen((index) {
-        _currentIndex = index;
         _persistQueue();
         notifyListeners();
       }),
@@ -223,7 +211,7 @@ class PlaybackState extends ChangeNotifier {
   /// "Add to queue" action; it operates on the real playing queue, not the
   /// separate Redis edit-queue.
   Future<void> enqueue(Map<String, dynamic> track) async {
-    if (_queue.isEmpty) {
+    if (queue.isEmpty) {
       await playQueue([track]);
       return;
     }
@@ -232,7 +220,7 @@ class PlaybackState extends ChangeNotifier {
       queueOriginManual,
     );
     await _queueController.insertIntoQueue(
-      manualEnqueueIndex(_queue, _currentIndex),
+      manualEnqueueIndex(queue, currentIndex),
       item,
     );
   }
@@ -240,7 +228,7 @@ class PlaybackState extends ChangeNotifier {
   /// Inserts [track] to play immediately after the current item ("Play next").
   /// Starts a fresh queue when nothing is playing.
   Future<void> playNext(Map<String, dynamic> track) async {
-    if (_queue.isEmpty) {
+    if (queue.isEmpty) {
       await playQueue([track]);
       return;
     }
@@ -248,7 +236,7 @@ class PlaybackState extends ChangeNotifier {
       await _sourceResolver.resolveTrack(track),
       queueOriginManual,
     );
-    await _queueController.insertIntoQueue((_currentIndex ?? -1) + 1, item);
+    await _queueController.insertIntoQueue((currentIndex ?? -1) + 1, item);
   }
 
   /// Runs [start], retrying it once if the failure looks like a stale/expired
@@ -340,7 +328,7 @@ class PlaybackState extends ChangeNotifier {
   }
 
   Future<void> _refreshCurrentSignedUrlIfNeeded() async {
-    final item = _currentItem;
+    final item = currentItem;
     if (item == null) return;
     // A local-backed item plays from an on-device file and never expires, so it
     // must never trigger a signed-URL refresh (which would hit the network and,
@@ -360,9 +348,13 @@ class PlaybackState extends ChangeNotifier {
   }
 
   Future<void> _refreshCurrentSignedUrl({bool force = false}) async {
-    final index = _currentIndex;
-    final item = _currentItem;
-    if (index == null || item == null || index < 0 || index >= _queue.length) {
+    final index = currentIndex;
+    final item = currentItem;
+    final currentQueue = queue;
+    if (index == null ||
+        item == null ||
+        index < 0 ||
+        index >= currentQueue.length) {
       return;
     }
     if (localArtifactPath(item) != null) return;
@@ -387,12 +379,12 @@ class PlaybackState extends ChangeNotifier {
       extras['storageKeyVersion'] = descriptor.storageKeyVersion;
     }
 
-    final refreshedQueue = List<MediaItem>.from(_queue);
+    final refreshedQueue = List<MediaItem>.from(currentQueue);
     refreshedQueue[index] = item.copyWith(extras: extras);
     await _queueController.setQueue(
       refreshedQueue,
       initialIndex: index,
-      initialPosition: _position,
+      initialPosition: _queueController.livePosition,
     );
   }
 
@@ -407,13 +399,18 @@ class PlaybackState extends ChangeNotifier {
   }
 
   Future<void> seek(Duration position) => _queueController.seek(position);
+  void beginLocalScrub() => _queueController.beginLocalScrub();
+  void updateLocalScrub(Duration position) =>
+      _queueController.updateLocalScrub(position);
+  Future<void> endLocalScrub(Duration position) =>
+      _queueController.endLocalScrub(position);
   Future<void> skipToNext() => _queueController.skipToNext();
   Future<void> skipToPrevious() => _queueController.skipToPrevious();
 
   /// Previous-button behavior: restart the current track when more than 3s in,
   /// otherwise skip to the previous track (see [previousAction]).
   Future<void> previous() async {
-    switch (previousAction(_position.inMilliseconds)) {
+    switch (previousAction(position.inMilliseconds)) {
       case PreviousAction.restart:
         await seek(Duration.zero);
       case PreviousAction.skip:
@@ -461,12 +458,13 @@ class PlaybackState extends ChangeNotifier {
     final store = _persistence;
     if (store == null) return;
 
-    final snapshot = _queue.isEmpty
+    final currentQueue = queue;
+    final snapshot = currentQueue.isEmpty
         ? const QueueSnapshot()
         : QueueSnapshot(
-            tracks: _queue.map(mediaItemToPlaybackJson).toList(),
-            currentIndex: _currentIndex ?? 0,
-            positionMs: _position.inMilliseconds,
+            tracks: currentQueue.map(mediaItemToPlaybackJson).toList(),
+            currentIndex: currentIndex ?? 0,
+            positionMs: position.inMilliseconds,
           );
     unawaited(store.save(snapshot));
   }
@@ -476,7 +474,7 @@ class PlaybackState extends ChangeNotifier {
   Future<void> cycleLoopMode() => _queueController.cycleLoopMode();
 
   Future<void> togglePlayPause() async {
-    if (_isPlaying) {
+    if (isPlaying || _isResolvingSignedUrl) {
       await pause();
     } else {
       await play();

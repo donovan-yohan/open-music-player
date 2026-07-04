@@ -7,6 +7,24 @@ import 'timeline_clock.dart';
 import 'timeline_model.dart';
 import 'voice.dart';
 
+enum DriftCorrectionKind { speedNudge, hardSeek }
+
+class DriftCorrectionEvent {
+  const DriftCorrectionEvent({
+    required this.clipId,
+    required this.kind,
+    required this.globalMs,
+    required this.expectedLocalMs,
+    required this.driftMs,
+  });
+
+  final String clipId;
+  final DriftCorrectionKind kind;
+  final int globalMs;
+  final int expectedLocalMs;
+  final int driftMs;
+}
+
 class VoicePool {
   VoicePool({
     required TimelineClock clock,
@@ -20,6 +38,8 @@ class VoicePool {
     Duration driftCheckInterval = const Duration(seconds: 2),
     // Resync is a hard player seek, so keep it for obvious drift only. Small
     // per-player position jitter is less harmful than audible stop/start seeks.
+    Duration driftSpeedNudgeThreshold = const Duration(milliseconds: 150),
+    Duration driftSpeedNudgeDuration = const Duration(milliseconds: 350),
     Duration driftCorrectionThreshold = const Duration(milliseconds: 500),
     Duration driftCorrectionCooldown = const Duration(seconds: 8),
     Duration gainUpdateInterval = const Duration(milliseconds: 100),
@@ -31,6 +51,8 @@ class VoicePool {
         _prepareTimeout = prepareTimeout,
         _lookAhead = lookAhead,
         _driftCheckInterval = driftCheckInterval,
+        _driftSpeedNudgeThreshold = driftSpeedNudgeThreshold,
+        _driftSpeedNudgeDuration = driftSpeedNudgeDuration,
         _driftCorrectionThreshold = driftCorrectionThreshold,
         _driftCorrectionCooldown = driftCorrectionCooldown,
         _gainUpdateInterval = gainUpdateInterval;
@@ -43,6 +65,8 @@ class VoicePool {
   final Duration _prepareTimeout;
   final Duration _lookAhead;
   final Duration _driftCheckInterval;
+  final Duration _driftSpeedNudgeThreshold;
+  final Duration _driftSpeedNudgeDuration;
   final Duration _driftCorrectionThreshold;
   final Duration _driftCorrectionCooldown;
   final Duration _gainUpdateInterval;
@@ -59,6 +83,8 @@ class VoicePool {
   final Set<String> _capacityEvictedClipIds = {};
   final _voiceStatusController =
       StreamController<Map<String, VoiceEventKind>>.broadcast();
+  final _driftCorrectionController =
+      StreamController<DriftCorrectionEvent>.broadcast();
 
   TimelineModel _model = TimelineModel();
   Timer? _driftTimer;
@@ -76,6 +102,8 @@ class VoicePool {
   int get generation => _generation;
   Stream<Map<String, VoiceEventKind>> get voiceStatusStream =>
       _voiceStatusController.stream;
+  Stream<DriftCorrectionEvent> get driftCorrectionStream =>
+      _driftCorrectionController.stream;
 
   Future<void> start() async {
     if (_started) return;
@@ -90,17 +118,19 @@ class VoicePool {
       }
     }
     _subscriptions
-      ..add(_clock.positionMsStream.listen((ms) {
+      ..add(_clock.voiceSyncPositionMsStream.listen((ms) {
         if (_skipNextClockPositionSync) {
           _skipNextClockPositionSync = false;
           return;
         }
+        if (_clock.isScrubbing) return;
         if (!_suppressClockSync) unawaited(syncAt(ms));
       }))
       ..add(_clock.scrubCommittedStream
           .listen((ms) => unawaited(syncAt(ms, forceSeek: true))))
-      ..add(_clock.isPlayingStream
-          .listen((playing) => unawaited(_setActivePlayback(playing))));
+      ..add(_clock.isPlayingStream.listen((playing) {
+        if (!playing) unawaited(pauseActive());
+      }));
     _driftTimer =
         Timer.periodic(_driftCheckInterval, (_) => unawaited(_checkDrift()));
     _gainTimer = Timer.periodic(_gainUpdateInterval,
@@ -139,45 +169,58 @@ class VoicePool {
     final active =
         _model.activeClipsAt(globalMs).take(_maxVoices).toList(growable: false);
     final activeIds = active.map((clip) => clip.id).toSet();
+    var releaseForceSeekHoldOnExit = false;
 
-    if (forceSeek) {
-      for (final voice in _activeVoices.values) {
-        await voice.pause();
-        await voice.setVolume(0);
-      }
+    if (forceSeek && _clock.isPlaying && _clock.positionMs == globalMs) {
+      _clock.holdForBuffering();
+      releaseForceSeekHoldOnExit = true;
     }
 
-    await _releaseLeaving(activeIds);
-    if (generation != _generation) return;
-    await _releaseChangedSources(active,
-        validateResolvedIdentities: validateResolvedIdentities);
-    if (generation != _generation) return;
-
-    final prepareTasks = <Future<_PreparedVoice?>>[];
-    for (final clip in active) {
-      final existing = _activeVoices[clip.id];
-      if (existing != null) {
-        _activeClips[clip.id] = clip;
-        if (forceSeek) {
-          await existing.seekLocal(_localPosition(clip, globalMs));
+    try {
+      if (forceSeek) {
+        for (final voice in _activeVoices.values) {
+          await voice.pause();
+          await voice.setVolume(0);
         }
-        continue;
       }
-      prepareTasks.add(_prepareNewVoice(clip, globalMs, generation));
-    }
 
-    if (prepareTasks.isNotEmpty) {
-      await Future.wait(
-        prepareTasks.map(
-            (future) => future.timeout(_prepareTimeout, onTimeout: () => null)),
-      );
+      await _releaseLeaving(activeIds);
       if (generation != _generation) return;
-    }
+      await _releaseChangedSources(active,
+          validateResolvedIdentities: validateResolvedIdentities);
+      if (generation != _generation) return;
 
-    await _commitReady(active, globalMs, generation);
-    _lateJoinTimedOut(active, globalMs, generation);
-    _updateBufferingHold(active);
-    _warmLookAhead(globalMs, activeIds);
+      final prepareTasks = <Future<_PreparedVoice?>>[];
+      for (final clip in active) {
+        final existing = _activeVoices[clip.id];
+        if (existing != null) {
+          _activeClips[clip.id] = clip;
+          if (forceSeek) {
+            await existing.seekLocal(_localPosition(clip, globalMs));
+          }
+          continue;
+        }
+        prepareTasks.add(_prepareNewVoice(clip, globalMs, generation));
+      }
+
+      if (prepareTasks.isNotEmpty) {
+        await Future.wait(
+          prepareTasks.map((future) =>
+              future.timeout(_prepareTimeout, onTimeout: () => null)),
+        );
+        if (generation != _generation) return;
+      }
+
+      await _commitReady(active, globalMs, generation);
+      _lateJoinTimedOut(active, globalMs, generation);
+      _updateBufferingHold(active);
+      releaseForceSeekHoldOnExit = false;
+      _warmLookAhead(globalMs, activeIds);
+    } finally {
+      if (releaseForceSeekHoldOnExit) {
+        _clock.releaseHold();
+      }
+    }
   }
 
   Future<void> stop() async {
@@ -195,6 +238,14 @@ class VoicePool {
     _publishStatus();
   }
 
+  Future<void> playActiveFromClock() {
+    final next = _syncChain.then((_) => _setActivePlayback(true));
+    _syncChain = next.then((_) {}, onError: (_) {});
+    return next;
+  }
+
+  Future<void> pauseActive() => _setActivePlayback(false);
+
   Future<void> dispose() async {
     await stop();
     for (final sub in _voiceSubscriptions.values) {
@@ -207,6 +258,7 @@ class VoicePool {
     _allVoices.clear();
     _idleVoices.clear();
     await _voiceStatusController.close();
+    await _driftCorrectionController.close();
   }
 
   Future<void> _releaseLeaving(Set<String> activeIds) async {
@@ -435,6 +487,8 @@ class VoicePool {
           .timeout(_lateJoinTimeout);
     } on TimeoutException {
       return;
+    } on StateError {
+      return;
     }
   }
 
@@ -443,11 +497,51 @@ class VoicePool {
       );
 
   Future<void> _setActivePlayback(bool playing) async {
-    final voices = _activeVoices.values.toList(growable: false);
     if (playing) {
-      await Future.wait(
-          voices.where((voice) => voice.isReady).map((voice) => voice.play()));
+      final generation = _generation;
+      final globalMs = _clock.positionMs;
+      final active = _model.activeClipsAt(globalMs).take(_maxVoices).toList();
+      var releasePlayHoldOnExit = false;
+      if (active.isNotEmpty) {
+        _clock.holdForBuffering();
+        releasePlayHoldOnExit = true;
+      }
+      try {
+        for (final clip in active) {
+          if (generation != _generation) return;
+          final voice = _activeVoices[clip.id];
+          if (voice == null || !voice.isReady) continue;
+          await voice.setVolume(0);
+          if (generation != _generation ||
+              !_activeVoices.containsKey(clip.id)) {
+            return;
+          }
+          await voice.seekLocal(_localPosition(clip, globalMs));
+          if (generation != _generation ||
+              !_activeVoices.containsKey(clip.id)) {
+            return;
+          }
+          await voice.setSpeed(_clock.rate);
+          if (generation != _generation ||
+              !_activeVoices.containsKey(clip.id)) {
+            return;
+          }
+          await voice.play();
+          if (generation != _generation ||
+              !_activeVoices.containsKey(clip.id)) {
+            return;
+          }
+          await voice.setVolume(clip.gainAt(globalMs));
+        }
+        _updateBufferingHold(active);
+        releasePlayHoldOnExit = false;
+      } finally {
+        if (releasePlayHoldOnExit) {
+          _clock.releaseHold(syncVoices: false);
+        }
+      }
     } else {
+      final voices = _activeVoices.values.toList(growable: false);
       await Future.wait(voices.map((voice) => voice.pause()));
     }
   }
@@ -462,7 +556,7 @@ class VoicePool {
   }
 
   Future<void> _checkDrift() async {
-    if (_model.isSingleClip || !_clock.isPlaying || _clock.isScrubbing) return;
+    if (!_clock.isPlaying || _clock.isScrubbing) return;
     final globalMs = _clock.positionMs;
     final generation = _generation;
     for (final entry in _activeClips.entries.toList()) {
@@ -470,34 +564,71 @@ class VoicePool {
       if (voice == null || !voice.isReady) continue;
       if (_voiceStatus[entry.key] == VoiceEventKind.buffering) continue;
       final expected = _localPosition(entry.value, globalMs);
-      final drift = voice.driftMs(expected)?.abs();
+      final signedDrift = voice.driftMs(expected);
+      if (signedDrift == null) continue;
+      final drift = signedDrift.abs();
       final lastCorrectionMs = _lastDriftCorrectionMs[entry.key];
       final cooldownElapsed = lastCorrectionMs == null ||
           (globalMs - lastCorrectionMs).abs() >=
               _driftCorrectionCooldown.inMilliseconds;
-      if (drift != null &&
-          drift > _driftCorrectionThreshold.inMilliseconds &&
-          cooldownElapsed) {
+      if (drift > _driftCorrectionThreshold.inMilliseconds && cooldownElapsed) {
         _lastDriftCorrectionMs[entry.key] = globalMs;
+        _publishDriftCorrection(
+          DriftCorrectionEvent(
+            clipId: entry.key,
+            kind: DriftCorrectionKind.hardSeek,
+            globalMs: globalMs,
+            expectedLocalMs: expected,
+            driftMs: signedDrift,
+          ),
+        );
         final targetGain = entry.value.gainAt(globalMs);
         await voice.setVolume(0);
         if (!_isCurrentVoice(entry.key, voice, generation)) continue;
         await voice.resync(expected);
         if (!_isCurrentVoice(entry.key, voice, generation)) continue;
         await voice.setVolume(targetGain);
+      } else if (drift > _driftSpeedNudgeThreshold.inMilliseconds) {
+        _publishDriftCorrection(
+          DriftCorrectionEvent(
+            clipId: entry.key,
+            kind: DriftCorrectionKind.speedNudge,
+            globalMs: globalMs,
+            expectedLocalMs: expected,
+            driftMs: signedDrift,
+          ),
+        );
+        await _nudgeVoiceSpeed(entry.key, voice, signedDrift, generation);
       }
     }
   }
 
-  void _updateBufferingHold(List<MixClip> active) {
+  Future<void> _nudgeVoiceSpeed(
+    String clipId,
+    Voice voice,
+    int signedDrift,
+    int generation,
+  ) async {
+    final nudge = signedDrift > 0 ? -0.02 : 0.02;
+    await voice.setSpeed((_clock.rate + nudge).clamp(0.5, 2.0).toDouble());
+    unawaited(Future<void>.delayed(_driftSpeedNudgeDuration, () async {
+      if (!_isCurrentVoice(clipId, voice, generation)) return;
+      await voice.setSpeed(_clock.rate);
+    }));
+  }
+
+  void _updateBufferingHold(
+    List<MixClip> active, {
+    bool syncVoicesOnRelease = false,
+  }) {
     if (active.isEmpty) {
-      _clock.releaseHold();
+      _clock.releaseHold(syncVoices: syncVoicesOnRelease);
       return;
     }
     final hasReady =
         active.any((clip) => _activeVoices[clip.id]?.isReady ?? false);
     if (hasReady) {
-      _clock.releaseHold();
+      _clock.releaseHold(syncVoices: syncVoicesOnRelease);
     } else {
       _clock.holdForBuffering();
     }
@@ -538,6 +669,12 @@ class VoicePool {
   void _publishStatus() {
     if (!_voiceStatusController.isClosed) {
       _voiceStatusController.add(Map.unmodifiable(_voiceStatus));
+    }
+  }
+
+  void _publishDriftCorrection(DriftCorrectionEvent event) {
+    if (!_driftCorrectionController.isClosed) {
+      _driftCorrectionController.add(event);
     }
   }
 }

@@ -64,6 +64,31 @@ void main() {
     await c.dispose();
   });
 
+  test('releaseHold can publish UI position without voice sync', () async {
+    final c = clock();
+    final uiPositions = <int>[];
+    final voiceSyncPositions = <int>[];
+    final uiSub = c.positionMsStream.listen(uiPositions.add);
+    final voiceSub = c.voiceSyncPositionMsStream.listen(voiceSyncPositions.add);
+
+    await c.play();
+    now = now.add(const Duration(milliseconds: 500));
+    c.tickForTest();
+    await Future<void>.delayed(Duration.zero);
+    c.holdForBuffering();
+    uiPositions.clear();
+    voiceSyncPositions.clear();
+    c.releaseHold(syncVoices: false);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(uiPositions, contains(500));
+    expect(voiceSyncPositions, isNot(contains(500)));
+
+    await uiSub.cancel();
+    await voiceSub.cancel();
+    await c.dispose();
+  });
+
   test('emits completed once when duration is reached', () async {
     final c = clock();
     final completed = expectLater(c.completedStream, emits(isNull));

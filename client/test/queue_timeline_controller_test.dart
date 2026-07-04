@@ -169,6 +169,31 @@ void main() {
       await sub.cancel();
       await harness.dispose();
     });
+
+    test('local scrub previews position and commits once on end', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([_item('1')]);
+      final commits = <int>[];
+      final sub = harness.clock.scrubCommittedStream.listen(commits.add);
+
+      harness.controller.beginLocalScrub();
+      harness.controller.updateLocalScrub(const Duration(seconds: 2));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(harness.clock.isScrubbing, isTrue);
+      expect(harness.controller.position, const Duration(seconds: 2));
+      expect(commits, isEmpty);
+
+      await harness.controller.endLocalScrub(const Duration(seconds: 3));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(harness.clock.isScrubbing, isFalse);
+      expect(harness.controller.position, const Duration(seconds: 3));
+      expect(commits, [3000]);
+
+      await sub.cancel();
+      await harness.dispose();
+    });
   });
 }
 

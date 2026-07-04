@@ -502,6 +502,19 @@ class _AppearanceSection extends ConsumerWidget {
 class _AboutSection extends StatelessWidget {
   const _AboutSection();
 
+  static const _sourceRef = String.fromEnvironment(
+    'OMP_SOURCE_REF',
+    defaultValue: 'unknown',
+  );
+  static const _buildId = String.fromEnvironment(
+    'OMP_BUILD_ID',
+    defaultValue: 'dev',
+  );
+  static const _apiBaseUrl = String.fromEnvironment(
+    'OMP_API_BASE_URL',
+    defaultValue: 'http://localhost:8080/api/v1',
+  );
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -520,6 +533,16 @@ class _AboutSection extends StatelessWidget {
                   '$version${buildNumber.isNotEmpty ? ' ($buildNumber)' : ''}'),
             );
           },
+        ),
+        const ListTile(
+          leading: Icon(Icons.numbers_outlined),
+          title: Text('Build'),
+          subtitle: Text('$_sourceRef · $_buildId'),
+        ),
+        const ListTile(
+          leading: Icon(Icons.cloud_outlined),
+          title: Text('API endpoint'),
+          subtitle: Text(_apiBaseUrl),
         ),
         ListTile(
           leading: const Icon(Icons.code_outlined),

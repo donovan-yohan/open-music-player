@@ -117,6 +117,34 @@ void main() {
       playback.dispose();
     });
 
+    test('toggle cancels a pending direct replacement autoplay', () async {
+      SharedPreferences.setMockInitialValues({});
+      final signed = _DelayedSignedRequester();
+      final playback = _playbackState(signedAudioUrlService: signed.service);
+
+      final firstStart = playback.playQueue([_track(1, seconds: 60)]);
+      await signed.waitForRequestCount(1);
+      signed.completeRequest(0);
+      await firstStart;
+      await Future<void>.delayed(Duration.zero);
+
+      final replacement = playback.playQueue([_track(2, seconds: 30)]);
+      await signed.waitForRequestCount(2);
+      await playback.togglePlayPause();
+
+      expect(playback.isResolvingSignedUrl, isFalse);
+      expect(playback.isPlaying, isFalse);
+
+      signed.completeRequest(1);
+      await replacement;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.hasTrack, isFalse);
+      expect(playback.currentItem, isNull);
+      expect(playback.isPlaying, isFalse);
+      playback.dispose();
+    });
+
     test('signed URL refresh preserves active local position', () async {
       SharedPreferences.setMockInitialValues({});
       var descriptorCalls = 0;
