@@ -414,16 +414,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
                         : Icons.arrow_downward)
                     : Icons.sort,
                 size: 20,
-                color:
-                    selected ? Theme.of(context).colorScheme.primary : null,
+                color: selected ? Theme.of(context).colorScheme.primary : null,
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
                   field.label,
                   style: TextStyle(
-                    fontWeight:
-                        selected ? FontWeight.bold : FontWeight.normal,
+                    fontWeight: selected ? FontWeight.bold : FontWeight.normal,
                   ),
                 ),
               ),
@@ -886,98 +884,133 @@ class _TrackListTileState extends State<_TrackListTile> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final currentTrackId = context.watch<PlaybackState>().currentItem?.id;
+    final isCurrent = currentTrackId == track.id.toString();
 
-    return ListTile(
-      leading: Stack(
-        children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(4),
+    return QueueSwipeAction(
+      actionKey: ValueKey('library_queue_${track.id}'),
+      onAddToQueue: () => _addToQueue(),
+      child: ListTile(
+        selected: isCurrent,
+        selectedTileColor: theme.colorScheme.primaryContainer.withValues(
+          alpha: 0.28,
+        ),
+        leading: Stack(
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: const Icon(Icons.music_note),
             ),
-            child: const Icon(Icons.music_note),
-          ),
-          // Verification status indicator
-          if (!track.mbVerified)
-            Positioned(
-              right: 0,
-              bottom: 0,
-              child: Container(
-                width: 14,
-                height: 14,
-                decoration: BoxDecoration(
-                  color: track.hasSuggestions ? Colors.orange : Colors.grey,
-                  borderRadius: BorderRadius.circular(7),
-                  border: Border.all(
-                    color: theme.colorScheme.surface,
-                    width: 2,
+            // Verification status indicator
+            if (!track.mbVerified)
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  width: 14,
+                  height: 14,
+                  decoration: BoxDecoration(
+                    color: track.hasSuggestions ? Colors.orange : Colors.grey,
+                    borderRadius: BorderRadius.circular(7),
+                    border: Border.all(
+                      color: theme.colorScheme.surface,
+                      width: 2,
+                    ),
+                  ),
+                  child: Icon(
+                    track.hasSuggestions
+                        ? Icons.auto_fix_high
+                        : Icons.help_outline,
+                    size: 8,
+                    color: Colors.white,
                   ),
                 ),
-                child: Icon(
-                  track.hasSuggestions
-                      ? Icons.auto_fix_high
-                      : Icons.help_outline,
-                  size: 8,
-                  color: Colors.white,
+              ),
+          ],
+        ),
+        title: Row(
+          children: [
+            Expanded(
+              child: Text(
+                track.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: isCurrent ? theme.colorScheme.primary : null,
+                  fontWeight: isCurrent ? FontWeight.w700 : null,
                 ),
               ),
             ),
-        ],
-      ),
-      title: Row(
-        children: [
-          Expanded(
-            child: Text(
-              track.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            if (track.needsVerification) ...[
+              const SizedBox(width: 8),
+              UnverifiedTrackIndicator(
+                onTap: () => _showMatchSuggestions(context),
+              ),
+            ],
+          ],
+        ),
+        subtitle: Text(
+          track.displayArtist,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isCurrent) ...[
+              Icon(Icons.equalizer, size: 18, color: theme.colorScheme.primary),
+              const SizedBox(width: 8),
+            ],
+            Text(
+              track.formattedDuration,
+              style: theme.textTheme.bodySmall,
             ),
-          ),
-          if (track.needsVerification) ...[
-            const SizedBox(width: 8),
-            UnverifiedTrackIndicator(
-              onTap: () => _showMatchSuggestions(context),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              icon: Icon(
+                _liked ? Icons.favorite : Icons.favorite_border,
+                color: _liked ? theme.colorScheme.primary : null,
+              ),
+              tooltip: _liked ? 'Unlike' : 'Like',
+              onPressed: _likeInFlight ? null : _toggleLike,
+            ),
+            DownloadButton(track: track),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.more_vert),
+              tooltip: 'More actions',
+              onPressed: () => _showActions(context),
             ),
           ],
-        ],
+        ),
+        onTap: () => _playTrack(context),
+        onLongPress: track.needsVerification
+            ? () => _showMatchSuggestions(context)
+            : () => _showActions(context),
       ),
-      subtitle: Text(
-        track.displayArtist,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            track.formattedDuration,
-            style: theme.textTheme.bodySmall,
-          ),
-          IconButton(
-            visualDensity: VisualDensity.compact,
-            icon: Icon(
-              _liked ? Icons.favorite : Icons.favorite_border,
-              color: _liked ? theme.colorScheme.primary : null,
-            ),
-            tooltip: _liked ? 'Unlike' : 'Like',
-            onPressed: _likeInFlight ? null : _toggleLike,
-          ),
-          DownloadButton(track: track),
-          IconButton(
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.more_vert),
-            tooltip: 'More actions',
-            onPressed: () => _showActions(context),
-          ),
-        ],
-      ),
-      onTap: () => _playTrack(context),
-      onLongPress: track.needsVerification
-          ? () => _showMatchSuggestions(context)
-          : () => _showActions(context),
     );
+  }
+
+  Future<void> _addToQueue() async {
+    final playback = context.read<PlaybackState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await addTrackToQueue(playback.enqueue, track);
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('Added "${track.title}" to queue')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not add to queue')),
+      );
+    }
   }
 
   Future<void> _toggleLike() async {
@@ -1004,7 +1037,6 @@ class _TrackListTileState extends State<_TrackListTile> {
 
   void _showActions(BuildContext context) {
     final playback = context.read<PlaybackState>();
-    final messenger = ScaffoldMessenger.of(context);
 
     showModalBottomSheet(
       context: context,
@@ -1017,10 +1049,7 @@ class _TrackListTileState extends State<_TrackListTile> {
               title: const Text('Add to queue'),
               onTap: () async {
                 Navigator.of(sheetContext).pop();
-                await addTrackToQueue(playback.enqueue, track);
-                messenger.showSnackBar(
-                  const SnackBar(content: Text('Added to queue')),
-                );
+                await _addToQueue();
               },
             ),
             ListTile(
@@ -1305,4 +1334,3 @@ class _UnverifiedTrackSheet extends StatelessWidget {
     return (name: name, url: sourceUrl);
   }
 }
-

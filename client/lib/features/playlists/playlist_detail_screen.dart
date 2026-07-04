@@ -8,6 +8,7 @@ import '../../core/api/api_client.dart';
 import '../../core/storage/secure_storage.dart';
 import '../../shared/models/playlist.dart';
 import '../../shared/models/track.dart';
+import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/track_tile.dart';
 import 'playlist_edit_dialog.dart';
 import 'playlist_selection.dart';
@@ -64,21 +65,17 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   Future<void> _removeTrack(Track track) async {
     if (_playlist == null) return;
 
-    final tracks = List<Track>.from(_playlist!.tracks ?? []);
-    final index = tracks.indexWhere((t) => t.id == track.id);
-    tracks.removeAt(index);
-
-    setState(() {
-      _playlist = _playlist!.copyWith(
-        tracks: tracks,
-        trackCount: _playlist!.trackCount - 1,
-      );
-    });
+    final playlist = _playlist!;
+    final messenger = ScaffoldMessenger.of(context);
 
     try {
-      await _playlistService.removeTrack(_playlist!.id, track.id);
+      final updated = await _playlistService.batchRemoveTracks(
+        playlist.id,
+        [track.id],
+      );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        setState(() => _playlist = updated);
+        messenger.showSnackBar(
           SnackBar(
             content: Text('Removed "${track.title}"'),
             action: SnackBarAction(
@@ -90,7 +87,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 if (mounted && result.hasSkipped && !result.hasAdded) {
                   messenger.showSnackBar(
                     SnackBar(
-                      content: Text(result.feedbackMessage(_playlist!.name)),
+                      content: Text(result.feedbackMessage(playlist.name)),
                     ),
                   );
                 }
@@ -101,12 +98,28 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         );
       }
     } catch (e) {
-      _loadPlaylist();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to remove track: $e')),
+        messenger.showSnackBar(
+          SnackBar(content: Text('Failed to remove "${track.title}"')),
         );
       }
+    }
+  }
+
+  Future<void> _enqueueTrack(Track track) async {
+    final playback = context.read<PlaybackState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await playback.enqueue(track.toPlaybackJson());
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('Added "${track.title}" to queue')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not add to queue')),
+      );
     }
   }
 
@@ -198,7 +211,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               coverUrl: result.coverUrl ?? '',
               isPublic: result.isPublic,
             );
-            setState(() => _playlist = updated.copyWith(tracks: _playlist!.tracks));
+            setState(
+                () => _playlist = updated.copyWith(tracks: _playlist!.tracks));
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Playlist updated')),
@@ -493,8 +507,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed:
-                        _hasPlayableTracks ? () => _playAll(shuffle: true) : null,
+                    onPressed: _hasPlayableTracks
+                        ? () => _playAll(shuffle: true)
+                        : null,
                     icon: const Icon(Icons.shuffle),
                     label: const Text('Shuffle'),
                   ),
@@ -509,6 +524,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
   Widget _buildTracksList() {
     final tracks = _playlist!.tracks ?? [];
+    final currentTrackId = context.watch<PlaybackState>().currentItem?.id;
 
     if (tracks.isEmpty) {
       return const SliverFillRemaining(
@@ -539,6 +555,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             final selected = _selection.contains(track.id);
             return TrackTile.fromTrack(
               track,
+              isCurrent: currentTrackId == track.id.toString(),
               onTap: () => _toggleTrackSelection(track.id),
               trailing: Checkbox(
                 value: selected,
@@ -562,6 +579,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             index: index,
             child: TrackTile.fromTrack(
               track,
+              isCurrent: currentTrackId == track.id.toString(),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -583,18 +601,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       delegate: SliverChildBuilderDelegate(
         (context, index) {
           final track = tracks[index];
-          return Dismissible(
-            key: Key('track_${track.id}'),
-            direction: DismissDirection.endToStart,
-            background: Container(
-              color: Colors.red,
-              alignment: Alignment.centerRight,
-              padding: const EdgeInsets.only(right: 16),
-              child: const Icon(Icons.delete, color: Colors.white),
-            ),
-            onDismissed: (_) => _removeTrack(track),
+          return QueueSwipeAction(
+            actionKey:
+                Key('playlist_queue_${widget.playlistId}_${track.id}_$index'),
+            onAddToQueue: () => _enqueueTrack(track),
             child: TrackTile.fromTrack(
               track,
+              isCurrent: currentTrackId == track.id.toString(),
               onTap: () => _playFromIndex(index),
             ),
           );

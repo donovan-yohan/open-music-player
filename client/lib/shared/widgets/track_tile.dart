@@ -14,6 +14,7 @@ class TrackTile extends StatelessWidget {
   final Widget? leading;
   final Widget? trailing;
   final bool showDragHandle;
+  final bool isCurrent;
 
   const TrackTile({
     super.key,
@@ -27,6 +28,7 @@ class TrackTile extends StatelessWidget {
     this.leading,
     this.trailing,
     this.showDragHandle = false,
+    this.isCurrent = false,
   });
 
   factory TrackTile.fromTrack(
@@ -36,6 +38,7 @@ class TrackTile extends StatelessWidget {
     Widget? leading,
     Widget? trailing,
     bool showDragHandle = false,
+    bool isCurrent = false,
   }) {
     return TrackTile(
       title: track.title,
@@ -48,6 +51,7 @@ class TrackTile extends StatelessWidget {
       leading: leading,
       trailing: trailing,
       showDragHandle: showDragHandle,
+      isCurrent: isCurrent,
     );
   }
 
@@ -58,6 +62,7 @@ class TrackTile extends StatelessWidget {
     Widget? leading,
     Widget? trailing,
     bool showDragHandle = false,
+    bool isCurrent = false,
   }) {
     return TrackTile(
       title: track.title,
@@ -70,6 +75,7 @@ class TrackTile extends StatelessWidget {
       leading: leading,
       trailing: trailing,
       showDragHandle: showDragHandle,
+      isCurrent: isCurrent,
     );
   }
 
@@ -79,13 +85,20 @@ class TrackTile extends StatelessWidget {
 
     return ListTile(
       onTap: onTap,
+      selected: isCurrent,
+      selectedTileColor: theme.colorScheme.primaryContainer.withValues(
+        alpha: 0.28,
+      ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       leading: leading ?? _buildCoverArt(theme),
       title: Text(
         title,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodyLarge,
+        style: theme.textTheme.bodyLarge?.copyWith(
+          color: isCurrent ? theme.colorScheme.primary : null,
+          fontWeight: isCurrent ? FontWeight.w700 : null,
+        ),
       ),
       subtitle: Text(
         [artist, album].where((s) => s != null && s.isNotEmpty).join(' • '),
@@ -120,6 +133,14 @@ class TrackTile extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (isCurrent) ...[
+          Icon(
+            Icons.equalizer,
+            size: 18,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+          const SizedBox(width: 8),
+        ],
         Text(
           duration,
           style: Theme.of(context).textTheme.bodySmall,

@@ -7,6 +7,7 @@ import '../../core/audio/playback_state.dart';
 import '../../core/errors/error_widgets.dart';
 import '../../core/services/api_client.dart';
 import '../../shared/models/models.dart';
+import '../../shared/widgets/queue_swipe_action.dart';
 import '../../core/services/home_service.dart';
 import 'home_state.dart';
 
@@ -54,7 +55,8 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     } catch (_) {
       if (!mounted) return;
-      setState(() => _state = HomeState.error('Could not load your home feed.'));
+      setState(
+          () => _state = HomeState.error('Could not load your home feed.'));
     }
   }
 
@@ -63,6 +65,23 @@ class _HomeScreenState extends State<HomeScreen> {
           tracks.map((t) => t.toPlaybackJson()).toList(),
           startIndex: startIndex,
         );
+  }
+
+  Future<void> _enqueueTrack(Track track) async {
+    final playback = context.read<PlaybackState>();
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await playback.enqueue(track.toPlaybackJson());
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text('Added "${track.title}" to queue')),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not add to queue')),
+      );
+    }
   }
 
   @override
@@ -91,7 +110,9 @@ class _HomeScreenState extends State<HomeScreen> {
         return _HomeContent(
           sections: _state.sections,
           onPlayTrack: _playTracks,
-          onOpenPlaylist: (playlist) => context.push('/playlists/${playlist.id}'),
+          onEnqueueTrack: _enqueueTrack,
+          onOpenPlaylist: (playlist) =>
+              context.push('/playlists/${playlist.id}'),
         );
     }
   }
@@ -142,11 +163,13 @@ class _HomeContent extends StatelessWidget {
   const _HomeContent({
     required this.sections,
     required this.onPlayTrack,
+    required this.onEnqueueTrack,
     required this.onOpenPlaylist,
   });
 
   final HomeSections sections;
   final void Function(List<Track> tracks, int startIndex) onPlayTrack;
+  final Future<void> Function(Track track) onEnqueueTrack;
   final void Function(Playlist playlist) onOpenPlaylist;
 
   @override
@@ -159,12 +182,14 @@ class _HomeContent extends StatelessWidget {
             title: 'Recently played',
             tracks: sections.recentlyPlayed,
             onPlay: onPlayTrack,
+            onEnqueue: onEnqueueTrack,
           ),
         if (sections.topTracks.isNotEmpty)
           _TrackSection(
             title: 'Your top tracks',
             tracks: sections.topTracks,
             onPlay: onPlayTrack,
+            onEnqueue: onEnqueueTrack,
           ),
         if (sections.playlists.isNotEmpty)
           _PlaylistSection(
@@ -181,11 +206,13 @@ class _TrackSection extends StatelessWidget {
     required this.title,
     required this.tracks,
     required this.onPlay,
+    required this.onEnqueue,
   });
 
   final String title;
   final List<Track> tracks;
   final void Function(List<Track> tracks, int startIndex) onPlay;
+  final Future<void> Function(Track track) onEnqueue;
 
   @override
   Widget build(BuildContext context) {
@@ -195,8 +222,10 @@ class _TrackSection extends StatelessWidget {
         _SectionHeader(title: title),
         for (var i = 0; i < tracks.length; i++)
           _TrackTile(
+            actionKey: ValueKey('home_queue_${title}_${tracks[i].id}_$i'),
             track: tracks[i],
             onTap: () => onPlay(tracks, i),
+            onAddToQueue: () => onEnqueue(tracks[i]),
           ),
       ],
     );
@@ -204,41 +233,52 @@ class _TrackSection extends StatelessWidget {
 }
 
 class _TrackTile extends StatelessWidget {
-  const _TrackTile({required this.track, required this.onTap});
+  const _TrackTile({
+    required this.actionKey,
+    required this.track,
+    required this.onTap,
+    required this.onAddToQueue,
+  });
 
+  final Key actionKey;
   final Track track;
   final VoidCallback onTap;
+  final Future<void> Function() onAddToQueue;
 
   @override
   Widget build(BuildContext context) {
     final cover = track.metadata?['cover_art_url'] as String? ??
         track.coverArtThumbnailUrl;
-    return ListTile(
-      onTap: onTap,
-      leading: ClipRRect(
-        borderRadius: BorderRadius.circular(4),
-        child: SizedBox(
-          width: 48,
-          height: 48,
-          child: cover != null && cover.isNotEmpty
-              ? CachedNetworkImage(
-                  imageUrl: cover,
-                  fit: BoxFit.cover,
-                  placeholder: (_, __) => const _CoverPlaceholder(),
-                  errorWidget: (_, __, ___) => const _CoverPlaceholder(),
-                )
-              : const _CoverPlaceholder(),
+    return QueueSwipeAction(
+      actionKey: actionKey,
+      onAddToQueue: onAddToQueue,
+      child: ListTile(
+        onTap: onTap,
+        leading: ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: SizedBox(
+            width: 48,
+            height: 48,
+            child: cover != null && cover.isNotEmpty
+                ? CachedNetworkImage(
+                    imageUrl: cover,
+                    fit: BoxFit.cover,
+                    placeholder: (_, __) => const _CoverPlaceholder(),
+                    errorWidget: (_, __, ___) => const _CoverPlaceholder(),
+                  )
+                : const _CoverPlaceholder(),
+          ),
         ),
-      ),
-      title: Text(
-        track.title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      subtitle: Text(
-        track.displayArtist,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+        title: Text(
+          track.title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          track.displayArtist,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
       ),
     );
   }
