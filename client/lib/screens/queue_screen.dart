@@ -1,12 +1,30 @@
 import 'package:flutter/material.dart';
+import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
+import '../core/audio/playback_context.dart';
 import '../models/track.dart';
 import '../providers/queue_provider.dart';
+import '../shared/widgets/track_tile.dart';
 import '../widgets/queue_item.dart';
 import '../widgets/stacked_waveform_timeline.dart';
 
 enum _QueueViewMode { list, timeline }
+
+enum ListeningQueueSection { previous, current, upNext }
+
+@visibleForTesting
+class ListeningQueueEntry {
+  const ListeningQueueEntry({
+    required this.index,
+    required this.item,
+    required this.section,
+  });
+
+  final int index;
+  final audio_service.MediaItem item;
+  final ListeningQueueSection section;
+}
 
 const double _queueReorderItemExtentPx = 64.0;
 
@@ -37,6 +55,52 @@ int queueListDragTargetIndex({
   return (relativeIndex + delta).clamp(0, itemCount - 1);
 }
 
+@visibleForTesting
+List<ListeningQueueEntry> listeningQueueEntries({
+  required List<audio_service.MediaItem> queue,
+  required int? currentIndex,
+}) {
+  if (queue.isEmpty) return const [];
+  final normalizedCurrent = currentIndex?.clamp(0, queue.length - 1).toInt();
+  return [
+    for (var i = 0; i < queue.length; i++)
+      ListeningQueueEntry(
+        index: i,
+        item: queue[i],
+        section: normalizedCurrent == null
+            ? ListeningQueueSection.upNext
+            : i < normalizedCurrent
+                ? ListeningQueueSection.previous
+                : i == normalizedCurrent
+                    ? ListeningQueueSection.current
+                    : ListeningQueueSection.upNext,
+      ),
+  ];
+}
+
+@visibleForTesting
+int listeningQueueRemainingMs({
+  required List<audio_service.MediaItem> queue,
+  required int? currentIndex,
+  required Duration currentPosition,
+}) {
+  if (queue.isEmpty) return 0;
+  final start =
+      currentIndex == null ? 0 : currentIndex.clamp(0, queue.length).toInt();
+  var total = 0;
+  for (var i = start; i < queue.length; i++) {
+    final durationMs = queue[i].duration?.inMilliseconds ?? 0;
+    if (i == start) {
+      total += (durationMs - currentPosition.inMilliseconds)
+          .clamp(0, durationMs)
+          .toInt();
+    } else {
+      total += durationMs;
+    }
+  }
+  return total;
+}
+
 class QueueScreen extends StatefulWidget {
   const QueueScreen({super.key});
 
@@ -60,8 +124,12 @@ class _QueueScreenState extends State<QueueScreen> {
     return Scaffold(
       body: SafeArea(
         bottom: false,
-        child: Consumer<QueueProvider>(
-          builder: (context, provider, _) {
+        child: Consumer2<QueueProvider, PlaybackState>(
+          builder: (context, provider, playback, _) {
+            if (playback.queue.isNotEmpty) {
+              return _buildPlaybackQueueView(context, playback);
+            }
+
             if (provider.isLoading) {
               return const Center(child: CircularProgressIndicator());
             }
@@ -126,6 +194,138 @@ class _QueueScreenState extends State<QueueScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildPlaybackQueueView(
+    BuildContext context,
+    PlaybackState playback,
+  ) {
+    final entries = listeningQueueEntries(
+      queue: playback.queue,
+      currentIndex: playback.currentIndex,
+    );
+    final previous = entries
+        .where((entry) => entry.section == ListeningQueueSection.previous)
+        .toList(growable: false);
+    final current = entries
+        .where((entry) => entry.section == ListeningQueueSection.current)
+        .toList(growable: false);
+    final upNext = entries
+        .where((entry) => entry.section == ListeningQueueSection.upNext)
+        .toList(growable: false);
+
+    return CustomScrollView(
+      key: const PageStorageKey('playback_queue_list_view'),
+      slivers: [
+        SliverToBoxAdapter(child: _buildPlaybackQueueHeader(context, playback)),
+        if (previous.isNotEmpty) ...[
+          _buildSectionHeader(context, 'Previous'),
+          _buildPlaybackQueueSection(playback, previous),
+        ],
+        if (current.isNotEmpty) ...[
+          _buildSectionHeader(context, 'Now Playing'),
+          _buildPlaybackQueueSection(playback, current),
+        ],
+        if (upNext.isNotEmpty) ...[
+          _buildSectionHeader(context, 'Up Next'),
+          _buildPlaybackQueueSection(playback, upNext),
+        ],
+        const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
+      ],
+    );
+  }
+
+  Widget _buildPlaybackQueueHeader(
+    BuildContext context,
+    PlaybackState playback,
+  ) {
+    final queue = playback.queue;
+    final remainingMs = listeningQueueRemainingMs(
+      queue: queue,
+      currentIndex: playback.currentIndex,
+      currentPosition: playback.position,
+    );
+    final contextLabel = _playbackContextLabel(playback.playbackContext);
+    final currentNumber = playback.currentIndex == null
+        ? null
+        : playback.currentIndex!.clamp(0, queue.length - 1).toInt() + 1;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Playback Queue',
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            [
+              if (contextLabel != null) contextLabel,
+              if (currentNumber != null) '$currentNumber of ${queue.length}',
+              '${_formatQueueRuntime(remainingMs)} remaining',
+            ].join(' • '),
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String? _playbackContextLabel(PlaybackContext? context) {
+    if (context == null) return null;
+    final kind = switch (context.kind) {
+      PlaybackContextKind.playlist => 'Playlist',
+      PlaybackContextKind.album => 'Album',
+      PlaybackContextKind.artist => 'Artist',
+      PlaybackContextKind.library => 'Library',
+      PlaybackContextKind.queue => 'Queue',
+      PlaybackContextKind.search => 'Search',
+    };
+    return '$kind • ${context.label}';
+  }
+
+  Widget _buildPlaybackQueueSection(
+    PlaybackState playback,
+    List<ListeningQueueEntry> entries,
+  ) {
+    return SliverList.builder(
+      itemCount: entries.length,
+      itemBuilder: (context, index) {
+        final entry = entries[index];
+        final item = entry.item;
+        final isCurrent = entry.section == ListeningQueueSection.current;
+        return TrackTile(
+          key: ValueKey('playback_queue_${entry.index}_${item.id}'),
+          title: item.title,
+          artist: item.artist,
+          album: item.album,
+          duration: _formatQueueRuntime(item.duration?.inMilliseconds ?? 0),
+          coverArtUrl: item.artUri?.toString(),
+          isCurrent: isCurrent,
+          onTap: isCurrent ? null : () => _skipToPlaybackIndex(playback, entry),
+        );
+      },
+    );
+  }
+
+  Future<void> _skipToPlaybackIndex(
+    PlaybackState playback,
+    ListeningQueueEntry entry,
+  ) async {
+    try {
+      await playback.skipToIndex(entry.index);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not play "${entry.item.title}"')),
+      );
+    }
   }
 
   Widget _buildQueueHeader(BuildContext context, QueueProvider provider) {
@@ -368,14 +568,12 @@ class _QueueScreenState extends State<QueueScreen> {
                 onTrimStartChanged: (ms) =>
                     provider.setStartOffsetMs(track, ms),
                 onTrimEndChanged: (ms) => provider.setEndOffsetMs(track, ms),
-                onPlay:
-                    track.queueStatus == TrackQueueStatus.playable &&
+                onPlay: track.queueStatus == TrackQueueStatus.playable &&
                         track.canPlay
                     ? () => _playFromQueue(context, provider, track)
                     : null,
-                onRetry: track.canRetry
-                    ? () => provider.retryTrack(track)
-                    : null,
+                onRetry:
+                    track.canRetry ? () => provider.retryTrack(track) : null,
                 onRemove: () => provider.removeFromQueue(absoluteIndex),
               );
             },

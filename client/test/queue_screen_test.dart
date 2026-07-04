@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -92,6 +93,73 @@ void main() {
     );
   });
 
+  test('splits playback queue around current index', () {
+    final entries = listeningQueueEntries(
+      queue: [
+        _mediaItem(1, 'Intro'),
+        _mediaItem(2, 'Drop'),
+        _mediaItem(3, 'Outro'),
+      ],
+      currentIndex: 1,
+    );
+
+    expect(entries.map((entry) => entry.section), [
+      ListeningQueueSection.previous,
+      ListeningQueueSection.current,
+      ListeningQueueSection.upNext,
+    ]);
+  });
+
+  test('playback queue remaining runtime subtracts current position', () {
+    final remaining = listeningQueueRemainingMs(
+      queue: [
+        _mediaItem(1, 'Intro', seconds: 60),
+        _mediaItem(2, 'Drop', seconds: 120),
+      ],
+      currentIndex: 0,
+      currentPosition: const Duration(seconds: 15),
+    );
+
+    expect(remaining, 165000);
+  });
+
+  testWidgets('renders live playback queue ahead of import queue', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Already Played', seconds: 90),
+        _mediaItem(2, 'Now Playing', seconds: 120),
+        _mediaItem(3, 'Next Song', seconds: 150),
+      ]
+      ..fakeCurrentIndex = 1
+      ..fakePosition = const Duration(seconds: 30)
+      ..fakeContext = const PlaybackContext(
+        kind: PlaybackContextKind.playlist,
+        label: 'all the things i desire',
+        id: '42',
+      );
+
+    await pumpQueueScreen(tester);
+
+    expect(find.text('Playback Queue'), findsOneWidget);
+    expect(
+      find.text('Playlist • all the things i desire • 2 of 3 • 4:00 remaining'),
+      findsOneWidget,
+    );
+    expect(find.text('Previous'), findsOneWidget);
+    expect(find.text('Now Playing'), findsNWidgets(2));
+    expect(find.text('Up Next'), findsOneWidget);
+    expect(find.text('Already Played'), findsOneWidget);
+    expect(find.text('Next Song'), findsOneWidget);
+    expect(find.byKey(const PageStorageKey('queue_list_view')), findsNothing);
+
+    await tester.tap(find.text('Next Song'));
+    await tester.pumpAndSettle();
+
+    expect(playbackState.skipToIndexCalls, [2]);
+  });
+
   testWidgets('defaults to 390px list view with a one tap Timeline switch', (
     tester,
   ) async {
@@ -153,9 +221,8 @@ void main() {
       playbackState.fakePosition = const Duration(seconds: 45);
 
       await pumpQueueScreen(tester);
-      final provider = tester
-          .element(find.byType(QueueScreen))
-          .read<QueueProvider>();
+      final provider =
+          tester.element(find.byType(QueueScreen)).read<QueueProvider>();
       final currentTrack = provider.currentTrack!;
       await provider.setStartOffsetMs(currentTrack, 30000);
       await provider.setEndOffsetMs(currentTrack, 90000);
@@ -293,9 +360,8 @@ void main() {
 
     await pumpQueueScreen(tester);
 
-    final provider = tester
-        .element(find.byType(QueueScreen))
-        .read<QueueProvider>();
+    final provider =
+        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
     final track = provider.upNext.first;
 
     await provider.setStartOffsetMs(track, 42000);
@@ -431,12 +497,32 @@ void main() {
 
 class _FakePlaybackState extends Fake implements PlaybackState {
   final List<({List<Map<String, dynamic>> tracks, int startIndex})>
-  playQueueCalls = [];
+      playQueueCalls = [];
   final _timelinePositions = StreamController<int>.broadcast();
   final List<String> scrubEvents = [];
+  final List<int> skipToIndexCalls = [];
   int seekCalls = 0;
 
   Duration fakePosition = Duration.zero;
+  List<audio_service.MediaItem> fakeQueue = const [];
+  int? fakeCurrentIndex;
+  PlaybackContext? fakeContext;
+
+  @override
+  List<audio_service.MediaItem> get queue => fakeQueue;
+
+  @override
+  int? get currentIndex => fakeCurrentIndex;
+
+  @override
+  audio_service.MediaItem? get currentItem => fakeCurrentIndex == null
+      ? null
+      : fakeQueue.isEmpty
+          ? null
+          : fakeQueue[fakeCurrentIndex!.clamp(0, fakeQueue.length - 1)];
+
+  @override
+  PlaybackContext? get playbackContext => fakeContext;
 
   @override
   Stream<int> get timelinePositionMsStream => _timelinePositions.stream;
@@ -463,6 +549,12 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   }
 
   @override
+  Future<void> skipToIndex(int index) async {
+    skipToIndexCalls.add(index);
+    fakeCurrentIndex = index;
+  }
+
+  @override
   Duration get position => fakePosition;
 
   @override
@@ -483,6 +575,19 @@ class _FakePlaybackState extends Fake implements PlaybackState {
     playQueueCalls.add((tracks: tracks, startIndex: startIndex));
   }
 }
+
+audio_service.MediaItem _mediaItem(
+  int id,
+  String title, {
+  int seconds = 60,
+}) =>
+    audio_service.MediaItem(
+      id: id.toString(),
+      title: title,
+      artist: 'Queue Artist',
+      album: 'Queue Album',
+      duration: Duration(seconds: seconds),
+    );
 
 class _FakeQueueApiClient extends ApiClient {
   QueueState _state = QueueState(
@@ -733,7 +838,8 @@ class _FakeQueueApiClient extends ApiClient {
   Future<MixPlan> createMixPlan({
     required String name,
     required List<MixPlanClip> clips,
-  }) async => _fakeMixPlan(name: name, clips: clips, version: 1);
+  }) async =>
+      _fakeMixPlan(name: name, clips: clips, version: 1);
 
   @override
   Future<MixPlan> updateMixPlan({
@@ -749,21 +855,22 @@ class _FakeQueueApiClient extends ApiClient {
     required String name,
     required List<MixPlanClip> clips,
     required int version,
-  }) => MixPlan(
-    id: id,
-    schemaVersion: 1,
-    name: name,
-    clips: clips,
-    summary: MixPlanSummary(
-      clipCount: clips.length,
-      trackIds: clips.map((clip) => clip.trackId).toList(),
-      durationMs: clips.fold<int>(
-        0,
-        (max, clip) => clip.timelineEndMs > max ? clip.timelineEndMs : max,
-      ),
-    ),
-    version: version,
-    createdAt: DateTime(2026),
-    updatedAt: DateTime(2026),
-  );
+  }) =>
+      MixPlan(
+        id: id,
+        schemaVersion: 1,
+        name: name,
+        clips: clips,
+        summary: MixPlanSummary(
+          clipCount: clips.length,
+          trackIds: clips.map((clip) => clip.trackId).toList(),
+          durationMs: clips.fold<int>(
+            0,
+            (max, clip) => clip.timelineEndMs > max ? clip.timelineEndMs : max,
+          ),
+        ),
+        version: version,
+        createdAt: DateTime(2026),
+        updatedAt: DateTime(2026),
+      );
 }
