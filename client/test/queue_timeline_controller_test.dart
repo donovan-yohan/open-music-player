@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
@@ -194,6 +196,39 @@ void main() {
       await sub.cancel();
       await harness.dispose();
     });
+
+    test('play command returns while native play future stays active',
+        () async {
+      final voices = <_BlockingPlayVoice>[];
+      final harness = _Harness(
+        voiceFactory: () {
+          final voice = _BlockingPlayVoice('v${voices.length}');
+          voices.add(voice);
+          return voice;
+        },
+      );
+      await harness.controller.setQueue([_item('1')]);
+
+      final play = harness.controller.play();
+      await voices.first.playStarted.future.timeout(
+        const Duration(milliseconds: 50),
+      );
+
+      await expectLater(
+        play.timeout(const Duration(milliseconds: 50)),
+        completes,
+      );
+      expect(harness.engine.isPlaying, isTrue);
+      expect(voices.first.isPlaying, isTrue);
+
+      await harness.controller.pause().timeout(
+            const Duration(milliseconds: 50),
+          );
+
+      expect(harness.engine.isPlaying, isFalse);
+      expect(voices.first.isPlaying, isFalse);
+      await harness.dispose();
+    });
   });
 }
 
@@ -205,14 +240,14 @@ MediaItem _item(String id, {int seconds = 5}) => MediaItem(
     );
 
 class _Harness {
-  _Harness() {
+  _Harness({FakeVoice Function()? voiceFactory}) {
     clock = DefaultTimelineClock(
       now: () => now,
       uiTickInterval: const Duration(hours: 1),
     );
     engine = PlaybackEngine.withClock(
       clock: clock,
-      voiceFactory: () => FakeVoice('v'),
+      voiceFactory: voiceFactory ?? () => FakeVoice('v'),
     );
     controller = QueueTimelineController(engine);
   }
@@ -230,5 +265,31 @@ class _Harness {
   Future<void> dispose() async {
     await controller.dispose();
     await clock.dispose();
+  }
+}
+
+class _BlockingPlayVoice extends FakeVoice {
+  _BlockingPlayVoice(super.debugId);
+
+  final Completer<void> playStarted = Completer<void>();
+  final Completer<void> _playReleased = Completer<void>();
+
+  @override
+  Future<void> play() async {
+    await super.play();
+    if (!playStarted.isCompleted) playStarted.complete();
+    return _playReleased.future;
+  }
+
+  @override
+  Future<void> pause() async {
+    await super.pause();
+    if (!_playReleased.isCompleted) _playReleased.complete();
+  }
+
+  @override
+  Future<void> release() async {
+    await pause();
+    await super.release();
   }
 }

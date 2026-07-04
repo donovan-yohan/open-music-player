@@ -224,6 +224,7 @@ class VoicePool {
   }
 
   Future<void> stop() async {
+    _generation += 1;
     for (final sub in _subscriptions) {
       await sub.cancel();
     }
@@ -424,12 +425,11 @@ class VoicePool {
       await voice.setVolume(clip.gainAt(globalMs));
     }
     if (_clock.isPlaying) {
-      final readyVoices = active
-          .map((clip) => _activeVoices[clip.id])
-          .whereType<Voice>()
-          .where((voice) => voice.isReady)
-          .toList(growable: false);
-      await Future.wait(readyVoices.map((voice) => voice.play()));
+      for (final clip in active) {
+        final voice = _activeVoices[clip.id];
+        if (voice == null || !voice.isReady) continue;
+        _requestPlay(clip.id, voice);
+      }
     }
   }
 
@@ -465,7 +465,7 @@ class VoicePool {
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
     await voice.seekLocal(_localPosition(clip, currentMs));
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
-    if (_clock.isPlaying) await voice.play();
+    if (_clock.isPlaying) _requestPlay(clip.id, voice);
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
     await voice.setVolume(clip.gainAt(currentMs));
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
@@ -526,7 +526,7 @@ class VoicePool {
               !_activeVoices.containsKey(clip.id)) {
             return;
           }
-          await voice.play();
+          _requestPlay(clip.id, voice);
           if (generation != _generation ||
               !_activeVoices.containsKey(clip.id)) {
             return;
@@ -544,6 +544,18 @@ class VoicePool {
       final voices = _activeVoices.values.toList(growable: false);
       await Future.wait(voices.map((voice) => voice.pause()));
     }
+  }
+
+  void _requestPlay(String clipId, Voice voice) {
+    unawaited(() async {
+      try {
+        await voice.play();
+      } catch (_) {
+        if (!_isCurrentVoice(clipId, voice, _generation)) return;
+        _voiceStatus[clipId] = VoiceEventKind.error;
+        _publishStatus();
+      }
+    }());
   }
 
   Future<void> _updateActiveGains(int globalMs) async {
