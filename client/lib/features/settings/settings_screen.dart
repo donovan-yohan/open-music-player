@@ -1,7 +1,6 @@
 // ignore_for_file: deprecated_member_use
 
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -28,7 +27,6 @@ class SettingsScreen extends ConsumerWidget {
           _PlaybackSection(),
           _StorageSection(),
           _AppearanceSection(),
-          if (kDebugMode) _DebugSection(),
           _AboutSection(),
         ],
       ),
@@ -500,31 +498,22 @@ class _AppearanceSection extends ConsumerWidget {
   }
 }
 
-/// Debug-only entry points that should not appear in the main nav.
-class _DebugSection extends StatelessWidget {
-  const _DebugSection();
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const _SectionHeader('Debug'),
-        ListTile(
-          leading: const Icon(Icons.multitrack_audio_outlined),
-          title: const Text('Mix engine Phase 0 proof'),
-          subtitle: const Text('Two voices, equal-power overlap, global scrub'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => context.push('/debug/mix-engine'),
-        ),
-      ],
-    );
-  }
-}
-
 /// About section with app info and legal links
 class _AboutSection extends StatelessWidget {
   const _AboutSection();
+
+  static const _sourceRef = String.fromEnvironment(
+    'OMP_SOURCE_REF',
+    defaultValue: 'unknown',
+  );
+  static const _buildId = String.fromEnvironment(
+    'OMP_BUILD_ID',
+    defaultValue: 'dev',
+  );
+  static const _apiBaseUrl = String.fromEnvironment(
+    'OMP_API_BASE_URL',
+    defaultValue: 'http://localhost:8080/api/v1',
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -544,6 +533,16 @@ class _AboutSection extends StatelessWidget {
                   '$version${buildNumber.isNotEmpty ? ' ($buildNumber)' : ''}'),
             );
           },
+        ),
+        const ListTile(
+          leading: Icon(Icons.numbers_outlined),
+          title: Text('Build'),
+          subtitle: Text('$_sourceRef · $_buildId'),
+        ),
+        const ListTile(
+          leading: Icon(Icons.cloud_outlined),
+          title: Text('API endpoint'),
+          subtitle: Text(_apiBaseUrl),
         ),
         ListTile(
           leading: const Icon(Icons.code_outlined),

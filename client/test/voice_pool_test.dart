@@ -80,8 +80,9 @@ void main() {
 
   test('scrub commit starts all ready active layers together', () async {
     await pool.loadMix(_model(['a', 'b']));
-    await clock.play();
+    await _play(clock, pool);
     await pool.syncAt(6000, forceSeek: true);
+    await _waitUntil(() => pool.activeVoices.containsKey('b'));
 
     final a = pool.activeVoices['a'] as FakeVoice;
     final b = pool.activeVoices['b'] as FakeVoice;
@@ -89,6 +90,56 @@ void main() {
     expect(b.playOrder, isNotNull);
     expect(a.seekLog.last, 6000);
     expect(b.currentLocalPositionMs, 1000);
+  });
+
+  test('scrub updates do not delay the final committed seek', () async {
+    resolver.delayByClip['b'] = const Duration(milliseconds: 80);
+    await pool.loadMix(_model(['a', 'b']));
+    await _play(clock, pool);
+
+    final a = pool.activeVoices['a'] as FakeVoice;
+    clock.beginScrub();
+    clock.updateScrub(6000);
+    await clock.endScrub(1000);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(pool.activeVoices.keys, ['a']);
+    expect(a.seekLog, contains(1000));
+  });
+
+  test('force scrub commit holds clock until active voices seek', () async {
+    await pool.loadMix(_model(['a']));
+    await _play(clock, pool);
+
+    final a = pool.activeVoices['a'] as FakeVoice;
+    final gate = Completer<void>();
+    final seekStarted = a.blockNextSeek(gate);
+
+    clock.beginScrub();
+    await clock.endScrub(2000);
+    await seekStarted;
+
+    expect(clock.isBufferingHeld, isTrue);
+    gate.complete();
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(a.seekLog, contains(2000));
+    expect(clock.isBufferingHeld, isFalse);
+  });
+
+  test('play realigns ready voices to the clock before resuming', () async {
+    await pool.loadMix(_model(['a']));
+    await clock.seek(4000);
+    await Future<void>.delayed(Duration.zero);
+
+    final a = pool.activeVoices['a'] as FakeVoice;
+    await a.seekLocal(0);
+    expect(a.currentLocalPositionMs, 0);
+
+    await _play(clock, pool);
+    await _waitUntil(() => a.isPlaying && a.currentLocalPositionMs == 4000);
+
+    expect(a.seekLog, contains(4000));
   });
 
   test('prepare timeout starts ready voices and late-joins slow layer muted',
@@ -121,8 +172,9 @@ void main() {
   test('late join stops if voice is released after mute yield', () async {
     resolver.delayByClip['b'] = const Duration(milliseconds: 80);
     await pool.loadMix(_model(['a', 'b']));
-    await clock.play();
+    await _play(clock, pool);
     await pool.syncAt(6000, forceSeek: true);
+    await _waitUntil(() => pool.activeVoices.containsKey('b'));
 
     final b = pool.activeVoices['b'] as FakeVoice;
     final muteGate = Completer<void>();
@@ -314,17 +366,72 @@ void main() {
       resolver: resolver,
     );
     await pool.start();
+    final corrections = <DriftCorrectionEvent>[];
+    final correctionSub = pool.driftCorrectionStream.listen(corrections.add);
     await pool.loadMix(TimelineModel(clips: [_clip('a', 0), _clip('b', 0)]));
-    await clock.play();
+    await _play(clock, pool);
 
     final voice = pool.activeVoices['a'] as FakeVoice;
+    await _waitUntil(() => voice.seekLog.isNotEmpty);
+    voice.seekLog.clear();
     now = now.add(const Duration(milliseconds: 300));
     await Future<void>.delayed(const Duration(milliseconds: 40));
     expect(voice.seekLog, isEmpty);
+    expect(voice.speedLog, contains(1.02));
+    expect(
+      corrections.map((event) => event.kind),
+      contains(DriftCorrectionKind.speedNudge),
+    );
 
     now = now.add(const Duration(milliseconds: 500));
     await Future<void>.delayed(const Duration(milliseconds: 40));
     expect(voice.seekLog, isNotEmpty);
+    expect(
+      corrections.map((event) => event.kind),
+      contains(DriftCorrectionKind.hardSeek),
+    );
+    await correctionSub.cancel();
+  });
+
+  test('drift monitor resyncs a single active clip', () async {
+    await pool.dispose();
+    await clock.dispose();
+
+    var now = DateTime.utc(2026, 1, 1);
+    clock = DefaultTimelineClock(
+      now: () => now,
+      uiTickInterval: const Duration(hours: 1),
+    );
+    voices = [];
+    resolver = FakeResolver();
+    capacityFailures = {};
+    pool = VoicePool(
+      clock: clock,
+      maxVoices: 4,
+      warmSpareVoices: 0,
+      prepareTimeout: const Duration(milliseconds: 30),
+      driftCheckInterval: const Duration(milliseconds: 10),
+      driftCorrectionThreshold: const Duration(milliseconds: 50),
+      driftCorrectionCooldown: const Duration(seconds: 8),
+      gainUpdateInterval: const Duration(hours: 1),
+      voiceFactory: () {
+        final voice = FakeVoice('v${voices.length}', capacityFailures);
+        voices.add(voice);
+        return voice;
+      },
+      resolver: resolver,
+    );
+    await pool.start();
+    await pool.loadMix(TimelineModel(clips: [_clip('a', 0)]));
+    await _play(clock, pool);
+
+    final voice = pool.activeVoices['a'] as FakeVoice;
+    await _waitUntil(() => voice.seekLog.isNotEmpty);
+    voice.seekLog.clear();
+    now = now.add(const Duration(milliseconds: 1000));
+    await _waitUntil(() => voice.seekLog.contains(1000));
+
+    expect(voice.seekLog.last, 1000);
   });
 
   test('drift correction stops if voice is released after mute yield',
@@ -358,10 +465,12 @@ void main() {
     );
     await pool.start();
     await pool.loadMix(TimelineModel(clips: [_clip('a', 0), _clip('b', 0)]));
-    await clock.play();
+    await _play(clock, pool);
     await pool.syncAt(0);
 
     final a = pool.activeVoices['a'] as FakeVoice;
+    await _waitUntil(() => a.seekLog.isNotEmpty);
+    a.seekLog.clear();
     final muteGate = Completer<void>();
     final muteStarted = a.blockNextSetVolume(muteGate);
     now = now.add(const Duration(milliseconds: 1000));
@@ -471,6 +580,7 @@ class FakeVoice implements Voice {
   final loadedSources = <Uri>[];
   final seekLog = <int>[];
   final volumeLog = <double>[];
+  final speedLog = <double>[];
   final _events = StreamController<VoiceEvent>.broadcast();
   int releaseCount = 0;
   int? playOrder;
@@ -480,11 +590,20 @@ class FakeVoice implements Voice {
   bool _playing = false;
   Completer<void>? _setVolumeGate;
   Completer<void>? _setVolumeStarted;
+  Completer<void>? _seekGate;
+  Completer<void>? _seekStarted;
 
   Future<void> blockNextSetVolume(Completer<void> gate) {
     _setVolumeGate = gate;
     final started = Completer<void>();
     _setVolumeStarted = started;
+    return started.future;
+  }
+
+  Future<void> blockNextSeek(Completer<void> gate) {
+    _seekGate = gate;
+    final started = Completer<void>();
+    _seekStarted = started;
     return started.future;
   }
 
@@ -520,6 +639,12 @@ class FakeVoice implements Voice {
   @override
   Future<void> seekLocal(int localPositionMs) async {
     seekLog.add(localPositionMs);
+    final gate = _seekGate;
+    if (gate != null) {
+      _seekGate = null;
+      _seekStarted?.complete();
+      await gate.future;
+    }
     _positionMs = localPositionMs;
   }
 
@@ -535,7 +660,9 @@ class FakeVoice implements Voice {
   }
 
   @override
-  Future<void> setSpeed(double rate) async {}
+  Future<void> setSpeed(double rate) async {
+    speedLog.add(rate);
+  }
 
   @override
   Future<void> play() async {
@@ -574,4 +701,21 @@ class FakeVoice implements Voice {
   @override
   Future<void> resync(int expectedLocalPositionMs) =>
       seekLocal(expectedLocalPositionMs);
+}
+
+Future<void> _waitUntil(
+  bool Function() condition, {
+  Duration timeout = const Duration(milliseconds: 500),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (condition()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  fail('condition not met within $timeout');
+}
+
+Future<void> _play(DefaultTimelineClock clock, VoicePool pool) async {
+  await clock.play();
+  await pool.playActiveFromClock();
 }

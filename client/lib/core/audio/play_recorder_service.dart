@@ -5,6 +5,7 @@ import 'package:just_audio/just_audio.dart';
 
 import '../api/api_client.dart';
 import 'play_record_decider.dart';
+import 'playback_session.dart';
 import 'playback_state.dart';
 
 /// Sink for a decided play event. Kept as a thin interface so the recorder can
@@ -43,10 +44,12 @@ class ApiPlayEventSink implements PlayEventSink {
   }
 }
 
-/// Wires a [PlayRecordDecider] to a [PlaybackState]'s position / current-item /
-/// completion streams and records exactly one play per continuous listen once
-/// it crosses the threshold or the track completes. Posting is retried on
-/// failure, and [reset] clears pending state on logout / account switch.
+/// Wires a [PlayRecordDecider] to [PlaybackState.snapshotStream] and records
+/// exactly one play per continuous listen once it crosses the threshold or the
+/// track completes. Reading the atomic snapshot keeps completion events tied to
+/// the item that completed, even if playback immediately advances to the next
+/// item. Posting is retried on failure, and [reset] clears pending state on
+/// logout / account switch.
 class PlayRecorderService {
   PlayRecorderService(
     this._playback,
@@ -72,18 +75,7 @@ class PlayRecorderService {
     if (_started) return;
     _started = true;
     _subscriptions.addAll([
-      _playback.currentMediaItemStream.listen((item) {
-        _decider.onTrackChanged(item?.id);
-      }),
-      _playback.positionStream.listen((position) {
-        _emit(_decider.onPosition(position, _playback.duration));
-      }),
-      _playback.playerStateStream.listen((state) {
-        if (state.processingState == ProcessingState.completed) {
-          _decider.onTrackChanged(_playback.currentItem?.id);
-          _emit(_decider.onCompleted());
-        }
-      }),
+      _playback.snapshotStream.listen(_handleSnapshot),
     ]);
   }
 
@@ -97,6 +89,17 @@ class PlayRecorderService {
     }
     _subscriptions.clear();
     _started = false;
+  }
+
+  void _handleSnapshot(PlaybackSnapshot snapshot) {
+    _decider.onTrackChanged(snapshot.currentMediaItem?.id);
+    _emit(_decider.onPosition(
+      snapshot.localPosition,
+      snapshot.localDuration,
+    ));
+    if (snapshot.processingState == ProcessingState.completed) {
+      _emit(_decider.onCompleted());
+    }
   }
 
   void _emit(String? trackId) {

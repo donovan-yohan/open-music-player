@@ -2,11 +2,13 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:rxdart/rxdart.dart';
 import '../cache/playback_cache_manager.dart';
 import '../engine/playback_engine.dart';
 import '../engine/timeline_model.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'playback_media_item_source.dart';
+import 'playback_session.dart';
 import 'playback_context.dart';
 import 'playback_source_resolver.dart';
 import 'queue_timeline_controller.dart';
@@ -27,28 +29,29 @@ class PlaybackState extends ChangeNotifier {
   List<StreamSubscription> _subscriptions = [];
 
   bool _isPlaying = false;
-  Duration _position = Duration.zero;
-  Duration _bufferedPosition = Duration.zero;
-  Duration _duration = Duration.zero;
-  MediaItem? _currentItem;
-  List<MediaItem> _queue = [];
-  int? _currentIndex;
   bool _shuffleEnabled = false;
   LoopMode _loopMode = LoopMode.off;
   String? _playbackError;
   bool _isResolvingSignedUrl = false;
   PlaybackContext? _playbackContext;
 
-  bool get isPlaying => _isPlaying;
-  Duration get position => _position;
-  Duration get bufferedPosition => _bufferedPosition;
-  Duration get duration => _duration;
-  MediaItem? get currentItem => _currentItem;
-  List<MediaItem> get queue => _queue;
-  int? get currentIndex => _currentIndex;
+  /// Monotonic user intent token for direct playback replacement.
+  ///
+  /// Direct play resolves URLs asynchronously. If the user taps B while A is
+  /// playing, A must stop immediately; and if the user then pauses/stops before
+  /// B finishes resolving, that stale pending request must not auto-start B.
+  int _playRequestGeneration = 0;
+
+  bool get isPlaying => _queueController.snapshot.playing;
+  Duration get position => _queueController.snapshot.localPosition;
+  Duration get bufferedPosition => _queueController.bufferedPosition;
+  Duration get duration => _queueController.snapshot.localDuration;
+  MediaItem? get currentItem => _queueController.snapshot.currentMediaItem;
+  List<MediaItem> get queue => _queueController.queue;
+  int? get currentIndex => _queueController.currentIndex;
   bool get shuffleEnabled => _shuffleEnabled;
   LoopMode get loopMode => _loopMode;
-  bool get hasTrack => _currentItem != null;
+  bool get hasTrack => currentItem != null;
   String? get playbackError => _playbackError;
   bool get isResolvingSignedUrl => _isResolvingSignedUrl;
 
@@ -66,6 +69,9 @@ class PlaybackState extends ChangeNotifier {
       _queueController.currentMediaItemStream;
   Stream<PlayerState> get playerStateStream =>
       _queueController.playerStateStream;
+  ValueStream<PlaybackSnapshot> get snapshotStream =>
+      _queueController.snapshotStream;
+  PlaybackSnapshot get snapshot => _queueController.snapshot;
 
   /// Live global mix timeline state for the waveform surface. This is the raw
   /// engine clock/model contract, not the source-relative player position.
@@ -86,14 +92,14 @@ class PlaybackState extends ChangeNotifier {
     LocalAudioArtifactResolver? localResolver,
     PlaybackCacheManager? cacheManager,
     QueuePersistenceStore? persistence,
-  }) : _queueController = QueueTimelineController(engine),
-       _signedAudioUrlService = signedAudioUrlService,
-       _persistence = persistence,
-       _sourceResolver = PlaybackSourceResolver(
-         signedAudioUrlService: signedAudioUrlService,
-         localResolver: localResolver,
-         cacheManager: cacheManager,
-       ) {
+  })  : _queueController = QueueTimelineController(engine),
+        _signedAudioUrlService = signedAudioUrlService,
+        _persistence = persistence,
+        _sourceResolver = PlaybackSourceResolver(
+          signedAudioUrlService: signedAudioUrlService,
+          localResolver: localResolver,
+          cacheManager: cacheManager,
+        ) {
     _init();
   }
 
@@ -108,28 +114,22 @@ class PlaybackState extends ChangeNotifier {
         notifyListeners();
       }),
       _queueController.positionStream.listen((pos) {
-        _position = pos;
         notifyListeners();
       }),
       _queueController.bufferedPositionStream.listen((pos) {
-        _bufferedPosition = pos;
         notifyListeners();
       }),
       _queueController.durationStream.listen((dur) {
-        _duration = dur ?? Duration.zero;
         notifyListeners();
       }),
       _queueController.currentMediaItemStream.listen((item) {
-        _currentItem = item;
         notifyListeners();
       }),
       _queueController.queueStream.listen((q) {
-        _queue = q;
         _persistQueue();
         notifyListeners();
       }),
       _queueController.currentIndexStream.listen((index) {
-        _currentIndex = index;
         _persistQueue();
         notifyListeners();
       }),
@@ -145,13 +145,16 @@ class PlaybackState extends ChangeNotifier {
   }
 
   Future<void> playTrack(Map<String, dynamic> track) async {
+    final generation = await _beginPlaybackReplacement(context: null);
     await _resolveSignedUrls(() async {
       await _startWithRecovery(() async {
         final item = await _sourceResolver.resolveTrack(track);
+        if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.setQueue([item]);
+        if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.play();
       });
-    });
+    }, generation: generation);
   }
 
   Future<void> playQueue(
@@ -163,16 +166,43 @@ class PlaybackState extends ChangeNotifier {
 
     // Stamp (or clear) the attribution before playback starts so the player
     // updates immediately and a context-less play never leaves a stale label.
-    _playbackContext = context;
-    notifyListeners();
+    final generation = await _beginPlaybackReplacement(context: context);
 
     await _resolveSignedUrls(() async {
       await _startWithRecovery(() async {
         final items = await _sourceResolver.resolveQueue(tracks);
+        if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.setQueue(items, initialIndex: startIndex);
+        if (!_isCurrentPlayRequest(generation)) return;
         await _queueController.play();
       });
-    });
+    }, generation: generation);
+  }
+
+  Future<int> _beginPlaybackReplacement(
+      {required PlaybackContext? context}) async {
+    final generation = ++_playRequestGeneration;
+    _playbackContext = context;
+    _playbackError = null;
+
+    // Stop/release the old session before waiting on signed URL resolution.
+    // Otherwise Android keeps playing A while B is still preparing, which makes
+    // the pause button appear to "stop A and start B" once the pending request
+    // finally resolves.
+    await _queueController.setQueue(const []);
+    return generation;
+  }
+
+  bool _isCurrentPlayRequest(int generation) {
+    return generation == _playRequestGeneration;
+  }
+
+  void _cancelPendingPlayRequests() {
+    _playRequestGeneration += 1;
+    if (_isResolvingSignedUrl) {
+      _isResolvingSignedUrl = false;
+      notifyListeners();
+    }
   }
 
   /// Adds [track] to the active listening queue after the current item and any
@@ -181,7 +211,7 @@ class PlaybackState extends ChangeNotifier {
   /// "Add to queue" action; it operates on the real playing queue, not the
   /// separate Redis edit-queue.
   Future<void> enqueue(Map<String, dynamic> track) async {
-    if (_queue.isEmpty) {
+    if (queue.isEmpty) {
       await playQueue([track]);
       return;
     }
@@ -190,7 +220,7 @@ class PlaybackState extends ChangeNotifier {
       queueOriginManual,
     );
     await _queueController.insertIntoQueue(
-      manualEnqueueIndex(_queue, _currentIndex),
+      manualEnqueueIndex(queue, currentIndex),
       item,
     );
   }
@@ -198,7 +228,7 @@ class PlaybackState extends ChangeNotifier {
   /// Inserts [track] to play immediately after the current item ("Play next").
   /// Starts a fresh queue when nothing is playing.
   Future<void> playNext(Map<String, dynamic> track) async {
-    if (_queue.isEmpty) {
+    if (queue.isEmpty) {
       await playQueue([track]);
       return;
     }
@@ -206,7 +236,7 @@ class PlaybackState extends ChangeNotifier {
       await _sourceResolver.resolveTrack(track),
       queueOriginManual,
     );
-    await _queueController.insertIntoQueue((_currentIndex ?? -1) + 1, item);
+    await _queueController.insertIntoQueue((currentIndex ?? -1) + 1, item);
   }
 
   /// Runs [start], retrying it once if the failure looks like a stale/expired
@@ -232,28 +262,38 @@ class PlaybackState extends ChangeNotifier {
         message.contains('access denied');
   }
 
-  Future<void> _resolveSignedUrls(Future<void> Function() action) async {
+  Future<void> _resolveSignedUrls(
+    Future<void> Function() action, {
+    int? generation,
+  }) async {
     _isResolvingSignedUrl = true;
     _playbackError = null;
     notifyListeners();
 
+    bool requestIsCurrent() =>
+        generation == null || _isCurrentPlayRequest(generation);
+
     try {
       await action();
     } on SignedAudioUrlException catch (error) {
+      if (!requestIsCurrent()) return;
       _playbackError = _userFacingPlaybackError(error);
       if (kDebugMode) {
         debugPrint('Playback URL resolution failed: ${error.code}');
       }
       rethrow;
     } catch (error) {
+      if (!requestIsCurrent()) return;
       _playbackError = 'Playback failed before audio could start.';
       if (kDebugMode) {
         debugPrint('Playback start failed: $error');
       }
       rethrow;
     } finally {
-      _isResolvingSignedUrl = false;
-      notifyListeners();
+      if (requestIsCurrent()) {
+        _isResolvingSignedUrl = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -288,7 +328,7 @@ class PlaybackState extends ChangeNotifier {
   }
 
   Future<void> _refreshCurrentSignedUrlIfNeeded() async {
-    final item = _currentItem;
+    final item = currentItem;
     if (item == null) return;
     // A local-backed item plays from an on-device file and never expires, so it
     // must never trigger a signed-URL refresh (which would hit the network and,
@@ -308,9 +348,13 @@ class PlaybackState extends ChangeNotifier {
   }
 
   Future<void> _refreshCurrentSignedUrl({bool force = false}) async {
-    final index = _currentIndex;
-    final item = _currentItem;
-    if (index == null || item == null || index < 0 || index >= _queue.length) {
+    final index = currentIndex;
+    final item = currentItem;
+    final currentQueue = queue;
+    if (index == null ||
+        item == null ||
+        index < 0 ||
+        index >= currentQueue.length) {
       return;
     }
     if (localArtifactPath(item) != null) return;
@@ -335,25 +379,38 @@ class PlaybackState extends ChangeNotifier {
       extras['storageKeyVersion'] = descriptor.storageKeyVersion;
     }
 
-    final refreshedQueue = List<MediaItem>.from(_queue);
+    final refreshedQueue = List<MediaItem>.from(currentQueue);
     refreshedQueue[index] = item.copyWith(extras: extras);
     await _queueController.setQueue(
       refreshedQueue,
       initialIndex: index,
-      initialPosition: _position,
+      initialPosition: _queueController.livePosition,
     );
   }
 
-  Future<void> pause() => _queueController.pause();
-  Future<void> stop() => _queueController.stop();
+  Future<void> pause() async {
+    _cancelPendingPlayRequests();
+    await _queueController.pause();
+  }
+
+  Future<void> stop() async {
+    _cancelPendingPlayRequests();
+    await _queueController.stop();
+  }
+
   Future<void> seek(Duration position) => _queueController.seek(position);
+  void beginLocalScrub() => _queueController.beginLocalScrub();
+  void updateLocalScrub(Duration position) =>
+      _queueController.updateLocalScrub(position);
+  Future<void> endLocalScrub(Duration position) =>
+      _queueController.endLocalScrub(position);
   Future<void> skipToNext() => _queueController.skipToNext();
   Future<void> skipToPrevious() => _queueController.skipToPrevious();
 
   /// Previous-button behavior: restart the current track when more than 3s in,
   /// otherwise skip to the previous track (see [previousAction]).
   Future<void> previous() async {
-    switch (previousAction(_position.inMilliseconds)) {
+    switch (previousAction(position.inMilliseconds)) {
       case PreviousAction.restart:
         await seek(Duration.zero);
       case PreviousAction.skip:
@@ -401,12 +458,13 @@ class PlaybackState extends ChangeNotifier {
     final store = _persistence;
     if (store == null) return;
 
-    final snapshot = _queue.isEmpty
+    final currentQueue = queue;
+    final snapshot = currentQueue.isEmpty
         ? const QueueSnapshot()
         : QueueSnapshot(
-            tracks: _queue.map(mediaItemToPlaybackJson).toList(),
-            currentIndex: _currentIndex ?? 0,
-            positionMs: _position.inMilliseconds,
+            tracks: currentQueue.map(mediaItemToPlaybackJson).toList(),
+            currentIndex: currentIndex ?? 0,
+            positionMs: position.inMilliseconds,
           );
     unawaited(store.save(snapshot));
   }
@@ -416,7 +474,7 @@ class PlaybackState extends ChangeNotifier {
   Future<void> cycleLoopMode() => _queueController.cycleLoopMode();
 
   Future<void> togglePlayPause() async {
-    if (_isPlaying) {
+    if (isPlaying || _isResolvingSignedUrl) {
       await pause();
     } else {
       await play();

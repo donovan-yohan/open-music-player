@@ -144,9 +144,18 @@ class PlaybackEngine implements PlaybackEngineControls {
   }
 
   @override
-  Future<void> play() => _clock.play();
+  Future<void> play() async {
+    await _pool.syncAt(_clock.positionMs, forceSeek: true);
+    await _clock.play();
+    await _pool.playActiveFromClock();
+  }
+
   @override
-  Future<void> pause() => _clock.pause();
+  Future<void> pause() async {
+    await _clock.pause();
+    await _pool.pauseActive();
+  }
+
   void beginScrub() => _clock.beginScrub();
   void updateScrub(int globalMs) {
     _markManualPositionJump();

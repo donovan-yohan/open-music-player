@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 /// playback position; voices never feed their own player positions back into it.
 abstract class TimelineClock {
   Stream<int> get positionMsStream;
+  Stream<int> get voiceSyncPositionMsStream;
   int get positionMs;
 
   int get durationMs;
@@ -22,7 +23,7 @@ abstract class TimelineClock {
   Stream<bool> get isBufferingHeldStream;
 
   void holdForBuffering();
-  void releaseHold();
+  void releaseHold({bool syncVoices = true});
 
   Stream<void> get completedStream;
   Stream<int> get scrubCommittedStream;
@@ -43,16 +44,17 @@ class DefaultTimelineClock implements TimelineClock {
     DateTime Function() now = DateTime.now,
     Duration uiTickInterval = const Duration(milliseconds: 150),
     Duration bufferingHoldTimeout = const Duration(seconds: 15),
-  }) : _now = now,
-       _uiTickInterval = uiTickInterval,
-       _bufferingHoldTimeout = bufferingHoldTimeout,
-       _anchorTime = now();
+  })  : _now = now,
+        _uiTickInterval = uiTickInterval,
+        _bufferingHoldTimeout = bufferingHoldTimeout,
+        _anchorTime = now();
 
   final DateTime Function() _now;
   final Duration _uiTickInterval;
   final Duration _bufferingHoldTimeout;
 
   final _positionController = StreamController<int>.broadcast();
+  final _voiceSyncPositionController = StreamController<int>.broadcast();
   final _isPlayingController = StreamController<bool>.broadcast();
   final _isBufferingHeldController = StreamController<bool>.broadcast();
   final _completedController = StreamController<void>.broadcast();
@@ -70,6 +72,10 @@ class DefaultTimelineClock implements TimelineClock {
 
   @override
   Stream<int> get positionMsStream => _positionController.stream;
+
+  @override
+  Stream<int> get voiceSyncPositionMsStream =>
+      _voiceSyncPositionController.stream;
 
   @override
   int get positionMs {
@@ -143,7 +149,7 @@ class DefaultTimelineClock implements TimelineClock {
     _positionMs = _clampPosition(globalMs);
     _completedEmitted = false;
     _resetAnchor();
-    _publishPosition();
+    _publishPosition(syncVoices: false);
   }
 
   @override
@@ -175,14 +181,14 @@ class DefaultTimelineClock implements TimelineClock {
   }
 
   @override
-  void releaseHold() {
+  void releaseHold({bool syncVoices = true}) {
     if (!_isBufferingHeld) return;
     _isBufferingHeld = false;
     _holdTimeoutTimer?.cancel();
     _holdTimeoutTimer = null;
     _resetAnchor();
     _isBufferingHeldController.add(false);
-    _publishPosition();
+    _publishPosition(syncVoices: syncVoices);
   }
 
   @visibleForTesting
@@ -193,6 +199,7 @@ class DefaultTimelineClock implements TimelineClock {
     _tickTimer?.cancel();
     _holdTimeoutTimer?.cancel();
     await _positionController.close();
+    await _voiceSyncPositionController.close();
     await _isPlayingController.close();
     await _isBufferingHeldController.close();
     await _completedController.close();
@@ -236,9 +243,12 @@ class DefaultTimelineClock implements TimelineClock {
     _anchorTime = _now();
   }
 
-  void _publishPosition() {
+  void _publishPosition({bool syncVoices = true}) {
     if (!_positionController.isClosed) {
       _positionController.add(positionMs);
+    }
+    if (syncVoices && !_voiceSyncPositionController.isClosed) {
+      _voiceSyncPositionController.add(positionMs);
     }
   }
 }

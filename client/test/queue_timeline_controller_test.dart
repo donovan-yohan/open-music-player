@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
@@ -23,6 +25,11 @@ void main() {
         '1',
         '2',
       ]);
+      expect(harness.engine.model.clips.map((clip) => clip.id), [
+        'session_1_queue_0',
+        'session_1_queue_1',
+        'session_1_queue_2',
+      ]);
       expect(harness.engine.positionMs, 5000);
 
       await harness.controller.skipToPrevious();
@@ -33,6 +40,34 @@ void main() {
       await harness.controller.skipToPrevious();
       expect(harness.controller.currentIndex, 0);
       expect(harness.engine.positionMs, 0);
+
+      await harness.dispose();
+    });
+
+    test('setQueue creates a canonical replacement session snapshot', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([_item('a')]);
+      await harness.controller.play();
+
+      final firstSession = harness.controller.snapshot.sessionId;
+      expect(harness.controller.snapshot.currentMediaItem?.id, 'a');
+      expect(harness.engine.model.clips.single.trackId, 'a');
+
+      await harness.controller.setQueue([_item('b', seconds: 7)]);
+      await Future<void>.delayed(Duration.zero);
+
+      final snapshot = harness.controller.snapshot;
+      expect(snapshot.sessionId, isNot(firstSession));
+      expect(snapshot.currentMediaItem?.id, 'b');
+      expect(snapshot.currentQueueIndex, 0);
+      expect(snapshot.localPosition, Duration.zero);
+      expect(snapshot.localDuration, const Duration(seconds: 7));
+      expect(snapshot.globalPosition, Duration.zero);
+      expect(snapshot.globalDuration, const Duration(seconds: 7));
+      expect(snapshot.cues.single.cueId, '${snapshot.sessionId}_queue_0');
+      expect(harness.engine.model.clips.map((clip) => clip.trackId), ['b']);
+      expect(harness.engine.model.clips.single.id,
+          '${snapshot.sessionId}_queue_0');
 
       await harness.dispose();
     });
@@ -87,6 +122,20 @@ void main() {
         expect(harness.controller.queue.map((item) => item.id), ['2', '3']);
         expect(harness.controller.currentIndex, 0);
 
+        await harness.controller.removeFromQueue(0);
+        await harness.controller.removeFromQueue(0);
+        expect(harness.controller.queue, isEmpty);
+        expect(harness.engine.isPlaying, isFalse);
+        expect(harness.controller.snapshot.cues, isEmpty);
+        expect(harness.controller.snapshot.currentMediaItem, isNull);
+        expect(harness.controller.snapshot.playing, isFalse);
+
+        await harness.controller.setQueue([_item('z')]);
+        await harness.controller.play();
+        expect(harness.engine.isPlaying, isTrue);
+        await harness.controller.setQueue(const []);
+        expect(harness.engine.isPlaying, isFalse);
+        expect(harness.controller.snapshot.cues, isEmpty);
         await harness.dispose();
       },
     );
@@ -122,6 +171,64 @@ void main() {
       await sub.cancel();
       await harness.dispose();
     });
+
+    test('local scrub previews position and commits once on end', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([_item('1')]);
+      final commits = <int>[];
+      final sub = harness.clock.scrubCommittedStream.listen(commits.add);
+
+      harness.controller.beginLocalScrub();
+      harness.controller.updateLocalScrub(const Duration(seconds: 2));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(harness.clock.isScrubbing, isTrue);
+      expect(harness.controller.position, const Duration(seconds: 2));
+      expect(commits, isEmpty);
+
+      await harness.controller.endLocalScrub(const Duration(seconds: 3));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(harness.clock.isScrubbing, isFalse);
+      expect(harness.controller.position, const Duration(seconds: 3));
+      expect(commits, [3000]);
+
+      await sub.cancel();
+      await harness.dispose();
+    });
+
+    test('play command returns while native play future stays active',
+        () async {
+      final voices = <_BlockingPlayVoice>[];
+      final harness = _Harness(
+        voiceFactory: () {
+          final voice = _BlockingPlayVoice('v${voices.length}');
+          voices.add(voice);
+          return voice;
+        },
+      );
+      await harness.controller.setQueue([_item('1')]);
+
+      final play = harness.controller.play();
+      await voices.first.playStarted.future.timeout(
+        const Duration(milliseconds: 50),
+      );
+
+      await expectLater(
+        play.timeout(const Duration(milliseconds: 50)),
+        completes,
+      );
+      expect(harness.engine.isPlaying, isTrue);
+      expect(voices.first.isPlaying, isTrue);
+
+      await harness.controller.pause().timeout(
+            const Duration(milliseconds: 50),
+          );
+
+      expect(harness.engine.isPlaying, isFalse);
+      expect(voices.first.isPlaying, isFalse);
+      await harness.dispose();
+    });
   });
 }
 
@@ -133,14 +240,14 @@ MediaItem _item(String id, {int seconds = 5}) => MediaItem(
     );
 
 class _Harness {
-  _Harness() {
+  _Harness({FakeVoice Function()? voiceFactory}) {
     clock = DefaultTimelineClock(
       now: () => now,
       uiTickInterval: const Duration(hours: 1),
     );
     engine = PlaybackEngine.withClock(
       clock: clock,
-      voiceFactory: () => FakeVoice('v'),
+      voiceFactory: voiceFactory ?? () => FakeVoice('v'),
     );
     controller = QueueTimelineController(engine);
   }
@@ -158,5 +265,31 @@ class _Harness {
   Future<void> dispose() async {
     await controller.dispose();
     await clock.dispose();
+  }
+}
+
+class _BlockingPlayVoice extends FakeVoice {
+  _BlockingPlayVoice(super.debugId);
+
+  final Completer<void> playStarted = Completer<void>();
+  final Completer<void> _playReleased = Completer<void>();
+
+  @override
+  Future<void> play() async {
+    await super.play();
+    if (!playStarted.isCompleted) playStarted.complete();
+    return _playReleased.future;
+  }
+
+  @override
+  Future<void> pause() async {
+    await super.pause();
+    if (!_playReleased.isCompleted) _playReleased.complete();
+  }
+
+  @override
+  Future<void> release() async {
+    await pause();
+    await super.release();
   }
 }

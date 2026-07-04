@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -204,6 +206,13 @@ class PlayerScreen extends StatelessWidget {
   Widget _buildProgressBar(PlaybackState playback) {
     final position = playback.position;
     final duration = playback.duration;
+    final canSeek = duration.inMilliseconds > 0;
+
+    Duration positionForValue(double value) {
+      return Duration(
+        milliseconds: (value * duration.inMilliseconds).round(),
+      );
+    }
 
     return Column(
       children: [
@@ -218,16 +227,18 @@ class PlayerScreen extends StatelessWidget {
             overlayColor: AppTheme.brandColor.withOpacity(0.2),
           ),
           child: Slider(
-            value: duration.inMilliseconds > 0
+            value: canSeek
                 ? (position.inMilliseconds / duration.inMilliseconds)
                     .clamp(0.0, 1.0)
                 : 0.0,
-            onChanged: (value) {
-              final newPosition = Duration(
-                milliseconds: (value * duration.inMilliseconds).round(),
-              );
-              playback.seek(newPosition);
-            },
+            onChangeStart: canSeek ? (_) => playback.beginLocalScrub() : null,
+            onChanged: canSeek
+                ? (value) => playback.updateLocalScrub(positionForValue(value))
+                : null,
+            onChangeEnd: canSeek
+                ? (value) =>
+                    unawaited(playback.endLocalScrub(positionForValue(value)))
+                : null,
           ),
         ),
         Padding(
