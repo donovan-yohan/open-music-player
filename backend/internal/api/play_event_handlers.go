@@ -30,6 +30,7 @@ type playEventTrackRepository interface {
 type playEventStore interface {
 	RecordPlay(ctx context.Context, userID uuid.UUID, trackID int64, contextType, contextID string) error
 	RecentlyPlayed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]db.RecentlyPlayedTrack, error)
+	PlayHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]db.PlayHistoryEvent, error)
 	TopTracks(ctx context.Context, userID uuid.UUID, days, limit int) ([]db.TopTrack, error)
 }
 
@@ -67,6 +68,20 @@ type RecentlyPlayedResponse struct {
 	Tracks []PlayEventTrackResponse `json:"tracks"`
 	Limit  int                      `json:"limit"`
 	Offset int                      `json:"offset"`
+}
+
+type PlayHistoryEntryResponse struct {
+	ID          int64                  `json:"id"`
+	Track       PlayEventTrackResponse `json:"track"`
+	PlayedAt    time.Time              `json:"playedAt"`
+	ContextType string                 `json:"contextType,omitempty"`
+	ContextID   string                 `json:"contextId,omitempty"`
+}
+
+type PlayHistoryResponse struct {
+	Plays  []PlayHistoryEntryResponse `json:"plays"`
+	Limit  int                        `json:"limit"`
+	Offset int                        `json:"offset"`
 }
 
 type TopTracksResponse struct {
@@ -119,6 +134,48 @@ func (h *PlayEventHandlers) RecordPlay(w http.ResponseWriter, r *http.Request) {
 	writePlayEventJSON(w, http.StatusCreated, map[string]interface{}{
 		"trackId": req.TrackID,
 		"played":  true,
+	})
+}
+
+// PlayHistory handles GET /api/v1/me/plays/history.
+func (h *PlayEventHandlers) PlayHistory(w http.ResponseWriter, r *http.Request) {
+	userCtx := auth.GetUserFromContext(r.Context())
+	if userCtx == nil {
+		writePlayEventError(w, http.StatusUnauthorized, "UNAUTHORIZED", "not authenticated")
+		return
+	}
+
+	limit := parseIntParam(r, "limit", 50)
+	offset := parseIntParam(r, "offset", 0)
+
+	events, err := h.playEventRepo.PlayHistory(r.Context(), userCtx.UserID, limit, offset)
+	if err != nil {
+		writePlayEventError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load play history")
+		return
+	}
+
+	responses := make([]PlayHistoryEntryResponse, 0, len(events))
+	for _, event := range events {
+		track := trackToPlayEventResponse(event.Track)
+		track.LastPlayedAt = event.PlayedAt
+		response := PlayHistoryEntryResponse{
+			ID:       event.ID,
+			Track:    track,
+			PlayedAt: event.PlayedAt,
+		}
+		if event.ContextType.Valid {
+			response.ContextType = event.ContextType.String
+		}
+		if event.ContextID.Valid {
+			response.ContextID = event.ContextID.String
+		}
+		responses = append(responses, response)
+	}
+
+	writePlayEventJSON(w, http.StatusOK, PlayHistoryResponse{
+		Plays:  responses,
+		Limit:  limit,
+		Offset: offset,
 	})
 }
 

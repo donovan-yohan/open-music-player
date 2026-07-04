@@ -30,7 +30,11 @@ void main() {
     test('recentlyPlayed -> GET /me/plays/recent with limit', () async {
       final api = _CapturingApiClient({
         'tracks': [
-          {'id': 1, 'title': 'Highway to Hell', 'coverArtUrl': 'http://c/1.jpg'},
+          {
+            'id': 1,
+            'title': 'Highway to Hell',
+            'coverArtUrl': 'http://c/1.jpg'
+          },
         ],
         'limit': 5,
         'offset': 0,
@@ -61,6 +65,47 @@ void main() {
       expect(api.capturedParams?['days'], '7');
       expect(api.capturedParams?['limit'], '3');
       expect(tracks.single.title, 'Thunderstruck');
+    });
+
+    test('listeningHistory -> GET /me/plays/history with limit and offset',
+        () async {
+      final api = _CapturingApiClient({
+        'plays': [
+          {
+            'id': 10,
+            'playedAt': '2026-07-04T20:00:00Z',
+            'contextType': 'playlist',
+            'contextId': '7',
+            'track': {
+              'id': 2,
+              'title': 'Thunderstruck',
+              'coverArtUrl': 'http://c/2.jpg',
+            },
+          },
+          {
+            'id': 9,
+            'playedAt': '2026-07-04T19:00:00Z',
+            'track': {'id': 2, 'title': 'Thunderstruck'},
+          },
+        ],
+        'limit': 2,
+        'offset': 4,
+      });
+
+      final entries =
+          await HomeService(api).listeningHistory(limit: 2, offset: 4);
+
+      expect(api.capturedEndpoint, '/me/plays/history');
+      expect(api.capturedParams?['limit'], '2');
+      expect(api.capturedParams?['offset'], '4');
+      expect(entries, hasLength(2));
+      expect(entries.first.id, 10);
+      expect(entries.first.track.title, 'Thunderstruck');
+      expect(entries.first.contextType, 'playlist');
+      expect(entries.first.contextId, '7');
+      expect(entries.first.track.toPlaybackJson()['artwork_url'],
+          'http://c/2.jpg');
+      expect(entries[1].track.id, 2);
     });
 
     test('playlists -> GET /playlists and parses the playlists envelope',
