@@ -242,6 +242,41 @@ void main() {
     expect(events.last, startsWith('end:'));
   });
 
+  testWidgets('edit mode ruler drag scrubs without leaving edit mode', (
+    tester,
+  ) async {
+    final events = <String>[];
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next],
+      timelineModel: TimelineModel(
+        clips: [_mixClip('t1', 0, 240000), _mixClip('t2', 240000, 240000)],
+      ),
+      onScrubStart: () => events.add('begin'),
+      onScrubUpdate: (ms) => events.add('update:$ms'),
+      onScrubEnd: (ms) async => events.add('end:$ms'),
+    );
+
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+      const Offset(120, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(events.first, 'begin');
+    expect(events.where((event) => event.startsWith('update:')), isNotEmpty);
+    expect(events.last, startsWith('end:'));
+    expect(
+        find.byKey(const ValueKey('timeline_trim_start_t1')), findsOneWidget);
+  });
+
   testWidgets('renders real model overlaps with gain-derived feedback', (
     tester,
   ) async {
@@ -704,26 +739,15 @@ void main() {
     await tester.tap(find.text('Edit'));
     await tester.pumpAndSettle();
 
-    final playheadBefore = tester.getRect(
-      find.byKey(const ValueKey('timeline_playhead')),
-    );
     await tester.drag(
       find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
       const Offset(90, 0),
     );
     await tester.pumpAndSettle();
 
-    final playheadAfter = tester.getRect(
-      find.byKey(const ValueKey('timeline_playhead')),
-    );
-
-    expect(starts, isNotEmpty);
+    expect(starts, hasLength(1));
     expect(starts.last, greaterThan(0));
-    expect(
-      playheadAfter.left,
-      playheadBefore.left,
-      reason: 'edit body drag should not fall through into browse pan',
-    );
+    expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
   });
 
   testWidgets('trim handles beat body drag hit-testing in edit mode', (
@@ -751,7 +775,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(trimStarts, isNotEmpty);
+    expect(trimStarts, hasLength(1));
     expect(trimStarts.last, greaterThan(0));
     expect(
       placements,

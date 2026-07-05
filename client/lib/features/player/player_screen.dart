@@ -6,20 +6,33 @@ import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import '../../app/theme.dart';
+import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/services/analysis_service.dart';
 import '../../core/services/api_client.dart';
 import '../../models/track_analysis.dart';
 import 'widgets/song_info_sheet.dart';
 
-class PlayerScreen extends StatelessWidget {
+enum _PlayerTimeMode { song, queue }
+
+class PlayerScreen extends StatefulWidget {
   const PlayerScreen({super.key});
+
+  @override
+  State<PlayerScreen> createState() => _PlayerScreenState();
+}
+
+class _PlayerScreenState extends State<PlayerScreen> {
+  _PlayerTimeMode _timeMode = _PlayerTimeMode.song;
 
   @override
   Widget build(BuildContext context) {
     return Consumer<PlaybackState>(
       builder: (context, playback, _) {
         final item = playback.currentItem;
+        final queueModeAvailable = _queueModeAvailable(playback);
+        final activeTimeMode =
+            queueModeAvailable ? _timeMode : _PlayerTimeMode.song;
 
         return Scaffold(
           backgroundColor: AppTheme.darkBackground,
@@ -90,9 +103,16 @@ class PlayerScreen extends StatelessWidget {
                             const Spacer(flex: 1),
                             _buildAlbumArt(item.artUri?.toString()),
                             const Spacer(flex: 1),
-                            _buildTrackInfo(item.title, item.artist),
+                            _buildTrackInfo(
+                              _displayTitle(item, playback, activeTimeMode),
+                              _displaySubtitle(playback, activeTimeMode),
+                            ),
                             const SizedBox(height: 24),
-                            _buildProgressBar(playback),
+                            _buildProgressBar(
+                              playback,
+                              activeTimeMode,
+                              queueModeAvailable: queueModeAvailable,
+                            ),
                             const SizedBox(height: 24),
                             _buildControls(playback),
                             const SizedBox(height: 16),
@@ -107,6 +127,14 @@ class PlayerScreen extends StatelessWidget {
         );
       },
     );
+  }
+
+  bool _queueModeAvailable(PlaybackState playback) {
+    final snapshot = playback.snapshot;
+    return snapshot.globalDuration.inMilliseconds > 0 &&
+        (playback.queue.length > 1 ||
+            playback.playbackContext != null ||
+            snapshot.globalDuration != playback.duration);
   }
 
   void _showSongInfo(BuildContext context, MediaItem item) {
@@ -141,7 +169,7 @@ class PlayerScreen extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.4),
+              color: Colors.black.withValues(alpha: 0.4),
               blurRadius: 30,
               offset: const Offset(0, 10),
             ),
@@ -174,6 +202,38 @@ class PlayerScreen extends StatelessWidget {
     );
   }
 
+  String _displayTitle(
+    MediaItem item,
+    PlaybackState playback,
+    _PlayerTimeMode mode,
+  ) {
+    if (mode == _PlayerTimeMode.queue) {
+      return playback.playbackContext?.label ?? 'Playback Queue';
+    }
+    return item.title;
+  }
+
+  String? _displaySubtitle(PlaybackState playback, _PlayerTimeMode mode) {
+    final item = playback.currentItem;
+    if (mode == _PlayerTimeMode.song) {
+      return item?.artist ?? 'Unknown Artist';
+    }
+
+    final count = playback.queue.length;
+    final kind = switch (playback.playbackContext?.kind) {
+      PlaybackContextKind.playlist => 'Playlist',
+      PlaybackContextKind.album => 'Album',
+      PlaybackContextKind.artist => 'Artist',
+      PlaybackContextKind.library => 'Library',
+      PlaybackContextKind.queue => 'Queue',
+      PlaybackContextKind.search => 'Search',
+      null => 'Queue',
+    };
+    if (count <= 0) return kind;
+    final countLabel = count == 1 ? '1 track' : '$count tracks';
+    return '$kind · $countLabel';
+  }
+
   Widget _buildTrackInfo(String title, String? artist) {
     return Column(
       children: [
@@ -203,9 +263,18 @@ class PlayerScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildProgressBar(PlaybackState playback) {
-    final position = playback.position;
-    final duration = playback.duration;
+  Widget _buildProgressBar(
+    PlaybackState playback,
+    _PlayerTimeMode mode, {
+    required bool queueModeAvailable,
+  }) {
+    final snapshot = playback.snapshot;
+    final position = mode == _PlayerTimeMode.queue
+        ? snapshot.globalPosition
+        : playback.position;
+    final duration = mode == _PlayerTimeMode.queue
+        ? snapshot.globalDuration
+        : playback.duration;
     final canSeek = duration.inMilliseconds > 0;
 
     Duration positionForValue(double value) {
@@ -216,6 +285,29 @@ class PlayerScreen extends StatelessWidget {
 
     return Column(
       children: [
+        if (queueModeAvailable) ...[
+          SegmentedButton<_PlayerTimeMode>(
+            key: const ValueKey('player_time_mode_switch'),
+            segments: const [
+              ButtonSegment(
+                value: _PlayerTimeMode.song,
+                icon: Icon(Icons.music_note),
+                label: Text('Song'),
+              ),
+              ButtonSegment(
+                value: _PlayerTimeMode.queue,
+                icon: Icon(Icons.queue_music),
+                label: Text('Queue'),
+              ),
+            ],
+            selected: {mode},
+            showSelectedIcon: false,
+            onSelectionChanged: (selection) {
+              setState(() => _timeMode = selection.single);
+            },
+          ),
+          const SizedBox(height: 12),
+        ],
         SliderTheme(
           data: SliderThemeData(
             trackHeight: 4,
@@ -224,20 +316,43 @@ class PlayerScreen extends StatelessWidget {
             activeTrackColor: AppTheme.brandColor,
             inactiveTrackColor: AppTheme.darkCard,
             thumbColor: AppTheme.lightText,
-            overlayColor: AppTheme.brandColor.withOpacity(0.2),
+            overlayColor: AppTheme.brandColor.withValues(alpha: 0.2),
           ),
           child: Slider(
             value: canSeek
                 ? (position.inMilliseconds / duration.inMilliseconds)
                     .clamp(0.0, 1.0)
                 : 0.0,
-            onChangeStart: canSeek ? (_) => playback.beginLocalScrub() : null,
+            onChangeStart: canSeek
+                ? (_) {
+                    if (mode == _PlayerTimeMode.queue) {
+                      playback.beginTimelineScrub();
+                    } else {
+                      playback.beginLocalScrub();
+                    }
+                  }
+                : null,
             onChanged: canSeek
-                ? (value) => playback.updateLocalScrub(positionForValue(value))
+                ? (value) {
+                    final target = positionForValue(value);
+                    if (mode == _PlayerTimeMode.queue) {
+                      playback.updateTimelineScrub(target.inMilliseconds);
+                    } else {
+                      playback.updateLocalScrub(target);
+                    }
+                  }
                 : null,
             onChangeEnd: canSeek
-                ? (value) =>
-                    unawaited(playback.endLocalScrub(positionForValue(value)))
+                ? (value) {
+                    final target = positionForValue(value);
+                    if (mode == _PlayerTimeMode.queue) {
+                      unawaited(
+                        playback.endTimelineScrub(target.inMilliseconds),
+                      );
+                    } else {
+                      unawaited(playback.endLocalScrub(target));
+                    }
+                  }
                 : null,
           ),
         ),

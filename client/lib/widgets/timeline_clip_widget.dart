@@ -18,6 +18,7 @@ class TimelineLaneHeader extends StatelessWidget {
   final LaneRole role;
   final String statusLabel;
   final Color accent;
+  final bool hidden;
 
   const TimelineLaneHeader({
     super.key,
@@ -25,9 +26,10 @@ class TimelineLaneHeader extends StatelessWidget {
     required this.role,
     required this.statusLabel,
     required this.accent,
+    this.hidden = false,
   });
 
-  static const double railWidth = 88;
+  static const double railWidth = 128;
 
   bool get _collapsed => role == LaneRole.collapsed;
   bool get _active => role == LaneRole.current;
@@ -36,6 +38,9 @@ class TimelineLaneHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final muted = role == LaneRole.previous;
+    if (hidden) {
+      return const SizedBox.shrink();
+    }
 
     return Semantics(
       container: true,
@@ -43,12 +48,22 @@ class TimelineLaneHeader extends StatelessWidget {
           '$statusLabel: ${track.title} by ${track.artist ?? 'Unknown artist'}',
       child: Container(
         width: railWidth,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
         decoration: BoxDecoration(
-          color: theme.colorScheme.surface,
-          border: Border(
-            right: BorderSide(color: theme.dividerColor.withValues(alpha: 0.4)),
+          color: theme.colorScheme.surface.withValues(
+            alpha: _active ? 0.90 : 0.74,
           ),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: accent.withValues(alpha: _active ? 0.45 : 0.18),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.10),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -132,6 +147,7 @@ class TimelineClipWidget extends StatelessWidget {
   final int snapMarkerCount;
   final double gain;
   final bool showGainBadge;
+  final bool showInLaneChip;
 
   const TimelineClipWidget({
     super.key,
@@ -144,6 +160,7 @@ class TimelineClipWidget extends StatelessWidget {
     this.snapMarkerCount = 0,
     this.gain = 1,
     this.showGainBadge = false,
+    this.showInLaneChip = true,
   });
 
   bool get _active => role == LaneRole.current;
@@ -153,9 +170,8 @@ class TimelineClipWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final gainScalar = gain.clamp(0.0, 1.0).toDouble();
-    final waveAlpha = (_muted ? 0.45 : 0.62 + (gainScalar * 0.38))
-        .clamp(0.0, 1.0)
-        .toDouble();
+    final waveAlpha =
+        (_muted ? 0.45 : 0.62 + (gainScalar * 0.38)).clamp(0.0, 1.0).toDouble();
     final waveColor = accent.withValues(alpha: waveAlpha);
 
     return Container(
@@ -188,7 +204,8 @@ class TimelineClipWidget extends StatelessWidget {
               ),
             ),
           ),
-          Positioned(left: 4, top: 4, right: 4, child: _inLaneChip(theme)),
+          if (showInLaneChip)
+            Positioned(left: 4, top: 4, right: 4, child: _inLaneChip(theme)),
           if (showGainBadge)
             Positioned(
               key: ValueKey('timeline_gain_${track.id}'),
