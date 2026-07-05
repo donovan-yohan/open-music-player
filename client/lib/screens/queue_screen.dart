@@ -284,17 +284,25 @@ class _QueueScreenState extends State<QueueScreen> {
           itemBuilder: (context, index) {
             final entry = entries[index];
             final item = entry.item;
-            return TrackTile(
-              key: ValueKey('playback_queue_${entry.index}_${item.id}'),
-              title: item.title,
-              artist: item.artist,
-              album: item.album,
-              duration: _formatQueueRuntime(item.duration?.inMilliseconds ?? 0),
-              coverArtUrl: item.artUri?.toString(),
-              isCurrent: entry.isCurrent,
-              onTap: entry.isCurrent
-                  ? null
-                  : () => _skipToPlaybackIndex(playback, entry),
+            return _buildSwipeToRemoveQueueItem(
+              context: context,
+              key: ValueKey('remove_playback_queue_${entry.index}_${item.id}'),
+              enabled: !entry.isCurrent,
+              label: item.title,
+              onRemove: () => _removePlaybackQueueEntry(playback, entry),
+              child: TrackTile(
+                key: ValueKey('playback_queue_${entry.index}_${item.id}'),
+                title: item.title,
+                artist: item.artist,
+                album: item.album,
+                duration:
+                    _formatQueueRuntime(item.duration?.inMilliseconds ?? 0),
+                coverArtUrl: item.artUri?.toString(),
+                isCurrent: entry.isCurrent,
+                onTap: entry.isCurrent
+                    ? null
+                    : () => _skipToPlaybackIndex(playback, entry),
+              ),
             );
           },
         ),
@@ -375,6 +383,20 @@ class _QueueScreenState extends State<QueueScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not play "${entry.item.title}"')),
+      );
+    }
+  }
+
+  Future<void> _removePlaybackQueueEntry(
+    PlaybackState playback,
+    ListeningQueueEntry entry,
+  ) async {
+    try {
+      await playback.removeFromQueue(entry.index);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not remove "${entry.item.title}"')),
       );
     }
   }
@@ -616,53 +638,64 @@ class _QueueScreenState extends State<QueueScreen> {
                 ? tracks.length - currentIndex - 1
                 : tracks.length;
 
-            return QueueItem(
-              key: ValueKey(isCurrent ? 'queue_current_${track.id}' : track.id),
-              track: track,
-              isPlaying: isCurrent,
-              reorderHandle: canEdit
-                  ? _buildReorderHandle(
-                      track,
-                      relativeIndex,
-                      onDragReorder: (dragDeltaY) {
-                        final relativeNewIndex = queueListDragTargetIndex(
-                          relativeIndex: relativeIndex,
-                          itemCount: movableCount,
-                          dragDeltaY: dragDeltaY,
-                        );
-                        if (relativeNewIndex == relativeIndex) return;
-                        final (
-                          absoluteOldIndex,
-                          absoluteNewIndex,
-                        ) = queueListReorderIndices(
-                          relativeOldIndex: relativeIndex,
-                          relativeNewIndex: relativeNewIndex,
-                          currentIndex: currentIndex,
-                          hasActiveTrack: hasActiveTrack,
-                        );
-                        provider.reorderQueue(
-                          absoluteOldIndex,
-                          absoluteNewIndex,
-                        );
-                      },
-                    )
-                  : null,
-              showTrimControls: canEdit,
-              trimRange: canEdit ? provider.trimRangeFor(track) : null,
-              waveformPeaks:
-                  canEdit ? provider.waveformPeaksFor(track) : const [],
-              onTrimStartChanged:
-                  canEdit ? (ms) => provider.setStartOffsetMs(track, ms) : null,
-              onTrimEndChanged:
-                  canEdit ? (ms) => provider.setEndOffsetMs(track, ms) : null,
-              onPlay: track.queueStatus == TrackQueueStatus.playable &&
-                      track.canPlay
-                  ? () => _playFromQueue(context, provider, track)
-                  : null,
-              onRetry: track.canRetry ? () => provider.retryTrack(track) : null,
-              onRemove: canEdit
-                  ? () => provider.removeFromQueue(absoluteIndex)
-                  : null,
+            return _buildSwipeToRemoveQueueItem(
+              context: context,
+              key: ValueKey('remove_queue_${track.id}'),
+              enabled: canEdit,
+              label: track.title,
+              onRemove: () => provider.removeFromQueue(absoluteIndex),
+              child: QueueItem(
+                key: ValueKey(
+                  isCurrent ? 'queue_current_${track.id}' : track.id,
+                ),
+                track: track,
+                isPlaying: isCurrent,
+                reorderHandle: canEdit
+                    ? _buildReorderHandle(
+                        track,
+                        relativeIndex,
+                        onDragReorder: (dragDeltaY) {
+                          final relativeNewIndex = queueListDragTargetIndex(
+                            relativeIndex: relativeIndex,
+                            itemCount: movableCount,
+                            dragDeltaY: dragDeltaY,
+                          );
+                          if (relativeNewIndex == relativeIndex) return;
+                          final (
+                            absoluteOldIndex,
+                            absoluteNewIndex,
+                          ) = queueListReorderIndices(
+                            relativeOldIndex: relativeIndex,
+                            relativeNewIndex: relativeNewIndex,
+                            currentIndex: currentIndex,
+                            hasActiveTrack: hasActiveTrack,
+                          );
+                          provider.reorderQueue(
+                            absoluteOldIndex,
+                            absoluteNewIndex,
+                          );
+                        },
+                      )
+                    : null,
+                showTrimControls: canEdit,
+                trimRange: canEdit ? provider.trimRangeFor(track) : null,
+                waveformPeaks:
+                    canEdit ? provider.waveformPeaksFor(track) : const [],
+                onTrimStartChanged: canEdit
+                    ? (ms) => provider.setStartOffsetMs(track, ms)
+                    : null,
+                onTrimEndChanged:
+                    canEdit ? (ms) => provider.setEndOffsetMs(track, ms) : null,
+                onPlay: track.queueStatus == TrackQueueStatus.playable &&
+                        track.canPlay
+                    ? () => _playFromQueue(context, provider, track)
+                    : null,
+                onRetry:
+                    track.canRetry ? () => provider.retryTrack(track) : null,
+                onRemove: canEdit
+                    ? () => provider.removeFromQueue(absoluteIndex)
+                    : null,
+              ),
             );
           },
         ),
@@ -743,6 +776,45 @@ class _QueueScreenState extends State<QueueScreen> {
       label: 'Reorder ${track.title}',
       hint: 'Drag vertically to move this queued track',
       child: _QueueReorderHandle(onDragReorder: onDragReorder),
+    );
+  }
+
+  Widget _buildSwipeToRemoveQueueItem({
+    required BuildContext context,
+    required Key key,
+    required Widget child,
+    required String label,
+    required Future<void> Function() onRemove,
+    required bool enabled,
+  }) {
+    if (!enabled) return child;
+
+    return Dismissible(
+      key: key,
+      direction: DismissDirection.endToStart,
+      background: const SizedBox.shrink(),
+      secondaryBackground: _buildSwipeDeleteBackground(context, label),
+      confirmDismiss: (_) async {
+        await onRemove();
+        return false;
+      },
+      child: child,
+    );
+  }
+
+  Widget _buildSwipeDeleteBackground(BuildContext context, String label) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Semantics(
+      label: 'Remove $label from queue',
+      child: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        color: colorScheme.errorContainer,
+        child: Icon(
+          Icons.delete_outline,
+          color: colorScheme.onErrorContainer,
+        ),
+      ),
     );
   }
 

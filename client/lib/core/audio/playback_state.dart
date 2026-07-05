@@ -116,14 +116,14 @@ class PlaybackState extends ChangeNotifier {
     LocalAudioArtifactResolver? localResolver,
     PlaybackCacheManager? cacheManager,
     QueuePersistenceStore? persistence,
-  }) : _queueController = QueueTimelineController(engine),
-       _signedAudioUrlService = signedAudioUrlService,
-       _persistence = persistence,
-       _sourceResolver = PlaybackSourceResolver(
-         signedAudioUrlService: signedAudioUrlService,
-         localResolver: localResolver,
-         cacheManager: cacheManager,
-       ) {
+  })  : _queueController = QueueTimelineController(engine),
+        _signedAudioUrlService = signedAudioUrlService,
+        _persistence = persistence,
+        _sourceResolver = PlaybackSourceResolver(
+          signedAudioUrlService: signedAudioUrlService,
+          localResolver: localResolver,
+          cacheManager: cacheManager,
+        ) {
     _init();
   }
 
@@ -496,6 +496,8 @@ class PlaybackState extends ChangeNotifier {
   }
 
   Future<void> skipToIndex(int index) => _queueController.skipToIndex(index);
+  Future<void> removeFromQueue(int index) =>
+      _queueController.removeFromQueue(index);
   Future<void> toggleShuffle() => _queueController.toggleShuffle();
   Future<void> cycleLoopMode() => _queueController.cycleLoopMode();
 

@@ -158,6 +158,28 @@ void main() {
     expect(playbackState.skipToIndexCalls, [2]);
   });
 
+  testWidgets('swiping live playback queue item left removes it', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Already Played', seconds: 90),
+        _mediaItem(2, 'Now Playing', seconds: 120),
+        _mediaItem(3, 'Next Song', seconds: 150),
+      ]
+      ..fakeCurrentIndex = 1;
+
+    await pumpQueueScreen(tester);
+
+    await tester.drag(
+      find.byKey(const ValueKey('remove_playback_queue_2_3')),
+      const Offset(-500, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(playbackState.removeFromQueueCalls, [2]);
+  });
+
   testWidgets('defaults to 390px list view with a one tap Timeline switch', (
     tester,
   ) async {
@@ -372,6 +394,24 @@ void main() {
     expect(apiClient.removedPositions, [1]);
   });
 
+  testWidgets('swiping editable queue item left removes it', (tester) async {
+    tester.view.physicalSize = const Size(390, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpQueueScreen(tester);
+
+    await tester.drag(
+      find.byKey(const ValueKey('remove_queue_t2')),
+      const Offset(-500, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(apiClient.removedPositions, [1]);
+    expect(find.text('Paper Planes'), findsNothing);
+  });
+
   testWidgets(
     'timeline move buttons reorder upcoming tracks after switching modes',
     (tester) async {
@@ -555,6 +595,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   final List<(int, int)> trimStartCalls = [];
   final List<(int, int)> trimEndCalls = [];
   final List<(int, int)> reorderCalls = [];
+  final List<int> removeFromQueueCalls = [];
   int seekCalls = 0;
   int pauseCalls = 0;
 
@@ -660,6 +701,22 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   @override
   Future<void> reorderPlaybackQueue(int oldIndex, int newIndex) async {
     reorderCalls.add((oldIndex, newIndex));
+  }
+
+  @override
+  Future<void> removeFromQueue(int index) async {
+    removeFromQueueCalls.add(index);
+    fakeQueue = [
+      for (var i = 0; i < fakeQueue.length; i++)
+        if (i != index) fakeQueue[i],
+    ];
+    if (fakeQueue.isEmpty) {
+      fakeCurrentIndex = null;
+    } else if (fakeCurrentIndex != null && index < fakeCurrentIndex!) {
+      fakeCurrentIndex = fakeCurrentIndex! - 1;
+    } else if (fakeCurrentIndex != null && index == fakeCurrentIndex!) {
+      fakeCurrentIndex = fakeCurrentIndex!.clamp(0, fakeQueue.length - 1);
+    }
   }
 
   @override
