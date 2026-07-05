@@ -7,12 +7,13 @@ import 'package:rxdart/rxdart.dart';
 
 import '../engine/playback_engine.dart';
 import '../engine/timeline_model.dart';
+import '../../models/timeline_clip.dart';
 import 'playback_session.dart';
 import 'queue_persistence.dart';
 
 class QueueTimelineController {
   QueueTimelineController(this._engine, {math.Random? shuffleRandom})
-      : _shuffleRandom = shuffleRandom ?? math.Random() {
+    : _shuffleRandom = shuffleRandom ?? math.Random() {
     _bind();
   }
 
@@ -49,6 +50,7 @@ class QueueTimelineController {
 
   List<MediaItem> _queue = const [];
   List<int> _playOrder = const [];
+  Map<int, TimelineClip> _cueOverrides = const {};
   CueTimeline _cueTimeline = CueTimeline.empty;
   int _sessionGeneration = 0;
   String _sessionId = 'session_0';
@@ -96,24 +98,32 @@ class QueueTimelineController {
     List<MediaItem> items, {
     int initialIndex = 0,
     Duration initialPosition = Duration.zero,
+    bool preserveTimelineEdits = false,
   }) async {
-    await _enqueueCommand(() => _setQueue(
-          items,
-          initialIndex: initialIndex,
-          initialPosition: initialPosition,
-        ));
+    await _enqueueCommand(
+      () => _setQueue(
+        items,
+        initialIndex: initialIndex,
+        initialPosition: initialPosition,
+        preserveTimelineEdits: preserveTimelineEdits,
+      ),
+    );
   }
 
   Future<void> _setQueue(
     List<MediaItem> items, {
     int initialIndex = 0,
     Duration initialPosition = Duration.zero,
+    bool preserveTimelineEdits = false,
   }) async {
     await start();
     _sessionGeneration += 1;
     _sessionId = 'session_$_sessionGeneration';
     _queue = List.unmodifiable(items);
     _playOrder = [for (var i = 0; i < _queue.length; i++) i];
+    _cueOverrides = preserveTimelineEdits
+        ? _pruneCueOverrides(_cueOverrides, _queue.length)
+        : const {};
     if (_queue.isEmpty) {
       _currentIndex = null;
       _cueTimeline = CueTimeline.empty;
@@ -148,6 +158,7 @@ class QueueTimelineController {
     final localPosition = livePosition.inMilliseconds;
     final nextQueue = List<MediaItem>.from(_queue)..insert(insertIndex, item);
     _queue = List.unmodifiable(nextQueue);
+    _cueOverrides = _shiftCueOverridesForInsert(_cueOverrides, insertIndex);
     if (previousCurrent == null) {
       _currentIndex = 0;
     } else if (insertIndex <= previousCurrent) {
@@ -169,6 +180,7 @@ class QueueTimelineController {
     final localPosition = livePosition.inMilliseconds;
     final nextQueue = List<MediaItem>.from(_queue)..removeAt(index);
     _queue = List.unmodifiable(nextQueue);
+    _cueOverrides = _shiftCueOverridesForRemove(_cueOverrides, index);
     if (_queue.isEmpty) {
       _currentIndex = null;
       _playOrder = const [];
@@ -191,6 +203,89 @@ class QueueTimelineController {
       await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
     }
     _publishQueueState();
+  }
+
+  Future<void> reorderQueue(int oldIndex, int newIndex) async {
+    await _enqueueCommand(() => _reorderQueue(oldIndex, newIndex));
+  }
+
+  Future<void> _reorderQueue(int oldIndex, int newIndex) async {
+    if (oldIndex == newIndex) return;
+    if (oldIndex < 0 || oldIndex >= _queue.length) return;
+    if (newIndex < 0 || newIndex >= _queue.length) return;
+
+    final localPosition = livePosition.inMilliseconds;
+    final nextQueue = List<MediaItem>.from(_queue);
+    final item = nextQueue.removeAt(oldIndex);
+    nextQueue.insert(newIndex, item);
+    _queue = List.unmodifiable(nextQueue);
+    _cueOverrides = _remapCueOverridesForReorder(
+      _cueOverrides,
+      oldIndex,
+      newIndex,
+    );
+
+    if (_currentIndex == oldIndex) {
+      _currentIndex = newIndex;
+    } else if (_currentIndex != null &&
+        oldIndex < _currentIndex! &&
+        newIndex >= _currentIndex!) {
+      _currentIndex = _currentIndex! - 1;
+    } else if (_currentIndex != null &&
+        oldIndex > _currentIndex! &&
+        newIndex <= _currentIndex!) {
+      _currentIndex = _currentIndex! + 1;
+    }
+
+    _rebuildPlayOrderKeepCurrent();
+    _processingState = ProcessingState.ready;
+    await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
+    _publishQueueState();
+  }
+
+  TimelineClip? timelineClipForIndex(int index) =>
+      _cueTimeline.cueForQueueIndex(index)?.placement;
+
+  Future<void> setTimelineStartMs(int index, int ms) async {
+    await _enqueueCommand(() => _setTimelineStartMs(index, ms));
+  }
+
+  Future<void> _setTimelineStartMs(int index, int ms) async {
+    if (index < 0 || index >= _queue.length) return;
+    final placement = _placementForIndex(index).withTimelineStartMs(ms);
+    await _applyCueOverride(index, placement);
+  }
+
+  Future<void> setSourceStartMs(int index, int ms) async {
+    await _enqueueCommand(() => _setSourceStartMs(index, ms));
+  }
+
+  Future<void> _setSourceStartMs(int index, int ms) async {
+    if (index < 0 || index >= _queue.length) return;
+    final placement = _placementForIndex(index);
+    await _applyCueOverride(
+      index,
+      placement.withSourceRange(
+        sourceStartMs: ms,
+        sourceEndMs: placement.sourceEndMs,
+      ),
+    );
+  }
+
+  Future<void> setSourceEndMs(int index, int ms) async {
+    await _enqueueCommand(() => _setSourceEndMs(index, ms));
+  }
+
+  Future<void> _setSourceEndMs(int index, int ms) async {
+    if (index < 0 || index >= _queue.length) return;
+    final placement = _placementForIndex(index);
+    await _applyCueOverride(
+      index,
+      placement.withSourceRange(
+        sourceStartMs: placement.sourceStartMs,
+        sourceEndMs: ms,
+      ),
+    );
   }
 
   Future<void> play() async {
@@ -327,9 +422,8 @@ class QueueTimelineController {
     _loopModeSubject.add(mode);
   }
 
-  Future<void> toggleShuffle() => _enqueueCommand(
-        () => _setShuffleMode(!_shuffleEnabled),
-      );
+  Future<void> toggleShuffle() =>
+      _enqueueCommand(() => _setShuffleMode(!_shuffleEnabled));
 
   Future<void> cycleLoopMode() async {
     await _enqueueCommand(() async {
@@ -361,18 +455,18 @@ class QueueTimelineController {
     _subscriptions
       ..add(_engine.positionMsStream.listen(_onGlobalPosition))
       ..add(_engine.isPlayingStream.listen((_) => _publishPlayerState()))
-      ..add(_engine.clipCompletionStream.listen(
-        (event) {
+      ..add(
+        _engine.clipCompletionStream.listen((event) {
           if (_suppressPositionSync) return;
           unawaited(_onClipCompleted(event));
-        },
-      ))
-      ..add(_engine.clock.completedStream.listen(
-        (_) {
+        }),
+      )
+      ..add(
+        _engine.clock.completedStream.listen((_) {
           if (_suppressPositionSync) return;
           unawaited(_onCompleted());
-        },
-      ));
+        }),
+      );
   }
 
   Future<T> _enqueueCommand<T>(Future<T> Function() command) {
@@ -392,10 +486,11 @@ class QueueTimelineController {
     required bool seekToCurrent,
     int localPositionMs = 0,
   }) async {
-    _cueTimeline = CueTimeline.contiguousQueue(
+    _cueTimeline = CueTimeline.editedQueue(
       sessionId: _sessionId,
       queue: _queue,
       playOrder: _playOrder,
+      placements: _cueOverrides,
     );
     _suppressPositionSync = true;
     try {
@@ -408,6 +503,95 @@ class QueueTimelineController {
       _suppressPositionSync = false;
     }
     _publishPosition(_engine.positionMs);
+  }
+
+  TimelineClip _placementForIndex(int index) {
+    final current = _cueTimeline.cueForQueueIndex(index)?.placement;
+    if (current != null) return current;
+
+    final item = _queue[index];
+    final durationMs = item.duration?.inMilliseconds ?? 0;
+    return TimelineClip.clamped(
+      id: '${_sessionId}_queue_$index',
+      trackId: item.id,
+      sourceDurationMs: durationMs,
+      sourceStartMs: 0,
+      sourceEndMs: durationMs,
+      timelineStartMs: 0,
+    );
+  }
+
+  Future<void> _applyCueOverride(int index, TimelineClip placement) async {
+    final nextOverrides = Map<int, TimelineClip>.from(_cueOverrides)
+      ..[index] = placement;
+    if (!_canApplyCueOverrides(nextOverrides)) return;
+
+    final localPosition = livePosition.inMilliseconds;
+    _cueOverrides = Map.unmodifiable(nextOverrides);
+    await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
+    _publishQueueState();
+  }
+
+  bool _canApplyCueOverrides(Map<int, TimelineClip> overrides) {
+    final timeline = CueTimeline.editedQueue(
+      sessionId: _sessionId,
+      queue: _queue,
+      playOrder: _playOrder,
+      placements: overrides,
+    );
+    var model = TimelineModel();
+    for (final cue in timeline.cues) {
+      final clip = cue.toMixClip();
+      if (!model.canPlace(clip.placement)) return false;
+      model = model.addClip(clip);
+    }
+    return true;
+  }
+
+  Map<int, TimelineClip> _pruneCueOverrides(
+    Map<int, TimelineClip> overrides,
+    int queueLength,
+  ) => Map.unmodifiable({
+    for (final entry in overrides.entries)
+      if (entry.key >= 0 && entry.key < queueLength) entry.key: entry.value,
+  });
+
+  Map<int, TimelineClip> _shiftCueOverridesForInsert(
+    Map<int, TimelineClip> overrides,
+    int insertIndex,
+  ) => Map.unmodifiable({
+    for (final entry in overrides.entries)
+      (entry.key >= insertIndex ? entry.key + 1 : entry.key): entry.value,
+  });
+
+  Map<int, TimelineClip> _shiftCueOverridesForRemove(
+    Map<int, TimelineClip> overrides,
+    int removedIndex,
+  ) => Map.unmodifiable({
+    for (final entry in overrides.entries)
+      if (entry.key != removedIndex)
+        (entry.key > removedIndex ? entry.key - 1 : entry.key): entry.value,
+  });
+
+  Map<int, TimelineClip> _remapCueOverridesForReorder(
+    Map<int, TimelineClip> overrides,
+    int oldIndex,
+    int newIndex,
+  ) {
+    int remap(int index) {
+      if (index == oldIndex) return newIndex;
+      if (oldIndex < newIndex && index > oldIndex && index <= newIndex) {
+        return index - 1;
+      }
+      if (oldIndex > newIndex && index >= newIndex && index < oldIndex) {
+        return index + 1;
+      }
+      return index;
+    }
+
+    return Map.unmodifiable({
+      for (final entry in overrides.entries) remap(entry.key): entry.value,
+    });
   }
 
   void _rebuildPlayOrderKeepCurrent() {

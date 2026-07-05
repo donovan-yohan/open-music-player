@@ -140,6 +140,57 @@ void main() {
       },
     );
 
+    test('session timeline edits rebuild the live mix with crossfades',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item('1', seconds: 10),
+        _item('2', seconds: 10),
+      ]);
+
+      await harness.controller.setTimelineStartMs(1, 8000);
+
+      expect(harness.engine.model.clips[0].timelineEndMs, 10000);
+      expect(harness.engine.model.clips[0].envelope.fadeOutMs, 2000);
+      expect(harness.engine.model.clips[1].timelineStartMs, 8000);
+      expect(harness.engine.model.clips[1].envelope.fadeInMs, 2000);
+      expect(
+        harness.controller.snapshot.globalDuration,
+        const Duration(seconds: 18),
+      );
+
+      await harness.controller.setSourceStartMs(1, 2000);
+      await harness.controller.setSourceEndMs(1, 9000);
+
+      final second = harness.engine.model.clips[1].placement;
+      expect(second.sourceStartMs, 2000);
+      expect(second.sourceEndMs, 9000);
+      expect(second.selectedDurationMs, 7000);
+
+      await harness.dispose();
+    });
+
+    test('live queue reorder preserves the selected current item', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item('1'),
+        _item('2'),
+        _item('3'),
+      ], initialIndex: 1);
+
+      await harness.controller.reorderQueue(2, 0);
+
+      expect(harness.controller.queue.map((item) => item.id), [
+        '3',
+        '1',
+        '2',
+      ]);
+      expect(harness.controller.currentIndex, 2);
+      expect(harness.controller.currentMediaItem?.id, '2');
+
+      await harness.dispose();
+    });
+
     test('loop one repeats a non-last item on natural completion', () async {
       final harness = _Harness();
       await harness.controller.setQueue([_item('1'), _item('2')]);

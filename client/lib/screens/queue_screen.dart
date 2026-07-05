@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
 import '../core/audio/playback_context.dart';
 import '../models/track.dart';
+import '../models/waveform.dart';
 import '../providers/queue_provider.dart';
 import '../shared/widgets/track_tile.dart';
 import '../widgets/queue_item.dart';
@@ -11,19 +14,17 @@ import '../widgets/stacked_waveform_timeline.dart';
 
 enum _QueueViewMode { list, timeline }
 
-enum ListeningQueueSection { previous, current, upNext }
-
 @visibleForTesting
 class ListeningQueueEntry {
   const ListeningQueueEntry({
     required this.index,
     required this.item,
-    required this.section,
+    required this.isCurrent,
   });
 
   final int index;
   final audio_service.MediaItem item;
-  final ListeningQueueSection section;
+  final bool isCurrent;
 }
 
 const double _queueReorderItemExtentPx = 64.0;
@@ -67,13 +68,7 @@ List<ListeningQueueEntry> listeningQueueEntries({
       ListeningQueueEntry(
         index: i,
         item: queue[i],
-        section: normalizedCurrent == null
-            ? ListeningQueueSection.upNext
-            : i < normalizedCurrent
-                ? ListeningQueueSection.previous
-                : i == normalizedCurrent
-                    ? ListeningQueueSection.current
-                    : ListeningQueueSection.upNext,
+        isCurrent: normalizedCurrent != null && i == normalizedCurrent,
       ),
   ];
 }
@@ -196,41 +191,20 @@ class _QueueScreenState extends State<QueueScreen> {
     );
   }
 
-  Widget _buildPlaybackQueueView(
-    BuildContext context,
-    PlaybackState playback,
-  ) {
+  Widget _buildPlaybackQueueView(BuildContext context, PlaybackState playback) {
     final entries = listeningQueueEntries(
       queue: playback.queue,
       currentIndex: playback.currentIndex,
     );
-    final previous = entries
-        .where((entry) => entry.section == ListeningQueueSection.previous)
-        .toList(growable: false);
-    final current = entries
-        .where((entry) => entry.section == ListeningQueueSection.current)
-        .toList(growable: false);
-    final upNext = entries
-        .where((entry) => entry.section == ListeningQueueSection.upNext)
-        .toList(growable: false);
 
-    return CustomScrollView(
-      key: const PageStorageKey('playback_queue_list_view'),
-      slivers: [
-        SliverToBoxAdapter(child: _buildPlaybackQueueHeader(context, playback)),
-        if (previous.isNotEmpty) ...[
-          _buildSectionHeader(context, 'Previous'),
-          _buildPlaybackQueueSection(playback, previous),
-        ],
-        if (current.isNotEmpty) ...[
-          _buildSectionHeader(context, 'Now Playing'),
-          _buildPlaybackQueueSection(playback, current),
-        ],
-        if (upNext.isNotEmpty) ...[
-          _buildSectionHeader(context, 'Up Next'),
-          _buildPlaybackQueueSection(playback, upNext),
-        ],
-        const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
+    return Column(
+      children: [
+        _buildPlaybackQueueHeader(context, playback),
+        Expanded(
+          child: _viewMode == _QueueViewMode.list
+              ? _buildPlaybackQueueList(playback, entries)
+              : _buildPlaybackTimelineView(context, playback),
+        ),
       ],
     );
   }
@@ -255,11 +229,19 @@ class _QueueScreenState extends State<QueueScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Playback Queue',
-            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Playback Queue',
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                 ),
+              ),
+              const SizedBox(width: 8),
+              _buildViewSwitch(context),
+            ],
           ),
           const SizedBox(height: 4),
           Text(
@@ -290,27 +272,96 @@ class _QueueScreenState extends State<QueueScreen> {
     return '$kind • ${context.label}';
   }
 
-  Widget _buildPlaybackQueueSection(
+  Widget _buildPlaybackQueueList(
     PlaybackState playback,
     List<ListeningQueueEntry> entries,
   ) {
-    return SliverList.builder(
-      itemCount: entries.length,
-      itemBuilder: (context, index) {
-        final entry = entries[index];
-        final item = entry.item;
-        final isCurrent = entry.section == ListeningQueueSection.current;
-        return TrackTile(
-          key: ValueKey('playback_queue_${entry.index}_${item.id}'),
-          title: item.title,
-          artist: item.artist,
-          album: item.album,
-          duration: _formatQueueRuntime(item.duration?.inMilliseconds ?? 0),
-          coverArtUrl: item.artUri?.toString(),
-          isCurrent: isCurrent,
-          onTap: isCurrent ? null : () => _skipToPlaybackIndex(playback, entry),
+    return CustomScrollView(
+      key: const PageStorageKey('playback_queue_list_view'),
+      slivers: [
+        SliverList.builder(
+          itemCount: entries.length,
+          itemBuilder: (context, index) {
+            final entry = entries[index];
+            final item = entry.item;
+            return TrackTile(
+              key: ValueKey('playback_queue_${entry.index}_${item.id}'),
+              title: item.title,
+              artist: item.artist,
+              album: item.album,
+              duration: _formatQueueRuntime(item.duration?.inMilliseconds ?? 0),
+              coverArtUrl: item.artUri?.toString(),
+              isCurrent: entry.isCurrent,
+              onTap: entry.isCurrent
+                  ? null
+                  : () => _skipToPlaybackIndex(playback, entry),
+            );
+          },
+        ),
+        const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
+      ],
+    );
+  }
+
+  Widget _buildPlaybackTimelineView(
+    BuildContext context,
+    PlaybackState playback,
+  ) {
+    final queue = playback.queue;
+    if (queue.isEmpty) return const SizedBox.shrink();
+    final currentIndex =
+        playback.currentIndex?.clamp(0, queue.length - 1).toInt();
+    if (currentIndex == null) {
+      return const Center(child: Text('Start playback to edit the timeline'));
+    }
+
+    final current = _playbackTrackFor(queue[currentIndex], currentIndex);
+    final previous = currentIndex > 0
+        ? _playbackTrackFor(queue[currentIndex - 1], currentIndex - 1)
+        : null;
+    final upcoming = [
+      for (var i = currentIndex + 1; i < queue.length; i++)
+        _playbackTrackFor(queue[i], i),
+    ];
+
+    return StackedWaveformTimeline(
+      key: const ValueKey('queue_surface'),
+      previousTrack: previous,
+      currentTrack: current,
+      upcomingTracks: upcoming,
+      peaksFor: (track) => mockWaveformPeaks(track.queueItemId),
+      trimRangeFor: (track) =>
+          playback.trimRangeForQueueIndex(_playbackQueueIndex(track)),
+      clipFor: (track, fallback) =>
+          playback.timelineClipForQueueIndex(_playbackQueueIndex(track)) ??
+          fallback,
+      timelineModel: playback.timelineModel,
+      playheadPositionMs: playback.timelinePositionMs,
+      positionMsStream: playback.timelinePositionMsStream,
+      onScrubStart: playback.beginTimelineScrub,
+      onScrubUpdate: playback.updateTimelineScrub,
+      onScrubEnd: playback.endTimelineScrub,
+      onTimelineStartChanged: (track, ms) {
+        _pauseThenEditTimeline(
+          playback,
+          () =>
+              playback.setQueueTimelineStartMs(_playbackQueueIndex(track), ms),
         );
       },
+      onTrimStartChanged: (track, ms) {
+        _pauseThenEditTimeline(
+          playback,
+          () => playback.setQueueTrimStartMs(_playbackQueueIndex(track), ms),
+        );
+      },
+      onTrimEndChanged: (track, ms) {
+        _pauseThenEditTimeline(
+          playback,
+          () => playback.setQueueTrimEndMs(_playbackQueueIndex(track), ms),
+        );
+      },
+      onMoveEarlier: (track) => _movePlaybackTimelineTrack(playback, track, -1),
+      onMoveLater: (track) => _movePlaybackTimelineTrack(playback, track, 1),
     );
   }
 
@@ -326,6 +377,48 @@ class _QueueScreenState extends State<QueueScreen> {
         SnackBar(content: Text('Could not play "${entry.item.title}"')),
       );
     }
+  }
+
+  Track _playbackTrackFor(audio_service.MediaItem item, int index) {
+    final duration = item.duration ?? Duration.zero;
+    return Track(
+      id: 'playback_queue_$index',
+      queueItemId: index.toString(),
+      playbackTrackId: item.id,
+      title: item.title,
+      artist: item.artist,
+      album: item.album,
+      duration: duration.inSeconds,
+      coverUrl: item.artUri?.toString(),
+      addedAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+    );
+  }
+
+  int _playbackQueueIndex(Track track) =>
+      int.tryParse(track.queueItemId) ?? int.tryParse(track.id) ?? 0;
+
+  void _pauseThenEditTimeline(
+    PlaybackState playback,
+    Future<void> Function() edit,
+  ) {
+    unawaited(() async {
+      await playback.pause();
+      await edit();
+    }());
+  }
+
+  void _movePlaybackTimelineTrack(
+    PlaybackState playback,
+    Track track,
+    int delta,
+  ) {
+    final oldIndex = _playbackQueueIndex(track);
+    final newIndex = (oldIndex + delta).clamp(0, playback.queue.length - 1);
+    if (newIndex == oldIndex) return;
+    _pauseThenEditTimeline(
+      playback,
+      () => playback.reorderPlaybackQueue(oldIndex, newIndex),
+    );
   }
 
   Widget _buildQueueHeader(BuildContext context, QueueProvider provider) {
@@ -502,99 +595,79 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   Widget _buildListView(BuildContext context, QueueProvider provider) {
-    final currentTrack = provider.currentTrack;
     final currentIndex = provider.queue.currentIndex;
     final tracks = provider.queue.tracks;
-    final hasActiveTrack = currentTrack != null;
-    final upNext = hasActiveTrack ? provider.upNext : tracks;
+    final hasActiveTrack =
+        currentIndex >= 0 && currentIndex < provider.queue.tracks.length;
 
     return CustomScrollView(
       key: const PageStorageKey('queue_list_view'),
       slivers: [
-        if (currentTrack != null) ...[
-          _buildSectionHeader(context, 'Current'),
-          SliverToBoxAdapter(
-            child: QueueItem(
-              key: ValueKey('queue_current_${currentTrack.id}'),
-              track: currentTrack,
-              isPlaying: true,
-              onPlay: currentTrack.canPlay
-                  ? () => _playFromQueue(context, provider, currentTrack)
+        SliverList.builder(
+          itemCount: tracks.length,
+          itemBuilder: (context, absoluteIndex) {
+            final track = tracks[absoluteIndex];
+            final isCurrent = hasActiveTrack && absoluteIndex == currentIndex;
+            final canEdit = !hasActiveTrack || absoluteIndex > currentIndex;
+            final relativeIndex = hasActiveTrack
+                ? absoluteIndex - currentIndex - 1
+                : absoluteIndex;
+            final movableCount = hasActiveTrack
+                ? tracks.length - currentIndex - 1
+                : tracks.length;
+
+            return QueueItem(
+              key: ValueKey(isCurrent ? 'queue_current_${track.id}' : track.id),
+              track: track,
+              isPlaying: isCurrent,
+              reorderHandle: canEdit
+                  ? _buildReorderHandle(
+                      track,
+                      relativeIndex,
+                      onDragReorder: (dragDeltaY) {
+                        final relativeNewIndex = queueListDragTargetIndex(
+                          relativeIndex: relativeIndex,
+                          itemCount: movableCount,
+                          dragDeltaY: dragDeltaY,
+                        );
+                        if (relativeNewIndex == relativeIndex) return;
+                        final (
+                          absoluteOldIndex,
+                          absoluteNewIndex,
+                        ) = queueListReorderIndices(
+                          relativeOldIndex: relativeIndex,
+                          relativeNewIndex: relativeNewIndex,
+                          currentIndex: currentIndex,
+                          hasActiveTrack: hasActiveTrack,
+                        );
+                        provider.reorderQueue(
+                          absoluteOldIndex,
+                          absoluteNewIndex,
+                        );
+                      },
+                    )
                   : null,
-              onRetry: currentTrack.canRetry
-                  ? () => provider.retryTrack(currentTrack)
+              showTrimControls: canEdit,
+              trimRange: canEdit ? provider.trimRangeFor(track) : null,
+              waveformPeaks:
+                  canEdit ? provider.waveformPeaksFor(track) : const [],
+              onTrimStartChanged:
+                  canEdit ? (ms) => provider.setStartOffsetMs(track, ms) : null,
+              onTrimEndChanged:
+                  canEdit ? (ms) => provider.setEndOffsetMs(track, ms) : null,
+              onPlay: track.queueStatus == TrackQueueStatus.playable &&
+                      track.canPlay
+                  ? () => _playFromQueue(context, provider, track)
                   : null,
-              onRemove: null,
-            ),
-          ),
-        ],
-        if (upNext.isNotEmpty) ...[
-          _buildSectionHeader(context, hasActiveTrack ? 'Up Next' : 'Queue'),
-          SliverList.builder(
-            itemCount: upNext.length,
-            itemBuilder: (context, index) {
-              final track = upNext[index];
-              final absoluteIndex =
-                  (hasActiveTrack ? currentIndex + 1 : 0) + index;
-              return QueueItem(
-                key: ValueKey(track.id),
-                track: track,
-                isPlaying: false,
-                reorderHandle: _buildReorderHandle(
-                  track,
-                  index,
-                  onDragReorder: (dragDeltaY) {
-                    final relativeNewIndex = queueListDragTargetIndex(
-                      relativeIndex: index,
-                      itemCount: upNext.length,
-                      dragDeltaY: dragDeltaY,
-                    );
-                    if (relativeNewIndex == index) return;
-                    final (
-                      absoluteOldIndex,
-                      absoluteNewIndex,
-                    ) = queueListReorderIndices(
-                      relativeOldIndex: index,
-                      relativeNewIndex: relativeNewIndex,
-                      currentIndex: currentIndex,
-                      hasActiveTrack: hasActiveTrack,
-                    );
-                    provider.reorderQueue(absoluteOldIndex, absoluteNewIndex);
-                  },
-                ),
-                showTrimControls: true,
-                trimRange: provider.trimRangeFor(track),
-                waveformPeaks: provider.waveformPeaksFor(track),
-                onTrimStartChanged: (ms) =>
-                    provider.setStartOffsetMs(track, ms),
-                onTrimEndChanged: (ms) => provider.setEndOffsetMs(track, ms),
-                onPlay: track.queueStatus == TrackQueueStatus.playable &&
-                        track.canPlay
-                    ? () => _playFromQueue(context, provider, track)
-                    : null,
-                onRetry:
-                    track.canRetry ? () => provider.retryTrack(track) : null,
-                onRemove: () => provider.removeFromQueue(absoluteIndex),
-              );
-            },
-          ),
-        ],
+              onRetry: track.canRetry ? () => provider.retryTrack(track) : null,
+              onRemove: canEdit
+                  ? () => provider.removeFromQueue(absoluteIndex)
+                  : null,
+            );
+          },
+        ),
         const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
       ],
-    );
-  }
-
-  SliverToBoxAdapter _buildSectionHeader(BuildContext context, String title) {
-    return SliverToBoxAdapter(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-        child: Text(
-          title,
-          style: Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-        ),
-      ),
     );
   }
 

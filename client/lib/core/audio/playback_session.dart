@@ -4,6 +4,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../../models/timeline_clip.dart';
+import '../engine/gain_envelope.dart';
 import '../engine/timeline_model.dart';
 import 'playback_media_item_source.dart';
 
@@ -14,6 +15,7 @@ class PlaybackCue {
     required this.trackId,
     required this.mediaItem,
     required this.audioUri,
+    required this.sourceDuration,
     required this.sourceStart,
     required this.sourceEnd,
     required this.timelineStart,
@@ -24,6 +26,7 @@ class PlaybackCue {
   final String trackId;
   final MediaItem mediaItem;
   final Uri audioUri;
+  final Duration sourceDuration;
   final Duration sourceStart;
   final Duration sourceEnd;
   final Duration timelineStart;
@@ -35,15 +38,19 @@ class PlaybackCue {
 
   Duration get timelineEnd => timelineStart + selectedDuration;
 
-  MixClip toMixClip() => MixClip(
-        placement: TimelineClip.clamped(
-          id: cueId,
-          trackId: trackId,
-          sourceDurationMs: sourceEnd.inMilliseconds,
-          sourceStartMs: sourceStart.inMilliseconds,
-          sourceEndMs: sourceEnd.inMilliseconds,
-          timelineStartMs: timelineStart.inMilliseconds,
-        ),
+  TimelineClip get placement => TimelineClip.clamped(
+    id: cueId,
+    trackId: trackId,
+    sourceDurationMs: sourceDuration.inMilliseconds,
+    sourceStartMs: sourceStart.inMilliseconds,
+    sourceEndMs: sourceEnd.inMilliseconds,
+    timelineStartMs: timelineStart.inMilliseconds,
+  );
+
+  MixClip toMixClip({GainEnvelope envelope = const GainEnvelope.flat()}) =>
+      MixClip(
+        placement: placement,
+        envelope: envelope,
         audioSourceRef: audioUri.toString(),
         queueItemId: queueIndex.toString(),
       );
@@ -59,6 +66,17 @@ class CueTimeline {
     required String sessionId,
     required List<MediaItem> queue,
     required List<int> playOrder,
+  }) => CueTimeline.editedQueue(
+    sessionId: sessionId,
+    queue: queue,
+    playOrder: playOrder,
+  );
+
+  factory CueTimeline.editedQueue({
+    required String sessionId,
+    required List<MediaItem> queue,
+    required List<int> playOrder,
+    Map<int, TimelineClip> placements = const {},
   }) {
     var cursor = Duration.zero;
     final cues = <PlaybackCue>[];
@@ -66,15 +84,26 @@ class CueTimeline {
       if (queueIndex < 0 || queueIndex >= queue.length) continue;
       final item = queue[queueIndex];
       final duration = item.duration ?? Duration.zero;
-      final cue = PlaybackCue(
-        cueId: '${sessionId}_queue_$queueIndex',
-        queueIndex: queueIndex,
+      final durationMs = duration.inMilliseconds;
+      final placement = TimelineClip.clamped(
+        id: '${sessionId}_queue_$queueIndex',
         trackId: item.id,
+        sourceDurationMs: durationMs,
+        sourceStartMs: placements[queueIndex]?.sourceStartMs ?? 0,
+        sourceEndMs: placements[queueIndex]?.sourceEndMs ?? durationMs,
+        timelineStartMs:
+            placements[queueIndex]?.timelineStartMs ?? cursor.inMilliseconds,
+      );
+      final cue = PlaybackCue(
+        cueId: placement.id,
+        queueIndex: queueIndex,
+        trackId: placement.trackId,
         mediaItem: item,
         audioUri: audioSourceUriForItem(item),
-        sourceStart: Duration.zero,
-        sourceEnd: duration,
-        timelineStart: cursor,
+        sourceDuration: duration,
+        sourceStart: Duration(milliseconds: placement.sourceStartMs),
+        sourceEnd: Duration(milliseconds: placement.sourceEndMs),
+        timelineStart: Duration(milliseconds: placement.timelineStartMs),
       );
       cues.add(cue);
       cursor = cue.timelineEnd;
@@ -87,13 +116,42 @@ class CueTimeline {
   final List<PlaybackCue> cues;
 
   Duration get duration => cues.fold<Duration>(
-        Duration.zero,
-        (maxEnd, cue) => cue.timelineEnd > maxEnd ? cue.timelineEnd : maxEnd,
-      );
+    Duration.zero,
+    (maxEnd, cue) => cue.timelineEnd > maxEnd ? cue.timelineEnd : maxEnd,
+  );
 
   TimelineModel toTimelineModel() => TimelineModel(
-        clips: cues.map((cue) => cue.toMixClip()),
+    clips: [for (final cue in cues) cue.toMixClip(envelope: _envelopeFor(cue))],
+  );
+
+  GainEnvelope _envelopeFor(PlaybackCue cue) {
+    var fadeInMs = 0;
+    var fadeOutMs = 0;
+    for (final other in cues) {
+      if (identical(other, cue)) continue;
+      final overlapStart = math.max(
+        cue.timelineStart.inMilliseconds,
+        other.timelineStart.inMilliseconds,
       );
+      final overlapEnd = math.min(
+        cue.timelineEnd.inMilliseconds,
+        other.timelineEnd.inMilliseconds,
+      );
+      if (overlapEnd <= overlapStart) continue;
+
+      final overlapMs = overlapEnd - overlapStart;
+      if (other.timelineStart < cue.timelineStart) {
+        fadeInMs = math.max(fadeInMs, overlapMs);
+      } else if (other.timelineStart > cue.timelineStart) {
+        fadeOutMs = math.max(fadeOutMs, overlapMs);
+      } else if (other.queueIndex < cue.queueIndex) {
+        fadeInMs = math.max(fadeInMs, overlapMs);
+      } else {
+        fadeOutMs = math.max(fadeOutMs, overlapMs);
+      }
+    }
+    return GainEnvelope(fadeInMs: fadeInMs, fadeOutMs: fadeOutMs);
+  }
 
   PlaybackCue? cueForQueueIndex(int queueIndex) {
     for (final cue in cues) {
@@ -115,8 +173,11 @@ class CueTimeline {
   }
 
   Duration globalFor(PlaybackCue cue, Duration localPosition) {
-    final clamped =
-        _clampDuration(localPosition, Duration.zero, cue.selectedDuration);
+    final clamped = _clampDuration(
+      localPosition,
+      Duration.zero,
+      cue.selectedDuration,
+    );
     return cue.timelineStart + clamped;
   }
 

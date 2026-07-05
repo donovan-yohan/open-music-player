@@ -6,6 +6,8 @@ import 'package:rxdart/rxdart.dart';
 import '../cache/playback_cache_manager.dart';
 import '../engine/playback_engine.dart';
 import '../engine/timeline_model.dart';
+import '../../models/timeline_clip.dart';
+import '../../models/trim_range.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'playback_media_item_source.dart';
 import 'playback_session.dart';
@@ -79,6 +81,28 @@ class PlaybackState extends ChangeNotifier {
       _queueController.engine.positionMsStream;
   int get timelinePositionMs => _queueController.engine.positionMs;
   TimelineModel get timelineModel => _queueController.engine.model;
+  TimelineClip? timelineClipForQueueIndex(int index) =>
+      _queueController.timelineClipForIndex(index);
+  TrimRange trimRangeForQueueIndex(int index) {
+    final clip = _queueController.timelineClipForIndex(index);
+    final item = index >= 0 && index < queue.length ? queue[index] : null;
+    final durationMs = item?.duration?.inMilliseconds ?? 0;
+    if (clip == null) return TrimRange.full(durationMs);
+    return TrimRange.clamped(
+      trackDurationMs: durationMs,
+      startOffsetMs: clip.sourceStartMs,
+      endOffsetMs: clip.sourceEndMs,
+    );
+  }
+
+  Future<void> setQueueTimelineStartMs(int index, int ms) =>
+      _queueController.setTimelineStartMs(index, ms);
+  Future<void> setQueueTrimStartMs(int index, int ms) =>
+      _queueController.setSourceStartMs(index, ms);
+  Future<void> setQueueTrimEndMs(int index, int ms) =>
+      _queueController.setSourceEndMs(index, ms);
+  Future<void> reorderPlaybackQueue(int oldIndex, int newIndex) =>
+      _queueController.reorderQueue(oldIndex, newIndex);
 
   void beginTimelineScrub() => _queueController.engine.beginScrub();
   void updateTimelineScrub(int globalMs) =>
@@ -92,14 +116,14 @@ class PlaybackState extends ChangeNotifier {
     LocalAudioArtifactResolver? localResolver,
     PlaybackCacheManager? cacheManager,
     QueuePersistenceStore? persistence,
-  })  : _queueController = QueueTimelineController(engine),
-        _signedAudioUrlService = signedAudioUrlService,
-        _persistence = persistence,
-        _sourceResolver = PlaybackSourceResolver(
-          signedAudioUrlService: signedAudioUrlService,
-          localResolver: localResolver,
-          cacheManager: cacheManager,
-        ) {
+  }) : _queueController = QueueTimelineController(engine),
+       _signedAudioUrlService = signedAudioUrlService,
+       _persistence = persistence,
+       _sourceResolver = PlaybackSourceResolver(
+         signedAudioUrlService: signedAudioUrlService,
+         localResolver: localResolver,
+         cacheManager: cacheManager,
+       ) {
     _init();
   }
 
@@ -179,8 +203,9 @@ class PlaybackState extends ChangeNotifier {
     }, generation: generation);
   }
 
-  Future<int> _beginPlaybackReplacement(
-      {required PlaybackContext? context}) async {
+  Future<int> _beginPlaybackReplacement({
+    required PlaybackContext? context,
+  }) async {
     final generation = ++_playRequestGeneration;
     _playbackContext = context;
     _playbackError = null;
@@ -385,6 +410,7 @@ class PlaybackState extends ChangeNotifier {
       refreshedQueue,
       initialIndex: index,
       initialPosition: _queueController.livePosition,
+      preserveTimelineEdits: true,
     );
   }
 

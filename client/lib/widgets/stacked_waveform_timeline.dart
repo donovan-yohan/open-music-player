@@ -83,22 +83,22 @@ enum SnapMarkerMode { beat1, beat4, beat16 }
 
 extension on SnapMarkerMode {
   int get markerCount => switch (this) {
-        SnapMarkerMode.beat1 => 1,
-        SnapMarkerMode.beat4 => 4,
-        SnapMarkerMode.beat16 => 16,
-      };
+    SnapMarkerMode.beat1 => 1,
+    SnapMarkerMode.beat4 => 4,
+    SnapMarkerMode.beat16 => 16,
+  };
 
   int get snapMs => switch (this) {
-        SnapMarkerMode.beat1 => 500,
-        SnapMarkerMode.beat4 => 2000,
-        SnapMarkerMode.beat16 => 8000,
-      };
+    SnapMarkerMode.beat1 => 500,
+    SnapMarkerMode.beat4 => 2000,
+    SnapMarkerMode.beat16 => 8000,
+  };
 
   String get label => switch (this) {
-        SnapMarkerMode.beat1 => '1 beat',
-        SnapMarkerMode.beat4 => '4 beats',
-        SnapMarkerMode.beat16 => '16 beats',
-      };
+    SnapMarkerMode.beat1 => '1 beat',
+    SnapMarkerMode.beat4 => '4 beats',
+    SnapMarkerMode.beat16 => '16 beats',
+  };
 }
 
 class _LaneModel {
@@ -201,7 +201,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         timelineStartMs: cursor,
       );
       final liveClip = _liveClipForTrack(track, usedLiveClipIds);
-      final clip = liveClip?.placement ??
+      final clip =
+          liveClip?.placement ??
           widget.clipFor?.call(track, defaultClip) ??
           defaultClip;
       placed[track] = liveClip ?? MixClip(placement: clip);
@@ -218,13 +219,14 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final totalMs = placed.values
         .map((c) => c.timelineEndMs)
         .fold<int>(0, (a, b) => a > b ? a : b);
-    final engineBacked = widget.positionMsStream != null ||
+    final engineBacked =
+        widget.positionMsStream != null ||
         (widget.timelineModel?.clips.isNotEmpty ?? false);
     final playheadMs = engineBacked
         ? livePlayheadMs.clamp(0, totalMs).toInt()
         : currentClip.timelineStartMs +
-            StackedWaveformTimeline.transitionMs +
-            8000;
+              StackedWaveformTimeline.transitionMs +
+              8000;
 
     final basePps = totalMs <= 0
         ? TimelineViewport.minPixelsPerSecond
@@ -233,7 +235,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       TimelineViewport.minPixelsPerSecond,
       TimelineViewport.maxPixelsPerSecond,
     );
-    final viewportOffsetMs = _manualOffsetMs ??
+    final viewportOffsetMs =
+        _manualOffsetMs ??
         (currentClip.timelineStartMs - 60000).clamp(0, totalMs);
     final viewport = TimelineViewport.clamped(
       durationMs: totalMs,
@@ -283,7 +286,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     }
 
     final playheadPaneX = viewport.msToX(playheadMs);
-    final isPlayheadVisible = playheadPaneX.isFinite &&
+    final isPlayheadVisible =
+        playheadPaneX.isFinite &&
         playheadPaneX >= 0 &&
         playheadPaneX <= paneWidth;
 
@@ -294,9 +298,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       paneWidth,
     );
 
-    final historyAgoMs = playheadMs -
+    final historyAgoMs =
+        playheadMs -
         (placed[widget.previousTrack]?.timelineEndMs ?? playheadMs);
-    final futureInMs = (upcoming.isNotEmpty
+    final futureInMs =
+        (upcoming.isNotEmpty
             ? placed[upcoming.first]!.timelineStartMs
             : playheadMs) -
         playheadMs;
@@ -353,7 +359,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               child: _edgeTeaser(
                 context,
                 icon: Icons.history,
-                label: '${widget.previousTrack!.title} · ended '
+                label:
+                    '${widget.previousTrack!.title} · ended '
                     '${_formatClock(historyAgoMs.abs())} ago',
                 accent: StackedWaveformTimeline.previousAccent,
                 onTap: () => _jumpToClip(
@@ -373,7 +380,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               child: _edgeTeaser(
                 context,
                 icon: Icons.fast_forward,
-                label: '${upcoming.first.title} · starts in '
+                label:
+                    '${upcoming.first.title} · starts in '
                     '${_formatClock(futureInMs.abs())}',
                 accent: StackedWaveformTimeline.upcomingAccent,
                 onTap: () =>
@@ -482,9 +490,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     TimelineViewport viewport,
   ) {
     final left = viewport.msToX(lane.clip.timelineStartMs);
-    final width = (viewport.msToX(lane.clip.timelineEndMs) -
-            viewport.msToX(lane.clip.timelineStartMs))
-        .clamp(8.0, double.infinity);
+    final width =
+        (viewport.msToX(lane.clip.timelineEndMs) -
+                viewport.msToX(lane.clip.timelineStartMs))
+            .clamp(8.0, double.infinity);
 
     return SizedBox(
       height: lane.height,
@@ -554,30 +563,31 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           child: GestureDetector(
             key: ValueKey('timeline_clip_body_drag_${lane.track.id}'),
             behavior: HitTestBehavior.opaque,
-            onLongPressStart: editMode && widget.onTimelineStartChanged != null
-                ? (_) {
-                    setState(() {
-                      _activeClipDragTrackId = lane.track.id;
-                      _activeClipDragStartMs = lane.clip.timelineStartMs;
-                    });
-                  }
+            onHorizontalDragStart:
+                editMode && widget.onTimelineStartChanged != null
+                ? (_) => _beginClipDrag(lane)
                 : null,
-            onLongPressMoveUpdate: editMode &&
-                    widget.onTimelineStartChanged != null
-                ? (details) {
-                    if (_activeClipDragTrackId != lane.track.id) return;
-                    final dragStartMs = _activeClipDragStartMs;
-                    if (dragStartMs == null) return;
-                    final deltaMs = _timelineDeltaMs(
-                      viewport,
-                      details.offsetFromOrigin.dx,
-                    );
-                    final snappedStart = _snapTimelineMs(
-                      math.max(0, dragStartMs + deltaMs),
-                    );
-                    if (snappedStart == lane.clip.timelineStartMs) return;
-                    widget.onTimelineStartChanged!(lane.track, snappedStart);
-                  }
+            onHorizontalDragUpdate:
+                editMode && widget.onTimelineStartChanged != null
+                ? (details) => _updateClipDrag(
+                    lane,
+                    viewport,
+                    details.primaryDelta ?? 0,
+                    useIncrementalDelta: true,
+                  )
+                : null,
+            onHorizontalDragEnd: (_) => _clearActiveClipDrag(lane.track.id),
+            onHorizontalDragCancel: () => _clearActiveClipDrag(lane.track.id),
+            onLongPressStart: editMode && widget.onTimelineStartChanged != null
+                ? (_) => _beginClipDrag(lane)
+                : null,
+            onLongPressMoveUpdate:
+                editMode && widget.onTimelineStartChanged != null
+                ? (details) => _updateClipDrag(
+                    lane,
+                    viewport,
+                    details.offsetFromOrigin.dx,
+                  )
                 : null,
             onLongPressEnd: (_) => _clearActiveClipDrag(lane.track.id),
             onLongPressCancel: () => _clearActiveClipDrag(lane.track.id),
@@ -618,6 +628,33 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
   }
 
+  void _beginClipDrag(_LaneModel lane) {
+    setState(() {
+      _activeClipDragTrackId = lane.track.id;
+      _activeClipDragStartMs = lane.clip.timelineStartMs;
+    });
+  }
+
+  void _updateClipDrag(
+    _LaneModel lane,
+    TimelineViewport viewport,
+    double deltaPx, {
+    bool useIncrementalDelta = false,
+  }) {
+    if (_activeClipDragTrackId != lane.track.id) return;
+    final dragStartMs = useIncrementalDelta
+        ? lane.clip.timelineStartMs
+        : _activeClipDragStartMs;
+    if (dragStartMs == null) return;
+    final deltaMs = _timelineDeltaMs(viewport, deltaPx);
+    final snappedStart = _snapTimelineMs(math.max(0, dragStartMs + deltaMs));
+    if (snappedStart == lane.clip.timelineStartMs) return;
+    widget.onTimelineStartChanged!(lane.track, snappedStart);
+    if (useIncrementalDelta) {
+      _activeClipDragStartMs = snappedStart;
+    }
+  }
+
   Widget _trimHandle({
     required Key key,
     required bool alignStart,
@@ -642,8 +679,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                 ? (details) => onDragUpdate(details.primaryDelta ?? 0)
                 : null,
             child: Align(
-              alignment:
-                  alignStart ? Alignment.centerLeft : Alignment.centerRight,
+              alignment: alignStart
+                  ? Alignment.centerLeft
+                  : Alignment.centerRight,
               child: Container(
                 width: 10,
                 margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),

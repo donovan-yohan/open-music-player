@@ -1,6 +1,7 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
+import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
   group('CueTimeline', () {
@@ -70,6 +71,41 @@ void main() {
       expect(model.clips.single.queueItemId, '0');
       expect(model.clips.single.timelineStartMs, 0);
       expect(model.clips.single.timelineEndMs, 5000);
+    });
+
+    test('edited placements preserve trims and derive overlap fades', () {
+      final timeline = CueTimeline.editedQueue(
+        sessionId: 'session_7',
+        queue: [_item('a', seconds: 10), _item('b', seconds: 10)],
+        playOrder: const [0, 1],
+        placements: {
+          0: TimelineClip.clamped(
+            id: 'session_7_queue_0',
+            trackId: 'a',
+            sourceDurationMs: 10000,
+            sourceStartMs: 1000,
+            sourceEndMs: 9000,
+            timelineStartMs: 0,
+          ),
+          1: TimelineClip.clamped(
+            id: 'session_7_queue_1',
+            trackId: 'b',
+            sourceDurationMs: 10000,
+            sourceStartMs: 0,
+            sourceEndMs: 10000,
+            timelineStartMs: 7000,
+          ),
+        },
+      );
+
+      final model = timeline.toTimelineModel();
+
+      expect(model.clips[0].timelineEndMs, 8000);
+      expect(model.clips[0].placement.sourceStartMs, 1000);
+      expect(model.clips[0].placement.sourceEndMs, 9000);
+      expect(model.clips[0].envelope.fadeOutMs, 1000);
+      expect(model.clips[1].timelineStartMs, 7000);
+      expect(model.clips[1].envelope.fadeInMs, 1000);
     });
   });
 }

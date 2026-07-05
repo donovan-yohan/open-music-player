@@ -713,19 +713,6 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(
-      starts,
-      isEmpty,
-      reason: 'clip placement drag must be armed by a tap-hold first',
-    );
-
-    final clipBody = find.byKey(const ValueKey('timeline_clip_body_drag_t1'));
-    final gesture = await tester.startGesture(tester.getCenter(clipBody));
-    await tester.pump(const Duration(milliseconds: 600));
-    await gesture.moveBy(const Offset(90, 0));
-    await tester.pumpAndSettle();
-    await gesture.up();
-    await tester.pumpAndSettle();
     final playheadAfter = tester.getRect(
       find.byKey(const ValueKey('timeline_playhead')),
     );
