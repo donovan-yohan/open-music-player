@@ -90,6 +90,27 @@ Future<void> _pump(
   await tester.pumpAndSettle();
 }
 
+Future<void> _pinchZoom(
+  WidgetTester tester, {
+  double startDistance = 80,
+  double endDistance = 190,
+}) async {
+  final center = tester.getCenter(
+    find.byKey(const ValueKey('timeline_pan_surface')),
+  );
+  final first = await tester.createGesture(pointer: 1);
+  final second = await tester.createGesture(pointer: 2);
+  await first.down(center - Offset(startDistance / 2, 0));
+  await second.down(center + Offset(startDistance / 2, 0));
+  await tester.pump();
+  await first.moveTo(center - Offset(endDistance / 2, 0));
+  await second.moveTo(center + Offset(endDistance / 2, 0));
+  await tester.pump();
+  await first.up();
+  await second.up();
+  await tester.pumpAndSettle();
+}
+
 void main() {
   group('mock waveform fixtures', () {
     test('include near-silence and isolated transient spikes', () {
@@ -161,7 +182,7 @@ void main() {
     );
     expect(find.byKey(const ValueKey('timeline_playhead')), findsOneWidget);
     expect(find.byKey(const ValueKey('transition_window')), findsOneWidget);
-    expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_options_fab')), findsOneWidget);
 
     // Current + upcoming lanes each render header, clip and waveform.
     for (final id in ['t1', 't2', 't3']) {
@@ -242,7 +263,7 @@ void main() {
     expect(events.last, startsWith('end:'));
   });
 
-  testWidgets('edit mode ruler drag scrubs without leaving edit mode', (
+  testWidgets('selected track ruler drag scrubs without clearing selection', (
     tester,
   ) async {
     final events = <String>[];
@@ -262,7 +283,7 @@ void main() {
       onScrubEnd: (ms) async => events.add('end:$ms'),
     );
 
-    await tester.tap(find.text('Edit'));
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
     await tester.pumpAndSettle();
     await tester.drag(
       find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
@@ -411,7 +432,9 @@ void main() {
     },
   );
 
-  testWidgets('mode bar toggles browse and edit', (tester) async {
+  testWidgets('tap selects a clip and empty tap returns to browse', (
+    tester,
+  ) async {
     await _pump(
       tester,
       previous: null,
@@ -419,29 +442,23 @@ void main() {
       upcoming: const [],
     );
 
-    expect(find.text('Browse'), findsOneWidget);
-    expect(find.text('Edit'), findsOneWidget);
-    expect(find.byKey(const ValueKey('timeline_zoom_out')), findsOneWidget);
-    expect(find.byKey(const ValueKey('timeline_zoom_in')), findsOneWidget);
-    expect(find.byKey(const ValueKey('timeline_zoom_reset')), findsOneWidget);
-    expect(find.byKey(const ValueKey('timeline_zoom_label')), findsOneWidget);
-    expect(find.text('1.0x'), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_trim_start_t1')), findsNothing);
+    expect(find.byKey(const ValueKey('timeline_zoom_in')), findsNothing);
 
-    await tester.tap(find.byKey(const ValueKey('timeline_zoom_in')));
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
     await tester.pumpAndSettle();
-    expect(find.text('1.5x'), findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('timeline_trim_start_t1')), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('timeline_zoom_reset')));
+    final surface = tester.getRect(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+    );
+    await tester.tapAt(surface.bottomRight - const Offset(8, 8));
     await tester.pumpAndSettle();
-    expect(find.text('1.0x'), findsOneWidget);
-
-    await tester.tap(find.text('Edit'));
-    await tester.pumpAndSettle();
-    // No throw, mode bar still present.
-    expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_trim_start_t1')), findsNothing);
   });
 
-  testWidgets('floating options panel controls snap marker mode and zoom', (
+  testWidgets('floating options panel controls snap marker mode', (
     tester,
   ) async {
     await _pump(
@@ -459,22 +476,17 @@ void main() {
       find.byKey(const ValueKey('timeline_options_panel')),
       findsOneWidget,
     );
-    expect(find.byKey(const ValueKey('timeline_snap_1')), findsOneWidget);
-    expect(find.byKey(const ValueKey('timeline_snap_4')), findsOneWidget);
-    expect(find.byKey(const ValueKey('timeline_snap_16')), findsOneWidget);
-    expect(find.text('4 beats'), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_snap_free')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_snap_beat1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_snap_beat4')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_snap_beat16')), findsOneWidget);
+    expect(find.text('1 beat'), findsOneWidget);
 
-    await tester.tap(find.byKey(const ValueKey('timeline_snap_16')));
+    await tester.tap(find.byKey(const ValueKey('timeline_snap_beat16')));
     await tester.pumpAndSettle();
     expect(find.textContaining('16 beats'), findsWidgets);
-
-    await tester.tap(find.byKey(const ValueKey('timeline_options_zoom_in')));
-    await tester.pumpAndSettle();
     expect(
-      find.byKey(const ValueKey('timeline_options_zoom_label')),
-      findsOneWidget,
-    );
-    expect(find.text('1.5x'), findsWidgets);
+        find.byKey(const ValueKey('timeline_options_zoom_in')), findsNothing);
   });
 
   testWidgets('browse drag pans the zoomed timeline viewport', (tester) async {
@@ -485,9 +497,7 @@ void main() {
       upcoming: [_track('t2', 'Paper Planes', 240), _track('t3', 'Glass', 240)],
     );
 
-    await tester.tap(find.byKey(const ValueKey('timeline_zoom_in')));
-    await tester.pumpAndSettle();
-    expect(find.text('1.5x'), findsOneWidget);
+    await _pinchZoom(tester);
 
     final before = tester.getRect(
       find.byKey(const ValueKey('timeline_clip_t2')),
@@ -506,6 +516,63 @@ void main() {
       lessThan(before.left),
       reason: 'dragging left should pan later in shared mix time',
     );
+  });
+
+  testWidgets('pinch zoom visibly scales the timeline', (tester) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+    );
+
+    final before = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t1')),
+    );
+    await _pinchZoom(tester);
+    final after = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t1')),
+    );
+
+    expect(after.width, greaterThan(before.width));
+    expect(find.byKey(const ValueKey('timeline_zoom_in')), findsNothing);
+  });
+
+  testWidgets('selected clip still allows empty-space timeline panning', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240), _track('t3', 'Glass', 240)],
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+    expect(
+        find.byKey(const ValueKey('timeline_trim_start_t1')), findsOneWidget);
+
+    await _pinchZoom(tester);
+    final before = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    final surface = tester.getRect(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+    );
+    final gesture = await tester.startGesture(
+      surface.bottomRight - const Offset(8, 8),
+    );
+    await gesture.moveBy(const Offset(-160, 0));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    final after = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+
+    expect(after.left, lessThan(before.left));
+    expect(
+        find.byKey(const ValueKey('timeline_trim_start_t1')), findsOneWidget);
   });
 
   testWidgets('browse drag pans zoomed engine timelines with scrub handlers', (
@@ -530,9 +597,7 @@ void main() {
       onScrubEnd: (ms) async => events.add('end:$ms'),
     );
 
-    await tester.tap(find.byKey(const ValueKey('timeline_zoom_in')));
-    await tester.pumpAndSettle();
-    expect(find.text('1.5x'), findsOneWidget);
+    await _pinchZoom(tester);
 
     final before = tester.getRect(
       find.byKey(const ValueKey('timeline_clip_t2')),
@@ -568,8 +633,7 @@ void main() {
       upcoming: [second, third],
     );
 
-    await tester.tap(find.byKey(const ValueKey('timeline_zoom_in')));
-    await tester.pumpAndSettle();
+    await _pinchZoom(tester);
     await tester.drag(
       find.byKey(const ValueKey('timeline_pan_surface')),
       const Offset(-300, 0),
@@ -662,8 +726,7 @@ void main() {
         size: const Size(390, 844),
       );
 
-      await tester.tap(find.byKey(const ValueKey('timeline_zoom_in')));
-      await tester.pumpAndSettle();
+      await _pinchZoom(tester);
       await tester.drag(
         find.byKey(const ValueKey('timeline_pan_surface')),
         const Offset(-220, 0),
@@ -704,6 +767,9 @@ void main() {
       onMoveLater: (track) => movedLater.add(track.id),
     );
 
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+
     expect(
       find.byKey(const ValueKey('timeline_move_earlier_t2')),
       findsOneWidget,
@@ -736,7 +802,7 @@ void main() {
         if (track.id == 't1') starts.add(ms);
       },
     );
-    await tester.tap(find.text('Edit'));
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
     await tester.pumpAndSettle();
 
     await tester.drag(
@@ -747,7 +813,8 @@ void main() {
 
     expect(starts, hasLength(1));
     expect(starts.last, greaterThan(0));
-    expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('timeline_trim_start_t1')), findsOneWidget);
   });
 
   testWidgets('trim handles beat body drag hit-testing in edit mode', (
@@ -766,7 +833,7 @@ void main() {
         if (track.id == 't1') trimStarts.add(ms);
       },
     );
-    await tester.tap(find.text('Edit'));
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
     await tester.pumpAndSettle();
 
     await tester.drag(
@@ -800,7 +867,7 @@ void main() {
       onTrimStartChanged: null,
       onTrimEndChanged: null,
     );
-    await tester.tap(find.text('Edit'));
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
     await tester.pumpAndSettle();
 
     final clip = tester.getRect(find.byKey(const ValueKey('timeline_clip_t1')));

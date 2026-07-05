@@ -199,7 +199,7 @@ void main() {
       find.byKey(const ValueKey('stacked_waveform_timeline')),
       findsOneWidget,
     );
-    expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_options_fab')), findsOneWidget);
   });
 
   testWidgets(
@@ -379,6 +379,8 @@ void main() {
 
       await tester.tap(find.text('Timeline'));
       await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('timeline_move_later_t2')));
       await tester.pumpAndSettle();
 
@@ -443,7 +445,9 @@ void main() {
 
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Edit'));
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_playback_queue_0')),
+    );
     await tester.pumpAndSettle();
 
     await tester.drag(
@@ -455,6 +459,10 @@ void main() {
     expect(playbackState.pauseCalls, greaterThan(0));
     expect(playbackState.trimStartCalls, isNotEmpty);
 
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_playback_queue_1')),
+    );
+    await tester.pumpAndSettle();
     await tester.drag(
       find.byKey(const ValueKey('timeline_clip_body_drag_playback_queue_1')),
       const Offset(-80, 0),

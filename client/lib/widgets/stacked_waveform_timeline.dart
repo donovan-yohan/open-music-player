@@ -78,8 +78,6 @@ class StackedWaveformTimeline extends StatefulWidget {
       _StackedWaveformTimelineState();
 }
 
-enum _TimelineMode { browse, edit }
-
 enum SnapMarkerMode { free, beat1, beat4, beat16 }
 
 enum _TrimEdge { start, end }
@@ -130,19 +128,17 @@ class _LaneModel {
 class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   static const double _minZoom = 0.5;
   static const double _maxZoom = 4.0;
-  static const double _zoomStep = 0.5;
 
-  _TimelineMode _mode = _TimelineMode.browse;
   SnapMarkerMode _snapMode = SnapMarkerMode.beat1;
   double _zoom = 1.0;
   int? _manualOffsetMs;
+  String? _selectedTrackId;
   String? _activeClipDragTrackId;
   TimelineClip? _activeClipDragStartClip;
   String? _activeTrimTrackId;
   _TrimEdge? _activeTrimEdge;
   TimelineClip? _activeTrimStartClip;
   final Map<String, TimelineClip> _previewClips = {};
-  TimelineViewport? _lastViewport;
   TimelineViewport? _scaleStartViewport;
   double? _scaleStartZoom;
   bool _isScrubbing = false;
@@ -154,6 +150,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
     if (oldWidget.currentTrack.id != widget.currentTrack.id) {
       _manualOffsetMs = null;
+      _selectedTrackId = null;
       _activeClipDragTrackId = null;
       _activeClipDragStartClip = null;
       _activeTrimTrackId = null;
@@ -186,7 +183,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             },
           ),
         ),
-        _buildModeBar(context),
       ],
     );
   }
@@ -245,9 +241,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             StackedWaveformTimeline.transitionMs +
             8000;
 
-    final basePps = totalMs <= 0
+    final fitPps = totalMs <= 0
         ? TimelineViewport.minPixelsPerSecond
         : (paneWidth / (totalMs / 1000));
+    final basePps = math.max(fitPps, TimelineViewport.minPixelsPerSecond);
     final pps = (basePps * _zoom).clamp(
       TimelineViewport.minPixelsPerSecond,
       TimelineViewport.maxPixelsPerSecond,
@@ -260,7 +257,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       pixelsPerSecond: pps,
       offsetMs: viewportOffsetMs,
     );
-    _lastViewport = viewport;
 
     // --- Build lane models in stack order (history → future, top to bottom). ---
     final lanes = <_LaneModel>[];
@@ -331,18 +327,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     return GestureDetector(
       key: const ValueKey('timeline_pan_surface'),
       behavior: HitTestBehavior.opaque,
-      onScaleStart: _mode == _TimelineMode.browse
-          ? (details) => _beginViewportScale(viewport)
-          : null,
-      onScaleUpdate: _mode == _TimelineMode.browse
-          ? (details) => _updateViewportScale(viewport, details)
-          : null,
-      onScaleEnd: _mode == _TimelineMode.browse
-          ? (_) {
-              _scaleStartViewport = null;
-              _scaleStartZoom = null;
-            }
-          : null,
+      onTap: _clearSelectedTrack,
+      onScaleStart: (details) => _beginViewportScale(viewport),
+      onScaleUpdate: (details) => _updateViewportScale(viewport, details),
+      onScaleEnd: (_) {
+        _scaleStartViewport = null;
+        _scaleStartZoom = null;
+      },
       child: Stack(
         children: [
           Column(
@@ -495,8 +486,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     _previewClips.remove(trackId);
   }
 
+  bool _isTrackSelected(String trackId) => _selectedTrackId == trackId;
+
   bool _isEditingTrack(String trackId) =>
-      _activeClipDragTrackId == trackId || _activeTrimTrackId == trackId;
+      _isTrackSelected(trackId) ||
+      _activeClipDragTrackId == trackId ||
+      _activeTrimTrackId == trackId;
 
   MixClip _copyMixClipWithPlacement(MixClip clip, TimelineClip placement) =>
       MixClip(
@@ -648,6 +643,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final width = (viewport.msToX(lane.clip.timelineEndMs) -
             viewport.msToX(lane.clip.timelineStartMs))
         .clamp(8.0, double.infinity);
+    final selected = _isTrackSelected(lane.track.id);
 
     return SizedBox(
       height: lane.height,
@@ -661,8 +657,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               width: width,
               child: _buildClipSurface(context, lane, viewport),
             ),
-            if (lane.role == LaneRole.upcoming ||
-                lane.role == LaneRole.collapsed)
+            if (selected &&
+                (lane.role == LaneRole.upcoming ||
+                    lane.role == LaneRole.collapsed))
               Positioned(
                 right: 6,
                 top: 12,
@@ -693,7 +690,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     _LaneModel lane,
     TimelineViewport viewport,
   ) {
-    final editMode = _mode == _TimelineMode.edit;
+    final selected = _isTrackSelected(lane.track.id);
     final editingTrack = _isEditingTrack(lane.track.id);
     final selectedTrim = TrimRange.full(lane.clip.selectedDurationMs);
     final body = TimelineClipWidget(
@@ -715,12 +712,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           child: GestureDetector(
             key: ValueKey('timeline_clip_body_drag_${lane.track.id}'),
             behavior: HitTestBehavior.opaque,
+            onTap: () => _selectTrack(lane.track.id),
             onHorizontalDragStart:
-                editMode && widget.onTimelineStartChanged != null
+                selected && widget.onTimelineStartChanged != null
                     ? (_) => _beginClipDrag(lane)
                     : null,
             onHorizontalDragUpdate:
-                editMode && widget.onTimelineStartChanged != null
+                selected && widget.onTimelineStartChanged != null
                     ? (details) => _updateClipDrag(
                           lane,
                           viewport,
@@ -730,11 +728,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                     : null,
             onHorizontalDragEnd: (_) => _finishClipDrag(lane),
             onHorizontalDragCancel: () => _cancelClipDrag(lane.track.id),
-            onLongPressStart: editMode && widget.onTimelineStartChanged != null
+            onLongPressStart: selected && widget.onTimelineStartChanged != null
                 ? (_) => _beginClipDrag(lane)
                 : null,
             onLongPressMoveUpdate:
-                editMode && widget.onTimelineStartChanged != null
+                selected && widget.onTimelineStartChanged != null
                     ? (details) => _updateClipDrag(
                           lane,
                           viewport,
@@ -746,7 +744,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             child: body,
           ),
         ),
-        if (editMode) ...[
+        if (selected) ...[
           _trimHandle(
             key: ValueKey('timeline_trim_start_${lane.track.id}'),
             alignStart: true,
@@ -774,6 +772,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   void _beginClipDrag(_LaneModel lane) {
     setState(() {
+      _selectedTrackId = lane.track.id;
       _activeClipDragTrackId = lane.track.id;
       _activeClipDragStartClip = lane.clip;
       _storePreviewClip(lane.track, lane.clip);
@@ -826,6 +825,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   void _beginTrimDrag(_LaneModel lane, _TrimEdge edge) {
     setState(() {
+      _selectedTrackId = lane.track.id;
       _activeTrimTrackId = lane.track.id;
       _activeTrimEdge = edge;
       _activeTrimStartClip = lane.clip;
@@ -891,6 +891,20 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _activeTrimEdge = null;
       _activeTrimStartClip = null;
     });
+  }
+
+  void _selectTrack(String trackId) {
+    if (_selectedTrackId == trackId) return;
+    setState(() => _selectedTrackId = trackId);
+  }
+
+  void _clearSelectedTrack() {
+    if (_selectedTrackId == null ||
+        _activeClipDragTrackId != null ||
+        _activeTrimTrackId != null) {
+      return;
+    }
+    setState(() => _selectedTrackId = null);
   }
 
   Widget _trimHandle({
@@ -1225,30 +1239,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     setState(() => _manualOffsetMs = next.offsetMs);
   }
 
-  void _setZoom(double newZoom) {
-    final clampedZoom = newZoom.clamp(_minZoom, _maxZoom).toDouble();
-    if ((clampedZoom - _zoom).abs() < 0.01) return;
-    final viewport = _lastViewport;
-    final oldZoom = _zoom;
-    setState(() {
-      _zoom = clampedZoom;
-      if (viewport != null) {
-        final nextPps = (viewport.pixelsPerSecond * (clampedZoom / oldZoom))
-            .clamp(
-              TimelineViewport.minPixelsPerSecond,
-              TimelineViewport.maxPixelsPerSecond,
-            )
-            .toDouble();
-        _manualOffsetMs = viewport
-            .zoomAround(
-              newPixelsPerSecond: nextPps,
-              focalXPx: viewport.widthPx / 2,
-            )
-            .offsetMs;
-      }
-    });
-  }
-
   void _showOptionsPanel(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
@@ -1258,12 +1248,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           void updateSnap(SnapMarkerMode mode) {
             if (!mounted) return;
             setState(() => _snapMode = mode);
-            setSheetState(() {});
-          }
-
-          void updateZoom(int index) {
-            if (!mounted) return;
-            _setZoom(_zoom + (index * _zoomStep));
             setSheetState(() {});
           }
 
@@ -1290,177 +1274,18 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                     children: [
                       for (final mode in SnapMarkerMode.values)
                         ChoiceChip(
-                          key: ValueKey('timeline_snap_${mode.markerCount}'),
+                          key: ValueKey('timeline_snap_${mode.name}'),
                           label: Text(mode.label),
                           selected: _snapMode == mode,
                           onSelected: (_) => updateSnap(mode),
                         ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Text(
-                        'Zoom',
-                        style: Theme.of(context).textTheme.labelLarge,
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        key: const ValueKey('timeline_options_zoom_out'),
-                        tooltip: 'Zoom out timeline',
-                        onPressed:
-                            _zoom <= _minZoom ? null : () => updateZoom(-1),
-                        icon: const Icon(Icons.zoom_out),
-                      ),
-                      Text(
-                        '${_zoom.toStringAsFixed(1)}x',
-                        key: const ValueKey('timeline_options_zoom_label'),
-                      ),
-                      IconButton(
-                        key: const ValueKey('timeline_options_zoom_in'),
-                        tooltip: 'Zoom in timeline',
-                        onPressed:
-                            _zoom >= _maxZoom ? null : () => updateZoom(1),
-                        icon: const Icon(Icons.zoom_in),
-                      ),
-                    ],
-                  ),
-                  Text(
-                    'Drag clips after tap-hold; moves snap to ${_snapMode.label}.',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
                 ],
               ),
             ),
           );
         },
-      ),
-    );
-  }
-
-  Widget _buildModeBar(BuildContext context) {
-    final theme = Theme.of(context);
-    final leadingControls = [
-      _modeButton(
-        label: 'Browse',
-        icon: Icons.pan_tool_alt,
-        selected: _mode == _TimelineMode.browse,
-        onTap: () => setState(() {
-          _mode = _TimelineMode.browse;
-          _activeClipDragTrackId = null;
-          _activeClipDragStartClip = null;
-          _activeTrimTrackId = null;
-          _activeTrimEdge = null;
-          _activeTrimStartClip = null;
-        }),
-      ),
-      const SizedBox(width: 4),
-      _modeButton(
-        label: 'Edit',
-        icon: Icons.edit,
-        selected: _mode == _TimelineMode.edit,
-        onTap: () => setState(() => _mode = _TimelineMode.edit),
-      ),
-    ];
-    final trailingControls = [
-      IconButton(
-        key: const ValueKey('timeline_zoom_out'),
-        icon: const Icon(Icons.zoom_out),
-        tooltip: 'Zoom out timeline',
-        constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-        padding: EdgeInsets.zero,
-        onPressed: _zoom <= _minZoom ? null : () => _setZoom(_zoom - _zoomStep),
-      ),
-      Container(
-        key: const ValueKey('timeline_zoom_label'),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.tertiaryContainer,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(
-          '${_zoom.toStringAsFixed(1)}x',
-          style: theme.textTheme.labelSmall?.copyWith(
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ),
-      IconButton(
-        key: const ValueKey('timeline_zoom_in'),
-        icon: const Icon(Icons.zoom_in),
-        tooltip: 'Zoom in timeline',
-        constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-        padding: EdgeInsets.zero,
-        onPressed: _zoom >= _maxZoom ? null : () => _setZoom(_zoom + _zoomStep),
-      ),
-      IconButton(
-        key: const ValueKey('timeline_zoom_reset'),
-        icon: const Icon(Icons.zoom_out_map),
-        tooltip: 'Reset timeline zoom',
-        constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-        padding: EdgeInsets.zero,
-        onPressed: (_zoom - 1.0).abs() < 0.01 ? null : () => _setZoom(1.0),
-      ),
-    ];
-
-    return Container(
-      key: const ValueKey('timeline_mode_bar'),
-      height: 60,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        border: Border(top: BorderSide(color: theme.dividerColor)),
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          return FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.center,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ...leadingControls,
-                const SizedBox(width: 16),
-                ...trailingControls,
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _modeButton({
-    required String label,
-    required IconData icon,
-    required bool selected,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        constraints: const BoxConstraints(minHeight: 44, minWidth: 44),
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        decoration: BoxDecoration(
-          color: selected
-              ? StackedWaveformTimeline.currentAccent.withValues(alpha: 0.15)
-              : null,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: selected
-                ? StackedWaveformTimeline.currentAccent
-                : Colors.transparent,
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 18),
-            const SizedBox(width: 6),
-            Text(label),
-          ],
-        ),
       ),
     );
   }
