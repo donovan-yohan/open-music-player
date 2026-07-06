@@ -15,7 +15,8 @@ import 'timeline_clip_widget.dart';
 /// The dominant object is a stack of overlapping waveform lanes sharing a single
 /// global playhead — not list rows or cards. Previous / current / upcoming clips
 /// are placed on one timeline with synthetic transition windows so overlap is
-/// visible. Offscreen clips surface as left history / right future teasers.
+/// visible. Lane identity stays inside each row so the timeline can converge
+/// with the queue list instead of relying on separate edge controls.
 ///
 /// Source trim stays separate from timeline placement. Engine-backed callers
 /// provide real [TimelineModel] clips plus the raw global playhead stream;
@@ -319,12 +320,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       paneWidth,
     );
 
-    final historyAgoMs = playheadMs -
-        (placed[widget.previousTrack]?.timelineEndMs ?? playheadMs);
-    final futureInMs = (upcoming.isNotEmpty
-            ? placed[upcoming.first]!.timelineStartMs
-            : playheadMs) -
-        playheadMs;
     final dominantClip = _dominantClipAt(
       placed.values.toList(growable: false),
       playheadMs,
@@ -417,43 +412,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                 ),
                 onHorizontalDragEnd: (_) => _endScrub(),
                 onHorizontalDragCancel: _endScrub,
-              ),
-            ),
-
-          // Left-edge history teaser for the offscreen played clip.
-          if (widget.previousTrack != null)
-            Positioned(
-              key: const ValueKey('left_history_teaser'),
-              left: StackedWaveformTimeline.railWidth + 4,
-              top: 6,
-              child: _edgeTeaser(
-                context,
-                icon: Icons.history,
-                label: '${widget.previousTrack!.title} · ended '
-                    '${_formatClock(historyAgoMs.abs())} ago',
-                accent: StackedWaveformTimeline.previousAccent,
-                onTap: () => _jumpToClip(
-                  placed[widget.previousTrack!]!.placement,
-                  viewport,
-                  alignEnd: true,
-                ),
-              ),
-            ),
-
-          // Right-edge future teaser / countdown for the offscreen next clip.
-          if (upcoming.isNotEmpty)
-            Positioned(
-              key: const ValueKey('right_future_teaser'),
-              right: 4,
-              top: 6,
-              child: _edgeTeaser(
-                context,
-                icon: Icons.fast_forward,
-                label: '${upcoming.first.title} · starts in '
-                    '${_formatClock(futureInMs.abs())}',
-                accent: StackedWaveformTimeline.upcomingAccent,
-                onTap: () =>
-                    _jumpToClip(placed[upcoming.first]!.placement, viewport),
               ),
             ),
 
@@ -1164,46 +1122,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
   }
 
-  Widget _edgeTeaser(
-    BuildContext context, {
-    required IconData icon,
-    required String label,
-    required Color accent,
-    VoidCallback? onTap,
-  }) {
-    return Semantics(
-      button: onTap != null,
-      label: label,
-      child: Material(
-        color: accent.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(12),
-          child: Container(
-            constraints: const BoxConstraints(maxWidth: 150, minHeight: 32),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 12, color: Colors.white),
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(
-                    label,
-                    style: const TextStyle(color: Colors.white, fontSize: 11),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   void _panViewport(TimelineViewport viewport, double deltaXPx) {
     if (!deltaXPx.isFinite || deltaXPx == 0) return;
     final baseViewport = _manualOffsetMs == null
@@ -1370,18 +1288,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     });
   }
 
-  void _jumpToClip(
-    TimelineClip clip,
-    TimelineViewport viewport, {
-    bool alignEnd = false,
-  }) {
-    final target = alignEnd
-        ? clip.timelineEndMs - viewport.visibleDurationMs
-        : clip.timelineStartMs;
-    final next = viewport.panToOffsetMs(target);
-    setState(() => _manualOffsetMs = next.offsetMs);
-  }
-
   void _showOptionsPanel(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
@@ -1452,17 +1358,24 @@ class _RulerPainter extends CustomPainter {
     final tick = Paint()
       ..color = color
       ..strokeWidth = 1;
-    // One label every ~15s, scaled to whatever fits.
-    const stepMs = 15000;
-    final firstTickMs = (viewport.offsetMs ~/ stepMs) * stepMs;
+    final majorStepMs = _majorStepMsFor(viewport.pixelsPerSecond);
+    final minorStepMs = math.max(5000, majorStepMs ~/ 4);
+    final firstTickMs = (viewport.offsetMs ~/ minorStepMs) * minorStepMs;
     final lastTickMs = (viewport.offsetMs + viewport.visibleDurationMs).clamp(
       0,
       viewport.durationMs,
     );
-    for (var ms = firstTickMs; ms <= lastTickMs; ms += stepMs) {
+    var lastLabelRight = -double.infinity;
+    for (var ms = firstTickMs; ms <= lastTickMs; ms += minorStepMs) {
       final x = viewport.msToX(ms);
       if (x < 0 || x > size.width) continue;
-      canvas.drawLine(Offset(x, size.height - 8), Offset(x, size.height), tick);
+      final major = ms % majorStepMs == 0;
+      canvas.drawLine(
+        Offset(x, size.height - (major ? 10 : 6)),
+        Offset(x, size.height),
+        tick,
+      );
+      if (!major) continue;
       final tp = TextPainter(
         text: TextSpan(
           text: _formatClock(ms),
@@ -1470,8 +1383,30 @@ class _RulerPainter extends CustomPainter {
         ),
         textDirection: TextDirection.ltr,
       )..layout();
+      if (x < lastLabelRight + 6) continue;
       tp.paint(canvas, Offset(x + 2, 2));
+      lastLabelRight = x + 2 + tp.width;
     }
+  }
+
+  int _majorStepMsFor(double pixelsPerSecond) {
+    const minLabelSpacingPx = 64.0;
+    const candidates = <int>[
+      15000,
+      30000,
+      60000,
+      120000,
+      300000,
+      600000,
+      900000,
+      1800000,
+      3600000,
+    ];
+    for (final stepMs in candidates) {
+      final spacing = (stepMs / 1000) * pixelsPerSecond;
+      if (spacing >= minLabelSpacingPx) return stepMs;
+    }
+    return candidates.last;
   }
 
   @override

@@ -196,8 +196,8 @@ void main() {
       expect(find.byKey(ValueKey('timeline_waveform_$id')), findsOneWidget);
     }
 
-    // Right future teaser present; no previous → no history teaser.
-    expect(find.byKey(const ValueKey('right_future_teaser')), findsOneWidget);
+    // Edge teaser chips stay out of the timeline chrome; lane rows carry identity.
+    expect(find.byKey(const ValueKey('right_future_teaser')), findsNothing);
     expect(find.byKey(const ValueKey('left_history_teaser')), findsNothing);
   });
 
@@ -414,7 +414,7 @@ void main() {
     }
   });
 
-  testWidgets('renders left history teaser when a previous clip exists', (
+  testWidgets('renders previous lane without edge teaser chips', (
     tester,
   ) async {
     await _pump(
@@ -424,14 +424,14 @@ void main() {
       upcoming: [_track('t2', 'Paper Planes', 188)],
     );
 
-    expect(find.byKey(const ValueKey('left_history_teaser')), findsOneWidget);
-    expect(find.byKey(const ValueKey('right_future_teaser')), findsOneWidget);
+    expect(find.byKey(const ValueKey('left_history_teaser')), findsNothing);
+    expect(find.byKey(const ValueKey('right_future_teaser')), findsNothing);
     expect(
       find.byKey(const ValueKey('timeline_lane_header_t0')),
       findsOneWidget,
     );
-    expect(find.textContaining('ended'), findsOneWidget);
-    expect(find.textContaining('starts in'), findsOneWidget);
+    expect(find.textContaining('ended'), findsNothing);
+    expect(find.textContaining('starts in'), findsNothing);
   });
 
   testWidgets('handles zero-duration current and upcoming tracks', (
