@@ -128,6 +128,8 @@ class _LaneModel {
 class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   static const double _minZoom = 0.5;
   static const double _maxZoom = 4.0;
+  static const double _scrubEdgeScrollZonePx = 56;
+  static const double _scrubMaxEdgeScrollPx = 32;
 
   SnapMarkerMode _snapMode = SnapMarkerMode.beat1;
   double _zoom = 1.0;
@@ -141,7 +143,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   final Map<String, TimelineClip> _previewClips = {};
   TimelineViewport? _scaleStartViewport;
   double? _scaleStartZoom;
+  double? _scaleLastLocalFocalX;
   bool _isScrubbing = false;
+  bool _preserveViewportForScrub = false;
   int? _lastScrubMs;
 
   @override
@@ -149,6 +153,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     super.didUpdateWidget(oldWidget);
 
     if (oldWidget.currentTrack.id != widget.currentTrack.id) {
+      if (_isScrubbing || _preserveViewportForScrub) {
+        if (!_isScrubbing) {
+          _preserveViewportForScrub = false;
+        }
+        return;
+      }
       _manualOffsetMs = null;
       _selectedTrackId = null;
       _activeClipDragTrackId = null;
@@ -328,11 +338,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       key: const ValueKey('timeline_pan_surface'),
       behavior: HitTestBehavior.opaque,
       onTap: _clearSelectedTrack,
-      onScaleStart: (details) => _beginViewportScale(viewport),
+      onScaleStart: (details) => _beginViewportScale(viewport, details),
       onScaleUpdate: (details) => _updateViewportScale(viewport, details),
       onScaleEnd: (_) {
         _scaleStartViewport = null;
         _scaleStartZoom = null;
+        _scaleLastLocalFocalX = null;
       },
       child: Stack(
         children: [
@@ -1134,14 +1145,21 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   void _panViewport(TimelineViewport viewport, double deltaXPx) {
     if (!deltaXPx.isFinite || deltaXPx == 0) return;
-    final next = viewport.panByPixels(deltaXPx);
-    if (next.offsetMs == viewport.offsetMs) return;
+    final baseViewport = _manualOffsetMs == null
+        ? viewport
+        : viewport.panToOffsetMs(_manualOffsetMs!);
+    final next = baseViewport.panByPixels(deltaXPx);
+    if (next.offsetMs == baseViewport.offsetMs) return;
     setState(() => _manualOffsetMs = next.offsetMs);
   }
 
-  void _beginViewportScale(TimelineViewport viewport) {
+  void _beginViewportScale(
+    TimelineViewport viewport,
+    ScaleStartDetails details,
+  ) {
     _scaleStartViewport = viewport;
     _scaleStartZoom = _zoom;
+    _scaleLastLocalFocalX = details.localFocalPoint.dx;
   }
 
   void _updateViewportScale(
@@ -1174,7 +1192,16 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       return;
     }
 
-    _panViewport(viewport, -details.focalPointDelta.dx);
+    final previousFocalX = _scaleLastLocalFocalX;
+    var dragDeltaPx = details.focalPointDelta.dx;
+    if (previousFocalX != null) {
+      final localDeltaPx = details.localFocalPoint.dx - previousFocalX;
+      if (localDeltaPx != 0) {
+        dragDeltaPx = localDeltaPx;
+      }
+    }
+    _scaleLastLocalFocalX = details.localFocalPoint.dx;
+    _panViewport(viewport, -dragDeltaPx);
   }
 
   bool get _hasScrubHandlers =>
@@ -1199,8 +1226,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     double localX,
   ) {
     final ms = _timelineMsForPointer(viewport, paneWidth, localX);
-    _isScrubbing = true;
-    _lastScrubMs = ms;
+    setState(() {
+      _isScrubbing = true;
+      _preserveViewportForScrub = true;
+      _manualOffsetMs ??= viewport.offsetMs;
+      _lastScrubMs = ms;
+    });
     widget.onScrubStart?.call();
   }
 
@@ -1212,19 +1243,70 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     if (!_isScrubbing) {
       _beginScrubAt(viewport, paneWidth, localX);
     }
-    final ms = _timelineMsForPointer(viewport, paneWidth, localX);
+    final effectiveViewport = _autoPanViewportNearScrubEdge(
+      viewport,
+      paneWidth,
+      localX,
+    );
+    final ms = _timelineMsForPointer(effectiveViewport, paneWidth, localX);
     _lastScrubMs = ms;
     widget.onScrubUpdate?.call(ms);
   }
 
   void _endScrub() {
     final ms = _lastScrubMs ?? widget.playheadPositionMs;
-    _isScrubbing = false;
-    _lastScrubMs = null;
+    setState(() {
+      _isScrubbing = false;
+      _lastScrubMs = null;
+    });
     final end = widget.onScrubEnd;
     if (end != null) {
-      end(ms);
+      end(ms).whenComplete(_releaseScrubViewportLockAfterFrame);
+    } else {
+      _releaseScrubViewportLockAfterFrame();
     }
+  }
+
+  TimelineViewport _autoPanViewportNearScrubEdge(
+    TimelineViewport viewport,
+    double paneWidth,
+    double localX,
+  ) {
+    final baseViewport = _manualOffsetMs == null
+        ? viewport
+        : viewport.panToOffsetMs(_manualOffsetMs!);
+    final paneX = (localX - StackedWaveformTimeline.railWidth)
+        .clamp(0.0, paneWidth)
+        .toDouble();
+    final leftDistance = paneX;
+    final rightDistance = paneWidth - paneX;
+    var panPx = 0.0;
+
+    if (leftDistance < _scrubEdgeScrollZonePx) {
+      final intensity =
+          ((_scrubEdgeScrollZonePx - leftDistance) / _scrubEdgeScrollZonePx)
+              .clamp(0.0, 1.0);
+      panPx = -_scrubMaxEdgeScrollPx * intensity;
+    } else if (rightDistance < _scrubEdgeScrollZonePx) {
+      final intensity =
+          ((_scrubEdgeScrollZonePx - rightDistance) / _scrubEdgeScrollZonePx)
+              .clamp(0.0, 1.0);
+      panPx = _scrubMaxEdgeScrollPx * intensity;
+    }
+
+    if (panPx == 0) return baseViewport;
+    final next = baseViewport.panByPixels(panPx);
+    if (next.offsetMs != baseViewport.offsetMs) {
+      setState(() => _manualOffsetMs = next.offsetMs);
+    }
+    return next;
+  }
+
+  void _releaseScrubViewportLockAfterFrame() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _isScrubbing) return;
+      _preserveViewportForScrub = false;
+    });
   }
 
   void _jumpToClip(

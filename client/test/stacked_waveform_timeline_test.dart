@@ -56,6 +56,7 @@ Future<void> _pump(
   void Function(Track, int)? onTimelineStartChanged,
   void Function(Track, int)? onTrimStartChanged,
   void Function(Track, int)? onTrimEndChanged,
+  bool settle = true,
 }) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
@@ -87,7 +88,11 @@ Future<void> _pump(
       ),
     ),
   );
-  await tester.pumpAndSettle();
+  if (settle) {
+    await tester.pumpAndSettle();
+  } else {
+    await tester.pump();
+  }
 }
 
 Future<void> _pinchZoom(
@@ -561,7 +566,7 @@ void main() {
       find.byKey(const ValueKey('timeline_pan_surface')),
     );
     final gesture = await tester.startGesture(
-      surface.bottomRight - const Offset(8, 8),
+      surface.bottomRight - const Offset(96, 24),
     );
     await gesture.moveBy(const Offset(-160, 0));
     await gesture.up();
@@ -654,6 +659,116 @@ void main() {
       reason: 'new current clip should auto-follow after playback advances',
     );
     expect(find.byKey(const ValueKey('timeline_playhead')), findsOneWidget);
+  });
+
+  testWidgets('current track changes during scrub preserve the viewport', (
+    tester,
+  ) async {
+    final events = <String>[];
+    final first = _track('t1', 'Midnight Drive', 240);
+    final second = _track('t2', 'Paper Planes', 240);
+    final third = _track('t3', 'Glass', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: first,
+      upcoming: [second, third],
+      onScrubStart: () => events.add('begin'),
+      onScrubUpdate: (ms) => events.add('update:$ms'),
+      onScrubEnd: (ms) async => events.add('end:$ms'),
+    );
+
+    final before = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    final ruler = tester.getRect(
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+    );
+    final gesture = await tester.startGesture(ruler.center);
+    await gesture.moveBy(const Offset(80, 0));
+    await tester.pump();
+
+    await _pump(
+      tester,
+      previous: first,
+      current: second,
+      upcoming: [third],
+      onScrubStart: () => events.add('begin'),
+      onScrubUpdate: (ms) => events.add('update:$ms'),
+      onScrubEnd: (ms) async => events.add('end:$ms'),
+      settle: false,
+    );
+
+    final during = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    expect(
+      during.left,
+      closeTo(before.left, 1),
+      reason:
+          'scrubbing into the next song must not auto-follow and move the pane',
+    );
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(events.first, 'begin');
+  });
+
+  testWidgets('scrub drag only pans when held near a horizontal edge', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    final later = _track('t3', 'Glass', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next, later],
+      onScrubStart: () {},
+      onScrubUpdate: (_) {},
+      onScrubEnd: (_) async {},
+    );
+
+    final ruler = tester.getRect(
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+    );
+    final beforeCenter = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    final centerGesture = await tester.startGesture(ruler.center);
+    await centerGesture.moveBy(const Offset(80, 0));
+    await tester.pump();
+    final afterCenter = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    expect(afterCenter.left, closeTo(beforeCenter.left, 1));
+    await centerGesture.up();
+    await tester.pumpAndSettle();
+
+    final beforeEdge = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    final edgeGesture = await tester.startGesture(
+      Offset(ruler.right - 4, ruler.center.dy),
+    );
+    await edgeGesture.moveBy(const Offset(24, 0));
+    await edgeGesture.moveBy(const Offset(24, 0));
+    await tester.pump();
+    final afterEdge = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+
+    expect(
+      afterEdge.left,
+      lessThan(beforeEdge.left),
+      reason: 'edge scrub should reveal later timeline content',
+    );
+
+    await edgeGesture.up();
+    await tester.pumpAndSettle();
   });
 
   testWidgets('no-op edge pan does not create a manual offset lock', (
