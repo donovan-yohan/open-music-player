@@ -21,14 +21,14 @@ void main() {
 
       expect(harness.controller.currentIndex, 1);
       expect(harness.engine.model.clips.map((clip) => clip.queueItemId), [
-        '0',
-        '1',
-        '2',
+        'session_1_item_0',
+        'session_1_item_1',
+        'session_1_item_2',
       ]);
       expect(harness.engine.model.clips.map((clip) => clip.id), [
-        'session_1_queue_0',
-        'session_1_queue_1',
-        'session_1_queue_2',
+        'session_1_clip_0',
+        'session_1_clip_1',
+        'session_1_clip_2',
       ]);
       expect(harness.engine.positionMs, 5000);
 
@@ -64,10 +64,10 @@ void main() {
       expect(snapshot.localDuration, const Duration(seconds: 7));
       expect(snapshot.globalPosition, Duration.zero);
       expect(snapshot.globalDuration, const Duration(seconds: 7));
-      expect(snapshot.cues.single.cueId, '${snapshot.sessionId}_queue_0');
+      expect(snapshot.cues.single.cueId, '${snapshot.sessionId}_clip_0');
       expect(harness.engine.model.clips.map((clip) => clip.trackId), ['b']);
-      expect(harness.engine.model.clips.single.id,
-          '${snapshot.sessionId}_queue_0');
+      expect(
+          harness.engine.model.clips.single.id, '${snapshot.sessionId}_clip_0');
 
       await harness.dispose();
     });
@@ -87,11 +87,14 @@ void main() {
         expect(harness.controller.shuffleEnabled, isTrue);
         expect(harness.controller.currentIndex, 1);
         expect(harness.controller.currentMediaItem?.id, '2');
-        expect(harness.engine.model.clips.first.queueItemId, '1');
+        expect(
+          harness.engine.model.clips.first.queueItemId,
+          'session_1_item_1',
+        );
         expect(harness.engine.model.clips.map((clip) => clip.queueItemId), [
-          '1',
-          '2',
-          '0',
+          'session_1_item_1',
+          'session_1_item_2',
+          'session_1_item_0',
         ]);
 
         await harness.dispose();
@@ -159,8 +162,8 @@ void main() {
       expect(harness.controller.queue.map((item) => item.id), ['1', '2']);
       expect(harness.controller.currentIndex, 0);
       expect(harness.engine.model.clips.map((clip) => clip.queueItemId), [
-        '0',
-        '1',
+        'session_1_item_0',
+        'session_1_item_1',
       ]);
       expect(currentVoice.isPlaying, isTrue);
       expect(currentVoice.pauseCount, 0);

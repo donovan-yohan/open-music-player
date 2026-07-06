@@ -50,7 +50,7 @@ class QueueTimelineController {
 
   List<MediaItem> _queue = const [];
   List<int> _playOrder = const [];
-  Map<int, TimelineClip> _cueOverrides = const {};
+  MixSession _session = MixSession.empty();
   CueTimeline _cueTimeline = CueTimeline.empty;
   int _sessionGeneration = 0;
   String _sessionId = 'session_0';
@@ -63,6 +63,7 @@ class QueueTimelineController {
   Future<void> _commandChain = Future<void>.value();
 
   PlaybackEngine get engine => _engine;
+  MixSession get session => _session;
   List<MediaItem> get queue => _queue;
   int? get currentIndex => _currentIndex;
   MediaItem? get currentMediaItem => _currentMediaItemSubject.valueOrNull;
@@ -99,6 +100,7 @@ class QueueTimelineController {
     int initialIndex = 0,
     Duration initialPosition = Duration.zero,
     bool preserveTimelineEdits = false,
+    MixSession? session,
   }) async {
     await _enqueueCommand(
       () => _setQueue(
@@ -106,6 +108,7 @@ class QueueTimelineController {
         initialIndex: initialIndex,
         initialPosition: initialPosition,
         preserveTimelineEdits: preserveTimelineEdits,
+        session: session,
       ),
     );
   }
@@ -115,17 +118,21 @@ class QueueTimelineController {
     int initialIndex = 0,
     Duration initialPosition = Duration.zero,
     bool preserveTimelineEdits = false,
+    MixSession? session,
   }) async {
     await start();
     _sessionGeneration += 1;
-    _sessionId = 'session_$_sessionGeneration';
     _queue = List.unmodifiable(items);
     _playOrder = [for (var i = 0; i < _queue.length; i++) i];
-    _cueOverrides = preserveTimelineEdits
-        ? _pruneCueOverrides(_cueOverrides, _queue.length)
-        : const {};
+    _sessionId = session?.sessionId ?? 'session_$_sessionGeneration';
+    _session = session == null
+        ? (preserveTimelineEdits
+            ? _session.normalizedForQueue(_queue)
+            : MixSession.fromQueue(sessionId: _sessionId, queue: _queue))
+        : session.normalizedForQueue(_queue);
     if (_queue.isEmpty) {
       _currentIndex = null;
+      _session = MixSession.empty(sessionId: _sessionId);
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
       await _engine.pause();
@@ -155,12 +162,18 @@ class QueueTimelineController {
   Future<void> _insertIntoQueue(int index, MediaItem item) async {
     final insertIndex = index.clamp(0, _queue.length).toInt();
     final previousCurrent = _currentIndex;
+    final previousCurrentQueueItemId = previousCurrent == null
+        ? null
+        : _session.clipAt(previousCurrent)?.queueItemId;
     final localPosition = livePosition.inMilliseconds;
-    final preserveActivePlayback =
-        _canPreserveActivePlaybackForFutureInsert(insertIndex, previousCurrent);
+    final preserveActivePlayback = _canPreserveActivePlaybackForFutureInsert(
+      insertIndex,
+      previousCurrent,
+      previousCurrentQueueItemId,
+    );
     final nextQueue = List<MediaItem>.from(_queue)..insert(insertIndex, item);
     _queue = List.unmodifiable(nextQueue);
-    _cueOverrides = _shiftCueOverridesForInsert(_cueOverrides, insertIndex);
+    _session = _session.insertAt(insertIndex, item).normalizedForQueue(_queue);
     if (previousCurrent == null) {
       _currentIndex = 0;
     } else if (insertIndex <= previousCurrent) {
@@ -186,10 +199,11 @@ class QueueTimelineController {
     final localPosition = livePosition.inMilliseconds;
     final nextQueue = List<MediaItem>.from(_queue)..removeAt(index);
     _queue = List.unmodifiable(nextQueue);
-    _cueOverrides = _shiftCueOverridesForRemove(_cueOverrides, index);
+    _session = _session.removeAt(index).normalizedForQueue(_queue);
     if (_queue.isEmpty) {
       _currentIndex = null;
       _playOrder = const [];
+      _session = MixSession.empty(sessionId: _sessionId);
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
       await _engine.pause();
@@ -225,11 +239,7 @@ class QueueTimelineController {
     final item = nextQueue.removeAt(oldIndex);
     nextQueue.insert(newIndex, item);
     _queue = List.unmodifiable(nextQueue);
-    _cueOverrides = _remapCueOverridesForReorder(
-      _cueOverrides,
-      oldIndex,
-      newIndex,
-    );
+    _session = _session.reorder(oldIndex, newIndex).normalizedForQueue(_queue);
 
     if (_currentIndex == oldIndex) {
       _currentIndex = newIndex;
@@ -244,13 +254,14 @@ class QueueTimelineController {
     }
 
     _rebuildPlayOrderKeepCurrent();
+    _session = _session.reflowedByOrder(_playOrder);
     _processingState = ProcessingState.ready;
     await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
     _publishQueueState();
   }
 
   TimelineClip? timelineClipForIndex(int index) =>
-      _cueTimeline.cueForQueueIndex(index)?.placement;
+      _session.clipAt(index)?.placement;
 
   Future<void> setTimelineStartMs(int index, int ms) async {
     await _enqueueCommand(() => _setTimelineStartMs(index, ms));
@@ -411,6 +422,7 @@ class QueueTimelineController {
       _currentIndex = current;
     }
     _rebuildPlayOrderKeepCurrent();
+    _session = _session.reflowedByOrder(_playOrder);
     await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
     if (current != null && current >= 0 && current < _queue.length) {
       _currentIndex = current;
@@ -493,11 +505,11 @@ class QueueTimelineController {
     int localPositionMs = 0,
     bool preserveActivePlayback = false,
   }) async {
-    _cueTimeline = CueTimeline.editedQueue(
-      sessionId: _sessionId,
+    _session = _session.normalizedForQueue(_queue);
+    _cueTimeline = CueTimeline.fromSession(
+      session: _session,
       queue: _queue,
       playOrder: _playOrder,
-      placements: _cueOverrides,
     );
     _suppressPositionSync = true;
     try {
@@ -518,16 +530,18 @@ class QueueTimelineController {
   bool _canPreserveActivePlaybackForFutureInsert(
     int insertIndex,
     int? previousCurrent,
+    String? previousCurrentQueueItemId,
   ) {
     if (!_engine.isPlaying || previousCurrent == null) return false;
+    if (previousCurrentQueueItemId == null) return false;
     if (insertIndex <= previousCurrent) return false;
     final active = _engine.model.activeClipsAt(_engine.positionMs);
     return active.length == 1 &&
-        active.single.queueItemId == previousCurrent.toString();
+        active.single.queueItemId == previousCurrentQueueItemId;
   }
 
   TimelineClip _placementForIndex(int index) {
-    final current = _cueTimeline.cueForQueueIndex(index)?.placement;
+    final current = _session.clipAt(index)?.placement;
     if (current != null) return current;
 
     final item = _queue[index];
@@ -543,22 +557,20 @@ class QueueTimelineController {
   }
 
   Future<void> _applyCueOverride(int index, TimelineClip placement) async {
-    final nextOverrides = Map<int, TimelineClip>.from(_cueOverrides)
-      ..[index] = placement;
-    if (!_canApplyCueOverrides(nextOverrides)) return;
+    final nextSession = _session.withPlacementAt(index, placement);
+    if (!_canApplySession(nextSession)) return;
 
     final localPosition = livePosition.inMilliseconds;
-    _cueOverrides = Map.unmodifiable(nextOverrides);
+    _session = nextSession.normalizedForQueue(_queue);
     await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
     _publishQueueState();
   }
 
-  bool _canApplyCueOverrides(Map<int, TimelineClip> overrides) {
-    final timeline = CueTimeline.editedQueue(
-      sessionId: _sessionId,
+  bool _canApplySession(MixSession session) {
+    final timeline = CueTimeline.fromSession(
+      session: session,
       queue: _queue,
       playOrder: _playOrder,
-      placements: overrides,
     );
     var model = TimelineModel();
     for (final cue in timeline.cues) {
@@ -567,55 +579,6 @@ class QueueTimelineController {
       model = model.addClip(clip);
     }
     return true;
-  }
-
-  Map<int, TimelineClip> _pruneCueOverrides(
-    Map<int, TimelineClip> overrides,
-    int queueLength,
-  ) =>
-      Map.unmodifiable({
-        for (final entry in overrides.entries)
-          if (entry.key >= 0 && entry.key < queueLength) entry.key: entry.value,
-      });
-
-  Map<int, TimelineClip> _shiftCueOverridesForInsert(
-    Map<int, TimelineClip> overrides,
-    int insertIndex,
-  ) =>
-      Map.unmodifiable({
-        for (final entry in overrides.entries)
-          (entry.key >= insertIndex ? entry.key + 1 : entry.key): entry.value,
-      });
-
-  Map<int, TimelineClip> _shiftCueOverridesForRemove(
-    Map<int, TimelineClip> overrides,
-    int removedIndex,
-  ) =>
-      Map.unmodifiable({
-        for (final entry in overrides.entries)
-          if (entry.key != removedIndex)
-            (entry.key > removedIndex ? entry.key - 1 : entry.key): entry.value,
-      });
-
-  Map<int, TimelineClip> _remapCueOverridesForReorder(
-    Map<int, TimelineClip> overrides,
-    int oldIndex,
-    int newIndex,
-  ) {
-    int remap(int index) {
-      if (index == oldIndex) return newIndex;
-      if (oldIndex < newIndex && index > oldIndex && index <= newIndex) {
-        return index - 1;
-      }
-      if (oldIndex > newIndex && index >= newIndex && index < oldIndex) {
-        return index + 1;
-      }
-      return index;
-    }
-
-    return Map.unmodifiable({
-      for (final entry in overrides.entries) remap(entry.key): entry.value,
-    });
   }
 
   void _rebuildPlayOrderKeepCurrent() {
@@ -737,8 +700,10 @@ class QueueTimelineController {
   MixClip? _currentClip() {
     final current = _currentIndex;
     if (current == null) return null;
+    final queueItemId = _session.clipAt(current)?.queueItemId;
+    if (queueItemId == null) return null;
     for (final clip in _engine.model.clips) {
-      if (clip.queueItemId == current.toString()) return clip;
+      if (clip.queueItemId == queueItemId) return clip;
     }
     return null;
   }
@@ -807,7 +772,10 @@ class QueueTimelineController {
       _publishQueueState(includeQueue: false);
       return;
     }
-    final completedIndex = int.tryParse(clip.queueItemId ?? '');
+    final completedQueueItemId = clip.queueItemId;
+    final completedIndex = completedQueueItemId == null
+        ? null
+        : _cueTimeline.cueForQueueItemId(completedQueueItemId)?.queueIndex;
     if (completedIndex == null ||
         completedIndex < 0 ||
         completedIndex >= _queue.length) {

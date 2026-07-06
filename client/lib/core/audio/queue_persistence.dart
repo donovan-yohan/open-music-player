@@ -4,6 +4,8 @@ import 'dart:math';
 import 'package:audio_service/audio_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'playback_session.dart';
+
 /// Pure, testable decisions and (de)serialization for resumable playback:
 ///   * [QueueSnapshot] — the persisted listening queue (track playback-json
 ///     list + current index + last position), with round-trip encode/decode.
@@ -40,11 +42,13 @@ class QueueSnapshot {
   final List<Map<String, dynamic>> tracks;
   final int currentIndex;
   final int positionMs;
+  final MixSession? session;
 
   const QueueSnapshot({
     this.tracks = const [],
     this.currentIndex = 0,
     this.positionMs = 0,
+    this.session,
   });
 
   bool get isEmpty => tracks.isEmpty;
@@ -53,6 +57,7 @@ class QueueSnapshot {
         'tracks': tracks,
         'currentIndex': currentIndex,
         'positionMs': positionMs,
+        if (session != null) 'session': session!.toJson(),
       };
 
   factory QueueSnapshot.fromJson(Map<String, dynamic> json) {
@@ -73,10 +78,17 @@ class QueueSnapshot {
     final rawPosition = (json['positionMs'] as num?)?.toInt() ?? 0;
     final positionMs = rawPosition < 0 ? 0 : rawPosition;
 
+    MixSession? session;
+    final rawSession = json['session'];
+    if (rawSession is Map) {
+      session = MixSession.fromJson(Map<String, dynamic>.from(rawSession));
+    }
+
     return QueueSnapshot(
       tracks: tracks,
       currentIndex: currentIndex,
       positionMs: positionMs,
+      session: session,
     );
   }
 
@@ -117,7 +129,10 @@ List<int> shufflePermutation(
   final current =
       (currentIndex < 0 || currentIndex >= length) ? 0 : currentIndex;
 
-  final natural = [for (var i = 0; i < length; i++) if (i != current) i];
+  final natural = [
+    for (var i = 0; i < length; i++)
+      if (i != current) i
+  ];
   final others = List<int>.of(natural);
 
   // Fisher-Yates shuffle of the non-current indices.

@@ -2,7 +2,9 @@ import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/queue_persistence.dart';
+import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 Map<String, dynamic> _track(int id) => {
@@ -29,6 +31,51 @@ void main() {
       expect(restored.currentIndex, 2);
       expect(restored.positionMs, 45123);
       expect(restored.isEmpty, isFalse);
+    });
+
+    test('canonical mix session timing survives encode -> decode', () {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_1',
+        queue: [
+          const MediaItem(
+            id: '1',
+            title: 'Track 1',
+            duration: Duration(seconds: 30),
+          ),
+          const MediaItem(
+            id: '2',
+            title: 'Track 2',
+            duration: Duration(seconds: 45),
+          ),
+        ],
+      ).withPlacementAt(
+        1,
+        TimelineClip.clamped(
+          id: 'ignored',
+          trackId: '2',
+          sourceDurationMs: 45000,
+          sourceStartMs: 5000,
+          sourceEndMs: 40000,
+          timelineStartMs: 25000,
+        ),
+      );
+      final snapshot = QueueSnapshot(
+        tracks: [_track(1), _track(2)],
+        currentIndex: 1,
+        positionMs: 7000,
+        session: session,
+      );
+
+      final restored = QueueSnapshot.decode(snapshot.encode());
+
+      expect(restored.session?.sessionId, 'session_1');
+      expect(restored.session?.clips.map((clip) => clip.queueItemId), [
+        'session_1_item_0',
+        'session_1_item_1',
+      ]);
+      expect(restored.session?.clips[1].sourceStartMs, 5000);
+      expect(restored.session?.clips[1].sourceEndMs, 40000);
+      expect(restored.session?.clips[1].timelineStartMs, 25000);
     });
 
     test('an empty snapshot round-trips to an empty (no-op) snapshot', () {
@@ -181,7 +228,8 @@ void main() {
       expect((await store.load()).isEmpty, isTrue);
     });
 
-    test('load with no stored value yields an empty (no-op) snapshot', () async {
+    test('load with no stored value yields an empty (no-op) snapshot',
+        () async {
       SharedPreferences.setMockInitialValues({});
       final store = QueuePersistenceStore(
         prefs: SharedPreferences.getInstance(),

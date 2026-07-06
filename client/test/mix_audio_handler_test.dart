@@ -191,10 +191,10 @@ void main() {
         expect(snapshot.localPosition, Duration.zero);
         expect(snapshot.localDuration, const Duration(seconds: 7));
         expect(snapshot.globalPosition, Duration.zero);
-        expect(snapshot.cues.single.cueId, '${snapshot.sessionId}_queue_0');
+        expect(snapshot.cues.single.cueId, '${snapshot.sessionId}_clip_0');
         expect(harness.engine.model.clips.single.trackId, '2');
         expect(harness.engine.model.clips.single.id,
-            '${snapshot.sessionId}_queue_0');
+            '${snapshot.sessionId}_clip_0');
         expect(mediaItems.last?.id, '2');
         expect(states.last.updatePosition, Duration.zero);
         expect(states.last.queueIndex, 0);

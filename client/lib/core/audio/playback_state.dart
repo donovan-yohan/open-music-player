@@ -461,7 +461,11 @@ class PlaybackState extends ChangeNotifier {
       final items = await _sourceResolver.resolveQueue(snapshot.tracks);
       if (items.isEmpty) return;
       final index = snapshot.currentIndex.clamp(0, items.length - 1);
-      await _queueController.setQueue(items, initialIndex: index);
+      await _queueController.setQueue(
+        items,
+        initialIndex: index,
+        session: snapshot.session,
+      );
       if (snapshot.positionMs > 0) {
         await _queueController.seek(
           Duration(milliseconds: snapshot.positionMs),
@@ -491,6 +495,7 @@ class PlaybackState extends ChangeNotifier {
             tracks: currentQueue.map(mediaItemToPlaybackJson).toList(),
             currentIndex: currentIndex ?? 0,
             positionMs: position.inMilliseconds,
+            session: _queueController.session,
           );
     unawaited(store.save(snapshot));
   }
