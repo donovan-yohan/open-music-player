@@ -140,6 +140,36 @@ void main() {
       },
     );
 
+    test('future insert preserves the active playing voice', () async {
+      final voices = <_CountingVoice>[];
+      final harness = _Harness(
+        voiceFactory: () {
+          final voice = _CountingVoice('v${voices.length}');
+          voices.add(voice);
+          return voice;
+        },
+      );
+      await harness.controller.setQueue([_item('1')]);
+      await harness.controller.play();
+
+      final currentVoice = voices.first;
+      currentVoice.clearInteractionLog();
+      await harness.controller.insertIntoQueue(1, _item('2'));
+
+      expect(harness.controller.queue.map((item) => item.id), ['1', '2']);
+      expect(harness.controller.currentIndex, 0);
+      expect(harness.engine.model.clips.map((clip) => clip.queueItemId), [
+        '0',
+        '1',
+      ]);
+      expect(currentVoice.isPlaying, isTrue);
+      expect(currentVoice.pauseCount, 0);
+      expect(currentVoice.seekLog, isEmpty);
+      expect(currentVoice.releaseCount, 0);
+
+      await harness.dispose();
+    });
+
     test('session timeline edits rebuild the live mix with crossfades',
         () async {
       final harness = _Harness();
@@ -341,6 +371,38 @@ class _BlockingPlayVoice extends FakeVoice {
   @override
   Future<void> release() async {
     await pause();
+    await super.release();
+  }
+}
+
+class _CountingVoice extends FakeVoice {
+  _CountingVoice(super.debugId);
+
+  final seekLog = <int>[];
+  int pauseCount = 0;
+  int releaseCount = 0;
+
+  void clearInteractionLog() {
+    seekLog.clear();
+    pauseCount = 0;
+    releaseCount = 0;
+  }
+
+  @override
+  Future<void> seekLocal(int localPositionMs) async {
+    seekLog.add(localPositionMs);
+    await super.seekLocal(localPositionMs);
+  }
+
+  @override
+  Future<void> pause() async {
+    pauseCount++;
+    await super.pause();
+  }
+
+  @override
+  Future<void> release() async {
+    releaseCount++;
     await super.release();
   }
 }

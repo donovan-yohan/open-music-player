@@ -13,7 +13,7 @@ import 'queue_persistence.dart';
 
 class QueueTimelineController {
   QueueTimelineController(this._engine, {math.Random? shuffleRandom})
-    : _shuffleRandom = shuffleRandom ?? math.Random() {
+      : _shuffleRandom = shuffleRandom ?? math.Random() {
     _bind();
   }
 
@@ -156,6 +156,8 @@ class QueueTimelineController {
     final insertIndex = index.clamp(0, _queue.length).toInt();
     final previousCurrent = _currentIndex;
     final localPosition = livePosition.inMilliseconds;
+    final preserveActivePlayback =
+        _canPreserveActivePlaybackForFutureInsert(insertIndex, previousCurrent);
     final nextQueue = List<MediaItem>.from(_queue)..insert(insertIndex, item);
     _queue = List.unmodifiable(nextQueue);
     _cueOverrides = _shiftCueOverridesForInsert(_cueOverrides, insertIndex);
@@ -166,7 +168,11 @@ class QueueTimelineController {
     }
     _rebuildPlayOrderKeepCurrent();
     _processingState = ProcessingState.ready;
-    await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
+    await _loadModel(
+      seekToCurrent: !preserveActivePlayback,
+      localPositionMs: localPosition,
+      preserveActivePlayback: preserveActivePlayback,
+    );
     _publishQueueState();
   }
 
@@ -485,6 +491,7 @@ class QueueTimelineController {
   Future<void> _loadModel({
     required bool seekToCurrent,
     int localPositionMs = 0,
+    bool preserveActivePlayback = false,
   }) async {
     _cueTimeline = CueTimeline.editedQueue(
       sessionId: _sessionId,
@@ -494,7 +501,10 @@ class QueueTimelineController {
     );
     _suppressPositionSync = true;
     try {
-      await _engine.loadMix(_cueTimeline.toTimelineModel());
+      await _engine.loadMix(
+        _cueTimeline.toTimelineModel(),
+        preserveActivePlayback: preserveActivePlayback,
+      );
       if (seekToCurrent && _currentIndex != null) {
         await _engine.seek(_globalForCurrentLocal(localPositionMs));
       }
@@ -503,6 +513,17 @@ class QueueTimelineController {
       _suppressPositionSync = false;
     }
     _publishPosition(_engine.positionMs);
+  }
+
+  bool _canPreserveActivePlaybackForFutureInsert(
+    int insertIndex,
+    int? previousCurrent,
+  ) {
+    if (!_engine.isPlaying || previousCurrent == null) return false;
+    if (insertIndex <= previousCurrent) return false;
+    final active = _engine.model.activeClipsAt(_engine.positionMs);
+    return active.length == 1 &&
+        active.single.queueItemId == previousCurrent.toString();
   }
 
   TimelineClip _placementForIndex(int index) {
@@ -551,27 +572,30 @@ class QueueTimelineController {
   Map<int, TimelineClip> _pruneCueOverrides(
     Map<int, TimelineClip> overrides,
     int queueLength,
-  ) => Map.unmodifiable({
-    for (final entry in overrides.entries)
-      if (entry.key >= 0 && entry.key < queueLength) entry.key: entry.value,
-  });
+  ) =>
+      Map.unmodifiable({
+        for (final entry in overrides.entries)
+          if (entry.key >= 0 && entry.key < queueLength) entry.key: entry.value,
+      });
 
   Map<int, TimelineClip> _shiftCueOverridesForInsert(
     Map<int, TimelineClip> overrides,
     int insertIndex,
-  ) => Map.unmodifiable({
-    for (final entry in overrides.entries)
-      (entry.key >= insertIndex ? entry.key + 1 : entry.key): entry.value,
-  });
+  ) =>
+      Map.unmodifiable({
+        for (final entry in overrides.entries)
+          (entry.key >= insertIndex ? entry.key + 1 : entry.key): entry.value,
+      });
 
   Map<int, TimelineClip> _shiftCueOverridesForRemove(
     Map<int, TimelineClip> overrides,
     int removedIndex,
-  ) => Map.unmodifiable({
-    for (final entry in overrides.entries)
-      if (entry.key != removedIndex)
-        (entry.key > removedIndex ? entry.key - 1 : entry.key): entry.value,
-  });
+  ) =>
+      Map.unmodifiable({
+        for (final entry in overrides.entries)
+          if (entry.key != removedIndex)
+            (entry.key > removedIndex ? entry.key - 1 : entry.key): entry.value,
+      });
 
   Map<int, TimelineClip> _remapCueOverridesForReorder(
     Map<int, TimelineClip> overrides,

@@ -142,6 +142,29 @@ void main() {
     expect(a.seekLog, contains(4000));
   });
 
+  test('preserved mix update keeps the active voice playing', () async {
+    await pool.loadMix(TimelineModel(clips: [_clip('a', 0)]));
+    await _play(clock, pool);
+
+    final a = pool.activeVoices['a'] as FakeVoice;
+    await _waitUntil(() => a.isPlaying);
+    a.seekLog.clear();
+    a.volumeLog.clear();
+    final pauseCount = a.pauseCount;
+
+    await pool.loadMix(
+      TimelineModel(clips: [_clip('a', 0), _clip('b', 10000)]),
+      preserveActivePlayback: true,
+    );
+
+    expect(pool.activeVoices['a'], same(a));
+    expect(a.isPlaying, isTrue);
+    expect(a.pauseCount, pauseCount);
+    expect(a.seekLog, isEmpty);
+    expect(a.releaseCount, 0);
+    expect(pool.model.clips.map((clip) => clip.id), ['a', 'b']);
+  });
+
   test('prepare timeout starts ready voices and late-joins slow layer muted',
       () async {
     resolver.delayByClip['b'] = const Duration(milliseconds: 80);
@@ -583,6 +606,7 @@ class FakeVoice implements Voice {
   final speedLog = <double>[];
   final _events = StreamController<VoiceEvent>.broadcast();
   int releaseCount = 0;
+  int pauseCount = 0;
   int? playOrder;
   int? _positionMs;
   bool _loaded = false;
@@ -672,6 +696,7 @@ class FakeVoice implements Voice {
 
   @override
   Future<void> pause() async {
+    pauseCount++;
     _playing = false;
     playOrder = null;
   }

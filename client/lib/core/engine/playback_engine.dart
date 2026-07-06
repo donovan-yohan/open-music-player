@@ -124,14 +124,25 @@ class PlaybackEngine implements PlaybackEngineControls {
 
   Future<void> start() => _pool.start();
 
-  Future<void> loadMix(TimelineModel model) async {
+  Future<void> loadMix(
+    TimelineModel model, {
+    bool preserveActivePlayback = false,
+  }) async {
     _model = model;
     _lastDominantClipId = null;
     _lastActiveVoiceCount = null;
-    _lastPositionMs = 0;
-    _manualPositionJumpPending = false;
-    _completedClipIds.clear();
-    await _pool.loadMix(model);
+    if (preserveActivePlayback) {
+      final clipIds = model.clips.map((clip) => clip.id).toSet();
+      _completedClipIds.removeWhere((clipId) => !clipIds.contains(clipId));
+    } else {
+      _lastPositionMs = 0;
+      _manualPositionJumpPending = false;
+      _completedClipIds.clear();
+    }
+    await _pool.loadMix(
+      model,
+      preserveActivePlayback: preserveActivePlayback,
+    );
     _publishNowPlaying();
   }
 
