@@ -201,6 +201,60 @@ void main() {
     expect(find.byKey(const ValueKey('left_history_teaser')), findsNothing);
   });
 
+  testWidgets('future lane identity stays pinned before its waveform starts', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Long Now', 600),
+      upcoming: [_track('t2', 'Long Next', 600)],
+    );
+
+    final header = tester.getRect(
+      find.byKey(const ValueKey('timeline_lane_header_t2')),
+    );
+    final clip = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+
+    expect(header.left, closeTo(8, 1));
+    expect(
+      clip.left,
+      greaterThan(390),
+      reason: 'the future song row is visible before its waveform begins',
+    );
+  });
+
+  testWidgets('lane identity clips away after the track end scrolls past', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Long Now', 600),
+      upcoming: [_track('t2', 'Long Next', 600), _track('t3', 'Late', 600)],
+    );
+
+    expect(
+      find.byKey(const ValueKey('timeline_lane_header_t1')),
+      findsOneWidget,
+    );
+
+    await _pinchZoom(tester);
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+      const Offset(-1500, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('timeline_lane_header_t1')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('timeline_lane_header_t2')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('binds the playhead to the live engine position stream', (
     tester,
   ) async {

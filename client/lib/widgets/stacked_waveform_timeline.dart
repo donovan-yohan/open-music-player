@@ -357,7 +357,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                   child: Column(
                     children: [
                       for (final lane in lanes)
-                        _buildLane(context, lane, viewport),
+                        _buildLane(context, lane, viewport, paneWidth),
                     ],
                   ),
                 ),
@@ -649,6 +649,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     BuildContext context,
     _LaneModel lane,
     TimelineViewport viewport,
+    double paneWidth,
   ) {
     final left = viewport.msToX(lane.clip.timelineStartMs);
     final width = (viewport.msToX(lane.clip.timelineEndMs) -
@@ -657,10 +658,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final selected = _isTrackSelected(lane.track.id);
 
     return SizedBox(
+      width: double.infinity,
       height: lane.height,
       child: ClipRect(
         child: Stack(
           children: [
+            _buildLaneSpan(context, lane, viewport),
             Positioned(
               left: left,
               top: 8,
@@ -676,21 +679,80 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                 top: 12,
                 child: _timelineMoveControls(context, lane.track),
               ),
-            Positioned(
-              left: 8,
-              top: 12,
-              child: IgnorePointer(
-                child: TimelineLaneHeader(
-                  key: ValueKey('timeline_lane_header_${lane.track.id}'),
-                  track: lane.track,
-                  role: lane.role,
-                  statusLabel: lane.status,
-                  accent: lane.accent,
-                  hidden: _isEditingTrack(lane.track.id),
-                ),
+            _buildLaneIdentity(context, lane, viewport, paneWidth),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLaneSpan(
+    BuildContext context,
+    _LaneModel lane,
+    TimelineViewport viewport,
+  ) {
+    final left = viewport.msToX(0);
+    final width = (viewport.msToX(lane.clip.timelineEndMs) - left)
+        .clamp(0.0, double.infinity)
+        .toDouble();
+    if (width <= 0) return const SizedBox.shrink();
+
+    return Positioned(
+      key: ValueKey('timeline_lane_span_${lane.track.id}'),
+      left: left,
+      top: 8,
+      bottom: 8,
+      width: width,
+      child: IgnorePointer(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: lane.accent.withValues(
+              alpha: lane.role == LaneRole.current ? 0.035 : 0.022,
+            ),
+            border: Border(
+              bottom: BorderSide(
+                color: lane.accent.withValues(alpha: 0.10),
               ),
             ),
-          ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLaneIdentity(
+    BuildContext context,
+    _LaneModel lane,
+    TimelineViewport viewport,
+    double paneWidth,
+  ) {
+    if (_isEditingTrack(lane.track.id)) return const SizedBox.shrink();
+
+    const leftInset = 8.0;
+    const topInset = 12.0;
+    const minVisibleWidth = 56.0;
+    final maxWidth = math.min(260.0, math.max(0.0, paneWidth - 16));
+    final laneEndX = viewport.msToX(lane.clip.timelineEndMs);
+    final visibleEndX = laneEndX.clamp(0.0, paneWidth).toDouble();
+    final width = (visibleEndX - leftInset).clamp(0.0, maxWidth).toDouble();
+    if (width < minVisibleWidth) return const SizedBox.shrink();
+
+    return Positioned(
+      left: leftInset,
+      top: topInset,
+      width: width,
+      child: IgnorePointer(
+        child: ClipRect(
+          child: SizedBox(
+            width: width,
+            child: TimelineLaneHeader(
+              key: ValueKey('timeline_lane_header_${lane.track.id}'),
+              track: lane.track,
+              role: lane.role,
+              statusLabel: lane.status,
+              accent: lane.accent,
+            ),
+          ),
         ),
       ),
     );
@@ -702,7 +764,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     TimelineViewport viewport,
   ) {
     final selected = _isTrackSelected(lane.track.id);
-    final editingTrack = _isEditingTrack(lane.track.id);
     final selectedTrim = TrimRange.full(lane.clip.selectedDurationMs);
     final body = TimelineClipWidget(
       track: lane.track,
@@ -714,7 +775,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       snapMarkerCount: _snapMode.markerCount,
       gain: _clipDisplayGain(lane.mixClip),
       showGainBadge: widget.timelineModel?.clips.isNotEmpty ?? false,
-      showInLaneChip: !editingTrack,
+      showInLaneChip: false,
     );
 
     return Stack(

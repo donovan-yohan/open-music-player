@@ -8,17 +8,16 @@ import 'timeline_waveform_painter.dart';
 /// secondary.
 enum LaneRole { previous, current, upcoming, collapsed }
 
-/// Pinned left-rail header for a lane: cover / status / title / artist.
+/// List-like identity strip for a timeline lane: artwork, title, artist.
 ///
-/// Lives in the fixed `x 0-88` rail so metadata never scrolls off with the
-/// waveform. When [collapsed] the artist line and cover shrink away first,
-/// keeping the title and a status dot.
+/// The timeline decides how much horizontal space remains before the lane's
+/// end and clips this widget accordingly. That keeps future songs readable like
+/// queue rows while letting ended songs disappear off the left edge.
 class TimelineLaneHeader extends StatelessWidget {
   final Track track;
   final LaneRole role;
   final String statusLabel;
   final Color accent;
-  final bool hidden;
 
   const TimelineLaneHeader({
     super.key,
@@ -26,108 +25,104 @@ class TimelineLaneHeader extends StatelessWidget {
     required this.role,
     required this.statusLabel,
     required this.accent,
-    this.hidden = false,
   });
 
-  static const double railWidth = 128;
-
-  bool get _collapsed => role == LaneRole.collapsed;
   bool get _active => role == LaneRole.current;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final muted = role == LaneRole.previous;
-    if (hidden) {
-      return const SizedBox.shrink();
-    }
 
     return Semantics(
       container: true,
       label:
           '$statusLabel: ${track.title} by ${track.artist ?? 'Unknown artist'}',
-      child: Container(
-        width: railWidth,
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface.withValues(
-            alpha: _active ? 0.90 : 0.74,
-          ),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: accent.withValues(alpha: _active ? 0.45 : 0.18),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.10),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
+      child: Material(
+        color: theme.colorScheme.surface.withValues(
+          alpha: _active ? 0.86 : 0.72,
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Row(
-              children: [
-                // Status dot — paired with a text label, never colour-only.
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: accent,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Text(
-                    statusLabel,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: accent,
-                      fontWeight: _active ? FontWeight.bold : FontWeight.w500,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          height: 48,
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: accent.withValues(alpha: _active ? 0.42 : 0.18),
             ),
-            if (!_collapsed) ...[
-              const SizedBox(height: 4),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: Container(
-                  width: 28,
-                  height: 28,
-                  color: accent.withValues(alpha: 0.18),
-                  child: Icon(Icons.music_note, size: 16, color: accent),
+          ),
+          child: Row(
+            children: [
+              _artwork(theme),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        if (_active) ...[
+                          Icon(Icons.equalizer, size: 13, color: accent),
+                          const SizedBox(width: 3),
+                        ],
+                        Expanded(
+                          child: Text(
+                            track.title,
+                            style: theme.textTheme.labelMedium?.copyWith(
+                              fontWeight:
+                                  _active ? FontWeight.bold : FontWeight.w600,
+                              color: muted ? theme.disabledColor : null,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Text(
+                      track.artist ?? 'Unknown artist',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: muted
+                            ? theme.disabledColor
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
               ),
             ],
-            const SizedBox(height: 4),
-            Text(
-              track.title,
-              style: theme.textTheme.labelMedium?.copyWith(
-                fontWeight: _active ? FontWeight.bold : FontWeight.w500,
-                color: muted ? theme.disabledColor : null,
-              ),
-              maxLines: _collapsed ? 1 : 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            if (!_collapsed)
-              Text(
-                track.artist ?? 'Unknown artist',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: muted ? theme.disabledColor : Colors.grey[600],
-                ),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-          ],
+          ),
         ),
       ),
+    );
+  }
+
+  Widget _artwork(ThemeData theme) {
+    final url = track.coverUrl;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(4),
+      child: SizedBox(
+        width: 36,
+        height: 36,
+        child: url == null || url.isEmpty
+            ? _artworkFallback()
+            : Image.network(
+                url,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => _artworkFallback(),
+              ),
+      ),
+    );
+  }
+
+  Widget _artworkFallback() {
+    return Container(
+      color: accent.withValues(alpha: 0.16),
+      child: Icon(Icons.music_note, size: 18, color: accent),
     );
   }
 }
