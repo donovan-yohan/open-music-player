@@ -296,6 +296,11 @@ class QueueItem extends StatelessWidget {
           Icons.error_outline,
           colorScheme.error,
         ),
+      TrackAnalysisStatus.stale => (
+          'Analysis refreshing',
+          Icons.refresh,
+          Colors.orange,
+        ),
       TrackAnalysisStatus.unsupported => (
           'Analysis unsupported',
           Icons.block,

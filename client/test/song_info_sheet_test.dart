@@ -8,6 +8,7 @@ TrackAnalysis _analyzed({
   Object? key = 'A minor',
   Object? camelot = '8A',
   Object? energy = 0.72,
+  Object? loudness = -11.4,
 }) {
   return TrackAnalysis.fromJson(
     status: 'analyzed',
@@ -16,6 +17,7 @@ TrackAnalysis _analyzed({
       if (key != null) 'key': {'value': key},
       if (camelot != null) 'camelot': {'value': camelot},
       if (energy != null) 'energy': {'value': energy},
+      if (loudness != null) 'loudness': {'integrated_lufs': loudness},
     },
   );
 }
@@ -48,6 +50,7 @@ void main() {
       expect(values['Tempo'], '128 BPM');
       expect(values['Key'], 'A minor (8A)');
       expect(values['Energy'], '72%');
+      expect(values['Loudness'], '-11.4 LUFS');
     });
 
     test('null analysis is unavailable, not a crash', () {
@@ -102,6 +105,15 @@ void main() {
       );
 
       expect(find.textContaining('failed'), findsOneWidget);
+    });
+
+    testWidgets('shows refresh state for stale analysis', (tester) async {
+      await _pump(
+        tester,
+        () async => TrackAnalysis.fromJson(status: 'stale'),
+      );
+
+      expect(find.textContaining('refreshed'), findsOneWidget);
     });
   });
 }

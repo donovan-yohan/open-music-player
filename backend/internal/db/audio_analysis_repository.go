@@ -15,18 +15,25 @@ const (
 	AnalysisStatusAnalyzing   = "analyzing"
 	AnalysisStatusAnalyzed    = "analyzed"
 	AnalysisStatusFailed      = "failed"
+	AnalysisStatusStale       = "stale"
 	AnalysisStatusUnsupported = "unsupported"
 )
 
 const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(
 	'bpm', ta.summary_json->'bpm',
+	'beat_grid', ta.summary_json->'beat_grid',
+	'downbeats', ta.summary_json->'downbeats',
 	'key', ta.summary_json->'key',
 	'camelot', ta.summary_json->'camelot',
 	'energy', ta.summary_json->'energy',
+	'loudness', ta.summary_json->'loudness',
+	'true_peak', ta.summary_json->'true_peak',
 	'genre_hints', ta.summary_json->'genre_hints',
 	'tag_hints', ta.summary_json->'tag_hints',
 	'waveform', CASE WHEN ta.summary_json ? 'waveform' THEN jsonb_strip_nulls(jsonb_build_object(
 		'sample_count', ta.summary_json->'waveform'->'sample_count',
+		'resolutions', ta.summary_json->'waveform'->'resolutions',
+		'spectral_bands', ta.summary_json->'waveform'->'spectral_bands',
 		'confidence', ta.summary_json->'waveform'->'confidence',
 		'provenance', ta.summary_json->'waveform'->'provenance'
 	)) END,
@@ -186,6 +193,8 @@ func (r *AnalysisRepository) RequestRepairAnalysis(ctx context.Context, trackID 
 		result.Reason = "forced_repair"
 	} else if status == AnalysisStatusFailed {
 		result.Reason = "failed_retry"
+	} else if status == AnalysisStatusStale {
+		result.Reason = "stale_analysis"
 	} else if stale {
 		result.Reason = "stale_active_repair"
 	} else {
@@ -257,6 +266,34 @@ func (r *AnalysisRepository) markTerminal(ctx context.Context, trackID int64, st
 		WHERE track_id = $1
 	`
 	return r.execTrackAnalysisUpdate(ctx, query, trackID, status, errText, nullableRawJSON(provenance))
+}
+
+func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, analyzerName, analyzerVersion string) (int64, error) {
+	query := `
+		UPDATE track_analysis
+		SET status = $3,
+			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || jsonb_build_object(
+				'stale', jsonb_build_object(
+					'reason', 'analyzer_version_changed',
+					'required_analyzer', NULLIF($1, ''),
+					'required_analyzer_version', NULLIF($2, ''),
+					'previous_analyzer', provenance_json->>'analyzer',
+					'previous_analyzer_version', provenance_json->>'analyzer_version',
+					'marked_at', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+				)
+			),
+			updated_at = NOW()
+		WHERE status = $4
+		  AND (
+			(NULLIF($1, '') IS NOT NULL AND COALESCE(provenance_json->>'analyzer', '') <> $1)
+			OR (NULLIF($2, '') IS NOT NULL AND COALESCE(provenance_json->>'analyzer_version', '') <> $2)
+		  )
+	`
+	result, err := r.db.ExecContext(ctx, query, analyzerName, analyzerVersion, AnalysisStatusStale, AnalysisStatusAnalyzed)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (r *AnalysisRepository) GetByTrackID(ctx context.Context, trackID int64) (*TrackAnalysis, error) {

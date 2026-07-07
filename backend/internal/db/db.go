@@ -270,7 +270,7 @@ func (db *DB) Migrate() error {
 		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 		CONSTRAINT chk_track_analysis_schema_version CHECK (schema_version >= 1),
-		CONSTRAINT chk_track_analysis_status CHECK (status IN ('pending', 'analyzing', 'analyzed', 'failed', 'unsupported'))
+		CONSTRAINT chk_track_analysis_status CHECK (status IN ('pending', 'analyzing', 'analyzed', 'failed', 'stale', 'unsupported'))
 	);
 	CREATE INDEX IF NOT EXISTS idx_track_analysis_status ON track_analysis(status);
 	CREATE INDEX IF NOT EXISTS idx_track_analysis_updated_at ON track_analysis(updated_at DESC);
@@ -290,6 +290,9 @@ func (db *DB) Migrate() error {
 	if err != nil {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
+	if err := db.refreshTrackAnalysisStatusConstraint(); err != nil {
+		return err
+	}
 
 	// Best-effort: enable pg_trgm for fuzzy/typo-tolerant local search. This is
 	// intentionally OUTSIDE the required schema above and MUST NOT be fatal:
@@ -298,6 +301,18 @@ func (db *DB) Migrate() error {
 	// gracefully to the FTS path — the server still starts and search still works.
 	db.TrigramEnabled = db.tryEnableTrigram()
 
+	return nil
+}
+
+func (db *DB) refreshTrackAnalysisStatusConstraint() error {
+	_, err := db.Exec(`
+		ALTER TABLE track_analysis DROP CONSTRAINT IF EXISTS chk_track_analysis_status;
+		ALTER TABLE track_analysis ADD CONSTRAINT chk_track_analysis_status
+			CHECK (status IN ('pending', 'analyzing', 'analyzed', 'failed', 'stale', 'unsupported'));
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to refresh track_analysis status constraint: %w", err)
+	}
 	return nil
 }
 

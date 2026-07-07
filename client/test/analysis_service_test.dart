@@ -33,9 +33,35 @@ void main() {
         'status': 'analyzed',
         'summary': {
           'bpm': {'value': 128},
+          'beat_grid': {
+            'bpm': 128,
+            'beats_ms': [0, 469, 938],
+          },
+          'downbeats': {
+            'positions_ms': [0],
+          },
           'key': {'value': 'A minor'},
           'camelot': {'value': '8A'},
           'energy': {'value': 0.72},
+          'loudness': {'integrated_lufs': -11.4},
+          'true_peak': {'dbtp': -1.1},
+          'waveform': {
+            'sample_count': 4,
+            'resolutions': [
+              {
+                'name': 'overview',
+                'samples_per_pixel': 1024,
+                'sample_count': 4,
+                'artifact_ref': 'waveforms.overview',
+              },
+            ],
+            'spectral_bands': {
+              'low': {
+                'sample_count': 4,
+                'artifact_ref': 'spectral_bands.overview.low',
+              },
+            },
+          },
         },
       });
 
@@ -47,6 +73,13 @@ void main() {
       expect(analysis.summary?.key?.textValue, 'A minor');
       expect(analysis.summary?.camelot?.textValue, '8A');
       expect(analysis.summary?.energy?.numericValue, 0.72);
+      expect(analysis.summary?.beatGrid?.beatsMs, [0, 469, 938]);
+      expect(analysis.summary?.downbeats?.positionsMs, [0]);
+      expect(analysis.summary?.loudness?.integratedLufs, -11.4);
+      expect(analysis.summary?.truePeak?.dbtp, -1.1);
+      expect(analysis.summary?.waveform?.resolutions.single.artifactRef,
+          'waveforms.overview');
+      expect(analysis.summary?.waveform?.spectralBands['low']?.sampleCount, 4);
     });
 
     test('tolerates a pending analysis with no summary', () async {
@@ -59,6 +92,19 @@ void main() {
 
       expect(analysis.status, TrackAnalysisStatus.pending);
       expect(analysis.summary, isNull);
+    });
+
+    test('parses stale analysis status for invalidated analyzer artifacts',
+        () async {
+      final api = _CapturingApiClient({
+        'track_id': 9,
+        'status': 'stale',
+      });
+
+      final analysis = await AnalysisService(api).getTrackAnalysis(9);
+
+      expect(analysis.status, TrackAnalysisStatus.stale);
+      expect(analysis.isNonSuccess, isTrue);
     });
   });
 }

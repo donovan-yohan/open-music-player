@@ -903,6 +903,7 @@ func (r *TrackRepository) GetMaintenanceCandidates(ctx context.Context, includeM
 			AND (
 				ta.track_id IS NULL
 				OR ta.status = 'failed'
+				OR ta.status = 'stale'
 				OR (ta.status IN ('pending', 'analyzing') AND ta.updated_at < NOW() - ($3::bigint * INTERVAL '1 second'))
 			)
 		)
