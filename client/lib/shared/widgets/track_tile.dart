@@ -15,6 +15,7 @@ class TrackTile extends StatelessWidget {
   final Widget? trailing;
   final bool showDragHandle;
   final bool isCurrent;
+  final String? activeLabel;
 
   const TrackTile({
     super.key,
@@ -29,6 +30,7 @@ class TrackTile extends StatelessWidget {
     this.trailing,
     this.showDragHandle = false,
     this.isCurrent = false,
+    this.activeLabel,
   });
 
   factory TrackTile.fromTrack(
@@ -39,6 +41,7 @@ class TrackTile extends StatelessWidget {
     Widget? trailing,
     bool showDragHandle = false,
     bool isCurrent = false,
+    String? activeLabel,
   }) {
     return TrackTile(
       title: track.title,
@@ -52,6 +55,7 @@ class TrackTile extends StatelessWidget {
       trailing: trailing,
       showDragHandle: showDragHandle,
       isCurrent: isCurrent,
+      activeLabel: activeLabel,
     );
   }
 
@@ -63,6 +67,7 @@ class TrackTile extends StatelessWidget {
     Widget? trailing,
     bool showDragHandle = false,
     bool isCurrent = false,
+    String? activeLabel,
   }) {
     return TrackTile(
       title: track.title,
@@ -76,37 +81,52 @@ class TrackTile extends StatelessWidget {
       trailing: trailing,
       showDragHandle: showDragHandle,
       isCurrent: isCurrent,
+      activeLabel: activeLabel,
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final activeColor = theme.colorScheme.primary;
+    final titleStyle = isCurrent
+        ? theme.textTheme.bodyLarge?.copyWith(
+            color: activeColor,
+            fontWeight: FontWeight.w700,
+          )
+        : theme.textTheme.bodyLarge;
+    final subtitleStyle = isCurrent
+        ? theme.textTheme.bodySmall?.copyWith(
+            color: activeColor.withValues(alpha: 0.85),
+          )
+        : theme.textTheme.bodySmall;
 
-    return ListTile(
-      onTap: onTap,
-      selected: isCurrent,
-      selectedTileColor: theme.colorScheme.primaryContainer.withValues(
-        alpha: 0.28,
+    return Container(
+      decoration: BoxDecoration(
+        border: isCurrent
+            ? Border(left: BorderSide(color: activeColor, width: 3))
+            : null,
       ),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      leading: leading ?? _buildCoverArt(theme),
-      title: Text(
-        title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodyLarge?.copyWith(
-          color: isCurrent ? theme.colorScheme.primary : null,
-          fontWeight: isCurrent ? FontWeight.w700 : null,
+      child: ListTile(
+        onTap: onTap,
+        selected: isCurrent,
+        selectedTileColor: activeColor.withValues(alpha: 0.10),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        leading: leading ?? _buildCoverArt(theme),
+        title: Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: titleStyle,
         ),
+        subtitle: Text(
+          [artist, album].where((s) => s != null && s.isNotEmpty).join(' • '),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: subtitleStyle,
+        ),
+        trailing: trailing ?? _buildTrailing(context),
       ),
-      subtitle: Text(
-        [artist, album].where((s) => s != null && s.isNotEmpty).join(' • '),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.bodySmall,
-      ),
-      trailing: trailing ?? _buildTrailing(context),
     );
   }
 
@@ -130,20 +150,35 @@ class TrackTile extends StatelessWidget {
   }
 
   Widget _buildTrailing(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (isCurrent) ...[
+        if (isCurrent && activeLabel != null)
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: _NowPlayingBadge(
+              label: activeLabel!,
+              color: theme.colorScheme.primary,
+            ),
+          )
+        else if (isCurrent) ...[
           Icon(
             Icons.equalizer,
             size: 18,
-            color: Theme.of(context).colorScheme.primary,
+            color: theme.colorScheme.primary,
           ),
           const SizedBox(width: 8),
         ],
         Text(
           duration,
-          style: Theme.of(context).textTheme.bodySmall,
+          style: isCurrent
+              ? theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                )
+              : theme.textTheme.bodySmall,
         ),
         if (onMorePressed != null)
           IconButton(
@@ -157,6 +192,43 @@ class TrackTile extends StatelessWidget {
             child: Icon(Icons.drag_handle),
           ),
       ],
+    );
+  }
+}
+
+class _NowPlayingBadge extends StatelessWidget {
+  const _NowPlayingBadge({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: label,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.16),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: color.withValues(alpha: 0.7)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.equalizer, size: 14, color: color),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

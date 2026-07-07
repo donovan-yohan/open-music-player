@@ -16,6 +16,23 @@ void main() {
     expect(routerSource, contains('initialLocation: _initialRoute'));
   });
 
+  test('app router keeps playlist detail routes inside shell chrome', () {
+    final routerSource = File('lib/app/router.dart').readAsStringSync();
+    final shellIndex = routerSource.indexOf('ShellRoute(');
+    final playlistIndex = routerSource.indexOf("path: '/playlists/:id'");
+    final libraryArtistIndex =
+        routerSource.indexOf("path: '/library/artist/:name'");
+
+    expect(shellIndex, greaterThanOrEqualTo(0));
+    expect(playlistIndex, greaterThan(shellIndex));
+    expect(libraryArtistIndex, greaterThan(shellIndex));
+    expect(
+      routerSource,
+      contains(
+          "location.startsWith('/library') || location.startsWith('/playlists')"),
+    );
+  });
+
   testWidgets('shell navigation exposes and selects the Queue route', (
     tester,
   ) async {

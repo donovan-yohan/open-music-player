@@ -65,18 +65,6 @@ GoRouter createRouter(AuthState authState) {
         builder: (context, state) => const DownloadsScreen(),
       ),
       GoRoute(
-        path: '/library/artist/:name',
-        builder: (context, state) => LocalArtistScreen(
-          artist: Uri.decodeComponent(state.pathParameters['name']!),
-        ),
-      ),
-      GoRoute(
-        path: '/library/album/:name',
-        builder: (context, state) => LocalAlbumScreen(
-          album: Uri.decodeComponent(state.pathParameters['name']!),
-        ),
-      ),
-      GoRoute(
         path: '/share',
         builder: (context, state) => ShareImportScreen(
           sharedText: state.uri.queryParameters['text'] ?? '',
@@ -105,19 +93,38 @@ GoRouter createRouter(AuthState authState) {
                 const NoTransitionPage(child: LibraryScreen()),
           ),
           GoRoute(
+            path: '/library/artist/:name',
+            pageBuilder: (context, state) => NoTransitionPage(
+              child: LocalArtistScreen(
+                artist: Uri.decodeComponent(state.pathParameters['name']!),
+              ),
+            ),
+          ),
+          GoRoute(
+            path: '/library/album/:name',
+            pageBuilder: (context, state) => NoTransitionPage(
+              child: LocalAlbumScreen(
+                album: Uri.decodeComponent(state.pathParameters['name']!),
+              ),
+            ),
+          ),
+          GoRoute(
             path: '/playlists',
             pageBuilder: (context, state) =>
                 const NoTransitionPage(child: PlaylistsScreen()),
           ),
           GoRoute(
             path: '/playlists/import',
-            builder: (context, state) => const PlaylistImportScreen(),
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: PlaylistImportScreen()),
           ),
           GoRoute(
             path: '/playlists/:id',
-            builder: (context, state) {
+            pageBuilder: (context, state) {
               final id = int.parse(state.pathParameters['id']!);
-              return PlaylistDetailScreen(playlistId: id);
+              return NoTransitionPage(
+                child: PlaylistDetailScreen(playlistId: id),
+              );
             },
           ),
           GoRoute(
@@ -234,8 +241,9 @@ class ScaffoldWithNavBar extends StatelessWidget {
     final location = GoRouterState.of(context).uri.path;
     if (location.startsWith('/home')) return 0;
     if (location.startsWith('/search')) return 1;
-    if (location.startsWith('/library')) return 2;
-    if (location.startsWith('/playlists')) return 2;
+    if (location.startsWith('/library') || location.startsWith('/playlists')) {
+      return 2;
+    }
     if (location.startsWith('/queue')) return 3;
     if (location.startsWith('/settings')) return 4;
     return 0;
