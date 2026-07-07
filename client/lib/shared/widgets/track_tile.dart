@@ -103,7 +103,6 @@ class TrackTile extends StatelessWidget {
 
     return Container(
       decoration: BoxDecoration(
-        color: isCurrent ? activeColor.withValues(alpha: 0.10) : null,
         border: isCurrent
             ? Border(left: BorderSide(color: activeColor, width: 3))
             : null,
@@ -111,9 +110,7 @@ class TrackTile extends StatelessWidget {
       child: ListTile(
         onTap: onTap,
         selected: isCurrent,
-        selectedTileColor: theme.colorScheme.primaryContainer.withValues(
-          alpha: 0.28,
-        ),
+        selectedTileColor: activeColor.withValues(alpha: 0.10),
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         leading: leading ?? _buildCoverArt(theme),
         title: Text(
