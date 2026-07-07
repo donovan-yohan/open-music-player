@@ -6,43 +6,58 @@ import (
 	"testing"
 )
 
-func TestFixtureClientReturnsSyntheticContract(t *testing.T) {
+func TestFixtureClientReturnsDJAnalysisArtifacts(t *testing.T) {
 	client := NewFixtureClient("testdata/synthetic_analysis.json")
-	result, err := client.Analyze(context.Background(), Request{TrackID: 42, StorageKey: "tracks/fixture/song.wav"})
+
+	result, err := client.Analyze(context.Background(), Request{
+		TrackID:    42,
+		StorageKey: "tracks/fixture/synthetic.wav",
+		DurationMs: 197500,
+	})
 	if err != nil {
 		t.Fatalf("Analyze returned error: %v", err)
 	}
 	if result.SchemaVersion != SchemaVersion {
 		t.Fatalf("schema version = %d, want %d", result.SchemaVersion, SchemaVersion)
 	}
-	var summary map[string]interface{}
+
+	var summary map[string]any
 	if err := json.Unmarshal(result.SummaryJSON, &summary); err != nil {
 		t.Fatalf("summary json invalid: %v", err)
 	}
-	for _, key := range []string{"bpm", "key", "camelot", "energy", "genre_hints", "tag_hints", "waveform", "transients", "silence", "intro", "outro", "trim", "sections", "cue_candidates"} {
+	for _, key := range []string{"bpm", "beat_grid", "downbeats", "key", "camelot", "energy", "genre_hints", "tag_hints", "loudness", "true_peak", "waveform", "transients", "silence", "intro", "outro", "trim", "sections", "cue_candidates", "duration_sanity"} {
 		if _, ok := summary[key]; !ok {
-			t.Fatalf("summary missing %s", key)
+			t.Fatalf("summary missing %q: %s", key, result.SummaryJSON)
 		}
 	}
-	bpm, ok := summary["bpm"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("bpm field has unexpected shape: %#v", summary["bpm"])
+	beatGrid := summary["beat_grid"].(map[string]any)
+	if beats, ok := beatGrid["beats_ms"].([]any); !ok || len(beats) == 0 {
+		t.Fatalf("beat_grid missing beats_ms: %#v", beatGrid)
 	}
-	for _, key := range []string{"value", "confidence", "provenance"} {
-		if _, ok := bpm[key]; !ok {
-			t.Fatalf("bpm missing %s", key)
-		}
+	waveform := summary["waveform"].(map[string]any)
+	if resolutions, ok := waveform["resolutions"].([]any); !ok || len(resolutions) < 2 {
+		t.Fatalf("waveform missing multi-resolution summaries: %#v", waveform)
 	}
-	var artifacts map[string]interface{}
+	if _, ok := waveform["spectral_bands"].(map[string]any); !ok {
+		t.Fatalf("waveform missing spectral band summaries: %#v", waveform)
+	}
+
+	var artifacts map[string]any
 	if err := json.Unmarshal(result.ArtifactsJSON, &artifacts); err != nil {
 		t.Fatalf("artifacts json invalid: %v", err)
 	}
-	var provenance map[string]interface{}
+	for _, key := range []string{"source", "waveforms", "spectral_bands", "beat_grid", "markers"} {
+		if _, ok := artifacts[key]; !ok {
+			t.Fatalf("artifacts missing %q: %s", key, result.ArtifactsJSON)
+		}
+	}
+
+	var provenance map[string]any
 	if err := json.Unmarshal(result.ProvenanceJSON, &provenance); err != nil {
 		t.Fatalf("provenance json invalid: %v", err)
 	}
-	if provenance["analyzer"] != "fixture" {
-		t.Fatalf("provenance analyzer = %#v, want fixture", provenance["analyzer"])
+	if provenance["analyzer"] != "fixture" || provenance["analyzer_version"] != "fixture-v2" {
+		t.Fatalf("provenance = %#v, want fixture fixture-v2", provenance)
 	}
 }
 

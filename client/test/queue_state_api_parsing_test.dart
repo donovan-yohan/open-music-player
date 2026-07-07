@@ -208,10 +208,25 @@ void main() {
           'analysisStatus': 'analyzed',
           'analysisSummary': {
             'bpm': {'value': 124.0, 'confidence': 0.94},
+            'beat_grid': {
+              'beats_ms': [320, 804, 1288],
+            },
+            'downbeats': {
+              'positions_ms': [320],
+            },
             'key': {'value': 'A minor'},
             'camelot': {'value': '8A'},
             'energy': {'value': 0.73},
-            'waveform': {'sample_count': 6, 'confidence': 0.99},
+            'loudness': {'integrated_lufs': -11.8},
+            'true_peak': {'dbtp': -1.2},
+            'waveform': {
+              'sample_count': 6,
+              'confidence': 0.99,
+              'resolutions': [
+                {'name': 'overview', 'sample_count': 6},
+                {'name': 'detail', 'sample_count': 12},
+              ],
+            },
             'intro': {'start_ms': 320, 'end_ms': 16000},
             'outro': {'start_ms': 180000, 'end_ms': 197500},
             'sections': [
@@ -232,16 +247,26 @@ void main() {
     expect(analysis.summary!.bpm!.numericValue, 124.0);
     expect(analysis.summary!.camelot!.textValue, '8A');
     expect(analysis.summary!.energy!.numericValue, 0.73);
+    expect(analysis.summary!.beatGrid!.beatsMs, [320, 804, 1288]);
+    expect(analysis.summary!.downbeats!.positionsMs, [320]);
+    expect(analysis.summary!.loudness!.integratedLufs, -11.8);
+    expect(analysis.summary!.truePeak!.dbtp, -1.2);
     expect(analysis.summary!.waveform!.sampleCount, 6);
+    expect(analysis.summary!.waveform!.resolutions, hasLength(2));
     expect(analysis.summary!.sections, hasLength(2));
     expect(analysis.summary!.cueCandidates, hasLength(2));
     expect(
       analysis.summary!.displayLabels,
       containsAll([
         '124 BPM',
+        '3 beats',
+        '1 downbeat',
         'A minor · 8A',
         'Energy 73%',
+        'Loudness -11.8 LUFS',
+        'Peak -1.2 dBTP',
         'Waveform 6 samples',
+        '2 waveform layers',
         'Intro 0:00-0:16',
         'Outro 3:00-3:18',
         '2 sections',
@@ -261,6 +286,7 @@ void main() {
           'analysisStatus': 'analyzing',
         },
         {'id': 'failed', 'title': 'Failed', 'analysisStatus': 'failed'},
+        {'id': 'stale', 'title': 'Stale', 'analysisStatus': 'stale'},
         {
           'id': 'unsupported',
           'title': 'Unsupported',
@@ -272,7 +298,8 @@ void main() {
     expect(state.tracks[0].analysis!.status, TrackAnalysisStatus.pending);
     expect(state.tracks[1].analysis!.status, TrackAnalysisStatus.analyzing);
     expect(state.tracks[2].analysis!.status, TrackAnalysisStatus.failed);
-    expect(state.tracks[3].analysis!.status, TrackAnalysisStatus.unsupported);
+    expect(state.tracks[3].analysis!.status, TrackAnalysisStatus.stale);
+    expect(state.tracks[4].analysis!.status, TrackAnalysisStatus.unsupported);
   });
 
   test('Track keeps status-only analysis metadata summary absent', () {

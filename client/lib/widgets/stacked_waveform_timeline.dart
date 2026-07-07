@@ -15,7 +15,8 @@ import 'timeline_clip_widget.dart';
 /// The dominant object is a stack of overlapping waveform lanes sharing a single
 /// global playhead — not list rows or cards. Previous / current / upcoming clips
 /// are placed on one timeline with synthetic transition windows so overlap is
-/// visible. Offscreen clips surface as left history / right future teasers.
+/// visible. Lane identity stays inside each row so the timeline can converge
+/// with the queue list instead of relying on separate edge controls.
 ///
 /// Source trim stays separate from timeline placement. Engine-backed callers
 /// provide real [TimelineModel] clips plus the raw global playhead stream;
@@ -65,8 +66,9 @@ class StackedWaveformTimeline extends StatefulWidget {
   /// only — there is no real mixer.
   static const int transitionMs = 18000;
 
-  /// Left pinned header rail width (matches design `x 0-88`).
-  static const double railWidth = TimelineLaneHeader.railWidth;
+  /// Timeline metadata is overlaid on top of the lane so the waveform keeps the
+  /// full phone width for direct manipulation.
+  static const double railWidth = 0;
 
   static const Color currentAccent = Color(0xFFE65100); // high-contrast orange
   static const Color previousAccent = Color(0xFF607D8B);
@@ -77,24 +79,27 @@ class StackedWaveformTimeline extends StatefulWidget {
       _StackedWaveformTimelineState();
 }
 
-enum _TimelineMode { browse, edit }
+enum SnapMarkerMode { free, beat1, beat4, beat16 }
 
-enum SnapMarkerMode { beat1, beat4, beat16 }
+enum _TrimEdge { start, end }
 
 extension on SnapMarkerMode {
   int get markerCount => switch (this) {
+        SnapMarkerMode.free => 0,
         SnapMarkerMode.beat1 => 1,
         SnapMarkerMode.beat4 => 4,
         SnapMarkerMode.beat16 => 16,
       };
 
   int get snapMs => switch (this) {
+        SnapMarkerMode.free => 1,
         SnapMarkerMode.beat1 => 500,
         SnapMarkerMode.beat4 => 2000,
         SnapMarkerMode.beat16 => 8000,
       };
 
   String get label => switch (this) {
+        SnapMarkerMode.free => 'Free',
         SnapMarkerMode.beat1 => '1 beat',
         SnapMarkerMode.beat4 => '4 beats',
         SnapMarkerMode.beat16 => '16 beats',
@@ -122,28 +127,47 @@ class _LaneModel {
 }
 
 class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
-  static const _zoomLevels = [0.5, 1.0, 1.5, 2.0, 3.0];
+  static const double _minZoom = 0.5;
+  static const double _maxZoom = 4.0;
+  static const double _scrubEdgeScrollZonePx = 56;
+  static const double _scrubMaxEdgeScrollPx = 32;
 
-  _TimelineMode _mode = _TimelineMode.browse;
-  SnapMarkerMode _snapMode = SnapMarkerMode.beat4;
-  int _zoomIndex = 1;
+  SnapMarkerMode _snapMode = SnapMarkerMode.beat1;
+  double _zoom = 1.0;
   int? _manualOffsetMs;
+  String? _selectedTrackId;
   String? _activeClipDragTrackId;
-  int? _activeClipDragStartMs;
-  TimelineViewport? _lastViewport;
+  TimelineClip? _activeClipDragStartClip;
+  String? _activeTrimTrackId;
+  _TrimEdge? _activeTrimEdge;
+  TimelineClip? _activeTrimStartClip;
+  final Map<String, TimelineClip> _previewClips = {};
+  TimelineViewport? _scaleStartViewport;
+  double? _scaleStartZoom;
+  double? _scaleLastLocalFocalX;
   bool _isScrubbing = false;
+  bool _preserveViewportForScrub = false;
   int? _lastScrubMs;
-
-  double get _zoom => _zoomLevels[_zoomIndex];
 
   @override
   void didUpdateWidget(covariant StackedWaveformTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
 
     if (oldWidget.currentTrack.id != widget.currentTrack.id) {
+      if (_isScrubbing || _preserveViewportForScrub) {
+        if (!_isScrubbing) {
+          _preserveViewportForScrub = false;
+        }
+        return;
+      }
       _manualOffsetMs = null;
+      _selectedTrackId = null;
       _activeClipDragTrackId = null;
-      _activeClipDragStartMs = null;
+      _activeClipDragStartClip = null;
+      _activeTrimTrackId = null;
+      _activeTrimEdge = null;
+      _activeTrimStartClip = null;
+      _previewClips.clear();
     }
   }
 
@@ -170,7 +194,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             },
           ),
         ),
-        _buildModeBar(context),
       ],
     );
   }
@@ -201,10 +224,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         timelineStartMs: cursor,
       );
       final liveClip = _liveClipForTrack(track, usedLiveClipIds);
-      final clip = liveClip?.placement ??
+      final baseClip = liveClip?.placement ??
           widget.clipFor?.call(track, defaultClip) ??
           defaultClip;
-      placed[track] = liveClip ?? MixClip(placement: clip);
+      final clip = _previewClipFor(track, baseClip) ?? baseClip;
+      placed[track] = liveClip == null
+          ? MixClip(placement: clip)
+          : _copyMixClipWithPlacement(liveClip, clip);
       // Next clip overlaps the tail by one transition window. A zero-duration
       // clip has timelineEndMs == timelineStartMs, so the naive lower bound
       // (start + 1) can exceed the upper bound and invert the clamp; cap the
@@ -226,9 +252,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             StackedWaveformTimeline.transitionMs +
             8000;
 
-    final basePps = totalMs <= 0
+    final fitPps = totalMs <= 0
         ? TimelineViewport.minPixelsPerSecond
         : (paneWidth / (totalMs / 1000));
+    final basePps = math.max(fitPps, TimelineViewport.minPixelsPerSecond);
     final pps = (basePps * _zoom).clamp(
       TimelineViewport.minPixelsPerSecond,
       TimelineViewport.maxPixelsPerSecond,
@@ -241,7 +268,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       pixelsPerSecond: pps,
       offsetMs: viewportOffsetMs,
     );
-    _lastViewport = viewport;
 
     // --- Build lane models in stack order (history → future, top to bottom). ---
     final lanes = <_LaneModel>[];
@@ -294,19 +320,26 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       paneWidth,
     );
 
-    final historyAgoMs = playheadMs -
-        (placed[widget.previousTrack]?.timelineEndMs ?? playheadMs);
-    final futureInMs = (upcoming.isNotEmpty
-            ? placed[upcoming.first]!.timelineStartMs
-            : playheadMs) -
-        playheadMs;
+    final dominantClip = _dominantClipAt(
+      placed.values.toList(growable: false),
+      playheadMs,
+    );
+    final playheadLabel = _playheadTimeLabel(playheadMs, dominantClip);
+    final badgeLeft = (StackedWaveformTimeline.railWidth + playheadPaneX + 6)
+        .clamp(4.0, math.max(4.0, paneWidth - 152))
+        .toDouble();
 
     return GestureDetector(
       key: const ValueKey('timeline_pan_surface'),
       behavior: HitTestBehavior.opaque,
-      onHorizontalDragUpdate: _mode == _TimelineMode.browse
-          ? (details) => _panViewport(viewport, -(details.primaryDelta ?? 0))
-          : null,
+      onTap: _clearSelectedTrack,
+      onScaleStart: (details) => _beginViewportScale(viewport, details),
+      onScaleUpdate: (details) => _updateViewportScale(viewport, details),
+      onScaleEnd: (_) {
+        _scaleStartViewport = null;
+        _scaleStartZoom = null;
+        _scaleLastLocalFocalX = null;
+      },
       child: Stack(
         children: [
           Column(
@@ -319,7 +352,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                   child: Column(
                     children: [
                       for (final lane in lanes)
-                        _buildLane(context, lane, viewport),
+                        _buildLane(context, lane, viewport, paneWidth),
                     ],
                   ),
                 ),
@@ -344,40 +377,41 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               ),
             ),
 
-          // Left-edge history teaser for the offscreen played clip.
-          if (widget.previousTrack != null)
+          if (isPlayheadVisible)
             Positioned(
-              key: const ValueKey('left_history_teaser'),
-              left: StackedWaveformTimeline.railWidth + 4,
-              top: 6,
-              child: _edgeTeaser(
-                context,
-                icon: Icons.history,
-                label: '${widget.previousTrack!.title} · ended '
-                    '${_formatClock(historyAgoMs.abs())} ago',
-                accent: StackedWaveformTimeline.previousAccent,
-                onTap: () => _jumpToClip(
-                  placed[widget.previousTrack!]!.placement,
-                  viewport,
-                  alignEnd: true,
-                ),
-              ),
+              key: const ValueKey('timeline_playhead_time_badge'),
+              top: 42,
+              left: badgeLeft,
+              child: _playheadBadge(context, playheadLabel),
             ),
 
-          // Right-edge future teaser / countdown for the offscreen next clip.
-          if (upcoming.isNotEmpty)
+          if (isPlayheadVisible && _hasScrubHandlers)
             Positioned(
-              key: const ValueKey('right_future_teaser'),
-              right: 4,
-              top: 6,
-              child: _edgeTeaser(
-                context,
-                icon: Icons.fast_forward,
-                label: '${upcoming.first.title} · starts in '
-                    '${_formatClock(futureInMs.abs())}',
-                accent: StackedWaveformTimeline.upcomingAccent,
-                onTap: () =>
-                    _jumpToClip(placed[upcoming.first]!.placement, viewport),
+              key: const ValueKey('timeline_playhead_drag_handle'),
+              top: 0,
+              bottom: 0,
+              left: StackedWaveformTimeline.railWidth + playheadPaneX - 14,
+              width: 28,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onHorizontalDragStart: (details) => _beginScrubAt(
+                  viewport,
+                  paneWidth,
+                  StackedWaveformTimeline.railWidth +
+                      playheadPaneX -
+                      14 +
+                      details.localPosition.dx,
+                ),
+                onHorizontalDragUpdate: (details) => _updateScrubAt(
+                  viewport,
+                  paneWidth,
+                  StackedWaveformTimeline.railWidth +
+                      playheadPaneX -
+                      14 +
+                      details.localPosition.dx,
+                ),
+                onHorizontalDragEnd: (_) => _endScrub(),
+                onHorizontalDragCancel: _endScrub,
               ),
             ),
 
@@ -408,6 +442,99 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       return clip;
     }
     return null;
+  }
+
+  TimelineClip? _previewClipFor(Track track, TimelineClip fallback) =>
+      _previewClips[track.id];
+
+  void _storePreviewClip(Track track, TimelineClip clip) {
+    _previewClips[track.id] = clip;
+  }
+
+  void _removePreviewClip(String trackId) {
+    _previewClips.remove(trackId);
+  }
+
+  bool _isTrackSelected(String trackId) => _selectedTrackId == trackId;
+
+  bool _isEditingTrack(String trackId) =>
+      _isTrackSelected(trackId) ||
+      _activeClipDragTrackId == trackId ||
+      _activeTrimTrackId == trackId;
+
+  MixClip _copyMixClipWithPlacement(MixClip clip, TimelineClip placement) =>
+      MixClip(
+        placement: placement,
+        envelope: clip.envelope,
+        audioSourceRef: clip.audioSourceRef,
+        queueItemId: clip.queueItemId,
+      );
+
+  List<double> _peaksForClip(Track track, TimelineClip clip) {
+    final peaks = widget.peaksFor(track);
+    if (peaks.isEmpty || clip.sourceDurationMs <= 0) return peaks;
+
+    final startFraction =
+        (clip.sourceStartMs / clip.sourceDurationMs).clamp(0.0, 1.0);
+    final endFraction =
+        (clip.sourceEndMs / clip.sourceDurationMs).clamp(0.0, 1.0);
+    final startIndex = (peaks.length * startFraction).floor();
+    var endIndex = (peaks.length * endFraction).ceil();
+    if (endIndex <= startIndex) {
+      endIndex = startIndex + 1 < peaks.length ? startIndex + 1 : peaks.length;
+    }
+    if (startIndex <= 0 && endIndex >= peaks.length) return peaks;
+    final safeStart = startIndex.clamp(0, peaks.length).toInt();
+    final safeEnd = endIndex.clamp(safeStart, peaks.length).toInt();
+    return peaks.sublist(safeStart, safeEnd).toList(growable: false);
+  }
+
+  MixClip? _dominantClipAt(List<MixClip> clips, int timelineMs) {
+    final active = clips
+        .where((clip) => clip.isActiveAt(timelineMs))
+        .toList(growable: false);
+    if (active.isEmpty) return null;
+    return active.reduce((current, candidate) {
+      final currentGain = current.gainAt(timelineMs);
+      final candidateGain = candidate.gainAt(timelineMs);
+      if (candidateGain > currentGain) return candidate;
+      if (candidateGain < currentGain) return current;
+      return candidate.timelineStartMs >= current.timelineStartMs
+          ? candidate
+          : current;
+    });
+  }
+
+  String _playheadTimeLabel(int playheadMs, MixClip? clip) {
+    if (clip == null) return 'Mix ${_formatClock(playheadMs)}';
+    final localMs =
+        (playheadMs - clip.timelineStartMs + clip.placement.sourceStartMs)
+            .clamp(clip.placement.sourceStartMs, clip.placement.sourceEndMs)
+            .toInt();
+    return 'Mix ${_formatClock(playheadMs)} · Song ${_formatClock(localMs)}';
+  }
+
+  Widget _playheadBadge(BuildContext context, String label) {
+    final theme = Theme.of(context);
+    return IgnorePointer(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 148),
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.inverseSurface.withValues(alpha: 0.82),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: theme.colorScheme.onInverseSurface,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+    );
   }
 
   bool _clipMatchesTrack(MixClip clip, Track track) {
@@ -480,47 +607,111 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     BuildContext context,
     _LaneModel lane,
     TimelineViewport viewport,
+    double paneWidth,
   ) {
     final left = viewport.msToX(lane.clip.timelineStartMs);
     final width = (viewport.msToX(lane.clip.timelineEndMs) -
             viewport.msToX(lane.clip.timelineStartMs))
         .clamp(8.0, double.infinity);
+    final selected = _isTrackSelected(lane.track.id);
 
     return SizedBox(
+      width: double.infinity,
       height: lane.height,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          TimelineLaneHeader(
-            key: ValueKey('timeline_lane_header_${lane.track.id}'),
-            track: lane.track,
-            role: lane.role,
-            statusLabel: lane.status,
-            accent: lane.accent,
-          ),
-          Expanded(
-            child: ClipRect(
-              child: Stack(
-                children: [
-                  Positioned(
-                    left: left,
-                    top: 8,
-                    bottom: 8,
-                    width: width,
-                    child: _buildClipSurface(context, lane, viewport),
-                  ),
-                  if (lane.role == LaneRole.upcoming ||
-                      lane.role == LaneRole.collapsed)
-                    Positioned(
-                      right: 6,
-                      top: 12,
-                      child: _timelineMoveControls(context, lane.track),
-                    ),
-                ],
+      child: ClipRect(
+        child: Stack(
+          children: [
+            _buildLaneSpan(context, lane, viewport),
+            Positioned(
+              left: left,
+              top: 8,
+              bottom: 8,
+              width: width,
+              child: _buildClipSurface(context, lane, viewport),
+            ),
+            if (selected &&
+                (lane.role == LaneRole.upcoming ||
+                    lane.role == LaneRole.collapsed))
+              Positioned(
+                right: 6,
+                top: 12,
+                child: _timelineMoveControls(context, lane.track),
+              ),
+            _buildLaneIdentity(context, lane, viewport, paneWidth),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLaneSpan(
+    BuildContext context,
+    _LaneModel lane,
+    TimelineViewport viewport,
+  ) {
+    final left = viewport.msToX(0);
+    final width = (viewport.msToX(lane.clip.timelineEndMs) - left)
+        .clamp(0.0, double.infinity)
+        .toDouble();
+    if (width <= 0) return const SizedBox.shrink();
+
+    return Positioned(
+      key: ValueKey('timeline_lane_span_${lane.track.id}'),
+      left: left,
+      top: 8,
+      bottom: 8,
+      width: width,
+      child: IgnorePointer(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: lane.accent.withValues(
+              alpha: lane.role == LaneRole.current ? 0.035 : 0.022,
+            ),
+            border: Border(
+              bottom: BorderSide(
+                color: lane.accent.withValues(alpha: 0.10),
               ),
             ),
           ),
-        ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLaneIdentity(
+    BuildContext context,
+    _LaneModel lane,
+    TimelineViewport viewport,
+    double paneWidth,
+  ) {
+    if (_isEditingTrack(lane.track.id)) return const SizedBox.shrink();
+
+    const leftInset = 8.0;
+    const topInset = 12.0;
+    const minVisibleWidth = 56.0;
+    final maxWidth = math.min(260.0, math.max(0.0, paneWidth - 16));
+    final laneEndX = viewport.msToX(lane.clip.timelineEndMs);
+    final visibleEndX = laneEndX.clamp(0.0, paneWidth).toDouble();
+    final width = (visibleEndX - leftInset).clamp(0.0, maxWidth).toDouble();
+    if (width < minVisibleWidth) return const SizedBox.shrink();
+
+    return Positioned(
+      left: leftInset,
+      top: topInset,
+      width: width,
+      child: IgnorePointer(
+        child: ClipRect(
+          child: SizedBox(
+            width: width,
+            child: TimelineLaneHeader(
+              key: ValueKey('timeline_lane_header_${lane.track.id}'),
+              track: lane.track,
+              role: lane.role,
+              statusLabel: lane.status,
+              accent: lane.accent,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -530,22 +721,19 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     _LaneModel lane,
     TimelineViewport viewport,
   ) {
-    final editMode = _mode == _TimelineMode.edit;
-    final trim = TrimRange.clamped(
-      trackDurationMs: lane.clip.sourceDurationMs,
-      startOffsetMs: lane.clip.sourceStartMs,
-      endOffsetMs: lane.clip.sourceEndMs,
-    );
+    final selected = _isTrackSelected(lane.track.id);
+    final selectedTrim = TrimRange.full(lane.clip.selectedDurationMs);
     final body = TimelineClipWidget(
       track: lane.track,
-      peaks: widget.peaksFor(lane.track),
-      trim: trim,
+      peaks: _peaksForClip(lane.track, lane.clip),
+      trim: selectedTrim,
       role: lane.role,
       accent: lane.accent,
       stateLabel: lane.status,
       snapMarkerCount: _snapMode.markerCount,
       gain: _clipDisplayGain(lane.mixClip),
       showGainBadge: widget.timelineModel?.clips.isNotEmpty ?? false,
+      showInLaneChip: false,
     );
 
     return Stack(
@@ -554,68 +742,199 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           child: GestureDetector(
             key: ValueKey('timeline_clip_body_drag_${lane.track.id}'),
             behavior: HitTestBehavior.opaque,
-            onLongPressStart: editMode && widget.onTimelineStartChanged != null
-                ? (_) {
-                    setState(() {
-                      _activeClipDragTrackId = lane.track.id;
-                      _activeClipDragStartMs = lane.clip.timelineStartMs;
-                    });
-                  }
+            onTap: () => _selectTrack(lane.track.id),
+            onHorizontalDragStart:
+                selected && widget.onTimelineStartChanged != null
+                    ? (_) => _beginClipDrag(lane)
+                    : null,
+            onHorizontalDragUpdate:
+                selected && widget.onTimelineStartChanged != null
+                    ? (details) => _updateClipDrag(
+                          lane,
+                          viewport,
+                          details.primaryDelta ?? 0,
+                          useIncrementalDelta: true,
+                        )
+                    : null,
+            onHorizontalDragEnd: (_) => _finishClipDrag(lane),
+            onHorizontalDragCancel: () => _cancelClipDrag(lane.track.id),
+            onLongPressStart: selected && widget.onTimelineStartChanged != null
+                ? (_) => _beginClipDrag(lane)
                 : null,
-            onLongPressMoveUpdate: editMode &&
-                    widget.onTimelineStartChanged != null
-                ? (details) {
-                    if (_activeClipDragTrackId != lane.track.id) return;
-                    final dragStartMs = _activeClipDragStartMs;
-                    if (dragStartMs == null) return;
-                    final deltaMs = _timelineDeltaMs(
-                      viewport,
-                      details.offsetFromOrigin.dx,
-                    );
-                    final snappedStart = _snapTimelineMs(
-                      math.max(0, dragStartMs + deltaMs),
-                    );
-                    if (snappedStart == lane.clip.timelineStartMs) return;
-                    widget.onTimelineStartChanged!(lane.track, snappedStart);
-                  }
-                : null,
-            onLongPressEnd: (_) => _clearActiveClipDrag(lane.track.id),
-            onLongPressCancel: () => _clearActiveClipDrag(lane.track.id),
+            onLongPressMoveUpdate:
+                selected && widget.onTimelineStartChanged != null
+                    ? (details) => _updateClipDrag(
+                          lane,
+                          viewport,
+                          details.offsetFromOrigin.dx,
+                        )
+                    : null,
+            onLongPressEnd: (_) => _finishClipDrag(lane),
+            onLongPressCancel: () => _cancelClipDrag(lane.track.id),
             child: body,
           ),
         ),
-        if (editMode) ...[
+        if (selected) ...[
           _trimHandle(
             key: ValueKey('timeline_trim_start_${lane.track.id}'),
             alignStart: true,
             accent: lane.accent,
             enabled: widget.onTrimStartChanged != null,
-            onDragUpdate: (deltaPx) {
-              final deltaMs = _timelineDeltaMs(viewport, deltaPx);
-              if (deltaMs == 0) return;
-              widget.onTrimStartChanged!(
-                lane.track,
-                lane.clip.sourceStartMs + deltaMs,
-              );
-            },
+            onDragStart: () => _beginTrimDrag(lane, _TrimEdge.start),
+            onDragUpdate: (deltaPx) => _updateTrimDrag(lane, viewport, deltaPx),
+            onDragEnd: () => _finishTrimDrag(lane),
+            onDragCancel: () => _cancelTrimDrag(lane.track.id),
           ),
           _trimHandle(
             key: ValueKey('timeline_trim_end_${lane.track.id}'),
             alignStart: false,
             accent: lane.accent,
             enabled: widget.onTrimEndChanged != null,
-            onDragUpdate: (deltaPx) {
-              final deltaMs = _timelineDeltaMs(viewport, deltaPx);
-              if (deltaMs == 0) return;
-              widget.onTrimEndChanged!(
-                lane.track,
-                lane.clip.sourceEndMs + deltaMs,
-              );
-            },
+            onDragStart: () => _beginTrimDrag(lane, _TrimEdge.end),
+            onDragUpdate: (deltaPx) => _updateTrimDrag(lane, viewport, deltaPx),
+            onDragEnd: () => _finishTrimDrag(lane),
+            onDragCancel: () => _cancelTrimDrag(lane.track.id),
           ),
         ],
       ],
     );
+  }
+
+  void _beginClipDrag(_LaneModel lane) {
+    setState(() {
+      _selectedTrackId = lane.track.id;
+      _activeClipDragTrackId = lane.track.id;
+      _activeClipDragStartClip = lane.clip;
+      _storePreviewClip(lane.track, lane.clip);
+    });
+  }
+
+  void _updateClipDrag(
+    _LaneModel lane,
+    TimelineViewport viewport,
+    double deltaPx, {
+    bool useIncrementalDelta = false,
+  }) {
+    if (_activeClipDragTrackId != lane.track.id) return;
+    final baseClip = useIncrementalDelta
+        ? (_previewClipFor(lane.track, lane.clip) ?? lane.clip)
+        : _activeClipDragStartClip;
+    if (baseClip == null) return;
+    final deltaMs = _timelineDeltaMs(viewport, deltaPx);
+    final snappedStart = _snapTimelineMs(
+      math.max(0, baseClip.timelineStartMs + deltaMs),
+    );
+    if (snappedStart == baseClip.timelineStartMs) return;
+    setState(() {
+      _storePreviewClip(lane.track, baseClip.withTimelineStartMs(snappedStart));
+    });
+  }
+
+  void _finishClipDrag(_LaneModel lane) {
+    if (_activeClipDragTrackId != lane.track.id) return;
+    final preview = _previewClipFor(lane.track, lane.clip) ?? lane.clip;
+    final startClip = _activeClipDragStartClip;
+    setState(() {
+      _activeClipDragTrackId = null;
+      _activeClipDragStartClip = null;
+    });
+    if (startClip == null ||
+        preview.timelineStartMs != startClip.timelineStartMs) {
+      widget.onTimelineStartChanged?.call(lane.track, preview.timelineStartMs);
+    }
+  }
+
+  void _cancelClipDrag(String trackId) {
+    if (_activeClipDragTrackId != trackId) return;
+    setState(() {
+      _removePreviewClip(trackId);
+      _activeClipDragTrackId = null;
+      _activeClipDragStartClip = null;
+    });
+  }
+
+  void _beginTrimDrag(_LaneModel lane, _TrimEdge edge) {
+    setState(() {
+      _selectedTrackId = lane.track.id;
+      _activeTrimTrackId = lane.track.id;
+      _activeTrimEdge = edge;
+      _activeTrimStartClip = lane.clip;
+      _storePreviewClip(lane.track, lane.clip);
+    });
+  }
+
+  void _updateTrimDrag(
+    _LaneModel lane,
+    TimelineViewport viewport,
+    double deltaPx,
+  ) {
+    if (_activeTrimTrackId != lane.track.id) return;
+    final edge = _activeTrimEdge;
+    if (edge == null) return;
+    final baseClip = _previewClipFor(lane.track, lane.clip) ?? lane.clip;
+    final deltaMs = _timelineDeltaMs(viewport, deltaPx);
+    if (deltaMs == 0) return;
+    final next = switch (edge) {
+      _TrimEdge.start => baseClip.withSourceRange(
+          sourceStartMs: baseClip.sourceStartMs + deltaMs,
+          sourceEndMs: baseClip.sourceEndMs,
+        ),
+      _TrimEdge.end => baseClip.withSourceRange(
+          sourceStartMs: baseClip.sourceStartMs,
+          sourceEndMs: baseClip.sourceEndMs + deltaMs,
+        ),
+    };
+    if (next == baseClip) return;
+    setState(() => _storePreviewClip(lane.track, next));
+  }
+
+  void _finishTrimDrag(_LaneModel lane) {
+    if (_activeTrimTrackId != lane.track.id) return;
+    final edge = _activeTrimEdge;
+    final preview = _previewClipFor(lane.track, lane.clip) ?? lane.clip;
+    final startClip = _activeTrimStartClip;
+    setState(() {
+      _activeTrimTrackId = null;
+      _activeTrimEdge = null;
+      _activeTrimStartClip = null;
+    });
+    if (edge == null || startClip == null) return;
+    switch (edge) {
+      case _TrimEdge.start:
+        if (preview.sourceStartMs != startClip.sourceStartMs) {
+          widget.onTrimStartChanged?.call(lane.track, preview.sourceStartMs);
+        }
+        break;
+      case _TrimEdge.end:
+        if (preview.sourceEndMs != startClip.sourceEndMs) {
+          widget.onTrimEndChanged?.call(lane.track, preview.sourceEndMs);
+        }
+        break;
+    }
+  }
+
+  void _cancelTrimDrag(String trackId) {
+    if (_activeTrimTrackId != trackId) return;
+    setState(() {
+      _removePreviewClip(trackId);
+      _activeTrimTrackId = null;
+      _activeTrimEdge = null;
+      _activeTrimStartClip = null;
+    });
+  }
+
+  void _selectTrack(String trackId) {
+    if (_selectedTrackId == trackId) return;
+    setState(() => _selectedTrackId = trackId);
+  }
+
+  void _clearSelectedTrack() {
+    if (_selectedTrackId == null ||
+        _activeClipDragTrackId != null ||
+        _activeTrimTrackId != null) {
+      return;
+    }
+    setState(() => _selectedTrackId = null);
   }
 
   Widget _trimHandle({
@@ -623,7 +942,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     required bool alignStart,
     required Color accent,
     required bool enabled,
+    required VoidCallback onDragStart,
     required ValueChanged<double> onDragUpdate,
+    required VoidCallback onDragEnd,
+    required VoidCallback onDragCancel,
   }) {
     return Positioned(
       left: alignStart ? 0 : null,
@@ -638,9 +960,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           child: GestureDetector(
             key: key,
             behavior: HitTestBehavior.opaque,
+            onHorizontalDragStart: enabled ? (_) => onDragStart() : null,
             onHorizontalDragUpdate: enabled
                 ? (details) => onDragUpdate(details.primaryDelta ?? 0)
                 : null,
+            onHorizontalDragEnd: enabled ? (_) => onDragEnd() : null,
+            onHorizontalDragCancel: enabled ? onDragCancel : null,
             child: Align(
               alignment:
                   alignStart ? Alignment.centerLeft : Alignment.centerRight,
@@ -660,14 +985,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         ),
       ),
     );
-  }
-
-  void _clearActiveClipDrag(String trackId) {
-    if (_activeClipDragTrackId != trackId) return;
-    setState(() {
-      _activeClipDragTrackId = null;
-      _activeClipDragStartMs = null;
-    });
   }
 
   int _timelineDeltaMs(TimelineViewport viewport, double deltaXPx) {
@@ -729,20 +1046,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
         border: Border(bottom: BorderSide(color: theme.dividerColor)),
       ),
-      child: Row(
+      child: Stack(
         children: [
-          SizedBox(
-            width: StackedWaveformTimeline.railWidth,
-            child: Center(
-              child: Text(
-                'Mix time',
-                style: theme.textTheme.labelSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ),
-          Expanded(
+          Positioned.fill(
             child: CustomPaint(
               painter: _RulerPainter(
                 viewport: viewport,
@@ -751,11 +1057,22 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               ),
             ),
           ),
+          Positioned(
+            left: 8,
+            bottom: 4,
+            child: Text(
+              'Mix time',
+              style: theme.textTheme.labelSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
         ],
       ),
     );
 
-    if (_mode != _TimelineMode.browse || !_hasScrubHandlers) {
+    if (!_hasScrubHandlers) {
       return ruler;
     }
 
@@ -805,51 +1122,65 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
   }
 
-  Widget _edgeTeaser(
-    BuildContext context, {
-    required IconData icon,
-    required String label,
-    required Color accent,
-    VoidCallback? onTap,
-  }) {
-    return Semantics(
-      button: onTap != null,
-      label: label,
-      child: Material(
-        color: accent.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(12),
-          child: Container(
-            constraints: const BoxConstraints(maxWidth: 150, minHeight: 32),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 12, color: Colors.white),
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(
-                    label,
-                    style: const TextStyle(color: Colors.white, fontSize: 11),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
   void _panViewport(TimelineViewport viewport, double deltaXPx) {
     if (!deltaXPx.isFinite || deltaXPx == 0) return;
-    final next = viewport.panByPixels(deltaXPx);
-    if (next.offsetMs == viewport.offsetMs) return;
+    final baseViewport = _manualOffsetMs == null
+        ? viewport
+        : viewport.panToOffsetMs(_manualOffsetMs!);
+    final next = baseViewport.panByPixels(deltaXPx);
+    if (next.offsetMs == baseViewport.offsetMs) return;
     setState(() => _manualOffsetMs = next.offsetMs);
+  }
+
+  void _beginViewportScale(
+    TimelineViewport viewport,
+    ScaleStartDetails details,
+  ) {
+    _scaleStartViewport = viewport;
+    _scaleStartZoom = _zoom;
+    _scaleLastLocalFocalX = details.localFocalPoint.dx;
+  }
+
+  void _updateViewportScale(
+    TimelineViewport viewport,
+    ScaleUpdateDetails details,
+  ) {
+    if (details.pointerCount > 1 || (details.scale - 1).abs() > 0.01) {
+      final startViewport = _scaleStartViewport ?? viewport;
+      final startZoom = _scaleStartZoom ?? _zoom;
+      final nextZoom =
+          (startZoom * details.scale).clamp(_minZoom, _maxZoom).toDouble();
+      final nextPps = (startViewport.pixelsPerSecond * (nextZoom / startZoom))
+          .clamp(
+            TimelineViewport.minPixelsPerSecond,
+            TimelineViewport.maxPixelsPerSecond,
+          )
+          .toDouble();
+      final focalX =
+          (details.localFocalPoint.dx - StackedWaveformTimeline.railWidth)
+              .clamp(0.0, viewport.widthPx)
+              .toDouble();
+      final next = startViewport.zoomAround(
+        newPixelsPerSecond: nextPps,
+        focalXPx: focalX,
+      );
+      setState(() {
+        _zoom = nextZoom;
+        _manualOffsetMs = next.offsetMs;
+      });
+      return;
+    }
+
+    final previousFocalX = _scaleLastLocalFocalX;
+    var dragDeltaPx = details.focalPointDelta.dx;
+    if (previousFocalX != null) {
+      final localDeltaPx = details.localFocalPoint.dx - previousFocalX;
+      if (localDeltaPx != 0) {
+        dragDeltaPx = localDeltaPx;
+      }
+    }
+    _scaleLastLocalFocalX = details.localFocalPoint.dx;
+    _panViewport(viewport, -dragDeltaPx);
   }
 
   bool get _hasScrubHandlers =>
@@ -874,8 +1205,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     double localX,
   ) {
     final ms = _timelineMsForPointer(viewport, paneWidth, localX);
-    _isScrubbing = true;
-    _lastScrubMs = ms;
+    setState(() {
+      _isScrubbing = true;
+      _preserveViewportForScrub = true;
+      _manualOffsetMs ??= viewport.offsetMs;
+      _lastScrubMs = ms;
+    });
     widget.onScrubStart?.call();
   }
 
@@ -887,56 +1222,69 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     if (!_isScrubbing) {
       _beginScrubAt(viewport, paneWidth, localX);
     }
-    final ms = _timelineMsForPointer(viewport, paneWidth, localX);
+    final effectiveViewport = _autoPanViewportNearScrubEdge(
+      viewport,
+      paneWidth,
+      localX,
+    );
+    final ms = _timelineMsForPointer(effectiveViewport, paneWidth, localX);
     _lastScrubMs = ms;
     widget.onScrubUpdate?.call(ms);
   }
 
   void _endScrub() {
     final ms = _lastScrubMs ?? widget.playheadPositionMs;
-    _isScrubbing = false;
-    _lastScrubMs = null;
+    setState(() {
+      _isScrubbing = false;
+      _lastScrubMs = null;
+    });
     final end = widget.onScrubEnd;
     if (end != null) {
-      end(ms);
+      end(ms).whenComplete(_releaseScrubViewportLockAfterFrame);
+    } else {
+      _releaseScrubViewportLockAfterFrame();
     }
   }
 
-  void _jumpToClip(
-    TimelineClip clip,
-    TimelineViewport viewport, {
-    bool alignEnd = false,
-  }) {
-    final target = alignEnd
-        ? clip.timelineEndMs - viewport.visibleDurationMs
-        : clip.timelineStartMs;
-    final next = viewport.panToOffsetMs(target);
-    setState(() => _manualOffsetMs = next.offsetMs);
+  TimelineViewport _autoPanViewportNearScrubEdge(
+    TimelineViewport viewport,
+    double paneWidth,
+    double localX,
+  ) {
+    final baseViewport = _manualOffsetMs == null
+        ? viewport
+        : viewport.panToOffsetMs(_manualOffsetMs!);
+    final paneX = (localX - StackedWaveformTimeline.railWidth)
+        .clamp(0.0, paneWidth)
+        .toDouble();
+    final leftDistance = paneX;
+    final rightDistance = paneWidth - paneX;
+    var panPx = 0.0;
+
+    if (leftDistance < _scrubEdgeScrollZonePx) {
+      final intensity =
+          ((_scrubEdgeScrollZonePx - leftDistance) / _scrubEdgeScrollZonePx)
+              .clamp(0.0, 1.0);
+      panPx = -_scrubMaxEdgeScrollPx * intensity;
+    } else if (rightDistance < _scrubEdgeScrollZonePx) {
+      final intensity =
+          ((_scrubEdgeScrollZonePx - rightDistance) / _scrubEdgeScrollZonePx)
+              .clamp(0.0, 1.0);
+      panPx = _scrubMaxEdgeScrollPx * intensity;
+    }
+
+    if (panPx == 0) return baseViewport;
+    final next = baseViewport.panByPixels(panPx);
+    if (next.offsetMs != baseViewport.offsetMs) {
+      setState(() => _manualOffsetMs = next.offsetMs);
+    }
+    return next;
   }
 
-  void _setZoomIndex(int newIndex) {
-    final clampedIndex = newIndex.clamp(0, _zoomLevels.length - 1).toInt();
-    if (clampedIndex == _zoomIndex) return;
-
-    final viewport = _lastViewport;
-    final oldZoom = _zoom;
-    final newZoom = _zoomLevels[clampedIndex];
-    setState(() {
-      _zoomIndex = clampedIndex;
-      if (viewport != null) {
-        final nextPps = (viewport.pixelsPerSecond * (newZoom / oldZoom))
-            .clamp(
-              TimelineViewport.minPixelsPerSecond,
-              TimelineViewport.maxPixelsPerSecond,
-            )
-            .toDouble();
-        _manualOffsetMs = viewport
-            .zoomAround(
-              newPixelsPerSecond: nextPps,
-              focalXPx: viewport.widthPx / 2,
-            )
-            .offsetMs;
-      }
+  void _releaseScrubViewportLockAfterFrame() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _isScrubbing) return;
+      _preserveViewportForScrub = false;
     });
   }
 
@@ -949,12 +1297,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           void updateSnap(SnapMarkerMode mode) {
             if (!mounted) return;
             setState(() => _snapMode = mode);
-            setSheetState(() {});
-          }
-
-          void updateZoom(int index) {
-            if (!mounted) return;
-            _setZoomIndex(index);
             setSheetState(() {});
           }
 
@@ -981,178 +1323,18 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                     children: [
                       for (final mode in SnapMarkerMode.values)
                         ChoiceChip(
-                          key: ValueKey('timeline_snap_${mode.markerCount}'),
+                          key: ValueKey('timeline_snap_${mode.name}'),
                           label: Text(mode.label),
                           selected: _snapMode == mode,
                           onSelected: (_) => updateSnap(mode),
                         ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Text(
-                        'Zoom',
-                        style: Theme.of(context).textTheme.labelLarge,
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        key: const ValueKey('timeline_options_zoom_out'),
-                        tooltip: 'Zoom out timeline',
-                        onPressed: _zoomIndex == 0
-                            ? null
-                            : () => updateZoom(_zoomIndex - 1),
-                        icon: const Icon(Icons.zoom_out),
-                      ),
-                      Text(
-                        '${_zoom.toStringAsFixed(1)}x',
-                        key: const ValueKey('timeline_options_zoom_label'),
-                      ),
-                      IconButton(
-                        key: const ValueKey('timeline_options_zoom_in'),
-                        tooltip: 'Zoom in timeline',
-                        onPressed: _zoomIndex == _zoomLevels.length - 1
-                            ? null
-                            : () => updateZoom(_zoomIndex + 1),
-                        icon: const Icon(Icons.zoom_in),
-                      ),
-                    ],
-                  ),
-                  Text(
-                    'Drag clips after tap-hold; moves snap to ${_snapMode.label}.',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
                 ],
               ),
             ),
           );
         },
-      ),
-    );
-  }
-
-  Widget _buildModeBar(BuildContext context) {
-    final theme = Theme.of(context);
-    final leadingControls = [
-      _modeButton(
-        label: 'Browse',
-        icon: Icons.pan_tool_alt,
-        selected: _mode == _TimelineMode.browse,
-        onTap: () => setState(() {
-          _mode = _TimelineMode.browse;
-          _activeClipDragTrackId = null;
-          _activeClipDragStartMs = null;
-        }),
-      ),
-      const SizedBox(width: 4),
-      _modeButton(
-        label: 'Edit',
-        icon: Icons.edit,
-        selected: _mode == _TimelineMode.edit,
-        onTap: () => setState(() => _mode = _TimelineMode.edit),
-      ),
-    ];
-    final trailingControls = [
-      IconButton(
-        key: const ValueKey('timeline_zoom_out'),
-        icon: const Icon(Icons.zoom_out),
-        tooltip: 'Zoom out timeline',
-        constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-        padding: EdgeInsets.zero,
-        onPressed: _zoomIndex == 0 ? null : () => _setZoomIndex(_zoomIndex - 1),
-      ),
-      Container(
-        key: const ValueKey('timeline_zoom_label'),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.tertiaryContainer,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(
-          '${_zoom.toStringAsFixed(1)}x',
-          style: theme.textTheme.labelSmall?.copyWith(
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ),
-      IconButton(
-        key: const ValueKey('timeline_zoom_in'),
-        icon: const Icon(Icons.zoom_in),
-        tooltip: 'Zoom in timeline',
-        constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-        padding: EdgeInsets.zero,
-        onPressed: _zoomIndex == _zoomLevels.length - 1
-            ? null
-            : () => _setZoomIndex(_zoomIndex + 1),
-      ),
-      IconButton(
-        key: const ValueKey('timeline_zoom_reset'),
-        icon: const Icon(Icons.zoom_out_map),
-        tooltip: 'Reset timeline zoom',
-        constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-        padding: EdgeInsets.zero,
-        onPressed: _zoomIndex == 1 ? null : () => _setZoomIndex(1),
-      ),
-    ];
-
-    return Container(
-      key: const ValueKey('timeline_mode_bar'),
-      height: 60,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        border: Border(top: BorderSide(color: theme.dividerColor)),
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          return FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.center,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ...leadingControls,
-                const SizedBox(width: 16),
-                ...trailingControls,
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _modeButton({
-    required String label,
-    required IconData icon,
-    required bool selected,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        constraints: const BoxConstraints(minHeight: 44, minWidth: 44),
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        decoration: BoxDecoration(
-          color: selected
-              ? StackedWaveformTimeline.currentAccent.withValues(alpha: 0.15)
-              : null,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: selected
-                ? StackedWaveformTimeline.currentAccent
-                : Colors.transparent,
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 18),
-            const SizedBox(width: 6),
-            Text(label),
-          ],
-        ),
       ),
     );
   }
@@ -1176,17 +1358,24 @@ class _RulerPainter extends CustomPainter {
     final tick = Paint()
       ..color = color
       ..strokeWidth = 1;
-    // One label every ~15s, scaled to whatever fits.
-    const stepMs = 15000;
-    final firstTickMs = (viewport.offsetMs ~/ stepMs) * stepMs;
+    final majorStepMs = _majorStepMsFor(viewport.pixelsPerSecond);
+    final minorStepMs = math.max(5000, majorStepMs ~/ 4);
+    final firstTickMs = (viewport.offsetMs ~/ minorStepMs) * minorStepMs;
     final lastTickMs = (viewport.offsetMs + viewport.visibleDurationMs).clamp(
       0,
       viewport.durationMs,
     );
-    for (var ms = firstTickMs; ms <= lastTickMs; ms += stepMs) {
+    var lastLabelRight = -double.infinity;
+    for (var ms = firstTickMs; ms <= lastTickMs; ms += minorStepMs) {
       final x = viewport.msToX(ms);
       if (x < 0 || x > size.width) continue;
-      canvas.drawLine(Offset(x, size.height - 8), Offset(x, size.height), tick);
+      final major = ms % majorStepMs == 0;
+      canvas.drawLine(
+        Offset(x, size.height - (major ? 10 : 6)),
+        Offset(x, size.height),
+        tick,
+      );
+      if (!major) continue;
       final tp = TextPainter(
         text: TextSpan(
           text: _formatClock(ms),
@@ -1194,8 +1383,30 @@ class _RulerPainter extends CustomPainter {
         ),
         textDirection: TextDirection.ltr,
       )..layout();
+      if (x < lastLabelRight + 6) continue;
       tp.paint(canvas, Offset(x + 2, 2));
+      lastLabelRight = x + 2 + tp.width;
     }
+  }
+
+  int _majorStepMsFor(double pixelsPerSecond) {
+    const minLabelSpacingPx = 64.0;
+    const candidates = <int>[
+      15000,
+      30000,
+      60000,
+      120000,
+      300000,
+      600000,
+      900000,
+      1800000,
+      3600000,
+    ];
+    for (final stepMs in candidates) {
+      final spacing = (stepMs / 1000) * pixelsPerSecond;
+      if (spacing >= minLabelSpacingPx) return stepMs;
+    }
+    return candidates.last;
   }
 
   @override

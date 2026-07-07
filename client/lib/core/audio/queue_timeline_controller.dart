@@ -7,6 +7,7 @@ import 'package:rxdart/rxdart.dart';
 
 import '../engine/playback_engine.dart';
 import '../engine/timeline_model.dart';
+import '../../models/timeline_clip.dart';
 import 'playback_session.dart';
 import 'queue_persistence.dart';
 
@@ -49,6 +50,7 @@ class QueueTimelineController {
 
   List<MediaItem> _queue = const [];
   List<int> _playOrder = const [];
+  MixSession _session = MixSession.empty();
   CueTimeline _cueTimeline = CueTimeline.empty;
   int _sessionGeneration = 0;
   String _sessionId = 'session_0';
@@ -61,6 +63,7 @@ class QueueTimelineController {
   Future<void> _commandChain = Future<void>.value();
 
   PlaybackEngine get engine => _engine;
+  MixSession get session => _session;
   List<MediaItem> get queue => _queue;
   int? get currentIndex => _currentIndex;
   MediaItem? get currentMediaItem => _currentMediaItemSubject.valueOrNull;
@@ -96,26 +99,40 @@ class QueueTimelineController {
     List<MediaItem> items, {
     int initialIndex = 0,
     Duration initialPosition = Duration.zero,
+    bool preserveTimelineEdits = false,
+    MixSession? session,
   }) async {
-    await _enqueueCommand(() => _setQueue(
-          items,
-          initialIndex: initialIndex,
-          initialPosition: initialPosition,
-        ));
+    await _enqueueCommand(
+      () => _setQueue(
+        items,
+        initialIndex: initialIndex,
+        initialPosition: initialPosition,
+        preserveTimelineEdits: preserveTimelineEdits,
+        session: session,
+      ),
+    );
   }
 
   Future<void> _setQueue(
     List<MediaItem> items, {
     int initialIndex = 0,
     Duration initialPosition = Duration.zero,
+    bool preserveTimelineEdits = false,
+    MixSession? session,
   }) async {
     await start();
     _sessionGeneration += 1;
-    _sessionId = 'session_$_sessionGeneration';
     _queue = List.unmodifiable(items);
     _playOrder = [for (var i = 0; i < _queue.length; i++) i];
+    _sessionId = session?.sessionId ?? 'session_$_sessionGeneration';
+    _session = session == null
+        ? (preserveTimelineEdits
+            ? _session.normalizedForQueue(_queue)
+            : MixSession.fromQueue(sessionId: _sessionId, queue: _queue))
+        : session.normalizedForQueue(_queue);
     if (_queue.isEmpty) {
       _currentIndex = null;
+      _session = MixSession.empty(sessionId: _sessionId);
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
       await _engine.pause();
@@ -145,9 +162,18 @@ class QueueTimelineController {
   Future<void> _insertIntoQueue(int index, MediaItem item) async {
     final insertIndex = index.clamp(0, _queue.length).toInt();
     final previousCurrent = _currentIndex;
+    final previousCurrentQueueItemId = previousCurrent == null
+        ? null
+        : _session.clipAt(previousCurrent)?.queueItemId;
     final localPosition = livePosition.inMilliseconds;
+    final preserveActivePlayback = _canPreserveActivePlaybackForFutureInsert(
+      insertIndex,
+      previousCurrent,
+      previousCurrentQueueItemId,
+    );
     final nextQueue = List<MediaItem>.from(_queue)..insert(insertIndex, item);
     _queue = List.unmodifiable(nextQueue);
+    _session = _session.insertAt(insertIndex, item).normalizedForQueue(_queue);
     if (previousCurrent == null) {
       _currentIndex = 0;
     } else if (insertIndex <= previousCurrent) {
@@ -155,7 +181,11 @@ class QueueTimelineController {
     }
     _rebuildPlayOrderKeepCurrent();
     _processingState = ProcessingState.ready;
-    await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
+    await _loadModel(
+      seekToCurrent: !preserveActivePlayback,
+      localPositionMs: localPosition,
+      preserveActivePlayback: preserveActivePlayback,
+    );
     _publishQueueState();
   }
 
@@ -169,9 +199,11 @@ class QueueTimelineController {
     final localPosition = livePosition.inMilliseconds;
     final nextQueue = List<MediaItem>.from(_queue)..removeAt(index);
     _queue = List.unmodifiable(nextQueue);
+    _session = _session.removeAt(index).normalizedForQueue(_queue);
     if (_queue.isEmpty) {
       _currentIndex = null;
       _playOrder = const [];
+      _session = MixSession.empty(sessionId: _sessionId);
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
       await _engine.pause();
@@ -191,6 +223,86 @@ class QueueTimelineController {
       await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
     }
     _publishQueueState();
+  }
+
+  Future<void> reorderQueue(int oldIndex, int newIndex) async {
+    await _enqueueCommand(() => _reorderQueue(oldIndex, newIndex));
+  }
+
+  Future<void> _reorderQueue(int oldIndex, int newIndex) async {
+    if (oldIndex == newIndex) return;
+    if (oldIndex < 0 || oldIndex >= _queue.length) return;
+    if (newIndex < 0 || newIndex >= _queue.length) return;
+
+    final localPosition = livePosition.inMilliseconds;
+    final nextQueue = List<MediaItem>.from(_queue);
+    final item = nextQueue.removeAt(oldIndex);
+    nextQueue.insert(newIndex, item);
+    _queue = List.unmodifiable(nextQueue);
+    _session = _session.reorder(oldIndex, newIndex).normalizedForQueue(_queue);
+
+    if (_currentIndex == oldIndex) {
+      _currentIndex = newIndex;
+    } else if (_currentIndex != null &&
+        oldIndex < _currentIndex! &&
+        newIndex >= _currentIndex!) {
+      _currentIndex = _currentIndex! - 1;
+    } else if (_currentIndex != null &&
+        oldIndex > _currentIndex! &&
+        newIndex <= _currentIndex!) {
+      _currentIndex = _currentIndex! + 1;
+    }
+
+    _rebuildPlayOrderKeepCurrent();
+    _session = _session.reflowedByOrder(_playOrder);
+    _processingState = ProcessingState.ready;
+    await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
+    _publishQueueState();
+  }
+
+  TimelineClip? timelineClipForIndex(int index) =>
+      _session.clipAt(index)?.placement;
+
+  Future<void> setTimelineStartMs(int index, int ms) async {
+    await _enqueueCommand(() => _setTimelineStartMs(index, ms));
+  }
+
+  Future<void> _setTimelineStartMs(int index, int ms) async {
+    if (index < 0 || index >= _queue.length) return;
+    final placement = _placementForIndex(index).withTimelineStartMs(ms);
+    await _applyCueOverride(index, placement);
+  }
+
+  Future<void> setSourceStartMs(int index, int ms) async {
+    await _enqueueCommand(() => _setSourceStartMs(index, ms));
+  }
+
+  Future<void> _setSourceStartMs(int index, int ms) async {
+    if (index < 0 || index >= _queue.length) return;
+    final placement = _placementForIndex(index);
+    await _applyCueOverride(
+      index,
+      placement.withSourceRange(
+        sourceStartMs: ms,
+        sourceEndMs: placement.sourceEndMs,
+      ),
+    );
+  }
+
+  Future<void> setSourceEndMs(int index, int ms) async {
+    await _enqueueCommand(() => _setSourceEndMs(index, ms));
+  }
+
+  Future<void> _setSourceEndMs(int index, int ms) async {
+    if (index < 0 || index >= _queue.length) return;
+    final placement = _placementForIndex(index);
+    await _applyCueOverride(
+      index,
+      placement.withSourceRange(
+        sourceStartMs: placement.sourceStartMs,
+        sourceEndMs: ms,
+      ),
+    );
   }
 
   Future<void> play() async {
@@ -310,6 +422,7 @@ class QueueTimelineController {
       _currentIndex = current;
     }
     _rebuildPlayOrderKeepCurrent();
+    _session = _session.reflowedByOrder(_playOrder);
     await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
     if (current != null && current >= 0 && current < _queue.length) {
       _currentIndex = current;
@@ -327,9 +440,8 @@ class QueueTimelineController {
     _loopModeSubject.add(mode);
   }
 
-  Future<void> toggleShuffle() => _enqueueCommand(
-        () => _setShuffleMode(!_shuffleEnabled),
-      );
+  Future<void> toggleShuffle() =>
+      _enqueueCommand(() => _setShuffleMode(!_shuffleEnabled));
 
   Future<void> cycleLoopMode() async {
     await _enqueueCommand(() async {
@@ -361,18 +473,18 @@ class QueueTimelineController {
     _subscriptions
       ..add(_engine.positionMsStream.listen(_onGlobalPosition))
       ..add(_engine.isPlayingStream.listen((_) => _publishPlayerState()))
-      ..add(_engine.clipCompletionStream.listen(
-        (event) {
+      ..add(
+        _engine.clipCompletionStream.listen((event) {
           if (_suppressPositionSync) return;
           unawaited(_onClipCompleted(event));
-        },
-      ))
-      ..add(_engine.clock.completedStream.listen(
-        (_) {
+        }),
+      )
+      ..add(
+        _engine.clock.completedStream.listen((_) {
           if (_suppressPositionSync) return;
           unawaited(_onCompleted());
-        },
-      ));
+        }),
+      );
   }
 
   Future<T> _enqueueCommand<T>(Future<T> Function() command) {
@@ -391,15 +503,20 @@ class QueueTimelineController {
   Future<void> _loadModel({
     required bool seekToCurrent,
     int localPositionMs = 0,
+    bool preserveActivePlayback = false,
   }) async {
-    _cueTimeline = CueTimeline.contiguousQueue(
-      sessionId: _sessionId,
+    _session = _session.normalizedForQueue(_queue);
+    _cueTimeline = CueTimeline.fromSession(
+      session: _session,
       queue: _queue,
       playOrder: _playOrder,
     );
     _suppressPositionSync = true;
     try {
-      await _engine.loadMix(_cueTimeline.toTimelineModel());
+      await _engine.loadMix(
+        _cueTimeline.toTimelineModel(),
+        preserveActivePlayback: preserveActivePlayback,
+      );
       if (seekToCurrent && _currentIndex != null) {
         await _engine.seek(_globalForCurrentLocal(localPositionMs));
       }
@@ -408,6 +525,60 @@ class QueueTimelineController {
       _suppressPositionSync = false;
     }
     _publishPosition(_engine.positionMs);
+  }
+
+  bool _canPreserveActivePlaybackForFutureInsert(
+    int insertIndex,
+    int? previousCurrent,
+    String? previousCurrentQueueItemId,
+  ) {
+    if (!_engine.isPlaying || previousCurrent == null) return false;
+    if (previousCurrentQueueItemId == null) return false;
+    if (insertIndex <= previousCurrent) return false;
+    final active = _engine.model.activeClipsAt(_engine.positionMs);
+    return active.length == 1 &&
+        active.single.queueItemId == previousCurrentQueueItemId;
+  }
+
+  TimelineClip _placementForIndex(int index) {
+    final current = _session.clipAt(index)?.placement;
+    if (current != null) return current;
+
+    final item = _queue[index];
+    final durationMs = item.duration?.inMilliseconds ?? 0;
+    return TimelineClip.clamped(
+      id: '${_sessionId}_queue_$index',
+      trackId: item.id,
+      sourceDurationMs: durationMs,
+      sourceStartMs: 0,
+      sourceEndMs: durationMs,
+      timelineStartMs: 0,
+    );
+  }
+
+  Future<void> _applyCueOverride(int index, TimelineClip placement) async {
+    final nextSession = _session.withPlacementAt(index, placement);
+    if (!_canApplySession(nextSession)) return;
+
+    final localPosition = livePosition.inMilliseconds;
+    _session = nextSession.normalizedForQueue(_queue);
+    await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
+    _publishQueueState();
+  }
+
+  bool _canApplySession(MixSession session) {
+    final timeline = CueTimeline.fromSession(
+      session: session,
+      queue: _queue,
+      playOrder: _playOrder,
+    );
+    var model = TimelineModel();
+    for (final cue in timeline.cues) {
+      final clip = cue.toMixClip();
+      if (!model.canPlace(clip.placement)) return false;
+      model = model.addClip(clip);
+    }
+    return true;
   }
 
   void _rebuildPlayOrderKeepCurrent() {
@@ -529,8 +700,10 @@ class QueueTimelineController {
   MixClip? _currentClip() {
     final current = _currentIndex;
     if (current == null) return null;
+    final queueItemId = _session.clipAt(current)?.queueItemId;
+    if (queueItemId == null) return null;
     for (final clip in _engine.model.clips) {
-      if (clip.queueItemId == current.toString()) return clip;
+      if (clip.queueItemId == queueItemId) return clip;
     }
     return null;
   }
@@ -599,7 +772,10 @@ class QueueTimelineController {
       _publishQueueState(includeQueue: false);
       return;
     }
-    final completedIndex = int.tryParse(clip.queueItemId ?? '');
+    final completedQueueItemId = clip.queueItemId;
+    final completedIndex = completedQueueItemId == null
+        ? null
+        : _cueTimeline.cueForQueueItemId(completedQueueItemId)?.queueIndex;
     if (completedIndex == null ||
         completedIndex < 0 ||
         completedIndex >= _queue.length) {

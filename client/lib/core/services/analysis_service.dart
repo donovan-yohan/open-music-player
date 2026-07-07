@@ -16,7 +16,7 @@ class AnalysisService {
   /// Fetches the current analysis for [trackId].
   ///
   /// Returns a [TrackAnalysis] whose [TrackAnalysis.status] may be pending /
-  /// analyzing / failed / unsupported and whose summary may be null. Throws
+  /// analyzing / stale / failed / unsupported and whose summary may be null. Throws
   /// [ApiException] when the server has no analysis to give (404) or the
   /// analyzer is disabled (503).
   Future<TrackAnalysis> getTrackAnalysis(int trackId) {

@@ -64,6 +64,14 @@ SongInfoDisplay buildSongInfoDisplay(TrackAnalysis? analysis) {
     ));
   }
 
+  final integratedLufs = summary?.loudness?.integratedLufs;
+  if (integratedLufs != null) {
+    rows.add(SongInfoRow(
+      label: 'Loudness',
+      value: '${integratedLufs.toStringAsFixed(1)} LUFS',
+    ));
+  }
+
   if (rows.isNotEmpty) {
     return SongInfoDisplay(rows: rows);
   }
@@ -88,6 +96,8 @@ String _messageForStatus(TrackAnalysisStatus status) {
       return 'Analysis in progress. Check back soon.';
     case TrackAnalysisStatus.failed:
       return 'Analysis failed for this track.';
+    case TrackAnalysisStatus.stale:
+      return 'Analysis is being refreshed for this track.';
     case TrackAnalysisStatus.unsupported:
       return 'Analysis is not supported for this track.';
     case TrackAnalysisStatus.analyzed:

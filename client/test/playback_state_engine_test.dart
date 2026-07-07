@@ -1,11 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:audio_service/audio_service.dart' show MediaItem;
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/audio/queue_persistence.dart';
 import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
+import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/fake_voice.dart';
@@ -32,6 +35,55 @@ void main() {
       expect(playback.currentItem?.id, '2');
       expect(playback.position, const Duration(seconds: 12));
       expect(playback.duration, const Duration(seconds: 45));
+      expect(playback.isPlaying, isFalse);
+      playback.dispose();
+    });
+
+    test('restore preserves canonical mix-session timing metadata', () async {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_restore',
+        queue: [
+          const MediaItem(
+            id: '1',
+            title: 'Track 1',
+            duration: Duration(seconds: 30),
+          ),
+          const MediaItem(
+            id: '2',
+            title: 'Track 2',
+            duration: Duration(seconds: 45),
+          ),
+        ],
+      ).withPlacementAt(
+        1,
+        TimelineClip.clamped(
+          id: 'ignored',
+          trackId: '2',
+          sourceDurationMs: 45000,
+          sourceStartMs: 5000,
+          sourceEndMs: 40000,
+          timelineStartMs: 25000,
+        ),
+      );
+      SharedPreferences.setMockInitialValues({
+        QueuePersistenceStore.storageKey: QueueSnapshot(
+          tracks: [_track(1, seconds: 30), _track(2, seconds: 45)],
+          currentIndex: 1,
+          positionMs: 12000,
+          session: session,
+        ).encode(),
+      });
+      final playback = _playbackState();
+
+      await playback.restore();
+      await Future<void>.delayed(Duration.zero);
+
+      final restoredClip = playback.timelineModel.clips[1].placement;
+      expect(restoredClip.sourceStartMs, 5000);
+      expect(restoredClip.sourceEndMs, 40000);
+      expect(restoredClip.timelineStartMs, 25000);
+      expect(playback.position, const Duration(seconds: 12));
+      expect(playback.timelinePositionMs, 37000);
       expect(playback.isPlaying, isFalse);
       playback.dispose();
     });

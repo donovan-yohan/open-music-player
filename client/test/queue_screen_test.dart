@@ -10,8 +10,10 @@ import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/queue_state.dart';
+import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/track_analysis.dart';
+import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/screens/queue_screen.dart';
@@ -93,7 +95,7 @@ void main() {
     );
   });
 
-  test('splits playback queue around current index', () {
+  test('marks the current item in one continuous playback queue', () {
     final entries = listeningQueueEntries(
       queue: [
         _mediaItem(1, 'Intro'),
@@ -103,11 +105,7 @@ void main() {
       currentIndex: 1,
     );
 
-    expect(entries.map((entry) => entry.section), [
-      ListeningQueueSection.previous,
-      ListeningQueueSection.current,
-      ListeningQueueSection.upNext,
-    ]);
+    expect(entries.map((entry) => entry.isCurrent), [false, true, false]);
   });
 
   test('playback queue remaining runtime subtracts current position', () {
@@ -147,9 +145,9 @@ void main() {
       find.text('Playlist • all the things i desire • 2 of 3 • 4:00 remaining'),
       findsOneWidget,
     );
-    expect(find.text('Previous'), findsOneWidget);
-    expect(find.text('Now Playing'), findsNWidgets(2));
-    expect(find.text('Up Next'), findsOneWidget);
+    expect(find.text('Previous'), findsNothing);
+    expect(find.text('Now Playing'), findsOneWidget);
+    expect(find.text('Up Next'), findsNothing);
     expect(find.text('Already Played'), findsOneWidget);
     expect(find.text('Next Song'), findsOneWidget);
     expect(find.byKey(const PageStorageKey('queue_list_view')), findsNothing);
@@ -158,6 +156,28 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(playbackState.skipToIndexCalls, [2]);
+  });
+
+  testWidgets('swiping live playback queue item left removes it', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Already Played', seconds: 90),
+        _mediaItem(2, 'Now Playing', seconds: 120),
+        _mediaItem(3, 'Next Song', seconds: 150),
+      ]
+      ..fakeCurrentIndex = 1;
+
+    await pumpQueueScreen(tester);
+
+    await tester.drag(
+      find.byKey(const ValueKey('remove_playback_queue_2_3')),
+      const Offset(-500, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(playbackState.removeFromQueueCalls, [2]);
   });
 
   testWidgets('defaults to 390px list view with a one tap Timeline switch', (
@@ -178,8 +198,8 @@ void main() {
     expect(find.byKey(const ValueKey('queue_summary_pill')), findsOneWidget);
     expect(find.text('3 tracks · 10:41 remaining'), findsOneWidget);
 
-    expect(find.text('Current'), findsOneWidget);
-    expect(find.text('Up Next'), findsOneWidget);
+    expect(find.text('Current'), findsNothing);
+    expect(find.text('Up Next'), findsNothing);
     expect(find.text('Paper Planes'), findsOneWidget);
     expect(find.byKey(const ValueKey('reorder_handle_t2')), findsOneWidget);
     expect(find.byKey(const ValueKey('remove_t2')), findsOneWidget);
@@ -201,7 +221,7 @@ void main() {
       find.byKey(const ValueKey('stacked_waveform_timeline')),
       findsOneWidget,
     );
-    expect(find.byKey(const ValueKey('timeline_mode_bar')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_options_fab')), findsOneWidget);
   });
 
   testWidgets(
@@ -374,12 +394,32 @@ void main() {
     expect(apiClient.removedPositions, [1]);
   });
 
+  testWidgets('swiping editable queue item left removes it', (tester) async {
+    tester.view.physicalSize = const Size(390, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpQueueScreen(tester);
+
+    await tester.drag(
+      find.byKey(const ValueKey('remove_queue_t2')),
+      const Offset(-500, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(apiClient.removedPositions, [1]);
+    expect(find.text('Paper Planes'), findsNothing);
+  });
+
   testWidgets(
     'timeline move buttons reorder upcoming tracks after switching modes',
     (tester) async {
       await pumpQueueScreen(tester);
 
       await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('timeline_move_later_t2')));
       await tester.pumpAndSettle();
@@ -429,6 +469,56 @@ void main() {
     expect(apiClient.reorders, [const (1, 2)]);
   });
 
+  testWidgets('live timeline edits pause playback and update session timing', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Current Song', seconds: 120),
+        _mediaItem(2, 'Paper Planes', seconds: 120),
+        _mediaItem(3, 'Glass', seconds: 120),
+      ]
+      ..fakeCurrentIndex = 0
+      ..fakeIsPlaying = true;
+
+    await pumpQueueScreen(tester);
+
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_playback_queue_0')),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_trim_start_playback_queue_0')),
+      const Offset(80, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(playbackState.pauseCalls, greaterThan(0));
+    expect(playbackState.trimStartCalls, isNotEmpty);
+
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_playback_queue_1')),
+    );
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_clip_body_drag_playback_queue_1')),
+      const Offset(-80, 0),
+    );
+    await tester.pumpAndSettle();
+
+    expect(playbackState.timelineStartCalls, isNotEmpty);
+
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_move_later_playback_queue_1')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(playbackState.reorderCalls, [const (1, 2)]);
+  });
+
   testWidgets('renders queued tracks when there is no active track', (
     tester,
   ) async {
@@ -437,7 +527,7 @@ void main() {
     await pumpQueueScreen(tester);
 
     expect(find.text('Current'), findsNothing);
-    expect(find.text('Queue'), findsWidgets);
+    expect(find.text('Queue'), findsNothing);
     expect(find.text('Current Song'), findsOneWidget);
     expect(find.text('Paper Planes'), findsOneWidget);
     expect(find.byKey(const ValueKey('reorder_handle_t1')), findsOneWidget);
@@ -501,15 +591,25 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   final _timelinePositions = StreamController<int>.broadcast();
   final List<String> scrubEvents = [];
   final List<int> skipToIndexCalls = [];
+  final List<(int, int)> timelineStartCalls = [];
+  final List<(int, int)> trimStartCalls = [];
+  final List<(int, int)> trimEndCalls = [];
+  final List<(int, int)> reorderCalls = [];
+  final List<int> removeFromQueueCalls = [];
   int seekCalls = 0;
+  int pauseCalls = 0;
 
   Duration fakePosition = Duration.zero;
   List<audio_service.MediaItem> fakeQueue = const [];
   int? fakeCurrentIndex;
   PlaybackContext? fakeContext;
+  bool fakeIsPlaying = false;
 
   @override
   List<audio_service.MediaItem> get queue => fakeQueue;
+
+  @override
+  bool get isPlaying => fakeIsPlaying;
 
   @override
   int? get currentIndex => fakeCurrentIndex;
@@ -534,6 +634,29 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   TimelineModel get timelineModel => TimelineModel();
 
   @override
+  TimelineClip? timelineClipForQueueIndex(int index) {
+    if (index < 0 || index >= fakeQueue.length) return null;
+    final item = fakeQueue[index];
+    final durationMs = item.duration?.inMilliseconds ?? 0;
+    return TimelineClip.clamped(
+      id: 'session_1_queue_$index',
+      trackId: item.id,
+      sourceDurationMs: durationMs,
+      sourceStartMs: 0,
+      sourceEndMs: durationMs,
+      timelineStartMs: index * durationMs,
+    );
+  }
+
+  @override
+  TrimRange trimRangeForQueueIndex(int index) {
+    final durationMs = index >= 0 && index < fakeQueue.length
+        ? fakeQueue[index].duration?.inMilliseconds ?? 0
+        : 0;
+    return TrimRange.full(durationMs);
+  }
+
+  @override
   void beginTimelineScrub() => scrubEvents.add('begin');
 
   @override
@@ -549,9 +672,51 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   }
 
   @override
+  Future<void> pause() async {
+    pauseCalls++;
+    fakeIsPlaying = false;
+  }
+
+  @override
   Future<void> skipToIndex(int index) async {
     skipToIndexCalls.add(index);
     fakeCurrentIndex = index;
+  }
+
+  @override
+  Future<void> setQueueTimelineStartMs(int index, int ms) async {
+    timelineStartCalls.add((index, ms));
+  }
+
+  @override
+  Future<void> setQueueTrimStartMs(int index, int ms) async {
+    trimStartCalls.add((index, ms));
+  }
+
+  @override
+  Future<void> setQueueTrimEndMs(int index, int ms) async {
+    trimEndCalls.add((index, ms));
+  }
+
+  @override
+  Future<void> reorderPlaybackQueue(int oldIndex, int newIndex) async {
+    reorderCalls.add((oldIndex, newIndex));
+  }
+
+  @override
+  Future<void> removeFromQueue(int index) async {
+    removeFromQueueCalls.add(index);
+    fakeQueue = [
+      for (var i = 0; i < fakeQueue.length; i++)
+        if (i != index) fakeQueue[i],
+    ];
+    if (fakeQueue.isEmpty) {
+      fakeCurrentIndex = null;
+    } else if (fakeCurrentIndex != null && index < fakeCurrentIndex!) {
+      fakeCurrentIndex = fakeCurrentIndex! - 1;
+    } else if (fakeCurrentIndex != null && index == fakeCurrentIndex!) {
+      fakeCurrentIndex = fakeCurrentIndex!.clamp(0, fakeQueue.length - 1);
+    }
   }
 
   @override

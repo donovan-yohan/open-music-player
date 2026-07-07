@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/features/player/player_screen.dart';
 import 'package:provider/provider.dart';
@@ -38,19 +39,109 @@ void main() {
       'end:36000',
     ]);
   });
+
+  testWidgets('queue time mode displays context and scrubs global timeline',
+      (tester) async {
+    final playback = _FakePlaybackState(
+      playbackContext: const PlaybackContext(
+        kind: PlaybackContextKind.playlist,
+        label: 'Road Mix',
+      ),
+      queue: const [
+        _FakePlaybackState.testItem,
+        MediaItem(id: '2', title: 'Next Track', duration: Duration(minutes: 2)),
+      ],
+      snapshot: const PlaybackSnapshot(
+        sessionId: 'session_test',
+        cues: [],
+        currentCueId: 'cue_1',
+        currentQueueIndex: 0,
+        currentMediaItem: _FakePlaybackState.testItem,
+        localPosition: Duration(seconds: 10),
+        localDuration: Duration(minutes: 1),
+        globalPosition: Duration(seconds: 30),
+        globalDuration: Duration(minutes: 3),
+        playing: false,
+        processingState: ProcessingState.ready,
+        activeVoiceCount: 1,
+      ),
+    );
+    tester.view.physicalSize = const Size(1200, 2200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ListenableProvider<PlaybackState>.value(
+        value: playback,
+        child: const MaterialApp(home: PlayerScreen()),
+      ),
+    );
+
+    await tester.tap(find.text('Queue'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Road Mix'), findsWidgets);
+    expect(find.text('Playlist · 2 tracks'), findsOneWidget);
+
+    final slider = tester.widget<Slider>(find.byType(Slider));
+    slider.onChangeStart?.call(0.1);
+    slider.onChanged?.call(0.5);
+    slider.onChangeEnd?.call(0.5);
+    await tester.pump();
+
+    expect(playback.scrubEvents, [
+      'timeline-begin',
+      'timeline-update:90000',
+      'timeline-end:90000',
+    ]);
+  });
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
+  _FakePlaybackState({
+    PlaybackContext? playbackContext,
+    List<MediaItem>? queue,
+    PlaybackSnapshot? snapshot,
+  })  : _playbackContext = playbackContext,
+        _queue = queue ?? const [testItem],
+        _snapshot = snapshot ??
+            const PlaybackSnapshot(
+              sessionId: 'session_test',
+              cues: [],
+              currentCueId: 'cue_1',
+              currentQueueIndex: 0,
+              currentMediaItem: testItem,
+              localPosition: Duration(seconds: 10),
+              localDuration: Duration(seconds: 60),
+              globalPosition: Duration(seconds: 10),
+              globalDuration: Duration(seconds: 60),
+              playing: false,
+              processingState: ProcessingState.ready,
+              activeVoiceCount: 1,
+            );
+
+  static const testItem = MediaItem(
+    id: '1',
+    title: 'Test Track',
+    artist: 'Test Artist',
+    duration: Duration(seconds: 60),
+  );
+
   final scrubEvents = <String>[];
+  final PlaybackContext? _playbackContext;
+  final List<MediaItem> _queue;
+  final PlaybackSnapshot _snapshot;
   int seekCalls = 0;
 
   @override
-  MediaItem? get currentItem => const MediaItem(
-        id: '1',
-        title: 'Test Track',
-        artist: 'Test Artist',
-        duration: Duration(seconds: 60),
-      );
+  MediaItem? get currentItem => testItem;
+
+  @override
+  List<MediaItem> get queue => _queue;
+
+  @override
+  PlaybackSnapshot get snapshot => _snapshot;
 
   @override
   Duration get position => const Duration(seconds: 10);
@@ -68,7 +159,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   LoopMode get loopMode => LoopMode.off;
 
   @override
-  PlaybackContext? get playbackContext => null;
+  PlaybackContext? get playbackContext => _playbackContext;
 
   @override
   Future<void> seek(Duration position) async {
@@ -86,6 +177,19 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   @override
   Future<void> endLocalScrub(Duration position) async {
     scrubEvents.add('end:${position.inMilliseconds}');
+  }
+
+  @override
+  void beginTimelineScrub() => scrubEvents.add('timeline-begin');
+
+  @override
+  void updateTimelineScrub(int globalMs) {
+    scrubEvents.add('timeline-update:$globalMs');
+  }
+
+  @override
+  Future<void> endTimelineScrub(int globalMs) async {
+    scrubEvents.add('timeline-end:$globalMs');
   }
 
   @override

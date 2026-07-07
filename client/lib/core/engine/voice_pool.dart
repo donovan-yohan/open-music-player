@@ -138,14 +138,20 @@ class VoicePool {
     await syncAt(_clock.positionMs, forceSeek: true);
   }
 
-  Future<void> loadMix(TimelineModel model) async {
+  Future<void> loadMix(
+    TimelineModel model, {
+    bool preserveActivePlayback = false,
+  }) async {
     _model = model;
     _skipNextClockPositionSync = true;
     _suppressClockSync = true;
     _clock.durationMs = model.durationMs;
     _suppressClockSync = false;
-    await _enqueueSyncAt(_clock.positionMs,
-        forceSeek: true, validateResolvedIdentities: true);
+    await _enqueueSyncAt(
+      _clock.positionMs,
+      forceSeek: !preserveActivePlayback,
+      validateResolvedIdentities: !preserveActivePlayback,
+    );
   }
 
   Future<void> syncAt(int globalMs, {bool forceSeek = false}) {

@@ -21,14 +21,14 @@ void main() {
 
       expect(harness.controller.currentIndex, 1);
       expect(harness.engine.model.clips.map((clip) => clip.queueItemId), [
-        '0',
-        '1',
-        '2',
+        'session_1_item_0',
+        'session_1_item_1',
+        'session_1_item_2',
       ]);
       expect(harness.engine.model.clips.map((clip) => clip.id), [
-        'session_1_queue_0',
-        'session_1_queue_1',
-        'session_1_queue_2',
+        'session_1_clip_0',
+        'session_1_clip_1',
+        'session_1_clip_2',
       ]);
       expect(harness.engine.positionMs, 5000);
 
@@ -64,10 +64,10 @@ void main() {
       expect(snapshot.localDuration, const Duration(seconds: 7));
       expect(snapshot.globalPosition, Duration.zero);
       expect(snapshot.globalDuration, const Duration(seconds: 7));
-      expect(snapshot.cues.single.cueId, '${snapshot.sessionId}_queue_0');
+      expect(snapshot.cues.single.cueId, '${snapshot.sessionId}_clip_0');
       expect(harness.engine.model.clips.map((clip) => clip.trackId), ['b']);
-      expect(harness.engine.model.clips.single.id,
-          '${snapshot.sessionId}_queue_0');
+      expect(
+          harness.engine.model.clips.single.id, '${snapshot.sessionId}_clip_0');
 
       await harness.dispose();
     });
@@ -87,11 +87,14 @@ void main() {
         expect(harness.controller.shuffleEnabled, isTrue);
         expect(harness.controller.currentIndex, 1);
         expect(harness.controller.currentMediaItem?.id, '2');
-        expect(harness.engine.model.clips.first.queueItemId, '1');
+        expect(
+          harness.engine.model.clips.first.queueItemId,
+          'session_1_item_1',
+        );
         expect(harness.engine.model.clips.map((clip) => clip.queueItemId), [
-          '1',
-          '2',
-          '0',
+          'session_1_item_1',
+          'session_1_item_2',
+          'session_1_item_0',
         ]);
 
         await harness.dispose();
@@ -139,6 +142,87 @@ void main() {
         await harness.dispose();
       },
     );
+
+    test('future insert preserves the active playing voice', () async {
+      final voices = <_CountingVoice>[];
+      final harness = _Harness(
+        voiceFactory: () {
+          final voice = _CountingVoice('v${voices.length}');
+          voices.add(voice);
+          return voice;
+        },
+      );
+      await harness.controller.setQueue([_item('1')]);
+      await harness.controller.play();
+
+      final currentVoice = voices.first;
+      currentVoice.clearInteractionLog();
+      await harness.controller.insertIntoQueue(1, _item('2'));
+
+      expect(harness.controller.queue.map((item) => item.id), ['1', '2']);
+      expect(harness.controller.currentIndex, 0);
+      expect(harness.engine.model.clips.map((clip) => clip.queueItemId), [
+        'session_1_item_0',
+        'session_1_item_1',
+      ]);
+      expect(currentVoice.isPlaying, isTrue);
+      expect(currentVoice.pauseCount, 0);
+      expect(currentVoice.seekLog, isEmpty);
+      expect(currentVoice.releaseCount, 0);
+
+      await harness.dispose();
+    });
+
+    test('session timeline edits rebuild the live mix with crossfades',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item('1', seconds: 10),
+        _item('2', seconds: 10),
+      ]);
+
+      await harness.controller.setTimelineStartMs(1, 8000);
+
+      expect(harness.engine.model.clips[0].timelineEndMs, 10000);
+      expect(harness.engine.model.clips[0].envelope.fadeOutMs, 2000);
+      expect(harness.engine.model.clips[1].timelineStartMs, 8000);
+      expect(harness.engine.model.clips[1].envelope.fadeInMs, 2000);
+      expect(
+        harness.controller.snapshot.globalDuration,
+        const Duration(seconds: 18),
+      );
+
+      await harness.controller.setSourceStartMs(1, 2000);
+      await harness.controller.setSourceEndMs(1, 9000);
+
+      final second = harness.engine.model.clips[1].placement;
+      expect(second.sourceStartMs, 2000);
+      expect(second.sourceEndMs, 9000);
+      expect(second.selectedDurationMs, 7000);
+
+      await harness.dispose();
+    });
+
+    test('live queue reorder preserves the selected current item', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item('1'),
+        _item('2'),
+        _item('3'),
+      ], initialIndex: 1);
+
+      await harness.controller.reorderQueue(2, 0);
+
+      expect(harness.controller.queue.map((item) => item.id), [
+        '3',
+        '1',
+        '2',
+      ]);
+      expect(harness.controller.currentIndex, 2);
+      expect(harness.controller.currentMediaItem?.id, '2');
+
+      await harness.dispose();
+    });
 
     test('loop one repeats a non-last item on natural completion', () async {
       final harness = _Harness();
@@ -290,6 +374,38 @@ class _BlockingPlayVoice extends FakeVoice {
   @override
   Future<void> release() async {
     await pause();
+    await super.release();
+  }
+}
+
+class _CountingVoice extends FakeVoice {
+  _CountingVoice(super.debugId);
+
+  final seekLog = <int>[];
+  int pauseCount = 0;
+  int releaseCount = 0;
+
+  void clearInteractionLog() {
+    seekLog.clear();
+    pauseCount = 0;
+    releaseCount = 0;
+  }
+
+  @override
+  Future<void> seekLocal(int localPositionMs) async {
+    seekLog.add(localPositionMs);
+    await super.seekLocal(localPositionMs);
+  }
+
+  @override
+  Future<void> pause() async {
+    pauseCount++;
+    await super.pause();
+  }
+
+  @override
+  Future<void> release() async {
+    releaseCount++;
     await super.release();
   }
 }
