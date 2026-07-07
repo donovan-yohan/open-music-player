@@ -167,6 +167,32 @@ func TestPlayEventRecordAndListingsAgainstPostgres(t *testing.T) {
 		t.Fatalf("page2 = %#v, want single trackB", page2)
 	}
 
+	// Full play history preserves every play event, newest first, including
+	// repeated listens of the same track.
+	history, err := repo.PlayHistory(ctx, user, 10, 0)
+	if err != nil {
+		t.Fatalf("PlayHistory: %v", err)
+	}
+	if len(history) != 6 {
+		t.Fatalf("history len = %d, want 6 raw play events", len(history))
+	}
+	wantHistoryOrder := []int64{trackA, trackB, trackA, trackC, trackC, trackA}
+	for i, wantTrackID := range wantHistoryOrder {
+		if history[i].Track.ID != wantTrackID {
+			t.Fatalf("history[%d] track = %d, want %d", i, history[i].Track.ID, wantTrackID)
+		}
+	}
+	if !history[0].ContextType.Valid || history[0].ContextType.String != "playlist" {
+		t.Fatalf("history[0] context_type = %#v, want playlist from RecordPlay", history[0].ContextType)
+	}
+	historyPage2, err := repo.PlayHistory(ctx, user, 2, 2)
+	if err != nil {
+		t.Fatalf("PlayHistory page2: %v", err)
+	}
+	if len(historyPage2) != 2 || historyPage2[0].Track.ID != trackA || historyPage2[1].Track.ID != trackC {
+		t.Fatalf("history page2 = %#v, want trackA then trackC", historyPage2)
+	}
+
 	// Top tracks within 30 days: trackA has 3 in-window plays (RecordPlay~now,
 	// -3h, plus... wait -40d is out) -> in-window trackA count = 2 (now + -3h),
 	// trackC count = 2, trackB count = 1. Order by count desc then recency:

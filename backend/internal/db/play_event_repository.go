@@ -23,6 +23,17 @@ type TopTrack struct {
 	LastPlayedAt time.Time
 }
 
+// PlayHistoryEvent is one raw play event joined with the played track. Unlike
+// RecentlyPlayedTrack, this is not deduped: repeated plays of the same track are
+// returned as separate rows.
+type PlayHistoryEvent struct {
+	ID          int64
+	Track       Track
+	PlayedAt    time.Time
+	ContextType sql.NullString
+	ContextID   sql.NullString
+}
+
 // PlayEventRepository records play events and serves recently-played / top-track
 // listings. All reads and writes are scoped to a single user.
 type PlayEventRepository struct {
@@ -105,6 +116,62 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 		return nil, err
 	}
 	return tracks, nil
+}
+
+// PlayHistory returns the user's raw play events newest-first, preserving repeat
+// listens and their optional playback context.
+func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]PlayHistoryEvent, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	query := `
+		SELECT pe.id,
+			   t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
+			   t.mb_recording_id, t.mb_release_id, t.mb_artist_id, t.mb_verified,
+			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
+			   t.metadata_json, t.metadata_status, t.metadata_confidence, t.metadata_provenance,
+			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at,
+			   pe.played_at, pe.context_type, pe.context_id
+		FROM play_events pe
+		JOIN tracks t ON t.id = pe.track_id
+		WHERE pe.user_id = $1
+		ORDER BY pe.played_at DESC, pe.id DESC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []PlayHistoryEvent
+	for rows.Next() {
+		var event PlayHistoryEvent
+		if err := rows.Scan(
+			&event.ID,
+			&event.Track.ID, &event.Track.IdentityHash, &event.Track.Title, &event.Track.Artist, &event.Track.Album, &event.Track.DurationMs, &event.Track.Version,
+			&event.Track.MBRecordingID, &event.Track.MBReleaseID, &event.Track.MBArtistID, &event.Track.MBVerified,
+			&event.Track.SourceURL, &event.Track.SourceType, &event.Track.StorageKey, &event.Track.FileSizeBytes,
+			&event.Track.MetadataJSON, &event.Track.MetadataStatus, &event.Track.MetadataConfidence, &event.Track.MetadataProvenance,
+			&event.Track.CoverArtURL, &event.Track.MetadataUserEdited, &event.Track.CreatedAt, &event.Track.UpdatedAt,
+			&event.PlayedAt, &event.ContextType, &event.ContextID,
+		); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
 }
 
 // TopTracks returns the user's most-played tracks within the trailing window of

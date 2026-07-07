@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -41,6 +42,7 @@ type recordedPlay struct {
 type fakePlayStore struct {
 	records []recordedPlay
 	recent  []db.RecentlyPlayedTrack
+	history []db.PlayHistoryEvent
 	top     []db.TopTrack
 }
 
@@ -51,6 +53,10 @@ func (f *fakePlayStore) RecordPlay(ctx context.Context, userID uuid.UUID, trackI
 
 func (f *fakePlayStore) RecentlyPlayed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]db.RecentlyPlayedTrack, error) {
 	return f.recent, nil
+}
+
+func (f *fakePlayStore) PlayHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]db.PlayHistoryEvent, error) {
+	return f.history, nil
 }
 
 func (f *fakePlayStore) TopTracks(ctx context.Context, userID uuid.UUID, days, limit int) ([]db.TopTrack, error) {
@@ -157,6 +163,45 @@ func TestRecentlyPlayedHTTP(t *testing.T) {
 	}
 }
 
+func TestPlayHistoryHTTP(t *testing.T) {
+	now := time.Now()
+	store := &fakePlayStore{history: []db.PlayHistoryEvent{
+		{
+			ID:          10,
+			Track:       *newTrack(2, "Bravo"),
+			PlayedAt:    now,
+			ContextType: sqlNullString("playlist"),
+			ContextID:   sqlNullString("pl-1"),
+		},
+		{
+			ID:       9,
+			Track:    *newTrack(2, "Bravo"),
+			PlayedAt: now.Add(-time.Minute),
+		},
+	}}
+	h := NewPlayEventHandlers(store, &fakePlayTrackRepo{})
+
+	req := withUser(httptest.NewRequest(http.MethodGet, "/api/v1/me/plays/history?limit=5", nil), uuid.New())
+	rr := httptest.NewRecorder()
+	h.PlayHistory(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var resp PlayHistoryResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Plays) != 2 {
+		t.Fatalf("plays len = %d, want 2 raw events", len(resp.Plays))
+	}
+	if resp.Plays[0].ID != 10 || resp.Plays[0].Track.ID != 2 || resp.Plays[0].ContextType != "playlist" || resp.Plays[0].ContextID != "pl-1" {
+		t.Fatalf("first play = %#v, want event 10 track 2 playlist pl-1", resp.Plays[0])
+	}
+	if resp.Plays[1].ID != 9 || resp.Plays[1].Track.ID != 2 {
+		t.Fatalf("second play = %#v, want repeated track event 9", resp.Plays[1])
+	}
+}
+
 func TestTopTracksHTTP(t *testing.T) {
 	now := time.Now()
 	store := &fakePlayStore{top: []db.TopTrack{
@@ -181,4 +226,8 @@ func TestTopTracksHTTP(t *testing.T) {
 	if len(resp.Tracks) != 2 || resp.Tracks[0].ID != 3 || resp.Tracks[0].PlayCount != 5 {
 		t.Fatalf("tracks = %#v, want top track 3 count 5", resp.Tracks)
 	}
+}
+
+func sqlNullString(value string) sql.NullString {
+	return sql.NullString{String: value, Valid: value != ""}
 }

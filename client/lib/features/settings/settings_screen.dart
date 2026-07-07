@@ -11,6 +11,7 @@ import '../../core/auth/auth_state.dart' as session_auth;
 import '../../core/models/settings_model.dart';
 import '../../core/providers/cache_provider.dart';
 import '../../core/providers/settings_provider.dart';
+import 'listening_history_screen.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -97,6 +98,17 @@ class _AccountSection extends ConsumerWidget {
             subtitle:
                 const Text('Clears tokens and biometric unlock enrollment'),
             onTap: () => _showLogoutDialog(context, ref),
+          ),
+          ListTile(
+            leading: const Icon(Icons.history),
+            title: const Text('Listening history'),
+            subtitle: const Text('Songs you played, newest first'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => const ListeningHistoryScreen(),
+              ),
+            ),
           ),
         ] else
           ListTile(

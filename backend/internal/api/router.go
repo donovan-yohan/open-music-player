@@ -295,11 +295,13 @@ func (r *Router) setupRoutes() {
 	// Play event routes (auth required): record a play and read personal history.
 	if r.playEventHandlers != nil {
 		r.mux.HandleFunc("POST /api/v1/me/plays", r.withAuth(r.playEventHandlers.RecordPlay))
+		r.mux.HandleFunc("GET /api/v1/me/plays/history", r.withAuth(r.playEventHandlers.PlayHistory))
 		r.mux.HandleFunc("GET /api/v1/me/plays/recent", r.withAuth(r.playEventHandlers.RecentlyPlayed))
 		r.mux.HandleFunc("GET /api/v1/me/plays/top", r.withAuth(r.playEventHandlers.TopTracks))
 	} else {
 		playEventUnavailable := r.withAuth(unavailableHandler("Play history is unavailable"))
 		r.mux.HandleFunc("POST /api/v1/me/plays", playEventUnavailable)
+		r.mux.HandleFunc("GET /api/v1/me/plays/history", playEventUnavailable)
 		r.mux.HandleFunc("GET /api/v1/me/plays/recent", playEventUnavailable)
 		r.mux.HandleFunc("GET /api/v1/me/plays/top", playEventUnavailable)
 	}
