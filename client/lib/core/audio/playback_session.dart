@@ -10,9 +10,6 @@ import '../engine/timeline_model.dart';
 import 'playback_media_item_source.dart';
 
 const int mixSessionSchemaVersion = 1;
-const int defaultTransitionPhraseBeats = 16;
-const int minDefaultTransitionOverlapMs = 4000;
-const int maxDefaultTransitionOverlapMs = 12000;
 
 /// Versioned canonical clip/session state for queue, playlist, and timeline
 /// playback. Signed URLs stay on [MediaItem]; this carries durable edit data.
@@ -24,10 +21,8 @@ class MixSession {
     this.nextClipOrdinal = 0,
   });
 
-  factory MixSession.empty({String sessionId = 'session_0'}) => MixSession(
-        sessionId: sessionId,
-        clips: const [],
-      );
+  factory MixSession.empty({String sessionId = 'session_0'}) =>
+      MixSession(sessionId: sessionId, clips: const []);
 
   factory MixSession.fromQueue({
     required String sessionId,
@@ -318,8 +313,10 @@ class MixSessionClip {
       return null;
     }
 
-    final sourceDurationMs =
-        math.max(0, (json['sourceDurationMs'] as num?)?.toInt() ?? 0);
+    final sourceDurationMs = math.max(
+      0,
+      (json['sourceDurationMs'] as num?)?.toInt() ?? 0,
+    );
     final placement = TimelineClip.clamped(
       id: clipId,
       trackId: trackId,
@@ -410,7 +407,8 @@ class MixSessionClip {
   MixSessionClip shiftedBy(int deltaMs) {
     if (deltaMs == 0) return this;
     return withPlacement(
-        placement.withTimelineStartMs(timelineStartMs + deltaMs));
+      placement.withTimelineStartMs(timelineStartMs + deltaMs),
+    );
   }
 
   Map<String, dynamic> toJson() => {
@@ -743,51 +741,15 @@ int _defaultTimelineStartAfter(
   int fallbackStartMs,
 ) {
   if (previous == null) return math.max(0, fallbackStartMs);
-  final overlapMs = _defaultPhraseOverlapMs(previous, incoming);
-  if (overlapMs <= 0) return math.max(0, fallbackStartMs);
-
-  final requestedStartMs = math.max(0, previous.timelineEndMs - overlapMs);
-  final snapped = snapIncomingStartToNearestDownbeat(
-    requestedStartMs: requestedStartMs,
-    incomingSourceStartMs: incoming.sourceStartMs,
-    incomingTempo: incoming.tempo,
+  return defaultDownbeatLockedTransitionStartMs(
     outgoingTimelineStartMs: previous.timelineStartMs,
+    outgoingTimelineEndMs: previous.timelineEndMs,
     outgoingSourceStartMs: previous.sourceStartMs,
+    outgoingSelectedDurationMs: previous.selectedDurationMs,
     outgoingTempo: previous.tempo,
-    toleranceMs: _snapToleranceMs(previous.tempo),
+    incomingSourceStartMs: incoming.sourceStartMs,
+    incomingSelectedDurationMs: incoming.selectedDurationMs,
+    incomingTempo: incoming.tempo,
+    fallbackStartMs: fallbackStartMs,
   );
-
-  return snapped ?? math.max(0, fallbackStartMs);
-}
-
-int _defaultPhraseOverlapMs(
-  MixSessionClip outgoing,
-  MixSessionClip incoming,
-) {
-  if (!outgoing.tempo.hasReliableBpm ||
-      !incoming.tempo.hasReliableBpm ||
-      !outgoing.tempo.hasDownbeats ||
-      !incoming.tempo.hasDownbeats) {
-    return 0;
-  }
-
-  final outgoingBpm = outgoing.tempo.nativeBpm;
-  if (outgoingBpm == null || outgoingBpm <= 0) return 0;
-  final beatMs = 60000 / outgoingBpm;
-  final phraseMs = (beatMs * defaultTransitionPhraseBeats).round();
-  final boundedPhraseMs = phraseMs
-      .clamp(minDefaultTransitionOverlapMs, maxDefaultTransitionOverlapMs)
-      .toInt();
-  final maxSafeOverlap = math.min(
-    outgoing.selectedDurationMs ~/ 2,
-    incoming.selectedDurationMs ~/ 2,
-  );
-  final overlapMs = math.min(boundedPhraseMs, maxSafeOverlap);
-  return overlapMs < 1000 ? 0 : overlapMs;
-}
-
-int _snapToleranceMs(ClipTempoMetadata tempo) {
-  final bpm = tempo.nativeBpm;
-  if (bpm == null || bpm <= 0) return 900;
-  return math.max(900, (60000 / bpm).round());
 }

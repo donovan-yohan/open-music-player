@@ -118,10 +118,7 @@ class _SnapGrid {
   final List<int> markersMs;
   final int? intervalMs;
 
-  const _SnapGrid({
-    this.markersMs = const [],
-    this.intervalMs,
-  });
+  const _SnapGrid({this.markersMs = const [], this.intervalMs});
 }
 
 @visibleForTesting
@@ -175,9 +172,10 @@ int snapSourceMsToMusicalGrid({
 
   final intervalMs = grid.intervalMs ?? _fallbackSnapIntervalMs(mode);
   if (intervalMs <= 1) return safeRequestedSourceMs;
-  return _snapToInterval(safeRequestedSourceMs, intervalMs)
-      .clamp(0, math.max(0, clip.sourceDurationMs))
-      .toInt();
+  return _snapToInterval(
+    safeRequestedSourceMs,
+    intervalMs,
+  ).clamp(0, math.max(0, clip.sourceDurationMs)).toInt();
 }
 
 _SnapGrid _snapGridFor(SnapMarkerMode mode, ClipTempoMetadata tempo) {
@@ -212,9 +210,7 @@ _SnapGrid _snapGridFor(SnapMarkerMode mode, ClipTempoMetadata tempo) {
 List<int> _strideMarkers(List<int> markers, int stride) {
   if (markers.isEmpty) return const [];
   if (stride <= 1) return markers;
-  return [
-    for (var i = 0; i < markers.length; i += stride) markers[i],
-  ];
+  return [for (var i = 0; i < markers.length; i += stride) markers[i]];
 }
 
 List<int> _sortedUniqueInts(List<int> values) {
@@ -369,7 +365,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final placed = <Track, MixClip>{};
     final usedLiveClipIds = <String>{};
     var cursor = 0;
-    for (final track in ordered) {
+    for (var index = 0; index < ordered.length; index++) {
+      final track = ordered[index];
       final trim = widget.trimRangeFor(track);
       final defaultClip = TimelineClip.clamped(
         id: 'clip_${track.id}',
@@ -384,16 +381,15 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           widget.clipFor?.call(track, defaultClip) ??
           defaultClip;
       final clip = _previewClipFor(track, baseClip) ?? baseClip;
-      placed[track] = liveClip == null
+      final mixClip = liveClip == null
           ? MixClip(placement: clip, tempo: _tempoForTrack(track))
           : _copyMixClipWithPlacement(liveClip, clip);
-      // Next clip overlaps the tail by one transition window. A zero-duration
-      // clip has timelineEndMs == timelineStartMs, so the naive lower bound
-      // (start + 1) can exceed the upper bound and invert the clamp; cap the
-      // lower bound at the clip end.
-      final lower = math.min(clip.timelineStartMs + 1, clip.timelineEndMs);
-      cursor = (clip.timelineEndMs - StackedWaveformTimeline.transitionMs)
-          .clamp(lower, clip.timelineEndMs);
+      placed[track] = mixClip;
+
+      final nextTrack = index + 1 < ordered.length ? ordered[index + 1] : null;
+      if (nextTrack != null) {
+        cursor = _defaultTimelineStartAfter(mixClip, nextTrack);
+      }
     }
 
     final currentClip = placed[widget.currentTrack]!;
@@ -636,6 +632,30 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     return ClipTempoMetadata.fromAnalysisSummary(
       analysis.summary?.toJson(),
       overrides: analysis.overrides?.toJson(),
+    );
+  }
+
+  int _defaultTimelineStartAfter(MixClip outgoing, Track incomingTrack) {
+    final trim = widget.trimRangeFor(incomingTrack);
+    final fallbackStartMs = outgoing.timelineEndMs;
+    final incomingDefaultClip = TimelineClip.clamped(
+      id: 'clip_${incomingTrack.id}',
+      trackId: incomingTrack.id,
+      sourceDurationMs: incomingTrack.durationMs,
+      sourceStartMs: trim.startOffsetMs,
+      sourceEndMs: trim.endOffsetMs,
+      timelineStartMs: fallbackStartMs,
+    );
+    return defaultDownbeatLockedTransitionStartMs(
+      outgoingTimelineStartMs: outgoing.timelineStartMs,
+      outgoingTimelineEndMs: outgoing.timelineEndMs,
+      outgoingSourceStartMs: outgoing.placement.sourceStartMs,
+      outgoingSelectedDurationMs: outgoing.selectedDurationMs,
+      outgoingTempo: outgoing.tempo,
+      incomingSourceStartMs: incomingDefaultClip.sourceStartMs,
+      incomingSelectedDurationMs: incomingDefaultClip.selectedDurationMs,
+      incomingTempo: _tempoForTrack(incomingTrack),
+      fallbackStartMs: fallbackStartMs,
     );
   }
 

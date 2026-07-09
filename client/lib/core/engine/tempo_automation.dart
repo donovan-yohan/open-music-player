@@ -3,6 +3,9 @@ import 'dart:math' as math;
 const double minTempoAutomationRate = 0.5;
 const double maxTempoAutomationRate = 2.0;
 const double reliableBpmConfidenceFloor = 0.55;
+const int defaultTransitionPhraseBeats = 16;
+const int minDefaultTransitionOverlapMs = 4000;
+const int maxDefaultTransitionOverlapMs = 12000;
 const String pitchModePreserve = 'preserve';
 const String pitchModeFollowTempo = 'followTempo';
 
@@ -423,6 +426,95 @@ int? snapIncomingStartToNearestDownbeat({
 
   final snapped = nearest - (incomingAnchor - incomingSourceStartMs);
   return math.max(0, snapped);
+}
+
+int defaultTransitionOverlapMsForTempo({
+  required int outgoingSelectedDurationMs,
+  required ClipTempoMetadata outgoingTempo,
+  required int incomingSelectedDurationMs,
+  required ClipTempoMetadata incomingTempo,
+  int phraseBeats = defaultTransitionPhraseBeats,
+  int minOverlapMs = minDefaultTransitionOverlapMs,
+  int maxOverlapMs = maxDefaultTransitionOverlapMs,
+}) {
+  if (!outgoingTempo.hasReliableBpm ||
+      !incomingTempo.hasReliableBpm ||
+      !outgoingTempo.hasDownbeats ||
+      !incomingTempo.hasDownbeats) {
+    return 0;
+  }
+
+  final outgoingBpm = outgoingTempo.nativeBpm;
+  if (outgoingBpm == null || outgoingBpm <= 0 || phraseBeats <= 0) return 0;
+
+  final beatMs = 60000 / outgoingBpm;
+  final phraseMs = (beatMs * phraseBeats).round();
+  final safeMinOverlapMs = math.max(0, minOverlapMs);
+  final safeMaxOverlapMs = math.max(
+    safeMinOverlapMs,
+    math.max(0, maxOverlapMs),
+  );
+  final boundedPhraseMs =
+      phraseMs.clamp(safeMinOverlapMs, safeMaxOverlapMs).toInt();
+  final maxSafeOverlap = math.min(
+    math.max(0, outgoingSelectedDurationMs) ~/ 2,
+    math.max(0, incomingSelectedDurationMs) ~/ 2,
+  );
+  final overlapMs = math.min(boundedPhraseMs, maxSafeOverlap);
+  return overlapMs < 1000 ? 0 : overlapMs;
+}
+
+int downbeatSnapToleranceMs(ClipTempoMetadata tempo) {
+  final bpm = tempo.nativeBpm;
+  if (bpm == null || bpm <= 0) return 900;
+  return math.max(900, (60000 / bpm).round());
+}
+
+int defaultDownbeatLockedTransitionStartMs({
+  required int outgoingTimelineStartMs,
+  required int outgoingTimelineEndMs,
+  required int outgoingSourceStartMs,
+  required int outgoingSelectedDurationMs,
+  required ClipTempoMetadata outgoingTempo,
+  required int incomingSourceStartMs,
+  required int incomingSelectedDurationMs,
+  required ClipTempoMetadata incomingTempo,
+  int? fallbackStartMs,
+}) {
+  final fallback = math.max(0, fallbackStartMs ?? outgoingTimelineEndMs);
+  final overlapMs = defaultTransitionOverlapMsForTempo(
+    outgoingSelectedDurationMs: outgoingSelectedDurationMs,
+    outgoingTempo: outgoingTempo,
+    incomingSelectedDurationMs: incomingSelectedDurationMs,
+    incomingTempo: incomingTempo,
+  );
+  if (overlapMs <= 0) return fallback;
+
+  final requestedStartMs = math.max(0, outgoingTimelineEndMs - overlapMs);
+  final snapped = snapIncomingStartToNearestDownbeat(
+    requestedStartMs: requestedStartMs,
+    incomingSourceStartMs: incomingSourceStartMs,
+    incomingTempo: incomingTempo,
+    outgoingTimelineStartMs: outgoingTimelineStartMs,
+    outgoingSourceStartMs: outgoingSourceStartMs,
+    outgoingTempo: outgoingTempo,
+    toleranceMs: downbeatSnapToleranceMs(outgoingTempo),
+  );
+
+  if (snapped == null) return fallback;
+
+  final actualOverlapMs = outgoingTimelineEndMs - snapped;
+  final maxSafeOverlapMs = math.min(
+    math.max(0, outgoingSelectedDurationMs) ~/ 2,
+    math.max(0, incomingSelectedDurationMs) ~/ 2,
+  );
+  if (snapped < math.max(0, outgoingTimelineStartMs) ||
+      actualOverlapMs < 1000 ||
+      actualOverlapMs > maxSafeOverlapMs) {
+    return fallback;
+  }
+
+  return snapped;
 }
 
 double? _readAnalysisValue(Object? value) {
