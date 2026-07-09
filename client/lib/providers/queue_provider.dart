@@ -10,6 +10,7 @@ import '../models/track_analysis.dart';
 import '../models/trim_range.dart';
 import '../models/waveform.dart';
 import '../core/api/api_client.dart';
+import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
 
 class QueueProvider extends ChangeNotifier {
@@ -542,14 +543,25 @@ class QueueProvider extends ChangeNotifier {
   }
 
   TimelineModel _queueTimingModelFromPlan(MixPlan plan) {
-    final trackOrder = _queue.tracks
-        .map(_mixPlanTrackId)
-        .whereType<String>()
+    final orderedTracks = [
+      for (final track in _queue.tracks)
+        if (_mixPlanTrackId(track) != null) track,
+    ];
+    final trackOrder = orderedTracks
+        .map((track) => _mixPlanTrackId(track)!)
         .toList(growable: false);
     return TimelineModel.fromQueuePlan(
       plan,
       trackOrder: trackOrder,
       sourceDurationMsFor: _sourceDurationMsForTrackId,
+      tempoMetadataForEntry: (_, index) =>
+          _tempoMetadataForTrack(orderedTracks[index]),
+      clipIdFor: (trackId, index) {
+        final queueItemId = orderedTracks[index].queueItemId;
+        return queueItemId.isNotEmpty ? queueItemId : 'clip_${index}_$trackId';
+      },
+      queueItemIdFor: (_, index) => orderedTracks[index].queueItemId,
+      useTempoDefaultStarts: true,
     );
   }
 
@@ -616,6 +628,18 @@ class QueueProvider extends ChangeNotifier {
       if (_mixPlanTrackId(track) == trackId) return track.durationMs;
     }
     return 0;
+  }
+
+  ClipTempoMetadata _tempoMetadataForTrack(Track track) {
+    final analysisTrackId = _analysisTrackId(track);
+    final analysis = track.analysis ??
+        (analysisTrackId == null
+            ? null
+            : _analysisByTrackId[analysisTrackId.toString()]);
+    return ClipTempoMetadata.fromAnalysisSummary(
+      analysis?.summary?.toJson(),
+      overrides: analysis?.overrides?.toJson(),
+    );
   }
 
   String? _mixPlanTrackId(Track track) {

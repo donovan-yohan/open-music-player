@@ -70,15 +70,16 @@ Use RTK wrappers for noisy output when running these through Codex.
 
 ## Local Testing / Deploy
 
-Use this when user says "deploy backend/frontend" or asks for phone dogfood.
-Backend lives on `dev`; `server-mac` is for remote ADB/LLM, not the API.
+Use when user says "deploy backend", "deploy frontend", "phone dogfood", or
+"local testing". Backend lives on `dev`; `server-mac` is only remote ADB/LLM.
+Do not revive the old `8091` APK download page; install through remote ADB.
 
 - Backend root: `http://dev.fish-rattlesnake.ts.net:8080`
 - API base: `http://dev.fish-rattlesnake.ts.net:8080/api/v1`
 - Remote ADB: `tcp:server-mac.fish-rattlesnake.ts.net:5037`
 - Known Pixel 10 Pro serial: `5B120DLCH002TK`
 
-Backend deploy from checkout you want live, then smoke:
+Deploy backend from checkout you want live:
 
 ```bash
 export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
@@ -86,15 +87,15 @@ scripts/tailnet-staging.sh start-downloads
 scripts/tailnet-staging.sh smoke
 ```
 
-Backend-only fast path when downloads/worker not needed:
+Backend-only fast path when queue/download worker is irrelevant:
 
 ```bash
 export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
 scripts/tailnet-staging.sh start-backend
-curl -fsS http://dev.fish-rattlesnake.ts.net:8080/health?deep=true
+scripts/tailnet-staging.sh smoke
 ```
 
-Android frontend deploy to physical phone through remote ADB:
+Deploy Android frontend to the physical phone:
 
 ```bash
 export ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037
@@ -112,16 +113,18 @@ adb logcat -d -t 1000 | \
   rg -i "FATAL EXCEPTION|E/flutter|AndroidRuntime: FATAL|AndroidRuntime.*FATAL"
 ```
 
-Flutter Web frontend preview:
+Preview Flutter Web frontend on tailnet:
 
 ```bash
+export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
 OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
   scripts/tailnet-staging.sh serve-web
 ```
 
-Use `scripts/tailnet-staging.sh urls` for live URLs. Report backend URL, build
-ID/source ref, Android serial or web URL, evidence path, and fatal-log status.
-`scripts/dogfood-android` writes
+Use `scripts/tailnet-staging.sh urls` for live URLs. Use
+`scripts/tailnet-staging.sh stop` to tear down backend services. Report backend
+URL, build ID/source ref, Android serial or web URL, evidence path, and fatal-log
+status. `scripts/dogfood-android` writes
 `/tmp/open-music-player-dogfood-<build-id>/evidence.md`. Settings Build must
 match `OMP_SOURCE_REF` and `OMP_BUILD_ID`.
 
