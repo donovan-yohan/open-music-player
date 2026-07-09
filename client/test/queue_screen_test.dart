@@ -350,6 +350,34 @@ void main() {
   });
 
   testWidgets(
+    'playback timeline syncs provider analysis into the active mix engine',
+    (tester) async {
+      apiClient.useAnalysisFixture();
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(101, 'Analyzed Track', seconds: 198),
+        ]
+        ..fakeCurrentIndex = 0;
+
+      await pumpQueueScreen(tester);
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+
+      expect(playbackState.analysisRefreshes, hasLength(1));
+      expect(playbackState.analysisRefreshes.single.trackId, '101');
+      expect(
+        playbackState
+            .analysisRefreshes.single.analysis.summary?.bpm?.numericValue,
+        124,
+      );
+      expect(
+        playbackState.fakeQueue.single.extras?['analysisSummary'],
+        isNotNull,
+      );
+    },
+  );
+
+  testWidgets(
     'timeline analysis correction seeds first downbeat from playhead',
     (tester) async {
       tester.view.physicalSize = const Size(390, 2000);
@@ -687,6 +715,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   final List<(int, int)> trimEndCalls = [];
   final List<(int, int)> reorderCalls = [];
   final List<int> removeFromQueueCalls = [];
+  final List<({String trackId, TrackAnalysis analysis})> analysisRefreshes = [];
   int seekCalls = 0;
   int pauseCalls = 0;
 
@@ -816,6 +845,30 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   }
 
   @override
+  Future<void> refreshTrackAnalysis(
+    String trackId,
+    TrackAnalysis analysis,
+  ) async {
+    analysisRefreshes.add((trackId: trackId, analysis: analysis));
+    fakeQueue = [
+      for (final item in fakeQueue)
+        item.id == trackId
+            ? item.copyWith(
+                extras: {
+                  ...?item.extras,
+                  'analysisRef': trackId,
+                  'analysisStatus': analysis.status.name,
+                  if (analysis.summary != null)
+                    'analysisSummary': analysis.summary!.toJson(),
+                  if (analysis.overrides != null)
+                    'analysisOverrides': analysis.overrides!.toJson(),
+                },
+              )
+            : item,
+    ];
+  }
+
+  @override
   Duration get position => fakePosition;
 
   @override
@@ -841,6 +894,7 @@ audio_service.MediaItem _mediaItem(
   int id,
   String title, {
   int seconds = 60,
+  Map<String, dynamic>? extras,
 }) =>
     audio_service.MediaItem(
       id: id.toString(),
@@ -848,6 +902,7 @@ audio_service.MediaItem _mediaItem(
       artist: 'Queue Artist',
       album: 'Queue Album',
       duration: Duration(seconds: seconds),
+      extras: extras,
     );
 
 class _FakeQueueApiClient extends ApiClient {

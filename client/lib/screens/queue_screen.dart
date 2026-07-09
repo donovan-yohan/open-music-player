@@ -5,7 +5,9 @@ import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
 import '../core/audio/playback_context.dart';
+import '../core/engine/tempo_automation.dart';
 import '../models/track.dart';
+import '../models/track_analysis.dart';
 import '../providers/queue_provider.dart';
 import '../shared/widgets/track_tile.dart';
 import '../widgets/queue_item.dart';
@@ -105,6 +107,7 @@ class QueueScreen extends StatefulWidget {
 
 class _QueueScreenState extends State<QueueScreen> {
   _QueueViewMode _viewMode = _QueueViewMode.list;
+  final Set<String> _analysisRefreshesInFlight = <String>{};
 
   @override
   void initState() {
@@ -341,6 +344,16 @@ class _QueueScreenState extends State<QueueScreen> {
       for (var i = currentIndex + 1; i < queue.length; i++)
         _playbackTrackFor(queue[i], i, provider),
     ];
+    final timelineTracks = [
+      if (previous != null) previous,
+      current,
+      ...upcoming,
+    ];
+    _syncPlaybackAnalyses(
+      playback: playback,
+      queue: queue,
+      tracks: timelineTracks,
+    );
 
     return StackedWaveformTimeline(
       key: const ValueKey('queue_surface'),
@@ -441,6 +454,61 @@ class _QueueScreenState extends State<QueueScreen> {
     );
     return provider.trackWithAnalysis(track);
   }
+
+  void _syncPlaybackAnalyses({
+    required PlaybackState playback,
+    required List<audio_service.MediaItem> queue,
+    required Iterable<Track> tracks,
+  }) {
+    for (final track in tracks) {
+      final analysis = track.analysis;
+      final trackId = _analysisTrackId(track);
+      if (analysis == null || trackId == null) continue;
+
+      final queueIndex = _playbackQueueIndex(track);
+      if (queueIndex < 0 || queueIndex >= queue.length) continue;
+      if (!_mediaItemNeedsAnalysisRefresh(queue[queueIndex], analysis)) {
+        continue;
+      }
+
+      final refreshKey =
+          '$queueIndex:$trackId:${_tempoForAnalysis(analysis).hashCode}';
+      if (!_analysisRefreshesInFlight.add(refreshKey)) continue;
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          _analysisRefreshesInFlight.remove(refreshKey);
+          return;
+        }
+        unawaited(
+          playback.refreshTrackAnalysis(trackId, analysis).whenComplete(
+                () => _analysisRefreshesInFlight.remove(refreshKey),
+              ),
+        );
+      });
+    }
+  }
+
+  bool _mediaItemNeedsAnalysisRefresh(
+    audio_service.MediaItem item,
+    TrackAnalysis analysis,
+  ) {
+    final nextTempo = _tempoForAnalysis(analysis);
+    if (nextTempo.isEmpty) return false;
+
+    final extras = item.extras ?? const <String, dynamic>{};
+    final currentTempo = ClipTempoMetadata.fromAnalysisSummary(
+      extras['analysisSummary'] ?? extras['analysis_summary'],
+      overrides: extras['analysisOverrides'] ?? extras['analysis_overrides'],
+    );
+    return currentTempo != nextTempo;
+  }
+
+  ClipTempoMetadata _tempoForAnalysis(TrackAnalysis analysis) =>
+      ClipTempoMetadata.fromAnalysisSummary(
+        analysis.summary?.toJson(),
+        overrides: analysis.overrides?.toJson(),
+      );
 
   int _playbackQueueIndex(Track track) =>
       int.tryParse(track.queueItemId) ?? int.tryParse(track.id) ?? 0;
