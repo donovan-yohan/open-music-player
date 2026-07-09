@@ -223,11 +223,46 @@ void main() {
       expect(incoming.playbackRateAt(10000), closeTo(1.0, 0.0001));
 
       expect(incoming.sourcePositionAt(7500), closeTo(2125, 1));
-      expect(
-        incoming.timelineMsForSourcePosition(2125),
-        closeTo(7500, 2),
-      );
+      expect(incoming.timelineMsForSourcePosition(2125), closeTo(7500, 2));
     });
+
+    test(
+      'tempo automation keeps active windows aligned to source duration',
+      () {
+        final model = TimelineModel(
+          clips: [
+            _tempoClip('outgoing', 0, nativeBpm: 100),
+            _tempoClip('incoming', 5000, nativeBpm: 125),
+          ],
+        );
+
+        final outgoing = model.clips.firstWhere(
+          (clip) => clip.id == 'outgoing',
+        );
+        final incoming = model.clips.firstWhere(
+          (clip) => clip.id == 'incoming',
+        );
+
+        expect(
+          outgoing.timelineEndMs,
+          lessThan(outgoing.placement.timelineEndMs),
+        );
+        expect(
+          outgoing.sourcePositionAt(outgoing.timelineEndMs),
+          outgoing.placement.sourceEndMs,
+        );
+
+        expect(
+          incoming.timelineEndMs,
+          greaterThan(incoming.placement.timelineEndMs),
+        );
+        expect(
+          incoming.sourcePositionAt(incoming.timelineEndMs),
+          incoming.placement.sourceEndMs,
+        );
+        expect(model.durationMs, incoming.timelineEndMs);
+      },
+    );
 
     test('overlap BPM automation falls back to 1.0 without reliable BPM', () {
       final model = TimelineModel(

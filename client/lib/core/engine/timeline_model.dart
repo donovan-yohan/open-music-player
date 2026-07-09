@@ -27,18 +27,12 @@ class MixClip {
     PlaybackRateAutomation? rateAutomation,
   })  : audioSourceRef = audioSourceRef ?? placement.trackId,
         playbackRate = playbackRate
-            .clamp(
-              minTempoAutomationRate,
-              maxTempoAutomationRate,
-            )
+            .clamp(minTempoAutomationRate, maxTempoAutomationRate)
             .toDouble(),
         rateAutomation = rateAutomation ??
             PlaybackRateAutomation(
               baseRate: playbackRate
-                  .clamp(
-                    minTempoAutomationRate,
-                    maxTempoAutomationRate,
-                  )
+                  .clamp(minTempoAutomationRate, maxTempoAutomationRate)
                   .toDouble(),
               pitchMode: pitchMode,
             );
@@ -46,7 +40,10 @@ class MixClip {
   String get id => placement.id;
   String get trackId => placement.trackId;
   int get timelineStartMs => placement.timelineStartMs;
-  int get timelineEndMs => placement.timelineEndMs;
+  int get timelineEndMs => rateAutomation.timelineMsForSelectedSource(
+        timelineStartMs: timelineStartMs,
+        sourceDurationMs: selectedDurationMs,
+      );
   int get selectedDurationMs => placement.selectedDurationMs;
 
   bool isActiveAt(int timelineMs) =>
