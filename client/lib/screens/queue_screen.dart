@@ -467,12 +467,12 @@ class _QueueScreenState extends State<QueueScreen> {
 
       final queueIndex = _playbackQueueIndex(track);
       if (queueIndex < 0 || queueIndex >= queue.length) continue;
-      if (!_mediaItemNeedsAnalysisRefresh(queue[queueIndex], analysis)) {
+      final nextTempo = _tempoForAnalysis(analysis);
+      if (!_mediaItemNeedsAnalysisRefresh(queue[queueIndex], nextTempo)) {
         continue;
       }
 
-      final refreshKey =
-          '$queueIndex:$trackId:${_tempoForAnalysis(analysis).hashCode}';
+      final refreshKey = '$queueIndex:$trackId:${nextTempo.hashCode}';
       if (!_analysisRefreshesInFlight.add(refreshKey)) continue;
 
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -491,9 +491,8 @@ class _QueueScreenState extends State<QueueScreen> {
 
   bool _mediaItemNeedsAnalysisRefresh(
     audio_service.MediaItem item,
-    TrackAnalysis analysis,
+    ClipTempoMetadata nextTempo,
   ) {
-    final nextTempo = _tempoForAnalysis(analysis);
     if (nextTempo.isEmpty) return false;
 
     final extras = item.extras ?? const <String, dynamic>{};
