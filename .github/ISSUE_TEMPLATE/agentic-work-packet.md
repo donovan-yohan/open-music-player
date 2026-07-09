@@ -29,6 +29,12 @@ assignees: ""
 - Android dogfood, if relevant:
 - Logs/artifacts:
 
+## Adversarial Review
+
+- Doctrine vs harness:
+- Review-bypass/direct-to-main risk:
+- Required evidence artifact:
+
 ## Risk Seams
 
 - Auth/security:

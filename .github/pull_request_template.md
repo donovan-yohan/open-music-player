@@ -28,6 +28,12 @@
 - Fresh QA/review required? yes/no + why:
 - Physical device dogfood required? yes/no + target:
 
+## Adversarial review
+
+- Doctrine vs harness: what executable check proves this is not prose-only?
+- Review-bypass/direct-to-main check: any script/workflow can push to `main` or sweep dirty state? yes/no + evidence:
+- Unresolved reviewer/bot comments: none / linked and triaged:
+
 ## Risk seams
 
 - Auth/security:

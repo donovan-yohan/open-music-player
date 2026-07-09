@@ -12,7 +12,7 @@ domain concept moves or a new production harness becomes canonical.
 | Browser extension | `extension/` | Share/import surface for YouTube/SoundCloud style sources | `scripts/test extension`, `scripts/lint extension`, `scripts/build extension` |
 | Local stack | `docker-compose*.yml`, `scripts/local-low-memory.sh` | Postgres, Redis, MinIO, backend/analyzer dogfood services, worker-free backend test dependencies | `scripts/dev`, `scripts/dev test-infra`, `scripts/smoke`, `scripts/smoke e2e` |
 | Android dogfood | `scripts/dogfood-android`, `docs/ANDROID_PR_ARTIFACTS.md` | Debug APK build/install evidence for physical-device playback checks | `scripts/dogfood-android build`, `scripts/dogfood-android all` |
-| Delivery harness | `AGENTS.md`, `docs/context-map.md`, `docs/agentic-delivery.md`, `.github/`, `scripts/agentic-harness`, `scripts/agentic-cycle`, `scripts/release-audit` | Agent handoff map, CI wiring, PR evidence, exact-head gates, release audits, scaffold drift checks | `scripts/agentic-harness`, `scripts/agentic-cycle`, `scripts/release-audit`, `scripts/lint delivery` |
+| Delivery harness | `AGENTS.md`, `docs/context-map.md`, `docs/agentic-delivery.md`, `docs/adr/0002-agentic-delivery-harness.md`, `.github/`, `scripts/agentic-harness`, `scripts/agentic-cycle`, `scripts/release-audit` | Agent handoff map, CI wiring, PR evidence, adversarial doctrine-vs-harness review, exact-head gates, release audits, scaffold drift checks | `scripts/agentic-harness`, `scripts/agentic-cycle`, `scripts/release-audit`, `scripts/lint delivery` |
 | Architecture decisions | `docs/adr/` | Durable decisions and consequences for hard-to-reverse seams | `scripts/agentic-harness` |
 
 ## Domain Concepts
@@ -74,12 +74,16 @@ domain concept moves or a new production harness becomes canonical.
 
 - Local policy: `docs/agentic-delivery.md`.
 - PR evidence template: `.github/pull_request_template.md`.
+- Delivery harness ADR: `docs/adr/0002-agentic-delivery-harness.md`.
 - Enforcement: `scripts/agentic-harness`, `scripts/agentic-cycle`,
   `scripts/release-audit`,
   `scripts/lint delivery`, CI `Delivery Harness`.
 - Guardrail: exact-head evidence is required for PR release decisions; mobile
   and audio claims need physical-device dogfood when tests cannot prove the
   central behavior.
+- Guardrail: agentic-delivery claims must survive adversarial doctrine-vs-harness
+  review. Process changes need executable backpressure, and scripts/workflows
+  must not bypass review by pushing directly to `main`.
 
 ## Harness Matrix
 
@@ -87,6 +91,7 @@ domain concept moves or a new production harness becomes canonical.
 | --- | --- | --- |
 | Fast backend check | `scripts/test backend` | Runs `go test ./...` from `backend/`. |
 | Delivery scaffold check | `scripts/agentic-harness` | Validates required agent docs, root scripts, CI wiring, JSON/Python/Bash syntax, and secret-like values. |
+| Adversarial delivery check | `scripts/agentic-harness` | Fails scaffold drift, missing doctrine-vs-harness policy text, and direct-to-main script/workflow bypass patterns. |
 | Exact-head dev-cycle plan | `scripts/agentic-cycle --base origin/main` | Classifies changed files, assigns a gate risk tier, lists required component checks, and names Android dogfood when needed. |
 | Exact-head dev-cycle run | `scripts/agentic-cycle --run --base origin/main` | Runs the planned local lint/test gates and writes JSON evidence under `/tmp/open-music-player-agentic-cycle-*.json`, including failed/interrupted gate progress and dirty-worktree markers. |
 | Deterministic evidence artifact | `scripts/agentic-cycle --run --evidence /tmp/omp-cycle.json` | Uses a stable evidence path for PR comments, issue handoff, or agent-to-agent transfer. |

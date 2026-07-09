@@ -19,6 +19,28 @@ For substantial work, capture this packet in the issue, PR body, or handoff:
 - Handoff evidence: head SHA, commands plus exit codes, artifact IDs, device
   IDs when relevant, caveats, and follow-ups.
 
+## Adversarial Review
+
+Use this pass for PRs that change process, agent instructions, CI, scripts,
+release flow, or architecture guardrails.
+
+- Doctrine vs harness: separate prose/templates/prompts from executable checks.
+  A claim is production backpressure only when a test, lint, CI gate, smoke
+  script, schema/eval, log, or artifact contract can fail.
+- Review-bypass/direct-to-main check: scripts and workflows must not push to
+  `main`, sweep dirty state with `git add -A` before pushing, or mutate release
+  state without an explicit human override and evidence trail.
+- Intake enforcement: issues and PRs should name intent, context map,
+  harness/backpressure, risk seams, exact-head evidence, and Android dogfood
+  evidence when relevant.
+- Active feedback: unresolved medium/high human or bot comments remain findings
+  until triaged with evidence.
+- Permission and environment scope: mobile/device/deploy automation must record
+  target URLs, device IDs, artifacts, and rollback/cleanup notes.
+
+`scripts/agentic-harness` enforces the local review-bypass guardrails that can
+be checked statically. Human review still owns architecture and correctness.
+
 ## Exact-Head Gates
 
 Exact-head evidence is the release invariant. Before merge, the QA/review/build
@@ -79,6 +101,9 @@ commit for merge-ready exact-head evidence.
 The runner is advisory for expensive gates: it lists Android dogfood by default
 instead of running it. Pass `--include-device` only when an authorized physical
 device is reachable and the central claim depends on Android/audio behavior.
+The plan and JSON evidence also carry the adversarial review checklist so PR
+handoffs keep doctrine-vs-harness, review-bypass, and unresolved-comment checks
+visible next to the risk tier.
 
 Use `scripts/dev test-infra` before backend tests that need PostgreSQL, Redis,
 or MinIO but should not race a running backend worker. Use
