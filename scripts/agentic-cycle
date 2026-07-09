@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import time
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -102,6 +103,11 @@ def changed_files(base_ref: str, include_worktree: bool) -> list[str]:
             files.update(line for line in diff.splitlines() if line)
 
     return sorted(files)
+
+
+def worktree_status() -> list[str]:
+    status = run_git(["status", "--short"], check=False)
+    return [line for line in status.splitlines() if line]
 
 
 def is_docs_only(path: str) -> bool:
@@ -294,14 +300,20 @@ def run_gate(gate: Gate) -> GateResult:
     )
 
 
-def write_evidence(payload: dict) -> Path:
+def utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def default_evidence_path() -> Path:
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    path = Path(
-        os.environ.get(
-            "OMP_AGENTIC_EVIDENCE",
-            f"/tmp/open-music-player-agentic-cycle-{stamp}.json",
-        )
+    return Path(
+        os.environ.get("OMP_AGENTIC_EVIDENCE")
+        or f"/tmp/open-music-player-agentic-cycle-{stamp}.json"
     )
+
+
+def write_evidence(payload: dict, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return path
 
@@ -312,6 +324,8 @@ def render_plan(payload: dict, gates: list[Gate], manual: list[Gate]) -> None:
     print(f"base: {payload['base_ref']}")
     print(f"risk tier: {payload['risk_tier']}")
     print(f"components: {', '.join(payload['components'])}")
+    if payload.get("worktree_dirty"):
+        print(f"worktree: dirty ({len(payload.get('worktree_status') or [])} entries)")
     print(f"changed files: {len(payload['changed_files'])}")
     for path in payload["changed_files"][:24]:
         print(f"- {path}")
@@ -343,6 +357,9 @@ def build_payload(args: argparse.Namespace) -> tuple[dict, list[Gate], list[Gate
     payload = {
         "base_ref": args.base,
         "head_sha": head_sha(),
+        "include_worktree": not args.committed_only,
+        "worktree_dirty": False,
+        "worktree_status": [],
         "changed_files": files,
         "components": sorted(components),
         "risk_tier": tier,
@@ -356,6 +373,10 @@ def build_payload(args: argparse.Namespace) -> tuple[dict, list[Gate], list[Gate
             for gate in manual
         ],
     }
+    if not args.committed_only:
+        status = worktree_status()
+        payload["worktree_dirty"] = bool(status)
+        payload["worktree_status"] = status
     return payload, gates, manual
 
 
@@ -363,6 +384,18 @@ def self_test() -> int:
     cases = [
         (
             ["client/lib/core/audio/playback_state.dart"],
+            "mobile-audio-device",
+            {"client"},
+            True,
+        ),
+        (
+            ["client/lib/core/engine/timeline_model.dart"],
+            "mobile-audio-device",
+            {"client"},
+            True,
+        ),
+        (
+            ["client/lib/widgets/timeline_waveform_painter.dart"],
             "mobile-audio-device",
             {"client"},
             True,
@@ -400,6 +433,52 @@ def self_test() -> int:
             )
         if got_android != expected_android:
             failures.append(f"{files}: android {got_android!r} != {expected_android!r}")
+
+    gates, manual = plan_gates(
+        {"client"},
+        include_build=False,
+        include_smoke=False,
+        include_device=False,
+        requires_android_dogfood=True,
+    )
+    if ("scripts/dogfood-android", "all") in {gate.command for gate in gates}:
+        failures.append("android dogfood should be manual unless --include-device is set")
+    if ("scripts/dogfood-android", "all") not in {gate.command for gate in manual}:
+        failures.append("mobile/audio plan must list android dogfood as manual evidence")
+
+    gates, manual = plan_gates(
+        {"client"},
+        include_build=False,
+        include_smoke=False,
+        include_device=True,
+        requires_android_dogfood=True,
+    )
+    if manual:
+        failures.append("android dogfood manual gate should be empty when --include-device is set")
+    if ("scripts/dogfood-android", "all") not in {gate.command for gate in gates}:
+        failures.append("mobile/audio plan must run android dogfood with --include-device")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "evidence.json"
+        payload = {"status": "running", "results": []}
+        write_evidence(payload, path)
+        loaded = json.loads(path.read_text())
+        if loaded != payload:
+            failures.append("evidence writer did not round-trip payload")
+
+    fake_args = argparse.Namespace(
+        base="HEAD",
+        committed_only=True,
+        include_build=False,
+        include_smoke=False,
+        include_device=False,
+    )
+    payload, _, _ = build_payload(fake_args)
+    if payload["include_worktree"]:
+        failures.append("--committed-only payload should not include worktree changes")
+    if payload["worktree_dirty"] or payload["worktree_status"]:
+        failures.append("--committed-only payload should not report dirty worktree state")
+
     if failures:
         print("AGENTIC CYCLE SELF-TEST FAILED")
         for failure in failures:
@@ -437,6 +516,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="run Android dogfood instead of listing it as manual evidence",
     )
+    parser.add_argument(
+        "--evidence",
+        help="write --run evidence JSON to this path instead of /tmp or OMP_AGENTIC_EVIDENCE",
+    )
     parser.add_argument("--json", action="store_true", help="print the plan as JSON")
     parser.add_argument("--self-test", action="store_true", help="run classifier tests")
     return parser.parse_args(argv)
@@ -456,11 +539,33 @@ def main(argv: list[str]) -> int:
     if not args.run:
         return 0
 
-    results = [run_gate(gate) for gate in gates]
-    payload["results"] = [result.__dict__ for result in results]
-    evidence = write_evidence(payload)
-    print(f"evidence: {evidence}")
+    evidence_path = Path(args.evidence) if args.evidence else default_evidence_path()
+    payload["evidence_path"] = str(evidence_path)
+    payload["status"] = "running"
+    payload["started_at"] = utc_now()
+    payload["results"] = []
+    write_evidence(payload, evidence_path)
+    print(f"evidence: {evidence_path}")
+
+    try:
+        for gate in gates:
+            result = run_gate(gate)
+            payload["results"].append(result.__dict__)
+            payload["status"] = "failed" if result.exit_code != 0 else "running"
+            payload["updated_at"] = utc_now()
+            write_evidence(payload, evidence_path)
+    except KeyboardInterrupt:
+        payload["status"] = "interrupted"
+        payload["updated_at"] = utc_now()
+        write_evidence(payload, evidence_path)
+        print("interrupted; evidence updated")
+        return 130
+
+    results = [GateResult(**result) for result in payload["results"]]
     failed = [result for result in results if result.exit_code != 0]
+    payload["status"] = "failed" if failed else "passed"
+    payload["completed_at"] = utc_now()
+    write_evidence(payload, evidence_path)
     if failed:
         print("failed gates:")
         for result in failed:

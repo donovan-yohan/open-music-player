@@ -242,6 +242,8 @@ def check_ci_wires_harness() -> None:
         "scripts/dev isolated",
         "scripts/smoke isolated",
         "scripts/smoke playback-isolated",
+        "fetch-depth: 0",
+        "Upload debug APK artifact",
     ]
     for phrase in required_phrases:
         if phrase not in text:
@@ -286,6 +288,7 @@ def check_python_syntax(files: list[Path]) -> None:
         if path.suffix.lower() != ".py" and rel(path) not in {
             "scripts/agentic-harness",
             "scripts/agentic-cycle",
+            "scripts/release-audit",
         }:
             continue
         try:
@@ -378,6 +381,47 @@ def check_architecture_guardrails(files: list[Path]) -> None:
         fail("migrations/: root migrations directory must not be reintroduced; backend/internal/db/db.go is schema authority")
 
 
+def check_agentic_cycle_contracts() -> None:
+    cycle = ROOT / "scripts/agentic-cycle"
+    if not cycle.exists():
+        return
+    text = cycle.read_text(errors="replace")
+    required_phrases = [
+        "--evidence",
+        "mobile-audio-device",
+        "manual_gates",
+        "worktree_dirty",
+        "worktree_status",
+        "requires_android_dogfood",
+        "client/lib/core/audio/",
+        "client/lib/core/engine/",
+        "client/lib/models/timeline_",
+        "client/lib/widgets/stacked_waveform",
+        "client/lib/widgets/timeline_",
+        "scripts/dogfood-android",
+        "write_evidence(payload, evidence_path)",
+        "interrupted",
+    ]
+    for phrase in required_phrases:
+        if phrase not in text:
+            fail(f"scripts/agentic-cycle: missing contract phrase {phrase!r}")
+
+    dogfood = ROOT / "scripts/dogfood-android"
+    if not dogfood.exists():
+        return
+    dogfood_text = dogfood.read_text(errors="replace")
+    for phrase in [
+        "OMP_API_BASE_URL",
+        "OMP_SOURCE_REF",
+        "OMP_BUILD_ID",
+        "APK SHA256",
+        "adb devices -l",
+        "ADB_SERVER_SOCKET",
+    ]:
+        if phrase not in dogfood_text:
+            fail(f"scripts/dogfood-android: missing evidence phrase {phrase!r}")
+
+
 def main() -> int:
     files = repo_files()
     check_required_files()
@@ -390,6 +434,7 @@ def main() -> int:
     check_bash_syntax(files)
     check_secret_scan(files)
     check_architecture_guardrails(files)
+    check_agentic_cycle_contracts()
 
     if FAILURES:
         print("AGENTIC HARNESS FAILED")
