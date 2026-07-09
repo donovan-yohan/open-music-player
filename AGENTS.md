@@ -71,8 +71,10 @@ Use RTK wrappers for noisy output when running these through Codex.
 ## Local Testing / Deploy
 
 Use when user says "deploy backend", "deploy frontend", "phone dogfood", or
-"local testing". Backend lives on `dev`; `server-mac` is only remote ADB/LLM.
-Do not revive the old `8091` APK download page; install through remote ADB.
+"local testing". Backend deploy means tailnet staging on `dev`; frontend deploy
+means Android dogfood through remote ADB or Flutter Web preview on tailnet.
+`server-mac` is only remote ADB/LLM. Do not revive the old `8091` APK download
+page; install through remote ADB.
 
 - Backend root: `http://dev.fish-rattlesnake.ts.net:8080`
 - API base: `http://dev.fish-rattlesnake.ts.net:8080/api/v1`

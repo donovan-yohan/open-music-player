@@ -865,11 +865,15 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   bool _canEditAnalysis(Track track) {
+    return _analysisTrackId(track) != null;
+  }
+
+  String? _analysisTrackId(Track track) {
     for (final candidate in [track.playbackTrackId, track.id]) {
       final parsed = int.tryParse(candidate ?? '');
-      if (parsed != null && parsed > 0) return true;
+      if (parsed != null && parsed > 0) return parsed.toString();
     }
-    return false;
+    return null;
   }
 
   Future<void> _showAnalysisCorrectionSheet(
@@ -893,7 +897,14 @@ class _QueueScreenState extends State<QueueScreen> {
     if (corrected == null || !context.mounted) return;
 
     try {
-      await provider.updateAnalysisOverrides(track, corrected);
+      final analysis = await provider.updateAnalysisOverrides(track, corrected);
+      final trackId = _analysisTrackId(track);
+      if (trackId != null && context.mounted) {
+        await context.read<PlaybackState>().refreshTrackAnalysis(
+              trackId,
+              analysis,
+            );
+      }
     } catch (_) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

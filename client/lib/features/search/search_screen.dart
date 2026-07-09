@@ -1552,37 +1552,197 @@ class _SearchScreenState extends State<SearchScreen> {
       message: quality.debugReason,
       child: Align(
         alignment: Alignment.centerLeft,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: background,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            key: ValueKey(
+              'source_quality_chip_${quality.classification}_${quality.recommendation}',
+            ),
             borderRadius: BorderRadius.circular(999),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 13, color: foreground),
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(
-                    quality.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: foreground,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      height: 1.1,
+            onTap: () => _showSourceQualityDetails(quality),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: background,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, size: 13, color: foreground),
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        quality.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: foreground,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          height: 1.1,
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
       ),
     );
+  }
+
+  void _showSourceQualityDetails(DiscoverySourceQuality quality) {
+    final theme = Theme.of(context);
+    final scoreLabel = '${quality.score}/100';
+    final confidenceLabel =
+        '${(quality.confidence.clamp(0, 1) * 100).round()}%';
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+            shrinkWrap: true,
+            children: [
+              Text(
+                'Source quality',
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _buildSourceQualityDetailPill(
+                    icon: Icons.graphic_eq,
+                    label: quality.label,
+                  ),
+                  _buildSourceQualityDetailPill(
+                    icon: Icons.check_circle_outline,
+                    label: _humanizeSourceQualityToken(
+                      quality.recommendation,
+                    ),
+                  ),
+                  _buildSourceQualityDetailPill(
+                    icon: Icons.speed,
+                    label: scoreLabel,
+                  ),
+                  _buildSourceQualityDetailPill(
+                    icon: Icons.fact_check_outlined,
+                    label: confidenceLabel,
+                  ),
+                ],
+              ),
+              if (quality.warnings.isNotEmpty) ...[
+                const SizedBox(height: 18),
+                _buildSourceQualityDetailSection(
+                  'Warnings',
+                  quality.warnings,
+                ),
+              ],
+              if (quality.reasons.isNotEmpty) ...[
+                const SizedBox(height: 18),
+                _buildSourceQualityDetailSection(
+                  'Reasons',
+                  quality.reasons,
+                ),
+              ],
+              if (quality.provenance.isNotEmpty) ...[
+                const SizedBox(height: 18),
+                Text(
+                  'Provenance',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                SelectableText(
+                  quality.provenance,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSourceQualityDetailPill({
+    required IconData icon,
+    required String label,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: colorScheme.onSurfaceVariant),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              color: colorScheme.onSurfaceVariant,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSourceQualityDetailSection(
+    String title,
+    List<String> values,
+  ) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: theme.textTheme.labelLarge?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 6),
+        ...values.map(
+          (value) => Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(value, style: theme.textTheme.bodyMedium),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _humanizeSourceQualityToken(String value) {
+    final words = value
+        .split('_')
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList();
+    if (words.isEmpty) return 'Review';
+    return words
+        .map((word) => word[0].toUpperCase() + word.substring(1))
+        .join(' ');
   }
 
   Widget _buildQueueAction(

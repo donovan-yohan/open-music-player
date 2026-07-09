@@ -9,6 +9,7 @@ import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
+import 'package:open_music_player/models/track_analysis.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/fake_voice.dart';
@@ -234,6 +235,50 @@ void main() {
       );
       playback.dispose();
     });
+
+    test('analysis refresh updates active timeline tempo automation', () async {
+      SharedPreferences.setMockInitialValues({});
+      final playback = _playbackState();
+
+      await playback.playQueue([
+        _track(1, seconds: 20),
+        _track(2, seconds: 20),
+      ]);
+      await playback.setQueueTimelineStartMs(
+        1,
+        12000,
+        snapToDownbeat: false,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.timelineModel.clips[0].tempo.nativeBpm, isNull);
+      expect(playback.timelineModel.clips[1].tempo.nativeBpm, isNull);
+
+      await playback.refreshTrackAnalysis(
+        '1',
+        _analysis(
+          bpm: 100,
+          downbeatsMs: [0, 8000, 16000],
+        ),
+      );
+      await playback.refreshTrackAnalysis(
+        '2',
+        _analysis(
+          bpm: 125,
+          downbeatsMs: [0, 8000, 16000],
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final clips = playback.timelineModel.clips;
+      expect(clips[0].tempo.nativeBpm, 100);
+      expect(clips[1].tempo.nativeBpm, 125);
+      expect(clips[1].timelineStartMs, 12000);
+      expect(clips[0].playbackRateAt(12000), 1);
+      expect(clips[1].playbackRateAt(12000), closeTo(0.8, 0.0001));
+      expect(playback.currentIndex, 0);
+      playback.dispose();
+    });
   });
 }
 
@@ -316,3 +361,16 @@ Map<String, dynamic> _track(int id, {required int seconds}) => {
       'artist': 'Artist $id',
       'duration': seconds,
     };
+
+TrackAnalysis _analysis({
+  required double bpm,
+  required List<int> downbeatsMs,
+}) =>
+    TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: {
+        'bpm': {'value': bpm, 'confidence': 1.0},
+        'beat_grid': {'bpm': bpm, 'confidence': 1.0},
+        'downbeats': {'positions_ms': downbeatsMs},
+      },
+    );

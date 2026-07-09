@@ -148,7 +148,7 @@ List<TransitionDiagnostic> _tempoDiagnostics(
       TransitionDiagnostic(
         severity: TransitionDiagnosticSeverity.warning,
         code: TransitionDiagnosticCode.missingBpm,
-        label: 'No BPM',
+        label: _missingLabel('BPM', missing),
         detail:
             'Missing ${missing.join(' and ')} BPM; transition uses native speed.',
       ),
@@ -225,11 +225,14 @@ List<TransitionDiagnostic> _downbeatDiagnostics({
   required int overlapEndMs,
 }) {
   if (!outgoing.tempo.hasDownbeats || !incoming.tempo.hasDownbeats) {
-    return const [
+    final missing = <String>[];
+    if (!outgoing.tempo.hasDownbeats) missing.add('outgoing');
+    if (!incoming.tempo.hasDownbeats) missing.add('incoming');
+    return [
       TransitionDiagnostic(
         severity: TransitionDiagnosticSeverity.warning,
         code: TransitionDiagnosticCode.missingDownbeats,
-        label: 'No downbeat',
+        label: _missingLabel('downbeat', missing),
         detail:
             'Missing downbeat markers; transition cannot be verified as phrase-locked.',
       ),
@@ -370,6 +373,11 @@ int? _nearestDownbeatDelta({
 }
 
 String _percent(double value) => '${(value * 100).round()}%';
+
+String _missingLabel(String subject, List<String> missing) {
+  if (missing.length == 1) return 'No ${missing.single} $subject';
+  return 'No $subject';
+}
 
 String _bpm(ClipTempoMetadata tempo) {
   final bpm = tempo.nativeBpm;

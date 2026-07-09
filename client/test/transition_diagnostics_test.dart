@@ -99,6 +99,26 @@ void main() {
     expect(diagnostics.hasWarnings, isTrue);
   });
 
+  test('missing BPM and downbeat labels identify the missing side', () {
+    final diagnostics = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [0, 8000, 16000],
+        ),
+      ),
+      _clip('incoming', 8000),
+    );
+
+    expect(diagnostics.compactLabels, [
+      'No incoming BPM',
+      'No incoming downbeat',
+    ]);
+  });
+
   test('warns on large tempo pulls and incompatible keys', () {
     final diagnostics = diagnoseTransition(
       _clip(

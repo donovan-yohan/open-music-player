@@ -277,15 +277,6 @@ class MixSessionClip {
     required int timelineStartMs,
   }) {
     final durationMs = item.duration?.inMilliseconds ?? 0;
-    final extras = item.extras ?? const <String, dynamic>{};
-    final analysisSummary =
-        extras['analysisSummary'] ?? extras['analysis_summary'];
-    final analysisOverrides =
-        extras['analysisOverrides'] ?? extras['analysis_overrides'];
-    final tempo = ClipTempoMetadata.fromAnalysisSummary(
-      analysisSummary,
-      overrides: analysisOverrides,
-    );
     return MixSessionClip(
       clipId: '${sessionId}_clip_$ordinal',
       queueItemId: '${sessionId}_item_$ordinal',
@@ -294,9 +285,9 @@ class MixSessionClip {
       sourceStartMs: 0,
       sourceEndMs: durationMs,
       timelineStartMs: timelineStartMs,
-      tempo: tempo,
-      analysisRef: extras['analysisRef'] as String? ?? item.id,
-      analysisVersion: extras['analysisVersion']?.toString(),
+      tempo: _tempoForMediaItem(item),
+      analysisRef: _analysisRefForMediaItem(item),
+      analysisVersion: _analysisVersionForMediaItem(item),
     );
   }
 
@@ -383,7 +374,24 @@ class MixSessionClip {
       sourceEndMs: math.min(sourceEndMs, durationMs),
       timelineStartMs: timelineStartMs,
     );
-    return withPlacement(placement);
+    final refreshedTempo = _tempoForMediaItem(item);
+    return MixSessionClip(
+      clipId: clipId,
+      queueItemId: queueItemId,
+      trackId: placement.trackId,
+      sourceDurationMs: placement.sourceDurationMs,
+      sourceStartMs: placement.sourceStartMs,
+      sourceEndMs: placement.sourceEndMs,
+      timelineStartMs: placement.timelineStartMs,
+      gainDb: gainDb,
+      fadeInMs: fadeInMs,
+      fadeOutMs: fadeOutMs,
+      playbackRate: playbackRate,
+      pitchMode: pitchMode,
+      tempo: refreshedTempo.isEmpty ? tempo : refreshedTempo,
+      analysisRef: _analysisRefForMediaItem(item) ?? analysisRef,
+      analysisVersion: _analysisVersionForMediaItem(item) ?? analysisVersion,
+    );
   }
 
   MixSessionClip withPlacement(TimelineClip placement) => MixSessionClip(
@@ -428,6 +436,28 @@ class MixSessionClip {
         if (analysisRef != null) 'analysisRef': analysisRef,
         if (analysisVersion != null) 'analysisVersion': analysisVersion,
       };
+}
+
+ClipTempoMetadata _tempoForMediaItem(MediaItem item) {
+  final extras = item.extras ?? const <String, dynamic>{};
+  final analysisSummary =
+      extras['analysisSummary'] ?? extras['analysis_summary'];
+  final analysisOverrides =
+      extras['analysisOverrides'] ?? extras['analysis_overrides'];
+  return ClipTempoMetadata.fromAnalysisSummary(
+    analysisSummary,
+    overrides: analysisOverrides,
+  );
+}
+
+String? _analysisRefForMediaItem(MediaItem item) {
+  final extras = item.extras ?? const <String, dynamic>{};
+  return extras['analysisRef'] as String? ?? item.id;
+}
+
+String? _analysisVersionForMediaItem(MediaItem item) {
+  final extras = item.extras ?? const <String, dynamic>{};
+  return extras['analysisVersion']?.toString();
 }
 
 class PlaybackCue {
