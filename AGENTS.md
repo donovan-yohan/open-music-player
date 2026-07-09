@@ -71,18 +71,13 @@ Use RTK wrappers for noisy output when running these through Codex.
 ## Local Testing / Deploy Backend And Frontend
 
 Use when user says "deploy backend/frontend" or asks for phone dogfood. Backend
-= shared dev API on the tailnet. Frontend = Android APK through remote ADB, or
+= shared dev API on tailnet. Frontend = Android APK through remote ADB, or
 Flutter Web tailnet preview.
 
-Fast path:
-
-1. Backend: from the intended source checkout, start/rebuild tailnet backend and
-   verify deep health.
-2. Frontend Android: build/install APK from current checkout with explicit
-   `OMP_API_BASE_URL`, `OMP_SOURCE_REF`, and `OMP_BUILD_ID`.
-3. Frontend Web: use Tailnet Flutter Web preview when Android is not needed.
-4. Handoff: report backend URL, source ref/build ID, device serial or web URL,
-   evidence path, and log status.
+Fast path: deploy backend from intended checkout; verify deep health; deploy
+frontend from same source ref with explicit `OMP_API_BASE_URL`,
+`OMP_SOURCE_REF`, and `OMP_BUILD_ID`; report backend URL, build ID/source ref,
+device serial or web URL, evidence path, and fatal-log status.
 
 Constants:
 
@@ -126,7 +121,7 @@ scripts/dogfood-android all
 adb shell monkey -p com.openmusicplayer.app -c android.intent.category.LAUNCHER 1
 adb shell pidof com.openmusicplayer.app
 adb logcat -d -t 1000 | \
-  rg -i "AndroidRuntime|FATAL EXCEPTION|E/flutter|com\\.openmusicplayer|OpenMusic|Dart"
+  rg -i "FATAL EXCEPTION|E/flutter|AndroidRuntime: FATAL|AndroidRuntime.*FATAL"
 ```
 
 `scripts/dogfood-android` writes evidence under
