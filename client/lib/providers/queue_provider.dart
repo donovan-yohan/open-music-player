@@ -122,16 +122,23 @@ class QueueProvider extends ChangeNotifier {
   /// Playback media items do not carry queue API analysis fields, so attach
   /// cached analysis by backend track ID and fetch it lazily when needed.
   Track trackWithAnalysis(Track track) {
-    if (track.analysis != null) {
-      _rememberTrackAnalysis(track);
+    final trackId = _analysisTrackId(track);
+    if (trackId == null) {
       return track;
     }
 
-    final trackId = _analysisTrackId(track);
-    if (trackId == null) return track;
+    final key = trackId.toString();
+    final cached = _analysisByTrackId[key];
+    if (cached != null) {
+      return identical(cached, track.analysis)
+          ? track
+          : track.copyWith(analysis: cached);
+    }
 
-    final cached = _analysisByTrackId[trackId.toString()];
-    if (cached != null) return track.copyWith(analysis: cached);
+    if (track.analysis != null) {
+      _analysisByTrackId[key] = track.analysis!;
+      return track;
+    }
 
     _fetchAnalysisIfNeeded(trackId);
     return track;
