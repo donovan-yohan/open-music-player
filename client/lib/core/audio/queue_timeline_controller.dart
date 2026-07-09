@@ -509,7 +509,9 @@ class QueueTimelineController {
           if (_suppressPositionSync) return;
           unawaited(_onCompleted());
         }),
-      );
+      )
+      ..add(_engine.pool.pitchFallbackClipIdsStream
+          .listen((_) => _publishSnapshot(_engine.positionMs)));
   }
 
   Future<T> _enqueueCommand<T>(Future<T> Function() command) {
@@ -831,6 +833,7 @@ class QueueTimelineController {
         processingState: _processingState,
         activeVoiceCount: _engine.pool.activeVoiceCount,
         playbackSpeed: _playbackSpeedForGlobal(globalMs),
+        pitchPreservationFallback: _engine.pool.hasPitchFallback,
       ),
     );
   }

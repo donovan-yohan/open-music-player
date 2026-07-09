@@ -3,10 +3,11 @@ import 'dart:async';
 import 'package:open_music_player/core/engine/voice.dart';
 
 class FakeVoice implements Voice {
-  FakeVoice(this.debugId);
+  FakeVoice(this.debugId, {this.pitchSupported = true});
 
   @override
   final String debugId;
+  final bool pitchSupported;
 
   final _events = StreamController<VoiceEvent>.broadcast();
   bool _ready = false;
@@ -56,7 +57,7 @@ class FakeVoice implements Voice {
   Future<void> setSpeed(double rate) async {}
 
   @override
-  Future<void> setPitch(double factor) async {}
+  Future<bool> setPitch(double factor) async => pitchSupported;
 
   @override
   Future<void> setVolume(double linearGain) async {}

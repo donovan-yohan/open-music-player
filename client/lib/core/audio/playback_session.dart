@@ -663,6 +663,7 @@ class PlaybackSnapshot {
     required this.processingState,
     required this.activeVoiceCount,
     this.playbackSpeed = 1,
+    this.pitchPreservationFallback = false,
   });
 
   factory PlaybackSnapshot.empty({String sessionId = 'session_0'}) =>
@@ -694,6 +695,7 @@ class PlaybackSnapshot {
   final ProcessingState processingState;
   final int activeVoiceCount;
   final double playbackSpeed;
+  final bool pitchPreservationFallback;
 }
 
 Duration _clampDuration(Duration value, Duration min, Duration max) {

@@ -209,6 +209,38 @@ void main() {
     expect(a.pitchLog.last, closeTo(1.25, 0.0001));
   });
 
+  test('reports pitch fallback when key lock is unavailable', () async {
+    for (final voice in voices) {
+      voice.pitchSupported = false;
+    }
+    final fallbackEvents = <Set<String>>[];
+    final fallbackSub =
+        pool.pitchFallbackClipIdsStream.listen(fallbackEvents.add);
+
+    await pool.loadMix(
+      TimelineModel(
+        clips: [
+          _clip(
+            'a',
+            0,
+            rateAutomation: const PlaybackRateAutomation(baseRate: 1.25),
+          ),
+        ],
+      ),
+    );
+
+    expect(pool.hasPitchFallback, isTrue);
+    expect(pool.pitchFallbackClipIds, {'a'});
+    expect(fallbackEvents.last, {'a'});
+
+    await pool.syncAt(12000, forceSeek: true);
+
+    expect(pool.hasPitchFallback, isFalse);
+    expect(fallbackEvents.last, isEmpty);
+
+    await fallbackSub.cancel();
+  });
+
   test('release resets playback speed and pitch before voice reuse', () async {
     await pool.loadMix(
       TimelineModel(
@@ -769,9 +801,12 @@ class FakeVoice implements Voice {
     speedLog.add(rate);
   }
 
+  bool pitchSupported = true;
+
   @override
-  Future<void> setPitch(double factor) async {
+  Future<bool> setPitch(double factor) async {
     pitchLog.add(factor);
+    return pitchSupported;
   }
 
   @override

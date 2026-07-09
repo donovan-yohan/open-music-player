@@ -82,10 +82,12 @@ class VoicePool {
   final Map<String, VoiceEventKind> _voiceStatus = {};
   final Map<String, int> _lastDriftCorrectionMs = {};
   final Set<String> _capacityEvictedClipIds = {};
+  final Set<String> _pitchFallbackClipIds = {};
   final _voiceStatusController =
       StreamController<Map<String, VoiceEventKind>>.broadcast();
   final _driftCorrectionController =
       StreamController<DriftCorrectionEvent>.broadcast();
+  final _pitchFallbackController = StreamController<Set<String>>.broadcast();
 
   TimelineModel _model = TimelineModel();
   Timer? _driftTimer;
@@ -101,10 +103,15 @@ class VoicePool {
   Map<String, MixClip> get activeClips => Map.unmodifiable(_activeClips);
   int get activeVoiceCount => _activeVoices.length;
   int get generation => _generation;
+  bool get hasPitchFallback => _pitchFallbackClipIds.isNotEmpty;
+  Set<String> get pitchFallbackClipIds =>
+      Set.unmodifiable(_pitchFallbackClipIds);
   Stream<Map<String, VoiceEventKind>> get voiceStatusStream =>
       _voiceStatusController.stream;
   Stream<DriftCorrectionEvent> get driftCorrectionStream =>
       _driftCorrectionController.stream;
+  Stream<Set<String>> get pitchFallbackClipIdsStream =>
+      _pitchFallbackController.stream;
 
   Future<void> start() async {
     if (_started) return;
@@ -241,6 +248,7 @@ class VoicePool {
     _driftTimer = null;
     _gainTimer = null;
     await _releaseLeaving(const {});
+    _clearPitchFallbacks();
     _started = false;
     _clock.releaseHold();
     _publishStatus();
@@ -267,6 +275,7 @@ class VoicePool {
     _idleVoices.clear();
     await _voiceStatusController.close();
     await _driftCorrectionController.close();
+    await _pitchFallbackController.close();
   }
 
   Future<void> _releaseLeaving(Set<String> activeIds) async {
@@ -315,6 +324,7 @@ class VoicePool {
     _activeSourceIdentities.remove(clipId);
     _voiceStatus.remove(clipId);
     _lastDriftCorrectionMs.remove(clipId);
+    _clearPitchFallbackFor(clipId);
     await voice.setVolume(0);
     await _applyNeutralPlaybackTuning(voice);
     await voice.release();
@@ -386,6 +396,7 @@ class VoicePool {
       _activeClips.remove(clipId);
       _activeSourceIdentities.remove(clipId);
       _voiceStatus.remove(clipId);
+      _clearPitchFallbackFor(clipId);
     }
     if (_activeVoices.containsValue(voice) || _idleVoices.contains(voice)) {
       _publishStatus();
@@ -643,6 +654,7 @@ class VoicePool {
       voice,
       (base + nudge).clamp(0.5, 2.0).toDouble(),
       clip?.rateAutomation.pitchMode ?? pitchModePreserve,
+      clipId: clipId,
     );
     unawaited(Future<void>.delayed(_driftSpeedNudgeDuration, () async {
       if (!_isCurrentVoice(clipId, voice, generation)) return;
@@ -651,6 +663,7 @@ class VoicePool {
         voice,
         clip == null ? _clock.rate : _targetSpeedFor(clip, _clock.positionMs),
         clip?.rateAutomation.pitchMode ?? pitchModePreserve,
+        clipId: clipId,
       );
     }));
   }
@@ -718,6 +731,7 @@ class VoicePool {
       voice,
       _targetSpeedFor(clip, globalMs),
       clip.rateAutomation.pitchMode,
+      clipId: clip.id,
     );
   }
 
@@ -725,16 +739,19 @@ class VoicePool {
     return _applySpeedAndPitch(voice, 1, pitchModePreserve);
   }
 
-  Future<void> _applySpeedAndPitch(
-    Voice voice,
-    double rate,
-    String pitchMode,
-  ) async {
+  Future<void> _applySpeedAndPitch(Voice voice, double rate, String pitchMode,
+      {String? clipId}) async {
     final safeRate = rate.clamp(0.5, 2.0).toDouble();
-    await voice.setSpeed(safeRate);
-    await voice.setPitch(
-      pitchFactorForRate(rate: safeRate, pitchMode: pitchMode),
+    final pitchFactor = pitchFactorForRate(
+      rate: safeRate,
+      pitchMode: pitchMode,
     );
+    await voice.setSpeed(safeRate);
+    final pitchSupported = await voice.setPitch(pitchFactor);
+    if (clipId == null) return;
+    final needsPitchLock =
+        (pitchFactor - 1).abs() < 0.0001 && (safeRate - 1).abs() >= 0.0001;
+    _setPitchFallback(clipId, !pitchSupported && needsPitchLock);
   }
 
   void _publishStatus() {
@@ -746,6 +763,31 @@ class VoicePool {
   void _publishDriftCorrection(DriftCorrectionEvent event) {
     if (!_driftCorrectionController.isClosed) {
       _driftCorrectionController.add(event);
+    }
+  }
+
+  void _setPitchFallback(String clipId, bool enabled) {
+    final changed = enabled
+        ? _pitchFallbackClipIds.add(clipId)
+        : _pitchFallbackClipIds.remove(clipId);
+    if (changed) _publishPitchFallbacks();
+  }
+
+  void _clearPitchFallbackFor(String clipId) {
+    if (_pitchFallbackClipIds.remove(clipId)) {
+      _publishPitchFallbacks();
+    }
+  }
+
+  void _clearPitchFallbacks() {
+    if (_pitchFallbackClipIds.isEmpty) return;
+    _pitchFallbackClipIds.clear();
+    _publishPitchFallbacks();
+  }
+
+  void _publishPitchFallbacks() {
+    if (!_pitchFallbackController.isClosed) {
+      _pitchFallbackController.add(Set.unmodifiable(_pitchFallbackClipIds));
     }
   }
 }
