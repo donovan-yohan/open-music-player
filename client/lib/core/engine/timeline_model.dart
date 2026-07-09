@@ -386,36 +386,21 @@ class TimelineModel {
         final outgoing = next[outgoingIndex];
         final incoming = next[incomingIndex];
         if (outgoing.timelineStartMs == incoming.timelineStartMs) continue;
-        if (!outgoing.tempo.hasReliableBpm || !incoming.tempo.hasReliableBpm) {
-          continue;
-        }
-
-        final outgoingBpm = outgoing.tempo.nativeBpm!;
-        final incomingBpm = incoming.tempo.nativeBpm!;
-        final outgoingStartRate = _rateForTempo(outgoing, outgoingBpm);
-        final outgoingEndRate = _rateForTempo(outgoing, incomingBpm);
-        final incomingStartRate = _rateForTempo(incoming, outgoingBpm);
-        final incomingEndRate = _rateForTempo(incoming, incomingBpm);
+        final ratePlan = planTempoMatchedTransition(
+          overlapStartMs: overlapStart,
+          overlapEndMs: overlapEnd,
+          outgoingTempo: outgoing.tempo,
+          incomingTempo: incoming.tempo,
+          outgoingBaseRate: outgoing.rateAutomation.baseRate,
+          incomingBaseRate: incoming.rateAutomation.baseRate,
+        );
+        if (ratePlan == null) continue;
 
         final proposedOutgoing = outgoing.withRateAutomation(
-          outgoing.rateAutomation.withSegment(
-            PlaybackRateSegment(
-              startMs: overlapStart,
-              endMs: overlapEnd,
-              startRate: outgoingStartRate,
-              endRate: outgoingEndRate,
-            ),
-          ),
+          ratePlan.applyToOutgoing(outgoing.rateAutomation),
         );
         final proposedIncoming = incoming.withRateAutomation(
-          incoming.rateAutomation.withSegment(
-            PlaybackRateSegment(
-              startMs: overlapStart,
-              endMs: overlapEnd,
-              startRate: incomingStartRate,
-              endRate: incomingEndRate,
-            ),
-          ),
+          ratePlan.applyToIncoming(incoming.rateAutomation),
         );
         final proposed = List<MixClip>.from(next)
           ..[outgoingIndex] = proposedOutgoing
@@ -444,14 +429,6 @@ class TimelineModel {
     }
     return false;
   }
-}
-
-double _rateForTempo(MixClip clip, double targetBpm) {
-  final nativeBpm = clip.tempo.nativeBpm;
-  if (nativeBpm == null || nativeBpm <= 0) return clip.playbackRate;
-  return (clip.playbackRate * targetBpm / nativeBpm)
-      .clamp(minTempoAutomationRate, maxTempoAutomationRate)
-      .toDouble();
 }
 
 MixClip _mixClipFromPlanClip(

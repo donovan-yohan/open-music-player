@@ -242,6 +242,41 @@ void main() {
       expect(incoming.timelineMsForSourcePosition(2125), closeTo(7500, 2));
     });
 
+    test('overlap BPM automation preserves existing base rates', () {
+      final model = TimelineModel(
+        clips: [
+          _tempoClip(
+            'outgoing',
+            0,
+            nativeBpm: 120,
+            rateAutomation: const PlaybackRateAutomation(baseRate: 0.9),
+          ),
+          _tempoClip(
+            'incoming',
+            5000,
+            nativeBpm: 90,
+            rateAutomation: const PlaybackRateAutomation(baseRate: 1.1),
+          ),
+        ],
+      );
+
+      final outgoing = model.clips.firstWhere((clip) => clip.id == 'outgoing');
+      final incoming = model.clips.firstWhere((clip) => clip.id == 'incoming');
+      final outgoingSegment = outgoing.rateAutomation.segments.single;
+      final incomingSegment = incoming.rateAutomation.segments.single;
+
+      expect(outgoing.playbackRateAt(5000), closeTo(0.9, 0.0001));
+      expect(
+        outgoing.playbackRateAt(outgoingSegment.endMs),
+        closeTo(0.675, 0.0001),
+      );
+      expect(incoming.playbackRateAt(5000), closeTo(1.4667, 0.0001));
+      expect(
+        incoming.playbackRateAt(incomingSegment.endMs),
+        closeTo(1.1, 0.0001),
+      );
+    });
+
     test(
       'tempo automation keeps active windows aligned to source duration',
       () {
@@ -480,6 +515,7 @@ MixClip _tempoClip(
   int timelineStartMs, {
   double? nativeBpm,
   double? bpmConfidence = 0.95,
+  PlaybackRateAutomation? rateAutomation,
 }) {
   return MixClip(
     placement: TimelineClip.clamped(
@@ -494,5 +530,6 @@ MixClip _tempoClip(
       nativeBpm: nativeBpm,
       bpmConfidence: nativeBpm == null ? null : bpmConfidence,
     ),
+    rateAutomation: rateAutomation,
   );
 }

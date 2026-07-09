@@ -368,6 +368,96 @@ class PlaybackRateAutomation {
       Object.hash(baseRate, pitchMode, Object.hashAll(segments));
 }
 
+class TempoTransitionRatePlan {
+  final PlaybackRateSegment outgoingSegment;
+  final PlaybackRateSegment incomingSegment;
+
+  const TempoTransitionRatePlan({
+    required this.outgoingSegment,
+    required this.incomingSegment,
+  });
+
+  PlaybackRateAutomation applyToOutgoing(PlaybackRateAutomation automation) =>
+      automation.withSegment(outgoingSegment);
+
+  PlaybackRateAutomation applyToIncoming(PlaybackRateAutomation automation) =>
+      automation.withSegment(incomingSegment);
+}
+
+TempoTransitionRatePlan? planTempoMatchedTransition({
+  required int overlapStartMs,
+  required int overlapEndMs,
+  required ClipTempoMetadata outgoingTempo,
+  required ClipTempoMetadata incomingTempo,
+  double outgoingBaseRate = 1,
+  double incomingBaseRate = 1,
+}) {
+  if (overlapEndMs <= overlapStartMs) return null;
+  if (!outgoingTempo.hasReliableBpm || !incomingTempo.hasReliableBpm) {
+    return null;
+  }
+
+  final outgoingBpm = outgoingTempo.nativeBpm;
+  final incomingBpm = incomingTempo.nativeBpm;
+  if (outgoingBpm == null ||
+      outgoingBpm <= 0 ||
+      incomingBpm == null ||
+      incomingBpm <= 0) {
+    return null;
+  }
+
+  final outgoingStartRate = playbackRateForTargetBpm(
+    baseRate: outgoingBaseRate,
+    nativeBpm: outgoingBpm,
+    targetBpm: outgoingBpm,
+  );
+  final outgoingEndRate = playbackRateForTargetBpm(
+    baseRate: outgoingBaseRate,
+    nativeBpm: outgoingBpm,
+    targetBpm: incomingBpm,
+  );
+  final incomingStartRate = playbackRateForTargetBpm(
+    baseRate: incomingBaseRate,
+    nativeBpm: incomingBpm,
+    targetBpm: outgoingBpm,
+  );
+  final incomingEndRate = playbackRateForTargetBpm(
+    baseRate: incomingBaseRate,
+    nativeBpm: incomingBpm,
+    targetBpm: incomingBpm,
+  );
+
+  return TempoTransitionRatePlan(
+    outgoingSegment: PlaybackRateSegment(
+      startMs: overlapStartMs,
+      endMs: overlapEndMs,
+      startRate: outgoingStartRate,
+      endRate: outgoingEndRate,
+    ),
+    incomingSegment: PlaybackRateSegment(
+      startMs: overlapStartMs,
+      endMs: overlapEndMs,
+      startRate: incomingStartRate,
+      endRate: incomingEndRate,
+    ),
+  );
+}
+
+double playbackRateForTargetBpm({
+  required double baseRate,
+  required double nativeBpm,
+  required double targetBpm,
+}) {
+  if (!nativeBpm.isFinite || nativeBpm <= 0) {
+    return baseRate
+        .clamp(minTempoAutomationRate, maxTempoAutomationRate)
+        .toDouble();
+  }
+  return (baseRate * targetBpm / nativeBpm)
+      .clamp(minTempoAutomationRate, maxTempoAutomationRate)
+      .toDouble();
+}
+
 double pitchFactorForRate({required double rate, required String pitchMode}) {
   final safeRate =
       rate.clamp(minTempoAutomationRate, maxTempoAutomationRate).toDouble();
