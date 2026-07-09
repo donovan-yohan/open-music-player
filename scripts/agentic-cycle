@@ -1,0 +1,473 @@
+#!/usr/bin/env python3
+"""Classify and run the Open Music Player agentic dev cycle."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@dataclass(frozen=True)
+class Gate:
+    name: str
+    command: tuple[str, ...]
+    reason: str
+
+
+@dataclass
+class GateResult:
+    name: str
+    command: list[str]
+    exit_code: int
+    duration_seconds: float
+
+
+RISK_ORDER = {
+    "same-head": 0,
+    "non-semantic": 1,
+    "test-harness-only": 2,
+    "behavior-runtime": 3,
+    "security-protocol-destructive": 4,
+    "mobile-audio-device": 5,
+}
+
+
+def run_git(args: list[str], check: bool = True) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+    return result.stdout.strip()
+
+
+def head_sha() -> str:
+    return run_git(["rev-parse", "--short", "HEAD"])
+
+
+def resolve_diff_base(base_ref: str) -> str | None:
+    if not base_ref:
+        return None
+    result = subprocess.run(
+        ["git", "merge-base", base_ref, "HEAD"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+
+    fallback = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD~1"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if fallback.returncode == 0:
+        return fallback.stdout.strip()
+    return None
+
+
+def changed_files(base_ref: str, include_worktree: bool) -> list[str]:
+    files: set[str] = set()
+    base = resolve_diff_base(base_ref)
+    if base:
+        diff = run_git(
+            ["diff", "--name-only", "--diff-filter=ACMRTUXB", f"{base}...HEAD"],
+            check=False,
+        )
+        files.update(line for line in diff.splitlines() if line)
+
+    if include_worktree:
+        for args in (
+            ["diff", "--name-only", "--diff-filter=ACMRTUXB"],
+            ["diff", "--cached", "--name-only", "--diff-filter=ACMRTUXB"],
+            ["ls-files", "--others", "--exclude-standard"],
+        ):
+            diff = run_git(args, check=False)
+            files.update(line for line in diff.splitlines() if line)
+
+    return sorted(files)
+
+
+def is_docs_only(path: str) -> bool:
+    return (
+        path.endswith(".md")
+        or path.startswith("docs/")
+        or path.startswith(".github/ISSUE_TEMPLATE/")
+    )
+
+
+def is_test_path(path: str) -> bool:
+    parts = path.split("/")
+    return (
+        "test" in parts
+        or "tests" in parts
+        or path.endswith("_test.go")
+        or path.endswith("_test.dart")
+        or path.endswith(".test.ts")
+    )
+
+
+def components_for(files: Iterable[str]) -> set[str]:
+    components: set[str] = set()
+    for path in files:
+        if path.startswith("backend/"):
+            components.add("backend")
+        elif path.startswith("client/"):
+            components.add("client")
+        elif path.startswith("extension/"):
+            components.add("extension")
+        elif path in {"AGENTS.md", "CLAUDE.md"} or path.startswith(
+            ("docs/", ".github/", "scripts/")
+        ):
+            components.add("delivery")
+        else:
+            components.add("repo")
+    if not components:
+        components.add("delivery")
+    return components
+
+
+def needs_mobile_audio_device(files: Iterable[str]) -> bool:
+    markers = (
+        "client/android/",
+        "client/lib/core/audio/",
+        "client/lib/core/engine/",
+        "client/lib/models/timeline_",
+        "client/lib/widgets/stacked_waveform",
+        "client/lib/widgets/timeline_",
+        "client/lib/screens/queue_screen",
+    )
+    return any(path.startswith(markers) for path in files)
+
+
+def needs_security_protocol_gate(files: Iterable[str]) -> bool:
+    markers = (
+        "backend/internal/auth/",
+        "backend/internal/api/",
+        "backend/internal/db/",
+        "backend/internal/storage/",
+        "backend/internal/queue/",
+        "backend/internal/download/",
+        "client/lib/core/api/",
+        "client/lib/core/auth/",
+        "extension/src/",
+        "docker-compose",
+        ".github/workflows/",
+    )
+    return any(path.startswith(markers) for path in files)
+
+
+def risk_tier(files: list[str]) -> str:
+    if not files:
+        return "same-head"
+    if needs_mobile_audio_device(files):
+        return "mobile-audio-device"
+    if needs_security_protocol_gate(files):
+        return "security-protocol-destructive"
+
+    semantic_code = [
+        path
+        for path in files
+        if path.endswith((".go", ".dart", ".ts", ".tsx", ".js", ".py", ".sh"))
+        and not is_test_path(path)
+    ]
+    if semantic_code:
+        if all(path.startswith((".github/", "scripts/")) for path in semantic_code):
+            return "test-harness-only"
+        return "behavior-runtime"
+    if all(is_docs_only(path) for path in files):
+        return "non-semantic"
+    return "test-harness-only"
+
+
+def sorted_risk(left: str, right: str) -> str:
+    return left if RISK_ORDER[left] >= RISK_ORDER[right] else right
+
+
+def plan_gates(
+    components: set[str],
+    include_build: bool,
+    include_smoke: bool,
+    include_device: bool,
+    requires_android_dogfood: bool,
+) -> tuple[list[Gate], list[Gate]]:
+    gates: list[Gate] = [
+        Gate(
+            "delivery lint",
+            ("scripts/lint", "delivery"),
+            "delivery scaffold and cycle self-test",
+        )
+    ]
+    manual: list[Gate] = []
+
+    if "backend" in components:
+        gates.extend(
+            [
+                Gate("backend lint", ("scripts/lint", "backend"), "Go static checks"),
+                Gate("backend tests", ("scripts/test", "backend"), "Go regression suite"),
+            ]
+        )
+        if include_build:
+            gates.append(
+                Gate("backend build", ("scripts/build", "backend"), "server/analyzer build")
+            )
+        if include_smoke:
+            gates.append(
+                Gate("isolated smoke", ("scripts/smoke", "isolated"), "local API smoke")
+            )
+
+    if "client" in components:
+        gates.extend(
+            [
+                Gate("client lint", ("scripts/lint", "client"), "Flutter analyzer"),
+                Gate("client tests", ("scripts/test", "client"), "Flutter regression suite"),
+            ]
+        )
+        if include_build:
+            gates.append(
+                Gate("client build", ("scripts/build", "client"), "debug APK build")
+            )
+
+    if "extension" in components:
+        gates.extend(
+            [
+                Gate("extension lint", ("scripts/lint", "extension"), "TypeScript checks"),
+                Gate("extension tests", ("scripts/test", "extension"), "extension regressions"),
+            ]
+        )
+        if include_build:
+            gates.append(
+                Gate("extension build", ("scripts/build", "extension"), "extension package build")
+            )
+
+    if include_device:
+        gates.append(
+            Gate(
+                "android dogfood",
+                ("scripts/dogfood-android", "all"),
+                "physical Android playback/device evidence",
+            )
+        )
+    elif requires_android_dogfood:
+        manual.append(
+            Gate(
+                "android dogfood",
+                ("scripts/dogfood-android", "all"),
+                "required when the central claim depends on Android/audio/device behavior",
+            )
+        )
+
+    seen: set[tuple[str, ...]] = set()
+    deduped: list[Gate] = []
+    for gate in gates:
+        if gate.command in seen:
+            continue
+        seen.add(gate.command)
+        deduped.append(gate)
+    return deduped, manual
+
+
+def run_gate(gate: Gate) -> GateResult:
+    start = time.monotonic()
+    result = subprocess.run(list(gate.command), cwd=ROOT, text=True, check=False)
+    return GateResult(
+        name=gate.name,
+        command=list(gate.command),
+        exit_code=result.returncode,
+        duration_seconds=round(time.monotonic() - start, 3),
+    )
+
+
+def write_evidence(payload: dict) -> Path:
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    path = Path(
+        os.environ.get(
+            "OMP_AGENTIC_EVIDENCE",
+            f"/tmp/open-music-player-agentic-cycle-{stamp}.json",
+        )
+    )
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def render_plan(payload: dict, gates: list[Gate], manual: list[Gate]) -> None:
+    print("Open Music Player agentic dev cycle")
+    print(f"head: {payload['head_sha']}")
+    print(f"base: {payload['base_ref']}")
+    print(f"risk tier: {payload['risk_tier']}")
+    print(f"components: {', '.join(payload['components'])}")
+    print(f"changed files: {len(payload['changed_files'])}")
+    for path in payload["changed_files"][:24]:
+        print(f"- {path}")
+    if len(payload["changed_files"]) > 24:
+        print(f"- ... {len(payload['changed_files']) - 24} more")
+    print("planned gates:")
+    for gate in gates:
+        print(f"- {' '.join(gate.command)}  # {gate.reason}")
+    if manual and payload["requires_android_dogfood"]:
+        print("manual/device evidence:")
+        for gate in manual:
+            print(f"- {' '.join(gate.command)}  # {gate.reason}")
+
+
+def build_payload(args: argparse.Namespace) -> tuple[dict, list[Gate], list[Gate]]:
+    files = changed_files(args.base, include_worktree=not args.committed_only)
+    components = components_for(files)
+    tier = risk_tier(files)
+    requires_android = needs_mobile_audio_device(files)
+    if requires_android:
+        tier = sorted_risk(tier, "mobile-audio-device")
+    gates, manual = plan_gates(
+        components,
+        include_build=args.include_build,
+        include_smoke=args.include_smoke,
+        include_device=args.include_device,
+        requires_android_dogfood=requires_android,
+    )
+    payload = {
+        "base_ref": args.base,
+        "head_sha": head_sha(),
+        "changed_files": files,
+        "components": sorted(components),
+        "risk_tier": tier,
+        "requires_android_dogfood": requires_android,
+        "planned_gates": [
+            {"name": gate.name, "command": list(gate.command), "reason": gate.reason}
+            for gate in gates
+        ],
+        "manual_gates": [
+            {"name": gate.name, "command": list(gate.command), "reason": gate.reason}
+            for gate in manual
+        ],
+    }
+    return payload, gates, manual
+
+
+def self_test() -> int:
+    cases = [
+        (
+            ["client/lib/core/audio/playback_state.dart"],
+            "mobile-audio-device",
+            {"client"},
+            True,
+        ),
+        (
+            ["backend/internal/api/auth.go"],
+            "security-protocol-destructive",
+            {"backend"},
+            False,
+        ),
+        (
+            ["scripts/agentic-harness", "docs/context-map.md"],
+            "test-harness-only",
+            {"delivery"},
+            False,
+        ),
+        (
+            ["README.md"],
+            "non-semantic",
+            {"repo"},
+            False,
+        ),
+    ]
+    failures: list[str] = []
+    for files, expected_risk, expected_components, expected_android in cases:
+        got_risk = risk_tier(files)
+        got_components = components_for(files)
+        got_android = needs_mobile_audio_device(files)
+        if got_risk != expected_risk:
+            failures.append(f"{files}: risk {got_risk!r} != {expected_risk!r}")
+        if got_components != expected_components:
+            failures.append(
+                f"{files}: components {sorted(got_components)!r} != "
+                f"{sorted(expected_components)!r}"
+            )
+        if got_android != expected_android:
+            failures.append(f"{files}: android {got_android!r} != {expected_android!r}")
+    if failures:
+        print("AGENTIC CYCLE SELF-TEST FAILED")
+        for failure in failures:
+            print(f"- {failure}")
+        return 1
+    print("AGENTIC CYCLE SELF-TEST OK")
+    return 0
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--base",
+        default="origin/main",
+        help="base ref for changed-file classification",
+    )
+    parser.add_argument(
+        "--committed-only",
+        action="store_true",
+        help="ignore uncommitted worktree files",
+    )
+    parser.add_argument("--run", action="store_true", help="execute planned gates")
+    parser.add_argument(
+        "--include-build",
+        action="store_true",
+        help="include component build gates",
+    )
+    parser.add_argument(
+        "--include-smoke",
+        action="store_true",
+        help="include isolated local smoke gates",
+    )
+    parser.add_argument(
+        "--include-device",
+        action="store_true",
+        help="run Android dogfood instead of listing it as manual evidence",
+    )
+    parser.add_argument("--json", action="store_true", help="print the plan as JSON")
+    parser.add_argument("--self-test", action="store_true", help="run classifier tests")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    if args.self_test:
+        return self_test()
+
+    payload, gates, manual = build_payload(args)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        render_plan(payload, gates, manual)
+
+    if not args.run:
+        return 0
+
+    results = [run_gate(gate) for gate in gates]
+    payload["results"] = [result.__dict__ for result in results]
+    evidence = write_evidence(payload)
+    print(f"evidence: {evidence}")
+    failed = [result for result in results if result.exit_code != 0]
+    if failed:
+        print("failed gates:")
+        for result in failed:
+            print(f"- {result.name}: exit {result.exit_code}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

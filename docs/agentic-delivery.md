@@ -45,6 +45,8 @@ CI and humans should prefer the root scripts so local and remote backpressure
 exercise the same behavior:
 
 - `scripts/lint delivery`
+- `scripts/agentic-cycle --base origin/main`
+- `scripts/agentic-cycle --run --base origin/main`
 - `scripts/lint backend|client|extension`
 - `scripts/test backend|client|extension`
 - `scripts/build backend|client|extension`
@@ -55,6 +57,18 @@ exercise the same behavior:
 
 Heavy mobile build checks can stay targeted, but the handoff must say whether
 the build was local, CI artifact, emulator, or physical device.
+
+## Dev-Cycle Runner
+
+Use `scripts/agentic-cycle --base origin/main` before PR handoff to classify the
+current branch by changed files, risk tier, required gates, and Android dogfood
+need. Use `scripts/agentic-cycle --run --base origin/main` when the local
+machine should execute the planned lint/test gates and write JSON evidence under
+`/tmp/open-music-player-agentic-cycle-*.json`.
+
+The runner is advisory for expensive gates: it lists Android dogfood by default
+instead of running it. Pass `--include-device` only when an authorized physical
+device is reachable and the central claim depends on Android/audio behavior.
 
 ## Mobile And Audio Dogfood
 

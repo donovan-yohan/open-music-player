@@ -121,6 +121,7 @@ def check_required_files() -> None:
         "scripts/build",
         "scripts/smoke",
         "scripts/dogfood-android",
+        "scripts/agentic-cycle",
         "scripts/agentic-harness",
         ".github/workflows/ci.yml",
         ".github/pull_request_template.md",
@@ -138,6 +139,7 @@ def check_executable_scripts() -> None:
         "scripts/build",
         "scripts/smoke",
         "scripts/dogfood-android",
+        "scripts/agentic-cycle",
         "scripts/agentic-harness",
     ]:
         path = ROOT / name
@@ -154,6 +156,7 @@ def check_agent_docs() -> None:
             "Agentic Engineering Rule",
             "docs/agentic-delivery.md",
             "scripts/agentic-harness",
+            "scripts/agentic-cycle",
             "scripts/dogfood-android",
             "docs/adr/0001-playback-timeline-source-of-truth.md",
         ],
@@ -163,6 +166,7 @@ def check_agent_docs() -> None:
             "Audio Analysis And DJ Waveforms",
             "Agentic Delivery And Release Gates",
             "scripts/agentic-harness",
+            "scripts/agentic-cycle",
             "scripts/dogfood-android",
             "docs/adr/0001-playback-timeline-source-of-truth.md",
         ],
@@ -172,14 +176,17 @@ def check_agent_docs() -> None:
             "Mobile And Audio Dogfood",
             "Resource Closeout",
             "scripts/lint delivery",
+            "scripts/agentic-cycle",
             "scripts/dogfood-android",
         ],
         ".github/pull_request_template.md": [
             "Intent",
             "Context map",
             "Harness / backpressure",
+            "Agentic dev-cycle plan/evidence",
             "Gate classification",
             "Exact-head evidence",
+            "scripts/agentic-cycle",
             "Android APK SHA256",
             "docs/agentic-delivery.md",
         ],
@@ -214,7 +221,8 @@ def check_ci_wires_harness() -> None:
         return
     text = path.read_text(errors="replace")
     required_phrases = [
-        "scripts/agentic-harness",
+        "scripts/lint delivery",
+        "scripts/agentic-cycle --committed-only",
         "scripts/lint backend",
         "scripts/test backend",
         "scripts/build backend",
@@ -245,7 +253,10 @@ def check_json_syntax(files: list[Path]) -> None:
 
 def check_python_syntax(files: list[Path]) -> None:
     for path in files:
-        if path.suffix.lower() != ".py" and rel(path) != "scripts/agentic-harness":
+        if path.suffix.lower() != ".py" and rel(path) not in {
+            "scripts/agentic-harness",
+            "scripts/agentic-cycle",
+        }:
             continue
         try:
             ast.parse(path.read_text(errors="replace"), filename=str(path))
