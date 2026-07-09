@@ -70,10 +70,17 @@ Use RTK wrappers for noisy output when running these through Codex.
 
 ## Local Testing / Deploy
 
+Use this when user says "deploy backend/frontend" or asks for phone dogfood.
+Backend = shared dev API. Frontend = Android APK on remote ADB, or Flutter Web
+tailnet preview.
+
 - Shared phone backend URL: `http://dev.fish-rattlesnake.ts.net:8080`.
 - Shared phone API URL: `http://dev.fish-rattlesnake.ts.net:8080/api/v1`.
 - Shared Compose project: `omp-local-run-vruka8`, pinned by
   `/home/donovanyohan/Documents/Programs/personal/open-music-player/deploy/.env`.
+
+### Backend
+
 - Rebuild/restart shared backend from current checkout, keep ports/data:
   ```bash
   REDIS_ENABLED=true WORKER_COUNT=1 docker compose \
@@ -81,7 +88,7 @@ Use RTK wrappers for noisy output when running these through Codex.
     -f docker-compose.local-low-memory.yml \
     --profile downloads up -d --build postgres minio minio-init redis analyzer backend
   ```
-- Verify backend:
+- Verify backend health and containers:
   ```bash
   curl -fsS http://dev.fish-rattlesnake.ts.net:8080/health?deep=true
   REDIS_ENABLED=true WORKER_COUNT=1 docker compose \
@@ -89,7 +96,14 @@ Use RTK wrappers for noisy output when running these through Codex.
     -f docker-compose.local-low-memory.yml \
     --profile downloads ps
   ```
-- Deploy Android frontend to physical Pixel:
+
+### Android Frontend
+
+- Find physical device through remote ADB:
+  ```bash
+  ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 adb devices -l
+  ```
+- Build, install, and launch dogfood APK on physical Pixel:
   ```bash
   ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 \
   ANDROID_SERIAL=<adb-serial> \
@@ -98,12 +112,25 @@ Use RTK wrappers for noisy output when running these through Codex.
   OMP_BUILD_ID="<slice>-$(date -u +%Y%m%dT%H%M%SZ)" \
   scripts/dogfood-android all
   ```
-- Verify Android install: `adb devices -l`, launch with
-  `adb shell monkey -p com.openmusicplayer.app -c android.intent.category.LAUNCHER 1`,
-  then check Settings build marker, `adb shell pidof com.openmusicplayer.app`,
-  and recent logcat for `AndroidRuntime`, `FATAL EXCEPTION`, or `E/flutter`.
-- Flutter Web frontend on tailnet: `scripts/tailnet-staging.sh serve-web`
-  after exporting `OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1`.
+- Verify Android install:
+  ```bash
+  ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 adb shell \
+    monkey -p com.openmusicplayer.app -c android.intent.category.LAUNCHER 1
+  ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 adb shell \
+    pidof com.openmusicplayer.app
+  ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 adb logcat -d -t 1000 | \
+    rg -i "AndroidRuntime|FATAL EXCEPTION|E/flutter|com\\.openmusicplayer|OpenMusic|Dart"
+  ```
+- Check Settings build marker after install. It must match `OMP_SOURCE_REF` and
+  `OMP_BUILD_ID`.
+
+### Flutter Web Frontend
+
+- Build/serve web preview on tailnet:
+  ```bash
+  OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
+    scripts/tailnet-staging.sh serve-web
+  ```
 
 ## Architecture Guardrails
 
