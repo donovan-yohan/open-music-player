@@ -57,6 +57,66 @@ func TestSourceQualityRanksOfficialAudioAheadOfMusicVideo(t *testing.T) {
 	}
 }
 
+func TestSourceQualityRanksOfficialAudioAheadOfVisualizerAndLyricVideo(t *testing.T) {
+	svc := NewService(ServiceConfig{
+		Providers: []Provider{
+			fakeProvider{name: "youtube", items: []Candidate{
+				{
+					CandidateID:  "youtube:visualizer",
+					Provider:     "youtube",
+					SourceID:     "visualizer",
+					SourceURL:    "https://www.youtube.com/watch?v=visualizer",
+					Title:        "Ninajirachi - iPod Touch (Official Visualizer)",
+					Artist:       "Ninajirachi",
+					Uploader:     "Ninajirachi",
+					DurationMs:   240000,
+					Downloadable: true,
+				},
+				{
+					CandidateID:  "youtube:lyric",
+					Provider:     "youtube",
+					SourceID:     "lyric",
+					SourceURL:    "https://www.youtube.com/watch?v=lyric",
+					Title:        "Ninajirachi - iPod Touch (Official Lyric Video)",
+					Artist:       "Ninajirachi",
+					Uploader:     "Ninajirachi",
+					DurationMs:   240000,
+					Downloadable: true,
+				},
+				{
+					CandidateID:  "youtube:audio",
+					Provider:     "youtube",
+					SourceID:     "audio",
+					SourceURL:    "https://www.youtube.com/watch?v=audio",
+					Title:        "Ninajirachi - iPod Touch (Official Audio)",
+					Artist:       "Ninajirachi",
+					Uploader:     "Ninajirachi",
+					DurationMs:   240000,
+					Downloadable: true,
+				},
+			}},
+		},
+		DefaultProviders: []string{"youtube"},
+	})
+
+	resp := svc.Search(context.Background(), "Ninajirachi iPod Touch", []string{"youtube"}, 10)
+
+	if len(resp.Results) != 3 {
+		t.Fatalf("results = %d, want 3", len(resp.Results))
+	}
+	if got := resp.Results[0].CandidateID; got != "youtube:audio" {
+		t.Fatalf("top result = %s, want official audio first", got)
+	}
+	visualizerQuality := sourceQualityFromMetadata(t, resp.Results[1].Metadata)
+	if visualizerQuality.Classification != SourceQualityVisualizer || visualizerQuality.Recommendation == SourceQualityPreferred {
+		t.Fatalf("visualizer quality = %#v, want non-preferred visualizer", visualizerQuality)
+	}
+	lyricQuality := sourceQualityFromMetadata(t, resp.Results[2].Metadata)
+	if lyricQuality.Classification != SourceQualityLyricVideo || lyricQuality.Recommendation == SourceQualityPreferred {
+		t.Fatalf("lyric quality = %#v, want non-preferred lyric_video", lyricQuality)
+	}
+}
+
 func TestSourceQualityPrefersTopicAudioOverLongLiveClip(t *testing.T) {
 	svc := NewService(ServiceConfig{
 		Providers: []Provider{
@@ -103,6 +163,29 @@ func TestSourceQualityPrefersTopicAudioOverLongLiveClip(t *testing.T) {
 	}
 }
 
+func TestSourceQualityUsesMetadataHints(t *testing.T) {
+	quality := EvaluateSourceQuality("Ninajirachi iPod Touch", Candidate{
+		CandidateID:  "youtube:metadata",
+		Provider:     "youtube",
+		SourceURL:    "https://www.youtube.com/watch?v=metadata",
+		Title:        "Ninajirachi - iPod Touch",
+		Artist:       "Ninajirachi",
+		Uploader:     "Ninajirachi",
+		DurationMs:   240000,
+		Downloadable: true,
+		Metadata: map[string]interface{}{
+			"description": "Official music video.",
+		},
+	})
+
+	if quality.Classification != SourceQualityMusicVideo {
+		t.Fatalf("classification = %s, want music_video from metadata hint; quality=%#v", quality.Classification, quality)
+	}
+	if quality.Recommendation != SourceQualityAvoid {
+		t.Fatalf("recommendation = %s, want avoid; quality=%#v", quality.Recommendation, quality)
+	}
+}
+
 func TestSourceQualityHonorsRequestedLiveVersion(t *testing.T) {
 	live := Candidate{
 		CandidateID:  "youtube:live",
@@ -122,6 +205,28 @@ func TestSourceQualityHonorsRequestedLiveVersion(t *testing.T) {
 	}
 	if quality.Recommendation == SourceQualityAvoid {
 		t.Fatalf("requested live version should not be avoid: %#v", quality)
+	}
+}
+
+func TestSourceQualityHonorsRequestedVisualizer(t *testing.T) {
+	visualizer := Candidate{
+		CandidateID:  "youtube:visualizer",
+		Provider:     "youtube",
+		SourceURL:    "https://www.youtube.com/watch?v=visualizer",
+		Title:        "Shelter (Official Visualizer)",
+		Artist:       "Porter Robinson",
+		Uploader:     "Porter Robinson",
+		DurationMs:   240000,
+		Downloadable: true,
+	}
+
+	quality := EvaluateSourceQuality("Porter Robinson Shelter visualizer", visualizer)
+
+	if quality.Classification != SourceQualityVisualizer {
+		t.Fatalf("classification = %s, want visualizer", quality.Classification)
+	}
+	if quality.Recommendation == SourceQualityAvoid {
+		t.Fatalf("requested visualizer should not be avoid: %#v", quality)
 	}
 }
 

@@ -96,6 +96,21 @@ void main() {
     expect(sourceQuality['provenance'], 'deterministic_source_quality_v1');
   });
 
+  test('source quality labels visualizer classifications', () {
+    final quality = DiscoverySourceQuality.fromJson({
+      'score': 74,
+      'classification': 'visualizer',
+      'recommendation': 'acceptable',
+      'confidence': 0.79,
+      'warnings': ['candidate appears to be a visualizer; verify clean audio'],
+      'provenance': 'deterministic_source_quality_v1',
+    });
+
+    expect(quality.label, 'Visualizer');
+    expect(quality.debugReason,
+        'candidate appears to be a visualizer; verify clean audio');
+  });
+
   test('grouped search response parses entity and source sections', () {
     final response = DiscoverySearchResponse.fromJson({
       'query': 'ninajirachi ipod touch',

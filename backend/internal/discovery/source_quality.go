@@ -14,6 +14,7 @@ const (
 	SourceQualityTopicAudio    = "topic_audio"
 	SourceQualityArtistUpload  = "artist_upload"
 	SourceQualityMusicVideo    = "music_video"
+	SourceQualityVisualizer    = "visualizer"
 	SourceQualityLive          = "live"
 	SourceQualityLyricVideo    = "lyric_video"
 	SourceQualityInterview     = "interview"
@@ -87,8 +88,9 @@ func rankSourceCandidates(query string, candidates []Candidate) []Candidate {
 }
 
 // EvaluateSourceQuality scores one candidate against a user query. It prefers
-// official audio / topic uploads and warns against music videos, live clips,
-// interviews, shorts, and user-modified versions unless the query asks for them.
+// official audio / topic uploads and warns against visualizers, music videos,
+// live clips, interviews, shorts, and user-modified versions unless the query
+// asks for them.
 func EvaluateSourceQuality(query string, candidate Candidate) SourceQuality {
 	score := 55
 	classification := SourceQualityUnknown
@@ -99,7 +101,7 @@ func EvaluateSourceQuality(query string, candidate Candidate) SourceQuality {
 	artist := strings.ToLower(candidate.Artist)
 	uploader := strings.ToLower(candidate.Uploader)
 	sourceURL := strings.ToLower(candidate.SourceURL)
-	combined := strings.Join([]string{title, artist, uploader, sourceURL}, " ")
+	combined := sourceQualityText(candidate)
 	queryText := strings.ToLower(query)
 	queryTokens := tokenSet(queryText)
 	combinedTokens := tokenSet(combined)
@@ -110,12 +112,14 @@ func EvaluateSourceQuality(query string, candidate Candidate) SourceQuality {
 	}
 
 	queryRequestsVideo := containsAny(queryText, "music video") || hasAnyToken(queryTokens, "video", "mv")
+	queryRequestsVisualizer := hasAnyToken(queryTokens, "visualizer", "visualiser")
 	queryRequestsLive := hasAnyToken(queryTokens, "live", "concert", "festival", "set")
 	queryRequestsLyrics := hasAnyToken(queryTokens, "lyric", "lyrics")
 	queryRequestsCover := hasAnyToken(queryTokens, "cover")
 	queryRequestsRemix := hasAnyToken(queryTokens, "remix", "edit", "mashup")
 
-	hasOfficialAudio := containsAny(combined, "official audio", "audio only", "official track", "official visualizer")
+	hasOfficialAudio := containsAny(combined, "official audio", "audio only", "official track")
+	hasVisualizer := hasAnyToken(combinedTokens, "visualizer", "visualiser") || containsAny(combined, "official visualizer", "official visualiser")
 	hasTopicUpload := strings.Contains(uploader, " - topic") || strings.HasSuffix(strings.TrimSpace(uploader), " topic")
 	hasMusicVideo := containsAny(combined, "official music video", "music video", "official video", "(video)", "[video]") || strings.Contains(title, " mv")
 	hasLive := hasAnyToken(combinedTokens, "live", "concert", "festival") || containsAny(combined, "boiler room", "live at")
@@ -130,6 +134,19 @@ func EvaluateSourceQuality(query string, candidate Candidate) SourceQuality {
 		score += 30
 		classification = SourceQualityOfficialAudio
 		reasons = append(reasons, "title indicates official audio")
+	}
+	if hasVisualizer {
+		if queryRequestsVisualizer {
+			score += 8
+			classification = SourceQualityVisualizer
+			reasons = append(reasons, "query asked for visualizer content")
+		} else {
+			score += 6
+			if classification == SourceQualityUnknown {
+				classification = SourceQualityVisualizer
+			}
+			warnings = append(warnings, "candidate appears to be a visualizer; verify clean audio")
+		}
 	}
 	if hasTopicUpload {
 		score += 24
@@ -185,7 +202,7 @@ func EvaluateSourceQuality(query string, candidate Candidate) SourceQuality {
 	}
 	if hasLyric && !queryRequestsLyrics {
 		score -= 14
-		if classification == SourceQualityUnknown {
+		if classification == SourceQualityUnknown || classification == SourceQualityArtistUpload || classification == SourceQualityVisualizer {
 			classification = SourceQualityLyricVideo
 		}
 		warnings = append(warnings, "candidate appears to be a lyric video")
@@ -295,6 +312,58 @@ func containsAny(value string, needles ...string) bool {
 
 func normalizedContains(value, needle string) bool {
 	return strings.Contains(normalizedTokenText(value), normalizedTokenText(needle))
+}
+
+func sourceQualityText(candidate Candidate) string {
+	fragments := []string{
+		candidate.Title,
+		candidate.Artist,
+		candidate.Uploader,
+		candidate.SourceURL,
+	}
+	for _, key := range []string{
+		"description",
+		"snippet",
+		"channel",
+		"channelName",
+		"channel_name",
+		"creator",
+		"fulltitle",
+		"altTitle",
+		"alt_title",
+		"webpageUrl",
+		"webpage_url",
+		"tags",
+		"categories",
+	} {
+		appendMetadataText(&fragments, candidate.Metadata[key], 0)
+	}
+	return strings.ToLower(strings.Join(fragments, " "))
+}
+
+func appendMetadataText(fragments *[]string, value interface{}, depth int) {
+	if value == nil || depth > 1 {
+		return
+	}
+	switch typed := value.(type) {
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return
+		}
+		if len(text) > 512 {
+			text = text[:512]
+		}
+		*fragments = append(*fragments, text)
+	case []string:
+		for _, item := range typed {
+			appendMetadataText(fragments, item, depth+1)
+		}
+	case []interface{}:
+		for _, item := range typed {
+			appendMetadataText(fragments, item, depth+1)
+		}
+	}
 }
 
 func titleMatchesQuery(query string, candidate Candidate) bool {
