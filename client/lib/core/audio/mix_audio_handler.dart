@@ -44,6 +44,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   bool _isPlaying = false;
   int _activeVoiceCount = 0;
   double _playbackSpeed = 1;
+  bool _pitchPreservationFallback = false;
   audio_service.AudioProcessingState _processingState =
       audio_service.AudioProcessingState.ready;
   DateTime? _lastStatePushAt;
@@ -99,6 +100,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     _isPlaying = snapshot.playing;
     _activeVoiceCount = snapshot.activeVoiceCount;
     _playbackSpeed = snapshot.playbackSpeed;
+    _pitchPreservationFallback = snapshot.pitchPreservationFallback;
     _processingState = _audioProcessingStateFor(snapshot.processingState);
   }
 
@@ -111,6 +113,8 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
       'activeVoiceCount': activeVoiceCount,
       if (item?.id != null) 'dominantTrackId': item!.id,
       'notificationKind': activeVoiceCount > 1 ? 'layered_mix' : 'single_voice',
+      'pitchPreservation': _pitchPreservationFallback ? 'fallback' : 'locked',
+      if (_pitchPreservationFallback) 'pitchLockUnavailable': true,
     };
     final baseTitle = item?.title.trim();
     final title = baseTitle != null && baseTitle.isNotEmpty

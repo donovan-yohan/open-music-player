@@ -107,6 +107,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               _displayTitle(item, playback, activeTimeMode),
                               _displaySubtitle(playback, activeTimeMode),
                             ),
+                            if (playback
+                                .snapshot.pitchPreservationFallback) ...[
+                              const SizedBox(height: 12),
+                              _buildPitchFallbackWarning(),
+                            ],
                             const SizedBox(height: 24),
                             _buildProgressBar(
                               playback,
@@ -126,6 +131,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 ),
         );
       },
+    );
+  }
+
+  Widget _buildPitchFallbackWarning() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppTheme.brandColor.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: AppTheme.brandColor.withValues(alpha: 0.45),
+        ),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.tune,
+            size: 18,
+            color: AppTheme.brandColor,
+          ),
+          SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              'Pitch lock unavailable. Tempo match may alter pitch.',
+              style: TextStyle(
+                color: AppTheme.lightText,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ],
+      ),
     );
   }
 

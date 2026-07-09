@@ -38,7 +38,7 @@ abstract class Voice {
   Future<void> seekLocal(int localPositionMs);
   Future<void> setVolume(double linearGain);
   Future<void> setSpeed(double rate);
-  Future<void> setPitch(double factor);
+  Future<bool> setPitch(double factor);
   Future<void> play();
   Future<void> pause();
   Future<void> release();
@@ -148,12 +148,14 @@ class JustAudioVoice implements Voice {
   Future<void> setSpeed(double rate) => _player.setSpeed(rate.clamp(0.5, 2.0));
 
   @override
-  Future<void> setPitch(double factor) async {
+  Future<bool> setPitch(double factor) async {
     try {
       await _player.setPitch(factor.clamp(0.5, 2.0));
+      return true;
     } catch (_) {
       // Some just_audio backends do not implement pitch shifting. Keep
       // playback alive there; Android supports this path for dogfood builds.
+      return false;
     }
   }
 

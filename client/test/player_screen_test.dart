@@ -96,6 +96,44 @@ void main() {
       'timeline-end:90000',
     ]);
   });
+
+  testWidgets('shows pitch lock fallback warning when snapshot reports it',
+      (tester) async {
+    final playback = _FakePlaybackState(
+      snapshot: const PlaybackSnapshot(
+        sessionId: 'session_test',
+        cues: [],
+        currentCueId: 'cue_1',
+        currentQueueIndex: 0,
+        currentMediaItem: _FakePlaybackState.testItem,
+        localPosition: Duration(seconds: 10),
+        localDuration: Duration(seconds: 60),
+        globalPosition: Duration(seconds: 10),
+        globalDuration: Duration(seconds: 60),
+        playing: false,
+        processingState: ProcessingState.ready,
+        activeVoiceCount: 1,
+        playbackSpeed: 1.25,
+        pitchPreservationFallback: true,
+      ),
+    );
+    tester.view.physicalSize = const Size(1200, 2200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ListenableProvider<PlaybackState>.value(
+        value: playback,
+        child: const MaterialApp(home: PlayerScreen()),
+      ),
+    );
+
+    expect(
+      find.text('Pitch lock unavailable. Tempo match may alter pitch.'),
+      findsOneWidget,
+    );
+  });
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {

@@ -133,6 +133,41 @@ void main() {
     );
 
     test(
+      'notification extras expose pitch preservation fallback',
+      () async {
+        final harness = _PlaybackHarness(pitchSupported: false);
+        await harness.playback.playQueue([
+          _track(1, seconds: 10, analysisSummary: _bpmAnalysis(100)),
+          _track(2, seconds: 10, analysisSummary: _bpmAnalysis(125)),
+        ]);
+        await harness.playback.setQueueTimelineStartMs(
+          1,
+          5000,
+          snapToDownbeat: false,
+        );
+        await harness.engine.seek(7500);
+        await Future<void>.delayed(Duration.zero);
+
+        final handler = MixAudioHandler(
+          playbackState: harness.playback,
+          statePushThrottle: Duration.zero,
+          now: () => harness.now,
+        );
+        final mediaItems = <audio_service.MediaItem?>[];
+        final mediaSub = handler.mediaItem.listen(mediaItems.add);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(harness.playback.snapshot.pitchPreservationFallback, isTrue);
+        expect(mediaItems.last?.extras?['pitchPreservation'], 'fallback');
+        expect(mediaItems.last?.extras?['pitchLockUnavailable'], isTrue);
+
+        await mediaSub.cancel();
+        await handler.dispose();
+        await harness.dispose();
+      },
+    );
+
+    test(
       'notification skipToNext gives immediate app and media-session feedback',
       () async {
         final harness = _PlaybackHarness();
@@ -307,14 +342,18 @@ Map<String, dynamic> _bpmAnalysis(double bpm) => {
     };
 
 class _PlaybackHarness {
-  _PlaybackHarness() {
+  _PlaybackHarness({bool pitchSupported = true}) {
+    var voiceIndex = 0;
     clock = DefaultTimelineClock(
       now: () => now,
       uiTickInterval: const Duration(hours: 1),
     );
     engine = PlaybackEngine.withClock(
       clock: clock,
-      voiceFactory: () => FakeVoice('v'),
+      voiceFactory: () => FakeVoice(
+        'v${voiceIndex++}',
+        pitchSupported: pitchSupported,
+      ),
     );
     playback = app_audio.PlaybackState(
       engine,

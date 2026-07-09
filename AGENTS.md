@@ -68,29 +68,18 @@ See `docs/context-map.md` for the fuller map and harness table.
 
 Use RTK wrappers for noisy output when running these through Codex.
 
-## Local Testing / Deploy Backend And Frontend
+## Local Testing / Deploy
 
-Use when user says "deploy backend/frontend" or asks for phone dogfood. Backend
-= shared dev API on tailnet. Frontend = Android APK through remote ADB, or
-Flutter Web tailnet preview.
-
-Fast path: deploy backend from intended checkout; verify deep health; deploy
-frontend from same source ref with explicit `OMP_API_BASE_URL`,
-`OMP_SOURCE_REF`, and `OMP_BUILD_ID`; report backend URL, build ID/source ref,
-device serial or web URL, evidence path, and fatal-log status.
-
-Constants:
+Use this when user says "deploy backend/frontend" or asks for phone dogfood.
+Backend = tailnet dev API. Frontend = Android APK through remote ADB, or
+Flutter Web preview.
 
 - Backend: `http://dev.fish-rattlesnake.ts.net:8080`
 - API: `http://dev.fish-rattlesnake.ts.net:8080/api/v1`
 - Remote Mac / ADB: `server-mac.fish-rattlesnake.ts.net`
 - Remote ADB socket: `tcp:server-mac.fish-rattlesnake.ts.net:5037`
 
-### Backend Deploy
-
-Deploy the backend from the checkout whose code you want running. For the
-shared dev API, bind it to the tailnet name and include downloads when queue or
-ingestion behavior matters.
+Backend deploy from checkout you want live:
 
 ```bash
 export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
@@ -98,7 +87,7 @@ scripts/tailnet-staging.sh start-downloads
 scripts/tailnet-staging.sh smoke
 ```
 
-Backend-only/lightweight path when downloads are not part of the test:
+Backend-only fast path:
 
 ```bash
 export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
@@ -106,7 +95,7 @@ scripts/tailnet-staging.sh start-backend
 curl -fsS http://dev.fish-rattlesnake.ts.net:8080/health?deep=true
 ```
 
-### Android Frontend Deploy
+Android frontend deploy:
 
 ```bash
 export ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037
@@ -124,18 +113,18 @@ adb logcat -d -t 1000 | \
   rg -i "FATAL EXCEPTION|E/flutter|AndroidRuntime: FATAL|AndroidRuntime.*FATAL"
 ```
 
-`scripts/dogfood-android` writes evidence under
-`/tmp/open-music-player-dogfood-<build-id>/evidence.md`. Check Settings after
-install; Build must match `OMP_SOURCE_REF` and `OMP_BUILD_ID`.
-
-### Flutter Web Frontend Deploy
+Flutter Web frontend deploy:
 
 ```bash
 OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
   scripts/tailnet-staging.sh serve-web
 ```
 
-Use `scripts/tailnet-staging.sh urls` for the current tailnet web/backend URLs.
+Use `scripts/tailnet-staging.sh urls` for current URLs. Report backend URL,
+build ID/source ref, Android serial or web URL, evidence path, and fatal-log
+status. `scripts/dogfood-android` writes evidence under
+`/tmp/open-music-player-dogfood-<build-id>/evidence.md`; Settings Build must
+match `OMP_SOURCE_REF` and `OMP_BUILD_ID`.
 
 ## Architecture Guardrails
 
