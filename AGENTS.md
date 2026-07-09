@@ -68,6 +68,43 @@ See `docs/context-map.md` for the fuller map and harness table.
 
 Use RTK wrappers for noisy output when running these through Codex.
 
+## Local Testing / Deploy
+
+- Shared phone backend URL: `http://dev.fish-rattlesnake.ts.net:8080`.
+- Shared phone API URL: `http://dev.fish-rattlesnake.ts.net:8080/api/v1`.
+- Shared Compose project: `omp-local-run-vruka8`, pinned by
+  `/home/donovanyohan/Documents/Programs/personal/open-music-player/deploy/.env`.
+- Rebuild/restart shared backend from current checkout, keep ports/data:
+  ```bash
+  REDIS_ENABLED=true WORKER_COUNT=1 docker compose \
+    --env-file /home/donovanyohan/Documents/Programs/personal/open-music-player/deploy/.env \
+    -f docker-compose.local-low-memory.yml \
+    --profile downloads up -d --build postgres minio minio-init redis analyzer backend
+  ```
+- Verify backend:
+  ```bash
+  curl -fsS http://dev.fish-rattlesnake.ts.net:8080/health?deep=true
+  REDIS_ENABLED=true WORKER_COUNT=1 docker compose \
+    --env-file /home/donovanyohan/Documents/Programs/personal/open-music-player/deploy/.env \
+    -f docker-compose.local-low-memory.yml \
+    --profile downloads ps
+  ```
+- Deploy Android frontend to physical Pixel:
+  ```bash
+  ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 \
+  ANDROID_SERIAL=<adb-serial> \
+  OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
+  OMP_SOURCE_REF="$(git rev-parse --abbrev-ref HEAD)@$(git rev-parse --short HEAD)" \
+  OMP_BUILD_ID="<slice>-$(date -u +%Y%m%dT%H%M%SZ)" \
+  scripts/dogfood-android all
+  ```
+- Verify Android install: `adb devices -l`, launch with
+  `adb shell monkey -p com.openmusicplayer.app -c android.intent.category.LAUNCHER 1`,
+  then check Settings build marker, `adb shell pidof com.openmusicplayer.app`,
+  and recent logcat for `AndroidRuntime`, `FATAL EXCEPTION`, or `E/flutter`.
+- Flutter Web frontend on tailnet: `scripts/tailnet-staging.sh serve-web`
+  after exporting `OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1`.
+
 ## Architecture Guardrails
 
 - Do not reintroduce root Rust/sqlx migrations or a second schema authority.
