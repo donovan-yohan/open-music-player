@@ -349,6 +349,7 @@ void main() {
       );
       await Future<void>.delayed(Duration.zero);
 
+      expect(playback.timelineModel.clips[1].tempo.nativeBpm, 120);
       expect(playback.timelineModel.clips[1].timelineStartMs, 23000);
       playback.dispose();
     });
