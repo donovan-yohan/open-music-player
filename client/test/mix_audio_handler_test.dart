@@ -96,6 +96,43 @@ void main() {
     );
 
     test(
+      'notification speed follows tempo automation during BPM-matched overlap',
+      () async {
+        final harness = _PlaybackHarness();
+        await harness.playback.playQueue([
+          _track(1, seconds: 10, analysisSummary: _bpmAnalysis(100)),
+          _track(2, seconds: 10, analysisSummary: _bpmAnalysis(125)),
+        ]);
+        await harness.playback.setQueueTimelineStartMs(
+          1,
+          5000,
+          snapToDownbeat: false,
+        );
+        await harness.engine.seek(7500);
+        await Future<void>.delayed(Duration.zero);
+
+        final handler = MixAudioHandler(
+          playbackState: harness.playback,
+          statePushThrottle: Duration.zero,
+          now: () => harness.now,
+        );
+        final states = <audio_service.PlaybackState>[];
+        final stateSub = handler.playbackState.listen(states.add);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(harness.playback.currentItem?.id, '2');
+        expect(harness.playback.snapshot.playbackSpeed, closeTo(0.9, 0.0001));
+        expect(states.last.speed, closeTo(0.9, 0.0001));
+        expect(states.last.updatePosition.inMilliseconds, closeTo(2125, 1));
+        expect(states.last.queueIndex, 1);
+
+        await stateSub.cancel();
+        await handler.dispose();
+        await harness.dispose();
+      },
+    );
+
+    test(
       'notification skipToNext gives immediate app and media-session feedback',
       () async {
         final harness = _PlaybackHarness();
@@ -252,11 +289,21 @@ void main() {
   });
 }
 
-Map<String, dynamic> _track(int id, {required int seconds}) => {
+Map<String, dynamic> _track(
+  int id, {
+  required int seconds,
+  Map<String, dynamic>? analysisSummary,
+}) =>
+    {
       'id': id,
       'title': 'Track $id',
       'artist': 'Artist $id',
       'duration': seconds,
+      if (analysisSummary != null) 'analysisSummary': analysisSummary,
+    };
+
+Map<String, dynamic> _bpmAnalysis(double bpm) => {
+      'bpm': {'value': bpm, 'confidence': 0.95},
     };
 
 class _PlaybackHarness {

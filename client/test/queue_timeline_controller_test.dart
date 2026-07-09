@@ -360,6 +360,19 @@ void main() {
         harness.engine.model.durationMs,
       );
 
+      await harness.engine.seek(7500);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(harness.controller.currentIndex, 1);
+      expect(
+        harness.controller.snapshot.playbackSpeed,
+        closeTo(0.9, 0.0001),
+      );
+      expect(
+        harness.controller.snapshot.localPosition.inMilliseconds,
+        closeTo(2125, 1),
+      );
+
       final probeMs = outgoing.timelineEndMs + 50;
       expect(probeMs, lessThan(10000));
 

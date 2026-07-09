@@ -71,12 +71,13 @@ Use RTK wrappers for noisy output when running these through Codex.
 ## Local Testing / Deploy Backend And Frontend
 
 Use when user says "deploy backend/frontend" or asks for phone dogfood. Backend
-= shared dev API. Frontend = Android APK through remote ADB, or Flutter Web
-tailnet preview.
+= shared dev API on the tailnet. Frontend = Android APK through remote ADB, or
+Flutter Web tailnet preview.
 
 Fast path:
 
-1. Backend: deploy latest `main` from persistent clone, then verify deep health.
+1. Backend: from the intended source checkout, start/rebuild tailnet backend and
+   verify deep health.
 2. Frontend Android: build/install APK from current checkout with explicit
    `OMP_API_BASE_URL`, `OMP_SOURCE_REF`, and `OMP_BUILD_ID`.
 3. Frontend Web: use Tailnet Flutter Web preview when Android is not needed.
@@ -89,34 +90,25 @@ Constants:
 - API: `http://dev.fish-rattlesnake.ts.net:8080/api/v1`
 - Remote Mac / ADB: `server-mac.fish-rattlesnake.ts.net`
 - Remote ADB socket: `tcp:server-mac.fish-rattlesnake.ts.net:5037`
-- Shared deploy env: `/home/donovanyohan/Documents/Programs/personal/open-music-player/deploy/.env`
 
 ### Backend Deploy
 
-Preferred deploy for latest `main` uses the persistent clone with `deploy/.env`;
-it keeps the same Docker project/volumes so DB and MinIO data survive rebuilds.
+Deploy the backend from the checkout whose code you want running. For the
+shared dev API, bind it to the tailnet name and include downloads when queue or
+ingestion behavior matters.
 
 ```bash
-cd /home/donovanyohan/Documents/Programs/personal/open-music-player
-git pull --ff-only
-scripts/deploy.sh          # backend-only rebuild, keeps stateful services
-scripts/deploy.sh full     # first boot or repair whole stack
-curl -fsS http://dev.fish-rattlesnake.ts.net:8080/health?deep=true
+export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
+scripts/tailnet-staging.sh start-downloads
+scripts/tailnet-staging.sh smoke
 ```
 
-To deploy the current worktree before merge, reuse the shared env but build from
-this checkout:
+Backend-only/lightweight path when downloads are not part of the test:
 
 ```bash
-SHARED_ENV=/home/donovanyohan/Documents/Programs/personal/open-music-player/deploy/.env
-REDIS_ENABLED=true WORKER_COUNT=1 docker compose \
-  --env-file "$SHARED_ENV" \
-  -f docker-compose.local-low-memory.yml \
-  --profile downloads up -d --build \
-  postgres minio minio-init redis analyzer backend
+export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
+scripts/tailnet-staging.sh start-backend
 curl -fsS http://dev.fish-rattlesnake.ts.net:8080/health?deep=true
-docker compose --env-file "$SHARED_ENV" -f docker-compose.local-low-memory.yml \
-  --profile downloads ps
 ```
 
 ### Android Frontend Deploy
