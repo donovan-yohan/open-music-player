@@ -12,7 +12,7 @@ domain concept moves or a new production harness becomes canonical.
 | Browser extension | `extension/` | Share/import surface for YouTube/SoundCloud style sources | `scripts/test extension`, `scripts/lint extension`, `scripts/build extension` |
 | Local stack | `docker-compose*.yml`, `scripts/local-low-memory.sh` | Postgres, Redis, MinIO, backend/analyzer dogfood services, worker-free backend test dependencies | `scripts/dev`, `scripts/dev test-infra`, `scripts/smoke`, `scripts/smoke e2e` |
 | Android dogfood | `scripts/dogfood-android`, `docs/ANDROID_PR_ARTIFACTS.md` | Debug APK build/install evidence for physical-device playback checks | `scripts/dogfood-android build`, `scripts/dogfood-android all` |
-| Delivery harness | `AGENTS.md`, `docs/context-map.md`, `docs/agentic-delivery.md`, `.github/`, `scripts/agentic-harness`, `scripts/agentic-cycle` | Agent handoff map, CI wiring, PR evidence, exact-head gates, scaffold drift checks | `scripts/agentic-harness`, `scripts/agentic-cycle`, `scripts/lint delivery` |
+| Delivery harness | `AGENTS.md`, `docs/context-map.md`, `docs/agentic-delivery.md`, `.github/`, `scripts/agentic-harness`, `scripts/agentic-cycle`, `scripts/release-audit` | Agent handoff map, CI wiring, PR evidence, exact-head gates, release audits, scaffold drift checks | `scripts/agentic-harness`, `scripts/agentic-cycle`, `scripts/release-audit`, `scripts/lint delivery` |
 | Architecture decisions | `docs/adr/` | Durable decisions and consequences for hard-to-reverse seams | `scripts/agentic-harness` |
 
 ## Domain Concepts
@@ -75,6 +75,7 @@ domain concept moves or a new production harness becomes canonical.
 - Local policy: `docs/agentic-delivery.md`.
 - PR evidence template: `.github/pull_request_template.md`.
 - Enforcement: `scripts/agentic-harness`, `scripts/agentic-cycle`,
+  `scripts/release-audit`,
   `scripts/lint delivery`, CI `Delivery Harness`.
 - Guardrail: exact-head evidence is required for PR release decisions; mobile
   and audio claims need physical-device dogfood when tests cannot prove the
@@ -88,6 +89,7 @@ domain concept moves or a new production harness becomes canonical.
 | Delivery scaffold check | `scripts/agentic-harness` | Validates required agent docs, root scripts, CI wiring, JSON/Python/Bash syntax, and secret-like values. |
 | Exact-head dev-cycle plan | `scripts/agentic-cycle --base origin/main` | Classifies changed files, assigns a gate risk tier, lists required component checks, and names Android dogfood when needed. |
 | Exact-head dev-cycle run | `scripts/agentic-cycle --run --base origin/main` | Runs the planned local lint/test gates and writes JSON evidence under `/tmp/open-music-player-agentic-cycle-*.json`. |
+| Release closeout audit | `scripts/release-audit --pr <number> --issue <number>` | Verifies default branch truth, PR state/checks/review/mergeability, and issue state before saying work is shipped. |
 | Exact-head/release policy check | `scripts/lint delivery` | Ensures OMP delivery docs, PR template, and CI script wiring stay present. |
 | Backend static/build | `scripts/lint backend`, `scripts/build backend` | `go vet` plus server/analyzer/local smoke binaries. |
 | Flutter check | `scripts/lint client`, `scripts/test client` | Runs `flutter pub get`, analyze, and tests. |

@@ -7,6 +7,7 @@ TARGET="${1:-all}"
 run_delivery() {
   "$ROOT/scripts/agentic-harness"
   "$ROOT/scripts/agentic-cycle" --self-test
+  "$ROOT/scripts/release-audit" --self-test
 }
 
 run_backend() {

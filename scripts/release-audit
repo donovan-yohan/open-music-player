@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+"""Audit PR/default-branch truth before calling work shipped."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@dataclass(frozen=True)
+class CheckSummary:
+    passed: int
+    failed: int
+    pending: int
+    skipped: int
+
+    @property
+    def total(self) -> int:
+        return self.passed + self.failed + self.pending + self.skipped
+
+
+@dataclass(frozen=True)
+class Verdict:
+    status: str
+    exit_status: int
+    reasons: list[str]
+
+
+def run(command: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(f"{' '.join(command)} failed: {message}")
+    return result
+
+
+def parse_github_repo(remote: str) -> str | None:
+    remote = remote.strip()
+    patterns = [
+        r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/.]+)(?:\.git)?$",
+        r"https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/.]+)(?:\.git)?$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, remote)
+        if match:
+            return f"{match.group('owner')}/{match.group('repo')}"
+    return None
+
+
+def default_repo() -> str:
+    if os.environ.get("GITHUB_REPOSITORY"):
+        return os.environ["GITHUB_REPOSITORY"]
+    remote = run(["git", "remote", "get-url", "origin"]).stdout.strip()
+    parsed = parse_github_repo(remote)
+    if parsed:
+        return parsed
+    raise RuntimeError("could not infer GitHub repo; pass --repo owner/name")
+
+
+def git_fetch(base: str) -> str:
+    result = run(["git", "fetch", "origin", base, "--quiet"], check=False)
+    if result.returncode == 0:
+        return "fetched"
+    return f"fetch failed: {(result.stderr or result.stdout).strip()}"
+
+
+def default_branch_head(base: str) -> str:
+    result = run(["git", "log", "-1", "--format=%h %H %ci %s", f"origin/{base}"], check=False)
+    if result.returncode != 0:
+        return f"unavailable: {(result.stderr or result.stdout).strip()}"
+    return result.stdout.strip()
+
+
+def is_ancestor(commit: str, base: str) -> bool:
+    if not commit:
+        return False
+    result = run(["git", "merge-base", "--is-ancestor", commit, f"origin/{base}"], check=False)
+    return result.returncode == 0
+
+
+def gh_json(args: list[str]) -> dict[str, Any]:
+    result = run(["gh", *args])
+    return json.loads(result.stdout)
+
+
+def issue_view(repo: str, issue: int) -> dict[str, Any]:
+    return gh_json(
+        [
+            "issue",
+            "view",
+            str(issue),
+            "--repo",
+            repo,
+            "--json",
+            "number,title,state,closedAt,url",
+        ]
+    )
+
+
+def pr_view(repo: str, pr: int) -> dict[str, Any]:
+    return gh_json(
+        [
+            "pr",
+            "view",
+            str(pr),
+            "--repo",
+            repo,
+            "--json",
+            ",".join(
+                [
+                    "number",
+                    "title",
+                    "state",
+                    "url",
+                    "isDraft",
+                    "baseRefName",
+                    "headRefName",
+                    "headRefOid",
+                    "mergedAt",
+                    "mergeCommit",
+                    "reviewDecision",
+                    "mergeStateStatus",
+                    "statusCheckRollup",
+                    "closingIssuesReferences",
+                ]
+            ),
+        ]
+    )
+
+
+def check_value(check: dict[str, Any]) -> str:
+    value = (
+        check.get("conclusion")
+        or check.get("state")
+        or check.get("status")
+        or check.get("workflowConclusion")
+        or ""
+    )
+    return str(value).upper()
+
+
+def summarize_checks(checks: list[dict[str, Any]]) -> CheckSummary:
+    passed = failed = pending = skipped = 0
+    for check in checks:
+        value = check_value(check)
+        if value in {"SUCCESS", "PASSED", "COMPLETED", "NEUTRAL"}:
+            passed += 1
+        elif value in {"SKIPPED"}:
+            skipped += 1
+        elif value in {"FAILURE", "FAILED", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"}:
+            failed += 1
+        else:
+            pending += 1
+    return CheckSummary(passed=passed, failed=failed, pending=pending, skipped=skipped)
+
+
+def classify_pr(pr: dict[str, Any], checks: CheckSummary, base: str, merge_commit_in_base: bool) -> Verdict:
+    reasons: list[str] = []
+    state = str(pr.get("state") or "").upper()
+    review = str(pr.get("reviewDecision") or "").upper()
+    merge_state = str(pr.get("mergeStateStatus") or "").upper()
+
+    if state == "MERGED":
+        if str(pr.get("baseRefName")) == base and merge_commit_in_base:
+            reasons.append(f"PR #{pr['number']} is merged and its merge commit is in origin/{base}.")
+            return Verdict("shipped to main", 0, reasons)
+        reasons.append(f"PR #{pr['number']} is merged but not verified in origin/{base}.")
+        return Verdict("implementation exists, not shipped", 1, reasons)
+
+    if state != "OPEN":
+        reasons.append(f"PR #{pr.get('number')} state is {state or 'unknown'}.")
+        return Verdict("blocked", 1, reasons)
+
+    if pr.get("isDraft"):
+        reasons.append("PR is still draft.")
+        return Verdict("implementation exists, not shipped", 1, reasons)
+    if checks.failed:
+        reasons.append(f"{checks.failed} required/status checks are failing.")
+        return Verdict("blocked", 1, reasons)
+    if checks.pending:
+        reasons.append(f"{checks.pending} checks are still pending.")
+        return Verdict("implementation exists, not shipped", 1, reasons)
+    if review == "CHANGES_REQUESTED":
+        reasons.append("review decision is CHANGES_REQUESTED.")
+        return Verdict("blocked", 1, reasons)
+    if merge_state in {"DIRTY", "BLOCKED", "BEHIND", "UNKNOWN"}:
+        reasons.append(f"merge state is {merge_state}.")
+        return Verdict("blocked", 1, reasons)
+
+    reasons.append(f"PR #{pr['number']} is open, non-draft, mergeable, and checks are green.")
+    return Verdict("candidate ready", 0, reasons)
+
+
+def render_text(payload: dict[str, Any]) -> None:
+    print("Open Music Player release audit")
+    print(f"repo: {payload['repo']}")
+    print(f"base: {payload['base']}")
+    print(f"default branch: {payload['default_branch_head']}")
+    if payload.get("fetch_status"):
+        print(f"fetch: {payload['fetch_status']}")
+
+    pr = payload.get("pr")
+    if pr:
+        checks = payload["checks"]
+        print(f"pr: #{pr['number']} {pr['title']}")
+        print(f"url: {pr['url']}")
+        print(f"state: {pr['state']} draft={pr['isDraft']}")
+        print(f"head: {pr['headRefName']}@{pr['headRefOid']}")
+        print(f"base ref: {pr['baseRefName']}")
+        print(f"review: {pr.get('reviewDecision') or 'none'}")
+        print(f"merge state: {pr.get('mergeStateStatus') or 'unknown'}")
+        print(
+            "checks: "
+            f"{checks['passed']} passed, {checks['failed']} failed, "
+            f"{checks['pending']} pending, {checks['skipped']} skipped"
+        )
+        if pr.get("mergedAt"):
+            merge_commit = pr.get("mergeCommit") or {}
+            print(f"merged: {pr['mergedAt']} {merge_commit.get('oid', '')}")
+
+    for issue in payload.get("issues", []):
+        print(f"issue: #{issue['number']} {issue['state']} {issue['title']} {issue['url']}")
+
+    print(f"verdict: {payload['verdict']['status']}")
+    print("reasons:")
+    for reason in payload["verdict"]["reasons"]:
+        print(f"- {reason}")
+
+
+def self_test() -> int:
+    checks = summarize_checks(
+        [
+            {"conclusion": "SUCCESS"},
+            {"state": "SUCCESS"},
+            {"conclusion": "SKIPPED"},
+            {"status": "IN_PROGRESS"},
+        ]
+    )
+    failures: list[str] = []
+    if checks != CheckSummary(passed=2, failed=0, pending=1, skipped=1):
+        failures.append(f"unexpected check summary: {checks}")
+
+    ready = classify_pr(
+        {
+            "number": 1,
+            "state": "OPEN",
+            "isDraft": False,
+            "reviewDecision": "APPROVED",
+            "mergeStateStatus": "CLEAN",
+        },
+        CheckSummary(passed=3, failed=0, pending=0, skipped=0),
+        "main",
+        False,
+    )
+    if ready.status != "candidate ready" or ready.exit_status != 0:
+        failures.append(f"ready PR classified as {ready}")
+
+    blocked = classify_pr(
+        {
+            "number": 2,
+            "state": "OPEN",
+            "isDraft": False,
+            "reviewDecision": "APPROVED",
+            "mergeStateStatus": "CLEAN",
+        },
+        CheckSummary(passed=2, failed=1, pending=0, skipped=0),
+        "main",
+        False,
+    )
+    if blocked.status != "blocked" or blocked.exit_status == 0:
+        failures.append(f"failing PR classified as {blocked}")
+
+    shipped = classify_pr(
+        {
+            "number": 3,
+            "state": "MERGED",
+            "baseRefName": "main",
+        },
+        CheckSummary(passed=0, failed=0, pending=0, skipped=0),
+        "main",
+        True,
+    )
+    if shipped.status != "shipped to main" or shipped.exit_status != 0:
+        failures.append(f"merged PR classified as {shipped}")
+
+    if failures:
+        print("RELEASE AUDIT SELF-TEST FAILED")
+        for failure in failures:
+            print(f"- {failure}")
+        return 1
+    print("RELEASE AUDIT SELF-TEST OK")
+    return 0
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo", help="GitHub repo as owner/name; inferred from origin by default")
+    parser.add_argument("--base", default="main", help="default/release branch to audit")
+    parser.add_argument("--pr", type=int, help="PR number to audit")
+    parser.add_argument("--issue", type=int, action="append", default=[], help="issue number to include")
+    parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="exit nonzero when verdict is not shipped to main or candidate ready",
+    )
+    parser.add_argument("--self-test", action="store_true", help="run local classifier tests")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    if args.self_test:
+        return self_test()
+
+    repo = args.repo or default_repo()
+    fetch_status = git_fetch(args.base)
+    payload: dict[str, Any] = {
+        "repo": repo,
+        "base": args.base,
+        "fetch_status": fetch_status,
+        "default_branch_head": default_branch_head(args.base),
+        "issues": [issue_view(repo, issue) for issue in args.issue],
+    }
+
+    if args.pr:
+        pr = pr_view(repo, args.pr)
+        check_summary = summarize_checks(pr.get("statusCheckRollup") or [])
+        merge_commit = (pr.get("mergeCommit") or {}).get("oid") or ""
+        verdict = classify_pr(pr, check_summary, args.base, is_ancestor(merge_commit, args.base))
+        payload.update(
+            {
+                "pr": pr,
+                "checks": check_summary.__dict__,
+                "verdict": verdict.__dict__,
+            }
+        )
+    else:
+        payload["verdict"] = {
+            "status": "default branch audited",
+            "exit_status": 0,
+            "reasons": [f"origin/{args.base} head was inspected."],
+        }
+
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        render_text(payload)
+
+    if args.strict and payload["verdict"]["exit_status"] != 0:
+        return int(payload["verdict"]["exit_status"])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

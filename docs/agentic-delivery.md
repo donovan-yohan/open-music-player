@@ -55,6 +55,7 @@ exercise the same behavior:
 - `scripts/smoke isolated`
 - `scripts/smoke playback-isolated`
 - `scripts/dogfood-android build|install|all`
+- `scripts/release-audit --pr <number> --issue <number>`
 
 Heavy mobile build checks can stay targeted, but the handoff must say whether
 the build was local, CI artifact, emulator, or physical device.
@@ -75,6 +76,25 @@ Use `scripts/dev test-infra` before backend tests that need PostgreSQL, Redis,
 or MinIO but should not race a running backend worker. Use
 `scripts/dev test-infra-isolated` from parallel worktrees or CI-like local runs
 when the default dogfood stack might already own the normal ports.
+
+## Closeout Audit
+
+Before calling a PR, issue, or epic shipped, run:
+
+```bash
+scripts/release-audit --pr <number> --issue <number>
+```
+
+Use `--strict` when the command is acting as a release gate; non-ready verdicts
+then exit nonzero.
+
+Use the verdict literally:
+
+- `shipped to main`: merged and verified in `origin/main`.
+- `candidate ready`: PR is open, non-draft, mergeable, and checks are green.
+- `implementation exists, not shipped`: work exists but still needs merge,
+  pending checks, or default-branch verification.
+- `blocked`: failing checks, requested changes, closed PR, or merge conflict.
 
 ## Mobile And Audio Dogfood
 
