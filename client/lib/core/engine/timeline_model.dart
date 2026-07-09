@@ -126,7 +126,7 @@ class TimelineModel {
   }) {
     var model = const TimelineModel._([]);
     for (final clip in clips) {
-      if (model.canPlace(clip.placement)) {
+      if (model.canPlaceClip(clip)) {
         model = model._copyAdding(clip);
       }
     }
@@ -186,7 +186,7 @@ class TimelineModel {
         clip,
         sourceDurationMsFor: sourceDurationMsFor,
       );
-      if (model.canPlace(mixClip.placement)) {
+      if (model.canPlaceClip(mixClip)) {
         model = model._copyAdding(mixClip);
       }
     }
@@ -241,7 +241,7 @@ class TimelineModel {
         envelope: _envelopeFromPlanClip(planClip),
         queueItemId: planClip?.queueItemId,
       );
-      if (model.canPlace(mixClip.placement)) {
+      if (model.canPlaceClip(mixClip)) {
         model = model._copyAdding(mixClip);
       }
       cursor = placement.timelineEndMs;
@@ -280,30 +280,23 @@ class TimelineModel {
   }
 
   bool canPlace(TimelineClip placement, {String? ignoringClipId}) {
-    final candidates = <TimelineClip>[
-      for (final clip in clips)
-        if (clip.id != ignoringClipId) clip.placement,
-      placement,
-    ];
-    final probeTimes = candidates
-        .map((clip) => clip.timelineStartMs)
-        .toSet()
-        .toList(growable: false)
-      ..sort();
+    return canPlaceClip(
+      MixClip(placement: placement),
+      ignoringClipId: ignoringClipId,
+    );
+  }
 
-    for (final time in probeTimes) {
-      final depth = candidates
-          .where(
-            (clip) => time >= clip.timelineStartMs && time < clip.timelineEndMs,
-          )
-          .length;
-      if (depth > maxConcurrentVoices) return false;
-    }
-    return true;
+  bool canPlaceClip(MixClip candidate, {String? ignoringClipId}) {
+    final candidates = <MixClip>[
+      for (final clip in clips)
+        if (clip.id != ignoringClipId) clip,
+      candidate,
+    ];
+    return !_exceedsMaxConcurrentVoices(candidates);
   }
 
   TimelineModel addClip(MixClip clip) {
-    if (!canPlace(clip.placement)) {
+    if (!canPlaceClip(clip)) {
       throw StateError(
         'clip would exceed $maxConcurrentVoices concurrent voices',
       );
@@ -379,7 +372,7 @@ class TimelineModel {
         final incomingStartRate = _rateForTempo(incoming, outgoingBpm);
         final incomingEndRate = _rateForTempo(incoming, incomingBpm);
 
-        next[outgoingIndex] = outgoing.withRateAutomation(
+        final proposedOutgoing = outgoing.withRateAutomation(
           outgoing.rateAutomation.withSegment(
             PlaybackRateSegment(
               startMs: overlapStart,
@@ -389,7 +382,7 @@ class TimelineModel {
             ),
           ),
         );
-        next[incomingIndex] = incoming.withRateAutomation(
+        final proposedIncoming = incoming.withRateAutomation(
           incoming.rateAutomation.withSegment(
             PlaybackRateSegment(
               startMs: overlapStart,
@@ -399,10 +392,32 @@ class TimelineModel {
             ),
           ),
         );
+        final proposed = List<MixClip>.from(next)
+          ..[outgoingIndex] = proposedOutgoing
+          ..[incomingIndex] = proposedIncoming;
+        if (_exceedsMaxConcurrentVoices(proposed)) continue;
+
+        next[outgoingIndex] = proposedOutgoing;
+        next[incomingIndex] = proposedIncoming;
       }
     }
 
     return TimelineModel._(List.unmodifiable(next));
+  }
+
+  static bool _exceedsMaxConcurrentVoices(Iterable<MixClip> candidates) {
+    final clips = candidates.toList(growable: false);
+    final probeTimes = clips
+        .map((clip) => clip.timelineStartMs)
+        .toSet()
+        .toList(growable: false)
+      ..sort();
+
+    for (final time in probeTimes) {
+      final depth = clips.where((clip) => clip.isActiveAt(time)).length;
+      if (depth > maxConcurrentVoices) return true;
+    }
+    return false;
   }
 }
 

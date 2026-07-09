@@ -90,6 +90,22 @@ void main() {
         5000,
       );
     });
+
+    test('source elapsed fast path clamps unsafe base playback rates', () {
+      const automation = PlaybackRateAutomation(baseRate: 10);
+
+      expect(
+        automation.sourceElapsedMs(timelineStartMs: 0, timelineMs: 1000),
+        2000,
+      );
+      expect(
+        automation.timelineMsForSelectedSource(
+          timelineStartMs: 0,
+          sourceDurationMs: 2000,
+        ),
+        1000,
+      );
+    });
   });
 
   group('GainEnvelope', () {
@@ -263,6 +279,36 @@ void main() {
         expect(model.durationMs, incoming.timelineEndMs);
       },
     );
+
+    test('dynamic clip duration participates in four-voice placement cap', () {
+      final existing = List.generate(
+        TimelineModel.maxConcurrentVoices,
+        (index) => MixClip(
+          placement: placement(
+            id: 'existing-$index',
+            trackId: 'existing-$index',
+            sourceDurationMs: 1000,
+            sourceEndMs: 1000,
+            timelineStartMs: 1000,
+          ),
+        ),
+      );
+      final model = TimelineModel(clips: existing, autoTempoTransitions: false);
+      final candidate = MixClip(
+        placement: placement(
+          id: 'slow',
+          trackId: 'slow',
+          sourceDurationMs: 1000,
+          sourceEndMs: 1000,
+          timelineStartMs: 0,
+        ),
+        rateAutomation: const PlaybackRateAutomation(baseRate: 0.5),
+      );
+
+      expect(model.canPlace(candidate.placement), isTrue);
+      expect(model.canPlaceClip(candidate), isFalse);
+      expect(() => model.addClip(candidate), throwsStateError);
+    });
 
     test('overlap BPM automation falls back to 1.0 without reliable BPM', () {
       final model = TimelineModel(

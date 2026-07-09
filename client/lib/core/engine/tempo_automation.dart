@@ -271,7 +271,10 @@ class PlaybackRateAutomation {
   int sourceElapsedMs({required int timelineStartMs, required int timelineMs}) {
     if (timelineMs <= timelineStartMs) return 0;
     if (segments.isEmpty) {
-      return ((timelineMs - timelineStartMs) * baseRate).round();
+      final rate = baseRate
+          .clamp(minTempoAutomationRate, maxTempoAutomationRate)
+          .toDouble();
+      return ((timelineMs - timelineStartMs) * rate).round();
     }
 
     final breakpoints = <int>{timelineStartMs, timelineMs};
