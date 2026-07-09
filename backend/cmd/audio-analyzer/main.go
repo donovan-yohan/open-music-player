@@ -64,9 +64,14 @@ type waveformAnalysis struct {
 	leadingMs   int
 	trailingMs  int
 	bpm         float64
+	keyName     string
+	camelot     string
+	keyConf     float64
 	energy      float64
 	truePeakDb  float64
 	loudnessDb  float64
+	declaredMs  int
+	decodedMs   int
 	sampleRate  int
 	sampleCount int
 }
@@ -270,6 +275,8 @@ func analyzeSamples(samples []float64, sampleRate int, declaredDurationMs int, w
 		low:         make([]float64, target),
 		mid:         make([]float64, target),
 		high:        make([]float64, target),
+		declaredMs:  declaredDurationMs,
+		decodedMs:   decodedDurationMs,
 		sampleRate:  sampleRate,
 		sampleCount: target,
 	}
@@ -331,10 +338,21 @@ func analyzeSamples(samples []float64, sampleRate int, declaredDurationMs int, w
 	a.beats = buildBeatGrid(a.durationMs, interval, firstOffset(a.transients, interval))
 	a.downbeats = everyNth(a.beats, 4)
 	a.silence, a.leadingMs, a.trailingMs = detectSilence(a.rms, a.durationMs)
+	a.keyName, a.camelot, a.keyConf = estimateMusicalKey(samples, sampleRate)
 	return a
 }
 
 func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
+	overviewPeaks := downsample(a.peaks, 512)
+	overviewRMS := downsample(a.rms, 512)
+	overviewLow := downsample(a.low, 512)
+	overviewMid := downsample(a.mid, 512)
+	overviewHigh := downsample(a.high, 512)
+	trimStartMs := a.leadingMs
+	trimEndMs := max(trimStartMs, a.durationMs-a.trailingMs)
+	introEndMs := defaultCueBoundaryMs(a, true)
+	outroStartMs := defaultCueBoundaryMs(a, false)
+
 	summary := map[string]any{
 		"bpm": map[string]any{
 			"value":      round(a.bpm, 2),
@@ -374,6 +392,12 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 			"rms":          a.rms,
 			"resolutions": []map[string]any{
 				{
+					"name":              "overview",
+					"samples_per_pixel": max(1, int(math.Ceil(float64(a.sampleCount)/float64(max(1, len(overviewPeaks)))))),
+					"sample_count":      len(overviewPeaks),
+					"artifact_ref":      "waveforms.overview",
+				},
+				{
 					"name":              "detail",
 					"samples_per_pixel": 1,
 					"sample_count":      a.sampleCount,
@@ -402,6 +426,75 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 			"confidence":  0.64,
 			"provenance":  "rms_threshold",
 		},
+		"intro": map[string]any{
+			"start_ms":   trimStartMs,
+			"end_ms":     introEndMs,
+			"confidence": 0.45,
+			"provenance": "beat_grid_proxy",
+		},
+		"outro": map[string]any{
+			"start_ms":   outroStartMs,
+			"end_ms":     trimEndMs,
+			"confidence": 0.45,
+			"provenance": "beat_grid_proxy",
+		},
+		"trim": map[string]any{
+			"start_ms":   trimStartMs,
+			"end_ms":     trimEndMs,
+			"confidence": 0.64,
+			"provenance": "silence_threshold",
+		},
+		"sections": []map[string]any{
+			{
+				"label":      "intro",
+				"start_ms":   trimStartMs,
+				"end_ms":     introEndMs,
+				"confidence": 0.45,
+				"provenance": "beat_grid_proxy",
+			},
+			{
+				"label":      "outro",
+				"start_ms":   outroStartMs,
+				"end_ms":     trimEndMs,
+				"confidence": 0.45,
+				"provenance": "beat_grid_proxy",
+			},
+		},
+		"cue_candidates": []map[string]any{
+			{
+				"kind":       "mix_in",
+				"start_ms":   introEndMs,
+				"confidence": 0.45,
+				"provenance": "beat_grid_proxy",
+			},
+			{
+				"kind":       "mix_out",
+				"start_ms":   outroStartMs,
+				"confidence": 0.45,
+				"provenance": "beat_grid_proxy",
+			},
+		},
+		"duration_sanity": map[string]any{
+			"declared_ms": a.declaredMs,
+			"decoded_ms":  a.decodedMs,
+			"delta_ms":    a.decodedMs - a.declaredMs,
+			"confidence":  durationSanityConfidence(a.declaredMs, a.decodedMs),
+			"provenance":  "ffmpeg_decode",
+		},
+	}
+	if a.keyName != "" {
+		summary["key"] = map[string]any{
+			"value":      a.keyName,
+			"confidence": round(a.keyConf, 3),
+			"provenance": "zero_crossing_chroma_proxy",
+		}
+	}
+	if a.camelot != "" {
+		summary["camelot"] = map[string]any{
+			"value":      a.camelot,
+			"confidence": round(a.keyConf, 3),
+			"provenance": "zero_crossing_chroma_proxy",
+		}
 	}
 	artifacts := map[string]any{
 		"source": map[string]any{
@@ -409,14 +502,48 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 			"duration_ms": a.durationMs,
 			"sample_rate": a.sampleRate,
 		},
-		"waveform_resolution": "summary_detail",
+		"waveforms": map[string]any{
+			"overview": map[string]any{
+				"sample_rate_hz": max(1, len(overviewPeaks)*1000/max(1, a.durationMs)),
+				"peaks":          overviewPeaks,
+				"rms":            overviewRMS,
+			},
+			"detail": map[string]any{
+				"sample_rate_hz": max(1, a.sampleCount*1000/max(1, a.durationMs)),
+				"peaks":          a.peaks,
+				"rms":            a.rms,
+			},
+		},
+		"spectral_bands": map[string]any{
+			"overview": map[string]any{
+				"low":  overviewLow,
+				"mid":  overviewMid,
+				"high": overviewHigh,
+			},
+			"detail": map[string]any{
+				"low":  a.low,
+				"mid":  a.mid,
+				"high": a.high,
+			},
+		},
+		"beat_grid": map[string]any{
+			"beats_ms":     a.beats,
+			"downbeats_ms": a.downbeats,
+		},
+		"markers": map[string]any{
+			"silence_ranges": a.silence,
+			"transients_ms":  a.transients,
+		},
+		"waveform_resolution": "multi_resolution",
 	}
 	provenance := map[string]any{
 		"analyzer":         "omp-ffmpeg-analyzer",
-		"analyzer_version": "2026-07-08-1",
+		"analyzer_version": "2026-07-09-1",
 		"model_versions": map[string]any{
 			"waveform": "pcm-rms-v1",
 			"tempo":    "transient-grid-v1",
+			"key":      "zero-crossing-chroma-v1",
+			"sections": "beat-grid-proxy-v1",
 		},
 	}
 	return map[string]any{
@@ -458,6 +585,169 @@ func detectTransients(rms []float64, peaks []float64, durationMs int) []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+func estimateMusicalKey(samples []float64, sampleRate int) (string, string, float64) {
+	if len(samples) == 0 || sampleRate <= 0 {
+		return "", "", 0
+	}
+	chroma := make([]float64, 12)
+	frameSize := clampInt(sampleRate/20, 512, 4096)
+	hop := max(1, frameSize/2)
+	totalEnergy := 0.0
+	for start := 0; start+frameSize <= len(samples); start += hop {
+		frame := samples[start : start+frameSize]
+		rms := frameRMS(frame)
+		if rms < 0.015 {
+			continue
+		}
+		frequency := zeroCrossingFrequency(frame, sampleRate)
+		if frequency < 55 || frequency > 1760 {
+			continue
+		}
+		midi := int(math.Round(69 + 12*math.Log2(frequency/440)))
+		pitchClass := ((midi % 12) + 12) % 12
+		weight := rms * math.Min(1.5, math.Max(0.4, frequency/440))
+		chroma[pitchClass] += weight
+		totalEnergy += weight
+	}
+	if totalEnergy <= 0 {
+		return "", "", 0
+	}
+	normalize(chroma, maxFloat(chroma))
+	keyIndex, mode, confidence := matchKeyProfile(chroma)
+	key := fmt.Sprintf("%s %s", keyNames[keyIndex], mode)
+	return key, camelotFor(keyIndex, mode), confidence
+}
+
+func frameRMS(samples []float64) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	sum := 0.0
+	for _, sample := range samples {
+		sum += sample * sample
+	}
+	return math.Sqrt(sum / float64(len(samples)))
+}
+
+func zeroCrossingFrequency(samples []float64, sampleRate int) float64 {
+	crossings := 0
+	previous := samples[0]
+	for _, sample := range samples[1:] {
+		if (previous <= 0 && sample > 0) || (previous >= 0 && sample < 0) {
+			crossings++
+		}
+		previous = sample
+	}
+	return float64(crossings) * float64(sampleRate) / (2 * float64(max(1, len(samples)-1)))
+}
+
+var keyNames = []string{"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
+
+var majorKeyProfile = []float64{6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88}
+var minorKeyProfile = []float64{6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17}
+
+func matchKeyProfile(chroma []float64) (int, string, float64) {
+	type candidate struct {
+		key   int
+		mode  string
+		score float64
+	}
+	candidates := []candidate{}
+	for key := 0; key < 12; key++ {
+		candidates = append(candidates,
+			candidate{key: key, mode: "major", score: profileScore(chroma, majorKeyProfile, key)},
+			candidate{key: key, mode: "minor", score: profileScore(chroma, minorKeyProfile, key)},
+		)
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
+	best := candidates[0]
+	second := candidates[1]
+	confidence := clamp(0.35+(best.score-second.score)*1.8, 0.25, 0.88)
+	return best.key, best.mode, confidence
+}
+
+func profileScore(chroma []float64, profile []float64, key int) float64 {
+	dot, chromaMag, profileMag := 0.0, 0.0, 0.0
+	for i := 0; i < 12; i++ {
+		rotated := profile[(i-key+12)%12]
+		dot += chroma[i] * rotated
+		chromaMag += chroma[i] * chroma[i]
+		profileMag += rotated * rotated
+	}
+	if chromaMag <= 0 || profileMag <= 0 {
+		return 0
+	}
+	return dot / math.Sqrt(chromaMag*profileMag)
+}
+
+func camelotFor(key int, mode string) string {
+	major := []string{"8B", "3B", "10B", "5B", "12B", "7B", "2B", "9B", "4B", "11B", "6B", "1B"}
+	minor := []string{"5A", "12A", "7A", "2A", "9A", "4A", "11A", "6A", "1A", "8A", "3A", "10A"}
+	if mode == "minor" {
+		return minor[key%12]
+	}
+	return major[key%12]
+}
+
+func downsample(values []float64, maxSamples int) []float64 {
+	if len(values) <= maxSamples || maxSamples <= 0 {
+		return append([]float64(nil), values...)
+	}
+	out := make([]float64, maxSamples)
+	for i := range out {
+		start := i * len(values) / maxSamples
+		end := (i + 1) * len(values) / maxSamples
+		if end <= start {
+			end = min(len(values), start+1)
+		}
+		peak := 0.0
+		for _, value := range values[start:end] {
+			peak = math.Max(peak, value)
+		}
+		out[i] = round(peak, 4)
+	}
+	return out
+}
+
+func defaultCueBoundaryMs(a waveformAnalysis, intro bool) int {
+	if len(a.downbeats) == 0 {
+		if intro {
+			return min(a.durationMs, max(a.leadingMs, 16000))
+		}
+		return max(0, a.durationMs-max(a.trailingMs, 16000))
+	}
+	if intro {
+		target := a.leadingMs + 16000
+		for _, ms := range a.downbeats {
+			if ms >= target {
+				return min(ms, a.durationMs)
+			}
+		}
+		return min(a.durationMs, target)
+	}
+	target := a.durationMs - a.trailingMs - 16000
+	last := max(0, target)
+	for _, ms := range a.downbeats {
+		if ms > target {
+			break
+		}
+		last = ms
+	}
+	return max(0, min(last, a.durationMs))
+}
+
+func durationSanityConfidence(declaredMs int, decodedMs int) float64 {
+	if declaredMs <= 0 || decodedMs <= 0 {
+		return 0.5
+	}
+	delta := math.Abs(float64(decodedMs - declaredMs))
+	if delta <= 100 {
+		return 0.99
+	}
+	ratio := delta / math.Max(float64(declaredMs), float64(decodedMs))
+	return round(clamp(1-ratio*5, 0.25, 0.95), 3)
 }
 
 func estimateBeatInterval(transients []int) int {
@@ -582,6 +872,16 @@ func mean(values []float64) float64 {
 		total += value
 	}
 	return total / float64(len(values))
+}
+
+func maxFloat(values []float64) float64 {
+	maxValue := 0.0
+	for _, value := range values {
+		if value > maxValue {
+			maxValue = value
+		}
+	}
+	return maxValue
 }
 
 func db(value float64) float64 {
