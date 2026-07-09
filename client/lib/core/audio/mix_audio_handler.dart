@@ -98,7 +98,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     _bufferedPosition = snapshot.localDuration;
     _isPlaying = snapshot.playing;
     _activeVoiceCount = snapshot.activeVoiceCount;
-    _playbackSpeed = snapshot.playbackSpeed.clamp(0.5, 2.0).toDouble();
+    _playbackSpeed = snapshot.playbackSpeed;
     _processingState = _audioProcessingStateFor(snapshot.processingState);
   }
 
