@@ -197,10 +197,17 @@ class TimelineModel {
     MixPlan plan, {
     required List<String> trackOrder,
     int Function(String trackId)? sourceDurationMsFor,
+    ClipTempoMetadata Function(String trackId)? tempoMetadataFor,
+    ClipTempoMetadata Function(String trackId, int index)?
+        tempoMetadataForEntry,
+    String Function(String trackId, int index)? clipIdFor,
+    String Function(String trackId, int index)? queueItemIdFor,
+    bool useTempoDefaultStarts = false,
   }) {
     final remainingPlanClips = List<MixPlanClip>.from(plan.clips);
     var cursor = 0;
     var model = const TimelineModel._([]);
+    MixClip? previousQueueClip;
 
     for (var index = 0; index < trackOrder.length; index++) {
       final trackId = trackOrder[index];
@@ -220,16 +227,31 @@ class TimelineModel {
         sourceEndMs = planClip.sourceEndMs;
       }
 
+      final tempo = tempoMetadataForEntry?.call(trackId, index) ??
+          tempoMetadataFor?.call(trackId) ??
+          ClipTempoMetadata.empty;
       final baselineTimelineStartMs = cursor;
       var timelineStartMs = baselineTimelineStartMs;
-      if (planClip != null &&
-          planClip.timelineStartMs != 0 &&
-          planClip.timelineStartMs != baselineTimelineStartMs) {
+      if (planClip != null && planClip.timelineStartMs != 0) {
         timelineStartMs = planClip.timelineStartMs;
+      } else if (useTempoDefaultStarts && previousQueueClip != null) {
+        timelineStartMs = defaultDownbeatLockedTransitionStartMs(
+          outgoingTimelineStartMs: previousQueueClip.timelineStartMs,
+          outgoingTimelineEndMs: previousQueueClip.timelineEndMs,
+          outgoingSourceStartMs: previousQueueClip.placement.sourceStartMs,
+          outgoingSelectedDurationMs: previousQueueClip.selectedDurationMs,
+          outgoingTempo: previousQueueClip.tempo,
+          incomingSourceStartMs: sourceStartMs,
+          incomingSelectedDurationMs: sourceEndMs - sourceStartMs,
+          incomingTempo: tempo,
+          fallbackStartMs: baselineTimelineStartMs,
+        );
       }
 
       final placement = TimelineClip.clamped(
-        id: planClip?.clipId ?? 'clip_${index}_$trackId',
+        id: planClip?.clipId ??
+            clipIdFor?.call(trackId, index) ??
+            'clip_${index}_$trackId',
         trackId: trackId,
         sourceDurationMs: sourceDurationMs,
         sourceStartMs: sourceStartMs,
@@ -239,10 +261,13 @@ class TimelineModel {
       final mixClip = MixClip(
         placement: placement,
         envelope: _envelopeFromPlanClip(planClip),
-        queueItemId: planClip?.queueItemId,
+        queueItemId:
+            planClip?.queueItemId ?? queueItemIdFor?.call(trackId, index),
+        tempo: tempo,
       );
       if (model.canPlaceClip(mixClip)) {
         model = model._copyAdding(mixClip);
+        previousQueueClip = mixClip;
       }
       cursor = placement.timelineEndMs;
     }

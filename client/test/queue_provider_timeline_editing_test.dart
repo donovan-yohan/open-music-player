@@ -33,6 +33,35 @@ Track _track({
       analysis: analysis,
     );
 
+TrackAnalysis _tempoAnalysis({
+  double bpm = 120,
+  int durationMs = 240000,
+}) {
+  final beatMs = (60000 / bpm).round();
+  final downbeatMs = beatMs * 8;
+  return TrackAnalysis(
+    status: TrackAnalysisStatus.analyzed,
+    summary: TrackAnalysisSummary(
+      bpm: AnalysisValue(value: bpm, confidence: 0.9),
+      beatGrid: BeatGridSummary(
+        bpm: bpm,
+        beatsMs: List<int>.generate(
+          (durationMs / beatMs).floor() + 1,
+          (index) => index * beatMs,
+        ),
+        confidence: 0.9,
+      ),
+      downbeats: DownbeatSummary(
+        positionsMs: List<int>.generate(
+          (durationMs / downbeatMs).floor() + 1,
+          (index) => index * downbeatMs,
+        ),
+        confidence: 0.9,
+      ),
+    ),
+  );
+}
+
 TimelineClip _fallback(Track track) => TimelineClip.clamped(
       id: 'clip_${track.queueItemId}',
       trackId: track.id,
@@ -596,6 +625,84 @@ void main() {
   });
 
   test(
+      'loadQueue gives missing analyzed queue clips downbeat-locked default timing',
+      () async {
+    final first = _track(
+      id: '42',
+      queueItemId: 'queue-a',
+      playbackTrackId: '42',
+      analysis: _tempoAnalysis(),
+    );
+    final second = _track(
+      id: '43',
+      queueItemId: 'queue-b',
+      playbackTrackId: '43',
+      analysis: _tempoAnalysis(),
+    );
+    final provider = QueueProvider(
+      ApiClient(
+        dio: mockQueueDio((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              jsonEncode({
+                'items': [first.toJson(), second.toJson()],
+                'currentPosition': 0,
+              }),
+              200,
+            );
+          }
+          if (request.method == 'GET' &&
+              request.url.path.endsWith('/mix-plans')) {
+            return http.Response(
+              jsonEncode({
+                'data': [
+                  {
+                    'id': 'plan-queue-timing',
+                    'schemaVersion': 1,
+                    'name': 'Queue timing',
+                    'clips': [
+                      {
+                        'clipId': 'queue-a',
+                        'queueItemId': 'queue-a',
+                        'trackId': 42,
+                        'sourceStartMs': 0,
+                        'sourceEndMs': first.durationMs,
+                        'timelineStartMs': 0,
+                        'gainDb': 0,
+                      },
+                    ],
+                    'summary': {
+                      'clipCount': 1,
+                      'trackIds': [42],
+                      'durationMs': first.durationMs,
+                    },
+                    'version': 2,
+                    'createdAt': '2026-06-03T01:02:03Z',
+                    'updatedAt': '2026-06-03T02:03:04Z',
+                  },
+                ],
+                'total': 1,
+                'limit': 50,
+                'offset': 0,
+              }),
+              200,
+            );
+          }
+          return http.Response('', 404);
+        }),
+      ),
+    );
+
+    await provider.loadQueue();
+
+    expect(
+      provider.timelineClipFor(second, _fallback(second)).timelineStartMs,
+      232000,
+    );
+    expect(provider.mixPlanClips['queue-b']?.queueItemId, 'queue-b');
+  });
+
+  test(
       'loadQueue does not hydrate stale queue-item-aware clips through shared track id',
       () async {
     final fresh =
@@ -898,6 +1005,82 @@ void main() {
         'gainDb': 0.0,
       },
     ]);
+  });
+
+  test('analyzed trim edits save downbeat-locked queue timing defaults',
+      () async {
+    final first = _track(
+      id: '42',
+      queueItemId: 'queue-a',
+      playbackTrackId: '42',
+      analysis: _tempoAnalysis(),
+    );
+    final second = _track(
+      id: '43',
+      queueItemId: 'queue-b',
+      playbackTrackId: '43',
+      analysis: _tempoAnalysis(),
+    );
+    Map<String, dynamic>? savedBody;
+    final provider = QueueProvider(
+      ApiClient(
+        dio: mockQueueDio((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              jsonEncode({
+                'items': [first.toJson(), second.toJson()],
+                'currentPosition': 0,
+              }),
+              200,
+            );
+          }
+          if (request.method == 'GET' &&
+              request.url.path.endsWith('/mix-plans')) {
+            return http.Response(
+              jsonEncode({'data': [], 'total': 0, 'limit': 50, 'offset': 0}),
+              200,
+            );
+          }
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/mix-plans')) {
+            savedBody = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              jsonEncode({
+                'id': 'plan-queue-timing',
+                'schemaVersion': 1,
+                'name': savedBody!['name'],
+                'clips': savedBody!['clips'],
+                'summary': {
+                  'clipCount': 2,
+                  'trackIds': [42, 43],
+                  'durationMs': 472000,
+                },
+                'version': 1,
+                'createdAt': '2026-06-03T01:02:03Z',
+                'updatedAt': '2026-06-03T02:03:04Z',
+              }),
+              201,
+            );
+          }
+          return http.Response('', 404);
+        }),
+      ),
+    );
+
+    await provider.loadQueue();
+    await provider.setTrimRange(second, TrimRange.full(second.durationMs));
+
+    expect(savedBody, isNotNull);
+    expect(
+        (savedBody!['clips'] as List).map((clip) {
+          final json = clip as Map<String, dynamic>;
+          return json['timelineStartMs'];
+        }),
+        [0, 232000]);
+    expect(
+      provider.timelineClipFor(second, _fallback(second)).timelineStartMs,
+      232000,
+    );
   });
 
   test('overlapping timing edits create one plan then coalesce into update',
