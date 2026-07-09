@@ -43,6 +43,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   Duration _bufferedPosition = Duration.zero;
   bool _isPlaying = false;
   int _activeVoiceCount = 0;
+  double _playbackSpeed = 1;
   audio_service.AudioProcessingState _processingState =
       audio_service.AudioProcessingState.ready;
   DateTime? _lastStatePushAt;
@@ -97,6 +98,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     _bufferedPosition = snapshot.localDuration;
     _isPlaying = snapshot.playing;
     _activeVoiceCount = snapshot.activeVoiceCount;
+    _playbackSpeed = snapshot.playbackSpeed;
     _processingState = _audioProcessingStateFor(snapshot.processingState);
   }
 
@@ -193,7 +195,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
         playing: _isPlaying,
         updatePosition: _position,
         bufferedPosition: _bufferedPosition,
-        speed: 1,
+        speed: _playbackSpeed,
         updateTime: _now(),
         queueIndex: _queueIndex,
       ),

@@ -830,8 +830,17 @@ class QueueTimelineController {
         playing: _engine.isPlaying,
         processingState: _processingState,
         activeVoiceCount: _engine.pool.activeVoiceCount,
+        playbackSpeed: _playbackSpeedForGlobal(globalMs),
       ),
     );
+  }
+
+  double _playbackSpeedForGlobal(int globalMs) {
+    final clip = _currentClip();
+    if (clip == null) return 1;
+    return (_engine.clock.rate * clip.playbackRateAt(globalMs))
+        .clamp(minTempoAutomationRate, maxTempoAutomationRate)
+        .toDouble();
   }
 
   Future<void> _onClipCompleted(ClipCompletionEvent event) async {
