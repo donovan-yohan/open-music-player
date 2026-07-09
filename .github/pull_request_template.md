@@ -42,6 +42,7 @@
 - Head SHA:
 - Commands + exit codes:
 - `scripts/agentic-cycle` evidence path:
+- `scripts/release-audit` verdict:
 - Build/deploy/device IDs:
 - Android APK SHA256 / `scripts/dogfood-android` evidence path:
 - Caveats/follow-ups:

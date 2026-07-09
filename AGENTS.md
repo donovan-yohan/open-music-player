@@ -16,7 +16,7 @@ physical mobile dogfood path continue to work together.
 - Android/audio dogfood -> `scripts/dogfood-android`, `docs/ANDROID_PR_ARTIFACTS.md`.
 - Agentic delivery gates -> `docs/agentic-delivery.md`,
   `.github/pull_request_template.md`, `scripts/agentic-harness`,
-  `scripts/agentic-cycle`.
+  `scripts/agentic-cycle`, `scripts/release-audit`.
 - Playback timeline ADR -> `docs/adr/0001-playback-timeline-source-of-truth.md`.
 
 See `docs/context-map.md` for the fuller map and harness table.
@@ -53,6 +53,7 @@ See `docs/context-map.md` for the fuller map and harness table.
   `scripts/lint delivery`
 - Exact-head dev-cycle plan/run: `scripts/agentic-cycle --base origin/main` or
   `scripts/agentic-cycle --run --base origin/main`
+- Release/closeout audit: `scripts/release-audit --pr <number> --issue <number>`
 - Build checks: `scripts/build`
 - Local backend smoke: `scripts/smoke`
 - Isolated backend smoke: `scripts/smoke isolated`
@@ -77,6 +78,8 @@ Use RTK wrappers for noisy output when running these through Codex.
   delivery scaffold.
 - Use `scripts/agentic-cycle` to classify changed files, choose gates, and write
   `/tmp` evidence for nontrivial local PR handoffs.
+- Use `scripts/release-audit` before calling an epic/PR shipped; it verifies
+  default-branch truth, PR checks, mergeability, review state, and issue state.
 - Use `scripts/dev test-infra` when backend tests need PostgreSQL/Redis/MinIO
   without a backend worker consuming queue jobs.
 - Keep the OMP delivery rules in `docs/agentic-delivery.md` aligned with the

@@ -27,6 +27,9 @@ jobs:
       - name: Plan exact-head dev cycle
         run: scripts/agentic-cycle --committed-only --base origin/main
 
+      - name: Test release audit classifier
+        run: scripts/release-audit --self-test
+
   backend:
     name: Backend (Go)
     runs-on: ubuntu-latest

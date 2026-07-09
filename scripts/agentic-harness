@@ -123,6 +123,7 @@ def check_required_files() -> None:
         "scripts/dogfood-android",
         "scripts/agentic-cycle",
         "scripts/agentic-harness",
+        "scripts/release-audit",
         ".github/workflows/ci.yml",
         ".github/pull_request_template.md",
         ".github/ISSUE_TEMPLATE/agentic-work-packet.md",
@@ -141,6 +142,7 @@ def check_executable_scripts() -> None:
         "scripts/dogfood-android",
         "scripts/agentic-cycle",
         "scripts/agentic-harness",
+        "scripts/release-audit",
     ]:
         path = ROOT / name
         if path.exists() and not os.access(path, os.X_OK):
@@ -157,6 +159,7 @@ def check_agent_docs() -> None:
             "docs/agentic-delivery.md",
             "scripts/agentic-harness",
             "scripts/agentic-cycle",
+            "scripts/release-audit",
             "scripts/dogfood-android",
             "docs/adr/0001-playback-timeline-source-of-truth.md",
         ],
@@ -167,6 +170,7 @@ def check_agent_docs() -> None:
             "Agentic Delivery And Release Gates",
             "scripts/agentic-harness",
             "scripts/agentic-cycle",
+            "scripts/release-audit",
             "scripts/dogfood-android",
             "docs/adr/0001-playback-timeline-source-of-truth.md",
         ],
@@ -177,6 +181,7 @@ def check_agent_docs() -> None:
             "Resource Closeout",
             "scripts/lint delivery",
             "scripts/agentic-cycle",
+            "scripts/release-audit",
             "scripts/dogfood-android",
         ],
         ".github/pull_request_template.md": [
@@ -187,6 +192,7 @@ def check_agent_docs() -> None:
             "Gate classification",
             "Exact-head evidence",
             "scripts/agentic-cycle",
+            "scripts/release-audit",
             "Android APK SHA256",
             "docs/agentic-delivery.md",
         ],
@@ -223,6 +229,7 @@ def check_ci_wires_harness() -> None:
     required_phrases = [
         "scripts/lint delivery",
         "scripts/agentic-cycle --committed-only",
+        "scripts/release-audit --self-test",
         "scripts/lint backend",
         "scripts/test backend",
         "scripts/build backend",
