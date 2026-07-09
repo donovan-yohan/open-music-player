@@ -79,6 +79,7 @@ class VoicePool {
   final List<Voice> _allVoices = [];
   final List<StreamSubscription> _subscriptions = [];
   final Map<Voice, StreamSubscription<VoiceEvent>> _voiceSubscriptions = {};
+  final Map<Voice, _PlaybackTuningState> _voiceTuning = {};
   final Map<String, VoiceEventKind> _voiceStatus = {};
   final Map<String, int> _lastDriftCorrectionMs = {};
   final Set<String> _capacityEvictedClipIds = {};
@@ -746,8 +747,29 @@ class VoicePool {
       rate: safeRate,
       pitchMode: pitchMode,
     );
-    await voice.setSpeed(safeRate);
-    final pitchSupported = await voice.setPitch(pitchFactor);
+    final previous = _voiceTuning[voice];
+    final speedChanged = previous == null ||
+        (previous.speed - safeRate).abs() >= _tuningRateEpsilon;
+    final pitchChanged = previous == null ||
+        (previous.pitchFactor - pitchFactor).abs() >= _tuningPitchEpsilon;
+
+    final appliedSpeed = speedChanged ? safeRate : previous.speed;
+    if (speedChanged) {
+      await voice.setSpeed(safeRate);
+    }
+
+    bool? pitchSupported = previous?.pitchSupported;
+    final appliedPitchFactor =
+        pitchChanged ? pitchFactor : previous.pitchFactor;
+    if (pitchChanged || pitchSupported == null) {
+      pitchSupported = await voice.setPitch(pitchFactor);
+    }
+    _voiceTuning[voice] = _PlaybackTuningState(
+      speed: appliedSpeed,
+      pitchFactor: appliedPitchFactor,
+      pitchSupported: pitchSupported,
+    );
+
     if (clipId == null) return;
     final needsPitchLock =
         (pitchFactor - 1).abs() < 0.0001 && (safeRate - 1).abs() >= 0.0001;
@@ -790,6 +812,21 @@ class VoicePool {
       _pitchFallbackController.add(Set.unmodifiable(_pitchFallbackClipIds));
     }
   }
+}
+
+const double _tuningRateEpsilon = 0.001;
+const double _tuningPitchEpsilon = 0.001;
+
+class _PlaybackTuningState {
+  const _PlaybackTuningState({
+    required this.speed,
+    required this.pitchFactor,
+    required this.pitchSupported,
+  });
+
+  final double speed;
+  final double pitchFactor;
+  final bool pitchSupported;
 }
 
 class _PreparedVoice {

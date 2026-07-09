@@ -188,6 +188,11 @@ transition cannot leak tuning into the next loaded track. Pitch shifting is
 best-effort on unsupported just_audio platforms; Android supports the dogfood
 path.
 
+The voice pool caches the last applied speed/pitch pair for each deck and does
+not resend unchanged tuning on steady gain/sync ticks. BPM ramps still update
+when the effective rate changes, but a stable rate should not churn the audio
+backend.
+
 ## Key and Camelot analysis
 
 The built-in ffmpeg analyzer now emits `key` and `camelot` summaries for real

@@ -166,6 +166,64 @@ void main() {
     expect(pool.model.clips.map((clip) => clip.id), ['a', 'b']);
   });
 
+  test('unchanged tempo tuning is not resent on steady sync ticks', () async {
+    await pool.loadMix(
+      TimelineModel(
+        clips: [
+          _clip(
+            'a',
+            0,
+            rateAutomation: const PlaybackRateAutomation(baseRate: 1.25),
+          ),
+        ],
+      ),
+    );
+
+    final a = pool.activeVoices['a'] as FakeVoice;
+    final speedCalls = a.speedLog.length;
+    final pitchCalls = a.pitchLog.length;
+
+    await pool.syncAt(0);
+    await pool.syncAt(0);
+
+    expect(a.speedLog.length, speedCalls);
+    expect(a.pitchLog.length, pitchCalls);
+  });
+
+  test('small tempo ramp changes accumulate against the last applied rate',
+      () async {
+    await pool.loadMix(
+      TimelineModel(
+        clips: [
+          _clip(
+            'a',
+            0,
+            rateAutomation: const PlaybackRateAutomation(
+              segments: [
+                PlaybackRateSegment(
+                  startMs: 0,
+                  endMs: 4000,
+                  startRate: 1,
+                  endRate: 1.004,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+
+    final a = pool.activeVoices['a'] as FakeVoice;
+    final speedCalls = a.speedLog.length;
+
+    await pool.syncAt(500);
+    expect(a.speedLog.length, speedCalls);
+
+    await pool.syncAt(1500);
+    expect(a.speedLog.length, speedCalls + 1);
+    expect(a.speedLog.last, closeTo(1.0015, 0.0001));
+  });
+
   test('applies per-voice BPM transition rates during an overlap', () async {
     await pool.loadMix(
       TimelineModel(
