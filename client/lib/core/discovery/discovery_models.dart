@@ -165,6 +165,8 @@ class DiscoveryCandidate {
   final String? thumbnailUrl;
   final bool downloadable;
   final bool playable;
+  final Map<String, dynamic> metadata;
+  final DiscoverySourceQuality? sourceQuality;
 
   const DiscoveryCandidate({
     required this.candidateId,
@@ -179,9 +181,14 @@ class DiscoveryCandidate {
     this.thumbnailUrl,
     required this.downloadable,
     required this.playable,
+    this.metadata = const {},
+    this.sourceQuality,
   });
 
   factory DiscoveryCandidate.fromJson(Map<String, dynamic> json) {
+    final metadata = _readMap(json['metadata']);
+    final sourceQualityJson = _readOptionalMap(json['sourceQuality']) ??
+        _readOptionalMap(metadata['sourceQuality']);
     return DiscoveryCandidate(
       candidateId: json['candidateId'] as String? ?? '',
       provider: json['provider'] as String? ?? 'unknown',
@@ -197,10 +204,17 @@ class DiscoveryCandidate {
       ),
       downloadable: json['downloadable'] as bool? ?? false,
       playable: json['playable'] as bool? ?? false,
+      metadata: metadata,
+      sourceQuality: sourceQualityJson == null
+          ? null
+          : DiscoverySourceQuality.fromJson(sourceQualityJson),
     );
   }
 
   factory DiscoveryCandidate.fromQueueItemJson(Map<String, dynamic> json) {
+    final metadata = _readMap(json['metadata']);
+    final sourceQualityJson = _readOptionalMap(json['sourceQuality']) ??
+        _readOptionalMap(metadata['sourceQuality']);
     return DiscoveryCandidate(
       candidateId: json['candidateId'] as String? ?? '',
       provider: json['provider'] as String? ?? 'library',
@@ -216,6 +230,10 @@ class DiscoveryCandidate {
       ),
       downloadable: false,
       playable: true,
+      metadata: metadata,
+      sourceQuality: sourceQualityJson == null
+          ? null
+          : DiscoverySourceQuality.fromJson(sourceQualityJson),
     );
   }
 
@@ -232,6 +250,7 @@ class DiscoveryCandidate {
       if (durationMs != null) 'durationMs': durationMs,
       if (thumbnailUrl != null) 'thumbnailUrl': thumbnailUrl,
       'downloadable': downloadable,
+      if (metadata.isNotEmpty) 'metadata': metadata,
     };
   }
 
@@ -262,6 +281,69 @@ class DiscoveryCandidate {
   }
 }
 
+class DiscoverySourceQuality {
+  final int score;
+  final String classification;
+  final String recommendation;
+  final double confidence;
+  final List<String> reasons;
+  final List<String> warnings;
+  final String provenance;
+
+  const DiscoverySourceQuality({
+    required this.score,
+    required this.classification,
+    required this.recommendation,
+    required this.confidence,
+    this.reasons = const [],
+    this.warnings = const [],
+    this.provenance = '',
+  });
+
+  factory DiscoverySourceQuality.fromJson(Map<String, dynamic> json) {
+    return DiscoverySourceQuality(
+      score: _readInt(json['score']) ?? 0,
+      classification: json['classification'] as String? ?? 'unknown',
+      recommendation: json['recommendation'] as String? ?? 'review',
+      confidence: _readDouble(json['confidence']) ?? 0,
+      reasons: _readStringList(json['reasons']),
+      warnings: _readStringList(json['warnings']),
+      provenance: json['provenance'] as String? ?? '',
+    );
+  }
+
+  String get label {
+    return switch (classification) {
+      'official_audio' => 'Official audio',
+      'topic_audio' => 'Topic audio',
+      'artist_upload' => 'Artist upload',
+      'music_video' => 'Music video',
+      'live' => 'Live',
+      'lyric_video' => 'Lyric video',
+      'interview' => 'Interview',
+      'cover' => 'Cover',
+      'remix' => 'Remix',
+      'altered_audio' => 'Altered',
+      'direct_url' => 'Direct URL',
+      _ => switch (recommendation) {
+          'preferred' => 'Preferred',
+          'acceptable' => 'Acceptable',
+          'avoid' => 'Avoid',
+          _ => 'Review',
+        },
+    };
+  }
+
+  String get debugReason {
+    if (warnings.isNotEmpty &&
+        (recommendation == 'avoid' || recommendation == 'review')) {
+      return warnings.first;
+    }
+    if (reasons.isNotEmpty) return reasons.last;
+    return '$score/100';
+  }
+}
+
 class DiscoveryProviderSummary {
   final String provider;
   final String status;
@@ -284,9 +366,8 @@ class DiscoveryProviderSummary {
       status: json['status'] as String? ?? 'unknown',
       resultCount: json['resultCount'] as int? ?? 0,
       elapsedMs: json['elapsedMs'] as int? ?? 0,
-      errorMessage: error is Map<String, dynamic>
-          ? error['message'] as String?
-          : null,
+      errorMessage:
+          error is Map<String, dynamic> ? error['message'] as String? : null,
     );
   }
 }
@@ -329,8 +410,8 @@ class DiscoveryAssistResponse {
     final rawStatus = (json['status'] as String? ?? '').trim();
     final status =
         const {'ok', 'disabled', 'clarification', 'error'}.contains(rawStatus)
-        ? rawStatus
-        : 'error';
+            ? rawStatus
+            : 'error';
     return DiscoveryAssistResponse(
       // A missing/blank status is treated as an error so the UI never silently
       // renders an unlabelled/unknown envelope as a success or empty screen.
@@ -500,12 +581,11 @@ class DiscoveryQueueItem {
     bool? canRemove,
     this.addedAt,
     this.updatedAt,
-  }) : playbackState = playbackState ?? status ?? 'queued',
-       canPlay =
-           canPlay ??
-           ((playbackState ?? status ?? '') == 'playable' && trackId != null),
-       canRetry = canRetry ?? ((playbackState ?? status ?? '') == 'failed'),
-       canRemove = canRemove ?? true;
+  })  : playbackState = playbackState ?? status ?? 'queued',
+        canPlay = canPlay ??
+            ((playbackState ?? status ?? '') == 'playable' && trackId != null),
+        canRetry = canRetry ?? ((playbackState ?? status ?? '') == 'failed'),
+        canRemove = canRemove ?? true;
 
   factory DiscoveryQueueItem.fromJson(Map<String, dynamic> json) {
     final sourceJson = json['sourceCandidate'];
@@ -514,23 +594,20 @@ class DiscoveryQueueItem {
         : DiscoveryCandidate.fromQueueItemJson(json);
     final queueItemId = json['queueItemId'] as String?;
     final trackId = _readInt(json['trackId']);
-    final rawState =
-        json['playbackState'] as String? ??
+    final rawState = json['playbackState'] as String? ??
         (trackId != null ? 'playable' : 'queued');
     final playbackState = _normalizePlaybackState(rawState);
-    final progress =
-        _readInt(json['progress']) ??
+    final progress = _readInt(json['progress']) ??
         (playbackState == 'playable'
             ? 100
             : playbackState == 'failed'
-            ? 0
-            : 0);
+                ? 0
+                : 0);
     final error = _blankToNull(json['error'] as String?);
     final downloadJobId = json['downloadJobId'] as String?;
 
     return DiscoveryQueueItem(
-      localId:
-          queueItemId ??
+      localId: queueItemId ??
           candidate.candidateId.ifNotEmpty ??
           downloadJobId ??
           candidate.sourceUrl,
@@ -544,8 +621,7 @@ class DiscoveryQueueItem {
       progress: progress,
       trackId: trackId,
       error: error,
-      canPlay:
-          json['canPlay'] as bool? ??
+      canPlay: json['canPlay'] as bool? ??
           (playbackState == 'playable' && trackId != null),
       canRetry: json['canRetry'] as bool? ?? playbackState == 'failed',
       canRemove: json['canRemove'] as bool? ?? true,
@@ -651,6 +727,33 @@ int? _readInt(Object? value) {
   if (value is num) return value.toInt();
   if (value is String) return int.tryParse(value);
   return null;
+}
+
+double? _readDouble(Object? value) {
+  if (value is double) return value;
+  if (value is num) return value.toDouble();
+  if (value is String) return double.tryParse(value);
+  return null;
+}
+
+Map<String, dynamic> _readMap(Object? value) {
+  return _readOptionalMap(value) ?? const {};
+}
+
+Map<String, dynamic>? _readOptionalMap(Object? value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) {
+    return value.map((key, entry) => MapEntry(key.toString(), entry));
+  }
+  return null;
+}
+
+List<String> _readStringList(Object? value) {
+  if (value is! List) return const [];
+  return value
+      .map((entry) => entry?.toString().trim() ?? '')
+      .where((entry) => entry.isNotEmpty)
+      .toList();
 }
 
 DateTime? _readDate(Object? value) {

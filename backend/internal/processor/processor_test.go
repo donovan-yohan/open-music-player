@@ -481,6 +481,11 @@ func TestMetadataProvenanceRetainsRawProviderAndCleanup(t *testing.T) {
 			"title":         "Madeon // All My Friends (Visualizer) [HD]",
 			"uploader":      "madeonofficial",
 			"thumbnail_url": "https://img.example/front.jpg",
+			"source_quality": map[string]interface{}{
+				"score":          88,
+				"classification": "official_audio",
+				"recommendation": "preferred",
+			},
 		},
 	}
 	cleanup := applyDeterministicCleanup(metadata)
@@ -493,6 +498,10 @@ func TestMetadataProvenanceRetainsRawProviderAndCleanup(t *testing.T) {
 	provider := decoded["raw_provider"].(map[string]interface{})
 	if provider["title"] != "Madeon // All My Friends (Visualizer) [HD]" {
 		t.Fatalf("raw provider title = %v", provider["title"])
+	}
+	sourceQuality := provider["source_quality"].(map[string]interface{})
+	if sourceQuality["classification"] != "official_audio" {
+		t.Fatalf("source quality provenance = %#v", sourceQuality)
 	}
 	deterministic := decoded["deterministic"].(map[string]interface{})
 	if deterministic["artist"] != "Madeon" || deterministic["title"] != "All My Friends" || deterministic["applied"] != true {

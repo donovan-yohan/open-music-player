@@ -192,6 +192,7 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 		Uploader:     candidate.Uploader,
 		DurationMs:   candidate.DurationMs,
 		ThumbnailURL: candidate.ThumbnailURL,
+		Metadata:     candidate.Metadata,
 	}, req.MBRecordingID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create download job")

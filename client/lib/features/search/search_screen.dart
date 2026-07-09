@@ -1501,6 +1501,10 @@ class _SearchScreenState extends State<SearchScreen> {
                           height: 1.16,
                         ),
                       ),
+                      if (candidate.sourceQuality != null) ...[
+                        const SizedBox(height: 5),
+                        _buildSourceQualityChip(candidate.sourceQuality!),
+                      ],
                     ],
                   ),
                 ),
@@ -1516,6 +1520,67 @@ class _SearchScreenState extends State<SearchScreen> {
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildSourceQualityChip(DiscoverySourceQuality quality) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final (icon, background, foreground) = switch (quality.recommendation) {
+      'preferred' => (
+          Icons.verified,
+          colorScheme.primaryContainer,
+          colorScheme.onPrimaryContainer,
+        ),
+      'acceptable' => (
+          Icons.check_circle_outline,
+          colorScheme.secondaryContainer,
+          colorScheme.onSecondaryContainer,
+        ),
+      'avoid' => (
+          Icons.warning_amber,
+          colorScheme.errorContainer,
+          colorScheme.onErrorContainer,
+        ),
+      _ => (
+          Icons.info_outline,
+          colorScheme.surfaceContainerHighest,
+          colorScheme.onSurfaceVariant,
+        ),
+    };
+    return Tooltip(
+      message: quality.debugReason,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: background,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 13, color: foreground),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    quality.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: foreground,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      height: 1.1,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

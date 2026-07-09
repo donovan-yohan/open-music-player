@@ -47,17 +47,18 @@ type QueueItem struct {
 }
 
 type SourceCandidate struct {
-	CandidateID  string `json:"candidateId"`
-	Provider     string `json:"provider"`
-	SourceID     string `json:"sourceId,omitempty"`
-	SourceURL    string `json:"sourceUrl"`
-	Title        string `json:"title"`
-	Artist       string `json:"artist,omitempty"`
-	Album        string `json:"album,omitempty"`
-	Uploader     string `json:"uploader,omitempty"`
-	DurationMs   int    `json:"durationMs,omitempty"`
-	ThumbnailURL string `json:"thumbnailUrl,omitempty"`
-	Downloadable bool   `json:"downloadable"`
+	CandidateID  string                 `json:"candidateId"`
+	Provider     string                 `json:"provider"`
+	SourceID     string                 `json:"sourceId,omitempty"`
+	SourceURL    string                 `json:"sourceUrl"`
+	Title        string                 `json:"title"`
+	Artist       string                 `json:"artist,omitempty"`
+	Album        string                 `json:"album,omitempty"`
+	Uploader     string                 `json:"uploader,omitempty"`
+	DurationMs   int                    `json:"durationMs,omitempty"`
+	ThumbnailURL string                 `json:"thumbnailUrl,omitempty"`
+	Downloadable bool                   `json:"downloadable"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // QueueState represents the full state of a user's playback queue

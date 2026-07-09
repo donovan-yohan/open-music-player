@@ -99,7 +99,7 @@ func (r *URLResolver) Resolve(rawURL string) (Candidate, error) {
 	// A valid validators result always carries a canonical absolute https URL, so
 	// the stored source URL is clean and stable rather than the raw pasted form.
 	sourceURL := result.Canonical
-	return Candidate{
+	candidate := Candidate{
 		CandidateID:  buildCandidateID(provider, result.MediaID, sourceURL),
 		Provider:     provider,
 		SourceID:     result.MediaID,
@@ -112,7 +112,8 @@ func (r *URLResolver) Resolve(rawURL string) (Candidate, error) {
 			"mediaType":     result.MediaType,
 			"titleResolved": false,
 		},
-	}, nil
+	}
+	return candidateWithSourceQuality(candidate, sourceQualityForDirectURL(candidate)), nil
 }
 
 // resolveTitle derives a best-effort, offline display title from the parsed URL.
