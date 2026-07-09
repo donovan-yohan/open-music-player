@@ -349,6 +349,47 @@ void main() {
     expect(find.text('124 BPM'), findsNothing);
   });
 
+  testWidgets(
+    'timeline analysis correction seeds first downbeat from playhead',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 2000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      apiClient.useAnalysisFixture();
+      playbackState.fakeTimelinePositionMs = 16000;
+
+      await pumpQueueScreen(tester);
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('timeline_edit_analysis_t1')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        tester
+            .widget<TextField>(
+              find.byKey(const ValueKey('analysis_correction_first_downbeat')),
+            )
+            .controller
+            ?.text,
+        '16000',
+      );
+
+      await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
+      await tester.pumpAndSettle();
+
+      expect(apiClient.analysisOverrideUpdates, hasLength(1));
+      expect(
+        apiClient.analysisOverrideUpdates.single.overrides.downbeatsMs?.first,
+        16000,
+      );
+    },
+  );
+
   testWidgets('play button starts the playable queue at the tapped item', (
     tester,
   ) async {
@@ -654,6 +695,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   int? fakeCurrentIndex;
   PlaybackContext? fakeContext;
   bool fakeIsPlaying = false;
+  int fakeTimelinePositionMs = 0;
 
   @override
   List<audio_service.MediaItem> get queue => fakeQueue;
@@ -678,7 +720,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   Stream<int> get timelinePositionMsStream => _timelinePositions.stream;
 
   @override
-  int get timelinePositionMs => 0;
+  int get timelinePositionMs => fakeTimelinePositionMs;
 
   @override
   TimelineModel get timelineModel => TimelineModel();

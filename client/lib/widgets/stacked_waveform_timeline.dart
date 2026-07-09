@@ -11,6 +11,11 @@ import '../models/trim_range.dart';
 import '../models/waveform.dart';
 import 'timeline_clip_widget.dart';
 
+typedef TimelineAnalysisEditCallback = void Function(
+  Track track, {
+  int? initialFirstDownbeatMs,
+});
+
 /// Stacked compact-waveform timeline for the phone-first mix planner
 /// (~390x844), wired to the live mix engine when a [timelineModel] and
 /// [positionMsStream] are supplied.
@@ -39,7 +44,7 @@ class StackedWaveformTimeline extends StatefulWidget {
   final void Function(Track, int)? onTrimEndChanged;
   final ValueChanged<Track>? onMoveEarlier;
   final ValueChanged<Track>? onMoveLater;
-  final ValueChanged<Track>? onEditAnalysis;
+  final TimelineAnalysisEditCallback? onEditAnalysis;
   final TimelineModel? timelineModel;
   final int playheadPositionMs;
   final Stream<int>? positionMsStream;
@@ -547,6 +552,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                           viewport,
                           paneWidth,
                           placedClips,
+                          playheadMs,
                         ),
                     ],
                   ),
@@ -877,6 +883,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     TimelineViewport viewport,
     double paneWidth,
     List<MixClip> peerClips,
+    int playheadMs,
   ) {
     final left = viewport.msToX(lane.timelineStartMs);
     final width = (viewport.msToX(lane.timelineEndMs) -
@@ -912,7 +919,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               Positioned(
                 right: 6,
                 top: 12,
-                child: _timelineSelectionControls(context, lane, peerClips),
+                child: _timelineSelectionControls(
+                  context,
+                  lane,
+                  peerClips,
+                  playheadMs,
+                ),
               ),
             _buildLaneIdentity(context, lane, viewport, paneWidth),
           ],
@@ -1297,6 +1309,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     BuildContext context,
     _LaneModel lane,
     List<MixClip> peerClips,
+    int playheadMs,
   ) {
     final theme = Theme.of(context);
     final track = lane.track;
@@ -1326,7 +1339,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                     constraints:
                         const BoxConstraints.tightFor(width: 36, height: 36),
                     padding: EdgeInsets.zero,
-                    onPressed: () => widget.onEditAnalysis!(track),
+                    onPressed: () => widget.onEditAnalysis!(
+                      track,
+                      initialFirstDownbeatMs:
+                          _analysisAnchorForLane(lane, playheadMs),
+                    ),
                   ),
                 if (movable)
                   IconButton(
@@ -1401,6 +1418,14 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         ),
       ),
     );
+  }
+
+  int? _analysisAnchorForLane(_LaneModel lane, int playheadMs) {
+    if (!lane.mixClip.isActiveAt(playheadMs)) return null;
+    return lane.mixClip
+        .sourcePositionAt(playheadMs)
+        .clamp(0, lane.clip.sourceDurationMs)
+        .toInt();
   }
 
   Widget? _selectedTransitionHint(

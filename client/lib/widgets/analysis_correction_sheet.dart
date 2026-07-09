@@ -8,12 +8,16 @@ import '../models/track_analysis.dart';
 Future<TrackAnalysisOverrides?> showAnalysisCorrectionSheet({
   required BuildContext context,
   required Track track,
+  int? initialFirstDownbeatMs,
 }) {
   return showModalBottomSheet<TrackAnalysisOverrides>(
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
-    builder: (_) => AnalysisCorrectionSheet(track: track),
+    builder: (_) => AnalysisCorrectionSheet(
+      track: track,
+      initialFirstDownbeatMs: initialFirstDownbeatMs,
+    ),
   );
 }
 
@@ -79,8 +83,13 @@ TrackAnalysisOverrides analysisOverridesFromCorrectionFields({
 
 class AnalysisCorrectionSheet extends StatefulWidget {
   final Track track;
+  final int? initialFirstDownbeatMs;
 
-  const AnalysisCorrectionSheet({super.key, required this.track});
+  const AnalysisCorrectionSheet({
+    super.key,
+    required this.track,
+    this.initialFirstDownbeatMs,
+  });
 
   @override
   State<AnalysisCorrectionSheet> createState() =>
@@ -103,7 +112,8 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
     final bpm = overrides?.bpm ??
         summary?.bpm?.numericValue?.toDouble() ??
         summary?.beatGrid?.bpm;
-    final firstDownbeat = _firstDownbeatMs(summary, overrides);
+    final firstDownbeat =
+        widget.initialFirstDownbeatMs ?? _firstDownbeatMs(summary, overrides);
     final phraseBeats = _phraseBeats(summary, overrides, bpm);
 
     _bpmController = TextEditingController(text: _formatNullableDouble(bpm));

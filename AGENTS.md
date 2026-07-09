@@ -71,15 +71,14 @@ Use RTK wrappers for noisy output when running these through Codex.
 ## Local Testing / Deploy
 
 Use this when user says "deploy backend/frontend" or asks for phone dogfood.
-Backend = tailnet dev API. Frontend = Android APK through remote ADB, or
-Flutter Web preview.
+Backend lives on `dev`; `server-mac` is for remote ADB/LLM, not the API.
 
-- Backend: `http://dev.fish-rattlesnake.ts.net:8080`
-- API: `http://dev.fish-rattlesnake.ts.net:8080/api/v1`
-- Remote Mac / ADB: `server-mac.fish-rattlesnake.ts.net`
-- Remote ADB socket: `tcp:server-mac.fish-rattlesnake.ts.net:5037`
+- Backend root: `http://dev.fish-rattlesnake.ts.net:8080`
+- API base: `http://dev.fish-rattlesnake.ts.net:8080/api/v1`
+- Remote ADB: `tcp:server-mac.fish-rattlesnake.ts.net:5037`
+- Known Pixel 10 Pro serial: `5B120DLCH002TK`
 
-Backend deploy from checkout you want live:
+Backend deploy from checkout you want live, then smoke:
 
 ```bash
 export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
@@ -87,7 +86,7 @@ scripts/tailnet-staging.sh start-downloads
 scripts/tailnet-staging.sh smoke
 ```
 
-Backend-only fast path:
+Backend-only fast path when downloads/worker not needed:
 
 ```bash
 export OMP_TAILNET_HOST=dev.fish-rattlesnake.ts.net
@@ -95,13 +94,13 @@ scripts/tailnet-staging.sh start-backend
 curl -fsS http://dev.fish-rattlesnake.ts.net:8080/health?deep=true
 ```
 
-Android frontend deploy:
+Android frontend deploy to physical phone through remote ADB:
 
 ```bash
 export ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037
+export ANDROID_SERIAL=5B120DLCH002TK
 adb devices -l
 
-ANDROID_SERIAL=<adb-serial> \
 OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
 OMP_SOURCE_REF="$(git rev-parse --abbrev-ref HEAD)@$(git rev-parse --short HEAD)" \
 OMP_BUILD_ID="<slice>-$(date -u +%Y%m%dT%H%M%SZ)" \
@@ -113,17 +112,17 @@ adb logcat -d -t 1000 | \
   rg -i "FATAL EXCEPTION|E/flutter|AndroidRuntime: FATAL|AndroidRuntime.*FATAL"
 ```
 
-Flutter Web frontend deploy:
+Flutter Web frontend preview:
 
 ```bash
 OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
   scripts/tailnet-staging.sh serve-web
 ```
 
-Use `scripts/tailnet-staging.sh urls` for current URLs. Report backend URL,
-build ID/source ref, Android serial or web URL, evidence path, and fatal-log
-status. `scripts/dogfood-android` writes evidence under
-`/tmp/open-music-player-dogfood-<build-id>/evidence.md`; Settings Build must
+Use `scripts/tailnet-staging.sh urls` for live URLs. Report backend URL, build
+ID/source ref, Android serial or web URL, evidence path, and fatal-log status.
+`scripts/dogfood-android` writes
+`/tmp/open-music-player-dogfood-<build-id>/evidence.md`. Settings Build must
 match `OMP_SOURCE_REF` and `OMP_BUILD_ID`.
 
 ## Architecture Guardrails
