@@ -10,7 +10,7 @@ domain concept moves or a new production harness becomes canonical.
 | Backend API | `backend/` | Go REST API, auth, library, queue, downloads, storage, analysis persistence | `scripts/test backend`, `scripts/lint backend`, `scripts/build backend` |
 | Flutter client | `client/` | Mobile/web/desktop app, playback engine, queue timeline, settings/build metadata | `scripts/test client`, `scripts/lint client`, `scripts/build client` |
 | Browser extension | `extension/` | Share/import surface for YouTube/SoundCloud style sources | `scripts/test extension`, `scripts/lint extension`, `scripts/build extension` |
-| Local stack | `docker-compose*.yml`, `scripts/local-low-memory.sh` | Postgres, Redis, MinIO, backend/analyzer dogfood services | `scripts/dev`, `scripts/smoke`, `scripts/smoke e2e` |
+| Local stack | `docker-compose*.yml`, `scripts/local-low-memory.sh` | Postgres, Redis, MinIO, backend/analyzer dogfood services, worker-free backend test dependencies | `scripts/dev`, `scripts/dev test-infra`, `scripts/smoke`, `scripts/smoke e2e` |
 | Android dogfood | `scripts/dogfood-android`, `docs/ANDROID_PR_ARTIFACTS.md` | Debug APK build/install evidence for physical-device playback checks | `scripts/dogfood-android build`, `scripts/dogfood-android all` |
 | Delivery harness | `AGENTS.md`, `docs/context-map.md`, `docs/agentic-delivery.md`, `.github/`, `scripts/agentic-harness`, `scripts/agentic-cycle` | Agent handoff map, CI wiring, PR evidence, exact-head gates, scaffold drift checks | `scripts/agentic-harness`, `scripts/agentic-cycle`, `scripts/lint delivery` |
 | Architecture decisions | `docs/adr/` | Durable decisions and consequences for hard-to-reverse seams | `scripts/agentic-harness` |
@@ -93,7 +93,8 @@ domain concept moves or a new production harness becomes canonical.
 | Flutter check | `scripts/lint client`, `scripts/test client` | Runs `flutter pub get`, analyze, and tests. |
 | Extension check | `scripts/lint extension`, `scripts/test extension` | Runs `npm ci` when needed and TypeScript/regression tests. |
 | Local API smoke | `scripts/smoke` | Uses low-memory backend stack. |
-| Parallel-worktree smoke | `scripts/dev isolated`, `scripts/smoke isolated` | Uses high host ports to avoid the long-lived local OMP stack. |
+| Parallel-worktree smoke | `scripts/dev isolated`, `scripts/smoke isolated` | Uses worktree-derived high host ports to avoid the long-lived local OMP stack. |
+| Worker-free backend deps | `scripts/dev test-infra` | Starts PostgreSQL, Redis, and MinIO without backend workers so tests own queue state. |
 | Download/worker smoke | `scripts/smoke e2e` | Enables Redis/worker path and writes evidence under `/tmp`. |
 | Android APK evidence | `scripts/dogfood-android build` | Builds debug APK with explicit API/source/build markers and writes evidence under `/tmp`. |
 | Android device dogfood | `scripts/dogfood-android all` | Builds, installs through ADB, captures a logcat tail, and records device evidence. |

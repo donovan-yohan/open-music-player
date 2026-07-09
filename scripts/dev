@@ -4,11 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 use_isolated_ports() {
-  export SERVER_PORT="${SERVER_PORT:-18080}"
-  export POSTGRES_PORT="${POSTGRES_PORT:-15434}"
-  export REDIS_PORT="${REDIS_PORT:-16380}"
-  export MINIO_PORT="${MINIO_PORT:-19000}"
-  export MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-19001}"
+  local offset
+  offset="$(printf '%s' "${OMP_ISOLATED_PORT_SEED:-$ROOT}" | cksum | awk '{print $1 % 1000}')"
+  export SERVER_PORT="${SERVER_PORT:-$((18080 + offset))}"
+  export POSTGRES_PORT="${POSTGRES_PORT:-$((25000 + offset))}"
+  export REDIS_PORT="${REDIS_PORT:-$((26000 + offset))}"
+  export MINIO_PORT="${MINIO_PORT:-$((27000 + offset))}"
+  export MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-$((28000 + offset))}"
   export OMP_BACKEND_BASE_URL="${OMP_BACKEND_BASE_URL:-http://localhost:${SERVER_PORT}}"
 }
 
@@ -20,12 +22,19 @@ case "${1:-low-memory}" in
     use_isolated_ports
     exec "$ROOT/scripts/local-low-memory.sh" start
     ;;
+  test-infra)
+    exec "$ROOT/scripts/local-low-memory.sh" test-infra
+    ;;
+  test-infra-isolated|isolated-test-infra)
+    use_isolated_ports
+    exec "$ROOT/scripts/local-low-memory.sh" test-infra
+    ;;
   full)
     cd "$ROOT"
     exec docker compose up -d
     ;;
   *)
-    echo "usage: scripts/dev [low-memory|backend|isolated|codex|full]" >&2
+    echo "usage: scripts/dev [low-memory|backend|isolated|codex|test-infra|test-infra-isolated|full]" >&2
     exit 2
     ;;
 esac

@@ -50,6 +50,7 @@ exercise the same behavior:
 - `scripts/lint backend|client|extension`
 - `scripts/test backend|client|extension`
 - `scripts/build backend|client|extension`
+- `scripts/dev test-infra`
 - `scripts/dev isolated`
 - `scripts/smoke isolated`
 - `scripts/smoke playback-isolated`
@@ -69,6 +70,11 @@ machine should execute the planned lint/test gates and write JSON evidence under
 The runner is advisory for expensive gates: it lists Android dogfood by default
 instead of running it. Pass `--include-device` only when an authorized physical
 device is reachable and the central claim depends on Android/audio behavior.
+
+Use `scripts/dev test-infra` before backend tests that need PostgreSQL, Redis,
+or MinIO but should not race a running backend worker. Use
+`scripts/dev test-infra-isolated` from parallel worktrees or CI-like local runs
+when the default dogfood stack might already own the normal ports.
 
 ## Mobile And Audio Dogfood
 

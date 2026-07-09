@@ -38,11 +38,12 @@ FLUTTER_API_BASE_URL="${OMP_FLUTTER_API_BASE_URL:-${OMP_API_BASE_URL:-$BACKEND_B
 
 usage() {
   cat <<'USAGE'
-usage: scripts/local-low-memory.sh <start|start-downloads|stop|clean|status|smoke|playback-smoke|e2e-smoke|flutter-web-command>
+usage: scripts/local-low-memory.sh <start|start-downloads|test-infra|stop|clean|status|smoke|playback-smoke|e2e-smoke|flutter-web-command>
 
 commands:
   start                 start backend + PostgreSQL + MinIO, with Redis off and WORKER_COUNT=0
   start-downloads       start optional Redis too, with REDIS_ENABLED=true and WORKER_COUNT defaulting to 1
+  test-infra            start PostgreSQL + MinIO + Redis only, with no backend worker
   stop                  stop the low-memory compose stack, keeping low-memory volumes
   clean                 stop the low-memory stack and remove its containers, network, and volumes
   status                show compose service status
@@ -72,6 +73,13 @@ case "$cmd" in
     ;;
   start-downloads)
     REDIS_ENABLED=true WORKER_COUNT="${WORKER_COUNT:-1}" "${COMPOSE[@]}" --profile downloads up -d --build postgres minio minio-init redis backend
+    ;;
+  test-infra)
+    "${COMPOSE[@]}" rm -sf backend analyzer >/dev/null 2>&1 || true
+    REDIS_ENABLED=true WORKER_COUNT=0 "${COMPOSE[@]}" --profile downloads up -d \
+      --force-recreate --remove-orphans --wait --wait-timeout 60 \
+      postgres minio redis
+    REDIS_ENABLED=true WORKER_COUNT=0 "${COMPOSE[@]}" run --rm --no-deps minio-init
     ;;
   stop)
     "${COMPOSE[@]}" --profile downloads --profile smoke down

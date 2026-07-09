@@ -241,6 +241,29 @@ def check_ci_wires_harness() -> None:
             fail(f".github/workflows/ci.yml: CI must run {phrase}")
 
 
+def check_local_dev_contracts() -> None:
+    required_phrases = {
+        ".gitignore": ["outputs/", "deploy/.env"],
+        "scripts/dev": ["test-infra", "test-infra-isolated"],
+        "scripts/local-low-memory.sh": ["test-infra", "WORKER_COUNT=0"],
+        "docs/LOW_MEMORY_LOCAL_DEV.md": [
+            "scripts/dev test-infra",
+            "scripts/dev test-infra-isolated",
+        ],
+        "docs/context-map.md": ["scripts/dev test-infra"],
+        "docs/agentic-delivery.md": ["scripts/dev test-infra"],
+    }
+    for name, phrases in required_phrases.items():
+        path = ROOT / name
+        if not path.exists():
+            fail(f"{name}: required local dev contract file is missing")
+            continue
+        text = path.read_text(errors="replace")
+        for phrase in phrases:
+            if phrase not in text:
+                fail(f"{name}: missing local dev contract phrase {phrase!r}")
+
+
 def check_json_syntax(files: list[Path]) -> None:
     for path in files:
         if path.suffix.lower() != ".json":
@@ -354,6 +377,7 @@ def main() -> int:
     check_executable_scripts()
     check_agent_docs()
     check_ci_wires_harness()
+    check_local_dev_contracts()
     check_json_syntax(files)
     check_python_syntax(files)
     check_bash_syntax(files)

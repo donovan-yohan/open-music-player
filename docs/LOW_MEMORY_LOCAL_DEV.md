@@ -36,6 +36,12 @@ scripts/local-low-memory.sh playback-smoke
 # Run the full local discovery -> queue -> download -> MinIO -> signed playback gate.
 scripts/local-low-memory.sh e2e-smoke
 
+# Start only PostgreSQL, MinIO, and Redis for backend tests.
+scripts/dev test-infra
+
+# Same dependency-only stack on worktree-derived high ports for parallel worktrees.
+scripts/dev test-infra-isolated
+
 # Show services.
 scripts/local-low-memory.sh status
 
@@ -167,5 +173,25 @@ Set `WORKER_COUNT=0` if you need Redis-backed queue APIs but want downloads to r
 ```bash
 WORKER_COUNT=0 scripts/local-low-memory.sh start-downloads
 ```
+
+For automated backend tests, prefer the dependency-only command instead of a
+backend-running stack:
+
+```bash
+scripts/dev test-infra
+```
+
+This starts PostgreSQL, MinIO, and Redis but does not start the backend service
+or any worker. The test process owns queue mutations and download job state, so
+failures are easier to reproduce. In a parallel worktree, use:
+
+```bash
+scripts/dev test-infra-isolated
+```
+
+The isolated wrappers derive high host ports from the worktree path so multiple
+checkouts do not default to the same fixed ports. Set `SERVER_PORT`,
+`POSTGRES_PORT`, `REDIS_PORT`, `MINIO_PORT`, or `MINIO_CONSOLE_PORT` explicitly
+when you need a known port.
 
 Use the regular `docker-compose.yml` only for full-stack development or release-like validation where the heavier worker/download path is explicitly in scope.

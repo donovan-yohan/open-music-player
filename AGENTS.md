@@ -42,7 +42,10 @@ See `docs/context-map.md` for the fuller map and harness table.
 ## Commands
 
 - Dev stack: `scripts/dev`
-- Isolated dev stack for parallel worktrees: `scripts/dev isolated`
+- Isolated dev stack for parallel worktrees: `scripts/dev isolated` with
+  worktree-derived high ports unless explicit port env vars are set
+- Worker-free backend test dependencies: `scripts/dev test-infra` or
+  `scripts/dev test-infra-isolated`
 - Full local tests: `scripts/test`
 - Component tests: `scripts/test backend|client|extension`
 - Static checks: `scripts/lint`
@@ -74,6 +77,8 @@ Use RTK wrappers for noisy output when running these through Codex.
   delivery scaffold.
 - Use `scripts/agentic-cycle` to classify changed files, choose gates, and write
   `/tmp` evidence for nontrivial local PR handoffs.
+- Use `scripts/dev test-infra` when backend tests need PostgreSQL/Redis/MinIO
+  without a backend worker consuming queue jobs.
 - Keep the OMP delivery rules in `docs/agentic-delivery.md` aligned with the
   global `agentic-engineering-delivery` Codex skill.
 
