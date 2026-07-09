@@ -11,7 +11,9 @@ domain concept moves or a new production harness becomes canonical.
 | Flutter client | `client/` | Mobile/web/desktop app, playback engine, queue timeline, settings/build metadata | `scripts/test client`, `scripts/lint client`, `scripts/build client` |
 | Browser extension | `extension/` | Share/import surface for YouTube/SoundCloud style sources | `scripts/test extension`, `scripts/lint extension`, `scripts/build extension` |
 | Local stack | `docker-compose*.yml`, `scripts/local-low-memory.sh` | Postgres, Redis, MinIO, backend/analyzer dogfood services | `scripts/dev`, `scripts/smoke`, `scripts/smoke e2e` |
+| Android dogfood | `scripts/dogfood-android`, `docs/ANDROID_PR_ARTIFACTS.md` | Debug APK build/install evidence for physical-device playback checks | `scripts/dogfood-android build`, `scripts/dogfood-android all` |
 | Delivery harness | `AGENTS.md`, `docs/context-map.md`, `docs/agentic-delivery.md`, `.github/`, `scripts/agentic-harness` | Agent handoff map, CI wiring, PR evidence, exact-head gates, scaffold drift checks | `scripts/agentic-harness`, `scripts/lint delivery` |
+| Architecture decisions | `docs/adr/` | Durable decisions and consequences for hard-to-reverse seams | `scripts/agentic-harness` |
 
 ## Domain Concepts
 
@@ -20,6 +22,8 @@ domain concept moves or a new production harness becomes canonical.
 - Source files: `client/lib/core/audio/`, `client/lib/core/engine/`.
 - Key contracts: `PlaybackState`, `QueueTimelineController`,
   `PlaybackSnapshot`, `MixSession`, `CueTimeline`, `TimelineModel`.
+- Architecture decision:
+  `docs/adr/0001-playback-timeline-source-of-truth.md`.
 - UI surfaces: `client/lib/screens/queue_screen.dart`,
   `client/lib/widgets/stacked_waveform_timeline.dart`,
   `client/lib/widgets/timeline_clip_widget.dart`.
@@ -61,7 +65,8 @@ domain concept moves or a new production harness becomes canonical.
   `docs/LOW_MEMORY_LOCAL_DEV.md`.
 - Tailnet staging: `scripts/tailnet-staging.sh`, `docs/TAILNET_STAGING.md`.
 - Android dogfood: Flutter APK build with `OMP_API_BASE_URL`,
-  `OMP_SOURCE_REF`, and `OMP_BUILD_ID`, then install through ADB.
+  `OMP_SOURCE_REF`, and `OMP_BUILD_ID`, then install through ADB using
+  `scripts/dogfood-android`.
 - Guardrail: phone builds must use a phone-reachable backend URL, not
   `localhost`, unless the target is an emulator.
 
@@ -88,6 +93,8 @@ domain concept moves or a new production harness becomes canonical.
 | Local API smoke | `scripts/smoke` | Uses low-memory backend stack. |
 | Parallel-worktree smoke | `scripts/dev isolated`, `scripts/smoke isolated` | Uses high host ports to avoid the long-lived local OMP stack. |
 | Download/worker smoke | `scripts/smoke e2e` | Enables Redis/worker path and writes evidence under `/tmp`. |
+| Android APK evidence | `scripts/dogfood-android build` | Builds debug APK with explicit API/source/build markers and writes evidence under `/tmp`. |
+| Android device dogfood | `scripts/dogfood-android all` | Builds, installs through ADB, captures a logcat tail, and records device evidence. |
 | Full local confidence | `scripts/lint && scripts/test && scripts/build` | Heavy because Flutter build can invoke Gradle. |
 
 ## Updating This Map

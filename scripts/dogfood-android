@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TARGET="${1:-build}"
+
+DEFAULT_API_BASE_URL="http://dev.fish-rattlesnake.ts.net:8080/api/v1"
+SOURCE_REF="${OMP_SOURCE_REF:-$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)@$(git -C "$ROOT" rev-parse --short HEAD)}"
+BUILD_ID="${OMP_BUILD_ID:-dogfood-$(date -u +%Y%m%dT%H%M%SZ)}"
+API_BASE_URL="${OMP_API_BASE_URL:-$DEFAULT_API_BASE_URL}"
+EVIDENCE_DIR="${OMP_DOGFOOD_EVIDENCE_DIR:-/tmp/open-music-player-dogfood-$BUILD_ID}"
+APK_PATH="$ROOT/client/build/app/outputs/flutter-apk/app-debug.apk"
+EVIDENCE_PATH="$EVIDENCE_DIR/evidence.md"
+LOGCAT_PATH="$EVIDENCE_DIR/logcat.txt"
+
+mkdir -p "$EVIDENCE_DIR"
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+append_evidence() {
+  printf '%s\n' "$1" >>"$EVIDENCE_PATH"
+}
+
+reset_evidence() {
+  cat >"$EVIDENCE_PATH" <<EOF
+# Android Dogfood Evidence
+
+- Generated UTC: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+- Source ref: \`$SOURCE_REF\`
+- Build ID: \`$BUILD_ID\`
+- API base URL: \`$API_BASE_URL\`
+- ADB server: \`${ADB_SERVER_SOCKET:-default}\`
+- Android serial: \`${ANDROID_SERIAL:-default}\`
+
+EOF
+}
+
+ensure_evidence() {
+  if [ ! -f "$EVIDENCE_PATH" ]; then
+    reset_evidence
+  fi
+}
+
+build_apk() {
+  reset_evidence
+  (
+    cd "$ROOT/client"
+    flutter pub get
+    flutter build apk \
+      --debug \
+      --no-pub \
+      --target-platform android-arm64 \
+      --dart-define=OMP_API_BASE_URL="$API_BASE_URL" \
+      --dart-define=OMP_SOURCE_REF="$SOURCE_REF" \
+      --dart-define=OMP_BUILD_ID="$BUILD_ID"
+  )
+  local apk_sha
+  apk_sha="$(sha256_file "$APK_PATH")"
+  append_evidence "## Build"
+  append_evidence ""
+  append_evidence "- APK: \`$APK_PATH\`"
+  append_evidence "- APK SHA256: \`$apk_sha\`"
+  append_evidence ""
+  printf 'Built APK: %s\n' "$APK_PATH"
+  printf 'Evidence: %s\n' "$EVIDENCE_PATH"
+}
+
+ensure_adb() {
+  if ! command -v adb >/dev/null 2>&1; then
+    append_evidence "## Install"
+    append_evidence ""
+    append_evidence "- Status: failed"
+    append_evidence "- Reason: \`adb\` not found on PATH"
+    append_evidence ""
+    echo "adb not found on PATH" >&2
+    exit 1
+  fi
+}
+
+install_apk() {
+  ensure_adb
+  ensure_evidence
+  if [ ! -f "$APK_PATH" ]; then
+    build_apk
+  fi
+
+  local devices_path
+  devices_path="$EVIDENCE_DIR/adb-devices.txt"
+  adb devices -l >"$devices_path"
+  if ! awk 'NR > 1 && $2 == "device" { found = 1 } END { exit found ? 0 : 1 }' "$devices_path"; then
+    append_evidence "## Install"
+    append_evidence ""
+    append_evidence "- Status: failed"
+    append_evidence "- Reason: no authorized Android device from \`adb devices -l\`"
+    append_evidence "- Device list: \`$devices_path\`"
+    append_evidence ""
+    echo "No authorized Android device found. See $devices_path" >&2
+    exit 1
+  fi
+
+  adb install -r "$APK_PATH"
+  append_evidence "## Install"
+  append_evidence ""
+  append_evidence "- Status: installed"
+  append_evidence "- Device list: \`$devices_path\`"
+  append_evidence ""
+  printf 'Installed APK on Android device. Evidence: %s\n' "$EVIDENCE_PATH"
+}
+
+capture_logs() {
+  ensure_adb
+  ensure_evidence
+  adb logcat -d -t "${OMP_DOGFOOD_LOG_LINES:-1000}" >"$LOGCAT_PATH" || true
+  append_evidence "## Logs"
+  append_evidence ""
+  append_evidence "- Logcat tail: \`$LOGCAT_PATH\`"
+  append_evidence ""
+  printf 'Captured logcat tail: %s\n' "$LOGCAT_PATH"
+}
+
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/dogfood-android [build|install|logs|all]
+
+Environment:
+  OMP_API_BASE_URL             Phone-reachable API URL.
+  OMP_SOURCE_REF               Source marker compiled into Settings.
+  OMP_BUILD_ID                 Build marker compiled into Settings.
+  OMP_DOGFOOD_EVIDENCE_DIR     Evidence output directory.
+  ADB_SERVER_SOCKET            Optional remote ADB server, e.g. tcp:host:5037.
+  ANDROID_SERIAL               Optional adb target serial.
+EOF
+}
+
+case "$TARGET" in
+  build)
+    build_apk
+    ;;
+  install)
+    install_apk
+    ;;
+  logs)
+    capture_logs
+    ;;
+  all)
+    build_apk
+    install_apk
+    capture_logs
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
