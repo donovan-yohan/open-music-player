@@ -219,8 +219,10 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("DELETE /api/v1/library/tracks/{track_id}/like", r.withAuth(r.libraryHandlers.UnlikeTrack))
 	if r.analysisHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/analysis", r.withAuth(r.analysisHandlers.GetTrackAnalysis))
+		r.mux.HandleFunc("PATCH /api/v1/tracks/{track_id}/analysis/overrides", r.withAuth(r.analysisHandlers.UpdateTrackAnalysisOverrides))
 	} else {
 		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/analysis", r.withAuth(unavailableHandler("Track analysis is unavailable")))
+		r.mux.HandleFunc("PATCH /api/v1/tracks/{track_id}/analysis/overrides", r.withAuth(unavailableHandler("Track analysis is unavailable")))
 	}
 
 	// Direct playback/download URL issuance (auth required)

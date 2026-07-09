@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import '../audio/signed_audio_url_service.dart';
 import 'engine_audio_source_resolver.dart';
+import 'tempo_automation.dart';
 import 'timeline_clock.dart';
 import 'timeline_model.dart';
 import 'voice.dart';
@@ -134,7 +135,7 @@ class VoicePool {
     _driftTimer =
         Timer.periodic(_driftCheckInterval, (_) => unawaited(_checkDrift()));
     _gainTimer = Timer.periodic(_gainUpdateInterval,
-        (_) => unawaited(_updateActiveGains(_clock.positionMs)));
+        (_) => unawaited(_updateActiveVoiceLevels(_clock.positionMs)));
     await syncAt(_clock.positionMs, forceSeek: true);
   }
 
@@ -315,6 +316,7 @@ class VoicePool {
     _voiceStatus.remove(clipId);
     _lastDriftCorrectionMs.remove(clipId);
     await voice.setVolume(0);
+    await _applyNeutralPlaybackTuning(voice);
     await voice.release();
     if (!_idleVoices.contains(voice)) _idleVoices.add(voice);
     _publishStatus();
@@ -350,6 +352,7 @@ class VoicePool {
 
     try {
       await voice.setVolume(0);
+      await _applyNeutralPlaybackTuning(voice);
       final source = await _resolver.resolve(clip);
       await voice.load(source.uri,
           initialLocalPositionMs: _localPosition(clip, globalMs));
@@ -389,6 +392,7 @@ class VoicePool {
       return;
     }
     await voice.setVolume(0);
+    await _applyNeutralPlaybackTuning(voice);
     await voice.release();
     _idleVoices.add(voice);
     _publishStatus();
@@ -427,7 +431,7 @@ class VoicePool {
     for (final clip in active) {
       final voice = _activeVoices[clip.id];
       if (voice == null || !voice.isReady) continue;
-      await voice.setSpeed(_clock.rate);
+      await _applyPlaybackTuning(voice, clip, globalMs);
       await voice.setVolume(clip.gainAt(globalMs));
     }
     if (_clock.isPlaying) {
@@ -472,6 +476,8 @@ class VoicePool {
     await voice.seekLocal(_localPosition(clip, currentMs));
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
     if (_clock.isPlaying) _requestPlay(clip.id, voice);
+    if (!_isCurrentVoice(clip.id, voice, generation)) return;
+    await _applyPlaybackTuning(voice, clip, currentMs);
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
     await voice.setVolume(clip.gainAt(currentMs));
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
@@ -527,7 +533,7 @@ class VoicePool {
               !_activeVoices.containsKey(clip.id)) {
             return;
           }
-          await voice.setSpeed(_clock.rate);
+          await _applyPlaybackTuning(voice, clip, globalMs);
           if (generation != _generation ||
               !_activeVoices.containsKey(clip.id)) {
             return;
@@ -564,10 +570,11 @@ class VoicePool {
     }());
   }
 
-  Future<void> _updateActiveGains(int globalMs) async {
+  Future<void> _updateActiveVoiceLevels(int globalMs) async {
     for (final entry in _activeClips.entries.toList()) {
       final voice = _activeVoices[entry.key];
       if (voice == null || !voice.isReady) continue;
+      await _applyPlaybackTuning(voice, entry.value, globalMs);
       await voice.setVolume(entry.value.gainAt(globalMs));
     }
     _updateBufferingHold(_model.activeClipsAt(globalMs));
@@ -628,10 +635,23 @@ class VoicePool {
     int generation,
   ) async {
     final nudge = signedDrift > 0 ? -0.02 : 0.02;
-    await voice.setSpeed((_clock.rate + nudge).clamp(0.5, 2.0).toDouble());
+    final base = _activeClips[clipId] == null
+        ? _clock.rate
+        : _targetSpeedFor(_activeClips[clipId]!, _clock.positionMs);
+    final clip = _activeClips[clipId];
+    await _applySpeedAndPitch(
+      voice,
+      (base + nudge).clamp(0.5, 2.0).toDouble(),
+      clip?.rateAutomation.pitchMode ?? pitchModePreserve,
+    );
     unawaited(Future<void>.delayed(_driftSpeedNudgeDuration, () async {
       if (!_isCurrentVoice(clipId, voice, generation)) return;
-      await voice.setSpeed(_clock.rate);
+      final clip = _activeClips[clipId];
+      await _applySpeedAndPitch(
+        voice,
+        clip == null ? _clock.rate : _targetSpeedFor(clip, _clock.positionMs),
+        clip?.rateAutomation.pitchMode ?? pitchModePreserve,
+      );
     }));
   }
 
@@ -680,8 +700,41 @@ class VoicePool {
   }
 
   int _localPosition(MixClip clip, int globalMs) {
-    return math.max(
-        0, clip.placement.sourceStartMs + globalMs - clip.timelineStartMs);
+    return math.max(0, clip.sourcePositionAt(globalMs));
+  }
+
+  double _targetSpeedFor(MixClip clip, int globalMs) {
+    return (_clock.rate * clip.playbackRateAt(globalMs))
+        .clamp(0.5, 2.0)
+        .toDouble();
+  }
+
+  Future<void> _applyPlaybackTuning(
+    Voice voice,
+    MixClip clip,
+    int globalMs,
+  ) {
+    return _applySpeedAndPitch(
+      voice,
+      _targetSpeedFor(clip, globalMs),
+      clip.rateAutomation.pitchMode,
+    );
+  }
+
+  Future<void> _applyNeutralPlaybackTuning(Voice voice) {
+    return _applySpeedAndPitch(voice, 1, pitchModePreserve);
+  }
+
+  Future<void> _applySpeedAndPitch(
+    Voice voice,
+    double rate,
+    String pitchMode,
+  ) async {
+    final safeRate = rate.clamp(0.5, 2.0).toDouble();
+    await voice.setSpeed(safeRate);
+    await voice.setPitch(
+      pitchFactorForRate(rate: safeRate, pitchMode: pitchMode),
+    );
   }
 
   void _publishStatus() {

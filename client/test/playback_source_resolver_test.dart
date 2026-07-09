@@ -11,17 +11,25 @@ class _FakeLocalResolver implements LocalAudioArtifactResolver {
   Future<String?> localAudioPath(int trackId) async => paths[trackId];
 }
 
-Map<String, dynamic> trackMap(int id) => {
+Map<String, dynamic> trackMap(
+  int id, {
+  Map<String, dynamic>? analysisSummary,
+  Map<String, dynamic>? analysisOverrides,
+}) =>
+    {
       'id': id,
       'title': 'Track $id',
       'artist': 'Artist $id',
       'album': 'Album $id',
       'duration': 100 + id,
+      if (analysisSummary != null) 'analysisSummary': analysisSummary,
+      if (analysisOverrides != null) 'analysisOverrides': analysisOverrides,
     };
 
 void main() {
   group('PlaybackSourceResolver', () {
-    test('prefers a valid local artifact and excludes it from the signed '
+    test(
+        'prefers a valid local artifact and excludes it from the signed '
         'URL request', () async {
       final requested = <List<int>>[];
       final signed = SignedAudioUrlService.withRequester((body) async {
@@ -66,7 +74,8 @@ void main() {
       expect(items[2].extras?['url'], 'https://objects.example/track-3');
     });
 
-    test('a fully local queue resolves without any signed URL request '
+    test(
+        'a fully local queue resolves without any signed URL request '
         '(offline-capable)', () async {
       var requesterCalled = false;
       final signed = SignedAudioUrlService.withRequester((body) async {
@@ -111,6 +120,81 @@ void main() {
       expect(requested, [1]);
       expect(items.single.extras?['url'], 'https://objects.example/track-1');
       expect(items.single.extras?.containsKey('localPath'), isFalse);
+    });
+
+    test('carries analysis summary into playback media extras', () async {
+      final signed = SignedAudioUrlService.withRequester((body) async {
+        return {
+          'urls': [
+            {
+              'trackId': 1,
+              'url': 'https://objects.example/track-1',
+              'expiresAt': DateTime.now()
+                  .toUtc()
+                  .add(const Duration(minutes: 10))
+                  .toIso8601String(),
+            },
+          ],
+        };
+      });
+
+      final resolver = PlaybackSourceResolver(signedAudioUrlService: signed);
+      final analysisSummary = {
+        'bpm': {'value': 128, 'confidence': 0.96},
+        'downbeats': {
+          'positions_ms': [0, 1875],
+        },
+      };
+
+      final item = await resolver.resolveTrack(
+        trackMap(1, analysisSummary: analysisSummary),
+      );
+
+      expect(item.extras?['analysisSummary'], analysisSummary);
+      expect(item.extras?['analysisRef'], '1');
+    });
+
+    test('carries manual analysis overrides into playback media extras',
+        () async {
+      final signed = SignedAudioUrlService.withRequester((body) async {
+        return {
+          'urls': [
+            {
+              'trackId': 1,
+              'url': 'https://objects.example/track-1',
+              'expiresAt': DateTime.now()
+                  .toUtc()
+                  .add(const Duration(minutes: 10))
+                  .toIso8601String(),
+            },
+          ],
+        };
+      });
+
+      final resolver = PlaybackSourceResolver(signedAudioUrlService: signed);
+      final analysisSummary = {
+        'bpm': {'value': 118, 'confidence': 0.44},
+        'downbeats': {
+          'positions_ms': [0],
+        },
+      };
+      final analysisOverrides = {
+        'bpm': {'value': 124, 'confidence': 1.0},
+        'downbeats': {
+          'positions_ms': [120, 2056],
+        },
+      };
+
+      final item = await resolver.resolveTrack(
+        trackMap(
+          1,
+          analysisSummary: analysisSummary,
+          analysisOverrides: analysisOverrides,
+        ),
+      );
+
+      expect(item.extras?['analysisSummary'], analysisSummary);
+      expect(item.extras?['analysisOverrides'], analysisOverrides);
     });
   });
 }

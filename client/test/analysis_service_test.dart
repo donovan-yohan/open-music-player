@@ -10,6 +10,7 @@ class _CapturingApiClient extends ApiClient {
 
   final Map<String, dynamic> body;
   String? capturedEndpoint;
+  Map<String, dynamic>? capturedBody;
 
   @override
   Future<T> get<T>(
@@ -21,6 +22,18 @@ class _CapturingApiClient extends ApiClient {
   }) async {
     capturedEndpoint = endpoint;
     return parser!(body);
+  }
+
+  @override
+  Future<T> patch<T>(
+    String endpoint, {
+    Map<String, dynamic>? body,
+    T Function(Map<String, dynamic>)? parser,
+    bool requiresAuth = true,
+  }) async {
+    capturedEndpoint = endpoint;
+    capturedBody = body;
+    return parser!(this.body);
   }
 }
 
@@ -46,6 +59,8 @@ void main() {
           'loudness': {'integrated_lufs': -11.4},
           'true_peak': {'dbtp': -1.1},
           'waveform': {
+            'peaks': [0.0, 0.5, 0.9, 0.2],
+            'rms': [0.0, 0.3, 0.6, 0.1],
             'sample_count': 4,
             'resolutions': [
               {
@@ -59,8 +74,18 @@ void main() {
               'low': {
                 'sample_count': 4,
                 'artifact_ref': 'spectral_bands.overview.low',
+                'values': [0.9, 0.7, 0.3, 0.2],
               },
             },
+          },
+          'transients': {
+            'count': 2,
+            'strongest_ms': [10120, 20180],
+          },
+          'silence': {
+            'ranges': [
+              {'start_ms': 0, 'end_ms': 320},
+            ],
           },
         },
       });
@@ -77,9 +102,51 @@ void main() {
       expect(analysis.summary?.downbeats?.positionsMs, [0]);
       expect(analysis.summary?.loudness?.integratedLufs, -11.4);
       expect(analysis.summary?.truePeak?.dbtp, -1.1);
+      expect(analysis.summary?.waveform?.peaks, [0.0, 0.5, 0.9, 0.2]);
+      expect(analysis.summary?.waveform?.rms, [0.0, 0.3, 0.6, 0.1]);
       expect(analysis.summary?.waveform?.resolutions.single.artifactRef,
           'waveforms.overview');
       expect(analysis.summary?.waveform?.spectralBands['low']?.sampleCount, 4);
+      expect(
+        analysis.summary?.waveform?.spectralBands['low']?.values,
+        [0.9, 0.7, 0.3, 0.2],
+      );
+      expect(analysis.summary?.transients?.strongestMs, [10120, 20180]);
+      expect(analysis.summary?.silence?.ranges.single.startMs, 0);
+    });
+
+    test('updateTrackAnalysisOverrides -> PATCH override contract', () async {
+      final api = _CapturingApiClient({
+        'track_id': 42,
+        'status': 'analyzed',
+        'summary': {
+          'bpm': {'value': 118},
+        },
+        'overrides': {
+          'bpm': {'value': 124, 'confidence': 1.0},
+          'downbeats': {
+            'positions_ms': [120, 2056],
+          },
+        },
+      });
+
+      final analysis = await AnalysisService(api).updateTrackAnalysisOverrides(
+        42,
+        const TrackAnalysisOverrides(
+          bpm: 124,
+          bpmConfidence: 1,
+          downbeatsMs: [120, 2056],
+        ),
+      );
+
+      expect(api.capturedEndpoint, '/tracks/42/analysis/overrides');
+      expect(api.capturedBody?['overrides']['bpm']['value'], 124);
+      expect(
+        api.capturedBody?['overrides']['downbeats']['positions_ms'],
+        [120, 2056],
+      );
+      expect(analysis.summary?.bpm?.numericValue, 124);
+      expect(analysis.summary?.downbeats?.positionsMs, [120, 2056]);
     });
 
     test('tolerates a pending analysis with no summary', () async {

@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/engine/gain_envelope.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
@@ -185,6 +186,43 @@ void main() {
 
       expect(model.dominantClipAt(500)?.id, 'loud');
     });
+
+    test('overlap BPM automation keeps clips on a shared transition tempo', () {
+      final model = TimelineModel(
+        clips: [
+          _tempoClip('outgoing', 0, nativeBpm: 100),
+          _tempoClip('incoming', 5000, nativeBpm: 125),
+        ],
+      );
+
+      final outgoing = model.clips.firstWhere((clip) => clip.id == 'outgoing');
+      final incoming = model.clips.firstWhere((clip) => clip.id == 'incoming');
+
+      expect(outgoing.playbackRateAt(5000), closeTo(1.0, 0.0001));
+      expect(incoming.playbackRateAt(5000), closeTo(0.8, 0.0001));
+      expect(outgoing.playbackRateAt(7500), closeTo(1.125, 0.0001));
+      expect(incoming.playbackRateAt(7500), closeTo(0.9, 0.0001));
+      expect(outgoing.playbackRateAt(10000), closeTo(1.25, 0.0001));
+      expect(incoming.playbackRateAt(10000), closeTo(1.0, 0.0001));
+
+      expect(incoming.sourcePositionAt(7500), closeTo(2125, 1));
+      expect(
+        incoming.timelineMsForSourcePosition(2125),
+        closeTo(7500, 2),
+      );
+    });
+
+    test('overlap BPM automation falls back to 1.0 without reliable BPM', () {
+      final model = TimelineModel(
+        clips: [
+          _tempoClip('outgoing', 0, nativeBpm: 100),
+          _tempoClip('incoming', 5000),
+        ],
+      );
+
+      expect(model.clips[0].playbackRateAt(7500), 1);
+      expect(model.clips[1].playbackRateAt(7500), 1);
+    });
   });
 
   group('TimelineModel constructors', () {
@@ -337,4 +375,26 @@ void main() {
       expect(model.clips.single.timelineStartMs, 250);
     });
   });
+}
+
+MixClip _tempoClip(
+  String id,
+  int timelineStartMs, {
+  double? nativeBpm,
+  double? bpmConfidence = 0.95,
+}) {
+  return MixClip(
+    placement: TimelineClip.clamped(
+      id: id,
+      trackId: id,
+      sourceDurationMs: 10000,
+      sourceStartMs: 0,
+      sourceEndMs: 10000,
+      timelineStartMs: timelineStartMs,
+    ),
+    tempo: ClipTempoMetadata(
+      nativeBpm: nativeBpm,
+      bpmConfidence: nativeBpm == null ? null : bpmConfidence,
+    ),
+  );
 }

@@ -300,6 +300,55 @@ void main() {
     },
   );
 
+  testWidgets('analysis correction sheet saves BPM overrides from list view', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    apiClient.useAnalysisFixture();
+
+    await pumpQueueScreen(tester);
+    await tester.tap(find.byKey(const ValueKey('analysis_edit_t1')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('analysis_correction_sheet')),
+      findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<TextField>(
+            find.byKey(const ValueKey('analysis_correction_bpm')),
+          )
+          .controller
+          ?.text,
+      '124',
+    );
+
+    await tester.enterText(
+      find.byKey(const ValueKey('analysis_correction_bpm')),
+      '128',
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('analysis_correction_first_downbeat')),
+      '120',
+    );
+    await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
+    await tester.pumpAndSettle();
+
+    expect(apiClient.analysisOverrideUpdates, hasLength(1));
+    expect(apiClient.analysisOverrideUpdates.single.trackId, 101);
+    expect(apiClient.analysisOverrideUpdates.single.overrides.bpm, 128);
+    expect(
+      apiClient.analysisOverrideUpdates.single.overrides.downbeatsMs?.first,
+      120,
+    );
+    expect(find.text('128 BPM'), findsOneWidget);
+    expect(find.text('124 BPM'), findsNothing);
+  });
+
   testWidgets('play button starts the playable queue at the tapped item', (
     tester,
   ) async {
@@ -785,6 +834,8 @@ class _FakeQueueApiClient extends ApiClient {
   final List<int> removedPositions = [];
   final List<(int, int)> reorders = [];
   final List<String> retriedQueueItemIds = [];
+  final List<({int trackId, TrackAnalysisOverrides overrides})>
+      analysisOverrideUpdates = [];
   bool failLoads = false;
   bool deferLoad = false;
   Completer<QueueState>? _loadCompleter;
@@ -993,6 +1044,34 @@ class _FakeQueueApiClient extends ApiClient {
   @override
   Future<void> clearQueue() async {
     _state = QueueState.empty();
+  }
+
+  @override
+  Future<TrackAnalysis> updateTrackAnalysisOverrides(
+    int trackId,
+    TrackAnalysisOverrides overrides,
+  ) async {
+    analysisOverrideUpdates.add((trackId: trackId, overrides: overrides));
+    final track = _state.tracks.firstWhere(
+      (track) => track.playbackTrackId == trackId.toString(),
+    );
+    final analysis = TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: track.analysis?.summary?.toJson(),
+      overrides: overrides.toJson(),
+    );
+    _state = QueueState(
+      tracks: [
+        for (final item in _state.tracks)
+          item.playbackTrackId == trackId.toString()
+              ? item.copyWith(analysis: analysis)
+              : item,
+      ],
+      currentIndex: _state.currentIndex,
+      repeatMode: _state.repeatMode,
+      shuffled: _state.shuffled,
+    );
+    return analysis;
   }
 
   @override

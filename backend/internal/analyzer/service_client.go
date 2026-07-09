@@ -15,7 +15,7 @@ import (
 
 const (
 	defaultServiceTimeout    = 90 * time.Second
-	maxAnalyzerResponseBytes = 1 << 20
+	maxAnalyzerResponseBytes = 8 << 20
 )
 
 // ServiceConfig controls the optional out-of-process analyzer integration.

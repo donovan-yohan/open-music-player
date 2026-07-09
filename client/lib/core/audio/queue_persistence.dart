@@ -174,6 +174,12 @@ Map<String, dynamic> mediaItemToPlaybackJson(MediaItem item) {
     if (item.album != null) 'album': item.album,
     'duration': item.duration?.inSeconds ?? 0,
     if (item.artUri != null) 'artwork_url': item.artUri.toString(),
+    if (item.extras?['analysisStatus'] != null)
+      'analysisStatus': item.extras?['analysisStatus'],
+    if (item.extras?['analysisSummary'] != null)
+      'analysisSummary': item.extras?['analysisSummary'],
+    if (item.extras?['analysisOverrides'] != null)
+      'analysisOverrides': item.extras?['analysisOverrides'],
   };
 }
 

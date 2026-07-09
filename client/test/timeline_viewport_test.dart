@@ -154,6 +154,7 @@ void main() {
       final v = viewport(pixelsPerSecond: 20);
       expect(v.zoomAround(newPixelsPerSecond: 0.1, focalXPx: 0).pixelsPerSecond,
           TimelineViewport.minPixelsPerSecond);
+      expect(TimelineViewport.maxPixelsPerSecond, greaterThanOrEqualTo(2400));
       expect(
           v.zoomAround(newPixelsPerSecond: 10000, focalXPx: 0).pixelsPerSecond,
           TimelineViewport.maxPixelsPerSecond);

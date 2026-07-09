@@ -6,6 +6,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 
 import '../engine/playback_engine.dart';
+import '../engine/tempo_automation.dart';
 import '../engine/timeline_model.dart';
 import '../../models/timeline_clip.dart';
 import 'playback_session.dart';
@@ -196,7 +197,15 @@ class QueueTimelineController {
   Future<void> _removeFromQueue(int index) async {
     if (index < 0 || index >= _queue.length) return;
     final previousCurrent = _currentIndex;
+    final previousCurrentQueueItemId = previousCurrent == null
+        ? null
+        : _session.clipAt(previousCurrent)?.queueItemId;
     final localPosition = livePosition.inMilliseconds;
+    final preserveActivePlayback = _canPreserveActivePlaybackForFutureRemove(
+      index,
+      previousCurrent,
+      previousCurrentQueueItemId,
+    );
     final nextQueue = List<MediaItem>.from(_queue)..removeAt(index);
     _queue = List.unmodifiable(nextQueue);
     _session = _session.removeAt(index).normalizedForQueue(_queue);
@@ -220,7 +229,11 @@ class QueueTimelineController {
       }
       _rebuildPlayOrderKeepCurrent();
       _processingState = ProcessingState.ready;
-      await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
+      await _loadModel(
+        seekToCurrent: !preserveActivePlayback,
+        localPositionMs: localPosition,
+        preserveActivePlayback: preserveActivePlayback,
+      );
     }
     _publishQueueState();
   }
@@ -269,7 +282,8 @@ class QueueTimelineController {
 
   Future<void> _setTimelineStartMs(int index, int ms) async {
     if (index < 0 || index >= _queue.length) return;
-    final placement = _placementForIndex(index).withTimelineStartMs(ms);
+    final requested = _placementForIndex(index).withTimelineStartMs(ms);
+    final placement = _snapPlacementToDownbeat(index, requested);
     await _applyCueOverride(index, placement);
   }
 
@@ -540,6 +554,19 @@ class QueueTimelineController {
         active.single.queueItemId == previousCurrentQueueItemId;
   }
 
+  bool _canPreserveActivePlaybackForFutureRemove(
+    int removeIndex,
+    int? previousCurrent,
+    String? previousCurrentQueueItemId,
+  ) {
+    if (!_engine.isPlaying || previousCurrent == null) return false;
+    if (previousCurrentQueueItemId == null) return false;
+    if (removeIndex <= previousCurrent) return false;
+    final active = _engine.model.activeClipsAt(_engine.positionMs);
+    return active.length == 1 &&
+        active.single.queueItemId == previousCurrentQueueItemId;
+  }
+
   TimelineClip _placementForIndex(int index) {
     final current = _session.clipAt(index)?.placement;
     if (current != null) return current;
@@ -649,6 +676,10 @@ class QueueTimelineController {
   }
 
   int _localForGlobal(int globalMs) {
+    final clip = _currentClip();
+    if (clip != null) {
+      return clip.sourcePositionAt(globalMs) - clip.placement.sourceStartMs;
+    }
     final cue = _currentCue();
     if (cue == null) return 0;
     return _cueTimeline
@@ -657,6 +688,12 @@ class QueueTimelineController {
   }
 
   int _globalForCurrentLocal(int localMs) {
+    final clip = _currentClip();
+    if (clip != null) {
+      return clip.timelineMsForSourcePosition(
+        clip.placement.sourceStartMs + localMs,
+      );
+    }
     final cue = _currentCue();
     if (cue == null) return 0;
     return _cueTimeline
@@ -708,6 +745,32 @@ class QueueTimelineController {
     return null;
   }
 
+  TimelineClip _snapPlacementToDownbeat(int index, TimelineClip requested) {
+    final incoming = _session.clipAt(index);
+    if (incoming == null) return requested;
+    final previousIndex = _previousQueueIndexFor(index);
+    if (previousIndex == null) return requested;
+    final outgoing = _session.clipAt(previousIndex);
+    if (outgoing == null) return requested;
+
+    final snappedStart = snapIncomingStartToNearestDownbeat(
+      requestedStartMs: requested.timelineStartMs,
+      incomingSourceStartMs: requested.sourceStartMs,
+      incomingTempo: incoming.tempo,
+      outgoingTimelineStartMs: outgoing.timelineStartMs,
+      outgoingSourceStartMs: outgoing.sourceStartMs,
+      outgoingTempo: outgoing.tempo,
+    );
+    if (snappedStart == null) return requested;
+    return requested.withTimelineStartMs(snappedStart);
+  }
+
+  int? _previousQueueIndexFor(int queueIndex) {
+    final orderIndex = _playOrder.indexOf(queueIndex);
+    if (orderIndex <= 0) return null;
+    return _playOrder[orderIndex - 1];
+  }
+
   int? _previousQueueIndex() {
     final current = _currentIndex;
     if (current == null) return null;
@@ -739,7 +802,7 @@ class QueueTimelineController {
     final cue = _currentCue();
     final localPosition = cue == null
         ? Duration.zero
-        : _cueTimeline.localFor(cue, Duration(milliseconds: globalMs));
+        : Duration(milliseconds: _localForGlobal(globalMs));
     _snapshotSubject.add(
       PlaybackSnapshot(
         sessionId: _sessionId,

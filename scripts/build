@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TARGET="${1:-all}"
+
+run_backend() {
+  (
+    cd "$ROOT/backend"
+    build_dir="$(mktemp -d)"
+    trap 'rm -rf "$build_dir"' EXIT
+    go build -o "$build_dir/server" ./cmd/server
+    go build -o "$build_dir/audio-analyzer" ./cmd/audio-analyzer
+    go build -o "$build_dir/local-playback-smoke" ./cmd/local-playback-smoke
+  )
+}
+
+run_client() {
+  (
+    cd "$ROOT/client"
+    flutter pub get
+    flutter build apk --debug --no-pub --target-platform android-arm64
+  )
+}
+
+run_extension() {
+  (
+    cd "$ROOT/extension"
+    if [ ! -d node_modules ]; then
+      npm ci
+    fi
+    npm run build
+  )
+}
+
+case "$TARGET" in
+  backend)
+    run_backend
+    ;;
+  client)
+    run_client
+    ;;
+  extension)
+    run_extension
+    ;;
+  all)
+    run_backend
+    run_client
+    run_extension
+    ;;
+  *)
+    echo "usage: scripts/build [backend|client|extension|all]" >&2
+    exit 2
+    ;;
+esac

@@ -173,6 +173,40 @@ void main() {
       await harness.dispose();
     });
 
+    test('future remove preserves the active playing voice', () async {
+      final voices = <_CountingVoice>[];
+      final harness = _Harness(
+        voiceFactory: () {
+          final voice = _CountingVoice('v${voices.length}');
+          voices.add(voice);
+          return voice;
+        },
+      );
+      await harness.controller.setQueue([
+        _item('1'),
+        _item('2'),
+        _item('3'),
+      ]);
+      await harness.controller.play();
+
+      final currentVoice = voices.first;
+      currentVoice.clearInteractionLog();
+      await harness.controller.removeFromQueue(1);
+
+      expect(harness.controller.queue.map((item) => item.id), ['1', '3']);
+      expect(harness.controller.currentIndex, 0);
+      expect(harness.engine.model.clips.map((clip) => clip.queueItemId), [
+        'session_1_item_0',
+        'session_1_item_2',
+      ]);
+      expect(currentVoice.isPlaying, isTrue);
+      expect(currentVoice.pauseCount, 0);
+      expect(currentVoice.seekLog, isEmpty);
+      expect(currentVoice.releaseCount, 0);
+
+      await harness.dispose();
+    });
+
     test('session timeline edits rebuild the live mix with crossfades',
         () async {
       final harness = _Harness();
@@ -199,6 +233,69 @@ void main() {
       expect(second.sourceStartMs, 2000);
       expect(second.sourceEndMs, 9000);
       expect(second.selectedDurationMs, 7000);
+
+      await harness.dispose();
+    });
+
+    test('timeline start edits snap incoming clips to analyzed downbeats',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item(
+          '1',
+          seconds: 10,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000],
+          ),
+        ),
+        _item(
+          '2',
+          seconds: 10,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000],
+          ),
+        ),
+      ]);
+
+      await harness.controller.setTimelineStartMs(1, 7600);
+
+      expect(harness.controller.timelineClipForIndex(1)?.timelineStartMs, 8000);
+      expect(harness.engine.model.clips[1].timelineStartMs, 8000);
+      expect(harness.engine.model.clips[0].envelope.fadeOutMs, 2000);
+      expect(harness.engine.model.clips[1].envelope.fadeInMs, 2000);
+
+      await harness.dispose();
+    });
+
+    test('setQueue applies analyzed phrase/downbeat transition defaults',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item(
+          '1',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          ),
+        ),
+        _item(
+          '2',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000],
+          ),
+        ),
+      ]);
+
+      expect(
+          harness.controller.timelineClipForIndex(1)?.timelineStartMs, 12000);
+      expect(harness.engine.model.clips[0].envelope.fadeOutMs, 8000);
+      expect(harness.engine.model.clips[1].envelope.fadeInMs, 8000);
+      expect(harness.engine.model.overlapDepthAt(15000), 2);
 
       await harness.dispose();
     });
@@ -316,12 +413,30 @@ void main() {
   });
 }
 
-MediaItem _item(String id, {int seconds = 5}) => MediaItem(
+MediaItem _item(
+  String id, {
+  int seconds = 5,
+  Map<String, dynamic>? analysisSummary,
+}) =>
+    MediaItem(
       id: id,
       title: 'Track $id',
       duration: Duration(seconds: seconds),
-      extras: {'url': 'https://example.com/$id.mp3'},
+      extras: {
+        'url': 'https://example.com/$id.mp3',
+        if (analysisSummary != null) 'analysisSummary': analysisSummary,
+      },
     );
+
+Map<String, dynamic> _analysisSummary({
+  required double bpm,
+  required List<int> downbeatsMs,
+}) =>
+    {
+      'bpm': {'value': bpm, 'confidence': 0.95},
+      'beat_grid': {'bpm': bpm},
+      'downbeats': {'positions_ms': downbeatsMs},
+    };
 
 class _Harness {
   _Harness({FakeVoice Function()? voiceFactory}) {

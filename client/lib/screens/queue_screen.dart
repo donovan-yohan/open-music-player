@@ -6,10 +6,10 @@ import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
 import '../core/audio/playback_context.dart';
 import '../models/track.dart';
-import '../models/waveform.dart';
 import '../providers/queue_provider.dart';
 import '../shared/widgets/track_tile.dart';
 import '../widgets/queue_item.dart';
+import '../widgets/analysis_correction_sheet.dart';
 import '../widgets/stacked_waveform_timeline.dart';
 
 enum _QueueViewMode { list, timeline }
@@ -122,7 +122,7 @@ class _QueueScreenState extends State<QueueScreen> {
         child: Consumer2<QueueProvider, PlaybackState>(
           builder: (context, provider, playback, _) {
             if (playback.queue.isNotEmpty) {
-              return _buildPlaybackQueueView(context, playback);
+              return _buildPlaybackQueueView(context, provider, playback);
             }
 
             if (provider.isLoading) {
@@ -191,7 +191,11 @@ class _QueueScreenState extends State<QueueScreen> {
     );
   }
 
-  Widget _buildPlaybackQueueView(BuildContext context, PlaybackState playback) {
+  Widget _buildPlaybackQueueView(
+    BuildContext context,
+    QueueProvider provider,
+    PlaybackState playback,
+  ) {
     final entries = listeningQueueEntries(
       queue: playback.queue,
       currentIndex: playback.currentIndex,
@@ -203,7 +207,7 @@ class _QueueScreenState extends State<QueueScreen> {
         Expanded(
           child: _viewMode == _QueueViewMode.list
               ? _buildPlaybackQueueList(playback, entries)
-              : _buildPlaybackTimelineView(context, playback),
+              : _buildPlaybackTimelineView(context, provider, playback),
         ),
       ],
     );
@@ -295,8 +299,9 @@ class _QueueScreenState extends State<QueueScreen> {
                 title: item.title,
                 artist: item.artist,
                 album: item.album,
-                duration:
-                    _formatQueueRuntime(item.duration?.inMilliseconds ?? 0),
+                duration: _formatQueueRuntime(
+                  item.duration?.inMilliseconds ?? 0,
+                ),
                 coverArtUrl: item.artUri?.toString(),
                 isCurrent: entry.isCurrent,
                 onTap: entry.isCurrent
@@ -313,6 +318,7 @@ class _QueueScreenState extends State<QueueScreen> {
 
   Widget _buildPlaybackTimelineView(
     BuildContext context,
+    QueueProvider provider,
     PlaybackState playback,
   ) {
     final queue = playback.queue;
@@ -323,13 +329,17 @@ class _QueueScreenState extends State<QueueScreen> {
       return const Center(child: Text('Start playback to edit the timeline'));
     }
 
-    final current = _playbackTrackFor(queue[currentIndex], currentIndex);
+    final current = _playbackTrackFor(
+      queue[currentIndex],
+      currentIndex,
+      provider,
+    );
     final previous = currentIndex > 0
-        ? _playbackTrackFor(queue[currentIndex - 1], currentIndex - 1)
+        ? _playbackTrackFor(queue[currentIndex - 1], currentIndex - 1, provider)
         : null;
     final upcoming = [
       for (var i = currentIndex + 1; i < queue.length; i++)
-        _playbackTrackFor(queue[i], i),
+        _playbackTrackFor(queue[i], i, provider),
     ];
 
     return StackedWaveformTimeline(
@@ -337,7 +347,8 @@ class _QueueScreenState extends State<QueueScreen> {
       previousTrack: previous,
       currentTrack: current,
       upcomingTracks: upcoming,
-      peaksFor: (track) => mockWaveformPeaks(track.queueItemId),
+      peaksFor: provider.waveformPeaksFor,
+      waveformFor: provider.waveformFor,
       trimRangeFor: (track) =>
           playback.trimRangeForQueueIndex(_playbackQueueIndex(track)),
       clipFor: (track, fallback) =>
@@ -370,6 +381,8 @@ class _QueueScreenState extends State<QueueScreen> {
       },
       onMoveEarlier: (track) => _movePlaybackTimelineTrack(playback, track, -1),
       onMoveLater: (track) => _movePlaybackTimelineTrack(playback, track, 1),
+      onEditAnalysis: (track) =>
+          _showAnalysisCorrectionSheet(context, provider, track),
     );
   }
 
@@ -401,9 +414,13 @@ class _QueueScreenState extends State<QueueScreen> {
     }
   }
 
-  Track _playbackTrackFor(audio_service.MediaItem item, int index) {
+  Track _playbackTrackFor(
+    audio_service.MediaItem item,
+    int index,
+    QueueProvider provider,
+  ) {
     final duration = item.duration ?? Duration.zero;
-    return Track(
+    final track = Track(
       id: 'playback_queue_$index',
       queueItemId: index.toString(),
       playbackTrackId: item.id,
@@ -414,6 +431,7 @@ class _QueueScreenState extends State<QueueScreen> {
       coverUrl: item.artUri?.toString(),
       addedAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
     );
+    return provider.trackWithAnalysis(track);
   }
 
   int _playbackQueueIndex(Track track) =>
@@ -597,6 +615,7 @@ class _QueueScreenState extends State<QueueScreen> {
         currentTrack: currentTrack,
         upcomingTracks: upNext,
         peaksFor: provider.waveformPeaksFor,
+        waveformFor: provider.waveformFor,
         trimRangeFor: provider.trimRangeFor,
         clipFor: provider.timelineClipFor,
         timelineModel: playback.timelineModel,
@@ -612,6 +631,8 @@ class _QueueScreenState extends State<QueueScreen> {
             _moveTimelineTrack(provider, upNext, currentIndex, track, -1),
         onMoveLater: (track) =>
             _moveTimelineTrack(provider, upNext, currentIndex, track, 1),
+        onEditAnalysis: (track) =>
+            _showAnalysisCorrectionSheet(context, provider, track),
       ),
     );
   }
@@ -694,6 +715,13 @@ class _QueueScreenState extends State<QueueScreen> {
                     track.canRetry ? () => provider.retryTrack(track) : null,
                 onRemove: canEdit
                     ? () => provider.removeFromQueue(absoluteIndex)
+                    : null,
+                onEditAnalysis: _canEditAnalysis(track)
+                    ? () => _showAnalysisCorrectionSheet(
+                          context,
+                          provider,
+                          track,
+                        )
                     : null,
               ),
             );
@@ -810,10 +838,7 @@ class _QueueScreenState extends State<QueueScreen> {
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.symmetric(horizontal: 24),
         color: colorScheme.errorContainer,
-        child: Icon(
-          Icons.delete_outline,
-          color: colorScheme.onErrorContainer,
-        ),
+        child: Icon(Icons.delete_outline, color: colorScheme.onErrorContainer),
       ),
     );
   }
@@ -823,6 +848,42 @@ class _QueueScreenState extends State<QueueScreen> {
       case 'clear':
         _showClearQueueDialog(context);
         break;
+    }
+  }
+
+  bool _canEditAnalysis(Track track) {
+    for (final candidate in [track.playbackTrackId, track.id]) {
+      final parsed = int.tryParse(candidate ?? '');
+      if (parsed != null && parsed > 0) return true;
+    }
+    return false;
+  }
+
+  Future<void> _showAnalysisCorrectionSheet(
+    BuildContext context,
+    QueueProvider provider,
+    Track track,
+  ) async {
+    if (!_canEditAnalysis(track)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No analysis target for "${track.title}"')),
+      );
+      return;
+    }
+
+    final corrected = await showAnalysisCorrectionSheet(
+      context: context,
+      track: provider.trackWithAnalysis(track),
+    );
+    if (corrected == null || !context.mounted) return;
+
+    try {
+      await provider.updateAnalysisOverrides(track, corrected);
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save analysis for "${track.title}"')),
+      );
     }
   }
 

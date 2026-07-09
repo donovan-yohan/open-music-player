@@ -11,6 +11,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  delivery-harness:
+    name: Delivery Harness
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run agentic delivery harness
+        run: scripts/agentic-harness
+
   backend:
     name: Backend (Go)
     runs-on: ubuntu-latest
@@ -56,6 +67,9 @@ jobs:
       - name: Install dependencies
         run: go mod download
 
+      - name: Run repository backend lint
+        run: ../scripts/lint backend
+
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
@@ -65,13 +79,14 @@ jobs:
           working-directory: backend
 
       - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out ./...
+        run: ../scripts/test backend
         env:
+          BACKEND_GO_TEST_ARGS: -v -race -coverprofile=coverage.out
           DATABASE_URL: postgres://test:test@localhost:5432/openmusicplayer_test?sslmode=disable
           REDIS_URL: redis://localhost:6379
 
       - name: Build
-        run: go build -v ./cmd/server
+        run: ../scripts/build backend
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
@@ -102,12 +117,12 @@ jobs:
         run: flutter pub get
 
       - name: Analyze code
-        # Only fail on actual errors, not warnings/infos
-        # Info-level issues (use_build_context_synchronously) tracked in follow-up
-        run: flutter analyze --no-fatal-warnings --no-fatal-infos
+        run: ../scripts/lint client
 
       - name: Run tests
-        run: flutter test --coverage
+        run: ../scripts/test client
+        env:
+          FLUTTER_TEST_ARGS: --coverage
 
       - name: Tune Gradle for CI APK build
         if: ${{ github.event_name == 'pull_request' }}
@@ -121,7 +136,7 @@ jobs:
       - name: Build debug APK
         if: ${{ github.event_name == 'pull_request' }}
         timeout-minutes: 30
-        run: flutter build apk --debug --no-pub --target-platform android-arm64
+        run: ../scripts/build client
 
       - name: Upload debug APK artifact
         if: ${{ github.event_name == 'pull_request' }}
@@ -161,10 +176,13 @@ jobs:
         run: npm ci
 
       - name: Type check
-        run: npm run type-check
+        run: ../scripts/lint extension
+
+      - name: Run extension tests
+        run: ../scripts/test extension
 
       - name: Build
-        run: npm run build
+        run: ../scripts/build extension
 
       - name: Package extension
         run: |
@@ -178,3 +196,31 @@ jobs:
           name: chrome-extension
           path: extension/dist-zip/extension.zip
           retention-days: 7
+
+  local-smoke:
+    name: Local Stack Smoke
+    runs-on: ubuntu-latest
+    env:
+      SERVER_PORT: 18080
+      POSTGRES_PORT: 15434
+      REDIS_PORT: 16380
+      MINIO_PORT: 19000
+      MINIO_CONSOLE_PORT: 19001
+      OMP_BACKEND_BASE_URL: http://localhost:18080
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Start isolated low-memory stack
+        run: scripts/dev isolated
+
+      - name: Run isolated smoke
+        run: scripts/smoke isolated
+
+      - name: Run isolated playback smoke
+        run: scripts/smoke playback-isolated
+
+      - name: Cleanup low-memory stack
+        if: always()
+        run: scripts/local-low-memory.sh clean

@@ -25,6 +25,22 @@ class AnalysisService {
       parser: (json) => TrackAnalysis.fromJson(
         status: json['status'],
         summary: json['summary'],
+        overrides: json['overrides'],
+      ),
+    );
+  }
+
+  Future<TrackAnalysis> updateTrackAnalysisOverrides(
+    int trackId,
+    TrackAnalysisOverrides overrides,
+  ) {
+    return _apiClient.patch<TrackAnalysis>(
+      '/tracks/$trackId/analysis/overrides',
+      body: {'overrides': overrides.toJson()},
+      parser: (json) => TrackAnalysis.fromJson(
+        status: json['status'],
+        summary: json['summary'],
+        overrides: json['overrides'],
       ),
     );
   }

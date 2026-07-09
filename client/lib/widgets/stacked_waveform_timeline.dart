@@ -1,11 +1,14 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
+import '../core/engine/transition_diagnostics.dart';
 import '../models/timeline_clip.dart';
 import '../models/timeline_viewport.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
+import '../models/waveform.dart';
 import 'timeline_clip_widget.dart';
 
 /// Stacked compact-waveform timeline for the phone-first mix planner
@@ -27,6 +30,8 @@ class StackedWaveformTimeline extends StatefulWidget {
   final Track currentTrack;
   final List<Track> upcomingTracks;
   final List<double> Function(Track) peaksFor;
+  final TimelineWaveformData Function(Track, int targetSampleCount)?
+      waveformFor;
   final TrimRange Function(Track) trimRangeFor;
   final TimelineClip Function(Track, TimelineClip)? clipFor;
   final void Function(Track, int)? onTimelineStartChanged;
@@ -34,6 +39,7 @@ class StackedWaveformTimeline extends StatefulWidget {
   final void Function(Track, int)? onTrimEndChanged;
   final ValueChanged<Track>? onMoveEarlier;
   final ValueChanged<Track>? onMoveLater;
+  final ValueChanged<Track>? onEditAnalysis;
   final TimelineModel? timelineModel;
   final int playheadPositionMs;
   final Stream<int>? positionMsStream;
@@ -47,6 +53,7 @@ class StackedWaveformTimeline extends StatefulWidget {
     required this.currentTrack,
     required this.upcomingTracks,
     required this.peaksFor,
+    this.waveformFor,
     required this.trimRangeFor,
     this.clipFor,
     this.onTimelineStartChanged,
@@ -54,6 +61,7 @@ class StackedWaveformTimeline extends StatefulWidget {
     this.onTrimEndChanged,
     this.onMoveEarlier,
     this.onMoveLater,
+    this.onEditAnalysis,
     this.timelineModel,
     this.playheadPositionMs = 0,
     this.positionMsStream,
@@ -128,7 +136,7 @@ class _LaneModel {
 
 class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   static const double _minZoom = 0.5;
-  static const double _maxZoom = 4.0;
+  static const double _maxZoom = TimelineViewport.maxPixelsPerSecond;
   static const double _scrubEdgeScrollZonePx = 56;
   static const double _scrubMaxEdgeScrollPx = 32;
 
@@ -229,7 +237,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           defaultClip;
       final clip = _previewClipFor(track, baseClip) ?? baseClip;
       placed[track] = liveClip == null
-          ? MixClip(placement: clip)
+          ? MixClip(placement: clip, tempo: _tempoForTrack(track))
           : _copyMixClipWithPlacement(liveClip, clip);
       // Next clip overlaps the tail by one transition window. A zero-duration
       // clip has timelineEndMs == timelineStartMs, so the naive lower bound
@@ -342,6 +350,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       },
       child: Stack(
         children: [
+          ...overlapBands,
           Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -359,7 +368,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               ),
             ],
           ),
-          ...overlapBands,
 
           // Global playhead crossing the ruler + every lane. Hide it when it is
           // outside the visible pane instead of pinning it to an edge, which
@@ -468,16 +476,33 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         envelope: clip.envelope,
         audioSourceRef: clip.audioSourceRef,
         queueItemId: clip.queueItemId,
+        playbackRate: clip.playbackRate,
+        pitchMode: clip.pitchMode,
+        tempo: clip.tempo,
+        rateAutomation: clip.rateAutomation,
       );
+
+  ClipTempoMetadata _tempoForTrack(Track track) {
+    final analysis = track.analysis;
+    if (analysis == null) return ClipTempoMetadata.empty;
+    return ClipTempoMetadata.fromAnalysisSummary(
+      analysis.summary?.toJson(),
+      overrides: analysis.overrides?.toJson(),
+    );
+  }
 
   List<double> _peaksForClip(Track track, TimelineClip clip) {
     final peaks = widget.peaksFor(track);
     if (peaks.isEmpty || clip.sourceDurationMs <= 0) return peaks;
 
-    final startFraction =
-        (clip.sourceStartMs / clip.sourceDurationMs).clamp(0.0, 1.0);
-    final endFraction =
-        (clip.sourceEndMs / clip.sourceDurationMs).clamp(0.0, 1.0);
+    final startFraction = (clip.sourceStartMs / clip.sourceDurationMs).clamp(
+      0.0,
+      1.0,
+    );
+    final endFraction = (clip.sourceEndMs / clip.sourceDurationMs).clamp(
+      0.0,
+      1.0,
+    );
     final startIndex = (peaks.length * startFraction).floor();
     var endIndex = (peaks.length * endFraction).ceil();
     if (endIndex <= startIndex) {
@@ -487,6 +512,33 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final safeStart = startIndex.clamp(0, peaks.length).toInt();
     final safeEnd = endIndex.clamp(safeStart, peaks.length).toInt();
     return peaks.sublist(safeStart, safeEnd).toList(growable: false);
+  }
+
+  TimelineWaveformData? _waveformForClip(
+    Track track,
+    TimelineClip clip,
+    double width,
+  ) {
+    final sampleCount = _targetWaveformSamples(width);
+    final waveformFor = widget.waveformFor;
+    if (waveformFor == null) {
+      final generated = richWaveformForTrack(track, sampleCount: sampleCount);
+      return generated.sliced(
+        sourceStartMs: clip.sourceStartMs,
+        sourceEndMs: clip.sourceEndMs,
+        targetSampleCount: sampleCount,
+      );
+    }
+    return waveformFor(track, sampleCount).sliced(
+      sourceStartMs: clip.sourceStartMs,
+      sourceEndMs: clip.sourceEndMs,
+      targetSampleCount: sampleCount,
+    );
+  }
+
+  int _targetWaveformSamples(double clipWidth) {
+    if (!clipWidth.isFinite || clipWidth <= 0) return 512;
+    return (clipWidth / 0.72).round().clamp(512, 131072).toInt();
   }
 
   MixClip? _dominantClipAt(List<MixClip> clips, int timelineMs) {
@@ -580,6 +632,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             ((first.gainAt(midpointMs) + second.gainAt(midpointMs)) / 2)
                 .clamp(0.0, 1.0)
                 .toDouble();
+        final diagnostics = diagnoseTransition(first, second);
         bands.add(
           Positioned(
             key: bands.isEmpty
@@ -589,7 +642,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             top: 0,
             bottom: 0,
             width: width,
-            child: _transitionBand(context, overlap.durationMs, averageGain),
+            child: _transitionBand(
+              context,
+              overlap.durationMs,
+              averageGain,
+              diagnostics,
+            ),
           ),
         );
       }
@@ -627,15 +685,23 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               top: 8,
               bottom: 8,
               width: width,
-              child: _buildClipSurface(context, lane, viewport),
+              child: _buildClipSurface(
+                context,
+                lane,
+                viewport,
+                width,
+                left,
+                paneWidth,
+              ),
             ),
             if (selected &&
-                (lane.role == LaneRole.upcoming ||
+                (widget.onEditAnalysis != null ||
+                    lane.role == LaneRole.upcoming ||
                     lane.role == LaneRole.collapsed))
               Positioned(
                 right: 6,
                 top: 12,
-                child: _timelineMoveControls(context, lane.track),
+                child: _timelineSelectionControls(context, lane),
               ),
             _buildLaneIdentity(context, lane, viewport, paneWidth),
           ],
@@ -668,9 +734,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               alpha: lane.role == LaneRole.current ? 0.035 : 0.022,
             ),
             border: Border(
-              bottom: BorderSide(
-                color: lane.accent.withValues(alpha: 0.10),
-              ),
+              bottom: BorderSide(color: lane.accent.withValues(alpha: 0.10)),
             ),
           ),
         ),
@@ -720,12 +784,25 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     BuildContext context,
     _LaneModel lane,
     TimelineViewport viewport,
+    double clipWidth,
+    double clipLeft,
+    double paneWidth,
   ) {
     final selected = _isTrackSelected(lane.track.id);
     final selectedTrim = TrimRange.full(lane.clip.selectedDurationMs);
+    final waveform = _waveformForClip(lane.track, lane.clip, clipWidth);
+    final visibleStartPx = (-clipLeft).clamp(0.0, clipWidth).toDouble();
+    final visibleEndPx =
+        (paneWidth - clipLeft).clamp(0.0, clipWidth).toDouble();
+    final visibleStartFraction =
+        clipWidth <= 0 ? 0.0 : visibleStartPx / clipWidth;
+    final visibleEndFraction = clipWidth <= 0 ? 1.0 : visibleEndPx / clipWidth;
     final body = TimelineClipWidget(
       track: lane.track,
-      peaks: _peaksForClip(lane.track, lane.clip),
+      peaks: waveform?.peaks ?? _peaksForClip(lane.track, lane.clip),
+      waveform: waveform,
+      visibleStartFraction: visibleStartFraction,
+      visibleEndFraction: visibleEndFraction,
       trim: selectedTrim,
       role: lane.role,
       accent: lane.accent,
@@ -998,37 +1075,78 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     return ((ms / snapMs).round() * snapMs).clamp(0, 2147483647).toInt();
   }
 
-  Widget _timelineMoveControls(BuildContext context, Track track) {
+  Widget _timelineSelectionControls(BuildContext context, _LaneModel lane) {
     final theme = Theme.of(context);
+    final track = lane.track;
+    final movable =
+        lane.role == LaneRole.upcoming || lane.role == LaneRole.collapsed;
+    final tempoChip = _selectedTempoChip(context, lane);
     return Material(
       color: theme.colorScheme.surface.withValues(alpha: 0.88),
       borderRadius: BorderRadius.circular(12),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          IconButton(
-            key: ValueKey('timeline_move_earlier_${track.id}'),
-            tooltip: 'Move ${track.title} earlier',
-            icon: const Icon(Icons.keyboard_arrow_up),
-            iconSize: 20,
-            constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-            padding: EdgeInsets.zero,
-            onPressed: widget.onMoveEarlier == null
-                ? null
-                : () => widget.onMoveEarlier!(track),
-          ),
-          IconButton(
-            key: ValueKey('timeline_move_later_${track.id}'),
-            tooltip: 'Move ${track.title} later',
-            icon: const Icon(Icons.keyboard_arrow_down),
-            iconSize: 20,
-            constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-            padding: EdgeInsets.zero,
-            onPressed: widget.onMoveLater == null
-                ? null
-                : () => widget.onMoveLater!(track),
-          ),
+          if (tempoChip != null) tempoChip,
+          if (widget.onEditAnalysis != null)
+            IconButton(
+              key: ValueKey('timeline_edit_analysis_${track.id}'),
+              tooltip: 'Edit analysis for ${track.title}',
+              icon: const Icon(Icons.speed),
+              iconSize: 20,
+              constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+              padding: EdgeInsets.zero,
+              onPressed: () => widget.onEditAnalysis!(track),
+            ),
+          if (movable)
+            IconButton(
+              key: ValueKey('timeline_move_earlier_${track.id}'),
+              tooltip: 'Move ${track.title} earlier',
+              icon: const Icon(Icons.keyboard_arrow_up),
+              iconSize: 20,
+              constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+              padding: EdgeInsets.zero,
+              onPressed: widget.onMoveEarlier == null
+                  ? null
+                  : () => widget.onMoveEarlier!(track),
+            ),
+          if (movable)
+            IconButton(
+              key: ValueKey('timeline_move_later_${track.id}'),
+              tooltip: 'Move ${track.title} later',
+              icon: const Icon(Icons.keyboard_arrow_down),
+              iconSize: 20,
+              constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+              padding: EdgeInsets.zero,
+              onPressed: widget.onMoveLater == null
+                  ? null
+                  : () => widget.onMoveLater!(track),
+            ),
         ],
+      ),
+    );
+  }
+
+  Widget? _selectedTempoChip(BuildContext context, _LaneModel lane) {
+    final tempo = lane.mixClip.tempo;
+    final labels = <String>[
+      if (tempo.nativeBpm != null) '${_formatBpm(tempo.nativeBpm!)} BPM',
+      if (tempo.camelot != null) tempo.camelot!,
+    ];
+    if (labels.isEmpty) return null;
+    final theme = Theme.of(context);
+    return Container(
+      key: ValueKey('timeline_tempo_${lane.track.id}'),
+      constraints: const BoxConstraints(maxWidth: 116),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: Text(
+        labels.join(' · '),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.labelSmall?.copyWith(
+          fontWeight: FontWeight.w700,
+          color: theme.colorScheme.onSurface,
+        ),
       ),
     );
   }
@@ -1089,32 +1207,50 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
   }
 
-  Widget _transitionBand(BuildContext context, int durationMs, double gain) {
-    const accent = StackedWaveformTimeline.currentAccent;
-    final alpha = (0.08 + gain * 0.18).clamp(0.08, 0.26).toDouble();
-    return IgnorePointer(
-      child: Container(
-        decoration: BoxDecoration(
-          color: accent.withValues(alpha: alpha),
-          border: Border.symmetric(
-            vertical: BorderSide(
-              color: accent.withValues(alpha: 0.35 + gain * 0.35),
+  Widget _transitionBand(
+    BuildContext context,
+    int durationMs,
+    double gain,
+    TransitionDiagnostics diagnostics,
+  ) {
+    final theme = Theme.of(context);
+    final accent = switch (diagnostics.severity) {
+      TransitionDiagnosticSeverity.error => theme.colorScheme.error,
+      TransitionDiagnosticSeverity.warning => const Color(0xFFFF8F00),
+      TransitionDiagnosticSeverity.info =>
+        StackedWaveformTimeline.currentAccent,
+    };
+    final alpha = (0.025 + gain * 0.055).clamp(0.025, 0.08).toDouble();
+    final labels = diagnostics.compactLabels.take(2).toList(growable: false);
+    final hint =
+        labels.isEmpty ? 'gain ${(gain * 100).round()}%' : labels.join(' · ');
+    return Semantics(
+      label:
+          'Transition ${_formatClock(durationMs)}. ${diagnostics.semanticsLabel}',
+      child: IgnorePointer(
+        child: Container(
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: alpha),
+            border: Border.symmetric(
+              vertical: BorderSide(
+                color: accent.withValues(alpha: 0.35 + gain * 0.35),
+              ),
             ),
           ),
-        ),
-        alignment: Alignment.topCenter,
-        padding: const EdgeInsets.only(top: 2),
-        child: FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-            decoration: BoxDecoration(
-              color: accent,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              'transition ${_formatClock(durationMs)} · gain ${(gain * 100).round()}%',
-              style: const TextStyle(color: Colors.white, fontSize: 10),
+          alignment: Alignment.topCenter,
+          padding: const EdgeInsets.only(top: 2),
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              decoration: BoxDecoration(
+                color: accent,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'transition ${_formatClock(durationMs)} · $hint',
+                style: const TextStyle(color: Colors.white, fontSize: 10),
+              ),
             ),
           ),
         ),
@@ -1614,4 +1750,9 @@ String _formatClock(int ms) {
   final m = totalSeconds ~/ 60;
   final s = totalSeconds % 60;
   return '$m:${s.toString().padLeft(2, '0')}';
+}
+
+String _formatBpm(double bpm) {
+  if (bpm.roundToDouble() == bpm) return bpm.round().toString();
+  return bpm.toStringAsFixed(1);
 }

@@ -17,6 +17,7 @@ COPY . .
 
 # Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /audio-analyzer ./cmd/audio-analyzer
 
 # Final stage
 FROM alpine:3.19
@@ -42,6 +43,7 @@ RUN mkdir -p /app/data /app/tmp && chown -R appuser:appuser /app
 
 # Copy binary from builder
 COPY --from=builder /server /app/server
+COPY --from=builder /audio-analyzer /app/audio-analyzer
 
 # Use non-root user
 USER appuser

@@ -24,6 +24,7 @@ type AnalysisResponse struct {
 	SchemaVersion int             `json:"schema_version"`
 	Status        string          `json:"status"`
 	Summary       json.RawMessage `json:"summary,omitempty"`
+	Overrides     json.RawMessage `json:"overrides,omitempty"`
 	Artifacts     json.RawMessage `json:"artifacts,omitempty"`
 	Provenance    json.RawMessage `json:"provenance,omitempty"`
 	Error         string          `json:"error,omitempty"`
@@ -31,6 +32,10 @@ type AnalysisResponse struct {
 	StartedAt     string          `json:"started_at,omitempty"`
 	CompletedAt   string          `json:"completed_at,omitempty"`
 	UpdatedAt     string          `json:"updated_at"`
+}
+
+type AnalysisOverridesRequest struct {
+	Overrides json.RawMessage `json:"overrides"`
 }
 
 func (h *AnalysisHandlers) GetTrackAnalysis(w http.ResponseWriter, r *http.Request) {
@@ -71,6 +76,7 @@ func (h *AnalysisHandlers) GetTrackAnalysis(w http.ResponseWriter, r *http.Reque
 		SchemaVersion: analysis.SchemaVersion,
 		Status:        analysis.Status,
 		Summary:       analysis.SummaryJSON,
+		Overrides:     analysis.OverridesJSON,
 		Artifacts:     analysis.ArtifactsJSON,
 		Provenance:    analysis.ProvenanceJSON,
 		RequestedAt:   analysis.RequestedAt.Format("2006-01-02T15:04:05Z"),
@@ -86,4 +92,85 @@ func (h *AnalysisHandlers) GetTrackAnalysis(w http.ResponseWriter, r *http.Reque
 		resp.CompletedAt = analysis.CompletedAt.Time.Format("2006-01-02T15:04:05Z")
 	}
 	writeLibraryJSON(w, http.StatusOK, resp)
+}
+
+func (h *AnalysisHandlers) UpdateTrackAnalysisOverrides(w http.ResponseWriter, r *http.Request) {
+	userCtx := auth.GetUserFromContext(r.Context())
+	if userCtx == nil {
+		writeLibraryError(w, http.StatusUnauthorized, "UNAUTHORIZED", "user not authenticated")
+		return
+	}
+	if h == nil || h.analysisRepo == nil || h.libraryRepo == nil {
+		writeLibraryError(w, http.StatusServiceUnavailable, "SERVICE_DISABLED", "track analysis is unavailable")
+		return
+	}
+	trackID, err := strconv.ParseInt(r.PathValue("track_id"), 10, 64)
+	if err != nil || trackID <= 0 {
+		writeLibraryError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid track_id format")
+		return
+	}
+	inLibrary, err := h.libraryRepo.IsTrackInLibrary(r.Context(), userCtx.UserID, trackID)
+	if err != nil {
+		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to verify library membership")
+		return
+	}
+	if !inLibrary {
+		writeLibraryError(w, http.StatusNotFound, "TRACK_NOT_FOUND", "track not found")
+		return
+	}
+
+	var req AnalysisOverridesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeLibraryError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
+		return
+	}
+	normalized, err := normalizeAnalysisOverrides(req.Overrides)
+	if err != nil {
+		writeLibraryError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	analysis, err := h.analysisRepo.SetOverrides(r.Context(), trackID, normalized)
+	if err != nil {
+		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to save analysis overrides")
+		return
+	}
+	resp := AnalysisResponse{
+		TrackID:       analysis.TrackID,
+		SchemaVersion: analysis.SchemaVersion,
+		Status:        analysis.Status,
+		Summary:       analysis.SummaryJSON,
+		Overrides:     analysis.OverridesJSON,
+		Artifacts:     analysis.ArtifactsJSON,
+		Provenance:    analysis.ProvenanceJSON,
+		RequestedAt:   analysis.RequestedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:     analysis.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+	}
+	if analysis.Error.Valid {
+		resp.Error = analysis.Error.String
+	}
+	if analysis.StartedAt.Valid {
+		resp.StartedAt = analysis.StartedAt.Time.Format("2006-01-02T15:04:05Z")
+	}
+	if analysis.CompletedAt.Valid {
+		resp.CompletedAt = analysis.CompletedAt.Time.Format("2006-01-02T15:04:05Z")
+	}
+	writeLibraryJSON(w, http.StatusOK, resp)
+}
+
+func normalizeAnalysisOverrides(raw json.RawMessage) (json.RawMessage, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("overrides must be a JSON object")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, errors.New("overrides must be a JSON object")
+	}
+	if obj == nil {
+		return nil, errors.New("overrides must be a JSON object")
+	}
+	normalized, err := json.Marshal(obj)
+	if err != nil {
+		return nil, errors.New("failed to normalize overrides")
+	}
+	return normalized, nil
 }

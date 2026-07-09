@@ -5,12 +5,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:open_music_player/core/engine/gain_envelope.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/models/waveform.dart';
 import 'package:open_music_player/widgets/stacked_waveform_timeline.dart';
+import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
 
 Track _track(String id, String title, int duration) => Track(
       id: id,
@@ -25,6 +27,7 @@ MixClip _mixClip(
   int startMs,
   int durationMs, {
   GainEnvelope envelope = const GainEnvelope.flat(),
+  ClipTempoMetadata tempo = ClipTempoMetadata.empty,
 }) =>
     MixClip(
       placement: TimelineClip.clamped(
@@ -36,6 +39,7 @@ MixClip _mixClip(
         timelineStartMs: startMs,
       ),
       envelope: envelope,
+      tempo: tempo,
     );
 
 Future<void> _pump(
@@ -46,6 +50,8 @@ Future<void> _pump(
   Size size = const Size(390, 844),
   ValueChanged<Track>? onMoveEarlier,
   ValueChanged<Track>? onMoveLater,
+  ValueChanged<Track>? onEditAnalysis,
+  TimelineWaveformData Function(Track, int)? waveformFor,
   TimelineClip Function(Track, TimelineClip)? clipFor,
   TimelineModel? timelineModel,
   int playheadPositionMs = 0,
@@ -71,6 +77,7 @@ Future<void> _pump(
           currentTrack: current,
           upcomingTracks: upcoming,
           peaksFor: (t) => mockWaveformPeaks(t.id),
+          waveformFor: waveformFor,
           trimRangeFor: (t) => TrimRange.full(t.durationMs),
           clipFor: clipFor,
           timelineModel: timelineModel,
@@ -84,6 +91,7 @@ Future<void> _pump(
           onTrimEndChanged: onTrimEndChanged,
           onMoveEarlier: onMoveEarlier,
           onMoveLater: onMoveLater,
+          onEditAnalysis: onEditAnalysis,
         ),
       ),
     ),
@@ -114,6 +122,13 @@ Future<void> _pinchZoom(
   await first.up();
   await second.up();
   await tester.pumpAndSettle();
+}
+
+TimelineWaveformPainter _waveformPainter(WidgetTester tester, String trackId) {
+  final paint = tester.widget<CustomPaint>(
+    find.byKey(ValueKey('timeline_waveform_$trackId')),
+  );
+  return paint.painter! as TimelineWaveformPainter;
 }
 
 void main() {
@@ -199,6 +214,53 @@ void main() {
     // Edge teaser chips stay out of the timeline chrome; lane rows carry identity.
     expect(find.byKey(const ValueKey('right_future_teaser')), findsNothing);
     expect(find.byKey(const ValueKey('left_history_teaser')), findsNothing);
+  });
+
+  testWidgets('requests denser waveform data as timeline zoom increases', (
+    tester,
+  ) async {
+    final requested = <int>[];
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 420),
+      upcoming: [_track('t2', 'Paper Planes', 420)],
+      waveformFor: (track, targetSampleCount) {
+        requested.add(targetSampleCount);
+        return richWaveformForTrack(track, sampleCount: targetSampleCount);
+      },
+    );
+    final before = requested.reduce(math.max);
+
+    await _pinchZoom(tester);
+    final after = requested.reduce(math.max);
+
+    expect(after, greaterThan(before));
+  });
+
+  testWidgets('generates dense fallback waveform data when provider is omitted',
+      (tester) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 420),
+      upcoming: [_track('t2', 'Paper Planes', 420)],
+    );
+    final before = _waveformPainter(tester, 't1').waveform;
+
+    await _pinchZoom(tester);
+    final after = _waveformPainter(tester, 't1').waveform;
+
+    expect(before, isNotNull);
+    expect(before!.frames.length, greaterThanOrEqualTo(512));
+    expect(after, isNotNull);
+    expect(after!.frames.length, greaterThan(before.frames.length));
+    expect(
+        after.frames.map((frame) => frame.low).toSet().length, greaterThan(8));
+    expect(
+        after.frames.map((frame) => frame.mid).toSet().length, greaterThan(8));
+    expect(
+        after.frames.map((frame) => frame.high).toSet().length, greaterThan(8));
   });
 
   testWidgets('future lane identity stays pinned before its waveform starts', (
@@ -515,6 +577,76 @@ void main() {
     await tester.tapAt(surface.bottomRight - const Offset(8, 8));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('timeline_trim_start_t1')), findsNothing);
+  });
+
+  testWidgets('selected timeline clip exposes analysis correction action', (
+    tester,
+  ) async {
+    Track? edited;
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 214),
+      upcoming: [_track('t2', 'Paper Planes', 188)],
+      onEditAnalysis: (track) => edited = track,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_edit_analysis_t1')));
+    await tester.pumpAndSettle();
+
+    expect(edited?.id, 't1');
+  });
+
+  testWidgets('overlap bands and selected clips expose tempo diagnostics', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 160);
+    final incoming = _track('t2', 'Paper Planes', 160);
+    final timeline = TimelineModel(
+      clips: [
+        _mixClip(
+          't1',
+          0,
+          160000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 120,
+            bpmConfidence: 0.9,
+            downbeatsMs: [0, 8000, 16000, 24000],
+            camelot: '8A',
+          ),
+        ),
+        _mixClip(
+          't2',
+          8000,
+          160000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 124,
+            bpmConfidence: 0.9,
+            downbeatsMs: [0, 8000, 16000, 24000],
+            camelot: '9A',
+          ),
+        ),
+      ],
+    );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      timelineModel: timeline,
+      onEditAnalysis: (_) {},
+    );
+
+    expect(find.textContaining('Beat locked'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('timeline_tempo_t1')), findsOneWidget);
+    expect(find.textContaining('120 BPM'), findsOneWidget);
   });
 
   testWidgets('floating options panel controls snap marker mode', (

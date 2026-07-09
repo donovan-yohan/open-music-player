@@ -11,6 +11,7 @@ class QueueItem extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onPlay;
   final VoidCallback? onRetry;
+  final VoidCallback? onEditAnalysis;
 
   /// Left-edge vertical reorder grip. Supplied by the screen so it can wrap the
   /// grip — and only the grip — in a drag listener. Visually distinct from the
@@ -40,6 +41,7 @@ class QueueItem extends StatelessWidget {
     this.onTap,
     this.onPlay,
     this.onRetry,
+    this.onEditAnalysis,
     this.reorderHandle,
     this.showTrimControls = false,
     this.trimRange,
@@ -155,6 +157,14 @@ class QueueItem extends StatelessWidget {
                   children: [
                     _buildStatusChip(context),
                     ..._buildAnalysisChips(context),
+                    if (onEditAnalysis != null)
+                      IconButton(
+                        key: ValueKey('analysis_edit_${track.id}'),
+                        icon: const Icon(Icons.tune, size: 20),
+                        tooltip: 'Edit analysis for ${track.title}',
+                        onPressed: onEditAnalysis,
+                        color: Theme.of(context).colorScheme.primary,
+                      ),
                     _buildQueueAction(context),
                     if (onRemove != null)
                       IconButton(

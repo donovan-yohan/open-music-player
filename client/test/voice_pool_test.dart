@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/engine_audio_source_resolver.dart';
 import 'package:open_music_player/core/engine/gain_envelope.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/core/engine/voice.dart';
@@ -163,6 +164,76 @@ void main() {
     expect(a.seekLog, isEmpty);
     expect(a.releaseCount, 0);
     expect(pool.model.clips.map((clip) => clip.id), ['a', 'b']);
+  });
+
+  test('applies per-voice BPM transition rates during an overlap', () async {
+    await pool.loadMix(
+      TimelineModel(
+        clips: [
+          _clip('a', 0, fadeOutMs: 5000, nativeBpm: 100),
+          _clip('b', 5000, fadeInMs: 5000, nativeBpm: 125),
+        ],
+      ),
+    );
+
+    await pool.syncAt(7500, forceSeek: true);
+
+    final a = pool.activeVoices['a'] as FakeVoice;
+    final b = pool.activeVoices['b'] as FakeVoice;
+    expect(a.speedLog.last, closeTo(1.125, 0.0001));
+    expect(a.pitchLog.last, closeTo(1, 0.0001));
+    expect(b.speedLog.last, closeTo(0.9, 0.0001));
+    expect(b.pitchLog.last, closeTo(1, 0.0001));
+    expect(b.currentLocalPositionMs, closeTo(2125, 1));
+  });
+
+  test('follow-tempo pitch mode shifts pitch with playback rate', () async {
+    await pool.loadMix(
+      TimelineModel(
+        clips: [
+          _clip(
+            'a',
+            0,
+            pitchMode: pitchModeFollowTempo,
+            rateAutomation: const PlaybackRateAutomation(
+              baseRate: 1.25,
+              pitchMode: pitchModeFollowTempo,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    final a = pool.activeVoices['a'] as FakeVoice;
+    expect(a.speedLog.last, closeTo(1.25, 0.0001));
+    expect(a.pitchLog.last, closeTo(1.25, 0.0001));
+  });
+
+  test('release resets playback speed and pitch before voice reuse', () async {
+    await pool.loadMix(
+      TimelineModel(
+        clips: [
+          _clip(
+            'a',
+            0,
+            pitchMode: pitchModeFollowTempo,
+            rateAutomation: const PlaybackRateAutomation(
+              baseRate: 1.25,
+              pitchMode: pitchModeFollowTempo,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    final a = pool.activeVoices['a'] as FakeVoice;
+    expect(a.pitchLog.last, closeTo(1.25, 0.0001));
+
+    await pool.syncAt(12000, forceSeek: true);
+
+    expect(a.releaseCount, 1);
+    expect(a.speedLog.last, closeTo(1, 0.0001));
+    expect(a.pitchLog.last, closeTo(1, 0.0001));
   });
 
   test('prepare timeout starts ready voices and late-joins slow layer muted',
@@ -530,6 +601,9 @@ MixClip _clip(
   int fadeOutMs = 0,
   double gainDb = 0,
   String? audioSourceRef,
+  double? nativeBpm,
+  String pitchMode = pitchModePreserve,
+  PlaybackRateAutomation? rateAutomation,
 }) {
   return MixClip(
     placement: TimelineClip.clamped(
@@ -541,8 +615,14 @@ MixClip _clip(
       timelineStartMs: startMs,
     ),
     audioSourceRef: audioSourceRef ?? 'https://example.com/$id.mp3',
+    pitchMode: pitchMode,
+    rateAutomation: rateAutomation,
     envelope: GainEnvelope(
         fadeInMs: fadeInMs, fadeOutMs: fadeOutMs, baseGainDb: gainDb),
+    tempo: ClipTempoMetadata(
+      nativeBpm: nativeBpm,
+      bpmConfidence: nativeBpm == null ? null : 0.95,
+    ),
   );
 }
 
@@ -604,6 +684,7 @@ class FakeVoice implements Voice {
   final seekLog = <int>[];
   final volumeLog = <double>[];
   final speedLog = <double>[];
+  final pitchLog = <double>[];
   final _events = StreamController<VoiceEvent>.broadcast();
   int releaseCount = 0;
   int pauseCount = 0;
@@ -686,6 +767,11 @@ class FakeVoice implements Voice {
   @override
   Future<void> setSpeed(double rate) async {
     speedLog.add(rate);
+  }
+
+  @override
+  Future<void> setPitch(double factor) async {
+    pitchLog.add(factor);
   }
 
   @override

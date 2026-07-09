@@ -168,6 +168,22 @@ class PlaybackSourceResolver {
     int trackId,
     Map<String, dynamic> extras,
   ) {
+    final playbackExtras = {
+      ...extras,
+      if (track['analysisStatus'] != null)
+        'analysisStatus': track['analysisStatus'],
+      if (track['analysis_status'] != null)
+        'analysisStatus': track['analysis_status'],
+      if (track['analysisSummary'] != null)
+        'analysisSummary': track['analysisSummary'],
+      if (track['analysis_summary'] != null)
+        'analysisSummary': track['analysis_summary'],
+      if (track['analysisOverrides'] != null)
+        'analysisOverrides': track['analysisOverrides'],
+      if (track['analysis_overrides'] != null)
+        'analysisOverrides': track['analysis_overrides'],
+      'analysisRef': trackId.toString(),
+    };
     return MediaItem(
       id: trackId.toString(),
       title: track['title'] as String? ?? 'Unknown',
@@ -177,7 +193,7 @@ class PlaybackSourceResolver {
       artUri: track['artwork_url'] != null
           ? Uri.parse(track['artwork_url'] as String)
           : null,
-      extras: extras,
+      extras: playbackExtras,
     );
   }
 

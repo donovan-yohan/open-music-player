@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
+import '../models/waveform.dart';
 import 'timeline_waveform_painter.dart';
 
 /// Visual role of a lane in the stacked timeline. Drives emphasis (contrast,
@@ -135,6 +136,9 @@ class TimelineLaneHeader extends StatelessWidget {
 class TimelineClipWidget extends StatelessWidget {
   final Track track;
   final List<double> peaks;
+  final TimelineWaveformData? waveform;
+  final double visibleStartFraction;
+  final double visibleEndFraction;
   final TrimRange trim;
   final LaneRole role;
   final Color accent;
@@ -148,6 +152,9 @@ class TimelineClipWidget extends StatelessWidget {
     super.key,
     required this.track,
     required this.peaks,
+    this.waveform,
+    this.visibleStartFraction = 0,
+    this.visibleEndFraction = 1,
     required this.trim,
     required this.role,
     required this.accent,
@@ -189,6 +196,9 @@ class TimelineClipWidget extends StatelessWidget {
               key: ValueKey('timeline_waveform_${track.id}'),
               painter: TimelineWaveformPainter(
                 peaks: peaks,
+                waveform: waveform,
+                visibleStartFraction: visibleStartFraction,
+                visibleEndFraction: visibleEndFraction,
                 color: waveColor,
                 dimColor: theme.disabledColor.withValues(alpha: 0.35),
                 handleColor: accent.withValues(alpha: 0.9),
