@@ -48,3 +48,5 @@ build/
 .runtime/
 .claude/
 .logs/
+outputs/
+deploy/.env

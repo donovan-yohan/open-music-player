@@ -73,6 +73,7 @@ the isolated wrappers instead:
 
 ```bash
 scripts/dev isolated
+scripts/dev test-infra
 scripts/smoke isolated
 ```
 

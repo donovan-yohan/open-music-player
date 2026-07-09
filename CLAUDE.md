@@ -17,7 +17,8 @@ Open Music Player is a self-hosted music library management system with three ma
 ### Canonical Repo Harness
 ```bash
 scripts/dev                         # Start the low-memory backend stack
-scripts/dev isolated                # Same stack on high ports for parallel worktrees
+scripts/dev isolated                # Same stack on worktree-derived high ports
+scripts/dev test-infra              # Postgres/Redis/MinIO only, no backend worker
 scripts/test                        # Backend + client + extension tests
 scripts/test backend|client|extension
 scripts/lint                        # Backend + client + extension static checks
@@ -25,7 +26,7 @@ scripts/lint delivery               # Agentic delivery docs/scripts/CI scaffold
 scripts/agentic-harness             # Direct deterministic scaffold/secret/syntax check
 scripts/build                       # Backend + client + extension build checks
 scripts/smoke                       # Low-memory backend smoke
-scripts/smoke isolated              # Smoke the isolated high-port stack
+scripts/smoke isolated              # Smoke the worktree-derived high-port stack
 scripts/smoke e2e                   # Download worker / playback URL smoke
 ```
 
