@@ -98,6 +98,13 @@ func TestURLResolverNormalizesSupportedURLs(t *testing.T) {
 			if candidate.Metadata["titleResolved"] != false {
 				t.Fatalf("metadata.titleResolved = %v, want false", candidate.Metadata["titleResolved"])
 			}
+			quality, ok := candidate.Metadata[SourceQualityMetadataKey].(SourceQuality)
+			if !ok {
+				t.Fatalf("metadata.%s missing or wrong type: %#v", SourceQualityMetadataKey, candidate.Metadata[SourceQualityMetadataKey])
+			}
+			if quality.Classification != SourceQualityDirectURL || quality.Recommendation != SourceQualityReview {
+				t.Fatalf("direct URL source quality = %#v, want review direct_url", quality)
+			}
 			// The candidate must satisfy the same gate POST /api/v1/queue/items
 			// applies, so it is queueable without changing queue semantics.
 			if candidate.Provider == "" || candidate.SourceURL == "" || candidate.Title == "" {

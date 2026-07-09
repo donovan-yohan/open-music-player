@@ -235,6 +235,7 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 	for _, providerName := range sourceProviders {
 		resp.Results = append(resp.Results, providerItems[providerName]...)
 	}
+	resp.Results = rankSourceCandidates(query, resp.Results)
 	sections, catalogSummary := s.buildSections(ctx, query, limit, resp.Results, includeCatalog)
 	resp.Sections = sections
 	if catalogSummary != nil {

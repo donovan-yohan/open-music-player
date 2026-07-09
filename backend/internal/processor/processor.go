@@ -173,16 +173,17 @@ func (p *Processor) downloadAndStore(ctx context.Context, job *download.Download
 		SourceURL:  job.URL,
 		SourceType: job.SourceType,
 		Raw: map[string]interface{}{
-			"candidate_id":  job.CandidateID,
-			"source_id":     job.SourceID,
-			"title":         job.Title,
-			"artist":        job.Artist,
-			"album":         job.Album,
-			"uploader":      job.Uploader,
-			"duration_ms":   job.DurationMs,
-			"source_url":    job.URL,
-			"source_type":   job.SourceType,
-			"thumbnail_url": job.ThumbnailURL,
+			"candidate_id":   job.CandidateID,
+			"source_id":      job.SourceID,
+			"title":          job.Title,
+			"artist":         job.Artist,
+			"album":          job.Album,
+			"uploader":       job.Uploader,
+			"duration_ms":    job.DurationMs,
+			"source_url":     job.URL,
+			"source_type":    job.SourceType,
+			"thumbnail_url":  job.ThumbnailURL,
+			"source_quality": job.Metadata["sourceQuality"],
 		},
 	}
 	if job.MBRecordingID != nil {
@@ -452,7 +453,7 @@ func applyDeterministicCleanup(metadata *TrackMetadata) deterministicCleanup {
 
 func providerMetadata(metadata *TrackMetadata) map[string]interface{} {
 	provider := make(map[string]interface{})
-	keys := []string{"id", "title", "fulltitle", "artist", "album", "uploader", "channel", "duration", "duration_ms", "webpage_url", "source_url", "source_type", "thumbnail", "thumbnail_url", "candidate_id", "source_id"}
+	keys := []string{"id", "title", "fulltitle", "artist", "album", "uploader", "channel", "duration", "duration_ms", "webpage_url", "source_url", "source_type", "thumbnail", "thumbnail_url", "candidate_id", "source_id", "source_quality"}
 	for _, key := range keys {
 		if value, ok := metadata.Raw[key]; ok && providerValueIsPresent(value) {
 			provider[key] = value

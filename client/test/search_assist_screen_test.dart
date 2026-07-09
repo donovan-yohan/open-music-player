@@ -62,7 +62,8 @@ void main() {
   Future<void> enterAssistMode(WidgetTester tester, String prompt) async {
     await tester.tap(find.text('Assist'));
     await tester.pump();
-    await tester.enterText(find.byKey(const ValueKey('search_assist_input')), prompt);
+    await tester.enterText(
+        find.byKey(const ValueKey('search_assist_input')), prompt);
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
@@ -79,8 +80,10 @@ void main() {
       await enterAssistMode(tester, 'that live porter robinson shelter');
 
       // Grounded assistant text + candidate card are rendered.
-      expect(find.text("Here's what I found from your sources."), findsOneWidget);
+      expect(
+          find.text("Here's what I found from your sources."), findsOneWidget);
       expect(find.text('Porter Robinson - Shelter (Live)'), findsOneWidget);
+      expect(find.text('Live'), findsOneWidget);
       expect(find.byIcon(Icons.playlist_add), findsOneWidget);
 
       // Nothing was queued by rendering candidates: the action is explicit.
@@ -97,6 +100,7 @@ void main() {
           queueClient.lastAddBody?['sourceCandidate'] as Map<String, dynamic>?;
       expect(sent?['candidateId'], 'youtube:abc');
       expect(sent?['sourceUrl'], 'https://youtube.com/watch?v=abc');
+      expect(sent?['metadata'], containsPair('sourceQuality', isA<Map>()));
 
       await tester.pumpWidget(const SizedBox.shrink());
     },
@@ -211,7 +215,8 @@ void main() {
       // No spinner stuck, no crash: the thrown DioException degrades to a
       // banner that keeps the search-directly fallback.
       expect(find.byType(CircularProgressIndicator), findsNothing);
-      expect(find.byKey(const ValueKey('assist_status_banner')), findsOneWidget);
+      expect(
+          find.byKey(const ValueKey('assist_status_banner')), findsOneWidget);
 
       await tester.tap(find.byKey(const ValueKey('assist_search_directly')));
       await tester.pump();
@@ -322,6 +327,17 @@ const Map<String, dynamic> _candidateJson = {
   'durationMs': 245000,
   'downloadable': true,
   'playable': false,
+  'metadata': {
+    'sourceQuality': {
+      'score': 73,
+      'classification': 'live',
+      'recommendation': 'acceptable',
+      'confidence': 0.79,
+      'reasons': ['query asked for live content'],
+      'warnings': [],
+      'provenance': 'deterministic_source_quality_v1',
+    },
+  },
 };
 
 const Map<String, dynamic> _searchEnvelope = {
@@ -332,14 +348,20 @@ const Map<String, dynamic> _searchEnvelope = {
     'query': 'porter robinson shelter',
     'results': [_candidateJson],
     'providers': [
-      {'provider': 'youtube', 'status': 'ok', 'resultCount': 1, 'elapsedMs': 20},
+      {
+        'provider': 'youtube',
+        'status': 'ok',
+        'resultCount': 1,
+        'elapsedMs': 20
+      },
     ],
   },
 };
 
 const Map<String, dynamic> _directUrlEnvelope = {
   'status': 'ok',
-  'assistantText': 'I recognized a direct link. Confirm to add it to your queue.',
+  'assistantText':
+      'I recognized a direct link. Confirm to add it to your queue.',
   'intent': {'kind': 'direct_url', 'detectedUrl': 'https://youtu.be/abc'},
   'candidates': [
     {

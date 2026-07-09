@@ -17,6 +17,17 @@ void main() {
           'thumbnailUrl': 'https://img.example/cover.jpg',
           'downloadable': true,
           'playable': false,
+          'metadata': {
+            'sourceQuality': {
+              'score': 91,
+              'classification': 'official_audio',
+              'recommendation': 'preferred',
+              'confidence': 0.9,
+              'reasons': ['title indicates official audio'],
+              'warnings': [],
+              'provenance': 'deterministic_source_quality_v1',
+            },
+          },
         },
       ],
       'providers': [
@@ -38,6 +49,11 @@ void main() {
       'youtube:abc',
     );
     expect(response.results.single.formattedDuration, '4:13');
+    expect(response.results.single.sourceQuality?.label, 'Official audio');
+    expect(
+      response.results.single.toQueueJson()['metadata'],
+      containsPair('sourceQuality', isA<Map<String, dynamic>>()),
+    );
     expect(
       response.results.single.displaySubtitle,
       'mariya channel • youtube • 4:13',

@@ -44,6 +44,7 @@ type SourceCandidate struct {
 	Uploader     string
 	DurationMs   int
 	ThumbnailURL string
+	Metadata     map[string]interface{}
 }
 
 // NewQueue creates a new job queue with the given Redis URL
@@ -109,6 +110,7 @@ func (q *Queue) EnqueueCandidateWithID(ctx context.Context, jobID, userID string
 		Uploader:      candidate.Uploader,
 		DurationMs:    candidate.DurationMs,
 		ThumbnailURL:  candidate.ThumbnailURL,
+		Metadata:      candidate.Metadata,
 	})
 }
 
@@ -127,6 +129,7 @@ func (q *Queue) EnqueuePlaylistImportItem(ctx context.Context, userID string, ca
 		Uploader:             candidate.Uploader,
 		DurationMs:           candidate.DurationMs,
 		ThumbnailURL:         candidate.ThumbnailURL,
+		Metadata:             candidate.Metadata,
 		PlaylistImportJobID:  importJobID,
 		PlaylistImportItemID: importItemID,
 		PlaylistID:           playlistID,
