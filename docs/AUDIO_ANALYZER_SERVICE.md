@@ -51,8 +51,8 @@ Response (`200`):
       "confidence": 0.86,
       "provenance": "beat_grid"
     },
-    "key": { "value": "A minor", "confidence": 0.82, "provenance": "chroma" },
-    "camelot": { "value": "8A", "confidence": 0.82, "provenance": "chroma" },
+    "key": { "value": "A minor", "confidence": 0.82, "provenance": "zero_crossing_chroma_proxy" },
+    "camelot": { "value": "8A", "confidence": 0.82, "provenance": "zero_crossing_chroma_proxy" },
     "energy": { "value": 0.73, "confidence": 0.88, "provenance": "rms_spectral_flux" },
     "loudness": {
       "integrated_lufs": -11.8,
@@ -116,7 +116,7 @@ Response (`200`):
     "analyzer_version": "dev",
     "model_versions": {
       "tempo": "tempo-v1",
-      "key": "key-v1",
+      "key": "zero-crossing-chroma-v1",
       "loudness": "loudness-v1",
       "waveform": "waveform-v1"
     }
@@ -187,6 +187,14 @@ Voices are reset to neutral speed and pitch before release/reuse so a prior
 transition cannot leak tuning into the next loaded track. Pitch shifting is
 best-effort on unsupported just_audio platforms; Android supports the dogfood
 path.
+
+## Key and Camelot analysis
+
+The built-in ffmpeg analyzer now emits `key` and `camelot` summaries for real
+audio using a lightweight zero-crossing pitch-class proxy. This is intentionally
+lower-confidence than a full chroma model, but it gives the queue/timeline UI a
+stable harmonic hint and provenance while leaving room for a future analyzer
+version to replace it with richer chroma or stem-aware key detection.
 
 ## Beat-locked transition defaults
 
