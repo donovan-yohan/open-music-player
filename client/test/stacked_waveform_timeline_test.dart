@@ -9,17 +9,46 @@ import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/track.dart';
+import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/models/waveform.dart';
 import 'package:open_music_player/widgets/stacked_waveform_timeline.dart';
 import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
 
-Track _track(String id, String title, int duration) => Track(
+Track _track(
+  String id,
+  String title,
+  int duration, {
+  TrackAnalysis? analysis,
+}) =>
+    Track(
       id: id,
       title: title,
       artist: 'Artist $id',
       duration: duration,
       addedAt: DateTime.utc(2026, 1, 1),
+      analysis: analysis,
+    );
+
+Track _analyzedTrack(
+  String id,
+  String title,
+  int duration, {
+  double bpm = 120,
+  double confidence = 0.9,
+  List<int> downbeatsMs = const [0, 4000, 8000, 12000, 16000],
+}) =>
+    _track(
+      id,
+      title,
+      duration,
+      analysis: TrackAnalysis(
+        status: TrackAnalysisStatus.analyzed,
+        summary: TrackAnalysisSummary(
+          bpm: AnalysisValue(value: bpm, confidence: confidence),
+          downbeats: DownbeatSummary(positionsMs: downbeatsMs),
+        ),
+      ),
     );
 
 MixClip _mixClip(
@@ -275,8 +304,11 @@ void main() {
     await _pump(
       tester,
       previous: null,
-      current: _track('t1', 'Midnight Drive', 214),
-      upcoming: [_track('t2', 'Paper Planes', 188), _track('t3', 'Glass', 241)],
+      current: _analyzedTrack('t1', 'Midnight Drive', 20),
+      upcoming: [
+        _analyzedTrack('t2', 'Paper Planes', 20),
+        _analyzedTrack('t3', 'Glass', 20),
+      ],
     );
 
     expect(
@@ -286,6 +318,7 @@ void main() {
     expect(find.byKey(const ValueKey('timeline_playhead')), findsOneWidget);
     expect(find.byKey(const ValueKey('transition_window')), findsOneWidget);
     expect(find.byKey(const ValueKey('timeline_options_fab')), findsOneWidget);
+    expect(find.textContaining('transition 0:08'), findsWidgets);
 
     // Current + upcoming lanes each render header, clip and waveform.
     for (final id in ['t1', 't2', 't3']) {
@@ -322,30 +355,38 @@ void main() {
     expect(after, lessThanOrEqualTo(4096));
   });
 
-  testWidgets('generates dense fallback waveform data when provider is omitted',
-      (tester) async {
-    await _pump(
-      tester,
-      previous: null,
-      current: _track('t1', 'Midnight Drive', 420),
-      upcoming: [_track('t2', 'Paper Planes', 420)],
-    );
-    final before = _waveformPainter(tester, 't1').waveform;
+  testWidgets(
+    'generates dense fallback waveform data when provider is omitted',
+    (tester) async {
+      await _pump(
+        tester,
+        previous: null,
+        current: _track('t1', 'Midnight Drive', 420),
+        upcoming: [_track('t2', 'Paper Planes', 420)],
+      );
+      final before = _waveformPainter(tester, 't1').waveform;
 
-    await _pinchZoom(tester);
-    final after = _waveformPainter(tester, 't1').waveform;
+      await _pinchZoom(tester);
+      final after = _waveformPainter(tester, 't1').waveform;
 
-    expect(before, isNotNull);
-    expect(before!.frames.length, greaterThanOrEqualTo(512));
-    expect(after, isNotNull);
-    expect(after!.frames.length, greaterThan(before.frames.length));
-    expect(
-        after.frames.map((frame) => frame.low).toSet().length, greaterThan(8));
-    expect(
-        after.frames.map((frame) => frame.mid).toSet().length, greaterThan(8));
-    expect(
-        after.frames.map((frame) => frame.high).toSet().length, greaterThan(8));
-  });
+      expect(before, isNotNull);
+      expect(before!.frames.length, greaterThanOrEqualTo(512));
+      expect(after, isNotNull);
+      expect(after!.frames.length, greaterThan(before.frames.length));
+      expect(
+        after.frames.map((frame) => frame.low).toSet().length,
+        greaterThan(8),
+      );
+      expect(
+        after.frames.map((frame) => frame.mid).toSet().length,
+        greaterThan(8),
+      );
+      expect(
+        after.frames.map((frame) => frame.high).toSet().length,
+        greaterThan(8),
+      );
+    },
+  );
 
   testWidgets('future lane identity stays pinned before its waveform starts', (
     tester,
@@ -360,9 +401,7 @@ void main() {
     final header = tester.getRect(
       find.byKey(const ValueKey('timeline_lane_header_t2')),
     );
-    final clip = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t2')),
-    );
+    final clip = tester.getRect(find.byKey(const ValueKey('timeline_clip_t2')));
 
     expect(header.left, closeTo(8, 1));
     expect(
@@ -500,7 +539,9 @@ void main() {
     expect(events.where((event) => event.startsWith('update:')), isNotEmpty);
     expect(events.last, startsWith('end:'));
     expect(
-        find.byKey(const ValueKey('timeline_trim_start_t1')), findsOneWidget);
+      find.byKey(const ValueKey('timeline_trim_start_t1')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('renders real model overlaps with gain-derived feedback', (
@@ -565,9 +606,9 @@ void main() {
   ) async {
     await _pump(
       tester,
-      previous: _track('t0', 'Opening', 200),
-      current: _track('t1', 'Midnight Drive', 214),
-      upcoming: [_track('t2', 'Paper Planes', 188)],
+      previous: _analyzedTrack('t0', 'Opening', 20),
+      current: _analyzedTrack('t1', 'Midnight Drive', 20),
+      upcoming: [_analyzedTrack('t2', 'Paper Planes', 20)],
     );
 
     expect(find.byKey(const ValueKey('left_history_teaser')), findsNothing);
@@ -624,8 +665,8 @@ void main() {
       await _pump(
         tester,
         previous: null,
-        current: _track('n1', 'Narrow Now', 214),
-        upcoming: [_track('n2', 'Narrow Next', 188)],
+        current: _analyzedTrack('n1', 'Narrow Now', 20),
+        upcoming: [_analyzedTrack('n2', 'Narrow Next', 20)],
         size: const Size(StackedWaveformTimeline.railWidth + 1, 844),
       );
 
@@ -653,7 +694,9 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
     await tester.pumpAndSettle();
     expect(
-        find.byKey(const ValueKey('timeline_trim_start_t1')), findsOneWidget);
+      find.byKey(const ValueKey('timeline_trim_start_t1')),
+      findsOneWidget,
+    );
 
     final surface = tester.getRect(
       find.byKey(const ValueKey('timeline_pan_surface')),
@@ -761,7 +804,9 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('16 beats'), findsWidgets);
     expect(
-        find.byKey(const ValueKey('timeline_options_zoom_in')), findsNothing);
+      find.byKey(const ValueKey('timeline_options_zoom_in')),
+      findsNothing,
+    );
   });
 
   testWidgets('browse drag pans the zoomed timeline viewport', (tester) async {
@@ -826,7 +871,9 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
     await tester.pumpAndSettle();
     expect(
-        find.byKey(const ValueKey('timeline_trim_start_t1')), findsOneWidget);
+      find.byKey(const ValueKey('timeline_trim_start_t1')),
+      findsOneWidget,
+    );
 
     await _pinchZoom(tester);
     final before = tester.getRect(
@@ -847,7 +894,9 @@ void main() {
 
     expect(after.left, lessThan(before.left));
     expect(
-        find.byKey(const ValueKey('timeline_trim_start_t1')), findsOneWidget);
+      find.byKey(const ValueKey('timeline_trim_start_t1')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('browse drag pans zoomed engine timelines with scrub handlers', (
@@ -863,10 +912,11 @@ void main() {
       previous: null,
       current: current,
       upcoming: [next, later],
-      timelineModel: TimelineModel.sequential(
-        [current.id, next.id, later.id],
-        sourceDurationMsFor: (_) => 240000,
-      ),
+      timelineModel: TimelineModel.sequential([
+        current.id,
+        next.id,
+        later.id,
+      ], sourceDurationMsFor: (_) => 240000),
       onScrubStart: () => events.add('begin'),
       onScrubUpdate: (ms) => events.add('update:$ms'),
       onScrubEnd: (ms) async => events.add('end:$ms'),
@@ -1199,7 +1249,9 @@ void main() {
     expect(starts, hasLength(1));
     expect(starts.last, greaterThan(0));
     expect(
-        find.byKey(const ValueKey('timeline_trim_start_t1')), findsOneWidget);
+      find.byKey(const ValueKey('timeline_trim_start_t1')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('trim handles beat body drag hit-testing in edit mode', (
@@ -1320,5 +1372,34 @@ void main() {
       findsNothing,
       reason: 'moving/trimming clips apart should remove stale overlap chrome',
     );
+  });
+
+  testWidgets(
+    'fallback placement uses analyzed phrase/downbeat transition defaults',
+    (tester) async {
+      await _pump(
+        tester,
+        previous: null,
+        current: _analyzedTrack('t1', 'Midnight Drive', 20),
+        upcoming: [_analyzedTrack('t2', 'Phrase Entrance', 20)],
+      );
+
+      expect(find.byKey(const ValueKey('transition_window')), findsOneWidget);
+      expect(find.textContaining('transition 0:08'), findsOneWidget);
+      expect(find.textContaining('Beat locked'), findsOneWidget);
+    },
+  );
+
+  testWidgets('fallback placement stays contiguous without reliable analysis', (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 20),
+      upcoming: [_track('t2', 'Paper Planes', 20)],
+    );
+
+    expect(find.byKey(const ValueKey('transition_window')), findsNothing);
   });
 }
