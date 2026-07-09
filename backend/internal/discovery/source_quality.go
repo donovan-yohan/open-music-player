@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"math"
 	"sort"
 	"strings"
@@ -49,16 +50,71 @@ type scoredCandidate struct {
 	index     int
 }
 
+// SourceQualityJudge is an optional structured judge that can refine the
+// deterministic fallback. It is deliberately grounded by candidateId only: a
+// model can rank or explain existing candidates, but cannot create new URLs.
+type SourceQualityJudge interface {
+	JudgeSourceQuality(ctx context.Context, query string, candidates []SourceQualityCandidateFeature) ([]SourceQualityJudgment, error)
+}
+
+// SourceQualityCandidateFeature is the bounded candidate envelope passed to an
+// optional judge. It contains source-selection clues but not raw provider blobs.
+type SourceQualityCandidateFeature struct {
+	CandidateID   string                 `json:"candidateId"`
+	Provider      string                 `json:"provider"`
+	SourceID      string                 `json:"sourceId,omitempty"`
+	SourceURL     string                 `json:"sourceUrl"`
+	Title         string                 `json:"title"`
+	Artist        string                 `json:"artist,omitempty"`
+	Uploader      string                 `json:"uploader,omitempty"`
+	DurationMs    int                    `json:"durationMs,omitempty"`
+	Downloadable  bool                   `json:"downloadable"`
+	MetadataHints map[string]interface{} `json:"metadataHints,omitempty"`
+}
+
+// SourceQualityJudgment is the structured judge output. CandidateID must match
+// an input feature; unknown ids are ignored and fall back deterministically.
+type SourceQualityJudgment struct {
+	CandidateID string        `json:"candidateId"`
+	Quality     SourceQuality `json:"quality"`
+}
+
 // rankSourceCandidates annotates each candidate with sourceQuality metadata and
 // orders them by likely suitability for a clean audio import. It is deterministic
 // and does not require the AI assist model to be available.
 func rankSourceCandidates(query string, candidates []Candidate) []Candidate {
+	return rankSourceCandidatesWithQualities(candidates, deterministicSourceQualities(query, candidates))
+}
+
+func rankSourceCandidatesWithJudge(ctx context.Context, query string, candidates []Candidate, judge SourceQualityJudge) []Candidate {
 	if len(candidates) == 0 {
 		return candidates
 	}
+	if judge == nil {
+		return rankSourceCandidates(query, candidates)
+	}
+	qualities := deterministicSourceQualities(query, candidates)
+	if judgments, err := judge.JudgeSourceQuality(ctx, query, sourceQualityCandidateFeatures(candidates)); err == nil {
+		applySourceQualityJudgments(qualities, judgments)
+	}
+	return rankSourceCandidatesWithQualities(candidates, qualities)
+}
+
+func deterministicSourceQualities(query string, candidates []Candidate) map[string]SourceQuality {
+	qualities := make(map[string]SourceQuality, len(candidates))
+	for _, candidate := range candidates {
+		qualities[candidate.CandidateID] = EvaluateSourceQuality(query, candidate)
+	}
+	return qualities
+}
+
+func rankSourceCandidatesWithQualities(candidates []Candidate, qualities map[string]SourceQuality) []Candidate {
 	scored := make([]scoredCandidate, 0, len(candidates))
 	for i, candidate := range candidates {
-		quality := EvaluateSourceQuality(query, candidate)
+		quality, ok := qualities[candidate.CandidateID]
+		if !ok {
+			quality = EvaluateSourceQuality("", candidate)
+		}
 		scored = append(scored, scoredCandidate{
 			candidate: candidateWithSourceQuality(candidate, quality),
 			quality:   quality,
@@ -85,6 +141,38 @@ func rankSourceCandidates(query string, candidates []Candidate) []Candidate {
 		ranked[i] = item.candidate
 	}
 	return ranked
+}
+
+func applySourceQualityJudgments(qualities map[string]SourceQuality, judgments []SourceQualityJudgment) {
+	for _, judgment := range judgments {
+		if _, ok := qualities[judgment.CandidateID]; !ok {
+			continue
+		}
+		qualities[judgment.CandidateID] = normalizeJudgedSourceQuality(judgment.Quality)
+	}
+}
+
+func normalizeJudgedSourceQuality(quality SourceQuality) SourceQuality {
+	quality.Score = clampInt(quality.Score, 0, 100)
+	if !knownSourceQualityClassification(quality.Classification) {
+		quality.Classification = SourceQualityUnknown
+	}
+	if !knownSourceQualityRecommendation(quality.Recommendation) {
+		quality.Recommendation = recommendationForScore(quality.Score)
+	}
+	if quality.Confidence < 0 {
+		quality.Confidence = 0
+	}
+	if quality.Confidence > 1 {
+		quality.Confidence = 1
+	}
+	quality.Confidence = math.Round(quality.Confidence*100) / 100
+	quality.Reasons = uniqueStrings(quality.Reasons)
+	quality.Warnings = uniqueStrings(quality.Warnings)
+	if strings.TrimSpace(quality.Provenance) == "" {
+		quality.Provenance = "source_quality_judge"
+	}
+	return quality
 }
 
 // EvaluateSourceQuality scores one candidate against a user query. It prefers
@@ -321,7 +409,48 @@ func sourceQualityText(candidate Candidate) string {
 		candidate.Uploader,
 		candidate.SourceURL,
 	}
-	for _, key := range []string{
+	for _, key := range sourceQualityMetadataHintKeys() {
+		appendMetadataText(&fragments, candidate.Metadata[key], 0)
+	}
+	return strings.ToLower(strings.Join(fragments, " "))
+}
+
+func sourceQualityCandidateFeatures(candidates []Candidate) []SourceQualityCandidateFeature {
+	features := make([]SourceQualityCandidateFeature, 0, len(candidates))
+	for _, candidate := range candidates {
+		features = append(features, SourceQualityCandidateFeature{
+			CandidateID:   candidate.CandidateID,
+			Provider:      candidate.Provider,
+			SourceID:      candidate.SourceID,
+			SourceURL:     candidate.SourceURL,
+			Title:         candidate.Title,
+			Artist:        candidate.Artist,
+			Uploader:      candidate.Uploader,
+			DurationMs:    candidate.DurationMs,
+			Downloadable:  candidate.Downloadable,
+			MetadataHints: sourceQualityMetadataHints(candidate.Metadata),
+		})
+	}
+	return features
+}
+
+func sourceQualityMetadataHints(metadata map[string]interface{}) map[string]interface{} {
+	hints := make(map[string]interface{})
+	for _, key := range sourceQualityMetadataHintKeys() {
+		if value, ok := metadata[key]; ok {
+			if normalized, keep := normalizeMetadataHint(value, 0); keep {
+				hints[key] = normalized
+			}
+		}
+	}
+	if len(hints) == 0 {
+		return nil
+	}
+	return hints
+}
+
+func sourceQualityMetadataHintKeys() []string {
+	return []string{
 		"description",
 		"snippet",
 		"channel",
@@ -335,10 +464,7 @@ func sourceQualityText(candidate Candidate) string {
 		"webpage_url",
 		"tags",
 		"categories",
-	} {
-		appendMetadataText(&fragments, candidate.Metadata[key], 0)
 	}
-	return strings.ToLower(strings.Join(fragments, " "))
 }
 
 func appendMetadataText(fragments *[]string, value interface{}, depth int) {
@@ -363,6 +489,49 @@ func appendMetadataText(fragments *[]string, value interface{}, depth int) {
 		for _, item := range typed {
 			appendMetadataText(fragments, item, depth+1)
 		}
+	}
+}
+
+func normalizeMetadataHint(value interface{}, depth int) (interface{}, bool) {
+	if value == nil || depth > 1 {
+		return nil, false
+	}
+	switch typed := value.(type) {
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return nil, false
+		}
+		if len(text) > 512 {
+			text = text[:512]
+		}
+		return text, true
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if normalized, ok := normalizeMetadataHint(item, depth+1); ok {
+				out = append(out, normalized.(string))
+			}
+		}
+		if len(out) == 0 {
+			return nil, false
+		}
+		return out, true
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if normalized, ok := normalizeMetadataHint(item, depth+1); ok {
+				if text, ok := normalized.(string); ok {
+					out = append(out, text)
+				}
+			}
+		}
+		if len(out) == 0 {
+			return nil, false
+		}
+		return out, true
+	default:
+		return nil, false
 	}
 }
 
@@ -465,4 +634,37 @@ func uniqueStrings(values []string) []string {
 		return nil
 	}
 	return out
+}
+
+func knownSourceQualityClassification(value string) bool {
+	switch value {
+	case SourceQualityOfficialAudio,
+		SourceQualityTopicAudio,
+		SourceQualityArtistUpload,
+		SourceQualityMusicVideo,
+		SourceQualityVisualizer,
+		SourceQualityLive,
+		SourceQualityLyricVideo,
+		SourceQualityInterview,
+		SourceQualityCover,
+		SourceQualityRemix,
+		SourceQualityAlteredAudio,
+		SourceQualityDirectURL,
+		SourceQualityUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func knownSourceQualityRecommendation(value string) bool {
+	switch value {
+	case SourceQualityPreferred,
+		SourceQualityAcceptable,
+		SourceQualityReview,
+		SourceQualityAvoid:
+		return true
+	default:
+		return false
+	}
 }

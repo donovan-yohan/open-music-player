@@ -2,8 +2,23 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
+
+type fakeSourceQualityJudge struct {
+	judgments []SourceQualityJudgment
+	err       error
+	seen      []SourceQualityCandidateFeature
+}
+
+func (f *fakeSourceQualityJudge) JudgeSourceQuality(_ context.Context, _ string, candidates []SourceQualityCandidateFeature) ([]SourceQualityJudgment, error) {
+	f.seen = candidates
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.judgments, nil
+}
 
 func TestSourceQualityRanksOfficialAudioAheadOfMusicVideo(t *testing.T) {
 	svc := NewService(ServiceConfig{
@@ -54,6 +69,141 @@ func TestSourceQualityRanksOfficialAudioAheadOfMusicVideo(t *testing.T) {
 	}
 	if resp.Sections[0].Kind != "sources" || resp.Sections[0].Items[0].Candidate.CandidateID != "youtube:audio" {
 		t.Fatalf("sources section did not preserve ranked candidates: %#v", resp.Sections)
+	}
+}
+
+func TestSourceQualityJudgeCanPromoteGroundedCandidate(t *testing.T) {
+	judge := &fakeSourceQualityJudge{judgments: []SourceQualityJudgment{
+		{
+			CandidateID: "youtube:b",
+			Quality: SourceQuality{
+				Score:          96,
+				Classification: SourceQualityOfficialAudio,
+				Recommendation: SourceQualityPreferred,
+				Confidence:     1.7,
+				Reasons:        []string{"structured judge selected existing candidate"},
+				Provenance:     "fake_source_quality_judge",
+			},
+		},
+		{
+			CandidateID: "youtube:a",
+			Quality: SourceQuality{
+				Score:          -10,
+				Classification: "hallucinated_type",
+				Recommendation: "definitely",
+				Confidence:     -1,
+			},
+		},
+		{
+			CandidateID: "youtube:not-returned-by-provider",
+			Quality:     SourceQuality{Score: 100, Classification: SourceQualityOfficialAudio},
+		},
+	}}
+	svc := NewService(ServiceConfig{
+		Providers: []Provider{
+			fakeProvider{name: "youtube", items: []Candidate{
+				{
+					CandidateID:  "youtube:a",
+					Provider:     "youtube",
+					SourceID:     "a",
+					SourceURL:    "https://www.youtube.com/watch?v=a",
+					Title:        "Artist - Song",
+					Artist:       "Artist",
+					Uploader:     "Uploader",
+					DurationMs:   240000,
+					Downloadable: true,
+					Metadata: map[string]interface{}{
+						"description": "Provider description",
+						"tags":        []interface{}{"official", "audio"},
+						"raw":         "not passed to judge",
+					},
+				},
+				{
+					CandidateID:  "youtube:b",
+					Provider:     "youtube",
+					SourceID:     "b",
+					SourceURL:    "https://www.youtube.com/watch?v=b",
+					Title:        "Artist - Song upload",
+					Artist:       "Artist",
+					Uploader:     "Uploader",
+					DurationMs:   240000,
+					Downloadable: true,
+				},
+			}},
+		},
+		DefaultProviders:   []string{"youtube"},
+		SourceQualityJudge: judge,
+	})
+
+	resp := svc.Search(context.Background(), "Artist Song", []string{"youtube"}, 10)
+
+	if got := resp.Results[0].CandidateID; got != "youtube:b" {
+		t.Fatalf("top result = %s, want judge-promoted youtube:b", got)
+	}
+	promoted := sourceQualityFromMetadata(t, resp.Results[0].Metadata)
+	if promoted.Provenance != "fake_source_quality_judge" || promoted.Confidence != 1 {
+		t.Fatalf("promoted source quality not normalized/preserved: %#v", promoted)
+	}
+	demoted := sourceQualityFromMetadata(t, resp.Results[1].Metadata)
+	if demoted.Classification != SourceQualityUnknown || demoted.Recommendation != SourceQualityAvoid || demoted.Confidence != 0 {
+		t.Fatalf("demoted source quality not normalized: %#v", demoted)
+	}
+	if len(judge.seen) != 2 {
+		t.Fatalf("judge saw %d candidates, want 2", len(judge.seen))
+	}
+	hints := judge.seen[0].MetadataHints
+	if hints["description"] != "Provider description" {
+		t.Fatalf("description hint = %#v, want Provider description", hints["description"])
+	}
+	tags, ok := hints["tags"].([]string)
+	if !ok || len(tags) != 2 || tags[0] != "official" || tags[1] != "audio" {
+		t.Fatalf("tags hint = %#v, want normalized string tags", hints["tags"])
+	}
+	if _, ok := hints["raw"]; ok {
+		t.Fatalf("raw metadata leaked into judge hints: %#v", hints)
+	}
+}
+
+func TestSourceQualityJudgeErrorFallsBackToDeterministicRanking(t *testing.T) {
+	svc := NewService(ServiceConfig{
+		Providers: []Provider{
+			fakeProvider{name: "youtube", items: []Candidate{
+				{
+					CandidateID:  "youtube:video",
+					Provider:     "youtube",
+					SourceID:     "video",
+					SourceURL:    "https://www.youtube.com/watch?v=video",
+					Title:        "Ninajirachi - iPod Touch (Official Music Video)",
+					Artist:       "Ninajirachi",
+					Uploader:     "Ninajirachi",
+					DurationMs:   245000,
+					Downloadable: true,
+				},
+				{
+					CandidateID:  "youtube:audio",
+					Provider:     "youtube",
+					SourceID:     "audio",
+					SourceURL:    "https://www.youtube.com/watch?v=audio",
+					Title:        "Ninajirachi - iPod Touch (Official Audio)",
+					Artist:       "Ninajirachi",
+					Uploader:     "Ninajirachi",
+					DurationMs:   240000,
+					Downloadable: true,
+				},
+			}},
+		},
+		DefaultProviders:   []string{"youtube"},
+		SourceQualityJudge: &fakeSourceQualityJudge{err: errors.New("model offline")},
+	})
+
+	resp := svc.Search(context.Background(), "Ninajirachi iPod Touch", []string{"youtube"}, 10)
+
+	if got := resp.Results[0].CandidateID; got != "youtube:audio" {
+		t.Fatalf("top result = %s, want deterministic official audio fallback", got)
+	}
+	quality := sourceQualityFromMetadata(t, resp.Results[0].Metadata)
+	if quality.Provenance != "deterministic_source_quality_v1" {
+		t.Fatalf("fallback provenance = %s, want deterministic_source_quality_v1", quality.Provenance)
 	}
 }
 
