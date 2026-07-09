@@ -149,6 +149,32 @@ void main() {
       expect(analysis.summary?.downbeats?.positionsMs, [120, 2056]);
     });
 
+    test('manual BPM overrides default to trusted confidence when omitted',
+        () async {
+      final api = _CapturingApiClient({
+        'track_id': 42,
+        'status': 'analyzed',
+        'summary': {
+          'bpm': {'value': 118, 'confidence': 0.2},
+          'beat_grid': {'bpm': 118, 'confidence': 0.2},
+        },
+        'overrides': {
+          'bpm': {'value': 124},
+        },
+      });
+
+      final analysis = await AnalysisService(api).updateTrackAnalysisOverrides(
+        42,
+        const TrackAnalysisOverrides(bpm: 124),
+      );
+
+      expect(api.capturedBody?['overrides']['bpm']['confidence'], 1.0);
+      expect(api.capturedBody?['overrides']['beat_grid']['confidence'], 1.0);
+      expect(analysis.summary?.bpm?.numericValue, 124);
+      expect(analysis.summary?.bpm?.confidence, 1.0);
+      expect(analysis.summary?.beatGrid?.confidence, 1.0);
+    });
+
     test('tolerates a pending analysis with no summary', () async {
       final api = _CapturingApiClient({
         'track_id': 7,
