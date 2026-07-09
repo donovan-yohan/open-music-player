@@ -79,7 +79,7 @@ Future<void> _pump(
   Size size = const Size(390, 844),
   ValueChanged<Track>? onMoveEarlier,
   ValueChanged<Track>? onMoveLater,
-  ValueChanged<Track>? onEditAnalysis,
+  TimelineAnalysisEditCallback? onEditAnalysis,
   TimelineWaveformData Function(Track, int)? waveformFor,
   TimelineClip Function(Track, TimelineClip)? clipFor,
   TimelineModel? timelineModel,
@@ -764,12 +764,18 @@ void main() {
     tester,
   ) async {
     Track? edited;
+    int? seededDownbeat;
     await _pump(
       tester,
       previous: null,
       current: _track('t1', 'Midnight Drive', 214),
       upcoming: [_track('t2', 'Paper Planes', 188)],
-      onEditAnalysis: (track) => edited = track,
+      playheadPositionMs: 16000,
+      positionMsStream: const Stream<int>.empty(),
+      onEditAnalysis: (track, {initialFirstDownbeatMs}) {
+        edited = track;
+        seededDownbeat = initialFirstDownbeatMs;
+      },
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -778,6 +784,34 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(edited?.id, 't1');
+    expect(seededDownbeat, 16000);
+  });
+
+  testWidgets('analysis correction action has no seed for inactive clip', (
+    tester,
+  ) async {
+    Track? edited;
+    int? seededDownbeat;
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 214),
+      upcoming: [_track('t2', 'Paper Planes', 188)],
+      playheadPositionMs: 16000,
+      positionMsStream: const Stream<int>.empty(),
+      onEditAnalysis: (track, {initialFirstDownbeatMs}) {
+        edited = track;
+        seededDownbeat = initialFirstDownbeatMs;
+      },
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_edit_analysis_t2')));
+    await tester.pumpAndSettle();
+
+    expect(edited?.id, 't2');
+    expect(seededDownbeat, isNull);
   });
 
   testWidgets('overlap bands and selected clips expose tempo diagnostics', (
@@ -820,7 +854,7 @@ void main() {
       current: current,
       upcoming: [incoming],
       timelineModel: timeline,
-      onEditAnalysis: (_) {},
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
     );
 
     expect(find.textContaining('Beat locked'), findsOneWidget);
@@ -884,7 +918,7 @@ void main() {
       current: current,
       upcoming: [incoming],
       timelineModel: timeline,
-      onEditAnalysis: (_) {},
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));

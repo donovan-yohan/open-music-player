@@ -384,8 +384,13 @@ class _QueueScreenState extends State<QueueScreen> {
       },
       onMoveEarlier: (track) => _movePlaybackTimelineTrack(playback, track, -1),
       onMoveLater: (track) => _movePlaybackTimelineTrack(playback, track, 1),
-      onEditAnalysis: (track) =>
-          _showAnalysisCorrectionSheet(context, provider, track),
+      onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
+          _showAnalysisCorrectionSheet(
+        context,
+        provider,
+        track,
+        initialFirstDownbeatMs: initialFirstDownbeatMs,
+      ),
     );
   }
 
@@ -634,8 +639,13 @@ class _QueueScreenState extends State<QueueScreen> {
             _moveTimelineTrack(provider, upNext, currentIndex, track, -1),
         onMoveLater: (track) =>
             _moveTimelineTrack(provider, upNext, currentIndex, track, 1),
-        onEditAnalysis: (track) =>
-            _showAnalysisCorrectionSheet(context, provider, track),
+        onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
+            _showAnalysisCorrectionSheet(
+          context,
+          provider,
+          track,
+          initialFirstDownbeatMs: initialFirstDownbeatMs,
+        ),
       ),
     );
   }
@@ -865,8 +875,9 @@ class _QueueScreenState extends State<QueueScreen> {
   Future<void> _showAnalysisCorrectionSheet(
     BuildContext context,
     QueueProvider provider,
-    Track track,
-  ) async {
+    Track track, {
+    int? initialFirstDownbeatMs,
+  }) async {
     if (!_canEditAnalysis(track)) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('No analysis target for "${track.title}"')),
@@ -877,6 +888,7 @@ class _QueueScreenState extends State<QueueScreen> {
     final corrected = await showAnalysisCorrectionSheet(
       context: context,
       track: provider.trackWithAnalysis(track),
+      initialFirstDownbeatMs: initialFirstDownbeatMs,
     );
     if (corrected == null || !context.mounted) return;
 
