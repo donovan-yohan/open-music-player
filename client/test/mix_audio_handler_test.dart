@@ -130,6 +130,50 @@ void main() {
     );
 
     test(
+      'notification previous and stop keep app and media-session state aligned',
+      () async {
+        final harness = _PlaybackHarness();
+        final handler = MixAudioHandler(
+          playbackState: harness.playback,
+          statePushThrottle: Duration.zero,
+          now: () => harness.now,
+        );
+        final states = <audio_service.PlaybackState>[];
+        final mediaItems = <audio_service.MediaItem?>[];
+        final stateSub = handler.playbackState.listen(states.add);
+        final mediaSub = handler.mediaItem.listen(mediaItems.add);
+
+        await harness.playback.playQueue([
+          _track(1, seconds: 5),
+          _track(2, seconds: 5),
+        ], startIndex: 1);
+        await handler.skipToPrevious();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(harness.engine.positionMs, 0);
+        expect(harness.playback.currentItem?.id, '1');
+        expect(harness.playback.position, Duration.zero);
+        expect(mediaItems.last?.id, '1');
+        expect(states.last.queueIndex, 0);
+
+        await handler.stop();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(harness.playback.isPlaying, isFalse);
+        expect(states.last.playing, isFalse);
+        expect(
+          states.last.processingState,
+          audio_service.AudioProcessingState.idle,
+        );
+
+        await stateSub.cancel();
+        await mediaSub.cancel();
+        await handler.dispose();
+        await harness.dispose();
+      },
+    );
+
+    test(
       'queue transition keeps app and notification metadata aligned with audio',
       () async {
         final harness = _PlaybackHarness();
