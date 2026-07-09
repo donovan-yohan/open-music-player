@@ -68,11 +68,20 @@ See `docs/context-map.md` for the fuller map and harness table.
 
 Use RTK wrappers for noisy output when running these through Codex.
 
-## Local Testing / Deploy
+## Local Testing / Deploy Backend And Frontend
 
 Use when user says "deploy backend/frontend" or asks for phone dogfood. Backend
 = shared dev API. Frontend = Android APK through remote ADB, or Flutter Web
 tailnet preview.
+
+Fast path:
+
+1. Backend: deploy latest `main` from persistent clone, then verify deep health.
+2. Frontend Android: build/install APK from current checkout with explicit
+   `OMP_API_BASE_URL`, `OMP_SOURCE_REF`, and `OMP_BUILD_ID`.
+3. Frontend Web: use Tailnet Flutter Web preview when Android is not needed.
+4. Handoff: report backend URL, source ref/build ID, device serial or web URL,
+   evidence path, and log status.
 
 Constants:
 

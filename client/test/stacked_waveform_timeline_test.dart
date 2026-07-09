@@ -795,6 +795,7 @@ void main() {
             nativeBpm: 120,
             bpmConfidence: 0.9,
             downbeatsMs: [0, 8000, 16000, 24000],
+            musicalKey: 'A minor',
             camelot: '8A',
           ),
         ),
@@ -806,6 +807,7 @@ void main() {
             nativeBpm: 124,
             bpmConfidence: 0.9,
             downbeatsMs: [0, 8000, 16000, 24000],
+            musicalKey: 'E minor',
             camelot: '9A',
           ),
         ),
@@ -828,6 +830,76 @@ void main() {
 
     expect(find.byKey(const ValueKey('timeline_tempo_t1')), findsOneWidget);
     expect(find.textContaining('120 BPM'), findsOneWidget);
+    expect(find.textContaining('90%'), findsOneWidget);
+    expect(find.textContaining('A minor · 8A'), findsOneWidget);
+    expect(find.textContaining('4 downbeats'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('timeline_transition_hint_t1')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey('timeline_transition_hint_t1')),
+        matching: find.textContaining('Beat locked'),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('selected transition hint surfaces low-confidence beat issues', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 160);
+    final incoming = _track('t2', 'Paper Planes', 160);
+    final timeline = TimelineModel(
+      clips: [
+        _mixClip(
+          't1',
+          0,
+          160000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 120,
+            bpmConfidence: 0.2,
+            downbeatsMs: [0, 8000, 16000, 24000],
+            camelot: '8A',
+          ),
+        ),
+        _mixClip(
+          't2',
+          8500,
+          160000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 124,
+            bpmConfidence: 0.9,
+            downbeatsMs: [0, 8000, 16000, 24000],
+            camelot: '2B',
+          ),
+        ),
+      ],
+    );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      timelineModel: timeline,
+      onEditAnalysis: (_) {},
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+
+    final hint = find.byKey(const ValueKey('timeline_transition_hint_t1'));
+    expect(hint, findsOneWidget);
+    expect(
+      find.descendant(of: hint, matching: find.textContaining('Low BPM')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: hint, matching: find.textContaining('Downbeat')),
+      findsOneWidget,
+    );
   });
 
   testWidgets('floating options panel controls snap marker mode', (
