@@ -363,8 +363,11 @@ class _QueueScreenState extends State<QueueScreen> {
       onTimelineStartChanged: (track, ms) {
         _pauseThenEditTimeline(
           playback,
-          () =>
-              playback.setQueueTimelineStartMs(_playbackQueueIndex(track), ms),
+          () => playback.setQueueTimelineStartMs(
+            _playbackQueueIndex(track),
+            ms,
+            snapToDownbeat: false,
+          ),
         );
       },
       onTrimStartChanged: (track, ms) {

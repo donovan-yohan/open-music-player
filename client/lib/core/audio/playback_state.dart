@@ -95,8 +95,16 @@ class PlaybackState extends ChangeNotifier {
     );
   }
 
-  Future<void> setQueueTimelineStartMs(int index, int ms) =>
-      _queueController.setTimelineStartMs(index, ms);
+  Future<void> setQueueTimelineStartMs(
+    int index,
+    int ms, {
+    bool snapToDownbeat = true,
+  }) =>
+      _queueController.setTimelineStartMs(
+        index,
+        ms,
+        snapToDownbeat: snapToDownbeat,
+      );
   Future<void> setQueueTrimStartMs(int index, int ms) =>
       _queueController.setSourceStartMs(index, ms);
   Future<void> setQueueTrimEndMs(int index, int ms) =>

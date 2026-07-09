@@ -559,6 +559,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(playbackState.timelineStartCalls, isNotEmpty);
+    expect(playbackState.timelineStartCalls.last.$3, isFalse);
 
     await tester.tap(
       find.byKey(const ValueKey('timeline_move_later_playback_queue_1')),
@@ -640,7 +641,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   final _timelinePositions = StreamController<int>.broadcast();
   final List<String> scrubEvents = [];
   final List<int> skipToIndexCalls = [];
-  final List<(int, int)> timelineStartCalls = [];
+  final List<(int, int, bool)> timelineStartCalls = [];
   final List<(int, int)> trimStartCalls = [];
   final List<(int, int)> trimEndCalls = [];
   final List<(int, int)> reorderCalls = [];
@@ -733,8 +734,12 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   }
 
   @override
-  Future<void> setQueueTimelineStartMs(int index, int ms) async {
-    timelineStartCalls.add((index, ms));
+  Future<void> setQueueTimelineStartMs(
+    int index,
+    int ms, {
+    bool snapToDownbeat = true,
+  }) async {
+    timelineStartCalls.add((index, ms, snapToDownbeat));
   }
 
   @override

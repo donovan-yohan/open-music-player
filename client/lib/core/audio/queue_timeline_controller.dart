@@ -276,14 +276,25 @@ class QueueTimelineController {
   TimelineClip? timelineClipForIndex(int index) =>
       _session.clipAt(index)?.placement;
 
-  Future<void> setTimelineStartMs(int index, int ms) async {
-    await _enqueueCommand(() => _setTimelineStartMs(index, ms));
+  Future<void> setTimelineStartMs(
+    int index,
+    int ms, {
+    bool snapToDownbeat = true,
+  }) async {
+    await _enqueueCommand(
+      () => _setTimelineStartMs(index, ms, snapToDownbeat: snapToDownbeat),
+    );
   }
 
-  Future<void> _setTimelineStartMs(int index, int ms) async {
+  Future<void> _setTimelineStartMs(
+    int index,
+    int ms, {
+    required bool snapToDownbeat,
+  }) async {
     if (index < 0 || index >= _queue.length) return;
     final requested = _placementForIndex(index).withTimelineStartMs(ms);
-    final placement = _snapPlacementToDownbeat(index, requested);
+    final placement =
+        snapToDownbeat ? _snapPlacementToDownbeat(index, requested) : requested;
     await _applyCueOverride(index, placement);
   }
 
