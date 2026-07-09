@@ -787,6 +787,33 @@ void main() {
     expect(seededDownbeat, 16000);
   });
 
+  testWidgets('analysis correction action has no seed for inactive clip', (
+    tester,
+  ) async {
+    Track? edited;
+    int? seededDownbeat;
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 214),
+      upcoming: [_track('t2', 'Paper Planes', 188)],
+      playheadPositionMs: 16000,
+      positionMsStream: const Stream<int>.empty(),
+      onEditAnalysis: (track, {initialFirstDownbeatMs}) {
+        edited = track;
+        seededDownbeat = initialFirstDownbeatMs;
+      },
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_edit_analysis_t2')));
+    await tester.pumpAndSettle();
+
+    expect(edited?.id, 't2');
+    expect(seededDownbeat, isNull);
+  });
+
   testWidgets('overlap bands and selected clips expose tempo diagnostics', (
     tester,
   ) async {
