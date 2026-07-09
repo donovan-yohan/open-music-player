@@ -70,67 +70,76 @@ Use RTK wrappers for noisy output when running these through Codex.
 
 ## Local Testing / Deploy
 
-Use this when user says "deploy backend/frontend" or asks for phone dogfood.
-Backend = shared dev API. Frontend = Android APK on remote ADB, or Flutter Web
+Use when user says "deploy backend/frontend" or asks for phone dogfood. Backend
+= shared dev API. Frontend = Android APK through remote ADB, or Flutter Web
 tailnet preview.
 
-- Shared phone backend URL: `http://dev.fish-rattlesnake.ts.net:8080`.
-- Shared phone API URL: `http://dev.fish-rattlesnake.ts.net:8080/api/v1`.
-- Shared Compose project: `omp-local-run-vruka8`, pinned by
-  `/home/donovanyohan/Documents/Programs/personal/open-music-player/deploy/.env`.
+Constants:
 
-### Backend
+- Backend: `http://dev.fish-rattlesnake.ts.net:8080`
+- API: `http://dev.fish-rattlesnake.ts.net:8080/api/v1`
+- Remote Mac / ADB: `server-mac.fish-rattlesnake.ts.net`
+- Remote ADB socket: `tcp:server-mac.fish-rattlesnake.ts.net:5037`
+- Shared deploy env: `/home/donovanyohan/Documents/Programs/personal/open-music-player/deploy/.env`
 
-- Rebuild/restart shared backend from current checkout, keep ports/data:
-  ```bash
-  REDIS_ENABLED=true WORKER_COUNT=1 docker compose \
-    --env-file /home/donovanyohan/Documents/Programs/personal/open-music-player/deploy/.env \
-    -f docker-compose.local-low-memory.yml \
-    --profile downloads up -d --build postgres minio minio-init redis analyzer backend
-  ```
-- Verify backend health and containers:
-  ```bash
-  curl -fsS http://dev.fish-rattlesnake.ts.net:8080/health?deep=true
-  REDIS_ENABLED=true WORKER_COUNT=1 docker compose \
-    --env-file /home/donovanyohan/Documents/Programs/personal/open-music-player/deploy/.env \
-    -f docker-compose.local-low-memory.yml \
-    --profile downloads ps
-  ```
+### Backend Deploy
 
-### Android Frontend
+Preferred deploy for latest `main` uses the persistent clone with `deploy/.env`;
+it keeps the same Docker project/volumes so DB and MinIO data survive rebuilds.
 
-- Find physical device through remote ADB:
-  ```bash
-  ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 adb devices -l
-  ```
-- Build, install, and launch dogfood APK on physical Pixel:
-  ```bash
-  ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 \
-  ANDROID_SERIAL=<adb-serial> \
-  OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
-  OMP_SOURCE_REF="$(git rev-parse --abbrev-ref HEAD)@$(git rev-parse --short HEAD)" \
-  OMP_BUILD_ID="<slice>-$(date -u +%Y%m%dT%H%M%SZ)" \
-  scripts/dogfood-android all
-  ```
-- Verify Android install:
-  ```bash
-  ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 adb shell \
-    monkey -p com.openmusicplayer.app -c android.intent.category.LAUNCHER 1
-  ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 adb shell \
-    pidof com.openmusicplayer.app
-  ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 adb logcat -d -t 1000 | \
-    rg -i "AndroidRuntime|FATAL EXCEPTION|E/flutter|com\\.openmusicplayer|OpenMusic|Dart"
-  ```
-- Check Settings build marker after install. It must match `OMP_SOURCE_REF` and
-  `OMP_BUILD_ID`.
+```bash
+cd /home/donovanyohan/Documents/Programs/personal/open-music-player
+git pull --ff-only
+scripts/deploy.sh          # backend-only rebuild, keeps stateful services
+scripts/deploy.sh full     # first boot or repair whole stack
+curl -fsS http://dev.fish-rattlesnake.ts.net:8080/health?deep=true
+```
 
-### Flutter Web Frontend
+To deploy the current worktree before merge, reuse the shared env but build from
+this checkout:
 
-- Build/serve web preview on tailnet:
-  ```bash
-  OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
-    scripts/tailnet-staging.sh serve-web
-  ```
+```bash
+SHARED_ENV=/home/donovanyohan/Documents/Programs/personal/open-music-player/deploy/.env
+REDIS_ENABLED=true WORKER_COUNT=1 docker compose \
+  --env-file "$SHARED_ENV" \
+  -f docker-compose.local-low-memory.yml \
+  --profile downloads up -d --build \
+  postgres minio minio-init redis analyzer backend
+curl -fsS http://dev.fish-rattlesnake.ts.net:8080/health?deep=true
+docker compose --env-file "$SHARED_ENV" -f docker-compose.local-low-memory.yml \
+  --profile downloads ps
+```
+
+### Android Frontend Deploy
+
+```bash
+export ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037
+adb devices -l
+
+ANDROID_SERIAL=<adb-serial> \
+OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
+OMP_SOURCE_REF="$(git rev-parse --abbrev-ref HEAD)@$(git rev-parse --short HEAD)" \
+OMP_BUILD_ID="<slice>-$(date -u +%Y%m%dT%H%M%SZ)" \
+scripts/dogfood-android all
+
+adb shell monkey -p com.openmusicplayer.app -c android.intent.category.LAUNCHER 1
+adb shell pidof com.openmusicplayer.app
+adb logcat -d -t 1000 | \
+  rg -i "AndroidRuntime|FATAL EXCEPTION|E/flutter|com\\.openmusicplayer|OpenMusic|Dart"
+```
+
+`scripts/dogfood-android` writes evidence under
+`/tmp/open-music-player-dogfood-<build-id>/evidence.md`. Check Settings after
+install; Build must match `OMP_SOURCE_REF` and `OMP_BUILD_ID`.
+
+### Flutter Web Frontend Deploy
+
+```bash
+OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
+  scripts/tailnet-staging.sh serve-web
+```
+
+Use `scripts/tailnet-staging.sh urls` for the current tailnet web/backend URLs.
 
 ## Architecture Guardrails
 
