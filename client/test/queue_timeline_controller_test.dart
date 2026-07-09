@@ -269,6 +269,39 @@ void main() {
       await harness.dispose();
     });
 
+    test('timeline start edits can bypass automatic downbeat snap', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item(
+          '1',
+          seconds: 10,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000],
+          ),
+        ),
+        _item(
+          '2',
+          seconds: 10,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000],
+          ),
+        ),
+      ]);
+
+      await harness.controller.setTimelineStartMs(
+        1,
+        7600,
+        snapToDownbeat: false,
+      );
+
+      expect(harness.controller.timelineClipForIndex(1)?.timelineStartMs, 7600);
+      expect(harness.engine.model.clips[1].timelineStartMs, 7600);
+
+      await harness.dispose();
+    });
+
     test('setQueue applies analyzed phrase/downbeat transition defaults',
         () async {
       final harness = _Harness();
