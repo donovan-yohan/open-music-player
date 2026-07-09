@@ -68,6 +68,14 @@ need. Use `scripts/agentic-cycle --run --base origin/main` when the local
 machine should execute the planned lint/test gates and write JSON evidence under
 `/tmp/open-music-player-agentic-cycle-*.json`.
 
+Pass `--evidence /path/to/evidence.json` when a PR or handoff needs a stable
+artifact path. The runner writes evidence before the first gate and after each
+gate; failed or interrupted runs are still useful evidence because they record
+the exact head, planned gates, completed results, and status.
+When uncommitted worktree changes are included, the JSON records
+`worktree_dirty` and `worktree_status`; use `--committed-only` or rerun after
+commit for merge-ready exact-head evidence.
+
 The runner is advisory for expensive gates: it lists Android dogfood by default
 instead of running it. Pass `--include-device` only when an authorized physical
 device is reachable and the central claim depends on Android/audio behavior.

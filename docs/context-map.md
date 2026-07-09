@@ -88,7 +88,8 @@ domain concept moves or a new production harness becomes canonical.
 | Fast backend check | `scripts/test backend` | Runs `go test ./...` from `backend/`. |
 | Delivery scaffold check | `scripts/agentic-harness` | Validates required agent docs, root scripts, CI wiring, JSON/Python/Bash syntax, and secret-like values. |
 | Exact-head dev-cycle plan | `scripts/agentic-cycle --base origin/main` | Classifies changed files, assigns a gate risk tier, lists required component checks, and names Android dogfood when needed. |
-| Exact-head dev-cycle run | `scripts/agentic-cycle --run --base origin/main` | Runs the planned local lint/test gates and writes JSON evidence under `/tmp/open-music-player-agentic-cycle-*.json`. |
+| Exact-head dev-cycle run | `scripts/agentic-cycle --run --base origin/main` | Runs the planned local lint/test gates and writes JSON evidence under `/tmp/open-music-player-agentic-cycle-*.json`, including failed/interrupted gate progress and dirty-worktree markers. |
+| Deterministic evidence artifact | `scripts/agentic-cycle --run --evidence /tmp/omp-cycle.json` | Uses a stable evidence path for PR comments, issue handoff, or agent-to-agent transfer. |
 | Release closeout audit | `scripts/release-audit --pr <number> --issue <number>` | Verifies default branch truth, PR state/checks/review/mergeability, and issue state before saying work is shipped. |
 | Exact-head/release policy check | `scripts/lint delivery` | Ensures OMP delivery docs, PR template, and CI script wiring stay present. |
 | Backend static/build | `scripts/lint backend`, `scripts/build backend` | `go vet` plus server/analyzer/local smoke binaries. |

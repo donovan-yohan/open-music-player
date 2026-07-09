@@ -278,6 +278,8 @@ class _LaneModel {
   });
 
   TimelineClip get clip => mixClip.placement;
+  int get timelineStartMs => mixClip.timelineStartMs;
+  int get timelineEndMs => mixClip.timelineEndMs;
 }
 
 class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
@@ -705,10 +707,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   String _playheadTimeLabel(int playheadMs, MixClip? clip) {
     if (clip == null) return 'Mix ${_formatClock(playheadMs)}';
-    final localMs =
-        (playheadMs - clip.timelineStartMs + clip.placement.sourceStartMs)
-            .clamp(clip.placement.sourceStartMs, clip.placement.sourceEndMs)
-            .toInt();
+    final localMs = clip.sourcePositionAt(playheadMs);
     return 'Mix ${_formatClock(playheadMs)} · Song ${_formatClock(localMs)}';
   }
 
@@ -757,14 +756,16 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       for (var j = i + 1; j < clips.length; j++) {
         final first = clips[i];
         final second = clips[j];
-        final overlap = first.placement.overlapInterval(
+        final overlapStart = math.max(
+          first.timelineStartMs,
           second.timelineStartMs,
-          second.timelineEndMs,
         );
-        if (overlap == null) continue;
+        final overlapEnd = math.min(first.timelineEndMs, second.timelineEndMs);
+        if (overlapEnd <= overlapStart) continue;
+        final overlapDurationMs = overlapEnd - overlapStart;
 
-        final overlapStartX = viewport.msToX(overlap.startMs);
-        final overlapEndX = viewport.msToX(overlap.endMs);
+        final overlapStartX = viewport.msToX(overlapStart);
+        final overlapEndX = viewport.msToX(overlapEnd);
         final visibleStartX = overlapStartX.clamp(0.0, paneWidth).toDouble();
         final visibleEndX = overlapEndX.clamp(0.0, paneWidth).toDouble();
         final left = StackedWaveformTimeline.railWidth + visibleStartX;
@@ -773,7 +774,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           minBandWidth,
           paneWidth,
         );
-        final midpointMs = overlap.startMs + (overlap.durationMs ~/ 2);
+        final midpointMs = overlapStart + (overlapDurationMs ~/ 2);
         final averageGain =
             ((first.gainAt(midpointMs) + second.gainAt(midpointMs)) / 2)
                 .clamp(0.0, 1.0)
@@ -790,7 +791,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             width: width,
             child: _transitionBand(
               context,
-              overlap.durationMs,
+              overlapDurationMs,
               averageGain,
               diagnostics,
             ),
@@ -803,7 +804,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   double _clipDisplayGain(MixClip clip) {
     if (clip.selectedDurationMs <= 0) return 0;
-    final midpointMs = clip.timelineStartMs + (clip.selectedDurationMs ~/ 2);
+    final midpointMs = clip.timelineStartMs +
+        ((clip.timelineEndMs - clip.timelineStartMs) ~/ 2);
     return clip.gainAt(midpointMs).clamp(0.0, 1.0).toDouble();
   }
 
@@ -813,9 +815,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     TimelineViewport viewport,
     double paneWidth,
   ) {
-    final left = viewport.msToX(lane.clip.timelineStartMs);
-    final width = (viewport.msToX(lane.clip.timelineEndMs) -
-            viewport.msToX(lane.clip.timelineStartMs))
+    final left = viewport.msToX(lane.timelineStartMs);
+    final width = (viewport.msToX(lane.timelineEndMs) -
+            viewport.msToX(lane.timelineStartMs))
         .clamp(8.0, double.infinity);
     final selected = _isTrackSelected(lane.track.id);
 
@@ -862,7 +864,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     TimelineViewport viewport,
   ) {
     final left = viewport.msToX(0);
-    final width = (viewport.msToX(lane.clip.timelineEndMs) - left)
+    final width = (viewport.msToX(lane.timelineEndMs) - left)
         .clamp(0.0, double.infinity)
         .toDouble();
     if (width <= 0) return const SizedBox.shrink();
@@ -900,7 +902,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     const topInset = 12.0;
     const minVisibleWidth = 56.0;
     final maxWidth = math.min(260.0, math.max(0.0, paneWidth - 16));
-    final laneEndX = viewport.msToX(lane.clip.timelineEndMs);
+    final laneEndX = viewport.msToX(lane.timelineEndMs);
     final visibleEndX = laneEndX.clamp(0.0, paneWidth).toDouble();
     final width = (visibleEndX - leftInset).clamp(0.0, maxWidth).toDouble();
     if (width < minVisibleWidth) return const SizedBox.shrink();

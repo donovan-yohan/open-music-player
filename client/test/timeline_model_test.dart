@@ -90,6 +90,22 @@ void main() {
         5000,
       );
     });
+
+    test('source elapsed fast path clamps unsafe base playback rates', () {
+      const automation = PlaybackRateAutomation(baseRate: 10);
+
+      expect(
+        automation.sourceElapsedMs(timelineStartMs: 0, timelineMs: 1000),
+        2000,
+      );
+      expect(
+        automation.timelineMsForSelectedSource(
+          timelineStartMs: 0,
+          sourceDurationMs: 2000,
+        ),
+        1000,
+      );
+    });
   });
 
   group('GainEnvelope', () {
@@ -223,10 +239,75 @@ void main() {
       expect(incoming.playbackRateAt(10000), closeTo(1.0, 0.0001));
 
       expect(incoming.sourcePositionAt(7500), closeTo(2125, 1));
-      expect(
-        incoming.timelineMsForSourcePosition(2125),
-        closeTo(7500, 2),
+      expect(incoming.timelineMsForSourcePosition(2125), closeTo(7500, 2));
+    });
+
+    test(
+      'tempo automation keeps active windows aligned to source duration',
+      () {
+        final model = TimelineModel(
+          clips: [
+            _tempoClip('outgoing', 0, nativeBpm: 100),
+            _tempoClip('incoming', 5000, nativeBpm: 125),
+          ],
+        );
+
+        final outgoing = model.clips.firstWhere(
+          (clip) => clip.id == 'outgoing',
+        );
+        final incoming = model.clips.firstWhere(
+          (clip) => clip.id == 'incoming',
+        );
+
+        expect(
+          outgoing.timelineEndMs,
+          lessThan(outgoing.placement.timelineEndMs),
+        );
+        expect(
+          outgoing.sourcePositionAt(outgoing.timelineEndMs),
+          outgoing.placement.sourceEndMs,
+        );
+
+        expect(
+          incoming.timelineEndMs,
+          greaterThan(incoming.placement.timelineEndMs),
+        );
+        expect(
+          incoming.sourcePositionAt(incoming.timelineEndMs),
+          incoming.placement.sourceEndMs,
+        );
+        expect(model.durationMs, incoming.timelineEndMs);
+      },
+    );
+
+    test('dynamic clip duration participates in four-voice placement cap', () {
+      final existing = List.generate(
+        TimelineModel.maxConcurrentVoices,
+        (index) => MixClip(
+          placement: placement(
+            id: 'existing-$index',
+            trackId: 'existing-$index',
+            sourceDurationMs: 1000,
+            sourceEndMs: 1000,
+            timelineStartMs: 1000,
+          ),
+        ),
       );
+      final model = TimelineModel(clips: existing, autoTempoTransitions: false);
+      final candidate = MixClip(
+        placement: placement(
+          id: 'slow',
+          trackId: 'slow',
+          sourceDurationMs: 1000,
+          sourceEndMs: 1000,
+          timelineStartMs: 0,
+        ),
+        rateAutomation: const PlaybackRateAutomation(baseRate: 0.5),
+      );
+
+      expect(model.canPlace(candidate.placement), isTrue);
+      expect(model.canPlaceClip(candidate), isFalse);
+      expect(() => model.addClip(candidate), throwsStateError);
     });
 
     test('overlap BPM automation falls back to 1.0 without reliable BPM', () {

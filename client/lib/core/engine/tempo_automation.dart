@@ -68,8 +68,9 @@ class ClipTempoMetadata {
         : map['analysisOverrides'] ??
             map['analysis_overrides'] ??
             map['overrides'];
-    final parsedOverrides =
-        _ClipTempoOverrides.fromJson(overrides ?? embeddedOverrides);
+    final parsedOverrides = _ClipTempoOverrides.fromJson(
+      overrides ?? embeddedOverrides,
+    );
     return parsedOverrides == null ? base : parsedOverrides.applyTo(base);
   }
 
@@ -214,12 +215,11 @@ class PlaybackRateSegment {
   double rateAt(int timelineMs) {
     if (durationMs <= 0) return endRate;
     final t = ((timelineMs - startMs) / durationMs).clamp(0.0, 1.0).toDouble();
-    return _lerp(startRate, endRate, t)
-        .clamp(
-          minTempoAutomationRate,
-          maxTempoAutomationRate,
-        )
-        .toDouble();
+    return _lerp(
+      startRate,
+      endRate,
+      t,
+    ).clamp(minTempoAutomationRate, maxTempoAutomationRate).toDouble();
   }
 
   @override
@@ -268,13 +268,13 @@ class PlaybackRateAutomation {
         .toDouble();
   }
 
-  int sourceElapsedMs({
-    required int timelineStartMs,
-    required int timelineMs,
-  }) {
+  int sourceElapsedMs({required int timelineStartMs, required int timelineMs}) {
     if (timelineMs <= timelineStartMs) return 0;
     if (segments.isEmpty) {
-      return ((timelineMs - timelineStartMs) * baseRate).round();
+      final rate = baseRate
+          .clamp(minTempoAutomationRate, maxTempoAutomationRate)
+          .toDouble();
+      return ((timelineMs - timelineStartMs) * rate).round();
     }
 
     final breakpoints = <int>{timelineStartMs, timelineMs};
@@ -323,6 +323,36 @@ class PlaybackRateAutomation {
     return low;
   }
 
+  int timelineMsForSelectedSource({
+    required int timelineStartMs,
+    required int sourceDurationMs,
+  }) {
+    if (sourceDurationMs <= 0) return timelineStartMs;
+
+    if (segments.isEmpty) {
+      final rate = baseRate
+          .clamp(minTempoAutomationRate, maxTempoAutomationRate)
+          .toDouble();
+      return timelineStartMs + (sourceDurationMs / rate).ceil();
+    }
+
+    var high = timelineStartMs + sourceDurationMs;
+    final maxHigh = timelineStartMs +
+        (sourceDurationMs / minTempoAutomationRate).ceil() +
+        1;
+    while (high < maxHigh &&
+        sourceElapsedMs(timelineStartMs: timelineStartMs, timelineMs: high) <
+            sourceDurationMs) {
+      high = math.min(maxHigh, high + math.max(1, sourceDurationMs ~/ 4));
+    }
+
+    return timelineMsForSourceElapsed(
+      timelineStartMs: timelineStartMs,
+      sourceElapsedMs: sourceDurationMs,
+      maxTimelineMs: high,
+    );
+  }
+
   @override
   bool operator ==(Object other) =>
       other is PlaybackRateAutomation &&
@@ -331,25 +361,17 @@ class PlaybackRateAutomation {
       _sameSegments(other.segments, segments);
 
   @override
-  int get hashCode => Object.hash(
-        baseRate,
-        pitchMode,
-        Object.hashAll(segments),
-      );
+  int get hashCode =>
+      Object.hash(baseRate, pitchMode, Object.hashAll(segments));
 }
 
-double pitchFactorForRate({
-  required double rate,
-  required String pitchMode,
-}) {
-  final safeRate = rate
-      .clamp(
-        minTempoAutomationRate,
-        maxTempoAutomationRate,
-      )
-      .toDouble();
-  final normalized =
-      pitchMode.trim().toLowerCase().replaceAll(RegExp(r'[\s_-]+'), '');
+double pitchFactorForRate({required double rate, required String pitchMode}) {
+  final safeRate =
+      rate.clamp(minTempoAutomationRate, maxTempoAutomationRate).toDouble();
+  final normalized = pitchMode.trim().toLowerCase().replaceAll(
+        RegExp(r'[\s_-]+'),
+        '',
+      );
 
   switch (normalized) {
     case 'followtempo':
@@ -453,10 +475,7 @@ List<int>? _readNullableIntList(Object? value) {
 
 double _lerp(double a, double b, double t) => a + (b - a) * t;
 
-bool _sameSegments(
-  List<PlaybackRateSegment> a,
-  List<PlaybackRateSegment> b,
-) {
+bool _sameSegments(List<PlaybackRateSegment> a, List<PlaybackRateSegment> b) {
   if (a.length != b.length) return false;
   for (var i = 0; i < a.length; i++) {
     if (a[i] != b[i]) return false;

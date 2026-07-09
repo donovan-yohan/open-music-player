@@ -53,6 +53,8 @@ See `docs/context-map.md` for the fuller map and harness table.
   `scripts/lint delivery`
 - Exact-head dev-cycle plan/run: `scripts/agentic-cycle --base origin/main` or
   `scripts/agentic-cycle --run --base origin/main`
+- Deterministic dev-cycle evidence path:
+  `scripts/agentic-cycle --run --evidence /tmp/omp-cycle.json`
 - Release/closeout audit: `scripts/release-audit --pr <number> --issue <number>`
 - Build checks: `scripts/build`
 - Local backend smoke: `scripts/smoke`
@@ -77,7 +79,9 @@ Use RTK wrappers for noisy output when running these through Codex.
   evidence template in sync; `scripts/agentic-harness` enforces the minimum
   delivery scaffold.
 - Use `scripts/agentic-cycle` to classify changed files, choose gates, and write
-  `/tmp` evidence for nontrivial local PR handoffs.
+  `/tmp` evidence for nontrivial local PR handoffs. The runner writes evidence
+  before gates start and after each gate, so failed or interrupted cycles still
+  leave an inspectable artifact.
 - Use `scripts/release-audit` before calling an epic/PR shipped; it verifies
   default-branch truth, PR checks, mergeability, review state, and issue state.
 - Use `scripts/dev test-infra` when backend tests need PostgreSQL/Redis/MinIO
