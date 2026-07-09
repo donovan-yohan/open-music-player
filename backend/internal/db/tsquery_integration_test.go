@@ -17,7 +17,7 @@ func newSearchTestDB(t *testing.T) (*DB, context.Context) {
 
 	dsn := postgresTestDSN()
 	if dsn == "" {
-		t.Skip("set OMP_POSTGRES_TEST_DSN or QA_DATABASE_URL to run Postgres search integration tests")
+		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres search integration tests")
 	}
 
 	rawDB, err := sql.Open("postgres", dsn)

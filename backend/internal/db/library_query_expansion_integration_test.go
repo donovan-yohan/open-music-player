@@ -15,7 +15,7 @@ func newLibraryQueryTestDB(t *testing.T) (*DB, context.Context) {
 
 	dsn := postgresTestDSN()
 	if dsn == "" {
-		t.Skip("set OMP_POSTGRES_TEST_DSN or QA_DATABASE_URL to run Postgres library query integration tests")
+		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres library query integration tests")
 	}
 
 	rawDB, err := sql.Open("postgres", dsn)
