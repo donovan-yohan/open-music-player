@@ -15,7 +15,20 @@ func postgresTestDSN() string {
 	if dsn := os.Getenv("OMP_POSTGRES_TEST_DSN"); dsn != "" {
 		return dsn
 	}
-	return os.Getenv("QA_DATABASE_URL")
+	if dsn := os.Getenv("QA_DATABASE_URL"); dsn != "" {
+		return dsn
+	}
+	return os.Getenv("DATABASE_URL")
+}
+
+func TestPostgresTestDSNAcceptsDatabaseURL(t *testing.T) {
+	t.Setenv("OMP_POSTGRES_TEST_DSN", "")
+	t.Setenv("QA_DATABASE_URL", "")
+	t.Setenv("DATABASE_URL", "postgres://ci.example/openmusicplayer")
+
+	if got := postgresTestDSN(); got != "postgres://ci.example/openmusicplayer" {
+		t.Fatalf("postgresTestDSN() = %q, want DATABASE_URL fallback", got)
+	}
 }
 
 func newPostgresTestRepository(t *testing.T) (*TrackRepository, context.Context) {
@@ -23,7 +36,7 @@ func newPostgresTestRepository(t *testing.T) (*TrackRepository, context.Context)
 
 	dsn := postgresTestDSN()
 	if dsn == "" {
-		t.Skip("set OMP_POSTGRES_TEST_DSN or QA_DATABASE_URL to run Postgres repository integration tests")
+		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres repository integration tests")
 	}
 
 	rawDB, err := sql.Open("postgres", dsn)

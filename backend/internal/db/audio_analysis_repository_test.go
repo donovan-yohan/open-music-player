@@ -15,7 +15,7 @@ func newPostgresAnalysisTestDB(t *testing.T) (*DB, context.Context) {
 
 	dsn := postgresTestDSN()
 	if dsn == "" {
-		t.Skip("set OMP_POSTGRES_TEST_DSN or QA_DATABASE_URL to run Postgres analysis repository tests")
+		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres analysis repository tests")
 	}
 
 	rawDB, err := sql.Open("postgres", dsn)
@@ -50,6 +50,7 @@ func TestAnalysisRepositoryMarksStaleByAnalyzerVersionAgainstPostgres(t *testing
 		"",
 		197500,
 		WithStorage("tracks/fixture/synthetic.wav", 1024),
+		WithMetadata(json.RawMessage(`{}`)),
 	)
 	if err != nil {
 		t.Fatalf("create track: %v", err)

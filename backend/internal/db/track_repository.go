@@ -690,8 +690,8 @@ func (r *TrackRepository) Create(ctx context.Context, track *Track) error {
 	err := r.db.QueryRowContext(ctx, query,
 		track.IdentityHash, track.Title, track.Artist, track.Album, track.DurationMs, track.Version,
 		track.MBRecordingID, track.MBReleaseID, track.MBArtistID, track.MBVerified,
-		track.SourceURL, track.SourceType, track.StorageKey, track.FileSizeBytes, track.MetadataJSON,
-		track.MetadataStatus, track.MetadataConfidence, track.MetadataProvenance, track.CoverArtURL, track.MetadataUserEdited,
+		track.SourceURL, track.SourceType, track.StorageKey, track.FileSizeBytes, nullableRawJSON(track.MetadataJSON),
+		track.MetadataStatus, track.MetadataConfidence, nullableRawJSON(track.MetadataProvenance), track.CoverArtURL, track.MetadataUserEdited,
 	).Scan(&track.ID, &track.CreatedAt, &track.UpdatedAt)
 
 	if err != nil {
