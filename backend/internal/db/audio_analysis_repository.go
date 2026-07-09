@@ -19,7 +19,7 @@ const (
 	AnalysisStatusUnsupported = "unsupported"
 )
 
-const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(
+const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NULL ELSE (jsonb_strip_nulls(jsonb_build_object(
 	'bpm', ta.summary_json->'bpm',
 	'beat_grid', ta.summary_json->'beat_grid',
 	'downbeats', ta.summary_json->'downbeats',
@@ -31,6 +31,8 @@ const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NUL
 	'genre_hints', ta.summary_json->'genre_hints',
 	'tag_hints', ta.summary_json->'tag_hints',
 	'waveform', CASE WHEN ta.summary_json ? 'waveform' THEN jsonb_strip_nulls(jsonb_build_object(
+		'peaks', ta.summary_json->'waveform'->'peaks',
+		'rms', ta.summary_json->'waveform'->'rms',
 		'sample_count', ta.summary_json->'waveform'->'sample_count',
 		'resolutions', ta.summary_json->'waveform'->'resolutions',
 		'spectral_bands', ta.summary_json->'waveform'->'spectral_bands',
@@ -43,7 +45,7 @@ const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NUL
 	'outro', ta.summary_json->'outro',
 	'trim', ta.summary_json->'trim',
 	'cue_candidates', ta.summary_json->'cue_candidates'
-)) END`
+)) || COALESCE(ta.overrides_json, '{}'::jsonb)) END`
 
 var ErrTrackAnalysisNotFound = errors.New("track analysis not found")
 
@@ -52,6 +54,7 @@ type TrackAnalysis struct {
 	SchemaVersion  int
 	Status         string
 	SummaryJSON    json.RawMessage
+	OverridesJSON  json.RawMessage
 	ArtifactsJSON  json.RawMessage
 	ProvenanceJSON json.RawMessage
 	Error          sql.NullString
@@ -63,9 +66,10 @@ type TrackAnalysis struct {
 }
 
 type AnalysisCompact struct {
-	TrackID     int64
-	Status      string
-	SummaryJSON json.RawMessage
+	TrackID       int64
+	Status        string
+	SummaryJSON   json.RawMessage
+	OverridesJSON json.RawMessage
 }
 
 type AnalysisResult struct {
@@ -247,6 +251,32 @@ func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, res
 	return err
 }
 
+func (r *AnalysisRepository) SetOverrides(ctx context.Context, trackID int64, overrides json.RawMessage) (*TrackAnalysis, error) {
+	query := `
+		INSERT INTO track_analysis (
+			track_id, status, overrides_json, provenance_json, requested_at, updated_at
+		) VALUES (
+			$1, $2, COALESCE($3::jsonb, '{}'::jsonb),
+			jsonb_build_object('manual_overrides', jsonb_build_object(
+				'updated_at', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+			)),
+			NOW(), NOW()
+		)
+		ON CONFLICT (track_id) DO UPDATE
+		SET overrides_json = EXCLUDED.overrides_json,
+			status = $2,
+			provenance_json = COALESCE(track_analysis.provenance_json, '{}'::jsonb) ||
+				jsonb_build_object('manual_overrides', jsonb_build_object(
+					'updated_at', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+				)),
+			updated_at = NOW()
+	`
+	if _, err := r.db.ExecContext(ctx, query, trackID, AnalysisStatusAnalyzed, nullableRawJSON(overrides)); err != nil {
+		return nil, err
+	}
+	return r.GetByTrackID(ctx, trackID)
+}
+
 func (r *AnalysisRepository) MarkFailed(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
 	return r.markTerminal(ctx, trackID, AnalysisStatusFailed, errText, provenance)
 }
@@ -298,7 +328,7 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 
 func (r *AnalysisRepository) GetByTrackID(ctx context.Context, trackID int64) (*TrackAnalysis, error) {
 	query := `
-		SELECT track_id, schema_version, status, summary_json, artifacts_json, provenance_json,
+		SELECT track_id, schema_version, status, summary_json, overrides_json, artifacts_json, provenance_json,
 			   error, requested_at, started_at, completed_at, created_at, updated_at
 		FROM track_analysis
 		WHERE track_id = $1
@@ -309,6 +339,7 @@ func (r *AnalysisRepository) GetByTrackID(ctx context.Context, trackID int64) (*
 		&analysis.SchemaVersion,
 		&analysis.Status,
 		&analysis.SummaryJSON,
+		&analysis.OverridesJSON,
 		&analysis.ArtifactsJSON,
 		&analysis.ProvenanceJSON,
 		&analysis.Error,
@@ -333,7 +364,7 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 		return result, nil
 	}
 	query := `
-		SELECT track_id, status, ` + analysisCompactSummaryExpression + ` AS summary_json
+		SELECT track_id, status, ` + analysisCompactSummaryExpression + ` AS summary_json, overrides_json
 		FROM track_analysis
 		AS ta
 		WHERE track_id = ANY($1)
@@ -345,7 +376,7 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 	defer rows.Close()
 	for rows.Next() {
 		var compact AnalysisCompact
-		if err := rows.Scan(&compact.TrackID, &compact.Status, &compact.SummaryJSON); err != nil {
+		if err := rows.Scan(&compact.TrackID, &compact.Status, &compact.SummaryJSON, &compact.OverridesJSON); err != nil {
 			return nil, err
 		}
 		result[compact.TrackID] = compact

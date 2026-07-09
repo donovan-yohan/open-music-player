@@ -68,6 +68,14 @@ cd client
 flutter run -d chrome --dart-define=OMP_API_BASE_URL=http://localhost:8080/api/v1
 ```
 
+When another Open Music Player stack already owns the default host ports, use
+the isolated wrappers instead:
+
+```bash
+scripts/dev isolated
+scripts/smoke isolated
+```
+
 Default `start` mode runs only the backend, PostgreSQL, and MinIO. Redis is disabled by default (`REDIS_ENABLED=false`) and download workers are disabled (`WORKER_COUNT=0`), so Redis-backed queue/download endpoints return `503 SERVICE_DISABLED` until you intentionally enable the downloads profile. `e2e-smoke` starts that profile with `WORKER_COUNT=1` and writes compact evidence under `/tmp`. Use `scripts/local-low-memory.sh clean` when you need to reap the low-memory containers, network, and volumes. See [`docs/LOW_MEMORY_LOCAL_DEV.md`](docs/LOW_MEMORY_LOCAL_DEV.md) for smoke checks, Redis/worker guidance, and the no-Android/no-Gradle workflow.
 
 Audio analysis is optional and disabled unless an analyzer service is configured. See [`docs/AUDIO_ANALYZER_SERVICE.md`](docs/AUDIO_ANALYZER_SERVICE.md) for local service configuration, request/response shape, and failure behavior.

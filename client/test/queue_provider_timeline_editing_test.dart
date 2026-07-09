@@ -9,6 +9,7 @@ import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/track.dart';
+import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 
@@ -19,6 +20,7 @@ Track _track({
   String queueItemId = 'queue-7',
   String? playbackTrackId = '7',
   int duration = 240,
+  TrackAnalysis? analysis,
 }) =>
     Track(
       id: id,
@@ -28,6 +30,7 @@ Track _track({
       artist: 'Artist $id',
       duration: duration,
       addedAt: DateTime.utc(2026, 1, 1),
+      analysis: analysis,
     );
 
 TimelineClip _fallback(Track track) => TimelineClip.clamped(
@@ -57,6 +60,203 @@ void main() {
         identical(
             provider.waveformPeaksFor(track), provider.waveformPeaksFor(track)),
         isTrue);
+  });
+
+  test('rich timeline waveforms use analysis peaks and bucket zoom detail', () {
+    final provider = QueueProvider(ApiClient());
+    final track = _track(
+      analysis: const TrackAnalysis(
+        status: TrackAnalysisStatus.analyzed,
+        summary: TrackAnalysisSummary(
+          bpm: AnalysisValue(value: 120),
+          beatGrid: BeatGridSummary(beatsMs: [0, 500, 1000, 1500]),
+          downbeats: DownbeatSummary(positionsMs: [0]),
+          waveform: WaveformSummary(
+            peaks: [0.0, 0.25, 1.0, 0.5],
+            rms: [0.0, 0.18, 0.62, 0.3],
+            sampleCount: 4,
+          ),
+          transients: TransientsSummary(strongestMs: [750]),
+          silence: SilenceSummary(
+            ranges: [AnalysisRange(startMs: 0, endMs: 250)],
+          ),
+        ),
+      ),
+    );
+
+    final overview = provider.waveformFor(track, 48);
+    final detail = provider.waveformFor(track, 900);
+    final closeDetail = provider.waveformFor(track, 6000);
+
+    expect(overview.analyzed, isTrue);
+    expect(overview.beatsMs, [0, 500, 1000, 1500]);
+    expect(overview.downbeatsMs, [0]);
+    expect(overview.transientsMs, [750]);
+    expect(overview.silenceRanges.single.endMs, 250);
+    expect(overview.frames.length, 512);
+    expect(detail.frames.length, 1024);
+    expect(closeDetail.frames.length, 4096);
+    expect(provider.waveformFor(track, 100000).frames.length, 4096);
+    expect(identical(provider.waveformFor(track, 900), detail), isTrue);
+  });
+
+  test('playback tracks lazily attach backend analysis by media item track id',
+      () async {
+    final notified = Completer<void>();
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.path.endsWith('/tracks/42/analysis')) {
+          analysisRequests++;
+          return http.Response(
+            jsonEncode({
+              'status': 'analyzed',
+              'summary': {
+                'beat_grid': {
+                  'bpm': 120,
+                  'beats_ms': [0, 500, 1000],
+                },
+                'waveform': {
+                  'sample_count': 4,
+                  'peaks': [0.1, 0.5, 0.9, 0.2],
+                  'rms': [0.08, 0.3, 0.6, 0.12],
+                  'spectral_bands': {
+                    'low': {
+                      'sample_count': 4,
+                      'values': [0.9, 0.8, 0.4, 0.2],
+                    },
+                    'mid': {
+                      'sample_count': 4,
+                      'values': [0.2, 0.5, 0.9, 0.7],
+                    },
+                    'high': {
+                      'sample_count': 4,
+                      'values': [0.1, 0.2, 0.6, 0.9],
+                    },
+                  },
+                },
+              },
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('', 404);
+      }),
+    );
+    provider.addListener(() {
+      if (!notified.isCompleted) notified.complete();
+    });
+
+    final playbackTrack = _track(
+      id: 'playback_queue_0',
+      queueItemId: '0',
+      playbackTrackId: '42',
+      analysis: null,
+    );
+
+    expect(provider.trackWithAnalysis(playbackTrack).analysis, isNull);
+    await notified.future.timeout(const Duration(seconds: 1));
+
+    final enriched = provider.trackWithAnalysis(playbackTrack);
+    expect(analysisRequests, 1);
+    expect(enriched.analysis?.status, TrackAnalysisStatus.analyzed);
+    expect(provider.waveformFor(enriched, 512).analyzed, isTrue);
+    expect(provider.waveformFor(enriched, 512).frames.first.low,
+        greaterThan(provider.waveformFor(enriched, 512).frames.first.high));
+  });
+
+  test('analysis override updates patch backend and refresh timeline markers',
+      () async {
+    final originalAnalysis = TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: {
+        'bpm': {'value': 120},
+        'beat_grid': {
+          'bpm': 120,
+          'beats_ms': [0, 500, 1000],
+        },
+        'downbeats': {
+          'positions_ms': [0],
+        },
+        'waveform': {
+          'sample_count': 4,
+          'peaks': [0.1, 0.5, 0.9, 0.2],
+          'rms': [0.08, 0.3, 0.6, 0.12],
+        },
+      },
+    );
+    final track = _track(
+      id: '42',
+      queueItemId: 'queue-42',
+      playbackTrackId: '42',
+      analysis: originalAnalysis,
+    );
+    Map<String, dynamic>? capturedPatch;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+          return http.Response(
+            jsonEncode({
+              'items': [track.toJson()],
+              'currentPosition': 0,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path.endsWith('/mix-plans')) {
+          return http.Response(
+            jsonEncode({'data': []}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'PATCH' &&
+            request.url.path.endsWith('/tracks/42/analysis/overrides')) {
+          capturedPatch = jsonDecode(request.body) as Map<String, dynamic>;
+          return http.Response(
+            jsonEncode({
+              'status': 'analyzed',
+              'summary': originalAnalysis.summary!.toJson(),
+              'overrides': capturedPatch!['overrides'],
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('', 404);
+      }),
+    );
+
+    await provider.loadQueue();
+    final before = provider.queue.tracks.single;
+    expect(provider.waveformFor(before, 512).beatsMs, [0, 500, 1000]);
+
+    await provider.updateAnalysisOverrides(
+      before,
+      const TrackAnalysisOverrides(
+        bpm: 128,
+        bpmConfidence: 1,
+        beatsMs: [120, 589, 1058],
+        downbeatsMs: [120],
+        musicalKey: 'B minor',
+        camelot: '10A',
+      ),
+    );
+
+    final updated = provider.queue.tracks.single;
+    expect(capturedPatch?['overrides']['bpm']['value'], 128);
+    expect(updated.analysis?.summary?.bpm?.numericValue, 128);
+    expect(updated.analysis?.summary?.key?.textValue, 'B minor');
+    expect(provider.waveformFor(updated, 512).beatsMs.take(3).toList(), [
+      120,
+      589,
+      1058,
+    ]);
+    expect(provider.waveformFor(updated, 512).downbeatsMs, [120]);
   });
 
   test('mix plan clips feed timeline placement and trim state when available',

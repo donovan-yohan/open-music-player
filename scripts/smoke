@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TARGET="${1:-local}"
+
+use_isolated_ports() {
+  export SERVER_PORT="${SERVER_PORT:-18080}"
+  export POSTGRES_PORT="${POSTGRES_PORT:-15434}"
+  export REDIS_PORT="${REDIS_PORT:-16380}"
+  export MINIO_PORT="${MINIO_PORT:-19000}"
+  export MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-19001}"
+  export OMP_BACKEND_BASE_URL="${OMP_BACKEND_BASE_URL:-http://localhost:${SERVER_PORT}}"
+}
+
+case "$TARGET" in
+  local|backend)
+    exec "$ROOT/scripts/local-low-memory.sh" smoke
+    ;;
+  isolated|codex)
+    use_isolated_ports
+    exec "$ROOT/scripts/local-low-memory.sh" smoke
+    ;;
+  playback)
+    exec "$ROOT/scripts/local-low-memory.sh" playback-smoke
+    ;;
+  playback-isolated)
+    use_isolated_ports
+    exec "$ROOT/scripts/local-low-memory.sh" playback-smoke
+    ;;
+  e2e|downloads)
+    exec "$ROOT/scripts/local-low-memory.sh" e2e-smoke
+    ;;
+  e2e-isolated|downloads-isolated)
+    use_isolated_ports
+    exec "$ROOT/scripts/local-low-memory.sh" e2e-smoke
+    ;;
+  tailnet)
+    exec "$ROOT/scripts/tailnet-staging.sh" smoke
+    ;;
+  *)
+    echo "usage: scripts/smoke [local|backend|isolated|codex|playback|playback-isolated|e2e|e2e-isolated|downloads|downloads-isolated|tailnet]" >&2
+    exit 2
+    ;;
+esac

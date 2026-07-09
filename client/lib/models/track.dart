@@ -95,11 +95,17 @@ class Track {
   static TrackAnalysis? _parseAnalysis(Map<String, dynamic> json) {
     final rawStatus = json['analysisStatus'] ?? json['analysis_status'];
     final rawSummary = json['analysisSummary'] ?? json['analysis_summary'];
-    if (rawStatus == null && rawSummary == null) return null;
+    final rawOverrides = json['analysisOverrides'] ??
+        json['analysis_overrides'] ??
+        TrackAnalysisOverrides.fromJson(rawSummary?['overrides'])?.toJson();
+    if (rawStatus == null && rawSummary == null && rawOverrides == null) {
+      return null;
+    }
 
     final analysis = TrackAnalysis.fromJson(
       status: rawStatus,
       summary: rawSummary,
+      overrides: rawOverrides,
     );
     if (analysis.status == TrackAnalysisStatus.unknown &&
         !analysis.hasDisplayableSummary) {
@@ -206,6 +212,8 @@ class Track {
       if (analysis != null) 'analysisStatus': analysis!.status.name,
       if (analysis?.summary != null)
         'analysisSummary': analysis!.summary!.toJson(),
+      if (analysis?.overrides != null)
+        'analysisOverrides': analysis!.overrides!.toJson(),
     };
   }
 
@@ -217,7 +225,48 @@ class Track {
       'album': album,
       'duration': duration,
       'artwork_url': coverUrl,
+      if (analysis != null) 'analysisStatus': analysis!.status.name,
+      if (analysis?.summary != null)
+        'analysisSummary': analysis!.summary!.toJson(),
+      if (analysis?.overrides != null)
+        'analysisOverrides': analysis!.overrides!.toJson(),
     };
+  }
+
+  Track copyWith({
+    String? id,
+    String? queueItemId,
+    String? playbackTrackId,
+    String? sourceCandidateId,
+    String? sourceUrl,
+    String? title,
+    String? artist,
+    String? album,
+    int? duration,
+    String? coverUrl,
+    DateTime? addedAt,
+    TrackQueueStatus? queueStatus,
+    bool? canPlay,
+    bool? canRetry,
+    TrackAnalysis? analysis,
+  }) {
+    return Track(
+      id: id ?? this.id,
+      queueItemId: queueItemId ?? this.queueItemId,
+      playbackTrackId: playbackTrackId ?? this.playbackTrackId,
+      sourceCandidateId: sourceCandidateId ?? this.sourceCandidateId,
+      sourceUrl: sourceUrl ?? this.sourceUrl,
+      title: title ?? this.title,
+      artist: artist ?? this.artist,
+      album: album ?? this.album,
+      duration: duration ?? this.duration,
+      coverUrl: coverUrl ?? this.coverUrl,
+      addedAt: addedAt ?? this.addedAt,
+      queueStatus: queueStatus ?? this.queueStatus,
+      canPlay: canPlay ?? this.canPlay,
+      canRetry: canRetry ?? this.canRetry,
+      analysis: analysis ?? this.analysis,
+    );
   }
 
   /// Track duration in milliseconds (stored as whole seconds).

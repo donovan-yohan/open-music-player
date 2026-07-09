@@ -261,6 +261,7 @@ func (db *DB) Migrate() error {
 		schema_version INTEGER NOT NULL DEFAULT 1,
 		status VARCHAR(32) NOT NULL DEFAULT 'pending',
 		summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+		overrides_json JSONB NOT NULL DEFAULT '{}'::jsonb,
 		artifacts_json JSONB NOT NULL DEFAULT '{}'::jsonb,
 		provenance_json JSONB NOT NULL DEFAULT '{}'::jsonb,
 		error TEXT,
@@ -274,6 +275,7 @@ func (db *DB) Migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_track_analysis_status ON track_analysis(status);
 	CREATE INDEX IF NOT EXISTS idx_track_analysis_updated_at ON track_analysis(updated_at DESC);
+	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS overrides_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 	CREATE TABLE IF NOT EXISTS play_events (
 		id BIGSERIAL PRIMARY KEY,

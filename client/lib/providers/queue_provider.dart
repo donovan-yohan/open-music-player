@@ -6,6 +6,7 @@ import '../models/mix_plan.dart';
 import '../models/queue_state.dart';
 import '../models/timeline_clip.dart';
 import '../models/track.dart';
+import '../models/track_analysis.dart';
 import '../models/trim_range.dart';
 import '../models/waveform.dart';
 import '../core/api/api_client.dart';
@@ -30,6 +31,9 @@ class QueueProvider extends ChangeNotifier {
   Map<String, int> _timelineStartOverrides = {};
   Map<String, MixPlanClip> _mixPlanClips = {};
   final Map<String, List<double>> _waveformPeaks = {};
+  final Map<String, Map<int, TimelineWaveformData>> _timelineWaveforms = {};
+  final Map<String, TrackAnalysis> _analysisByTrackId = {};
+  final Set<String> _analysisRequestsInFlight = {};
 
   QueueProvider(this._apiClient);
 
@@ -93,8 +97,75 @@ class QueueProvider extends ChangeNotifier {
 
   /// Deterministic mock waveform peaks for a track until backend peak data is
   /// available.
-  List<double> waveformPeaksFor(Track track) =>
-      _waveformPeaks.putIfAbsent(track.id, () => mockWaveformPeaks(track.id));
+  List<double> waveformPeaksFor(Track track) {
+    final cacheKey = _trackWaveformKey(track);
+    return _waveformPeaks.putIfAbsent(
+      cacheKey,
+      () => waveformFor(track, 64).peaks,
+    );
+  }
+
+  TimelineWaveformData waveformFor(Track track, int targetSampleCount) {
+    final bucket = _waveformSampleBucket(targetSampleCount);
+    final cacheKey = _trackWaveformKey(track);
+    final perTrack = _timelineWaveforms.putIfAbsent(
+      cacheKey,
+      () => <int, TimelineWaveformData>{},
+    );
+    return perTrack.putIfAbsent(
+      bucket,
+      () => richWaveformForTrack(track, sampleCount: bucket),
+    );
+  }
+
+  /// Playback media items do not carry queue API analysis fields, so attach
+  /// cached analysis by backend track ID and fetch it lazily when needed.
+  Track trackWithAnalysis(Track track) {
+    if (track.analysis != null) {
+      _rememberTrackAnalysis(track);
+      return track;
+    }
+
+    final trackId = _analysisTrackId(track);
+    if (trackId == null) return track;
+
+    final cached = _analysisByTrackId[trackId.toString()];
+    if (cached != null) return track.copyWith(analysis: cached);
+
+    _fetchAnalysisIfNeeded(trackId);
+    return track;
+  }
+
+  Future<TrackAnalysis> updateAnalysisOverrides(
+    Track track,
+    TrackAnalysisOverrides overrides,
+  ) async {
+    final trackId = _analysisTrackId(track);
+    if (trackId == null) {
+      throw ApiException('Track does not have a backend analysis id', 400);
+    }
+
+    final analysis = await _apiClient.updateTrackAnalysisOverrides(
+      trackId,
+      overrides,
+    );
+    final key = trackId.toString();
+    _analysisByTrackId[key] = analysis;
+    _invalidateAnalysisCache(key);
+    _queue = QueueState(
+      tracks: [
+        for (final queuedTrack in _queue.tracks)
+          _analysisTrackId(queuedTrack) == trackId
+              ? queuedTrack.copyWith(analysis: analysis)
+              : queuedTrack,
+      ],
+      currentIndex: _queue.currentIndex,
+      repeatMode: _queue.repeatMode,
+      shuffled: _queue.shuffled,
+    );
+    _notifyListeners();
+    return analysis;
+  }
 
   Future<void> loadQueue() async {
     _isLoading = true;
@@ -104,6 +175,7 @@ class QueueProvider extends ChangeNotifier {
     try {
       _queue = await _apiClient.getQueue();
       if (_disposed) return;
+      _rememberQueueAnalyses();
       _pruneTimingState();
       await _loadQueueTimingMixPlan();
       if (_disposed) return;
@@ -128,6 +200,7 @@ class QueueProvider extends ChangeNotifier {
         trackIds: trackIds,
         position: playNext ? 'next' : 'last',
       );
+      _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
     } catch (e) {
@@ -146,6 +219,7 @@ class QueueProvider extends ChangeNotifier {
         candidate: candidate,
         position: playNext ? 'next' : 'last',
       );
+      _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
     } catch (e) {
@@ -192,6 +266,7 @@ class QueueProvider extends ChangeNotifier {
 
     try {
       _queue = await _apiClient.removeQueueItem(removedTrack.queueItemId);
+      _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
     } catch (e) {
@@ -210,6 +285,7 @@ class QueueProvider extends ChangeNotifier {
 
     try {
       _queue = await _apiClient.retryQueueItem(track.queueItemId);
+      _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
     } catch (e) {
@@ -254,6 +330,7 @@ class QueueProvider extends ChangeNotifier {
         queueItemId: track.queueItemId,
         toPosition: newIndex,
       );
+      _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
     } catch (e) {
@@ -558,6 +635,7 @@ class QueueProvider extends ChangeNotifier {
         _timelineStartOverrides = {};
         _mixPlanClips = {};
         _waveformPeaks.clear();
+        _timelineWaveforms.clear();
       }
       return;
     }
@@ -591,7 +669,23 @@ class QueueProvider extends ChangeNotifier {
         _storeMixPlanClip(clip);
       }
     }
-    _waveformPeaks.removeWhere((trackId, _) => !trackIds.contains(trackId));
+    _waveformPeaks.removeWhere(
+      (cacheKey, _) =>
+          !_cacheKeyMatchesAny(cacheKey, trackIds) &&
+          !_cacheKeyMatchesAny(cacheKey, queueItemIds),
+    );
+    _timelineWaveforms.removeWhere(
+      (cacheKey, _) =>
+          !_cacheKeyMatchesAny(cacheKey, trackIds) &&
+          !_cacheKeyMatchesAny(cacheKey, queueItemIds),
+    );
+  }
+
+  bool _cacheKeyMatchesAny(String cacheKey, Set<String> ids) {
+    for (final id in ids) {
+      if (cacheKey == id || cacheKey.startsWith('$id|')) return true;
+    }
+    return false;
   }
 
   Iterable<String> _localTimingKeys(Track track) sync* {
@@ -616,6 +710,97 @@ class QueueProvider extends ChangeNotifier {
         seen.add(playbackTrackId)) {
       yield playbackTrackId;
     }
+  }
+
+  String _trackWaveformKey(Track track) {
+    final analysisTrackId = _analysisTrackId(track);
+    final analysis = track.analysis;
+    final analysisKey = analysis == null
+        ? 'analysis:none'
+        : [
+            'analysis:${analysis.status.name}',
+            'bpm:${analysis.summary?.bpm?.numericValue ?? 'none'}',
+            'beats:${analysis.summary?.beatGrid?.beatsMs.length ?? 0}',
+            'downbeats:${analysis.summary?.downbeats?.positionsMs.length ?? 0}',
+            'key:${analysis.summary?.key?.textValue ?? ''}',
+            'camelot:${analysis.summary?.camelot?.textValue ?? ''}',
+            'overrides:${analysis.overrides?.toJson()}',
+            'waveform:${analysis.summary?.waveform?.sampleCount ?? 0}',
+            'bands:${analysis.summary?.waveform?.spectralBands.length ?? 0}',
+          ].join('|');
+    final suffix = [
+      if (analysisTrackId != null) 'track:$analysisTrackId',
+      analysisKey,
+    ].join('|');
+
+    for (final key in _trackTimingKeys(track)) {
+      return '$key|$suffix';
+    }
+    return '${track.id}|$suffix';
+  }
+
+  int _waveformSampleBucket(int targetSampleCount) {
+    final target = targetSampleCount.clamp(256, 4096).toInt();
+    var bucket = 512;
+    while (bucket < target && bucket < 4096) {
+      bucket *= 2;
+    }
+    return bucket.clamp(512, 4096).toInt();
+  }
+
+  void _rememberQueueAnalyses() {
+    for (final track in _queue.tracks) {
+      _rememberTrackAnalysis(track);
+    }
+  }
+
+  void _rememberTrackAnalysis(Track track) {
+    final analysis = track.analysis;
+    final trackId = _analysisTrackId(track);
+    if (analysis == null || trackId == null) return;
+    _analysisByTrackId[trackId.toString()] = analysis;
+  }
+
+  void _fetchAnalysisIfNeeded(int trackId) {
+    final key = trackId.toString();
+    if (_analysisByTrackId.containsKey(key) ||
+        _analysisRequestsInFlight.contains(key)) {
+      return;
+    }
+
+    _analysisRequestsInFlight.add(key);
+    unawaited(() async {
+      try {
+        final analysis = await _apiClient.getTrackAnalysis(trackId);
+        if (_disposed) return;
+        _analysisByTrackId[key] = analysis;
+        _invalidateAnalysisCache(key);
+        _notifyListeners();
+      } catch (_) {
+        // Analysis is progressive enhancement. Playback and queue editing must
+        // keep working if an individual track has no analyzed artifact yet.
+      } finally {
+        _analysisRequestsInFlight.remove(key);
+      }
+    }());
+  }
+
+  int? _analysisTrackId(Track track) {
+    for (final candidate in [track.playbackTrackId, track.id]) {
+      if (candidate == null) continue;
+      final parsed = int.tryParse(candidate);
+      if (parsed != null && parsed > 0) return parsed;
+    }
+    return null;
+  }
+
+  void _invalidateAnalysisCache(String trackId) {
+    _waveformPeaks.removeWhere(
+      (cacheKey, _) => cacheKey.contains('track:$trackId'),
+    );
+    _timelineWaveforms.removeWhere(
+      (cacheKey, _) => cacheKey.contains('track:$trackId'),
+    );
   }
 
   int? _firstTimelineStart(Track track) {

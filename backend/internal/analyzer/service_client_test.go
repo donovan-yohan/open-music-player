@@ -207,7 +207,7 @@ func TestServiceClientReportsTransportFailure(t *testing.T) {
 func TestServiceClientRejectsOversizeResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"schema_version":1,"summary":{"bpm":{"value":128}}}` + strings.Repeat(" ", 1<<20)))
+		_, _ = w.Write([]byte(`{"schema_version":1,"summary":{"bpm":{"value":128}}}` + strings.Repeat(" ", maxAnalyzerResponseBytes)))
 	}))
 	defer server.Close()
 

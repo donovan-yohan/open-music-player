@@ -6,6 +6,7 @@ import '../discovery/discovery_models.dart';
 import '../storage/secure_storage.dart';
 import '../../models/mix_plan.dart';
 import '../../models/queue_state.dart';
+import '../../models/track_analysis.dart';
 
 class ApiClient {
   static const String baseUrl = String.fromEnvironment(
@@ -31,8 +32,8 @@ class ApiClient {
   };
 
   ApiClient({SecureStorage? storage, Dio? dio})
-    : _storage = storage ?? SecureStorage(),
-      _dio = dio ?? Dio() {
+      : _storage = storage ?? SecureStorage(),
+        _dio = dio ?? Dio() {
     _dio.options.baseUrl = baseUrl;
     _dio.options.connectTimeout = const Duration(seconds: 10);
     _dio.options.receiveTimeout = const Duration(seconds: 10);
@@ -61,8 +62,7 @@ class ApiClient {
     ErrorInterceptorHandler handler,
   ) async {
     final requestOptions = error.requestOptions;
-    final shouldRefresh =
-        error.response?.statusCode == 401 &&
+    final shouldRefresh = error.response?.statusCode == 401 &&
         !_isAuthEndpoint(requestOptions) &&
         requestOptions.extra[_authRetryExtraKey] != true;
 
@@ -245,7 +245,10 @@ class ApiClient {
     try {
       final response = await _dio.post(
         '/queue/items',
-        data: {'position': position, 'sourceCandidate': candidate.toQueueJson()},
+        data: {
+          'position': position,
+          'sourceCandidate': candidate.toQueueJson()
+        },
       );
       final data = _asMap(response.data);
       final queue = data['queue'];
@@ -261,9 +264,8 @@ class ApiClient {
     Duration timeout = const Duration(seconds: 8),
   }) async {
     try {
-      final response = await _dio
-          .post('/downloads', data: {'url': url, 'source_type': sourceType})
-          .timeout(timeout);
+      final response = await _dio.post('/downloads',
+          data: {'url': url, 'source_type': sourceType}).timeout(timeout);
       return DownloadJobResponse.fromJson(_asMap(response.data));
     } on TimeoutException {
       throw ApiException('Download request timeout', 408);
@@ -326,6 +328,51 @@ class ApiClient {
       await _dio.delete('/queue');
     } on DioException catch (e) {
       throw ApiException('Failed to clear queue', _statusCodeOf(e));
+    }
+  }
+
+  Future<TrackAnalysis> getTrackAnalysis(int trackId) async {
+    if (trackId <= 0) {
+      throw ApiException('Track ID must be positive', 400);
+    }
+
+    try {
+      final response = await _dio.get('/tracks/$trackId/analysis');
+      final data = _asMap(response.data);
+      return TrackAnalysis.fromJson(
+        status: data['status'],
+        summary: data['summary'],
+        overrides: data['overrides'],
+      );
+    } on DioException catch (e) {
+      throw ApiException('Failed to get track analysis', _statusCodeOf(e));
+    }
+  }
+
+  Future<TrackAnalysis> updateTrackAnalysisOverrides(
+    int trackId,
+    TrackAnalysisOverrides overrides,
+  ) async {
+    if (trackId <= 0) {
+      throw ApiException('Track ID must be positive', 400);
+    }
+
+    try {
+      final response = await _dio.patch(
+        '/tracks/$trackId/analysis/overrides',
+        data: {'overrides': overrides.toJson()},
+      );
+      final data = _asMap(response.data);
+      return TrackAnalysis.fromJson(
+        status: data['status'],
+        summary: data['summary'],
+        overrides: data['overrides'],
+      );
+    } on DioException catch (e) {
+      throw ApiException(
+        'Failed to update track analysis overrides',
+        _statusCodeOf(e),
+      );
     }
   }
 

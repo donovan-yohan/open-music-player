@@ -178,6 +178,8 @@ class _FakeVoice implements Voice {
   @override
   Future<void> setSpeed(double rate) async {}
   @override
+  Future<void> setPitch(double factor) async {}
+  @override
   Future<void> setVolume(double linearGain) async {}
   @override
   int? driftMs(int expectedLocalPositionMs) => 0;

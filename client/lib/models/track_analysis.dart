@@ -11,14 +11,31 @@ enum TrackAnalysisStatus {
 class TrackAnalysis {
   final TrackAnalysisStatus status;
   final TrackAnalysisSummary? summary;
+  final TrackAnalysisOverrides? overrides;
 
-  const TrackAnalysis({required this.status, this.summary});
+  const TrackAnalysis({
+    required this.status,
+    this.summary,
+    this.overrides,
+  });
 
-  factory TrackAnalysis.fromJson({Object? status, Object? summary}) {
+  factory TrackAnalysis.fromJson({
+    Object? status,
+    Object? summary,
+    Object? overrides,
+  }) {
     final parsedStatus = parseTrackAnalysisStatus(status);
-    final parsedSummary =
+    final baseSummary =
         summary == null ? null : TrackAnalysisSummary.fromJson(summary);
-    return TrackAnalysis(status: parsedStatus, summary: parsedSummary);
+    final parsedOverrides = TrackAnalysisOverrides.fromJson(overrides);
+    final effectiveSummary = parsedOverrides == null
+        ? baseSummary
+        : parsedOverrides.applyTo(baseSummary ?? const TrackAnalysisSummary());
+    return TrackAnalysis(
+      status: parsedStatus,
+      summary: effectiveSummary,
+      overrides: parsedOverrides,
+    );
   }
 
   bool get isNonSuccess =>
@@ -34,6 +51,7 @@ class TrackAnalysis {
     return {
       'status': status.name,
       if (summary != null) 'summary': summary!.toJson(),
+      if (overrides != null) 'overrides': overrides!.toJson(),
     };
   }
 }
@@ -74,6 +92,169 @@ TrackAnalysisStatus parseTrackAnalysisStatus(Object? value) {
   }
 }
 
+/// User-authored corrections for analyzer metadata.
+///
+/// The analyzer summary stays useful for waveform/loudness/artifacts, while
+/// these fields override the musical timing facts used by queue snapping,
+/// BPM-sync automation, and user-facing analysis labels.
+class TrackAnalysisOverrides {
+  final double? bpm;
+  final double? bpmConfidence;
+  final List<int>? beatsMs;
+  final List<int>? downbeatsMs;
+  final String? musicalKey;
+  final String? camelot;
+  final String? provenance;
+
+  const TrackAnalysisOverrides({
+    this.bpm,
+    this.bpmConfidence,
+    this.beatsMs,
+    this.downbeatsMs,
+    this.musicalKey,
+    this.camelot,
+    this.provenance,
+  });
+
+  static TrackAnalysisOverrides? fromJson(Object? json) {
+    final map = _readMap(json);
+    if (map == null || map.isEmpty) return null;
+
+    final bpmValue = AnalysisValue.fromJson(map['bpm']);
+    final bpmMap = _readMap(map['bpm']);
+    final beatGrid = _readMap(map['beat_grid'] ?? map['beatGrid']);
+    final downbeats = _readMap(map['downbeats']);
+    final beatsRaw = _firstPresent(
+      [
+        map['beatGridMs'],
+        map['beatsMs'],
+        beatGrid?['beats_ms'],
+        beatGrid?['beatsMs'],
+      ],
+    );
+    final downbeatsRaw = _firstPresent(
+      [
+        map['downbeatsMs'],
+        downbeats?['positions_ms'],
+        downbeats?['positionsMs'],
+      ],
+    );
+    final keyValue = AnalysisValue.fromJson(map['key'] ?? map['musicalKey']);
+    final camelotValue = AnalysisValue.fromJson(map['camelot']);
+
+    final overrides = TrackAnalysisOverrides(
+      bpm: bpmValue?.numericValue?.toDouble() ??
+          _readDouble(map['nativeBpm']) ??
+          _readDouble(beatGrid?['bpm']),
+      bpmConfidence: _readDouble(map['bpmConfidence']) ??
+          _readDouble(bpmMap?['confidence']) ??
+          _readDouble(beatGrid?['confidence']),
+      beatsMs: beatsRaw == null ? null : _readIntList(beatsRaw),
+      downbeatsMs: downbeatsRaw == null ? null : _readIntList(downbeatsRaw),
+      musicalKey: keyValue?.textValue ?? _readString(map['musicalKey']),
+      camelot: camelotValue?.textValue,
+      provenance: _readString(map['provenance']),
+    );
+    return overrides.isEmpty ? null : overrides;
+  }
+
+  bool get isEmpty =>
+      bpm == null &&
+      bpmConfidence == null &&
+      beatsMs == null &&
+      downbeatsMs == null &&
+      musicalKey == null &&
+      camelot == null;
+
+  TrackAnalysisSummary applyTo(TrackAnalysisSummary base) {
+    final source = provenance ?? 'manual_override';
+    return TrackAnalysisSummary(
+      bpm: bpm == null
+          ? base.bpm
+          : AnalysisValue(
+              value: bpm!,
+              confidence: bpmConfidence ?? base.bpm?.confidence,
+              provenance: source,
+            ),
+      beatGrid: (bpm == null && beatsMs == null)
+          ? base.beatGrid
+          : BeatGridSummary(
+              bpm: bpm ?? base.beatGrid?.bpm,
+              offsetMs: base.beatGrid?.offsetMs,
+              beatsMs: beatsMs ?? base.beatGrid?.beatsMs ?? const [],
+              confidence: bpmConfidence ?? base.beatGrid?.confidence,
+              provenance: source,
+            ),
+      downbeats: downbeatsMs == null
+          ? base.downbeats
+          : DownbeatSummary(
+              positionsMs: downbeatsMs!,
+              confidence: base.downbeats?.confidence,
+              provenance: source,
+            ),
+      key: musicalKey == null
+          ? base.key
+          : AnalysisValue(
+              value: musicalKey!,
+              confidence: base.key?.confidence,
+              provenance: source,
+            ),
+      camelot: camelot == null
+          ? base.camelot
+          : AnalysisValue(
+              value: camelot!,
+              confidence: base.camelot?.confidence,
+              provenance: source,
+            ),
+      energy: base.energy,
+      loudness: base.loudness,
+      truePeak: base.truePeak,
+      waveform: base.waveform,
+      transients: base.transients,
+      silence: base.silence,
+      intro: base.intro,
+      outro: base.outro,
+      sections: base.sections,
+      cueCandidates: base.cueCandidates,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    final source = provenance ?? 'manual_override';
+    return {
+      if (bpm != null)
+        'bpm': {
+          'value': bpm,
+          if (bpmConfidence != null) 'confidence': bpmConfidence,
+          'provenance': source,
+        },
+      if (bpm != null || bpmConfidence != null || beatsMs != null)
+        'beat_grid': {
+          if (bpm != null) 'bpm': bpm,
+          if (bpmConfidence != null) 'confidence': bpmConfidence,
+          if (beatsMs != null) 'beats_ms': beatsMs,
+          'provenance': source,
+        },
+      if (downbeatsMs != null)
+        'downbeats': {
+          'positions_ms': downbeatsMs,
+          'provenance': source,
+        },
+      if (musicalKey != null)
+        'key': {
+          'value': musicalKey,
+          'provenance': source,
+        },
+      if (camelot != null)
+        'camelot': {
+          'value': camelot,
+          'provenance': source,
+        },
+      if (provenance != null) 'provenance': provenance,
+    };
+  }
+}
+
 class TrackAnalysisSummary {
   final AnalysisValue? bpm;
   final BeatGridSummary? beatGrid;
@@ -84,6 +265,8 @@ class TrackAnalysisSummary {
   final LoudnessSummary? loudness;
   final TruePeakSummary? truePeak;
   final WaveformSummary? waveform;
+  final TransientsSummary? transients;
+  final SilenceSummary? silence;
   final AnalysisRange? intro;
   final AnalysisRange? outro;
   final List<AnalysisRange> sections;
@@ -99,6 +282,8 @@ class TrackAnalysisSummary {
     this.loudness,
     this.truePeak,
     this.waveform,
+    this.transients,
+    this.silence,
     this.intro,
     this.outro,
     this.sections = const [],
@@ -118,6 +303,8 @@ class TrackAnalysisSummary {
       loudness: LoudnessSummary.fromJson(map['loudness']),
       truePeak: TruePeakSummary.fromJson(map['true_peak'] ?? map['truePeak']),
       waveform: WaveformSummary.fromJson(map['waveform']),
+      transients: TransientsSummary.fromJson(map['transients']),
+      silence: SilenceSummary.fromJson(map['silence']),
       intro: AnalysisRange.fromJson(map['intro']),
       outro: AnalysisRange.fromJson(map['outro']),
       sections: _readList(map['sections'])
@@ -178,9 +365,24 @@ class TrackAnalysisSummary {
       labels.add('Waveform $sampleCount samples');
     }
 
+    final peakCount = waveform?.peaks.length ?? 0;
+    if (peakCount > 0) {
+      labels.add(_pluralizedCount(peakCount, 'peak'));
+    }
+
     final resolutionCount = waveform?.resolutions.length ?? 0;
     if (resolutionCount > 0) {
       labels.add(_pluralizedCount(resolutionCount, 'waveform layer'));
+    }
+
+    final transientCount = transients?.count ?? transients?.strongestMs.length;
+    if (transientCount != null && transientCount > 0) {
+      labels.add(_pluralizedCount(transientCount, 'transient'));
+    }
+
+    final silenceCount = silence?.ranges.length ?? 0;
+    if (silenceCount > 0) {
+      labels.add(_pluralizedCount(silenceCount, 'silence range'));
     }
 
     if (intro?.hasRange ?? false) {
@@ -211,6 +413,8 @@ class TrackAnalysisSummary {
       if (loudness != null) 'loudness': loudness!.toJson(),
       if (truePeak != null) 'true_peak': truePeak!.toJson(),
       if (waveform != null) 'waveform': waveform!.toJson(),
+      if (transients != null) 'transients': transients!.toJson(),
+      if (silence != null) 'silence': silence!.toJson(),
       if (intro != null) 'intro': intro!.toJson(),
       if (outro != null) 'outro': outro!.toJson(),
       if (sections.isNotEmpty)
@@ -350,12 +554,15 @@ class LoudnessSummary {
     final map = _readMap(json);
     if (map == null) return null;
     return LoudnessSummary(
-      integratedLufs:
-          _readDouble(map['integrated_lufs'] ?? map['integratedLufs']),
-      shortTermLufs:
-          _readDouble(map['short_term_lufs'] ?? map['shortTermLufs']),
-      loudnessRangeLu:
-          _readDouble(map['loudness_range_lu'] ?? map['loudnessRangeLu']),
+      integratedLufs: _readDouble(
+        map['integrated_lufs'] ?? map['integratedLufs'],
+      ),
+      shortTermLufs: _readDouble(
+        map['short_term_lufs'] ?? map['shortTermLufs'],
+      ),
+      loudnessRangeLu: _readDouble(
+        map['loudness_range_lu'] ?? map['loudnessRangeLu'],
+      ),
       confidence: _readDouble(map['confidence']),
       provenance: _readString(map['provenance']),
     );
@@ -399,6 +606,8 @@ class TruePeakSummary {
 }
 
 class WaveformSummary {
+  final List<double> peaks;
+  final List<double> rms;
   final int? sampleCount;
   final List<WaveformResolutionSummary> resolutions;
   final Map<String, SpectralBandSummary> spectralBands;
@@ -406,6 +615,8 @@ class WaveformSummary {
   final String? provenance;
 
   const WaveformSummary({
+    this.peaks = const [],
+    this.rms = const [],
     this.sampleCount,
     this.resolutions = const [],
     this.spectralBands = const {},
@@ -417,13 +628,16 @@ class WaveformSummary {
     final map = _readMap(json);
     if (map == null) return null;
     return WaveformSummary(
+      peaks: _readDoubleList(map['peaks']),
+      rms: _readDoubleList(map['rms']),
       sampleCount: _readInt(map['sample_count'] ?? map['sampleCount']),
       resolutions: _readList(map['resolutions'])
           .map(WaveformResolutionSummary.fromJson)
           .whereType<WaveformResolutionSummary>()
           .toList(growable: false),
-      spectralBands:
-          _readSpectralBands(map['spectral_bands'] ?? map['spectralBands']),
+      spectralBands: _readSpectralBands(
+        map['spectral_bands'] ?? map['spectralBands'],
+      ),
       confidence: _readDouble(map['confidence']),
       provenance: _readString(map['provenance']),
     );
@@ -431,12 +645,97 @@ class WaveformSummary {
 
   Map<String, dynamic> toJson() {
     return {
+      if (peaks.isNotEmpty) 'peaks': peaks,
+      if (rms.isNotEmpty) 'rms': rms,
       if (sampleCount != null) 'sample_count': sampleCount,
       if (resolutions.isNotEmpty)
         'resolutions': resolutions.map((layer) => layer.toJson()).toList(),
       if (spectralBands.isNotEmpty)
-        'spectral_bands':
-            spectralBands.map((key, value) => MapEntry(key, value.toJson())),
+        'spectral_bands': spectralBands.map(
+          (key, value) => MapEntry(key, value.toJson()),
+        ),
+      if (confidence != null) 'confidence': confidence,
+      if (provenance != null) 'provenance': provenance,
+    };
+  }
+}
+
+class TransientsSummary {
+  final int? count;
+  final double? densityPerSecond;
+  final List<int> strongestMs;
+  final double? confidence;
+  final String? provenance;
+
+  const TransientsSummary({
+    this.count,
+    this.densityPerSecond,
+    this.strongestMs = const [],
+    this.confidence,
+    this.provenance,
+  });
+
+  static TransientsSummary? fromJson(Object? json) {
+    final map = _readMap(json);
+    if (map == null) return null;
+    return TransientsSummary(
+      count: _readInt(map['count']),
+      densityPerSecond: _readDouble(
+        map['density_per_second'] ?? map['densityPerSecond'],
+      ),
+      strongestMs: _readIntList(map['strongest_ms'] ?? map['strongestMs']),
+      confidence: _readDouble(map['confidence']),
+      provenance: _readString(map['provenance']),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      if (count != null) 'count': count,
+      if (densityPerSecond != null) 'density_per_second': densityPerSecond,
+      if (strongestMs.isNotEmpty) 'strongest_ms': strongestMs,
+      if (confidence != null) 'confidence': confidence,
+      if (provenance != null) 'provenance': provenance,
+    };
+  }
+}
+
+class SilenceSummary {
+  final int? leadingMs;
+  final int? trailingMs;
+  final List<AnalysisRange> ranges;
+  final double? confidence;
+  final String? provenance;
+
+  const SilenceSummary({
+    this.leadingMs,
+    this.trailingMs,
+    this.ranges = const [],
+    this.confidence,
+    this.provenance,
+  });
+
+  static SilenceSummary? fromJson(Object? json) {
+    final map = _readMap(json);
+    if (map == null) return null;
+    return SilenceSummary(
+      leadingMs: _readInt(map['leading_ms'] ?? map['leadingMs']),
+      trailingMs: _readInt(map['trailing_ms'] ?? map['trailingMs']),
+      ranges: _readList(map['ranges'])
+          .map(AnalysisRange.fromJson)
+          .whereType<AnalysisRange>()
+          .toList(growable: false),
+      confidence: _readDouble(map['confidence']),
+      provenance: _readString(map['provenance']),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      if (leadingMs != null) 'leading_ms': leadingMs,
+      if (trailingMs != null) 'trailing_ms': trailingMs,
+      if (ranges.isNotEmpty)
+        'ranges': ranges.map((range) => range.toJson()).toList(),
       if (confidence != null) 'confidence': confidence,
       if (provenance != null) 'provenance': provenance,
     };
@@ -461,8 +760,9 @@ class WaveformResolutionSummary {
     if (map == null) return null;
     return WaveformResolutionSummary(
       name: _readString(map['name']),
-      samplesPerPixel:
-          _readInt(map['samples_per_pixel'] ?? map['samplesPerPixel']),
+      samplesPerPixel: _readInt(
+        map['samples_per_pixel'] ?? map['samplesPerPixel'],
+      ),
       sampleCount: _readInt(map['sample_count'] ?? map['sampleCount']),
       artifactRef: _readString(map['artifact_ref'] ?? map['artifactRef']),
     );
@@ -481,8 +781,13 @@ class WaveformResolutionSummary {
 class SpectralBandSummary {
   final int? sampleCount;
   final String? artifactRef;
+  final List<double> values;
 
-  const SpectralBandSummary({this.sampleCount, this.artifactRef});
+  const SpectralBandSummary({
+    this.sampleCount,
+    this.artifactRef,
+    this.values = const [],
+  });
 
   static SpectralBandSummary? fromJson(Object? json) {
     final map = _readMap(json);
@@ -490,6 +795,7 @@ class SpectralBandSummary {
     return SpectralBandSummary(
       sampleCount: _readInt(map['sample_count'] ?? map['sampleCount']),
       artifactRef: _readString(map['artifact_ref'] ?? map['artifactRef']),
+      values: _readDoubleList(map['values'] ?? map['samples'] ?? map['data']),
     );
   }
 
@@ -497,6 +803,7 @@ class SpectralBandSummary {
     return {
       if (sampleCount != null) 'sample_count': sampleCount,
       if (artifactRef != null) 'artifact_ref': artifactRef,
+      if (values.isNotEmpty) 'values': values,
     };
   }
 }
@@ -600,11 +907,23 @@ List<Object?> _readList(Object? value) {
   return const [];
 }
 
+Object? _firstPresent(List<Object?> values) {
+  for (final value in values) {
+    if (value != null) return value;
+  }
+  return null;
+}
+
 List<int> _readIntList(Object? value) {
-  return _readList(value)
-      .map(_readInt)
-      .whereType<int>()
-      .toList(growable: false);
+  return _readList(
+    value,
+  ).map(_readInt).whereType<int>().toList(growable: false);
+}
+
+List<double> _readDoubleList(Object? value) {
+  return _readList(
+    value,
+  ).map(_readDouble).whereType<double>().toList(growable: false);
 }
 
 Map<String, SpectralBandSummary> _readSpectralBands(Object? value) {

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TARGET="${1:-all}"
+
+run_backend() {
+  (
+    cd "$ROOT/backend"
+    if [ -n "${BACKEND_GO_TEST_ARGS:-}" ]; then
+      # shellcheck disable=SC2206
+      extra_args=(${BACKEND_GO_TEST_ARGS})
+      go test "${extra_args[@]}" ./...
+    else
+      go test ./...
+    fi
+  )
+}
+
+run_client() {
+  (
+    cd "$ROOT/client"
+    flutter pub get
+    if [ -n "${FLUTTER_TEST_ARGS:-}" ]; then
+      # shellcheck disable=SC2206
+      extra_args=(${FLUTTER_TEST_ARGS})
+      flutter test "${extra_args[@]}"
+    else
+      flutter test
+    fi
+  )
+}
+
+run_extension() {
+  (
+    cd "$ROOT/extension"
+    if [ ! -d node_modules ]; then
+      npm ci
+    fi
+    npm run type-check
+    npm run test:auth-refresh
+  )
+}
+
+case "$TARGET" in
+  backend)
+    run_backend
+    ;;
+  client)
+    run_client
+    ;;
+  extension)
+    run_extension
+    ;;
+  all)
+    run_backend
+    run_client
+    run_extension
+    ;;
+  *)
+    echo "usage: scripts/test [backend|client|extension|all]" >&2
+    exit 2
+    ;;
+esac

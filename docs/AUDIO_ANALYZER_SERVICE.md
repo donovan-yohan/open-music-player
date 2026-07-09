@@ -137,6 +137,80 @@ Analysis rows use these lifecycle states:
 
 When an analyzer version or model version changes, backend maintenance can mark matching `analyzed` rows as `stale`; playback remains usable because stale analysis is metadata only, and the repair path re-queues those rows as `pending` without blocking import/share completion.
 
+## Manual correction overrides
+
+Manual DJ corrections are stored in `track_analysis.overrides_json` separately
+from analyzer output. Queue/library compact summaries overlay
+`overrides_json` on top of `summary_json`, so playback, beat snapping, and BPM
+automation consume corrected BPM/downbeats immediately while future analyzer
+runs can still refresh waveform/loudness/artifacts.
+
+Update corrections with:
+
+```http
+PATCH /api/v1/tracks/{track_id}/analysis/overrides
+Content-Type: application/json
+
+{
+  "overrides": {
+    "bpm": { "value": 124.0, "confidence": 1.0 },
+    "beat_grid": { "bpm": 124.0, "beats_ms": [120, 604, 1088] },
+    "downbeats": { "positions_ms": [120, 2056] },
+    "key": { "value": "A minor" },
+    "camelot": { "value": "8A" }
+  }
+}
+```
+
+The response is the normal analysis envelope plus `overrides`. The queue list
+and selected timeline clip expose the current editor sheet. It lets users edit
+BPM, first downbeat offset, phrase length, key, and Camelot; the client expands
+BPM/offset/phrase edits into beat-grid and downbeat arrays before saving them,
+then refreshes queue/timeline analysis caches so markers and labels consume the
+corrected summary immediately.
+
+## Tempo automation and pitch mode
+
+The timeline model uses reliable BPM metadata to automate playback speed during
+overlaps. The outgoing clip ramps from its native BPM toward the incoming BPM,
+while the incoming clip starts at the outgoing BPM and ramps back to its native
+BPM across the crossfade.
+
+Playback voices apply speed and pitch together:
+
+- `pitchMode: preserve` is the default key-lock mode. It keeps the just_audio
+  pitch factor at `1.0` while speed changes for BPM matching.
+- `pitchMode: followTempo` is available for vinyl/resample-style behavior. It
+  sets the pitch factor to the effective playback rate.
+
+Voices are reset to neutral speed and pitch before release/reuse so a prior
+transition cannot leak tuning into the next loaded track. Pitch shifting is
+best-effort on unsupported just_audio platforms; Android supports the dogfood
+path.
+
+## Beat-locked transition defaults
+
+Fresh queue sessions stay contiguous when analysis is missing or low
+confidence. When adjacent clips both have reliable BPM and downbeat metadata,
+the canonical session model creates a default 16-beat overlap, bounded between
+4s and 12s and never longer than half of either clip. The incoming clip's first
+usable downbeat is snapped onto the outgoing downbeat grid, so the default
+crossfade starts on a predictable musical boundary before the playback-rate
+automation above runs.
+
+Manual timeline edits still use the same downbeat snap math, and freeform timing
+remains available because persisted placements are preserved unless queue
+insert/remove/reorder needs to reflow downstream defaults.
+
+## Transition diagnostics
+
+Timeline overlap bands classify each crossfade with the same metadata consumed
+by playback: reliable BPM, downbeat positions, and Camelot key. The client shows
+compact labels for beat-locked overlaps, low-confidence/missing BPM, missing or
+offset downbeats, large BPM pulls, and harmonic key clashes. Those warnings are
+advisory UI only, but they make analyzer or manual-correction problems visible
+before the user hears a broken transition.
+
 ## Failure modes
 
 - `415 Unsupported Media Type` or `422 Unprocessable Entity` marks analysis `unsupported`.

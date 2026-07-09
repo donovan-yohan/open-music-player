@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TARGET="${1:-all}"
+
+run_delivery() {
+  "$ROOT/scripts/agentic-harness"
+}
+
+run_backend() {
+  (
+    cd "$ROOT/backend"
+    unformatted="$(gofmt -l .)"
+    if [ -n "$unformatted" ]; then
+      echo "gofmt required:" >&2
+      echo "$unformatted" >&2
+      exit 1
+    fi
+    go vet ./...
+  )
+}
+
+run_client() {
+  (
+    cd "$ROOT/client"
+    flutter pub get
+    flutter analyze --no-fatal-warnings --no-fatal-infos
+  )
+}
+
+run_extension() {
+  (
+    cd "$ROOT/extension"
+    if [ ! -d node_modules ]; then
+      npm ci
+    fi
+    npm run type-check
+  )
+}
+
+case "$TARGET" in
+  delivery|harness)
+    run_delivery
+    ;;
+  backend)
+    run_backend
+    ;;
+  client)
+    run_client
+    ;;
+  extension)
+    run_extension
+    ;;
+  all)
+    run_delivery
+    run_backend
+    run_client
+    run_extension
+    ;;
+  *)
+    echo "usage: scripts/lint [delivery|harness|backend|client|extension|all]" >&2
+    exit 2
+    ;;
+esac

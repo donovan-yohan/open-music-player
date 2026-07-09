@@ -33,6 +33,7 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET:-audio-files}
       MINIO_USE_SSL: "false"
       S3_USE_PATH_STYLE: "true"
+      ANALYZER_BASE_URL: http://analyzer:18190
 
       # Auth
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
@@ -48,12 +49,43 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      analyzer:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 15s
+    networks:
+      - omp-network
+
+  analyzer:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: omp-analyzer
+    restart: unless-stopped
+    entrypoint: ["/app/audio-analyzer"]
+    environment:
+      ANALYZER_ADDR: ":18190"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-audio-files}
+      MINIO_USE_SSL: "false"
+      S3_USE_PATH_STYLE: "true"
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18190/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - omp-network
 

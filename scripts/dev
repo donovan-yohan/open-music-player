@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+use_isolated_ports() {
+  export SERVER_PORT="${SERVER_PORT:-18080}"
+  export POSTGRES_PORT="${POSTGRES_PORT:-15434}"
+  export REDIS_PORT="${REDIS_PORT:-16380}"
+  export MINIO_PORT="${MINIO_PORT:-19000}"
+  export MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-19001}"
+  export OMP_BACKEND_BASE_URL="${OMP_BACKEND_BASE_URL:-http://localhost:${SERVER_PORT}}"
+}
+
+case "${1:-low-memory}" in
+  low-memory|backend)
+    exec "$ROOT/scripts/local-low-memory.sh" start
+    ;;
+  isolated|codex)
+    use_isolated_ports
+    exec "$ROOT/scripts/local-low-memory.sh" start
+    ;;
+  full)
+    cd "$ROOT"
+    exec docker compose up -d
+    ;;
+  *)
+    echo "usage: scripts/dev [low-memory|backend|isolated|codex|full]" >&2
+    exit 2
+    ;;
+esac

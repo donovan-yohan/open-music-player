@@ -13,7 +13,7 @@ class TimelineViewport {
   final int offsetMs;
 
   static const double minPixelsPerSecond = 1;
-  static const double maxPixelsPerSecond = 400;
+  static const double maxPixelsPerSecond = 2400;
 
   const TimelineViewport._({
     required this.durationMs,

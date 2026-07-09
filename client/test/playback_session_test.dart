@@ -101,6 +101,165 @@ void main() {
       expect(removed.clips.map((clip) => clip.timelineStartMs), [0, 5000]);
     });
 
+    test('analyzed queues default to phrase-length downbeat-locked overlaps',
+        () {
+      final timeline = CueTimeline.contiguousQueue(
+        sessionId: 'session_phrase',
+        queue: [
+          _item(
+            'a',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000],
+            ),
+          ),
+          _item(
+            'b',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000, 12000],
+            ),
+          ),
+        ],
+        playOrder: const [0, 1],
+      );
+
+      expect(timeline.cues[0].timelineStart, Duration.zero);
+      expect(timeline.cues[0].timelineEnd, const Duration(seconds: 20));
+      expect(timeline.cues[1].timelineStart, const Duration(seconds: 12));
+      expect(timeline.cues[1].timelineEnd, const Duration(seconds: 32));
+
+      final model = timeline.toTimelineModel();
+      expect(model.clips[0].envelope.fadeOutMs, 8000);
+      expect(model.clips[1].envelope.fadeInMs, 8000);
+      expect(model.overlapDepthAt(15000), 2);
+    });
+
+    test('default transition aligns incoming offset downbeat to outgoing grid',
+        () {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_offset',
+        queue: [
+          _item(
+            'a',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000],
+            ),
+          ),
+          _item(
+            'b',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [500, 4500, 8500, 12500],
+            ),
+          ),
+        ],
+      );
+
+      expect(session.clips[1].timelineStartMs, 11500);
+      expect(
+        session.clips[1].timelineStartMs +
+            session.clips[1].tempo.downbeatsMs.first,
+        12000,
+      );
+    });
+
+    test('missing or low-confidence analysis keeps queue timing contiguous',
+        () {
+      final missing = MixSession.fromQueue(
+        sessionId: 'session_missing',
+        queue: [_item('a', seconds: 20), _item('b', seconds: 20)],
+      );
+      expect(missing.clips.map((clip) => clip.timelineStartMs), [0, 20000]);
+
+      final lowConfidence = MixSession.fromQueue(
+        sessionId: 'session_low_confidence',
+        queue: [
+          _item(
+            'a',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              bpmConfidence: 0.3,
+              downbeatsMs: [0, 4000, 8000],
+            ),
+          ),
+          _item(
+            'b',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000],
+            ),
+          ),
+        ],
+      );
+      expect(
+        lowConfidence.clips.map((clip) => clip.timelineStartMs),
+        [0, 20000],
+      );
+    });
+
+    test('insert and remove keep analyzed default overlaps safe', () {
+      final a = _item(
+        'a',
+        seconds: 20,
+        analysisSummary: _analysisSummary(
+          bpm: 120,
+          downbeatsMs: [0, 4000, 8000, 12000, 16000],
+        ),
+      );
+      final b = _item(
+        'b',
+        seconds: 20,
+        analysisSummary: _analysisSummary(
+          bpm: 120,
+          downbeatsMs: [0, 4000, 8000, 12000, 16000],
+        ),
+      );
+      final c = _item(
+        'c',
+        seconds: 20,
+        analysisSummary: _analysisSummary(
+          bpm: 120,
+          downbeatsMs: [0, 4000, 8000, 12000, 16000],
+        ),
+      );
+
+      final session = MixSession.fromQueue(
+        sessionId: 'session_reflow',
+        queue: [a, c],
+      ).insertAt(1, b);
+
+      expect(session.clips.map((clip) => clip.trackId), ['a', 'b', 'c']);
+      expect(session.clips.map((clip) => clip.timelineStartMs), [
+        0,
+        12000,
+        24000,
+      ]);
+
+      final removed = session.removeAt(1);
+      expect(removed.clips.map((clip) => clip.trackId), ['a', 'c']);
+      expect(removed.clips.map((clip) => clip.timelineStartMs), [0, 12000]);
+
+      final model = CueTimeline.fromSession(
+        session: removed,
+        queue: [a, c],
+        playOrder: const [0, 1],
+      ).toTimelineModel();
+      for (var probe = 0; probe <= model.durationMs; probe += 1000) {
+        expect(
+          model.overlapDepthAt(probe),
+          lessThanOrEqualTo(2),
+        );
+      }
+    });
+
     test('session json carries future DJ metadata placeholders', () {
       final session = MixSession.fromQueue(
         sessionId: 'session_10',
@@ -128,6 +287,102 @@ void main() {
       expect(restored.clips.single.timelineStartMs, 7000);
       expect(restored.clips.single.playbackRate, 1);
       expect(restored.clips.single.pitchMode, 'preserve');
+    });
+
+    test('session json carries BPM, key, and downbeat metadata', () {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_11',
+        queue: [
+          const MediaItem(
+            id: 'a',
+            title: 'Track a',
+            duration: Duration(seconds: 10),
+            extras: {
+              'url': 'https://example.com/a.mp3',
+              'analysisSummary': {
+                'bpm': {'value': 124, 'confidence': 0.91},
+                'beat_grid': {
+                  'beats_ms': [0, 484, 968],
+                },
+                'downbeats': {
+                  'positions_ms': [0, 1936],
+                },
+                'key': {'value': 'A minor'},
+                'camelot': {'value': '8A'},
+              },
+            },
+          ),
+        ],
+      );
+
+      final restored = MixSession.fromJson(session.toJson());
+      final clip = restored.clips.single;
+      expect(clip.tempo.nativeBpm, 124);
+      expect(clip.tempo.bpmConfidence, 0.91);
+      expect(clip.tempo.beatsMs, [0, 484, 968]);
+      expect(clip.tempo.downbeatsMs, [0, 1936]);
+      expect(clip.tempo.musicalKey, 'A minor');
+      expect(clip.tempo.camelot, '8A');
+
+      final model = CueTimeline.fromSession(
+        session: restored,
+        queue: [
+          const MediaItem(
+            id: 'a',
+            title: 'Track a',
+            duration: Duration(seconds: 10),
+            extras: {'url': 'https://example.com/a.mp3'},
+          ),
+        ],
+        playOrder: const [0],
+      ).toTimelineModel();
+      expect(model.clips.single.tempo.nativeBpm, 124);
+    });
+
+    test('session tempo metadata applies manual BPM/downbeat overrides', () {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_12',
+        queue: [
+          const MediaItem(
+            id: 'a',
+            title: 'Track a',
+            duration: Duration(seconds: 10),
+            extras: {
+              'url': 'https://example.com/a.mp3',
+              'analysisSummary': {
+                'bpm': {'value': 118, 'confidence': 0.44},
+                'beat_grid': {
+                  'beats_ms': [0, 508, 1016],
+                },
+                'downbeats': {
+                  'positions_ms': [0],
+                },
+                'key': {'value': 'G minor'},
+                'camelot': {'value': '6A'},
+              },
+              'analysisOverrides': {
+                'bpm': {'value': 124, 'confidence': 1.0},
+                'beat_grid': {
+                  'beats_ms': [120, 604, 1088],
+                },
+                'downbeats': {
+                  'positions_ms': [120, 2056],
+                },
+                'key': {'value': 'A minor'},
+                'camelot': {'value': '8A'},
+              },
+            },
+          ),
+        ],
+      );
+
+      final clip = session.clips.single;
+      expect(clip.tempo.nativeBpm, 124);
+      expect(clip.tempo.bpmConfidence, 1.0);
+      expect(clip.tempo.beatsMs, [120, 604, 1088]);
+      expect(clip.tempo.downbeatsMs, [120, 2056]);
+      expect(clip.tempo.musicalKey, 'A minor');
+      expect(clip.tempo.camelot, '8A');
     });
 
     test('edited placements preserve trims and derive overlap fades', () {
@@ -167,9 +422,33 @@ void main() {
   });
 }
 
-MediaItem _item(String id, {required int seconds}) => MediaItem(
+MediaItem _item(
+  String id, {
+  required int seconds,
+  Map<String, dynamic>? analysisSummary,
+}) =>
+    MediaItem(
       id: id,
       title: 'Track $id',
       duration: Duration(seconds: seconds),
-      extras: {'url': 'https://example.com/$id.mp3'},
+      extras: {
+        'url': 'https://example.com/$id.mp3',
+        if (analysisSummary != null) 'analysisSummary': analysisSummary,
+      },
     );
+
+Map<String, dynamic> _analysisSummary({
+  required double bpm,
+  double bpmConfidence = 0.95,
+  required List<int> downbeatsMs,
+}) =>
+    {
+      'bpm': {'value': bpm, 'confidence': bpmConfidence},
+      'beat_grid': {
+        'bpm': bpm,
+        'confidence': bpmConfidence,
+      },
+      'downbeats': {
+        'positions_ms': downbeatsMs,
+      },
+    };

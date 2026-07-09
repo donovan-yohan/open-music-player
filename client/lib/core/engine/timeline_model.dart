@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import '../../models/mix_plan.dart';
 import '../../models/timeline_clip.dart';
 import 'gain_envelope.dart';
+import 'tempo_automation.dart';
 
 /// A timeline clip plus playback/source metadata used by the mix engine.
 class MixClip {
@@ -10,13 +11,37 @@ class MixClip {
   final GainEnvelope envelope;
   final String audioSourceRef;
   final String? queueItemId;
+  final double playbackRate;
+  final String pitchMode;
+  final ClipTempoMetadata tempo;
+  final PlaybackRateAutomation rateAutomation;
 
   MixClip({
     required this.placement,
     this.envelope = const GainEnvelope.flat(),
     String? audioSourceRef,
     this.queueItemId,
-  }) : audioSourceRef = audioSourceRef ?? placement.trackId;
+    double playbackRate = 1,
+    this.pitchMode = 'preserve',
+    this.tempo = ClipTempoMetadata.empty,
+    PlaybackRateAutomation? rateAutomation,
+  })  : audioSourceRef = audioSourceRef ?? placement.trackId,
+        playbackRate = playbackRate
+            .clamp(
+              minTempoAutomationRate,
+              maxTempoAutomationRate,
+            )
+            .toDouble(),
+        rateAutomation = rateAutomation ??
+            PlaybackRateAutomation(
+              baseRate: playbackRate
+                  .clamp(
+                    minTempoAutomationRate,
+                    maxTempoAutomationRate,
+                  )
+                  .toDouble(),
+              pitchMode: pitchMode,
+            );
 
   String get id => placement.id;
   String get trackId => placement.trackId;
@@ -32,17 +57,64 @@ class MixClip {
   double gainAt(int timelineMs) =>
       envelope.gainAt(localOffsetAt(timelineMs), selectedDurationMs);
 
+  double playbackRateAt(int timelineMs) => rateAutomation.rateAt(timelineMs);
+
+  int sourcePositionAt(int timelineMs) {
+    final elapsed = rateAutomation.sourceElapsedMs(
+      timelineStartMs: timelineStartMs,
+      timelineMs: timelineMs,
+    );
+    return (placement.sourceStartMs + elapsed)
+        .clamp(placement.sourceStartMs, placement.sourceEndMs)
+        .toInt();
+  }
+
+  int timelineMsForSourcePosition(int sourcePositionMs) {
+    final targetElapsed = sourcePositionMs
+            .clamp(placement.sourceStartMs, placement.sourceEndMs)
+            .toInt() -
+        placement.sourceStartMs;
+    return rateAutomation.timelineMsForSourceElapsed(
+      timelineStartMs: timelineStartMs,
+      sourceElapsedMs: targetElapsed,
+      maxTimelineMs: timelineEndMs,
+    );
+  }
+
+  MixClip withRateAutomation(PlaybackRateAutomation automation) => MixClip(
+        placement: placement,
+        envelope: envelope,
+        audioSourceRef: audioSourceRef,
+        queueItemId: queueItemId,
+        playbackRate: playbackRate,
+        pitchMode: pitchMode,
+        tempo: tempo,
+        rateAutomation: automation,
+      );
+
   @override
   bool operator ==(Object other) =>
       other is MixClip &&
       other.placement == placement &&
       other.envelope == envelope &&
       other.audioSourceRef == audioSourceRef &&
-      other.queueItemId == queueItemId;
+      other.queueItemId == queueItemId &&
+      other.playbackRate == playbackRate &&
+      other.pitchMode == pitchMode &&
+      other.tempo == tempo &&
+      other.rateAutomation == rateAutomation;
 
   @override
-  int get hashCode =>
-      Object.hash(placement, envelope, audioSourceRef, queueItemId);
+  int get hashCode => Object.hash(
+        placement,
+        envelope,
+        audioSourceRef,
+        queueItemId,
+        playbackRate,
+        pitchMode,
+        tempo,
+        rateAutomation,
+      );
 }
 
 /// Pure timeline arrangement model for Phase 1 of the mix engine.
@@ -51,14 +123,17 @@ class TimelineModel {
 
   final List<MixClip> clips;
 
-  factory TimelineModel({Iterable<MixClip> clips = const []}) {
+  factory TimelineModel({
+    Iterable<MixClip> clips = const [],
+    bool autoTempoTransitions = true,
+  }) {
     var model = const TimelineModel._([]);
     for (final clip in clips) {
       if (model.canPlace(clip.placement)) {
         model = model._copyAdding(clip);
       }
     }
-    return model;
+    return autoTempoTransitions ? model._withStandardTempoTransitions() : model;
   }
 
   const TimelineModel._(this.clips);
@@ -274,6 +349,72 @@ class TimelineModel {
       });
     return TimelineModel._(List.unmodifiable(next));
   }
+
+  TimelineModel _withStandardTempoTransitions() {
+    if (clips.length < 2) return this;
+
+    final next = List<MixClip>.from(clips);
+    for (var i = 0; i < next.length; i++) {
+      for (var j = i + 1; j < next.length; j++) {
+        final first = next[i];
+        final second = next[j];
+        final overlapStart = math.max(
+          first.timelineStartMs,
+          second.timelineStartMs,
+        );
+        final overlapEnd = math.min(first.timelineEndMs, second.timelineEndMs);
+        if (overlapEnd <= overlapStart) continue;
+
+        final firstIsOutgoing = first.timelineStartMs <= second.timelineStartMs;
+        final outgoingIndex = firstIsOutgoing ? i : j;
+        final incomingIndex = firstIsOutgoing ? j : i;
+        final outgoing = next[outgoingIndex];
+        final incoming = next[incomingIndex];
+        if (outgoing.timelineStartMs == incoming.timelineStartMs) continue;
+        if (!outgoing.tempo.hasReliableBpm || !incoming.tempo.hasReliableBpm) {
+          continue;
+        }
+
+        final outgoingBpm = outgoing.tempo.nativeBpm!;
+        final incomingBpm = incoming.tempo.nativeBpm!;
+        final outgoingStartRate = _rateForTempo(outgoing, outgoingBpm);
+        final outgoingEndRate = _rateForTempo(outgoing, incomingBpm);
+        final incomingStartRate = _rateForTempo(incoming, outgoingBpm);
+        final incomingEndRate = _rateForTempo(incoming, incomingBpm);
+
+        next[outgoingIndex] = outgoing.withRateAutomation(
+          outgoing.rateAutomation.withSegment(
+            PlaybackRateSegment(
+              startMs: overlapStart,
+              endMs: overlapEnd,
+              startRate: outgoingStartRate,
+              endRate: outgoingEndRate,
+            ),
+          ),
+        );
+        next[incomingIndex] = incoming.withRateAutomation(
+          incoming.rateAutomation.withSegment(
+            PlaybackRateSegment(
+              startMs: overlapStart,
+              endMs: overlapEnd,
+              startRate: incomingStartRate,
+              endRate: incomingEndRate,
+            ),
+          ),
+        );
+      }
+    }
+
+    return TimelineModel._(List.unmodifiable(next));
+  }
+}
+
+double _rateForTempo(MixClip clip, double targetBpm) {
+  final nativeBpm = clip.tempo.nativeBpm;
+  if (nativeBpm == null || nativeBpm <= 0) return clip.playbackRate;
+  return (clip.playbackRate * targetBpm / nativeBpm)
+      .clamp(minTempoAutomationRate, maxTempoAutomationRate)
+      .toDouble();
 }
 
 MixClip _mixClipFromPlanClip(

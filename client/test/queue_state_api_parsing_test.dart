@@ -220,11 +220,22 @@ void main() {
             'loudness': {'integrated_lufs': -11.8},
             'true_peak': {'dbtp': -1.2},
             'waveform': {
+              'peaks': [0.0, 0.21, 0.65, 0.78, 0.58, 0.22],
+              'rms': [0.0, 0.14, 0.41, 0.49, 0.37, 0.11],
               'sample_count': 6,
               'confidence': 0.99,
               'resolutions': [
                 {'name': 'overview', 'sample_count': 6},
                 {'name': 'detail', 'sample_count': 12},
+              ],
+            },
+            'transients': {
+              'count': 48,
+              'strongest_ms': [10120, 20180, 30240],
+            },
+            'silence': {
+              'ranges': [
+                {'start_ms': 0, 'end_ms': 320},
               ],
             },
             'intro': {'start_ms': 320, 'end_ms': 16000},
@@ -252,7 +263,25 @@ void main() {
     expect(analysis.summary!.loudness!.integratedLufs, -11.8);
     expect(analysis.summary!.truePeak!.dbtp, -1.2);
     expect(analysis.summary!.waveform!.sampleCount, 6);
+    expect(analysis.summary!.waveform!.peaks, [
+      0.0,
+      0.21,
+      0.65,
+      0.78,
+      0.58,
+      0.22,
+    ]);
+    expect(analysis.summary!.waveform!.rms, [
+      0.0,
+      0.14,
+      0.41,
+      0.49,
+      0.37,
+      0.11,
+    ]);
     expect(analysis.summary!.waveform!.resolutions, hasLength(2));
+    expect(analysis.summary!.transients!.strongestMs, [10120, 20180, 30240]);
+    expect(analysis.summary!.silence!.ranges.single.endMs, 320);
     expect(analysis.summary!.sections, hasLength(2));
     expect(analysis.summary!.cueCandidates, hasLength(2));
     expect(
@@ -266,7 +295,10 @@ void main() {
         'Loudness -11.8 LUFS',
         'Peak -1.2 dBTP',
         'Waveform 6 samples',
+        '6 peaks',
         '2 waveform layers',
+        '48 transients',
+        '1 silence range',
         'Intro 0:00-0:16',
         'Outro 3:00-3:18',
         '2 sections',
@@ -274,6 +306,64 @@ void main() {
         'Cue out 3:00',
       ]),
     );
+  });
+
+  test('QueueState applies manual analysis overrides before playback', () {
+    final state = QueueState.fromJson({
+      'items': [
+        {
+          'id': 'q_corrected',
+          'queueItemId': 'q_corrected',
+          'trackId': 99,
+          'title': 'Corrected Track',
+          'duration': 240,
+          'playbackState': 'playable',
+          'analysisStatus': 'analyzed',
+          'analysisSummary': {
+            'bpm': {'value': 118.0, 'confidence': 0.42},
+            'beat_grid': {
+              'bpm': 118.0,
+              'beats_ms': [0, 508, 1016],
+            },
+            'downbeats': {
+              'positions_ms': [0],
+            },
+            'key': {'value': 'G minor'},
+            'camelot': {'value': '6A'},
+          },
+          'analysisOverrides': {
+            'bpm': {'value': 124.0, 'confidence': 1.0},
+            'beat_grid': {
+              'bpm': 124.0,
+              'beats_ms': [120, 604, 1088],
+            },
+            'downbeats': {
+              'positions_ms': [120, 2056],
+            },
+            'key': {'value': 'A minor'},
+            'camelot': {'value': '8A'},
+          },
+        },
+      ],
+    });
+
+    final track = state.tracks.single;
+    final analysis = track.analysis!;
+    expect(analysis.summary!.bpm!.numericValue, 124);
+    expect(analysis.summary!.bpm!.provenance, 'manual_override');
+    expect(analysis.summary!.beatGrid!.bpm, 124);
+    expect(analysis.summary!.beatGrid!.beatsMs, [120, 604, 1088]);
+    expect(analysis.summary!.downbeats!.positionsMs, [120, 2056]);
+    expect(analysis.summary!.key!.textValue, 'A minor');
+    expect(analysis.summary!.camelot!.textValue, '8A');
+
+    final playbackJson = track.toPlaybackJson();
+    expect(playbackJson['analysisSummary']['bpm']['value'], 124);
+    expect(
+      playbackJson['analysisSummary']['downbeats']['positions_ms'],
+      [120, 2056],
+    );
+    expect(playbackJson['analysisOverrides'], isA<Map<String, dynamic>>());
   });
 
   test('QueueState parses non-success queue analysis states', () {

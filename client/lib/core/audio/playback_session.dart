@@ -5,10 +5,14 @@ import 'package:just_audio/just_audio.dart';
 
 import '../../models/timeline_clip.dart';
 import '../engine/gain_envelope.dart';
+import '../engine/tempo_automation.dart';
 import '../engine/timeline_model.dart';
 import 'playback_media_item_source.dart';
 
 const int mixSessionSchemaVersion = 1;
+const int defaultTransitionPhraseBeats = 16;
+const int minDefaultTransitionOverlapMs = 4000;
+const int maxDefaultTransitionOverlapMs = 12000;
 
 /// Versioned canonical clip/session state for queue, playlist, and timeline
 /// playback. Signed URLs stay on [MediaItem]; this carries durable edit data.
@@ -29,17 +33,23 @@ class MixSession {
     required String sessionId,
     required List<MediaItem> queue,
   }) {
-    var cursorMs = 0;
     final clips = <MixSessionClip>[];
     for (var i = 0; i < queue.length; i++) {
+      final previous = clips.isEmpty ? null : clips.last;
+      final fallbackStartMs = previous?.timelineEndMs ?? 0;
       final clip = MixSessionClip.fromMediaItem(
         sessionId: sessionId,
         ordinal: i,
         item: queue[i],
-        timelineStartMs: cursorMs,
+        timelineStartMs: fallbackStartMs,
       );
-      clips.add(clip);
-      cursorMs = clip.timelineEndMs;
+      clips.add(
+        clip.withPlacement(
+          clip.placement.withTimelineStartMs(
+            _defaultTimelineStartAfter(previous, clip, fallbackStartMs),
+          ),
+        ),
+      );
     }
     return MixSession(
       sessionId: sessionId,
@@ -86,6 +96,7 @@ class MixSession {
     var cursorMs = 0;
     var nextOrdinal = nextClipOrdinal;
     final normalized = <MixSessionClip>[];
+    int? firstNewIndex;
 
     for (var i = 0; i < queue.length; i++) {
       final existing = i < clips.length ? clips[i] : null;
@@ -98,15 +109,19 @@ class MixSession {
               timelineStartMs: cursorMs,
             )
           : existing.reconciledWithMediaItem(item);
+      if (existing == null) firstNewIndex ??= i;
       normalized.add(clip);
       cursorMs = clip.timelineEndMs;
     }
 
+    final reflowed = firstNewIndex == null
+        ? normalized
+        : _reflowDefaultTransitions(normalized, startIndex: firstNewIndex);
     return MixSession(
       sessionId: sessionId,
       schemaVersion: schemaVersion,
-      clips: List.unmodifiable(normalized),
-      nextClipOrdinal: math.max(nextOrdinal, _nextOrdinalAfter(normalized)),
+      clips: List.unmodifiable(reflowed),
+      nextClipOrdinal: math.max(nextOrdinal, _nextOrdinalAfter(reflowed)),
     );
   }
 
@@ -126,33 +141,32 @@ class MixSession {
     for (var i = 0; i < clips.length; i++) {
       if (i == insertIndex) nextClips.add(inserted);
       final clip = clips[i];
-      nextClips.add(
-        i >= insertIndex ? clip.shiftedBy(inserted.selectedDurationMs) : clip,
-      );
+      nextClips.add(clip);
     }
     if (insertIndex == clips.length) nextClips.add(inserted);
+    final reflowed = _reflowDefaultTransitions(
+      nextClips,
+      startIndex: insertIndex,
+    );
     return MixSession(
       sessionId: sessionId,
       schemaVersion: schemaVersion,
-      clips: List.unmodifiable(nextClips),
+      clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal + 1,
     );
   }
 
   MixSession removeAt(int index) {
     if (index < 0 || index >= clips.length) return this;
-    final removed = clips[index];
     final nextClips = <MixSessionClip>[
       for (var i = 0; i < clips.length; i++)
-        if (i != index)
-          i > index
-              ? clips[i].shiftedBy(-removed.selectedDurationMs)
-              : clips[i],
+        if (i != index) clips[i],
     ];
+    final reflowed = _reflowDefaultTransitions(nextClips, startIndex: index);
     return MixSession(
       sessionId: sessionId,
       schemaVersion: schemaVersion,
-      clips: List.unmodifiable(nextClips),
+      clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
     );
   }
@@ -177,24 +191,35 @@ class MixSession {
     var cursorMs = 0;
     final nextClips = List<MixSessionClip>.from(clips);
     final seen = <int>{};
+    MixSessionClip? previous;
 
     for (final index in playOrder) {
-      if (index < 0 || index >= nextClips.length || !seen.add(index)) {
+      if (index < 0 || index >= nextClips.length || seen.contains(index)) {
         continue;
       }
       final clip = nextClips[index];
+      final fallbackStartMs = previous?.timelineEndMs ?? cursorMs;
       nextClips[index] = clip.withPlacement(
-        clip.placement.withTimelineStartMs(cursorMs),
+        clip.placement.withTimelineStartMs(
+          _defaultTimelineStartAfter(previous, clip, fallbackStartMs),
+        ),
       );
+      seen.add(index);
+      previous = nextClips[index];
       cursorMs = nextClips[index].timelineEndMs;
     }
 
     for (var index = 0; index < nextClips.length; index++) {
       if (seen.contains(index)) continue;
       final clip = nextClips[index];
+      final fallbackStartMs = previous?.timelineEndMs ?? cursorMs;
       nextClips[index] = clip.withPlacement(
-        clip.placement.withTimelineStartMs(cursorMs),
+        clip.placement.withTimelineStartMs(
+          _defaultTimelineStartAfter(previous, clip, fallbackStartMs),
+        ),
       );
+      seen.add(index);
+      previous = nextClips[index];
       cursorMs = nextClips[index].timelineEndMs;
     }
 
@@ -245,6 +270,7 @@ class MixSessionClip {
     this.fadeOutMs,
     this.playbackRate = 1,
     this.pitchMode = 'preserve',
+    this.tempo = ClipTempoMetadata.empty,
     this.analysisRef,
     this.analysisVersion,
   });
@@ -256,6 +282,15 @@ class MixSessionClip {
     required int timelineStartMs,
   }) {
     final durationMs = item.duration?.inMilliseconds ?? 0;
+    final extras = item.extras ?? const <String, dynamic>{};
+    final analysisSummary =
+        extras['analysisSummary'] ?? extras['analysis_summary'];
+    final analysisOverrides =
+        extras['analysisOverrides'] ?? extras['analysis_overrides'];
+    final tempo = ClipTempoMetadata.fromAnalysisSummary(
+      analysisSummary,
+      overrides: analysisOverrides,
+    );
     return MixSessionClip(
       clipId: '${sessionId}_clip_$ordinal',
       queueItemId: '${sessionId}_item_$ordinal',
@@ -264,6 +299,9 @@ class MixSessionClip {
       sourceStartMs: 0,
       sourceEndMs: durationMs,
       timelineStartMs: timelineStartMs,
+      tempo: tempo,
+      analysisRef: extras['analysisRef'] as String? ?? item.id,
+      analysisVersion: extras['analysisVersion']?.toString(),
     );
   }
 
@@ -304,6 +342,7 @@ class MixSessionClip {
       fadeOutMs: (json['fadeOutMs'] as num?)?.toInt(),
       playbackRate: (json['playbackRate'] as num?)?.toDouble() ?? 1,
       pitchMode: (json['pitchMode'] as String?) ?? 'preserve',
+      tempo: ClipTempoMetadata.fromSessionJson(json),
       analysisRef: json['analysisRef'] as String?,
       analysisVersion: json['analysisVersion'] as String?,
     );
@@ -321,6 +360,7 @@ class MixSessionClip {
   final int? fadeOutMs;
   final double playbackRate;
   final String pitchMode;
+  final ClipTempoMetadata tempo;
   final String? analysisRef;
   final String? analysisVersion;
 
@@ -362,6 +402,7 @@ class MixSessionClip {
         fadeOutMs: fadeOutMs,
         playbackRate: playbackRate,
         pitchMode: pitchMode,
+        tempo: tempo,
         analysisRef: analysisRef,
         analysisVersion: analysisVersion,
       );
@@ -385,6 +426,7 @@ class MixSessionClip {
         if (fadeOutMs != null) 'fadeOutMs': fadeOutMs,
         'playbackRate': playbackRate,
         'pitchMode': pitchMode,
+        ...tempo.toJson(),
         if (analysisRef != null) 'analysisRef': analysisRef,
         if (analysisVersion != null) 'analysisVersion': analysisVersion,
       };
@@ -402,6 +444,9 @@ class PlaybackCue {
     required this.sourceStart,
     required this.sourceEnd,
     required this.timelineStart,
+    this.playbackRate = 1,
+    this.pitchMode = 'preserve',
+    this.tempo = ClipTempoMetadata.empty,
   });
 
   final String cueId;
@@ -414,6 +459,9 @@ class PlaybackCue {
   final Duration sourceStart;
   final Duration sourceEnd;
   final Duration timelineStart;
+  final double playbackRate;
+  final String pitchMode;
+  final ClipTempoMetadata tempo;
 
   Duration get selectedDuration {
     final selected = sourceEnd - sourceStart;
@@ -437,6 +485,9 @@ class PlaybackCue {
         envelope: envelope,
         audioSourceRef: audioUri.toString(),
         queueItemId: queueItemId,
+        playbackRate: playbackRate,
+        pitchMode: pitchMode,
+        tempo: tempo,
       );
 }
 
@@ -504,6 +555,9 @@ class CueTimeline {
         sourceStart: Duration(milliseconds: placement.sourceStartMs),
         sourceEnd: Duration(milliseconds: placement.sourceEndMs),
         timelineStart: Duration(milliseconds: placement.timelineStartMs),
+        playbackRate: sessionClip.playbackRate,
+        pitchMode: sessionClip.pitchMode,
+        tempo: sessionClip.tempo,
       );
       cues.add(cue);
       cursor = cue.timelineEnd;
@@ -658,4 +712,82 @@ int _nextOrdinalAfter(List<MixSessionClip> clips) {
     if (parsed != null && parsed > maxOrdinal) maxOrdinal = parsed;
   }
   return maxOrdinal + 1;
+}
+
+List<MixSessionClip> _reflowDefaultTransitions(
+  List<MixSessionClip> clips, {
+  required int startIndex,
+}) {
+  if (clips.isEmpty) return clips;
+  final next = List<MixSessionClip>.from(clips);
+  if (startIndex >= next.length) return next;
+  final first = startIndex.clamp(0, next.length - 1).toInt();
+
+  for (var index = first; index < next.length; index++) {
+    final previous = index == 0 ? null : next[index - 1];
+    final clip = next[index];
+    final fallbackStartMs = previous?.timelineEndMs ?? 0;
+    next[index] = clip.withPlacement(
+      clip.placement.withTimelineStartMs(
+        _defaultTimelineStartAfter(previous, clip, fallbackStartMs),
+      ),
+    );
+  }
+
+  return next;
+}
+
+int _defaultTimelineStartAfter(
+  MixSessionClip? previous,
+  MixSessionClip incoming,
+  int fallbackStartMs,
+) {
+  if (previous == null) return math.max(0, fallbackStartMs);
+  final overlapMs = _defaultPhraseOverlapMs(previous, incoming);
+  if (overlapMs <= 0) return math.max(0, fallbackStartMs);
+
+  final requestedStartMs = math.max(0, previous.timelineEndMs - overlapMs);
+  final snapped = snapIncomingStartToNearestDownbeat(
+    requestedStartMs: requestedStartMs,
+    incomingSourceStartMs: incoming.sourceStartMs,
+    incomingTempo: incoming.tempo,
+    outgoingTimelineStartMs: previous.timelineStartMs,
+    outgoingSourceStartMs: previous.sourceStartMs,
+    outgoingTempo: previous.tempo,
+    toleranceMs: _snapToleranceMs(previous.tempo),
+  );
+
+  return snapped ?? math.max(0, fallbackStartMs);
+}
+
+int _defaultPhraseOverlapMs(
+  MixSessionClip outgoing,
+  MixSessionClip incoming,
+) {
+  if (!outgoing.tempo.hasReliableBpm ||
+      !incoming.tempo.hasReliableBpm ||
+      !outgoing.tempo.hasDownbeats ||
+      !incoming.tempo.hasDownbeats) {
+    return 0;
+  }
+
+  final outgoingBpm = outgoing.tempo.nativeBpm;
+  if (outgoingBpm == null || outgoingBpm <= 0) return 0;
+  final beatMs = 60000 / outgoingBpm;
+  final phraseMs = (beatMs * defaultTransitionPhraseBeats).round();
+  final boundedPhraseMs = phraseMs
+      .clamp(minDefaultTransitionOverlapMs, maxDefaultTransitionOverlapMs)
+      .toInt();
+  final maxSafeOverlap = math.min(
+    outgoing.selectedDurationMs ~/ 2,
+    incoming.selectedDurationMs ~/ 2,
+  );
+  final overlapMs = math.min(boundedPhraseMs, maxSafeOverlap);
+  return overlapMs < 1000 ? 0 : overlapMs;
+}
+
+int _snapToleranceMs(ClipTempoMetadata tempo) {
+  final bpm = tempo.nativeBpm;
+  if (bpm == null || bpm <= 0) return 900;
+  return math.max(900, (60000 / bpm).round());
 }

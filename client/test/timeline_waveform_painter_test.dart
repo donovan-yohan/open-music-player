@@ -2,18 +2,27 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:open_music_player/models/track.dart';
+import 'package:open_music_player/models/waveform.dart';
 import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
 
 TimelineWaveformPainter _painter(
   List<double> peaks, {
   int snapMarkerCount = 0,
-}) => TimelineWaveformPainter(
-  peaks: peaks,
-  color: const Color(0xFF2E7D32),
-  dimColor: const Color(0xFF90A4AE),
-  handleColor: const Color(0xFFFFFFFF),
-  snapMarkerCount: snapMarkerCount,
-);
+  TimelineWaveformData? waveform,
+  double visibleStartFraction = 0,
+  double visibleEndFraction = 1,
+}) =>
+    TimelineWaveformPainter(
+      peaks: peaks,
+      waveform: waveform,
+      visibleStartFraction: visibleStartFraction,
+      visibleEndFraction: visibleEndFraction,
+      color: const Color(0xFF2E7D32),
+      dimColor: const Color(0xFF90A4AE),
+      handleColor: const Color(0xFFFFFFFF),
+      snapMarkerCount: snapMarkerCount,
+    );
 
 void _paint(TimelineWaveformPainter painter, Size size) {
   final recorder = PictureRecorder();
@@ -49,5 +58,49 @@ void main() {
         expect(() => _paint(painter, const Size(320, 40)), returnsNormally);
       }
     });
+
+    test('draws rich spectral waveform markers without throwing', () {
+      const waveform = TimelineWaveformData(
+        durationMs: 4000,
+        frames: [
+          WaveformFrame(peak: 0.2, rms: 0.1, low: 0.8, mid: 0.3, high: 0.1),
+          WaveformFrame(peak: 0.7, rms: 0.4, low: 0.4, mid: 0.8, high: 0.2),
+          WaveformFrame(peak: 1.0, rms: 0.7, low: 0.9, mid: 0.6, high: 0.4),
+          WaveformFrame(peak: 0.5, rms: 0.3, low: 0.2, mid: 0.4, high: 0.9),
+        ],
+        beatsMs: [0, 500, 1000, 1500],
+        downbeatsMs: [0],
+        transientsMs: [750, 1250],
+        silenceRanges: [WaveformTimeRange(startMs: 0, endMs: 250)],
+        analyzed: true,
+        resolutionLabel: 'detail',
+      );
+      final painter = _painter(waveform.peaks, waveform: waveform);
+
+      expect(() => _paint(painter, const Size(320, 64)), returnsNormally);
+    });
+
+    test('can paint a culled visible slice of a dense waveform', () {
+      final waveform = richWaveformForTrack(
+        _track(),
+        sampleCount: 131072,
+      );
+      final painter = _painter(
+        waveform.peaks,
+        waveform: waveform,
+        visibleStartFraction: 0.40,
+        visibleEndFraction: 0.405,
+      );
+
+      expect(() => _paint(painter, const Size(480000, 64)), returnsNormally);
+    });
   });
 }
+
+Track _track() => Track(
+      id: 'dense-painter-track',
+      title: 'Dense Painter Track',
+      artist: 'Artist',
+      duration: 240,
+      addedAt: DateTime.utc(2026, 1, 1),
+    );

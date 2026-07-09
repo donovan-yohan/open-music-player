@@ -180,6 +180,13 @@ void main() {
           'url': 'https://signed/42',
           'expiresAt': '2030-01-01T00:00:00Z',
           'itemOrigin': 'context',
+          'analysisStatus': 'analyzed',
+          'analysisSummary': {
+            'bpm': {'value': 128},
+          },
+          'analysisOverrides': {
+            'bpm': {'value': 130},
+          },
         },
       );
 
@@ -190,6 +197,13 @@ void main() {
       expect(json['album'], 'Back in Black');
       expect(json['duration'], 312);
       expect(json['artwork_url'], 'https://art/42.jpg');
+      expect(json['analysisStatus'], 'analyzed');
+      expect(json['analysisSummary'], {
+        'bpm': {'value': 128},
+      });
+      expect(json['analysisOverrides'], {
+        'bpm': {'value': 130},
+      });
       expect(json.containsKey('url'), isFalse);
       expect(json.containsKey('expiresAt'), isFalse);
     });

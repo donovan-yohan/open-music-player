@@ -12,12 +12,13 @@ void main() {
   group('itemOrigin / markOrigin', () {
     test('defaults to context when unmarked', () {
       expect(itemOrigin(_item('a')), queueOriginContext);
-      expect(itemOrigin(_item('a', origin: queueOriginManual)), queueOriginManual);
+      expect(
+          itemOrigin(_item('a', origin: queueOriginManual)), queueOriginManual);
     });
 
     test('markOrigin tags the item without dropping existing extras', () {
       final tagged = markOrigin(
-        MediaItem(id: 'x', title: 'x', extras: {'url': 'u'}),
+        const MediaItem(id: 'x', title: 'x', extras: {'url': 'u'}),
         queueOriginManual,
       );
       expect(tagged.extras?['itemOrigin'], queueOriginManual);
@@ -53,7 +54,8 @@ void main() {
       expect(manualEnqueueIndex(q, 0), 3);
     });
 
-    test('nothing playing yet (null index) with a context queue: insert at 0', () {
+    test('nothing playing yet (null index) with a context queue: insert at 0',
+        () {
       final q = [_item('c1'), _item('c2')];
       expect(manualEnqueueIndex(q, null), 0);
     });

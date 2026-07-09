@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""Deterministic delivery scaffolding checks for Open Music Player."""
+from __future__ import annotations
+
+import ast
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+FAILURES: list[str] = []
+
+SECRET_PATTERNS = [
+    re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"),
+    re.compile(r"ghp_[A-Za-z0-9_]{20,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{20,}"),
+    re.compile(r"https?://[^\s:/]+:[^\s@/]+@"),
+    re.compile(
+        r"(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|password|client[_-]?secret)\b"
+        r"\s*[:=]\s*['\"][A-Za-z0-9_./+=:-]{20,}['\"]"
+    ),
+]
+PLACEHOLDER_HINTS = (
+    "example",
+    "placeholder",
+    "redacted",
+    "your_",
+    "xxxx",
+    "<token",
+    "env var",
+    "os.environ",
+    "os.getenv",
+    "changeme",
+    "dummy",
+    "expired-",
+    "fake",
+    "mock",
+    "test:test",
+    "valid-",
+)
+TEXT_SUFFIXES = {
+    "",
+    ".bash",
+    ".dart",
+    ".env",
+    ".go",
+    ".html",
+    ".js",
+    ".json",
+    ".lock",
+    ".md",
+    ".py",
+    ".sh",
+    ".sql",
+    ".ts",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+SKIP_PARTS = {
+    ".dart_tool",
+    ".git",
+    ".gradle",
+    ".idea",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+}
+
+
+def fail(message: str) -> None:
+    FAILURES.append(message)
+
+
+def repo_files() -> list[Path]:
+    out = subprocess.check_output(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=ROOT,
+    )
+    files = []
+    for raw in out.split(b"\0"):
+        if not raw:
+            continue
+        rel = Path(raw.decode())
+        if any(part in SKIP_PARTS for part in rel.parts):
+            continue
+        files.append(ROOT / rel)
+    return files
+
+
+def rel(path: Path) -> str:
+    return path.relative_to(ROOT).as_posix()
+
+
+def read_text(path: Path) -> str | None:
+    if path.suffix.lower() not in TEXT_SUFFIXES:
+        return None
+    try:
+        text = path.read_text(errors="replace")
+    except Exception:
+        return None
+    if "\0" in text[:4096]:
+        return None
+    return text
+
+
+def check_required_files() -> None:
+    for name in [
+        "AGENTS.md",
+        "docs/context-map.md",
+        "docs/agentic-delivery.md",
+        "scripts/dev",
+        "scripts/test",
+        "scripts/lint",
+        "scripts/build",
+        "scripts/smoke",
+        "scripts/agentic-harness",
+        ".github/workflows/ci.yml",
+        ".github/pull_request_template.md",
+    ]:
+        if not (ROOT / name).exists():
+            fail(f"{name}: required delivery scaffold file is missing")
+
+
+def check_executable_scripts() -> None:
+    for name in [
+        "scripts/dev",
+        "scripts/test",
+        "scripts/lint",
+        "scripts/build",
+        "scripts/smoke",
+        "scripts/agentic-harness",
+    ]:
+        path = ROOT / name
+        if path.exists() and not os.access(path, os.X_OK):
+            fail(f"{name}: script must be executable")
+
+
+def check_agent_docs() -> None:
+    required = {
+        "AGENTS.md": [
+            "Domain Map",
+            "Commands",
+            "Architecture Guardrails",
+            "Agentic Engineering Rule",
+            "docs/agentic-delivery.md",
+            "scripts/agentic-harness",
+        ],
+        "docs/context-map.md": [
+            "Harness Matrix",
+            "Playback Session And Queue Timeline",
+            "Audio Analysis And DJ Waveforms",
+            "Agentic Delivery And Release Gates",
+            "scripts/agentic-harness",
+        ],
+        "docs/agentic-delivery.md": [
+            "Work Packet",
+            "Exact-Head Gates",
+            "Mobile And Audio Dogfood",
+            "Resource Closeout",
+            "scripts/lint delivery",
+        ],
+        ".github/pull_request_template.md": [
+            "Intent",
+            "Context map",
+            "Harness / backpressure",
+            "Gate classification",
+            "Exact-head evidence",
+            "docs/agentic-delivery.md",
+        ],
+    }
+    for name, phrases in required.items():
+        path = ROOT / name
+        if not path.exists():
+            continue
+        text = path.read_text(errors="replace")
+        for phrase in phrases:
+            if phrase not in text:
+                fail(f"{name}: missing required delivery phrase {phrase!r}")
+
+
+def check_ci_wires_harness() -> None:
+    path = ROOT / ".github/workflows/ci.yml"
+    if not path.exists():
+        return
+    text = path.read_text(errors="replace")
+    required_phrases = [
+        "scripts/agentic-harness",
+        "scripts/lint backend",
+        "scripts/test backend",
+        "scripts/build backend",
+        "scripts/lint client",
+        "scripts/test client",
+        "scripts/build client",
+        "scripts/lint extension",
+        "scripts/test extension",
+        "scripts/build extension",
+        "scripts/dev isolated",
+        "scripts/smoke isolated",
+        "scripts/smoke playback-isolated",
+    ]
+    for phrase in required_phrases:
+        if phrase not in text:
+            fail(f".github/workflows/ci.yml: CI must run {phrase}")
+
+
+def check_json_syntax(files: list[Path]) -> None:
+    for path in files:
+        if path.suffix.lower() != ".json":
+            continue
+        try:
+            json.loads(path.read_text(errors="replace"))
+        except Exception as exc:
+            fail(f"{rel(path)}: invalid json: {exc}")
+
+
+def check_python_syntax(files: list[Path]) -> None:
+    for path in files:
+        if path.suffix.lower() != ".py" and rel(path) != "scripts/agentic-harness":
+            continue
+        try:
+            ast.parse(path.read_text(errors="replace"), filename=str(path))
+        except SyntaxError as exc:
+            fail(f"{rel(path)}: python syntax error: {exc}")
+
+
+def check_bash_syntax(files: list[Path]) -> None:
+    for path in files:
+        text = read_text(path)
+        if not text or not text.startswith("#!") or "bash" not in text.splitlines()[0]:
+            continue
+        result = subprocess.run(
+            ["bash", "-n", str(path)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            fail(f"{rel(path)}: bash syntax error: {result.stderr.strip()}")
+
+
+def check_secret_scan(files: list[Path]) -> None:
+    for path in files:
+        text = read_text(path)
+        if text is None:
+            continue
+        for line_no, line in enumerate(text.splitlines(), 1):
+            low = line.lower()
+            if any(hint in low for hint in PLACEHOLDER_HINTS):
+                continue
+            if any(pattern.search(line) for pattern in SECRET_PATTERNS):
+                fail(f"{rel(path)}:{line_no}: secret-like value")
+
+
+def main() -> int:
+    files = repo_files()
+    check_required_files()
+    check_executable_scripts()
+    check_agent_docs()
+    check_ci_wires_harness()
+    check_json_syntax(files)
+    check_python_syntax(files)
+    check_bash_syntax(files)
+    check_secret_scan(files)
+
+    if FAILURES:
+        print("AGENTIC HARNESS FAILED")
+        for item in FAILURES:
+            print(f"- {item}")
+        return 1
+
+    print("AGENTIC HARNESS OK")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
