@@ -107,6 +107,34 @@ void main() {
   );
 
   testWidgets(
+    'source quality chip opens auditable ranking details',
+    (tester) async {
+      await pumpSearch(
+        tester,
+        assistEnvelope: _searchEnvelope,
+      );
+
+      await enterAssistMode(tester, 'that live porter robinson shelter');
+
+      await tester.tap(
+        find.byKey(const ValueKey('source_quality_chip_live_acceptable')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Source quality'), findsOneWidget);
+      expect(find.text('Acceptable'), findsOneWidget);
+      expect(find.text('73/100'), findsOneWidget);
+      expect(find.text('79%'), findsOneWidget);
+      expect(find.text('Reasons'), findsOneWidget);
+      expect(find.text('query asked for live content'), findsOneWidget);
+      expect(find.text('Provenance'), findsOneWidget);
+      expect(find.text('deterministic_source_quality_v1'), findsOneWidget);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
+
+  testWidgets(
     'pasting a URL in search mode auto-routes to assist and shows a queueable candidate',
     (tester) async {
       final queueClient = await pumpSearch(

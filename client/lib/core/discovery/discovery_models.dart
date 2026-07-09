@@ -238,6 +238,11 @@ class DiscoveryCandidate {
   }
 
   Map<String, dynamic> toQueueJson() {
+    final queueMetadata = Map<String, dynamic>.from(metadata);
+    if (sourceQuality != null &&
+        _readOptionalMap(queueMetadata['sourceQuality']) == null) {
+      queueMetadata['sourceQuality'] = sourceQuality!.toJson();
+    }
     return {
       'candidateId': candidateId,
       'provider': provider,
@@ -250,7 +255,7 @@ class DiscoveryCandidate {
       if (durationMs != null) 'durationMs': durationMs,
       if (thumbnailUrl != null) 'thumbnailUrl': thumbnailUrl,
       'downloadable': downloadable,
-      if (metadata.isNotEmpty) 'metadata': metadata,
+      if (queueMetadata.isNotEmpty) 'metadata': queueMetadata,
     };
   }
 
@@ -310,6 +315,18 @@ class DiscoverySourceQuality {
       warnings: _readStringList(json['warnings']),
       provenance: json['provenance'] as String? ?? '',
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'score': score,
+      'classification': classification,
+      'recommendation': recommendation,
+      'confidence': confidence,
+      if (reasons.isNotEmpty) 'reasons': reasons,
+      if (warnings.isNotEmpty) 'warnings': warnings,
+      if (provenance.isNotEmpty) 'provenance': provenance,
+    };
   }
 
   String get label {

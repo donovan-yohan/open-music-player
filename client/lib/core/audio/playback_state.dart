@@ -7,6 +7,7 @@ import '../cache/playback_cache_manager.dart';
 import '../engine/playback_engine.dart';
 import '../engine/timeline_model.dart';
 import '../../models/timeline_clip.dart';
+import '../../models/track_analysis.dart';
 import '../../models/trim_range.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'playback_media_item_source.dart';
@@ -420,6 +421,72 @@ class PlaybackState extends ChangeNotifier {
       initialPosition: _queueController.livePosition,
       preserveTimelineEdits: true,
     );
+  }
+
+  Future<void> refreshTrackAnalysis(
+    String trackId,
+    TrackAnalysis analysis,
+  ) async {
+    final normalizedTrackId = trackId.trim();
+    if (normalizedTrackId.isEmpty || queue.isEmpty) return;
+
+    var changed = false;
+    final refreshedQueue = <MediaItem>[];
+    for (final item in queue) {
+      if (_mediaItemMatchesAnalysisTrack(item, normalizedTrackId)) {
+        refreshedQueue.add(
+          _mediaItemWithAnalysis(item, normalizedTrackId, analysis),
+        );
+        changed = true;
+      } else {
+        refreshedQueue.add(item);
+      }
+    }
+    if (!changed) return;
+
+    final index =
+        currentIndex?.clamp(0, refreshedQueue.length - 1).toInt() ?? 0;
+    await _queueController.setQueue(
+      refreshedQueue,
+      initialIndex: index,
+      initialPosition: _queueController.livePosition,
+      preserveTimelineEdits: true,
+    );
+  }
+
+  bool _mediaItemMatchesAnalysisTrack(MediaItem item, String trackId) {
+    if (item.id == trackId) return true;
+    final extras = item.extras ?? const <String, dynamic>{};
+    return extras['analysisRef']?.toString() == trackId ||
+        extras['trackId']?.toString() == trackId ||
+        extras['track_id']?.toString() == trackId;
+  }
+
+  MediaItem _mediaItemWithAnalysis(
+    MediaItem item,
+    String trackId,
+    TrackAnalysis analysis,
+  ) {
+    final extras = Map<String, dynamic>.from(item.extras ?? const {});
+    extras['analysisRef'] = trackId;
+    extras['analysisStatus'] = analysis.status.name;
+    final summary = analysis.summary;
+    final overrides = analysis.overrides;
+    if (summary == null) {
+      extras.remove('analysisSummary');
+      extras.remove('analysis_summary');
+    } else {
+      extras['analysisSummary'] = summary.toJson();
+      extras.remove('analysis_summary');
+    }
+    if (overrides == null) {
+      extras.remove('analysisOverrides');
+      extras.remove('analysis_overrides');
+    } else {
+      extras['analysisOverrides'] = overrides.toJson();
+      extras.remove('analysis_overrides');
+    }
+    return item.copyWith(extras: extras);
   }
 
   Future<void> pause() async {

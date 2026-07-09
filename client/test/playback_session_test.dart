@@ -385,6 +385,59 @@ void main() {
       expect(clip.tempo.camelot, '8A');
     });
 
+    test('normalizing an existing session refreshes tempo from media items',
+        () {
+      final originalQueue = [_item('a', seconds: 20), _item('b', seconds: 20)];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_refresh',
+        queue: originalQueue,
+      ).withPlacementAt(
+        1,
+        TimelineClip.clamped(
+          id: 'session_refresh_clip_1',
+          trackId: 'b',
+          sourceDurationMs: 20000,
+          sourceStartMs: 0,
+          sourceEndMs: 20000,
+          timelineStartMs: 12000,
+        ),
+      );
+
+      final refreshedQueue = [
+        _item(
+          'a',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 100,
+            downbeatsMs: [0, 8000, 16000],
+          ),
+        ),
+        _item(
+          'b',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 125,
+            downbeatsMs: [0, 8000, 16000],
+          ),
+        ),
+      ];
+
+      final model = CueTimeline.fromSession(
+        session: session,
+        queue: refreshedQueue,
+        playOrder: const [0, 1],
+      ).toTimelineModel();
+
+      expect(model.clips[0].tempo.nativeBpm, 100);
+      expect(model.clips[1].tempo.nativeBpm, 125);
+      expect(model.clips[0].tempo.downbeatsMs, [0, 8000, 16000]);
+      expect(model.clips[1].tempo.downbeatsMs, [0, 8000, 16000]);
+      expect(model.clips[0].timelineStartMs, 0);
+      expect(model.clips[1].timelineStartMs, 12000);
+      expect(model.clips[0].playbackRateAt(12000), 1);
+      expect(model.clips[1].playbackRateAt(12000), closeTo(0.8, 0.0001));
+    });
+
     test(
         'manual BPM overrides without confidence still enable beat-synced defaults',
         () {

@@ -61,6 +61,41 @@ void main() {
     expect(response.providers.single.status, 'ok');
   });
 
+  test('queue JSON preserves top-level source quality as metadata', () {
+    final candidate = DiscoveryCandidate.fromJson({
+      'candidateId': 'youtube:abc',
+      'provider': 'youtube',
+      'sourceId': 'abc',
+      'sourceUrl': 'https://youtube.com/watch?v=abc',
+      'title': 'Plastic Love',
+      'downloadable': true,
+      'playable': false,
+      'metadata': {'providerRank': 3},
+      'sourceQuality': {
+        'score': 28,
+        'classification': 'music_video',
+        'recommendation': 'avoid',
+        'confidence': 0.52,
+        'reasons': ['deterministic fallback ranking'],
+        'warnings': ['candidate appears to be a music video'],
+        'provenance': 'deterministic_source_quality_v1',
+      },
+    });
+
+    final queued = candidate.toQueueJson();
+    final metadata = queued['metadata'] as Map<String, dynamic>;
+    final sourceQuality = metadata['sourceQuality'] as Map<String, dynamic>;
+
+    expect(metadata['providerRank'], 3);
+    expect(sourceQuality['classification'], 'music_video');
+    expect(sourceQuality['recommendation'], 'avoid');
+    expect(
+      sourceQuality['warnings'],
+      contains('candidate appears to be a music video'),
+    );
+    expect(sourceQuality['provenance'], 'deterministic_source_quality_v1');
+  });
+
   test('grouped search response parses entity and source sections', () {
     final response = DiscoverySearchResponse.fromJson({
       'query': 'ninajirachi ipod touch',
