@@ -494,6 +494,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         ),
       );
     }
+    final placedClips = placed.values.toList(growable: false);
 
     final playheadPaneX = viewport.msToX(playheadMs);
     final isPlayheadVisible = playheadPaneX.isFinite &&
@@ -502,13 +503,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
     final overlapBands = _buildOverlapBands(
       context,
-      placed.values.toList(growable: false),
+      placedClips,
       viewport,
       paneWidth,
     );
 
     final dominantClip = _dominantClipAt(
-      placed.values.toList(growable: false),
+      placedClips,
       playheadMs,
     );
     final playheadLabel = _playheadTimeLabel(playheadMs, dominantClip);
@@ -540,7 +541,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                   child: Column(
                     children: [
                       for (final lane in lanes)
-                        _buildLane(context, lane, viewport, paneWidth),
+                        _buildLane(
+                          context,
+                          lane,
+                          viewport,
+                          paneWidth,
+                          placedClips,
+                        ),
                     ],
                   ),
                 ),
@@ -869,6 +876,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     _LaneModel lane,
     TimelineViewport viewport,
     double paneWidth,
+    List<MixClip> peerClips,
   ) {
     final left = viewport.msToX(lane.timelineStartMs);
     final width = (viewport.msToX(lane.timelineEndMs) -
@@ -904,7 +912,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               Positioned(
                 right: 6,
                 top: 12,
-                child: _timelineSelectionControls(context, lane),
+                child: _timelineSelectionControls(context, lane, peerClips),
               ),
             _buildLaneIdentity(context, lane, viewport, paneWidth),
           ],
@@ -1285,54 +1293,72 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     return ((deltaXPx / viewport.pixelsPerSecond) * 1000).round();
   }
 
-  Widget _timelineSelectionControls(BuildContext context, _LaneModel lane) {
+  Widget _timelineSelectionControls(
+    BuildContext context,
+    _LaneModel lane,
+    List<MixClip> peerClips,
+  ) {
     final theme = Theme.of(context);
     final track = lane.track;
     final movable =
         lane.role == LaneRole.upcoming || lane.role == LaneRole.collapsed;
     final tempoChip = _selectedTempoChip(context, lane);
+    final transitionHint = _selectedTransitionHint(context, lane, peerClips);
     return Material(
       color: theme.colorScheme.surface.withValues(alpha: 0.88),
       borderRadius: BorderRadius.circular(12),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (tempoChip != null) tempoChip,
-          if (widget.onEditAnalysis != null)
-            IconButton(
-              key: ValueKey('timeline_edit_analysis_${track.id}'),
-              tooltip: 'Edit analysis for ${track.title}',
-              icon: const Icon(Icons.speed),
-              iconSize: 20,
-              constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-              padding: EdgeInsets.zero,
-              onPressed: () => widget.onEditAnalysis!(track),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (tempoChip != null) tempoChip,
+                if (widget.onEditAnalysis != null)
+                  IconButton(
+                    key: ValueKey('timeline_edit_analysis_${track.id}'),
+                    tooltip: 'Edit analysis for ${track.title}',
+                    icon: const Icon(Icons.speed),
+                    iconSize: 20,
+                    constraints:
+                        const BoxConstraints.tightFor(width: 36, height: 36),
+                    padding: EdgeInsets.zero,
+                    onPressed: () => widget.onEditAnalysis!(track),
+                  ),
+                if (movable)
+                  IconButton(
+                    key: ValueKey('timeline_move_earlier_${track.id}'),
+                    tooltip: 'Move ${track.title} earlier',
+                    icon: const Icon(Icons.keyboard_arrow_up),
+                    iconSize: 20,
+                    constraints:
+                        const BoxConstraints.tightFor(width: 36, height: 36),
+                    padding: EdgeInsets.zero,
+                    onPressed: widget.onMoveEarlier == null
+                        ? null
+                        : () => widget.onMoveEarlier!(track),
+                  ),
+                if (movable)
+                  IconButton(
+                    key: ValueKey('timeline_move_later_${track.id}'),
+                    tooltip: 'Move ${track.title} later',
+                    icon: const Icon(Icons.keyboard_arrow_down),
+                    iconSize: 20,
+                    constraints:
+                        const BoxConstraints.tightFor(width: 36, height: 36),
+                    padding: EdgeInsets.zero,
+                    onPressed: widget.onMoveLater == null
+                        ? null
+                        : () => widget.onMoveLater!(track),
+                  ),
+              ],
             ),
-          if (movable)
-            IconButton(
-              key: ValueKey('timeline_move_earlier_${track.id}'),
-              tooltip: 'Move ${track.title} earlier',
-              icon: const Icon(Icons.keyboard_arrow_up),
-              iconSize: 20,
-              constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-              padding: EdgeInsets.zero,
-              onPressed: widget.onMoveEarlier == null
-                  ? null
-                  : () => widget.onMoveEarlier!(track),
-            ),
-          if (movable)
-            IconButton(
-              key: ValueKey('timeline_move_later_${track.id}'),
-              tooltip: 'Move ${track.title} later',
-              icon: const Icon(Icons.keyboard_arrow_down),
-              iconSize: 20,
-              constraints: const BoxConstraints.tightFor(width: 36, height: 36),
-              padding: EdgeInsets.zero,
-              onPressed: widget.onMoveLater == null
-                  ? null
-                  : () => widget.onMoveLater!(track),
-            ),
-        ],
+            if (transitionHint != null) transitionHint,
+          ],
+        ),
       ),
     );
   }
@@ -1341,24 +1367,141 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final tempo = lane.mixClip.tempo;
     final labels = <String>[
       if (tempo.nativeBpm != null) '${_formatBpm(tempo.nativeBpm!)} BPM',
-      if (tempo.camelot != null) tempo.camelot!,
+      if (tempo.bpmConfidence != null)
+        '${(tempo.bpmConfidence!.clamp(0, 1) * 100).round()}%',
+      if (_formatKey(tempo.musicalKey, tempo.camelot) != null)
+        _formatKey(tempo.musicalKey, tempo.camelot)!,
+      if (tempo.downbeatsMs.isNotEmpty)
+        '${tempo.downbeatsMs.length} ${tempo.downbeatsMs.length == 1 ? 'downbeat' : 'downbeats'}'
+      else if (tempo.nativeBpm != null)
+        'No downbeat',
     ];
     if (labels.isEmpty) return null;
     final theme = Theme.of(context);
-    return Container(
-      key: ValueKey('timeline_tempo_${lane.track.id}'),
-      constraints: const BoxConstraints(maxWidth: 116),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      child: Text(
-        labels.join(' · '),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: theme.textTheme.labelSmall?.copyWith(
-          fontWeight: FontWeight.w700,
-          color: theme.colorScheme.onSurface,
+    final warning = tempo.nativeBpm == null ||
+        !tempo.hasReliableBpm ||
+        tempo.downbeatsMs.isEmpty;
+    final color = warning
+        ? const Color(0xFFFF8F00)
+        : theme.colorScheme.onSurface.withValues(alpha: 0.92);
+    return Tooltip(
+      message: labels.join(' · '),
+      child: Container(
+        key: ValueKey('timeline_tempo_${lane.track.id}'),
+        constraints: const BoxConstraints(maxWidth: 184),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Text(
+          labels.join(' · '),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.labelSmall?.copyWith(
+            fontWeight: FontWeight.w700,
+            color: color,
+          ),
         ),
       ),
     );
+  }
+
+  Widget? _selectedTransitionHint(
+    BuildContext context,
+    _LaneModel lane,
+    List<MixClip> peerClips,
+  ) {
+    final diagnostics = _bestSelectedTransitionDiagnostics(lane, peerClips);
+    if (diagnostics == null) return null;
+    final labels = diagnostics.compactLabels.take(3).toList(growable: false);
+    if (labels.isEmpty) return null;
+
+    final theme = Theme.of(context);
+    final accent = switch (diagnostics.severity) {
+      TransitionDiagnosticSeverity.error => theme.colorScheme.error,
+      TransitionDiagnosticSeverity.warning => const Color(0xFFFF8F00),
+      TransitionDiagnosticSeverity.info =>
+        StackedWaveformTimeline.currentAccent,
+    };
+    return Semantics(
+      label:
+          'Selected transition. ${_formatClock(diagnostics.overlapDurationMs)}. ${diagnostics.semanticsLabel}',
+      child: Container(
+        key: ValueKey('timeline_transition_hint_${lane.track.id}'),
+        constraints: const BoxConstraints(maxWidth: 250),
+        margin: const EdgeInsets.fromLTRB(6, 0, 6, 6),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+        decoration: BoxDecoration(
+          color: accent.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: accent.withValues(alpha: 0.55)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              diagnostics.hasWarnings
+                  ? Icons.warning_amber_rounded
+                  : Icons.sync_alt,
+              size: 14,
+              color: accent,
+            ),
+            const SizedBox(width: 5),
+            Flexible(
+              child: Text(
+                labels.join(' · '),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: accent,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  TransitionDiagnostics? _bestSelectedTransitionDiagnostics(
+    _LaneModel lane,
+    List<MixClip> peerClips,
+  ) {
+    final candidates = <TransitionDiagnostics>[];
+    for (final clip in peerClips) {
+      if (clip.id == lane.mixClip.id || clip.trackId == lane.mixClip.trackId) {
+        continue;
+      }
+      final overlapStart = math.max(
+        lane.mixClip.timelineStartMs,
+        clip.timelineStartMs,
+      );
+      final overlapEnd = math.min(
+        lane.mixClip.timelineEndMs,
+        clip.timelineEndMs,
+      );
+      if (overlapEnd <= overlapStart) continue;
+      candidates.add(diagnoseTransition(lane.mixClip, clip));
+    }
+    if (candidates.isEmpty) return null;
+    candidates.sort((a, b) {
+      final severity = _severityRank(a.severity).compareTo(
+        _severityRank(b.severity),
+      );
+      if (severity != 0) return severity;
+      return b.overlapDurationMs.compareTo(a.overlapDurationMs);
+    });
+    return candidates.first;
+  }
+
+  int _severityRank(TransitionDiagnosticSeverity severity) =>
+      switch (severity) {
+        TransitionDiagnosticSeverity.error => 0,
+        TransitionDiagnosticSeverity.warning => 1,
+        TransitionDiagnosticSeverity.info => 2,
+      };
+
+  String? _formatKey(String? musicalKey, String? camelot) {
+    if (musicalKey != null && camelot != null) return '$musicalKey · $camelot';
+    return musicalKey ?? camelot;
   }
 
   Widget _buildRuler(
