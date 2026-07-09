@@ -38,6 +38,8 @@ type AnalysisOverridesRequest struct {
 	Overrides json.RawMessage `json:"overrides"`
 }
 
+const maxAnalysisOverridesRequestBytes = 1 << 20
+
 func (h *AnalysisHandlers) GetTrackAnalysis(w http.ResponseWriter, r *http.Request) {
 	userCtx := auth.GetUserFromContext(r.Context())
 	if userCtx == nil {
@@ -119,8 +121,8 @@ func (h *AnalysisHandlers) UpdateTrackAnalysisOverrides(w http.ResponseWriter, r
 		return
 	}
 
-	var req AnalysisOverridesRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	req, err := decodeAnalysisOverridesRequest(w, r)
+	if err != nil {
 		writeLibraryError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
 		return
 	}
@@ -155,6 +157,13 @@ func (h *AnalysisHandlers) UpdateTrackAnalysisOverrides(w http.ResponseWriter, r
 		resp.CompletedAt = analysis.CompletedAt.Time.Format("2006-01-02T15:04:05Z")
 	}
 	writeLibraryJSON(w, http.StatusOK, resp)
+}
+
+func decodeAnalysisOverridesRequest(w http.ResponseWriter, r *http.Request) (AnalysisOverridesRequest, error) {
+	var req AnalysisOverridesRequest
+	r.Body = http.MaxBytesReader(w, r.Body, maxAnalysisOverridesRequestBytes)
+	err := json.NewDecoder(r.Body).Decode(&req)
+	return req, err
 }
 
 func normalizeAnalysisOverrides(raw json.RawMessage) (json.RawMessage, error) {

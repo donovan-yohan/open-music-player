@@ -538,7 +538,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   int _targetWaveformSamples(double clipWidth) {
     if (!clipWidth.isFinite || clipWidth <= 0) return 512;
-    return (clipWidth / 0.72).round().clamp(512, 131072).toInt();
+    return (clipWidth / 0.72).round().clamp(512, 4096).toInt();
   }
 
   MixClip? _dominantClipAt(List<MixClip> clips, int timelineMs) {

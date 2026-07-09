@@ -209,19 +209,31 @@ func decodePCM(ctx context.Context, path string, sampleRate int) ([]float64, err
 		"f32le",
 		"pipe:1",
 	)
-	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ffmpeg decode failed: %v: %s", err, strings.TrimSpace(stderr.String()))
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
 	}
-	data := stdout.Bytes()
-	if len(data) == 0 {
-		return nil, fmt.Errorf("ffmpeg decoded no audio samples")
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(stdout, int64(maxDecodedPCMBytes)+1))
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, err
 	}
 	if len(data) > maxDecodedPCMBytes {
-		return nil, fmt.Errorf("decoded PCM too large: %d bytes", len(data))
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("decoded PCM too large: exceeded %d bytes", maxDecodedPCMBytes)
+	}
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("ffmpeg decode failed: %v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("ffmpeg decoded no audio samples")
 	}
 	samples := make([]float64, 0, len(data)/4)
 	for i := 0; i+4 <= len(data); i += 4 {

@@ -95,7 +95,8 @@ void main() {
     expect(overview.silenceRanges.single.endMs, 250);
     expect(overview.frames.length, 512);
     expect(detail.frames.length, 1024);
-    expect(closeDetail.frames.length, 8192);
+    expect(closeDetail.frames.length, 4096);
+    expect(provider.waveformFor(track, 100000).frames.length, 4096);
     expect(identical(provider.waveformFor(track, 900), detail), isTrue);
   });
 

@@ -73,6 +73,23 @@ void main() {
 
       expect(MixClip(placement: p).audioSourceRef, p.trackId);
     });
+
+    test('source elapsed fast path honors base playback rate', () {
+      const automation = PlaybackRateAutomation(baseRate: 1.25);
+
+      expect(
+        automation.sourceElapsedMs(timelineStartMs: 1000, timelineMs: 5000),
+        5000,
+      );
+      expect(
+        automation.timelineMsForSourceElapsed(
+          timelineStartMs: 1000,
+          sourceElapsedMs: 5000,
+          maxTimelineMs: 10000,
+        ),
+        5000,
+      );
+    });
   });
 
   group('GainEnvelope', () {

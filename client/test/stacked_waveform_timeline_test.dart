@@ -236,6 +236,7 @@ void main() {
     final after = requested.reduce(math.max);
 
     expect(after, greaterThan(before));
+    expect(after, lessThanOrEqualTo(4096));
   });
 
   testWidgets('generates dense fallback waveform data when provider is omitted',

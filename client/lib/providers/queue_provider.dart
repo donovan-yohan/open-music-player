@@ -740,12 +740,12 @@ class QueueProvider extends ChangeNotifier {
   }
 
   int _waveformSampleBucket(int targetSampleCount) {
-    final target = targetSampleCount.clamp(256, 131072).toInt();
+    final target = targetSampleCount.clamp(256, 4096).toInt();
     var bucket = 512;
-    while (bucket < target && bucket < 131072) {
+    while (bucket < target && bucket < 4096) {
       bucket *= 2;
     }
-    return bucket.clamp(512, 131072).toInt();
+    return bucket.clamp(512, 4096).toInt();
   }
 
   void _rememberQueueAnalyses() {

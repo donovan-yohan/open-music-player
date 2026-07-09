@@ -271,6 +271,9 @@ class PlaybackRateAutomation {
     required int timelineMs,
   }) {
     if (timelineMs <= timelineStartMs) return 0;
+    if (segments.isEmpty) {
+      return ((timelineMs - timelineStartMs) * baseRate).round();
+    }
 
     final breakpoints = <int>{timelineStartMs, timelineMs};
     for (final segment in segments) {
