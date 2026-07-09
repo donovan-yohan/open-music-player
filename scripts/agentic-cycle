@@ -338,6 +338,9 @@ def render_plan(payload: dict, gates: list[Gate], manual: list[Gate]) -> None:
         print("manual/device evidence:")
         for gate in manual:
             print(f"- {' '.join(gate.command)}  # {gate.reason}")
+    print("adversarial review:")
+    for item in payload["adversarial_review"]:
+        print(f"- {item}")
 
 
 def build_payload(args: argparse.Namespace) -> tuple[dict, list[Gate], list[Gate]]:
@@ -371,6 +374,11 @@ def build_payload(args: argparse.Namespace) -> tuple[dict, list[Gate], list[Gate
         "manual_gates": [
             {"name": gate.name, "command": list(gate.command), "reason": gate.reason}
             for gate in manual
+        ],
+        "adversarial_review": [
+            "Doctrine vs harness: identify the executable checks behind any process or architecture claim.",
+            "Review-bypass/direct-to-main check: scripts and workflows must not push protected branches without an explicit human override.",
+            "Unresolved reviewer/bot comments: medium/high comments remain findings until triaged with evidence.",
         ],
     }
     if not args.committed_only:
@@ -478,6 +486,8 @@ def self_test() -> int:
         failures.append("--committed-only payload should not include worktree changes")
     if payload["worktree_dirty"] or payload["worktree_status"]:
         failures.append("--committed-only payload should not report dirty worktree state")
+    if "Doctrine vs harness" not in "\n".join(payload["adversarial_review"]):
+        failures.append("payload should include adversarial doctrine-vs-harness review notes")
 
     if failures:
         print("AGENTIC CYCLE SELF-TEST FAILED")

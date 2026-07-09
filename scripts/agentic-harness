@@ -115,6 +115,7 @@ def check_required_files() -> None:
         "docs/context-map.md",
         "docs/agentic-delivery.md",
         "docs/adr/0001-playback-timeline-source-of-truth.md",
+        "docs/adr/0002-agentic-delivery-harness.md",
         "scripts/dev",
         "scripts/test",
         "scripts/lint",
@@ -162,20 +163,30 @@ def check_agent_docs() -> None:
             "scripts/release-audit",
             "scripts/dogfood-android",
             "docs/adr/0001-playback-timeline-source-of-truth.md",
+            "docs/adr/0002-agentic-delivery-harness.md",
+            "Adversarial review",
+            "doctrine from harness",
         ],
         "docs/context-map.md": [
             "Harness Matrix",
             "Playback Session And Queue Timeline",
             "Audio Analysis And DJ Waveforms",
             "Agentic Delivery And Release Gates",
+            "Adversarial delivery check",
+            "doctrine-vs-harness",
             "scripts/agentic-harness",
             "scripts/agentic-cycle",
             "scripts/release-audit",
             "scripts/dogfood-android",
             "docs/adr/0001-playback-timeline-source-of-truth.md",
+            "docs/adr/0002-agentic-delivery-harness.md",
         ],
         "docs/agentic-delivery.md": [
             "Work Packet",
+            "Adversarial Review",
+            "Doctrine vs harness",
+            "Review-bypass/direct-to-main check",
+            "unresolved medium/high",
             "Exact-Head Gates",
             "Mobile And Audio Dogfood",
             "Resource Closeout",
@@ -190,6 +201,10 @@ def check_agent_docs() -> None:
             "Harness / backpressure",
             "Agentic dev-cycle plan/evidence",
             "Gate classification",
+            "Adversarial review",
+            "Doctrine vs harness",
+            "Review-bypass/direct-to-main check",
+            "Unresolved reviewer/bot comments",
             "Exact-head evidence",
             "scripts/agentic-cycle",
             "scripts/release-audit",
@@ -200,6 +215,9 @@ def check_agent_docs() -> None:
             "Intent",
             "Context Map",
             "Harness / Backpressure",
+            "Adversarial Review",
+            "Doctrine vs harness",
+            "Review-bypass/direct-to-main risk",
             "Risk Seams",
             "Acceptance",
         ],
@@ -209,6 +227,15 @@ def check_agent_docs() -> None:
             "TimelineModel",
             "VoicePool",
             "scripts/agentic-harness",
+        ],
+        "docs/adr/0002-agentic-delivery-harness.md": [
+            "adversarial doctrine-vs-harness review",
+            "exact-head evidence",
+            "scripts/agentic-harness",
+            "scripts/agentic-cycle",
+            "scripts/release-audit",
+            "scripts/dogfood-android",
+            "review-bypass patterns",
         ],
     }
     for name, phrases in required.items():
@@ -326,6 +353,35 @@ def check_secret_scan(files: list[Path]) -> None:
                 fail(f"{rel(path)}:{line_no}: secret-like value")
 
 
+def check_review_bypass_guards(files: list[Path]) -> None:
+    for path in files:
+        path_rel = rel(path)
+        if not (
+            path_rel.startswith("scripts/")
+            or path_rel.startswith(".github/workflows/")
+        ):
+            continue
+        text = read_text(path)
+        if text is None:
+            continue
+        has_push = bool(re.search(r"\bgit\s+push\b", text))
+        has_override = "ALLOW_MAIN_PUSH" in text or "HUMAN_OVERRIDE" in text
+        for line_no, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if re.search(r"\bgit\s+push\s+(?:origin\s+)?(?:main|HEAD:main)\b", stripped):
+                if not has_override:
+                    fail(
+                        f"{path_rel}:{line_no}: direct push to main needs an explicit human override guard"
+                    )
+            if has_push and re.search(r"\bgit\s+add\s+-A\b", stripped):
+                if not has_override:
+                    fail(
+                        f"{path_rel}:{line_no}: git add -A before push needs an explicit human override guard"
+                    )
+
+
 def check_architecture_guardrails(files: list[Path]) -> None:
     canonical_files = [
         "backend/internal/db/db.go",
@@ -390,6 +446,9 @@ def check_agentic_cycle_contracts() -> None:
         "--evidence",
         "mobile-audio-device",
         "manual_gates",
+        "adversarial_review",
+        "Doctrine vs harness",
+        "Review-bypass/direct-to-main check",
         "worktree_dirty",
         "worktree_status",
         "requires_android_dogfood",
@@ -433,6 +492,7 @@ def main() -> int:
     check_python_syntax(files)
     check_bash_syntax(files)
     check_secret_scan(files)
+    check_review_bypass_guards(files)
     check_architecture_guardrails(files)
     check_agentic_cycle_contracts()
 

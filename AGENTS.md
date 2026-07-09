@@ -18,6 +18,7 @@ physical mobile dogfood path continue to work together.
   `.github/pull_request_template.md`, `scripts/agentic-harness`,
   `scripts/agentic-cycle`, `scripts/release-audit`.
 - Playback timeline ADR -> `docs/adr/0001-playback-timeline-source-of-truth.md`.
+- Delivery harness ADR -> `docs/adr/0002-agentic-delivery-harness.md`.
 
 See `docs/context-map.md` for the fuller map and harness table.
 
@@ -38,6 +39,9 @@ See `docs/context-map.md` for the fuller map and harness table.
 - PR/release gates: use exact-head evidence. Reuse QA/review only when it cites
   the current PR head; rerun targeted gates for behavior, security, protocol,
   destructive, runtime, mobile/audio, or deployment deltas.
+- Adversarial review: separate doctrine from harness. Agent instructions,
+  templates, and docs are only production backpressure when a script, test, CI
+  gate, smoke check, or artifact contract can fail.
 
 ## Commands
 
@@ -78,6 +82,9 @@ Use RTK wrappers for noisy output when running these through Codex.
 - Keep `AGENTS.md`, `docs/context-map.md`, root harness scripts, CI, and the PR
   evidence template in sync; `scripts/agentic-harness` enforces the minimum
   delivery scaffold.
+- Keep process claims executable. If a PR says it improves agentic delivery, the
+  diff must include or point to machine-checkable harness changes, not only
+  doctrine or templates.
 - Use `scripts/agentic-cycle` to classify changed files, choose gates, and write
   `/tmp` evidence for nontrivial local PR handoffs. The runner writes evidence
   before gates start and after each gate, so failed or interrupted cycles still
