@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${1:-all}"
 
+run_delivery() {
+  "$ROOT/scripts/agentic-cycle" --self-test
+}
+
 run_backend() {
   (
     cd "$ROOT/backend"
@@ -43,6 +47,9 @@ run_extension() {
 }
 
 case "$TARGET" in
+  delivery|harness)
+    run_delivery
+    ;;
   backend)
     run_backend
     ;;
@@ -53,12 +60,13 @@ case "$TARGET" in
     run_extension
     ;;
   all)
+    run_delivery
     run_backend
     run_client
     run_extension
     ;;
   *)
-    echo "usage: scripts/test [backend|client|extension|all]" >&2
+    echo "usage: scripts/test [delivery|harness|backend|client|extension|all]" >&2
     exit 2
     ;;
 esac

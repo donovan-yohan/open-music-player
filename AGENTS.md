@@ -15,7 +15,8 @@ physical mobile dogfood path continue to work together.
 - Local/tailnet dogfood -> `scripts/local-low-memory.sh`, `scripts/local-e2e-smoke.py`, `scripts/tailnet-staging.sh`, `docs/LOW_MEMORY_LOCAL_DEV.md`, `docs/TAILNET_STAGING.md`.
 - Android/audio dogfood -> `scripts/dogfood-android`, `docs/ANDROID_PR_ARTIFACTS.md`.
 - Agentic delivery gates -> `docs/agentic-delivery.md`,
-  `.github/pull_request_template.md`, `scripts/agentic-harness`.
+  `.github/pull_request_template.md`, `scripts/agentic-harness`,
+  `scripts/agentic-cycle`.
 - Playback timeline ADR -> `docs/adr/0001-playback-timeline-source-of-truth.md`.
 
 See `docs/context-map.md` for the fuller map and harness table.
@@ -47,6 +48,8 @@ See `docs/context-map.md` for the fuller map and harness table.
 - Static checks: `scripts/lint`
 - Delivery scaffolding checks: `scripts/agentic-harness` or
   `scripts/lint delivery`
+- Exact-head dev-cycle plan/run: `scripts/agentic-cycle --base origin/main` or
+  `scripts/agentic-cycle --run --base origin/main`
 - Build checks: `scripts/build`
 - Local backend smoke: `scripts/smoke`
 - Isolated backend smoke: `scripts/smoke isolated`
@@ -69,6 +72,8 @@ Use RTK wrappers for noisy output when running these through Codex.
 - Keep `AGENTS.md`, `docs/context-map.md`, root harness scripts, CI, and the PR
   evidence template in sync; `scripts/agentic-harness` enforces the minimum
   delivery scaffold.
+- Use `scripts/agentic-cycle` to classify changed files, choose gates, and write
+  `/tmp` evidence for nontrivial local PR handoffs.
 - Keep the OMP delivery rules in `docs/agentic-delivery.md` aligned with the
   global `agentic-engineering-delivery` Codex skill.
 

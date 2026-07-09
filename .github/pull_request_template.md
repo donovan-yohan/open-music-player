@@ -17,6 +17,7 @@
 - Tests:
 - Lint/type/build:
 - Architecture guardrails:
+- Agentic dev-cycle plan/evidence:
 - Runtime/API/device smoke:
 - Logs/artifacts:
 - Android dogfood evidence path, if relevant:
@@ -40,6 +41,7 @@
 
 - Head SHA:
 - Commands + exit codes:
+- `scripts/agentic-cycle` evidence path:
 - Build/deploy/device IDs:
 - Android APK SHA256 / `scripts/dogfood-android` evidence path:
 - Caveats/follow-ups:

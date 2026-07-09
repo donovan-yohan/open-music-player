@@ -18,9 +18,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Run agentic delivery harness
-        run: scripts/agentic-harness
+        run: scripts/lint delivery
+
+      - name: Plan exact-head dev cycle
+        run: scripts/agentic-cycle --committed-only --base origin/main
 
   backend:
     name: Backend (Go)
