@@ -300,6 +300,49 @@ void main() {
       await harness.dispose();
     });
 
+    test('tempo-adjusted clip windows drive snapshot and current index',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item(
+          '1',
+          seconds: 10,
+          analysisSummary: _bpmOnlyAnalysis(bpm: 100),
+        ),
+        _item(
+          '2',
+          seconds: 10,
+          analysisSummary: _bpmOnlyAnalysis(bpm: 125),
+        ),
+      ]);
+
+      await harness.controller.setTimelineStartMs(1, 5000);
+
+      final outgoing = harness.engine.model.clips[0];
+      final incoming = harness.engine.model.clips[1];
+      expect(outgoing.timelineEndMs, lessThan(10000));
+      expect(incoming.timelineEndMs, greaterThan(15000));
+      expect(
+        harness.controller.snapshot.globalDuration.inMilliseconds,
+        harness.engine.model.durationMs,
+      );
+
+      final probeMs = outgoing.timelineEndMs + 50;
+      expect(probeMs, lessThan(10000));
+
+      await harness.engine.seek(probeMs);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(harness.controller.currentIndex, 1);
+      expect(harness.controller.snapshot.currentQueueIndex, 1);
+      expect(
+        harness.controller.snapshot.globalDuration.inMilliseconds,
+        harness.engine.model.durationMs,
+      );
+
+      await harness.dispose();
+    });
+
     test('live queue reorder preserves the selected current item', () async {
       final harness = _Harness();
       await harness.controller.setQueue([
@@ -436,6 +479,14 @@ Map<String, dynamic> _analysisSummary({
       'bpm': {'value': bpm, 'confidence': 0.95},
       'beat_grid': {'bpm': bpm},
       'downbeats': {'positions_ms': downbeatsMs},
+    };
+
+Map<String, dynamic> _bpmOnlyAnalysis({required double bpm}) => {
+      'bpm': {'value': bpm, 'confidence': 0.95},
+      'beat_grid': {
+        'bpm': bpm,
+        'confidence': 0.95,
+      },
     };
 
 class _Harness {

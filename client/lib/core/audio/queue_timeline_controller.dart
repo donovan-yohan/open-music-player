@@ -599,13 +599,9 @@ class QueueTimelineController {
       queue: _queue,
       playOrder: _playOrder,
     );
-    var model = TimelineModel();
-    for (final cue in timeline.cues) {
-      final clip = cue.toMixClip();
-      if (!model.canPlace(clip.placement)) return false;
-      model = model.addClip(clip);
-    }
-    return true;
+    final clips = timeline.cues.map((cue) => cue.toMixClip()).toList();
+    final model = TimelineModel(clips: clips);
+    return model.clips.length == clips.length;
   }
 
   void _rebuildPlayOrderKeepCurrent() {
@@ -651,6 +647,12 @@ class QueueTimelineController {
 
   int? _queueIndexForGlobal(int globalMs) {
     if (_queue.isEmpty || _playOrder.isEmpty) return null;
+    final dominant = _engine.model.dominantClipAt(globalMs);
+    final queueItemId = dominant?.queueItemId;
+    if (queueItemId != null) {
+      final cue = _cueTimeline.cueForQueueItemId(queueItemId);
+      if (cue != null) return cue.queueIndex;
+    }
     return _cueTimeline
             .currentCueAt(Duration(milliseconds: globalMs))
             ?.queueIndex ??
@@ -813,7 +815,7 @@ class QueueTimelineController {
         localPosition: localPosition,
         localDuration: cue?.selectedDuration ?? Duration.zero,
         globalPosition: Duration(milliseconds: globalMs),
-        globalDuration: _cueTimeline.duration,
+        globalDuration: Duration(milliseconds: _engine.durationMs),
         playing: _engine.isPlaying,
         processingState: _processingState,
         activeVoiceCount: _engine.pool.activeVoiceCount,
