@@ -99,11 +99,11 @@ extension on SnapMarkerMode {
         SnapMarkerMode.beat16 => 16,
       };
 
-  int get snapMs => switch (this) {
-        SnapMarkerMode.free => 1,
-        SnapMarkerMode.beat1 => 500,
-        SnapMarkerMode.beat4 => 2000,
-        SnapMarkerMode.beat16 => 8000,
+  int get beatStride => switch (this) {
+        SnapMarkerMode.free => 0,
+        SnapMarkerMode.beat1 => 1,
+        SnapMarkerMode.beat4 => 4,
+        SnapMarkerMode.beat16 => 16,
       };
 
   String get label => switch (this) {
@@ -112,6 +112,152 @@ extension on SnapMarkerMode {
         SnapMarkerMode.beat4 => '4 beats',
         SnapMarkerMode.beat16 => '16 beats',
       };
+}
+
+class _SnapGrid {
+  final List<int> markersMs;
+  final int? intervalMs;
+
+  const _SnapGrid({
+    this.markersMs = const [],
+    this.intervalMs,
+  });
+}
+
+@visibleForTesting
+int snapTimelineStartMsToMusicalGrid({
+  required int requestedStartMs,
+  required SnapMarkerMode mode,
+  required TimelineClip clip,
+  required ClipTempoMetadata tempo,
+}) {
+  final safeRequestedStartMs = math.max(0, requestedStartMs);
+  if (mode == SnapMarkerMode.free) return safeRequestedStartMs;
+
+  final grid = _snapGridFor(mode, tempo);
+  final sourceAnchorMs = _nearestMarker(
+        grid.markersMs.where(
+          (marker) =>
+              marker >= clip.sourceStartMs && marker <= clip.sourceEndMs,
+        ),
+        clip.sourceStartMs,
+      ) ??
+      clip.sourceStartMs;
+  final anchorDeltaMs = sourceAnchorMs - clip.sourceStartMs;
+  final intervalMs = grid.intervalMs ?? _fallbackSnapIntervalMs(mode);
+  if (intervalMs <= 1) return safeRequestedStartMs;
+
+  final targetAnchorMs = safeRequestedStartMs + anchorDeltaMs;
+  final snappedAnchorMs = _snapToInterval(targetAnchorMs, intervalMs);
+  return math.max(0, snappedAnchorMs - anchorDeltaMs);
+}
+
+@visibleForTesting
+int snapSourceMsToMusicalGrid({
+  required int requestedSourceMs,
+  required SnapMarkerMode mode,
+  required TimelineClip clip,
+  required ClipTempoMetadata tempo,
+}) {
+  final safeRequestedSourceMs =
+      requestedSourceMs.clamp(0, math.max(0, clip.sourceDurationMs)).toInt();
+  if (mode == SnapMarkerMode.free) return safeRequestedSourceMs;
+
+  final grid = _snapGridFor(mode, tempo);
+  final marker = _nearestMarker(
+    grid.markersMs.where(
+      (candidate) =>
+          candidate >= 0 && candidate <= math.max(0, clip.sourceDurationMs),
+    ),
+    safeRequestedSourceMs,
+  );
+  if (marker != null) return marker;
+
+  final intervalMs = grid.intervalMs ?? _fallbackSnapIntervalMs(mode);
+  if (intervalMs <= 1) return safeRequestedSourceMs;
+  return _snapToInterval(safeRequestedSourceMs, intervalMs)
+      .clamp(0, math.max(0, clip.sourceDurationMs))
+      .toInt();
+}
+
+_SnapGrid _snapGridFor(SnapMarkerMode mode, ClipTempoMetadata tempo) {
+  final stride = mode.beatStride;
+  if (stride <= 0) return const _SnapGrid(intervalMs: 1);
+
+  final beats = _sortedUniqueInts(tempo.beatsMs);
+  if (beats.length >= 2) {
+    return _SnapGrid(
+      markersMs: _strideMarkers(beats, stride),
+      intervalMs: _medianIntervalMs(beats) * stride,
+    );
+  }
+
+  final downbeats = _sortedUniqueInts(tempo.downbeatsMs);
+  if (downbeats.isNotEmpty) {
+    final markers = stride <= 4 ? downbeats : _strideMarkers(downbeats, 4);
+    final interval = downbeats.length >= 2
+        ? _medianIntervalMs(downbeats) * (stride <= 4 ? 1 : 4)
+        : null;
+    return _SnapGrid(markersMs: markers, intervalMs: interval);
+  }
+
+  final bpm = tempo.nativeBpm;
+  if (bpm != null && bpm.isFinite && bpm > 0) {
+    return _SnapGrid(intervalMs: (60000 / bpm * stride).round());
+  }
+
+  return _SnapGrid(intervalMs: _fallbackSnapIntervalMs(mode));
+}
+
+List<int> _strideMarkers(List<int> markers, int stride) {
+  if (markers.isEmpty) return const [];
+  if (stride <= 1) return markers;
+  return [
+    for (var i = 0; i < markers.length; i += stride) markers[i],
+  ];
+}
+
+List<int> _sortedUniqueInts(List<int> values) {
+  final sorted = values.where((value) => value >= 0).toSet().toList()..sort();
+  return List.unmodifiable(sorted);
+}
+
+int? _nearestMarker(Iterable<int> markers, int targetMs) {
+  int? nearest;
+  int? nearestDistance;
+  for (final marker in markers) {
+    final distance = (marker - targetMs).abs();
+    if (nearestDistance == null || distance < nearestDistance) {
+      nearest = marker;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
+}
+
+int _medianIntervalMs(List<int> sortedMarkers) {
+  if (sortedMarkers.length < 2) return 0;
+  final intervals = <int>[
+    for (var i = 1; i < sortedMarkers.length; i++)
+      if (sortedMarkers[i] > sortedMarkers[i - 1])
+        sortedMarkers[i] - sortedMarkers[i - 1],
+  ]..sort();
+  if (intervals.isEmpty) return 0;
+  return intervals[intervals.length ~/ 2];
+}
+
+int _fallbackSnapIntervalMs(SnapMarkerMode mode) => switch (mode) {
+      SnapMarkerMode.free => 1,
+      SnapMarkerMode.beat1 => 500,
+      SnapMarkerMode.beat4 => 2000,
+      SnapMarkerMode.beat16 => 8000,
+    };
+
+int _snapToInterval(int valueMs, int intervalMs) {
+  if (intervalMs <= 1) return valueMs;
+  return ((valueMs / intervalMs).round() * intervalMs)
+      .clamp(0, 2147483647)
+      .toInt();
 }
 
 class _LaneModel {
@@ -898,8 +1044,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         : _activeClipDragStartClip;
     if (baseClip == null) return;
     final deltaMs = _timelineDeltaMs(viewport, deltaPx);
-    final snappedStart = _snapTimelineMs(
-      math.max(0, baseClip.timelineStartMs + deltaMs),
+    final snappedStart = snapTimelineStartMsToMusicalGrid(
+      requestedStartMs: math.max(0, baseClip.timelineStartMs + deltaMs),
+      mode: _snapMode,
+      clip: baseClip,
+      tempo: lane.mixClip.tempo,
     );
     if (snappedStart == baseClip.timelineStartMs) return;
     setState(() {
@@ -951,14 +1100,24 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final baseClip = _previewClipFor(lane.track, lane.clip) ?? lane.clip;
     final deltaMs = _timelineDeltaMs(viewport, deltaPx);
     if (deltaMs == 0) return;
+    final requestedSourceMs = switch (edge) {
+      _TrimEdge.start => baseClip.sourceStartMs + deltaMs,
+      _TrimEdge.end => baseClip.sourceEndMs + deltaMs,
+    };
+    final snappedSourceMs = snapSourceMsToMusicalGrid(
+      requestedSourceMs: requestedSourceMs,
+      mode: _snapMode,
+      clip: baseClip,
+      tempo: lane.mixClip.tempo,
+    );
     final next = switch (edge) {
       _TrimEdge.start => baseClip.withSourceRange(
-          sourceStartMs: baseClip.sourceStartMs + deltaMs,
+          sourceStartMs: snappedSourceMs,
           sourceEndMs: baseClip.sourceEndMs,
         ),
       _TrimEdge.end => baseClip.withSourceRange(
           sourceStartMs: baseClip.sourceStartMs,
-          sourceEndMs: baseClip.sourceEndMs + deltaMs,
+          sourceEndMs: snappedSourceMs,
         ),
     };
     if (next == baseClip) return;
@@ -1067,12 +1226,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   int _timelineDeltaMs(TimelineViewport viewport, double deltaXPx) {
     if (!deltaXPx.isFinite || deltaXPx == 0) return 0;
     return ((deltaXPx / viewport.pixelsPerSecond) * 1000).round();
-  }
-
-  int _snapTimelineMs(int ms) {
-    final snapMs = _snapMode.snapMs;
-    if (snapMs <= 1) return ms;
-    return ((ms / snapMs).round() * snapMs).clamp(0, 2147483647).toInt();
   }
 
   Widget _timelineSelectionControls(BuildContext context, _LaneModel lane) {

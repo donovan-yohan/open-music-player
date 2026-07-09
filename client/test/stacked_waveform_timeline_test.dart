@@ -132,6 +132,89 @@ TimelineWaveformPainter _waveformPainter(WidgetTester tester, String trackId) {
 }
 
 void main() {
+  group('musical snap grid', () {
+    final clip = TimelineClip.clamped(
+      id: 'clip_t1',
+      trackId: 't1',
+      sourceDurationMs: 10000,
+      sourceStartMs: 0,
+      sourceEndMs: 10000,
+      timelineStartMs: 0,
+    );
+
+    test('source trim snaps to analyzed beat markers', () {
+      const tempo = ClipTempoMetadata(
+        nativeBpm: 124,
+        beatsMs: [120, 604, 1088, 1572],
+      );
+
+      expect(
+        snapSourceMsToMusicalGrid(
+          requestedSourceMs: 620,
+          mode: SnapMarkerMode.beat1,
+          clip: clip,
+          tempo: tempo,
+        ),
+        604,
+      );
+    });
+
+    test('four-beat trim snap uses every fourth analyzed beat', () {
+      const tempo = ClipTempoMetadata(
+        nativeBpm: 120,
+        beatsMs: [120, 620, 1120, 1620, 2120, 2620, 3120, 3620],
+      );
+
+      expect(
+        snapSourceMsToMusicalGrid(
+          requestedSourceMs: 1980,
+          mode: SnapMarkerMode.beat4,
+          clip: clip,
+          tempo: tempo,
+        ),
+        2120,
+      );
+    });
+
+    test('clip movement snaps with analyzed tempo offset', () {
+      const tempo = ClipTempoMetadata(
+        nativeBpm: 124,
+        beatsMs: [120, 604, 1088, 1572],
+      );
+
+      expect(
+        snapTimelineStartMsToMusicalGrid(
+          requestedStartMs: 1110,
+          mode: SnapMarkerMode.beat1,
+          clip: clip,
+          tempo: tempo,
+        ),
+        1332,
+      );
+    });
+
+    test('free mode preserves requested timing', () {
+      expect(
+        snapTimelineStartMsToMusicalGrid(
+          requestedStartMs: 1110,
+          mode: SnapMarkerMode.free,
+          clip: clip,
+          tempo: ClipTempoMetadata.empty,
+        ),
+        1110,
+      );
+      expect(
+        snapSourceMsToMusicalGrid(
+          requestedSourceMs: 620,
+          mode: SnapMarkerMode.free,
+          clip: clip,
+          tempo: ClipTempoMetadata.empty,
+        ),
+        620,
+      );
+    });
+  });
+
   group('mock waveform fixtures', () {
     test('include near-silence and isolated transient spikes', () {
       final peaks = mockWaveformPeaks('t1');
