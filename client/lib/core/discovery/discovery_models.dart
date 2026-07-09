@@ -335,6 +335,7 @@ class DiscoverySourceQuality {
       'topic_audio' => 'Topic audio',
       'artist_upload' => 'Artist upload',
       'music_video' => 'Music video',
+      'visualizer' => 'Visualizer',
       'live' => 'Live',
       'lyric_video' => 'Lyric video',
       'interview' => 'Interview',
@@ -352,8 +353,7 @@ class DiscoverySourceQuality {
   }
 
   String get debugReason {
-    if (warnings.isNotEmpty &&
-        (recommendation == 'avoid' || recommendation == 'review')) {
+    if (warnings.isNotEmpty && recommendation != 'preferred') {
       return warnings.first;
     }
     if (reasons.isNotEmpty) return reasons.last;
