@@ -385,6 +385,66 @@ void main() {
       expect(clip.tempo.camelot, '8A');
     });
 
+    test(
+        'manual BPM overrides without confidence still enable beat-synced defaults',
+        () {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_manual_trust',
+        queue: [
+          _item(
+            'a',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 118,
+              bpmConfidence: 0.2,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000],
+            ),
+            analysisOverrides: {
+              'bpm': {'value': 120},
+              'downbeats': {
+                'positions_ms': [0, 4000, 8000, 12000, 16000],
+              },
+            },
+          ),
+          _item(
+            'b',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 124,
+              bpmConfidence: 0.2,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000],
+            ),
+            analysisOverrides: {
+              'bpm': {'value': 120},
+              'downbeats': {
+                'positions_ms': [0, 4000, 8000, 12000, 16000],
+              },
+            },
+          ),
+        ],
+      );
+
+      expect(session.clips.map((clip) => clip.tempo.bpmConfidence), [
+        1.0,
+        1.0,
+      ]);
+      expect(session.clips.map((clip) => clip.timelineStartMs), [0, 12000]);
+
+      final model = CueTimeline.fromSession(
+        session: session,
+        queue: [
+          _item('a', seconds: 20),
+          _item('b', seconds: 20),
+        ],
+        playOrder: const [0, 1],
+      ).toTimelineModel();
+
+      expect(model.clips[0].playbackRateAt(16000), closeTo(1.0, 0.0001));
+      expect(model.clips[1].playbackRateAt(16000), closeTo(1.0, 0.0001));
+      expect(model.clips[0].envelope.fadeOutMs, 8000);
+      expect(model.clips[1].envelope.fadeInMs, 8000);
+    });
+
     test('edited placements preserve trims and derive overlap fades', () {
       final timeline = CueTimeline.editedQueue(
         sessionId: 'session_7',
@@ -426,6 +486,7 @@ MediaItem _item(
   String id, {
   required int seconds,
   Map<String, dynamic>? analysisSummary,
+  Map<String, dynamic>? analysisOverrides,
 }) =>
     MediaItem(
       id: id,
@@ -434,6 +495,7 @@ MediaItem _item(
       extras: {
         'url': 'https://example.com/$id.mp3',
         if (analysisSummary != null) 'analysisSummary': analysisSummary,
+        if (analysisOverrides != null) 'analysisOverrides': analysisOverrides,
       },
     );
 

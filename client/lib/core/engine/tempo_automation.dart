@@ -180,9 +180,11 @@ class _ClipTempoOverrides {
       camelot == null;
 
   ClipTempoMetadata applyTo(ClipTempoMetadata base) {
+    final effectiveBpmConfidence =
+        bpmConfidence ?? (nativeBpm == null ? null : 1.0);
     return ClipTempoMetadata(
       nativeBpm: nativeBpm ?? base.nativeBpm,
-      bpmConfidence: bpmConfidence ?? base.bpmConfidence,
+      bpmConfidence: effectiveBpmConfidence ?? base.bpmConfidence,
       beatsMs: beatsMs ?? base.beatsMs,
       downbeatsMs: downbeatsMs ?? base.downbeatsMs,
       musicalKey: musicalKey ?? base.musicalKey,

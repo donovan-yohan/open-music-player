@@ -168,12 +168,14 @@ class TrackAnalysisOverrides {
 
   TrackAnalysisSummary applyTo(TrackAnalysisSummary base) {
     final source = provenance ?? 'manual_override';
+    final effectiveBpmConfidence =
+        bpmConfidence ?? (bpm == null ? null : 1.0);
     return TrackAnalysisSummary(
       bpm: bpm == null
           ? base.bpm
           : AnalysisValue(
               value: bpm!,
-              confidence: bpmConfidence ?? base.bpm?.confidence,
+              confidence: effectiveBpmConfidence ?? base.bpm?.confidence,
               provenance: source,
             ),
       beatGrid: (bpm == null && beatsMs == null)
@@ -182,7 +184,7 @@ class TrackAnalysisOverrides {
               bpm: bpm ?? base.beatGrid?.bpm,
               offsetMs: base.beatGrid?.offsetMs,
               beatsMs: beatsMs ?? base.beatGrid?.beatsMs ?? const [],
-              confidence: bpmConfidence ?? base.beatGrid?.confidence,
+              confidence: effectiveBpmConfidence ?? base.beatGrid?.confidence,
               provenance: source,
             ),
       downbeats: downbeatsMs == null
@@ -221,17 +223,21 @@ class TrackAnalysisOverrides {
 
   Map<String, dynamic> toJson() {
     final source = provenance ?? 'manual_override';
+    final effectiveBpmConfidence =
+        bpmConfidence ?? (bpm == null ? null : 1.0);
     return {
       if (bpm != null)
         'bpm': {
           'value': bpm,
-          if (bpmConfidence != null) 'confidence': bpmConfidence,
+          if (effectiveBpmConfidence != null)
+            'confidence': effectiveBpmConfidence,
           'provenance': source,
         },
-      if (bpm != null || bpmConfidence != null || beatsMs != null)
+      if (bpm != null || effectiveBpmConfidence != null || beatsMs != null)
         'beat_grid': {
           if (bpm != null) 'bpm': bpm,
-          if (bpmConfidence != null) 'confidence': bpmConfidence,
+          if (effectiveBpmConfidence != null)
+            'confidence': effectiveBpmConfidence,
           if (beatsMs != null) 'beats_ms': beatsMs,
           'provenance': source,
         },
