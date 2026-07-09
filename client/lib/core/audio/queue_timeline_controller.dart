@@ -101,6 +101,7 @@ class QueueTimelineController {
     int initialIndex = 0,
     Duration initialPosition = Duration.zero,
     bool preserveTimelineEdits = false,
+    int? reflowDefaultTransitionsFromIndex,
     MixSession? session,
   }) async {
     await _enqueueCommand(
@@ -109,6 +110,7 @@ class QueueTimelineController {
         initialIndex: initialIndex,
         initialPosition: initialPosition,
         preserveTimelineEdits: preserveTimelineEdits,
+        reflowDefaultTransitionsFromIndex: reflowDefaultTransitionsFromIndex,
         session: session,
       ),
     );
@@ -119,6 +121,7 @@ class QueueTimelineController {
     int initialIndex = 0,
     Duration initialPosition = Duration.zero,
     bool preserveTimelineEdits = false,
+    int? reflowDefaultTransitionsFromIndex,
     MixSession? session,
   }) async {
     await start();
@@ -131,6 +134,11 @@ class QueueTimelineController {
             ? _session.normalizedForQueue(_queue)
             : MixSession.fromQueue(sessionId: _sessionId, queue: _queue))
         : session.normalizedForQueue(_queue);
+    if (reflowDefaultTransitionsFromIndex != null) {
+      _session = _session.reflowDefaultTransitionsFrom(
+        reflowDefaultTransitionsFromIndex,
+      );
+    }
     if (_queue.isEmpty) {
       _currentIndex = null;
       _session = MixSession.empty(sessionId: _sessionId);
