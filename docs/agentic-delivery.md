@@ -51,6 +51,7 @@ exercise the same behavior:
 - `scripts/dev isolated`
 - `scripts/smoke isolated`
 - `scripts/smoke playback-isolated`
+- `scripts/dogfood-android build|install|all`
 
 Heavy mobile build checks can stay targeted, but the handoff must say whether
 the build was local, CI artifact, emulator, or physical device.
@@ -70,6 +71,10 @@ Record:
 - backend URL and health check used by the device;
 - relevant log tail path under `/tmp`, not pasted raw into the PR.
 
+Use `scripts/dogfood-android build` for reproducible APK evidence and
+`scripts/dogfood-android all` when an authorized Android device is reachable
+through local or remote ADB.
+
 ## Resource Closeout
 
 Before final handoff, name any resources created or reused:
@@ -78,6 +83,7 @@ Before final handoff, name any resources created or reused:
 - Docker containers or Compose projects;
 - emulator/physical device state;
 - APK hosts or temporary artifact directories;
+- Android dogfood evidence directories from `scripts/dogfood-android`;
 - background processes, logs, and temporary worktrees.
 
 Stop temporary resources unless the user explicitly wants them left running.

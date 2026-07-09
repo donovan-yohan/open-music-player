@@ -19,6 +19,7 @@
 - Architecture guardrails:
 - Runtime/API/device smoke:
 - Logs/artifacts:
+- Android dogfood evidence path, if relevant:
 
 ## Gate classification
 
@@ -40,6 +41,7 @@
 - Head SHA:
 - Commands + exit codes:
 - Build/deploy/device IDs:
+- Android APK SHA256 / `scripts/dogfood-android` evidence path:
 - Caveats/follow-ups:
 
 See `docs/agentic-delivery.md` for the exact-head gate policy and mobile/audio

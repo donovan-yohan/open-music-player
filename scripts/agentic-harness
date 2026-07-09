@@ -114,14 +114,17 @@ def check_required_files() -> None:
         "AGENTS.md",
         "docs/context-map.md",
         "docs/agentic-delivery.md",
+        "docs/adr/0001-playback-timeline-source-of-truth.md",
         "scripts/dev",
         "scripts/test",
         "scripts/lint",
         "scripts/build",
         "scripts/smoke",
+        "scripts/dogfood-android",
         "scripts/agentic-harness",
         ".github/workflows/ci.yml",
         ".github/pull_request_template.md",
+        ".github/ISSUE_TEMPLATE/agentic-work-packet.md",
     ]:
         if not (ROOT / name).exists():
             fail(f"{name}: required delivery scaffold file is missing")
@@ -134,6 +137,7 @@ def check_executable_scripts() -> None:
         "scripts/lint",
         "scripts/build",
         "scripts/smoke",
+        "scripts/dogfood-android",
         "scripts/agentic-harness",
     ]:
         path = ROOT / name
@@ -150,6 +154,8 @@ def check_agent_docs() -> None:
             "Agentic Engineering Rule",
             "docs/agentic-delivery.md",
             "scripts/agentic-harness",
+            "scripts/dogfood-android",
+            "docs/adr/0001-playback-timeline-source-of-truth.md",
         ],
         "docs/context-map.md": [
             "Harness Matrix",
@@ -157,6 +163,8 @@ def check_agent_docs() -> None:
             "Audio Analysis And DJ Waveforms",
             "Agentic Delivery And Release Gates",
             "scripts/agentic-harness",
+            "scripts/dogfood-android",
+            "docs/adr/0001-playback-timeline-source-of-truth.md",
         ],
         "docs/agentic-delivery.md": [
             "Work Packet",
@@ -164,6 +172,7 @@ def check_agent_docs() -> None:
             "Mobile And Audio Dogfood",
             "Resource Closeout",
             "scripts/lint delivery",
+            "scripts/dogfood-android",
         ],
         ".github/pull_request_template.md": [
             "Intent",
@@ -171,7 +180,22 @@ def check_agent_docs() -> None:
             "Harness / backpressure",
             "Gate classification",
             "Exact-head evidence",
+            "Android APK SHA256",
             "docs/agentic-delivery.md",
+        ],
+        ".github/ISSUE_TEMPLATE/agentic-work-packet.md": [
+            "Intent",
+            "Context Map",
+            "Harness / Backpressure",
+            "Risk Seams",
+            "Acceptance",
+        ],
+        "docs/adr/0001-playback-timeline-source-of-truth.md": [
+            "QueueTimelineController",
+            "PlaybackSnapshot",
+            "TimelineModel",
+            "VoicePool",
+            "scripts/agentic-harness",
         ],
     }
     for name, phrases in required.items():
@@ -258,6 +282,61 @@ def check_secret_scan(files: list[Path]) -> None:
                 fail(f"{rel(path)}:{line_no}: secret-like value")
 
 
+def check_architecture_guardrails(files: list[Path]) -> None:
+    canonical_files = [
+        "backend/internal/db/db.go",
+        "client/lib/core/audio/playback_state.dart",
+        "client/lib/core/audio/queue_timeline_controller.dart",
+        "client/lib/core/audio/playback_session.dart",
+        "client/lib/core/audio/mix_audio_handler.dart",
+        "client/lib/core/engine/playback_engine.dart",
+        "client/lib/core/engine/timeline_clock.dart",
+        "client/lib/core/engine/timeline_model.dart",
+        "client/lib/core/engine/voice_pool.dart",
+    ]
+    for name in canonical_files:
+        if not (ROOT / name).exists():
+            fail(f"{name}: required architecture guardrail file is missing")
+
+    playback_state = ROOT / "client/lib/core/audio/playback_state.dart"
+    if playback_state.exists():
+        text = playback_state.read_text(errors="replace")
+        if "QueueTimelineController _queueController" not in text:
+            fail("client/lib/core/audio/playback_state.dart: must own QueueTimelineController as playback source of truth")
+        if "PlaybackSnapshot get snapshot => _queueController.snapshot" not in text:
+            fail("client/lib/core/audio/playback_state.dart: public snapshot must come from QueueTimelineController")
+
+    queue_controller = ROOT / "client/lib/core/audio/queue_timeline_controller.dart"
+    if queue_controller.exists():
+        text = queue_controller.read_text(errors="replace")
+        for phrase in [
+            "PlaybackSnapshot get snapshot",
+            "BehaviorSubject<MediaItem?> _currentMediaItemSubject",
+            "TimelineModel",
+        ]:
+            if phrase not in text:
+                fail(f"client/lib/core/audio/queue_timeline_controller.dart: missing canonical playback phrase {phrase!r}")
+
+    for path in files:
+        if path.suffix.lower() != ".dart":
+            continue
+        path_rel = rel(path)
+        text = read_text(path) or ""
+        if (
+            "_currentMediaItemSubject" in text
+            and path_rel != "client/lib/core/audio/queue_timeline_controller.dart"
+        ):
+            fail(f"{path_rel}: current media item subject must stay inside QueueTimelineController")
+        if re.search(r"class\s+\w*(?:Playback|Transport)Controller\b", text):
+            if path_rel != "client/lib/core/audio/queue_timeline_controller.dart":
+                fail(f"{path_rel}: do not introduce a second playback/transport controller")
+
+    if (ROOT / "Cargo.toml").exists():
+        fail("Cargo.toml: root Rust/sqlx migration stack must not be reintroduced")
+    if (ROOT / "migrations").exists():
+        fail("migrations/: root migrations directory must not be reintroduced; backend/internal/db/db.go is schema authority")
+
+
 def main() -> int:
     files = repo_files()
     check_required_files()
@@ -268,6 +347,7 @@ def main() -> int:
     check_python_syntax(files)
     check_bash_syntax(files)
     check_secret_scan(files)
+    check_architecture_guardrails(files)
 
     if FAILURES:
         print("AGENTIC HARNESS FAILED")

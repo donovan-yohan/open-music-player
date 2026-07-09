@@ -19,6 +19,22 @@ Artifacts are retained for 7 days.
 3. If prompted, allow installs from the browser/file manager used for the download.
 4. Install the app.
 
+## Local dogfood script
+
+When Android SDK and ADB are available, prefer the repo script so build markers,
+APK hash, device list, and log paths are recorded consistently:
+
+```bash
+OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
+scripts/dogfood-android build
+
+ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037 \
+OMP_API_BASE_URL=http://dev.fish-rattlesnake.ts.net:8080/api/v1 \
+scripts/dogfood-android all
+```
+
+The script writes handoff evidence under `/tmp/open-music-player-dogfood-*`.
+
 ## Smoke checklist
 
 - Launch the app.
@@ -27,6 +43,7 @@ Artifacts are retained for 7 days.
 - Exercise the target PR flow.
 - For OMP queue/playback work, verify search, queue display, playback URL/playback state, reorder/slide behavior, and error display for unavailable audio.
 - Report the PR number, artifact name, device model/Android version, backend URL, and pass/fail notes.
+- For local builds, include the `scripts/dogfood-android` evidence path and APK SHA256.
 
 ## Local devbox warning
 

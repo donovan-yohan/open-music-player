@@ -13,8 +13,10 @@ physical mobile dogfood path continue to work together.
 - Audio playback truth -> `client/lib/core/audio/`, `client/lib/core/engine/`, `client/lib/models/timeline_*`, `client/lib/widgets/*timeline*`.
 - Analysis/waveforms/DJ metadata -> `backend/internal/analyzer/`, `backend/cmd/audio-analyzer/`, `backend/internal/db/audio_analysis_repository.go`, `client/lib/models/track_analysis.dart`, `client/lib/models/waveform.dart`.
 - Local/tailnet dogfood -> `scripts/local-low-memory.sh`, `scripts/local-e2e-smoke.py`, `scripts/tailnet-staging.sh`, `docs/LOW_MEMORY_LOCAL_DEV.md`, `docs/TAILNET_STAGING.md`.
+- Android/audio dogfood -> `scripts/dogfood-android`, `docs/ANDROID_PR_ARTIFACTS.md`.
 - Agentic delivery gates -> `docs/agentic-delivery.md`,
   `.github/pull_request_template.md`, `scripts/agentic-harness`.
+- Playback timeline ADR -> `docs/adr/0001-playback-timeline-source-of-truth.md`.
 
 See `docs/context-map.md` for the fuller map and harness table.
 
@@ -49,6 +51,7 @@ See `docs/context-map.md` for the fuller map and harness table.
 - Local backend smoke: `scripts/smoke`
 - Isolated backend smoke: `scripts/smoke isolated`
 - Download/worker smoke: `scripts/smoke e2e`
+- Android dogfood APK/evidence: `scripts/dogfood-android build|install|all`
 
 Use RTK wrappers for noisy output when running these through Codex.
 
@@ -58,6 +61,8 @@ Use RTK wrappers for noisy output when running these through Codex.
 - Do not add a second playback/session controller; extend the existing timeline
   controller and immutable snapshot model.
 - Do not make queue/list/timeline UI own independent playback truth.
+- Keep playback/timeline changes aligned with
+  `docs/adr/0001-playback-timeline-source-of-truth.md`.
 - Do not bypass the unified authenticated API client for new client features
   unless the offline/local-storage boundary is explicit.
 - Do not let docs promise shipped behavior without a code/test/device path.
