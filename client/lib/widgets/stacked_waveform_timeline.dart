@@ -87,13 +87,14 @@ class StackedWaveformTimeline extends StatefulWidget {
       _StackedWaveformTimelineState();
 }
 
-enum SnapMarkerMode { free, beat1, beat4, beat16 }
+enum SnapMarkerMode { free, downbeat, beat1, beat4, beat16 }
 
 enum _TrimEdge { start, end }
 
 extension on SnapMarkerMode {
   int get markerCount => switch (this) {
         SnapMarkerMode.free => 0,
+        SnapMarkerMode.downbeat => 4,
         SnapMarkerMode.beat1 => 1,
         SnapMarkerMode.beat4 => 4,
         SnapMarkerMode.beat16 => 16,
@@ -101,6 +102,7 @@ extension on SnapMarkerMode {
 
   int get beatStride => switch (this) {
         SnapMarkerMode.free => 0,
+        SnapMarkerMode.downbeat => 0,
         SnapMarkerMode.beat1 => 1,
         SnapMarkerMode.beat4 => 4,
         SnapMarkerMode.beat16 => 16,
@@ -108,6 +110,7 @@ extension on SnapMarkerMode {
 
   String get label => switch (this) {
         SnapMarkerMode.free => 'Free',
+        SnapMarkerMode.downbeat => 'Downbeat',
         SnapMarkerMode.beat1 => '1 beat',
         SnapMarkerMode.beat4 => '4 beats',
         SnapMarkerMode.beat16 => '16 beats',
@@ -179,6 +182,29 @@ int snapSourceMsToMusicalGrid({
 }
 
 _SnapGrid _snapGridFor(SnapMarkerMode mode, ClipTempoMetadata tempo) {
+  if (mode == SnapMarkerMode.downbeat) {
+    final downbeats = _sortedUniqueInts(tempo.downbeatsMs);
+    if (downbeats.isNotEmpty) {
+      return _SnapGrid(
+        markersMs: downbeats,
+        intervalMs: downbeats.length >= 2
+            ? _medianIntervalMs(downbeats)
+            : _fourBeatIntervalMs(tempo),
+      );
+    }
+
+    final beats = _sortedUniqueInts(tempo.beatsMs);
+    if (beats.length >= 2) {
+      return _SnapGrid(
+        markersMs: _strideMarkers(beats, 4),
+        intervalMs: _medianIntervalMs(beats) * 4,
+      );
+    }
+
+    final interval = _fourBeatIntervalMs(tempo);
+    return _SnapGrid(intervalMs: interval ?? _fallbackSnapIntervalMs(mode));
+  }
+
   final stride = mode.beatStride;
   if (stride <= 0) return const _SnapGrid(intervalMs: 1);
 
@@ -205,6 +231,14 @@ _SnapGrid _snapGridFor(SnapMarkerMode mode, ClipTempoMetadata tempo) {
   }
 
   return _SnapGrid(intervalMs: _fallbackSnapIntervalMs(mode));
+}
+
+int? _fourBeatIntervalMs(ClipTempoMetadata tempo) {
+  final bpm = tempo.nativeBpm;
+  if (bpm != null && bpm.isFinite && bpm > 0) {
+    return (60000 / bpm * 4).round();
+  }
+  return null;
 }
 
 List<int> _strideMarkers(List<int> markers, int stride) {
@@ -244,6 +278,7 @@ int _medianIntervalMs(List<int> sortedMarkers) {
 
 int _fallbackSnapIntervalMs(SnapMarkerMode mode) => switch (mode) {
       SnapMarkerMode.free => 1,
+      SnapMarkerMode.downbeat => 2000,
       SnapMarkerMode.beat1 => 500,
       SnapMarkerMode.beat4 => 2000,
       SnapMarkerMode.beat16 => 8000,
@@ -284,7 +319,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   static const double _scrubEdgeScrollZonePx = 56;
   static const double _scrubMaxEdgeScrollPx = 32;
 
-  SnapMarkerMode _snapMode = SnapMarkerMode.beat1;
+  SnapMarkerMode _snapMode = SnapMarkerMode.downbeat;
   double _zoom = 1.0;
   int? _manualOffsetMs;
   String? _selectedTrackId;

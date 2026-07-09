@@ -205,6 +205,24 @@ void main() {
       );
     });
 
+    test('downbeat trim snap prefers analyzed downbeat markers', () {
+      const tempo = ClipTempoMetadata(
+        nativeBpm: 120,
+        beatsMs: [0, 500, 1000, 1500, 2000, 2500, 3000, 3500],
+        downbeatsMs: [250, 2250, 4250, 6250],
+      );
+
+      expect(
+        snapSourceMsToMusicalGrid(
+          requestedSourceMs: 2380,
+          mode: SnapMarkerMode.downbeat,
+          clip: clip,
+          tempo: tempo,
+        ),
+        2250,
+      );
+    });
+
     test('clip movement snaps with analyzed tempo offset', () {
       const tempo = ClipTempoMetadata(
         nativeBpm: 124,
@@ -219,6 +237,42 @@ void main() {
           tempo: tempo,
         ),
         1332,
+      );
+    });
+
+    test('downbeat movement aligns source downbeat with global phrase grid',
+        () {
+      const tempo = ClipTempoMetadata(
+        nativeBpm: 120,
+        downbeatsMs: [500, 4500, 8500],
+      );
+
+      expect(
+        snapTimelineStartMsToMusicalGrid(
+          requestedStartMs: 3700,
+          mode: SnapMarkerMode.downbeat,
+          clip: clip,
+          tempo: tempo,
+        ),
+        3500,
+      );
+    });
+
+    test('downbeat mode falls back to every fourth beat when downbeats miss',
+        () {
+      const tempo = ClipTempoMetadata(
+        nativeBpm: 120,
+        beatsMs: [120, 620, 1120, 1620, 2120, 2620, 3120, 3620],
+      );
+
+      expect(
+        snapSourceMsToMusicalGrid(
+          requestedSourceMs: 1980,
+          mode: SnapMarkerMode.downbeat,
+          clip: clip,
+          tempo: tempo,
+        ),
+        2120,
       );
     });
 
@@ -795,9 +849,14 @@ void main() {
       findsOneWidget,
     );
     expect(find.byKey(const ValueKey('timeline_snap_free')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('timeline_snap_downbeat')),
+      findsOneWidget,
+    );
     expect(find.byKey(const ValueKey('timeline_snap_beat1')), findsOneWidget);
     expect(find.byKey(const ValueKey('timeline_snap_beat4')), findsOneWidget);
     expect(find.byKey(const ValueKey('timeline_snap_beat16')), findsOneWidget);
+    expect(find.text('Downbeat'), findsOneWidget);
     expect(find.text('1 beat'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('timeline_snap_beat16')));
