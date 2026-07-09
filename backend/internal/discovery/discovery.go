@@ -119,6 +119,7 @@ type Service struct {
 	providers          map[string]Provider
 	defaultProviders   []string
 	musicCatalog       MusicCatalog
+	sourceQualityJudge SourceQualityJudge
 	overallTimeout     time.Duration
 	perProviderTimeout time.Duration
 }
@@ -127,6 +128,7 @@ type ServiceConfig struct {
 	Providers          []Provider
 	DefaultProviders   []string
 	MusicCatalog       MusicCatalog
+	SourceQualityJudge SourceQualityJudge
 	OverallTimeout     time.Duration
 	PerProviderTimeout time.Duration
 }
@@ -149,7 +151,14 @@ func NewService(cfg ServiceConfig) *Service {
 	if cfg.PerProviderTimeout <= 0 {
 		cfg.PerProviderTimeout = 3 * time.Second
 	}
-	return &Service{providers: providers, defaultProviders: defaults, musicCatalog: cfg.MusicCatalog, overallTimeout: cfg.OverallTimeout, perProviderTimeout: cfg.PerProviderTimeout}
+	return &Service{
+		providers:          providers,
+		defaultProviders:   defaults,
+		musicCatalog:       cfg.MusicCatalog,
+		sourceQualityJudge: cfg.SourceQualityJudge,
+		overallTimeout:     cfg.OverallTimeout,
+		perProviderTimeout: cfg.PerProviderTimeout,
+	}
 }
 
 func NewDefaultService() *Service {
@@ -235,7 +244,7 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 	for _, providerName := range sourceProviders {
 		resp.Results = append(resp.Results, providerItems[providerName]...)
 	}
-	resp.Results = rankSourceCandidates(query, resp.Results)
+	resp.Results = rankSourceCandidatesWithJudge(ctx, query, resp.Results, s.sourceQualityJudge)
 	sections, catalogSummary := s.buildSections(ctx, query, limit, resp.Results, includeCatalog)
 	resp.Sections = sections
 	if catalogSummary != nil {
