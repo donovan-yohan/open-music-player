@@ -6,10 +6,12 @@ import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
 import '../core/audio/playback_context.dart';
+import '../core/audio/playback_session.dart';
 import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
 import '../models/track.dart';
 import '../models/track_analysis.dart';
+import '../models/trim_range.dart';
 import '../providers/queue_provider.dart';
 import '../shared/widgets/track_tile.dart';
 import '../widgets/queue_item.dart';
@@ -104,6 +106,7 @@ class _PlaybackViewState {
   const _PlaybackViewState({
     required this.playback,
     required this.queue,
+    required this.cues,
     required this.currentIndex,
     required this.playbackContext,
     required this.timelineModel,
@@ -117,6 +120,7 @@ class _PlaybackViewState {
     return _PlaybackViewState(
       playback: playback,
       queue: playback.queue,
+      cues: snapshot.cues,
       currentIndex: playback.currentIndex,
       playbackContext: playback.playbackContext,
       timelineModel: playback.timelineModel,
@@ -130,6 +134,7 @@ class _PlaybackViewState {
 
   final PlaybackState playback;
   final List<audio_service.MediaItem> queue;
+  final List<PlaybackCue> cues;
   final int? currentIndex;
   final PlaybackContext? playbackContext;
   final TimelineModel timelineModel;
@@ -143,6 +148,7 @@ class _PlaybackViewState {
   bool hasSameStructure(_PlaybackViewState other) {
     return identical(playback, other.playback) &&
         identical(queue, other.queue) &&
+        identical(cues, other.cues) &&
         currentIndex == other.currentIndex &&
         playbackContext == other.playbackContext &&
         identical(timelineModel, other.timelineModel) &&
@@ -446,8 +452,12 @@ class _QueueScreenState extends State<QueueScreen> {
       playback: playback,
       timelineModel: playbackView.timelineModel,
       queue: queue,
+      cues: playbackView.cues,
       currentIndex: currentIndex,
     );
+    if (timelineTracks == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
     final current = timelineTracks.current;
     final previous = timelineTracks.previous;
     final upcoming = timelineTracks.upcoming;
@@ -459,11 +469,24 @@ class _QueueScreenState extends State<QueueScreen> {
       upcomingTracks: upcoming,
       peaksFor: provider.waveformPeaksFor,
       waveformFor: provider.waveformFor,
-      trimRangeFor: (track) =>
-          playback.trimRangeForQueueIndex(_playbackQueueIndex(track)),
-      clipFor: (track, fallback) =>
-          playback.timelineClipForQueueIndex(_playbackQueueIndex(track)) ??
-          fallback,
+      trimRangeFor: (track) {
+        final queueIndex = _playbackQueueIndexForQueueItemId(
+          playback,
+          track.queueItemId,
+        );
+        return queueIndex == null
+            ? TrimRange.full(track.durationMs)
+            : playback.trimRangeForQueueIndex(queueIndex);
+      },
+      clipFor: (track, fallback) {
+        final queueIndex = _playbackQueueIndexForQueueItemId(
+          playback,
+          track.queueItemId,
+        );
+        return queueIndex == null
+            ? fallback
+            : playback.timelineClipForQueueIndex(queueIndex) ?? fallback;
+      },
       timelineModel: playbackView.timelineModel,
       pitchFallbackClipIds: playbackView.pitchFallbackClipIds,
       transitionSnapMode: playbackView.transitionSnapMode,
@@ -473,33 +496,48 @@ class _QueueScreenState extends State<QueueScreen> {
       onScrubUpdate: playback.updateTimelineScrub,
       onScrubEnd: playback.endTimelineScrub,
       onTimelineStartChanged: (track, ms) {
-        return _pauseThenEditTimeline(
+        return _pauseThenEditPlaybackQueueItem(
           playback,
-          () => playback.setQueueTimelineStartMs(
-            _playbackQueueIndex(track),
+          track.queueItemId,
+          (queueItemId) => playback.setQueueTimelineStartMsByQueueItemId(
+            queueItemId,
             ms,
             snapToDownbeat: true,
           ),
         );
       },
       onTrimStartChanged: (track, ms) {
-        return _pauseThenEditTimeline(
+        return _pauseThenEditPlaybackQueueItem(
           playback,
-          () => playback.setQueueTrimStartMs(_playbackQueueIndex(track), ms),
+          track.queueItemId,
+          (queueItemId) => playback.setQueueTrimStartMsByQueueItemId(
+            queueItemId,
+            ms,
+          ),
         );
       },
       onTrimEndChanged: (track, ms) {
-        return _pauseThenEditTimeline(
+        return _pauseThenEditPlaybackQueueItem(
           playback,
-          () => playback.setQueueTrimEndMs(_playbackQueueIndex(track), ms),
+          track.queueItemId,
+          (queueItemId) => playback.setQueueTrimEndMsByQueueItemId(
+            queueItemId,
+            ms,
+          ),
         );
       },
       onMoveEarlier: (track) => _movePlaybackTimelineTrack(playback, track, -1),
       onMoveLater: (track) => _movePlaybackTimelineTrack(playback, track, 1),
-      onPitchModeChanged: (track, pitchMode) => playback.setQueuePitchMode(
-        _playbackQueueIndex(track),
-        pitchMode,
-      ),
+      onPitchModeChanged: (track, pitchMode) {
+        return _pauseThenEditPlaybackQueueItem(
+          playback,
+          track.queueItemId,
+          (queueItemId) => playback.setQueuePitchModeByQueueItemId(
+            queueItemId,
+            pitchMode,
+          ),
+        );
+      },
       onTransitionSnapModeChanged: (mode) {
         _pauseThenEditTimeline(
           playback,
@@ -518,29 +556,37 @@ class _QueueScreenState extends State<QueueScreen> {
     );
   }
 
-  _PlaybackTimelineTracks _playbackTimelineTracks({
+  _PlaybackTimelineTracks? _playbackTimelineTracks({
     required QueueProvider provider,
     required PlaybackState playback,
     required TimelineModel timelineModel,
     required List<audio_service.MediaItem> queue,
+    required List<PlaybackCue> cues,
     required int currentIndex,
   }) {
     final cached = _playbackTimelineTracksCache;
     if (cached != null &&
         identical(cached.queue, queue) &&
+        identical(cached.cues, cues) &&
         cached.currentIndex == currentIndex &&
         cached.analysisRevision == provider.analysisRevision &&
         identical(cached.timelineModel, timelineModel)) {
       return cached;
     }
 
-    final currentSource = _playbackTrackFor(queue[currentIndex], currentIndex);
-    final previousSource = currentIndex > 0
-        ? _playbackTrackFor(queue[currentIndex - 1], currentIndex - 1)
-        : null;
+    final cuesByQueueIndex = _playbackCuesByQueueIndex(queue, cues);
+    final currentCue = cuesByQueueIndex[currentIndex];
+    if (currentCue == null) return null;
+    final currentSource = _playbackTrackFor(queue[currentIndex], currentCue);
+    final previousCue =
+        currentIndex > 0 ? cuesByQueueIndex[currentIndex - 1] : null;
+    final previousSource = previousCue == null
+        ? null
+        : _playbackTrackFor(queue[currentIndex - 1], previousCue);
     final upcomingSources = [
       for (var index = currentIndex + 1; index < queue.length; index++)
-        _playbackTrackFor(queue[index], index),
+        if (cuesByQueueIndex[index] case final cue?)
+          _playbackTrackFor(queue[index], cue),
     ];
     final hydrationSources = [
       if (previousSource != null) previousSource,
@@ -578,6 +624,7 @@ class _QueueScreenState extends State<QueueScreen> {
 
     final result = _PlaybackTimelineTracks(
       queue: queue,
+      cues: cues,
       currentIndex: currentIndex,
       analysisRevision: provider.analysisRevision,
       timelineModel: timelineModel,
@@ -618,11 +665,31 @@ class _QueueScreenState extends State<QueueScreen> {
     }
   }
 
-  Track _playbackTrackFor(audio_service.MediaItem item, int index) {
+  Map<int, PlaybackCue> _playbackCuesByQueueIndex(
+    List<audio_service.MediaItem> queue,
+    List<PlaybackCue> cues,
+  ) {
+    final result = <int, PlaybackCue>{};
+    for (final cue in cues) {
+      final index = cue.queueIndex;
+      if (index < 0 || index >= queue.length || result.containsKey(index)) {
+        continue;
+      }
+      final item = queue[index];
+      if (cue.trackId != item.id && cue.mediaItem.id != item.id) continue;
+      result[index] = cue;
+    }
+    return result;
+  }
+
+  Track _playbackTrackFor(
+    audio_service.MediaItem item,
+    PlaybackCue cue,
+  ) {
     final duration = item.duration ?? Duration.zero;
     final track = Track(
-      id: 'playback_queue_$index',
-      queueItemId: index.toString(),
+      id: cue.queueItemId,
+      queueItemId: cue.queueItemId,
       playbackTrackId: item.id,
       title: item.title,
       artist: item.artist,
@@ -647,7 +714,11 @@ class _QueueScreenState extends State<QueueScreen> {
       final trackId = _analysisTrackId(track);
       if (analysis == null || trackId == null) continue;
 
-      final queueIndex = _playbackQueueIndex(track);
+      final queueIndex = _playbackQueueIndexForQueueItemId(
+        playback,
+        track.queueItemId,
+      );
+      if (queueIndex == null) continue;
       if (queueIndex < 0 || queueIndex >= queue.length) continue;
       final nextTempo = _tempoForAnalysis(analysis);
       if (!_mediaItemNeedsAnalysisRefresh(queue[queueIndex], nextTempo) &&
@@ -659,11 +730,19 @@ class _QueueScreenState extends State<QueueScreen> {
         continue;
       }
 
-      final refreshKey = '$queueIndex:$trackId:${nextTempo.hashCode}';
+      final refreshKey = '${track.queueItemId}:$trackId:${nextTempo.hashCode}';
       if (!_analysisRefreshesInFlight.add(refreshKey)) continue;
 
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) {
+          _analysisRefreshesInFlight.remove(refreshKey);
+          return;
+        }
+        final latestQueueIndex = _playbackQueueIndexForQueueItemId(
+          playback,
+          track.queueItemId,
+        );
+        if (latestQueueIndex == null) {
           _analysisRefreshesInFlight.remove(refreshKey);
           return;
         }
@@ -697,14 +776,6 @@ class _QueueScreenState extends State<QueueScreen> {
   ) {
     if (nextTempo.isEmpty || model.clips.isEmpty) return false;
 
-    final queueIndex = _playbackQueueIndex(track);
-    if (queueIndex >= 0 && queueIndex < model.clips.length) {
-      final clip = model.clips[queueIndex];
-      if (_timelineClipMatchesTrack(clip, track)) {
-        return clip.tempo != nextTempo;
-      }
-    }
-
     for (final clip in model.clips) {
       if (_timelineClipMatchesTrack(clip, track)) {
         return clip.tempo != nextTempo;
@@ -714,10 +785,16 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   bool _timelineClipMatchesTrack(MixClip clip, Track track) {
+    final clipQueueItemId = clip.queueItemId;
+    if (track.queueItemId.isNotEmpty &&
+        clipQueueItemId != null &&
+        clipQueueItemId.isNotEmpty) {
+      return clipQueueItemId == track.queueItemId;
+    }
+
     final playbackTrackId = track.playbackTrackId;
     if (playbackTrackId != null && playbackTrackId.isNotEmpty) {
-      return clip.trackId == playbackTrackId ||
-          clip.queueItemId == playbackTrackId;
+      return clip.trackId == playbackTrackId;
     }
 
     final ids = <String>{
@@ -735,8 +812,35 @@ class _QueueScreenState extends State<QueueScreen> {
         overrides: analysis.overrides?.toJson(),
       );
 
-  int _playbackQueueIndex(Track track) =>
-      int.tryParse(track.queueItemId) ?? int.tryParse(track.id) ?? 0;
+  int? _playbackQueueIndexForQueueItemId(
+    PlaybackState playback,
+    String queueItemId,
+  ) {
+    if (queueItemId.isEmpty) return null;
+    PlaybackCue? match;
+    for (final cue in playback.snapshot.cues) {
+      if (cue.queueItemId != queueItemId) continue;
+      if (match != null) return null;
+      match = cue;
+    }
+    if (match == null) return null;
+
+    final index = match.queueIndex;
+    final queue = playback.queue;
+    if (index < 0 || index >= queue.length) return null;
+    final item = queue[index];
+    if (match.trackId != item.id && match.mediaItem.id != item.id) return null;
+    return index;
+  }
+
+  Future<void> _pauseThenEditPlaybackQueueItem(
+    PlaybackState playback,
+    String queueItemId,
+    Future<void> Function(String queueItemId) edit,
+  ) async {
+    await playback.pause();
+    await edit(queueItemId);
+  }
 
   Future<void> _pauseThenEditTimeline(
     PlaybackState playback,
@@ -751,13 +855,14 @@ class _QueueScreenState extends State<QueueScreen> {
     Track track,
     int delta,
   ) {
-    final oldIndex = _playbackQueueIndex(track);
-    final newIndex = (oldIndex + delta).clamp(0, playback.queue.length - 1);
-    if (newIndex == oldIndex) return;
     unawaited(
-      _pauseThenEditTimeline(
+      _pauseThenEditPlaybackQueueItem(
         playback,
-        () => playback.reorderPlaybackQueue(oldIndex, newIndex),
+        track.queueItemId,
+        (queueItemId) => playback.movePlaybackQueueItemByQueueItemId(
+          queueItemId,
+          delta,
+        ),
       ),
     );
   }
@@ -1364,6 +1469,7 @@ class _QueueScreenState extends State<QueueScreen> {
 
 class _PlaybackTimelineTracks {
   final List<audio_service.MediaItem> queue;
+  final List<PlaybackCue> cues;
   final int currentIndex;
   final int analysisRevision;
   final TimelineModel timelineModel;
@@ -1374,6 +1480,7 @@ class _PlaybackTimelineTracks {
 
   const _PlaybackTimelineTracks({
     required this.queue,
+    required this.cues,
     required this.currentIndex,
     required this.analysisRevision,
     required this.timelineModel,

@@ -1590,6 +1590,119 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('pitch edit holds the per-track busy lock', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final completion = Completer<void>();
+    final calls = <String>[];
+    final current = _track('t1', 'Midnight Drive', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: const [],
+      timelineModel: TimelineModel(
+        clips: [_mixClip('t1', 0, 240000)],
+      ),
+      onTimelineStartChanged: (_, __) {},
+      onPitchModeChanged: (_, pitchMode) async {
+        calls.add(pitchMode);
+        await completion.future;
+      },
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_pitch_mode_t1')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_pitch_follows_tempo_t1')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(calls, [pitchModeFollowTempo]);
+    expect(
+      tester
+          .widget<PopupMenuButton<String>>(
+            find.byKey(const ValueKey('timeline_pitch_mode_t1')),
+          )
+          .enabled,
+      isFalse,
+    );
+    expect(
+      tester
+          .getSemantics(
+            find.byKey(const ValueKey('timeline_clip_semantics_t1')),
+          )
+          .label,
+      contains('Saving Midnight Drive timeline edit'),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_pitch_mode_t1')),
+      warnIfMissed: false,
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('timeline_pitch_follows_tempo_t1')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey('timeline_selection_toolbar_t1')),
+      findsOneWidget,
+    );
+    expect(calls, hasLength(1));
+
+    completion.complete();
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<PopupMenuButton<String>>(
+            find.byKey(const ValueKey('timeline_pitch_mode_t1')),
+          )
+          .enabled,
+      isTrue,
+    );
+    semantics.dispose();
+  });
+
+  testWidgets('failed pitch edit reports once and releases its busy lock', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: const [],
+      timelineModel: TimelineModel(
+        clips: [_mixClip('t1', 0, 240000)],
+      ),
+      onPitchModeChanged: (_, __) async {
+        throw StateError('pitch failed');
+      },
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_pitch_mode_t1')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_pitch_follows_tempo_t1')),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isA<StateError>());
+    expect(tester.takeException(), isNull);
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<PopupMenuButton<String>>(
+            find.byKey(const ValueKey('timeline_pitch_mode_t1')),
+          )
+          .enabled,
+      isTrue,
+    );
+  });
+
   testWidgets('floating options panel controls snap marker mode', (
     tester,
   ) async {
@@ -2059,7 +2172,7 @@ void main() {
     expect(
       tester
           .getSemantics(
-            find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+            find.byKey(const ValueKey('timeline_clip_semantics_t1')),
           )
           .label,
       'Move Midnight Drive in timeline',
@@ -2103,6 +2216,96 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('semantic decrease moves an editable incoming clip', (
+    tester,
+  ) async {
+    final starts = <int>[];
+    final semantics = tester.ensureSemantics();
+    const incomingStartMs = 180000;
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: TimelineModel(
+        clips: [
+          _mixClip('t1', 0, 240000),
+          _mixClip('t2', incomingStartMs, 240000),
+        ],
+      ),
+      onTimelineStartChanged: (track, startMs) {
+        if (track.id == 't2') starts.add(startMs);
+      },
+    );
+
+    final node = tester.getSemantics(
+      find.byKey(const ValueKey('timeline_clip_semantics_t2')),
+    );
+    expect(node.getSemanticsData().hasAction(SemanticsAction.decrease), isTrue);
+    tester.binding.performSemanticsAction(
+      ui.SemanticsActionEvent(
+        type: SemanticsAction.decrease,
+        viewId: tester.view.viewId,
+        nodeId: node.id,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(starts, hasLength(1));
+    expect(starts.single, lessThan(incomingStartMs));
+    semantics.dispose();
+  });
+
+  testWidgets('semantic tap selects current lane without moving it', (
+    tester,
+  ) async {
+    final starts = <int>[];
+    final semantics = tester.ensureSemantics();
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 214),
+      upcoming: const [],
+      onTimelineStartChanged: (_, startMs) => starts.add(startMs),
+      onPitchModeChanged: (_, __) {},
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+    );
+
+    final body = find.byKey(const ValueKey('timeline_clip_semantics_t1'));
+    final node = tester.getSemantics(body);
+    final semanticData = node.getSemanticsData();
+    expect(semanticData.hasAction(SemanticsAction.tap), isTrue);
+    expect(semanticData.hasAction(SemanticsAction.increase), isTrue);
+    expect(semanticData.hasAction(SemanticsAction.decrease), isTrue);
+    expect(semanticData.hasAction(SemanticsAction.scrollLeft), isFalse);
+    expect(semanticData.hasAction(SemanticsAction.scrollRight), isFalse);
+    expect(
+      find.byKey(const ValueKey('timeline_selection_toolbar_t1')),
+      findsNothing,
+    );
+
+    tester.binding.performSemanticsAction(
+      ui.SemanticsActionEvent(
+        type: SemanticsAction.tap,
+        viewId: tester.view.viewId,
+        nodeId: node.id,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('timeline_pitch_mode_t1')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('timeline_track_actions_t1')),
+      findsOneWidget,
+    );
+    expect(starts, isEmpty);
+    semantics.dispose();
+  });
+
   testWidgets('non-editable clips describe selection rather than movement', (
     tester,
   ) async {
@@ -2114,14 +2317,19 @@ void main() {
       upcoming: const [],
     );
 
-    expect(
-      tester
-          .getSemantics(
-            find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
-          )
-          .label,
-      'Select Midnight Drive in timeline',
+    final node = tester.getSemantics(
+      find.byKey(const ValueKey('timeline_clip_semantics_t1')),
     );
+    expect(node.label, 'Select Midnight Drive in timeline');
+    expect(
+      node.getSemanticsData().hasAction(SemanticsAction.increase),
+      isFalse,
+    );
+    expect(
+      node.getSemanticsData().hasAction(SemanticsAction.decrease),
+      isFalse,
+    );
+    expect(node.getSemanticsData().hasAction(SemanticsAction.tap), isTrue);
     semantics.dispose();
   });
 
@@ -2589,6 +2797,139 @@ void main() {
         lockedIncoming.timelineStartMs, lessThan(lockedOutgoing.timelineEndMs));
   });
 
+  testWidgets('phone first swipe moves an unselected incoming clip', (
+    tester,
+  ) async {
+    final starts = <int>[];
+    const initialIncomingStartMs = 180000;
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+      size: const Size(390, 844),
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: TimelineModel(
+        clips: [
+          _mixClip('t1', 0, 240000),
+          _mixClip('t2', initialIncomingStartMs, 240000),
+        ],
+      ),
+      onTimelineStartChanged: (track, startMs) {
+        if (track.id == 't2') starts.add(startMs);
+      },
+      onPitchModeChanged: (_, __) {},
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+    );
+
+    expect(
+      find.byKey(const ValueKey('timeline_selection_toolbar_t2')),
+      findsNothing,
+    );
+    final incoming = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_body_drag_t2')),
+    );
+    final visibleIncoming = incoming.intersect(
+      tester.getRect(find.byKey(const ValueKey('timeline_pan_surface'))),
+    );
+    expect(visibleIncoming.isEmpty, isFalse);
+    final gestureStart = Offset(
+      visibleIncoming.left + visibleIncoming.width * 0.55,
+      visibleIncoming.top + math.min(48, visibleIncoming.height * 0.45),
+    );
+    final gesture = await tester.startGesture(gestureStart);
+    for (final delta in const [
+      Offset(-24, 1),
+      Offset(-24, 1),
+      Offset(-24, 0),
+    ]) {
+      await gesture.moveBy(delta);
+      await tester.pump(const Duration(milliseconds: 8));
+    }
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(starts, hasLength(1));
+    expect(starts.single, isNot(initialIncomingStartMs));
+    expect(
+      find.byKey(const ValueKey('timeline_selection_toolbar_t2')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('timeline_trim_start_t2')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('tap selects an editable clip without persisting placement', (
+    tester,
+  ) async {
+    final starts = <int>[];
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+      onTimelineStartChanged: (_, startMs) => starts.add(startMs),
+      onPitchModeChanged: (_, __) {},
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_body_drag_t2')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(starts, isEmpty);
+    expect(
+      find.byKey(const ValueKey('timeline_selection_toolbar_t2')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('background drag still pans when clip editing is enabled', (
+    tester,
+  ) async {
+    final starts = <int>[];
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 600),
+      upcoming: [_track('t2', 'Paper Planes', 600)],
+      size: const Size(390, 844),
+      onTimelineStartChanged: (_, startMs) => starts.add(startMs),
+    );
+    await _pinchZoom(tester);
+
+    final surface = tester.getRect(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+    );
+    final clipRects = [
+      tester.getRect(find.byKey(const ValueKey('timeline_clip_t1'))),
+      tester.getRect(find.byKey(const ValueKey('timeline_clip_t2'))),
+    ];
+    final clipsBottom = clipRects
+        .map((rect) => rect.bottom)
+        .reduce((first, second) => math.max(first, second));
+    final background = Offset(
+      surface.center.dx,
+      math.min(surface.bottom - 72, clipsBottom + 48),
+    );
+    for (final rect in clipRects) {
+      expect(rect.contains(background), isFalse);
+    }
+    final beforeLeft = clipRects.first.left;
+
+    await tester.dragFrom(background, const Offset(-140, 0));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getRect(find.byKey(const ValueKey('timeline_clip_t1'))).left,
+      lessThan(beforeLeft),
+    );
+    expect(starts, isEmpty);
+  });
+
   testWidgets('edit-mode clip body drag updates timeline placement, not pan', (
     tester,
   ) async {
@@ -2753,13 +3094,243 @@ void main() {
     expect(find.textContaining('Downbeat -112ms'), findsNothing);
   });
 
-  testWidgets('older placement commit preserves a newer trim preview', (
+  testWidgets('busy placement blocks a quick second drag then re-enables edits',
+      (
     tester,
   ) async {
-    final placementCommit = Completer<void>();
-    final trimCommit = Completer<void>();
-    var placementCalls = 0;
-    var trimCalls = 0;
+    const initialStartMs = 180000;
+    var authoritativeStartMs = initialStartMs;
+    final calls = <int>[];
+    final completions = <Completer<void>>[];
+    final current = _track('t1', 'Midnight Drive', 240);
+    final incoming = _track('t2', 'Paper Planes', 240);
+
+    Future<void> commitPlacement(Track track, int startMs) async {
+      calls.add(startMs);
+      final completion = Completer<void>();
+      completions.add(completion);
+      await completion.future;
+      authoritativeStartMs = startMs;
+    }
+
+    TimelineModel modelAt(int incomingStartMs) => TimelineModel(
+          clips: [
+            _mixClip('t1', 0, 240000),
+            _mixClip('t2', incomingStartMs, 240000),
+          ],
+        );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: modelAt(initialStartMs),
+      onTimelineStartChanged: commitPlacement,
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_clip_body_drag_t2')),
+      const Offset(-30, 0),
+    );
+    await tester.pump();
+    expect(calls, hasLength(1));
+    final olderStartMs = calls.first;
+    final body = find.byKey(const ValueKey('timeline_clip_body_drag_t2'));
+    final beforeBlockedDrag = tester.getRect(body);
+
+    await tester.drag(
+      body,
+      const Offset(-30, 0),
+    );
+    await tester.pump();
+    final blockedStartMs =
+        _waveformPainter(tester, 't2').mixClip!.timelineStartMs;
+    expect(blockedStartMs, olderStartMs);
+    expect(
+      calls,
+      [olderStartMs],
+      reason: 'a busy track must not start a second placement write',
+    );
+    expect(tester.getRect(body), beforeBlockedDrag);
+
+    completions[0].complete();
+    await tester.pump();
+    expect(authoritativeStartMs, olderStartMs);
+    expect(calls, [olderStartMs]);
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: modelAt(olderStartMs),
+      onTimelineStartChanged: commitPlacement,
+      settle: false,
+    );
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      olderStartMs,
+    );
+
+    await tester.drag(
+      body,
+      const Offset(-30, 0),
+    );
+    await tester.pump();
+    expect(calls, hasLength(2));
+    final newerStartMs = calls.last;
+    expect(newerStartMs, lessThan(olderStartMs));
+    completions[1].complete();
+    await tester.pumpAndSettle();
+    expect(authoritativeStartMs, newerStartMs);
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: modelAt(authoritativeStartMs),
+      onTimelineStartChanged: commitPlacement,
+    );
+    expect(
+        _waveformPainter(tester, 't2').mixClip!.timelineStartMs, newerStartMs);
+
+    final correctedStartMs = newerStartMs + 137;
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: modelAt(correctedStartMs),
+      onTimelineStartChanged: commitPlacement,
+    );
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      correctedStartMs,
+      reason: 'the newest successful write must release its preview',
+    );
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: modelAt(newerStartMs),
+      onTimelineStartChanged: commitPlacement,
+    );
+    expect(
+        _waveformPainter(tester, 't2').mixClip!.timelineStartMs, newerStartMs);
+  });
+
+  testWidgets('busy placement cannot be replaced by semantic movement', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    const initialStartMs = 180000;
+    var authoritativeStartMs = initialStartMs;
+    final calls = <int>[];
+    final completions = <Completer<void>>[];
+    final current = _track('t1', 'Midnight Drive', 240);
+    final incoming = _track('t2', 'Paper Planes', 240);
+
+    Future<void> commitPlacement(Track track, int startMs) async {
+      calls.add(startMs);
+      final completion = Completer<void>();
+      completions.add(completion);
+      await completion.future;
+      authoritativeStartMs = startMs;
+    }
+
+    TimelineModel modelAt(int incomingStartMs) => TimelineModel(
+          clips: [
+            _mixClip('t1', 0, 240000),
+            _mixClip('t2', incomingStartMs, 240000),
+          ],
+        );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: modelAt(initialStartMs),
+      onTimelineStartChanged: commitPlacement,
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+
+    final body = find.byKey(const ValueKey('timeline_clip_body_drag_t2'));
+    await tester.drag(body, const Offset(-30, 0));
+    await tester.pump();
+    final firstStartMs = calls.single;
+    final firstPreviewMs =
+        _waveformPainter(tester, 't2').mixClip!.timelineStartMs;
+
+    final node = tester.getSemantics(
+      find.byKey(const ValueKey('timeline_clip_semantics_t2')),
+    );
+    final data = node.getSemanticsData();
+    expect(data.label, contains('Saving Paper Planes timeline edit'));
+    expect(data.hasAction(SemanticsAction.increase), isFalse);
+    expect(data.hasAction(SemanticsAction.decrease), isFalse);
+    tester.binding.performSemanticsAction(
+      ui.SemanticsActionEvent(
+        type: SemanticsAction.increase,
+        viewId: tester.view.viewId,
+        nodeId: node.id,
+      ),
+    );
+    await tester.pump();
+    expect(calls, [firstStartMs]);
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      firstPreviewMs,
+      reason: 'a suppressed semantic action must not orphan the drag preview',
+    );
+
+    completions[0].complete();
+    await tester.pumpAndSettle();
+    expect(authoritativeStartMs, firstStartMs);
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: modelAt(authoritativeStartMs),
+      onTimelineStartChanged: commitPlacement,
+    );
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      firstStartMs,
+    );
+    final available = tester
+        .getSemantics(
+          find.byKey(const ValueKey('timeline_clip_semantics_t2')),
+        )
+        .getSemanticsData();
+    expect(available.hasAction(SemanticsAction.increase), isTrue);
+    expect(available.hasAction(SemanticsAction.decrease), isTrue);
+    semantics.dispose();
+  });
+
+  testWidgets('dispose prevents an old transaction from reaching a successor', (
+    tester,
+  ) async {
+    final calls = <int>[];
+    final firstCompletion = Completer<void>();
+    final successorCalls = <int>[];
+
+    Future<void> commitPlacement(Track track, int startMs) async {
+      calls.add(startMs);
+      await firstCompletion.future;
+    }
 
     await _pump(
       tester,
@@ -2767,49 +3338,528 @@ void main() {
       current: _track('t1', 'Midnight Drive', 240),
       upcoming: [_track('t2', 'Paper Planes', 240)],
       transitionSnapMode: BeatSnapMode.free,
-      onTimelineStartChanged: (_, __) async {
-        placementCalls += 1;
-        await placementCommit.future;
-      },
-      onTrimEndChanged: (_, __) async {
-        trimCalls += 1;
-        await trimCommit.future;
-      },
+      timelineModel: TimelineModel(
+        clips: [
+          _mixClip('t1', 0, 240000),
+          _mixClip('t2', 180000, 240000),
+        ],
+      ),
+      onTimelineStartChanged: commitPlacement,
     );
-    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
     await tester.pumpAndSettle();
 
+    final body = find.byKey(const ValueKey('timeline_clip_body_drag_t2'));
+    await tester.drag(body, const Offset(-30, 0));
+    await tester.pump();
+    await tester.drag(body, const Offset(-30, 0));
+    await tester.pump();
+    expect(calls, hasLength(1));
+
+    await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+    await tester.pump();
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('successor', 'Successor', 240),
+      upcoming: const [],
+      onTimelineStartChanged: (_, startMs) => successorCalls.add(startMs),
+    );
+
+    firstCompletion.complete();
+    await tester.pump();
+    await tester.pump();
+
+    expect(calls, hasLength(1));
+    expect(successorCalls, isEmpty);
+    expect(tester.takeException(), isNull);
+
     await tester.drag(
-      find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+      find.byKey(const ValueKey('timeline_clip_body_drag_successor')),
       const Offset(90, 0),
     );
+    await tester.pumpAndSettle();
+    expect(successorCalls, hasLength(1));
+  });
+
+  testWidgets('fresh parent callbacks preserve pending edit ownership', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    const initialStartMs = 180000;
+    final oldCompletion = Completer<void>();
+    final oldCalls = <int>[];
+    final replacementCalls = <int>[];
+    final current = _track('t1', 'Midnight Drive', 240);
+    final incoming = _track('t2', 'Paper Planes', 240);
+
+    Future<void> oldCallback(Track track, int startMs) async {
+      oldCalls.add(startMs);
+      await oldCompletion.future;
+    }
+
+    void replacementCallback(Track track, int startMs) {
+      replacementCalls.add(startMs);
+    }
+
+    final model = TimelineModel(
+      clips: [
+        _mixClip('t1', 0, 240000),
+        _mixClip('t2', initialStartMs, 240000),
+      ],
+    );
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: model,
+      onTimelineStartChanged: oldCallback,
+    );
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_clip_body_drag_t2')),
+      const Offset(-30, 0),
+    );
     await tester.pump();
-    expect(placementCalls, 1);
+    expect(oldCalls, hasLength(1));
+    final heldPreviewMs =
+        _waveformPainter(tester, 't2').mixClip!.timelineStartMs;
+    expect(heldPreviewMs, lessThan(initialStartMs));
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: model,
+      onTimelineStartChanged: replacementCallback,
+    );
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      heldPreviewMs,
+      reason: 'inline callback churn must not release the active preview',
+    );
+    expect(
+      tester
+          .getSemantics(
+            find.byKey(const ValueKey('timeline_clip_semantics_t2')),
+          )
+          .label,
+      contains('Saving Paper Planes timeline edit'),
+    );
+
+    oldCompletion.complete();
+    await tester.pump();
+    await tester.pump();
+    expect(oldCalls, hasLength(1));
+    expect(replacementCalls, isEmpty);
+    expect(tester.takeException(), isNull);
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      initialStartMs,
+    );
 
     await tester.drag(
-      find.byKey(const ValueKey('timeline_trim_end_t1')),
-      const Offset(-70, 0),
+      find.byKey(const ValueKey('timeline_clip_body_drag_t2')),
+      const Offset(-30, 0),
     );
+    await tester.pumpAndSettle();
+    expect(replacementCalls, hasLength(1));
+    semantics.dispose();
+  });
+
+  testWidgets('track reorder preserves and removal prunes pending ownership', (
+    tester,
+  ) async {
+    const incomingStartMs = 180000;
+    final calls = <int>[];
+    final completions = <Completer<void>>[];
+    final replacementCalls = <int>[];
+    final current = _track('t1', 'Midnight Drive', 240);
+    final incoming = _track('t2', 'Paper Planes', 240);
+    final later = _track('t3', 'Glass', 240);
+
+    Future<void> heldCallback(Track track, int startMs) async {
+      calls.add(startMs);
+      final completion = Completer<void>();
+      completions.add(completion);
+      await completion.future;
+    }
+
+    TimelineModel model({required bool includeIncoming}) => TimelineModel(
+          clips: [
+            _mixClip('t1', 0, 240000),
+            if (includeIncoming) _mixClip('t2', incomingStartMs, 240000),
+            _mixClip('t3', 210000, 240000),
+          ],
+        );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming, later],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: model(includeIncoming: true),
+      onTimelineStartChanged: heldCallback,
+    );
+    final incomingBody = find.byKey(
+      const ValueKey('timeline_clip_body_drag_t2'),
+    );
+    await tester.drag(incomingBody, const Offset(-30, 0));
     await tester.pump();
-    expect(trimCalls, 1);
-    final newerPreview = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t1')),
+    expect(calls, hasLength(1));
+    final heldPreviewMs =
+        _waveformPainter(tester, 't2').mixClip!.timelineStartMs;
+    expect(
+      find.byKey(const ValueKey('timeline_trim_start_t2')),
+      findsOneWidget,
     );
 
-    placementCommit.complete();
+    await _pump(
+      tester,
+      previous: current,
+      current: incoming,
+      upcoming: [later],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: model(includeIncoming: true),
+      onTimelineStartChanged: (track, startMs) => heldCallback(track, startMs),
+    );
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      heldPreviewMs,
+      reason: 'stable lane ownership must survive a queue-role reorder',
+    );
+    expect(
+      find.byKey(const ValueKey('timeline_trim_start_t2')),
+      findsOneWidget,
+    );
+    await tester.drag(incomingBody, const Offset(-30, 0));
     await tester.pump();
-
-    final afterOlderCommit = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t1')),
+    expect(
+      calls,
+      hasLength(1),
+      reason: 'the busy lock must move with the stable lane identity',
     );
-    expect(afterOlderCommit.left, closeTo(newerPreview.left, 0.1));
-    expect(afterOlderCommit.width, closeTo(newerPreview.width, 0.1));
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      heldPreviewMs,
+    );
+    completions[0].complete();
+    await tester.pumpAndSettle();
+    expect(calls, hasLength(1));
 
-    trimCommit.complete();
+    await tester.drag(incomingBody, const Offset(-30, 0));
+    await tester.pump();
+    expect(calls, hasLength(2));
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [later],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: model(includeIncoming: false),
+      onTimelineStartChanged: null,
+    );
+    expect(incomingBody, findsNothing);
+    completions[1].complete();
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [later, incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: model(includeIncoming: true),
+      onTimelineStartChanged: (_, startMs) => replacementCalls.add(startMs),
+    );
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      incomingStartMs,
+      reason: 're-added tracks must not inherit stale busy or preview state',
+    );
+    expect(
+      find.byKey(const ValueKey('timeline_trim_start_t2')),
+      findsNothing,
+      reason: 'a removed lane must not retain stale selection ownership',
+    );
+    await tester.drag(incomingBody, const Offset(-30, 0));
+    await tester.pumpAndSettle();
+    expect(replacementCalls, hasLength(1));
+  });
+
+  testWidgets('failed busy write reports once and ignores a second drag', (
+    tester,
+  ) async {
+    const initialStartMs = 180000;
+    var authoritativeStartMs = initialStartMs;
+    final calls = <int>[];
+    final completions = <Completer<void>>[];
+    final current = _track('t1', 'Midnight Drive', 240);
+    final incoming = _track('t2', 'Paper Planes', 240);
+
+    Future<void> commitPlacement(Track track, int startMs) async {
+      calls.add(startMs);
+      final completion = Completer<void>();
+      completions.add(completion);
+      await completion.future;
+      authoritativeStartMs = startMs;
+    }
+
+    TimelineModel modelAt(int incomingStartMs) => TimelineModel(
+          clips: [
+            _mixClip('t1', 0, 240000),
+            _mixClip('t2', incomingStartMs, 240000),
+          ],
+        );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: modelAt(initialStartMs),
+      onTimelineStartChanged: commitPlacement,
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+
+    final body = find.byKey(const ValueKey('timeline_clip_body_drag_t2'));
+    await tester.drag(body, const Offset(-30, 0));
+    await tester.pump();
+    final olderStartMs = calls.single;
+    await tester.drag(body, const Offset(-30, 0));
+    await tester.pump();
+    final blockedPreviewMs =
+        _waveformPainter(tester, 't2').mixClip!.timelineStartMs;
+    expect(blockedPreviewMs, olderStartMs);
+    expect(calls, [olderStartMs]);
+
+    completions[0].completeError(StateError('placement failed'));
+    await tester.pump();
+    expect(tester.takeException(), isA<StateError>());
+    expect(tester.takeException(), isNull);
+    expect(calls, [olderStartMs]);
+    await tester.pump();
+    expect(authoritativeStartMs, initialStartMs);
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: modelAt(authoritativeStartMs),
+      onTimelineStartChanged: commitPlacement,
+    );
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      initialStartMs,
+    );
+
+    await tester.drag(body, const Offset(-30, 0));
+    await tester.pump();
+    expect(calls, hasLength(2));
+    completions[1].complete();
     await tester.pumpAndSettle();
   });
 
-  testWidgets('older trim commit preserves a newer placement preview', (
+  testWidgets('failed latest write rolls back its optimistic preview', (
+    tester,
+  ) async {
+    const initialStartMs = 180000;
+    final placementCommit = Completer<void>();
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: TimelineModel(
+        clips: [
+          _mixClip('t1', 0, 240000),
+          _mixClip('t2', initialStartMs, 240000),
+        ],
+      ),
+      onTimelineStartChanged: (_, __) async {
+        await placementCommit.future;
+      },
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_clip_body_drag_t2')),
+      const Offset(-30, 0),
+    );
+    await tester.pump();
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      lessThan(initialStartMs),
+    );
+
+    placementCommit.completeError(StateError('latest placement failed'));
+    await tester.pump();
+    expect(tester.takeException(), isA<StateError>());
+    expect(tester.takeException(), isNull);
+    await tester.pump();
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      initialStartMs,
+    );
+  });
+
+  testWidgets('busy lock preserves preview across no-op and cancelled drags', (
+    tester,
+  ) async {
+    const initialStartMs = 10000;
+    var authoritativeStartMs = initialStartMs;
+    final calls = <int>[];
+    final firstCompletion = Completer<void>();
+    final current = _track('t1', 'Midnight Drive', 240);
+    final incoming = _track('t2', 'Paper Planes', 240);
+
+    Future<void> commitPlacement(Track track, int startMs) async {
+      calls.add(startMs);
+      await firstCompletion.future;
+      authoritativeStartMs = startMs;
+    }
+
+    TimelineModel modelAt(int incomingStartMs) => TimelineModel(
+          clips: [
+            _mixClip('t1', 0, 240000),
+            _mixClip('t2', incomingStartMs, 240000),
+          ],
+        );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: modelAt(initialStartMs),
+      onTimelineStartChanged: commitPlacement,
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+
+    final body = find.byKey(const ValueKey('timeline_clip_body_drag_t2'));
+    await tester.drag(body, const Offset(-100, 0));
+    await tester.pump();
+    expect(calls, [0]);
+    expect(_waveformPainter(tester, 't2').mixClip!.timelineStartMs, 0);
+
+    await tester.drag(body, const Offset(-40, 0));
+    await tester.pump();
+    expect(calls, [0], reason: 'a busy no-op must not start another edit');
+    expect(_waveformPainter(tester, 't2').mixClip!.timelineStartMs, 0);
+
+    final cancelled = await tester.startGesture(tester.getCenter(body));
+    for (final delta in const [Offset(40, 0), Offset(40, 0)]) {
+      await cancelled.moveBy(delta);
+      await tester.pump();
+    }
+    expect(
+      _waveformPainter(tester, 't2').mixClip!.timelineStartMs,
+      0,
+      reason: 'the busy recognizer must not alter the in-flight preview',
+    );
+    tester.widget<GestureDetector>(body).onHorizontalDragCancel!();
+    await tester.pump();
+    await cancelled.cancel();
+    await tester.pump();
+    expect(calls, [0], reason: 'a cancelled busy drag must not start an edit');
+    expect(_waveformPainter(tester, 't2').mixClip!.timelineStartMs, 0);
+
+    firstCompletion.complete();
+    await tester.pumpAndSettle();
+    expect(authoritativeStartMs, 0);
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: modelAt(authoritativeStartMs),
+      onTimelineStartChanged: commitPlacement,
+    );
+    expect(_waveformPainter(tester, 't2').mixClip!.timelineStartMs, 0);
+  });
+
+  testWidgets('busy placement blocks trim no-op and cancel attempts', (
+    tester,
+  ) async {
+    final placementCommit = Completer<void>();
+    final trimCommit = Completer<void>();
+    var placementCalls = 0;
+    var trimCalls = 0;
+
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+      transitionSnapMode: BeatSnapMode.free,
+      onTimelineStartChanged: (_, __) async {
+        placementCalls += 1;
+        await placementCommit.future;
+      },
+      onTrimEndChanged: (_, __) async {
+        trimCalls += 1;
+        await trimCommit.future;
+      },
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+      const Offset(90, 0),
+    );
+    await tester.pump();
+    expect(placementCalls, 1);
+    final placementPreview = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t1')),
+    );
+
+    final trimHandle = find.byKey(const ValueKey('timeline_trim_end_t1'));
+    await tester.dragFrom(
+      tester.getCenter(trimHandle),
+      const Offset(-70, 0),
+    );
+    await tester.pump();
+    expect(trimCalls, 0);
+    expect(
+      tester.getRect(find.byKey(const ValueKey('timeline_clip_t1'))),
+      placementPreview,
+    );
+
+    final cancelledTrim =
+        await tester.startGesture(tester.getCenter(trimHandle));
+    for (final delta in const [Offset(-40, 0), Offset(-40, 0)]) {
+      await cancelledTrim.moveBy(delta);
+      await tester.pump();
+    }
+    await cancelledTrim.cancel();
+    await tester.pump();
+    expect(trimCalls, 0);
+    expect(
+      tester.getRect(find.byKey(const ValueKey('timeline_clip_t1'))),
+      placementPreview,
+      reason: 'a blocked trim attempt cannot remove the placement preview',
+    );
+
+    placementCommit.complete();
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('busy trim blocks placement until the trim completes', (
     tester,
   ) async {
     final trimCommit = Completer<void>();
@@ -2841,6 +3891,23 @@ void main() {
     );
     await tester.pump();
     expect(trimCalls, 1);
+    final trimPreview = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t1')),
+    );
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+      const Offset(90, 0),
+    );
+    await tester.pump();
+    expect(placementCalls, 0);
+    expect(
+      tester.getRect(find.byKey(const ValueKey('timeline_clip_t1'))),
+      trimPreview,
+    );
+
+    trimCommit.complete();
+    await tester.pumpAndSettle();
 
     await tester.drag(
       find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
@@ -2848,19 +3915,6 @@ void main() {
     );
     await tester.pump();
     expect(placementCalls, 1);
-    final newerPreview = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t1')),
-    );
-
-    trimCommit.complete();
-    await tester.pump();
-
-    final afterOlderCommit = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t1')),
-    );
-    expect(afterOlderCommit.left, closeTo(newerPreview.left, 0.1));
-    expect(afterOlderCommit.width, closeTo(newerPreview.width, 0.1));
-
     placementCommit.complete();
     await tester.pumpAndSettle();
   });

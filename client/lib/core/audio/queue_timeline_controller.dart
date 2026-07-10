@@ -270,6 +270,19 @@ class QueueTimelineController {
     await _enqueueCommand(() => _reorderQueue(oldIndex, newIndex));
   }
 
+  Future<void> moveQueueItemByQueueItemId(
+    String queueItemId,
+    int delta,
+  ) async {
+    await _enqueueCommand(() async {
+      if (delta == 0) return;
+      final oldIndex = _queueIndexForQueueItemId(queueItemId);
+      if (oldIndex == null || _queue.isEmpty) return;
+      final newIndex = (oldIndex + delta).clamp(0, _queue.length - 1).toInt();
+      await _reorderQueue(oldIndex, newIndex);
+    });
+  }
+
   Future<void> _reorderQueue(int oldIndex, int newIndex) async {
     if (oldIndex == newIndex) return;
     if (oldIndex < 0 || oldIndex >= _queue.length) return;
@@ -305,6 +318,17 @@ class QueueTimelineController {
   TimelineClip? timelineClipForIndex(int index) =>
       _session.clipAt(index)?.placement;
 
+  int? _queueIndexForQueueItemId(String queueItemId) {
+    if (queueItemId.isEmpty) return null;
+    int? match;
+    for (var index = 0; index < _queue.length; index++) {
+      if (_session.clipAt(index)?.queueItemId != queueItemId) continue;
+      if (match != null) return null;
+      match = index;
+    }
+    return match;
+  }
+
   Future<void> setTimelineStartMs(
     int index,
     int ms, {
@@ -313,6 +337,22 @@ class QueueTimelineController {
     await _enqueueCommand(
       () => _setTimelineStartMs(index, ms, snapToDownbeat: snapToDownbeat),
     );
+  }
+
+  Future<void> setTimelineStartMsByQueueItemId(
+    String queueItemId,
+    int ms, {
+    bool snapToDownbeat = true,
+  }) async {
+    await _enqueueCommand(() async {
+      final index = _queueIndexForQueueItemId(queueItemId);
+      if (index == null) return;
+      await _setTimelineStartMs(
+        index,
+        ms,
+        snapToDownbeat: snapToDownbeat,
+      );
+    });
   }
 
   Future<void> _setTimelineStartMs(
@@ -331,6 +371,17 @@ class QueueTimelineController {
     await _enqueueCommand(() => _setSourceStartMs(index, ms));
   }
 
+  Future<void> setSourceStartMsByQueueItemId(
+    String queueItemId,
+    int ms,
+  ) async {
+    await _enqueueCommand(() async {
+      final index = _queueIndexForQueueItemId(queueItemId);
+      if (index == null) return;
+      await _setSourceStartMs(index, ms);
+    });
+  }
+
   Future<void> _setSourceStartMs(int index, int ms) async {
     if (index < 0 || index >= _queue.length) return;
     final placement = _placementForIndex(index);
@@ -347,6 +398,17 @@ class QueueTimelineController {
     await _enqueueCommand(() => _setSourceEndMs(index, ms));
   }
 
+  Future<void> setSourceEndMsByQueueItemId(
+    String queueItemId,
+    int ms,
+  ) async {
+    await _enqueueCommand(() async {
+      final index = _queueIndexForQueueItemId(queueItemId);
+      if (index == null) return;
+      await _setSourceEndMs(index, ms);
+    });
+  }
+
   Future<void> _setSourceEndMs(int index, int ms) async {
     if (index < 0 || index >= _queue.length) return;
     final placement = _placementForIndex(index);
@@ -361,6 +423,17 @@ class QueueTimelineController {
 
   Future<void> setPitchMode(int index, String pitchMode) async {
     await _enqueueCommand(() => _setPitchMode(index, pitchMode));
+  }
+
+  Future<void> setPitchModeByQueueItemId(
+    String queueItemId,
+    String pitchMode,
+  ) async {
+    await _enqueueCommand(() async {
+      final index = _queueIndexForQueueItemId(queueItemId);
+      if (index == null) return;
+      await _setPitchMode(index, pitchMode);
+    });
   }
 
   Future<void> _setPitchMode(int index, String pitchMode) async {
