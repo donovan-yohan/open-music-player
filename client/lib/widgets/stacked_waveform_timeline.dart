@@ -47,6 +47,7 @@ class StackedWaveformTimeline extends StatefulWidget {
   final TimelineAnalysisEditCallback? onEditAnalysis;
   final TimelineModel? timelineModel;
   final Set<String> pitchFallbackClipIds;
+  final Map<String, ClipTempoRuntimeState> clipTempoStates;
   final int playheadPositionMs;
   final Stream<int>? positionMsStream;
   final VoidCallback? onScrubStart;
@@ -70,6 +71,7 @@ class StackedWaveformTimeline extends StatefulWidget {
     this.onEditAnalysis,
     this.timelineModel,
     this.pitchFallbackClipIds = const {},
+    this.clipTempoStates = const {},
     this.playheadPositionMs = 0,
     this.positionMsStream,
     this.onScrubStart,
@@ -1385,7 +1387,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   Widget? _selectedTempoChip(BuildContext context, _LaneModel lane) {
     final tempo = lane.mixClip.tempo;
     final pitchFallback = _hasPitchFallback(lane.mixClip);
+    final runtime = widget.clipTempoStates[lane.mixClip.id];
     final labels = <String>[
+      if (runtime?.effectiveBpm != null)
+        'Live ${_formatBpm(runtime!.effectiveBpm!)} BPM',
+      if (runtime != null && (runtime.effectiveSpeed - 1).abs() >= 0.005)
+        '${runtime.effectiveSpeed.toStringAsFixed(2)}x',
       if (tempo.nativeBpm != null) '${_formatBpm(tempo.nativeBpm!)} BPM',
       if (tempo.bpmConfidence != null)
         '${(tempo.bpmConfidence!.clamp(0, 1) * 100).round()}%',

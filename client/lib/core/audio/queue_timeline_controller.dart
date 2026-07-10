@@ -520,6 +520,11 @@ class QueueTimelineController {
       )
       ..add(_engine.pool.pitchFallbackClipIdsStream
           .listen((_) => _publishSnapshot(_engine.positionMs)));
+    _subscriptions.add(
+      _engine.pool.voiceStatusStream.listen(
+        (_) => _publishSnapshot(_engine.positionMs),
+      ),
+    );
   }
 
   Future<T> _enqueueCommand<T>(Future<T> Function() command) {
@@ -843,7 +848,39 @@ class QueueTimelineController {
         playbackSpeed: _playbackSpeedForGlobal(globalMs),
         pitchPreservationFallback: _engine.pool.hasPitchFallback,
         pitchFallbackClipIds: _engine.pool.pitchFallbackClipIds,
+        clipTempoStates: _clipTempoStatesForGlobal(globalMs),
       ),
+    );
+  }
+
+  Map<String, ClipTempoRuntimeState> _clipTempoStatesForGlobal(int globalMs) {
+    final pitchFallbacks = _engine.pool.pitchFallbackClipIds;
+    return Map.unmodifiable({
+      for (final clip in _engine.pool.activeClips.values)
+        clip.id: _clipTempoStateForGlobal(
+          clip,
+          globalMs,
+          pitchFallback: pitchFallbacks.contains(clip.id),
+        ),
+    });
+  }
+
+  ClipTempoRuntimeState _clipTempoStateForGlobal(
+    MixClip clip,
+    int globalMs, {
+    required bool pitchFallback,
+  }) {
+    final speed = (_engine.clock.rate * clip.playbackRateAt(globalMs))
+        .clamp(minTempoAutomationRate, maxTempoAutomationRate)
+        .toDouble();
+    final nativeBpm = clip.tempo.nativeBpm;
+    return ClipTempoRuntimeState(
+      clipId: clip.id,
+      effectiveSpeed: speed,
+      nativeBpm: nativeBpm,
+      effectiveBpm: nativeBpm == null ? null : nativeBpm * speed,
+      pitchMode: clip.rateAutomation.pitchMode,
+      pitchFallback: pitchFallback,
     );
   }
 

@@ -368,6 +368,44 @@ class PlaybackRateAutomation {
       Object.hash(baseRate, pitchMode, Object.hashAll(segments));
 }
 
+class ClipTempoRuntimeState {
+  final String clipId;
+  final double effectiveSpeed;
+  final double? nativeBpm;
+  final double? effectiveBpm;
+  final String pitchMode;
+  final bool pitchFallback;
+
+  const ClipTempoRuntimeState({
+    required this.clipId,
+    required this.effectiveSpeed,
+    required this.nativeBpm,
+    required this.effectiveBpm,
+    required this.pitchMode,
+    this.pitchFallback = false,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is ClipTempoRuntimeState &&
+      other.clipId == clipId &&
+      other.effectiveSpeed == effectiveSpeed &&
+      other.nativeBpm == nativeBpm &&
+      other.effectiveBpm == effectiveBpm &&
+      other.pitchMode == pitchMode &&
+      other.pitchFallback == pitchFallback;
+
+  @override
+  int get hashCode => Object.hash(
+        clipId,
+        effectiveSpeed,
+        nativeBpm,
+        effectiveBpm,
+        pitchMode,
+        pitchFallback,
+      );
+}
+
 class TempoTransitionRatePlan {
   final PlaybackRateSegment outgoingSegment;
   final PlaybackRateSegment incomingSegment;
