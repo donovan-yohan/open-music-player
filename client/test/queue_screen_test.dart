@@ -816,7 +816,11 @@ void main() {
       );
       await tester.pump();
       await tester.tap(
-        find.byKey(const ValueKey('timeline_edit_analysis_t1')),
+        find.byKey(const ValueKey('timeline_track_actions_t1')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('timeline_correct_analysis_t1')),
       );
       await tester.pumpAndSettle();
 
@@ -863,7 +867,15 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tap(
-        find.byKey(const ValueKey('timeline_edit_analysis_playback_queue_0')),
+        find.byKey(
+          const ValueKey('timeline_track_actions_playback_queue_0'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(
+          const ValueKey('timeline_correct_analysis_playback_queue_0'),
+        ),
       );
       await tester.pumpAndSettle();
 
@@ -1019,6 +1031,10 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
       await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('timeline_track_actions_t2')),
+      );
+      await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('timeline_move_later_t2')));
       await tester.pumpAndSettle();
 
@@ -1037,6 +1053,10 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('timeline_pitch_mode_t2')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_pitch_follows_tempo_t2')),
+    );
     await tester.pumpAndSettle();
 
     final provider =
@@ -1086,6 +1106,12 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(
       find.byKey(const ValueKey('timeline_pitch_mode_playback_queue_0')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(
+        const ValueKey('timeline_pitch_follows_tempo_playback_queue_0'),
+      ),
     );
     await tester.pumpAndSettle();
 
@@ -1180,6 +1206,12 @@ void main() {
     expect(playbackState.timelineStartCalls, isNotEmpty);
     expect(playbackState.timelineStartCalls.last.$3, isTrue);
 
+    await tester.tap(
+      find.byKey(
+        const ValueKey('timeline_track_actions_playback_queue_1'),
+      ),
+    );
+    await tester.pumpAndSettle();
     await tester.tap(
       find.byKey(const ValueKey('timeline_move_later_playback_queue_1')),
     );

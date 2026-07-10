@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -40,6 +41,7 @@ Track _analyzedTrack(
   String? key,
   String? camelot,
   double confidence = 0.9,
+  double? downbeatConfidence,
   List<int> downbeatsMs = const [0, 4000, 8000, 12000, 16000],
 }) =>
     _track(
@@ -52,7 +54,10 @@ Track _analyzedTrack(
           bpm: AnalysisValue(value: bpm, confidence: confidence),
           key: key == null ? null : AnalysisValue(value: key),
           camelot: camelot == null ? null : AnalysisValue(value: camelot),
-          downbeats: DownbeatSummary(positionsMs: downbeatsMs),
+          downbeats: DownbeatSummary(
+            positionsMs: downbeatsMs,
+            confidence: downbeatConfidence,
+          ),
         ),
       ),
     );
@@ -923,7 +928,13 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byKey(const ValueKey('timeline_tempo_t2')), findsOneWidget);
-      expect(find.textContaining('141.2 BPM'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('timeline_tempo_t2')),
+          matching: find.textContaining('141.2 BPM'),
+        ),
+        findsOneWidget,
+      );
       expect(find.textContaining('No next BPM'), findsNothing);
       expect(find.textContaining('No next downbeat'), findsNothing);
     },
@@ -1075,7 +1086,10 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('timeline_edit_analysis_t1')));
+    await tester.tap(find.byKey(const ValueKey('timeline_track_actions_t1')));
+    await tester.pumpAndSettle();
+    await tester
+        .tap(find.byKey(const ValueKey('timeline_correct_analysis_t1')));
     await tester.pumpAndSettle();
 
     expect(edited?.id, 't1');
@@ -1102,7 +1116,10 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('timeline_edit_analysis_t2')));
+    await tester.tap(find.byKey(const ValueKey('timeline_track_actions_t2')));
+    await tester.pumpAndSettle();
+    await tester
+        .tap(find.byKey(const ValueKey('timeline_correct_analysis_t2')));
     await tester.pumpAndSettle();
 
     expect(edited?.id, 't2');
@@ -1507,7 +1524,9 @@ void main() {
     expect(find.textContaining('No downbeat'), findsNothing);
   });
 
-  testWidgets('selected lane toggles pitch mode', (tester) async {
+  testWidgets('selected lane exposes explicit pitch mode choices',
+      (tester) async {
+    final semantics = tester.ensureSemantics();
     final current = _track('t1', 'Midnight Drive', 240);
     final calls = <({Track track, String pitchMode})>[];
 
@@ -1533,12 +1552,42 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
     await tester.pumpAndSettle();
+    final pitchMenu = tester.widget<PopupMenuButton<String>>(
+      find.byKey(const ValueKey('timeline_pitch_mode_t1')),
+    );
+    expect(
+      pitchMenu.tooltip,
+      'Key lock: preserve pitch while tempo changes',
+    );
+    expect(
+      tester
+          .getSemantics(
+            find.byKey(const ValueKey('timeline_pitch_mode_semantics_t1')),
+          )
+          .label,
+      contains('Key lock: preserve pitch while tempo changes'),
+    );
     await tester.tap(find.byKey(const ValueKey('timeline_pitch_mode_t1')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('timeline_pitch_key_lock_t1')),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Key lock: preserve pitch while tempo changes'),
+      findsOneWidget,
+    );
+    expect(find.text('Pitch follows tempo'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_pitch_follows_tempo_t1')),
+    );
     await tester.pumpAndSettle();
 
     expect(calls, hasLength(1));
     expect(calls.single.track.id, 't1');
     expect(calls.single.pitchMode, pitchModeFollowTempo);
+    semantics.dispose();
   });
 
   testWidgets('floating options panel controls snap marker mode', (
@@ -1961,7 +2010,7 @@ void main() {
     },
   );
 
-  testWidgets('shows timeline move controls for upcoming clips', (
+  testWidgets('shows clearly labeled queue-order moves for upcoming clips', (
     tester,
   ) async {
     final movedEarlier = <String>[];
@@ -1979,22 +2028,565 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
     await tester.pumpAndSettle();
 
-    expect(
-      find.byKey(const ValueKey('timeline_move_earlier_t2')),
-      findsOneWidget,
-    );
-    expect(
-      find.byKey(const ValueKey('timeline_move_later_t2')),
-      findsOneWidget,
-    );
+    await tester.tap(find.byKey(const ValueKey('timeline_track_actions_t2')));
+    await tester.pumpAndSettle();
+    expect(find.text('Move earlier in queue'), findsOneWidget);
+    expect(find.text('Move later in queue'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey('timeline_move_later_t2')));
     await tester.pumpAndSettle();
     expect(movedLater, ['t2']);
 
+    await tester.tap(find.byKey(const ValueKey('timeline_track_actions_t2')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('timeline_move_earlier_t2')));
     await tester.pumpAndSettle();
     expect(movedEarlier, ['t2']);
+  });
+
+  testWidgets('clip drag has an explicit timeline move semantic label', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 214),
+      upcoming: const [],
+      onTimelineStartChanged: (_, __) {},
+    );
+
+    expect(
+      tester
+          .getSemantics(
+            find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+          )
+          .label,
+      'Move Midnight Drive in timeline',
+    );
+    semantics.dispose();
+  });
+
+  testWidgets('semantic increase moves an editable clip on the snap grid', (
+    tester,
+  ) async {
+    final starts = <int>[];
+    final semantics = tester.ensureSemantics();
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 214),
+      upcoming: const [],
+      onTimelineStartChanged: (_, startMs) => starts.add(startMs),
+    );
+
+    final node = tester.getSemantics(
+      find
+          .ancestor(
+            of: find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+            matching: find.byType(Semantics),
+          )
+          .first,
+    );
+    expect(node.getSemanticsData().hasAction(SemanticsAction.increase), isTrue);
+    tester.binding.performSemanticsAction(
+      ui.SemanticsActionEvent(
+        type: SemanticsAction.increase,
+        viewId: tester.view.viewId,
+        nodeId: node.id,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(starts, hasLength(1));
+    expect(starts.single, greaterThan(0));
+    semantics.dispose();
+  });
+
+  testWidgets('non-editable clips describe selection rather than movement', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 214),
+      upcoming: const [],
+    );
+
+    expect(
+      tester
+          .getSemantics(
+            find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+          )
+          .label,
+      'Select Midnight Drive in timeline',
+    );
+    semantics.dispose();
+  });
+
+  for (final size in [const Size(320, 844), const Size(390, 844)]) {
+    testWidgets('large-text controls stay clear at ${size.width.toInt()}px', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        previous: null,
+        current: _analyzedTrack('t1', 'Midnight Drive', 214),
+        upcoming: const [],
+        size: size,
+        textScaler: const TextScaler.linear(3),
+        onPitchModeChanged: (_, __) {},
+        onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      );
+      await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+      await tester.pumpAndSettle();
+
+      final header = tester.getRect(
+        find.byKey(const ValueKey('timeline_lane_header_t1')),
+      );
+      final pitch = tester.getRect(
+        find.byKey(const ValueKey('timeline_pitch_mode_t1')),
+      );
+      final actions = tester.getRect(
+        find.byKey(const ValueKey('timeline_track_actions_t1')),
+      );
+      final region = tester.getRect(
+        find.byKey(const ValueKey('timeline_selection_region_t1')),
+      );
+      final clipBody = tester.getRect(
+        find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+      );
+
+      for (final rect in [pitch, actions]) {
+        expect(rect.width, greaterThanOrEqualTo(40));
+        expect(rect.height, greaterThanOrEqualTo(40));
+        expect(region.contains(rect.center), isTrue);
+        expect(rect.overlaps(header), isFalse);
+        expect(rect.overlaps(clipBody), isFalse);
+      }
+      expect(region.bottom, lessThanOrEqualTo(clipBody.top));
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final textScale in [1.0, 3.0]) {
+    testWidgets(
+      'playhead leaves selection controls tappable at ${textScale}x text scale',
+      (tester) async {
+        final positions = StreamController<int>.broadcast();
+        addTearDown(positions.close);
+        final scrubEvents = <String>[];
+        final pitchModes = <String>[];
+        var analysisEdits = 0;
+        final current = _track('t1', 'Midnight Drive', 390);
+
+        await _pump(
+          tester,
+          previous: null,
+          current: current,
+          upcoming: const [],
+          textScaler: TextScaler.linear(textScale),
+          timelineModel: TimelineModel(
+            clips: [_mixClip('t1', 0, 390000)],
+          ),
+          playheadPositionMs: 0,
+          positionMsStream: positions.stream,
+          onScrubStart: () => scrubEvents.add('begin'),
+          onScrubUpdate: (ms) => scrubEvents.add('update:$ms'),
+          onScrubEnd: (ms) async => scrubEvents.add('end:$ms'),
+          onPitchModeChanged: (_, mode) => pitchModes.add(mode),
+          onEditAnalysis: (_, {initialFirstDownbeatMs}) => analysisEdits++,
+        );
+        await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+        await tester.pumpAndSettle();
+
+        Future<void> movePlayheadTo(double globalX) async {
+          await tester.runAsync(() async {
+            positions.add((globalX * 1000).round());
+            await Future<void>.delayed(Duration.zero);
+          });
+          await tester.pump();
+        }
+
+        final pitch = find.byKey(const ValueKey('timeline_pitch_mode_t1'));
+        final actions = find.byKey(const ValueKey('timeline_track_actions_t1'));
+        final selectionRegion = tester.getRect(
+          find.byKey(const ValueKey('timeline_selection_region_t1')),
+        );
+
+        await movePlayheadTo(tester.getRect(pitch).center.dx);
+        final scrubHandle = tester.getRect(
+          find.byKey(const ValueKey('timeline_playhead_drag_handle')),
+        );
+        final badge = tester.getRect(
+          find.byKey(const ValueKey('timeline_playhead_time_badge')),
+        );
+        final rulerPlayhead = tester.getRect(
+          find.byKey(const ValueKey('timeline_ruler_playhead')),
+        );
+        final lanePlayhead = tester.getRect(
+          find.byKey(const ValueKey('timeline_playhead')),
+        );
+        expect(
+          scrubHandle.center.dx,
+          closeTo(tester.getRect(pitch).center.dx, 1),
+        );
+        expect(scrubHandle.top, greaterThanOrEqualTo(selectionRegion.bottom));
+        expect(badge.overlaps(selectionRegion), isFalse);
+        expect(rulerPlayhead.center.dx, closeTo(lanePlayhead.center.dx, 0.1));
+
+        await tester.tap(pitch);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('timeline_pitch_follows_tempo_t1')),
+        );
+        await tester.pumpAndSettle();
+        expect(pitchModes, [pitchModeFollowTempo]);
+        expect(scrubEvents, isEmpty);
+
+        await movePlayheadTo(tester.getRect(actions).center.dx);
+        expect(
+          tester
+              .getRect(
+                find.byKey(const ValueKey('timeline_playhead_drag_handle')),
+              )
+              .center
+              .dx,
+          closeTo(tester.getRect(actions).center.dx, 1),
+        );
+        await tester.tap(actions);
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(const ValueKey('timeline_correct_analysis_t1')),
+        );
+        await tester.pumpAndSettle();
+        expect(analysisEdits, 1);
+        expect(scrubEvents, isEmpty);
+
+        await tester.drag(
+          find.byKey(const ValueKey('timeline_playhead_drag_handle')),
+          const Offset(36, 0),
+        );
+        await tester.pumpAndSettle();
+        expect(scrubEvents.first, 'begin');
+        expect(
+          scrubEvents.where((event) => event.startsWith('update:')),
+          isNotEmpty,
+        );
+        expect(scrubEvents.last, startsWith('end:'));
+
+        scrubEvents.clear();
+        await tester.drag(
+          find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+          const Offset(-36, 0),
+        );
+        await tester.pumpAndSettle();
+        expect(scrubEvents.first, 'begin');
+        expect(
+          scrubEvents.where((event) => event.startsWith('update:')),
+          isNotEmpty,
+        );
+        expect(scrubEvents.last, startsWith('end:'));
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'large-text toolbar stays tappable without intercepting waveform drag',
+    (tester) async {
+      final starts = <int>[];
+      await _pump(
+        tester,
+        previous: null,
+        current: _analyzedTrack('t1', 'Midnight Drive', 214),
+        upcoming: const [],
+        size: const Size(320, 844),
+        textScaler: const TextScaler.linear(3),
+        onTimelineStartChanged: (_, startMs) => starts.add(startMs),
+        onPitchModeChanged: (_, __) {},
+        onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      );
+      await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+      await tester.pumpAndSettle();
+
+      final body = tester.getRect(
+        find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+      );
+      final toolbar = tester.getRect(
+        find.byKey(const ValueKey('timeline_selection_toolbar_t1')),
+      );
+      expect(toolbar.overlaps(body), isFalse);
+
+      await tester.tap(find.byKey(const ValueKey('timeline_pitch_mode_t1')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('timeline_pitch_key_lock_t1')),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('timeline_pitch_key_lock_t1')),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const ValueKey('timeline_track_actions_t1')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('timeline_correct_analysis_t1')),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.byKey(const ValueKey('timeline_correct_analysis_t1')),
+      );
+      await tester.pumpAndSettle();
+
+      final dragBody = tester.getRect(
+        find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+      );
+      await tester.dragFrom(
+        Offset(dragBody.right - 72, dragBody.top + 32),
+        const Offset(64, 0),
+      );
+      await tester.pumpAndSettle();
+
+      expect(starts, isNotEmpty);
+      expect(starts.last, greaterThan(0));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('caches waveform slices until the analysis revision changes', (
+    tester,
+  ) async {
+    var calls = 0;
+    final first = _track(
+      't1',
+      'Midnight Drive',
+      214,
+      analysis: TrackAnalysis(
+        status: TrackAnalysisStatus.analyzed,
+        updatedAt: DateTime.utc(2026, 1, 1),
+      ),
+    );
+    final revised = _track(
+      't1',
+      'Midnight Drive',
+      214,
+      analysis: TrackAnalysis(
+        status: TrackAnalysisStatus.analyzed,
+        updatedAt: DateTime.utc(2026, 1, 2),
+      ),
+    );
+    TimelineWaveformData waveformFor(Track track, int samples) {
+      calls++;
+      return richWaveformForTrack(track, sampleCount: samples);
+    }
+
+    await _pump(
+      tester,
+      previous: null,
+      current: first,
+      upcoming: const [],
+      waveformFor: waveformFor,
+    );
+    final firstCalls = calls;
+    await _pump(
+      tester,
+      previous: null,
+      current: first,
+      upcoming: const [],
+      waveformFor: waveformFor,
+    );
+    expect(calls, firstCalls);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: revised,
+      upcoming: const [],
+      waveformFor: waveformFor,
+    );
+    expect(calls, greaterThan(firstCalls));
+  });
+
+  testWidgets('caches dense 131k-frame sources at the visible sample count', (
+    tester,
+  ) async {
+    var calls = 0;
+    final denseFrames = List<WaveformFrame>.filled(
+      131072,
+      const WaveformFrame(peak: 0.8, rms: 0.5, low: 0.2, mid: 0.6, high: 0.9),
+    );
+    TimelineWaveformData waveformFor(Track track, int samples) {
+      calls++;
+      return TimelineWaveformData(durationMs: 600000, frames: denseFrames);
+    }
+
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Dense', 600),
+      upcoming: const [],
+      waveformFor: waveformFor,
+    );
+    final painter = _waveformPainter(tester, 't1');
+    expect(painter.waveform!.frames.length, lessThanOrEqualTo(65536));
+    final firstCalls = calls;
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Dense', 600),
+      upcoming: const [],
+      waveformFor: waveformFor,
+    );
+    expect(calls, firstCalls);
+  });
+
+  testWidgets('evicts the oldest waveform slice when the cache is bounded', (
+    tester,
+  ) async {
+    var calls = 0;
+    var sourceStartMs = 0;
+    final track = _track('t1', 'Cache bounds', 600);
+    final source = TimelineWaveformData(
+      durationMs: 600000,
+      frames: List<WaveformFrame>.filled(
+        2048,
+        const WaveformFrame(
+          peak: 0.7,
+          rms: 0.4,
+          low: 0.5,
+          mid: 0.6,
+          high: 0.3,
+        ),
+      ),
+    );
+    TimelineWaveformData waveformFor(Track track, int samples) {
+      calls++;
+      return source;
+    }
+
+    TimelineClip clipFor(Track track, TimelineClip fallback) =>
+        fallback.withSourceRange(
+          sourceStartMs: sourceStartMs,
+          sourceEndMs: sourceStartMs + 300000,
+        );
+
+    for (var index = 0; index < 13; index++) {
+      sourceStartMs = index * 1000;
+      await _pump(
+        tester,
+        previous: null,
+        current: track,
+        upcoming: const [],
+        waveformFor: waveformFor,
+        clipFor: clipFor,
+      );
+    }
+    expect(calls, 13);
+
+    sourceStartMs = 0;
+    await _pump(
+      tester,
+      previous: null,
+      current: track,
+      upcoming: const [],
+      waveformFor: waveformFor,
+      clipFor: clipFor,
+    );
+    expect(calls, 14, reason: 'the thirteenth key evicts the oldest slice');
+  });
+
+  testWidgets('snap options change advisory semantics from info to warning', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    const lowConfidenceTempo = ClipTempoMetadata(
+      nativeBpm: 120,
+      bpmConfidence: 0.9,
+      downbeatsMs: [0, 4000, 8000, 12000],
+      downbeatConfidence: 0.4,
+    );
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Outgoing', 20),
+      upcoming: [_track('t2', 'Incoming', 20)],
+      transitionSnapMode: BeatSnapMode.free,
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      timelineModel: TimelineModel(
+        clips: [
+          _mixClip('t1', 0, 20000, tempo: lowConfidenceTempo),
+          _mixClip('t2', 8000, 20000, tempo: lowConfidenceTempo),
+        ],
+      ),
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+
+    final hint = find.byKey(const ValueKey('timeline_transition_hint_t2'));
+    expect(hint, findsOneWidget);
+    expect(
+      tester
+          .widget<Icon>(find.descendant(of: hint, matching: find.byType(Icon)))
+          .icon,
+      Icons.sync_alt,
+    );
+    expect(tester.getSemantics(hint).label, contains('transition info'));
+
+    await tester.tap(find.byKey(const ValueKey('timeline_options_fab')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_snap_beat4')));
+    await tester.pumpAndSettle();
+    await tester.tapAt(const Offset(8, 8));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<Icon>(find.descendant(of: hint, matching: find.byType(Icon)))
+          .icon,
+      Icons.warning_amber_rounded,
+    );
+    expect(tester.getSemantics(hint).label, contains('transition warning'));
+    semantics.dispose();
+  });
+
+  testWidgets('snap options keep Free contiguous and lock Beat 4 placement', (
+    tester,
+  ) async {
+    final outgoing = _analyzedTrack(
+      't1',
+      'Outgoing',
+      20,
+    );
+    final incoming = _analyzedTrack(
+      't2',
+      'Incoming',
+      20,
+    );
+    await _pump(
+      tester,
+      previous: null,
+      current: outgoing,
+      upcoming: [incoming],
+      transitionSnapMode: BeatSnapMode.free,
+    );
+
+    final freeOutgoing = _waveformPainter(tester, 't1').mixClip!;
+    final freeIncoming = _waveformPainter(tester, 't2').mixClip!;
+    expect(freeIncoming.timelineStartMs, freeOutgoing.timelineEndMs);
+
+    await tester.tap(find.byKey(const ValueKey('timeline_options_fab')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_snap_beat4')));
+    await tester.pumpAndSettle();
+
+    final lockedOutgoing = _waveformPainter(tester, 't1').mixClip!;
+    final lockedIncoming = _waveformPainter(tester, 't2').mixClip!;
+    expect(lockedIncoming.timelineStartMs, 12000);
+    expect(
+        lockedIncoming.timelineStartMs, lessThan(lockedOutgoing.timelineEndMs));
   });
 
   testWidgets('edit-mode clip body drag updates timeline placement, not pan', (
@@ -2028,7 +2620,7 @@ void main() {
     );
   });
 
-  testWidgets('selected metadata overlay passes drags through to waveform',
+  testWidgets('selected metadata stays outside the draggable waveform',
       (tester) async {
     final starts = <int>[];
     final current = _analyzedTrack('t1', 'Midnight Drive', 240);
@@ -2063,9 +2655,11 @@ void main() {
     final clipRect = tester.getRect(
       find.byKey(const ValueKey('timeline_clip_t2')),
     );
-    final dragSurface = chipRect.intersect(clipRect);
-    expect(dragSurface.isEmpty, isFalse);
-    await tester.dragFrom(dragSurface.center, const Offset(100, 0));
+    expect(chipRect.overlaps(clipRect), isFalse);
+    await tester.dragFrom(
+      Offset(clipRect.right - 72, clipRect.top + 32),
+      const Offset(100, 0),
+    );
     await tester.pumpAndSettle();
 
     expect(

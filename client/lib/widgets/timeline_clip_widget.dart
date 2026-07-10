@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/engine/timeline_model.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
 import '../models/waveform.dart';
@@ -235,6 +236,8 @@ class TimelineClipWidget extends StatelessWidget {
   final Track track;
   final List<double> peaks;
   final TimelineWaveformData? waveform;
+  final MixClip? mixClip;
+  final Object? mappingRevision;
   final double visibleStartFraction;
   final double visibleEndFraction;
   final TrimRange trim;
@@ -251,6 +254,8 @@ class TimelineClipWidget extends StatelessWidget {
     required this.track,
     required this.peaks,
     this.waveform,
+    this.mixClip,
+    this.mappingRevision,
     this.visibleStartFraction = 0,
     this.visibleEndFraction = 1,
     required this.trim,
@@ -295,6 +300,8 @@ class TimelineClipWidget extends StatelessWidget {
               painter: TimelineWaveformPainter(
                 peaks: peaks,
                 waveform: waveform,
+                mixClip: mixClip,
+                mappingRevision: mappingRevision,
                 visibleStartFraction: visibleStartFraction,
                 visibleEndFraction: visibleEndFraction,
                 color: waveColor,
@@ -326,7 +333,7 @@ class TimelineClipWidget extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: theme.colorScheme.inverseSurface.withValues(alpha: 0.78),
+        color: theme.colorScheme.inverseSurface,
         borderRadius: BorderRadius.circular(10),
       ),
       child: Text(
