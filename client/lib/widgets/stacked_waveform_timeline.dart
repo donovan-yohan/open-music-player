@@ -325,6 +325,9 @@ class _LaneModel {
 class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   static const double _minZoom = 0.5;
   static const double _maxZoom = TimelineViewport.maxPixelsPerSecond;
+  static const double _waveformPixelsPerSample = 1.25;
+  static const int _minWaveformSamples = 512;
+  static const int _maxWaveformSamples = 65536;
   static const double _scrubEdgeScrollZonePx = 56;
   static const double _scrubMaxEdgeScrollPx = 32;
 
@@ -757,8 +760,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   }
 
   int _targetWaveformSamples(double clipWidth) {
-    if (!clipWidth.isFinite || clipWidth <= 0) return 512;
-    return (clipWidth / 0.72).round().clamp(512, 4096).toInt();
+    if (!clipWidth.isFinite || clipWidth <= 0) return _minWaveformSamples;
+    return (clipWidth / _waveformPixelsPerSample)
+        .round()
+        .clamp(_minWaveformSamples, _maxWaveformSamples)
+        .toInt();
   }
 
   MixClip? _dominantClipAt(List<MixClip> clips, int timelineMs) {
