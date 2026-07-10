@@ -180,6 +180,8 @@ Map<String, dynamic> mediaItemToPlaybackJson(MediaItem item) {
       'analysisSummary': item.extras?['analysisSummary'],
     if (item.extras?['analysisOverrides'] != null)
       'analysisOverrides': item.extras?['analysisOverrides'],
+    if (item.extras?['analysisUpdatedAt'] != null)
+      'analysisUpdatedAt': item.extras?['analysisUpdatedAt'],
   };
 }
 

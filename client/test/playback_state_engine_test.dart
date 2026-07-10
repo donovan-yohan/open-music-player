@@ -259,6 +259,7 @@ void main() {
         _analysis(
           bpm: 100,
           downbeatsMs: [0, 8000, 16000],
+          updatedAt: DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 456),
         ),
       );
       await playback.refreshTrackAnalysis(
@@ -274,6 +275,10 @@ void main() {
       expect(clips[0].tempo.nativeBpm, 100);
       expect(clips[1].tempo.nativeBpm, 125);
       expect(clips[1].timelineStartMs, 12000);
+      expect(
+        playback.queue[0].extras?['analysisUpdatedAt'],
+        '2026-07-10T11:00:00.123456Z',
+      );
       expect(clips[0].playbackRateAt(12000), 1);
       expect(clips[1].playbackRateAt(12000), closeTo(0.8, 0.0001));
       expect(playback.currentIndex, 0);
@@ -439,6 +444,7 @@ Map<String, dynamic> _track(int id, {required int seconds}) => {
 TrackAnalysis _analysis({
   required double bpm,
   required List<int> downbeatsMs,
+  DateTime? updatedAt,
 }) =>
     TrackAnalysis.fromJson(
       status: 'analyzed',
@@ -447,4 +453,5 @@ TrackAnalysis _analysis({
         'beat_grid': {'bpm': bpm, 'confidence': 1.0},
         'downbeats': {'positions_ms': downbeatsMs},
       },
+      updatedAt: updatedAt,
     );

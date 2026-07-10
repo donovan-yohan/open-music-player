@@ -147,6 +147,8 @@ class Track {
           'analysisSummary': analysis!.summary!.toJson(),
         if (analysis?.overrides != null)
           'analysisOverrides': analysis!.overrides!.toJson(),
+        if (analysis?.updatedAt != null)
+          'analysisUpdatedAt': analysis!.updatedAt!.toUtc().toIso8601String(),
       };
 
   factory Track.fromJson(Map<String, dynamic> json) {

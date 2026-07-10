@@ -13,12 +13,14 @@ class TrackAnalysis {
   final TrackAnalysisSummary? summary;
   final TrackAnalysisOverrides? overrides;
   final bool overridesPresent;
+  final DateTime? updatedAt;
 
   const TrackAnalysis({
     required this.status,
     this.summary,
     this.overrides,
     bool? overridesPresent,
+    this.updatedAt,
   }) : overridesPresent = overridesPresent ?? overrides != null;
 
   factory TrackAnalysis.fromJson({
@@ -26,6 +28,7 @@ class TrackAnalysis {
     Object? summary,
     Object? overrides,
     bool? overridesPresent,
+    Object? updatedAt,
   }) {
     final parsedStatus = parseTrackAnalysisStatus(status);
     final baseSummary =
@@ -39,6 +42,7 @@ class TrackAnalysis {
       summary: effectiveSummary,
       overrides: parsedOverrides,
       overridesPresent: overridesPresent ?? overrides != null,
+      updatedAt: _readDateTime(updatedAt),
     );
   }
 
@@ -56,6 +60,7 @@ class TrackAnalysis {
       'status': status.name,
       if (summary != null) 'summary': summary!.toJson(),
       if (overridesPresent) 'overrides': overrides?.toJson() ?? const {},
+      if (updatedAt != null) 'updated_at': updatedAt!.toUtc().toIso8601String(),
     };
   }
 }
@@ -68,6 +73,7 @@ class TrackAnalysis {
 TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
   final rawStatus = json['analysisStatus'] ?? json['analysis_status'];
   final rawSummary = json['analysisSummary'] ?? json['analysis_summary'];
+  final rawUpdatedAt = json['analysisUpdatedAt'] ?? json['analysis_updated_at'];
   final summaryMap = _readMap(rawSummary);
   final hasCamelCaseOverrides = json.containsKey('analysisOverrides');
   final hasSnakeCaseOverrides = json.containsKey('analysis_overrides');
@@ -79,7 +85,10 @@ TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
       : hasSnakeCaseOverrides
           ? json['analysis_overrides']
           : summaryMap?['overrides'];
-  if (rawStatus == null && rawSummary == null && !overridesPresent) {
+  if (rawStatus == null &&
+      rawSummary == null &&
+      !overridesPresent &&
+      rawUpdatedAt == null) {
     return null;
   }
 
@@ -88,13 +97,21 @@ TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
     summary: rawSummary,
     overrides: rawOverrides,
     overridesPresent: overridesPresent,
+    updatedAt: rawUpdatedAt,
   );
   if (analysis.status == TrackAnalysisStatus.unknown &&
       !analysis.hasDisplayableSummary &&
-      !analysis.overridesPresent) {
+      !analysis.overridesPresent &&
+      analysis.updatedAt == null) {
     return null;
   }
   return analysis;
+}
+
+DateTime? _readDateTime(Object? value) {
+  if (value is DateTime) return value.toUtc();
+  if (value is! String || value.trim().isEmpty) return null;
+  return DateTime.tryParse(value)?.toUtc();
 }
 
 TrackAnalysisStatus parseTrackAnalysisStatus(Object? value) {

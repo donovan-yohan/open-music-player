@@ -187,6 +187,7 @@ void main() {
           'analysisOverrides': {
             'bpm': {'value': 130},
           },
+          'analysisUpdatedAt': '2026-07-10T11:00:00.123456Z',
         },
       );
 
@@ -204,6 +205,10 @@ void main() {
       expect(json['analysisOverrides'], {
         'bpm': {'value': 130},
       });
+      expect(
+        json['analysisUpdatedAt'],
+        '2026-07-10T11:00:00.123456Z',
+      );
       expect(json.containsKey('url'), isFalse);
       expect(json.containsKey('expiresAt'), isFalse);
     });

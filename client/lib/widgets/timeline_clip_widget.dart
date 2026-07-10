@@ -73,7 +73,8 @@ class TimelineLaneHeader extends StatelessWidget {
                     Expanded(
                       child: LayoutBuilder(
                         builder: (context, constraints) {
-                          final largeText = textScale >= 1.2;
+                          final largeText =
+                              textScale >= 1.2 || constraints.maxWidth < 190;
                           if (largeText) {
                             return Column(
                               mainAxisAlignment: MainAxisAlignment.center,

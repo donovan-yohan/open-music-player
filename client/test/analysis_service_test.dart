@@ -44,6 +44,7 @@ void main() {
       final api = _CapturingApiClient({
         'track_id': 42,
         'status': 'analyzed',
+        'updated_at': '2026-07-10T11:00:00.123456Z',
         'summary': {
           'bpm': {'value': 128},
           'beat_grid': {
@@ -94,6 +95,10 @@ void main() {
 
       expect(api.capturedEndpoint, '/tracks/42/analysis');
       expect(analysis.status, TrackAnalysisStatus.analyzed);
+      expect(
+        analysis.updatedAt,
+        DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 456),
+      );
       expect(analysis.summary?.bpm?.numericValue, 128);
       expect(analysis.summary?.key?.textValue, 'A minor');
       expect(analysis.summary?.camelot?.textValue, '8A');
@@ -119,6 +124,7 @@ void main() {
       final api = _CapturingApiClient({
         'track_id': 42,
         'status': 'analyzed',
+        'updated_at': '2026-07-10T11:00:00.123457Z',
         'summary': {
           'bpm': {'value': 118},
         },
@@ -147,6 +153,10 @@ void main() {
       );
       expect(analysis.summary?.bpm?.numericValue, 124);
       expect(analysis.summary?.downbeats?.positionsMs, [120, 2056]);
+      expect(
+        analysis.updatedAt,
+        DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 457),
+      );
     });
 
     test('manual BPM overrides default to trusted confidence when omitted',

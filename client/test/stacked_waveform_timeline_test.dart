@@ -64,6 +64,7 @@ MixClip _mixClip(
   GainEnvelope envelope = const GainEnvelope.flat(),
   ClipTempoMetadata tempo = ClipTempoMetadata.empty,
   String pitchMode = pitchModePreserve,
+  PlaybackRateAutomation? rateAutomation,
 }) =>
     MixClip(
       placement: TimelineClip.clamped(
@@ -77,6 +78,7 @@ MixClip _mixClip(
       envelope: envelope,
       tempo: tempo,
       pitchMode: pitchMode,
+      rateAutomation: rateAutomation,
     );
 
 Future<void> _pump(
@@ -179,6 +181,40 @@ TimelineWaveformPainter _waveformPainter(WidgetTester tester, String trackId) {
 }
 
 void main() {
+  testWidgets('lane header keeps default-scale BPM text untruncated', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 220,
+            child: TimelineLaneHeader(
+              track: _analyzedTrack(
+                'default-text',
+                'EVERYTHING I’VE EVER WANTED',
+                180,
+                bpm: 184.6,
+                key: 'A minor',
+                camelot: '9A',
+              ),
+              role: LaneRole.collapsed,
+              statusLabel: 'Later',
+              accent: Colors.blue,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    for (final label in ['184.6 BPM', '9A']) {
+      final paragraph = tester.renderObject<RenderParagraph>(find.text(label));
+      expect(paragraph.didExceedMaxLines, isFalse, reason: label);
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('lane header constrains metadata chips at 2x text scale', (
     tester,
   ) async {
@@ -1294,8 +1330,11 @@ void main() {
     );
   });
 
-  testWidgets('selected lane exposes live tempo transition state',
+  testWidgets('selected lane follows model tempo without rebuilding waveforms',
       (tester) async {
+    final positions = StreamController<int>.broadcast();
+    addTearDown(positions.close);
+    var waveformBuilds = 0;
     final current = _track('t1', 'Midnight Drive', 160);
     final timeline = TimelineModel(
       clips: [
@@ -1308,6 +1347,18 @@ void main() {
             bpmConfidence: 0.9,
             downbeatsMs: [0, 8000, 16000, 24000],
           ),
+          rateAutomation: const PlaybackRateAutomation(
+            baseRate: 1.1,
+            pitchMode: pitchModePreserve,
+            segments: [
+              PlaybackRateSegment(
+                startMs: 0,
+                endMs: 100000,
+                startRate: 0.9,
+                endRate: 1.1,
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -1318,14 +1369,10 @@ void main() {
       current: current,
       upcoming: const [],
       timelineModel: timeline,
-      clipTempoStates: const {
-        'clip_t1': ClipTempoRuntimeState(
-          clipId: 'clip_t1',
-          effectiveSpeed: 0.9,
-          nativeBpm: 125,
-          effectiveBpm: 112.5,
-          pitchMode: pitchModePreserve,
-        ),
+      positionMsStream: positions.stream,
+      waveformFor: (track, targetSampleCount) {
+        waveformBuilds++;
+        return richWaveformForTrack(track, sampleCount: targetSampleCount);
       },
       onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
     );
@@ -1344,6 +1391,29 @@ void main() {
       find.descendant(of: chip, matching: find.textContaining('0.90x')),
       findsOneWidget,
     );
+    final buildsAfterSelection = waveformBuilds;
+
+    await tester.runAsync(() async {
+      positions.add(100000);
+      await Future<void>.delayed(Duration.zero);
+    });
+    await tester.pump();
+
+    expect(
+      find.descendant(
+          of: chip, matching: find.textContaining('Live 137.5 BPM')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: chip, matching: find.textContaining('1.10x')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+          of: chip, matching: find.textContaining('Live 112.5 BPM')),
+      findsNothing,
+    );
+    expect(waveformBuilds, buildsAfterSelection);
   });
 
   testWidgets('live timeline prefers corrected row tempo over stale clip tempo',

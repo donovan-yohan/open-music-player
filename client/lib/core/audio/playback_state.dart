@@ -496,6 +496,14 @@ class PlaybackState extends ChangeNotifier {
       extras['analysisOverrides'] = overrides.toJson();
       extras.remove('analysis_overrides');
     }
+    if (analysis.updatedAt == null) {
+      extras.remove('analysisUpdatedAt');
+      extras.remove('analysis_updated_at');
+    } else {
+      extras['analysisUpdatedAt'] =
+          analysis.updatedAt!.toUtc().toIso8601String();
+      extras.remove('analysis_updated_at');
+    }
     return item.copyWith(extras: extras);
   }
 

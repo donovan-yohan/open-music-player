@@ -87,6 +87,7 @@ void main() {
           jsonEncode({
             'status': 'analyzed',
             'overrides': <String, dynamic>{},
+            'updated_at': '2026-07-10T11:00:00.123456Z',
           }),
           200,
           headers: {'content-type': 'application/json'},
@@ -98,6 +99,10 @@ void main() {
       expect(analysis.overridesPresent, isTrue);
       expect(analysis.overrides, isNull);
       expect(analysis.toJson()['overrides'], isEmpty);
+      expect(
+        analysis.updatedAt,
+        DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 456),
+      );
     });
   });
 }

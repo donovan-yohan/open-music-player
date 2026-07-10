@@ -37,6 +37,7 @@ Track _track({
 TrackAnalysis _tempoAnalysis({
   double bpm = 120,
   int durationMs = 240000,
+  DateTime? updatedAt,
 }) {
   final beatMs = (60000 / bpm).round();
   final downbeatMs = beatMs * 8;
@@ -60,7 +61,22 @@ TrackAnalysis _tempoAnalysis({
         confidence: 0.9,
       ),
     ),
+    updatedAt: updatedAt,
   );
+}
+
+class _FailedQueueMutation {
+  final String name;
+  final String method;
+  final bool Function(String path) matchesPath;
+  final Future<void> Function(QueueProvider provider) run;
+
+  const _FailedQueueMutation({
+    required this.name,
+    required this.method,
+    required this.matchesPath,
+    required this.run,
+  });
 }
 
 TimelineClip _fallback(Track track) => TimelineClip.clamped(
@@ -692,9 +708,14 @@ void main() {
     provider.dispose();
   });
 
-  test('saved override rejects stale generations until a fresh queue reload',
+  test('saved override rejects payloads older than its server revision',
       () async {
-    Track staleTrack(double bpm) => _track(
+    final staleRevision = DateTime.utc(2026, 7, 10, 12);
+    final savedRevision = staleRevision.add(const Duration(microseconds: 1));
+    final reversionRevision =
+        savedRevision.add(const Duration(microseconds: 1));
+
+    Track analyzedTrack(double bpm, DateTime revision) => _track(
           id: '42',
           playbackTrackId: '42',
           analysis: TrackAnalysis.fromJson(
@@ -710,15 +731,16 @@ void main() {
               'bpm': {'value': bpm},
             },
             overridesPresent: true,
+            updatedAt: revision,
           ),
         );
 
     final staleGenerations = [
-      staleTrack(124),
-      staleTrack(126),
-      staleTrack(128),
+      analyzedTrack(124, staleRevision),
+      analyzedTrack(126, staleRevision),
+      analyzedTrack(128, staleRevision),
     ];
-    final legitimateReversion = staleGenerations[1];
+    final legitimateReversion = analyzedTrack(126, reversionRevision);
     final provider = QueueProvider(
       mockQueueApiClient((request) async {
         if (request.method == 'PATCH' &&
@@ -734,6 +756,7 @@ void main() {
                 },
               },
               'overrides': <String, dynamic>{},
+              'updated_at': savedRevision.toIso8601String(),
             }),
             200,
             headers: {'content-type': 'application/json'},
@@ -783,6 +806,75 @@ void main() {
       provider.queue.tracks.single.analysis?.summary?.bpm?.numericValue,
       126,
     );
+
+    for (final stale in staleGenerations) {
+      final replayed =
+          provider.trackWithAnalysis(stale, requestHydration: false);
+      expect(replayed.analysis?.summary?.bpm?.numericValue, 126);
+      expect(replayed.analysis?.updatedAt, reversionRevision);
+    }
+    provider.dispose();
+  });
+
+  test('newer concurrent queue load wins when responses complete out of order',
+      () async {
+    final firstStarted = Completer<void>();
+    final releaseFirst = Completer<void>();
+    final olderRevision = DateTime.utc(2026, 7, 10, 12);
+    final newerRevision = olderRevision.add(const Duration(microseconds: 1));
+    var queueRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+          queueRequests++;
+          final requestNumber = queueRequests;
+          if (requestNumber == 1) {
+            firstStarted.complete();
+            await releaseFirst.future;
+          }
+          final track = _track(
+            id: '42',
+            playbackTrackId: '42',
+            analysis: _tempoAnalysis(
+              bpm: requestNumber == 1 ? 120 : 130,
+              updatedAt: requestNumber == 1 ? olderRevision : newerRevision,
+            ),
+          );
+          return http.Response(
+            jsonEncode({
+              'items': [track.toJson()],
+              'currentPosition': 0,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path.endsWith('/mix-plans')) {
+          return http.Response(
+            jsonEncode({'data': []}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('', 404);
+      }),
+    );
+
+    final firstLoad = provider.loadQueue();
+    await firstStarted.future.timeout(const Duration(seconds: 1));
+    final secondLoad = provider.loadQueue();
+    await secondLoad;
+    releaseFirst.complete();
+    await firstLoad;
+
+    expect(queueRequests, 2);
+    expect(provider.isLoading, isFalse);
+    expect(
+      provider.queue.tracks.single.analysis?.summary?.bpm?.numericValue,
+      130,
+    );
+    expect(provider.queue.tracks.single.analysis?.updatedAt, newerRevision);
     provider.dispose();
   });
 
@@ -984,6 +1076,115 @@ void main() {
     );
     provider.dispose();
   });
+
+  for (final mutation in <_FailedQueueMutation>[
+    _FailedQueueMutation(
+      name: 'remove',
+      method: 'DELETE',
+      matchesPath: (path) => path.endsWith('/queue/items/queue-42'),
+      run: (provider) => provider.removeFromQueue(0),
+    ),
+    _FailedQueueMutation(
+      name: 'reorder',
+      method: 'PUT',
+      matchesPath: (path) => path.endsWith('/queue/reorder'),
+      run: (provider) => provider.reorderQueue(0, 1),
+    ),
+    _FailedQueueMutation(
+      name: 'clear',
+      method: 'DELETE',
+      matchesPath: (path) => path.endsWith('/queue'),
+      run: (provider) => provider.clearQueue(),
+    ),
+  ]) {
+    test('failed ${mutation.name} rollback preserves a concurrent correction',
+        () async {
+      final mutationStarted = Completer<void>();
+      final releaseMutation = Completer<void>();
+      final originalRevision = DateTime.utc(2026, 7, 10, 12);
+      final correctedRevision =
+          originalRevision.add(const Duration(microseconds: 1));
+      final originalTrack = _track(
+        id: '42',
+        queueItemId: 'queue-42',
+        playbackTrackId: '42',
+        analysis: _tempoAnalysis(
+          bpm: 120,
+          updatedAt: originalRevision,
+        ),
+      );
+      final otherTrack = _track(
+        id: '43',
+        queueItemId: 'queue-43',
+        playbackTrackId: '43',
+      );
+      final provider = QueueProvider(
+        mockQueueApiClient((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              jsonEncode({
+                'items': [originalTrack.toJson(), otherTrack.toJson()],
+                'currentPosition': 0,
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'GET' &&
+              request.url.path.endsWith('/mix-plans')) {
+            return http.Response(
+              jsonEncode({'data': []}),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == mutation.method &&
+              mutation.matchesPath(request.url.path)) {
+            mutationStarted.complete();
+            await releaseMutation.future;
+            return http.Response('', 500);
+          }
+          if (request.method == 'PATCH' &&
+              request.url.path.endsWith('/tracks/42/analysis/overrides')) {
+            return http.Response(
+              jsonEncode({
+                'status': 'analyzed',
+                'summary': {
+                  'bpm': {'value': 120},
+                },
+                'overrides': {
+                  'bpm': {'value': 128},
+                },
+                'updated_at': correctedRevision.toIso8601String(),
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response('', 404);
+        }),
+      );
+
+      await provider.loadQueue();
+      final queuedTrack = provider.queue.tracks.first;
+      final mutationFuture = mutation.run(provider);
+      await mutationStarted.future.timeout(const Duration(seconds: 1));
+      await provider.updateAnalysisOverrides(
+        queuedTrack,
+        const TrackAnalysisOverrides(bpm: 128),
+      );
+      releaseMutation.complete();
+      await mutationFuture;
+
+      expect(provider.queue.tracks, hasLength(2));
+      final restored = provider.queue.tracks.firstWhere(
+        (track) => track.playbackTrackId == '42',
+      );
+      expect(restored.analysis?.summary?.bpm?.numericValue, 128);
+      expect(restored.analysis?.updatedAt, correctedRevision);
+      provider.dispose();
+    });
+  }
 
   test('analysis invalidation does not evict prefix-matching track ids', () {
     Track analyzedTrack(int id, double bpm) => _track(

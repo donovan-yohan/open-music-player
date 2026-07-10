@@ -42,9 +42,9 @@ class Track {
     bool? canPlay,
     bool? canRetry,
     this.analysis,
-  }) : queueItemId = queueItemId ?? id,
-       canPlay = canPlay ?? queueStatus == TrackQueueStatus.playable,
-       canRetry = canRetry ?? queueStatus == TrackQueueStatus.failed;
+  })  : queueItemId = queueItemId ?? id,
+        canPlay = canPlay ?? queueStatus == TrackQueueStatus.playable,
+        canRetry = canRetry ?? queueStatus == TrackQueueStatus.failed;
 
   factory Track.fromJson(Map<String, dynamic> json) {
     final sourceCandidate = _readMap(json['sourceCandidate']);
@@ -53,12 +53,11 @@ class Track {
         json['trackId']?.toString() ?? json['track_id']?.toString();
     final sourceCandidateId =
         _readString(sourceCandidate, const ['candidateId', 'candidate_id']) ??
-        _readString(json, const ['sourceCandidateId']);
+            _readString(json, const ['sourceCandidateId']);
     final sourceUrl =
         _readString(sourceCandidate, const ['sourceUrl', 'source_url']) ??
-        _readString(json, const ['sourceUrl']);
-    final id =
-        json['id']?.toString() ??
+            _readString(json, const ['sourceUrl']);
+    final id = json['id']?.toString() ??
         queueItemId ??
         playbackTrackId ??
         sourceCandidateId ??
@@ -74,19 +73,15 @@ class Track {
       playbackTrackId: playbackTrackId,
       sourceCandidateId: sourceCandidateId,
       sourceUrl: sourceUrl,
-      title:
-          json['title'] as String? ??
+      title: json['title'] as String? ??
           _readString(sourceCandidate, const ['title']) ??
           'Unknown track',
-      artist:
-          json['artist'] as String? ??
+      artist: json['artist'] as String? ??
           _readString(sourceCandidate, const ['artist', 'uploader']),
-      album:
-          json['album'] as String? ??
+      album: json['album'] as String? ??
           _readString(sourceCandidate, const ['album', 'provider']),
       duration: _parseDuration(json, sourceCandidate),
-      coverUrl:
-          json['coverUrl'] as String? ??
+      coverUrl: json['coverUrl'] as String? ??
           json['cover_url'] as String? ??
           _readString(sourceCandidate, const ['thumbnailUrl', 'thumbnail_url']),
       addedAt: _parseDate(json['addedAt'] ?? json['added_at']),
@@ -105,8 +100,7 @@ class Track {
     if (duration is int) return duration;
     if (duration is num) return duration.round();
 
-    final durationMs =
-        json['duration_ms'] ??
+    final durationMs = json['duration_ms'] ??
         json['durationMs'] ??
         sourceCandidate?['duration_ms'] ??
         sourceCandidate?['durationMs'];
@@ -198,6 +192,8 @@ class Track {
         'analysisSummary': analysis!.summary!.toJson(),
       if (analysis?.overrides != null)
         'analysisOverrides': analysis!.overrides!.toJson(),
+      if (analysis?.updatedAt != null)
+        'analysisUpdatedAt': analysis!.updatedAt!.toUtc().toIso8601String(),
     };
   }
 
@@ -214,6 +210,8 @@ class Track {
         'analysisSummary': analysis!.summary!.toJson(),
       if (analysis?.overrides != null)
         'analysisOverrides': analysis!.overrides!.toJson(),
+      if (analysis?.updatedAt != null)
+        'analysisUpdatedAt': analysis!.updatedAt!.toUtc().toIso8601String(),
     };
   }
 

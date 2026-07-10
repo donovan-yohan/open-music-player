@@ -55,14 +55,14 @@ class Track {
       addedAt: json['addedAt'] != null
           ? DateTime.parse(json['addedAt'] as String)
           : json['added_at'] != null
-          ? DateTime.parse(json['added_at'] as String)
-          : DateTime.now(),
+              ? DateTime.parse(json['added_at'] as String)
+              : DateTime.now(),
       mbVerified: json['mbVerified'] ?? json['mb_verified'] ?? false,
       mbSuggestions:
           (json['mbSuggestions'] ?? json['mb_suggestions'] as List<dynamic>?)
-              ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
-              .toList() ??
-          [],
+                  ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
+                  .toList() ??
+              [],
       analysis: trackAnalysisFromTrackJson(json),
     );
   }
@@ -89,6 +89,8 @@ class Track {
         'analysisSummary': analysis!.summary!.toJson(),
       if (analysis?.overrides != null)
         'analysisOverrides': analysis!.overrides!.toJson(),
+      if (analysis?.updatedAt != null)
+        'analysisUpdatedAt': analysis!.updatedAt!.toUtc().toIso8601String(),
     };
   }
 

@@ -411,6 +411,9 @@ class _SearchScreenState extends State<SearchScreen> {
           'analysisSummary': track.analysis!.summary!.toJson(),
         if (track.analysis?.overrides != null)
           'analysisOverrides': track.analysis!.overrides!.toJson(),
+        if (track.analysis?.updatedAt != null)
+          'analysisUpdatedAt':
+              track.analysis!.updatedAt!.toUtc().toIso8601String(),
       };
 
   String _friendlyLocalError(Object error) {

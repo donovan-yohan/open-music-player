@@ -182,6 +182,10 @@ class PlaybackSourceResolver {
         'analysisOverrides': track['analysisOverrides'],
       if (track['analysis_overrides'] != null)
         'analysisOverrides': track['analysis_overrides'],
+      if (track['analysisUpdatedAt'] != null)
+        'analysisUpdatedAt': track['analysisUpdatedAt'],
+      if (track['analysis_updated_at'] != null)
+        'analysisUpdatedAt': track['analysis_updated_at'],
       'analysisRef': trackId.toString(),
     };
     return MediaItem(

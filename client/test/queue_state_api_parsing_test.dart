@@ -206,6 +206,7 @@ void main() {
           'duration': 198,
           'playbackState': 'playable',
           'analysisStatus': 'analyzed',
+          'analysisUpdatedAt': '2026-07-10T11:00:00.123456Z',
           'analysisSummary': {
             'bpm': {'value': 124.0, 'confidence': 0.94},
             'beat_grid': {
@@ -255,6 +256,14 @@ void main() {
 
     final analysis = state.tracks.single.analysis!;
     expect(analysis.status, TrackAnalysisStatus.analyzed);
+    expect(
+      analysis.updatedAt,
+      DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 456),
+    );
+    expect(
+      state.tracks.single.toPlaybackJson()['analysisUpdatedAt'],
+      '2026-07-10T11:00:00.123456Z',
+    );
     expect(analysis.summary!.bpm!.numericValue, 124.0);
     expect(analysis.summary!.camelot!.textValue, '8A');
     expect(analysis.summary!.energy!.numericValue, 0.73);

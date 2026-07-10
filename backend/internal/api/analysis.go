@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
@@ -40,6 +41,30 @@ type AnalysisOverridesRequest struct {
 
 const maxAnalysisOverridesRequestBytes = 1 << 20
 
+func newAnalysisResponse(analysis *db.TrackAnalysis) AnalysisResponse {
+	resp := AnalysisResponse{
+		TrackID:       analysis.TrackID,
+		SchemaVersion: analysis.SchemaVersion,
+		Status:        analysis.Status,
+		Summary:       analysis.SummaryJSON,
+		Overrides:     analysis.OverridesJSON,
+		Artifacts:     analysis.ArtifactsJSON,
+		Provenance:    analysis.ProvenanceJSON,
+		RequestedAt:   analysis.RequestedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:     analysis.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if analysis.Error.Valid {
+		resp.Error = analysis.Error.String
+	}
+	if analysis.StartedAt.Valid {
+		resp.StartedAt = analysis.StartedAt.Time.Format("2006-01-02T15:04:05Z")
+	}
+	if analysis.CompletedAt.Valid {
+		resp.CompletedAt = analysis.CompletedAt.Time.Format("2006-01-02T15:04:05Z")
+	}
+	return resp
+}
+
 func (h *AnalysisHandlers) GetTrackAnalysis(w http.ResponseWriter, r *http.Request) {
 	userCtx := auth.GetUserFromContext(r.Context())
 	if userCtx == nil {
@@ -73,27 +98,7 @@ func (h *AnalysisHandlers) GetTrackAnalysis(w http.ResponseWriter, r *http.Reque
 		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to retrieve track analysis")
 		return
 	}
-	resp := AnalysisResponse{
-		TrackID:       analysis.TrackID,
-		SchemaVersion: analysis.SchemaVersion,
-		Status:        analysis.Status,
-		Summary:       analysis.SummaryJSON,
-		Overrides:     analysis.OverridesJSON,
-		Artifacts:     analysis.ArtifactsJSON,
-		Provenance:    analysis.ProvenanceJSON,
-		RequestedAt:   analysis.RequestedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:     analysis.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-	}
-	if analysis.Error.Valid {
-		resp.Error = analysis.Error.String
-	}
-	if analysis.StartedAt.Valid {
-		resp.StartedAt = analysis.StartedAt.Time.Format("2006-01-02T15:04:05Z")
-	}
-	if analysis.CompletedAt.Valid {
-		resp.CompletedAt = analysis.CompletedAt.Time.Format("2006-01-02T15:04:05Z")
-	}
-	writeLibraryJSON(w, http.StatusOK, resp)
+	writeLibraryJSON(w, http.StatusOK, newAnalysisResponse(analysis))
 }
 
 func (h *AnalysisHandlers) UpdateTrackAnalysisOverrides(w http.ResponseWriter, r *http.Request) {
@@ -136,27 +141,7 @@ func (h *AnalysisHandlers) UpdateTrackAnalysisOverrides(w http.ResponseWriter, r
 		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to save analysis overrides")
 		return
 	}
-	resp := AnalysisResponse{
-		TrackID:       analysis.TrackID,
-		SchemaVersion: analysis.SchemaVersion,
-		Status:        analysis.Status,
-		Summary:       analysis.SummaryJSON,
-		Overrides:     analysis.OverridesJSON,
-		Artifacts:     analysis.ArtifactsJSON,
-		Provenance:    analysis.ProvenanceJSON,
-		RequestedAt:   analysis.RequestedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:     analysis.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-	}
-	if analysis.Error.Valid {
-		resp.Error = analysis.Error.String
-	}
-	if analysis.StartedAt.Valid {
-		resp.StartedAt = analysis.StartedAt.Time.Format("2006-01-02T15:04:05Z")
-	}
-	if analysis.CompletedAt.Valid {
-		resp.CompletedAt = analysis.CompletedAt.Time.Format("2006-01-02T15:04:05Z")
-	}
-	writeLibraryJSON(w, http.StatusOK, resp)
+	writeLibraryJSON(w, http.StatusOK, newAnalysisResponse(analysis))
 }
 
 func decodeAnalysisOverridesRequest(w http.ResponseWriter, r *http.Request) (AnalysisOverridesRequest, error) {

@@ -149,10 +149,11 @@ class _MetadataChipGroup extends StatelessWidget {
         child: singleLine
             ? Row(
                 key: const ValueKey('song_metadata_chips'),
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   for (var index = 0; index < chipWidgets.length; index++) ...[
                     if (index > 0) const SizedBox(width: 4),
-                    Flexible(child: chipWidgets[index]),
+                    chipWidgets[index],
                   ],
                 ],
               )
@@ -187,7 +188,7 @@ class _MetadataChip extends StatelessWidget {
     final theme = Theme.of(context);
     return Container(
       constraints: const BoxConstraints(minHeight: 18),
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(4),

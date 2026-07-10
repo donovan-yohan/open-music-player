@@ -895,6 +895,9 @@ class _TrackListTileState extends State<_TrackListTile> {
           'analysisSummary': track.analysis!.summary!.toJson(),
         if (track.analysis?.overrides != null)
           'analysisOverrides': track.analysis!.overrides!.toJson(),
+        if (track.analysis?.updatedAt != null)
+          'analysisUpdatedAt':
+              track.analysis!.updatedAt!.toUtc().toIso8601String(),
       });
     } catch (_) {
       if (!context.mounted) return;
