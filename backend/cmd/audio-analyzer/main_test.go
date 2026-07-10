@@ -70,6 +70,68 @@ func TestAnalyzeHTTPReturnsWaveformAndMIRJSON(t *testing.T) {
 	}
 }
 
+func TestAnalyzeHTTPKeepsBasicAnalysisForTinyAudio(t *testing.T) {
+	const sampleRate = 8000
+	testCases := []struct {
+		name        string
+		sampleCount int
+		durationMs  int
+	}{
+		{name: "one frame", sampleCount: 1, durationMs: 1},
+		{name: "eight milliseconds", sampleCount: 64, durationMs: 8},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			mirCalls := 0
+			server := &analyzerServer{
+				storage:    fakeAnalyzerStore{audio: testWAVSamples(sampleRate, testCase.sampleCount)},
+				sampleRate: sampleRate,
+				waveformHz: 80,
+				mirSlots:   make(chan struct{}, 1),
+				analyzeMIR: func(context.Context, string, string, string) (mirAnalysis, error) {
+					mirCalls++
+					return mirAnalysis{}, nil
+				},
+			}
+			bodyJSON, err := json.Marshal(map[string]any{
+				"schema_version": 1,
+				"track_id":       46,
+				"storage_key":    "smoke/tiny.wav",
+				"duration_ms":    testCase.durationMs,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/analyze", bytes.NewReader(bodyJSON))
+			response := httptest.NewRecorder()
+
+			server.handleAnalyze(response, request)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			if mirCalls != 1 {
+				t.Fatalf("MIR calls = %d, want 1", mirCalls)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			summary := payload["summary"].(map[string]any)
+			for _, key := range []string{"waveform", "loudness", "true_peak", "duration_sanity"} {
+				if _, ok := summary[key]; !ok {
+					t.Fatalf("summary missing %q: %#v", key, summary)
+				}
+			}
+			for _, key := range []string{"bpm", "beat_grid", "downbeats", "key", "camelot"} {
+				if _, ok := summary[key]; ok {
+					t.Fatalf("summary unexpectedly contains %q: %#v", key, summary[key])
+				}
+			}
+		})
+	}
+}
+
 func TestAnalyzeHTTPReturnsRetryableStatusForMIRFailure(t *testing.T) {
 	server := &analyzerServer{
 		storage:    fakeAnalyzerStore{audio: testWAV(8000, 2)},
@@ -298,7 +360,10 @@ func sineSamples(sampleRate int, frequency float64, seconds int) []float64 {
 }
 
 func testWAV(sampleRate, seconds int) []byte {
-	sampleCount := sampleRate * seconds
+	return testWAVSamples(sampleRate, sampleRate*seconds)
+}
+
+func testWAVSamples(sampleRate, sampleCount int) []byte {
 	dataSize := sampleCount * 2
 	buffer := bytes.NewBuffer(make([]byte, 0, 44+dataSize))
 	buffer.WriteString("RIFF")

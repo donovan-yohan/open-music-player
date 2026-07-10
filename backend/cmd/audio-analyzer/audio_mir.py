@@ -21,6 +21,12 @@ MINOR_PROFILE = np.asarray(
     dtype=np.float64,
 )
 
+# Beat This resamples to 22050 Hz and uses a centered 1024-sample STFT. Its
+# reflection padding is 512 samples on each side, so inputs must exceed it.
+BEAT_THIS_SAMPLE_RATE = 22050
+BEAT_THIS_N_FFT = 1024
+MIN_BEAT_THIS_SAMPLES = BEAT_THIS_N_FFT // 2 + 1
+
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
@@ -151,34 +157,79 @@ def regularize_downbeats(
     return beats[phase::4], round(confidence, 3)
 
 
+def empty_mir_result() -> dict[str, object]:
+    """Return the established helper schema without optional DJ metadata."""
+    return {
+        "bpm": None,
+        "tempo_confidence": 0.0,
+        "beats_ms": [],
+        "downbeats_ms": [],
+        "downbeat_confidence": 0.0,
+        "key_index": None,
+        "mode": None,
+        "key_confidence": 0.0,
+    }
+
+
+def load_beat_this_signal(audio_path: Path) -> np.ndarray:
+    """Decode and resample exactly as Beat This 1.1.0 does before its STFT."""
+    from beat_this.inference import load_audio
+
+    signal, sample_rate = load_audio(str(audio_path))
+    signal = np.asanyarray(signal)
+    if signal.ndim == 0:
+        signal = signal.reshape(1)
+    elif signal.ndim == 2:
+        signal = signal.mean(1)
+    elif signal.ndim != 1:
+        raise ValueError(f"Expected 1D or 2D signal, got shape {signal.shape}")
+    if sample_rate != BEAT_THIS_SAMPLE_RATE:
+        import soxr
+
+        signal = soxr.resample(
+            signal,
+            in_rate=sample_rate,
+            out_rate=BEAT_THIS_SAMPLE_RATE,
+        )
+    return np.asanyarray(signal)
+
+
 def analyze(audio_path: Path, model_path: Path) -> dict[str, object]:
     if not audio_path.is_file():
         raise ValueError(f"audio file does not exist: {audio_path}")
     if not model_path.is_file():
         raise ValueError(f"beat model does not exist: {model_path}")
 
-    import librosa
-    from beat_this.inference import File2Beats
+    signal = load_beat_this_signal(audio_path)
+    if signal.size < MIN_BEAT_THIS_SAMPLES:
+        return empty_mir_result()
 
-    tracker = File2Beats(checkpoint_path=str(model_path), device="cpu", dbn=False)
-    beats, downbeats = tracker(str(audio_path))
+    from beat_this.inference import Audio2Beats
+
+    tracker = Audio2Beats(checkpoint_path=str(model_path), device="cpu", dbn=False)
+    beats, downbeats = tracker(signal, BEAT_THIS_SAMPLE_RATE)
     try:
         bpm, tempo_confidence = estimate_tempo(beats)
     except ValueError:
         bpm, tempo_confidence = None, 0.0
     regular_downbeats, downbeat_confidence = regularize_downbeats(beats, downbeats)
 
-    audio, sample_rate = librosa.load(audio_path, sr=22050, mono=True)
-    if audio.size < sample_rate:
-        raise ValueError("audio is too short for tonal analysis")
-    harmonic = librosa.effects.harmonic(audio)
-    chroma = librosa.feature.chroma_cqt(
-        y=harmonic,
-        sr=sample_rate,
-        hop_length=4096,
-        bins_per_octave=36,
+    import librosa
+
+    audio, sample_rate = librosa.load(
+        audio_path, sr=BEAT_THIS_SAMPLE_RATE, mono=True
     )
-    key_index, mode, key_confidence = estimate_key(chroma)
+    if audio.size < sample_rate:
+        key_index, mode, key_confidence = None, None, 0.0
+    else:
+        harmonic = librosa.effects.harmonic(audio)
+        chroma = librosa.feature.chroma_cqt(
+            y=harmonic,
+            sr=sample_rate,
+            hop_length=4096,
+            bins_per_octave=36,
+        )
+        key_index, mode, key_confidence = estimate_key(chroma)
 
     return {
         "bpm": bpm,
