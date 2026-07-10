@@ -17,8 +17,9 @@ func TestTrackAnalysisProjectsIntoSongListingsAgainstPostgres(t *testing.T) {
 	if err := analysisRepo.StoreResult(ctx, trackID, AnalysisResult{
 		SchemaVersion: 1,
 		SummaryJSON: json.RawMessage(`{
-			"bpm":{"value":120},
-			"key":{"value":"Gm"},
+				"bpm":{"value":120},
+				"beat_grid":{"bpm":120,"offset_ms":0,"beats_ms":[0,500,1000]},
+				"key":{"value":"Gm"},
 			"camelot":{"value":"6A"},
 			"waveform":{"sample_count":65536,"peaks":[0.1,0.9],"resolutions":{"65536":{"peaks":[0.1,0.9]}}},
 			"transients":{"strongest_ms":[100,200]}
@@ -27,7 +28,8 @@ func TestTrackAnalysisProjectsIntoSongListingsAgainstPostgres(t *testing.T) {
 		t.Fatalf("store analysis: %v", err)
 	}
 	if _, err := analysisRepo.SetOverrides(ctx, trackID, json.RawMessage(`{
-		"bpm":{"value":128},
+			"bpm":{"value":128},
+			"beat_grid":{"bpm":128},
 		"key":{"value":"Am"},
 		"camelot":{"value":"8A"},
 		"waveform":{"sample_count":999999,"peaks":[0.1,0.9]},
@@ -113,6 +115,7 @@ func assertProjectedTrackAnalysis(t *testing.T, track Track) {
 	bpm := summary["bpm"].(map[string]any)
 	key := summary["key"].(map[string]any)
 	camelot := summary["camelot"].(map[string]any)
+	beatGrid := summary["beat_grid"].(map[string]any)
 	if got := bpm["value"]; got != float64(128) {
 		t.Fatalf("projected bpm = %#v, want 128 override", got)
 	}
@@ -121,6 +124,12 @@ func assertProjectedTrackAnalysis(t *testing.T, track Track) {
 	}
 	if got := camelot["value"]; got != "8A" {
 		t.Fatalf("projected Camelot key = %#v, want 8A override", got)
+	}
+	if got := beatGrid["bpm"]; got != float64(128) {
+		t.Fatalf("projected beat-grid BPM = %#v, want 128 override", got)
+	}
+	if got := len(beatGrid["beats_ms"].([]any)); got != 3 {
+		t.Fatalf("projected beat positions = %d, want analyzer positions preserved", got)
 	}
 	assertCompactAnalysisPayload(t, track.AnalysisSummary)
 }

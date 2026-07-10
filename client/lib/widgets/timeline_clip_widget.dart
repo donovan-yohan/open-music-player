@@ -35,6 +35,8 @@ class TimelineLaneHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final muted = role == LaneRole.previous;
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final headerHeight = (48 + ((textScale - 1) * 12)).clamp(48, 64).toDouble();
 
     return Semantics(
       container: true,
@@ -46,7 +48,7 @@ class TimelineLaneHeader extends StatelessWidget {
         ),
         borderRadius: BorderRadius.circular(8),
         child: Container(
-          height: 48,
+          height: headerHeight,
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8),
@@ -61,10 +63,7 @@ class TimelineLaneHeader extends StatelessWidget {
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    final largeText = MediaQuery.textScalerOf(
-                          context,
-                        ).scale(1) >=
-                        1.5;
+                    final largeText = textScale >= 1.2;
                     if (largeText) {
                       return Row(
                         children: [

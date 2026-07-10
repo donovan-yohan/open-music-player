@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 import '../core/discovery/discovery_models.dart';
@@ -15,10 +16,12 @@ import '../core/engine/timeline_model.dart';
 
 class QueueProvider extends ChangeNotifier {
   static const String queueTimingMixPlanName = 'Queue timing';
-  static const Duration _analysisRetryCooldown = Duration(seconds: 15);
+  static const Duration defaultAnalysisRetryCooldown = Duration(seconds: 15);
+  static const int _maxConcurrentAnalysisRequests = 3;
 
   final ApiClient _apiClient;
   final DateTime Function() _analysisClock;
+  final Duration _analysisRetryCooldown;
   QueueState _queue = QueueState.empty();
   bool _isLoading = false;
   String? _error;
@@ -37,11 +40,22 @@ class QueueProvider extends ChangeNotifier {
   final Map<String, Map<int, TimelineWaveformData>> _timelineWaveforms = {};
   final Map<String, TrackAnalysis> _analysisByTrackId = {};
   final Map<String, int> _appliedCompactAnalysisSignatures = {};
+  final Map<String, TrackAnalysis> _lastIncomingAnalysisByTrackId = {};
+  final Map<String, int> _analysisGenerations = {};
   final Set<String> _analysisRequestsInFlight = {};
+  final Set<String> _analysisRequestsQueued = {};
+  final Queue<int> _analysisRequestQueue = Queue<int>();
   final Map<String, DateTime> _analysisLastRequestedAt = {};
+  final Map<String, Timer> _analysisRetryTimers = {};
+  final Map<String, _EnrichedTrackCacheEntry> _enrichedTrackCache = {};
+  int _analysisRevision = 0;
 
-  QueueProvider(this._apiClient, {DateTime Function()? analysisClock})
-      : _analysisClock = analysisClock ?? DateTime.now;
+  QueueProvider(
+    this._apiClient, {
+    DateTime Function()? analysisClock,
+    Duration analysisRetryCooldown = defaultAnalysisRetryCooldown,
+  })  : _analysisClock = analysisClock ?? DateTime.now,
+        _analysisRetryCooldown = analysisRetryCooldown;
 
   QueueState get queue => _queue;
   bool get isLoading => _isLoading;
@@ -50,6 +64,7 @@ class QueueProvider extends ChangeNotifier {
   Track? get currentTrack => _queue.currentTrack;
   List<Track> get upNext => _queue.upNext;
   bool get isEmpty => _queue.isEmpty;
+  int get analysisRevision => _analysisRevision;
 
   Map<String, TrimRange> get trimRanges => Map.unmodifiable(_trimRanges);
   Map<String, MixPlanClip> get mixPlanClips => Map.unmodifiable(_mixPlanClips);
@@ -138,51 +153,16 @@ class QueueProvider extends ChangeNotifier {
 
     final key = trackId.toString();
     final incoming = track.analysis;
-    final incomingSignature =
-        incoming == null ? null : _analysisCompactSignature(incoming);
-    var cached = _analysisByTrackId[key];
-
-    if (incoming != null && _hasWaveformDetail(incoming)) {
-      if (!identical(cached, incoming)) {
-        _analysisByTrackId[key] = incoming;
-        _appliedCompactAnalysisSignatures[key] = incomingSignature!;
-        _analysisLastRequestedAt.remove(key);
-        _invalidateAnalysisCache(key);
-      }
-      return track;
-    }
-
-    if (incoming != null) {
-      if (cached == null) {
-        _analysisByTrackId[key] = incoming;
-        _appliedCompactAnalysisSignatures[key] = incomingSignature!;
-        cached = incoming;
-      } else if (cached.status != incoming.status) {
-        _analysisByTrackId[key] = incoming;
-        _appliedCompactAnalysisSignatures[key] = incomingSignature!;
-        _analysisLastRequestedAt.remove(key);
-        _invalidateAnalysisCache(key);
-        cached = incoming;
-      } else if (_hasWaveformDetail(cached)) {
-        if (_appliedCompactAnalysisSignatures[key] != incomingSignature) {
-          final merged = _mergeDetailedAnalysis(cached, incoming);
-          _invalidateAnalysisCache(key);
-          _analysisByTrackId[key] = merged;
-          _appliedCompactAnalysisSignatures[key] = incomingSignature!;
-          cached = merged;
-        }
-      } else if (_appliedCompactAnalysisSignatures[key] != incomingSignature) {
-        _analysisByTrackId[key] = incoming;
-        _appliedCompactAnalysisSignatures[key] = incomingSignature!;
-        _analysisLastRequestedAt.remove(key);
-        _invalidateAnalysisCache(key);
-        cached = incoming;
-      }
+    if (incoming != null &&
+        !identical(_lastIncomingAnalysisByTrackId[key], incoming)) {
+      _lastIncomingAnalysisByTrackId[key] = incoming;
+      _ingestIncomingAnalysis(key, incoming);
     }
 
     _fetchAnalysisIfNeeded(trackId);
+    final cached = _analysisByTrackId[key];
     if (cached == null || identical(cached, incoming)) return track;
-    return track.copyWith(analysis: cached);
+    return _enrichedTrack(track, key, cached);
   }
 
   Future<TrackAnalysis> updateAnalysisOverrides(
@@ -199,10 +179,13 @@ class QueueProvider extends ChangeNotifier {
       overrides,
     );
     final key = trackId.toString();
+    _advanceAnalysisGeneration(key);
     _analysisByTrackId[key] = analysis;
+    _lastIncomingAnalysisByTrackId[key] = analysis;
     _appliedCompactAnalysisSignatures[key] =
         _analysisCompactSignature(analysis);
     _analysisLastRequestedAt.remove(key);
+    _cancelAnalysisRetry(key);
     _invalidateAnalysisCache(key);
     _queue = QueueState(
       tracks: [
@@ -872,45 +855,38 @@ class QueueProvider extends ChangeNotifier {
     final trackId = _analysisTrackId(track);
     if (analysis == null || trackId == null) return;
     final key = trackId.toString();
+    _lastIncomingAnalysisByTrackId[key] = analysis;
+    _ingestIncomingAnalysis(key, analysis);
+  }
+
+  void _ingestIncomingAnalysis(String key, TrackAnalysis analysis) {
     final signature = _analysisCompactSignature(analysis);
     final cached = _analysisByTrackId[key];
     if (_hasWaveformDetail(analysis)) {
       if (!identical(cached, analysis)) {
+        _advanceAnalysisGeneration(key);
         _analysisByTrackId[key] = analysis;
         _appliedCompactAnalysisSignatures[key] = signature;
         _analysisLastRequestedAt.remove(key);
+        _cancelAnalysisRetry(key);
         _invalidateAnalysisCache(key);
       }
       return;
     }
 
-    if (cached == null) {
-      _analysisByTrackId[key] = analysis;
-      _appliedCompactAnalysisSignatures[key] = signature;
-      return;
-    }
-    if (cached.status != analysis.status) {
-      _analysisByTrackId[key] = analysis;
-      _appliedCompactAnalysisSignatures[key] = signature;
-      _analysisLastRequestedAt.remove(key);
-      _invalidateAnalysisCache(key);
-      return;
-    }
-    if (_hasWaveformDetail(cached)) {
-      if (_appliedCompactAnalysisSignatures[key] != signature) {
-        final merged = _mergeDetailedAnalysis(cached, analysis);
-        _invalidateAnalysisCache(key);
-        _analysisByTrackId[key] = merged;
-        _appliedCompactAnalysisSignatures[key] = signature;
-      }
-      return;
-    }
-    if (_appliedCompactAnalysisSignatures[key] != signature) {
-      _analysisByTrackId[key] = analysis;
-      _appliedCompactAnalysisSignatures[key] = signature;
-      _analysisLastRequestedAt.remove(key);
-      _invalidateAnalysisCache(key);
-    }
+    // Collection snapshots can remain pending after a newer per-track GET has
+    // returned analyzed detail. Apply each distinct compact snapshot once so a
+    // rebuild never downgrades that hydrated result back to the stale state.
+    if (_appliedCompactAnalysisSignatures[key] == signature) return;
+
+    _advanceAnalysisGeneration(key);
+    _appliedCompactAnalysisSignatures[key] = signature;
+    _analysisByTrackId[key] = cached != null && _hasWaveformDetail(cached)
+        ? _mergeDetailedAnalysis(cached, analysis)
+        : analysis;
+    _analysisLastRequestedAt.remove(key);
+    _cancelAnalysisRetry(key);
+    _invalidateAnalysisCache(key);
   }
 
   bool _hasWaveformDetail(TrackAnalysis analysis) {
@@ -924,17 +900,20 @@ class QueueProvider extends ChangeNotifier {
 
   void _fetchAnalysisIfNeeded(int trackId) {
     final key = trackId.toString();
-    if (_analysisRequestsInFlight.contains(key)) {
+    if (_analysisRequestsInFlight.contains(key) ||
+        _analysisRequestsQueued.contains(key)) {
       return;
     }
     final cached = _analysisByTrackId[key];
     if (cached != null) {
       if (_hasWaveformDetail(cached) &&
           cached.status == TrackAnalysisStatus.analyzed) {
+        _cancelAnalysisRetry(key);
         return;
       }
       if (cached.status == TrackAnalysisStatus.failed ||
           cached.status == TrackAnalysisStatus.unsupported) {
+        _cancelAnalysisRetry(key);
         return;
       }
     }
@@ -943,50 +922,142 @@ class QueueProvider extends ChangeNotifier {
     final lastRequestedAt = _analysisLastRequestedAt[key];
     if (lastRequestedAt != null &&
         now.difference(lastRequestedAt) < _analysisRetryCooldown) {
+      _scheduleAnalysisRetry(
+        trackId,
+        _analysisRetryCooldown - now.difference(lastRequestedAt),
+      );
       return;
     }
 
-    _analysisLastRequestedAt[key] = now;
+    _analysisRequestsQueued.add(key);
+    _analysisRequestQueue.add(trackId);
+    _drainAnalysisRequests();
+  }
+
+  void _drainAnalysisRequests() {
+    while (!_disposed &&
+        _analysisRequestsInFlight.length < _maxConcurrentAnalysisRequests &&
+        _analysisRequestQueue.isNotEmpty) {
+      final trackId = _analysisRequestQueue.removeFirst();
+      final key = trackId.toString();
+      _analysisRequestsQueued.remove(key);
+      if (_analysisRequestsInFlight.contains(key)) continue;
+      _startAnalysisRequest(trackId);
+    }
+  }
+
+  void _startAnalysisRequest(int trackId) {
+    final key = trackId.toString();
+    final generation = _analysisGenerations[key] ?? 0;
+    _analysisLastRequestedAt[key] = _analysisClock();
     _analysisRequestsInFlight.add(key);
     unawaited(() async {
+      var shouldRetry = false;
       try {
         final analysis = await _apiClient.getTrackAnalysis(trackId);
         if (_disposed) return;
+        if ((_analysisGenerations[key] ?? 0) != generation) return;
+
         _analysisByTrackId[key] = analysis;
-        if (_hasWaveformDetail(analysis)) {
-          _appliedCompactAnalysisSignatures.remove(key);
-        } else {
-          _appliedCompactAnalysisSignatures[key] =
-              _analysisCompactSignature(analysis);
-        }
         if (_hasWaveformDetail(analysis) &&
             analysis.status == TrackAnalysisStatus.analyzed) {
           _analysisLastRequestedAt.remove(key);
+          _cancelAnalysisRetry(key);
+        } else {
+          shouldRetry = analysis.status != TrackAnalysisStatus.failed &&
+              analysis.status != TrackAnalysisStatus.unsupported;
         }
         _invalidateAnalysisCache(key);
         _notifyListeners();
       } catch (_) {
         // Analysis is progressive enhancement. Playback and queue editing must
         // keep working if an individual track has no analyzed artifact yet.
+        shouldRetry = true;
       } finally {
         _analysisRequestsInFlight.remove(key);
+        if (!_disposed) {
+          if (shouldRetry) {
+            _scheduleAnalysisRetry(trackId, _analysisRetryCooldown);
+          } else if ((_analysisGenerations[key] ?? 0) != generation) {
+            _fetchAnalysisIfNeeded(trackId);
+          }
+          _drainAnalysisRequests();
+        }
       }
     }());
+  }
+
+  void _scheduleAnalysisRetry(int trackId, Duration delay) {
+    final key = trackId.toString();
+    if (_disposed || _analysisRetryTimers.containsKey(key)) return;
+    final retryDelay = delay.isNegative ? Duration.zero : delay;
+    _analysisRetryTimers[key] = Timer(retryDelay, () {
+      _analysisRetryTimers.remove(key);
+      if (_disposed) return;
+      _analysisLastRequestedAt.remove(key);
+      _fetchAnalysisIfNeeded(trackId);
+    });
+  }
+
+  void _cancelAnalysisRetry(String key) {
+    _analysisRetryTimers.remove(key)?.cancel();
+  }
+
+  void _advanceAnalysisGeneration(String key) {
+    _analysisGenerations[key] = (_analysisGenerations[key] ?? 0) + 1;
   }
 
   TrackAnalysis _mergeDetailedAnalysis(
     TrackAnalysis detailed,
     TrackAnalysis incoming,
   ) {
-    final summary = <String, dynamic>{
-      ...?detailed.summary?.toJson(),
-      ...?incoming.summary?.toJson(),
-    };
+    final summary = _deepMergeAnalysisMaps(
+      detailed.summary?.toJson() ?? const <String, dynamic>{},
+      incoming.summary?.toJson() ?? const <String, dynamic>{},
+    );
     return TrackAnalysis.fromJson(
       status: incoming.status.name,
       summary: summary.isEmpty ? null : summary,
-      overrides: incoming.overrides?.toJson(),
+      overrides: incoming.overrides?.toJson() ?? detailed.overrides?.toJson(),
     );
+  }
+
+  Map<String, dynamic> _deepMergeAnalysisMaps(
+    Map<String, dynamic> base,
+    Map<String, dynamic> incoming,
+  ) {
+    final merged = Map<String, dynamic>.from(base);
+    for (final entry in incoming.entries) {
+      final existing = merged[entry.key];
+      final value = entry.value;
+      if (existing is Map && value is Map) {
+        merged[entry.key] = _deepMergeAnalysisMaps(
+          Map<String, dynamic>.from(existing),
+          Map<String, dynamic>.from(value),
+        );
+      } else {
+        merged[entry.key] = value;
+      }
+    }
+    return merged;
+  }
+
+  Track _enrichedTrack(
+      Track track, String analysisKey, TrackAnalysis analysis) {
+    final cacheKey = '${track.queueItemId}|${track.id}|$analysisKey';
+    final cached = _enrichedTrackCache[cacheKey];
+    if (cached != null &&
+        identical(cached.source, track) &&
+        identical(cached.analysis, analysis)) {
+      return cached.result;
+    }
+    final result = track.copyWith(analysis: analysis);
+    _enrichedTrackCache[cacheKey] = _EnrichedTrackCacheEntry(
+      source: track,
+      analysis: analysis,
+      result: result,
+    );
+    return result;
   }
 
   int _analysisCompactSignature(TrackAnalysis analysis) {
@@ -1032,11 +1103,15 @@ class QueueProvider extends ChangeNotifier {
   }
 
   void _invalidateAnalysisCache(String trackId) {
+    _analysisRevision++;
     _waveformPeaks.removeWhere(
       (cacheKey, _) => cacheKey.contains('track:$trackId'),
     );
     _timelineWaveforms.removeWhere(
       (cacheKey, _) => cacheKey.contains('track:$trackId'),
+    );
+    _enrichedTrackCache.removeWhere(
+      (cacheKey, _) => cacheKey.endsWith('|$trackId'),
     );
   }
 
@@ -1081,6 +1156,24 @@ class QueueProvider extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    for (final timer in _analysisRetryTimers.values) {
+      timer.cancel();
+    }
+    _analysisRetryTimers.clear();
+    _analysisRequestQueue.clear();
+    _analysisRequestsQueued.clear();
     super.dispose();
   }
+}
+
+class _EnrichedTrackCacheEntry {
+  final Track source;
+  final TrackAnalysis analysis;
+  final Track result;
+
+  const _EnrichedTrackCacheEntry({
+    required this.source,
+    required this.analysis,
+    required this.result,
+  });
 }

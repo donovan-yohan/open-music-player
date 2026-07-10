@@ -109,6 +109,7 @@ class QueueScreen extends StatefulWidget {
 class _QueueScreenState extends State<QueueScreen> {
   _QueueViewMode _viewMode = _QueueViewMode.list;
   final Set<String> _analysisRefreshesInFlight = <String>{};
+  _PlaybackTimelineTracks? _playbackTimelineTracksCache;
 
   @override
   void initState() {
@@ -336,28 +337,15 @@ class _QueueScreenState extends State<QueueScreen> {
       return const Center(child: Text('Start playback to edit the timeline'));
     }
 
-    final current = _playbackTrackFor(
-      queue[currentIndex],
-      currentIndex,
-      provider,
-    );
-    final previous = currentIndex > 0
-        ? _playbackTrackFor(queue[currentIndex - 1], currentIndex - 1, provider)
-        : null;
-    final upcoming = [
-      for (var i = currentIndex + 1; i < queue.length; i++)
-        _playbackTrackFor(queue[i], i, provider),
-    ];
-    final timelineTracks = [
-      if (previous != null) previous,
-      current,
-      ...upcoming,
-    ];
-    _syncPlaybackAnalyses(
+    final timelineTracks = _playbackTimelineTracks(
+      provider: provider,
       playback: playback,
       queue: queue,
-      tracks: timelineTracks,
+      currentIndex: currentIndex,
     );
+    final current = timelineTracks.current;
+    final previous = timelineTracks.previous;
+    final upcoming = timelineTracks.upcoming;
 
     return StackedWaveformTimeline(
       key: const ValueKey('queue_surface'),
@@ -422,6 +410,47 @@ class _QueueScreenState extends State<QueueScreen> {
         initialFirstDownbeatMs: initialFirstDownbeatMs,
       ),
     );
+  }
+
+  _PlaybackTimelineTracks _playbackTimelineTracks({
+    required QueueProvider provider,
+    required PlaybackState playback,
+    required List<audio_service.MediaItem> queue,
+    required int currentIndex,
+  }) {
+    final cached = _playbackTimelineTracksCache;
+    if (cached != null &&
+        identical(cached.queue, queue) &&
+        cached.currentIndex == currentIndex &&
+        cached.analysisRevision == provider.analysisRevision) {
+      return cached;
+    }
+
+    final current = _playbackTrackFor(
+      queue[currentIndex],
+      currentIndex,
+      provider,
+    );
+    final previous = currentIndex > 0
+        ? _playbackTrackFor(queue[currentIndex - 1], currentIndex - 1, provider)
+        : null;
+    final upcoming = [
+      for (var index = currentIndex + 1; index < queue.length; index++)
+        _playbackTrackFor(queue[index], index, provider),
+    ];
+    final tracks = [if (previous != null) previous, current, ...upcoming];
+    _syncPlaybackAnalyses(playback: playback, queue: queue, tracks: tracks);
+
+    final result = _PlaybackTimelineTracks(
+      queue: queue,
+      currentIndex: currentIndex,
+      analysisRevision: provider.analysisRevision,
+      previous: previous,
+      current: current,
+      upcoming: upcoming,
+    );
+    _playbackTimelineTracksCache = result;
+    return result;
   }
 
   Future<void> _skipToPlaybackIndex(
@@ -1076,6 +1105,24 @@ class _QueueScreenState extends State<QueueScreen> {
       ),
     );
   }
+}
+
+class _PlaybackTimelineTracks {
+  final List<audio_service.MediaItem> queue;
+  final int currentIndex;
+  final int analysisRevision;
+  final Track? previous;
+  final Track current;
+  final List<Track> upcoming;
+
+  const _PlaybackTimelineTracks({
+    required this.queue,
+    required this.currentIndex,
+    required this.analysisRevision,
+    required this.previous,
+    required this.current,
+    required this.upcoming,
+  });
 }
 
 String _formatQueueRuntime(int ms) {

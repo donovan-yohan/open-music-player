@@ -213,6 +213,47 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  for (final textScale in [1.3, 3.0]) {
+    testWidgets('lane header stays bounded at ${textScale}x text scale', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: MediaQueryData(textScaler: TextScaler.linear(textScale)),
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 260,
+                child: TimelineLaneHeader(
+                  track: _analyzedTrack(
+                    'scaled-text-$textScale',
+                    'A long timeline title',
+                    180,
+                    bpm: 141.18,
+                    key: 'F-sharp minor',
+                    camelot: '11A',
+                  ),
+                  role: LaneRole.current,
+                  statusLabel: 'Current',
+                  accent: Colors.orange,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('141.2 BPM'), findsOneWidget);
+      expect(find.text('11A'), findsOneWidget);
+      expect(
+        tester.getSize(find.byType(TimelineLaneHeader)).height,
+        lessThanOrEqualTo(64),
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   group('musical snap grid', () {
     final clip = TimelineClip.clamped(
       id: 'clip_t1',

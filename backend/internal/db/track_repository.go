@@ -106,6 +106,7 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 			   sr.metadata_json, sr.metadata_status, sr.metadata_confidence, sr.metadata_provenance,
 			   sr.cover_art_url, sr.metadata_user_edited, sr.created_at, sr.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
+			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   sr.total_count
 		FROM search_results sr
 		LEFT JOIN track_analysis ta ON ta.track_id = sr.id
@@ -123,17 +124,19 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 	var total int
 	for rows.Next() {
 		var t Track
+		var analysisOverrides json.RawMessage
 		err := rows.Scan(
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
 			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
-			&t.AnalysisStatus, &t.AnalysisSummary, &total,
+			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &total,
 		)
 		if err != nil {
 			return nil, 0, err
 		}
+		t.AnalysisSummary, _ = projectCompactAnalysis(t.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, t)
 	}
 
@@ -187,6 +190,7 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 			   sr.metadata_json, sr.metadata_status, sr.metadata_confidence, sr.metadata_provenance,
 			   sr.cover_art_url, sr.metadata_user_edited, sr.created_at, sr.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
+			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   sr.total_count
 		FROM search_results sr
 		LEFT JOIN track_analysis ta ON ta.track_id = sr.id
@@ -204,17 +208,19 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 	var total int
 	for rows.Next() {
 		var t Track
+		var analysisOverrides json.RawMessage
 		err := rows.Scan(
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
 			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
-			&t.AnalysisStatus, &t.AnalysisSummary, &total,
+			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &total,
 		)
 		if err != nil {
 			return nil, 0, err
 		}
+		t.AnalysisSummary, _ = projectCompactAnalysis(t.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, t)
 	}
 

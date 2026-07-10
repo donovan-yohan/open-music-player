@@ -73,21 +73,27 @@ domain concept moves or a new production harness becomes canonical.
   queue list, and timeline lane headers.
 - Tests: `client/test/song_metadata_chips_test.dart`,
   `client/test/song_metadata_surface_wiring_test.dart`,
-  `client/test/queue_provider_timeline_editing_test.dart`, and
+  `client/test/queue_provider_timeline_editing_test.dart`,
+  `client/test/offline_database_analysis_test.dart`,
+  `backend/internal/db/analysis_compact_test.go`, and
   `backend/internal/db/track_analysis_projection_integration_test.go`.
 - Guardrail: list surfaces must preserve analysis when converting a track into
   a playback/queue payload. Do not format BPM or musical/Camelot keys in each
   surface; use the shared formatter and chip component.
 - Guardrail: collection responses carry compact tempo/key/downbeat summaries,
-  never multi-resolution waveform arrays. Compact overrides use the same field
-  whitelist so malformed or legacy override payloads cannot restore large
-  artifacts. Timeline detail hydrates through the per-track analysis endpoint.
-- Guardrail: detailed waveform caches merge current compact musical facts and
-  invalidate on analysis-status progression; pending/non-detailed responses
-  retry with a cooldown instead of becoming permanent or polling each frame.
+  never multi-resolution waveform arrays. `analysis_compact.go` is the typed
+  projection boundary: it deep-merges overrides, rejects malformed nested
+  values, and caps beat/downbeat arrays before a collection payload is emitted.
+  Timeline detail hydrates through the per-track analysis endpoint.
+- Guardrail: detailed waveform caches apply each compact snapshot once, deep
+  merge current musical facts, reject stale GET completions by generation, cap
+  hydration at three requests, and own their cooldown retry timers. Playback
+  position rebuilds reuse enriched timeline tracks instead of rehashing the
+  queue.
 - Offline storage: schema v4 persists compact analysis fields on local track
-  rows. Remote Library pages backfill matching downloaded rows so BPM/key chips
-  remain available after the device goes offline.
+  rows. Explicit downloads also create local Library membership; remote Library
+  pages publish immediately and batch-backfill matching rows asynchronously so
+  BPM/key chips remain available after the device goes offline.
 
 ### Schema And Storage
 

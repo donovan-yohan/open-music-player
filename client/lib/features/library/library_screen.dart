@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:go_router/go_router.dart';
@@ -232,22 +234,27 @@ class _LibraryScreenState extends State<LibraryScreen> {
         'analysis_summary',
       ],
     );
-    try {
-      await Future.wait(
-        page.tracks
-            .where((track) => track.analysis != null)
-            .map(offlineDatabase.updateTrackAnalysis),
-      );
-    } catch (_) {
-      // Offline analysis is a cache; a local write failure must not hide a
-      // successfully loaded remote Library page.
-    }
+    unawaited(_cacheRemoteTrackAnalysis(offlineDatabase, page.tracks));
 
     final counts = offset == 0
         ? await _loadRemoteCounts(apiClient)
         : Map<VerificationFilter, int>.from(_counts);
 
     return (tracks: page.tracks, total: page.total, counts: counts);
+  }
+
+  Future<void> _cacheRemoteTrackAnalysis(
+    OfflineDatabase offlineDatabase,
+    List<Track> tracks,
+  ) async {
+    try {
+      await offlineDatabase.updateTrackAnalyses(
+        tracks.where((track) => track.analysis != null),
+      );
+    } catch (_) {
+      // Offline analysis is a cache; a local write failure must not delay or
+      // hide a successfully loaded remote Library page.
+    }
   }
 
   Future<Map<VerificationFilter, int>> _loadRemoteCounts(

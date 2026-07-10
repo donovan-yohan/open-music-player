@@ -143,6 +143,7 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			   t.metadata_json, t.metadata_status, t.metadata_confidence, t.metadata_provenance,
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at, ul.added_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb) AS analysis_summary,
+			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb) AS analysis_overrides,
 			   EXISTS(SELECT 1 FROM track_favorites tf WHERE tf.user_id = ul.user_id AND tf.track_id = t.id) AS is_liked,
 			   t.genre,
 			   COUNT(*) OVER() as total_count
@@ -165,17 +166,19 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	var total int
 	for rows.Next() {
 		var lt LibraryTrack
+		var analysisOverrides json.RawMessage
 		err := rows.Scan(
 			&lt.ID, &lt.IdentityHash, &lt.Title, &lt.Artist, &lt.Album, &lt.DurationMs, &lt.Version,
 			&lt.MBRecordingID, &lt.MBReleaseID, &lt.MBArtistID, &lt.MBVerified,
 			&lt.SourceURL, &lt.SourceType, &lt.StorageKey, &lt.FileSizeBytes,
 			&lt.MetadataJSON, &lt.MetadataStatus, &lt.MetadataConfidence, &lt.MetadataProvenance,
 			&lt.CoverArtURL, &lt.MetadataUserEdited, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt,
-			&lt.AnalysisStatus, &lt.AnalysisSummary, &lt.IsLiked, &lt.Genre, &total,
+			&lt.AnalysisStatus, &lt.AnalysisSummary, &analysisOverrides, &lt.IsLiked, &lt.Genre, &total,
 		)
 		if err != nil {
 			return nil, 0, err
 		}
+		lt.AnalysisSummary, _ = projectCompactAnalysis(lt.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, lt)
 	}
 

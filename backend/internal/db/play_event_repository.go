@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,6 +81,7 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 			   t.metadata_json, t.metadata_status, t.metadata_confidence, t.metadata_provenance,
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
+			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   pe.last_played_at
 		FROM (
 			SELECT track_id, MAX(played_at) AS last_played_at
@@ -102,17 +104,19 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 	var tracks []RecentlyPlayedTrack
 	for rows.Next() {
 		var rt RecentlyPlayedTrack
+		var analysisOverrides json.RawMessage
 		if err := rows.Scan(
 			&rt.ID, &rt.IdentityHash, &rt.Title, &rt.Artist, &rt.Album, &rt.DurationMs, &rt.Version,
 			&rt.MBRecordingID, &rt.MBReleaseID, &rt.MBArtistID, &rt.MBVerified,
 			&rt.SourceURL, &rt.SourceType, &rt.StorageKey, &rt.FileSizeBytes,
 			&rt.MetadataJSON, &rt.MetadataStatus, &rt.MetadataConfidence, &rt.MetadataProvenance,
 			&rt.CoverArtURL, &rt.MetadataUserEdited, &rt.CreatedAt, &rt.UpdatedAt,
-			&rt.AnalysisStatus, &rt.AnalysisSummary,
+			&rt.AnalysisStatus, &rt.AnalysisSummary, &analysisOverrides,
 			&rt.LastPlayedAt,
 		); err != nil {
 			return nil, err
 		}
+		rt.AnalysisSummary, _ = projectCompactAnalysis(rt.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, rt)
 	}
 	if err := rows.Err(); err != nil {
@@ -142,6 +146,7 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 			   t.metadata_json, t.metadata_status, t.metadata_confidence, t.metadata_provenance,
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
+			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   pe.played_at, pe.context_type, pe.context_id
 		FROM play_events pe
 		JOIN tracks t ON t.id = pe.track_id
@@ -160,6 +165,7 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 	var events []PlayHistoryEvent
 	for rows.Next() {
 		var event PlayHistoryEvent
+		var analysisOverrides json.RawMessage
 		if err := rows.Scan(
 			&event.ID,
 			&event.Track.ID, &event.Track.IdentityHash, &event.Track.Title, &event.Track.Artist, &event.Track.Album, &event.Track.DurationMs, &event.Track.Version,
@@ -167,11 +173,12 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 			&event.Track.SourceURL, &event.Track.SourceType, &event.Track.StorageKey, &event.Track.FileSizeBytes,
 			&event.Track.MetadataJSON, &event.Track.MetadataStatus, &event.Track.MetadataConfidence, &event.Track.MetadataProvenance,
 			&event.Track.CoverArtURL, &event.Track.MetadataUserEdited, &event.Track.CreatedAt, &event.Track.UpdatedAt,
-			&event.Track.AnalysisStatus, &event.Track.AnalysisSummary,
+			&event.Track.AnalysisStatus, &event.Track.AnalysisSummary, &analysisOverrides,
 			&event.PlayedAt, &event.ContextType, &event.ContextID,
 		); err != nil {
 			return nil, err
 		}
+		event.Track.AnalysisSummary, _ = projectCompactAnalysis(event.Track.AnalysisSummary, analysisOverrides)
 		events = append(events, event)
 	}
 	if err := rows.Err(); err != nil {
@@ -201,6 +208,7 @@ func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, d
 			   t.metadata_json, t.metadata_status, t.metadata_confidence, t.metadata_provenance,
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
+			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   agg.play_count, agg.last_played_at
 		FROM (
 			SELECT track_id, COUNT(*) AS play_count, MAX(played_at) AS last_played_at
@@ -223,17 +231,19 @@ func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, d
 	var tracks []TopTrack
 	for rows.Next() {
 		var tt TopTrack
+		var analysisOverrides json.RawMessage
 		if err := rows.Scan(
 			&tt.ID, &tt.IdentityHash, &tt.Title, &tt.Artist, &tt.Album, &tt.DurationMs, &tt.Version,
 			&tt.MBRecordingID, &tt.MBReleaseID, &tt.MBArtistID, &tt.MBVerified,
 			&tt.SourceURL, &tt.SourceType, &tt.StorageKey, &tt.FileSizeBytes,
 			&tt.MetadataJSON, &tt.MetadataStatus, &tt.MetadataConfidence, &tt.MetadataProvenance,
 			&tt.CoverArtURL, &tt.MetadataUserEdited, &tt.CreatedAt, &tt.UpdatedAt,
-			&tt.AnalysisStatus, &tt.AnalysisSummary,
+			&tt.AnalysisStatus, &tt.AnalysisSummary, &analysisOverrides,
 			&tt.PlayCount, &tt.LastPlayedAt,
 		); err != nil {
 			return nil, err
 		}
+		tt.AnalysisSummary, _ = projectCompactAnalysis(tt.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, tt)
 	}
 	if err := rows.Err(); err != nil {

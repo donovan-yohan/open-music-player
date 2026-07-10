@@ -264,6 +264,51 @@ void main() {
     expect(hydrated.analysis?.summary?.waveform?.peaks, isNotEmpty);
   });
 
+  test('unchanged pending snapshot cannot downgrade hydrated analysis',
+      () async {
+    final hydrated = Completer<void>();
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        analysisRequests++;
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'bpm': {'value': 128},
+              'waveform': {
+                'sample_count': 4,
+                'peaks': [0.1, 0.4, 0.9, 0.2],
+              },
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    provider.addListener(() {
+      if (!hydrated.isCompleted) hydrated.complete();
+    });
+    final pending = _track(
+      playbackTrackId: '42',
+      analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+    );
+
+    provider.trackWithAnalysis(pending);
+    await hydrated.future.timeout(const Duration(seconds: 1));
+
+    for (var i = 0; i < 5; i++) {
+      final result = provider.trackWithAnalysis(pending);
+      expect(result.analysis?.status, TrackAnalysisStatus.analyzed);
+      expect(result.analysis?.summary?.waveform?.peaks, isNotEmpty);
+    }
+    expect(analysisRequests, 1);
+  });
+
   test('pending analysis retries after the hydration cooldown', () async {
     final firstResponse = Completer<void>();
     final secondResponse = Completer<void>();
@@ -306,6 +351,55 @@ void main() {
     expect(analysisRequests, 2);
   });
 
+  test('pending analysis schedules its own hydration retry', () async {
+    final secondRequest = Completer<void>();
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        analysisRequests++;
+        if (analysisRequests == 2 && !secondRequest.isCompleted) {
+          secondRequest.complete();
+        }
+        return http.Response(
+          jsonEncode(
+            analysisRequests == 1
+                ? {'status': 'pending'}
+                : {
+                    'status': 'analyzed',
+                    'summary': {
+                      'waveform': {
+                        'sample_count': 4,
+                        'peaks': [0.1, 0.4, 0.9, 0.2],
+                      },
+                    },
+                  },
+          ),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+      analysisRetryCooldown: const Duration(milliseconds: 10),
+    );
+    final pending = _track(
+      playbackTrackId: '42',
+      analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+    );
+
+    provider.trackWithAnalysis(pending);
+    await secondRequest.future.timeout(const Duration(seconds: 1));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(analysisRequests, 2);
+    expect(
+      provider.trackWithAnalysis(pending).analysis?.status,
+      TrackAnalysisStatus.analyzed,
+    );
+    provider.dispose();
+  });
+
   test('new compact override merges into cached detailed analysis', () async {
     final firstResponse = Completer<void>();
     var analysisRequests = 0;
@@ -320,6 +414,10 @@ void main() {
             'status': 'analyzed',
             'summary': {
               'bpm': {'value': 120},
+              'beat_grid': {
+                'bpm': 120,
+                'beats_ms': [0, 500, 1000],
+              },
               'waveform': {
                 'sample_count': 4,
                 'peaks': [0.1, 0.4, 0.9, 0.2],
@@ -350,12 +448,160 @@ void main() {
 
     final corrected = _track(
       playbackTrackId: '42',
-      analysis: _tempoAnalysis(bpm: 128),
+      analysis: const TrackAnalysis(
+        status: TrackAnalysisStatus.analyzed,
+        summary: TrackAnalysisSummary(
+          bpm: AnalysisValue(value: 128),
+          beatGrid: BeatGridSummary(bpm: 128),
+        ),
+        overrides: TrackAnalysisOverrides(bpm: 128),
+      ),
     );
     final refreshed = provider.trackWithAnalysis(corrected);
     expect(analysisRequests, 1);
     expect(refreshed.analysis?.summary?.bpm?.numericValue, 128);
+    expect(refreshed.analysis?.summary?.beatGrid?.beatsMs, [0, 500, 1000]);
     expect(refreshed.analysis?.summary?.waveform?.peaks, isNotEmpty);
+  });
+
+  test('older hydration response cannot overwrite a newer override', () async {
+    final getStarted = Completer<void>();
+    final releaseGet = Completer<void>();
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.path.endsWith('/tracks/42/analysis')) {
+          getStarted.complete();
+          await releaseGet.future;
+          return http.Response(
+            jsonEncode({
+              'status': 'analyzed',
+              'summary': {
+                'bpm': {'value': 120},
+                'waveform': {
+                  'sample_count': 4,
+                  'peaks': [0.1, 0.4, 0.9, 0.2],
+                },
+              },
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'PATCH' &&
+            request.url.path.endsWith('/tracks/42/analysis/overrides')) {
+          return http.Response(
+            jsonEncode({
+              'status': 'analyzed',
+              'summary': {
+                'bpm': {'value': 128},
+                'waveform': {
+                  'sample_count': 4,
+                  'peaks': [0.2, 0.5, 1.0, 0.3],
+                },
+              },
+              'overrides': {
+                'bpm': {'value': 128},
+              },
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('', 404);
+      }),
+    );
+    final original = _track(
+      id: '42',
+      playbackTrackId: '42',
+      analysis: _tempoAnalysis(),
+    );
+
+    provider.trackWithAnalysis(original);
+    await getStarted.future.timeout(const Duration(seconds: 1));
+    final corrected = await provider.updateAnalysisOverrides(
+      original,
+      const TrackAnalysisOverrides(bpm: 128),
+    );
+    releaseGet.complete();
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    final result = provider.trackWithAnalysis(
+      _track(
+        id: '42',
+        playbackTrackId: '42',
+        analysis: corrected,
+      ),
+    );
+    expect(result.analysis?.summary?.bpm?.numericValue, 128);
+    expect(result.analysis?.summary?.waveform?.peaks.first, 0.2);
+  });
+
+  test('analysis hydration uses bounded request concurrency', () async {
+    var active = 0;
+    var maxActive = 0;
+    final releases = <int, Completer<void>>{};
+    final started = <int>[];
+    final firstWaveStarted = Completer<void>();
+    final allStarted = Completer<void>();
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        final match =
+            RegExp(r'/tracks/(\d+)/analysis$').firstMatch(request.url.path);
+        if (match == null) return http.Response('', 404);
+        final trackId = int.parse(match.group(1)!);
+        final release = releases.putIfAbsent(trackId, Completer<void>.new);
+        started.add(trackId);
+        if (started.length == 3 && !firstWaveStarted.isCompleted) {
+          firstWaveStarted.complete();
+        }
+        if (started.length == 6 && !allStarted.isCompleted) {
+          allStarted.complete();
+        }
+        active++;
+        if (active > maxActive) maxActive = active;
+        await release.future;
+        active--;
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'waveform': {
+                'sample_count': 2,
+                'peaks': [0.2, 0.8],
+              },
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    for (var id = 1; id <= 6; id++) {
+      provider.trackWithAnalysis(
+        _track(
+          id: '$id',
+          playbackTrackId: '$id',
+          analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+        ),
+      );
+    }
+    await firstWaveStarted.future.timeout(const Duration(seconds: 1));
+    expect(started, hasLength(3));
+    expect(maxActive, 3);
+
+    for (final id in List<int>.from(started)) {
+      releases[id]!.complete();
+    }
+    await allStarted.future.timeout(const Duration(seconds: 1));
+    for (final id in started.skip(3)) {
+      releases[id]!.complete();
+    }
+    await Future<void>.delayed(Duration.zero);
+
+    expect(maxActive, 3);
+    provider.dispose();
   });
 
   test('analysis override updates patch backend and refresh timeline markers',

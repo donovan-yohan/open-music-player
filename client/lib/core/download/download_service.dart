@@ -113,6 +113,7 @@ class DownloadService implements LocalAudioArtifactResolver {
       // (PK is track_id) guarantees a retry never duplicates or preserves a
       // stale completed/failed state.
       await _db.insertTrack(track);
+      await _db.addToLibrary(track.id);
       await _db.insertDownloadedTrack(
         DownloadedTrack(
           trackId: track.id,

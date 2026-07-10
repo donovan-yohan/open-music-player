@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -107,6 +108,7 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
 			   t.metadata_json,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
+			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   t.created_at, t.updated_at
 		FROM playlists p
 		LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
@@ -130,13 +132,14 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 		var p Playlist
 		var t Track
 		var trackID sql.NullInt64
+		var analysisOverrides json.RawMessage
 
 		err := rows.Scan(
 			&p.ID, &p.UserID, &p.Name, &p.Description, &p.CoverURL, &p.IsPublic, &p.CreatedAt, &p.UpdatedAt,
 			&trackID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
-			&t.MetadataJSON, &t.AnalysisStatus, &t.AnalysisSummary,
+			&t.MetadataJSON, &t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides,
 			&t.CreatedAt, &t.UpdatedAt,
 		)
 		if err != nil {
@@ -151,6 +154,7 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 		// Add track if present (LEFT JOIN may return NULL for empty playlists)
 		if trackID.Valid {
 			t.ID = trackID.Int64
+			t.AnalysisSummary, _ = projectCompactAnalysis(t.AnalysisSummary, analysisOverrides)
 			tracks = append(tracks, t)
 			if t.DurationMs.Valid {
 				totalDuration += int64(t.DurationMs.Int32)

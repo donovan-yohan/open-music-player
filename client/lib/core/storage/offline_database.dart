@@ -11,7 +11,40 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   static const String _dbName = 'open_music_player.db';
   static const int _dbVersion = 4;
 
+  final Future<Database> Function()? _databaseProvider;
+  final DatabaseFactory? _databaseFactory;
+  final Future<String> Function()? _databasePathProvider;
+  Database? _customDatabase;
+  Future<Database>? _openingCustomDatabase;
+
+  OfflineDatabase({
+    Future<Database> Function()? databaseProvider,
+    DatabaseFactory? databaseFactory,
+    Future<String> Function()? databasePathProvider,
+  })  : _databaseProvider = databaseProvider,
+        _databaseFactory = databaseFactory,
+        _databasePathProvider = databasePathProvider;
+
   Future<Database> get database async {
+    final provider = _databaseProvider;
+    if (provider != null) return provider();
+
+    if (_databaseFactory != null || _databasePathProvider != null) {
+      final existing = _customDatabase;
+      if (existing != null) return existing;
+
+      final opening = _openingCustomDatabase ??= _initDatabase();
+      try {
+        final db = await opening;
+        _customDatabase = db;
+        return db;
+      } finally {
+        if (identical(_openingCustomDatabase, opening)) {
+          _openingCustomDatabase = null;
+        }
+      }
+    }
+
     final existing = _database;
     if (existing != null) return existing;
 
@@ -28,8 +61,22 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   }
 
   Future<Database> _initDatabase() async {
-    final dbPath = await getDatabasesPath();
-    final path = join(dbPath, _dbName);
+    final customPathProvider = _databasePathProvider;
+    final path = customPathProvider == null
+        ? join(await getDatabasesPath(), _dbName)
+        : await customPathProvider();
+
+    final customFactory = _databaseFactory;
+    if (customFactory != null) {
+      return customFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: _dbVersion,
+          onCreate: _onCreate,
+          onUpgrade: _onUpgrade,
+        ),
+      );
+    }
 
     return openDatabase(
       path,
@@ -212,25 +259,65 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
 
   Future<void> updateTrackAnalysis(Track track) async {
     final db = await database;
+    final update = _trackAnalysisUpdate(track);
+    await db.update(
+      'tracks',
+      update.values,
+      where: update.where,
+      whereArgs: update.whereArgs,
+    );
+  }
+
+  Future<void> updateTrackAnalyses(Iterable<Track> tracks) async {
+    final updates = tracks.map(_trackAnalysisUpdate).toList(growable: false);
+    if (updates.isEmpty) return;
+
+    final db = await database;
+    final batch = db.batch();
+    for (final update in updates) {
+      batch.update(
+        'tracks',
+        update.values,
+        where: update.where,
+        whereArgs: update.whereArgs,
+      );
+    }
+    await batch.commit(noResult: true, continueOnError: true);
+  }
+
+  ({
+    Map<String, Object?> values,
+    String where,
+    List<Object?> whereArgs,
+  }) _trackAnalysisUpdate(Track track) {
     final values = track.toDbMap();
     final status = values['analysis_status'];
     final summary = values['analysis_summary'];
     final overrides = values['analysis_overrides'];
-    await db.update(
-      'tracks',
-      {
+    final changedConditions = <String>[];
+    final whereArgs = <Object?>[track.id];
+
+    void addChangedCondition(String column, Object? value) {
+      if (value == null) {
+        changedConditions.add('$column IS NOT NULL');
+      } else {
+        changedConditions.add('($column IS NULL OR $column != ?)');
+        whereArgs.add(value);
+      }
+    }
+
+    addChangedCondition('analysis_status', status);
+    addChangedCondition('analysis_summary', summary);
+    addChangedCondition('analysis_overrides', overrides);
+
+    return (
+      values: <String, Object?>{
         'analysis_status': status,
         'analysis_summary': summary,
         'analysis_overrides': overrides,
       },
-      where: '''
-        id = ? AND (
-          analysis_status IS NOT ? OR
-          analysis_summary IS NOT ? OR
-          analysis_overrides IS NOT ?
-        )
-      ''',
-      whereArgs: [track.id, status, summary, overrides],
+      where: 'id = ? AND (${changedConditions.join(' OR ')})',
+      whereArgs: whereArgs,
     );
   }
 
@@ -473,6 +560,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   }
 
   // Library operations
+  @override
   Future<void> addToLibrary(int trackId) async {
     final db = await database;
     await db.insert(

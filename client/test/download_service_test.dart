@@ -108,6 +108,7 @@ void main() {
       // No stray .part file is left at the staging path.
       expect(await File('$path.part').exists(), isFalse);
       expect(await svc.isDownloaded(1), isTrue);
+      expect(store.libraryTrackIds, contains(1));
     });
 
     test('throttles persisted progress updates while preserving completion',

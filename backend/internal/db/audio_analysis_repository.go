@@ -31,14 +31,14 @@ const analysisCompactOverridesExpression = `jsonb_strip_nulls(jsonb_build_object
 	'energy', ta.overrides_json->'energy'
 ))`
 
-const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NULL ELSE (jsonb_strip_nulls(jsonb_build_object(
-	'bpm', ta.summary_json->'bpm',
-	'beat_grid', ta.summary_json->'beat_grid',
-	'downbeats', ta.summary_json->'downbeats',
-	'key', ta.summary_json->'key',
-	'camelot', ta.summary_json->'camelot',
-	'energy', ta.summary_json->'energy'
-)) || ` + analysisCompactOverridesExpression + `) END`
+const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(
+		'bpm', ta.summary_json->'bpm',
+		'beat_grid', ta.summary_json->'beat_grid',
+		'downbeats', ta.summary_json->'downbeats',
+		'key', ta.summary_json->'key',
+		'camelot', ta.summary_json->'camelot',
+		'energy', ta.summary_json->'energy'
+	)) END`
 
 var ErrTrackAnalysisNotFound = errors.New("track analysis not found")
 
@@ -373,6 +373,10 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 		if err := rows.Scan(&compact.TrackID, &compact.Status, &compact.SummaryJSON, &compact.OverridesJSON); err != nil {
 			return nil, err
 		}
+		compact.SummaryJSON, compact.OverridesJSON = projectCompactAnalysis(
+			compact.SummaryJSON,
+			compact.OverridesJSON,
+		)
 		result[compact.TrackID] = compact
 	}
 	if err := rows.Err(); err != nil {
