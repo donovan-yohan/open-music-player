@@ -26,6 +26,13 @@ run_backend() {
   )
 }
 
+run_analyzer() {
+  docker build \
+    --target analyzer-test \
+    --tag open-music-player-analyzer-test:local \
+    "$ROOT/backend"
+}
+
 run_client() {
   (
     cd "$ROOT/client"
@@ -58,6 +65,9 @@ case "$TARGET" in
   backend)
     run_backend
     ;;
+  analyzer)
+    run_analyzer
+    ;;
   client)
     run_client
     ;;
@@ -67,11 +77,12 @@ case "$TARGET" in
   all)
     run_delivery
     run_backend
+    run_analyzer
     run_client
     run_extension
     ;;
   *)
-    echo "usage: scripts/test [delivery|harness|backend|client|extension|all]" >&2
+    echo "usage: scripts/test [delivery|harness|backend|analyzer|client|extension|all]" >&2
     exit 2
     ;;
 esac

@@ -151,7 +151,10 @@ func (p *Processor) RequestAnalysisRepair(ctx context.Context, track *db.Track, 
 		Artist:        nullableString(track.Artist),
 		SchemaVersion: analyzer.SchemaVersion,
 	}
-	go p.runAnalysis(req)
+	if err := p.scheduleAnalysis(ctx, req); err != nil {
+		p.markAnalysisSchedulingFailed(track.ID, err)
+		return result, fmt.Errorf("schedule analysis repair: %w", err)
+	}
 	return result, nil
 }
 

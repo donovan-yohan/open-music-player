@@ -96,6 +96,7 @@ class TimelineLaneHeader extends StatelessWidget {
                                   child: SongMetadataChips(
                                     analysis: track.analysis,
                                     singleLine: true,
+                                    compact: true,
                                   ),
                                 ),
                               ],
@@ -131,6 +132,7 @@ class TimelineLaneHeader extends StatelessWidget {
                                         child: SongMetadataChips(
                                           analysis: track.analysis,
                                           singleLine: true,
+                                          compact: true,
                                         ),
                                       ),
                                     ),

@@ -25,11 +25,16 @@ const (
 	defaultAddr         = ":18190"
 	defaultSampleRate   = 22050
 	defaultWaveformHz   = 80
+	defaultMIRHelper    = "/app/audio_mir.py"
+	defaultBeatModel    = "/app/models/beat_this-final0.ckpt"
+	analyzerVersion     = "2026-07-10-3"
+	tempoModelVersion   = "beat-this-final0-v1.1.0"
+	keyModelVersion     = "librosa-cqt-krumhansl-v1"
 	maxRequestBytes     = 1 << 20
+	maxMIRResponseBytes = 2 << 20
 	maxDecodedPCMBytes  = 96 << 20
 	maxWaveformSamples  = 32768
 	minWaveformSamples  = 64
-	defaultBeatInterval = 500
 )
 
 type analyzeRequest struct {
@@ -44,36 +49,57 @@ type analyzeRequest struct {
 }
 
 type analyzerServer struct {
-	storage    *storage.Client
+	storage    analyzerObjectStore
 	authToken  string
 	sampleRate int
 	waveformHz int
+	mirHelper  string
+	beatModel  string
+	mirSlots   chan struct{}
+	analyzeMIR func(context.Context, string, string, string) (mirAnalysis, error)
+}
+
+type analyzerObjectStore interface {
+	GetObject(ctx context.Context, key string) (io.ReadCloser, *storage.ObjectInfo, error)
 }
 
 type waveformAnalysis struct {
-	durationMs  int
-	peaks       []float64
-	rms         []float64
-	low         []float64
-	mid         []float64
-	high        []float64
-	transients  []int
-	beats       []int
-	downbeats   []int
-	silence     []timeRange
-	leadingMs   int
-	trailingMs  int
-	bpm         float64
-	keyName     string
-	camelot     string
-	keyConf     float64
-	energy      float64
-	truePeakDb  float64
-	loudnessDb  float64
-	declaredMs  int
-	decodedMs   int
-	sampleRate  int
-	sampleCount int
+	durationMs   int
+	peaks        []float64
+	rms          []float64
+	low          []float64
+	mid          []float64
+	high         []float64
+	transients   []int
+	beats        []int
+	downbeats    []int
+	silence      []timeRange
+	leadingMs    int
+	trailingMs   int
+	bpm          float64
+	bpmConf      float64
+	downbeatConf float64
+	keyName      string
+	camelot      string
+	keyConf      float64
+	energy       float64
+	truePeakDb   float64
+	loudnessDb   float64
+	declaredMs   int
+	decodedMs    int
+	sampleRate   int
+	sampleCount  int
+}
+
+type mirAnalysis struct {
+	BPM                *float64 `json:"bpm"`
+	TempoConfidence    float64  `json:"tempo_confidence"`
+	BeatsMS            []int    `json:"beats_ms"`
+	DownbeatsMS        []int    `json:"downbeats_ms"`
+	DownbeatConfidence float64  `json:"downbeat_confidence"`
+	KeyIndex           *int     `json:"key_index"`
+	Mode               string   `json:"mode"`
+	KeyConfidence      float64  `json:"key_confidence"`
 }
 
 type timeRange struct {
@@ -99,16 +125,31 @@ func main() {
 		log.Fatalf("storage ping failed: %v", err)
 	}
 
+	concurrency := clampInt(envInt("ANALYZER_CONCURRENCY", 1), 1, 4)
 	server := &analyzerServer{
 		storage:    store,
 		authToken:  strings.TrimSpace(os.Getenv("ANALYZER_AUTH_TOKEN")),
 		sampleRate: envInt("ANALYZER_SAMPLE_RATE", defaultSampleRate),
 		waveformHz: envInt("ANALYZER_WAVEFORM_HZ", defaultWaveformHz),
+		mirHelper:  env("ANALYZER_MIR_HELPER", defaultMIRHelper),
+		beatModel:  env("ANALYZER_BEAT_MODEL", defaultBeatModel),
+		mirSlots:   make(chan struct{}, concurrency),
+		analyzeMIR: runMIRAnalysis,
+	}
+	checkCtx, checkCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer checkCancel()
+	if err := validateMIRRuntime(checkCtx, server.mirHelper, server.beatModel); err != nil {
+		log.Fatalf("MIR runtime readiness check failed: %v", err)
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "healthy"})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":           "healthy",
+			"analyzer_version": analyzerVersion,
+			"tempo_model":      tempoModelVersion,
+			"key_model":        keyModelVersion,
+		})
 	})
 	mux.HandleFunc("/analyze", server.handleAnalyze)
 
@@ -142,6 +183,13 @@ func (s *analyzerServer) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
+	select {
+	case s.mirSlots <- struct{}{}:
+		defer func() { <-s.mirSlots }()
+	case <-ctx.Done():
+		writeJSON(w, http.StatusRequestTimeout, map[string]any{"error": ctx.Err().Error()})
+		return
+	}
 
 	tmpPath, cleanup, err := s.downloadObject(ctx, req.StorageKey)
 	if err != nil {
@@ -156,6 +204,19 @@ func (s *analyzerServer) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	analysis := analyzeSamples(samples, s.sampleRate, req.DurationMs, s.waveformHz)
+	analyzeMIR := s.analyzeMIR
+	if analyzeMIR == nil {
+		analyzeMIR = runMIRAnalysis
+	}
+	mir, err := analyzeMIR(ctx, s.mirHelper, s.beatModel, tmpPath)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := analysis.applyMIR(mir); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 
 	writeJSON(w, http.StatusOK, buildResponse(req, analysis))
 }
@@ -190,6 +251,81 @@ func (s *analyzerServer) downloadObject(ctx context.Context, key string) (string
 		return "", func() {}, err
 	}
 	return path, cleanup, nil
+}
+
+func runMIRAnalysis(ctx context.Context, helperPath, modelPath, audioPath string) (mirAnalysis, error) {
+	if strings.TrimSpace(helperPath) == "" {
+		return mirAnalysis{}, fmt.Errorf("MIR helper path is required")
+	}
+	if strings.TrimSpace(modelPath) == "" {
+		return mirAnalysis{}, fmt.Errorf("beat model path is required")
+	}
+	cmd := exec.CommandContext(
+		ctx,
+		"python3",
+		helperPath,
+		"--model",
+		modelPath,
+		audioPath,
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return mirAnalysis{}, fmt.Errorf("MIR analysis failed: %s", detail)
+	}
+	if len(output) > maxMIRResponseBytes {
+		return mirAnalysis{}, fmt.Errorf("MIR response exceeds %d byte limit", maxMIRResponseBytes)
+	}
+	var result mirAnalysis
+	if err := json.Unmarshal(output, &result); err != nil {
+		return mirAnalysis{}, fmt.Errorf("parse MIR response: %w", err)
+	}
+	return result, nil
+}
+
+func validateMIRRuntime(ctx context.Context, helperPath, modelPath string) error {
+	for label, path := range map[string]string{
+		"MIR helper": helperPath,
+		"beat model": modelPath,
+	} {
+		if strings.TrimSpace(path) == "" {
+			return fmt.Errorf("%s path is required", label)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("%s unavailable at %s: %w", label, path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s at %s is not a regular file", label, path)
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, "python3", helperPath, "--check", "--model", modelPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("MIR helper check failed: %s", detail)
+	}
+	var status struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(output, &status); err != nil {
+		return fmt.Errorf("parse MIR helper check: %w", err)
+	}
+	if status.Status != "ready" {
+		return fmt.Errorf("MIR helper reported status %q", status.Status)
+	}
+	return nil
 }
 
 func decodePCM(ctx context.Context, path string, sampleRate int) ([]float64, error) {
@@ -258,10 +394,10 @@ func analyzeSamples(samples []float64, sampleRate int, declaredDurationMs int, w
 	if waveformHz <= 0 {
 		waveformHz = defaultWaveformHz
 	}
-	durationMs := declaredDurationMs
 	decodedDurationMs := int(math.Round(float64(len(samples)) / float64(sampleRate) * 1000))
+	durationMs := decodedDurationMs
 	if durationMs <= 0 {
-		durationMs = decodedDurationMs
+		durationMs = declaredDurationMs
 	}
 	target := clampInt(int(math.Ceil(float64(durationMs)*float64(waveformHz)/1000)), minWaveformSamples, maxWaveformSamples)
 	if target > len(samples) {
@@ -330,16 +466,66 @@ func analyzeSamples(samples []float64, sampleRate int, declaredDurationMs int, w
 	a.loudnessDb = db(mean(a.rms))
 	a.energy = clamp(mean(a.rms)*1.15, 0, 1)
 	a.transients = detectTransients(a.rms, a.peaks, a.durationMs)
-	interval := estimateBeatInterval(a.transients)
-	if interval <= 0 {
-		interval = defaultBeatInterval
-	}
-	a.bpm = 60000 / float64(interval)
-	a.beats = buildBeatGrid(a.durationMs, interval, firstOffset(a.transients, interval))
-	a.downbeats = everyNth(a.beats, 4)
 	a.silence, a.leadingMs, a.trailingMs = detectSilence(a.rms, a.durationMs)
-	a.keyName, a.camelot, a.keyConf = estimateMusicalKey(samples, sampleRate)
 	return a
+}
+
+func (a *waveformAnalysis) applyMIR(mir mirAnalysis) error {
+	a.beats = normalizeMarkers(mir.BeatsMS, a.durationMs)
+	a.downbeats = normalizeMarkers(mir.DownbeatsMS, a.durationMs)
+	if mir.BPM != nil {
+		if !isFiniteInRange(*mir.BPM, 30, 300) {
+			return fmt.Errorf("MIR analysis returned invalid BPM %.4f", *mir.BPM)
+		}
+		if len(a.beats) < 4 {
+			return fmt.Errorf("MIR beat grid has fewer than four in-range beats")
+		}
+		a.bpm = *mir.BPM
+		a.bpmConf = clamp(mir.TempoConfidence, 0, 1)
+	}
+	if len(a.downbeats) > 0 {
+		a.downbeatConf = clamp(mir.DownbeatConfidence, 0, 1)
+	}
+	if mir.KeyIndex == nil {
+		if strings.TrimSpace(mir.Mode) != "" {
+			return fmt.Errorf("MIR analysis returned key mode without key index")
+		}
+		return nil
+	}
+	keyIndex := *mir.KeyIndex
+	if keyIndex < 0 || keyIndex >= len(keyNames) {
+		return fmt.Errorf("MIR analysis returned invalid key index %d", keyIndex)
+	}
+	mode := strings.ToLower(strings.TrimSpace(mir.Mode))
+	if mode != "major" && mode != "minor" {
+		return fmt.Errorf("MIR analysis returned invalid key mode %q", mir.Mode)
+	}
+	a.keyName = fmt.Sprintf("%s %s", keyNames[keyIndex], mode)
+	a.camelot = camelotFor(keyIndex, mode)
+	a.keyConf = clamp(mir.KeyConfidence, 0, 1)
+	return nil
+}
+
+func normalizeMarkers(values []int, durationMs int) []int {
+	markers := make([]int, 0, len(values))
+	for _, value := range values {
+		if value < 0 || value > durationMs {
+			continue
+		}
+		markers = append(markers, value)
+	}
+	sort.Ints(markers)
+	unique := markers[:0]
+	for _, value := range markers {
+		if len(unique) == 0 || unique[len(unique)-1] != value {
+			unique = append(unique, value)
+		}
+	}
+	return unique
+}
+
+func isFiniteInRange(value, minValue, maxValue float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= minValue && value <= maxValue
 }
 
 func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
@@ -354,23 +540,6 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 	outroStartMs := defaultCueBoundaryMs(a, false)
 
 	summary := map[string]any{
-		"bpm": map[string]any{
-			"value":      round(a.bpm, 2),
-			"confidence": 0.62,
-			"provenance": "energy_transients",
-		},
-		"beat_grid": map[string]any{
-			"bpm":        round(a.bpm, 2),
-			"offset_ms":  firstOffset(a.beats, defaultBeatInterval),
-			"beats_ms":   a.beats,
-			"confidence": 0.48,
-			"provenance": "energy_transients",
-		},
-		"downbeats": map[string]any{
-			"positions_ms": a.downbeats,
-			"confidence":   0.38,
-			"provenance":   "every_four_beats",
-		},
 		"energy": map[string]any{
 			"value":      round(a.energy, 4),
 			"confidence": 0.72,
@@ -482,18 +651,39 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 			"provenance":  "ffmpeg_decode",
 		},
 	}
+	if a.bpm > 0 {
+		summary["bpm"] = map[string]any{
+			"value":      round(a.bpm, 2),
+			"confidence": round(a.bpmConf, 3),
+			"provenance": tempoModelVersion,
+		}
+		summary["beat_grid"] = map[string]any{
+			"bpm":        round(a.bpm, 2),
+			"offset_ms":  firstOffset(a.beats, max(1, int(math.Round(60000/a.bpm)))),
+			"beats_ms":   a.beats,
+			"confidence": round(a.bpmConf, 3),
+			"provenance": tempoModelVersion,
+		}
+	}
+	if len(a.downbeats) > 0 {
+		summary["downbeats"] = map[string]any{
+			"positions_ms": a.downbeats,
+			"confidence":   round(a.downbeatConf, 3),
+			"provenance":   tempoModelVersion,
+		}
+	}
 	if a.keyName != "" {
 		summary["key"] = map[string]any{
 			"value":      a.keyName,
 			"confidence": round(a.keyConf, 3),
-			"provenance": "zero_crossing_chroma_proxy",
+			"provenance": keyModelVersion,
 		}
 	}
 	if a.camelot != "" {
 		summary["camelot"] = map[string]any{
 			"value":      a.camelot,
 			"confidence": round(a.keyConf, 3),
-			"provenance": "zero_crossing_chroma_proxy",
+			"provenance": keyModelVersion,
 		}
 	}
 	artifacts := map[string]any{
@@ -537,12 +727,13 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 		"waveform_resolution": "multi_resolution",
 	}
 	provenance := map[string]any{
-		"analyzer":         "omp-ffmpeg-analyzer",
-		"analyzer_version": "2026-07-09-1",
+		"analyzer":         "omp-mir-analyzer",
+		"analyzer_version": analyzerVersion,
 		"model_versions": map[string]any{
 			"waveform": "pcm-rms-v1",
-			"tempo":    "transient-grid-v1",
-			"key":      "zero-crossing-chroma-v1",
+			"tempo":    tempoModelVersion,
+			"downbeat": tempoModelVersion,
+			"key":      keyModelVersion,
 			"sections": "beat-grid-proxy-v1",
 		},
 	}
@@ -587,100 +778,7 @@ func detectTransients(rms []float64, peaks []float64, durationMs int) []int {
 	return out
 }
 
-func estimateMusicalKey(samples []float64, sampleRate int) (string, string, float64) {
-	if len(samples) == 0 || sampleRate <= 0 {
-		return "", "", 0
-	}
-	chroma := make([]float64, 12)
-	frameSize := clampInt(sampleRate/20, 512, 4096)
-	hop := max(1, frameSize/2)
-	totalEnergy := 0.0
-	for start := 0; start+frameSize <= len(samples); start += hop {
-		frame := samples[start : start+frameSize]
-		rms := frameRMS(frame)
-		if rms < 0.015 {
-			continue
-		}
-		frequency := zeroCrossingFrequency(frame, sampleRate)
-		if frequency < 55 || frequency > 1760 {
-			continue
-		}
-		midi := int(math.Round(69 + 12*math.Log2(frequency/440)))
-		pitchClass := ((midi % 12) + 12) % 12
-		weight := rms * math.Min(1.5, math.Max(0.4, frequency/440))
-		chroma[pitchClass] += weight
-		totalEnergy += weight
-	}
-	if totalEnergy <= 0 {
-		return "", "", 0
-	}
-	normalize(chroma, maxFloat(chroma))
-	keyIndex, mode, confidence := matchKeyProfile(chroma)
-	key := fmt.Sprintf("%s %s", keyNames[keyIndex], mode)
-	return key, camelotFor(keyIndex, mode), confidence
-}
-
-func frameRMS(samples []float64) float64 {
-	if len(samples) == 0 {
-		return 0
-	}
-	sum := 0.0
-	for _, sample := range samples {
-		sum += sample * sample
-	}
-	return math.Sqrt(sum / float64(len(samples)))
-}
-
-func zeroCrossingFrequency(samples []float64, sampleRate int) float64 {
-	crossings := 0
-	previous := samples[0]
-	for _, sample := range samples[1:] {
-		if (previous <= 0 && sample > 0) || (previous >= 0 && sample < 0) {
-			crossings++
-		}
-		previous = sample
-	}
-	return float64(crossings) * float64(sampleRate) / (2 * float64(max(1, len(samples)-1)))
-}
-
 var keyNames = []string{"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
-
-var majorKeyProfile = []float64{6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88}
-var minorKeyProfile = []float64{6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17}
-
-func matchKeyProfile(chroma []float64) (int, string, float64) {
-	type candidate struct {
-		key   int
-		mode  string
-		score float64
-	}
-	candidates := []candidate{}
-	for key := 0; key < 12; key++ {
-		candidates = append(candidates,
-			candidate{key: key, mode: "major", score: profileScore(chroma, majorKeyProfile, key)},
-			candidate{key: key, mode: "minor", score: profileScore(chroma, minorKeyProfile, key)},
-		)
-	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
-	best := candidates[0]
-	second := candidates[1]
-	confidence := clamp(0.35+(best.score-second.score)*1.8, 0.25, 0.88)
-	return best.key, best.mode, confidence
-}
-
-func profileScore(chroma []float64, profile []float64, key int) float64 {
-	dot, chromaMag, profileMag := 0.0, 0.0, 0.0
-	for i := 0; i < 12; i++ {
-		rotated := profile[(i-key+12)%12]
-		dot += chroma[i] * rotated
-		chromaMag += chroma[i] * chroma[i]
-		profileMag += rotated * rotated
-	}
-	if chromaMag <= 0 || profileMag <= 0 {
-		return 0
-	}
-	return dot / math.Sqrt(chromaMag*profileMag)
-}
 
 func camelotFor(key int, mode string) string {
 	major := []string{"8B", "3B", "10B", "5B", "12B", "7B", "2B", "9B", "4B", "11B", "6B", "1B"}
@@ -750,64 +848,11 @@ func durationSanityConfidence(declaredMs int, decodedMs int) float64 {
 	return round(clamp(1-ratio*5, 0.25, 0.95), 3)
 }
 
-func estimateBeatInterval(transients []int) int {
-	if len(transients) < 2 {
-		return 0
-	}
-	buckets := map[int]int{}
-	for i := 0; i < len(transients); i++ {
-		for j := i + 1; j < len(transients); j++ {
-			diff := transients[j] - transients[i]
-			if diff < 300 {
-				continue
-			}
-			if diff > 900 {
-				break
-			}
-			buckets[(diff/25)*25]++
-		}
-	}
-	bestBucket, bestCount := 0, 0
-	for bucket, count := range buckets {
-		if count > bestCount || (count == bestCount && math.Abs(float64(bucket-500)) < math.Abs(float64(bestBucket-500))) {
-			bestBucket, bestCount = bucket, count
-		}
-	}
-	return bestBucket
-}
-
-func buildBeatGrid(durationMs int, intervalMs int, offsetMs int) []int {
-	if intervalMs <= 0 {
-		intervalMs = defaultBeatInterval
-	}
-	if offsetMs < 0 || offsetMs >= intervalMs {
-		offsetMs = 0
-	}
-	beats := []int{}
-	for ms := offsetMs; ms <= durationMs; ms += intervalMs {
-		beats = append(beats, ms)
-	}
-	return beats
-}
-
 func firstOffset(values []int, interval int) int {
 	if len(values) == 0 || interval <= 0 {
 		return 0
 	}
 	return values[0] % interval
-}
-
-func everyNth(values []int, n int) []int {
-	if n <= 0 {
-		return nil
-	}
-	out := []int{}
-	for i, value := range values {
-		if i%n == 0 {
-			out = append(out, value)
-		}
-	}
-	return out
 }
 
 func detectSilence(rms []float64, durationMs int) ([]timeRange, int, int) {
@@ -872,16 +917,6 @@ func mean(values []float64) float64 {
 		total += value
 	}
 	return total / float64(len(values))
-}
-
-func maxFloat(values []float64) float64 {
-	maxValue := 0.0
-	for _, value := range values {
-		if value > maxValue {
-			maxValue = value
-		}
-	}
-	return maxValue
 }
 
 func db(value float64) float64 {

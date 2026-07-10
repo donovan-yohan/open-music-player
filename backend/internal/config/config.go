@@ -59,10 +59,11 @@ type Config struct {
 
 	// Optional out-of-process audio analyzer. Disabled unless configured so the
 	// processor never creates unserviceable pending analysis rows by default.
-	AnalyzerEnabled   bool
-	AnalyzerBaseURL   string
-	AnalyzerAuthToken string
-	AnalyzerTimeout   time.Duration
+	AnalyzerEnabled     bool
+	AnalyzerBaseURL     string
+	AnalyzerAuthToken   string
+	AnalyzerTimeout     time.Duration
+	AnalyzerConcurrency int
 
 	// Optional "save playlist as mix" seam. Disabled by default; when enabled,
 	// POST /api/v1/playlists/{id}/mix creates a mix_plan from a playlist's
@@ -133,10 +134,11 @@ func Load() *Config {
 		MetadataLLMTimeout: parseDurationMsEnv("METADATA_LLM_TIMEOUT_MS", 5*time.Second),
 
 		// Audio analyzer service configuration
-		AnalyzerEnabled:   analyzerEnabled,
-		AnalyzerBaseURL:   analyzerBaseURL,
-		AnalyzerAuthToken: strings.TrimSpace(os.Getenv("ANALYZER_AUTH_TOKEN")),
-		AnalyzerTimeout:   parseDurationMsEnv("ANALYZER_TIMEOUT_MS", 90*time.Second),
+		AnalyzerEnabled:     analyzerEnabled,
+		AnalyzerBaseURL:     analyzerBaseURL,
+		AnalyzerAuthToken:   strings.TrimSpace(os.Getenv("ANALYZER_AUTH_TOKEN")),
+		AnalyzerTimeout:     parseDurationMsEnv("ANALYZER_TIMEOUT_MS", 90*time.Second),
+		AnalyzerConcurrency: parseBoundedIntEnv("ANALYZER_CONCURRENCY", 1, 1, 4),
 
 		// Save-playlist-as-mix seam (default OFF)
 		EnablePlaylistMix: parseBoolEnv("ENABLE_PLAYLIST_MIX", false),
@@ -155,6 +157,18 @@ func parseDurationMsEnv(key string, defaultValue time.Duration) time.Duration {
 		return defaultValue
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+func parseBoundedIntEnv(key string, defaultValue, minimum, maximum int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	parsed, err := strconv.Atoi(value)
+	if value == "" || err != nil || parsed < minimum {
+		return defaultValue
+	}
+	if parsed > maximum {
+		return maximum
+	}
+	return parsed
 }
 
 func parseCORSAllowedOrigins() []string {

@@ -103,6 +103,24 @@ jobs:
           flags: backend
         continue-on-error: true
 
+  analyzer:
+    name: Audio Analyzer (MIR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Lint analyzer wiring
+        run: scripts/lint analyzer
+
+      - name: Run analyzer unit image
+        run: scripts/test analyzer
+
+      - name: Build pinned analyzer image
+        run: scripts/build analyzer
+
   client:
     name: Client (Flutter)
     runs-on: ubuntu-latest

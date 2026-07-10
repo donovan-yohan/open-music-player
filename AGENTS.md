@@ -51,8 +51,9 @@ See `docs/context-map.md` for the fuller map and harness table.
 - Worker-free backend test dependencies: `scripts/dev test-infra` or
   `scripts/dev test-infra-isolated`
 - Full local tests: `scripts/test`
-- Component tests: `scripts/test backend|client|extension`
-- Static checks: `scripts/lint`
+- Component tests: `scripts/test backend|analyzer|client|extension`
+- Static checks: `scripts/lint`; use `scripts/lint analyzer` for Python and
+  Compose analyzer wiring
 - Delivery scaffolding checks: `scripts/agentic-harness` or
   `scripts/lint delivery`
 - Exact-head dev-cycle plan/run: `scripts/agentic-cycle --base origin/main` or
@@ -60,7 +61,8 @@ See `docs/context-map.md` for the fuller map and harness table.
 - Deterministic dev-cycle evidence path:
   `scripts/agentic-cycle --run --evidence /tmp/omp-cycle.json`
 - Release/closeout audit: `scripts/release-audit --pr <number> --issue <number>`
-- Build checks: `scripts/build`
+- Build checks: `scripts/build`; `scripts/build analyzer` verifies the pinned
+  Beat This/librosa image and model checksum
 - Local backend smoke: `scripts/smoke`
 - Isolated backend smoke: `scripts/smoke isolated`
 - Download/worker smoke: `scripts/smoke e2e`

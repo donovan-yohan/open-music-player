@@ -3,6 +3,7 @@ import 'dart:math' as math;
 const double minTempoAutomationRate = 0.5;
 const double maxTempoAutomationRate = 2.0;
 const double reliableBpmConfidenceFloor = 0.55;
+const double reliableDownbeatConfidenceFloor = 0.55;
 const int defaultTransitionPhraseBeats = 16;
 const int minDefaultTransitionOverlapMs = 4000;
 const int maxDefaultTransitionOverlapMs = 12000;
@@ -27,6 +28,7 @@ class ClipTempoMetadata {
   final double? bpmConfidence;
   final List<int> beatsMs;
   final List<int> downbeatsMs;
+  final double? downbeatConfidence;
   final String? musicalKey;
   final String? camelot;
 
@@ -35,6 +37,7 @@ class ClipTempoMetadata {
     this.bpmConfidence,
     this.beatsMs = const [],
     this.downbeatsMs = const [],
+    this.downbeatConfidence,
     this.musicalKey,
     this.camelot,
   });
@@ -48,13 +51,19 @@ class ClipTempoMetadata {
     return confidence == null || confidence >= reliableBpmConfidenceFloor;
   }
 
-  bool get hasDownbeats => downbeatsMs.isNotEmpty;
+  bool get hasDownbeats {
+    if (downbeatsMs.isEmpty) return false;
+    final confidence = downbeatConfidence;
+    return confidence == null || confidence >= reliableDownbeatConfidenceFloor;
+  }
 
   Map<String, dynamic> toJson() => {
         if (nativeBpm != null) 'nativeBpm': nativeBpm,
         if (bpmConfidence != null) 'bpmConfidence': bpmConfidence,
         if (beatsMs.isNotEmpty) 'beatGridMs': beatsMs,
         if (downbeatsMs.isNotEmpty) 'downbeatsMs': downbeatsMs,
+        if (downbeatConfidence != null)
+          'downbeatConfidence': downbeatConfidence,
         if (musicalKey != null) 'musicalKey': musicalKey,
         if (camelot != null) 'camelot': camelot,
       };
@@ -65,6 +74,7 @@ class ClipTempoMetadata {
       bpmConfidence: _readDouble(json['bpmConfidence']),
       beatsMs: _readIntList(json['beatGridMs'] ?? json['beatsMs']),
       downbeatsMs: _readIntList(json['downbeatsMs']),
+      downbeatConfidence: _readDouble(json['downbeatConfidence']),
       musicalKey: _readString(json['musicalKey'] ?? json['key']),
       camelot: _readString(json['camelot']),
     );
@@ -106,6 +116,7 @@ class ClipTempoMetadata {
       downbeatsMs: _readIntList(
         downbeats?['positions_ms'] ?? downbeats?['positionsMs'],
       ),
+      downbeatConfidence: _readDouble(downbeats?['confidence']),
       musicalKey: keyValue,
       camelot: camelotValue,
     );
@@ -116,6 +127,7 @@ class ClipTempoMetadata {
       bpmConfidence == null &&
       beatsMs.isEmpty &&
       downbeatsMs.isEmpty &&
+      downbeatConfidence == null &&
       musicalKey == null &&
       camelot == null;
 
@@ -126,6 +138,7 @@ class ClipTempoMetadata {
       other.bpmConfidence == bpmConfidence &&
       _sameInts(other.beatsMs, beatsMs) &&
       _sameInts(other.downbeatsMs, downbeatsMs) &&
+      other.downbeatConfidence == downbeatConfidence &&
       other.musicalKey == musicalKey &&
       other.camelot == camelot;
 
@@ -135,6 +148,7 @@ class ClipTempoMetadata {
         bpmConfidence,
         Object.hashAll(beatsMs),
         Object.hashAll(downbeatsMs),
+        downbeatConfidence,
         musicalKey,
         camelot,
       );
@@ -145,6 +159,7 @@ class _ClipTempoOverrides {
   final double? bpmConfidence;
   final List<int>? beatsMs;
   final List<int>? downbeatsMs;
+  final double? downbeatConfidence;
   final String? musicalKey;
   final String? camelot;
 
@@ -153,6 +168,7 @@ class _ClipTempoOverrides {
     this.bpmConfidence,
     this.beatsMs,
     this.downbeatsMs,
+    this.downbeatConfidence,
     this.musicalKey,
     this.camelot,
   });
@@ -182,6 +198,8 @@ class _ClipTempoOverrides {
             downbeats?['positions_ms'] ??
             downbeats?['positionsMs'],
       ),
+      downbeatConfidence: _readDouble(map['downbeatConfidence']) ??
+          _readDouble(downbeats?['confidence']),
       musicalKey: _readAnalysisText(key),
       camelot: _readAnalysisText(map['camelot']),
     );
@@ -193,17 +211,22 @@ class _ClipTempoOverrides {
       bpmConfidence == null &&
       beatsMs == null &&
       downbeatsMs == null &&
+      downbeatConfidence == null &&
       musicalKey == null &&
       camelot == null;
 
   ClipTempoMetadata applyTo(ClipTempoMetadata base) {
     final effectiveBpmConfidence =
         bpmConfidence ?? (nativeBpm == null ? null : 1.0);
+    final effectiveDownbeatConfidence =
+        downbeatConfidence ?? (downbeatsMs == null ? null : 1.0);
     return ClipTempoMetadata(
       nativeBpm: nativeBpm ?? base.nativeBpm,
       bpmConfidence: effectiveBpmConfidence ?? base.bpmConfidence,
       beatsMs: beatsMs ?? base.beatsMs,
       downbeatsMs: downbeatsMs ?? base.downbeatsMs,
+      downbeatConfidence:
+          effectiveDownbeatConfidence ?? base.downbeatConfidence,
       musicalKey: musicalKey ?? base.musicalKey,
       camelot: camelot ?? base.camelot,
     );
@@ -715,13 +738,16 @@ List<int> beatMarkersForSnapMode(
   ClipTempoMetadata tempo,
   BeatSnapMode snapMode,
 ) {
-  final beats = _sortedUniqueNonNegative(tempo.beatsMs);
-  final downbeats = _sortedUniqueNonNegative(tempo.downbeatsMs);
+  final beats = tempo.hasReliableBpm
+      ? _sortedUniqueNonNegative(tempo.beatsMs)
+      : const <int>[];
+  final downbeats = tempo.hasDownbeats
+      ? _sortedUniqueNonNegative(tempo.downbeatsMs)
+      : const <int>[];
 
   return switch (snapMode) {
     BeatSnapMode.free => const [],
-    BeatSnapMode.downbeat =>
-      downbeats.isNotEmpty ? downbeats : _strideMarkers(beats, 4),
+    BeatSnapMode.downbeat => downbeats,
     BeatSnapMode.beat1 => beats.isNotEmpty ? beats : downbeats,
     BeatSnapMode.beat4 =>
       downbeats.isNotEmpty ? downbeats : _strideMarkers(beats, 4),

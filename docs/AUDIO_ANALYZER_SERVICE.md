@@ -15,6 +15,16 @@ The analyzer is disabled unless `ANALYZER_BASE_URL` is set or `ANALYZER_ENABLED=
 | `ANALYZER_AUTH_TOKEN` | empty | Optional bearer token sent in the `Authorization` header. |
 | `ANALYZER_TIMEOUT_MS` | `90000` | Per-request timeout. The processor also caps the analysis goroutine at two minutes. |
 
+The analyzer container also accepts:
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `ANALYZER_MIR_HELPER` | `/app/audio_mir.py` | Python MIR bridge invoked for each stored audio file. |
+| `ANALYZER_BEAT_MODEL` | `/app/models/beat_this-final0.ckpt` | Pinned Beat This model used for beat and downbeat inference. |
+| `ANALYZER_CONCURRENCY` | `1` | Backend dispatch and service MIR concurrency, clamped to 1-4. Keep at 1 on low-memory hosts. |
+| `ANALYZER_SAMPLE_RATE` | `22050` | PCM sample rate used by the waveform pipeline. |
+| `ANALYZER_WAVEFORM_HZ` | `80` | Maximum detail waveform frames per second, bounded by the service cap. |
+
 ## Service contract
 
 Request:
@@ -38,21 +48,21 @@ Response (`200`):
 {
   "schema_version": 1,
   "summary": {
-    "bpm": { "value": 124.0, "confidence": 0.94, "provenance": "beat_grid" },
+    "bpm": { "value": 124.0, "confidence": 0.94, "provenance": "beat-this-final0-v1.1.0" },
     "beat_grid": {
       "bpm": 124.0,
       "offset_ms": 320,
       "beats_ms": [320, 804, 1288, 1772],
       "confidence": 0.91,
-      "provenance": "beat_grid"
+      "provenance": "beat-this-final0-v1.1.0"
     },
     "downbeats": {
       "positions_ms": [320],
       "confidence": 0.86,
-      "provenance": "beat_grid"
+      "provenance": "beat-this-final0-v1.1.0"
     },
-    "key": { "value": "A minor", "confidence": 0.82, "provenance": "zero_crossing_chroma_proxy" },
-    "camelot": { "value": "8A", "confidence": 0.82, "provenance": "zero_crossing_chroma_proxy" },
+    "key": { "value": "A minor", "confidence": 0.82, "provenance": "librosa-cqt-krumhansl-v1" },
+    "camelot": { "value": "8A", "confidence": 0.82, "provenance": "librosa-cqt-krumhansl-v1" },
     "energy": { "value": 0.73, "confidence": 0.88, "provenance": "rms_spectral_flux" },
     "loudness": {
       "integrated_lufs": -11.8,
@@ -112,11 +122,12 @@ Response (`200`):
     "waveform_resolution": "multi_resolution"
   },
   "provenance": {
-    "analyzer": "local-service",
-    "analyzer_version": "dev",
+    "analyzer": "omp-mir-analyzer",
+    "analyzer_version": "2026-07-10-3",
     "model_versions": {
-      "tempo": "tempo-v1",
-      "key": "zero-crossing-chroma-v1",
+      "tempo": "beat-this-final0-v1.1.0",
+      "downbeat": "beat-this-final0-v1.1.0",
+      "key": "librosa-cqt-krumhansl-v1",
       "loudness": "loudness-v1",
       "waveform": "waveform-v1"
     }
@@ -206,13 +217,41 @@ backend. Active-deck tuning frames are coalesced and applied concurrently; a
 slow platform call on one deck must not serialize the peer deck's BPM update or
 resume.
 
-## Key and Camelot analysis
+## Beat, downbeat, key, and Camelot analysis
 
-The built-in ffmpeg analyzer now emits `key` and `camelot` summaries for real
-audio using a lightweight zero-crossing pitch-class proxy. This is intentionally
-lower-confidence than a full chroma model, but it gives the queue/timeline UI a
-stable harmonic hint and provenance while leaving room for a future analyzer
-version to replace it with richer chroma or stem-aware key detection.
+The analyzer uses the MIT-licensed Beat This `final0` model for beat and
+downbeat inference. Model downbeat candidates vote on a dominant four-beat
+phase. Agreement and song coverage determine confidence; sparse or conflicting
+candidates remain low-confidence markers instead of being expanded into a
+synthetic full-song grid. BPM is derived from tracked beat intervals with robust
+outlier rejection instead of quantized transient buckets. Sparse or irregular
+tempo grids remain below the client's automatic beat-sync threshold. Downbeat
+confidence travels with session tempo metadata; automatic phrase overlap and
+downbeat snap ignore generated markers below that threshold, while manual
+corrections are treated as authoritative.
+
+Key detection uses librosa's constant-Q chroma over the harmonic signal and
+Pearson correlation against the Krumhansl major/minor profiles. The winning
+pitch class is converted to Camelot notation by the Go response boundary. Key
+confidence reflects both profile fit and separation from the runner-up. Flat or
+ambiguous chroma produces no generated key rather than an arbitrary label. BPM,
+downbeat, and key summaries are optional: waveform/spectral results still persist
+when one of those musical estimates is unavailable. Generated key remains an
+estimate, not catalog authority, because commercial databases can also disagree
+on harmonically ambiguous recordings.
+
+Decoded PCM duration is the timing authority for waveform bins, beats, and
+downbeats. Provider/catalog duration is retained separately for duration-sanity
+diagnostics, preventing marker drift when source metadata is slightly wrong.
+
+The analyzer image pins PyTorch CPU, Beat This, librosa, and the model checksum,
+then runs real model inference against a generated 120 BPM audio fixture.
+The normal backend image uses a separate Docker target and does not carry those
+MIR dependencies. Reanalysis replaces generated summaries and artifacts while
+retaining user-authored `overrides_json` corrections. Backend dispatch is
+bounded by the same analyzer concurrency setting before its per-track timeout
+starts, so a bulk repair queues locally instead of launching enough model
+processes to exhaust memory or timing out behind the service semaphore.
 
 ## Beat-locked transition defaults
 

@@ -175,7 +175,7 @@ func TestLoadMetadataLLMExplicitEnable(t *testing.T) {
 }
 
 func TestLoadAnalyzerDisabledByDefault(t *testing.T) {
-	for _, key := range []string{"ANALYZER_ENABLED", "ANALYZER_BASE_URL", "ANALYZER_AUTH_TOKEN", "ANALYZER_TIMEOUT_MS"} {
+	for _, key := range []string{"ANALYZER_ENABLED", "ANALYZER_BASE_URL", "ANALYZER_AUTH_TOKEN", "ANALYZER_TIMEOUT_MS", "ANALYZER_CONCURRENCY"} {
 		withUnsetEnv(t, key)
 	}
 	cfg := Load()
@@ -185,6 +185,9 @@ func TestLoadAnalyzerDisabledByDefault(t *testing.T) {
 	if cfg.AnalyzerTimeout != 90*time.Second {
 		t.Fatalf("AnalyzerTimeout = %s, want default 90s", cfg.AnalyzerTimeout)
 	}
+	if cfg.AnalyzerConcurrency != 1 {
+		t.Fatalf("AnalyzerConcurrency = %d, want default 1", cfg.AnalyzerConcurrency)
+	}
 }
 
 func TestLoadAnalyzerEnabledWhenBaseURLConfigured(t *testing.T) {
@@ -192,6 +195,7 @@ func TestLoadAnalyzerEnabledWhenBaseURLConfigured(t *testing.T) {
 	t.Setenv("ANALYZER_BASE_URL", "http://analyzer.local:18190")
 	t.Setenv("ANALYZER_AUTH_TOKEN", "secret-token")
 	t.Setenv("ANALYZER_TIMEOUT_MS", "2500")
+	t.Setenv("ANALYZER_CONCURRENCY", "3")
 
 	cfg := Load()
 	if !cfg.AnalyzerEnabled {
@@ -202,6 +206,19 @@ func TestLoadAnalyzerEnabledWhenBaseURLConfigured(t *testing.T) {
 	}
 	if cfg.AnalyzerTimeout != 2500*time.Millisecond {
 		t.Fatalf("AnalyzerTimeout = %s, want 2500ms", cfg.AnalyzerTimeout)
+	}
+	if cfg.AnalyzerConcurrency != 3 {
+		t.Fatalf("AnalyzerConcurrency = %d, want 3", cfg.AnalyzerConcurrency)
+	}
+}
+
+func TestLoadClampsAnalyzerConcurrency(t *testing.T) {
+	t.Setenv("ANALYZER_CONCURRENCY", "99")
+
+	cfg := Load()
+
+	if cfg.AnalyzerConcurrency != 4 {
+		t.Fatalf("AnalyzerConcurrency = %d, want cap 4", cfg.AnalyzerConcurrency)
 	}
 }
 

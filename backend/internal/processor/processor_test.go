@@ -127,6 +127,14 @@ type fakeAnalyzerClient struct {
 	err      error
 }
 
+type blockingAnalyzerClient struct {
+	mu        sync.Mutex
+	active    int
+	maxActive int
+	started   chan int64
+	release   chan struct{}
+}
+
 func sqlNullString(value string) sql.NullString {
 	return sql.NullString{String: value, Valid: value != ""}
 }
@@ -143,6 +151,99 @@ func (c *fakeAnalyzerClient) Analyze(ctx context.Context, req analyzer.Request) 
 		return nil, c.err
 	}
 	return c.result, nil
+}
+
+func (c *blockingAnalyzerClient) Analyze(ctx context.Context, req analyzer.Request) (*analyzer.Result, error) {
+	c.mu.Lock()
+	c.active++
+	if c.active > c.maxActive {
+		c.maxActive = c.active
+	}
+	c.mu.Unlock()
+	c.started <- req.TrackID
+	select {
+	case <-c.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	c.mu.Lock()
+	c.active--
+	c.mu.Unlock()
+	return &analyzer.Result{
+		SchemaVersion:  analyzer.SchemaVersion,
+		SummaryJSON:    json.RawMessage(`{}`),
+		ArtifactsJSON:  json.RawMessage(`{}`),
+		ProvenanceJSON: json.RawMessage(`{}`),
+	}, nil
+}
+
+func TestRunAnalysisSerializesConfiguredAnalyzerWork(t *testing.T) {
+	store := &fakeAnalysisStore{storeResultCh: make(chan db.AnalysisResult, 2)}
+	client := &blockingAnalyzerClient{
+		started: make(chan int64, 2),
+		release: make(chan struct{}, 2),
+	}
+	processor := New(&ProcessorConfig{
+		AnalysisRepo:        store,
+		AnalyzerClient:      client,
+		AnalysisConcurrency: 1,
+	})
+	for _, trackID := range []int64{1, 2} {
+		if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{
+			TrackID: trackID, StorageKey: "tracks/test.mp3",
+		}); err != nil {
+			t.Fatalf("scheduleAnalysis(%d) error = %v", trackID, err)
+		}
+	}
+
+	first := <-client.started
+	select {
+	case second := <-client.started:
+		t.Fatalf("track %d started while track %d was active", second, first)
+	case <-time.After(50 * time.Millisecond):
+	}
+	client.release <- struct{}{}
+	second := <-client.started
+	if second == first {
+		t.Fatalf("second track id = first track id = %d", first)
+	}
+	client.release <- struct{}{}
+	<-store.storeResultCh
+	<-store.storeResultCh
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.maxActive != 1 {
+		t.Fatalf("max concurrent analyses = %d, want 1", client.maxActive)
+	}
+}
+
+func TestScheduleAnalysisQueueIsBoundedAndContextAware(t *testing.T) {
+	client := &blockingAnalyzerClient{
+		started: make(chan int64, analysisQueueSize+1),
+		release: make(chan struct{}),
+	}
+	processor := New(&ProcessorConfig{
+		AnalysisRepo:        &fakeAnalysisStore{},
+		AnalyzerClient:      client,
+		AnalysisConcurrency: 1,
+	})
+
+	if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	<-client.started
+	for trackID := int64(2); trackID <= analysisQueueSize+1; trackID++ {
+		if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: trackID}); err != nil {
+			t.Fatalf("fill queue at track %d: %v", trackID, err)
+		}
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := processor.scheduleAnalysis(canceled, analyzer.Request{TrackID: 999}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("scheduleAnalysis() error = %v, want context.Canceled", err)
+	}
+	close(client.release)
 }
 
 func TestEnqueueAnalysisSkipsPendingRowWhenAnalyzerClientMissing(t *testing.T) {
@@ -203,7 +304,7 @@ func TestRequestAnalysisRepairDoesNotRunActiveNonStaleRequest(t *testing.T) {
 		Reason:         "active_not_stale",
 	}}
 	client := &fakeAnalyzerClient{requests: make(chan analyzer.Request, 1)}
-	processor := &Processor{analysisRepo: store, analyzerClient: client}
+	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
 
 	result, err := processor.RequestAnalysisRepair(context.Background(), &db.Track{
 		ID:         42,
@@ -228,7 +329,7 @@ func TestRequestAnalysisRepairDoesNotRunActiveNonStaleRequest(t *testing.T) {
 func TestRequestAnalysisRepairSkipsLegacyStoreWithoutRequeue(t *testing.T) {
 	store := &legacyAnalysisStore{}
 	client := &fakeAnalyzerClient{requests: make(chan analyzer.Request, 1)}
-	processor := &Processor{analysisRepo: store, analyzerClient: client}
+	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
 
 	result, err := processor.RequestAnalysisRepair(context.Background(), &db.Track{
 		ID:         42,
@@ -264,7 +365,7 @@ func TestRequestAnalysisRepairQueuesAndRunsAnalyzer(t *testing.T) {
 			ProvenanceJSON: json.RawMessage(`{"analyzer":"fake"}`),
 		},
 	}
-	processor := &Processor{analysisRepo: store, analyzerClient: client}
+	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
 
 	result, err := processor.RequestAnalysisRepair(context.Background(), &db.Track{
 		ID:         42,
@@ -306,7 +407,7 @@ func TestEnqueueAnalysisRunsConfiguredAnalyzerAndStoresResult(t *testing.T) {
 			ProvenanceJSON: json.RawMessage("{\"analyzer\":\"fake\"}"),
 		},
 	}
-	processor := &Processor{analysisRepo: store, analyzerClient: client}
+	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
 
 	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42}, &TrackMetadata{
 		StorageKey: "tracks/fixture/job-fixture.wav",
