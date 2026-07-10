@@ -70,6 +70,7 @@ class QueueTimelineController {
   MediaItem? get currentMediaItem => _currentMediaItemSubject.valueOrNull;
   bool get shuffleEnabled => _shuffleEnabled;
   LoopMode get loopMode => _loopMode;
+  BeatSnapMode get transitionSnapMode => _session.transitionSnapMode;
   Duration get position => _positionSubject.value;
   Duration get livePosition =>
       Duration(milliseconds: _localForGlobal(_engine.positionMs));
@@ -129,10 +130,16 @@ class QueueTimelineController {
     _queue = List.unmodifiable(items);
     _playOrder = [for (var i = 0; i < _queue.length; i++) i];
     _sessionId = session?.sessionId ?? 'session_$_sessionGeneration';
+    final transitionSnapMode =
+        session?.transitionSnapMode ?? _session.transitionSnapMode;
     _session = session == null
         ? (preserveTimelineEdits
             ? _session.normalizedForQueue(_queue)
-            : MixSession.fromQueue(sessionId: _sessionId, queue: _queue))
+            : MixSession.fromQueue(
+                sessionId: _sessionId,
+                queue: _queue,
+                transitionSnapMode: transitionSnapMode,
+              ))
         : session.normalizedForQueue(_queue);
     if (reflowDefaultTransitionsFromIndex != null) {
       _session = _session.reflowDefaultTransitionsFrom(
@@ -141,7 +148,10 @@ class QueueTimelineController {
     }
     if (_queue.isEmpty) {
       _currentIndex = null;
-      _session = MixSession.empty(sessionId: _sessionId);
+      _session = MixSession.empty(
+        sessionId: _sessionId,
+        transitionSnapMode: transitionSnapMode,
+      );
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
       await _engine.pause();
@@ -355,6 +365,24 @@ class QueueTimelineController {
     await _loadModel(
       seekToCurrent: false,
       preserveActivePlayback: true,
+    );
+    _publishQueueState();
+  }
+
+  Future<void> setTransitionSnapMode(BeatSnapMode mode) async {
+    await _enqueueCommand(() => _setTransitionSnapMode(mode));
+  }
+
+  Future<void> _setTransitionSnapMode(BeatSnapMode mode) async {
+    if (_session.transitionSnapMode == mode) return;
+    final nextSession = _session.withTransitionSnapMode(mode);
+    if (!_canApplySession(nextSession)) return;
+
+    final localPosition = livePosition.inMilliseconds;
+    _session = nextSession.normalizedForQueue(_queue);
+    await _loadModel(
+      seekToCurrent: true,
+      localPositionMs: localPosition,
     );
     _publishQueueState();
   }
@@ -809,6 +837,13 @@ class QueueTimelineController {
       outgoingTimelineStartMs: outgoing.timelineStartMs,
       outgoingSourceStartMs: outgoing.sourceStartMs,
       outgoingTempo: outgoing.tempo,
+      outgoingBaseRate: outgoing.playbackRate,
+      incomingBaseRate: incoming.playbackRate,
+      snapMode: _session.transitionSnapMode,
+      toleranceMs: downbeatSnapToleranceMs(
+        outgoing.tempo,
+        snapMode: _session.transitionSnapMode,
+      ),
     );
     if (snappedStart == null) return requested;
     return requested.withTimelineStartMs(snappedStart);

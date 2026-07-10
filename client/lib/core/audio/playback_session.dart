@@ -19,14 +19,23 @@ class MixSession {
     required this.clips,
     this.schemaVersion = mixSessionSchemaVersion,
     this.nextClipOrdinal = 0,
+    this.transitionSnapMode = BeatSnapMode.downbeat,
   });
 
-  factory MixSession.empty({String sessionId = 'session_0'}) =>
-      MixSession(sessionId: sessionId, clips: const []);
+  factory MixSession.empty({
+    String sessionId = 'session_0',
+    BeatSnapMode transitionSnapMode = BeatSnapMode.downbeat,
+  }) =>
+      MixSession(
+        sessionId: sessionId,
+        clips: const [],
+        transitionSnapMode: transitionSnapMode,
+      );
 
   factory MixSession.fromQueue({
     required String sessionId,
     required List<MediaItem> queue,
+    BeatSnapMode transitionSnapMode = BeatSnapMode.downbeat,
   }) {
     final clips = <MixSessionClip>[];
     for (var i = 0; i < queue.length; i++) {
@@ -41,7 +50,12 @@ class MixSession {
       clips.add(
         clip.withPlacement(
           clip.placement.withTimelineStartMs(
-            _defaultTimelineStartAfter(previous, clip, fallbackStartMs),
+            _defaultTimelineStartAfter(
+              previous,
+              clip,
+              fallbackStartMs,
+              transitionSnapMode,
+            ),
           ),
         ),
       );
@@ -50,6 +64,7 @@ class MixSession {
       sessionId: sessionId,
       clips: List.unmodifiable(clips),
       nextClipOrdinal: clips.length,
+      transitionSnapMode: transitionSnapMode,
     );
   }
 
@@ -77,6 +92,7 @@ class MixSession {
         (json['nextClipOrdinal'] as num?)?.toInt() ?? clips.length,
         _nextOrdinalAfter(clips),
       ),
+      transitionSnapMode: parseBeatSnapMode(json['transitionSnapMode']),
     );
   }
 
@@ -84,6 +100,7 @@ class MixSession {
   final String sessionId;
   final List<MixSessionClip> clips;
   final int nextClipOrdinal;
+  final BeatSnapMode transitionSnapMode;
 
   bool get isEmpty => clips.isEmpty;
 
@@ -114,21 +131,30 @@ class MixSession {
     }
 
     final reflowed = firstNewIndex != null
-        ? _reflowDefaultTransitions(normalized, startIndex: firstNewIndex)
+        ? _reflowDefaultTransitions(
+            normalized,
+            startIndex: firstNewIndex,
+            snapMode: transitionSnapMode,
+          )
         : firstTempoChangedIndex == null
             ? normalized
             : _reflowDefaultTransitions(
                 normalized,
                 startIndex: firstTempoChangedIndex,
+                snapMode: transitionSnapMode,
                 preserveEditedPlacements: true,
-                wasAutoManagedPlacement: (index) =>
-                    _wasAutoManagedPlacement(clips, index),
+                wasAutoManagedPlacement: (index) => _wasAutoManagedPlacement(
+                  clips,
+                  index,
+                  snapMode: transitionSnapMode,
+                ),
               );
     return MixSession(
       sessionId: sessionId,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: math.max(nextOrdinal, _nextOrdinalAfter(reflowed)),
+      transitionSnapMode: transitionSnapMode,
     );
   }
 
@@ -137,6 +163,7 @@ class MixSession {
     final reflowed = _reflowDefaultTransitions(
       clips,
       startIndex: startIndex,
+      snapMode: transitionSnapMode,
       preserveEditedPlacements: true,
     );
     if (_sameClipPlacements(clips, reflowed)) return this;
@@ -145,6 +172,7 @@ class MixSession {
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
     );
   }
 
@@ -170,12 +198,14 @@ class MixSession {
     final reflowed = _reflowDefaultTransitions(
       nextClips,
       startIndex: insertIndex,
+      snapMode: transitionSnapMode,
     );
     return MixSession(
       sessionId: sessionId,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal + 1,
+      transitionSnapMode: transitionSnapMode,
     );
   }
 
@@ -185,12 +215,17 @@ class MixSession {
       for (var i = 0; i < clips.length; i++)
         if (i != index) clips[i],
     ];
-    final reflowed = _reflowDefaultTransitions(nextClips, startIndex: index);
+    final reflowed = _reflowDefaultTransitions(
+      nextClips,
+      startIndex: index,
+      snapMode: transitionSnapMode,
+    );
     return MixSession(
       sessionId: sessionId,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
     );
   }
 
@@ -206,6 +241,7 @@ class MixSession {
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
     );
   }
 
@@ -224,7 +260,12 @@ class MixSession {
       final fallbackStartMs = previous?.timelineEndMs ?? cursorMs;
       nextClips[index] = clip.withPlacement(
         clip.placement.withTimelineStartMs(
-          _defaultTimelineStartAfter(previous, clip, fallbackStartMs),
+          _defaultTimelineStartAfter(
+            previous,
+            clip,
+            fallbackStartMs,
+            transitionSnapMode,
+          ),
         ),
       );
       seen.add(index);
@@ -238,7 +279,12 @@ class MixSession {
       final fallbackStartMs = previous?.timelineEndMs ?? cursorMs;
       nextClips[index] = clip.withPlacement(
         clip.placement.withTimelineStartMs(
-          _defaultTimelineStartAfter(previous, clip, fallbackStartMs),
+          _defaultTimelineStartAfter(
+            previous,
+            clip,
+            fallbackStartMs,
+            transitionSnapMode,
+          ),
         ),
       );
       seen.add(index);
@@ -251,6 +297,7 @@ class MixSession {
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
     );
   }
 
@@ -263,6 +310,7 @@ class MixSession {
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
     );
   }
 
@@ -276,6 +324,31 @@ class MixSession {
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
+    );
+  }
+
+  MixSession withTransitionSnapMode(BeatSnapMode mode) {
+    if (mode == transitionSnapMode) return this;
+    final reflowed = mode == BeatSnapMode.free
+        ? clips
+        : _reflowDefaultTransitions(
+            clips,
+            startIndex: 0,
+            snapMode: mode,
+            preserveEditedPlacements: true,
+            wasAutoManagedPlacement: (index) => _wasAutoManagedPlacement(
+              clips,
+              index,
+              snapMode: transitionSnapMode,
+            ),
+          );
+    return MixSession(
+      sessionId: sessionId,
+      schemaVersion: schemaVersion,
+      clips: List.unmodifiable(reflowed),
+      nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: mode,
     );
   }
 
@@ -288,6 +361,7 @@ class MixSession {
         'schemaVersion': schemaVersion,
         'sessionId': sessionId,
         'nextClipOrdinal': nextClipOrdinal,
+        'transitionSnapMode': transitionSnapMode.name,
         'clips': [for (final clip in clips) clip.toJson()],
       };
 }
@@ -814,6 +888,7 @@ int _nextOrdinalAfter(List<MixSessionClip> clips) {
 List<MixSessionClip> _reflowDefaultTransitions(
   List<MixSessionClip> clips, {
   required int startIndex,
+  required BeatSnapMode snapMode,
   bool preserveEditedPlacements = false,
   bool Function(int index)? wasAutoManagedPlacement,
 }) {
@@ -828,7 +903,11 @@ List<MixSessionClip> _reflowDefaultTransitions(
     if (preserveEditedPlacements &&
         (!reflowingContiguousDefaults ||
             !(wasAutoManagedPlacement?.call(index) ??
-                _wasAutoManagedPlacement(clips, index)))) {
+                _wasAutoManagedPlacement(
+                  clips,
+                  index,
+                  snapMode: snapMode,
+                )))) {
       reflowingContiguousDefaults = false;
       continue;
     }
@@ -837,7 +916,12 @@ List<MixSessionClip> _reflowDefaultTransitions(
     final fallbackStartMs = previous?.timelineEndMs ?? 0;
     next[index] = clip.withPlacement(
       clip.placement.withTimelineStartMs(
-        _defaultTimelineStartAfter(previous, clip, fallbackStartMs),
+        _defaultTimelineStartAfter(
+          previous,
+          clip,
+          fallbackStartMs,
+          snapMode,
+        ),
       ),
     );
   }
@@ -845,14 +929,18 @@ List<MixSessionClip> _reflowDefaultTransitions(
   return next;
 }
 
-bool _wasAutoManagedPlacement(List<MixSessionClip> clips, int index) {
+bool _wasAutoManagedPlacement(
+  List<MixSessionClip> clips,
+  int index, {
+  required BeatSnapMode snapMode,
+}) {
   if (index < 0 || index >= clips.length) return true;
   final clip = clips[index];
   final previous = index == 0 ? null : clips[index - 1];
   final fallbackStartMs = previous?.timelineEndMs ?? 0;
   if (clip.timelineStartMs == fallbackStartMs) return true;
   return clip.timelineStartMs ==
-      _defaultTimelineStartAfter(previous, clip, fallbackStartMs);
+      _defaultTimelineStartAfter(previous, clip, fallbackStartMs, snapMode);
 }
 
 bool _sameClipPlacements(
@@ -870,6 +958,7 @@ int _defaultTimelineStartAfter(
   MixSessionClip? previous,
   MixSessionClip incoming,
   int fallbackStartMs,
+  BeatSnapMode snapMode,
 ) {
   if (previous == null) return math.max(0, fallbackStartMs);
   return defaultDownbeatLockedTransitionStartMs(
@@ -878,9 +967,12 @@ int _defaultTimelineStartAfter(
     outgoingSourceStartMs: previous.sourceStartMs,
     outgoingSelectedDurationMs: previous.selectedDurationMs,
     outgoingTempo: previous.tempo,
+    outgoingBaseRate: previous.playbackRate,
     incomingSourceStartMs: incoming.sourceStartMs,
     incomingSelectedDurationMs: incoming.selectedDurationMs,
     incomingTempo: incoming.tempo,
+    incomingBaseRate: incoming.playbackRate,
+    snapMode: snapMode,
     fallbackStartMs: fallbackStartMs,
   );
 }

@@ -51,6 +51,8 @@ class StackedWaveformTimeline extends StatefulWidget {
   final ValueChanged<Track>? onMoveLater;
   final TimelineAnalysisEditCallback? onEditAnalysis;
   final TimelinePitchModeChangedCallback? onPitchModeChanged;
+  final BeatSnapMode transitionSnapMode;
+  final ValueChanged<BeatSnapMode>? onTransitionSnapModeChanged;
   final TimelineModel? timelineModel;
   final Set<String> pitchFallbackClipIds;
   final Map<String, ClipTempoRuntimeState> clipTempoStates;
@@ -77,6 +79,8 @@ class StackedWaveformTimeline extends StatefulWidget {
     this.onMoveLater,
     this.onEditAnalysis,
     this.onPitchModeChanged,
+    this.transitionSnapMode = BeatSnapMode.downbeat,
+    this.onTransitionSnapModeChanged,
     this.timelineModel,
     this.pitchFallbackClipIds = const {},
     this.clipTempoStates = const {},
@@ -132,7 +136,23 @@ extension on SnapMarkerMode {
         SnapMarkerMode.beat4 => '4 beats',
         SnapMarkerMode.beat16 => '16 beats',
       };
+
+  BeatSnapMode get beatSnapMode => switch (this) {
+        SnapMarkerMode.free => BeatSnapMode.free,
+        SnapMarkerMode.downbeat => BeatSnapMode.downbeat,
+        SnapMarkerMode.beat1 => BeatSnapMode.beat1,
+        SnapMarkerMode.beat4 => BeatSnapMode.beat4,
+        SnapMarkerMode.beat16 => BeatSnapMode.beat16,
+      };
 }
+
+SnapMarkerMode _snapMarkerModeFor(BeatSnapMode mode) => switch (mode) {
+      BeatSnapMode.free => SnapMarkerMode.free,
+      BeatSnapMode.downbeat => SnapMarkerMode.downbeat,
+      BeatSnapMode.beat1 => SnapMarkerMode.beat1,
+      BeatSnapMode.beat4 => SnapMarkerMode.beat4,
+      BeatSnapMode.beat16 => SnapMarkerMode.beat16,
+    };
 
 class _SnapGrid {
   final List<int> markersMs;
@@ -339,7 +359,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   static const double _scrubEdgeScrollZonePx = 56;
   static const double _scrubMaxEdgeScrollPx = 32;
 
-  SnapMarkerMode _snapMode = SnapMarkerMode.downbeat;
+  late SnapMarkerMode _snapMode;
   double _zoom = 1.0;
   int? _manualOffsetMs;
   String? _selectedTrackId;
@@ -357,8 +377,20 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   int? _lastScrubMs;
 
   @override
+  void initState() {
+    super.initState();
+    _snapMode = _snapMarkerModeFor(widget.transitionSnapMode);
+  }
+
+  @override
   void didUpdateWidget(covariant StackedWaveformTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.transitionSnapMode != widget.transitionSnapMode &&
+        _activeClipDragTrackId == null &&
+        _activeTrimTrackId == null) {
+      _snapMode = _snapMarkerModeFor(widget.transitionSnapMode);
+    }
 
     if (oldWidget.currentTrack.id != widget.currentTrack.id) {
       if (_isScrubbing || _preserveViewportForScrub) {
@@ -750,6 +782,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       outgoingSourceStartMs: outgoing.placement.sourceStartMs,
       outgoingSelectedDurationMs: outgoing.selectedDurationMs,
       outgoingTempo: outgoing.tempo,
+      outgoingBaseRate: outgoing.playbackRate,
       incomingSourceStartMs: incomingDefaultClip.sourceStartMs,
       incomingSelectedDurationMs: incomingDefaultClip.selectedDurationMs,
       incomingTempo: _tempoForTrack(incomingTrack),
@@ -1376,89 +1409,98 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         lane.role == LaneRole.upcoming || lane.role == LaneRole.collapsed;
     final tempoChip = _selectedTempoChip(context, lane);
     final transitionHint = _selectedTransitionHint(context, lane, peerClips);
-    return Material(
-      color: theme.colorScheme.surface.withValues(alpha: 0.88),
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
-        child: Column(
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Row(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (tempoChip != null) tempoChip,
-                if (widget.onPitchModeChanged != null)
-                  IconButton(
-                    key: ValueKey('timeline_pitch_mode_${track.id}'),
-                    tooltip: _pitchModeTooltip(track, lane.mixClip),
-                    icon: Icon(_pitchModeIcon(lane.mixClip)),
-                    color: pitchModeFollowsTempo(
-                      lane.mixClip.rateAutomation.pitchMode,
-                    )
-                        ? StackedWaveformTimeline.currentAccent
-                        : null,
-                    iconSize: 20,
-                    constraints:
-                        const BoxConstraints.tightFor(width: 36, height: 36),
-                    padding: EdgeInsets.zero,
-                    onPressed: () => widget.onPitchModeChanged!(
-                      track,
-                      pitchModeFollowsTempo(
+            if (tempoChip != null) IgnorePointer(child: tempoChip),
+            Material(
+              key: ValueKey('timeline_selection_toolbar_${track.id}'),
+              color: theme.colorScheme.surface.withValues(alpha: 0.78),
+              borderRadius: BorderRadius.circular(10),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (widget.onPitchModeChanged != null)
+                    IconButton(
+                      key: ValueKey('timeline_pitch_mode_${track.id}'),
+                      tooltip: _pitchModeTooltip(track, lane.mixClip),
+                      icon: Icon(_pitchModeIcon(lane.mixClip)),
+                      color: pitchModeFollowsTempo(
                         lane.mixClip.rateAutomation.pitchMode,
                       )
-                          ? pitchModePreserve
-                          : pitchModeFollowTempo,
+                          ? StackedWaveformTimeline.currentAccent
+                          : null,
+                      iconSize: 20,
+                      constraints:
+                          const BoxConstraints.tightFor(width: 36, height: 36),
+                      padding: EdgeInsets.zero,
+                      onPressed: () => widget.onPitchModeChanged!(
+                        track,
+                        pitchModeFollowsTempo(
+                          lane.mixClip.rateAutomation.pitchMode,
+                        )
+                            ? pitchModePreserve
+                            : pitchModeFollowTempo,
+                      ),
                     ),
-                  ),
-                if (widget.onEditAnalysis != null)
-                  IconButton(
-                    key: ValueKey('timeline_edit_analysis_${track.id}'),
-                    tooltip: 'Edit analysis for ${track.title}',
-                    icon: const Icon(Icons.speed),
-                    iconSize: 20,
-                    constraints:
-                        const BoxConstraints.tightFor(width: 36, height: 36),
-                    padding: EdgeInsets.zero,
-                    onPressed: () => widget.onEditAnalysis!(
-                      track,
-                      initialFirstDownbeatMs:
-                          _analysisAnchorForLane(lane, playheadMs),
+                  if (widget.onEditAnalysis != null)
+                    IconButton(
+                      key: ValueKey('timeline_edit_analysis_${track.id}'),
+                      tooltip: 'Edit analysis for ${track.title}',
+                      icon: const Icon(Icons.speed),
+                      iconSize: 20,
+                      constraints:
+                          const BoxConstraints.tightFor(width: 36, height: 36),
+                      padding: EdgeInsets.zero,
+                      onPressed: () => widget.onEditAnalysis!(
+                        track,
+                        initialFirstDownbeatMs:
+                            _analysisAnchorForLane(lane, playheadMs),
+                      ),
                     ),
-                  ),
-                if (movable)
-                  IconButton(
-                    key: ValueKey('timeline_move_earlier_${track.id}'),
-                    tooltip: 'Move ${track.title} earlier',
-                    icon: const Icon(Icons.keyboard_arrow_up),
-                    iconSize: 20,
-                    constraints:
-                        const BoxConstraints.tightFor(width: 36, height: 36),
-                    padding: EdgeInsets.zero,
-                    onPressed: widget.onMoveEarlier == null
-                        ? null
-                        : () => widget.onMoveEarlier!(track),
-                  ),
-                if (movable)
-                  IconButton(
-                    key: ValueKey('timeline_move_later_${track.id}'),
-                    tooltip: 'Move ${track.title} later',
-                    icon: const Icon(Icons.keyboard_arrow_down),
-                    iconSize: 20,
-                    constraints:
-                        const BoxConstraints.tightFor(width: 36, height: 36),
-                    padding: EdgeInsets.zero,
-                    onPressed: widget.onMoveLater == null
-                        ? null
-                        : () => widget.onMoveLater!(track),
-                  ),
-              ],
+                  if (movable)
+                    IconButton(
+                      key: ValueKey('timeline_move_earlier_${track.id}'),
+                      tooltip: 'Move ${track.title} earlier',
+                      icon: const Icon(Icons.keyboard_arrow_up),
+                      iconSize: 20,
+                      constraints:
+                          const BoxConstraints.tightFor(width: 36, height: 36),
+                      padding: EdgeInsets.zero,
+                      onPressed: widget.onMoveEarlier == null
+                          ? null
+                          : () => widget.onMoveEarlier!(track),
+                    ),
+                  if (movable)
+                    IconButton(
+                      key: ValueKey('timeline_move_later_${track.id}'),
+                      tooltip: 'Move ${track.title} later',
+                      icon: const Icon(Icons.keyboard_arrow_down),
+                      iconSize: 20,
+                      constraints:
+                          const BoxConstraints.tightFor(width: 36, height: 36),
+                      padding: EdgeInsets.zero,
+                      onPressed: widget.onMoveLater == null
+                          ? null
+                          : () => widget.onMoveLater!(track),
+                    ),
+                ],
+              ),
             ),
-            if (transitionHint != null) transitionHint,
           ],
         ),
-      ),
+        if (transitionHint != null)
+          IgnorePointer(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: transitionHint,
+            ),
+          ),
+      ],
     );
   }
 
@@ -1917,6 +1959,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             if (!mounted) return;
             setState(() => _snapMode = mode);
             setSheetState(() {});
+            widget.onTransitionSnapModeChanged?.call(mode.beatSnapMode);
           }
 
           return SafeArea(

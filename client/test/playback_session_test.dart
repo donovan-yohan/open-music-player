@@ -306,6 +306,42 @@ void main() {
       );
     });
 
+    test('session persists beat lock and reflows automatic transitions', () {
+      final queue = [
+        _item(
+          'a',
+          seconds: 30,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: List<int>.generate(16, (index) => index * 2000),
+          ),
+        ),
+        _item(
+          'b',
+          seconds: 30,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: List<int>.generate(16, (index) => index * 2000),
+          ),
+        ),
+      ];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_snap',
+        queue: queue,
+      );
+
+      expect(session.transitionSnapMode, BeatSnapMode.downbeat);
+      expect(session.clips[1].timelineStartMs, 22000);
+
+      final phraseLocked = session.withTransitionSnapMode(BeatSnapMode.beat16);
+      expect(phraseLocked.transitionSnapMode, BeatSnapMode.beat16);
+      expect(phraseLocked.clips[1].timelineStartMs, 24000);
+
+      final restored = MixSession.fromJson(phraseLocked.toJson());
+      expect(restored.transitionSnapMode, BeatSnapMode.beat16);
+      expect(restored.clips[1].timelineStartMs, 24000);
+    });
+
     test('session json carries BPM, key, and downbeat metadata', () {
       final session = MixSession.fromQueue(
         sessionId: 'session_11',

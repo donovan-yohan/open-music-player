@@ -119,11 +119,21 @@ void main() {
         final states = <audio_service.PlaybackState>[];
         final stateSub = handler.playbackState.listen(states.add);
         await Future<void>.delayed(Duration.zero);
+        final incoming = harness.engine.model.clips[1];
+        final expectedSpeed = incoming.playbackRateAt(7500);
+        final expectedPosition =
+            incoming.sourcePositionAt(7500) - incoming.placement.sourceStartMs;
 
         expect(harness.playback.currentItem?.id, '2');
-        expect(harness.playback.snapshot.playbackSpeed, closeTo(0.9, 0.0001));
-        expect(states.last.speed, closeTo(0.9, 0.0001));
-        expect(states.last.updatePosition.inMilliseconds, closeTo(2125, 1));
+        expect(
+          harness.playback.snapshot.playbackSpeed,
+          closeTo(expectedSpeed, 0.0001),
+        );
+        expect(states.last.speed, closeTo(expectedSpeed, 0.0001));
+        expect(
+          states.last.updatePosition.inMilliseconds,
+          closeTo(expectedPosition, 1),
+        );
         expect(states.last.queueIndex, 1);
 
         await stateSub.cancel();

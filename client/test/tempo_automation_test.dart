@@ -60,9 +60,21 @@ void main() {
       )!;
 
       expect(plan.outgoingSegment.startRate, closeTo(0.9, 0.0001));
-      expect(plan.outgoingSegment.endRate, closeTo(0.675, 0.0001));
-      expect(plan.incomingSegment.startRate, closeTo(1.4667, 0.0001));
+      expect(plan.outgoingSegment.endRate, closeTo(0.825, 0.0001));
+      expect(plan.incomingSegment.startRate, closeTo(1.2, 0.0001));
       expect(plan.incomingSegment.endRate, closeTo(1.1, 0.0001));
+
+      for (final ms in [0, 1000, 2000, 3000, 4000]) {
+        final outgoingEffectiveBpm =
+            outgoing.nativeBpm! * plan.outgoingSegment.rateAt(ms);
+        final incomingEffectiveBpm =
+            incoming.nativeBpm! * plan.incomingSegment.rateAt(ms);
+        expect(
+          incomingEffectiveBpm,
+          closeTo(outgoingEffectiveBpm, 0.0001),
+          reason: 'base speed must not break shared BPM at $ms ms',
+        );
+      }
     });
 
     test('falls back when BPM is missing, low confidence, or overlap is empty',
@@ -130,6 +142,21 @@ void main() {
           incomingTempo: incoming,
         ),
         isFalse,
+      );
+    });
+
+    test('keeps pitch stable while tempo changes in key-lock mode', () {
+      expect(
+        pitchFactorForRate(rate: 1.25, pitchMode: pitchModePreserve),
+        1,
+      );
+      expect(
+        pitchFactorForRate(rate: 0.8, pitchMode: pitchModePreserve),
+        1,
+      );
+      expect(
+        pitchFactorForRate(rate: 1.25, pitchMode: pitchModeFollowTempo),
+        1.25,
       );
     });
   });
@@ -216,6 +243,58 @@ void main() {
 
       expect(start, 11500);
       expect(start + incomingOffset.downbeatsMs.first, 12000);
+    });
+
+    test('uses the selected 1, 4, or 16 beat lock grid', () {
+      final outgoing = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        beatsMs: List<int>.generate(41, (index) => index * 500),
+        downbeatsMs: List<int>.generate(11, (index) => index * 2000),
+      );
+      final incoming = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        beatsMs: List<int>.generate(41, (index) => 100 + index * 500),
+        downbeatsMs: List<int>.generate(11, (index) => 100 + index * 2000),
+      );
+
+      int? snap(BeatSnapMode mode) => snapIncomingStartToNearestDownbeat(
+            requestedStartMs: 10900,
+            incomingSourceStartMs: 0,
+            incomingTempo: incoming,
+            outgoingTimelineStartMs: 0,
+            outgoingSourceStartMs: 0,
+            outgoingTempo: outgoing,
+            snapMode: mode,
+            toleranceMs: 6000,
+          );
+
+      expect(snap(BeatSnapMode.beat1), 10900);
+      expect(snap(BeatSnapMode.beat4), 9900);
+      expect(snap(BeatSnapMode.beat16), 7900);
+      expect(snap(BeatSnapMode.free), isNull);
+    });
+
+    test('maps outgoing beat phase through its existing playback rate', () {
+      const tempo = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        downbeatsMs: [0, 4000, 8000],
+      );
+
+      final start = snapIncomingStartToNearestDownbeat(
+        requestedStartMs: 2000,
+        incomingSourceStartMs: 0,
+        incomingTempo: tempo,
+        outgoingTimelineStartMs: 0,
+        outgoingSourceStartMs: 0,
+        outgoingTempo: tempo,
+        outgoingBaseRate: 2,
+        toleranceMs: 10,
+      );
+
+      expect(start, 2000);
     });
 
     test('uses tempo-matched rate for offset incoming downbeat alignment', () {

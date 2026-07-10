@@ -365,6 +365,45 @@ void main() {
       await harness.dispose();
     });
 
+    test('transition beat-lock selection rebuilds canonical queue timing',
+        () async {
+      final harness = _Harness();
+      final downbeats = List<int>.generate(16, (index) => index * 2000);
+      await harness.controller.setQueue([
+        _item(
+          '1',
+          seconds: 30,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: downbeats,
+          ),
+        ),
+        _item(
+          '2',
+          seconds: 30,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: downbeats,
+          ),
+        ),
+      ]);
+
+      expect(harness.controller.transitionSnapMode, BeatSnapMode.downbeat);
+      expect(
+          harness.controller.timelineClipForIndex(1)?.timelineStartMs, 22000);
+
+      await harness.controller.setTransitionSnapMode(BeatSnapMode.beat16);
+
+      expect(harness.controller.transitionSnapMode, BeatSnapMode.beat16);
+      expect(
+          harness.controller.session.transitionSnapMode, BeatSnapMode.beat16);
+      expect(
+          harness.controller.timelineClipForIndex(1)?.timelineStartMs, 24000);
+      expect(harness.engine.model.overlapDepthAt(27000), 2);
+
+      await harness.dispose();
+    });
+
     test('default transitions align offset downbeats at BPM-matched start rate',
         () async {
       final harness = _Harness();
@@ -519,29 +558,34 @@ void main() {
             .toSet()
             .containsAll([outgoing.id, incoming.id]),
       );
+      final expectedIncomingSpeed = incoming.playbackRateAt(7500);
+      final expectedLocalPosition =
+          incoming.sourcePositionAt(7500) - incoming.placement.sourceStartMs;
+      final expectedSharedBpm =
+          incoming.tempo.nativeBpm! * expectedIncomingSpeed;
 
       expect(harness.controller.currentIndex, 1);
       expect(
         harness.controller.snapshot.playbackSpeed,
-        closeTo(0.9, 0.0001),
+        closeTo(expectedIncomingSpeed, 0.0001),
       );
       expect(
         harness.controller.snapshot.localPosition.inMilliseconds,
-        closeTo(2125, 1),
+        closeTo(expectedLocalPosition, 1),
       );
       final tempoStates = harness.controller.snapshot.clipTempoStates;
       expect(tempoStates.keys, containsAll([outgoing.id, incoming.id]));
       expect(
         tempoStates[outgoing.id]?.effectiveBpm,
-        closeTo(112.5, 0.0001),
+        closeTo(expectedSharedBpm, 0.0001),
       );
       expect(
         tempoStates[incoming.id]?.effectiveBpm,
-        closeTo(112.5, 0.0001),
+        closeTo(expectedSharedBpm, 0.0001),
       );
       expect(
         tempoStates[incoming.id]?.effectiveSpeed,
-        closeTo(0.9, 0.0001),
+        closeTo(expectedIncomingSpeed, 0.0001),
       );
 
       final probeMs = outgoing.timelineEndMs + 50;

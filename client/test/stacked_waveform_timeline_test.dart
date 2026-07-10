@@ -83,6 +83,8 @@ Future<void> _pump(
   ValueChanged<Track>? onMoveLater,
   TimelineAnalysisEditCallback? onEditAnalysis,
   TimelinePitchModeChangedCallback? onPitchModeChanged,
+  BeatSnapMode transitionSnapMode = BeatSnapMode.downbeat,
+  ValueChanged<BeatSnapMode>? onTransitionSnapModeChanged,
   TimelineWaveformData Function(Track, int)? waveformFor,
   TimelineClip Function(Track, TimelineClip)? clipFor,
   TimelineModel? timelineModel,
@@ -129,6 +131,8 @@ Future<void> _pump(
           onMoveLater: onMoveLater,
           onEditAnalysis: onEditAnalysis,
           onPitchModeChanged: onPitchModeChanged,
+          transitionSnapMode: transitionSnapMode,
+          onTransitionSnapModeChanged: onTransitionSnapModeChanged,
         ),
       ),
     ),
@@ -1285,11 +1289,14 @@ void main() {
   testWidgets('floating options panel controls snap marker mode', (
     tester,
   ) async {
+    final changes = <BeatSnapMode>[];
     await _pump(
       tester,
       previous: null,
       current: _track('t1', 'Midnight Drive', 214),
       upcoming: [_track('t2', 'Paper Planes', 188)],
+      transitionSnapMode: BeatSnapMode.beat1,
+      onTransitionSnapModeChanged: changes.add,
     );
 
     expect(find.byKey(const ValueKey('timeline_options_fab')), findsOneWidget);
@@ -1313,6 +1320,7 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('timeline_snap_beat16')));
     await tester.pumpAndSettle();
+    expect(changes, [BeatSnapMode.beat16]);
     expect(find.textContaining('16 beats'), findsWidgets);
     expect(
       find.byKey(const ValueKey('timeline_options_zoom_in')),
@@ -1762,6 +1770,53 @@ void main() {
     expect(
       find.byKey(const ValueKey('timeline_trim_start_t1')),
       findsOneWidget,
+    );
+  });
+
+  testWidgets('selected metadata overlay passes drags through to waveform',
+      (tester) async {
+    final starts = <int>[];
+    final current = _analyzedTrack('t1', 'Midnight Drive', 240);
+    final upcoming = _analyzedTrack('t2', 'Paper Planes', 240);
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [upcoming],
+      onTimelineStartChanged: (track, ms) {
+        if (track.id == 't2') starts.add(ms);
+      },
+      onPitchModeChanged: (_, __) {},
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onMoveEarlier: (_) {},
+      onMoveLater: (_) {},
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: TimelineModel(
+        clips: [
+          _mixClip('t1', 0, 240000),
+          _mixClip('t2', 0, 240000),
+        ],
+      ),
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+
+    final chip = find.byKey(const ValueKey('timeline_tempo_t2'));
+    expect(chip, findsOneWidget);
+    final chipRect = tester.getRect(chip);
+    final clipRect = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    final dragSurface = chipRect.intersect(clipRect);
+    expect(dragSurface.isEmpty, isFalse);
+    await tester.dragFrom(dragSurface.center, const Offset(100, 0));
+    await tester.pumpAndSettle();
+
+    expect(
+      starts,
+      isNotEmpty,
+      reason: 'non-button metadata must not consume waveform drag gestures',
     );
   });
 

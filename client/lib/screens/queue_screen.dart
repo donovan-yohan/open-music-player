@@ -371,6 +371,7 @@ class _QueueScreenState extends State<QueueScreen> {
       timelineModel: playback.timelineModel,
       pitchFallbackClipIds: playback.snapshot.pitchFallbackClipIds,
       clipTempoStates: playback.snapshot.clipTempoStates,
+      transitionSnapMode: playback.transitionSnapMode,
       playheadPositionMs: playback.timelinePositionMs,
       positionMsStream: playback.timelinePositionMsStream,
       onScrubStart: playback.beginTimelineScrub,
@@ -382,7 +383,7 @@ class _QueueScreenState extends State<QueueScreen> {
           () => playback.setQueueTimelineStartMs(
             _playbackQueueIndex(track),
             ms,
-            snapToDownbeat: false,
+            snapToDownbeat: true,
           ),
         );
       },
@@ -404,6 +405,12 @@ class _QueueScreenState extends State<QueueScreen> {
         _playbackQueueIndex(track),
         pitchMode,
       ),
+      onTransitionSnapModeChanged: (mode) {
+        _pauseThenEditTimeline(
+          playback,
+          () => playback.setTransitionSnapMode(mode),
+        );
+      },
       onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
           _showAnalysisCorrectionSheet(
         context,

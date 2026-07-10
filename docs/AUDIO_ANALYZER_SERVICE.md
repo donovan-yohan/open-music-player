@@ -174,12 +174,23 @@ corrected summary immediately.
 The timeline model uses reliable BPM metadata to automate playback speed during
 overlaps. The outgoing clip ramps from its native BPM toward the incoming BPM,
 while the incoming clip starts at the outgoing BPM and ramps back to its native
-BPM across the crossfade.
+BPM across the crossfade. Both rates are projections of one shared target-BPM
+curve, so their effective BPM must be equal at every point in the overlap, not
+only at the start or midpoint. If either clip already has a non-1.0 base rate,
+the curve runs from the outgoing clip's effective BPM to the incoming clip's
+effective BPM; it does not multiply the shared target independently per deck.
+The client solves the transition end against the outgoing clip's
+rate-adjusted source duration. Auto-managed gain fades use that same solved
+window, so the outgoing deck reaches zero gain exactly when both tempo ramps
+reach the incoming target BPM instead of ending early or leaving a silent tail.
 
 Playback voices apply speed and pitch together:
 
 - `pitchMode: preserve` is the default key-lock mode. It keeps the just_audio
-  pitch factor at `1.0` while speed changes for BPM matching.
+  pitch factor at `1.0` while speed changes for BPM matching. On Android,
+  just_audio/ExoPlayer treats speed and pitch as independent playback
+  parameters, so `1.0` is the compensating key-lock value rather than an
+  uncorrected resample.
 - `pitchMode: followTempo` is available for vinyl/resample-style behavior. It
   sets the pitch factor to the effective playback rate.
 
@@ -191,7 +202,9 @@ path.
 The voice pool caches the last applied speed/pitch pair for each deck and does
 not resend unchanged tuning on steady gain/sync ticks. BPM ramps still update
 when the effective rate changes, but a stable rate should not churn the audio
-backend.
+backend. Active-deck tuning frames are coalesced and applied concurrently; a
+slow platform call on one deck must not serialize the peer deck's BPM update or
+resume.
 
 ## Key and Camelot analysis
 
@@ -214,6 +227,11 @@ automation above runs.
 Manual timeline edits still use the same downbeat snap math, and freeform timing
 remains available because persisted placements are preserved unless queue
 insert/remove/reorder needs to reflow downstream defaults.
+
+The canonical playback session stores the selected transition snap mode. The
+timeline's Free, Downbeat, 1 beat, 4 beats, and 16 beats options therefore drive
+the same queue timing model used by playback and survive queue snapshot restore;
+they are not widget-only display state.
 
 ## Transition diagnostics
 
