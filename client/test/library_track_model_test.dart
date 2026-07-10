@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/shared/models/track.dart';
 
@@ -27,5 +29,36 @@ void main() {
     expect(track.analysis?.summary?.bpm?.numericValue, 128);
     expect(track.analysis?.summary?.key?.textValue, 'Am');
     expect(track.analysis?.summary?.camelot?.textValue, '8A');
+  });
+
+  test('offline DB map retains compact analysis metadata', () {
+    final track = Track.fromLibraryJson({
+      'id': 9,
+      'title': 'Offline analysis',
+      'artist': 'Local Artist',
+      'duration_ms': 180000,
+      'added_at': '2026-06-26T04:40:00Z',
+      'analysis_status': 'analyzed',
+      'analysis_summary': {
+        'bpm': {'value': 128},
+        'key': {'value': 'Am'},
+        'camelot': {'value': '8A'},
+        'waveform': {
+          'sample_count': 4,
+          'peaks': [0.1, 0.9],
+        },
+      },
+    });
+
+    final dbMap = track.toDbMap();
+    final storedSummary =
+        jsonDecode(dbMap['analysis_summary'] as String) as Map<String, dynamic>;
+    final restored = Track.fromDbMap(dbMap);
+
+    expect(storedSummary, isNot(contains('waveform')));
+    expect(restored.analysis?.status.name, 'analyzed');
+    expect(restored.analysis?.summary?.bpm?.numericValue, 128);
+    expect(restored.analysis?.summary?.key?.textValue, 'Am');
+    expect(restored.analysis?.summary?.camelot?.textValue, '8A');
   });
 }

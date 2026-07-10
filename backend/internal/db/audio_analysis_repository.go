@@ -22,6 +22,15 @@ const (
 // List and queue responses need beat-lock metadata immediately, but full
 // multi-resolution waveforms belong on the per-track analysis endpoint. Keeping
 // those arrays out of collection responses avoids multi-megabyte payloads.
+const analysisCompactOverridesExpression = `jsonb_strip_nulls(jsonb_build_object(
+	'bpm', ta.overrides_json->'bpm',
+	'beat_grid', ta.overrides_json->'beat_grid',
+	'downbeats', ta.overrides_json->'downbeats',
+	'key', ta.overrides_json->'key',
+	'camelot', ta.overrides_json->'camelot',
+	'energy', ta.overrides_json->'energy'
+))`
+
 const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NULL ELSE (jsonb_strip_nulls(jsonb_build_object(
 	'bpm', ta.summary_json->'bpm',
 	'beat_grid', ta.summary_json->'beat_grid',
@@ -29,7 +38,7 @@ const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NUL
 	'key', ta.summary_json->'key',
 	'camelot', ta.summary_json->'camelot',
 	'energy', ta.summary_json->'energy'
-)) || COALESCE(ta.overrides_json, '{}'::jsonb)) END`
+)) || ` + analysisCompactOverridesExpression + `) END`
 
 var ErrTrackAnalysisNotFound = errors.New("track analysis not found")
 
@@ -348,7 +357,8 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 		return result, nil
 	}
 	query := `
-		SELECT track_id, status, ` + analysisCompactSummaryExpression + ` AS summary_json, overrides_json
+		SELECT track_id, status, ` + analysisCompactSummaryExpression + ` AS summary_json,
+		       ` + analysisCompactOverridesExpression + ` AS overrides_json
 		FROM track_analysis
 		AS ta
 		WHERE track_id = ANY($1)

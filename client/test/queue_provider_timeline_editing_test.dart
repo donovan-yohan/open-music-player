@@ -199,6 +199,165 @@ void main() {
         greaterThan(provider.waveformFor(enriched, 512).frames.first.high));
   });
 
+  test('analyzed compact update replaces cached pending analysis', () async {
+    final firstResponse = Completer<void>();
+    final secondResponse = Completer<void>();
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        analysisRequests++;
+        if (analysisRequests == 1) {
+          return http.Response(
+            jsonEncode({'status': 'pending'}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'bpm': {'value': 128},
+              'waveform': {
+                'sample_count': 4,
+                'peaks': [0.1, 0.4, 0.9, 0.2],
+              },
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    provider.addListener(() {
+      if (analysisRequests == 1 && !firstResponse.isCompleted) {
+        firstResponse.complete();
+      } else if (analysisRequests == 2 && !secondResponse.isCompleted) {
+        secondResponse.complete();
+      }
+    });
+
+    final pending = _track(
+      playbackTrackId: '42',
+      analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+    );
+    provider.trackWithAnalysis(pending);
+    await firstResponse.future.timeout(const Duration(seconds: 1));
+
+    final analyzed = _track(
+      playbackTrackId: '42',
+      analysis: _tempoAnalysis(bpm: 128),
+    );
+    expect(
+      provider.trackWithAnalysis(analyzed).analysis?.summary?.bpm?.numericValue,
+      128,
+    );
+    await secondResponse.future.timeout(const Duration(seconds: 1));
+
+    final hydrated = provider.trackWithAnalysis(analyzed);
+    expect(analysisRequests, 2);
+    expect(hydrated.analysis?.status, TrackAnalysisStatus.analyzed);
+    expect(hydrated.analysis?.summary?.bpm?.numericValue, 128);
+    expect(hydrated.analysis?.summary?.waveform?.peaks, isNotEmpty);
+  });
+
+  test('pending analysis retries after the hydration cooldown', () async {
+    final firstResponse = Completer<void>();
+    final secondResponse = Completer<void>();
+    var now = DateTime.utc(2026, 7, 10);
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        analysisRequests++;
+        return http.Response(
+          jsonEncode({'status': 'pending'}),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+      analysisClock: () => now,
+    );
+    provider.addListener(() {
+      if (analysisRequests == 1 && !firstResponse.isCompleted) {
+        firstResponse.complete();
+      } else if (analysisRequests == 2 && !secondResponse.isCompleted) {
+        secondResponse.complete();
+      }
+    });
+    final pending = _track(
+      playbackTrackId: '42',
+      analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+    );
+
+    provider.trackWithAnalysis(pending);
+    await firstResponse.future.timeout(const Duration(seconds: 1));
+    provider.trackWithAnalysis(pending);
+    expect(analysisRequests, 1);
+
+    now = now.add(const Duration(seconds: 16));
+    provider.trackWithAnalysis(pending);
+    await secondResponse.future.timeout(const Duration(seconds: 1));
+    expect(analysisRequests, 2);
+  });
+
+  test('new compact override merges into cached detailed analysis', () async {
+    final firstResponse = Completer<void>();
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        analysisRequests++;
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'bpm': {'value': 120},
+              'waveform': {
+                'sample_count': 4,
+                'peaks': [0.1, 0.4, 0.9, 0.2],
+              },
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    provider.addListener(() {
+      if (analysisRequests == 1 && !firstResponse.isCompleted) {
+        firstResponse.complete();
+      }
+    });
+
+    final original = _track(
+      playbackTrackId: '42',
+      analysis: _tempoAnalysis(),
+    );
+    provider.trackWithAnalysis(original);
+    await firstResponse.future.timeout(const Duration(seconds: 1));
+    expect(
+      provider.trackWithAnalysis(original).analysis?.summary?.bpm?.numericValue,
+      120,
+    );
+
+    final corrected = _track(
+      playbackTrackId: '42',
+      analysis: _tempoAnalysis(bpm: 128),
+    );
+    final refreshed = provider.trackWithAnalysis(corrected);
+    expect(analysisRequests, 1);
+    expect(refreshed.analysis?.summary?.bpm?.numericValue, 128);
+    expect(refreshed.analysis?.summary?.waveform?.peaks, isNotEmpty);
+  });
+
   test('analysis override updates patch backend and refresh timeline markers',
       () async {
     final originalAnalysis = TrackAnalysis.fromJson(

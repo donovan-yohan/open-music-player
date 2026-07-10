@@ -15,8 +15,10 @@ import '../core/engine/timeline_model.dart';
 
 class QueueProvider extends ChangeNotifier {
   static const String queueTimingMixPlanName = 'Queue timing';
+  static const Duration _analysisRetryCooldown = Duration(seconds: 15);
 
   final ApiClient _apiClient;
+  final DateTime Function() _analysisClock;
   QueueState _queue = QueueState.empty();
   bool _isLoading = false;
   String? _error;
@@ -34,9 +36,12 @@ class QueueProvider extends ChangeNotifier {
   final Map<String, List<double>> _waveformPeaks = {};
   final Map<String, Map<int, TimelineWaveformData>> _timelineWaveforms = {};
   final Map<String, TrackAnalysis> _analysisByTrackId = {};
+  final Map<String, int> _appliedCompactAnalysisSignatures = {};
   final Set<String> _analysisRequestsInFlight = {};
+  final Map<String, DateTime> _analysisLastRequestedAt = {};
 
-  QueueProvider(this._apiClient);
+  QueueProvider(this._apiClient, {DateTime Function()? analysisClock})
+      : _analysisClock = analysisClock ?? DateTime.now;
 
   QueueState get queue => _queue;
   bool get isLoading => _isLoading;
@@ -132,24 +137,52 @@ class QueueProvider extends ChangeNotifier {
     }
 
     final key = trackId.toString();
-    final cached = _analysisByTrackId[key];
-    if (cached != null) {
-      return identical(cached, track.analysis)
-          ? track
-          : track.copyWith(analysis: cached);
-    }
+    final incoming = track.analysis;
+    final incomingSignature =
+        incoming == null ? null : _analysisCompactSignature(incoming);
+    var cached = _analysisByTrackId[key];
 
-    if (track.analysis != null) {
-      if (_hasWaveformDetail(track.analysis!)) {
-        _analysisByTrackId[key] = track.analysis!;
-      } else {
-        _fetchAnalysisIfNeeded(trackId);
+    if (incoming != null && _hasWaveformDetail(incoming)) {
+      if (!identical(cached, incoming)) {
+        _analysisByTrackId[key] = incoming;
+        _appliedCompactAnalysisSignatures[key] = incomingSignature!;
+        _analysisLastRequestedAt.remove(key);
+        _invalidateAnalysisCache(key);
       }
       return track;
     }
 
+    if (incoming != null) {
+      if (cached == null) {
+        _analysisByTrackId[key] = incoming;
+        _appliedCompactAnalysisSignatures[key] = incomingSignature!;
+        cached = incoming;
+      } else if (cached.status != incoming.status) {
+        _analysisByTrackId[key] = incoming;
+        _appliedCompactAnalysisSignatures[key] = incomingSignature!;
+        _analysisLastRequestedAt.remove(key);
+        _invalidateAnalysisCache(key);
+        cached = incoming;
+      } else if (_hasWaveformDetail(cached)) {
+        if (_appliedCompactAnalysisSignatures[key] != incomingSignature) {
+          final merged = _mergeDetailedAnalysis(cached, incoming);
+          _invalidateAnalysisCache(key);
+          _analysisByTrackId[key] = merged;
+          _appliedCompactAnalysisSignatures[key] = incomingSignature!;
+          cached = merged;
+        }
+      } else if (_appliedCompactAnalysisSignatures[key] != incomingSignature) {
+        _analysisByTrackId[key] = incoming;
+        _appliedCompactAnalysisSignatures[key] = incomingSignature!;
+        _analysisLastRequestedAt.remove(key);
+        _invalidateAnalysisCache(key);
+        cached = incoming;
+      }
+    }
+
     _fetchAnalysisIfNeeded(trackId);
-    return track;
+    if (cached == null || identical(cached, incoming)) return track;
+    return track.copyWith(analysis: cached);
   }
 
   Future<TrackAnalysis> updateAnalysisOverrides(
@@ -167,6 +200,9 @@ class QueueProvider extends ChangeNotifier {
     );
     final key = trackId.toString();
     _analysisByTrackId[key] = analysis;
+    _appliedCompactAnalysisSignatures[key] =
+        _analysisCompactSignature(analysis);
+    _analysisLastRequestedAt.remove(key);
     _invalidateAnalysisCache(key);
     _queue = QueueState(
       tracks: [
@@ -835,8 +871,45 @@ class QueueProvider extends ChangeNotifier {
     final analysis = track.analysis;
     final trackId = _analysisTrackId(track);
     if (analysis == null || trackId == null) return;
+    final key = trackId.toString();
+    final signature = _analysisCompactSignature(analysis);
+    final cached = _analysisByTrackId[key];
     if (_hasWaveformDetail(analysis)) {
-      _analysisByTrackId[trackId.toString()] = analysis;
+      if (!identical(cached, analysis)) {
+        _analysisByTrackId[key] = analysis;
+        _appliedCompactAnalysisSignatures[key] = signature;
+        _analysisLastRequestedAt.remove(key);
+        _invalidateAnalysisCache(key);
+      }
+      return;
+    }
+
+    if (cached == null) {
+      _analysisByTrackId[key] = analysis;
+      _appliedCompactAnalysisSignatures[key] = signature;
+      return;
+    }
+    if (cached.status != analysis.status) {
+      _analysisByTrackId[key] = analysis;
+      _appliedCompactAnalysisSignatures[key] = signature;
+      _analysisLastRequestedAt.remove(key);
+      _invalidateAnalysisCache(key);
+      return;
+    }
+    if (_hasWaveformDetail(cached)) {
+      if (_appliedCompactAnalysisSignatures[key] != signature) {
+        final merged = _mergeDetailedAnalysis(cached, analysis);
+        _invalidateAnalysisCache(key);
+        _analysisByTrackId[key] = merged;
+        _appliedCompactAnalysisSignatures[key] = signature;
+      }
+      return;
+    }
+    if (_appliedCompactAnalysisSignatures[key] != signature) {
+      _analysisByTrackId[key] = analysis;
+      _appliedCompactAnalysisSignatures[key] = signature;
+      _analysisLastRequestedAt.remove(key);
+      _invalidateAnalysisCache(key);
     }
   }
 
@@ -851,17 +924,45 @@ class QueueProvider extends ChangeNotifier {
 
   void _fetchAnalysisIfNeeded(int trackId) {
     final key = trackId.toString();
-    if (_analysisByTrackId.containsKey(key) ||
-        _analysisRequestsInFlight.contains(key)) {
+    if (_analysisRequestsInFlight.contains(key)) {
+      return;
+    }
+    final cached = _analysisByTrackId[key];
+    if (cached != null) {
+      if (_hasWaveformDetail(cached) &&
+          cached.status == TrackAnalysisStatus.analyzed) {
+        return;
+      }
+      if (cached.status == TrackAnalysisStatus.failed ||
+          cached.status == TrackAnalysisStatus.unsupported) {
+        return;
+      }
+    }
+
+    final now = _analysisClock();
+    final lastRequestedAt = _analysisLastRequestedAt[key];
+    if (lastRequestedAt != null &&
+        now.difference(lastRequestedAt) < _analysisRetryCooldown) {
       return;
     }
 
+    _analysisLastRequestedAt[key] = now;
     _analysisRequestsInFlight.add(key);
     unawaited(() async {
       try {
         final analysis = await _apiClient.getTrackAnalysis(trackId);
         if (_disposed) return;
         _analysisByTrackId[key] = analysis;
+        if (_hasWaveformDetail(analysis)) {
+          _appliedCompactAnalysisSignatures.remove(key);
+        } else {
+          _appliedCompactAnalysisSignatures[key] =
+              _analysisCompactSignature(analysis);
+        }
+        if (_hasWaveformDetail(analysis) &&
+            analysis.status == TrackAnalysisStatus.analyzed) {
+          _analysisLastRequestedAt.remove(key);
+        }
         _invalidateAnalysisCache(key);
         _notifyListeners();
       } catch (_) {
@@ -872,6 +973,54 @@ class QueueProvider extends ChangeNotifier {
       }
     }());
   }
+
+  TrackAnalysis _mergeDetailedAnalysis(
+    TrackAnalysis detailed,
+    TrackAnalysis incoming,
+  ) {
+    final summary = <String, dynamic>{
+      ...?detailed.summary?.toJson(),
+      ...?incoming.summary?.toJson(),
+    };
+    return TrackAnalysis.fromJson(
+      status: incoming.status.name,
+      summary: summary.isEmpty ? null : summary,
+      overrides: incoming.overrides?.toJson(),
+    );
+  }
+
+  int _analysisCompactSignature(TrackAnalysis analysis) {
+    final summary = analysis.summary;
+    final beatGrid = summary?.beatGrid;
+    final downbeats = summary?.downbeats;
+    return Object.hash(
+      analysis.status,
+      _analysisValueSignature(summary?.bpm),
+      beatGrid == null
+          ? null
+          : Object.hash(
+              beatGrid.bpm,
+              beatGrid.offsetMs,
+              beatGrid.confidence,
+              beatGrid.provenance,
+              Object.hashAll(beatGrid.beatsMs),
+            ),
+      downbeats == null
+          ? null
+          : Object.hash(
+              downbeats.confidence,
+              downbeats.provenance,
+              Object.hashAll(downbeats.positionsMs),
+            ),
+      _analysisValueSignature(summary?.key),
+      _analysisValueSignature(summary?.camelot),
+      _analysisValueSignature(summary?.energy),
+    );
+  }
+
+  int? _analysisValueSignature(AnalysisValue? value) => value == null
+      ? null
+      : Object.hash(value.value, value.confidence, value.provenance);
 
   int? _analysisTrackId(Track track) {
     for (final candidate in [track.playbackTrackId, track.id]) {

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import '../../models/track_analysis.dart';
 
 /// MusicBrainz match suggestion for unverified tracks
@@ -34,8 +36,7 @@ class MBSuggestion {
       albumMbid: json['album_mbid'] as String?,
       duration: json['duration'] as int?,
       confidence: (json['confidence'] as num).toDouble(),
-      matchReasons:
-          (json['match_reasons'] as List<dynamic>?)
+      matchReasons: (json['match_reasons'] as List<dynamic>?)
               ?.map((e) => e as String)
               .toList() ??
           [],
@@ -135,24 +136,23 @@ class Track {
   /// Serializes this library track into the map shape `PlaybackState.playQueue`
   /// expects: numeric `id` for signed-URL issuance, `duration` in whole seconds.
   Map<String, dynamic> toPlaybackJson() => {
-    'id': id,
-    'title': title,
-    'artist': artist,
-    'album': album,
-    'duration': durationMs != null ? durationMs! ~/ 1000 : 0,
-    'artwork_url': metadata?['cover_art_url'],
-    if (analysis != null) 'analysisStatus': analysis!.status.name,
-    if (analysis?.summary != null)
-      'analysisSummary': analysis!.summary!.toJson(),
-    if (analysis?.overrides != null)
-      'analysisOverrides': analysis!.overrides!.toJson(),
-  };
+        'id': id,
+        'title': title,
+        'artist': artist,
+        'album': album,
+        'duration': durationMs != null ? durationMs! ~/ 1000 : 0,
+        'artwork_url': metadata?['cover_art_url'],
+        if (analysis != null) 'analysisStatus': analysis!.status.name,
+        if (analysis?.summary != null)
+          'analysisSummary': analysis!.summary!.toJson(),
+        if (analysis?.overrides != null)
+          'analysisOverrides': analysis!.overrides!.toJson(),
+      };
 
   factory Track.fromJson(Map<String, dynamic> json) {
     // Parse MB suggestions from the mb_suggestions field
     final suggestionsJson = json['mb_suggestions'] as List<dynamic>?;
-    final suggestions =
-        suggestionsJson
+    final suggestions = suggestionsJson
             ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
             .toList() ??
         [];
@@ -163,14 +163,13 @@ class Track {
       id: id,
       identityHash:
           _optionalString(json['identityHash'] ?? json['identity_hash']) ??
-          'track-$id',
+              'track-$id',
       title: json['title'] as String,
       artist: json['artist'] as String?,
       album: json['album'] as String?,
       durationMs: _optionalInt(json['durationMs'] ?? json['duration_ms']),
       version: json['version'] as String?,
-      mbRecordingId:
-          json['mbRecordingId'] as String? ??
+      mbRecordingId: json['mbRecordingId'] as String? ??
           json['mb_recording_id'] as String?,
       mbReleaseId:
           json['mbReleaseId'] as String? ?? json['mb_release_id'] as String?,
@@ -217,8 +216,7 @@ class Track {
       storageKey: json['storage_key'] as String?,
       fileSizeBytes: json['file_size_bytes'] as int?,
       metadata: json['metadata_json'] as Map<String, dynamic>?,
-      mbSuggestions:
-          suggestionsJson
+      mbSuggestions: suggestionsJson
               ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
               .toList() ??
           [],
@@ -278,6 +276,13 @@ class Track {
       'source_type': sourceType,
       'storage_key': storageKey,
       'file_size_bytes': fileSizeBytes,
+      if (analysis != null) 'analysis_status': analysis!.status.name,
+      if (analysis?.summary != null)
+        'analysis_summary': jsonEncode(
+          _compactAnalysisSummaryJson(analysis!.summary!),
+        ),
+      if (analysis?.overrides != null)
+        'analysis_overrides': jsonEncode(analysis!.overrides!.toJson()),
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
     };
@@ -301,6 +306,11 @@ class Track {
       storageKey: map['storage_key'] as String?,
       fileSizeBytes: map['file_size_bytes'] as int?,
       metadata: null,
+      analysis: trackAnalysisFromTrackJson({
+        'analysis_status': map['analysis_status'],
+        'analysis_summary': _decodeJsonColumn(map['analysis_summary']),
+        'analysis_overrides': _decodeJsonColumn(map['analysis_overrides']),
+      }),
       createdAt: DateTime.parse(map['created_at'] as String),
       updatedAt: DateTime.parse(map['updated_at'] as String),
     );
@@ -411,4 +421,31 @@ DateTime _dateTimeValue(dynamic value) {
     if (parsed != null) return parsed;
   }
   return DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+}
+
+Object? _decodeJsonColumn(Object? value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is! String || value.trim().isEmpty) return null;
+  try {
+    return jsonDecode(value);
+  } on FormatException {
+    return null;
+  }
+}
+
+Map<String, dynamic> _compactAnalysisSummaryJson(
+  TrackAnalysisSummary summary,
+) {
+  final json = summary.toJson();
+  return {
+    for (final key in const [
+      'bpm',
+      'beat_grid',
+      'downbeats',
+      'key',
+      'camelot',
+      'energy',
+    ])
+      if (json[key] != null) key: json[key],
+  };
 }

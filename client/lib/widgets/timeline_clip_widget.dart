@@ -59,51 +59,99 @@ class TimelineLaneHeader extends StatelessWidget {
               _artwork(theme),
               const SizedBox(width: 8),
               Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        if (_active) ...[
-                          Icon(Icons.equalizer, size: 13, color: accent),
-                          const SizedBox(width: 3),
-                        ],
-                        Expanded(
-                          child: Text(
-                            track.title,
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              fontWeight:
-                                  _active ? FontWeight.bold : FontWeight.w600,
-                              color: muted ? theme.disabledColor : null,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                    LayoutBuilder(
-                      builder: (context, constraints) => Row(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final largeText = MediaQuery.textScalerOf(
+                          context,
+                        ).scale(1) >=
+                        1.5;
+                    if (largeText) {
+                      return Row(
                         children: [
+                          if (_active) ...[
+                            Icon(Icons.equalizer, size: 13, color: accent),
+                            const SizedBox(width: 3),
+                          ],
                           Expanded(
                             child: Text(
-                              track.artist ?? 'Unknown artist',
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: muted
-                                    ? theme.disabledColor
-                                    : theme.colorScheme.onSurfaceVariant,
+                              '${track.title} · ${track.artist ?? 'Unknown artist'}',
+                              style: theme.textTheme.labelMedium?.copyWith(
+                                fontWeight:
+                                    _active ? FontWeight.bold : FontWeight.w600,
+                                color: muted ? theme.disabledColor : null,
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
                           if (constraints.maxWidth >= 150)
-                            SongMetadataChips(analysis: track.analysis),
+                            Flexible(
+                              flex: 3,
+                              child: Align(
+                                alignment: Alignment.centerRight,
+                                child: SongMetadataChips(
+                                  analysis: track.analysis,
+                                ),
+                              ),
+                            ),
                         ],
-                      ),
-                    ),
-                  ],
+                      );
+                    }
+
+                    return Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            if (_active) ...[
+                              Icon(Icons.equalizer, size: 13, color: accent),
+                              const SizedBox(width: 3),
+                            ],
+                            Expanded(
+                              child: Text(
+                                track.title,
+                                style: theme.textTheme.labelMedium?.copyWith(
+                                  fontWeight: _active
+                                      ? FontWeight.bold
+                                      : FontWeight.w600,
+                                  color: muted ? theme.disabledColor : null,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                track.artist ?? 'Unknown artist',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: muted
+                                      ? theme.disabledColor
+                                      : theme.colorScheme.onSurfaceVariant,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (constraints.maxWidth >= 150)
+                              Flexible(
+                                flex: 2,
+                                child: Align(
+                                  alignment: Alignment.centerRight,
+                                  child: SongMetadataChips(
+                                    analysis: track.analysis,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ],
+                    );
+                  },
                 ),
               ),
             ],

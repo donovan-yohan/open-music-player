@@ -13,6 +13,7 @@ import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/models/waveform.dart';
 import 'package:open_music_player/widgets/stacked_waveform_timeline.dart';
+import 'package:open_music_player/widgets/timeline_clip_widget.dart';
 import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
 
 Track _track(
@@ -177,6 +178,41 @@ TimelineWaveformPainter _waveformPainter(WidgetTester tester, String trackId) {
 }
 
 void main() {
+  testWidgets('lane header constrains metadata chips at 2x text scale', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MediaQuery(
+          data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: 260,
+              child: TimelineLaneHeader(
+                track: _analyzedTrack(
+                  'large-text',
+                  'A long timeline title',
+                  180,
+                  bpm: 141.18,
+                  key: 'F-sharp minor',
+                  camelot: '11A',
+                ),
+                role: LaneRole.current,
+                statusLabel: 'Current',
+                accent: Colors.orange,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('141.2 BPM'), findsOneWidget);
+    expect(find.text('11A'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   group('musical snap grid', () {
     final clip = TimelineClip.clamped(
       id: 'clip_t1',

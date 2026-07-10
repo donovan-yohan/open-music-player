@@ -716,10 +716,16 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   Widget _buildTimelineView(BuildContext context, QueueProvider provider) {
-    final currentTrack = provider.currentTrack;
     final currentIndex = provider.queue.currentIndex;
-    final tracks = provider.queue.tracks;
-    final upNext = currentTrack != null ? provider.upNext : tracks;
+    final tracks = provider.queue.tracks
+        .map(provider.trackWithAnalysis)
+        .toList(growable: false);
+    final currentTrack = currentIndex >= 0 && currentIndex < tracks.length
+        ? tracks[currentIndex]
+        : null;
+    final upNext = currentTrack != null
+        ? tracks.skip(currentIndex + 1).toList(growable: false)
+        : tracks;
     final previousTrack = currentIndex > 0 ? tracks[currentIndex - 1] : null;
 
     if (currentTrack == null) {

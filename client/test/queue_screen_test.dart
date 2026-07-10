@@ -20,6 +20,7 @@ import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/screens/queue_screen.dart';
+import 'package:open_music_player/widgets/timeline_clip_widget.dart';
 
 void main() {
   late _FakeQueueApiClient apiClient;
@@ -239,6 +240,22 @@ void main() {
       findsOneWidget,
     );
     expect(find.byKey(const ValueKey('timeline_options_fab')), findsOneWidget);
+  });
+
+  testWidgets('server queue timeline hydrates compact waveform analysis', (
+    tester,
+  ) async {
+    apiClient.useCompactAnalysisFixture();
+
+    await pumpQueueScreen(tester);
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+
+    expect(apiClient.analysisRequests, containsAll(<int>[101, 202]));
+    final currentHeader = tester.widget<TimelineLaneHeader>(
+      find.byKey(const ValueKey('timeline_lane_header_t1')),
+    );
+    expect(currentHeader.track.analysis?.summary?.waveform?.peaks, isNotEmpty);
   });
 
   testWidgets(
@@ -1171,8 +1188,10 @@ class _FakeQueueApiClient extends ApiClient {
   final List<String> retriedQueueItemIds = [];
   final List<({int trackId, TrackAnalysisOverrides overrides})>
       analysisOverrideUpdates = [];
+  final List<int> analysisRequests = [];
   bool failLoads = false;
   bool deferLoad = false;
+  bool hydrateAnalysisFixture = false;
   Completer<QueueState>? _loadCompleter;
 
   void moveBeforePlaybackStarts() {
@@ -1342,6 +1361,47 @@ class _FakeQueueApiClient extends ApiClient {
     );
   }
 
+  void useCompactAnalysisFixture() {
+    hydrateAnalysisFixture = true;
+    TrackAnalysis compact(double bpm) => TrackAnalysis.fromJson(
+          status: 'analyzed',
+          summary: {
+            'bpm': {'value': bpm},
+            'beat_grid': {
+              'bpm': bpm,
+              'beats_ms': [0, 500, 1000],
+            },
+            'downbeats': {
+              'positions_ms': [0],
+            },
+          },
+        );
+
+    _state = QueueState(
+      tracks: [
+        Track(
+          id: 't1',
+          playbackTrackId: '101',
+          title: 'Compact Current',
+          artist: 'Queue Artist',
+          duration: 198,
+          addedAt: DateTime(2026),
+          analysis: compact(124),
+        ),
+        Track(
+          id: 't2',
+          playbackTrackId: '202',
+          title: 'Compact Next',
+          artist: 'Queue Artist',
+          duration: 215,
+          addedAt: DateTime(2026),
+          analysis: compact(128),
+        ),
+      ],
+      currentIndex: 0,
+    );
+  }
+
   void completeDeferredLoad() {
     _loadCompleter?.complete(_state);
   }
@@ -1356,6 +1416,33 @@ class _FakeQueueApiClient extends ApiClient {
       return _loadCompleter!.future;
     }
     return _state;
+  }
+
+  @override
+  Future<TrackAnalysis> getTrackAnalysis(int trackId) async {
+    if (!hydrateAnalysisFixture) {
+      throw ApiException('analysis fixture not configured', 404);
+    }
+    analysisRequests.add(trackId);
+    final bpm = trackId == 101 ? 124.0 : 128.0;
+    return TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: {
+        'bpm': {'value': bpm},
+        'beat_grid': {
+          'bpm': bpm,
+          'beats_ms': [0, 500, 1000],
+        },
+        'downbeats': {
+          'positions_ms': [0],
+        },
+        'waveform': {
+          'sample_count': 4,
+          'peaks': [0.1, 0.5, 0.9, 0.2],
+          'rms': [0.08, 0.3, 0.6, 0.12],
+        },
+      },
+    );
   }
 
   @override

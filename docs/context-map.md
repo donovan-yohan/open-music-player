@@ -72,14 +72,22 @@ domain concept moves or a new production harness becomes canonical.
 - Surface coverage: home, search, library/local browse, playlists, history,
   queue list, and timeline lane headers.
 - Tests: `client/test/song_metadata_chips_test.dart`,
-  `client/test/song_metadata_surface_wiring_test.dart`, and
+  `client/test/song_metadata_surface_wiring_test.dart`,
+  `client/test/queue_provider_timeline_editing_test.dart`, and
   `backend/internal/db/track_analysis_projection_integration_test.go`.
 - Guardrail: list surfaces must preserve analysis when converting a track into
   a playback/queue payload. Do not format BPM or musical/Camelot keys in each
   surface; use the shared formatter and chip component.
 - Guardrail: collection responses carry compact tempo/key/downbeat summaries,
-  never multi-resolution waveform arrays. Timeline detail hydrates through the
-  per-track analysis endpoint.
+  never multi-resolution waveform arrays. Compact overrides use the same field
+  whitelist so malformed or legacy override payloads cannot restore large
+  artifacts. Timeline detail hydrates through the per-track analysis endpoint.
+- Guardrail: detailed waveform caches merge current compact musical facts and
+  invalidate on analysis-status progression; pending/non-detailed responses
+  retry with a cooldown instead of becoming permanent or polling each frame.
+- Offline storage: schema v4 persists compact analysis fields on local track
+  rows. Remote Library pages backfill matching downloaded rows so BPM/key chips
+  remain available after the device goes offline.
 
 ### Schema And Storage
 

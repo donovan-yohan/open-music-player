@@ -29,10 +29,23 @@ func TestTrackAnalysisProjectsIntoSongListingsAgainstPostgres(t *testing.T) {
 	if _, err := analysisRepo.SetOverrides(ctx, trackID, json.RawMessage(`{
 		"bpm":{"value":128},
 		"key":{"value":"Am"},
-		"camelot":{"value":"8A"}
+		"camelot":{"value":"8A"},
+		"waveform":{"sample_count":999999,"peaks":[0.1,0.9]},
+		"loudness":{"integrated_lufs":-4.2},
+		"cue_candidates":[{"kind":"mix_in","start_ms":100}]
 	}`)); err != nil {
 		t.Fatalf("set analysis overrides: %v", err)
 	}
+	compactByID, err := analysisRepo.GetCompactByTrackIDs(ctx, []int64{trackID})
+	if err != nil {
+		t.Fatalf("get compact analysis: %v", err)
+	}
+	compact, ok := compactByID[trackID]
+	if !ok {
+		t.Fatalf("compact analysis missing track %d", trackID)
+	}
+	assertCompactAnalysisPayload(t, compact.SummaryJSON)
+	assertCompactAnalysisPayload(t, compact.OverridesJSON)
 
 	searchTracks, _, err := trackRepo.SearchRecordings(ctx, "Projection", 20, 0)
 	if err != nil {
@@ -93,23 +106,41 @@ func assertProjectedTrackAnalysis(t *testing.T, track Track) {
 		t.Fatalf("analysis status = %#v, want %q", track.AnalysisStatus, AnalysisStatusAnalyzed)
 	}
 
-	var summary map[string]map[string]any
+	var summary map[string]any
 	if err := json.Unmarshal(track.AnalysisSummary, &summary); err != nil {
 		t.Fatalf("decode analysis summary: %v", err)
 	}
-	if got := summary["bpm"]["value"]; got != float64(128) {
+	bpm := summary["bpm"].(map[string]any)
+	key := summary["key"].(map[string]any)
+	camelot := summary["camelot"].(map[string]any)
+	if got := bpm["value"]; got != float64(128) {
 		t.Fatalf("projected bpm = %#v, want 128 override", got)
 	}
-	if got := summary["key"]["value"]; got != "Am" {
+	if got := key["value"]; got != "Am" {
 		t.Fatalf("projected key = %#v, want Am override", got)
 	}
-	if got := summary["camelot"]["value"]; got != "8A" {
+	if got := camelot["value"]; got != "8A" {
 		t.Fatalf("projected Camelot key = %#v, want 8A override", got)
 	}
+	assertCompactAnalysisPayload(t, track.AnalysisSummary)
+}
+
+func assertCompactAnalysisPayload(t *testing.T, payload json.RawMessage) {
+	t.Helper()
+	var summary map[string]any
+	if err := json.Unmarshal(payload, &summary); err != nil {
+		t.Fatalf("decode compact analysis payload: %v", err)
+	}
 	if _, ok := summary["waveform"]; ok {
-		t.Fatal("compact song-list projection must omit waveform arrays")
+		t.Fatal("compact analysis projection must omit waveform arrays")
 	}
 	if _, ok := summary["transients"]; ok {
-		t.Fatal("compact song-list projection must omit transient arrays")
+		t.Fatal("compact analysis projection must omit transient arrays")
+	}
+	if _, ok := summary["loudness"]; ok {
+		t.Fatal("compact analysis projection must omit loudness metadata")
+	}
+	if _, ok := summary["cue_candidates"]; ok {
+		t.Fatal("compact analysis projection must omit cue candidates")
 	}
 }

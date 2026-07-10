@@ -195,6 +195,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     // Capture the counts client before any await so we don't reach through
     // BuildContext across an async gap.
     final apiClient = context.read<ApiClient>();
+    final offlineDatabase = context.read<OfflineDatabase>();
     bool? mbVerified;
     switch (_verificationFilter) {
       case VerificationFilter.verifiedOnly:
@@ -231,6 +232,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
         'analysis_summary',
       ],
     );
+    try {
+      await Future.wait(
+        page.tracks
+            .where((track) => track.analysis != null)
+            .map(offlineDatabase.updateTrackAnalysis),
+      );
+    } catch (_) {
+      // Offline analysis is a cache; a local write failure must not hide a
+      // successfully loaded remote Library page.
+    }
 
     final counts = offset == 0
         ? await _loadRemoteCounts(apiClient)

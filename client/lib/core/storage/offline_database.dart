@@ -9,7 +9,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   static Database? _database;
   static Future<Database>? _openingDatabase;
   static const String _dbName = 'open_music_player.db';
-  static const int _dbVersion = 3;
+  static const int _dbVersion = 4;
 
   Future<Database> get database async {
     final existing = _database;
@@ -57,6 +57,9 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
         source_type TEXT,
         storage_key TEXT,
         file_size_bytes INTEGER,
+        analysis_status TEXT,
+        analysis_summary TEXT,
+        analysis_overrides TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -142,6 +145,13 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     if (oldVersion < 3) {
       await _createPlaybackCacheTable(db);
     }
+
+    // v4: retain compact musical analysis for downloaded/offline song rows.
+    if (oldVersion < 4) {
+      await db.execute('ALTER TABLE tracks ADD COLUMN analysis_status TEXT');
+      await db.execute('ALTER TABLE tracks ADD COLUMN analysis_summary TEXT');
+      await db.execute('ALTER TABLE tracks ADD COLUMN analysis_overrides TEXT');
+    }
   }
 
   Future<void> _createPlaybackCacheTable(Database db) async {
@@ -198,6 +208,30 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     final db = await database;
     final maps = await db.query('tracks', orderBy: 'title ASC');
     return maps.map((m) => Track.fromDbMap(m)).toList();
+  }
+
+  Future<void> updateTrackAnalysis(Track track) async {
+    final db = await database;
+    final values = track.toDbMap();
+    final status = values['analysis_status'];
+    final summary = values['analysis_summary'];
+    final overrides = values['analysis_overrides'];
+    await db.update(
+      'tracks',
+      {
+        'analysis_status': status,
+        'analysis_summary': summary,
+        'analysis_overrides': overrides,
+      },
+      where: '''
+        id = ? AND (
+          analysis_status IS NOT ? OR
+          analysis_summary IS NOT ? OR
+          analysis_overrides IS NOT ?
+        )
+      ''',
+      whereArgs: [track.id, status, summary, overrides],
+    );
   }
 
   // Downloaded track operations
