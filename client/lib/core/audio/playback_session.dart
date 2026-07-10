@@ -266,6 +266,19 @@ class MixSession {
     );
   }
 
+  MixSession withPitchModeAt(int index, String pitchMode) {
+    if (index < 0 || index >= clips.length) return this;
+    final nextClip = clips[index].withPitchMode(pitchMode);
+    if (nextClip.pitchMode == clips[index].pitchMode) return this;
+    final nextClips = List<MixSessionClip>.from(clips)..[index] = nextClip;
+    return MixSession(
+      sessionId: sessionId,
+      schemaVersion: schemaVersion,
+      clips: List.unmodifiable(nextClips),
+      nextClipOrdinal: nextClipOrdinal,
+    );
+  }
+
   MixSessionClip? clipAt(int index) {
     if (index < 0 || index >= clips.length) return null;
     return clips[index];
@@ -292,7 +305,7 @@ class MixSessionClip {
     this.fadeInMs,
     this.fadeOutMs,
     this.playbackRate = 1,
-    this.pitchMode = 'preserve',
+    this.pitchMode = pitchModePreserve,
     this.tempo = ClipTempoMetadata.empty,
     this.analysisRef,
     this.analysisVersion,
@@ -357,7 +370,9 @@ class MixSessionClip {
       fadeInMs: (json['fadeInMs'] as num?)?.toInt(),
       fadeOutMs: (json['fadeOutMs'] as num?)?.toInt(),
       playbackRate: (json['playbackRate'] as num?)?.toDouble() ?? 1,
-      pitchMode: (json['pitchMode'] as String?) ?? 'preserve',
+      pitchMode: normalizePitchMode(
+        (json['pitchMode'] as String?) ?? pitchModePreserve,
+      ),
       tempo: ClipTempoMetadata.fromSessionJson(json),
       analysisRef: json['analysisRef'] as String?,
       analysisVersion: json['analysisVersion'] as String?,
@@ -447,6 +462,24 @@ class MixSessionClip {
     );
   }
 
+  MixSessionClip withPitchMode(String pitchMode) => MixSessionClip(
+        clipId: clipId,
+        queueItemId: queueItemId,
+        trackId: trackId,
+        sourceDurationMs: sourceDurationMs,
+        sourceStartMs: sourceStartMs,
+        sourceEndMs: sourceEndMs,
+        timelineStartMs: timelineStartMs,
+        gainDb: gainDb,
+        fadeInMs: fadeInMs,
+        fadeOutMs: fadeOutMs,
+        playbackRate: playbackRate,
+        pitchMode: normalizePitchMode(pitchMode),
+        tempo: tempo,
+        analysisRef: analysisRef,
+        analysisVersion: analysisVersion,
+      );
+
   Map<String, dynamic> toJson() => {
         'clipId': clipId,
         'queueItemId': queueItemId,
@@ -501,7 +534,7 @@ class PlaybackCue {
     required this.sourceEnd,
     required this.timelineStart,
     this.playbackRate = 1,
-    this.pitchMode = 'preserve',
+    this.pitchMode = pitchModePreserve,
     this.tempo = ClipTempoMetadata.empty,
   });
 

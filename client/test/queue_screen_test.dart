@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/queue_state.dart';
@@ -676,6 +677,33 @@ void main() {
     expect(playbackState.seekCalls, 0);
   });
 
+  testWidgets('live timeline pitch toggle updates queue pitch mode', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Current Song', seconds: 120),
+      ]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_playback_queue_0')),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_pitch_mode_playback_queue_0')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(playbackState.pitchModeCalls, [
+      (0, pitchModeFollowTempo),
+    ]);
+  });
+
   testWidgets('touch-dragging the list reorder handle reorders Up Next', (
     tester,
   ) async {
@@ -821,6 +849,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   final List<(int, int, bool)> timelineStartCalls = [];
   final List<(int, int)> trimStartCalls = [];
   final List<(int, int)> trimEndCalls = [];
+  final List<(int, String)> pitchModeCalls = [];
   final List<(int, int)> reorderCalls = [];
   final List<int> removeFromQueueCalls = [];
   final List<({String trackId, TrackAnalysis analysis})> analysisRefreshes = [];
@@ -951,6 +980,11 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   @override
   Future<void> setQueueTrimEndMs(int index, int ms) async {
     trimEndCalls.add((index, ms));
+  }
+
+  @override
+  Future<void> setQueuePitchMode(int index, String pitchMode) async {
+    pitchModeCalls.add((index, pitchMode));
   }
 
   @override

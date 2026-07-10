@@ -338,6 +338,27 @@ class QueueTimelineController {
     );
   }
 
+  Future<void> setPitchMode(int index, String pitchMode) async {
+    await _enqueueCommand(() => _setPitchMode(index, pitchMode));
+  }
+
+  Future<void> _setPitchMode(int index, String pitchMode) async {
+    if (index < 0 || index >= _queue.length) return;
+    final normalized = normalizePitchMode(pitchMode);
+    final current = _session.clipAt(index);
+    if (current == null || current.pitchMode == normalized) return;
+
+    final nextSession = _session.withPitchModeAt(index, normalized);
+    if (!_canApplySession(nextSession)) return;
+
+    _session = nextSession.normalizedForQueue(_queue);
+    await _loadModel(
+      seekToCurrent: false,
+      preserveActivePlayback: true,
+    );
+    _publishQueueState();
+  }
+
   Future<void> play() async {
     await _enqueueCommand(_play);
   }

@@ -110,6 +110,8 @@ class PlaybackState extends ChangeNotifier {
       _queueController.setSourceStartMs(index, ms);
   Future<void> setQueueTrimEndMs(int index, int ms) =>
       _queueController.setSourceEndMs(index, ms);
+  Future<void> setQueuePitchMode(int index, String pitchMode) =>
+      _queueController.setPitchMode(index, pitchMode);
   Future<void> reorderPlaybackQueue(int oldIndex, int newIndex) =>
       _queueController.reorderQueue(oldIndex, newIndex);
 

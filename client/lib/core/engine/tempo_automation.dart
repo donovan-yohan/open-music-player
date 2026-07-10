@@ -588,6 +588,10 @@ double _safeBaseRate(double baseRate) {
 double pitchFactorForRate({required double rate, required String pitchMode}) {
   final safeRate =
       rate.clamp(minTempoAutomationRate, maxTempoAutomationRate).toDouble();
+  return pitchModeFollowsTempo(pitchMode) ? safeRate : 1;
+}
+
+String normalizePitchMode(String pitchMode) {
   final normalized = pitchMode.trim().toLowerCase().replaceAll(
         RegExp(r'[\s_-]+'),
         '',
@@ -599,15 +603,18 @@ double pitchFactorForRate({required double rate, required String pitchMode}) {
     case 'follow':
     case 'vinyl':
     case 'resample':
-      return safeRate;
+      return pitchModeFollowTempo;
     case 'preserve':
     case 'preservepitch':
     case 'keylock':
     case 'keepkey':
     default:
-      return 1;
+      return pitchModePreserve;
   }
 }
+
+bool pitchModeFollowsTempo(String pitchMode) =>
+    normalizePitchMode(pitchMode) == pitchModeFollowTempo;
 
 int? snapIncomingStartToNearestDownbeat({
   required int requestedStartMs,

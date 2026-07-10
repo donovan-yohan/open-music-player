@@ -1,6 +1,7 @@
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
@@ -286,7 +287,23 @@ void main() {
       expect(restored.clips.single.sourceEndMs, 4000);
       expect(restored.clips.single.timelineStartMs, 7000);
       expect(restored.clips.single.playbackRate, 1);
-      expect(restored.clips.single.pitchMode, 'preserve');
+      expect(restored.clips.single.pitchMode, pitchModePreserve);
+    });
+
+    test('session stores normalized clip pitch mode', () {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_pitch',
+        queue: [_item('a', seconds: 5)],
+      ).withPitchModeAt(0, 'vinyl');
+
+      final restored = MixSession.fromJson(session.toJson());
+
+      expect(session.clips.single.pitchMode, pitchModeFollowTempo);
+      expect(restored.clips.single.pitchMode, pitchModeFollowTempo);
+      expect(
+        restored.toJson()['clips'].single['pitchMode'],
+        pitchModeFollowTempo,
+      );
     });
 
     test('session json carries BPM, key, and downbeat metadata', () {

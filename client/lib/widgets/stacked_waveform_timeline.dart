@@ -15,6 +15,10 @@ typedef TimelineAnalysisEditCallback = void Function(
   Track track, {
   int? initialFirstDownbeatMs,
 });
+typedef TimelinePitchModeChangedCallback = void Function(
+  Track track,
+  String pitchMode,
+);
 
 /// Stacked compact-waveform timeline for the phone-first mix planner
 /// (~390x844), wired to the live mix engine when a [timelineModel] and
@@ -45,6 +49,7 @@ class StackedWaveformTimeline extends StatefulWidget {
   final ValueChanged<Track>? onMoveEarlier;
   final ValueChanged<Track>? onMoveLater;
   final TimelineAnalysisEditCallback? onEditAnalysis;
+  final TimelinePitchModeChangedCallback? onPitchModeChanged;
   final TimelineModel? timelineModel;
   final Set<String> pitchFallbackClipIds;
   final Map<String, ClipTempoRuntimeState> clipTempoStates;
@@ -69,6 +74,7 @@ class StackedWaveformTimeline extends StatefulWidget {
     this.onMoveEarlier,
     this.onMoveLater,
     this.onEditAnalysis,
+    this.onPitchModeChanged,
     this.timelineModel,
     this.pitchFallbackClipIds = const {},
     this.clipTempoStates = const {},
@@ -942,6 +948,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             ),
             if (selected &&
                 (widget.onEditAnalysis != null ||
+                    widget.onPitchModeChanged != null ||
                     lane.role == LaneRole.upcoming ||
                     lane.role == LaneRole.collapsed))
               Positioned(
@@ -1358,6 +1365,29 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (tempoChip != null) tempoChip,
+                if (widget.onPitchModeChanged != null)
+                  IconButton(
+                    key: ValueKey('timeline_pitch_mode_${track.id}'),
+                    tooltip: _pitchModeTooltip(track, lane.mixClip),
+                    icon: Icon(_pitchModeIcon(lane.mixClip)),
+                    color: pitchModeFollowsTempo(
+                      lane.mixClip.rateAutomation.pitchMode,
+                    )
+                        ? StackedWaveformTimeline.currentAccent
+                        : null,
+                    iconSize: 20,
+                    constraints:
+                        const BoxConstraints.tightFor(width: 36, height: 36),
+                    padding: EdgeInsets.zero,
+                    onPressed: () => widget.onPitchModeChanged!(
+                      track,
+                      pitchModeFollowsTempo(
+                        lane.mixClip.rateAutomation.pitchMode,
+                      )
+                          ? pitchModePreserve
+                          : pitchModeFollowTempo,
+                    ),
+                  ),
                 if (widget.onEditAnalysis != null)
                   IconButton(
                     key: ValueKey('timeline_edit_analysis_${track.id}'),
@@ -1458,6 +1488,18 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   bool _hasPitchFallback(MixClip clip) =>
       widget.pitchFallbackClipIds.contains(clip.id);
+
+  IconData _pitchModeIcon(MixClip clip) {
+    return pitchModeFollowsTempo(clip.rateAutomation.pitchMode)
+        ? Icons.graphic_eq
+        : Icons.lock_outline;
+  }
+
+  String _pitchModeTooltip(Track track, MixClip clip) {
+    return pitchModeFollowsTempo(clip.rateAutomation.pitchMode)
+        ? 'Pitch follows tempo for ${track.title}. Tap for key lock.'
+        : 'Key lock for ${track.title}. Tap for pitch follow.';
+  }
 
   int? _analysisAnchorForLane(_LaneModel lane, int playheadMs) {
     if (!lane.mixClip.isActiveAt(playheadMs)) return null;
