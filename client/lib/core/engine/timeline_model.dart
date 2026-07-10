@@ -41,9 +41,9 @@ class MixClip {
   String get trackId => placement.trackId;
   int get timelineStartMs => placement.timelineStartMs;
   late final int timelineEndMs = rateAutomation.timelineMsForSelectedSource(
-        timelineStartMs: timelineStartMs,
-        sourceDurationMs: selectedDurationMs,
-      );
+    timelineStartMs: timelineStartMs,
+    sourceDurationMs: selectedDurationMs,
+  );
   late final int timelineDurationMs = timelineEndMs - timelineStartMs;
   int get selectedDurationMs => placement.selectedDurationMs;
 
@@ -124,6 +124,63 @@ class MixClip {
         tempo,
         rateAutomation,
       );
+}
+
+int? beatAlignmentCorrectionMs({
+  required MixClip outgoing,
+  required MixClip incoming,
+  required BeatSnapMode snapMode,
+}) {
+  if (snapMode == BeatSnapMode.free) return null;
+  final overlapStartMs = math.max(
+    outgoing.timelineStartMs,
+    incoming.timelineStartMs,
+  );
+  final overlapEndMs = math.min(
+    outgoing.timelineEndMs,
+    incoming.timelineEndMs,
+  );
+  if (overlapEndMs <= overlapStartMs) return null;
+
+  final incomingMarkers = beatMarkersForSnapMode(
+    incoming.tempo,
+    snapMode,
+  ).where(
+    (sourceMs) =>
+        sourceMs >= incoming.placement.sourceStartMs &&
+        sourceMs <= incoming.placement.sourceEndMs,
+  );
+  if (incomingMarkers.isEmpty) return null;
+  final incomingAnchorMs = incoming.timelineMsForSourcePosition(
+    incomingMarkers.first,
+  );
+  final outgoingMarkers = beatMarkersForSnapMode(
+    outgoing.tempo,
+    snapMode,
+  )
+      .where(
+        (sourceMs) =>
+            sourceMs >= outgoing.placement.sourceStartMs &&
+            sourceMs <= outgoing.placement.sourceEndMs,
+      )
+      .map(outgoing.timelineMsForSourcePosition)
+      .toList(growable: false);
+  if (outgoingMarkers.isEmpty) return null;
+
+  var nearestOutgoingMs = outgoingMarkers.first;
+  var nearestDistance = (nearestOutgoingMs - incomingAnchorMs).abs();
+  for (final markerMs in outgoingMarkers.skip(1)) {
+    final distance = (markerMs - incomingAnchorMs).abs();
+    if (distance < nearestDistance) {
+      nearestOutgoingMs = markerMs;
+      nearestDistance = distance;
+    }
+  }
+  if (nearestDistance >
+      downbeatSnapToleranceMs(outgoing.tempo, snapMode: snapMode)) {
+    return null;
+  }
+  return nearestOutgoingMs - incomingAnchorMs;
 }
 
 /// Pure timeline arrangement model for Phase 1 of the mix engine.

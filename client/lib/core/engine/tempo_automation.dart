@@ -669,8 +669,8 @@ int? snapIncomingStartToNearestDownbeat({
 }) {
   if (snapMode == BeatSnapMode.free) return null;
 
-  final incomingMarkers = _markersForSnapMode(incomingTempo, snapMode);
-  final outgoingMarkers = _markersForSnapMode(outgoingTempo, snapMode);
+  final incomingMarkers = beatMarkersForSnapMode(incomingTempo, snapMode);
+  final outgoingMarkers = beatMarkersForSnapMode(outgoingTempo, snapMode);
   if (incomingMarkers.isEmpty || outgoingMarkers.isEmpty) return null;
 
   final incomingAnchor = _firstMarkerAtOrAfter(
@@ -711,14 +711,14 @@ int? snapIncomingStartToNearestDownbeat({
   return math.max(0, snapped);
 }
 
-List<int> _markersForSnapMode(
+List<int> beatMarkersForSnapMode(
   ClipTempoMetadata tempo,
-  BeatSnapMode mode,
+  BeatSnapMode snapMode,
 ) {
   final beats = _sortedUniqueNonNegative(tempo.beatsMs);
   final downbeats = _sortedUniqueNonNegative(tempo.downbeatsMs);
 
-  return switch (mode) {
+  return switch (snapMode) {
     BeatSnapMode.free => const [],
     BeatSnapMode.downbeat =>
       downbeats.isNotEmpty ? downbeats : _strideMarkers(beats, 4),

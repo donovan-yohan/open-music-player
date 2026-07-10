@@ -233,6 +233,12 @@ timeline's Free, Downbeat, 1 beat, 4 beats, and 16 beats options therefore drive
 the same queue timing model used by playback and survive queue snapshot restore;
 they are not widget-only display state.
 
+Locked auto layouts and drag commits are refined against the rate-adjusted
+timeline model after tempo automation is applied. This closes residual phase
+error for trimmed clips whose first usable marker lands inside a BPM ramp. The
+refinement is bounded by overlap and snap tolerance; explicit freeform/bypass
+placements are preserved unchanged.
+
 ## Transition diagnostics
 
 Timeline overlap bands classify each crossfade with the same metadata consumed

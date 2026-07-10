@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -428,15 +429,79 @@ void main() {
 
       expect(
         harness.controller.timelineClipForIndex(1)?.timelineStartMs,
-        13500,
+        closeTo(13500, 250),
       );
+      final outgoing = harness.engine.model.clips[0];
+      final incoming = harness.engine.model.clips[1];
+      final incomingAnchor = incoming.tempo.downbeatsMs.first;
+      final incomingGlobal = incoming.timelineMsForSourcePosition(
+        incomingAnchor,
+      );
+      final nearestDelta = outgoing.tempo.downbeatsMs
+          .map(outgoing.timelineMsForSourcePosition)
+          .map((globalMs) => (globalMs - incomingGlobal).abs())
+          .reduce(math.min);
+      expect(nearestDelta, lessThanOrEqualTo(1));
       final diagnostics = diagnoseTransition(
-        harness.engine.model.clips[0],
-        harness.engine.model.clips[1],
+        outgoing,
+        incoming,
       );
       final codes = diagnostics.diagnostics.map((item) => item.code).toList();
       expect(codes, contains(TransitionDiagnosticCode.beatLocked));
       expect(codes, isNot(contains(TransitionDiagnosticCode.downbeatOffset)));
+
+      await harness.dispose();
+    });
+
+    test('manual move refines trimmed clips onto the runtime downbeat grid',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item(
+          '1',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
+          ),
+        ),
+        _item(
+          '2',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 150,
+            downbeatsMs: [500, 2100, 3700, 5300, 6900, 8500, 10100],
+          ),
+        ),
+      ]);
+
+      await harness.controller.setSourceStartMs(1, 100);
+      await harness.controller.setTimelineStartMs(1, 15400);
+
+      final outgoing = harness.engine.model.clips[0];
+      final incoming = harness.engine.model.clips[1];
+      final incomingAnchor = incoming.tempo.downbeatsMs.firstWhere(
+        (sourceMs) => sourceMs >= incoming.placement.sourceStartMs,
+      );
+      final incomingGlobal = incoming.timelineMsForSourcePosition(
+        incomingAnchor,
+      );
+      final nearestDelta = outgoing.tempo.downbeatsMs
+          .where(
+            (sourceMs) =>
+                sourceMs >= outgoing.placement.sourceStartMs &&
+                sourceMs <= outgoing.placement.sourceEndMs,
+          )
+          .map(outgoing.timelineMsForSourcePosition)
+          .map((globalMs) => (globalMs - incomingGlobal).abs())
+          .reduce(math.min);
+
+      expect(nearestDelta, lessThanOrEqualTo(1));
+      final diagnostics = diagnoseTransition(outgoing, incoming);
+      expect(
+        diagnostics.diagnostics.map((item) => item.code),
+        contains(TransitionDiagnosticCode.beatLocked),
+      );
 
       await harness.dispose();
     });
