@@ -446,6 +446,11 @@ void main() {
 
       await harness.engine.seek(7500);
       await Future<void>.delayed(Duration.zero);
+      await _waitUntil(
+        () => harness.controller.snapshot.clipTempoStates.keys
+            .toSet()
+            .containsAll([outgoing.id, incoming.id]),
+      );
 
       expect(harness.controller.currentIndex, 1);
       expect(
@@ -455,6 +460,20 @@ void main() {
       expect(
         harness.controller.snapshot.localPosition.inMilliseconds,
         closeTo(2125, 1),
+      );
+      final tempoStates = harness.controller.snapshot.clipTempoStates;
+      expect(tempoStates.keys, containsAll([outgoing.id, incoming.id]));
+      expect(
+        tempoStates[outgoing.id]?.effectiveBpm,
+        closeTo(112.5, 0.0001),
+      );
+      expect(
+        tempoStates[incoming.id]?.effectiveBpm,
+        closeTo(112.5, 0.0001),
+      );
+      expect(
+        tempoStates[incoming.id]?.effectiveSpeed,
+        closeTo(0.9, 0.0001),
       );
 
       final probeMs = outgoing.timelineEndMs + 50;
@@ -648,6 +667,18 @@ class _Harness {
     await controller.dispose();
     await clock.dispose();
   }
+}
+
+Future<void> _waitUntil(
+  bool Function() condition, {
+  Duration timeout = const Duration(milliseconds: 500),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (condition()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+  }
+  fail('condition not met within $timeout');
 }
 
 class _BlockingPlayVoice extends FakeVoice {

@@ -84,6 +84,7 @@ Future<void> _pump(
   TimelineClip Function(Track, TimelineClip)? clipFor,
   TimelineModel? timelineModel,
   Set<String> pitchFallbackClipIds = const {},
+  Map<String, ClipTempoRuntimeState> clipTempoStates = const {},
   int playheadPositionMs = 0,
   Stream<int>? positionMsStream,
   VoidCallback? onScrubStart,
@@ -112,6 +113,7 @@ Future<void> _pump(
           clipFor: clipFor,
           timelineModel: timelineModel,
           pitchFallbackClipIds: pitchFallbackClipIds,
+          clipTempoStates: clipTempoStates,
           playheadPositionMs: playheadPositionMs,
           positionMsStream: positionMsStream,
           onScrubStart: onScrubStart,
@@ -977,6 +979,58 @@ void main() {
         of: chip,
         matching: find.textContaining('Pitch fallback'),
       ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('selected lane exposes live tempo transition state',
+      (tester) async {
+    final current = _track('t1', 'Midnight Drive', 160);
+    final timeline = TimelineModel(
+      clips: [
+        _mixClip(
+          't1',
+          0,
+          160000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 125,
+            bpmConfidence: 0.9,
+            downbeatsMs: [0, 8000, 16000, 24000],
+          ),
+        ),
+      ],
+    );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: const [],
+      timelineModel: timeline,
+      clipTempoStates: const {
+        'clip_t1': ClipTempoRuntimeState(
+          clipId: 'clip_t1',
+          effectiveSpeed: 0.9,
+          nativeBpm: 125,
+          effectiveBpm: 112.5,
+          pitchMode: pitchModePreserve,
+        ),
+      },
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+
+    final chip = find.byKey(const ValueKey('timeline_tempo_t1'));
+    expect(chip, findsOneWidget);
+    expect(
+      find.descendant(
+          of: chip, matching: find.textContaining('Live 112.5 BPM')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: chip, matching: find.textContaining('0.90x')),
       findsOneWidget,
     );
   });

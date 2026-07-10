@@ -721,6 +721,7 @@ class PlaybackSnapshot {
     this.playbackSpeed = 1,
     this.pitchPreservationFallback = false,
     this.pitchFallbackClipIds = const {},
+    this.clipTempoStates = const {},
   });
 
   factory PlaybackSnapshot.empty({String sessionId = 'session_0'}) =>
@@ -754,6 +755,7 @@ class PlaybackSnapshot {
   final double playbackSpeed;
   final bool pitchPreservationFallback;
   final Set<String> pitchFallbackClipIds;
+  final Map<String, ClipTempoRuntimeState> clipTempoStates;
 }
 
 Duration _clampDuration(Duration value, Duration min, Duration max) {
