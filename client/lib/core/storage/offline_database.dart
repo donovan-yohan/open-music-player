@@ -9,7 +9,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   static Database? _database;
   static Future<Database>? _openingDatabase;
   static const String _dbName = 'open_music_player.db';
-  static const int _dbVersion = 4;
+  static const int _dbVersion = 5;
 
   final Future<Database> Function()? _databaseProvider;
   final DatabaseFactory? _databaseFactory;
@@ -198,6 +198,17 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
       await db.execute('ALTER TABLE tracks ADD COLUMN analysis_status TEXT');
       await db.execute('ALTER TABLE tracks ADD COLUMN analysis_summary TEXT');
       await db.execute('ALTER TABLE tracks ADD COLUMN analysis_overrides TEXT');
+    }
+
+    // v5: downloads made before local Library membership was enforced must
+    // remain discoverable through the Downloaded filter after upgrade.
+    if (oldVersion < 5) {
+      await db.execute('''
+        INSERT OR IGNORE INTO library_tracks (track_id, added_at)
+        SELECT track_id, downloaded_at
+        FROM downloaded_tracks
+        WHERE status = 'completed'
+      ''');
     }
   }
 

@@ -90,10 +90,11 @@ domain concept moves or a new production harness becomes canonical.
   hydration at three requests, and own their cooldown retry timers. Playback
   position rebuilds reuse enriched timeline tracks instead of rehashing the
   queue.
-- Offline storage: schema v4 persists compact analysis fields on local track
-  rows. Explicit downloads also create local Library membership; remote Library
-  pages publish immediately and batch-backfill matching rows asynchronously so
-  BPM/key chips remain available after the device goes offline.
+- Offline storage: schema v5 persists compact analysis fields on local track
+  rows and migrates existing completed downloads into local Library membership.
+  New downloads enforce membership immediately; remote Library pages publish
+  first and batch-backfill matching rows asynchronously so BPM/key chips remain
+  available after the device goes offline.
 
 ### Schema And Storage
 

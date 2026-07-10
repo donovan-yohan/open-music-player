@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/storage/offline_database.dart';
 import 'package:open_music_player/models/track_analysis.dart';
-import 'package:open_music_player/shared/models/downloaded_track.dart';
 import 'package:open_music_player/shared/models/track.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -99,6 +98,14 @@ void main() {
             'created_at': '2026-01-01T00:00:00.000Z',
             'updated_at': '2026-01-01T00:00:00.000Z',
           });
+          await db.insert('downloaded_tracks', {
+            'track_id': 44,
+            'local_path': '/tmp/44.mp3',
+            'file_size_bytes': 1024,
+            'status': 'completed',
+            'progress': 1.0,
+            'downloaded_at': '2026-01-02T00:00:00.000Z',
+          });
         },
       ),
     );
@@ -112,7 +119,7 @@ void main() {
     addTearDown(migrated.close);
 
     final version = await migrated.rawQuery('PRAGMA user_version');
-    expect(version.single.values.single, 4);
+    expect(version.single.values.single, 5);
     final columns = await migrated.rawQuery('PRAGMA table_info(tracks)');
     expect(
       columns.map((column) => column['name']),
@@ -141,17 +148,6 @@ void main() {
       updatedAt: DateTime.utc(2026, 1, 1),
     );
     await offline.updateTrackAnalysis(analyzed);
-    await offline.addToLibrary(44);
-    await offline.insertDownloadedTrack(
-      DownloadedTrack(
-        trackId: 44,
-        localPath: '/tmp/44.mp3',
-        fileSizeBytes: 1024,
-        status: DownloadStatus.completed,
-        progress: 1,
-        downloadedAt: DateTime.utc(2026, 1, 2),
-      ),
-    );
 
     final local = await offline.getLibraryTracksWithCount(downloadedOnly: true);
     expect(local.total, 1);
