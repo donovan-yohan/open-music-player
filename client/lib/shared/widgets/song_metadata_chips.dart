@@ -214,37 +214,49 @@ class _MetadataChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final fixedCompactHeight = compact && textScale <= 1.3;
     final keyColors = _CamelotChipColors.resolve(theme, camelot);
     final textStyle = theme.textTheme.labelSmall?.copyWith(
-      color: keyColors?.foreground ?? theme.colorScheme.onSurfaceVariant,
+      color: keyColors?.foreground ?? theme.colorScheme.onSecondaryContainer,
       fontWeight: FontWeight.w600,
       height: 1,
     );
-    return Container(
+    final chip = Container(
+      height: fixedCompactHeight ? 18 : null,
       constraints: BoxConstraints(minHeight: compact ? 18 : 20),
-      alignment: Alignment.center,
-      padding: EdgeInsets.symmetric(horizontal: 5, vertical: compact ? 0 : 1),
+      padding: EdgeInsets.symmetric(
+        horizontal: 5,
+        vertical: fixedCompactHeight ? 0 : 1,
+      ),
       decoration: BoxDecoration(
-        color:
-            keyColors?.background ?? theme.colorScheme.surfaceContainerHighest,
+        color: keyColors?.background ?? theme.colorScheme.secondaryContainer,
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(
-          color: keyColors?.border ?? theme.colorScheme.outlineVariant,
+      ),
+      child: Center(
+        widthFactor: 1,
+        heightFactor: 1,
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          maxLines: allowWrap ? null : 1,
+          overflow: allowWrap ? TextOverflow.visible : TextOverflow.ellipsis,
+          softWrap: allowWrap,
+          strutStyle: StrutStyle(
+            fontSize: textStyle?.fontSize,
+            height: 1,
+            forceStrutHeight: true,
+          ),
+          style: textStyle,
         ),
       ),
-      child: Text(
-        label,
-        textAlign: TextAlign.center,
-        maxLines: allowWrap ? null : 1,
-        overflow: allowWrap ? TextOverflow.visible : TextOverflow.ellipsis,
-        softWrap: allowWrap,
-        strutStyle: StrutStyle(
-          fontSize: textStyle?.fontSize,
-          height: 1,
-          forceStrutHeight: true,
-        ),
-        style: textStyle,
-      ),
+    );
+    if (!compact) return chip;
+    return Align(
+      widthFactor: 1,
+      heightFactor: 1,
+      alignment: Alignment.center,
+      child: chip,
     );
   }
 }
@@ -252,12 +264,10 @@ class _MetadataChip extends StatelessWidget {
 class _CamelotChipColors {
   const _CamelotChipColors({
     required this.background,
-    required this.border,
     required this.foreground,
   });
 
   final Color background;
-  final Color border;
   final Color foreground;
 
   static _CamelotChipColors? resolve(ThemeData theme, String? camelot) {
@@ -267,25 +277,18 @@ class _CamelotChipColors {
 
     // Camelot neighbors are harmonic neighbors, so wheel position maps
     // directly around the hue spectrum. A/B variants share a hue while their
-    // fill strength distinguishes minor from major.
+    // fill brightness distinguishes minor from major.
     final isMinor = camelot.endsWith('A');
     final dark = theme.brightness == Brightness.dark;
-    final base = HSVColor.fromAHSV(
+    final background = HSVColor.fromAHSV(
       1,
       ((number - 1) * 30).toDouble(),
       dark ? 0.68 : 0.78,
-      dark ? 0.92 : 0.72,
+      dark ? (isMinor ? 0.78 : 0.92) : (isMinor ? 0.58 : 0.72),
     ).toColor();
-    final surface = theme.colorScheme.surfaceContainerHighest;
-    final fillAlpha = dark ? (isMinor ? 0.34 : 0.22) : (isMinor ? 0.20 : 0.12);
-    final background = Color.alphaBlend(
-      base.withValues(alpha: fillAlpha),
-      surface,
-    );
     final foreground = _highestContrastForeground(background);
     return _CamelotChipColors(
       background: background,
-      border: base.withValues(alpha: dark ? 0.88 : 0.82),
       foreground: foreground,
     );
   }

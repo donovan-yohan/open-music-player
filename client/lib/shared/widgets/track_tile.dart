@@ -133,26 +133,15 @@ class TrackTile extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: titleStyle,
         ),
-        subtitle: subtitle.isEmpty && !hasMetadata
+        subtitle: subtitle.isEmpty
             ? null
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (subtitle.isNotEmpty)
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: subtitleStyle,
-                    ),
-                  if (hasMetadata)
-                    SongMetadataChips(
-                      analysis: analysis,
-                      topSpacing: 3,
-                    ),
-                ],
+            : Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: subtitleStyle,
               ),
-        trailing: trailing ?? _buildTrailing(context),
+        trailing: _buildTrailing(context, hasMetadata),
       ),
     );
   }
@@ -176,44 +165,54 @@ class TrackTile extends StatelessWidget {
     return _CoverArtPlaceholder(theme: theme);
   }
 
-  Widget _buildTrailing(BuildContext context) {
+  Widget _buildTrailing(BuildContext context, bool hasMetadata) {
     final theme = Theme.of(context);
 
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (isCurrent && activeLabel != null)
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: _NowPlayingBadge(
-              label: activeLabel!,
-              color: theme.colorScheme.primary,
-            ),
-          )
-        else if (isCurrent) ...[
-          Icon(Icons.equalizer, size: 18, color: theme.colorScheme.primary),
-          const SizedBox(width: 8),
-        ],
-        Text(
-          duration,
-          style: isCurrent
-              ? theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.primary,
-                  fontWeight: FontWeight.w600,
-                )
-              : theme.textTheme.bodySmall,
+        SongMetadataChips(
+          analysis: analysis,
+          singleLine: true,
+          compact: true,
         ),
-        if (onMorePressed != null)
-          IconButton(
-            icon: const Icon(Icons.more_vert),
-            onPressed: onMorePressed,
-            iconSize: 20,
+        if (hasMetadata) const SizedBox(width: 6),
+        if (trailing != null)
+          trailing!
+        else ...[
+          if (isCurrent && activeLabel != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: _NowPlayingBadge(
+                label: activeLabel!,
+                color: theme.colorScheme.primary,
+              ),
+            )
+          else if (isCurrent) ...[
+            Icon(Icons.equalizer, size: 18, color: theme.colorScheme.primary),
+            const SizedBox(width: 8),
+          ],
+          Text(
+            duration,
+            style: isCurrent
+                ? theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                  )
+                : theme.textTheme.bodySmall,
           ),
-        if (showDragHandle)
-          const ReorderableDragStartListener(
-            index: 0,
-            child: Icon(Icons.drag_handle),
-          ),
+          if (onMorePressed != null)
+            IconButton(
+              icon: const Icon(Icons.more_vert),
+              onPressed: onMorePressed,
+              iconSize: 20,
+            ),
+          if (showDragHandle)
+            const ReorderableDragStartListener(
+              index: 0,
+              child: Icon(Icons.drag_handle),
+            ),
+        ],
       ],
     );
   }

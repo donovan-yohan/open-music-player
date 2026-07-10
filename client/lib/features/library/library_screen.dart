@@ -795,7 +795,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           }
 
           final track = _tracks[index];
-          return _TrackListTile(
+          return LibraryTrackListTile(
             key: ValueKey(track.id),
             track: track,
             libraryService: _libraryService,
@@ -808,13 +808,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 }
 
-class _TrackListTile extends StatefulWidget {
+class LibraryTrackListTile extends StatefulWidget {
   final Track track;
   final services.LibraryService libraryService;
   final services.ApiClient detailApiClient;
   final VoidCallback? onTrackUpdated;
 
-  const _TrackListTile({
+  const LibraryTrackListTile({
     super.key,
     required this.track,
     required this.libraryService,
@@ -823,10 +823,12 @@ class _TrackListTile extends StatefulWidget {
   });
 
   @override
-  State<_TrackListTile> createState() => _TrackListTileState();
+  State<LibraryTrackListTile> createState() => _LibraryTrackListTileState();
 }
 
-class _TrackListTileState extends State<_TrackListTile> {
+class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
+  static const _compactActionBreakpoint = 520.0;
+
   late bool _liked = widget.track.isLiked;
   bool _likeInFlight = false;
 
@@ -916,122 +918,149 @@ class _TrackListTileState extends State<_TrackListTile> {
     final theme = Theme.of(context);
     final currentTrackId = context.watch<PlaybackState>().currentItem?.id;
     final isCurrent = currentTrackId == track.id.toString();
+    final summary = track.analysis?.summary;
+    final hasMetadata = summary?.bpm?.numericValue != null ||
+        summary?.key?.textValue != null ||
+        summary?.camelot?.textValue != null;
 
-    return QueueSwipeAction(
-      actionKey: ValueKey('library_queue_${track.id}'),
-      onAddToQueue: () => _addToQueue(),
-      child: ListTile(
-        selected: isCurrent,
-        selectedTileColor: theme.colorScheme.primaryContainer.withValues(
-          alpha: 0.28,
-        ),
-        leading: Stack(
-          children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: const Icon(Icons.music_note),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compactActions =
+            constraints.maxWidth < _compactActionBreakpoint ||
+                MediaQuery.textScalerOf(context).scale(1) > 1.3;
+        final subtitle = compactActions
+            ? '${track.displayArtist} • ${track.formattedDuration}'
+            : track.displayArtist;
+
+        return QueueSwipeAction(
+          actionKey: ValueKey('library_queue_${track.id}'),
+          onAddToQueue: () => _addToQueue(),
+          child: ListTile(
+            key: ValueKey('library_track_row_${track.id}'),
+            selected: isCurrent,
+            contentPadding: compactActions
+                ? const EdgeInsets.symmetric(horizontal: 10)
+                : null,
+            horizontalTitleGap: compactActions ? 8 : null,
+            minLeadingWidth: compactActions ? 40 : null,
+            selectedTileColor: theme.colorScheme.primaryContainer.withValues(
+              alpha: 0.28,
             ),
-            // Verification status indicator
-            if (!track.mbVerified)
-              Positioned(
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  width: 14,
-                  height: 14,
+            leading: Stack(
+              children: [
+                Container(
+                  width: compactActions ? 40 : 48,
+                  height: compactActions ? 40 : 48,
                   decoration: BoxDecoration(
-                    color: track.hasSuggestions ? Colors.orange : Colors.grey,
-                    borderRadius: BorderRadius.circular(7),
-                    border: Border.all(
-                      color: theme.colorScheme.surface,
-                      width: 2,
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Icon(Icons.music_note),
+                ),
+                if (!track.mbVerified)
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: Container(
+                      width: 14,
+                      height: 14,
+                      decoration: BoxDecoration(
+                        color:
+                            track.hasSuggestions ? Colors.orange : Colors.grey,
+                        borderRadius: BorderRadius.circular(7),
+                        border: Border.all(
+                          color: theme.colorScheme.surface,
+                          width: 2,
+                        ),
+                      ),
+                      child: Icon(
+                        track.hasSuggestions
+                            ? Icons.auto_fix_high
+                            : Icons.help_outline,
+                        size: 8,
+                        color: Colors.white,
+                      ),
                     ),
                   ),
-                  child: Icon(
-                    track.hasSuggestions
-                        ? Icons.auto_fix_high
-                        : Icons.help_outline,
-                    size: 8,
-                    color: Colors.white,
+              ],
+            ),
+            title: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    track.title,
+                    key: ValueKey('library_track_title_${track.id}'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: isCurrent ? theme.colorScheme.primary : null,
+                      fontWeight: isCurrent ? FontWeight.w700 : null,
+                    ),
                   ),
                 ),
-              ),
-          ],
-        ),
-        title: Row(
-          children: [
-            Expanded(
-              child: Text(
-                track.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: isCurrent ? theme.colorScheme.primary : null,
-                  fontWeight: isCurrent ? FontWeight.w700 : null,
-                ),
-              ),
+                if (track.needsVerification && !compactActions) ...[
+                  const SizedBox(width: 8),
+                  UnverifiedTrackIndicator(
+                    onTap: () => _showMatchSuggestions(context),
+                  ),
+                ],
+              ],
             ),
-            if (track.needsVerification) ...[
-              const SizedBox(width: 8),
-              UnverifiedTrackIndicator(
-                onTap: () => _showMatchSuggestions(context),
-              ),
-            ],
-          ],
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              track.displayArtist,
+            subtitle: Text(
+              subtitle,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            SongMetadataChips(
-              analysis: track.analysis,
-              topSpacing: 3,
+            trailing: Row(
+              key: ValueKey('library_track_trailing_${track.id}'),
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SongMetadataChips(
+                  analysis: track.analysis,
+                  singleLine: true,
+                  compact: true,
+                ),
+                if (hasMetadata) const SizedBox(width: 6),
+                if (!compactActions) ...[
+                  if (isCurrent) ...[
+                    Icon(
+                      Icons.equalizer,
+                      size: 18,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Text(
+                    track.formattedDuration,
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(
+                      _liked ? Icons.favorite : Icons.favorite_border,
+                      color: _liked ? theme.colorScheme.primary : null,
+                    ),
+                    tooltip: _liked ? 'Unlike' : 'Like',
+                    onPressed: _likeInFlight ? null : _toggleLike,
+                  ),
+                  DownloadButton(track: track),
+                ],
+                IconButton(
+                  key: ValueKey('library_track_more_${track.id}'),
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.more_vert),
+                  tooltip: 'More actions',
+                  onPressed: () => _showActions(context),
+                ),
+              ],
             ),
-          ],
-        ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (isCurrent) ...[
-              Icon(Icons.equalizer, size: 18, color: theme.colorScheme.primary),
-              const SizedBox(width: 8),
-            ],
-            Text(
-              track.formattedDuration,
-              style: theme.textTheme.bodySmall,
-            ),
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              icon: Icon(
-                _liked ? Icons.favorite : Icons.favorite_border,
-                color: _liked ? theme.colorScheme.primary : null,
-              ),
-              tooltip: _liked ? 'Unlike' : 'Like',
-              onPressed: _likeInFlight ? null : _toggleLike,
-            ),
-            DownloadButton(track: track),
-            IconButton(
-              visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.more_vert),
-              tooltip: 'More actions',
-              onPressed: () => _showActions(context),
-            ),
-          ],
-        ),
-        onTap: () => _playTrack(context),
-        onLongPress: track.needsVerification
-            ? () => _showMatchSuggestions(context)
-            : () => _showActions(context),
-      ),
+            onTap: () => _playTrack(context),
+            onLongPress: track.needsVerification
+                ? () => _showMatchSuggestions(context)
+                : () => _showActions(context),
+          ),
+        );
+      },
     );
   }
 
@@ -1080,66 +1109,83 @@ class _TrackListTileState extends State<_TrackListTile> {
     showModalBottomSheet(
       context: context,
       builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.queue_music),
-              title: const Text('Add to queue'),
-              onTap: () async {
-                Navigator.of(sheetContext).pop();
-                await _addToQueue();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.playlist_play),
-              title: const Text('Play next'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                playTrackNext(playback.playNext, track);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.playlist_add),
-              title: const Text('Add to playlist'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                _addToPlaylist();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.person),
-              title: const Text('Go to artist'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                _goToArtist();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.album),
-              title: const Text('Go to album'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                _goToAlbum();
-              },
-            ),
-            ListTile(
-              leading: Icon(_liked ? Icons.favorite : Icons.favorite_border),
-              title: Text(_liked ? 'Unlike' : 'Like'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                _toggleLike();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline),
-              title: const Text('Remove from library'),
-              onTap: () {
-                Navigator.of(sheetContext).pop();
-                _removeFromLibrary();
-              },
-            ),
-          ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (track.needsVerification)
+                ListTile(
+                  key: ValueKey('library_review_match_${track.id}'),
+                  leading: const Icon(Icons.auto_fix_high),
+                  title: const Text('Review match'),
+                  onTap: () {
+                    Navigator.of(sheetContext).pop();
+                    _showMatchSuggestions(context);
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.queue_music),
+                title: const Text('Add to queue'),
+                onTap: () async {
+                  Navigator.of(sheetContext).pop();
+                  await _addToQueue();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.playlist_play),
+                title: const Text('Play next'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  playTrackNext(playback.playNext, track);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.playlist_add),
+                title: const Text('Add to playlist'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _addToPlaylist();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.person),
+                title: const Text('Go to artist'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _goToArtist();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.album),
+                title: const Text('Go to album'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _goToAlbum();
+                },
+              ),
+              ListTile(
+                leading: Icon(_liked ? Icons.favorite : Icons.favorite_border),
+                title: Text(_liked ? 'Unlike' : 'Like'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _toggleLike();
+                },
+              ),
+              ListTile(
+                key: ValueKey('library_download_action_${track.id}'),
+                title: const Text('Download'),
+                trailing: DownloadButton(track: track),
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('Remove from library'),
+                onTap: () {
+                  Navigator.of(sheetContext).pop();
+                  _removeFromLibrary();
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );

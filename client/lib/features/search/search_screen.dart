@@ -890,30 +890,31 @@ class _SearchScreenState extends State<SearchScreen> {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
-        subtitle: subtitle.isEmpty && track.analysis == null
+        subtitle: subtitle.isEmpty
             ? null
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (subtitle.isNotEmpty)
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  SongMetadataChips(
-                    analysis: track.analysis,
-                    topSpacing: 3,
-                  ),
-                ],
+            : Text(
+                subtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-        trailing: playable
-            ? IconButton(
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SongMetadataChips(
+              analysis: track.analysis,
+              singleLine: true,
+              compact: true,
+            ),
+            if (playable) ...[
+              const SizedBox(width: 6),
+              IconButton(
                 tooltip: 'Play',
                 icon: const Icon(Icons.play_arrow),
                 onPressed: () => _playLocalTrack(track),
-              )
-            : null,
+              ),
+            ],
+          ],
+        ),
         onTap: playable ? () => _playLocalTrack(track) : null,
       ),
     );

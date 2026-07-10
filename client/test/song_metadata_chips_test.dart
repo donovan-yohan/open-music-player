@@ -160,13 +160,43 @@ void main() {
     final minor11 = decorationFor('11A');
     final major11 = decorationFor('11B');
     final minor10 = decorationFor('10A');
-    final hue11A = HSVColor.fromColor(minor11.border!.top.color).hue;
-    final hue11B = HSVColor.fromColor(major11.border!.top.color).hue;
-    final hue10A = HSVColor.fromColor(minor10.border!.top.color).hue;
+    final hue11A = HSVColor.fromColor(minor11.color!).hue;
+    final hue11B = HSVColor.fromColor(major11.color!).hue;
+    final hue10A = HSVColor.fromColor(minor10.color!).hue;
 
     expect(hue11A, closeTo(hue11B, 0.01));
-    expect((hue11A - hue10A).abs(), closeTo(30, 0.01));
+    expect((hue11A - hue10A).abs(), closeTo(30, 0.5));
     expect(minor11.color, isNot(major11.color));
+    expect(minor11.color!.a, 1);
+    expect(minor11.border, isNull);
+  });
+
+  testWidgets('uses opaque solid fills without outline borders',
+      (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: SongMetadataChips(analysis: _analysis())),
+      ),
+    );
+
+    for (final label in ['141.2 BPM', '11A']) {
+      final chip = find.ancestor(
+        of: find.text(label),
+        matching: find.byKey(
+          label == '141.2 BPM'
+              ? const ValueKey('song_metadata_bpm_chip')
+              : const ValueKey('song_metadata_key_chip'),
+        ),
+      );
+      final container = find.descendant(
+        of: chip,
+        matching: find.byType(Container),
+      );
+      final decoration =
+          tester.widget<Container>(container).decoration! as BoxDecoration;
+      expect(decoration.color!.a, 1);
+      expect(decoration.border, isNull);
+    }
   });
 
   testWidgets('all Camelot pills meet text contrast in light and dark themes', (

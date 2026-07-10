@@ -131,18 +131,30 @@ class QueueItem extends StatelessWidget {
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          track.formattedDuration,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(color: Colors.grey[600]),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
                       ],
                     ),
+                  ),
+                  const SizedBox(width: 8),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SongMetadataChips(
+                        analysis: track.analysis,
+                        singleLine: true,
+                        compact: true,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        track.formattedDuration,
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(color: Colors.grey[600]),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -157,7 +169,6 @@ class QueueItem extends StatelessWidget {
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     _buildStatusChip(context),
-                    SongMetadataChips(analysis: track.analysis),
                     ..._buildAnalysisChips(context),
                     if (onEditAnalysis != null)
                       IconButton(

@@ -37,28 +37,30 @@ class TrackTile extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      subtitle: Text(
+        [track.artist, track.album].whereType<String>().join(' - '),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
+          SongMetadataChips(
+            analysis: track.analysis,
+            singleLine: true,
+            compact: true,
+          ),
+          const SizedBox(width: 6),
           Text(
-            [track.artist, track.album].whereType<String>().join(' - '),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+            track.formattedDuration,
             style: TextStyle(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
-          SongMetadataChips(
-            analysis: track.analysis,
-            topSpacing: 3,
-          ),
         ],
-      ),
-      trailing: Text(
-        track.formattedDuration,
-        style: TextStyle(
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
       ),
       onTap: onTap,
     );

@@ -275,19 +275,15 @@ class _TrackTile extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              track.displayArtist,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            SongMetadataChips(
-              analysis: track.analysis,
-              topSpacing: 3,
-            ),
-          ],
+        subtitle: Text(
+          track.displayArtist,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: SongMetadataChips(
+          analysis: track.analysis,
+          singleLine: true,
+          compact: true,
         ),
       ),
     );

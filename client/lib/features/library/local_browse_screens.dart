@@ -126,8 +126,7 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content:
-              Text(playback.playbackError ?? 'Could not start playback.'),
+          content: Text(playback.playbackError ?? 'Could not start playback.'),
           backgroundColor: Colors.red,
         ),
       );
@@ -223,23 +222,25 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            subtitle: Text(
+              track.displayArtist,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  track.displayArtist,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
                 SongMetadataChips(
                   analysis: track.analysis,
-                  topSpacing: 3,
+                  singleLine: true,
+                  compact: true,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  track.formattedDuration,
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
-            ),
-            trailing: Text(
-              track.formattedDuration,
-              style: Theme.of(context).textTheme.bodySmall,
             ),
             onTap: () => _play(startIndex: index - 1),
           );
