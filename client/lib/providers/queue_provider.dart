@@ -85,6 +85,9 @@ class QueueProvider extends ChangeNotifier {
     );
   }
 
+  String pitchModeFor(Track track) =>
+      _mixPlanClipFor(track)?.pitchMode ?? pitchModePreserve;
+
   /// Load durable #57 mix-plan clip timing into the queue editing surface.
   /// The UI can still edit optimistically when no saved plan is present.
   void applyMixPlanClips(Iterable<MixPlanClip> clips) {
@@ -398,6 +401,42 @@ class QueueProvider extends ChangeNotifier {
     unawaited(_enqueueQueueTimingMixPlanSave());
   }
 
+  void setPitchMode(Track track, String pitchMode) {
+    final normalized = normalizePitchMode(pitchMode);
+    final existing = _mixPlanClipFor(track);
+    if (existing != null && existing.pitchMode == normalized) return;
+    if (existing != null) {
+      _storeMixPlanClip(existing.withPitchMode(normalized));
+    } else {
+      final trackId = _mixPlanTrackId(track);
+      if (trackId == null) return;
+      final range = trimRangeFor(track);
+      final fallbackClip = TimelineClip.clamped(
+        id: track.queueItemId.isNotEmpty ? track.queueItemId : track.id,
+        trackId: trackId,
+        sourceDurationMs: track.durationMs,
+        sourceStartMs: range.startOffsetMs,
+        sourceEndMs: range.endOffsetMs,
+        timelineStartMs: _firstTimelineStart(track) ?? 0,
+      );
+      _storeMixPlanClip(
+        MixPlanClip(
+          clipId: fallbackClip.id,
+          queueItemId: track.queueItemId.isNotEmpty
+              ? track.queueItemId
+              : fallbackClip.id,
+          trackId: trackId,
+          sourceStartMs: fallbackClip.sourceStartMs,
+          sourceEndMs: fallbackClip.sourceEndMs,
+          timelineStartMs: fallbackClip.timelineStartMs,
+          pitchMode: normalized,
+        ),
+      );
+    }
+    _notifyListeners();
+    unawaited(_enqueueQueueTimingMixPlanSave());
+  }
+
   Future<void> setTrimRange(Track track, TrimRange range) async {
     _trimRanges = Map<String, TrimRange>.from(_trimRanges);
     for (final key in _localTimingKeys(track)) {
@@ -542,6 +581,7 @@ class QueueProvider extends ChangeNotifier {
           gainDb: existing?.gainDb ?? 0,
           fadeInMs: existing?.fadeInMs,
           fadeOutMs: existing?.fadeOutMs,
+          pitchMode: existing?.pitchMode ?? pitchModePreserve,
         ),
       );
     }
@@ -605,6 +645,7 @@ class QueueProvider extends ChangeNotifier {
       gainDb: normalized.gainDb,
       fadeInMs: normalized.fadeInMs,
       fadeOutMs: normalized.fadeOutMs,
+      pitchMode: normalized.pitchMode,
     );
   }
 

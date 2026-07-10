@@ -86,7 +86,7 @@ func TestCreateMixPlanAcceptsDuplicateTrackClipsAndStoresDerivedSummary(t *testi
 		"schemaVersion":1,
 		"name":"Road trip mix",
 		"clips":[
-			{"clipId":"intro","queueItemId":"queue-intro","trackId":42,"sourceStartMs":1000,"sourceEndMs":5000,"timelineStartMs":0,"gainDb":-3.5,"fadeInMs":250},
+			{"clipId":"intro","queueItemId":"queue-intro","trackId":42,"sourceStartMs":1000,"sourceEndMs":5000,"timelineStartMs":0,"gainDb":-3.5,"fadeInMs":250,"pitchMode":"vinyl"},
 			{"clipId":"drop","queueItemId":"queue-drop","trackId":42,"sourceStartMs":6000,"sourceEndMs":9000,"timelineStartMs":4500,"gainDb":1.25,"fadeOutMs":500}
 		]
 	}`)
@@ -118,6 +118,9 @@ func TestCreateMixPlanAcceptsDuplicateTrackClipsAndStoresDerivedSummary(t *testi
 	if storedPayload.Clips[0].FadeInMs == nil || *storedPayload.Clips[0].FadeInMs != 250 {
 		t.Fatalf("stored fadeInMs = %+v, want 250", storedPayload.Clips[0].FadeInMs)
 	}
+	if storedPayload.Clips[0].PitchMode != "followTempo" || storedPayload.Clips[1].PitchMode != "preserve" {
+		t.Fatalf("stored pitch modes = %q/%q, want followTempo/preserve", storedPayload.Clips[0].PitchMode, storedPayload.Clips[1].PitchMode)
+	}
 
 	var storedSummary MixPlanSummary
 	if err := json.Unmarshal(store.created.Summary, &storedSummary); err != nil {
@@ -142,6 +145,9 @@ func TestCreateMixPlanAcceptsDuplicateTrackClipsAndStoresDerivedSummary(t *testi
 	}
 	if resp.Clips[0].QueueItemID != "queue-intro" || resp.Clips[0].TimelineEndMs != 4000 {
 		t.Fatalf("response first clip = %+v, want queueItemId and derived timelineEndMs", resp.Clips[0])
+	}
+	if resp.Clips[0].PitchMode != "followTempo" || resp.Clips[1].PitchMode != "preserve" {
+		t.Fatalf("response pitch modes = %q/%q, want followTempo/preserve", resp.Clips[0].PitchMode, resp.Clips[1].PitchMode)
 	}
 	if resp.Clips[1].TimelineEndMs != 7500 {
 		t.Fatalf("response second timelineEndMs = %d, want 7500", resp.Clips[1].TimelineEndMs)

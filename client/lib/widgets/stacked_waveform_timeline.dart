@@ -43,6 +43,7 @@ class StackedWaveformTimeline extends StatefulWidget {
       waveformFor;
   final TrimRange Function(Track) trimRangeFor;
   final TimelineClip Function(Track, TimelineClip)? clipFor;
+  final String Function(Track)? pitchModeFor;
   final void Function(Track, int)? onTimelineStartChanged;
   final void Function(Track, int)? onTrimStartChanged;
   final void Function(Track, int)? onTrimEndChanged;
@@ -68,6 +69,7 @@ class StackedWaveformTimeline extends StatefulWidget {
     this.waveformFor,
     required this.trimRangeFor,
     this.clipFor,
+    this.pitchModeFor,
     this.onTimelineStartChanged,
     this.onTrimStartChanged,
     this.onTrimEndChanged,
@@ -436,7 +438,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       final clip = _previewClipFor(track, baseClip) ?? baseClip;
       final trackTempo = _tempoForTrack(track);
       final mixClip = liveClip == null
-          ? MixClip(placement: clip, tempo: trackTempo)
+          ? MixClip(
+              placement: clip,
+              tempo: trackTempo,
+              pitchMode: widget.pitchModeFor?.call(track) ?? pitchModePreserve,
+            )
           : _copyMixClipWithPlacement(
               liveClip,
               clip,
@@ -685,9 +691,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     TimelineClip placement, {
     ClipTempoMetadata fallbackTempo = ClipTempoMetadata.empty,
   }) {
-    final tempo = clip.tempo.isEmpty && !fallbackTempo.isEmpty
-        ? fallbackTempo
-        : clip.tempo;
+    final tempo = _freshestTempo(clip.tempo, fallbackTempo);
     return MixClip(
       placement: placement,
       envelope: clip.envelope,
@@ -698,6 +702,26 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       tempo: tempo,
       rateAutomation: clip.rateAutomation,
     );
+  }
+
+  ClipTempoMetadata _freshestTempo(
+    ClipTempoMetadata liveTempo,
+    ClipTempoMetadata rowTempo,
+  ) {
+    if (rowTempo.isEmpty) return liveTempo;
+    if (liveTempo.isEmpty) return rowTempo;
+    if (rowTempo == liveTempo) return liveTempo;
+
+    final rowHasCompleteTiming =
+        rowTempo.hasReliableBpm && rowTempo.hasDownbeats;
+    final liveHasCompleteTiming =
+        liveTempo.hasReliableBpm && liveTempo.hasDownbeats;
+    if (rowHasCompleteTiming) return rowTempo;
+    if (!liveHasCompleteTiming &&
+        (rowTempo.hasReliableBpm || rowTempo.hasDownbeats)) {
+      return rowTempo;
+    }
+    return liveTempo;
   }
 
   ClipTempoMetadata _tempoForTrack(Track track) {

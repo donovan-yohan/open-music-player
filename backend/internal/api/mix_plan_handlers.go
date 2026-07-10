@@ -62,6 +62,7 @@ type MixPlanClip struct {
 	GainDB          float64 `json:"gainDb"`
 	FadeInMs        *int64  `json:"fadeInMs,omitempty"`
 	FadeOutMs       *int64  `json:"fadeOutMs,omitempty"`
+	PitchMode       string  `json:"pitchMode,omitempty"`
 }
 
 type MixPlanClipResponse struct {
@@ -75,6 +76,7 @@ type MixPlanClipResponse struct {
 	GainDB          float64 `json:"gainDb"`
 	FadeInMs        *int64  `json:"fadeInMs,omitempty"`
 	FadeOutMs       *int64  `json:"fadeOutMs,omitempty"`
+	PitchMode       string  `json:"pitchMode"`
 }
 
 type MixPlanSummary struct {
@@ -387,6 +389,7 @@ func buildMixPlanPayload(req *SaveMixPlanRequest) (MixPlanPayload, MixPlanSummar
 		if clip.FadeOutMs != nil && *clip.FadeOutMs < 0 {
 			return payload, MixPlanSummary{}, nil, fmt.Errorf("clips[%d].fadeOutMs must be non-negative", i)
 		}
+		clip.PitchMode = normalizeMixPlanPitchMode(clip.PitchMode)
 		if !trackSeen[clip.TrackID] {
 			trackSeen[clip.TrackID] = true
 			trackIDs = append(trackIDs, clip.TrackID)
@@ -447,9 +450,22 @@ func mixPlanClipResponses(clips []MixPlanClip) []MixPlanClipResponse {
 			GainDB:          clip.GainDB,
 			FadeInMs:        clip.FadeInMs,
 			FadeOutMs:       clip.FadeOutMs,
+			PitchMode:       normalizeMixPlanPitchMode(clip.PitchMode),
 		})
 	}
 	return responses
+}
+
+func normalizeMixPlanPitchMode(mode string) string {
+	normalized := strings.NewReplacer(" ", "", "_", "", "-", "").Replace(strings.ToLower(strings.TrimSpace(mode)))
+	switch normalized {
+	case "", "preserve", "preservepitch", "keylock", "keepkey":
+		return "preserve"
+	case "followtempo", "followrate", "follow", "vinyl", "resample":
+		return "followTempo"
+	default:
+		return "preserve"
+	}
 }
 
 func parseMixPlanID(r *http.Request) (uuid.UUID, error) {

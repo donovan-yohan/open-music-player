@@ -1201,6 +1201,53 @@ void main() {
     );
   });
 
+  testWidgets('live timeline prefers corrected row tempo over stale clip tempo',
+      (tester) async {
+    final downbeats = List<int>.generate(50, (index) => index * 5000);
+    final current = _analyzedTrack(
+      't1',
+      'Midnight Drive',
+      220,
+      bpm: 141.18,
+      downbeatsMs: downbeats,
+    );
+    final upcoming = _analyzedTrack(
+      't2',
+      'Skyline',
+      180,
+      bpm: 141.18,
+      downbeatsMs: downbeats,
+    );
+    const staleTempo = ClipTempoMetadata(nativeBpm: 90);
+    final timeline = TimelineModel(
+      clips: [
+        _mixClip('t1', 0, 220000, tempo: staleTempo),
+        _mixClip('t2', 195000, 180000, tempo: staleTempo),
+      ],
+    );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [upcoming],
+      timelineModel: timeline,
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+
+    final chip = find.byKey(const ValueKey('timeline_tempo_t2'));
+    expect(chip, findsOneWidget);
+    expect(
+      find.descendant(of: chip, matching: find.textContaining('141.2 BPM')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Beat locked'), findsWidgets);
+    expect(find.textContaining('No downbeat'), findsNothing);
+  });
+
   testWidgets('selected lane toggles pitch mode', (tester) async {
     final current = _track('t1', 'Midnight Drive', 240);
     final calls = <({Track track, String pitchMode})>[];
