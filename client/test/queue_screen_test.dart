@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 
 import 'package:open_music_player/core/audio/playback_context.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/mix_plan.dart';
@@ -810,6 +812,27 @@ class _FakePlaybackState extends Fake implements PlaybackState {
 
   @override
   TimelineModel get timelineModel => TimelineModel();
+
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot(
+        sessionId: 'fake_session',
+        cues: const [],
+        currentCueId: null,
+        currentQueueIndex: fakeCurrentIndex,
+        currentMediaItem: currentItem,
+        localPosition: fakePosition,
+        localDuration: currentItem?.duration ?? Duration.zero,
+        globalPosition: Duration(milliseconds: fakeTimelinePositionMs),
+        globalDuration: Duration(
+          milliseconds: fakeQueue.fold<int>(
+            0,
+            (total, item) => total + (item.duration?.inMilliseconds ?? 0),
+          ),
+        ),
+        playing: fakeIsPlaying,
+        processingState: ProcessingState.ready,
+        activeVoiceCount: fakeIsPlaying ? 1 : 0,
+      );
 
   @override
   TimelineClip? timelineClipForQueueIndex(int index) {

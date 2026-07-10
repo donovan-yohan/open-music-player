@@ -46,6 +46,7 @@ class StackedWaveformTimeline extends StatefulWidget {
   final ValueChanged<Track>? onMoveLater;
   final TimelineAnalysisEditCallback? onEditAnalysis;
   final TimelineModel? timelineModel;
+  final Set<String> pitchFallbackClipIds;
   final int playheadPositionMs;
   final Stream<int>? positionMsStream;
   final VoidCallback? onScrubStart;
@@ -68,6 +69,7 @@ class StackedWaveformTimeline extends StatefulWidget {
     this.onMoveLater,
     this.onEditAnalysis,
     this.timelineModel,
+    this.pitchFallbackClipIds = const {},
     this.playheadPositionMs = 0,
     this.positionMsStream,
     this.onScrubStart,
@@ -1382,6 +1384,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   Widget? _selectedTempoChip(BuildContext context, _LaneModel lane) {
     final tempo = lane.mixClip.tempo;
+    final pitchFallback = _hasPitchFallback(lane.mixClip);
     final labels = <String>[
       if (tempo.nativeBpm != null) '${_formatBpm(tempo.nativeBpm!)} BPM',
       if (tempo.bpmConfidence != null)
@@ -1392,12 +1395,14 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         '${tempo.downbeatsMs.length} ${tempo.downbeatsMs.length == 1 ? 'downbeat' : 'downbeats'}'
       else if (tempo.nativeBpm != null)
         'No downbeat',
+      if (pitchFallback) 'Pitch fallback',
     ];
     if (labels.isEmpty) return null;
     final theme = Theme.of(context);
     final warning = tempo.nativeBpm == null ||
         !tempo.hasReliableBpm ||
-        tempo.downbeatsMs.isEmpty;
+        tempo.downbeatsMs.isEmpty ||
+        pitchFallback;
     final color = warning
         ? const Color(0xFFFF8F00)
         : theme.colorScheme.onSurface.withValues(alpha: 0.92);
@@ -1419,6 +1424,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       ),
     );
   }
+
+  bool _hasPitchFallback(MixClip clip) =>
+      widget.pitchFallbackClipIds.contains(clip.id);
 
   int? _analysisAnchorForLane(_LaneModel lane, int playheadMs) {
     if (!lane.mixClip.isActiveAt(playheadMs)) return null;

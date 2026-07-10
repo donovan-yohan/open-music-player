@@ -368,6 +368,7 @@ class _QueueScreenState extends State<QueueScreen> {
           playback.timelineClipForQueueIndex(_playbackQueueIndex(track)) ??
           fallback,
       timelineModel: playback.timelineModel,
+      pitchFallbackClipIds: playback.snapshot.pitchFallbackClipIds,
       playheadPositionMs: playback.timelinePositionMs,
       positionMsStream: playback.timelinePositionMsStream,
       onScrubStart: playback.beginTimelineScrub,
@@ -694,6 +695,7 @@ class _QueueScreenState extends State<QueueScreen> {
         trimRangeFor: provider.trimRangeFor,
         clipFor: provider.timelineClipFor,
         timelineModel: playback.timelineModel,
+        pitchFallbackClipIds: playback.snapshot.pitchFallbackClipIds,
         playheadPositionMs: playback.timelinePositionMs,
         positionMsStream: playback.timelinePositionMsStream,
         onScrubStart: playback.beginTimelineScrub,
