@@ -121,6 +121,8 @@ class MixSession {
                 normalized,
                 startIndex: firstTempoChangedIndex,
                 preserveEditedPlacements: true,
+                wasAutoManagedPlacement: (index) =>
+                    _wasAutoManagedPlacement(clips, index),
               );
     return MixSession(
       sessionId: sessionId,
@@ -780,6 +782,7 @@ List<MixSessionClip> _reflowDefaultTransitions(
   List<MixSessionClip> clips, {
   required int startIndex,
   bool preserveEditedPlacements = false,
+  bool Function(int index)? wasAutoManagedPlacement,
 }) {
   if (clips.isEmpty) return clips;
   final next = List<MixSessionClip>.from(clips);
@@ -788,12 +791,11 @@ List<MixSessionClip> _reflowDefaultTransitions(
   var reflowingContiguousDefaults = true;
 
   for (var index = first; index < next.length; index++) {
-    final originalPrevious = index == 0 ? null : clips[index - 1];
-    final originalFallbackStartMs = originalPrevious?.timelineEndMs ?? 0;
     final clip = next[index];
     if (preserveEditedPlacements &&
         (!reflowingContiguousDefaults ||
-            clip.timelineStartMs != originalFallbackStartMs)) {
+            !(wasAutoManagedPlacement?.call(index) ??
+                _wasAutoManagedPlacement(clips, index)))) {
       reflowingContiguousDefaults = false;
       continue;
     }
@@ -808,6 +810,16 @@ List<MixSessionClip> _reflowDefaultTransitions(
   }
 
   return next;
+}
+
+bool _wasAutoManagedPlacement(List<MixSessionClip> clips, int index) {
+  if (index < 0 || index >= clips.length) return true;
+  final clip = clips[index];
+  final previous = index == 0 ? null : clips[index - 1];
+  final fallbackStartMs = previous?.timelineEndMs ?? 0;
+  if (clip.timelineStartMs == fallbackStartMs) return true;
+  return clip.timelineStartMs ==
+      _defaultTimelineStartAfter(previous, clip, fallbackStartMs);
 }
 
 bool _sameClipPlacements(

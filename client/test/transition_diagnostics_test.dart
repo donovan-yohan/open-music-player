@@ -100,6 +100,38 @@ void main() {
     expect(diagnostics.hasWarnings, isTrue);
   });
 
+  test('validates downbeat lock through tempo automation timing', () {
+    final model = TimelineModel(
+      clips: [
+        _clip(
+          'outgoing',
+          0,
+          durationMs: 24000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 120,
+            bpmConfidence: 0.9,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
+          ),
+        ),
+        _clip(
+          'incoming',
+          13500,
+          durationMs: 24000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 150,
+            bpmConfidence: 0.9,
+            downbeatsMs: [2000, 3600, 5200, 6800],
+          ),
+        ),
+      ],
+    );
+    final diagnostics = diagnoseTransition(model.clips[0], model.clips[1]);
+    final codes = diagnostics.diagnostics.map((item) => item.code).toList();
+
+    expect(codes, contains(TransitionDiagnosticCode.beatLocked));
+    expect(codes, isNot(contains(TransitionDiagnosticCode.downbeatOffset)));
+  });
+
   test('missing BPM and downbeat labels identify the missing side', () {
     final diagnostics = diagnoseTransition(
       _clip(
@@ -340,6 +372,7 @@ void main() {
 MixClip _clip(
   String id,
   int timelineStartMs, {
+  int durationMs = 16000,
   ClipTempoMetadata tempo = ClipTempoMetadata.empty,
   String pitchMode = pitchModePreserve,
 }) {
@@ -347,9 +380,9 @@ MixClip _clip(
     placement: TimelineClip.clamped(
       id: id,
       trackId: id,
-      sourceDurationMs: 16000,
+      sourceDurationMs: durationMs,
       sourceStartMs: 0,
-      sourceEndMs: 16000,
+      sourceEndMs: durationMs,
       timelineStartMs: timelineStartMs,
     ),
     tempo: tempo,

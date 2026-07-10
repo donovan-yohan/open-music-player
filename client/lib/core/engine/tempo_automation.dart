@@ -620,10 +620,11 @@ int? snapIncomingStartToNearestDownbeat({
 }) {
   if (!incomingTempo.hasDownbeats || !outgoingTempo.hasDownbeats) return null;
 
-  final incomingAnchor = incomingTempo.downbeatsMs.firstWhere(
-    (ms) => ms >= incomingSourceStartMs,
-    orElse: () => incomingTempo.downbeatsMs.first,
+  final incomingAnchor = _firstMarkerAtOrAfter(
+    incomingTempo.downbeatsMs,
+    incomingSourceStartMs,
   );
+  if (incomingAnchor == null) return null;
   final outgoingGlobals = outgoingTempo.downbeatsMs
       .map((ms) => outgoingTimelineStartMs + (ms - outgoingSourceStartMs))
       .where((ms) => ms >= 0)
@@ -641,8 +642,56 @@ int? snapIncomingStartToNearestDownbeat({
   }
   if (nearestDistance > toleranceMs) return null;
 
-  final snapped = nearest - (incomingAnchor - incomingSourceStartMs);
+  final anchorOffsetMs = _incomingDownbeatTimelineOffsetMs(
+    sourceDeltaMs: incomingAnchor - incomingSourceStartMs,
+    incomingTempo: incomingTempo,
+    outgoingTempo: outgoingTempo,
+  );
+  final snapped = nearest - anchorOffsetMs;
   return math.max(0, snapped);
+}
+
+int? _firstMarkerAtOrAfter(List<int> markers, int sourceMs) {
+  int? first;
+  for (final marker in markers) {
+    if (marker < sourceMs) continue;
+    if (first == null || marker < first) first = marker;
+  }
+  return first;
+}
+
+int _incomingDownbeatTimelineOffsetMs({
+  required int sourceDeltaMs,
+  required ClipTempoMetadata incomingTempo,
+  required ClipTempoMetadata outgoingTempo,
+}) {
+  final safeSourceDeltaMs = math.max(0, sourceDeltaMs);
+  if (safeSourceDeltaMs == 0) return 0;
+
+  final incomingBpm = incomingTempo.nativeBpm;
+  final outgoingBpm = outgoingTempo.nativeBpm;
+  if (incomingTempo.hasReliableBpm &&
+      outgoingTempo.hasReliableBpm &&
+      incomingBpm != null &&
+      incomingBpm > 0 &&
+      outgoingBpm != null &&
+      outgoingBpm > 0 &&
+      playbackRateCanReachTargetBpm(
+        baseRate: 1,
+        nativeBpm: incomingBpm,
+        targetBpm: outgoingBpm,
+      )) {
+    final incomingStartRate = playbackRateForTargetBpm(
+      baseRate: 1,
+      nativeBpm: incomingBpm,
+      targetBpm: outgoingBpm,
+    );
+    if (incomingStartRate > 0) {
+      return (safeSourceDeltaMs / incomingStartRate).round();
+    }
+  }
+
+  return safeSourceDeltaMs;
 }
 
 int defaultTransitionOverlapMsForTempo({
