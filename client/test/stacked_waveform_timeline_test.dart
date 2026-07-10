@@ -1904,6 +1904,118 @@ void main() {
     expect(find.textContaining('Downbeat -112ms'), findsNothing);
   });
 
+  testWidgets('older placement commit preserves a newer trim preview', (
+    tester,
+  ) async {
+    final placementCommit = Completer<void>();
+    final trimCommit = Completer<void>();
+    var placementCalls = 0;
+    var trimCalls = 0;
+
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+      transitionSnapMode: BeatSnapMode.free,
+      onTimelineStartChanged: (_, __) async {
+        placementCalls += 1;
+        await placementCommit.future;
+      },
+      onTrimEndChanged: (_, __) async {
+        trimCalls += 1;
+        await trimCommit.future;
+      },
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+      const Offset(90, 0),
+    );
+    await tester.pump();
+    expect(placementCalls, 1);
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_trim_end_t1')),
+      const Offset(-70, 0),
+    );
+    await tester.pump();
+    expect(trimCalls, 1);
+    final newerPreview = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t1')),
+    );
+
+    placementCommit.complete();
+    await tester.pump();
+
+    final afterOlderCommit = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t1')),
+    );
+    expect(afterOlderCommit.left, closeTo(newerPreview.left, 0.1));
+    expect(afterOlderCommit.width, closeTo(newerPreview.width, 0.1));
+
+    trimCommit.complete();
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('older trim commit preserves a newer placement preview', (
+    tester,
+  ) async {
+    final trimCommit = Completer<void>();
+    final placementCommit = Completer<void>();
+    var trimCalls = 0;
+    var placementCalls = 0;
+
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+      transitionSnapMode: BeatSnapMode.free,
+      onTrimEndChanged: (_, __) async {
+        trimCalls += 1;
+        await trimCommit.future;
+      },
+      onTimelineStartChanged: (_, __) async {
+        placementCalls += 1;
+        await placementCommit.future;
+      },
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_trim_end_t1')),
+      const Offset(-70, 0),
+    );
+    await tester.pump();
+    expect(trimCalls, 1);
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_clip_body_drag_t1')),
+      const Offset(90, 0),
+    );
+    await tester.pump();
+    expect(placementCalls, 1);
+    final newerPreview = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t1')),
+    );
+
+    trimCommit.complete();
+    await tester.pump();
+
+    final afterOlderCommit = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t1')),
+    );
+    expect(afterOlderCommit.left, closeTo(newerPreview.left, 0.1));
+    expect(afterOlderCommit.width, closeTo(newerPreview.width, 0.1));
+
+    placementCommit.complete();
+    await tester.pumpAndSettle();
+  });
+
   testWidgets('trim handles beat body drag hit-testing in edit mode', (
     tester,
   ) async {

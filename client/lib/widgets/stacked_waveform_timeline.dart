@@ -370,10 +370,14 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   String? _selectedTrackId;
   String? _activeClipDragTrackId;
   TimelineClip? _activeClipDragStartClip;
+  int? _activeClipDragGeneration;
   String? _activeTrimTrackId;
   _TrimEdge? _activeTrimEdge;
   TimelineClip? _activeTrimStartClip;
+  int? _activeTrimGeneration;
+  int _nextPreviewGeneration = 0;
   final Map<String, TimelineClip> _previewClips = {};
+  final Map<String, int> _previewGenerations = {};
   TimelineViewport? _scaleStartViewport;
   double? _scaleStartZoom;
   double? _scaleLastLocalFocalX;
@@ -408,10 +412,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _selectedTrackId = null;
       _activeClipDragTrackId = null;
       _activeClipDragStartClip = null;
+      _activeClipDragGeneration = null;
       _activeTrimTrackId = null;
       _activeTrimEdge = null;
       _activeTrimStartClip = null;
+      _activeTrimGeneration = null;
       _previewClips.clear();
+      _previewGenerations.clear();
     }
   }
 
@@ -712,8 +719,18 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     _previewClips[track.id] = clip;
   }
 
-  void _removePreviewClip(String trackId) {
+  int _claimPreview(String trackId) {
+    final generation = ++_nextPreviewGeneration;
+    _previewGenerations[trackId] = generation;
+    return generation;
+  }
+
+  void _removePreviewClip(String trackId, {int? generation}) {
+    if (generation != null && _previewGenerations[trackId] != generation) {
+      return;
+    }
     _previewClips.remove(trackId);
+    _previewGenerations.remove(trackId);
   }
 
   bool _isTrackSelected(String trackId) => _selectedTrackId == trackId;
@@ -1202,6 +1219,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _selectedTrackId = lane.track.id;
       _activeClipDragTrackId = lane.track.id;
       _activeClipDragStartClip = lane.clip;
+      _activeClipDragGeneration = _claimPreview(lane.track.id);
       _storePreviewClip(lane.track, lane.clip);
     });
   }
@@ -1234,9 +1252,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     if (_activeClipDragTrackId != lane.track.id) return;
     final preview = _previewClipFor(lane.track, lane.clip) ?? lane.clip;
     final startClip = _activeClipDragStartClip;
+    final generation = _activeClipDragGeneration;
     setState(() {
       _activeClipDragTrackId = null;
       _activeClipDragStartClip = null;
+      _activeClipDragGeneration = null;
     });
     try {
       if (startClip == null ||
@@ -1248,7 +1268,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       }
     } finally {
       if (mounted) {
-        setState(() => _removePreviewClip(lane.track.id));
+        setState(
+          () => _removePreviewClip(
+            lane.track.id,
+            generation: generation,
+          ),
+        );
       }
     }
   }
@@ -1259,6 +1284,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _removePreviewClip(trackId);
       _activeClipDragTrackId = null;
       _activeClipDragStartClip = null;
+      _activeClipDragGeneration = null;
     });
   }
 
@@ -1268,6 +1294,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _activeTrimTrackId = lane.track.id;
       _activeTrimEdge = edge;
       _activeTrimStartClip = lane.clip;
+      _activeTrimGeneration = _claimPreview(lane.track.id);
       _storePreviewClip(lane.track, lane.clip);
     });
   }
@@ -1312,10 +1339,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final edge = _activeTrimEdge;
     final preview = _previewClipFor(lane.track, lane.clip) ?? lane.clip;
     final startClip = _activeTrimStartClip;
+    final generation = _activeTrimGeneration;
     setState(() {
       _activeTrimTrackId = null;
       _activeTrimEdge = null;
       _activeTrimStartClip = null;
+      _activeTrimGeneration = null;
     });
     try {
       if (edge == null || startClip == null) return;
@@ -1339,7 +1368,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       }
     } finally {
       if (mounted) {
-        setState(() => _removePreviewClip(lane.track.id));
+        setState(
+          () => _removePreviewClip(
+            lane.track.id,
+            generation: generation,
+          ),
+        );
       }
     }
   }
@@ -1351,6 +1385,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _activeTrimTrackId = null;
       _activeTrimEdge = null;
       _activeTrimStartClip = null;
+      _activeTrimGeneration = null;
     });
   }
 
