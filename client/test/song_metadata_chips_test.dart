@@ -9,13 +9,13 @@ import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/shared/widgets/song_metadata_chips.dart';
 
 TrackAnalysis _analysis() => TrackAnalysis.fromJson(
-  status: 'analyzed',
-  summary: {
-    'bpm': {'value': 141.18},
-    'key': {'value': 'F#m'},
-    'camelot': {'value': '11A'},
-  },
-);
+      status: 'analyzed',
+      summary: {
+        'bpm': {'value': 141.18},
+        'key': {'value': 'F#m'},
+        'camelot': {'value': '11A'},
+      },
+    );
 
 Future<ProviderContainer> _container() async {
   SharedPreferences.setMockInitialValues({});
@@ -135,5 +135,10 @@ void main() {
     );
     expect(labels.bpm, '128 BPM');
     expect(labels.key, '6A');
+  });
+
+  test('BPM formatter removes a decimal after rounding to an integer', () {
+    expect(SongMetadataFormatter.formatBpm(120.95), '121 BPM');
+    expect(SongMetadataFormatter.formatBpm(141.18), '141.2 BPM');
   });
 }

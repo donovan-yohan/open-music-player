@@ -33,10 +33,10 @@ abstract final class SongMetadataFormatter {
   static String? formatBpm(num? bpm) {
     final value = bpm?.toDouble();
     if (value == null || !value.isFinite || value <= 0) return null;
-    final rounded = value.roundToDouble();
-    final text = (value - rounded).abs() < 0.05
+    final rounded = (value * 10).round() / 10;
+    final text = rounded % 1 == 0
         ? rounded.toInt().toString()
-        : value.toStringAsFixed(1);
+        : rounded.toStringAsFixed(1);
     return '$text BPM';
   }
 
