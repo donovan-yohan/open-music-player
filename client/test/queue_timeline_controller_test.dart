@@ -468,6 +468,46 @@ void main() {
       await harness.dispose();
     });
 
+    test('bulk refinement keeps a long analyzed queue beat locked', () async {
+      final harness = _Harness();
+      final items = List<MediaItem>.generate(24, (index) {
+        final firstDownbeatMs = (index % 4) * 125;
+        return _item(
+          'bulk-$index',
+          seconds: 30,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: List<int>.generate(
+              15,
+              (beat) => firstDownbeatMs + beat * 2000,
+            ),
+          ),
+        );
+      });
+
+      await harness.controller.setQueue(items);
+
+      final clips = harness.engine.model.clips;
+      expect(clips, hasLength(items.length));
+      for (var index = 1; index < clips.length; index++) {
+        final codes = diagnoseTransition(
+          clips[index - 1],
+          clips[index],
+        ).diagnostics.map((item) => item.code);
+        expect(
+          codes,
+          contains(TransitionDiagnosticCode.beatLocked),
+          reason: 'transition ${index - 1} -> $index should be beat locked',
+        );
+        expect(
+          codes,
+          isNot(contains(TransitionDiagnosticCode.downbeatOffset)),
+        );
+      }
+
+      await harness.dispose();
+    });
+
     test('manual move refines trimmed clips onto the runtime downbeat grid',
         () async {
       final harness = _Harness();

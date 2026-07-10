@@ -921,17 +921,69 @@ class QueueTimelineController {
     }
 
     var refined = session;
-    for (final index in _playOrder.skip(1)) {
-      final clip = refined.clipAt(index);
-      if (clip == null) continue;
-      final placement = _refineRuntimeBeatAlignment(
-        index,
-        clip.placement,
-        baseSession: refined,
-      );
-      if (placement.timelineStartMs == clip.timelineStartMs) continue;
-      final candidate = refined.withPlacementAt(index, placement);
-      if (_canApplySession(candidate)) refined = candidate;
+    for (var attempt = 0; attempt < 8; attempt++) {
+      final model = CueTimeline.fromSession(
+        session: refined,
+        queue: _queue,
+        playOrder: _playOrder,
+      ).toTimelineModel();
+      final clipsById = <String, MixClip>{
+        for (final clip in model.clips) clip.id: clip,
+      };
+      final clipsByQueueItemId = <String, MixClip>{
+        for (final clip in model.clips)
+          if (clip.queueItemId != null) clip.queueItemId!: clip,
+      };
+      final updates = <(int, TimelineClip)>[];
+
+      for (var orderIndex = 1; orderIndex < _playOrder.length; orderIndex++) {
+        final index = _playOrder[orderIndex];
+        final previousIndex = _playOrder[orderIndex - 1];
+        final incomingSessionClip = refined.clipAt(index);
+        final outgoingSessionClip = refined.clipAt(previousIndex);
+        if (incomingSessionClip == null || outgoingSessionClip == null) {
+          continue;
+        }
+        final incoming = clipsById[incomingSessionClip.clipId] ??
+            clipsByQueueItemId[incomingSessionClip.queueItemId];
+        final outgoing = clipsById[outgoingSessionClip.clipId] ??
+            clipsByQueueItemId[outgoingSessionClip.queueItemId];
+        if (incoming == null || outgoing == null) continue;
+        final correctionMs = beatAlignmentCorrectionMs(
+          outgoing: outgoing,
+          incoming: incoming,
+          snapMode: refined.transitionSnapMode,
+        );
+        if (correctionMs == null || correctionMs.abs() <= 1) continue;
+        final correctedStartMs = math.max(
+          0,
+          incomingSessionClip.timelineStartMs + correctionMs,
+        );
+        if (correctedStartMs == incomingSessionClip.timelineStartMs) continue;
+        updates.add((
+          index,
+          incomingSessionClip.placement.withTimelineStartMs(correctedStartMs),
+        ));
+      }
+
+      if (updates.isEmpty) return refined;
+      var candidate = refined;
+      for (final (index, placement) in updates) {
+        candidate = candidate.withPlacementAt(index, placement);
+      }
+      if (_canApplySession(candidate)) {
+        refined = candidate;
+        continue;
+      }
+
+      // Retain independent valid corrections if a combined update conflicts.
+      var fallback = refined;
+      for (final (index, placement) in updates) {
+        final next = fallback.withPlacementAt(index, placement);
+        if (_canApplySession(next)) fallback = next;
+      }
+      if (identical(fallback, refined)) return refined;
+      refined = fallback;
     }
     return refined;
   }
