@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:open_music_player/core/api/api_client.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/track.dart';
@@ -592,6 +593,7 @@ void main() {
                         'sourceEndMs': 90000,
                         'timelineStartMs': 30000,
                         'gainDb': 0,
+                        'pitchMode': 'followTempo',
                       },
                     ],
                     'summary': {
@@ -620,6 +622,7 @@ void main() {
 
     expect(provider.trimRangeFor(track).startOffsetMs, 12000);
     expect(provider.trimRangeFor(track).endOffsetMs, 90000);
+    expect(provider.pitchModeFor(track), pitchModeFollowTempo);
     expect(provider.timelineClipFor(track, _fallback(track)).timelineStartMs,
         30000);
   });
@@ -1003,6 +1006,78 @@ void main() {
         'sourceEndMs': second.durationMs,
         'timelineStartMs': 240000,
         'gainDb': 0.0,
+      },
+    ]);
+  });
+
+  test('pitch mode edits save the current queue timing to the mix-plan API',
+      () async {
+    final first =
+        _track(id: '42', queueItemId: 'queue-a', playbackTrackId: '42');
+    Map<String, dynamic>? savedBody;
+    final provider = QueueProvider(
+      ApiClient(
+        dio: mockQueueDio((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              jsonEncode({
+                'items': [first.toJson()],
+                'currentPosition': 0,
+              }),
+              200,
+            );
+          }
+          if (request.method == 'GET' &&
+              request.url.path.endsWith('/mix-plans')) {
+            return http.Response(
+              jsonEncode({'data': [], 'total': 0, 'limit': 50, 'offset': 0}),
+              200,
+            );
+          }
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/mix-plans')) {
+            savedBody = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              jsonEncode({
+                'id': 'plan-queue-timing',
+                'schemaVersion': 1,
+                'name': savedBody!['name'],
+                'clips': savedBody!['clips'],
+                'summary': {
+                  'clipCount': 1,
+                  'trackIds': [42],
+                  'durationMs': first.durationMs,
+                },
+                'version': 1,
+                'createdAt': '2026-06-03T01:02:03Z',
+                'updatedAt': '2026-06-03T02:03:04Z',
+              }),
+              201,
+            );
+          }
+          return http.Response('', 404);
+        }),
+      ),
+    );
+
+    await provider.loadQueue();
+    provider.setPitchMode(first, pitchModeFollowTempo);
+    for (var i = 0; i < 10 && savedBody == null; i++) {
+      await Future<void>.delayed(Duration.zero);
+    }
+
+    expect(provider.pitchModeFor(first), pitchModeFollowTempo);
+    expect(savedBody, isNotNull);
+    expect(savedBody!['clips'], [
+      {
+        'clipId': 'queue-a',
+        'queueItemId': 'queue-a',
+        'trackId': 42,
+        'sourceStartMs': 0,
+        'sourceEndMs': first.durationMs,
+        'timelineStartMs': 0,
+        'gainDb': 0.0,
+        'pitchMode': pitchModeFollowTempo,
       },
     ]);
   });

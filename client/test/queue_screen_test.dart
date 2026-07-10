@@ -655,6 +655,25 @@ void main() {
     },
   );
 
+  testWidgets('provider timeline pitch toggle updates saved mix metadata', (
+    tester,
+  ) async {
+    apiClient.useMixTimingFixture();
+    await pumpQueueScreen(tester);
+
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_pitch_mode_t2')));
+    await tester.pumpAndSettle();
+
+    final provider =
+        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+    expect(
+        provider.pitchModeFor(provider.queue.tracks[1]), pitchModeFollowTempo);
+  });
+
   testWidgets('timeline drag uses scrub lifecycle instead of direct seek', (
     tester,
   ) async {
@@ -1163,6 +1182,38 @@ class _FakeQueueApiClient extends ApiClient {
           duration: 201,
           addedAt: DateTime(2026),
           queueStatus: TrackQueueStatus.playable,
+        ),
+      ],
+      currentIndex: 0,
+    );
+  }
+
+  void useMixTimingFixture() {
+    _state = QueueState(
+      tracks: [
+        Track(
+          id: 't1',
+          playbackTrackId: '101',
+          title: 'Current Song',
+          artist: 'Queue Artist',
+          duration: 185,
+          addedAt: DateTime(2026),
+        ),
+        Track(
+          id: 't2',
+          playbackTrackId: '202',
+          title: 'Paper Planes',
+          artist: 'Queue Artist',
+          duration: 215,
+          addedAt: DateTime(2026),
+        ),
+        Track(
+          id: 't3',
+          playbackTrackId: '303',
+          title: 'Glass',
+          artist: 'Queue Artist',
+          duration: 241,
+          addedAt: DateTime(2026),
         ),
       ],
       currentIndex: 0,

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 
 void main() {
@@ -9,6 +10,7 @@ void main() {
     int sourceStartMs = 1000,
     int sourceEndMs = 5000,
     int timelineStartMs = 12000,
+    String pitchMode = pitchModePreserve,
   }) =>
       MixPlanClip(
         clipId: clipId,
@@ -19,6 +21,7 @@ void main() {
         timelineStartMs: timelineStartMs,
         gainDb: -1.5,
         fadeInMs: 250,
+        pitchMode: pitchMode,
       );
 
   test('timelineEndMs is derived from placement plus selected source duration',
@@ -30,12 +33,15 @@ void main() {
   });
 
   test('moving placement preserves trim and fade hooks', () {
-    final moved = clip().withTimelineStartMs(30000);
+    final moved = clip(pitchMode: pitchModeFollowTempo).withTimelineStartMs(
+      30000,
+    );
 
     expect(moved.timelineStartMs, 30000);
     expect(moved.sourceStartMs, 1000);
     expect(moved.sourceEndMs, 5000);
     expect(moved.fadeInMs, 250);
+    expect(moved.pitchMode, pitchModeFollowTempo);
     expect(moved.timelineEndMs, 34000);
   });
 
@@ -49,7 +55,20 @@ void main() {
     expect(trimmed.timelineStartMs, 12000);
     expect(trimmed.sourceStartMs, 2000);
     expect(trimmed.sourceEndMs, 8000);
+    expect(trimmed.pitchMode, pitchModePreserve);
     expect(trimmed.timelineEndMs, 18000);
+  });
+
+  test('pitch mode normalizes and round-trips through mix plan json', () {
+    final c = clip(pitchMode: 'vinyl');
+    final json = c.toJson();
+
+    expect(c.pitchMode, pitchModeFollowTempo);
+    expect(json['pitchMode'], pitchModeFollowTempo);
+    expect(MixPlanClip.fromJson(json).pitchMode, pitchModeFollowTempo);
+    expect(MixPlanClip.fromJson({...json}..remove('pitchMode')).pitchMode,
+        pitchModePreserve);
+    expect(c.withPitchMode('key_lock').pitchMode, pitchModePreserve);
   });
 
   test(

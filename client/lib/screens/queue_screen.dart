@@ -744,6 +744,7 @@ class _QueueScreenState extends State<QueueScreen> {
         waveformFor: provider.waveformFor,
         trimRangeFor: provider.trimRangeFor,
         clipFor: provider.timelineClipFor,
+        pitchModeFor: provider.pitchModeFor,
         timelineModel: playback.timelineModel,
         pitchFallbackClipIds: playback.snapshot.pitchFallbackClipIds,
         clipTempoStates: playback.snapshot.clipTempoStates,
@@ -759,6 +760,7 @@ class _QueueScreenState extends State<QueueScreen> {
             _moveTimelineTrack(provider, upNext, currentIndex, track, -1),
         onMoveLater: (track) =>
             _moveTimelineTrack(provider, upNext, currentIndex, track, 1),
+        onPitchModeChanged: provider.setPitchMode,
         onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
             _showAnalysisCorrectionSheet(
           context,

@@ -263,6 +263,7 @@ class TimelineModel {
         envelope: _envelopeFromPlanClip(planClip),
         queueItemId:
             planClip?.queueItemId ?? queueItemIdFor?.call(trackId, index),
+        pitchMode: planClip?.pitchMode ?? pitchModePreserve,
         tempo: tempo,
       );
       if (model.canPlaceClip(mixClip)) {
@@ -352,6 +353,7 @@ class TimelineModel {
           fadeInMs: clip.envelope.fadeInMs == 0 ? null : clip.envelope.fadeInMs,
           fadeOutMs:
               clip.envelope.fadeOutMs == 0 ? null : clip.envelope.fadeOutMs,
+          pitchMode: clip.rateAutomation.pitchMode,
         ),
       )
       .toList(growable: false);
@@ -451,6 +453,7 @@ MixClip _mixClipFromPlanClip(
     ),
     envelope: _envelopeFromPlanClip(clip),
     queueItemId: clip.queueItemId,
+    pitchMode: clip.pitchMode,
   );
 }
 

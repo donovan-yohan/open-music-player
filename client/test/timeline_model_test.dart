@@ -35,6 +35,7 @@ void main() {
     double gainDb = -1.5,
     int? fadeInMs = 100,
     int? fadeOutMs = 200,
+    String pitchMode = pitchModePreserve,
   }) =>
       MixPlanClip(
         clipId: clipId,
@@ -46,6 +47,7 @@ void main() {
         gainDb: gainDb,
         fadeInMs: fadeInMs,
         fadeOutMs: fadeOutMs,
+        pitchMode: pitchMode,
       );
 
   MixPlan plan({String name = 'Test mix', required List<MixPlanClip> clips}) =>
@@ -411,6 +413,7 @@ void main() {
             gainDb: -3,
             fadeInMs: 250,
             fadeOutMs: 300,
+            pitchMode: pitchModeFollowTempo,
           ),
         ],
       );
@@ -423,6 +426,26 @@ void main() {
       expect(payload['schemaVersion'], 1);
       expect(payload['name'], sourcePlan.name);
       expect(payload['clips'], sourcePlan.clips.map((clip) => clip.toJson()));
+    });
+
+    test('fromQueuePlan preserves pitch mode on queue timing clips', () {
+      final model = TimelineModel.fromQueuePlan(
+        plan(
+          clips: [
+            planClip(
+              clipId: 'queue-a',
+              queueItemId: 'queue-a',
+              trackId: '1',
+              pitchMode: pitchModeFollowTempo,
+            ),
+          ],
+        ),
+        trackOrder: const ['1'],
+      );
+
+      expect(model.clips.single.pitchMode, pitchModeFollowTempo);
+      expect(model.clips.single.rateAutomation.pitchMode, pitchModeFollowTempo);
+      expect(model.toMixPlanClips().single.pitchMode, pitchModeFollowTempo);
     });
 
     test('fromMixPlan clamps positive gain and drops depth overflow', () {

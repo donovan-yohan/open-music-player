@@ -1,3 +1,5 @@
+import '../core/engine/tempo_automation.dart';
+
 bool _isNonBlank(String value) => value.trim().isNotEmpty;
 
 bool _isPositiveIntString(String value) {
@@ -24,6 +26,7 @@ class MixPlanClip {
   final double gainDb;
   final int? fadeInMs;
   final int? fadeOutMs;
+  final String pitchMode;
 
   MixPlanClip({
     required this.clipId,
@@ -36,11 +39,13 @@ class MixPlanClip {
     this.gainDb = 0,
     this.fadeInMs,
     this.fadeOutMs,
+    String pitchMode = pitchModePreserve,
   })  : assert(_isNonBlank(clipId)),
         assert(_isNonBlank(queueItemId)),
         assert(_isPositiveIntString(trackId)),
         assert(sourceStartMs >= 0),
         assert(sourceEndMs > sourceStartMs),
+        pitchMode = normalizePitchMode(pitchMode),
         assert(timelineStartMs >= 0),
         assert(fadeInMs == null || fadeInMs >= 0),
         assert(fadeOutMs == null || fadeOutMs >= 0);
@@ -60,6 +65,7 @@ class MixPlanClip {
         gainDb: gainDb,
         fadeInMs: fadeInMs,
         fadeOutMs: fadeOutMs,
+        pitchMode: pitchMode,
       );
 
   MixPlanClip withSourceRange({
@@ -77,6 +83,21 @@ class MixPlanClip {
         gainDb: gainDb,
         fadeInMs: fadeInMs,
         fadeOutMs: fadeOutMs,
+        pitchMode: pitchMode,
+      );
+
+  MixPlanClip withPitchMode(String mode) => MixPlanClip(
+        clipId: clipId,
+        queueItemId: queueItemId,
+        hasExplicitQueueItemId: hasExplicitQueueItemId,
+        trackId: trackId,
+        sourceStartMs: sourceStartMs,
+        sourceEndMs: sourceEndMs,
+        timelineStartMs: timelineStartMs,
+        gainDb: gainDb,
+        fadeInMs: fadeInMs,
+        fadeOutMs: fadeOutMs,
+        pitchMode: mode,
       );
 
   Map<String, dynamic> toJson() {
@@ -94,6 +115,9 @@ class MixPlanClip {
     }
     if (fadeOutMs != null) {
       json['fadeOutMs'] = fadeOutMs;
+    }
+    if (pitchMode != pitchModePreserve) {
+      json['pitchMode'] = pitchMode;
     }
     return json;
   }
@@ -113,6 +137,7 @@ class MixPlanClip {
       gainDb: (json['gainDb'] as num?)?.toDouble() ?? 0,
       fadeInMs: (json['fadeInMs'] as num?)?.toInt(),
       fadeOutMs: (json['fadeOutMs'] as num?)?.toInt(),
+      pitchMode: (json['pitchMode'] as String?) ?? pitchModePreserve,
     );
   }
 }
