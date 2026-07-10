@@ -343,6 +343,7 @@ class ApiClient {
         status: data['status'],
         summary: data['summary'],
         overrides: data['overrides'],
+        overridesPresent: data.containsKey('overrides'),
       );
     } on DioException catch (e) {
       throw ApiException('Failed to get track analysis', _statusCodeOf(e));
@@ -367,6 +368,7 @@ class ApiClient {
         status: data['status'],
         summary: data['summary'],
         overrides: data['overrides'],
+        overridesPresent: data.containsKey('overrides'),
       );
     } on DioException catch (e) {
       throw ApiException(

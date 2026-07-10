@@ -258,6 +258,41 @@ void main() {
     expect(currentHeader.track.analysis?.summary?.waveform?.peaks, isNotEmpty);
   });
 
+  testWidgets('server timeline does not hydrate before playback starts', (
+    tester,
+  ) async {
+    apiClient.useCompactAnalysisFixture(currentIndex: -1);
+
+    await pumpQueueScreen(tester);
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Start playback to use Timeline view'), findsOneWidget);
+    expect(apiClient.analysisRequests, isEmpty);
+  });
+
+  testWidgets('server timeline hydrates visible lanes as the user scrolls', (
+    tester,
+  ) async {
+    apiClient.useCompactAnalysisFixture(currentIndex: 2, trackCount: 10);
+
+    await pumpQueueScreen(tester);
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+
+    expect(apiClient.analysisRequests, containsAll(<int>[202, 303, 404, 505]));
+    expect(apiClient.analysisRequests, isNot(contains(101)));
+    expect(apiClient.analysisRequests, isNot(contains(1010)));
+
+    await tester.drag(
+      find.byKey(const PageStorageKey('timeline_lane_scroll')),
+      const Offset(0, -2000),
+    );
+    await tester.pumpAndSettle();
+
+    expect(apiClient.analysisRequests, contains(1010));
+  });
+
   testWidgets(
     'queue summary subtracts elapsed playback from remaining runtime',
     (tester) async {
@@ -460,6 +495,61 @@ void main() {
       expect(playbackState.analysisRefreshes.single.trackId, '101');
     },
   );
+
+  testWidgets('playback timeline cache follows replacement timeline models', (
+    tester,
+  ) async {
+    final analysisSummary = {
+      'bpm': {'value': 124.0},
+      'beat_grid': {'bpm': 124.0},
+    };
+    final placement = TimelineClip.clamped(
+      id: 'session_clip_0',
+      trackId: '101',
+      sourceDurationMs: 198000,
+      sourceStartMs: 0,
+      sourceEndMs: 198000,
+      timelineStartMs: 0,
+    );
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(
+          101,
+          'Analyzed Track',
+          seconds: 198,
+          extras: {
+            'analysisRef': '101',
+            'analysisStatus': 'analyzed',
+            'analysisSummary': analysisSummary,
+          },
+        ),
+      ]
+      ..fakeTimelineModel = TimelineModel(
+        clips: [
+          MixClip(
+            placement: placement,
+            tempo: ClipTempoMetadata.fromAnalysisSummary(analysisSummary),
+          ),
+        ],
+      )
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+    expect(playbackState.analysisRefreshes, isEmpty);
+
+    playbackState.fakeTimelineModel = TimelineModel(
+      clips: [MixClip(placement: placement)],
+    );
+    final provider =
+        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+    provider.applyMixPlanClips(const <MixPlanClip>[]);
+    await tester.pumpAndSettle();
+
+    expect(playbackState.analysisRefreshes, hasLength(1));
+    expect(playbackState.analysisRefreshes.single.trackId, '101');
+  });
 
   testWidgets(
     'timeline analysis correction seeds first downbeat from playhead',
@@ -1361,7 +1451,7 @@ class _FakeQueueApiClient extends ApiClient {
     );
   }
 
-  void useCompactAnalysisFixture() {
+  void useCompactAnalysisFixture({int currentIndex = 0, int trackCount = 2}) {
     hydrateAnalysisFixture = true;
     TrackAnalysis compact(double bpm) => TrackAnalysis.fromJson(
           status: 'analyzed',
@@ -1379,26 +1469,18 @@ class _FakeQueueApiClient extends ApiClient {
 
     _state = QueueState(
       tracks: [
-        Track(
-          id: 't1',
-          playbackTrackId: '101',
-          title: 'Compact Current',
-          artist: 'Queue Artist',
-          duration: 198,
-          addedAt: DateTime(2026),
-          analysis: compact(124),
-        ),
-        Track(
-          id: 't2',
-          playbackTrackId: '202',
-          title: 'Compact Next',
-          artist: 'Queue Artist',
-          duration: 215,
-          addedAt: DateTime(2026),
-          analysis: compact(128),
-        ),
+        for (var index = 0; index < trackCount; index++)
+          Track(
+            id: 't${index + 1}',
+            playbackTrackId: '${(index + 1) * 101}',
+            title: 'Compact Track ${index + 1}',
+            artist: 'Queue Artist',
+            duration: 198 + index,
+            addedAt: DateTime(2026),
+            analysis: compact(124 + index.toDouble()),
+          ),
       ],
-      currentIndex: 0,
+      currentIndex: currentIndex,
     );
   }
 

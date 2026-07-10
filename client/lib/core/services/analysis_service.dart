@@ -26,6 +26,7 @@ class AnalysisService {
         status: json['status'],
         summary: json['summary'],
         overrides: json['overrides'],
+        overridesPresent: json.containsKey('overrides'),
       ),
     );
   }
@@ -41,6 +42,7 @@ class AnalysisService {
         status: json['status'],
         summary: json['summary'],
         overrides: json['overrides'],
+        overridesPresent: json.containsKey('overrides'),
       ),
     );
   }

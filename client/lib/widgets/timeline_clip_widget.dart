@@ -86,10 +86,17 @@ class TimelineLaneHeader extends StatelessWidget {
                           if (constraints.maxWidth >= 150)
                             Flexible(
                               flex: 3,
-                              child: Align(
-                                alignment: Alignment.centerRight,
-                                child: SongMetadataChips(
-                                  analysis: track.analysis,
+                              child: SizedBox(
+                                height: headerHeight - 12,
+                                child: Align(
+                                  alignment: Alignment.centerRight,
+                                  child: FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    alignment: Alignment.centerRight,
+                                    child: SongMetadataChips(
+                                      analysis: track.analysis,
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),

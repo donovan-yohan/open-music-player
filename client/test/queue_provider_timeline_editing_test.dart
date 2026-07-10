@@ -400,6 +400,99 @@ void main() {
     provider.dispose();
   });
 
+  test('permanent analysis errors do not retry while interest is retained',
+      () async {
+    final firstRequest = Completer<void>();
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        analysisRequests++;
+        if (!firstRequest.isCompleted) firstRequest.complete();
+        return http.Response('', 404);
+      }),
+      analysisRetryCooldown: const Duration(milliseconds: 5),
+    );
+    final pending = _track(
+      playbackTrackId: '42',
+      analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+    );
+
+    provider.trackWithAnalysis(pending);
+    await firstRequest.future.timeout(const Duration(seconds: 1));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    for (var index = 0; index < 3; index++) {
+      provider.trackWithAnalysis(pending);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+
+    expect(analysisRequests, 1);
+    provider.dispose();
+  });
+
+  test('transient analysis errors stop after the bounded retry budget',
+      () async {
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        analysisRequests++;
+        return http.Response('', 503);
+      }),
+      analysisRetryCooldown: const Duration(milliseconds: 2),
+    );
+    final pending = _track(
+      playbackTrackId: '42',
+      analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+    );
+
+    provider.trackWithAnalysis(pending);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    provider.trackWithAnalysis(pending);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(analysisRequests, 4);
+    provider.dispose();
+  });
+
+  test('clearing timeline interest cancels a pending analysis retry', () async {
+    final firstResponse = Completer<void>();
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        analysisRequests++;
+        return http.Response(
+          jsonEncode({'status': 'pending'}),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+      analysisRetryCooldown: const Duration(milliseconds: 20),
+    );
+    provider.addListener(() {
+      if (!firstResponse.isCompleted) firstResponse.complete();
+    });
+    final pending = _track(
+      playbackTrackId: '42',
+      analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+    );
+
+    provider.trackWithAnalysis(pending);
+    await firstResponse.future.timeout(const Duration(seconds: 1));
+    provider.clearAnalysisHydrationInterest();
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+
+    expect(analysisRequests, 1);
+    provider.dispose();
+  });
+
   test('new compact override merges into cached detailed analysis', () async {
     final firstResponse = Completer<void>();
     var analysisRequests = 0;
@@ -462,6 +555,91 @@ void main() {
     expect(refreshed.analysis?.summary?.bpm?.numericValue, 128);
     expect(refreshed.analysis?.summary?.beatGrid?.beatsMs, [0, 500, 1000]);
     expect(refreshed.analysis?.summary?.waveform?.peaks, isNotEmpty);
+  });
+
+  test('explicit compact override clear replaces cached detailed override',
+      () async {
+    final hydrated = Completer<void>();
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'bpm': {'value': 120},
+              'beat_grid': {
+                'bpm': 120,
+                'beats_ms': [0, 500, 1000],
+              },
+              'waveform': {
+                'sample_count': 4,
+                'peaks': [0.1, 0.4, 0.9, 0.2],
+              },
+            },
+            'overrides': {
+              'bpm': {'value': 128},
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    provider.addListener(() {
+      if (!hydrated.isCompleted) hydrated.complete();
+    });
+    final corrected = _track(
+      playbackTrackId: '42',
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'bpm': {'value': 120},
+          'beat_grid': {'bpm': 120},
+        },
+        overrides: {
+          'bpm': {'value': 128},
+        },
+        overridesPresent: true,
+      ),
+    );
+
+    provider.trackWithAnalysis(corrected);
+    await hydrated.future.timeout(const Duration(seconds: 1));
+    expect(
+      provider
+          .trackWithAnalysis(corrected)
+          .analysis
+          ?.summary
+          ?.bpm
+          ?.numericValue,
+      128,
+    );
+
+    final cleared = _track(
+      playbackTrackId: '42',
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'bpm': {'value': 120},
+          'beat_grid': {
+            'bpm': 120,
+            'beats_ms': [0, 500, 1000],
+          },
+        },
+        overrides: const <String, dynamic>{},
+        overridesPresent: true,
+      ),
+    );
+    final result = provider.trackWithAnalysis(cleared);
+
+    expect(result.analysis?.summary?.bpm?.numericValue, 120);
+    expect(result.analysis?.overrides, isNull);
+    expect(result.analysis?.overridesPresent, isTrue);
+    expect(result.analysis?.summary?.waveform?.peaks, isNotEmpty);
+    provider.dispose();
   });
 
   test('older hydration response cannot overwrite a newer override', () async {
@@ -601,6 +779,73 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(maxActive, 3);
+    provider.dispose();
+  });
+
+  test('queued hydration discards a stale generation before it starts',
+      () async {
+    final releases = <int, Completer<void>>{};
+    final started = <int>[];
+    final firstWaveStarted = Completer<void>();
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        final match =
+            RegExp(r'/tracks/(\d+)/analysis$').firstMatch(request.url.path);
+        if (match == null) return http.Response('', 404);
+        final trackId = int.parse(match.group(1)!);
+        started.add(trackId);
+        if (started.length == 3 && !firstWaveStarted.isCompleted) {
+          firstWaveStarted.complete();
+        }
+        final release = releases.putIfAbsent(trackId, Completer<void>.new);
+        await release.future;
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'waveform': {
+                'sample_count': 2,
+                'peaks': [0.2, 0.8],
+              },
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    final pendingTracks = [
+      for (var id = 1; id <= 4; id++)
+        _track(
+          id: '$id',
+          playbackTrackId: '$id',
+          analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+        ),
+    ];
+    for (final track in pendingTracks) {
+      provider.trackWithAnalysis(track);
+    }
+    await firstWaveStarted.future.timeout(const Duration(seconds: 1));
+
+    provider.trackWithAnalysis(
+      pendingTracks.last.copyWith(
+        analysis: TrackAnalysis.fromJson(
+          status: 'analyzed',
+          summary: {
+            'waveform': {
+              'sample_count': 2,
+              'peaks': [0.3, 0.9],
+            },
+          },
+        ),
+      ),
+    );
+    for (final release in releases.values) {
+      release.complete();
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(started, isNot(contains(4)));
     provider.dispose();
   });
 

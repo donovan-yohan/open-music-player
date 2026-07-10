@@ -110,6 +110,11 @@ class _QueueScreenState extends State<QueueScreen> {
   _QueueViewMode _viewMode = _QueueViewMode.list;
   final Set<String> _analysisRefreshesInFlight = <String>{};
   _PlaybackTimelineTracks? _playbackTimelineTracksCache;
+  QueueProvider? _hydrationProvider;
+  Object? _hydrationQueueIdentity;
+  int? _hydrationCurrentIndex;
+  bool? _hydrationUsesPlaybackQueue;
+  Set<String> _visibleHydrationTrackKeys = <String>{};
 
   @override
   void initState() {
@@ -120,21 +125,42 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final provider = context.read<QueueProvider>();
+    if (!identical(_hydrationProvider, provider)) {
+      _hydrationProvider?.clearAnalysisHydrationInterest();
+      _hydrationProvider = provider;
+    }
+  }
+
+  @override
+  void dispose() {
+    _hydrationProvider?.clearAnalysisHydrationInterest();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
         bottom: false,
         child: Consumer2<QueueProvider, PlaybackState>(
           builder: (context, provider, playback, _) {
+            if (_viewMode == _QueueViewMode.list) {
+              _clearAnalysisHydration(provider);
+            }
             if (playback.queue.isNotEmpty) {
               return _buildPlaybackQueueView(context, provider, playback);
             }
 
             if (provider.isLoading) {
+              _clearAnalysisHydration(provider);
               return const Center(child: CircularProgressIndicator());
             }
 
             if (provider.error != null) {
+              _clearAnalysisHydration(provider);
               return Center(
                 child: Padding(
                   padding: const EdgeInsets.all(24),
@@ -160,6 +186,7 @@ class _QueueScreenState extends State<QueueScreen> {
             }
 
             if (provider.isEmpty) {
+              _clearAnalysisHydration(provider);
               return const Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -330,10 +357,14 @@ class _QueueScreenState extends State<QueueScreen> {
     PlaybackState playback,
   ) {
     final queue = playback.queue;
-    if (queue.isEmpty) return const SizedBox.shrink();
+    if (queue.isEmpty) {
+      _clearAnalysisHydration(provider);
+      return const SizedBox.shrink();
+    }
     final currentIndex =
         playback.currentIndex?.clamp(0, queue.length - 1).toInt();
     if (currentIndex == null) {
+      _clearAnalysisHydration(provider);
       return const Center(child: Text('Start playback to edit the timeline'));
     }
 
@@ -409,6 +440,8 @@ class _QueueScreenState extends State<QueueScreen> {
         track,
         initialFirstDownbeatMs: initialFirstDownbeatMs,
       ),
+      onVisibleTracksChanged: (tracks) =>
+          _updateVisibleAnalysisHydration(provider, tracks),
     );
   }
 
@@ -422,21 +455,54 @@ class _QueueScreenState extends State<QueueScreen> {
     if (cached != null &&
         identical(cached.queue, queue) &&
         cached.currentIndex == currentIndex &&
-        cached.analysisRevision == provider.analysisRevision) {
+        cached.analysisRevision == provider.analysisRevision &&
+        identical(cached.timelineModel, playback.timelineModel)) {
+      _syncPlaybackAnalyses(
+        playback: playback,
+        queue: queue,
+        tracks: cached.tracks,
+      );
       return cached;
     }
 
-    final current = _playbackTrackFor(
-      queue[currentIndex],
-      currentIndex,
-      provider,
-    );
-    final previous = currentIndex > 0
-        ? _playbackTrackFor(queue[currentIndex - 1], currentIndex - 1, provider)
+    final currentSource = _playbackTrackFor(queue[currentIndex], currentIndex);
+    final previousSource = currentIndex > 0
+        ? _playbackTrackFor(queue[currentIndex - 1], currentIndex - 1)
         : null;
-    final upcoming = [
+    final upcomingSources = [
       for (var index = currentIndex + 1; index < queue.length; index++)
-        _playbackTrackFor(queue[index], index, provider),
+        _playbackTrackFor(queue[index], index),
+    ];
+    final hydrationSources = [
+      if (previousSource != null) previousSource,
+      currentSource,
+      ...upcomingSources,
+    ];
+    _prepareAnalysisHydration(
+      provider: provider,
+      queueIdentity: queue,
+      currentIndex: currentIndex,
+      usesPlaybackQueue: true,
+      sources: hydrationSources,
+      initialSources: [
+        if (previousSource != null) previousSource,
+        currentSource,
+        ...upcomingSources.take(2),
+      ],
+    );
+    final current = provider.trackWithAnalysis(
+      currentSource,
+      requestHydration: false,
+    );
+    final previous = previousSource == null
+        ? null
+        : provider.trackWithAnalysis(
+            previousSource,
+            requestHydration: false,
+          );
+    final upcoming = [
+      for (final track in upcomingSources)
+        provider.trackWithAnalysis(track, requestHydration: false),
     ];
     final tracks = [if (previous != null) previous, current, ...upcoming];
     _syncPlaybackAnalyses(playback: playback, queue: queue, tracks: tracks);
@@ -445,6 +511,8 @@ class _QueueScreenState extends State<QueueScreen> {
       queue: queue,
       currentIndex: currentIndex,
       analysisRevision: provider.analysisRevision,
+      timelineModel: playback.timelineModel,
+      tracks: tracks,
       previous: previous,
       current: current,
       upcoming: upcoming,
@@ -481,11 +549,7 @@ class _QueueScreenState extends State<QueueScreen> {
     }
   }
 
-  Track _playbackTrackFor(
-    audio_service.MediaItem item,
-    int index,
-    QueueProvider provider,
-  ) {
+  Track _playbackTrackFor(audio_service.MediaItem item, int index) {
     final duration = item.duration ?? Duration.zero;
     final track = Track(
       id: 'playback_queue_$index',
@@ -501,7 +565,7 @@ class _QueueScreenState extends State<QueueScreen> {
         Map<String, dynamic>.from(item.extras ?? const {}),
       ),
     );
-    return provider.trackWithAnalysis(track);
+    return track;
   }
 
   void _syncPlaybackAnalyses({
@@ -738,7 +802,11 @@ class _QueueScreenState extends State<QueueScreen> {
         selected: {_viewMode},
         showSelectedIcon: false,
         onSelectionChanged: (selection) {
-          setState(() => _viewMode = selection.single);
+          final next = selection.single;
+          if (next == _QueueViewMode.list) {
+            _clearAnalysisHydration(context.read<QueueProvider>());
+          }
+          setState(() => _viewMode = next);
         },
       ),
     );
@@ -746,18 +814,9 @@ class _QueueScreenState extends State<QueueScreen> {
 
   Widget _buildTimelineView(BuildContext context, QueueProvider provider) {
     final currentIndex = provider.queue.currentIndex;
-    final tracks = provider.queue.tracks
-        .map(provider.trackWithAnalysis)
-        .toList(growable: false);
-    final currentTrack = currentIndex >= 0 && currentIndex < tracks.length
-        ? tracks[currentIndex]
-        : null;
-    final upNext = currentTrack != null
-        ? tracks.skip(currentIndex + 1).toList(growable: false)
-        : tracks;
-    final previousTrack = currentIndex > 0 ? tracks[currentIndex - 1] : null;
-
-    if (currentTrack == null) {
+    final sourceTracks = provider.queue.tracks;
+    if (currentIndex < 0 || currentIndex >= sourceTracks.length) {
+      _clearAnalysisHydration(provider);
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -781,6 +840,31 @@ class _QueueScreenState extends State<QueueScreen> {
         ),
       );
     }
+
+    final firstRenderedIndex = currentIndex > 0 ? currentIndex - 1 : 0;
+    final hydrationSources = sourceTracks.sublist(firstRenderedIndex);
+    _prepareAnalysisHydration(
+      provider: provider,
+      queueIdentity: sourceTracks,
+      currentIndex: currentIndex,
+      usesPlaybackQueue: false,
+      sources: hydrationSources,
+      initialSources: hydrationSources.take(4),
+    );
+    final tracks = hydrationSources
+        .map(
+          (track) => provider.trackWithAnalysis(
+            track,
+            requestHydration: false,
+          ),
+        )
+        .toList(growable: false);
+    final renderedCurrentIndex = currentIndex - firstRenderedIndex;
+    final currentTrack = tracks[renderedCurrentIndex];
+    final upNext =
+        tracks.skip(renderedCurrentIndex + 1).toList(growable: false);
+    final previousTrack =
+        renderedCurrentIndex > 0 ? tracks[renderedCurrentIndex - 1] : null;
 
     return Consumer<PlaybackState>(
       builder: (context, playback, _) => StackedWaveformTimeline(
@@ -816,8 +900,73 @@ class _QueueScreenState extends State<QueueScreen> {
           track,
           initialFirstDownbeatMs: initialFirstDownbeatMs,
         ),
+        onVisibleTracksChanged: (tracks) =>
+            _updateVisibleAnalysisHydration(provider, tracks),
       ),
     );
+  }
+
+  void _prepareAnalysisHydration({
+    required QueueProvider provider,
+    required Object queueIdentity,
+    required int currentIndex,
+    required bool usesPlaybackQueue,
+    required List<Track> sources,
+    required Iterable<Track> initialSources,
+  }) {
+    final contextChanged = !identical(_hydrationQueueIdentity, queueIdentity) ||
+        _hydrationCurrentIndex != currentIndex ||
+        _hydrationUsesPlaybackQueue != usesPlaybackQueue;
+    if (contextChanged) {
+      _hydrationQueueIdentity = queueIdentity;
+      _hydrationCurrentIndex = currentIndex;
+      _hydrationUsesPlaybackQueue = usesPlaybackQueue;
+      _visibleHydrationTrackKeys = {
+        for (final track in initialSources) _timelineHydrationTrackKey(track),
+      };
+    }
+
+    var retained = [
+      for (final track in sources)
+        if (_visibleHydrationTrackKeys.contains(
+          _timelineHydrationTrackKey(track),
+        ))
+          track,
+    ];
+    if (retained.isEmpty && sources.isNotEmpty) {
+      retained = initialSources.toList(growable: false);
+      _visibleHydrationTrackKeys = {
+        for (final track in retained) _timelineHydrationTrackKey(track),
+      };
+    }
+    provider.setAnalysisHydrationInterest(retained);
+  }
+
+  void _updateVisibleAnalysisHydration(
+    QueueProvider provider,
+    List<Track> tracks,
+  ) {
+    final next = {
+      for (final track in tracks) _timelineHydrationTrackKey(track),
+    };
+    if (_sameHydrationKeys(next, _visibleHydrationTrackKeys)) return;
+    _visibleHydrationTrackKeys = next;
+    provider.setAnalysisHydrationInterest(tracks);
+  }
+
+  bool _sameHydrationKeys(Set<String> first, Set<String> second) =>
+      first.length == second.length && first.every(second.contains);
+
+  String _timelineHydrationTrackKey(Track track) =>
+      '${track.queueItemId}|${track.id}|${track.playbackTrackId ?? ''}';
+
+  void _clearAnalysisHydration(QueueProvider provider) {
+    _hydrationQueueIdentity = null;
+    _hydrationCurrentIndex = null;
+    _hydrationUsesPlaybackQueue = null;
+    _visibleHydrationTrackKeys = <String>{};
+    _playbackTimelineTracksCache = null;
+    provider.clearAnalysisHydrationInterest();
   }
 
   Widget _buildListView(BuildContext context, QueueProvider provider) {
@@ -1061,7 +1210,7 @@ class _QueueScreenState extends State<QueueScreen> {
 
     final corrected = await showAnalysisCorrectionSheet(
       context: context,
-      track: provider.trackWithAnalysis(track),
+      track: provider.trackWithAnalysis(track, requestHydration: false),
       initialFirstDownbeatMs: initialFirstDownbeatMs,
     );
     if (corrected == null || !context.mounted) return;
@@ -1111,6 +1260,8 @@ class _PlaybackTimelineTracks {
   final List<audio_service.MediaItem> queue;
   final int currentIndex;
   final int analysisRevision;
+  final TimelineModel timelineModel;
+  final List<Track> tracks;
   final Track? previous;
   final Track current;
   final List<Track> upcoming;
@@ -1119,6 +1270,8 @@ class _PlaybackTimelineTracks {
     required this.queue,
     required this.currentIndex,
     required this.analysisRevision,
+    required this.timelineModel,
+    required this.tracks,
     required this.previous,
     required this.current,
     required this.upcoming,

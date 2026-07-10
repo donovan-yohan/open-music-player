@@ -66,6 +66,7 @@ class StackedWaveformTimeline extends StatefulWidget {
   final VoidCallback? onScrubStart;
   final ValueChanged<int>? onScrubUpdate;
   final Future<void> Function(int globalMs)? onScrubEnd;
+  final ValueChanged<List<Track>>? onVisibleTracksChanged;
 
   const StackedWaveformTimeline({
     super.key,
@@ -94,6 +95,7 @@ class StackedWaveformTimeline extends StatefulWidget {
     this.onScrubStart,
     this.onScrubUpdate,
     this.onScrubEnd,
+    this.onVisibleTracksChanged,
   });
 
   /// Synthetic crossfade/transition window between adjacent clips (ms). Visual
@@ -384,11 +386,25 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   bool _isScrubbing = false;
   bool _preserveViewportForScrub = false;
   int? _lastScrubMs;
+  final ScrollController _laneScrollController = ScrollController();
+  List<_LaneModel> _latestLanes = const [];
+  double _laneViewportHeight = 0;
+  String? _lastVisibleLaneSignature;
+  bool _visibleLaneReportScheduled = false;
 
   @override
   void initState() {
     super.initState();
     _snapMode = _snapMarkerModeFor(widget.transitionSnapMode);
+    _laneScrollController.addListener(_scheduleVisibleLaneReport);
+  }
+
+  @override
+  void dispose() {
+    _laneScrollController
+      ..removeListener(_scheduleVisibleLaneReport)
+      ..dispose();
+    super.dispose();
   }
 
   @override
@@ -609,21 +625,29 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             children: [
               _buildRuler(context, viewport, paneWidth),
               Expanded(
-                child: SingleChildScrollView(
-                  key: const PageStorageKey('timeline_lane_scroll'),
-                  child: Column(
-                    children: [
-                      for (final lane in lanes)
-                        _buildLane(
-                          context,
-                          lane,
-                          viewport,
-                          paneWidth,
-                          placedClips,
-                          playheadMs,
-                        ),
-                    ],
-                  ),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    _latestLanes = lanes;
+                    _laneViewportHeight = constraints.maxHeight;
+                    _scheduleVisibleLaneReport();
+                    return SingleChildScrollView(
+                      key: const PageStorageKey('timeline_lane_scroll'),
+                      controller: _laneScrollController,
+                      child: Column(
+                        children: [
+                          for (final lane in lanes)
+                            _buildLane(
+                              context,
+                              lane,
+                              viewport,
+                              paneWidth,
+                              placedClips,
+                              playheadMs,
+                            ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ),
             ],
@@ -698,6 +722,41 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       ),
     );
   }
+
+  void _scheduleVisibleLaneReport() {
+    if (widget.onVisibleTracksChanged == null || _visibleLaneReportScheduled) {
+      return;
+    }
+    _visibleLaneReportScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _visibleLaneReportScheduled = false;
+      if (!mounted || widget.onVisibleTracksChanged == null) return;
+      _reportVisibleLanes();
+    });
+  }
+
+  void _reportVisibleLanes() {
+    if (_latestLanes.isEmpty || _laneViewportHeight <= 0) return;
+    final offset =
+        _laneScrollController.hasClients ? _laneScrollController.offset : 0.0;
+    final end = offset + _laneViewportHeight;
+    var laneTop = 0.0;
+    final visible = <Track>[];
+    for (final lane in _latestLanes) {
+      final laneBottom = laneTop + lane.height;
+      if (laneBottom > offset && laneTop < end) visible.add(lane.track);
+      laneTop = laneBottom;
+    }
+    if (visible.isEmpty) visible.add(_latestLanes.first.track);
+
+    final signature = visible.map(_timelineTrackIdentity).join('\u0000');
+    if (signature == _lastVisibleLaneSignature) return;
+    _lastVisibleLaneSignature = signature;
+    widget.onVisibleTracksChanged!(List<Track>.unmodifiable(visible));
+  }
+
+  String _timelineTrackIdentity(Track track) =>
+      '${track.queueItemId}|${track.id}|${track.playbackTrackId ?? ''}';
 
   MixClip? _liveClipForTrack(Track track, Set<String> usedClipIds) {
     final model = widget.timelineModel;

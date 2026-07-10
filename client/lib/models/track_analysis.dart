@@ -12,18 +12,24 @@ class TrackAnalysis {
   final TrackAnalysisStatus status;
   final TrackAnalysisSummary? summary;
   final TrackAnalysisOverrides? overrides;
+  final bool overridesPresent;
 
-  const TrackAnalysis({required this.status, this.summary, this.overrides});
+  const TrackAnalysis({
+    required this.status,
+    this.summary,
+    this.overrides,
+    bool? overridesPresent,
+  }) : overridesPresent = overridesPresent ?? overrides != null;
 
   factory TrackAnalysis.fromJson({
     Object? status,
     Object? summary,
     Object? overrides,
+    bool? overridesPresent,
   }) {
     final parsedStatus = parseTrackAnalysisStatus(status);
-    final baseSummary = summary == null
-        ? null
-        : TrackAnalysisSummary.fromJson(summary);
+    final baseSummary =
+        summary == null ? null : TrackAnalysisSummary.fromJson(summary);
     final parsedOverrides = TrackAnalysisOverrides.fromJson(overrides);
     final effectiveSummary = parsedOverrides == null
         ? baseSummary
@@ -32,6 +38,7 @@ class TrackAnalysis {
       status: parsedStatus,
       summary: effectiveSummary,
       overrides: parsedOverrides,
+      overridesPresent: overridesPresent ?? overrides != null,
     );
   }
 
@@ -48,7 +55,7 @@ class TrackAnalysis {
     return {
       'status': status.name,
       if (summary != null) 'summary': summary!.toJson(),
-      if (overrides != null) 'overrides': overrides!.toJson(),
+      if (overridesPresent) 'overrides': overrides?.toJson() ?? const {},
     };
   }
 }
@@ -62,11 +69,17 @@ TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
   final rawStatus = json['analysisStatus'] ?? json['analysis_status'];
   final rawSummary = json['analysisSummary'] ?? json['analysis_summary'];
   final summaryMap = _readMap(rawSummary);
-  final rawOverrides =
-      json['analysisOverrides'] ??
-      json['analysis_overrides'] ??
-      summaryMap?['overrides'];
-  if (rawStatus == null && rawSummary == null && rawOverrides == null) {
+  final hasCamelCaseOverrides = json.containsKey('analysisOverrides');
+  final hasSnakeCaseOverrides = json.containsKey('analysis_overrides');
+  final hasSummaryOverrides = summaryMap?.containsKey('overrides') ?? false;
+  final overridesPresent =
+      hasCamelCaseOverrides || hasSnakeCaseOverrides || hasSummaryOverrides;
+  final rawOverrides = hasCamelCaseOverrides
+      ? json['analysisOverrides']
+      : hasSnakeCaseOverrides
+          ? json['analysis_overrides']
+          : summaryMap?['overrides'];
+  if (rawStatus == null && rawSummary == null && !overridesPresent) {
     return null;
   }
 
@@ -74,9 +87,11 @@ TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
     status: rawStatus,
     summary: rawSummary,
     overrides: rawOverrides,
+    overridesPresent: overridesPresent,
   );
   if (analysis.status == TrackAnalysisStatus.unknown &&
-      !analysis.hasDisplayableSummary) {
+      !analysis.hasDisplayableSummary &&
+      !analysis.overridesPresent) {
     return null;
   }
   return analysis;
@@ -165,12 +180,10 @@ class TrackAnalysisOverrides {
     final camelotValue = AnalysisValue.fromJson(map['camelot']);
 
     final overrides = TrackAnalysisOverrides(
-      bpm:
-          bpmValue?.numericValue?.toDouble() ??
+      bpm: bpmValue?.numericValue?.toDouble() ??
           _readDouble(map['nativeBpm']) ??
           _readDouble(beatGrid?['bpm']),
-      bpmConfidence:
-          _readDouble(map['bpmConfidence']) ??
+      bpmConfidence: _readDouble(map['bpmConfidence']) ??
           _readDouble(bpmMap?['confidence']) ??
           _readDouble(beatGrid?['confidence']),
       beatsMs: beatsRaw == null ? null : _readIntList(beatsRaw),

@@ -250,6 +250,24 @@ void main() {
         tester.getSize(find.byType(TimelineLaneHeader)).height,
         lessThanOrEqualTo(64),
       );
+      if (textScale == 3.0) {
+        final headerBounds = tester.getRect(find.byType(TimelineLaneHeader));
+        final bpmBounds = tester.getRect(
+          find.byKey(const ValueKey('song_metadata_bpm_chip')),
+        );
+        final keyBounds = tester.getRect(
+          find.byKey(const ValueKey('song_metadata_key_chip')),
+        );
+
+        for (final chipBounds in [bpmBounds, keyBounds]) {
+          expect(chipBounds.left, greaterThanOrEqualTo(headerBounds.left));
+          expect(chipBounds.top, greaterThanOrEqualTo(headerBounds.top));
+          expect(chipBounds.right, lessThanOrEqualTo(headerBounds.right));
+          expect(chipBounds.bottom, lessThanOrEqualTo(headerBounds.bottom));
+        }
+        expect(
+            (bpmBounds.center.dy - keyBounds.center.dy).abs(), lessThan(0.5));
+      }
       expect(tester.takeException(), isNull);
     });
   }
