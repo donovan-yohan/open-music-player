@@ -115,34 +115,68 @@ class TrackTile extends StatelessWidget {
         summary?.key?.textValue != null ||
         summary?.camelot?.textValue != null;
 
-    return Container(
-      decoration: BoxDecoration(
-        border: isCurrent
-            ? Border(left: BorderSide(color: activeColor, width: 3))
-            : null,
-      ),
-      child: ListTile(
-        onTap: onTap,
-        selected: isCurrent,
-        selectedTileColor: activeColor.withValues(alpha: 0.10),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        leading: leading ?? _buildCoverArt(theme),
-        title: Text(
-          title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: titleStyle,
-        ),
-        subtitle: subtitle.isEmpty
-            ? null
-            : Text(
-                subtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: subtitleStyle,
-              ),
-        trailing: _buildTrailing(context, hasMetadata),
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth = constraints.hasBoundedWidth
+            ? constraints.maxWidth
+            : MediaQuery.sizeOf(context).width;
+        final trailingMaxWidth =
+            (availableWidth * 0.38).clamp(96.0, 168.0).toDouble();
+        final enlargedText = MediaQuery.textScalerOf(context).scale(1) > 1.3;
+        final hasNowPlayingBadge = isCurrent && activeLabel != null;
+
+        final useExpandedLayout = hasMetadata &&
+            (hasNowPlayingBadge || (enlargedText && availableWidth < 480));
+
+        if (useExpandedLayout) {
+          final expandedMetadataMaxWidth =
+              (availableWidth * 0.55).clamp(150.0, 220.0).toDouble();
+          return _buildExpandedTextTile(
+            context,
+            theme: theme,
+            activeColor: activeColor,
+            titleStyle: titleStyle,
+            subtitleStyle: subtitleStyle,
+            subtitle: subtitle,
+            metadataMaxWidth: expandedMetadataMaxWidth,
+          );
+        }
+
+        return Container(
+          decoration: BoxDecoration(
+            border: isCurrent
+                ? Border(left: BorderSide(color: activeColor, width: 3))
+                : null,
+          ),
+          child: ListTile(
+            onTap: onTap,
+            selected: isCurrent,
+            selectedTileColor: activeColor.withValues(alpha: 0.10),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            leading: leading ?? _buildCoverArt(theme),
+            title: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: titleStyle,
+            ),
+            subtitle: subtitle.isEmpty
+                ? null
+                : Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: subtitleStyle,
+                  ),
+            trailing: _buildTrailing(
+              context,
+              hasMetadata,
+              trailingMaxWidth,
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -165,32 +199,133 @@ class TrackTile extends StatelessWidget {
     return _CoverArtPlaceholder(theme: theme);
   }
 
-  Widget _buildTrailing(BuildContext context, bool hasMetadata) {
+  Widget _buildTrailing(
+    BuildContext context,
+    bool hasMetadata,
+    double maxWidth,
+  ) {
+    final actions = _buildTrailingActions(context);
+    if (!hasMetadata) return actions;
+
+    final metadata = Align(
+      widthFactor: 1,
+      alignment: Alignment.centerRight,
+      child: SongMetadataChips(
+        analysis: analysis,
+        singleLine: true,
+        compact: true,
+      ),
+    );
+    return ConstrainedBox(
+      key: const ValueKey('track_tile_trailing'),
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Flexible(child: metadata),
+          const SizedBox(width: 6),
+          actions,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildExpandedTextTile(
+    BuildContext context, {
+    required ThemeData theme,
+    required Color activeColor,
+    required TextStyle? titleStyle,
+    required TextStyle? subtitleStyle,
+    required String subtitle,
+    required double metadataMaxWidth,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: isCurrent ? activeColor.withValues(alpha: 0.10) : null,
+        border: isCurrent
+            ? Border(left: BorderSide(color: activeColor, width: 3))
+            : null,
+      ),
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              leading ?? _buildCoverArt(theme),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: titleStyle,
+                    ),
+                    if (subtitle.isNotEmpty)
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: subtitleStyle,
+                      ),
+                    const SizedBox(height: 4),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: ConstrainedBox(
+                        key: const ValueKey('track_tile_trailing'),
+                        constraints: BoxConstraints(
+                          maxWidth: metadataMaxWidth,
+                        ),
+                        child: Align(
+                          widthFactor: 1,
+                          alignment: Alignment.centerRight,
+                          child: SongMetadataChips(
+                            analysis: analysis,
+                            singleLine: true,
+                            compact: true,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: _buildTrailingActions(context),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTrailingActions(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
+    return Wrap(
+      key: const ValueKey('track_tile_actions'),
+      alignment: WrapAlignment.end,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 8,
+      runSpacing: 2,
       children: [
-        SongMetadataChips(
-          analysis: analysis,
-          singleLine: true,
-          compact: true,
-        ),
-        if (hasMetadata) const SizedBox(width: 6),
         if (trailing != null)
           trailing!
         else ...[
           if (isCurrent && activeLabel != null)
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: _NowPlayingBadge(
-                label: activeLabel!,
-                color: theme.colorScheme.primary,
-              ),
+            _NowPlayingBadge(
+              label: activeLabel!,
+              color: theme.colorScheme.primary,
             )
           else if (isCurrent) ...[
             Icon(Icons.equalizer, size: 18, color: theme.colorScheme.primary),
-            const SizedBox(width: 8),
           ],
           Text(
             duration,
@@ -229,6 +364,7 @@ class _NowPlayingBadge extends StatelessWidget {
     return Semantics(
       label: label,
       child: Container(
+        key: const ValueKey('track_tile_now_playing_badge'),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.16),
@@ -240,12 +376,14 @@ class _NowPlayingBadge extends StatelessWidget {
           children: [
             Icon(Icons.equalizer, size: 14, color: color),
             const SizedBox(width: 4),
-            Text(
-              label,
-              style: TextStyle(
-                color: color,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
+            Flexible(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
           ],

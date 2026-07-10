@@ -149,43 +149,96 @@ class _MetadataChipGroup extends StatelessWidget {
       if (labels.bpm != null) 'Tempo ${labels.bpm}',
       if (labels.key != null) 'Key ${labels.key}',
     ].join(', ');
-    final chipWidgets = [
-      if (labels.bpm != null)
-        _MetadataChip(
-          key: const ValueKey('song_metadata_bpm_chip'),
-          label: labels.bpm!,
-          allowWrap: !singleLine,
-          compact: compact,
-        ),
-      if (labels.key != null)
-        _MetadataChip(
-          key: const ValueKey('song_metadata_key_chip'),
-          label: labels.key!,
-          allowWrap: !singleLine,
-          camelot: labels.camelot,
-          compact: compact,
-        ),
-    ];
+    List<Widget> buildChipWidgets({
+      required bool allowWrap,
+      double? maxChipWidth,
+      bool dense = false,
+    }) {
+      Widget constrain(Widget chip) {
+        if (maxChipWidth == null) return chip;
+        return ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: maxChipWidth),
+          child: chip,
+        );
+      }
+
+      return [
+        if (labels.bpm != null)
+          constrain(
+            _MetadataChip(
+              key: const ValueKey('song_metadata_bpm_chip'),
+              label: labels.bpm!,
+              allowWrap: allowWrap,
+              compact: compact,
+              dense: dense,
+            ),
+          ),
+        if (labels.key != null)
+          constrain(
+            _MetadataChip(
+              key: const ValueKey('song_metadata_key_chip'),
+              label: labels.key!,
+              allowWrap: allowWrap,
+              camelot: labels.camelot,
+              compact: compact,
+              dense: dense,
+            ),
+          ),
+      ];
+    }
+
     final chips = Semantics(
       container: true,
       label: semantics,
       child: ExcludeSemantics(
         child: singleLine
-            ? Row(
-                key: const ValueKey('song_metadata_chips'),
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (var index = 0; index < chipWidgets.length; index++) ...[
-                    if (index > 0) const SizedBox(width: 4),
-                    chipWidgets[index],
-                  ],
-                ],
+            ? LayoutBuilder(
+                builder: (context, constraints) {
+                  final textScale = MediaQuery.textScalerOf(context).scale(1);
+                  final canWrapLabels =
+                      constraints.hasBoundedWidth && textScale > 1.3;
+                  final maxChipWidth =
+                      canWrapLabels ? constraints.maxWidth * 0.9 : null;
+                  final useDenseLabels = constraints.hasBoundedWidth &&
+                      constraints.maxWidth < 150 &&
+                      !canWrapLabels;
+                  final chipWidgets = buildChipWidgets(
+                    allowWrap: canWrapLabels,
+                    maxChipWidth: maxChipWidth,
+                    dense: useDenseLabels,
+                  );
+                  if (!canWrapLabels) {
+                    return FittedBox(
+                      alignment: Alignment.centerRight,
+                      fit: BoxFit.scaleDown,
+                      child: Row(
+                        key: const ValueKey('song_metadata_chips'),
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (var index = 0;
+                              index < chipWidgets.length;
+                              index++) ...[
+                            if (index > 0) const SizedBox(width: 4),
+                            chipWidgets[index],
+                          ],
+                        ],
+                      ),
+                    );
+                  }
+                  return Wrap(
+                    key: const ValueKey('song_metadata_chips'),
+                    alignment: WrapAlignment.end,
+                    spacing: 4,
+                    runSpacing: 2,
+                    children: chipWidgets,
+                  );
+                },
               )
             : Wrap(
                 key: const ValueKey('song_metadata_chips'),
                 spacing: 4,
                 runSpacing: 2,
-                children: chipWidgets,
+                children: buildChipWidgets(allowWrap: true),
               ),
       ),
     );
@@ -203,12 +256,14 @@ class _MetadataChip extends StatelessWidget {
     required this.label,
     required this.allowWrap,
     required this.compact,
+    required this.dense,
     this.camelot,
   });
 
   final String label;
   final bool allowWrap;
   final bool compact;
+  final bool dense;
   final String? camelot;
 
   @override
@@ -219,6 +274,7 @@ class _MetadataChip extends StatelessWidget {
     final keyColors = _CamelotChipColors.resolve(theme, camelot);
     final textStyle = theme.textTheme.labelSmall?.copyWith(
       color: keyColors?.foreground ?? theme.colorScheme.onSecondaryContainer,
+      fontSize: dense ? 9 : null,
       fontWeight: FontWeight.w600,
       height: 1,
     );

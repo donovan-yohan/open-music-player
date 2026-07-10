@@ -312,6 +312,61 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+    'keeps compact trailing metadata visible and right aligned at 135px',
+    (tester) async {
+      final container = await _container();
+      const availableWidth = 135.0;
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: Scaffold(
+              body: MediaQuery(
+                data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+                child: SizedBox(
+                  width: availableWidth,
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: SongMetadataChips(
+                      analysis: _analysis(),
+                      singleLine: true,
+                      compact: true,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final group = tester.getRect(
+        find.byKey(const ValueKey('song_metadata_chips')),
+      );
+      expect(group.right, closeTo(availableWidth, 0.01));
+      for (final entry in <(Key, String)>[
+        (const ValueKey('song_metadata_bpm_chip'), '141.2 BPM'),
+        (const ValueKey('song_metadata_key_chip'), '11A'),
+      ]) {
+        final chip = find.byKey(entry.$1);
+        final chipRect = tester.getRect(chip);
+        expect(find.text(entry.$2), findsOneWidget);
+        expect(chipRect.right, lessThanOrEqualTo(group.right));
+        expect(chipRect.width, lessThan(availableWidth));
+        expect(tester.getSize(chip).height, greaterThanOrEqualTo(18));
+        expect(
+          (tester.getCenter(chip).dy - tester.getCenter(find.text(entry.$2)).dy)
+              .abs(),
+          lessThan(0.5),
+        );
+      }
+      expect(tester.takeException(), isNull);
+    },
+  );
+
   test('override-aware parser feeds the formatter canonical values', () {
     final analysis = trackAnalysisFromTrackJson({
       'analysis_status': 'analyzed',
