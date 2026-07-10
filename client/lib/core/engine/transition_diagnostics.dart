@@ -17,6 +17,7 @@ enum TransitionDiagnosticCode {
   lowBpmConfidence,
   missingDownbeats,
   downbeatOffset,
+  tempoOutOfRange,
   tempoMatched,
   tempoShift,
   largeTempoShift,
@@ -150,7 +151,7 @@ List<TransitionDiagnostic> _tempoDiagnostics(
         code: TransitionDiagnosticCode.missingBpm,
         label: _missingLabel('BPM', missing),
         detail:
-            'Missing ${missing.join(' and ')} BPM; transition uses native speed.',
+            'Missing ${_missingSideText(missing)} BPM; transition uses native speed.',
       ),
     ];
   }
@@ -166,6 +167,23 @@ List<TransitionDiagnostic> _tempoDiagnostics(
         label: 'Low BPM',
         detail:
             'Low ${lowConfidence.join(' and ')} BPM confidence; beat sync may drift.',
+      ),
+    ];
+  }
+
+  if (!tempoTransitionTargetsAreAchievable(
+    outgoingTempo: outgoing.tempo,
+    incomingTempo: incoming.tempo,
+    outgoingBaseRate: outgoing.rateAutomation.baseRate,
+    incomingBaseRate: incoming.rateAutomation.baseRate,
+  )) {
+    return [
+      TransitionDiagnostic(
+        severity: TransitionDiagnosticSeverity.warning,
+        code: TransitionDiagnosticCode.tempoOutOfRange,
+        label: 'Tempo range',
+        detail:
+            'BPM pull from ${_bpm(outgoing.tempo)} to ${_bpm(incoming.tempo)} exceeds the safe ${minTempoAutomationRate}x-${maxTempoAutomationRate}x sync range.',
       ),
     ];
   }
@@ -234,7 +252,7 @@ List<TransitionDiagnostic> _downbeatDiagnostics({
         code: TransitionDiagnosticCode.missingDownbeats,
         label: _missingLabel('downbeat', missing),
         detail:
-            'Missing downbeat markers; transition cannot be verified as phrase-locked.',
+            'Missing ${_missingSideText(missing)} downbeat markers; transition cannot be verified as phrase-locked.',
       ),
     ];
   }
@@ -323,10 +341,14 @@ bool _hasReliableConfidence(ClipTempoMetadata tempo) {
 
 double _rateForTargetBpm(MixClip clip, double targetBpm) {
   final nativeBpm = clip.tempo.nativeBpm;
-  if (nativeBpm == null || nativeBpm <= 0) return clip.playbackRate;
-  return (clip.playbackRate * targetBpm / nativeBpm)
-      .clamp(minTempoAutomationRate, maxTempoAutomationRate)
-      .toDouble();
+  if (nativeBpm == null || nativeBpm <= 0) {
+    return clip.rateAutomation.baseRate;
+  }
+  return rawPlaybackRateForTargetBpm(
+    baseRate: clip.rateAutomation.baseRate,
+    nativeBpm: nativeBpm,
+    targetBpm: targetBpm,
+  ).clamp(minTempoAutomationRate, maxTempoAutomationRate).toDouble();
 }
 
 double _relativeRateShift(double baseRate, double transitionRate) {
@@ -375,8 +397,24 @@ int? _nearestDownbeatDelta({
 String _percent(double value) => '${(value * 100).round()}%';
 
 String _missingLabel(String subject, List<String> missing) {
-  if (missing.length == 1) return 'No ${missing.single} $subject';
-  return 'No $subject';
+  if (missing.length == 1) return 'No ${_sideLabel(missing.single)} $subject';
+  return 'No current/next $subject';
+}
+
+String _missingSideText(List<String> missing) {
+  if (missing.length == 1) return _sideLabel(missing.single);
+  return missing.map(_sideLabel).join(' and ');
+}
+
+String _sideLabel(String side) {
+  switch (side) {
+    case 'outgoing':
+      return 'current';
+    case 'incoming':
+      return 'next';
+    default:
+      return side;
+  }
 }
 
 String _bpm(ClipTempoMetadata tempo) {

@@ -115,9 +115,30 @@ void main() {
     );
 
     expect(diagnostics.compactLabels, [
-      'No incoming BPM',
-      'No incoming downbeat',
+      'No next BPM',
+      'No next downbeat',
     ]);
+    expect(
+      diagnostics.diagnostics.first.detail,
+      contains('Missing next BPM'),
+    );
+  });
+
+  test('missing BPM and downbeat labels stay specific when both sides miss',
+      () {
+    final diagnostics = diagnoseTransition(
+      _clip('outgoing', 0),
+      _clip('incoming', 8000),
+    );
+
+    expect(diagnostics.compactLabels, [
+      'No current/next BPM',
+      'No current/next downbeat',
+    ]);
+    expect(
+      diagnostics.diagnostics.first.detail,
+      contains('Missing current and next BPM'),
+    );
   });
 
   test('manual correction metadata clears missing BPM and downbeat warnings',
@@ -178,6 +199,37 @@ void main() {
       ]),
     );
     expect(diagnostics.compactLabels.first, startsWith('Tempo'));
+  });
+
+  test('warns when BPM sync would exceed the safe playback-rate range', () {
+    final diagnostics = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 60,
+          bpmConfidence: 0.9,
+          downbeatsMs: [0, 8000, 16000],
+        ),
+      ),
+      _clip(
+        'incoming',
+        8000,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 220,
+          bpmConfidence: 0.9,
+          downbeatsMs: [0, 8000, 16000],
+        ),
+      ),
+    );
+
+    final warning = diagnostics.diagnostics.firstWhere(
+      (diagnostic) =>
+          diagnostic.code == TransitionDiagnosticCode.tempoOutOfRange,
+    );
+    expect(warning.label, 'Tempo range');
+    expect(warning.detail, contains('0.5x-2.0x'));
+    expect(diagnostics.hasWarnings, isTrue);
   });
 
   test('derives harmonic compatibility from musical keys without Camelot', () {

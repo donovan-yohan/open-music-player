@@ -443,6 +443,14 @@ TempoTransitionRatePlan? planTempoMatchedTransition({
       incomingBpm <= 0) {
     return null;
   }
+  if (!tempoTransitionTargetsAreAchievable(
+    outgoingTempo: outgoingTempo,
+    incomingTempo: incomingTempo,
+    outgoingBaseRate: outgoingBaseRate,
+    incomingBaseRate: incomingBaseRate,
+  )) {
+    return null;
+  }
 
   final outgoingStartRate = playbackRateForTargetBpm(
     baseRate: outgoingBaseRate,
@@ -481,6 +489,78 @@ TempoTransitionRatePlan? planTempoMatchedTransition({
   );
 }
 
+bool tempoTransitionTargetsAreAchievable({
+  required ClipTempoMetadata outgoingTempo,
+  required ClipTempoMetadata incomingTempo,
+  double outgoingBaseRate = 1,
+  double incomingBaseRate = 1,
+}) {
+  final outgoingBpm = outgoingTempo.nativeBpm;
+  final incomingBpm = incomingTempo.nativeBpm;
+  if (outgoingBpm == null ||
+      outgoingBpm <= 0 ||
+      incomingBpm == null ||
+      incomingBpm <= 0) {
+    return false;
+  }
+
+  return playbackRateCanReachTargetBpm(
+        baseRate: outgoingBaseRate,
+        nativeBpm: outgoingBpm,
+        targetBpm: outgoingBpm,
+      ) &&
+      playbackRateCanReachTargetBpm(
+        baseRate: outgoingBaseRate,
+        nativeBpm: outgoingBpm,
+        targetBpm: incomingBpm,
+      ) &&
+      playbackRateCanReachTargetBpm(
+        baseRate: incomingBaseRate,
+        nativeBpm: incomingBpm,
+        targetBpm: outgoingBpm,
+      ) &&
+      playbackRateCanReachTargetBpm(
+        baseRate: incomingBaseRate,
+        nativeBpm: incomingBpm,
+        targetBpm: incomingBpm,
+      );
+}
+
+bool playbackRateCanReachTargetBpm({
+  required double baseRate,
+  required double nativeBpm,
+  required double targetBpm,
+}) {
+  if (!nativeBpm.isFinite ||
+      nativeBpm <= 0 ||
+      !targetBpm.isFinite ||
+      targetBpm <= 0) {
+    return false;
+  }
+  final rate = rawPlaybackRateForTargetBpm(
+    baseRate: baseRate,
+    nativeBpm: nativeBpm,
+    targetBpm: targetBpm,
+  );
+  const epsilon = 0.000001;
+  return rate >= minTempoAutomationRate - epsilon &&
+      rate <= maxTempoAutomationRate + epsilon;
+}
+
+double rawPlaybackRateForTargetBpm({
+  required double baseRate,
+  required double nativeBpm,
+  required double targetBpm,
+}) {
+  if (!nativeBpm.isFinite ||
+      nativeBpm <= 0 ||
+      !targetBpm.isFinite ||
+      targetBpm <= 0) {
+    return _safeBaseRate(baseRate);
+  }
+  return _safeBaseRate(baseRate) * targetBpm / nativeBpm;
+}
+
 double playbackRateForTargetBpm({
   required double baseRate,
   required double nativeBpm,
@@ -491,7 +571,16 @@ double playbackRateForTargetBpm({
         .clamp(minTempoAutomationRate, maxTempoAutomationRate)
         .toDouble();
   }
-  return (baseRate * targetBpm / nativeBpm)
+  return rawPlaybackRateForTargetBpm(
+    baseRate: baseRate,
+    nativeBpm: nativeBpm,
+    targetBpm: targetBpm,
+  ).clamp(minTempoAutomationRate, maxTempoAutomationRate).toDouble();
+}
+
+double _safeBaseRate(double baseRate) {
+  if (!baseRate.isFinite || baseRate <= 0) return 1;
+  return baseRate
       .clamp(minTempoAutomationRate, maxTempoAutomationRate)
       .toDouble();
 }
