@@ -82,6 +82,7 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
+			   ta.updated_at,
 			   pe.last_played_at
 		FROM (
 			SELECT track_id, MAX(played_at) AS last_played_at
@@ -111,7 +112,7 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 			&rt.SourceURL, &rt.SourceType, &rt.StorageKey, &rt.FileSizeBytes,
 			&rt.MetadataJSON, &rt.MetadataStatus, &rt.MetadataConfidence, &rt.MetadataProvenance,
 			&rt.CoverArtURL, &rt.MetadataUserEdited, &rt.CreatedAt, &rt.UpdatedAt,
-			&rt.AnalysisStatus, &rt.AnalysisSummary, &analysisOverrides,
+			&rt.AnalysisStatus, &rt.AnalysisSummary, &analysisOverrides, &rt.AnalysisUpdatedAt,
 			&rt.LastPlayedAt,
 		); err != nil {
 			return nil, err
@@ -147,6 +148,7 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
+			   ta.updated_at,
 			   pe.played_at, pe.context_type, pe.context_id
 		FROM play_events pe
 		JOIN tracks t ON t.id = pe.track_id
@@ -173,7 +175,7 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 			&event.Track.SourceURL, &event.Track.SourceType, &event.Track.StorageKey, &event.Track.FileSizeBytes,
 			&event.Track.MetadataJSON, &event.Track.MetadataStatus, &event.Track.MetadataConfidence, &event.Track.MetadataProvenance,
 			&event.Track.CoverArtURL, &event.Track.MetadataUserEdited, &event.Track.CreatedAt, &event.Track.UpdatedAt,
-			&event.Track.AnalysisStatus, &event.Track.AnalysisSummary, &analysisOverrides,
+			&event.Track.AnalysisStatus, &event.Track.AnalysisSummary, &analysisOverrides, &event.Track.AnalysisUpdatedAt,
 			&event.PlayedAt, &event.ContextType, &event.ContextID,
 		); err != nil {
 			return nil, err
@@ -209,6 +211,7 @@ func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, d
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
+			   ta.updated_at,
 			   agg.play_count, agg.last_played_at
 		FROM (
 			SELECT track_id, COUNT(*) AS play_count, MAX(played_at) AS last_played_at
@@ -238,7 +241,7 @@ func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, d
 			&tt.SourceURL, &tt.SourceType, &tt.StorageKey, &tt.FileSizeBytes,
 			&tt.MetadataJSON, &tt.MetadataStatus, &tt.MetadataConfidence, &tt.MetadataProvenance,
 			&tt.CoverArtURL, &tt.MetadataUserEdited, &tt.CreatedAt, &tt.UpdatedAt,
-			&tt.AnalysisStatus, &tt.AnalysisSummary, &analysisOverrides,
+			&tt.AnalysisStatus, &tt.AnalysisSummary, &analysisOverrides, &tt.AnalysisUpdatedAt,
 			&tt.PlayCount, &tt.LastPlayedAt,
 		); err != nil {
 			return nil, err

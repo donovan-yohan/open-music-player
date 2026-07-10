@@ -878,6 +878,343 @@ void main() {
     provider.dispose();
   });
 
+  for (final loadCompletesFirst in <bool>[true, false]) {
+    test(
+        'successful add wins over an older load when ${loadCompletesFirst ? 'load' : 'add'} completes first',
+        () async {
+      final loadStarted = Completer<void>();
+      final addStarted = Completer<void>();
+      final releaseLoad = Completer<void>();
+      final releaseAdd = Completer<void>();
+      final staleTrack = _track(
+        id: '41',
+        queueItemId: 'queue-stale',
+        playbackTrackId: '41',
+      );
+      final addedTrack = _track(
+        id: '42',
+        queueItemId: 'queue-added',
+        playbackTrackId: '42',
+      );
+      final provider = QueueProvider(
+        mockQueueApiClient((request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            loadStarted.complete();
+            await releaseLoad.future;
+            return http.Response(
+              jsonEncode({
+                'items': [staleTrack.toJson()],
+                'currentPosition': 0,
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.method == 'POST' &&
+              request.url.path.endsWith('/queue/items')) {
+            addStarted.complete();
+            await releaseAdd.future;
+            return http.Response(
+              jsonEncode({
+                'items': [addedTrack.toJson()],
+                'currentPosition': 0,
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          return http.Response('', 404);
+        }),
+      );
+
+      final load = provider.loadQueue();
+      await loadStarted.future.timeout(const Duration(seconds: 1));
+      final add = provider.addToQueue(const ['42']);
+      await addStarted.future.timeout(const Duration(seconds: 1));
+
+      if (loadCompletesFirst) {
+        releaseLoad.complete();
+        await load;
+        releaseAdd.complete();
+      } else {
+        releaseAdd.complete();
+        await add;
+        releaseLoad.complete();
+      }
+      await Future.wait([load, add]);
+
+      expect(provider.queue.tracks.single.queueItemId, 'queue-added');
+      expect(provider.isLoading, isFalse);
+      expect(provider.error, isNull);
+      provider.dispose();
+    });
+  }
+
+  test('newer load waits for failed remove and never accepts its rollback',
+      () async {
+    final removeStarted = Completer<void>();
+    final reloadStarted = Completer<void>();
+    final releaseRemove = Completer<void>();
+    final releaseReload = Completer<void>();
+    final initialTrack = _track(
+      id: '41',
+      queueItemId: 'queue-initial',
+      playbackTrackId: '41',
+    );
+    final loadedTrack = _track(
+      id: '42',
+      queueItemId: 'queue-loaded',
+      playbackTrackId: '42',
+    );
+    var queueRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+          queueRequests++;
+          if (queueRequests == 1) {
+            return http.Response(
+              jsonEncode({
+                'items': [initialTrack.toJson()],
+                'currentPosition': 0,
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          reloadStarted.complete();
+          await releaseReload.future;
+          return http.Response(
+            jsonEncode({
+              'items': [loadedTrack.toJson()],
+              'currentPosition': 0,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path.endsWith('/mix-plans')) {
+          return http.Response(
+            jsonEncode({'data': []}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'DELETE' &&
+            request.url.path.endsWith('/queue/items/queue-initial')) {
+          removeStarted.complete();
+          await releaseRemove.future;
+          return http.Response('', 500);
+        }
+        return http.Response('', 404);
+      }),
+    );
+
+    await provider.loadQueue();
+    final remove = provider.removeFromQueue(0);
+    await removeStarted.future.timeout(const Duration(seconds: 1));
+    final reload = provider.loadQueue();
+    await Future<void>.delayed(Duration.zero);
+    expect(reloadStarted.isCompleted, isFalse);
+
+    releaseRemove.complete();
+    await remove;
+    await reloadStarted.future.timeout(const Duration(seconds: 1));
+    releaseReload.complete();
+    await reload;
+
+    expect(provider.queue.tracks.single.queueItemId, 'queue-loaded');
+    expect(provider.isLoading, isFalse);
+    expect(provider.error, isNull);
+    provider.dispose();
+  });
+
+  test('failed clear reconciles a preceding successful add', () async {
+    final addStarted = Completer<void>();
+    final clearStarted = Completer<void>();
+    final releaseAdd = Completer<void>();
+    final addedTrack = _track(
+      id: '42',
+      queueItemId: 'queue-added',
+      playbackTrackId: '42',
+    );
+    var serverTracks = <Track>[];
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method == 'POST' &&
+            request.url.path.endsWith('/queue/items')) {
+          addStarted.complete();
+          await releaseAdd.future;
+          serverTracks = [addedTrack];
+          return http.Response(
+            jsonEncode({
+              'items': serverTracks.map((track) => track.toJson()).toList(),
+              'currentPosition': 0,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'DELETE' && request.url.path.endsWith('/queue')) {
+          clearStarted.complete();
+          return http.Response('', 500);
+        }
+        if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+          return http.Response(
+            jsonEncode({
+              'items': serverTracks.map((track) => track.toJson()).toList(),
+              'currentPosition': serverTracks.isEmpty ? -1 : 0,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path.endsWith('/mix-plans')) {
+          return http.Response(
+            jsonEncode({'data': []}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('', 404);
+      }),
+    );
+
+    final add = provider.addToQueue(const ['42']);
+    await addStarted.future.timeout(const Duration(seconds: 1));
+    final clear = provider.clearQueue();
+    releaseAdd.complete();
+    await clearStarted.future.timeout(const Duration(seconds: 1));
+    await Future.wait([add, clear]);
+
+    expect(provider.queue.tracks.single.queueItemId, 'queue-added');
+    expect(provider.error, contains('Failed to clear queue'));
+    provider.dispose();
+  });
+
+  test('off-queue analysis authority is bounded and evicts oldest floors', () {
+    final provider = QueueProvider(
+      mockQueueApiClient((_) async => http.Response('', 404)),
+    );
+    final revision = DateTime.utc(2026, 7, 10, 12);
+
+    Track analyzedTrack(int id, double bpm, DateTime updatedAt) => _track(
+          id: '$id',
+          queueItemId: 'queue-$id',
+          playbackTrackId: '$id',
+          analysis: TrackAnalysis.fromJson(
+            status: 'analyzed',
+            summary: {
+              'bpm': {'value': bpm},
+              'waveform': {
+                'sample_count': 4,
+                'peaks': [0.1, 0.4, 0.8, 0.2],
+              },
+            },
+            updatedAt: updatedAt,
+          ),
+        );
+
+    for (var id = 1; id <= 256; id++) {
+      provider.trackWithAnalysis(
+        analyzedTrack(id, 100 + id.toDouble(), revision),
+        requestHydration: false,
+      );
+    }
+
+    expect(provider.retainedAnalysisAuthorityCount, lessThanOrEqualTo(128));
+    final oldestReplay = provider.trackWithAnalysis(
+      analyzedTrack(
+        1,
+        99,
+        revision.subtract(const Duration(microseconds: 1)),
+      ),
+      requestHydration: false,
+    );
+    final newestReplay = provider.trackWithAnalysis(
+      analyzedTrack(
+        256,
+        99,
+        revision.subtract(const Duration(microseconds: 1)),
+      ),
+      requestHydration: false,
+    );
+
+    expect(oldestReplay.analysis?.summary?.bpm?.numericValue, 99);
+    expect(newestReplay.analysis?.summary?.bpm?.numericValue, 356);
+    expect(provider.retainedAnalysisAuthorityCount, lessThanOrEqualTo(128));
+    provider.dispose();
+  });
+
+  test('large active queues retain bounded authority marker arrays', () async {
+    final revision = DateTime.utc(2026, 7, 10, 12);
+    final tracks = List<Track>.generate(
+      129,
+      (index) {
+        final id = index + 1;
+        return _track(
+          id: '$id',
+          queueItemId: 'queue-$id',
+          playbackTrackId: '$id',
+          duration: 600,
+          analysis: _tempoAnalysis(
+            durationMs: 600000,
+            updatedAt: revision,
+          ),
+        );
+      },
+      growable: false,
+    );
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+          return http.Response(
+            jsonEncode({
+              'items': tracks.map((track) => track.toJson()).toList(),
+              'currentPosition': 0,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path.endsWith('/mix-plans')) {
+          return http.Response(
+            jsonEncode({'data': []}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('', 404);
+      }),
+    );
+
+    await provider.loadQueue();
+
+    expect(provider.retainedAnalysisAuthorityCount, greaterThanOrEqualTo(129));
+    for (final id in [1, 65, 129]) {
+      final resolved = provider.trackWithAnalysis(
+        _track(
+          id: '$id',
+          queueItemId: 'playback-$id',
+          playbackTrackId: '$id',
+          duration: 600,
+        ),
+        requestHydration: false,
+      );
+      expect(
+        resolved.analysis?.summary?.beatGrid?.beatsMs.length,
+        lessThanOrEqualTo(128),
+      );
+      expect(
+        resolved.analysis?.summary?.downbeats?.positionsMs.length,
+        lessThanOrEqualTo(64),
+      );
+    }
+    provider.dispose();
+  });
+
   test('concurrent override saves serialize server writes before reload',
       () async {
     final firstStarted = Completer<void>();

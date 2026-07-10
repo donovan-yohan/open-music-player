@@ -11,6 +11,7 @@ func TestTrackAnalysisProjectsIntoSongListingsAgainstPostgres(t *testing.T) {
 	analysisRepo := NewAnalysisRepository(database)
 	playlistRepo := NewPlaylistRepository(database)
 	playEventRepo := NewPlayEventRepository(database)
+	libraryRepo := NewLibraryRepository(database)
 
 	userID := seedPlayUser(t, database, "analysis-projection@example.test")
 	trackID := seedPlayTrack(t, trackRepo, ctx, "Projection Artist", "Projection Song")
@@ -48,6 +49,9 @@ func TestTrackAnalysisProjectsIntoSongListingsAgainstPostgres(t *testing.T) {
 	}
 	assertCompactAnalysisPayload(t, compact.SummaryJSON)
 	assertCompactAnalysisPayload(t, compact.OverridesJSON)
+	if compact.UpdatedAt.IsZero() {
+		t.Fatal("compact analysis revision is missing")
+	}
 
 	searchTracks, _, err := trackRepo.SearchRecordings(ctx, "Projection", 20, 0)
 	if err != nil {
@@ -73,6 +77,24 @@ func TestTrackAnalysisProjectsIntoSongListingsAgainstPostgres(t *testing.T) {
 		t.Fatalf("playlist tracks = %d, want 1", len(withTracks.Tracks))
 	}
 	assertProjectedTrackAnalysis(t, withTracks.Tracks[0])
+
+	if _, err := libraryRepo.AddTrackToLibrary(ctx, userID, trackID); err != nil {
+		t.Fatalf("add library track: %v", err)
+	}
+	libraryTracks, _, err := libraryRepo.GetUserLibrary(
+		ctx,
+		userID,
+		LibraryQueryOptions{Limit: 10},
+	)
+	if err != nil {
+		t.Fatalf("get library tracks: %v", err)
+	}
+	if len(libraryTracks) != 1 {
+		t.Fatalf("library tracks = %d, want 1", len(libraryTracks))
+	}
+	if !libraryTracks[0].AnalysisUpdatedAt.Valid {
+		t.Fatal("library analysis revision is missing")
+	}
 
 	if err := playEventRepo.RecordPlay(ctx, userID, trackID, "playlist", "projection"); err != nil {
 		t.Fatalf("record play: %v", err)
@@ -106,6 +128,9 @@ func assertProjectedTrackAnalysis(t *testing.T, track Track) {
 	t.Helper()
 	if !track.AnalysisStatus.Valid || track.AnalysisStatus.String != AnalysisStatusAnalyzed {
 		t.Fatalf("analysis status = %#v, want %q", track.AnalysisStatus, AnalysisStatusAnalyzed)
+	}
+	if !track.AnalysisUpdatedAt.Valid {
+		t.Fatal("analysis revision is missing")
 	}
 
 	var summary map[string]any

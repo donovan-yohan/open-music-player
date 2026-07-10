@@ -255,6 +255,8 @@ class Track {
         'analysis_summary': analysis!.summary!.toJson(),
       if (analysis?.overrides != null)
         'analysis_overrides': analysis!.overrides!.toJson(),
+      if (analysis?.updatedAt != null)
+        'analysis_updated_at': analysis!.updatedAt!.toUtc().toIso8601String(),
       'is_liked': isLiked,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
@@ -285,6 +287,11 @@ class Track {
         ),
       if (analysis?.overrides != null)
         'analysis_overrides': jsonEncode(analysis!.overrides!.toJson()),
+      if (analysis?.updatedAt != null)
+        'analysis_updated_at': analysis!.updatedAt!.toUtc().toIso8601String(),
+      if (analysis?.updatedAt != null)
+        'analysis_updated_at_us':
+            analysis!.updatedAt!.toUtc().microsecondsSinceEpoch,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
     };
@@ -312,6 +319,7 @@ class Track {
         'analysis_status': map['analysis_status'],
         'analysis_summary': _decodeJsonColumn(map['analysis_summary']),
         'analysis_overrides': _decodeJsonColumn(map['analysis_overrides']),
+        'analysis_updated_at': map['analysis_updated_at'],
       }),
       createdAt: DateTime.parse(map['created_at'] as String),
       updatedAt: DateTime.parse(map['updated_at'] as String),

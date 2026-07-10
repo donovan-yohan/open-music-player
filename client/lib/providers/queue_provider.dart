@@ -19,6 +19,9 @@ class QueueProvider extends ChangeNotifier {
   static const Duration defaultAnalysisRetryCooldown = Duration(seconds: 15);
   static const int _maxConcurrentAnalysisRequests = 3;
   static const int _maxAnalysisRequestAttempts = 4;
+  static const int _maxRetainedAnalysisAuthorityEntries = 128;
+  static const int _maxRetainedBeatPositions = 128;
+  static const int _maxRetainedDownbeatPositions = 64;
   static const Duration _maxAnalysisRetryDelay = Duration(minutes: 2);
 
   final ApiClient _apiClient;
@@ -48,7 +51,9 @@ class QueueProvider extends ChangeNotifier {
   final Map<String, int> _analysisGenerations = {};
   final Map<String, Future<void>> _analysisOverrideMutationTails = {};
   final Map<String, TrackAnalysis> _authoritativeAnalysisLocks = {};
-  int _queueLoadGeneration = 0;
+  final LinkedHashSet<String> _analysisAuthorityLru = LinkedHashSet<String>();
+  Future<void>? _queueMutationTail;
+  int _queueOperationGeneration = 0;
   final Set<String> _analysisHydrationInterest = {};
   final Set<String> _analysisRequestsInFlight = {};
   final Set<String> _analysisRequestsQueued = {};
@@ -77,6 +82,9 @@ class QueueProvider extends ChangeNotifier {
   List<Track> get upNext => _queue.upNext;
   bool get isEmpty => _queue.isEmpty;
   int get analysisRevision => _analysisRevision;
+
+  @visibleForTesting
+  int get retainedAnalysisAuthorityCount => _analysisAuthorityKeys().length;
 
   Map<String, TrimRange> get trimRanges => Map.unmodifiable(_trimRanges);
   Map<String, MixPlanClip> get mixPlanClips => Map.unmodifiable(_mixPlanClips);
@@ -178,9 +186,15 @@ class QueueProvider extends ChangeNotifier {
       _analysisHydrationInterest.add(key);
       _fetchAnalysisIfNeeded(trackId);
     }
-    final cached = _analysisByTrackId[key] ?? _analysisRevisionSnapshots[key];
-    if (cached == null || identical(cached, incoming)) return track;
-    return _enrichedTrack(track, key, cached);
+    final cached = _analysisByTrackId[key] ??
+        _authoritativeAnalysisLocks[key] ??
+        _analysisRevisionSnapshots[key];
+    final result = cached == null || identical(cached, incoming)
+        ? track
+        : _enrichedTrack(track, key, cached);
+    if (cached != null) _touchAnalysisAuthority(key);
+    _pruneAnalysisAuthorityState();
+    return result;
   }
 
   /// Retains detailed analysis only for tracks rendered by the timeline.
@@ -221,6 +235,7 @@ class QueueProvider extends ChangeNotifier {
       }
       _fetchAnalysisIfNeeded(trackId);
     }
+    _pruneAnalysisAuthorityState();
   }
 
   void clearAnalysisHydrationInterest() {
@@ -260,6 +275,7 @@ class QueueProvider extends ChangeNotifier {
       tail.whenComplete(() {
         if (identical(_analysisOverrideMutationTails[key], tail)) {
           _analysisOverrideMutationTails.remove(key);
+          _pruneAnalysisAuthorityState();
         }
       }),
     );
@@ -277,7 +293,8 @@ class QueueProvider extends ChangeNotifier {
     );
     if (_disposed) return analysis;
     _rememberAnalysisRevision(key, analysis);
-    _authoritativeAnalysisLocks[key] = analysis;
+    _authoritativeAnalysisLocks[key] = _compactRevisionSnapshot(analysis);
+    _touchAnalysisAuthority(key);
     _advanceAnalysisGeneration(key);
     _analysisByTrackId[key] = analysis;
     _lastIncomingAnalysisByTrackId[key] = analysis;
@@ -296,35 +313,46 @@ class QueueProvider extends ChangeNotifier {
       repeatMode: _queue.repeatMode,
       shuffled: _queue.shuffled,
     );
+    _pruneAnalysisAuthorityState();
     _notifyListeners();
     return analysis;
   }
 
   Future<void> loadQueue() async {
-    final loadGeneration = ++_queueLoadGeneration;
+    final operationGeneration = _beginQueueOperation(loading: true);
     _isLoading = true;
     _error = null;
     _notifyListeners();
 
     try {
+      while (_queueMutationTail != null) {
+        final pendingMutation = _queueMutationTail!;
+        await pendingMutation;
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        if (identical(_queueMutationTail, pendingMutation)) {
+          _queueMutationTail = null;
+        }
+      }
       while (_analysisOverrideMutationTails.isNotEmpty) {
         await Future.wait(
           _analysisOverrideMutationTails.values.toList(growable: false),
         );
-        if (_disposed || loadGeneration != _queueLoadGeneration) return;
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
       }
       final loadedQueue = await _apiClient.getQueue();
-      if (_disposed || loadGeneration != _queueLoadGeneration) return;
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
       _queue = _queueWithAuthoritativeAnalysis(loadedQueue);
       _rememberQueueAnalyses();
       _pruneTimingState();
-      await _loadQueueTimingMixPlan(loadGeneration: loadGeneration);
-      if (_disposed || loadGeneration != _queueLoadGeneration) return;
+      await _loadQueueTimingMixPlan(
+        operationGeneration: operationGeneration,
+      );
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
     } catch (e) {
-      if (_disposed || loadGeneration != _queueLoadGeneration) return;
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
       _error = e.toString();
     } finally {
-      if (!_disposed && loadGeneration == _queueLoadGeneration) {
+      if (_isCurrentQueueOperation(operationGeneration)) {
         _isLoading = false;
         _notifyListeners();
       }
@@ -335,18 +363,25 @@ class QueueProvider extends ChangeNotifier {
     List<String> trackIds, {
     bool playNext = false,
   }) async {
+    final operationGeneration = _beginQueueOperation();
+    _notifyListeners();
     try {
       _error = null;
-      _queue = _queueWithAuthoritativeAnalysis(
-        await _apiClient.addToQueue(
+      final updatedQueue = await _runQueueMutation(
+        () => _apiClient.addToQueue(
           trackIds: trackIds,
           position: playNext ? 'next' : 'last',
         ),
       );
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
       _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
     } catch (e) {
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      await _reconcileQueueAfterMutationFailure(operationGeneration);
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
       _error = e.toString();
       _notifyListeners();
     }
@@ -356,18 +391,25 @@ class QueueProvider extends ChangeNotifier {
     DiscoveryCandidate candidate, {
     bool playNext = false,
   }) async {
+    final operationGeneration = _beginQueueOperation();
+    _notifyListeners();
     try {
       _error = null;
-      _queue = _queueWithAuthoritativeAnalysis(
-        await _apiClient.addSourceCandidateToQueue(
+      final updatedQueue = await _runQueueMutation(
+        () => _apiClient.addSourceCandidateToQueue(
           candidate: candidate,
           position: playNext ? 'next' : 'last',
         ),
       );
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
       _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
     } catch (e) {
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      await _reconcileQueueAfterMutationFailure(operationGeneration);
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
       _error = e.toString();
       _notifyListeners();
       rethrow;
@@ -376,6 +418,8 @@ class QueueProvider extends ChangeNotifier {
 
   Future<void> removeFromQueue(int position) async {
     if (position < 0 || position >= _queue.tracks.length) return;
+
+    final operationGeneration = _beginQueueOperation();
 
     final previousQueue = _queue;
     final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
@@ -407,16 +451,27 @@ class QueueProvider extends ChangeNotifier {
       shuffled: _queue.shuffled,
     );
     _pruneTimingState();
+    _pruneAnalysisAuthorityState();
     _notifyListeners();
 
     try {
-      _queue = _queueWithAuthoritativeAnalysis(
-        await _apiClient.removeQueueItem(removedTrack.queueItemId),
+      final updatedQueue = await _runQueueMutation(
+        () => _apiClient.removeQueueItem(removedTrack.queueItemId),
       );
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
       _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
     } catch (e) {
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _error = e.toString();
+        _notifyListeners();
+        return;
+      }
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
       _queue = _queueWithAuthoritativeAnalysis(previousQueue);
       _rememberQueueAnalyses();
       _trimRanges = previousTrimRanges;
@@ -428,17 +483,23 @@ class QueueProvider extends ChangeNotifier {
   }
 
   Future<void> retryTrack(Track track) async {
+    final operationGeneration = _beginQueueOperation();
     _error = null;
     _notifyListeners();
 
     try {
-      _queue = _queueWithAuthoritativeAnalysis(
-        await _apiClient.retryQueueItem(track.queueItemId),
+      final updatedQueue = await _runQueueMutation(
+        () => _apiClient.retryQueueItem(track.queueItemId),
       );
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
       _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
     } catch (e) {
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      await _reconcileQueueAfterMutationFailure(operationGeneration);
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
       _error = e.toString();
       _notifyListeners();
     }
@@ -448,6 +509,8 @@ class QueueProvider extends ChangeNotifier {
     if (oldIndex == newIndex) return;
     if (oldIndex < 0 || oldIndex >= _queue.tracks.length) return;
     if (newIndex < 0 || newIndex >= _queue.tracks.length) return;
+
+    final operationGeneration = _beginQueueOperation();
 
     final previousQueue = _queue;
 
@@ -476,16 +539,26 @@ class QueueProvider extends ChangeNotifier {
     _notifyListeners();
 
     try {
-      _queue = _queueWithAuthoritativeAnalysis(
-        await _apiClient.reorderQueue(
+      final updatedQueue = await _runQueueMutation(
+        () => _apiClient.reorderQueue(
           queueItemId: track.queueItemId,
           toPosition: newIndex,
         ),
       );
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
       _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
     } catch (e) {
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _error = e.toString();
+        _notifyListeners();
+        return;
+      }
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
       _queue = _queueWithAuthoritativeAnalysis(previousQueue);
       _rememberQueueAnalyses();
       _error = e.toString();
@@ -494,6 +567,7 @@ class QueueProvider extends ChangeNotifier {
   }
 
   Future<void> clearQueue() async {
+    final operationGeneration = _beginQueueOperation();
     final previousQueue = _queue;
     final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
     final previousTimelineStarts = Map<String, int>.from(
@@ -505,11 +579,20 @@ class QueueProvider extends ChangeNotifier {
     _trimRanges = {};
     _timelineStartOverrides = {};
     _mixPlanClips = {};
+    _pruneAnalysisAuthorityState();
     _notifyListeners();
 
     try {
-      await _apiClient.clearQueue();
+      await _runQueueMutation(_apiClient.clearQueue);
     } catch (e) {
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _error = e.toString();
+        _notifyListeners();
+        return;
+      }
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
       _queue = _queueWithAuthoritativeAnalysis(previousQueue);
       _rememberQueueAnalyses();
       _trimRanges = previousTrimRanges;
@@ -604,8 +687,52 @@ class QueueProvider extends ChangeNotifier {
     _notifyListeners();
   }
 
-  Future<void> _loadQueueTimingMixPlan({required int loadGeneration}) async {
-    if (loadGeneration != _queueLoadGeneration) return;
+  int _beginQueueOperation({bool loading = false}) {
+    _isLoading = loading;
+    _error = null;
+    return ++_queueOperationGeneration;
+  }
+
+  bool _isCurrentQueueOperation(int generation) =>
+      !_disposed && generation == _queueOperationGeneration;
+
+  Future<T> _runQueueMutation<T>(Future<T> Function() mutation) {
+    final previous = _queueMutationTail;
+    final result = () async {
+      if (previous != null) await previous;
+      return mutation();
+    }();
+    late final Future<void> tail;
+    tail = result.then<void>((_) {}, onError: (_, __) {});
+    _queueMutationTail = tail;
+    unawaited(
+      tail.whenComplete(() {
+        if (identical(_queueMutationTail, tail)) {
+          _queueMutationTail = null;
+        }
+      }),
+    );
+    return result;
+  }
+
+  Future<bool> _reconcileQueueAfterMutationFailure(int generation) async {
+    try {
+      final loadedQueue = await _apiClient.getQueue();
+      if (!_isCurrentQueueOperation(generation)) return false;
+      _queue = _queueWithAuthoritativeAnalysis(loadedQueue);
+      _rememberQueueAnalyses();
+      _pruneTimingState();
+      await _loadQueueTimingMixPlan(operationGeneration: generation);
+      return _isCurrentQueueOperation(generation);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _loadQueueTimingMixPlan({
+    required int operationGeneration,
+  }) async {
+    if (!_isCurrentQueueOperation(operationGeneration)) return;
     if (_queue.tracks.isEmpty) {
       _activeMixPlanId = null;
       _activeMixPlanVersion = null;
@@ -615,7 +742,7 @@ class QueueProvider extends ChangeNotifier {
 
     try {
       final plans = await _apiClient.listMixPlans();
-      if (_disposed || loadGeneration != _queueLoadGeneration) return;
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
       final plan = plans.cast<MixPlan?>().firstWhere(
             (plan) => plan?.name == queueTimingMixPlanName,
             orElse: () => null,
@@ -968,6 +1095,7 @@ class QueueProvider extends ChangeNotifier {
     for (final track in _queue.tracks) {
       _rememberTrackAnalysis(track);
     }
+    _pruneAnalysisAuthorityState();
   }
 
   QueueState _queueWithAuthoritativeAnalysis(QueueState queue) {
@@ -1015,6 +1143,7 @@ class QueueProvider extends ChangeNotifier {
   bool _ingestIncomingAnalysis(String key, TrackAnalysis analysis) {
     if (!_acceptIncomingAnalysis(key, analysis)) return false;
 
+    _touchAnalysisAuthority(key);
     _rememberAnalysisRevision(key, analysis);
     final signature = _analysisCompactSignature(analysis);
     final cached = _analysisByTrackId[key];
@@ -1092,18 +1221,62 @@ class QueueProvider extends ChangeNotifier {
     if (floor != null && revision.isBefore(floor)) return;
     _analysisRevisionFloors[key] = revision;
     _analysisRevisionSnapshots[key] = _compactRevisionSnapshot(analysis);
+    _touchAnalysisAuthority(key);
   }
 
   TrackAnalysis _compactRevisionSnapshot(TrackAnalysis analysis) {
-    final summary = analysis.summary?.toJson();
-    summary?.remove('waveform');
+    final sourceSummary = analysis.summary;
+    final beatGrid = sourceSummary?.beatGrid;
+    final downbeats = sourceSummary?.downbeats;
+    final summary = sourceSummary == null
+        ? null
+        : TrackAnalysisSummary(
+            bpm: sourceSummary.bpm,
+            beatGrid: beatGrid == null
+                ? null
+                : BeatGridSummary(
+                    bpm: beatGrid.bpm,
+                    offsetMs: beatGrid.offsetMs,
+                    beatsMs: _boundedMarkerPositions(
+                      beatGrid.beatsMs,
+                      _maxRetainedBeatPositions,
+                    ),
+                    confidence: beatGrid.confidence,
+                    provenance: beatGrid.provenance,
+                  ),
+            downbeats: downbeats == null
+                ? null
+                : DownbeatSummary(
+                    positionsMs: _boundedMarkerPositions(
+                      downbeats.positionsMs,
+                      _maxRetainedDownbeatPositions,
+                    ),
+                    confidence: downbeats.confidence,
+                    provenance: downbeats.provenance,
+                  ),
+            key: sourceSummary.key,
+            camelot: sourceSummary.camelot,
+            energy: sourceSummary.energy,
+          );
     return TrackAnalysis.fromJson(
       status: analysis.status.name,
-      summary: summary,
+      summary: summary?.toJson(),
       overrides: analysis.overrides?.toJson(),
       overridesPresent: analysis.overridesPresent,
       updatedAt: analysis.updatedAt,
     );
+  }
+
+  List<int> _boundedMarkerPositions(List<int> positions, int limit) {
+    if (positions.length <= limit) {
+      return List<int>.unmodifiable(positions);
+    }
+    final headLength = limit ~/ 2;
+    final tailLength = limit - headLength;
+    return List<int>.unmodifiable([
+      ...positions.take(headLength),
+      ...positions.skip(positions.length - tailLength),
+    ]);
   }
 
   bool _analysisRevisionSupersedes(
@@ -1256,6 +1429,7 @@ class QueueProvider extends ChangeNotifier {
             _fetchAnalysisIfNeeded(trackId);
           }
           _drainAnalysisRequests();
+          _pruneAnalysisAuthorityState();
         }
       }
     }());
@@ -1314,6 +1488,128 @@ class QueueProvider extends ChangeNotifier {
     _cancelAnalysisRetry(key);
   }
 
+  Set<String> _analysisAuthorityKeys() => <String>{
+        ..._analysisRevisionFloors.keys,
+        ..._analysisRevisionSnapshots.keys,
+        ..._analysisGenerations.keys,
+        ..._authoritativeAnalysisLocks.keys,
+        ..._appliedCompactAnalysisSignatures.keys,
+        ..._lastIncomingAnalysisByTrackId.keys,
+        ..._analysisByTrackId.keys,
+        ..._analysisLastRequestedAt.keys,
+        ..._analysisRequestAttempts.keys,
+        ..._analysisTransportFailures.keys,
+        ..._analysisPermanentFailures,
+        ..._analysisRequestsQueued,
+        ..._analysisRequestsInFlight,
+        ..._analysisRetryTimers.keys,
+      };
+
+  Set<String> _activeAnalysisAuthorityKeys() {
+    final active = <String>{
+      ..._analysisHydrationInterest,
+      ..._analysisOverrideMutationTails.keys,
+      ..._analysisRequestsInFlight,
+    };
+    for (final track in _queue.tracks) {
+      final trackId = _analysisTrackId(track);
+      if (trackId != null) active.add(trackId.toString());
+    }
+    return active;
+  }
+
+  void _touchAnalysisAuthority(String key) {
+    _analysisAuthorityLru
+      ..remove(key)
+      ..add(key);
+  }
+
+  void _pruneAnalysisAuthorityState() {
+    if (_disposed) return;
+
+    // Detailed waveform payloads only belong to visible timeline lanes. The
+    // revision snapshots and correction locks below are compact metadata.
+    final detailKeys = <String>{
+      ..._analysisByTrackId.keys,
+      ..._lastIncomingAnalysisByTrackId.keys,
+    };
+    for (final key in detailKeys) {
+      if (_analysisHydrationInterest.contains(key)) continue;
+      final cached = _analysisByTrackId[key];
+      final compactedAnalysis =
+          cached != null && _analysisNeedsAuthorityCompaction(cached);
+      if (cached != null && compactedAnalysis) {
+        _analysisByTrackId[key] = _compactRevisionSnapshot(cached);
+      }
+      final removedIncoming = _lastIncomingAnalysisByTrackId.remove(key);
+      if (compactedAnalysis || removedIncoming != null) {
+        _invalidateAnalysisCache(key);
+      }
+    }
+
+    final authorityKeys = _analysisAuthorityKeys();
+    _analysisAuthorityLru.removeWhere(
+      (key) => !authorityKeys.contains(key),
+    );
+    for (final key in authorityKeys) {
+      _analysisAuthorityLru.add(key);
+    }
+
+    final active = _activeAnalysisAuthorityKeys();
+    var retainedOffQueue =
+        _analysisAuthorityLru.where((key) => !active.contains(key)).length;
+    while (retainedOffQueue > _maxRetainedAnalysisAuthorityEntries) {
+      String? evicted;
+      for (final key in _analysisAuthorityLru) {
+        if (!active.contains(key)) {
+          evicted = key;
+          break;
+        }
+      }
+      if (evicted == null) break;
+      _evictAnalysisAuthority(evicted);
+      retainedOffQueue--;
+    }
+  }
+
+  void _evictAnalysisAuthority(String key) {
+    _analysisAuthorityLru.remove(key);
+    _analysisRevisionFloors.remove(key);
+    _analysisRevisionSnapshots.remove(key);
+    _analysisGenerations.remove(key);
+    _authoritativeAnalysisLocks.remove(key);
+    _appliedCompactAnalysisSignatures.remove(key);
+    _lastIncomingAnalysisByTrackId.remove(key);
+    _analysisByTrackId.remove(key);
+    _analysisLastRequestedAt.remove(key);
+    _analysisRequestAttempts.remove(key);
+    _analysisTransportFailures.remove(key);
+    _analysisPermanentFailures.remove(key);
+    _analysisRequestsQueued.remove(key);
+    _analysisRequestQueue.removeWhere(
+      (request) => request.trackId.toString() == key,
+    );
+    _cancelAnalysisRetry(key);
+    _invalidateAnalysisCache(key);
+  }
+
+  bool _analysisNeedsAuthorityCompaction(TrackAnalysis analysis) {
+    final summary = analysis.summary;
+    if (summary == null) return false;
+    return _hasWaveformDetail(analysis) ||
+        (summary.beatGrid?.beatsMs.length ?? 0) > _maxRetainedBeatPositions ||
+        (summary.downbeats?.positionsMs.length ?? 0) >
+            _maxRetainedDownbeatPositions ||
+        summary.loudness != null ||
+        summary.truePeak != null ||
+        summary.transients != null ||
+        summary.silence != null ||
+        summary.intro != null ||
+        summary.outro != null ||
+        summary.sections.isNotEmpty ||
+        summary.cueCandidates.isNotEmpty;
+  }
+
   void _releaseAnalysisHydration(String key) {
     _advanceAnalysisGeneration(key);
     _analysisRequestsQueued.remove(key);
@@ -1322,10 +1618,12 @@ class QueueProvider extends ChangeNotifier {
     _appliedCompactAnalysisSignatures.remove(key);
     _lastIncomingAnalysisByTrackId.remove(key);
     _invalidateAnalysisCache(key);
+    _pruneAnalysisAuthorityState();
   }
 
   void _advanceAnalysisGeneration(String key) {
     _analysisGenerations[key] = (_analysisGenerations[key] ?? 0) + 1;
+    _touchAnalysisAuthority(key);
   }
 
   TrackAnalysis _mergeDetailedAnalysis(

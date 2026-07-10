@@ -109,6 +109,7 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 			   t.metadata_json,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
+			   ta.updated_at,
 			   t.created_at, t.updated_at
 		FROM playlists p
 		LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
@@ -139,7 +140,7 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 			&trackID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
-			&t.MetadataJSON, &t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides,
+			&t.MetadataJSON, &t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt,
 			&t.CreatedAt, &t.UpdatedAt,
 		)
 		if err != nil {

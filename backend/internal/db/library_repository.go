@@ -21,11 +21,12 @@ type LibraryEntry struct {
 
 type LibraryTrack struct {
 	Track
-	AddedAt         time.Time
-	AnalysisStatus  sql.NullString
-	AnalysisSummary json.RawMessage
-	IsLiked         bool
-	Genre           sql.NullString
+	AddedAt           time.Time
+	AnalysisStatus    sql.NullString
+	AnalysisSummary   json.RawMessage
+	AnalysisUpdatedAt sql.NullTime
+	IsLiked           bool
+	Genre             sql.NullString
 }
 
 type LibraryRepository struct {
@@ -144,6 +145,7 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at, ul.added_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb) AS analysis_summary,
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb) AS analysis_overrides,
+			   ta.updated_at AS analysis_updated_at,
 			   EXISTS(SELECT 1 FROM track_favorites tf WHERE tf.user_id = ul.user_id AND tf.track_id = t.id) AS is_liked,
 			   t.genre,
 			   COUNT(*) OVER() as total_count
@@ -173,7 +175,7 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			&lt.SourceURL, &lt.SourceType, &lt.StorageKey, &lt.FileSizeBytes,
 			&lt.MetadataJSON, &lt.MetadataStatus, &lt.MetadataConfidence, &lt.MetadataProvenance,
 			&lt.CoverArtURL, &lt.MetadataUserEdited, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt,
-			&lt.AnalysisStatus, &lt.AnalysisSummary, &analysisOverrides, &lt.IsLiked, &lt.Genre, &total,
+			&lt.AnalysisStatus, &lt.AnalysisSummary, &analysisOverrides, &lt.AnalysisUpdatedAt, &lt.IsLiked, &lt.Genre, &total,
 		)
 		if err != nil {
 			return nil, 0, err

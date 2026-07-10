@@ -53,17 +53,18 @@ type RecordPlayRequest struct {
 }
 
 type PlayEventTrackResponse struct {
-	ID              int64           `json:"id"`
-	Title           string          `json:"title"`
-	Artist          string          `json:"artist,omitempty"`
-	Album           string          `json:"album,omitempty"`
-	DurationMs      int             `json:"durationMs,omitempty"`
-	CoverArtURL     string          `json:"coverArtUrl,omitempty"`
-	MBRecordingID   *uuid.UUID      `json:"mbRecordingId,omitempty"`
-	AnalysisStatus  string          `json:"analysisStatus,omitempty"`
-	AnalysisSummary json.RawMessage `json:"analysisSummary,omitempty"`
-	LastPlayedAt    time.Time       `json:"lastPlayedAt"`
-	PlayCount       int             `json:"playCount,omitempty"`
+	ID                int64           `json:"id"`
+	Title             string          `json:"title"`
+	Artist            string          `json:"artist,omitempty"`
+	Album             string          `json:"album,omitempty"`
+	DurationMs        int             `json:"durationMs,omitempty"`
+	CoverArtURL       string          `json:"coverArtUrl,omitempty"`
+	MBRecordingID     *uuid.UUID      `json:"mbRecordingId,omitempty"`
+	AnalysisStatus    string          `json:"analysisStatus,omitempty"`
+	AnalysisSummary   json.RawMessage `json:"analysisSummary,omitempty"`
+	AnalysisUpdatedAt string          `json:"analysisUpdatedAt,omitempty"`
+	LastPlayedAt      time.Time       `json:"lastPlayedAt"`
+	PlayCount         int             `json:"playCount,omitempty"`
 }
 
 type RecentlyPlayedResponse struct {
@@ -269,6 +270,9 @@ func trackToPlayEventResponse(t db.Track) PlayEventTrackResponse {
 	}
 	if len(t.AnalysisSummary) > 0 && string(t.AnalysisSummary) != "{}" {
 		resp.AnalysisSummary = t.AnalysisSummary
+	}
+	if t.AnalysisUpdatedAt.Valid {
+		resp.AnalysisUpdatedAt = t.AnalysisUpdatedAt.Time.UTC().Format(time.RFC3339Nano)
 	}
 	return resp
 }

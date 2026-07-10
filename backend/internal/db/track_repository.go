@@ -45,6 +45,7 @@ type Track struct {
 	MetadataUserEdited bool
 	AnalysisStatus     sql.NullString
 	AnalysisSummary    json.RawMessage
+	AnalysisUpdatedAt  sql.NullTime
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
@@ -107,6 +108,7 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 			   sr.cover_art_url, sr.metadata_user_edited, sr.created_at, sr.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
+			   ta.updated_at,
 			   sr.total_count
 		FROM search_results sr
 		LEFT JOIN track_analysis ta ON ta.track_id = sr.id
@@ -131,7 +133,7 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
 			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
-			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &total,
+			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt, &total,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -191,6 +193,7 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 			   sr.cover_art_url, sr.metadata_user_edited, sr.created_at, sr.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
+			   ta.updated_at,
 			   sr.total_count
 		FROM search_results sr
 		LEFT JOIN track_analysis ta ON ta.track_id = sr.id
@@ -215,7 +218,7 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
 			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
-			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &total,
+			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt, &total,
 		)
 		if err != nil {
 			return nil, 0, err

@@ -11,13 +11,18 @@ run_delivery() {
 run_backend() {
   (
     cd "$ROOT/backend"
+    go_test_args=()
+    if [ -n "${OMP_POSTGRES_TEST_DSN:-${QA_DATABASE_URL:-${DATABASE_URL:-}}}" ]; then
+      # Integration packages truncate shared fixtures; one DSN requires
+      # package-serial execution to prevent cross-package deadlocks.
+      go_test_args+=(-p 1)
+    fi
     if [ -n "${BACKEND_GO_TEST_ARGS:-}" ]; then
       # shellcheck disable=SC2206
       extra_args=(${BACKEND_GO_TEST_ARGS})
-      go test "${extra_args[@]}" ./...
-    else
-      go test ./...
+      go_test_args+=("${extra_args[@]}")
     fi
+    go test "${go_test_args[@]}" ./...
   )
 }
 

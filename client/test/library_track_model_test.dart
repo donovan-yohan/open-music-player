@@ -18,6 +18,7 @@ void main() {
         'key': {'value': 'Am'},
         'camelot': {'value': '8A'},
       },
+      'analysis_updated_at': '2026-07-10T11:00:00.123456Z',
     });
 
     expect(track.id, 9);
@@ -29,6 +30,10 @@ void main() {
     expect(track.analysis?.summary?.bpm?.numericValue, 128);
     expect(track.analysis?.summary?.key?.textValue, 'Am');
     expect(track.analysis?.summary?.camelot?.textValue, '8A');
+    expect(
+      track.analysis?.updatedAt,
+      DateTime.parse('2026-07-10T11:00:00.123456Z'),
+    );
   });
 
   test('offline DB map retains compact analysis metadata', () {
@@ -48,6 +53,7 @@ void main() {
           'peaks': [0.1, 0.9],
         },
       },
+      'analysis_updated_at': '2026-07-10T11:00:00.123456Z',
     });
 
     final dbMap = track.toDbMap();
@@ -56,9 +62,18 @@ void main() {
     final restored = Track.fromDbMap(dbMap);
 
     expect(storedSummary, isNot(contains('waveform')));
+    expect(dbMap['analysis_updated_at'], '2026-07-10T11:00:00.123456Z');
+    expect(
+      dbMap['analysis_updated_at_us'],
+      DateTime.parse('2026-07-10T11:00:00.123456Z').microsecondsSinceEpoch,
+    );
     expect(restored.analysis?.status.name, 'analyzed');
     expect(restored.analysis?.summary?.bpm?.numericValue, 128);
     expect(restored.analysis?.summary?.key?.textValue, 'Am');
     expect(restored.analysis?.summary?.camelot?.textValue, '8A');
+    expect(
+      restored.analysis?.updatedAt,
+      DateTime.parse('2026-07-10T11:00:00.123456Z'),
+    );
   });
 }

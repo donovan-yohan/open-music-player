@@ -2265,6 +2265,12 @@ components:
         analysisSummary:
           type: object
           additionalProperties: true
+        analysisOverrides:
+          type: object
+          additionalProperties: true
+        analysisUpdatedAt:
+          type: string
+          format: date-time
         canPlay:
           type: boolean
         canRetry:

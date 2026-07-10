@@ -63,6 +63,7 @@ type AnalysisCompact struct {
 	Status        string
 	SummaryJSON   json.RawMessage
 	OverridesJSON json.RawMessage
+	UpdatedAt     time.Time
 }
 
 type AnalysisResult struct {
@@ -358,7 +359,8 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 	}
 	query := `
 		SELECT track_id, status, ` + analysisCompactSummaryExpression + ` AS summary_json,
-		       ` + analysisCompactOverridesExpression + ` AS overrides_json
+		       ` + analysisCompactOverridesExpression + ` AS overrides_json,
+		       updated_at
 		FROM track_analysis
 		AS ta
 		WHERE track_id = ANY($1)
@@ -370,7 +372,13 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 	defer rows.Close()
 	for rows.Next() {
 		var compact AnalysisCompact
-		if err := rows.Scan(&compact.TrackID, &compact.Status, &compact.SummaryJSON, &compact.OverridesJSON); err != nil {
+		if err := rows.Scan(
+			&compact.TrackID,
+			&compact.Status,
+			&compact.SummaryJSON,
+			&compact.OverridesJSON,
+			&compact.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		compact.SummaryJSON, compact.OverridesJSON = projectCompactAnalysis(

@@ -9,7 +9,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   static Database? _database;
   static Future<Database>? _openingDatabase;
   static const String _dbName = 'open_music_player.db';
-  static const int _dbVersion = 5;
+  static const int _dbVersion = 6;
 
   final Future<Database> Function()? _databaseProvider;
   final DatabaseFactory? _databaseFactory;
@@ -107,6 +107,8 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
         analysis_status TEXT,
         analysis_summary TEXT,
         analysis_overrides TEXT,
+        analysis_updated_at TEXT,
+        analysis_updated_at_us INTEGER,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -210,6 +212,17 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
         WHERE status = 'completed'
       ''');
     }
+
+    // v6: preserve the server analysis revision so offline writes cannot
+    // replace a corrected analysis with an older collection snapshot.
+    if (oldVersion < 6) {
+      await db.execute(
+        'ALTER TABLE tracks ADD COLUMN analysis_updated_at TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE tracks ADD COLUMN analysis_updated_at_us INTEGER',
+      );
+    }
   }
 
   Future<void> _createPlaybackCacheTable(Database db) async {
@@ -235,24 +248,73 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   @override
   Future<void> insertTrack(Track track) async {
     final db = await database;
-    await db.insert(
-      'tracks',
-      track.toDbMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await db.transaction((txn) async {
+      final values = await _trackValuesPreservingNewerAnalysis(txn, track);
+      await txn.insert(
+        'tracks',
+        values,
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    });
   }
 
   Future<void> insertTracks(List<Track> tracks) async {
     final db = await database;
-    final batch = db.batch();
-    for (final track in tracks) {
-      batch.insert(
-        'tracks',
-        track.toDbMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+    await db.transaction((txn) async {
+      for (final track in tracks) {
+        final values = await _trackValuesPreservingNewerAnalysis(txn, track);
+        await txn.insert(
+          'tracks',
+          values,
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+  }
+
+  Future<Map<String, Object?>> _trackValuesPreservingNewerAnalysis(
+    DatabaseExecutor executor,
+    Track track,
+  ) async {
+    final values = Map<String, Object?>.from(track.toDbMap());
+    final existing = await executor.query(
+      'tracks',
+      columns: const [
+        'analysis_status',
+        'analysis_summary',
+        'analysis_overrides',
+        'analysis_updated_at',
+        'analysis_updated_at_us',
+      ],
+      where: 'id = ?',
+      whereArgs: [track.id],
+      limit: 1,
+    );
+    if (existing.isEmpty) return values;
+
+    final stored = existing.single;
+    final storedRevisionUs = stored['analysis_updated_at_us'] as int? ??
+        DateTime.tryParse(stored['analysis_updated_at'] as String? ?? '')
+            ?.toUtc()
+            .microsecondsSinceEpoch;
+    final incomingRevisionUs =
+        track.analysis?.updatedAt?.toUtc().microsecondsSinceEpoch;
+    if (storedRevisionUs == null ||
+        (incomingRevisionUs != null &&
+            incomingRevisionUs >= storedRevisionUs)) {
+      return values;
     }
-    await batch.commit(noResult: true);
+
+    for (final column in const [
+      'analysis_status',
+      'analysis_summary',
+      'analysis_overrides',
+      'analysis_updated_at',
+      'analysis_updated_at_us',
+    ]) {
+      values[column] = stored[column];
+    }
+    return values;
   }
 
   Future<Track?> getTrack(int id) async {
@@ -305,8 +367,15 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     final status = values['analysis_status'];
     final summary = values['analysis_summary'];
     final overrides = values['analysis_overrides'];
+    final analysisUpdatedAt = values['analysis_updated_at'];
+    final analysisUpdatedAtUs = values['analysis_updated_at_us'];
     final changedConditions = <String>[];
     final whereArgs = <Object?>[track.id];
+
+    final revisionCondition = analysisUpdatedAtUs == null
+        ? 'analysis_updated_at_us IS NULL'
+        : '(analysis_updated_at_us IS NULL OR analysis_updated_at_us <= ?)';
+    if (analysisUpdatedAtUs != null) whereArgs.add(analysisUpdatedAtUs);
 
     void addChangedCondition(String column, Object? value) {
       if (value == null) {
@@ -320,14 +389,19 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     addChangedCondition('analysis_status', status);
     addChangedCondition('analysis_summary', summary);
     addChangedCondition('analysis_overrides', overrides);
+    addChangedCondition('analysis_updated_at', analysisUpdatedAt);
+    addChangedCondition('analysis_updated_at_us', analysisUpdatedAtUs);
 
     return (
       values: <String, Object?>{
         'analysis_status': status,
         'analysis_summary': summary,
         'analysis_overrides': overrides,
+        'analysis_updated_at': analysisUpdatedAt,
+        'analysis_updated_at_us': analysisUpdatedAtUs,
       },
-      where: 'id = ? AND (${changedConditions.join(' OR ')})',
+      where:
+          'id = ? AND $revisionCondition AND (${changedConditions.join(' OR ')})',
       whereArgs: whereArgs,
     );
   }

@@ -56,6 +56,8 @@ class LibraryTrack {
         'analysis_summary': analysis!.summary!.toJson(),
       if (analysis?.overrides != null)
         'analysis_overrides': analysis!.overrides!.toJson(),
+      if (analysis?.updatedAt != null)
+        'analysis_updated_at': analysis!.updatedAt!.toUtc().toIso8601String(),
     };
   }
 

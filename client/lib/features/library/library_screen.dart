@@ -232,6 +232,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         'mb_suggestions',
         'analysis_status',
         'analysis_summary',
+        'analysis_updated_at',
       ],
     );
     unawaited(_cacheRemoteTrackAnalysis(offlineDatabase, page.tracks));
