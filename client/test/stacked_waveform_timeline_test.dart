@@ -83,6 +83,7 @@ Future<void> _pump(
   TimelineWaveformData Function(Track, int)? waveformFor,
   TimelineClip Function(Track, TimelineClip)? clipFor,
   TimelineModel? timelineModel,
+  Set<String> pitchFallbackClipIds = const {},
   int playheadPositionMs = 0,
   Stream<int>? positionMsStream,
   VoidCallback? onScrubStart,
@@ -110,6 +111,7 @@ Future<void> _pump(
           trimRangeFor: (t) => TrimRange.full(t.durationMs),
           clipFor: clipFor,
           timelineModel: timelineModel,
+          pitchFallbackClipIds: pitchFallbackClipIds,
           playheadPositionMs: playheadPositionMs,
           positionMsStream: positionMsStream,
           onScrubStart: onScrubStart,
@@ -932,6 +934,49 @@ void main() {
     );
     expect(
       find.descendant(of: hint, matching: find.textContaining('Downbeat')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('selected lane exposes pitch fallback from live clip state', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 160);
+    final timeline = TimelineModel(
+      clips: [
+        _mixClip(
+          't1',
+          0,
+          160000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 120,
+            bpmConfidence: 0.9,
+            downbeatsMs: [0, 8000, 16000, 24000],
+          ),
+        ),
+      ],
+    );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: const [],
+      timelineModel: timeline,
+      pitchFallbackClipIds: const {'clip_t1'},
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+
+    final chip = find.byKey(const ValueKey('timeline_tempo_t1'));
+    expect(chip, findsOneWidget);
+    expect(
+      find.descendant(
+        of: chip,
+        matching: find.textContaining('Pitch fallback'),
+      ),
       findsOneWidget,
     );
   });

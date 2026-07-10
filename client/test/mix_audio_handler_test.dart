@@ -158,6 +158,11 @@ void main() {
         await Future<void>.delayed(Duration.zero);
 
         expect(harness.playback.snapshot.pitchPreservationFallback, isTrue);
+        expect(harness.playback.snapshot.pitchFallbackClipIds, isNotEmpty);
+        expect(
+          harness.playback.snapshot.pitchFallbackClipIds,
+          everyElement(allOf(startsWith('session_'), contains('_clip_'))),
+        );
         expect(mediaItems.last?.extras?['pitchPreservation'], 'fallback');
         expect(mediaItems.last?.extras?['pitchLockUnavailable'], isTrue);
 

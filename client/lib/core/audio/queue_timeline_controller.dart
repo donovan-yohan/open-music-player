@@ -842,6 +842,7 @@ class QueueTimelineController {
         activeVoiceCount: _engine.pool.activeVoiceCount,
         playbackSpeed: _playbackSpeedForGlobal(globalMs),
         pitchPreservationFallback: _engine.pool.hasPitchFallback,
+        pitchFallbackClipIds: _engine.pool.pitchFallbackClipIds,
       ),
     );
   }
