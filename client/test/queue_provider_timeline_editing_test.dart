@@ -692,27 +692,33 @@ void main() {
     provider.dispose();
   });
 
-  test('saved override clear rejects a replayed stale track snapshot',
+  test('saved override rejects stale generations until a fresh queue reload',
       () async {
-    final originalAnalysis = TrackAnalysis.fromJson(
-      status: 'analyzed',
-      summary: {
-        'bpm': {'value': 120},
-        'waveform': {
-          'sample_count': 2,
-          'peaks': [0.2, 0.8],
-        },
-      },
-      overrides: {
-        'bpm': {'value': 128},
-      },
-      overridesPresent: true,
-    );
-    final original = _track(
-      id: '42',
-      playbackTrackId: '42',
-      analysis: originalAnalysis,
-    );
+    Track staleTrack(double bpm) => _track(
+          id: '42',
+          playbackTrackId: '42',
+          analysis: TrackAnalysis.fromJson(
+            status: 'analyzed',
+            summary: {
+              'bpm': {'value': 120},
+              'waveform': {
+                'sample_count': 2,
+                'peaks': [0.2, 0.8],
+              },
+            },
+            overrides: {
+              'bpm': {'value': bpm},
+            },
+            overridesPresent: true,
+          ),
+        );
+
+    final staleGenerations = [
+      staleTrack(124),
+      staleTrack(126),
+      staleTrack(128),
+    ];
+    final legitimateReversion = staleGenerations[1];
     final provider = QueueProvider(
       mockQueueApiClient((request) async {
         if (request.method == 'PATCH' &&
@@ -733,63 +739,137 @@ void main() {
             headers: {'content-type': 'application/json'},
           );
         }
+        if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+          return http.Response(
+            jsonEncode({
+              'items': [legitimateReversion.toJson()],
+              'currentPosition': 0,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path.endsWith('/mix-plans')) {
+          return http.Response(
+            jsonEncode({'data': []}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
         return http.Response('', 404);
       }),
     );
 
-    provider.trackWithAnalysis(original);
+    for (final stale in staleGenerations) {
+      provider.trackWithAnalysis(stale, requestHydration: false);
+    }
     final cleared = await provider.updateAnalysisOverrides(
-      original,
+      staleGenerations.last,
       const TrackAnalysisOverrides(),
     );
     expect(cleared.summary?.bpm?.numericValue, 120);
 
-    final replayed = provider.trackWithAnalysis(original);
-    expect(replayed.analysis?.summary?.bpm?.numericValue, 120);
-    expect(replayed.analysis?.overrides, isNull);
-    expect(replayed.analysis?.overridesPresent, isTrue);
+    for (final stale in staleGenerations) {
+      final replayed =
+          provider.trackWithAnalysis(stale, requestHydration: false);
+      expect(replayed.analysis?.summary?.bpm?.numericValue, 120);
+      expect(replayed.analysis?.overrides, isNull);
+      expect(replayed.analysis?.overridesPresent, isTrue);
+    }
+
+    await provider.loadQueue();
+    expect(
+      provider.queue.tracks.single.analysis?.summary?.bpm?.numericValue,
+      126,
+    );
     provider.dispose();
   });
 
-  test('concurrent override saves commit only the latest mutation', () async {
+  test('concurrent override saves serialize server writes before reload',
+      () async {
     final firstStarted = Completer<void>();
     final secondStarted = Completer<void>();
     final releaseFirst = Completer<void>();
     final releaseSecond = Completer<void>();
     var patchRequests = 0;
+    var queueRequests = 0;
+    double persistedBpm = 120;
     final provider = QueueProvider(
       mockQueueApiClient((request) async {
-        if (request.method != 'PATCH' ||
-            !request.url.path.endsWith('/tracks/42/analysis/overrides')) {
-          return http.Response('', 404);
-        }
-        patchRequests++;
-        final requestNumber = patchRequests;
-        if (requestNumber == 1) {
-          firstStarted.complete();
-          await releaseFirst.future;
-        } else {
-          secondStarted.complete();
-          await releaseSecond.future;
-        }
-        final bpm = requestNumber == 1 ? 128 : 130;
-        return http.Response(
-          jsonEncode({
-            'status': 'analyzed',
-            'summary': {
-              'bpm': {'value': 120},
-              'waveform': {
-                'sample_count': 2,
-                'peaks': [0.2, 0.8],
+        if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+          queueRequests++;
+          final persistedTrack = _track(
+            id: '42',
+            playbackTrackId: '42',
+            analysis: TrackAnalysis.fromJson(
+              status: 'analyzed',
+              summary: {
+                'bpm': {'value': 120},
+                'waveform': {
+                  'sample_count': 2,
+                  'peaks': [0.2, 0.8],
+                },
               },
-            },
-            'overrides': {
-              'bpm': {'value': bpm},
-            },
-          }),
-          200,
-          headers: {'content-type': 'application/json'},
-        );
+              overrides: {
+                'bpm': {'value': persistedBpm},
+              },
+              overridesPresent: true,
+            ),
+          );
+          return http.Response(
+            jsonEncode({
+              'items': [persistedTrack.toJson()],
+              'currentPosition': 0,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path.endsWith('/mix-plans')) {
+          return http.Response(
+            jsonEncode({'data': []}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'PATCH' &&
+            request.url.path.endsWith('/tracks/42/analysis/overrides')) {
+          patchRequests++;
+          final requestNumber = patchRequests;
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          final overrides = body['overrides'] as Map<String, dynamic>;
+          final bpm =
+              ((overrides['bpm'] as Map<String, dynamic>)['value'] as num)
+                  .toDouble();
+          if (requestNumber == 1) {
+            firstStarted.complete();
+            await releaseFirst.future;
+          } else {
+            secondStarted.complete();
+            await releaseSecond.future;
+          }
+          persistedBpm = bpm;
+          return http.Response(
+            jsonEncode({
+              'status': 'analyzed',
+              'summary': {
+                'bpm': {'value': 120},
+                'waveform': {
+                  'sample_count': 2,
+                  'peaks': [0.2, 0.8],
+                },
+              },
+              'overrides': {
+                'bpm': {'value': bpm},
+              },
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('', 404);
       }),
     );
     final track = _track(
@@ -817,17 +897,90 @@ void main() {
       track,
       const TrackAnalysisOverrides(bpm: 130),
     );
+    final reload = provider.loadQueue();
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    expect(patchRequests, 1);
+    expect(secondStarted.isCompleted, isFalse);
+    expect(queueRequests, 0);
+
+    releaseFirst.complete();
     await secondStarted.future.timeout(const Duration(seconds: 1));
     releaseSecond.complete();
+    final firstResult = await first;
     final newest = await second;
-    releaseFirst.complete();
-    final stale = await first;
+    await reload;
 
+    expect(firstResult.summary?.bpm?.numericValue, 128);
     expect(newest.summary?.bpm?.numericValue, 130);
-    expect(stale.summary?.bpm?.numericValue, 130);
+    expect(patchRequests, 2);
+    expect(queueRequests, 1);
+    expect(persistedBpm, 130);
     expect(
-      provider.trackWithAnalysis(track).analysis?.summary?.bpm?.numericValue,
+      provider.queue.tracks.single.analysis?.summary?.bpm?.numericValue,
       130,
+    );
+    provider.dispose();
+  });
+
+  test('failed latest override preserves the prior serialized server write',
+      () async {
+    var patchRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method != 'PATCH' ||
+            !request.url.path.endsWith('/tracks/42/analysis/overrides')) {
+          return http.Response('', 404);
+        }
+        patchRequests++;
+        if (patchRequests == 2) {
+          return http.Response('', 500);
+        }
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'bpm': {'value': 120},
+              'waveform': {
+                'sample_count': 2,
+                'peaks': [0.2, 0.8],
+              },
+            },
+            'overrides': {
+              'bpm': {'value': 128},
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    final track = _track(
+      id: '42',
+      playbackTrackId: '42',
+      analysis: _tempoAnalysis(),
+    );
+    provider.trackWithAnalysis(track, requestHydration: false);
+
+    final first = provider.updateAnalysisOverrides(
+      track,
+      const TrackAnalysisOverrides(bpm: 128),
+    );
+    final second = provider.updateAnalysisOverrides(
+      track,
+      const TrackAnalysisOverrides(bpm: 130),
+    );
+
+    expect((await first).summary?.bpm?.numericValue, 128);
+    await expectLater(second, throwsA(isA<ApiException>()));
+    expect(patchRequests, 2);
+    expect(
+      provider
+          .trackWithAnalysis(track, requestHydration: false)
+          .analysis
+          ?.summary
+          ?.bpm
+          ?.numericValue,
+      128,
     );
     provider.dispose();
   });

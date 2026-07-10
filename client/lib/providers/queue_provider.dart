@@ -44,8 +44,9 @@ class QueueProvider extends ChangeNotifier {
   final Map<String, int> _appliedCompactAnalysisSignatures = {};
   final Map<String, TrackAnalysis> _lastIncomingAnalysisByTrackId = {};
   final Map<String, int> _analysisGenerations = {};
-  final Map<String, int> _analysisOverrideMutationGenerations = {};
-  final Map<String, Set<int>> _supersededAnalysisSignatures = {};
+  final Map<String, Future<void>> _analysisOverrideMutationTails = {};
+  final Map<String, TrackAnalysis> _authoritativeAnalysisLocks = {};
+  int _analysisOverrideMutationEpoch = 0;
   final Set<String> _analysisHydrationInterest = {};
   final Set<String> _analysisRequestsInFlight = {};
   final Set<String> _analysisRequestsQueued = {};
@@ -226,25 +227,53 @@ class QueueProvider extends ChangeNotifier {
   Future<TrackAnalysis> updateAnalysisOverrides(
     Track track,
     TrackAnalysisOverrides overrides,
-  ) async {
+  ) {
     final trackId = _analysisTrackId(track);
     if (trackId == null) {
       throw ApiException('Track does not have a backend analysis id', 400);
     }
 
     final key = trackId.toString();
-    final mutationGeneration =
-        (_analysisOverrideMutationGenerations[key] ?? 0) + 1;
-    _analysisOverrideMutationGenerations[key] = mutationGeneration;
+    _analysisOverrideMutationEpoch++;
+    final previous = _analysisOverrideMutationTails[key];
+    final result = () async {
+      if (previous != null) {
+        try {
+          await previous;
+        } catch (_) {
+          // A newer correction should still run after an older save fails.
+        }
+      }
+      return _performAnalysisOverrideUpdate(
+        trackId: trackId,
+        key: key,
+        overrides: overrides,
+      );
+    }();
+    late final Future<void> tail;
+    tail = result.then<void>((_) {}, onError: (_, __) {});
+    _analysisOverrideMutationTails[key] = tail;
+    unawaited(
+      tail.whenComplete(() {
+        if (identical(_analysisOverrideMutationTails[key], tail)) {
+          _analysisOverrideMutationTails.remove(key);
+        }
+      }),
+    );
+    return result;
+  }
+
+  Future<TrackAnalysis> _performAnalysisOverrideUpdate({
+    required int trackId,
+    required String key,
+    required TrackAnalysisOverrides overrides,
+  }) async {
     final analysis = await _apiClient.updateTrackAnalysisOverrides(
       trackId,
       overrides,
     );
-    if (_disposed ||
-        _analysisOverrideMutationGenerations[key] != mutationGeneration) {
-      return _analysisByTrackId[key] ?? analysis;
-    }
-    _markSupersededAnalysisSnapshots(key, analysis);
+    if (_disposed) return analysis;
+    _authoritativeAnalysisLocks[key] = analysis;
     _advanceAnalysisGeneration(key);
     _analysisByTrackId[key] = analysis;
     _lastIncomingAnalysisByTrackId[key] = analysis;
@@ -273,8 +302,22 @@ class QueueProvider extends ChangeNotifier {
     _notifyListeners();
 
     try {
-      _queue = await _apiClient.getQueue();
+      while (_analysisOverrideMutationTails.isNotEmpty) {
+        await Future.wait(
+          _analysisOverrideMutationTails.values.toList(growable: false),
+        );
+      }
+      final mutationEpoch = _analysisOverrideMutationEpoch;
+      final loadedQueue = await _apiClient.getQueue();
       if (_disposed) return;
+      final isPostMutationSnapshot =
+          mutationEpoch == _analysisOverrideMutationEpoch;
+      if (isPostMutationSnapshot) {
+        _authoritativeAnalysisLocks.clear();
+        _queue = loadedQueue;
+      } else {
+        _queue = _queueWithAuthoritativeAnalysis(loadedQueue);
+      }
       _rememberQueueAnalyses();
       _pruneTimingState();
       await _loadQueueTimingMixPlan();
@@ -296,9 +339,11 @@ class QueueProvider extends ChangeNotifier {
   }) async {
     try {
       _error = null;
-      _queue = await _apiClient.addToQueue(
-        trackIds: trackIds,
-        position: playNext ? 'next' : 'last',
+      _queue = _queueWithAuthoritativeAnalysis(
+        await _apiClient.addToQueue(
+          trackIds: trackIds,
+          position: playNext ? 'next' : 'last',
+        ),
       );
       _rememberQueueAnalyses();
       _pruneTimingState();
@@ -315,9 +360,11 @@ class QueueProvider extends ChangeNotifier {
   }) async {
     try {
       _error = null;
-      _queue = await _apiClient.addSourceCandidateToQueue(
-        candidate: candidate,
-        position: playNext ? 'next' : 'last',
+      _queue = _queueWithAuthoritativeAnalysis(
+        await _apiClient.addSourceCandidateToQueue(
+          candidate: candidate,
+          position: playNext ? 'next' : 'last',
+        ),
       );
       _rememberQueueAnalyses();
       _pruneTimingState();
@@ -365,7 +412,9 @@ class QueueProvider extends ChangeNotifier {
     _notifyListeners();
 
     try {
-      _queue = await _apiClient.removeQueueItem(removedTrack.queueItemId);
+      _queue = _queueWithAuthoritativeAnalysis(
+        await _apiClient.removeQueueItem(removedTrack.queueItemId),
+      );
       _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
@@ -384,7 +433,9 @@ class QueueProvider extends ChangeNotifier {
     _notifyListeners();
 
     try {
-      _queue = await _apiClient.retryQueueItem(track.queueItemId);
+      _queue = _queueWithAuthoritativeAnalysis(
+        await _apiClient.retryQueueItem(track.queueItemId),
+      );
       _rememberQueueAnalyses();
       _pruneTimingState();
       _notifyListeners();
@@ -426,9 +477,11 @@ class QueueProvider extends ChangeNotifier {
     _notifyListeners();
 
     try {
-      _queue = await _apiClient.reorderQueue(
-        queueItemId: track.queueItemId,
-        toPosition: newIndex,
+      _queue = _queueWithAuthoritativeAnalysis(
+        await _apiClient.reorderQueue(
+          queueItemId: track.queueItemId,
+          toPosition: newIndex,
+        ),
       );
       _rememberQueueAnalyses();
       _pruneTimingState();
@@ -915,6 +968,26 @@ class QueueProvider extends ChangeNotifier {
     }
   }
 
+  QueueState _queueWithAuthoritativeAnalysis(QueueState queue) {
+    if (_authoritativeAnalysisLocks.isEmpty) return queue;
+    final tracks = <Track>[];
+    for (final track in queue.tracks) {
+      final trackId = _analysisTrackId(track);
+      final authoritative = trackId == null
+          ? null
+          : _authoritativeAnalysisLocks[trackId.toString()];
+      tracks.add(
+        authoritative == null ? track : track.copyWith(analysis: authoritative),
+      );
+    }
+    return QueueState(
+      tracks: tracks,
+      currentIndex: queue.currentIndex,
+      repeatMode: queue.repeatMode,
+      shuffled: queue.shuffled,
+    );
+  }
+
   void _rememberTrackAnalysis(Track track) {
     final analysis = track.analysis;
     final trackId = _analysisTrackId(track);
@@ -925,8 +998,10 @@ class QueueProvider extends ChangeNotifier {
 
   void _ingestIncomingAnalysis(String key, TrackAnalysis analysis) {
     final signature = _analysisCompactSignature(analysis);
-    if (_supersededAnalysisSignatures[key]?.contains(signature) ?? false) {
-      return;
+    final authoritative = _authoritativeAnalysisLocks[key];
+    if (authoritative != null && !identical(authoritative, analysis)) {
+      final authoritativeSignature = _analysisCompactSignature(authoritative);
+      if (signature != authoritativeSignature) return;
     }
     _lastIncomingAnalysisByTrackId[key] = analysis;
     final cached = _analysisByTrackId[key];
@@ -1057,6 +1132,7 @@ class QueueProvider extends ChangeNotifier {
         }
 
         _analysisByTrackId[key] = analysis;
+        _authoritativeAnalysisLocks.remove(key);
         _analysisPermanentFailures.remove(key);
         _analysisTransportFailures.remove(key);
         if (_hasWaveformDetail(analysis) &&
@@ -1161,31 +1237,6 @@ class QueueProvider extends ChangeNotifier {
 
   void _advanceAnalysisGeneration(String key) {
     _analysisGenerations[key] = (_analysisGenerations[key] ?? 0) + 1;
-  }
-
-  void _markSupersededAnalysisSnapshots(
-    String key,
-    TrackAnalysis authoritative,
-  ) {
-    final authoritativeSignature = _analysisCompactSignature(authoritative);
-    final superseded = _supersededAnalysisSignatures.putIfAbsent(
-      key,
-      () => <int>{},
-    );
-    for (final previous in [
-      _analysisByTrackId[key],
-      _lastIncomingAnalysisByTrackId[key],
-    ]) {
-      if (previous == null) continue;
-      final previousSignature = _analysisCompactSignature(previous);
-      if (previousSignature != authoritativeSignature) {
-        superseded.add(previousSignature);
-      }
-    }
-    superseded.remove(authoritativeSignature);
-    while (superseded.length > 8) {
-      superseded.remove(superseded.first);
-    }
   }
 
   TrackAnalysis _mergeDetailedAnalysis(

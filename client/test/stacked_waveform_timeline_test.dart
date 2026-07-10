@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:open_music_player/core/engine/gain_envelope.dart';
@@ -196,7 +197,7 @@ void main() {
                   180,
                   bpm: 141.18,
                   key: 'F-sharp minor',
-                  camelot: '11A',
+                  camelot: null,
                 ),
                 role: LaneRole.current,
                 statusLabel: 'Current',
@@ -209,7 +210,11 @@ void main() {
     );
 
     expect(find.text('141.2 BPM'), findsOneWidget);
-    expect(find.text('11A'), findsOneWidget);
+    expect(find.text('F-sharp minor'), findsOneWidget);
+    for (final label in ['141.2 BPM', 'F-sharp minor']) {
+      final paragraph = tester.renderObject<RenderParagraph>(find.text(label));
+      expect(paragraph.didExceedMaxLines, isFalse, reason: label);
+    }
     expect(tester.takeException(), isNull);
   });
 
@@ -268,8 +273,13 @@ void main() {
           expect(chipBounds.right, lessThanOrEqualTo(headerBounds.right));
           expect(chipBounds.bottom, lessThanOrEqualTo(headerBounds.bottom));
         }
-        expect(
-            (bpmBounds.center.dy - keyBounds.center.dy).abs(), lessThan(0.5));
+        expect(keyBounds.top, greaterThan(bpmBounds.top));
+        for (final label in ['141.2 BPM', 'F-sharp minor']) {
+          final paragraph = tester.renderObject<RenderParagraph>(
+            find.text(label),
+          );
+          expect(paragraph.didExceedMaxLines, isFalse, reason: label);
+        }
       }
       expect(tester.takeException(), isNull);
     });

@@ -36,7 +36,7 @@ class TimelineLaneHeader extends StatelessWidget {
     if (safeScale <= 1.5) {
       return (48 + ((safeScale - 1) * 12)).clamp(48, 54).toDouble();
     }
-    return (54 + ((safeScale - 1.5) * 28)).clamp(54, 112).toDouble();
+    return (54 + ((safeScale - 1.5) * 128)).clamp(54, 374).toDouble();
   }
 
   @override
@@ -64,112 +64,130 @@ class TimelineLaneHeader extends StatelessWidget {
               color: accent.withValues(alpha: _active ? 0.42 : 0.18),
             ),
           ),
-          child: Row(
-            children: [
-              _artwork(theme),
-              const SizedBox(width: 8),
-              Expanded(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final largeText = textScale >= 1.2;
-                    if (largeText) {
-                      return Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              if (_active) ...[
-                                Icon(Icons.equalizer, size: 13, color: accent),
-                                const SizedBox(width: 3),
-                              ],
-                              Expanded(
-                                child: Text(
+          child: textScale >= 2
+              ? _accessibleLayout(theme, muted)
+              : Row(
+                  children: [
+                    _artwork(theme),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final largeText = textScale >= 1.2;
+                          if (largeText) {
+                            return Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _titleRow(
+                                  theme,
+                                  muted,
                                   '${track.title} · ${track.artist ?? 'Unknown artist'}',
-                                  style: theme.textTheme.labelMedium?.copyWith(
-                                    fontWeight: _active
-                                        ? FontWeight.bold
-                                        : FontWeight.w600,
-                                    color: muted ? theme.disabledColor : null,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
                                 ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 2),
-                          Flexible(
-                            child: SongMetadataChips(
-                              analysis: track.analysis,
-                              singleLine: true,
-                            ),
-                          ),
-                        ],
-                      );
-                    }
-
-                    return Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            if (_active) ...[
-                              Icon(Icons.equalizer, size: 13, color: accent),
-                              const SizedBox(width: 3),
-                            ],
-                            Expanded(
-                              child: Text(
-                                track.title,
-                                style: theme.textTheme.labelMedium?.copyWith(
-                                  fontWeight: _active
-                                      ? FontWeight.bold
-                                      : FontWeight.w600,
-                                  color: muted ? theme.disabledColor : null,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                          ],
-                        ),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                track.artist ?? 'Unknown artist',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: muted
-                                      ? theme.disabledColor
-                                      : theme.colorScheme.onSurfaceVariant,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            if (constraints.maxWidth >= 150)
-                              Flexible(
-                                flex: 2,
-                                child: Align(
-                                  alignment: Alignment.centerRight,
+                                const SizedBox(height: 2),
+                                Flexible(
                                   child: SongMetadataChips(
                                     analysis: track.analysis,
                                     singleLine: true,
                                   ),
                                 ),
+                              ],
+                            );
+                          }
+
+                          return Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _titleRow(theme, muted, track.title),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      track.artist ?? 'Unknown artist',
+                                      style:
+                                          theme.textTheme.bodySmall?.copyWith(
+                                        color: muted
+                                            ? theme.disabledColor
+                                            : theme
+                                                .colorScheme.onSurfaceVariant,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (constraints.maxWidth >= 150)
+                                    Flexible(
+                                      flex: 2,
+                                      child: Align(
+                                        alignment: Alignment.centerRight,
+                                        child: SongMetadataChips(
+                                          analysis: track.analysis,
+                                          singleLine: true,
+                                        ),
+                                      ),
+                                    ),
+                                ],
                               ),
-                          ],
-                        ),
-                      ],
-                    );
-                  },
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ],
-          ),
         ),
       ),
+    );
+  }
+
+  Widget _accessibleLayout(ThemeData theme, bool muted) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            _artwork(theme),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _titleRow(
+                theme,
+                muted,
+                '${track.title} · ${track.artist ?? 'Unknown artist'}',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Expanded(
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: SongMetadataChips(analysis: track.analysis),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _titleRow(ThemeData theme, bool muted, String title) {
+    return Row(
+      children: [
+        if (_active) ...[
+          Icon(Icons.equalizer, size: 13, color: accent),
+          const SizedBox(width: 3),
+        ],
+        Expanded(
+          child: Text(
+            title,
+            style: theme.textTheme.labelMedium?.copyWith(
+              fontWeight: _active ? FontWeight.bold : FontWeight.w600,
+              color: muted ? theme.disabledColor : null,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
     );
   }
 

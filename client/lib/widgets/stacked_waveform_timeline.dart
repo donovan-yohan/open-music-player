@@ -1156,11 +1156,15 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               Positioned(
                 right: 6,
                 top: 12,
-                child: _timelineSelectionControls(
-                  context,
-                  lane,
-                  peerClips,
-                  _resolvedPlayheadMs(_livePlayheadMs.value),
+                child: ValueListenableBuilder<int>(
+                  valueListenable: _livePlayheadMs,
+                  builder: (context, livePlayheadMs, _) =>
+                      _timelineSelectionControls(
+                    context,
+                    lane,
+                    peerClips,
+                    _resolvedPlayheadMs(livePlayheadMs),
+                  ),
                 ),
               ),
             _buildLaneIdentity(context, lane, viewport, paneWidth),
@@ -1591,7 +1595,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final track = lane.track;
     final movable =
         lane.role == LaneRole.upcoming || lane.role == LaneRole.collapsed;
-    final tempoChip = _selectedTempoChip(context, lane);
+    final tempoChip = _selectedTempoChip(context, lane, playheadMs);
     final transitionHint = _selectedTransitionHint(context, lane, peerClips);
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -1642,8 +1646,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                       padding: EdgeInsets.zero,
                       onPressed: () => widget.onEditAnalysis!(
                         track,
-                        initialFirstDownbeatMs:
-                            _analysisAnchorForLane(lane, playheadMs),
+                        initialFirstDownbeatMs: _analysisAnchorForLane(
+                          lane,
+                          _resolvedPlayheadMs(_livePlayheadMs.value),
+                        ),
                       ),
                     ),
                   if (movable)
@@ -1688,15 +1694,30 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
   }
 
-  Widget? _selectedTempoChip(BuildContext context, _LaneModel lane) {
+  Widget? _selectedTempoChip(
+    BuildContext context,
+    _LaneModel lane,
+    int playheadMs,
+  ) {
     final tempo = lane.mixClip.tempo;
     final pitchFallback = _hasPitchFallback(lane.mixClip);
     final runtime = widget.clipTempoStates[lane.mixClip.id];
+    final modeledSpeed = lane.mixClip.playbackRateAt(playheadMs);
+    final effectiveSpeed = runtime?.effectiveSpeed ?? modeledSpeed;
+    final effectiveBpm = runtime?.effectiveBpm ??
+        (tempo.nativeBpm == null
+            ? null
+            : effectiveBpmForRate(
+                nativeBpm: tempo.nativeBpm!,
+                rate: effectiveSpeed,
+              ));
+    final showLiveTempo =
+        runtime != null || (effectiveSpeed - 1).abs() >= 0.005;
     final labels = <String>[
-      if (runtime?.effectiveBpm != null)
-        'Live ${_formatBpm(runtime!.effectiveBpm!)} BPM',
-      if (runtime != null && (runtime.effectiveSpeed - 1).abs() >= 0.005)
-        '${runtime.effectiveSpeed.toStringAsFixed(2)}x',
+      if (showLiveTempo && effectiveBpm != null && effectiveBpm > 0)
+        'Live ${_formatBpm(effectiveBpm)} BPM',
+      if ((effectiveSpeed - 1).abs() >= 0.005)
+        '${effectiveSpeed.toStringAsFixed(2)}x',
       if (tempo.nativeBpm != null) '${_formatBpm(tempo.nativeBpm!)} BPM',
       if (tempo.bpmConfidence != null)
         '${(tempo.bpmConfidence!.clamp(0, 1) * 100).round()}%',

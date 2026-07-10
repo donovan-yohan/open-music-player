@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
@@ -99,6 +100,57 @@ int listeningQueueRemainingMs({
   return total;
 }
 
+class _PlaybackViewState {
+  const _PlaybackViewState({
+    required this.playback,
+    required this.queue,
+    required this.currentIndex,
+    required this.playbackContext,
+    required this.timelineModel,
+    required this.transitionSnapMode,
+    required this.pitchFallbackClipIds,
+    required this.timelinePositionMs,
+  });
+
+  factory _PlaybackViewState.read(PlaybackState playback) {
+    final snapshot = playback.snapshot;
+    return _PlaybackViewState(
+      playback: playback,
+      queue: playback.queue,
+      currentIndex: playback.currentIndex,
+      playbackContext: playback.playbackContext,
+      timelineModel: playback.timelineModel,
+      transitionSnapMode: playback.transitionSnapMode,
+      pitchFallbackClipIds: Set<String>.unmodifiable(
+        snapshot.pitchFallbackClipIds,
+      ),
+      timelinePositionMs: playback.timelinePositionMs,
+    );
+  }
+
+  final PlaybackState playback;
+  final List<audio_service.MediaItem> queue;
+  final int? currentIndex;
+  final PlaybackContext? playbackContext;
+  final TimelineModel timelineModel;
+  final BeatSnapMode transitionSnapMode;
+  final Set<String> pitchFallbackClipIds;
+
+  // The timeline stream owns subsequent clock updates. This value seeds a
+  // newly built timeline and intentionally does not participate in equality.
+  final int timelinePositionMs;
+
+  bool hasSameStructure(_PlaybackViewState other) {
+    return identical(playback, other.playback) &&
+        identical(queue, other.queue) &&
+        currentIndex == other.currentIndex &&
+        playbackContext == other.playbackContext &&
+        identical(timelineModel, other.timelineModel) &&
+        transitionSnapMode == other.transitionSnapMode &&
+        setEquals(pitchFallbackClipIds, other.pitchFallbackClipIds);
+  }
+}
+
 class QueueScreen extends StatefulWidget {
   const QueueScreen({super.key});
 
@@ -135,80 +187,93 @@ class _QueueScreenState extends State<QueueScreen> {
     return Scaffold(
       body: SafeArea(
         bottom: false,
-        child: Consumer2<QueueProvider, PlaybackState>(
-          builder: (context, provider, playback, _) {
-            _adoptHydrationProvider(provider);
-            if (_viewMode == _QueueViewMode.list) {
-              _clearAnalysisHydration(provider);
-            }
-            if (playback.queue.isNotEmpty) {
-              return _buildPlaybackQueueView(context, provider, playback);
-            }
+        child: Consumer<QueueProvider>(
+          builder: (context, provider, _) =>
+              Selector<PlaybackState, _PlaybackViewState>(
+            selector: (_, playback) => _PlaybackViewState.read(playback),
+            shouldRebuild: (previous, next) => !previous.hasSameStructure(next),
+            builder: (context, playbackView, _) {
+              _adoptHydrationProvider(provider);
+              if (_viewMode == _QueueViewMode.list) {
+                _clearAnalysisHydration(provider);
+              }
+              if (playbackView.queue.isNotEmpty) {
+                return _buildPlaybackQueueView(
+                  context,
+                  provider,
+                  playbackView,
+                );
+              }
 
-            if (provider.isLoading) {
-              _clearAnalysisHydration(provider);
-              return const Center(child: CircularProgressIndicator());
-            }
+              if (provider.isLoading) {
+                _clearAnalysisHydration(provider);
+                return const Center(child: CircularProgressIndicator());
+              }
 
-            if (provider.error != null) {
-              _clearAnalysisHydration(provider);
-              return Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
+              if (provider.error != null) {
+                _clearAnalysisHydration(provider);
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          'Error loading queue',
+                          style: Theme.of(context).textTheme.titleMedium,
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(provider.error!, textAlign: TextAlign.center),
+                        const SizedBox(height: 16),
+                        ElevatedButton(
+                          onPressed: () => provider.loadQueue(),
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }
+
+              if (provider.isEmpty) {
+                _clearAnalysisHydration(provider);
+                return const Center(
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
+                      Icon(Icons.queue_music, size: 64, color: Colors.grey),
+                      SizedBox(height: 16),
                       Text(
-                        'Error loading queue',
-                        style: Theme.of(context).textTheme.titleMedium,
-                        textAlign: TextAlign.center,
+                        'Your queue is empty',
+                        style: TextStyle(fontSize: 18, color: Colors.grey),
                       ),
-                      const SizedBox(height: 8),
-                      Text(provider.error!, textAlign: TextAlign.center),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: () => provider.loadQueue(),
-                        child: const Text('Retry'),
+                      SizedBox(height: 8),
+                      Text(
+                        'Add songs to start playing',
+                        style: TextStyle(color: Colors.grey),
                       ),
                     ],
                   ),
-                ),
-              );
-            }
+                );
+              }
 
-            if (provider.isEmpty) {
-              _clearAnalysisHydration(provider);
-              return const Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.queue_music, size: 64, color: Colors.grey),
-                    SizedBox(height: 16),
-                    Text(
-                      'Your queue is empty',
-                      style: TextStyle(fontSize: 18, color: Colors.grey),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      'Add songs to start playing',
-                      style: TextStyle(color: Colors.grey),
-                    ),
-                  ],
-                ),
+              return Column(
+                children: [
+                  _buildQueueHeader(context, provider),
+                  Expanded(
+                    child: _viewMode == _QueueViewMode.list
+                        ? _buildListView(context, provider)
+                        : _buildTimelineView(
+                            context,
+                            provider,
+                            playbackView,
+                          ),
+                  ),
+                ],
               );
-            }
-
-            return Column(
-              children: [
-                _buildQueueHeader(context, provider),
-                Expanded(
-                  child: _viewMode == _QueueViewMode.list
-                      ? _buildListView(context, provider)
-                      : _buildTimelineView(context, provider),
-                ),
-              ],
-            );
-          },
+            },
+          ),
         ),
       ),
     );
@@ -217,20 +282,25 @@ class _QueueScreenState extends State<QueueScreen> {
   Widget _buildPlaybackQueueView(
     BuildContext context,
     QueueProvider provider,
-    PlaybackState playback,
+    _PlaybackViewState playbackView,
   ) {
+    final playback = playbackView.playback;
     final entries = listeningQueueEntries(
-      queue: playback.queue,
-      currentIndex: playback.currentIndex,
+      queue: playbackView.queue,
+      currentIndex: playbackView.currentIndex,
     );
 
     return Column(
       children: [
-        _buildPlaybackQueueHeader(context, playback),
+        _buildPlaybackQueueHeader(context, playbackView),
         Expanded(
           child: _viewMode == _QueueViewMode.list
               ? _buildPlaybackQueueList(playback, entries)
-              : _buildPlaybackTimelineView(context, provider, playback),
+              : _buildPlaybackTimelineView(
+                  context,
+                  provider,
+                  playbackView,
+                ),
         ),
       ],
     );
@@ -238,18 +308,13 @@ class _QueueScreenState extends State<QueueScreen> {
 
   Widget _buildPlaybackQueueHeader(
     BuildContext context,
-    PlaybackState playback,
+    _PlaybackViewState playbackView,
   ) {
-    final queue = playback.queue;
-    final remainingMs = listeningQueueRemainingMs(
-      queue: queue,
-      currentIndex: playback.currentIndex,
-      currentPosition: playback.position,
-    );
-    final contextLabel = _playbackContextLabel(playback.playbackContext);
-    final currentNumber = playback.currentIndex == null
+    final queue = playbackView.queue;
+    final contextLabel = _playbackContextLabel(playbackView.playbackContext);
+    final currentNumber = playbackView.currentIndex == null
         ? null
-        : playback.currentIndex!.clamp(0, queue.length - 1).toInt() + 1;
+        : playbackView.currentIndex!.clamp(0, queue.length - 1).toInt() + 1;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -271,15 +336,26 @@ class _QueueScreenState extends State<QueueScreen> {
             ],
           ),
           const SizedBox(height: 4),
-          Text(
-            [
-              if (contextLabel != null) contextLabel,
-              if (currentNumber != null) '$currentNumber of ${queue.length}',
-              '${_formatQueueRuntime(remainingMs)} remaining',
-            ].join(' • '),
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+          Selector<PlaybackState, Duration>(
+            selector: (_, playback) => playback.position,
+            builder: (context, position, _) {
+              final remainingMs = listeningQueueRemainingMs(
+                queue: queue,
+                currentIndex: playbackView.currentIndex,
+                currentPosition: position,
+              );
+              return Text(
+                [
+                  if (contextLabel != null) contextLabel,
+                  if (currentNumber != null)
+                    '$currentNumber of ${queue.length}',
+                  '${_formatQueueRuntime(remainingMs)} remaining',
+                ].join(' • '),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              );
+            },
           ),
         ],
       ),
@@ -345,15 +421,16 @@ class _QueueScreenState extends State<QueueScreen> {
   Widget _buildPlaybackTimelineView(
     BuildContext context,
     QueueProvider provider,
-    PlaybackState playback,
+    _PlaybackViewState playbackView,
   ) {
-    final queue = playback.queue;
+    final playback = playbackView.playback;
+    final queue = playbackView.queue;
     if (queue.isEmpty) {
       _clearAnalysisHydration(provider);
       return const SizedBox.shrink();
     }
     final currentIndex =
-        playback.currentIndex?.clamp(0, queue.length - 1).toInt();
+        playbackView.currentIndex?.clamp(0, queue.length - 1).toInt();
     if (currentIndex == null) {
       _clearAnalysisHydration(provider);
       return const Center(child: Text('Start playback to edit the timeline'));
@@ -362,6 +439,7 @@ class _QueueScreenState extends State<QueueScreen> {
     final timelineTracks = _playbackTimelineTracks(
       provider: provider,
       playback: playback,
+      timelineModel: playbackView.timelineModel,
       queue: queue,
       currentIndex: currentIndex,
     );
@@ -381,11 +459,10 @@ class _QueueScreenState extends State<QueueScreen> {
       clipFor: (track, fallback) =>
           playback.timelineClipForQueueIndex(_playbackQueueIndex(track)) ??
           fallback,
-      timelineModel: playback.timelineModel,
-      pitchFallbackClipIds: playback.snapshot.pitchFallbackClipIds,
-      clipTempoStates: playback.snapshot.clipTempoStates,
-      transitionSnapMode: playback.transitionSnapMode,
-      playheadPositionMs: playback.timelinePositionMs,
+      timelineModel: playbackView.timelineModel,
+      pitchFallbackClipIds: playbackView.pitchFallbackClipIds,
+      transitionSnapMode: playbackView.transitionSnapMode,
+      playheadPositionMs: playbackView.timelinePositionMs,
       positionMsStream: playback.timelinePositionMsStream,
       onScrubStart: playback.beginTimelineScrub,
       onScrubUpdate: playback.updateTimelineScrub,
@@ -439,6 +516,7 @@ class _QueueScreenState extends State<QueueScreen> {
   _PlaybackTimelineTracks _playbackTimelineTracks({
     required QueueProvider provider,
     required PlaybackState playback,
+    required TimelineModel timelineModel,
     required List<audio_service.MediaItem> queue,
     required int currentIndex,
   }) {
@@ -447,7 +525,7 @@ class _QueueScreenState extends State<QueueScreen> {
         identical(cached.queue, queue) &&
         cached.currentIndex == currentIndex &&
         cached.analysisRevision == provider.analysisRevision &&
-        identical(cached.timelineModel, playback.timelineModel)) {
+        identical(cached.timelineModel, timelineModel)) {
       return cached;
     }
 
@@ -497,7 +575,7 @@ class _QueueScreenState extends State<QueueScreen> {
       queue: queue,
       currentIndex: currentIndex,
       analysisRevision: provider.analysisRevision,
-      timelineModel: playback.timelineModel,
+      timelineModel: timelineModel,
       tracks: tracks,
       previous: previous,
       current: current,
@@ -685,10 +763,10 @@ class _QueueScreenState extends State<QueueScreen> {
       child: Row(
         children: [
           Expanded(
-            child: Consumer<PlaybackState>(
-              builder: (context, playback, _) {
-                return _buildQueueStatusPill(context, provider, playback);
-              },
+            child: Selector<PlaybackState, Duration>(
+              selector: (_, playback) => playback.position,
+              builder: (context, position, _) =>
+                  _buildQueueStatusPill(context, provider, position),
             ),
           ),
           const SizedBox(width: 8),
@@ -716,7 +794,7 @@ class _QueueScreenState extends State<QueueScreen> {
   Widget _buildQueueStatusPill(
     BuildContext context,
     QueueProvider provider,
-    PlaybackState playback,
+    Duration playbackPosition,
   ) {
     final tracks = provider.queue.tracks;
     final currentIndex = provider.queue.currentIndex;
@@ -727,7 +805,7 @@ class _QueueScreenState extends State<QueueScreen> {
       final trim = provider.trimRangeFor(track);
       if (i == firstRemainingIndex && currentIndex >= 0) {
         final currentRemainingMs =
-            trim.endOffsetMs - playback.position.inMilliseconds;
+            trim.endOffsetMs - playbackPosition.inMilliseconds;
         totalMs += currentRemainingMs.clamp(0, trim.selectedDurationMs).toInt();
       } else {
         totalMs += trim.selectedDurationMs;
@@ -798,7 +876,11 @@ class _QueueScreenState extends State<QueueScreen> {
     );
   }
 
-  Widget _buildTimelineView(BuildContext context, QueueProvider provider) {
+  Widget _buildTimelineView(
+    BuildContext context,
+    QueueProvider provider,
+    _PlaybackViewState playbackView,
+  ) {
     final currentIndex = provider.queue.currentIndex;
     final sourceTracks = provider.queue.tracks;
     if (currentIndex < 0 || currentIndex >= sourceTracks.length) {
@@ -852,43 +934,41 @@ class _QueueScreenState extends State<QueueScreen> {
     final previousTrack =
         renderedCurrentIndex > 0 ? tracks[renderedCurrentIndex - 1] : null;
 
-    return Consumer<PlaybackState>(
-      builder: (context, playback, _) => StackedWaveformTimeline(
-        key: const ValueKey('queue_surface'),
-        previousTrack: previousTrack,
-        currentTrack: currentTrack,
-        upcomingTracks: upNext,
-        peaksFor: provider.waveformPeaksFor,
-        waveformFor: provider.waveformFor,
-        trimRangeFor: provider.trimRangeFor,
-        clipFor: provider.timelineClipFor,
-        pitchModeFor: provider.pitchModeFor,
-        timelineModel: playback.timelineModel,
-        pitchFallbackClipIds: playback.snapshot.pitchFallbackClipIds,
-        clipTempoStates: playback.snapshot.clipTempoStates,
-        playheadPositionMs: playback.timelinePositionMs,
-        positionMsStream: playback.timelinePositionMsStream,
-        onScrubStart: playback.beginTimelineScrub,
-        onScrubUpdate: playback.updateTimelineScrub,
-        onScrubEnd: playback.endTimelineScrub,
-        onTimelineStartChanged: provider.setTimelineStartMs,
-        onTrimStartChanged: provider.setStartOffsetMs,
-        onTrimEndChanged: provider.setEndOffsetMs,
-        onMoveEarlier: (track) =>
-            _moveTimelineTrack(provider, upNext, currentIndex, track, -1),
-        onMoveLater: (track) =>
-            _moveTimelineTrack(provider, upNext, currentIndex, track, 1),
-        onPitchModeChanged: provider.setPitchMode,
-        onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
-            _showAnalysisCorrectionSheet(
-          context,
-          provider,
-          track,
-          initialFirstDownbeatMs: initialFirstDownbeatMs,
-        ),
-        onVisibleTracksChanged: (tracks) =>
-            _updateVisibleAnalysisHydration(provider, tracks),
+    final playback = playbackView.playback;
+    return StackedWaveformTimeline(
+      key: const ValueKey('queue_surface'),
+      previousTrack: previousTrack,
+      currentTrack: currentTrack,
+      upcomingTracks: upNext,
+      peaksFor: provider.waveformPeaksFor,
+      waveformFor: provider.waveformFor,
+      trimRangeFor: provider.trimRangeFor,
+      clipFor: provider.timelineClipFor,
+      pitchModeFor: provider.pitchModeFor,
+      timelineModel: playbackView.timelineModel,
+      pitchFallbackClipIds: playbackView.pitchFallbackClipIds,
+      playheadPositionMs: playbackView.timelinePositionMs,
+      positionMsStream: playback.timelinePositionMsStream,
+      onScrubStart: playback.beginTimelineScrub,
+      onScrubUpdate: playback.updateTimelineScrub,
+      onScrubEnd: playback.endTimelineScrub,
+      onTimelineStartChanged: provider.setTimelineStartMs,
+      onTrimStartChanged: provider.setStartOffsetMs,
+      onTrimEndChanged: provider.setEndOffsetMs,
+      onMoveEarlier: (track) =>
+          _moveTimelineTrack(provider, upNext, currentIndex, track, -1),
+      onMoveLater: (track) =>
+          _moveTimelineTrack(provider, upNext, currentIndex, track, 1),
+      onPitchModeChanged: provider.setPitchMode,
+      onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
+          _showAnalysisCorrectionSheet(
+        context,
+        provider,
+        track,
+        initialFirstDownbeatMs: initialFirstDownbeatMs,
       ),
+      onVisibleTracksChanged: (tracks) =>
+          _updateVisibleAnalysisHydration(provider, tracks),
     );
   }
 

@@ -133,11 +133,13 @@ class _MetadataChipGroup extends StatelessWidget {
         _MetadataChip(
           key: const ValueKey('song_metadata_bpm_chip'),
           label: labels.bpm!,
+          allowWrap: !singleLine,
         ),
       if (labels.key != null)
         _MetadataChip(
           key: const ValueKey('song_metadata_key_chip'),
           label: labels.key!,
+          allowWrap: !singleLine,
         ),
     ];
     final chips = Semantics(
@@ -171,9 +173,14 @@ class _MetadataChipGroup extends StatelessWidget {
 }
 
 class _MetadataChip extends StatelessWidget {
-  const _MetadataChip({super.key, required this.label});
+  const _MetadataChip({
+    super.key,
+    required this.label,
+    required this.allowWrap,
+  });
 
   final String label;
+  final bool allowWrap;
 
   @override
   Widget build(BuildContext context) {
@@ -188,9 +195,9 @@ class _MetadataChip extends StatelessWidget {
       ),
       child: Text(
         label,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        softWrap: false,
+        maxLines: allowWrap ? null : 1,
+        overflow: allowWrap ? TextOverflow.visible : TextOverflow.ellipsis,
+        softWrap: allowWrap,
         style: theme.textTheme.labelSmall?.copyWith(
           color: theme.colorScheme.onSurfaceVariant,
           fontWeight: FontWeight.w600,

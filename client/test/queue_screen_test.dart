@@ -17,6 +17,7 @@ import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/models/trim_range.dart';
+import 'package:open_music_player/models/waveform.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/screens/queue_screen.dart';
@@ -31,12 +32,15 @@ void main() {
     playbackState = _FakePlaybackState();
   });
 
-  Future<void> pumpQueueScreen(WidgetTester tester) async {
+  Future<void> pumpQueueScreen(
+    WidgetTester tester, {
+    QueueProvider? queueProvider,
+  }) async {
     await tester.pumpWidget(
       MultiProvider(
         providers: [
           ChangeNotifierProvider<QueueProvider>(
-            create: (_) => QueueProvider(apiClient),
+            create: (_) => queueProvider ?? QueueProvider(apiClient),
           ),
           ListenableProvider<PlaybackState>.value(value: playbackState),
         ],
@@ -45,6 +49,8 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  tearDown(() => playbackState.dispose());
 
   test('converts list reorder offsets into absolute queue indices', () {
     expect(
@@ -291,6 +297,151 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(apiClient.analysisRequests, contains(1010));
+  });
+
+  testWidgets(
+    'playback clock updates header and playhead without rebuilding waveforms',
+    (tester) async {
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(1, 'Current', seconds: 60),
+          _mediaItem(2, 'Next', seconds: 60),
+          _mediaItem(3, 'Later', seconds: 60),
+        ]
+        ..fakeCurrentIndex = 0;
+      final provider = _CountingQueueProvider(apiClient);
+
+      await pumpQueueScreen(tester, queueProvider: provider);
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+
+      final callsBeforeTick = provider.waveformCalls;
+      final playheadBefore = tester.getRect(
+        find.byKey(const ValueKey('timeline_playhead')),
+      );
+      expect(callsBeforeTick, greaterThan(0));
+      expect(find.text('1 of 3 • 3:00 remaining'), findsOneWidget);
+
+      playbackState.emitPlaybackPosition(
+        localPosition: const Duration(seconds: 30),
+        timelinePositionMs: 30000,
+      );
+      await tester.pump();
+
+      expect(find.text('1 of 3 • 2:30 remaining'), findsOneWidget);
+      expect(
+        tester.getRect(find.byKey(const ValueKey('timeline_playhead'))).left,
+        isNot(playheadBefore.left),
+      );
+      expect(provider.waveformCalls, callsBeforeTick);
+    },
+  );
+
+  testWidgets('timeline visibility debounce coalesces rapid scroll updates', (
+    tester,
+  ) async {
+    apiClient.useCompactAnalysisFixture(currentIndex: 1, trackCount: 30);
+    final provider = _TrackingQueueProvider(apiClient);
+
+    await pumpQueueScreen(tester, queueProvider: provider);
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+    final interestCount = provider.distinctInterestSignatures.length;
+
+    final scroll = find.byKey(const PageStorageKey('timeline_lane_scroll'));
+    await tester.drag(scroll, const Offset(0, -500));
+    await tester.drag(scroll, const Offset(0, -500));
+    await tester.drag(scroll, const Offset(0, -500));
+    await tester.pump(const Duration(milliseconds: 119));
+
+    expect(provider.distinctInterestSignatures.length, interestCount);
+    await tester.pump(const Duration(milliseconds: 2));
+    await tester.pump();
+    expect(provider.distinctInterestSignatures.length, interestCount + 1);
+  });
+
+  testWidgets('stale held hydration is discarded after lanes leave view', (
+    tester,
+  ) async {
+    apiClient
+      ..useCompactAnalysisFixture(currentIndex: 2, trackCount: 20)
+      ..holdAnalysisRequests = true;
+
+    await pumpQueueScreen(tester);
+    await tester.tap(find.text('Timeline'));
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(apiClient.analysisRequests, contains(202));
+
+    final scroll = find.byKey(const PageStorageKey('timeline_lane_scroll'));
+    await tester.drag(scroll, const Offset(0, -3000));
+    await tester.pump(const Duration(milliseconds: 121));
+    apiClient.releaseHeldAnalysisRequests();
+    await tester.pumpAndSettle();
+    expect(
+        apiClient.analysisRequests.any((trackId) => trackId >= 1515), isTrue);
+
+    await tester.drag(scroll, const Offset(0, 3000));
+    await tester.pump(const Duration(milliseconds: 121));
+    await tester.pumpAndSettle();
+    expect(
+      apiClient.analysisRequests.where((trackId) => trackId == 202).length,
+      greaterThanOrEqualTo(2),
+    );
+  });
+
+  testWidgets('replacing queue provider releases prior hydration ownership', (
+    tester,
+  ) async {
+    final firstApi = _FakeQueueApiClient()
+      ..useCompactAnalysisFixture(trackCount: 12);
+    final secondApi = _FakeQueueApiClient()
+      ..useCompactAnalysisFixture(trackCount: 12);
+    final first = _TrackingQueueProvider(firstApi);
+    final second = _TrackingQueueProvider(secondApi);
+    addTearDown(first.dispose);
+    addTearDown(second.dispose);
+    await second.loadQueue();
+
+    Widget host(QueueProvider provider) => MultiProvider(
+          providers: [
+            ChangeNotifierProvider<QueueProvider>.value(value: provider),
+            ListenableProvider<PlaybackState>.value(value: playbackState),
+          ],
+          child: const MaterialApp(home: QueueScreen()),
+        );
+
+    await tester.pumpWidget(host(first));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+    final clearsBeforeSwap = first.clearCalls;
+    expect(first.distinctInterestSignatures, isNotEmpty);
+
+    await tester.pumpWidget(host(second));
+    await tester.pumpAndSettle();
+
+    expect(first.clearCalls, clearsBeforeSwap + 1);
+    expect(second.distinctInterestSignatures, isNotEmpty);
+  });
+
+  testWidgets('long timeline virtualizes offscreen waveform lanes', (
+    tester,
+  ) async {
+    apiClient.useCompactAnalysisFixture(trackCount: 100);
+    final provider = _CountingQueueProvider(apiClient);
+
+    await pumpQueueScreen(tester, queueProvider: provider);
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+
+    final builtLanes = find.byType(TimelineClipWidget).evaluate().length;
+    expect(builtLanes, greaterThan(0));
+    expect(builtLanes, lessThan(20));
+    expect(provider.waveformCalls, lessThan(20));
+    expect(
+      find.byKey(const ValueKey('timeline_clip_t100')),
+      findsNothing,
+    );
   });
 
   testWidgets(
@@ -566,6 +717,11 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
       await tester.pumpAndSettle();
+      playbackState.emitPlaybackPosition(
+        localPosition: const Duration(seconds: 32),
+        timelinePositionMs: 32000,
+      );
+      await tester.pump();
       await tester.tap(
         find.byKey(const ValueKey('timeline_edit_analysis_t1')),
       );
@@ -578,7 +734,7 @@ void main() {
             )
             .controller
             ?.text,
-        '16000',
+        '32000',
       );
 
       await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
@@ -587,7 +743,7 @@ void main() {
       expect(apiClient.analysisOverrideUpdates, hasLength(1));
       expect(
         apiClient.analysisOverrideUpdates.single.overrides.downbeatsMs?.first,
-        16000,
+        32000,
       );
     },
   );
@@ -1006,6 +1162,7 @@ void main() {
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
+  final _notifier = _PlaybackStateNotifier();
   final List<({List<Map<String, dynamic>> tracks, int startIndex})>
       playQueueCalls = [];
   final _timelinePositions = StreamController<int>.broadcast();
@@ -1030,6 +1187,16 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   int fakeTimelinePositionMs = 0;
   TimelineModel fakeTimelineModel = TimelineModel();
   BeatSnapMode fakeTransitionSnapMode = BeatSnapMode.downbeat;
+
+  void emitPlaybackPosition({
+    required Duration localPosition,
+    required int timelinePositionMs,
+  }) {
+    fakePosition = localPosition;
+    fakeTimelinePositionMs = timelinePositionMs;
+    _timelinePositions.add(timelinePositionMs);
+    _notifier.emit();
+  }
 
   @override
   List<audio_service.MediaItem> get queue => fakeQueue;
@@ -1212,10 +1379,17 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   Duration get position => fakePosition;
 
   @override
-  void addListener(VoidCallback listener) {}
+  void addListener(VoidCallback listener) => _notifier.addListener(listener);
 
   @override
-  void removeListener(VoidCallback listener) {}
+  void removeListener(VoidCallback listener) =>
+      _notifier.removeListener(listener);
+
+  @override
+  void dispose() {
+    unawaited(_timelinePositions.close());
+    _notifier.dispose();
+  }
 
   @override
   String? get playbackError => null;
@@ -1244,6 +1418,46 @@ audio_service.MediaItem _mediaItem(
       duration: Duration(seconds: seconds),
       extras: extras,
     );
+
+class _PlaybackStateNotifier extends ChangeNotifier {
+  void emit() => notifyListeners();
+}
+
+class _CountingQueueProvider extends QueueProvider {
+  _CountingQueueProvider(super.apiClient);
+
+  int waveformCalls = 0;
+
+  @override
+  TimelineWaveformData waveformFor(Track track, int targetSampleCount) {
+    waveformCalls++;
+    return super.waveformFor(track, targetSampleCount);
+  }
+}
+
+class _TrackingQueueProvider extends _CountingQueueProvider {
+  _TrackingQueueProvider(super.apiClient);
+
+  final List<String> distinctInterestSignatures = [];
+  int clearCalls = 0;
+
+  @override
+  void setAnalysisHydrationInterest(Iterable<Track> tracks) {
+    final retained = tracks.toList(growable: false);
+    final signature = retained.map((track) => track.queueItemId).join('|');
+    if (distinctInterestSignatures.isEmpty ||
+        distinctInterestSignatures.last != signature) {
+      distinctInterestSignatures.add(signature);
+    }
+    super.setAnalysisHydrationInterest(retained);
+  }
+
+  @override
+  void clearAnalysisHydrationInterest() {
+    clearCalls++;
+    super.clearAnalysisHydrationInterest();
+  }
+}
 
 class _FakeQueueApiClient extends ApiClient {
   QueueState _state = QueueState(
@@ -1279,9 +1493,12 @@ class _FakeQueueApiClient extends ApiClient {
   final List<({int trackId, TrackAnalysisOverrides overrides})>
       analysisOverrideUpdates = [];
   final List<int> analysisRequests = [];
+  final List<({int trackId, Completer<TrackAnalysis> completer})>
+      _heldAnalysisRequests = [];
   bool failLoads = false;
   bool deferLoad = false;
   bool hydrateAnalysisFixture = false;
+  bool holdAnalysisRequests = false;
   Completer<QueueState>? _loadCompleter;
 
   void moveBeforePlaybackStarts() {
@@ -1506,6 +1723,24 @@ class _FakeQueueApiClient extends ApiClient {
       throw ApiException('analysis fixture not configured', 404);
     }
     analysisRequests.add(trackId);
+    if (holdAnalysisRequests) {
+      final completer = Completer<TrackAnalysis>();
+      _heldAnalysisRequests.add((trackId: trackId, completer: completer));
+      return completer.future;
+    }
+    return _hydratedAnalysis(trackId);
+  }
+
+  void releaseHeldAnalysisRequests() {
+    holdAnalysisRequests = false;
+    final held = List.of(_heldAnalysisRequests);
+    _heldAnalysisRequests.clear();
+    for (final request in held) {
+      request.completer.complete(_hydratedAnalysis(request.trackId));
+    }
+  }
+
+  TrackAnalysis _hydratedAnalysis(int trackId) {
     final bpm = trackId == 101 ? 124.0 : 128.0;
     return TrackAnalysis.fromJson(
       status: 'analyzed',
