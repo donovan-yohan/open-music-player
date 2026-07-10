@@ -218,6 +218,41 @@ void main() {
       expect(start + incomingOffset.downbeatsMs.first, 12000);
     });
 
+    test('uses tempo-matched rate for offset incoming downbeat alignment', () {
+      const outgoing = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
+      );
+      const incomingFaster = ClipTempoMetadata(
+        nativeBpm: 150,
+        bpmConfidence: 0.9,
+        downbeatsMs: [2000, 3600, 5200, 6800],
+      );
+
+      final start = defaultDownbeatLockedTransitionStartMs(
+        outgoingTimelineStartMs: 0,
+        outgoingTimelineEndMs: 24000,
+        outgoingSourceStartMs: 0,
+        outgoingSelectedDurationMs: 24000,
+        outgoingTempo: outgoing,
+        incomingSourceStartMs: 0,
+        incomingSelectedDurationMs: 24000,
+        incomingTempo: incomingFaster,
+      );
+
+      expect(start, 13500);
+      expect(
+        start + incomingFaster.downbeatsMs.first,
+        isNot(16000),
+        reason: 'static source-time alignment would ignore the 0.8x start rate',
+      );
+      expect(
+        start + (incomingFaster.downbeatsMs.first / 0.8).round(),
+        16000,
+      );
+    });
+
     test(
       'uses the contiguous fallback when downbeat snap is out of tolerance',
       () {

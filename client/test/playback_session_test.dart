@@ -498,6 +498,78 @@ void main() {
       expect(model.clips[1].envelope.fadeInMs, 8000);
     });
 
+    test('analysis refresh reflows old automatic overlap placements', () {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_auto_refresh',
+        queue: [
+          _item(
+            'a',
+            seconds: 24,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
+            ),
+          ),
+          _item(
+            'b',
+            seconds: 24,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
+            ),
+          ),
+        ],
+      );
+
+      expect(session.clips[1].timelineStartMs, 16000);
+
+      final refreshed = session.normalizedForQueue([
+        _item(
+          'a',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
+          ),
+        ),
+        _item(
+          'b',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 150,
+            downbeatsMs: [2000, 3600, 5200, 6800],
+          ),
+        ),
+      ]);
+
+      expect(refreshed.clips[1].timelineStartMs, 13500);
+
+      final manuallyEdited = session.withPlacementAt(
+        1,
+        session.clips[1].placement.withTimelineStartMs(15000),
+      );
+      final preserved = manuallyEdited.normalizedForQueue([
+        _item(
+          'a',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
+          ),
+        ),
+        _item(
+          'b',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 150,
+            downbeatsMs: [2000, 3600, 5200, 6800],
+          ),
+        ),
+      ]);
+
+      expect(preserved.clips[1].timelineStartMs, 15000);
+    });
+
     test('edited placements preserve trims and derive overlap fades', () {
       final timeline = CueTimeline.editedQueue(
         sessionId: 'session_7',

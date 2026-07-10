@@ -419,10 +419,19 @@ double _relativeRateShift(double baseRate, double transitionRate) {
   return ((transitionRate - baseRate) / baseRate).abs();
 }
 
-List<int> _globalDownbeatsFor(MixClip clip) => clip.tempo.downbeatsMs
-    .map((ms) => clip.timelineStartMs + (ms - clip.placement.sourceStartMs))
-    .where((ms) => ms >= 0)
-    .toList(growable: false);
+List<int> _globalDownbeatsFor(MixClip clip) {
+  final globals = <int>{};
+  for (final sourceMs in clip.tempo.downbeatsMs) {
+    if (sourceMs < clip.placement.sourceStartMs ||
+        sourceMs > clip.placement.sourceEndMs) {
+      continue;
+    }
+    final timelineMs = clip.timelineMsForSourcePosition(sourceMs);
+    if (timelineMs >= 0) globals.add(timelineMs);
+  }
+  final sorted = globals.toList(growable: false)..sort();
+  return sorted;
+}
 
 int? _nearestDownbeatDelta({
   required List<int> outgoingDownbeats,

@@ -334,6 +334,43 @@ void main() {
       await harness.dispose();
     });
 
+    test('default transitions align offset downbeats at BPM-matched start rate',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item(
+          '1',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
+          ),
+        ),
+        _item(
+          '2',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 150,
+            downbeatsMs: [2000, 3600, 5200, 6800],
+          ),
+        ),
+      ]);
+
+      expect(
+        harness.controller.timelineClipForIndex(1)?.timelineStartMs,
+        13500,
+      );
+      final diagnostics = diagnoseTransition(
+        harness.engine.model.clips[0],
+        harness.engine.model.clips[1],
+      );
+      final codes = diagnostics.diagnostics.map((item) => item.code).toList();
+      expect(codes, contains(TransitionDiagnosticCode.beatLocked));
+      expect(codes, isNot(contains(TransitionDiagnosticCode.downbeatOffset)));
+
+      await harness.dispose();
+    });
+
     test('refreshed manual analysis rebuilds tempo diagnostics and automation',
         () async {
       final harness = _Harness();
