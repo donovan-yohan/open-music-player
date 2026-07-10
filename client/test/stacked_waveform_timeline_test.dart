@@ -651,6 +651,57 @@ void main() {
     expect(find.byKey(const ValueKey('timeline_gain_t2')), findsOneWidget);
   });
 
+  testWidgets(
+    'uses corrected track analysis while live clip tempo refresh catches up',
+    (tester) async {
+      final current = _analyzedTrack(
+        't1',
+        'Midnight Drive',
+        20,
+        bpm: 120,
+        downbeatsMs: const [0, 4000, 8000, 12000, 16000],
+      );
+      final next = _analyzedTrack(
+        't2',
+        'Paper Planes',
+        20,
+        bpm: 141.18,
+        downbeatsMs: const [0, 4000, 8000, 12000, 16000],
+      );
+
+      await _pump(
+        tester,
+        previous: null,
+        current: current,
+        upcoming: [next],
+        timelineModel: TimelineModel(
+          clips: [
+            _mixClip(
+              't1',
+              0,
+              20000,
+              envelope: const GainEnvelope(fadeOutMs: 8000),
+            ),
+            _mixClip(
+              't2',
+              12000,
+              20000,
+              envelope: const GainEnvelope(fadeInMs: 8000),
+            ),
+          ],
+        ),
+      );
+
+      await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('timeline_tempo_t2')), findsOneWidget);
+      expect(find.textContaining('141.2 BPM'), findsOneWidget);
+      expect(find.textContaining('No next BPM'), findsNothing);
+      expect(find.textContaining('No next downbeat'), findsNothing);
+    },
+  );
+
   testWidgets('renders every upcoming track as a vertically scrollable lane', (
     tester,
   ) async {

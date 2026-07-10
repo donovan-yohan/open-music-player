@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
 import '../core/audio/playback_context.dart';
 import '../core/engine/tempo_automation.dart';
+import '../core/engine/timeline_model.dart';
 import '../models/track.dart';
 import '../models/track_analysis.dart';
 import '../providers/queue_provider.dart';
@@ -470,7 +471,12 @@ class _QueueScreenState extends State<QueueScreen> {
       final queueIndex = _playbackQueueIndex(track);
       if (queueIndex < 0 || queueIndex >= queue.length) continue;
       final nextTempo = _tempoForAnalysis(analysis);
-      if (!_mediaItemNeedsAnalysisRefresh(queue[queueIndex], nextTempo)) {
+      if (!_mediaItemNeedsAnalysisRefresh(queue[queueIndex], nextTempo) &&
+          !_timelineModelNeedsAnalysisRefresh(
+            playback.timelineModel,
+            track,
+            nextTempo,
+          )) {
         continue;
       }
 
@@ -503,6 +509,45 @@ class _QueueScreenState extends State<QueueScreen> {
       overrides: extras['analysisOverrides'] ?? extras['analysis_overrides'],
     );
     return currentTempo != nextTempo;
+  }
+
+  bool _timelineModelNeedsAnalysisRefresh(
+    TimelineModel model,
+    Track track,
+    ClipTempoMetadata nextTempo,
+  ) {
+    if (nextTempo.isEmpty || model.clips.isEmpty) return false;
+
+    final queueIndex = _playbackQueueIndex(track);
+    if (queueIndex >= 0 && queueIndex < model.clips.length) {
+      final clip = model.clips[queueIndex];
+      if (_timelineClipMatchesTrack(clip, track)) {
+        return clip.tempo != nextTempo;
+      }
+    }
+
+    for (final clip in model.clips) {
+      if (_timelineClipMatchesTrack(clip, track)) {
+        return clip.tempo != nextTempo;
+      }
+    }
+    return false;
+  }
+
+  bool _timelineClipMatchesTrack(MixClip clip, Track track) {
+    final playbackTrackId = track.playbackTrackId;
+    if (playbackTrackId != null && playbackTrackId.isNotEmpty) {
+      return clip.trackId == playbackTrackId ||
+          clip.queueItemId == playbackTrackId;
+    }
+
+    final ids = <String>{
+      track.id,
+      track.queueItemId,
+      if (track.sourceCandidateId != null) track.sourceCandidateId!,
+      if (track.sourceUrl != null) track.sourceUrl!,
+    };
+    return ids.contains(clip.trackId) || ids.contains(clip.queueItemId);
   }
 
   ClipTempoMetadata _tempoForAnalysis(TrackAnalysis analysis) =>

@@ -380,6 +380,55 @@ void main() {
   );
 
   testWidgets(
+    'playback timeline refreshes stale live clip tempo even when queue extras match',
+    (tester) async {
+      apiClient.useAnalysisFixture();
+      final analysisSummary = {
+        'bpm': {'value': 124.0},
+        'key': {'value': 'A minor'},
+        'camelot': {'value': '8A'},
+        'energy': {'value': 0.73},
+        'waveform': {'sample_count': 6},
+      };
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(
+            101,
+            'Analyzed Track',
+            seconds: 198,
+            extras: {
+              'analysisRef': '101',
+              'analysisStatus': 'analyzed',
+              'analysisSummary': analysisSummary,
+            },
+          ),
+        ]
+        ..fakeTimelineModel = TimelineModel(
+          clips: [
+            MixClip(
+              placement: TimelineClip.clamped(
+                id: 'session_clip_0',
+                trackId: '101',
+                sourceDurationMs: 198000,
+                sourceStartMs: 0,
+                sourceEndMs: 198000,
+                timelineStartMs: 0,
+              ),
+            ),
+          ],
+        )
+        ..fakeCurrentIndex = 0;
+
+      await pumpQueueScreen(tester);
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+
+      expect(playbackState.analysisRefreshes, hasLength(1));
+      expect(playbackState.analysisRefreshes.single.trackId, '101');
+    },
+  );
+
+  testWidgets(
     'timeline analysis correction seeds first downbeat from playhead',
     (tester) async {
       tester.view.physicalSize = const Size(390, 2000);
@@ -784,6 +833,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   PlaybackContext? fakeContext;
   bool fakeIsPlaying = false;
   int fakeTimelinePositionMs = 0;
+  TimelineModel fakeTimelineModel = TimelineModel();
 
   @override
   List<audio_service.MediaItem> get queue => fakeQueue;
@@ -811,7 +861,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   int get timelinePositionMs => fakeTimelinePositionMs;
 
   @override
-  TimelineModel get timelineModel => TimelineModel();
+  TimelineModel get timelineModel => fakeTimelineModel;
 
   @override
   PlaybackSnapshot get snapshot => PlaybackSnapshot(

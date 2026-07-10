@@ -428,9 +428,14 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           widget.clipFor?.call(track, defaultClip) ??
           defaultClip;
       final clip = _previewClipFor(track, baseClip) ?? baseClip;
+      final trackTempo = _tempoForTrack(track);
       final mixClip = liveClip == null
-          ? MixClip(placement: clip, tempo: _tempoForTrack(track))
-          : _copyMixClipWithPlacement(liveClip, clip);
+          ? MixClip(placement: clip, tempo: trackTempo)
+          : _copyMixClipWithPlacement(
+              liveClip,
+              clip,
+              fallbackTempo: trackTempo,
+            );
       placed[track] = mixClip;
 
       final nextTrack = index + 1 < ordered.length ? ordered[index + 1] : null;
@@ -669,17 +674,25 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _activeClipDragTrackId == trackId ||
       _activeTrimTrackId == trackId;
 
-  MixClip _copyMixClipWithPlacement(MixClip clip, TimelineClip placement) =>
-      MixClip(
-        placement: placement,
-        envelope: clip.envelope,
-        audioSourceRef: clip.audioSourceRef,
-        queueItemId: clip.queueItemId,
-        playbackRate: clip.playbackRate,
-        pitchMode: clip.pitchMode,
-        tempo: clip.tempo,
-        rateAutomation: clip.rateAutomation,
-      );
+  MixClip _copyMixClipWithPlacement(
+    MixClip clip,
+    TimelineClip placement, {
+    ClipTempoMetadata fallbackTempo = ClipTempoMetadata.empty,
+  }) {
+    final tempo = clip.tempo.isEmpty && !fallbackTempo.isEmpty
+        ? fallbackTempo
+        : clip.tempo;
+    return MixClip(
+      placement: placement,
+      envelope: clip.envelope,
+      audioSourceRef: clip.audioSourceRef,
+      queueItemId: clip.queueItemId,
+      playbackRate: clip.playbackRate,
+      pitchMode: clip.pitchMode,
+      tempo: tempo,
+      rateAutomation: clip.rateAutomation,
+    );
+  }
 
   ClipTempoMetadata _tempoForTrack(Track track) {
     final analysis = track.analysis;
@@ -813,10 +826,15 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   }
 
   bool _clipMatchesTrack(MixClip clip, Track track) {
+    final playbackTrackId = track.playbackTrackId;
+    if (playbackTrackId != null && playbackTrackId.isNotEmpty) {
+      return clip.trackId == playbackTrackId ||
+          clip.queueItemId == playbackTrackId;
+    }
+
     final ids = <String>{
       track.id,
       track.queueItemId,
-      if (track.playbackTrackId != null) track.playbackTrackId!,
       if (track.sourceCandidateId != null) track.sourceCandidateId!,
       if (track.sourceUrl != null) track.sourceUrl!,
     };
