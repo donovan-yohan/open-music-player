@@ -35,6 +35,7 @@ void main() {
   Future<void> pumpQueueScreen(
     WidgetTester tester, {
     QueueProvider? queueProvider,
+    TextScaler? textScaler,
   }) async {
     await tester.pumpWidget(
       MultiProvider(
@@ -44,7 +45,17 @@ void main() {
           ),
           ListenableProvider<PlaybackState>.value(value: playbackState),
         ],
-        child: const MaterialApp(home: QueueScreen()),
+        child: MaterialApp(
+          builder: textScaler == null
+              ? null
+              : (context, child) => MediaQuery(
+                    data: MediaQuery.of(
+                      context,
+                    ).copyWith(textScaler: textScaler),
+                    child: child!,
+                  ),
+          home: const QueueScreen(),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -180,6 +191,88 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(playbackState.skipToIndexCalls, [2]);
+  });
+
+  testWidgets('2x text stacks queue view labels without wrapping', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Current Track', seconds: 120),
+        _mediaItem(2, 'Next Track', seconds: 150),
+      ]
+      ..fakeCurrentIndex = 0;
+    final flutterErrors = <FlutterErrorDetails>[];
+    final previousOnError = FlutterError.onError;
+    FlutterError.onError = flutterErrors.add;
+
+    try {
+      await pumpQueueScreen(
+        tester,
+        textScaler: const TextScaler.linear(2),
+      );
+    } finally {
+      FlutterError.onError = previousOnError;
+    }
+
+    final title = find.text('Playback Queue');
+    final viewSwitch = find.byKey(const ValueKey('queue_view_switch'));
+    expect(tester.getBottomLeft(title).dy,
+        lessThan(tester.getTopLeft(viewSwitch).dy));
+    for (final label in ['List', 'Timeline']) {
+      expect(find.text(label), findsOneWidget);
+      expect(tester.getSize(find.text(label)).height, lessThan(50));
+    }
+    expect(
+      flutterErrors.where(
+        (error) => error.exceptionAsString().contains('overflowed'),
+      ),
+      isEmpty,
+    );
+  });
+
+  testWidgets('3x text uses tooltip-labeled queue view icons', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [_mediaItem(1, 'Current Track', seconds: 120)]
+      ..fakeCurrentIndex = 0;
+    final flutterErrors = <FlutterErrorDetails>[];
+    final previousOnError = FlutterError.onError;
+    FlutterError.onError = flutterErrors.add;
+
+    try {
+      await pumpQueueScreen(
+        tester,
+        textScaler: const TextScaler.linear(3),
+      );
+    } finally {
+      FlutterError.onError = previousOnError;
+    }
+
+    final segmented = tester.widget<SegmentedButton<dynamic>>(
+      find.byKey(const ValueKey('queue_view_switch')),
+    );
+    expect(
+        segmented.segments.every((segment) => segment.label == null), isTrue);
+    expect(segmented.segments.map((segment) => segment.tooltip), [
+      'List view',
+      'Timeline view',
+    ]);
+    expect(
+      flutterErrors.where(
+        (error) => error.exceptionAsString().contains('overflowed'),
+      ),
+      isEmpty,
+    );
   });
 
   testWidgets('swiping live playback queue item left removes it', (

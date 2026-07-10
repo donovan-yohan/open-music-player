@@ -87,6 +87,7 @@ Future<void> _pump(
   required Track current,
   required List<Track> upcoming,
   Size size = const Size(390, 844),
+  TextScaler textScaler = TextScaler.noScaling,
   ValueChanged<Track>? onMoveEarlier,
   ValueChanged<Track>? onMoveLater,
   TimelineAnalysisEditCallback? onEditAnalysis,
@@ -115,6 +116,10 @@ Future<void> _pump(
 
   await tester.pumpWidget(
     MaterialApp(
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+        child: child!,
+      ),
       home: Scaffold(
         body: StackedWaveformTimeline(
           previousTrack: previous,
@@ -254,7 +259,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  for (final textScale in [1.3, 3.0]) {
+  for (final textScale in [1.3, 1.49, 1.9, 3.0]) {
     testWidgets('lane header stays bounded at ${textScale}x text scale', (
       tester,
     ) async {
@@ -265,7 +270,7 @@ void main() {
             child: Align(
               alignment: Alignment.topLeft,
               child: SizedBox(
-                width: 260,
+                width: textScale < 1.5 ? 140 : 260,
                 child: TimelineLaneHeader(
                   track: _analyzedTrack(
                     'scaled-text-$textScale',
@@ -273,7 +278,7 @@ void main() {
                     180,
                     bpm: 141.18,
                     key: 'F-sharp minor',
-                    camelot: textScale >= 3 ? null : '11A',
+                    camelot: textScale == 1.3 ? '11A' : null,
                   ),
                   role: LaneRole.current,
                   statusLabel: 'Current',
@@ -287,14 +292,14 @@ void main() {
 
       expect(find.text('141.2 BPM'), findsOneWidget);
       expect(
-        find.text(textScale >= 3 ? 'F-sharp minor' : '11A'),
+        find.text(textScale == 1.3 ? '11A' : 'F-sharp minor'),
         findsOneWidget,
       );
       expect(
         tester.getSize(find.byType(TimelineLaneHeader)).height,
         TimelineLaneHeader.heightForTextScale(textScale),
       );
-      if (textScale == 3.0) {
+      if (textScale >= 1.3) {
         final headerBounds = tester.getRect(find.byType(TimelineLaneHeader));
         final bpmBounds = tester.getRect(
           find.byKey(const ValueKey('song_metadata_bpm_chip')),
@@ -309,8 +314,13 @@ void main() {
           expect(chipBounds.right, lessThanOrEqualTo(headerBounds.right));
           expect(chipBounds.bottom, lessThanOrEqualTo(headerBounds.bottom));
         }
-        expect(keyBounds.top, greaterThan(bpmBounds.top));
-        for (final label in ['141.2 BPM', 'F-sharp minor']) {
+        if (textScale >= 1.49) {
+          expect(keyBounds.top, greaterThan(bpmBounds.top));
+        }
+        for (final label in [
+          '141.2 BPM',
+          textScale == 1.3 ? '11A' : 'F-sharp minor',
+        ]) {
           final paragraph = tester.renderObject<RenderParagraph>(
             find.text(label),
           );
@@ -319,6 +329,40 @@ void main() {
       }
       expect(tester.takeException(), isNull);
     });
+  }
+
+  test('large-text lane identity hides before its safe width', () {
+    for (final textScale in [1.3, 1.49, 2.0, 3.0]) {
+      expect(
+        TimelineLaneHeader.minimumVisibleWidthForTextScale(textScale),
+        greaterThan(120),
+      );
+    }
+  });
+
+  for (final textScale in [1.3, 1.49]) {
+    testWidgets(
+      'timeline hides sub-120px identity at ${textScale}x text scale',
+      (tester) async {
+        await _pump(
+          tester,
+          previous: null,
+          current: _analyzedTrack('narrow', 'Narrow identity', 80),
+          upcoming: [_analyzedTrack('wide', 'Wide identity', 600)],
+          textScaler: TextScaler.linear(textScale),
+        );
+
+        expect(
+          find.byKey(const ValueKey('timeline_lane_header_narrow')),
+          findsNothing,
+        );
+        expect(
+          find.byKey(const ValueKey('timeline_lane_header_wide')),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
   }
 
   group('musical snap grid', () {

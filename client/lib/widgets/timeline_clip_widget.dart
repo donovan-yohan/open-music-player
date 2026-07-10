@@ -33,11 +33,17 @@ class TimelineLaneHeader extends StatelessWidget {
 
   static double heightForTextScale(double textScale) {
     final safeScale = textScale.clamp(1.0, 4.0);
-    if (safeScale <= 1.5) {
-      return (48 + ((safeScale - 1) * 12)).clamp(48, 54).toDouble();
+    if (safeScale < 1.3) {
+      return (48 + ((safeScale - 1) * 12)).clamp(48, 52).toDouble();
     }
-    return (54 + ((safeScale - 1.5) * 128)).clamp(54, 374).toDouble();
+    if (safeScale <= 2) {
+      return (140 + ((safeScale - 1.3) * (4 / 0.7))).clamp(140, 144).toDouble();
+    }
+    return (144 + ((safeScale - 2) * 115)).clamp(144, 374).toDouble();
   }
+
+  static double minimumVisibleWidthForTextScale(double textScale) =>
+      textScale >= 1.3 ? 140 : 56;
 
   @override
   Widget build(BuildContext context) {
@@ -64,7 +70,7 @@ class TimelineLaneHeader extends StatelessWidget {
               color: accent.withValues(alpha: _active ? 0.42 : 0.18),
             ),
           ),
-          child: textScale >= 2
+          child: textScale >= 1.3
               ? _accessibleLayout(theme, muted)
               : Row(
                   children: [

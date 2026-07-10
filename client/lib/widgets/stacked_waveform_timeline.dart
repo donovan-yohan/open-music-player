@@ -1216,7 +1216,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
     const leftInset = 8.0;
     const topInset = 12.0;
-    const minVisibleWidth = 56.0;
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final minVisibleWidth =
+        TimelineLaneHeader.minimumVisibleWidthForTextScale(textScale);
     final maxWidth = math.min(260.0, math.max(0.0, paneWidth - 16));
     final laneEndX = viewport.msToX(lane.timelineEndMs);
     final visibleEndX = laneEndX.clamp(0.0, paneWidth).toDouble();

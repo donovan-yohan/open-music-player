@@ -315,27 +315,32 @@ class _QueueScreenState extends State<QueueScreen> {
     final currentNumber = playbackView.currentIndex == null
         ? null
         : playbackView.currentIndex!.clamp(0, queue.length - 1).toInt() + 1;
+    final stackedHeader = _usesStackedQueueHeader(context);
+    final title = Text(
+      'Playback Queue',
+      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+            fontWeight: FontWeight.w700,
+          ),
+    );
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Playback Queue',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              _buildViewSwitch(context),
-            ],
-          ),
-          const SizedBox(height: 4),
+          if (stackedHeader) ...[
+            title,
+            const SizedBox(height: 8),
+            _buildViewSwitch(context, expanded: true),
+          ] else
+            Row(
+              children: [
+                Expanded(child: title),
+                const SizedBox(width: 8),
+                _buildViewSwitch(context),
+              ],
+            ),
+          SizedBox(height: stackedHeader ? 8 : 4),
           Selector<PlaybackState, Duration>(
             selector: (_, playback) => playback.position,
             builder: (context, position, _) {
@@ -758,36 +763,45 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   Widget _buildQueueHeader(BuildContext context, QueueProvider provider) {
+    final stackedHeader = _usesStackedQueueHeader(context);
+    final status = Selector<PlaybackState, Duration>(
+      selector: (_, playback) => playback.position,
+      builder: (context, position, _) =>
+          _buildQueueStatusPill(context, provider, position),
+    );
+    final menu = PopupMenuButton<String>(
+      key: const ValueKey('queue_header_menu'),
+      tooltip: 'Queue actions',
+      onSelected: (value) => _handleMenuAction(context, value),
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: 'clear',
+          child: ListTile(
+            leading: Icon(Icons.clear_all),
+            title: Text('Clear queue'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+      ],
+    );
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 8, 6),
-      child: Row(
-        children: [
-          Expanded(
-            child: Selector<PlaybackState, Duration>(
-              selector: (_, playback) => playback.position,
-              builder: (context, position, _) =>
-                  _buildQueueStatusPill(context, provider, position),
+      child: stackedHeader
+          ? Column(
+              children: [
+                Row(children: [Expanded(child: status), menu]),
+                const SizedBox(height: 8),
+                _buildViewSwitch(context, expanded: true),
+              ],
+            )
+          : Row(
+              children: [
+                Expanded(child: status),
+                const SizedBox(width: 8),
+                _buildViewSwitch(context),
+                menu,
+              ],
             ),
-          ),
-          const SizedBox(width: 8),
-          _buildViewSwitch(context),
-          PopupMenuButton<String>(
-            key: const ValueKey('queue_header_menu'),
-            tooltip: 'Queue actions',
-            onSelected: (value) => _handleMenuAction(context, value),
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'clear',
-                child: ListTile(
-                  leading: Icon(Icons.clear_all),
-                  title: Text('Clear queue'),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
     );
   }
 
@@ -846,21 +860,36 @@ class _QueueScreenState extends State<QueueScreen> {
     );
   }
 
-  Widget _buildViewSwitch(BuildContext context) {
+  bool _usesStackedQueueHeader(BuildContext context) =>
+      MediaQuery.textScalerOf(context).scale(1) >= 1.3;
+
+  Widget _buildViewSwitch(
+    BuildContext context, {
+    bool expanded = false,
+  }) {
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final showLabels = textScale < 2.5;
+    final showIcons = textScale < 1.3 || !showLabels;
     return SizedBox(
-      width: 176,
+      width: expanded ? double.infinity : 176,
       child: SegmentedButton<_QueueViewMode>(
         key: const ValueKey('queue_view_switch'),
-        segments: const [
+        segments: [
           ButtonSegment(
             value: _QueueViewMode.list,
-            icon: Icon(Icons.format_list_bulleted),
-            label: Text('List'),
+            icon: showIcons ? const Icon(Icons.format_list_bulleted) : null,
+            label: showLabels
+                ? const Text('List', maxLines: 1, softWrap: false)
+                : null,
+            tooltip: 'List view',
           ),
           ButtonSegment(
             value: _QueueViewMode.timeline,
-            icon: Icon(Icons.timeline),
-            label: Text('Timeline'),
+            icon: showIcons ? const Icon(Icons.timeline) : null,
+            label: showLabels
+                ? const Text('Timeline', maxLines: 1, softWrap: false)
+                : null,
+            tooltip: 'Timeline view',
           ),
         ],
         selected: {_viewMode},
