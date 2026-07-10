@@ -179,6 +179,69 @@ void main() {
     );
     expect(diagnostics.compactLabels.first, startsWith('Tempo'));
   });
+
+  test('derives harmonic compatibility from musical keys without Camelot', () {
+    final diagnostics = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: _tempo(musicalKey: 'A minor'),
+      ),
+      _clip(
+        'incoming',
+        8000,
+        tempo: _tempo(musicalKey: 'E minor'),
+      ),
+    );
+
+    final harmonic = diagnostics.diagnostics.firstWhere(
+      (diagnostic) =>
+          diagnostic.code == TransitionDiagnosticCode.harmonicCompatible,
+    );
+    expect(harmonic.label, 'Harmonic 8A->9A');
+    expect(diagnostics.hasWarnings, isFalse);
+  });
+
+  test('derives harmonic clashes from key shorthand and flats', () {
+    final diagnostics = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: _tempo(musicalKey: 'Am'),
+      ),
+      _clip(
+        'incoming',
+        8000,
+        tempo: _tempo(musicalKey: 'Gb major'),
+      ),
+    );
+
+    final harmonic = diagnostics.diagnostics.firstWhere(
+      (diagnostic) => diagnostic.code == TransitionDiagnosticCode.harmonicClash,
+    );
+    expect(harmonic.label, 'Key clash 8A->2B');
+    expect(diagnostics.hasWarnings, isTrue);
+  });
+
+  test('prefers explicit Camelot over derived musical key', () {
+    final diagnostics = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: _tempo(musicalKey: 'A minor', camelot: '2B'),
+      ),
+      _clip(
+        'incoming',
+        8000,
+        tempo: _tempo(musicalKey: 'E minor', camelot: '8A'),
+      ),
+    );
+
+    final harmonic = diagnostics.diagnostics.firstWhere(
+      (diagnostic) => diagnostic.code == TransitionDiagnosticCode.harmonicClash,
+    );
+    expect(harmonic.label, 'Key clash 2B->8A');
+  });
 }
 
 MixClip _clip(
@@ -196,5 +259,18 @@ MixClip _clip(
       timelineStartMs: timelineStartMs,
     ),
     tempo: tempo,
+  );
+}
+
+ClipTempoMetadata _tempo({
+  String? musicalKey,
+  String? camelot,
+}) {
+  return ClipTempoMetadata(
+    nativeBpm: 120,
+    bpmConfidence: 0.9,
+    downbeatsMs: const [0, 8000, 16000],
+    musicalKey: musicalKey,
+    camelot: camelot,
   );
 }

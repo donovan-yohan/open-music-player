@@ -285,8 +285,8 @@ List<TransitionDiagnostic> _harmonicDiagnostics(
   MixClip outgoing,
   MixClip incoming,
 ) {
-  final outgoingKey = _CamelotKey.parse(outgoing.tempo.camelot);
-  final incomingKey = _CamelotKey.parse(incoming.tempo.camelot);
+  final outgoingKey = _CamelotKey.fromTempo(outgoing.tempo);
+  final incomingKey = _CamelotKey.fromTempo(incoming.tempo);
   if (outgoingKey == null || incomingKey == null) return const [];
 
   final label = '${outgoingKey.label}->${incomingKey.label}';
@@ -396,12 +396,25 @@ class _CamelotKey {
 
   String get label => '$number$letter';
 
+  static _CamelotKey? fromTempo(ClipTempoMetadata tempo) {
+    return parse(tempo.camelot) ?? fromMusicalKey(tempo.musicalKey);
+  }
+
   static _CamelotKey? parse(String? raw) {
     if (raw == null) return null;
     final match = RegExp(r'^\s*(1[0-2]|[1-9])\s*([abAB])\s*$').firstMatch(raw);
     if (match == null) return null;
     return _CamelotKey(
         int.parse(match.group(1)!), match.group(2)!.toUpperCase());
+  }
+
+  static _CamelotKey? fromMusicalKey(String? raw) {
+    final parsed = _MusicalKey.parse(raw);
+    if (parsed == null) return null;
+    final labels = parsed.mode == _MusicalMode.minor
+        ? _minorCamelotByPitchClass
+        : _majorCamelotByPitchClass;
+    return parse(labels[parsed.pitchClass]);
   }
 
   bool isCompatibleWith(_CamelotKey other) {
@@ -413,5 +426,88 @@ class _CamelotKey {
   bool _isAdjacent(int a, int b) {
     final distance = (a - b).abs();
     return distance == 1 || distance == 11;
+  }
+
+  static const _majorCamelotByPitchClass = [
+    '8B',
+    '3B',
+    '10B',
+    '5B',
+    '12B',
+    '7B',
+    '2B',
+    '9B',
+    '4B',
+    '11B',
+    '6B',
+    '1B',
+  ];
+
+  static const _minorCamelotByPitchClass = [
+    '5A',
+    '12A',
+    '7A',
+    '2A',
+    '9A',
+    '4A',
+    '11A',
+    '6A',
+    '1A',
+    '8A',
+    '3A',
+    '10A',
+  ];
+}
+
+enum _MusicalMode { major, minor }
+
+class _MusicalKey {
+  final int pitchClass;
+  final _MusicalMode mode;
+
+  const _MusicalKey(this.pitchClass, this.mode);
+
+  static _MusicalKey? parse(String? raw) {
+    final text = raw?.trim();
+    if (text == null || text.isEmpty) return null;
+    final match = RegExp(
+      r'^([A-Ga-g])\s*([#b]?)\s*(major|maj|min|minor|m)?$',
+    ).firstMatch(text);
+    if (match == null) return null;
+
+    final pitchClass = _pitchClass(
+      match.group(1)!,
+      accidental: match.group(2),
+    );
+    if (pitchClass == null) return null;
+
+    final rawMode = match.group(3)?.toLowerCase();
+    final mode = switch (rawMode) {
+      'minor' || 'min' || 'm' => _MusicalMode.minor,
+      'major' || 'maj' || null => _MusicalMode.major,
+      _ => null,
+    };
+    if (mode == null) return null;
+    return _MusicalKey(pitchClass, mode);
+  }
+
+  static int? _pitchClass(String note, {String? accidental}) {
+    final base = switch (note.toUpperCase()) {
+      'C' => 0,
+      'D' => 2,
+      'E' => 4,
+      'F' => 5,
+      'G' => 7,
+      'A' => 9,
+      'B' => 11,
+      _ => null,
+    };
+    if (base == null) return null;
+    final delta = switch (accidental) {
+      '#' => 1,
+      'b' => -1,
+      _ => 0,
+    };
+    return (base + delta) % 12;
   }
 }
