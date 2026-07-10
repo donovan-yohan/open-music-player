@@ -40,10 +40,11 @@ class MixClip {
   String get id => placement.id;
   String get trackId => placement.trackId;
   int get timelineStartMs => placement.timelineStartMs;
-  int get timelineEndMs => rateAutomation.timelineMsForSelectedSource(
-        timelineStartMs: timelineStartMs,
-        sourceDurationMs: selectedDurationMs,
-      );
+  late final int timelineEndMs = rateAutomation.timelineMsForSelectedSource(
+    timelineStartMs: timelineStartMs,
+    sourceDurationMs: selectedDurationMs,
+  );
+  late final int timelineDurationMs = timelineEndMs - timelineStartMs;
   int get selectedDurationMs => placement.selectedDurationMs;
 
   bool isActiveAt(int timelineMs) =>
@@ -52,7 +53,7 @@ class MixClip {
   int localOffsetAt(int timelineMs) => timelineMs - timelineStartMs;
 
   double gainAt(int timelineMs) =>
-      envelope.gainAt(localOffsetAt(timelineMs), selectedDurationMs);
+      envelope.gainAt(localOffsetAt(timelineMs), timelineDurationMs);
 
   double playbackRateAt(int timelineMs) => rateAutomation.rateAt(timelineMs);
 
@@ -89,6 +90,17 @@ class MixClip {
         rateAutomation: automation,
       );
 
+  MixClip withEnvelope(GainEnvelope nextEnvelope) => MixClip(
+        placement: placement,
+        envelope: nextEnvelope,
+        audioSourceRef: audioSourceRef,
+        queueItemId: queueItemId,
+        playbackRate: playbackRate,
+        pitchMode: pitchMode,
+        tempo: tempo,
+        rateAutomation: rateAutomation,
+      );
+
   @override
   bool operator ==(Object other) =>
       other is MixClip &&
@@ -112,6 +124,67 @@ class MixClip {
         tempo,
         rateAutomation,
       );
+}
+
+int? beatAlignmentCorrectionMs({
+  required MixClip outgoing,
+  required MixClip incoming,
+  required BeatSnapMode snapMode,
+}) {
+  if (snapMode == BeatSnapMode.free) return null;
+  final overlapStartMs = math.max(
+    outgoing.timelineStartMs,
+    incoming.timelineStartMs,
+  );
+  final overlapEndMs = math.min(
+    outgoing.timelineEndMs,
+    incoming.timelineEndMs,
+  );
+  if (overlapEndMs <= overlapStartMs) return null;
+
+  final incomingMarkers = beatMarkersForSnapMode(
+    incoming.tempo,
+    snapMode,
+  ).where(
+    (sourceMs) =>
+        sourceMs >= incoming.placement.sourceStartMs &&
+        sourceMs <= incoming.placement.sourceEndMs,
+  );
+  if (incomingMarkers.isEmpty) return null;
+  final incomingAnchorMs = incoming.timelineMsForSourcePosition(
+    incomingMarkers.first,
+  );
+  final outgoingMarkers = beatMarkersForSnapMode(
+    outgoing.tempo,
+    snapMode,
+  )
+      .where(
+        (sourceMs) =>
+            sourceMs >= outgoing.placement.sourceStartMs &&
+            sourceMs <= outgoing.placement.sourceEndMs,
+      )
+      .map(outgoing.timelineMsForSourcePosition)
+      .toList(growable: false);
+  if (outgoingMarkers.isEmpty) return null;
+
+  var nearestOutgoingMs = outgoingMarkers.first;
+  var nearestDistance = (nearestOutgoingMs - incomingAnchorMs).abs();
+  for (final markerMs in outgoingMarkers.skip(1)) {
+    final distance = (markerMs - incomingAnchorMs).abs();
+    if (distance < nearestDistance) {
+      nearestOutgoingMs = markerMs;
+      nearestDistance = distance;
+    }
+  }
+  if (nearestDistance >
+      downbeatSnapToleranceMs(
+        outgoing.tempo,
+        snapMode: snapMode,
+        baseRate: outgoing.playbackRate,
+      )) {
+    return null;
+  }
+  return nearestOutgoingMs - incomingAnchorMs;
 }
 
 /// Pure timeline arrangement model for Phase 1 of the mix engine.
@@ -388,22 +461,16 @@ class TimelineModel {
         final outgoing = next[outgoingIndex];
         final incoming = next[incomingIndex];
         if (outgoing.timelineStartMs == incoming.timelineStartMs) continue;
-        final ratePlan = planTempoMatchedTransition(
+        final transition = _tempoMatchedPair(
+          outgoing: outgoing,
+          incoming: incoming,
           overlapStartMs: overlapStart,
-          overlapEndMs: overlapEnd,
-          outgoingTempo: outgoing.tempo,
-          incomingTempo: incoming.tempo,
-          outgoingBaseRate: outgoing.rateAutomation.baseRate,
-          incomingBaseRate: incoming.rateAutomation.baseRate,
+          initialOverlapEndMs: overlapEnd,
         );
-        if (ratePlan == null) continue;
+        if (transition == null) continue;
 
-        final proposedOutgoing = outgoing.withRateAutomation(
-          ratePlan.applyToOutgoing(outgoing.rateAutomation),
-        );
-        final proposedIncoming = incoming.withRateAutomation(
-          ratePlan.applyToIncoming(incoming.rateAutomation),
-        );
+        final proposedOutgoing = transition.outgoing;
+        final proposedIncoming = transition.incoming;
         final proposed = List<MixClip>.from(next)
           ..[outgoingIndex] = proposedOutgoing
           ..[incomingIndex] = proposedIncoming;
@@ -431,6 +498,76 @@ class TimelineModel {
     }
     return false;
   }
+}
+
+_TempoMatchedPair? _tempoMatchedPair({
+  required MixClip outgoing,
+  required MixClip incoming,
+  required int overlapStartMs,
+  required int initialOverlapEndMs,
+}) {
+  final initialOverlapMs = initialOverlapEndMs - overlapStartMs;
+  if (initialOverlapMs <= 0) return null;
+
+  var transitionEndMs = initialOverlapEndMs;
+  MixClip? proposedOutgoing;
+  MixClip? proposedIncoming;
+  var converged = false;
+
+  for (var attempt = 0; attempt < 12; attempt++) {
+    final ratePlan = planTempoMatchedTransition(
+      overlapStartMs: overlapStartMs,
+      overlapEndMs: transitionEndMs,
+      outgoingTempo: outgoing.tempo,
+      incomingTempo: incoming.tempo,
+      outgoingBaseRate: outgoing.rateAutomation.baseRate,
+      incomingBaseRate: incoming.rateAutomation.baseRate,
+    );
+    if (ratePlan == null) return null;
+
+    proposedOutgoing = outgoing.withRateAutomation(
+      ratePlan.applyToOutgoing(outgoing.rateAutomation),
+    );
+    proposedIncoming = incoming.withRateAutomation(
+      ratePlan.applyToIncoming(incoming.rateAutomation),
+    );
+    final actualOverlapEndMs = math.min(
+      proposedOutgoing.timelineEndMs,
+      proposedIncoming.timelineEndMs,
+    );
+    if (actualOverlapEndMs <= overlapStartMs) return null;
+    if ((actualOverlapEndMs - transitionEndMs).abs() <= 1) {
+      transitionEndMs = actualOverlapEndMs;
+      converged = true;
+      break;
+    }
+    transitionEndMs = actualOverlapEndMs;
+  }
+
+  if (!converged || proposedOutgoing == null || proposedIncoming == null) {
+    return null;
+  }
+
+  final transitionMs = transitionEndMs - overlapStartMs;
+  if (outgoing.envelope.fadeOutMs == initialOverlapMs) {
+    proposedOutgoing = proposedOutgoing.withEnvelope(
+      outgoing.envelope.withFadeOutMs(transitionMs),
+    );
+  }
+  if (incoming.envelope.fadeInMs == initialOverlapMs) {
+    proposedIncoming = proposedIncoming.withEnvelope(
+      incoming.envelope.withFadeInMs(transitionMs),
+    );
+  }
+
+  return _TempoMatchedPair(proposedOutgoing, proposedIncoming);
+}
+
+class _TempoMatchedPair {
+  const _TempoMatchedPair(this.outgoing, this.incoming);
+
+  final MixClip outgoing;
+  final MixClip incoming;
 }
 
 MixClip _mixClipFromPlanClip(

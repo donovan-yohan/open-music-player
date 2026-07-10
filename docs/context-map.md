@@ -21,7 +21,8 @@ domain concept moves or a new production harness becomes canonical.
 
 - Source files: `client/lib/core/audio/`, `client/lib/core/engine/`.
 - Key contracts: `PlaybackState`, `QueueTimelineController`,
-  `PlaybackSnapshot`, `MixSession`, `CueTimeline`, `TimelineModel`.
+  `PlaybackSnapshot`, `MixSession`, `CueTimeline`, `TimelineModel`,
+  `BeatSnapMode`.
 - Architecture decision:
   `docs/adr/0001-playback-timeline-source-of-truth.md`.
 - UI surfaces: `client/lib/screens/queue_screen.dart`,
@@ -29,6 +30,12 @@ domain concept moves or a new production harness becomes canonical.
   `client/lib/widgets/timeline_clip_widget.dart`.
 - Guardrail: one playback source of truth. Do not add parallel UI-owned current
   track, scrub position, or queue state when a snapshot/controller seam exists.
+- Guardrail: transition snap mode belongs to `MixSession`; timeline controls
+  may preview it locally, but 1/4/16-beat defaults must flow through the
+  controller before playback timing changes.
+- Guardrail: raw source-marker snapping is only the first pass. Locked layouts
+  use `beatAlignmentCorrectionMs` against the rate-adjusted `TimelineModel`;
+  explicit freeform placements bypass that refinement.
 
 ### Library, Downloads, And Queue API
 

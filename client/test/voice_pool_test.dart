@@ -238,11 +238,57 @@ void main() {
 
     final a = pool.activeVoices['a'] as FakeVoice;
     final b = pool.activeVoices['b'] as FakeVoice;
-    expect(a.speedLog.last, closeTo(1.125, 0.0001));
+    final aClip = pool.model.clips.firstWhere((clip) => clip.id == 'a');
+    final bClip = pool.model.clips.firstWhere((clip) => clip.id == 'b');
+    expect(a.speedLog.last, closeTo(aClip.playbackRateAt(7500), 0.0001));
     expect(a.pitchLog.last, closeTo(1, 0.0001));
-    expect(b.speedLog.last, closeTo(0.9, 0.0001));
+    expect(b.speedLog.last, closeTo(bClip.playbackRateAt(7500), 0.0001));
     expect(b.pitchLog.last, closeTo(1, 0.0001));
-    expect(b.currentLocalPositionMs, closeTo(2125, 1));
+    expect(
+      b.currentLocalPositionMs,
+      closeTo(bClip.sourcePositionAt(7500), 1),
+    );
+  });
+
+  test('prepares both BPM-matched decks concurrently before resume', () async {
+    await clock.seek(7500);
+    final speedGate = Completer<void>();
+    final firstSpeedStarted = voices.first.blockNextSetSpeed(speedGate);
+    final load = pool.loadMix(
+      TimelineModel(
+        clips: [
+          _clip('a', 0, fadeOutMs: 5000, nativeBpm: 100),
+          _clip('b', 5000, fadeInMs: 5000, nativeBpm: 125),
+        ],
+      ),
+    );
+
+    await firstSpeedStarted;
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      voices[1].speedLog,
+      isNotEmpty,
+      reason: 'one slow deck must not hold back the peer tempo update',
+    );
+    speedGate.complete();
+    await load;
+
+    final a = pool.activeVoices['a'] as FakeVoice;
+    final b = pool.activeVoices['b'] as FakeVoice;
+    final seekGate = Completer<void>();
+    final firstSeekStarted = a.blockNextSeek(seekGate);
+    final play = _play(clock, pool);
+
+    await firstSeekStarted;
+    await Future<void>.delayed(Duration.zero);
+    final bClip = pool.model.clips.firstWhere((clip) => clip.id == 'b');
+    expect(b.seekLog.last, closeTo(bClip.sourcePositionAt(7500), 1));
+    expect(a.isPlaying, isFalse);
+    expect(b.isPlaying, isFalse);
+
+    seekGate.complete();
+    await play;
+    await _waitUntil(() => a.isPlaying && b.isPlaying);
   });
 
   test('follow-tempo pitch mode shifts pitch with playback rate', () async {
@@ -324,6 +370,39 @@ void main() {
     expect(a.releaseCount, 1);
     expect(a.speedLog.last, closeTo(1, 0.0001));
     expect(a.pitchLog.last, closeTo(1, 0.0001));
+  });
+
+  test('stop releases all teardown state after a level update fails', () async {
+    for (final voice in voices) {
+      voice.pitchSupported = false;
+    }
+    await pool.loadMix(
+      TimelineModel(
+        clips: [
+          _clip(
+            'a',
+            0,
+            rateAutomation: const PlaybackRateAutomation(baseRate: 1.25),
+          ),
+        ],
+      ),
+    );
+    final voice = pool.activeVoices['a'] as FakeVoice;
+    expect(pool.hasPitchFallback, isTrue);
+    final gate = Completer<void>();
+    final levelUpdateStarted = voice.blockNextSetVolume(gate);
+    voice.nextSetVolumeError = StateError('level update failed');
+    await levelUpdateStarted.timeout(const Duration(milliseconds: 500));
+    clock.holdForBuffering();
+
+    final stop = pool.stop();
+    gate.complete();
+
+    await expectLater(stop, throwsA(isA<StateError>()));
+    expect(voice.releaseCount, 1);
+    expect(pool.activeVoices, isEmpty);
+    expect(pool.pitchFallbackClipIds, isEmpty);
+    expect(clock.isBufferingHeld, isFalse);
   });
 
   test('prepare timeout starts ready voices and late-joins slow layer muted',
@@ -787,6 +866,9 @@ class FakeVoice implements Voice {
   Completer<void>? _setVolumeStarted;
   Completer<void>? _seekGate;
   Completer<void>? _seekStarted;
+  Completer<void>? _setSpeedGate;
+  Completer<void>? _setSpeedStarted;
+  Object? nextSetVolumeError;
 
   Future<void> blockNextSetVolume(Completer<void> gate) {
     _setVolumeGate = gate;
@@ -799,6 +881,13 @@ class FakeVoice implements Voice {
     _seekGate = gate;
     final started = Completer<void>();
     _seekStarted = started;
+    return started.future;
+  }
+
+  Future<void> blockNextSetSpeed(Completer<void> gate) {
+    _setSpeedGate = gate;
+    final started = Completer<void>();
+    _setSpeedStarted = started;
     return started.future;
   }
 
@@ -852,11 +941,20 @@ class FakeVoice implements Voice {
       _setVolumeStarted?.complete();
       await gate.future;
     }
+    final error = nextSetVolumeError;
+    nextSetVolumeError = null;
+    if (error != null) throw error;
   }
 
   @override
   Future<void> setSpeed(double rate) async {
     speedLog.add(rate);
+    final gate = _setSpeedGate;
+    if (gate != null) {
+      _setSpeedGate = null;
+      _setSpeedStarted?.complete();
+      await gate.future;
+    }
   }
 
   bool pitchSupported = true;
@@ -920,6 +1018,11 @@ Future<void> _waitUntil(
 }
 
 Future<void> _play(DefaultTimelineClock clock, VoicePool pool) async {
-  await clock.play();
-  await pool.playActiveFromClock();
+  pool.beginCoordinatedResume();
+  try {
+    await clock.play();
+    await pool.playActiveFromClock();
+  } finally {
+    pool.endCoordinatedResume();
+  }
 }

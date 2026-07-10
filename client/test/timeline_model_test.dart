@@ -108,6 +108,18 @@ void main() {
         1000,
       );
     });
+
+    test('gain envelopes use rate-adjusted timeline duration', () {
+      final clip = MixClip(
+        placement: placement(sourceEndMs: 1000),
+        envelope: const GainEnvelope(fadeOutMs: 500),
+        rateAutomation: const PlaybackRateAutomation(baseRate: 2),
+      );
+
+      expect(clip.timelineDurationMs, 500);
+      expect(clip.gainAt(250), closeTo(math.sqrt1_2, 0.0001));
+      expect(clip.gainAt(500), 0);
+    });
   });
 
   group('GainEnvelope', () {
@@ -232,16 +244,63 @@ void main() {
 
       final outgoing = model.clips.firstWhere((clip) => clip.id == 'outgoing');
       final incoming = model.clips.firstWhere((clip) => clip.id == 'incoming');
+      final outgoingSegment = outgoing.rateAutomation.segments.single;
+      final incomingSegment = incoming.rateAutomation.segments.single;
+      final midpoint =
+          outgoingSegment.startMs + outgoingSegment.durationMs ~/ 2;
 
       expect(outgoing.playbackRateAt(5000), closeTo(1.0, 0.0001));
       expect(incoming.playbackRateAt(5000), closeTo(0.8, 0.0001));
-      expect(outgoing.playbackRateAt(7500), closeTo(1.125, 0.0001));
-      expect(incoming.playbackRateAt(7500), closeTo(0.9, 0.0001));
-      expect(outgoing.playbackRateAt(10000), closeTo(1.25, 0.0001));
-      expect(incoming.playbackRateAt(10000), closeTo(1.0, 0.0001));
+      expect(outgoing.playbackRateAt(midpoint), closeTo(1.125, 0.0002));
+      expect(incoming.playbackRateAt(midpoint), closeTo(0.9, 0.0002));
+      expect(
+        outgoing.playbackRateAt(outgoingSegment.endMs),
+        closeTo(1.25, 0.0001),
+      );
+      expect(
+        incoming.playbackRateAt(incomingSegment.endMs),
+        closeTo(1.0, 0.0001),
+      );
+      expect(incomingSegment.endMs, outgoingSegment.endMs);
+      expect(outgoing.timelineEndMs, closeTo(outgoingSegment.endMs, 1));
 
-      expect(incoming.sourcePositionAt(7500), closeTo(2125, 1));
-      expect(incoming.timelineMsForSourcePosition(2125), closeTo(7500, 2));
+      final incomingMidpointSource = incoming.sourcePositionAt(midpoint);
+      expect(
+        incoming.timelineMsForSourcePosition(incomingMidpointSource),
+        closeTo(midpoint, 2),
+      );
+    });
+
+    test('auto crossfade spans the solved shared-BPM transition window', () {
+      final model = TimelineModel(
+        clips: [
+          _tempoClip(
+            'outgoing',
+            0,
+            nativeBpm: 100,
+            envelope: const GainEnvelope(fadeOutMs: 5000),
+          ),
+          _tempoClip(
+            'incoming',
+            5000,
+            nativeBpm: 125,
+            envelope: const GainEnvelope(fadeInMs: 5000),
+          ),
+        ],
+      );
+
+      final outgoing = model.clips.firstWhere((clip) => clip.id == 'outgoing');
+      final incoming = model.clips.firstWhere((clip) => clip.id == 'incoming');
+      final transitionEndMs = outgoing.rateAutomation.segments.single.endMs;
+      final transitionMs = transitionEndMs - incoming.timelineStartMs;
+
+      expect(outgoing.timelineEndMs, closeTo(transitionEndMs, 1));
+      expect(outgoing.envelope.fadeOutMs, transitionMs);
+      expect(incoming.envelope.fadeInMs, transitionMs);
+      expect(outgoing.gainAt(incoming.timelineStartMs), closeTo(1, 0.0001));
+      expect(incoming.gainAt(incoming.timelineStartMs), 0);
+      expect(outgoing.gainAt(transitionEndMs - 1), lessThan(0.01));
+      expect(incoming.gainAt(transitionEndMs - 1), greaterThan(0.99));
     });
 
     test('does not apply BPM automation that would break shared tempo lock',
@@ -288,13 +347,19 @@ void main() {
       expect(outgoing.playbackRateAt(5000), closeTo(0.9, 0.0001));
       expect(
         outgoing.playbackRateAt(outgoingSegment.endMs),
-        closeTo(0.675, 0.0001),
+        closeTo(0.825, 0.0001),
       );
-      expect(incoming.playbackRateAt(5000), closeTo(1.4667, 0.0001));
+      expect(incoming.playbackRateAt(5000), closeTo(1.2, 0.0001));
       expect(
         incoming.playbackRateAt(incomingSegment.endMs),
         closeTo(1.1, 0.0001),
       );
+      for (final ms in [5000, 6250, 7500, 8750, outgoingSegment.endMs]) {
+        expect(
+          120 * outgoing.playbackRateAt(ms),
+          closeTo(90 * incoming.playbackRateAt(ms), 0.0001),
+        );
+      }
     });
 
     test(
@@ -557,6 +622,7 @@ MixClip _tempoClip(
   double? nativeBpm,
   double? bpmConfidence = 0.95,
   PlaybackRateAutomation? rateAutomation,
+  GainEnvelope envelope = const GainEnvelope.flat(),
 }) {
   return MixClip(
     placement: TimelineClip.clamped(
@@ -571,6 +637,7 @@ MixClip _tempoClip(
       nativeBpm: nativeBpm,
       bpmConfidence: nativeBpm == null ? null : bpmConfidence,
     ),
+    envelope: envelope,
     rateAutomation: rateAutomation,
   );
 }

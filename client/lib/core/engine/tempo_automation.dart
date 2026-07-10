@@ -9,6 +9,19 @@ const int maxDefaultTransitionOverlapMs = 12000;
 const String pitchModePreserve = 'preserve';
 const String pitchModeFollowTempo = 'followTempo';
 
+enum BeatSnapMode { free, downbeat, beat1, beat4, beat16 }
+
+BeatSnapMode parseBeatSnapMode(Object? value) {
+  final normalized = value?.toString().trim().toLowerCase();
+  return switch (normalized) {
+    'free' => BeatSnapMode.free,
+    'beat1' || '1' => BeatSnapMode.beat1,
+    'beat4' || '4' => BeatSnapMode.beat4,
+    'beat16' || '16' => BeatSnapMode.beat16,
+    _ => BeatSnapMode.downbeat,
+  };
+}
+
 class ClipTempoMetadata {
   final double? nativeBpm;
   final double? bpmConfidence;
@@ -452,25 +465,34 @@ TempoTransitionRatePlan? planTempoMatchedTransition({
     return null;
   }
 
+  final transitionStartBpm = effectiveBpmForRate(
+    nativeBpm: outgoingBpm,
+    rate: outgoingBaseRate,
+  );
+  final transitionEndBpm = effectiveBpmForRate(
+    nativeBpm: incomingBpm,
+    rate: incomingBaseRate,
+  );
+
   final outgoingStartRate = playbackRateForTargetBpm(
     baseRate: outgoingBaseRate,
     nativeBpm: outgoingBpm,
-    targetBpm: outgoingBpm,
+    targetBpm: transitionStartBpm,
   );
   final outgoingEndRate = playbackRateForTargetBpm(
     baseRate: outgoingBaseRate,
     nativeBpm: outgoingBpm,
-    targetBpm: incomingBpm,
+    targetBpm: transitionEndBpm,
   );
   final incomingStartRate = playbackRateForTargetBpm(
     baseRate: incomingBaseRate,
     nativeBpm: incomingBpm,
-    targetBpm: outgoingBpm,
+    targetBpm: transitionStartBpm,
   );
   final incomingEndRate = playbackRateForTargetBpm(
     baseRate: incomingBaseRate,
     nativeBpm: incomingBpm,
-    targetBpm: incomingBpm,
+    targetBpm: transitionEndBpm,
   );
 
   return TempoTransitionRatePlan(
@@ -504,26 +526,43 @@ bool tempoTransitionTargetsAreAchievable({
     return false;
   }
 
+  final transitionStartBpm = effectiveBpmForRate(
+    nativeBpm: outgoingBpm,
+    rate: outgoingBaseRate,
+  );
+  final transitionEndBpm = effectiveBpmForRate(
+    nativeBpm: incomingBpm,
+    rate: incomingBaseRate,
+  );
+
   return playbackRateCanReachTargetBpm(
         baseRate: outgoingBaseRate,
         nativeBpm: outgoingBpm,
-        targetBpm: outgoingBpm,
+        targetBpm: transitionStartBpm,
       ) &&
       playbackRateCanReachTargetBpm(
         baseRate: outgoingBaseRate,
         nativeBpm: outgoingBpm,
-        targetBpm: incomingBpm,
+        targetBpm: transitionEndBpm,
       ) &&
       playbackRateCanReachTargetBpm(
         baseRate: incomingBaseRate,
         nativeBpm: incomingBpm,
-        targetBpm: outgoingBpm,
+        targetBpm: transitionStartBpm,
       ) &&
       playbackRateCanReachTargetBpm(
         baseRate: incomingBaseRate,
         nativeBpm: incomingBpm,
-        targetBpm: incomingBpm,
+        targetBpm: transitionEndBpm,
       );
+}
+
+double effectiveBpmForRate({
+  required double nativeBpm,
+  required double rate,
+}) {
+  if (!nativeBpm.isFinite || nativeBpm <= 0) return 0;
+  return nativeBpm * _safeBaseRate(rate);
 }
 
 bool playbackRateCanReachTargetBpm({
@@ -558,7 +597,7 @@ double rawPlaybackRateForTargetBpm({
       targetBpm <= 0) {
     return _safeBaseRate(baseRate);
   }
-  return _safeBaseRate(baseRate) * targetBpm / nativeBpm;
+  return targetBpm / nativeBpm;
 }
 
 double playbackRateForTargetBpm({
@@ -623,17 +662,29 @@ int? snapIncomingStartToNearestDownbeat({
   required int outgoingTimelineStartMs,
   required int outgoingSourceStartMs,
   required ClipTempoMetadata outgoingTempo,
+  double outgoingBaseRate = 1,
+  double incomingBaseRate = 1,
+  BeatSnapMode snapMode = BeatSnapMode.downbeat,
   int toleranceMs = 900,
 }) {
-  if (!incomingTempo.hasDownbeats || !outgoingTempo.hasDownbeats) return null;
+  if (snapMode == BeatSnapMode.free) return null;
+
+  final incomingMarkers = beatMarkersForSnapMode(incomingTempo, snapMode);
+  final outgoingMarkers = beatMarkersForSnapMode(outgoingTempo, snapMode);
+  if (incomingMarkers.isEmpty || outgoingMarkers.isEmpty) return null;
 
   final incomingAnchor = _firstMarkerAtOrAfter(
-    incomingTempo.downbeatsMs,
+    incomingMarkers,
     incomingSourceStartMs,
   );
   if (incomingAnchor == null) return null;
-  final outgoingGlobals = outgoingTempo.downbeatsMs
-      .map((ms) => outgoingTimelineStartMs + (ms - outgoingSourceStartMs))
+  final outgoingRate = _safeBaseRate(outgoingBaseRate);
+  final outgoingGlobals = outgoingMarkers
+      .map(
+        (ms) =>
+            outgoingTimelineStartMs +
+            ((ms - outgoingSourceStartMs) / outgoingRate).round(),
+      )
       .where((ms) => ms >= 0)
       .toList(growable: false);
   if (outgoingGlobals.isEmpty) return null;
@@ -653,9 +704,44 @@ int? snapIncomingStartToNearestDownbeat({
     sourceDeltaMs: incomingAnchor - incomingSourceStartMs,
     incomingTempo: incomingTempo,
     outgoingTempo: outgoingTempo,
+    outgoingBaseRate: outgoingBaseRate,
+    incomingBaseRate: incomingBaseRate,
   );
   final snapped = nearest - anchorOffsetMs;
   return math.max(0, snapped);
+}
+
+List<int> beatMarkersForSnapMode(
+  ClipTempoMetadata tempo,
+  BeatSnapMode snapMode,
+) {
+  final beats = _sortedUniqueNonNegative(tempo.beatsMs);
+  final downbeats = _sortedUniqueNonNegative(tempo.downbeatsMs);
+
+  return switch (snapMode) {
+    BeatSnapMode.free => const [],
+    BeatSnapMode.downbeat =>
+      downbeats.isNotEmpty ? downbeats : _strideMarkers(beats, 4),
+    BeatSnapMode.beat1 => beats.isNotEmpty ? beats : downbeats,
+    BeatSnapMode.beat4 =>
+      downbeats.isNotEmpty ? downbeats : _strideMarkers(beats, 4),
+    BeatSnapMode.beat16 => downbeats.isNotEmpty
+        ? _strideMarkers(downbeats, 4)
+        : _strideMarkers(beats, 16),
+  };
+}
+
+List<int> _sortedUniqueNonNegative(List<int> values) {
+  final sorted = values.where((value) => value >= 0).toSet().toList()..sort();
+  return sorted;
+}
+
+List<int> _strideMarkers(List<int> markers, int stride) {
+  if (markers.isEmpty) return const [];
+  if (stride <= 1) return markers;
+  return [
+    for (var index = 0; index < markers.length; index += stride) markers[index]
+  ];
 }
 
 int? _firstMarkerAtOrAfter(List<int> markers, int sourceMs) {
@@ -671,6 +757,8 @@ int _incomingDownbeatTimelineOffsetMs({
   required int sourceDeltaMs,
   required ClipTempoMetadata incomingTempo,
   required ClipTempoMetadata outgoingTempo,
+  required double outgoingBaseRate,
+  required double incomingBaseRate,
 }) {
   final safeSourceDeltaMs = math.max(0, sourceDeltaMs);
   if (safeSourceDeltaMs == 0) return 0;
@@ -684,14 +772,20 @@ int _incomingDownbeatTimelineOffsetMs({
       outgoingBpm != null &&
       outgoingBpm > 0 &&
       playbackRateCanReachTargetBpm(
-        baseRate: 1,
+        baseRate: incomingBaseRate,
         nativeBpm: incomingBpm,
-        targetBpm: outgoingBpm,
+        targetBpm: effectiveBpmForRate(
+          nativeBpm: outgoingBpm,
+          rate: outgoingBaseRate,
+        ),
       )) {
     final incomingStartRate = playbackRateForTargetBpm(
-      baseRate: 1,
+      baseRate: incomingBaseRate,
       nativeBpm: incomingBpm,
-      targetBpm: outgoingBpm,
+      targetBpm: effectiveBpmForRate(
+        nativeBpm: outgoingBpm,
+        rate: outgoingBaseRate,
+      ),
     );
     if (incomingStartRate > 0) {
       return (safeSourceDeltaMs / incomingStartRate).round();
@@ -737,10 +831,27 @@ int defaultTransitionOverlapMsForTempo({
   return overlapMs < 1000 ? 0 : overlapMs;
 }
 
-int downbeatSnapToleranceMs(ClipTempoMetadata tempo) {
+int downbeatSnapToleranceMs(
+  ClipTempoMetadata tempo, {
+  BeatSnapMode snapMode = BeatSnapMode.downbeat,
+  double baseRate = 1,
+}) {
   final bpm = tempo.nativeBpm;
   if (bpm == null || bpm <= 0) return 900;
-  return math.max(900, (60000 / bpm).round());
+  final effectiveBpm = effectiveBpmForRate(
+    nativeBpm: bpm,
+    rate: baseRate,
+  );
+  final beatStride = switch (snapMode) {
+    BeatSnapMode.free => 1,
+    BeatSnapMode.downbeat || BeatSnapMode.beat4 => 4,
+    BeatSnapMode.beat1 => 1,
+    BeatSnapMode.beat16 => 16,
+  };
+  return math.max(
+    900,
+    (60000 / effectiveBpm * beatStride / 2).round(),
+  );
 }
 
 int defaultDownbeatLockedTransitionStartMs({
@@ -752,9 +863,13 @@ int defaultDownbeatLockedTransitionStartMs({
   required int incomingSourceStartMs,
   required int incomingSelectedDurationMs,
   required ClipTempoMetadata incomingTempo,
+  double outgoingBaseRate = 1,
+  double incomingBaseRate = 1,
+  BeatSnapMode snapMode = BeatSnapMode.downbeat,
   int? fallbackStartMs,
 }) {
   final fallback = math.max(0, fallbackStartMs ?? outgoingTimelineEndMs);
+  if (snapMode == BeatSnapMode.free) return fallback;
   final overlapMs = defaultTransitionOverlapMsForTempo(
     outgoingSelectedDurationMs: outgoingSelectedDurationMs,
     outgoingTempo: outgoingTempo,
@@ -771,7 +886,14 @@ int defaultDownbeatLockedTransitionStartMs({
     outgoingTimelineStartMs: outgoingTimelineStartMs,
     outgoingSourceStartMs: outgoingSourceStartMs,
     outgoingTempo: outgoingTempo,
-    toleranceMs: downbeatSnapToleranceMs(outgoingTempo),
+    outgoingBaseRate: outgoingBaseRate,
+    incomingBaseRate: incomingBaseRate,
+    snapMode: snapMode,
+    toleranceMs: downbeatSnapToleranceMs(
+      outgoingTempo,
+      snapMode: snapMode,
+      baseRate: outgoingBaseRate,
+    ),
   );
 
   if (snapped == null) return fallback;

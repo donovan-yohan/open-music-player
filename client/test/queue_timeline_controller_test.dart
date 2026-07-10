@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -365,6 +366,60 @@ void main() {
       await harness.dispose();
     });
 
+    test('transition beat-lock selection rebuilds canonical queue timing',
+        () async {
+      final harness = _Harness();
+      final downbeats = List<int>.generate(16, (index) => index * 2000);
+      await harness.controller.setQueue([
+        _item(
+          '1',
+          seconds: 30,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: downbeats,
+          ),
+        ),
+        _item(
+          '2',
+          seconds: 30,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: downbeats,
+          ),
+        ),
+      ]);
+
+      expect(harness.controller.transitionSnapMode, BeatSnapMode.downbeat);
+      expect(
+          harness.controller.timelineClipForIndex(1)?.timelineStartMs, 22000);
+
+      await harness.controller.setTransitionSnapMode(BeatSnapMode.beat16);
+
+      expect(harness.controller.transitionSnapMode, BeatSnapMode.beat16);
+      expect(
+          harness.controller.session.transitionSnapMode, BeatSnapMode.beat16);
+      expect(
+          harness.controller.timelineClipForIndex(1)?.timelineStartMs, 24000);
+      expect(harness.engine.model.overlapDepthAt(27000), 2);
+
+      await harness.dispose();
+    });
+
+    test('removing the last item preserves the transition snap mode', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([_item('1')]);
+      await harness.controller.setTransitionSnapMode(BeatSnapMode.beat16);
+
+      await harness.controller.removeFromQueue(0);
+
+      expect(harness.controller.queue, isEmpty);
+      expect(harness.controller.transitionSnapMode, BeatSnapMode.beat16);
+      await harness.controller.addToQueue(_item('2'));
+      expect(harness.controller.transitionSnapMode, BeatSnapMode.beat16);
+
+      await harness.dispose();
+    });
+
     test('default transitions align offset downbeats at BPM-matched start rate',
         () async {
       final harness = _Harness();
@@ -389,15 +444,163 @@ void main() {
 
       expect(
         harness.controller.timelineClipForIndex(1)?.timelineStartMs,
-        13500,
+        closeTo(13500, 250),
       );
+      final outgoing = harness.engine.model.clips[0];
+      final incoming = harness.engine.model.clips[1];
+      final incomingAnchor = incoming.tempo.downbeatsMs.first;
+      final incomingGlobal = incoming.timelineMsForSourcePosition(
+        incomingAnchor,
+      );
+      final nearestDelta = outgoing.tempo.downbeatsMs
+          .map(outgoing.timelineMsForSourcePosition)
+          .map((globalMs) => (globalMs - incomingGlobal).abs())
+          .reduce(math.min);
+      expect(nearestDelta, lessThanOrEqualTo(1));
       final diagnostics = diagnoseTransition(
-        harness.engine.model.clips[0],
-        harness.engine.model.clips[1],
+        outgoing,
+        incoming,
       );
       final codes = diagnostics.diagnostics.map((item) => item.code).toList();
       expect(codes, contains(TransitionDiagnosticCode.beatLocked));
       expect(codes, isNot(contains(TransitionDiagnosticCode.downbeatOffset)));
+
+      await harness.dispose();
+    });
+
+    test('bulk refinement keeps a long analyzed queue beat locked', () async {
+      final harness = _Harness();
+      final items = List<MediaItem>.generate(24, (index) {
+        final firstDownbeatMs = (index % 4) * 125;
+        return _item(
+          'bulk-$index',
+          seconds: 30,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: List<int>.generate(
+              15,
+              (beat) => firstDownbeatMs + beat * 2000,
+            ),
+          ),
+        );
+      });
+
+      await harness.controller.setQueue(items);
+
+      final clips = harness.engine.model.clips;
+      expect(clips, hasLength(items.length));
+      for (var index = 1; index < clips.length; index++) {
+        final codes = diagnoseTransition(
+          clips[index - 1],
+          clips[index],
+        ).diagnostics.map((item) => item.code);
+        expect(
+          codes,
+          contains(TransitionDiagnosticCode.beatLocked),
+          reason: 'transition ${index - 1} -> $index should be beat locked',
+        );
+        expect(
+          codes,
+          isNot(contains(TransitionDiagnosticCode.downbeatOffset)),
+        );
+      }
+
+      await harness.dispose();
+    });
+
+    test('manual move refines trimmed clips onto the runtime downbeat grid',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item(
+          '1',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
+          ),
+        ),
+        _item(
+          '2',
+          seconds: 24,
+          analysisSummary: _analysisSummary(
+            bpm: 150,
+            downbeatsMs: [500, 2100, 3700, 5300, 6900, 8500, 10100],
+          ),
+        ),
+      ]);
+
+      await harness.controller.setSourceStartMs(1, 100);
+      await harness.controller.setTimelineStartMs(1, 15400);
+
+      final outgoing = harness.engine.model.clips[0];
+      final incoming = harness.engine.model.clips[1];
+      final incomingAnchor = incoming.tempo.downbeatsMs.firstWhere(
+        (sourceMs) => sourceMs >= incoming.placement.sourceStartMs,
+      );
+      final incomingGlobal = incoming.timelineMsForSourcePosition(
+        incomingAnchor,
+      );
+      final nearestDelta = outgoing.tempo.downbeatsMs
+          .where(
+            (sourceMs) =>
+                sourceMs >= outgoing.placement.sourceStartMs &&
+                sourceMs <= outgoing.placement.sourceEndMs,
+          )
+          .map(outgoing.timelineMsForSourcePosition)
+          .map((globalMs) => (globalMs - incomingGlobal).abs())
+          .reduce(math.min);
+
+      expect(nearestDelta, lessThanOrEqualTo(1));
+      final diagnostics = diagnoseTransition(outgoing, incoming);
+      expect(
+        diagnostics.diagnostics.map((item) => item.code),
+        contains(TransitionDiagnosticCode.beatLocked),
+      );
+
+      await harness.dispose();
+    });
+
+    test('manual moves keep offset production downbeats runtime-aligned',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item(
+          'still-here',
+          seconds: 184,
+          analysisSummary: _analysisSummary(
+            bpm: 72.73,
+            downbeatsMs: List<int>.generate(56, (index) => 112 + index * 3300),
+          ),
+        ),
+        _item(
+          'csirac',
+          seconds: 202,
+          analysisSummary: _analysisSummary(
+            bpm: 72.73,
+            downbeatsMs: List<int>.generate(62, (index) => 562 + index * 3300),
+          ),
+        ),
+      ]);
+
+      final initialStart =
+          harness.controller.timelineClipForIndex(1)!.timelineStartMs;
+      // The widget preview snaps against global zero, which is 112ms earlier
+      // than this outgoing track's analyzed downbeat grid.
+      await harness.controller.setTimelineStartMs(1, initialStart + 3300 - 112);
+
+      final diagnostics = diagnoseTransition(
+        harness.engine.model.clips[0],
+        harness.engine.model.clips[1],
+      );
+      expect(
+        diagnostics.diagnostics.map((item) => item.code),
+        contains(TransitionDiagnosticCode.beatLocked),
+      );
+      expect(
+        diagnostics.diagnostics.map((item) => item.code),
+        isNot(contains(TransitionDiagnosticCode.downbeatOffset)),
+      );
 
       await harness.dispose();
     });
@@ -519,29 +722,34 @@ void main() {
             .toSet()
             .containsAll([outgoing.id, incoming.id]),
       );
+      final expectedIncomingSpeed = incoming.playbackRateAt(7500);
+      final expectedLocalPosition =
+          incoming.sourcePositionAt(7500) - incoming.placement.sourceStartMs;
+      final expectedSharedBpm =
+          incoming.tempo.nativeBpm! * expectedIncomingSpeed;
 
       expect(harness.controller.currentIndex, 1);
       expect(
         harness.controller.snapshot.playbackSpeed,
-        closeTo(0.9, 0.0001),
+        closeTo(expectedIncomingSpeed, 0.0001),
       );
       expect(
         harness.controller.snapshot.localPosition.inMilliseconds,
-        closeTo(2125, 1),
+        closeTo(expectedLocalPosition, 1),
       );
       final tempoStates = harness.controller.snapshot.clipTempoStates;
       expect(tempoStates.keys, containsAll([outgoing.id, incoming.id]));
       expect(
         tempoStates[outgoing.id]?.effectiveBpm,
-        closeTo(112.5, 0.0001),
+        closeTo(expectedSharedBpm, 0.0001),
       );
       expect(
         tempoStates[incoming.id]?.effectiveBpm,
-        closeTo(112.5, 0.0001),
+        closeTo(expectedSharedBpm, 0.0001),
       );
       expect(
         tempoStates[incoming.id]?.effectiveSpeed,
-        closeTo(0.9, 0.0001),
+        closeTo(expectedIncomingSpeed, 0.0001),
       );
 
       final probeMs = outgoing.timelineEndMs + 50;

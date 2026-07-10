@@ -70,6 +70,7 @@ class QueueTimelineController {
   MediaItem? get currentMediaItem => _currentMediaItemSubject.valueOrNull;
   bool get shuffleEnabled => _shuffleEnabled;
   LoopMode get loopMode => _loopMode;
+  BeatSnapMode get transitionSnapMode => _session.transitionSnapMode;
   Duration get position => _positionSubject.value;
   Duration get livePosition =>
       Duration(milliseconds: _localForGlobal(_engine.positionMs));
@@ -129,10 +130,16 @@ class QueueTimelineController {
     _queue = List.unmodifiable(items);
     _playOrder = [for (var i = 0; i < _queue.length; i++) i];
     _sessionId = session?.sessionId ?? 'session_$_sessionGeneration';
+    final transitionSnapMode =
+        session?.transitionSnapMode ?? _session.transitionSnapMode;
     _session = session == null
         ? (preserveTimelineEdits
             ? _session.normalizedForQueue(_queue)
-            : MixSession.fromQueue(sessionId: _sessionId, queue: _queue))
+            : MixSession.fromQueue(
+                sessionId: _sessionId,
+                queue: _queue,
+                transitionSnapMode: transitionSnapMode,
+              ))
         : session.normalizedForQueue(_queue);
     if (reflowDefaultTransitionsFromIndex != null) {
       _session = _session.reflowDefaultTransitionsFrom(
@@ -141,7 +148,10 @@ class QueueTimelineController {
     }
     if (_queue.isEmpty) {
       _currentIndex = null;
-      _session = MixSession.empty(sessionId: _sessionId);
+      _session = MixSession.empty(
+        sessionId: _sessionId,
+        transitionSnapMode: transitionSnapMode,
+      );
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
       await _engine.pause();
@@ -149,6 +159,10 @@ class QueueTimelineController {
       await _engine.seek(0);
       _publishQueueState();
       return;
+    }
+    if ((session == null && !preserveTimelineEdits) ||
+        reflowDefaultTransitionsFromIndex != null) {
+      _session = _refineSessionRuntimeBeatAlignments(_session);
     }
     _currentIndex = initialIndex.clamp(0, _queue.length - 1).toInt();
     _processingState = ProcessingState.ready;
@@ -189,6 +203,7 @@ class QueueTimelineController {
       _currentIndex = previousCurrent + 1;
     }
     _rebuildPlayOrderKeepCurrent();
+    _session = _refineSessionRuntimeBeatAlignments(_session);
     _processingState = ProcessingState.ready;
     await _loadModel(
       seekToCurrent: !preserveActivePlayback,
@@ -220,7 +235,10 @@ class QueueTimelineController {
     if (_queue.isEmpty) {
       _currentIndex = null;
       _playOrder = const [];
-      _session = MixSession.empty(sessionId: _sessionId);
+      _session = MixSession.empty(
+        sessionId: _sessionId,
+        transitionSnapMode: _session.transitionSnapMode,
+      );
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
       await _engine.pause();
@@ -229,6 +247,7 @@ class QueueTimelineController {
     } else if (previousCurrent == index) {
       _currentIndex = math.min(index, _queue.length - 1);
       _rebuildPlayOrderKeepCurrent();
+      _session = _refineSessionRuntimeBeatAlignments(_session);
       _processingState = ProcessingState.ready;
       await _loadModel(seekToCurrent: true);
     } else {
@@ -236,6 +255,7 @@ class QueueTimelineController {
         _currentIndex = previousCurrent - 1;
       }
       _rebuildPlayOrderKeepCurrent();
+      _session = _refineSessionRuntimeBeatAlignments(_session);
       _processingState = ProcessingState.ready;
       await _loadModel(
         seekToCurrent: !preserveActivePlayback,
@@ -276,6 +296,7 @@ class QueueTimelineController {
 
     _rebuildPlayOrderKeepCurrent();
     _session = _session.reflowedByOrder(_playOrder);
+    _session = _refineSessionRuntimeBeatAlignments(_session);
     _processingState = ProcessingState.ready;
     await _loadModel(seekToCurrent: true, localPositionMs: localPosition);
     _publishQueueState();
@@ -355,6 +376,25 @@ class QueueTimelineController {
     await _loadModel(
       seekToCurrent: false,
       preserveActivePlayback: true,
+    );
+    _publishQueueState();
+  }
+
+  Future<void> setTransitionSnapMode(BeatSnapMode mode) async {
+    await _enqueueCommand(() => _setTransitionSnapMode(mode));
+  }
+
+  Future<void> _setTransitionSnapMode(BeatSnapMode mode) async {
+    if (_session.transitionSnapMode == mode) return;
+    final nextSession = _session.withTransitionSnapMode(mode);
+    if (!_canApplySession(nextSession)) return;
+
+    final localPosition = livePosition.inMilliseconds;
+    _session = nextSession.normalizedForQueue(_queue);
+    _session = _refineSessionRuntimeBeatAlignments(_session);
+    await _loadModel(
+      seekToCurrent: true,
+      localPositionMs: localPosition,
     );
     _publishQueueState();
   }
@@ -809,9 +849,156 @@ class QueueTimelineController {
       outgoingTimelineStartMs: outgoing.timelineStartMs,
       outgoingSourceStartMs: outgoing.sourceStartMs,
       outgoingTempo: outgoing.tempo,
+      outgoingBaseRate: outgoing.playbackRate,
+      incomingBaseRate: incoming.playbackRate,
+      snapMode: _session.transitionSnapMode,
+      toleranceMs: downbeatSnapToleranceMs(
+        outgoing.tempo,
+        snapMode: _session.transitionSnapMode,
+        baseRate: outgoing.playbackRate,
+      ),
     );
     if (snappedStart == null) return requested;
-    return requested.withTimelineStartMs(snappedStart);
+    return _refineRuntimeBeatAlignment(
+      index,
+      requested.withTimelineStartMs(snappedStart),
+    );
+  }
+
+  TimelineClip _refineRuntimeBeatAlignment(
+    int index,
+    TimelineClip initialPlacement, {
+    MixSession? baseSession,
+  }) {
+    final previousIndex = _previousQueueIndexFor(index);
+    if (previousIndex == null) return initialPlacement;
+    final sourceSession = baseSession ?? _session;
+    var placement = initialPlacement;
+
+    for (var attempt = 0; attempt < 8; attempt++) {
+      final candidateSession = sourceSession.withPlacementAt(index, placement);
+      final candidateModel = CueTimeline.fromSession(
+        session: candidateSession,
+        queue: _queue,
+        playOrder: _playOrder,
+      ).toTimelineModel();
+      final incomingSessionClip = candidateSession.clipAt(index);
+      final outgoingSessionClip = candidateSession.clipAt(previousIndex);
+      if (incomingSessionClip == null || outgoingSessionClip == null) {
+        return placement;
+      }
+      final incoming = _modelClipForSessionClip(
+        candidateModel,
+        incomingSessionClip,
+      );
+      final outgoing = _modelClipForSessionClip(
+        candidateModel,
+        outgoingSessionClip,
+      );
+      if (incoming == null || outgoing == null) return placement;
+      final correctionMs = beatAlignmentCorrectionMs(
+        outgoing: outgoing,
+        incoming: incoming,
+        snapMode: candidateSession.transitionSnapMode,
+      );
+      if (correctionMs == null) return placement;
+      if (correctionMs.abs() <= 1) return placement;
+      final correctedStartMs = math.max(
+        0,
+        placement.timelineStartMs + correctionMs,
+      );
+      if (correctedStartMs == placement.timelineStartMs) return placement;
+      placement = placement.withTimelineStartMs(correctedStartMs);
+    }
+
+    return placement;
+  }
+
+  MixSession _refineSessionRuntimeBeatAlignments(MixSession session) {
+    if (session.transitionSnapMode == BeatSnapMode.free ||
+        _playOrder.length < 2) {
+      return session;
+    }
+
+    var refined = session;
+    for (var attempt = 0; attempt < 8; attempt++) {
+      final model = CueTimeline.fromSession(
+        session: refined,
+        queue: _queue,
+        playOrder: _playOrder,
+      ).toTimelineModel();
+      final clipsById = <String, MixClip>{
+        for (final clip in model.clips) clip.id: clip,
+      };
+      final clipsByQueueItemId = <String, MixClip>{
+        for (final clip in model.clips)
+          if (clip.queueItemId != null) clip.queueItemId!: clip,
+      };
+      final updates = <(int, TimelineClip)>[];
+
+      for (var orderIndex = 1; orderIndex < _playOrder.length; orderIndex++) {
+        final index = _playOrder[orderIndex];
+        final previousIndex = _playOrder[orderIndex - 1];
+        final incomingSessionClip = refined.clipAt(index);
+        final outgoingSessionClip = refined.clipAt(previousIndex);
+        if (incomingSessionClip == null || outgoingSessionClip == null) {
+          continue;
+        }
+        final incoming = clipsById[incomingSessionClip.clipId] ??
+            clipsByQueueItemId[incomingSessionClip.queueItemId];
+        final outgoing = clipsById[outgoingSessionClip.clipId] ??
+            clipsByQueueItemId[outgoingSessionClip.queueItemId];
+        if (incoming == null || outgoing == null) continue;
+        final correctionMs = beatAlignmentCorrectionMs(
+          outgoing: outgoing,
+          incoming: incoming,
+          snapMode: refined.transitionSnapMode,
+        );
+        if (correctionMs == null || correctionMs.abs() <= 1) continue;
+        final correctedStartMs = math.max(
+          0,
+          incomingSessionClip.timelineStartMs + correctionMs,
+        );
+        if (correctedStartMs == incomingSessionClip.timelineStartMs) continue;
+        updates.add((
+          index,
+          incomingSessionClip.placement.withTimelineStartMs(correctedStartMs),
+        ));
+      }
+
+      if (updates.isEmpty) return refined;
+      var candidate = refined;
+      for (final (index, placement) in updates) {
+        candidate = candidate.withPlacementAt(index, placement);
+      }
+      if (_canApplySession(candidate)) {
+        refined = candidate;
+        continue;
+      }
+
+      // Retain independent valid corrections if a combined update conflicts.
+      var fallback = refined;
+      for (final (index, placement) in updates) {
+        final next = fallback.withPlacementAt(index, placement);
+        if (_canApplySession(next)) fallback = next;
+      }
+      if (identical(fallback, refined)) return refined;
+      refined = fallback;
+    }
+    return refined;
+  }
+
+  MixClip? _modelClipForSessionClip(
+    TimelineModel model,
+    MixSessionClip sessionClip,
+  ) {
+    for (final clip in model.clips) {
+      if (clip.id == sessionClip.clipId ||
+          clip.queueItemId == sessionClip.queueItemId) {
+        return clip;
+      }
+    }
+    return null;
   }
 
   int? _previousQueueIndexFor(int queueIndex) {

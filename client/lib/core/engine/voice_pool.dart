@@ -93,9 +93,12 @@ class VoicePool {
   TimelineModel _model = TimelineModel();
   Timer? _driftTimer;
   Timer? _gainTimer;
+  Future<void>? _levelUpdateDrain;
+  int? _pendingLevelUpdateMs;
   Future<void> _syncChain = Future<void>.value();
   int _generation = 0;
   bool _started = false;
+  bool _coordinatedResumeInProgress = false;
   bool _suppressClockSync = false;
   bool _skipNextClockPositionSync = false;
 
@@ -142,8 +145,10 @@ class VoicePool {
       }));
     _driftTimer =
         Timer.periodic(_driftCheckInterval, (_) => unawaited(_checkDrift()));
-    _gainTimer = Timer.periodic(_gainUpdateInterval,
-        (_) => unawaited(_updateActiveVoiceLevels(_clock.positionMs)));
+    _gainTimer = Timer.periodic(
+      _gainUpdateInterval,
+      (_) => _scheduleActiveVoiceLevels(_clock.positionMs),
+    );
     await syncAt(_clock.positionMs, forceSeek: true);
   }
 
@@ -240,6 +245,10 @@ class VoicePool {
 
   Future<void> stop() async {
     _generation += 1;
+    _started = false;
+    _coordinatedResumeInProgress = false;
+    _pendingLevelUpdateMs = null;
+    final levelUpdateDrain = _levelUpdateDrain;
     for (final sub in _subscriptions) {
       await sub.cancel();
     }
@@ -248,17 +257,31 @@ class VoicePool {
     _gainTimer?.cancel();
     _driftTimer = null;
     _gainTimer = null;
-    await _releaseLeaving(const {});
-    _clearPitchFallbacks();
-    _started = false;
-    _clock.releaseHold();
-    _publishStatus();
+    try {
+      if (levelUpdateDrain != null) await levelUpdateDrain;
+    } finally {
+      try {
+        await _releaseLeaving(const {});
+      } finally {
+        _clearPitchFallbacks();
+        _clock.releaseHold();
+        _publishStatus();
+      }
+    }
   }
 
   Future<void> playActiveFromClock() {
     final next = _syncChain.then((_) => _setActivePlayback(true));
     _syncChain = next.then((_) {}, onError: (_) {});
     return next;
+  }
+
+  void beginCoordinatedResume() {
+    _coordinatedResumeInProgress = true;
+  }
+
+  void endCoordinatedResume() {
+    _coordinatedResumeInProgress = false;
   }
 
   Future<void> pauseActive() => _setActivePlayback(false);
@@ -440,16 +463,18 @@ class VoicePool {
     int generation,
   ) async {
     if (generation != _generation) return;
-    for (final clip in active) {
+    await Future.wait(active.map((clip) async {
       final voice = _activeVoices[clip.id];
-      if (voice == null || !voice.isReady) continue;
+      if (voice == null || !voice.isReady) return;
       await _applyPlaybackTuning(voice, clip, globalMs);
+      if (!_isCurrentVoice(clip.id, voice, generation)) return;
       await voice.setVolume(clip.gainAt(globalMs));
-    }
-    if (_clock.isPlaying) {
+    }));
+    if (generation != _generation) return;
+    if (_clock.isPlaying && !_coordinatedResumeInProgress) {
       for (final clip in active) {
         final voice = _activeVoices[clip.id];
-        if (voice == null || !voice.isReady) continue;
+        if (voice == null || !voice.isReady || voice.isPlaying) continue;
         _requestPlay(clip.id, voice);
       }
     }
@@ -531,32 +556,32 @@ class VoicePool {
         releasePlayHoldOnExit = true;
       }
       try {
-        for (final clip in active) {
-          if (generation != _generation) return;
+        final ready = [
+          for (final clip in active)
+            if (_activeVoices[clip.id]?.isReady ?? false) clip,
+        ];
+        await Future.wait(ready.map((clip) async {
+          final voice = _activeVoices[clip.id]!;
+          await voice.setVolume(0);
+          if (!_isCurrentVoice(clip.id, voice, generation)) return;
+          await voice.seekLocal(_localPosition(clip, globalMs));
+          if (!_isCurrentVoice(clip.id, voice, generation)) return;
+          await _applyPlaybackTuning(voice, clip, globalMs);
+        }));
+        if (generation != _generation) return;
+
+        for (final clip in ready) {
           final voice = _activeVoices[clip.id];
           if (voice == null || !voice.isReady) continue;
-          await voice.setVolume(0);
-          if (generation != _generation ||
-              !_activeVoices.containsKey(clip.id)) {
-            return;
-          }
-          await voice.seekLocal(_localPosition(clip, globalMs));
-          if (generation != _generation ||
-              !_activeVoices.containsKey(clip.id)) {
-            return;
-          }
-          await _applyPlaybackTuning(voice, clip, globalMs);
-          if (generation != _generation ||
-              !_activeVoices.containsKey(clip.id)) {
-            return;
-          }
           _requestPlay(clip.id, voice);
-          if (generation != _generation ||
-              !_activeVoices.containsKey(clip.id)) {
-            return;
-          }
-          await voice.setVolume(clip.gainAt(globalMs));
         }
+        await Future.wait(ready.map((clip) async {
+          final voice = _activeVoices[clip.id];
+          if (voice == null || !voice.isReady) return;
+          if (!_isCurrentVoice(clip.id, voice, generation)) return;
+          await voice.setVolume(clip.gainAt(globalMs));
+        }));
+        if (generation != _generation) return;
         _updateBufferingHold(active);
         releasePlayHoldOnExit = false;
       } finally {
@@ -582,14 +607,50 @@ class VoicePool {
     }());
   }
 
-  Future<void> _updateActiveVoiceLevels(int globalMs) async {
-    for (final entry in _activeClips.entries.toList()) {
-      final voice = _activeVoices[entry.key];
-      if (voice == null || !voice.isReady) continue;
-      await _applyPlaybackTuning(voice, entry.value, globalMs);
-      await voice.setVolume(entry.value.gainAt(globalMs));
+  void _scheduleActiveVoiceLevels(int globalMs) {
+    if (!_started) return;
+    _pendingLevelUpdateMs = globalMs;
+    if (_levelUpdateDrain != null) return;
+
+    final drain = _drainActiveVoiceLevels();
+    _levelUpdateDrain = drain;
+    void finishDrain() {
+      _levelUpdateDrain = null;
+      if (_started && _pendingLevelUpdateMs != null) {
+        _scheduleActiveVoiceLevels(_pendingLevelUpdateMs!);
+      }
     }
-    _updateBufferingHold(_model.activeClipsAt(globalMs));
+
+    unawaited(
+      drain.then<void>(
+        (_) => finishDrain(),
+        onError: (Object _, StackTrace __) => finishDrain(),
+      ),
+    );
+  }
+
+  Future<void> _drainActiveVoiceLevels() async {
+    while (_started && _pendingLevelUpdateMs != null) {
+      final globalMs = _pendingLevelUpdateMs!;
+      _pendingLevelUpdateMs = null;
+      await _updateActiveVoiceLevels(globalMs);
+    }
+  }
+
+  Future<void> _updateActiveVoiceLevels(int globalMs) async {
+    final generation = _generation;
+    final entries = _activeClips.entries.toList(growable: false);
+    await Future.wait(entries.map((entry) async {
+      final voice = _activeVoices[entry.key];
+      if (voice == null || !voice.isReady) return;
+      if (!_isCurrentVoice(entry.key, voice, generation)) return;
+      await _applyPlaybackTuning(voice, entry.value, globalMs);
+      if (!_isCurrentVoice(entry.key, voice, generation)) return;
+      await voice.setVolume(entry.value.gainAt(globalMs));
+    }));
+    if (generation == _generation) {
+      _updateBufferingHold(_model.activeClipsAt(globalMs));
+    }
   }
 
   Future<void> _checkDrift() async {

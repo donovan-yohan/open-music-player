@@ -191,11 +191,18 @@ List<TransitionDiagnostic> _tempoDiagnostics(
     ];
   }
 
-  final outgoingEndRate =
-      _rateForTargetBpm(outgoing, incoming.tempo.nativeBpm!);
+  final transitionStartBpm = effectiveBpmForRate(
+    nativeBpm: outgoing.tempo.nativeBpm!,
+    rate: outgoing.rateAutomation.baseRate,
+  );
+  final transitionEndBpm = effectiveBpmForRate(
+    nativeBpm: incoming.tempo.nativeBpm!,
+    rate: incoming.rateAutomation.baseRate,
+  );
+  final outgoingEndRate = _rateForTargetBpm(outgoing, transitionEndBpm);
   final incomingStartRate = _rateForTargetBpm(
     incoming,
-    outgoing.tempo.nativeBpm!,
+    transitionStartBpm,
   );
   final outgoingShift =
       _relativeRateShift(outgoing.playbackRate, outgoingEndRate);
@@ -256,8 +263,16 @@ List<TransitionDiagnostic> _pitchDiagnostics(
     return const [];
   }
 
-  final outgoingRate = _rateForTargetBpm(outgoing, incoming.tempo.nativeBpm!);
-  final incomingRate = _rateForTargetBpm(incoming, outgoing.tempo.nativeBpm!);
+  final transitionStartBpm = effectiveBpmForRate(
+    nativeBpm: outgoing.tempo.nativeBpm!,
+    rate: outgoing.rateAutomation.baseRate,
+  );
+  final transitionEndBpm = effectiveBpmForRate(
+    nativeBpm: incoming.tempo.nativeBpm!,
+    rate: incoming.rateAutomation.baseRate,
+  );
+  final outgoingRate = _rateForTargetBpm(outgoing, transitionEndBpm);
+  final incomingRate = _rateForTargetBpm(incoming, transitionStartBpm);
   final shifted = <String>[];
   final locked = <String>[];
 

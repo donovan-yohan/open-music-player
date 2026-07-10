@@ -156,9 +156,14 @@ class PlaybackEngine implements PlaybackEngineControls {
 
   @override
   Future<void> play() async {
-    await _pool.syncAt(_clock.positionMs, forceSeek: true);
-    await _clock.play();
-    await _pool.playActiveFromClock();
+    _pool.beginCoordinatedResume();
+    try {
+      await _pool.syncAt(_clock.positionMs, forceSeek: true);
+      await _clock.play();
+      await _pool.playActiveFromClock();
+    } finally {
+      _pool.endCoordinatedResume();
+    }
   }
 
   @override

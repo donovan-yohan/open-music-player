@@ -5,6 +5,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 import '../cache/playback_cache_manager.dart';
 import '../engine/playback_engine.dart';
+import '../engine/tempo_automation.dart';
 import '../engine/timeline_model.dart';
 import '../../models/timeline_clip.dart';
 import '../../models/track_analysis.dart';
@@ -82,6 +83,7 @@ class PlaybackState extends ChangeNotifier {
       _queueController.engine.positionMsStream;
   int get timelinePositionMs => _queueController.engine.positionMs;
   TimelineModel get timelineModel => _queueController.engine.model;
+  BeatSnapMode get transitionSnapMode => _queueController.transitionSnapMode;
   TimelineClip? timelineClipForQueueIndex(int index) =>
       _queueController.timelineClipForIndex(index);
   TrimRange trimRangeForQueueIndex(int index) {
@@ -112,6 +114,8 @@ class PlaybackState extends ChangeNotifier {
       _queueController.setSourceEndMs(index, ms);
   Future<void> setQueuePitchMode(int index, String pitchMode) =>
       _queueController.setPitchMode(index, pitchMode);
+  Future<void> setTransitionSnapMode(BeatSnapMode mode) =>
+      _queueController.setTransitionSnapMode(mode);
   Future<void> reorderPlaybackQueue(int oldIndex, int newIndex) =>
       _queueController.reorderQueue(oldIndex, newIndex);
 

@@ -723,6 +723,30 @@ void main() {
     ]);
   });
 
+  testWidgets('live timeline beat-lock choice updates canonical playback mode',
+      (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Current Song', seconds: 120),
+        _mediaItem(2, 'Next Song', seconds: 120),
+      ]
+      ..fakeCurrentIndex = 0
+      ..fakeIsPlaying = true;
+
+    await pumpQueueScreen(tester);
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_options_fab')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_snap_beat16')));
+    await tester.pumpAndSettle();
+
+    expect(playbackState.pauseCalls, 1);
+    expect(playbackState.transitionSnapModeCalls, [BeatSnapMode.beat16]);
+  });
+
   testWidgets('touch-dragging the list reorder handle reorders Up Next', (
     tester,
   ) async {
@@ -783,7 +807,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(playbackState.timelineStartCalls, isNotEmpty);
-    expect(playbackState.timelineStartCalls.last.$3, isFalse);
+    expect(playbackState.timelineStartCalls.last.$3, isTrue);
 
     await tester.tap(
       find.byKey(const ValueKey('timeline_move_later_playback_queue_1')),
@@ -869,6 +893,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   final List<(int, int)> trimStartCalls = [];
   final List<(int, int)> trimEndCalls = [];
   final List<(int, String)> pitchModeCalls = [];
+  final List<BeatSnapMode> transitionSnapModeCalls = [];
   final List<(int, int)> reorderCalls = [];
   final List<int> removeFromQueueCalls = [];
   final List<({String trackId, TrackAnalysis analysis})> analysisRefreshes = [];
@@ -882,6 +907,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   bool fakeIsPlaying = false;
   int fakeTimelinePositionMs = 0;
   TimelineModel fakeTimelineModel = TimelineModel();
+  BeatSnapMode fakeTransitionSnapMode = BeatSnapMode.downbeat;
 
   @override
   List<audio_service.MediaItem> get queue => fakeQueue;
@@ -910,6 +936,9 @@ class _FakePlaybackState extends Fake implements PlaybackState {
 
   @override
   TimelineModel get timelineModel => fakeTimelineModel;
+
+  @override
+  BeatSnapMode get transitionSnapMode => fakeTransitionSnapMode;
 
   @override
   PlaybackSnapshot get snapshot => PlaybackSnapshot(
@@ -1004,6 +1033,12 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   @override
   Future<void> setQueuePitchMode(int index, String pitchMode) async {
     pitchModeCalls.add((index, pitchMode));
+  }
+
+  @override
+  Future<void> setTransitionSnapMode(BeatSnapMode mode) async {
+    transitionSnapModeCalls.add(mode);
+    fakeTransitionSnapMode = mode;
   }
 
   @override

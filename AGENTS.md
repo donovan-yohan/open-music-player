@@ -97,7 +97,31 @@ scripts/tailnet-staging.sh start-backend
 scripts/tailnet-staging.sh smoke
 ```
 
-Deploy Android frontend to the physical phone:
+Use the remote `Pixel_10_Pro` AVD for automated Android checks unless the user
+explicitly asks for the physical phone. Boot it on the Mac, then use its remote
+ADB server:
+
+```bash
+ssh server-mac.fish-rattlesnake.ts.net \
+  'nohup $HOME/Library/Android/sdk/emulator/emulator -avd Pixel_10_Pro \
+  >/tmp/omp-pixel-10-pro.log 2>&1 </dev/null &'
+export ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037
+adb wait-for-device
+export ANDROID_SERIAL="$(adb devices | awk '$1 ~ /^emulator-/ { print $1; exit }')"
+export OMP_DEV_TAILNET_IP="$(getent ahostsv4 dev.fish-rattlesnake.ts.net | \
+  awk 'NR == 1 { print $1 }')"
+
+OMP_API_BASE_URL="http://$OMP_DEV_TAILNET_IP:8080/api/v1" \
+OMP_SOURCE_REF="$(git rev-parse --abbrev-ref HEAD)@$(git rev-parse --short HEAD)" \
+OMP_BUILD_ID="<slice>-$(date -u +%Y%m%dT%H%M%SZ)" \
+scripts/dogfood-android all
+```
+
+The AVD can route to tailnet IPs through the Mac but may not resolve MagicDNS
+`.ts.net` names. Use the resolved tailnet IP in `OMP_API_BASE_URL` when login
+reports `Unable to connect to server`.
+
+Deploy Android frontend to the physical phone only when requested:
 
 ```bash
 export ADB_SERVER_SOCKET=tcp:server-mac.fish-rattlesnake.ts.net:5037
