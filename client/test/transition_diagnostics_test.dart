@@ -3,6 +3,7 @@ import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/core/engine/transition_diagnostics.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
+import 'package:open_music_player/widgets/analysis_correction_sheet.dart';
 
 void main() {
   test('reports beat lock, tempo match, and harmonic compatibility', () {
@@ -117,6 +118,32 @@ void main() {
       'No incoming BPM',
       'No incoming downbeat',
     ]);
+  });
+
+  test('manual correction metadata clears missing BPM and downbeat warnings',
+      () {
+    final overrides = analysisOverridesFromCorrectionFields(
+      durationMs: 16000,
+      bpm: 141.18,
+      firstDownbeatMs: 87,
+      phraseBeats: 4,
+    );
+    final correctedTempo = ClipTempoMetadata.fromAnalysisSummary(
+      null,
+      overrides: overrides.toJson(),
+    );
+
+    final diagnostics = diagnoseTransition(
+      _clip('outgoing', 0, tempo: correctedTempo),
+      _clip('incoming', 8500, tempo: correctedTempo),
+    );
+
+    final codes = diagnostics.diagnostics.map((diagnostic) => diagnostic.code);
+    expect(correctedTempo.nativeBpm, closeTo(141.18, 0.001));
+    expect(correctedTempo.downbeatsMs.take(2).toList(), [87, 1787]);
+    expect(codes, isNot(contains(TransitionDiagnosticCode.missingBpm)));
+    expect(codes, isNot(contains(TransitionDiagnosticCode.missingDownbeats)));
+    expect(codes, contains(TransitionDiagnosticCode.beatLocked));
   });
 
   test('warns on large tempo pulls and incompatible keys', () {
