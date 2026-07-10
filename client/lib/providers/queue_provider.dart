@@ -44,6 +44,8 @@ class QueueProvider extends ChangeNotifier {
   final Map<String, int> _appliedCompactAnalysisSignatures = {};
   final Map<String, TrackAnalysis> _lastIncomingAnalysisByTrackId = {};
   final Map<String, int> _analysisGenerations = {};
+  final Map<String, int> _analysisOverrideMutationGenerations = {};
+  final Map<String, Set<int>> _supersededAnalysisSignatures = {};
   final Set<String> _analysisHydrationInterest = {};
   final Set<String> _analysisRequestsInFlight = {};
   final Set<String> _analysisRequestsQueued = {};
@@ -52,6 +54,7 @@ class QueueProvider extends ChangeNotifier {
   final Map<String, DateTime> _analysisLastRequestedAt = {};
   final Map<String, Timer> _analysisRetryTimers = {};
   final Map<String, int> _analysisRequestAttempts = {};
+  final Map<String, int> _analysisTransportFailures = {};
   final Set<String> _analysisPermanentFailures = {};
   final Map<String, _EnrichedTrackCacheEntry> _enrichedTrackCache = {};
   int _analysisRevision = 0;
@@ -164,7 +167,6 @@ class QueueProvider extends ChangeNotifier {
     final incoming = track.analysis;
     if (incoming != null &&
         !identical(_lastIncomingAnalysisByTrackId[key], incoming)) {
-      _lastIncomingAnalysisByTrackId[key] = incoming;
       _ingestIncomingAnalysis(key, incoming);
     }
 
@@ -210,7 +212,6 @@ class QueueProvider extends ChangeNotifier {
       final incoming = track.analysis;
       if (incoming != null &&
           !identical(_lastIncomingAnalysisByTrackId[key], incoming)) {
-        _lastIncomingAnalysisByTrackId[key] = incoming;
         _ingestIncomingAnalysis(key, incoming);
       }
       _fetchAnalysisIfNeeded(trackId);
@@ -231,11 +232,19 @@ class QueueProvider extends ChangeNotifier {
       throw ApiException('Track does not have a backend analysis id', 400);
     }
 
+    final key = trackId.toString();
+    final mutationGeneration =
+        (_analysisOverrideMutationGenerations[key] ?? 0) + 1;
+    _analysisOverrideMutationGenerations[key] = mutationGeneration;
     final analysis = await _apiClient.updateTrackAnalysisOverrides(
       trackId,
       overrides,
     );
-    final key = trackId.toString();
+    if (_disposed ||
+        _analysisOverrideMutationGenerations[key] != mutationGeneration) {
+      return _analysisByTrackId[key] ?? analysis;
+    }
+    _markSupersededAnalysisSnapshots(key, analysis);
     _advanceAnalysisGeneration(key);
     _analysisByTrackId[key] = analysis;
     _lastIncomingAnalysisByTrackId[key] = analysis;
@@ -911,12 +920,15 @@ class QueueProvider extends ChangeNotifier {
     final trackId = _analysisTrackId(track);
     if (analysis == null || trackId == null) return;
     final key = trackId.toString();
-    _lastIncomingAnalysisByTrackId[key] = analysis;
     _ingestIncomingAnalysis(key, analysis);
   }
 
   void _ingestIncomingAnalysis(String key, TrackAnalysis analysis) {
     final signature = _analysisCompactSignature(analysis);
+    if (_supersededAnalysisSignatures[key]?.contains(signature) ?? false) {
+      return;
+    }
+    _lastIncomingAnalysisByTrackId[key] = analysis;
     final cached = _analysisByTrackId[key];
     if (_hasWaveformDetail(analysis)) {
       if (!identical(cached, analysis)) {
@@ -986,7 +998,7 @@ class QueueProvider extends ChangeNotifier {
 
   bool _analysisNeedsHydration(String key) {
     if (_analysisPermanentFailures.contains(key) ||
-        (_analysisRequestAttempts[key] ?? 0) >= _maxAnalysisRequestAttempts) {
+        (_analysisTransportFailures[key] ?? 0) >= _maxAnalysisRequestAttempts) {
       return false;
     }
     final cached = _analysisByTrackId[key];
@@ -1046,6 +1058,7 @@ class QueueProvider extends ChangeNotifier {
 
         _analysisByTrackId[key] = analysis;
         _analysisPermanentFailures.remove(key);
+        _analysisTransportFailures.remove(key);
         if (_hasWaveformDetail(analysis) &&
             analysis.status == TrackAnalysisStatus.analyzed) {
           _analysisLastRequestedAt.remove(key);
@@ -1061,7 +1074,12 @@ class QueueProvider extends ChangeNotifier {
         // Analysis is progressive enhancement. Playback and queue editing must
         // keep working if an individual track has no analyzed artifact yet.
         shouldRetry = _isRetryableAnalysisError(error);
-        if (!shouldRetry) _analysisPermanentFailures.add(key);
+        if (shouldRetry) {
+          _analysisTransportFailures[key] =
+              (_analysisTransportFailures[key] ?? 0) + 1;
+        } else {
+          _analysisPermanentFailures.add(key);
+        }
       } finally {
         _analysisRequestsInFlight.remove(key);
         if (!_disposed) {
@@ -1126,6 +1144,7 @@ class QueueProvider extends ChangeNotifier {
   void _resetAnalysisRequestState(String key) {
     _analysisLastRequestedAt.remove(key);
     _analysisRequestAttempts.remove(key);
+    _analysisTransportFailures.remove(key);
     _analysisPermanentFailures.remove(key);
     _cancelAnalysisRetry(key);
   }
@@ -1142,6 +1161,31 @@ class QueueProvider extends ChangeNotifier {
 
   void _advanceAnalysisGeneration(String key) {
     _analysisGenerations[key] = (_analysisGenerations[key] ?? 0) + 1;
+  }
+
+  void _markSupersededAnalysisSnapshots(
+    String key,
+    TrackAnalysis authoritative,
+  ) {
+    final authoritativeSignature = _analysisCompactSignature(authoritative);
+    final superseded = _supersededAnalysisSignatures.putIfAbsent(
+      key,
+      () => <int>{},
+    );
+    for (final previous in [
+      _analysisByTrackId[key],
+      _lastIncomingAnalysisByTrackId[key],
+    ]) {
+      if (previous == null) continue;
+      final previousSignature = _analysisCompactSignature(previous);
+      if (previousSignature != authoritativeSignature) {
+        superseded.add(previousSignature);
+      }
+    }
+    superseded.remove(authoritativeSignature);
+    while (superseded.length > 8) {
+      superseded.remove(superseded.first);
+    }
   }
 
   TrackAnalysis _mergeDetailedAnalysis(
@@ -1288,10 +1332,10 @@ class QueueProvider extends ChangeNotifier {
   void _invalidateAnalysisCache(String trackId) {
     _analysisRevision++;
     _waveformPeaks.removeWhere(
-      (cacheKey, _) => cacheKey.contains('track:$trackId'),
+      (cacheKey, _) => cacheKey.contains('|track:$trackId|'),
     );
     _timelineWaveforms.removeWhere(
-      (cacheKey, _) => cacheKey.contains('track:$trackId'),
+      (cacheKey, _) => cacheKey.contains('|track:$trackId|'),
     );
     _enrichedTrackCache.removeWhere(
       (cacheKey, _) => cacheKey.endsWith('|$trackId'),

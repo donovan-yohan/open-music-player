@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
 import '../core/engine/transition_diagnostics.dart';
@@ -386,23 +387,34 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   bool _isScrubbing = false;
   bool _preserveViewportForScrub = false;
   int? _lastScrubMs;
+  late final ValueNotifier<int> _livePlayheadMs;
+  StreamSubscription<int>? _positionSubscription;
+  int _fallbackPlayheadMs = 0;
+  int _timelineDurationMs = 0;
+  bool _engineBacked = false;
   final ScrollController _laneScrollController = ScrollController();
   List<_LaneModel> _latestLanes = const [];
   double _laneViewportHeight = 0;
   String? _lastVisibleLaneSignature;
   bool _visibleLaneReportScheduled = false;
+  Timer? _visibleLaneDebounce;
 
   @override
   void initState() {
     super.initState();
     _snapMode = _snapMarkerModeFor(widget.transitionSnapMode);
-    _laneScrollController.addListener(_scheduleVisibleLaneReport);
+    _livePlayheadMs = ValueNotifier<int>(widget.playheadPositionMs);
+    _bindPositionStream();
+    _laneScrollController.addListener(_scheduleDebouncedVisibleLaneReport);
   }
 
   @override
   void dispose() {
+    _positionSubscription?.cancel();
+    _visibleLaneDebounce?.cancel();
+    _livePlayheadMs.dispose();
     _laneScrollController
-      ..removeListener(_scheduleVisibleLaneReport)
+      ..removeListener(_scheduleDebouncedVisibleLaneReport)
       ..dispose();
     super.dispose();
   }
@@ -410,6 +422,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   @override
   void didUpdateWidget(covariant StackedWaveformTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    if (!identical(oldWidget.positionMsStream, widget.positionMsStream)) {
+      _bindPositionStream();
+    } else if (widget.positionMsStream == null &&
+        oldWidget.playheadPositionMs != widget.playheadPositionMs) {
+      _livePlayheadMs.value = widget.playheadPositionMs;
+    }
 
     if (oldWidget.transitionSnapMode != widget.transitionSnapMode &&
         _activeClipDragTrackId == null &&
@@ -449,15 +468,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               final paneWidth =
                   (constraints.maxWidth - StackedWaveformTimeline.railWidth)
                       .clamp(1.0, double.infinity);
-              return StreamBuilder<int>(
-                stream: widget.positionMsStream,
-                initialData: widget.playheadPositionMs,
-                builder: (context, snapshot) => _buildTimeline(
-                  context,
-                  paneWidth,
-                  snapshot.data ?? widget.playheadPositionMs,
-                ),
-              );
+              return _buildTimeline(context, paneWidth);
             },
           ),
         ),
@@ -468,7 +479,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   Widget _buildTimeline(
     BuildContext context,
     double paneWidth,
-    int livePlayheadMs,
   ) {
     // --- Resolve global placement from the live engine model when available. ---
     final ordered = <Track>[
@@ -520,13 +530,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final totalMs = placed.values
         .map((c) => c.timelineEndMs)
         .fold<int>(0, (a, b) => a > b ? a : b);
-    final engineBacked = widget.positionMsStream != null ||
+    _engineBacked = widget.positionMsStream != null ||
         (widget.timelineModel?.clips.isNotEmpty ?? false);
-    final playheadMs = engineBacked
-        ? livePlayheadMs.clamp(0, totalMs).toInt()
-        : currentClip.timelineStartMs +
-            StackedWaveformTimeline.transitionMs +
-            8000;
+    _timelineDurationMs = totalMs;
+    _fallbackPlayheadMs = currentClip.timelineStartMs +
+        StackedWaveformTimeline.transitionMs +
+        8000;
 
     final fitPps = totalMs <= 0
         ? TimelineViewport.minPixelsPerSecond
@@ -546,6 +555,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
 
     // --- Build lane models in stack order (history → future, top to bottom). ---
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final laneHeightExtra = math.max(
+      0.0,
+      TimelineLaneHeader.heightForTextScale(textScale) - 64,
+    );
     final lanes = <_LaneModel>[];
     if (widget.previousTrack != null) {
       lanes.add(
@@ -555,7 +569,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           role: LaneRole.previous,
           accent: StackedWaveformTimeline.previousAccent,
           status: 'Played',
-          height: 114,
+          height: 114 + laneHeightExtra,
         ),
       );
     }
@@ -566,7 +580,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         role: LaneRole.current,
         accent: StackedWaveformTimeline.currentAccent,
         status: 'Now playing',
-        height: 146,
+        height: 146 + laneHeightExtra,
       ),
     );
     final upcoming = widget.upcomingTracks.toList();
@@ -579,16 +593,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           role: collapsed ? LaneRole.collapsed : LaneRole.upcoming,
           accent: StackedWaveformTimeline.upcomingAccent,
           status: i == 0 ? 'Up next' : 'Later',
-          height: collapsed ? 84 : 114,
+          height: (collapsed ? 84 : 114) + laneHeightExtra,
         ),
       );
     }
     final placedClips = placed.values.toList(growable: false);
-
-    final playheadPaneX = viewport.msToX(playheadMs);
-    final isPlayheadVisible = playheadPaneX.isFinite &&
-        playheadPaneX >= 0 &&
-        playheadPaneX <= paneWidth;
 
     final overlapBands = _buildOverlapBands(
       context,
@@ -596,15 +605,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       viewport,
       paneWidth,
     );
-
-    final dominantClip = _dominantClipAt(
-      placedClips,
-      playheadMs,
-    );
-    final playheadLabel = _playheadTimeLabel(playheadMs, dominantClip);
-    final badgeLeft = (StackedWaveformTimeline.railWidth + playheadPaneX + 6)
-        .clamp(4.0, math.max(4.0, paneWidth - 152))
-        .toDouble();
 
     return GestureDetector(
       key: const ValueKey('timeline_pan_surface'),
@@ -630,21 +630,17 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                     _latestLanes = lanes;
                     _laneViewportHeight = constraints.maxHeight;
                     _scheduleVisibleLaneReport();
-                    return SingleChildScrollView(
+                    return ListView.builder(
                       key: const PageStorageKey('timeline_lane_scroll'),
                       controller: _laneScrollController,
-                      child: Column(
-                        children: [
-                          for (final lane in lanes)
-                            _buildLane(
-                              context,
-                              lane,
-                              viewport,
-                              paneWidth,
-                              placedClips,
-                              playheadMs,
-                            ),
-                        ],
+                      scrollCacheExtent: const ScrollCacheExtent.pixels(160),
+                      itemCount: lanes.length,
+                      itemBuilder: (context, index) => _buildLane(
+                        context,
+                        lanes[index],
+                        viewport,
+                        paneWidth,
+                        placedClips,
                       ),
                     );
                   },
@@ -652,61 +648,14 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
               ),
             ],
           ),
-
-          // Global playhead crossing the ruler + every lane. Hide it when it is
-          // outside the visible pane instead of pinning it to an edge, which
-          // would misleadingly imply the playhead is visible at that boundary.
-          if (isPlayheadVisible)
-            Positioned(
-              key: const ValueKey('timeline_playhead'),
-              top: 0,
-              bottom: 0,
-              left: StackedWaveformTimeline.railWidth + playheadPaneX,
-              width: 2,
-              child: Semantics(
-                label: 'Mix playhead at ${_formatClock(playheadMs)}',
-                child: const ColoredBox(color: Color(0xFFD32F2F)),
-              ),
+          Positioned.fill(
+            child: _buildPlayheadOverlay(
+              context,
+              viewport,
+              paneWidth,
+              placedClips,
             ),
-
-          if (isPlayheadVisible)
-            Positioned(
-              key: const ValueKey('timeline_playhead_time_badge'),
-              top: 42,
-              left: badgeLeft,
-              child: _playheadBadge(context, playheadLabel),
-            ),
-
-          if (isPlayheadVisible && _hasScrubHandlers)
-            Positioned(
-              key: const ValueKey('timeline_playhead_drag_handle'),
-              top: 0,
-              bottom: 0,
-              left: StackedWaveformTimeline.railWidth + playheadPaneX - 14,
-              width: 28,
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onHorizontalDragStart: (details) => _beginScrubAt(
-                  viewport,
-                  paneWidth,
-                  StackedWaveformTimeline.railWidth +
-                      playheadPaneX -
-                      14 +
-                      details.localPosition.dx,
-                ),
-                onHorizontalDragUpdate: (details) => _updateScrubAt(
-                  viewport,
-                  paneWidth,
-                  StackedWaveformTimeline.railWidth +
-                      playheadPaneX -
-                      14 +
-                      details.localPosition.dx,
-                ),
-                onHorizontalDragEnd: (_) => _endScrub(),
-                onHorizontalDragCancel: _endScrub,
-              ),
-            ),
-
+          ),
           Positioned(
             right: 12,
             bottom: 12,
@@ -720,6 +669,110 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           ),
         ],
       ),
+    );
+  }
+
+  void _bindPositionStream() {
+    final previous = _positionSubscription;
+    _positionSubscription = null;
+    if (previous != null) unawaited(previous.cancel());
+    _livePlayheadMs.value = widget.playheadPositionMs;
+    final stream = widget.positionMsStream;
+    if (stream == null) return;
+    _positionSubscription = stream.listen((positionMs) {
+      if (_livePlayheadMs.value != positionMs) {
+        _livePlayheadMs.value = positionMs;
+      }
+    });
+  }
+
+  int _resolvedPlayheadMs(int livePositionMs) => _engineBacked
+      ? livePositionMs.clamp(0, _timelineDurationMs).toInt()
+      : _fallbackPlayheadMs;
+
+  Widget _buildPlayheadOverlay(
+    BuildContext context,
+    TimelineViewport viewport,
+    double paneWidth,
+    List<MixClip> placedClips,
+  ) {
+    return ValueListenableBuilder<int>(
+      valueListenable: _livePlayheadMs,
+      builder: (context, livePositionMs, _) {
+        final playheadMs = _resolvedPlayheadMs(livePositionMs);
+        final playheadPaneX = viewport.msToX(playheadMs);
+        final visible = playheadPaneX.isFinite &&
+            playheadPaneX >= 0 &&
+            playheadPaneX <= paneWidth;
+        if (!visible) return const SizedBox.shrink();
+
+        final dominantClip = _dominantClipAt(placedClips, playheadMs);
+        final playheadLabel = _playheadTimeLabel(playheadMs, dominantClip);
+        final badgeLeft =
+            (StackedWaveformTimeline.railWidth + playheadPaneX + 6)
+                .clamp(4.0, math.max(4.0, paneWidth - 152))
+                .toDouble();
+
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            Positioned(
+              key: const ValueKey('timeline_playhead'),
+              top: 0,
+              bottom: 0,
+              left: StackedWaveformTimeline.railWidth + playheadPaneX,
+              width: 2,
+              child: Semantics(
+                label: 'Mix playhead at ${_formatClock(playheadMs)}',
+                child: const ColoredBox(color: Color(0xFFD32F2F)),
+              ),
+            ),
+            Positioned(
+              key: const ValueKey('timeline_playhead_time_badge'),
+              top: 42,
+              left: badgeLeft,
+              child: _playheadBadge(context, playheadLabel),
+            ),
+            if (_hasScrubHandlers)
+              Positioned(
+                key: const ValueKey('timeline_playhead_drag_handle'),
+                top: 0,
+                bottom: 0,
+                left: StackedWaveformTimeline.railWidth + playheadPaneX - 14,
+                width: 28,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onHorizontalDragStart: (details) => _beginScrubAt(
+                    viewport,
+                    paneWidth,
+                    StackedWaveformTimeline.railWidth +
+                        playheadPaneX -
+                        14 +
+                        details.localPosition.dx,
+                  ),
+                  onHorizontalDragUpdate: (details) => _updateScrubAt(
+                    viewport,
+                    paneWidth,
+                    StackedWaveformTimeline.railWidth +
+                        playheadPaneX -
+                        14 +
+                        details.localPosition.dx,
+                  ),
+                  onHorizontalDragEnd: (_) => _endScrub(),
+                  onHorizontalDragCancel: _endScrub,
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _scheduleDebouncedVisibleLaneReport() {
+    _visibleLaneDebounce?.cancel();
+    _visibleLaneDebounce = Timer(
+      const Duration(milliseconds: 120),
+      _scheduleVisibleLaneReport,
     );
   }
 
@@ -741,13 +794,25 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         _laneScrollController.hasClients ? _laneScrollController.offset : 0.0;
     final end = offset + _laneViewportHeight;
     var laneTop = 0.0;
-    final visible = <Track>[];
-    for (final lane in _latestLanes) {
+    int? firstVisible;
+    int? lastVisible;
+    for (var index = 0; index < _latestLanes.length; index++) {
+      final lane = _latestLanes[index];
       final laneBottom = laneTop + lane.height;
-      if (laneBottom > offset && laneTop < end) visible.add(lane.track);
+      if (laneBottom > offset && laneTop < end) {
+        firstVisible ??= index;
+        lastVisible = index;
+      }
       laneTop = laneBottom;
     }
-    if (visible.isEmpty) visible.add(_latestLanes.first.track);
+    final first = math.max(0, (firstVisible ?? 0) - 1);
+    final last = math.min(
+      _latestLanes.length - 1,
+      (lastVisible ?? first) + 1,
+    );
+    final visible = [
+      for (var index = first; index <= last; index++) _latestLanes[index].track,
+    ];
 
     final signature = visible.map(_timelineTrackIdentity).join('\u0000');
     if (signature == _lastVisibleLaneSignature) return;
@@ -1055,7 +1120,6 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     TimelineViewport viewport,
     double paneWidth,
     List<MixClip> peerClips,
-    int playheadMs,
   ) {
     final left = viewport.msToX(lane.timelineStartMs);
     final width = (viewport.msToX(lane.timelineEndMs) -
@@ -1096,7 +1160,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                   context,
                   lane,
                   peerClips,
-                  playheadMs,
+                  _resolvedPlayheadMs(_livePlayheadMs.value),
                 ),
               ),
             _buildLaneIdentity(context, lane, viewport, paneWidth),

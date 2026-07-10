@@ -31,12 +31,20 @@ class TimelineLaneHeader extends StatelessWidget {
 
   bool get _active => role == LaneRole.current;
 
+  static double heightForTextScale(double textScale) {
+    final safeScale = textScale.clamp(1.0, 4.0);
+    if (safeScale <= 1.5) {
+      return (48 + ((safeScale - 1) * 12)).clamp(48, 54).toDouble();
+    }
+    return (54 + ((safeScale - 1.5) * 28)).clamp(54, 112).toDouble();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final muted = role == LaneRole.previous;
     final textScale = MediaQuery.textScalerOf(context).scale(1);
-    final headerHeight = (48 + ((textScale - 1) * 12)).clamp(48, 64).toDouble();
+    final headerHeight = heightForTextScale(textScale);
 
     return Semantics(
       container: true,
@@ -65,41 +73,38 @@ class TimelineLaneHeader extends StatelessWidget {
                   builder: (context, constraints) {
                     final largeText = textScale >= 1.2;
                     if (largeText) {
-                      return Row(
+                      return Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          if (_active) ...[
-                            Icon(Icons.equalizer, size: 13, color: accent),
-                            const SizedBox(width: 3),
-                          ],
-                          Expanded(
-                            child: Text(
-                              '${track.title} · ${track.artist ?? 'Unknown artist'}',
-                              style: theme.textTheme.labelMedium?.copyWith(
-                                fontWeight:
-                                    _active ? FontWeight.bold : FontWeight.w600,
-                                color: muted ? theme.disabledColor : null,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          if (constraints.maxWidth >= 150)
-                            Flexible(
-                              flex: 3,
-                              child: SizedBox(
-                                height: headerHeight - 12,
-                                child: Align(
-                                  alignment: Alignment.centerRight,
-                                  child: FittedBox(
-                                    fit: BoxFit.scaleDown,
-                                    alignment: Alignment.centerRight,
-                                    child: SongMetadataChips(
-                                      analysis: track.analysis,
-                                    ),
+                          Row(
+                            children: [
+                              if (_active) ...[
+                                Icon(Icons.equalizer, size: 13, color: accent),
+                                const SizedBox(width: 3),
+                              ],
+                              Expanded(
+                                child: Text(
+                                  '${track.title} · ${track.artist ?? 'Unknown artist'}',
+                                  style: theme.textTheme.labelMedium?.copyWith(
+                                    fontWeight: _active
+                                        ? FontWeight.bold
+                                        : FontWeight.w600,
+                                    color: muted ? theme.disabledColor : null,
                                   ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Flexible(
+                            child: SongMetadataChips(
+                              analysis: track.analysis,
+                              singleLine: true,
                             ),
+                          ),
                         ],
                       );
                     }
@@ -150,6 +155,7 @@ class TimelineLaneHeader extends StatelessWidget {
                                   alignment: Alignment.centerRight,
                                   child: SongMetadataChips(
                                     analysis: track.analysis,
+                                    singleLine: true,
                                   ),
                                 ),
                               ),

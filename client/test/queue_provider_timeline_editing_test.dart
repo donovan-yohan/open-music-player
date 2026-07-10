@@ -459,6 +459,56 @@ void main() {
     provider.dispose();
   });
 
+  test('valid pending analysis keeps polling beyond transport retry budget',
+      () async {
+    final analyzed = Completer<void>();
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        analysisRequests++;
+        if (analysisRequests == 5 && !analyzed.isCompleted) {
+          analyzed.complete();
+        }
+        return http.Response(
+          jsonEncode(
+            analysisRequests < 5
+                ? {'status': 'pending'}
+                : {
+                    'status': 'analyzed',
+                    'summary': {
+                      'waveform': {
+                        'sample_count': 2,
+                        'peaks': [0.2, 0.8],
+                      },
+                    },
+                  },
+          ),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+      analysisRetryCooldown: const Duration(milliseconds: 1),
+    );
+    final pending = _track(
+      playbackTrackId: '42',
+      analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+    );
+
+    provider.trackWithAnalysis(pending);
+    await analyzed.future.timeout(const Duration(seconds: 1));
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(analysisRequests, 5);
+    expect(
+      provider.trackWithAnalysis(pending).analysis?.status,
+      TrackAnalysisStatus.analyzed,
+    );
+    provider.dispose();
+  });
+
   test('clearing timeline interest cancels a pending analysis retry', () async {
     final firstResponse = Completer<void>();
     var analysisRequests = 0;
@@ -639,6 +689,176 @@ void main() {
     expect(result.analysis?.overrides, isNull);
     expect(result.analysis?.overridesPresent, isTrue);
     expect(result.analysis?.summary?.waveform?.peaks, isNotEmpty);
+    provider.dispose();
+  });
+
+  test('saved override clear rejects a replayed stale track snapshot',
+      () async {
+    final originalAnalysis = TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: {
+        'bpm': {'value': 120},
+        'waveform': {
+          'sample_count': 2,
+          'peaks': [0.2, 0.8],
+        },
+      },
+      overrides: {
+        'bpm': {'value': 128},
+      },
+      overridesPresent: true,
+    );
+    final original = _track(
+      id: '42',
+      playbackTrackId: '42',
+      analysis: originalAnalysis,
+    );
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method == 'PATCH' &&
+            request.url.path.endsWith('/tracks/42/analysis/overrides')) {
+          return http.Response(
+            jsonEncode({
+              'status': 'analyzed',
+              'summary': {
+                'bpm': {'value': 120},
+                'waveform': {
+                  'sample_count': 2,
+                  'peaks': [0.2, 0.8],
+                },
+              },
+              'overrides': <String, dynamic>{},
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('', 404);
+      }),
+    );
+
+    provider.trackWithAnalysis(original);
+    final cleared = await provider.updateAnalysisOverrides(
+      original,
+      const TrackAnalysisOverrides(),
+    );
+    expect(cleared.summary?.bpm?.numericValue, 120);
+
+    final replayed = provider.trackWithAnalysis(original);
+    expect(replayed.analysis?.summary?.bpm?.numericValue, 120);
+    expect(replayed.analysis?.overrides, isNull);
+    expect(replayed.analysis?.overridesPresent, isTrue);
+    provider.dispose();
+  });
+
+  test('concurrent override saves commit only the latest mutation', () async {
+    final firstStarted = Completer<void>();
+    final secondStarted = Completer<void>();
+    final releaseFirst = Completer<void>();
+    final releaseSecond = Completer<void>();
+    var patchRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method != 'PATCH' ||
+            !request.url.path.endsWith('/tracks/42/analysis/overrides')) {
+          return http.Response('', 404);
+        }
+        patchRequests++;
+        final requestNumber = patchRequests;
+        if (requestNumber == 1) {
+          firstStarted.complete();
+          await releaseFirst.future;
+        } else {
+          secondStarted.complete();
+          await releaseSecond.future;
+        }
+        final bpm = requestNumber == 1 ? 128 : 130;
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'bpm': {'value': 120},
+              'waveform': {
+                'sample_count': 2,
+                'peaks': [0.2, 0.8],
+              },
+            },
+            'overrides': {
+              'bpm': {'value': bpm},
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    final track = _track(
+      id: '42',
+      playbackTrackId: '42',
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'bpm': {'value': 120},
+          'waveform': {
+            'sample_count': 2,
+            'peaks': [0.2, 0.8],
+          },
+        },
+      ),
+    );
+    provider.trackWithAnalysis(track);
+
+    final first = provider.updateAnalysisOverrides(
+      track,
+      const TrackAnalysisOverrides(bpm: 128),
+    );
+    await firstStarted.future.timeout(const Duration(seconds: 1));
+    final second = provider.updateAnalysisOverrides(
+      track,
+      const TrackAnalysisOverrides(bpm: 130),
+    );
+    await secondStarted.future.timeout(const Duration(seconds: 1));
+    releaseSecond.complete();
+    final newest = await second;
+    releaseFirst.complete();
+    final stale = await first;
+
+    expect(newest.summary?.bpm?.numericValue, 130);
+    expect(stale.summary?.bpm?.numericValue, 130);
+    expect(
+      provider.trackWithAnalysis(track).analysis?.summary?.bpm?.numericValue,
+      130,
+    );
+    provider.dispose();
+  });
+
+  test('analysis invalidation does not evict prefix-matching track ids', () {
+    Track analyzedTrack(int id, double bpm) => _track(
+          id: '$id',
+          playbackTrackId: '$id',
+          analysis: TrackAnalysis.fromJson(
+            status: 'analyzed',
+            summary: {
+              'bpm': {'value': bpm},
+              'waveform': {
+                'sample_count': 2,
+                'peaks': [0.2, 0.8],
+              },
+            },
+          ),
+        );
+    final provider = QueueProvider(mockQueueApiClient((_) async {
+      return http.Response('', 404);
+    }));
+    final track42 = analyzedTrack(42, 120);
+    final track420 = analyzedTrack(420, 128);
+    provider.trackWithAnalysis(track42);
+    provider.trackWithAnalysis(track420);
+    final waveform420 = provider.waveformFor(track420, 512);
+
+    provider.trackWithAnalysis(analyzedTrack(42, 122));
+
+    expect(identical(provider.waveformFor(track420, 512), waveform420), isTrue);
     provider.dispose();
   });
 

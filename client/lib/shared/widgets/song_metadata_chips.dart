@@ -64,10 +64,12 @@ class SongMetadataChips extends StatelessWidget {
     super.key,
     required this.analysis,
     this.topSpacing = 0,
+    this.singleLine = false,
   });
 
   final TrackAnalysis? analysis;
   final double topSpacing;
+  final bool singleLine;
 
   @override
   Widget build(BuildContext context) {
@@ -87,6 +89,7 @@ class SongMetadataChips extends StatelessWidget {
           KeyNotation.camelot,
         ),
         topSpacing: topSpacing,
+        singleLine: singleLine,
       );
     }
 
@@ -99,6 +102,7 @@ class SongMetadataChips extends StatelessWidget {
         return _MetadataChipGroup(
           labels: labels,
           topSpacing: topSpacing,
+          singleLine: singleLine,
         );
       },
     );
@@ -109,10 +113,12 @@ class _MetadataChipGroup extends StatelessWidget {
   const _MetadataChipGroup({
     required this.labels,
     required this.topSpacing,
+    required this.singleLine,
   });
 
   final SongMetadataLabels labels;
   final double topSpacing;
+  final bool singleLine;
 
   @override
   Widget build(BuildContext context) {
@@ -122,27 +128,38 @@ class _MetadataChipGroup extends StatelessWidget {
       if (labels.bpm != null) 'Tempo ${labels.bpm}',
       if (labels.key != null) 'Key ${labels.key}',
     ].join(', ');
+    final chipWidgets = [
+      if (labels.bpm != null)
+        _MetadataChip(
+          key: const ValueKey('song_metadata_bpm_chip'),
+          label: labels.bpm!,
+        ),
+      if (labels.key != null)
+        _MetadataChip(
+          key: const ValueKey('song_metadata_key_chip'),
+          label: labels.key!,
+        ),
+    ];
     final chips = Semantics(
       container: true,
       label: semantics,
       child: ExcludeSemantics(
-        child: Wrap(
-          key: const ValueKey('song_metadata_chips'),
-          spacing: 4,
-          runSpacing: 2,
-          children: [
-            if (labels.bpm != null)
-              _MetadataChip(
-                key: const ValueKey('song_metadata_bpm_chip'),
-                label: labels.bpm!,
+        child: singleLine
+            ? Row(
+                key: const ValueKey('song_metadata_chips'),
+                children: [
+                  for (var index = 0; index < chipWidgets.length; index++) ...[
+                    if (index > 0) const SizedBox(width: 4),
+                    Flexible(child: chipWidgets[index]),
+                  ],
+                ],
+              )
+            : Wrap(
+                key: const ValueKey('song_metadata_chips'),
+                spacing: 4,
+                runSpacing: 2,
+                children: chipWidgets,
               ),
-            if (labels.key != null)
-              _MetadataChip(
-                key: const ValueKey('song_metadata_key_chip'),
-                label: labels.key!,
-              ),
-          ],
-        ),
       ),
     );
     if (topSpacing <= 0) return chips;

@@ -232,7 +232,7 @@ void main() {
                     180,
                     bpm: 141.18,
                     key: 'F-sharp minor',
-                    camelot: '11A',
+                    camelot: textScale >= 3 ? null : '11A',
                   ),
                   role: LaneRole.current,
                   statusLabel: 'Current',
@@ -245,10 +245,13 @@ void main() {
       );
 
       expect(find.text('141.2 BPM'), findsOneWidget);
-      expect(find.text('11A'), findsOneWidget);
+      expect(
+        find.text(textScale >= 3 ? 'F-sharp minor' : '11A'),
+        findsOneWidget,
+      );
       expect(
         tester.getSize(find.byType(TimelineLaneHeader)).height,
-        lessThanOrEqualTo(64),
+        TimelineLaneHeader.heightForTextScale(textScale),
       );
       if (textScale == 3.0) {
         final headerBounds = tester.getRect(find.byType(TimelineLaneHeader));
@@ -648,6 +651,7 @@ void main() {
     final model = TimelineModel(
       clips: [_mixClip('t1', 0, 240000), _mixClip('t2', 240000, 240000)],
     );
+    var waveformBuilds = 0;
 
     await _pump(
       tester,
@@ -657,11 +661,16 @@ void main() {
       timelineModel: model,
       playheadPositionMs: 0,
       positionMsStream: positions.stream,
+      waveformFor: (track, targetSampleCount) {
+        waveformBuilds++;
+        return richWaveformForTrack(track, sampleCount: targetSampleCount);
+      },
     );
 
     final before = tester.getRect(
       find.byKey(const ValueKey('timeline_playhead')),
     );
+    final waveformBuildsBeforePosition = waveformBuilds;
     await tester.runAsync(() async {
       positions.add(60000);
       await Future<void>.delayed(Duration.zero);
@@ -672,6 +681,7 @@ void main() {
     );
 
     expect(after.left, greaterThan(before.left));
+    expect(waveformBuilds, waveformBuildsBeforePosition);
   });
 
   testWidgets('browse drag scrubs through the engine lifecycle', (

@@ -125,16 +125,6 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final provider = context.read<QueueProvider>();
-    if (!identical(_hydrationProvider, provider)) {
-      _hydrationProvider?.clearAnalysisHydrationInterest();
-      _hydrationProvider = provider;
-    }
-  }
-
-  @override
   void dispose() {
     _hydrationProvider?.clearAnalysisHydrationInterest();
     super.dispose();
@@ -147,6 +137,7 @@ class _QueueScreenState extends State<QueueScreen> {
         bottom: false,
         child: Consumer2<QueueProvider, PlaybackState>(
           builder: (context, provider, playback, _) {
+            _adoptHydrationProvider(provider);
             if (_viewMode == _QueueViewMode.list) {
               _clearAnalysisHydration(provider);
             }
@@ -457,11 +448,6 @@ class _QueueScreenState extends State<QueueScreen> {
         cached.currentIndex == currentIndex &&
         cached.analysisRevision == provider.analysisRevision &&
         identical(cached.timelineModel, playback.timelineModel)) {
-      _syncPlaybackAnalyses(
-        playback: playback,
-        queue: queue,
-        tracks: cached.tracks,
-      );
       return cached;
     }
 
@@ -967,6 +953,17 @@ class _QueueScreenState extends State<QueueScreen> {
     _visibleHydrationTrackKeys = <String>{};
     _playbackTimelineTracksCache = null;
     provider.clearAnalysisHydrationInterest();
+  }
+
+  void _adoptHydrationProvider(QueueProvider provider) {
+    if (identical(_hydrationProvider, provider)) return;
+    _hydrationProvider?.clearAnalysisHydrationInterest();
+    _hydrationProvider = provider;
+    _hydrationQueueIdentity = null;
+    _hydrationCurrentIndex = null;
+    _hydrationUsesPlaybackQueue = null;
+    _visibleHydrationTrackKeys = <String>{};
+    _playbackTimelineTracksCache = null;
   }
 
   Widget _buildListView(BuildContext context, QueueProvider provider) {
