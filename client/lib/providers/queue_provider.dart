@@ -1276,6 +1276,7 @@ class QueueProvider extends ChangeNotifier {
         : TrackAnalysisOverrides(
             bpm: sourceOverrides.bpm,
             bpmConfidence: sourceOverrides.bpmConfidence,
+            beatGridOffsetMs: sourceOverrides.beatGridOffsetMs,
             beatsMs: sourceOverrides.beatsMs == null
                 ? null
                 : _boundedMarkerPositions(
@@ -1291,6 +1292,9 @@ class QueueProvider extends ChangeNotifier {
             musicalKey: sourceOverrides.musicalKey,
             camelot: sourceOverrides.camelot,
             provenance: sourceOverrides.provenance,
+            bpmProvenance: sourceOverrides.bpmProvenance,
+            beatGridProvenance: sourceOverrides.beatGridProvenance,
+            downbeatProvenance: sourceOverrides.downbeatProvenance,
           );
     return TrackAnalysis(
       status: analysis.status,
@@ -1701,7 +1705,15 @@ class QueueProvider extends ChangeNotifier {
           ..remove('confidence')
           ..remove('provenance');
       }
-      if (overrides.beatsMs != null) beatGrid.remove('beats_ms');
+      if (overrides.beatsMs != null) {
+        beatGrid
+          ..remove('beats_ms')
+          ..remove('confidence')
+          ..remove('provenance');
+      }
+      if (overrides.beatGridOffsetMs != null) {
+        beatGrid.remove('offset_ms');
+      }
       if (beatGrid.isEmpty) summary.remove('beat_grid');
     }
     if (overrides.downbeatsMs != null) summary.remove('downbeats');
@@ -1786,8 +1798,30 @@ class QueueProvider extends ChangeNotifier {
       _analysisValueSignature(summary?.key),
       _analysisValueSignature(summary?.camelot),
       _analysisValueSignature(summary?.energy),
+      _analysisOverridesSignature(analysis.overrides),
     );
   }
+
+  int? _analysisOverridesSignature(TrackAnalysisOverrides? overrides) =>
+      overrides == null
+          ? null
+          : Object.hash(
+              overrides.bpm,
+              overrides.bpmConfidence,
+              overrides.beatGridOffsetMs,
+              overrides.beatsMs == null
+                  ? null
+                  : Object.hashAll(overrides.beatsMs!),
+              overrides.downbeatsMs == null
+                  ? null
+                  : Object.hashAll(overrides.downbeatsMs!),
+              overrides.musicalKey,
+              overrides.camelot,
+              overrides.provenance,
+              overrides.bpmProvenance,
+              overrides.beatGridProvenance,
+              overrides.downbeatProvenance,
+            );
 
   int? _analysisValueSignature(AnalysisValue? value) => value == null
       ? null

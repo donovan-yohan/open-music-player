@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -40,6 +41,8 @@ type AnalysisOverridesRequest struct {
 }
 
 const maxAnalysisOverridesRequestBytes = 1 << 20
+
+const manualAnalysisOverrideProvenance = "manual_override"
 
 func newAnalysisResponse(analysis *db.TrackAnalysis) AnalysisResponse {
 	resp := AnalysisResponse{
@@ -162,9 +165,162 @@ func normalizeAnalysisOverrides(raw json.RawMessage) (json.RawMessage, error) {
 	if obj == nil {
 		return nil, errors.New("overrides must be a JSON object")
 	}
+	if err := normalizeManualBPMOverride(obj); err != nil {
+		return nil, err
+	}
+	if err := normalizeManualBeatGridOverride(obj); err != nil {
+		return nil, err
+	}
+	if err := normalizeManualDownbeatsOverride(obj); err != nil {
+		return nil, err
+	}
 	normalized, err := json.Marshal(obj)
 	if err != nil {
 		return nil, errors.New("failed to normalize overrides")
 	}
 	return normalized, nil
+}
+
+func normalizeManualBPMOverride(overrides map[string]any) error {
+	raw, present := overrides["bpm"]
+	if !present {
+		return nil
+	}
+	fields, ok := raw.(map[string]any)
+	if !ok {
+		if !isFiniteJSONNumber(raw) {
+			return errors.New("bpm override value must be a finite number")
+		}
+		fields = map[string]any{"value": raw}
+	} else if _, hasValue := fields["value"]; !hasValue {
+		if legacyValue, hasLegacyValue := fields["nativeBpm"]; hasLegacyValue {
+			fields["value"] = legacyValue
+		}
+	}
+	delete(fields, "nativeBpm")
+
+	value, hasValue := fields["value"]
+	if !hasValue {
+		clearManualTrust(fields)
+		overrides["bpm"] = fields
+		return nil
+	}
+	if !isFiniteJSONNumber(value) {
+		return errors.New("bpm override value must be a finite number")
+	}
+	stampManualTrust(fields)
+	overrides["bpm"] = fields
+	return nil
+}
+
+func normalizeManualBeatGridOverride(overrides map[string]any) error {
+	raw, present := overrides["beat_grid"]
+	if !present {
+		return nil
+	}
+	fields, ok := raw.(map[string]any)
+	if !ok {
+		return errors.New("beat_grid override must be a JSON object")
+	}
+
+	bpm, hasBPM := preferCanonicalOverrideField(fields, "bpm")
+	if hasBPM && !isFiniteJSONNumber(bpm) {
+		return errors.New("beat_grid bpm must be a finite number")
+	}
+	offset, hasOffset := preferCanonicalOverrideField(fields, "offset_ms", "offsetMs")
+	if hasOffset && !isJSONInteger(offset) {
+		return errors.New("beat_grid offset must be an integer")
+	}
+	beats, hasBeats := preferCanonicalOverrideField(fields, "beats_ms", "beatsMs")
+	if hasBeats && !isJSONIntegerList(beats) {
+		return errors.New("beat_grid beats must be an integer array")
+	}
+
+	// Compact beat-grid confidence is also the fallback BPM confidence. An
+	// offset-only correction must therefore retain analyzer confidence instead
+	// of marking inherited BPM/beat facts as manually trusted.
+	if hasBPM || hasBeats {
+		stampManualTrust(fields)
+	} else {
+		clearManualTrust(fields)
+	}
+	overrides["beat_grid"] = fields
+	return nil
+}
+
+func normalizeManualDownbeatsOverride(overrides map[string]any) error {
+	raw, present := overrides["downbeats"]
+	if !present {
+		return nil
+	}
+	fields, ok := raw.(map[string]any)
+	if !ok {
+		if !isJSONIntegerList(raw) {
+			return errors.New("downbeats override must be an integer array or JSON object")
+		}
+		fields = map[string]any{"positions_ms": raw}
+	} else {
+		preferCanonicalOverrideField(fields, "positions_ms", "positionsMs")
+	}
+
+	positions, hasPositions := fields["positions_ms"]
+	if !hasPositions {
+		clearManualTrust(fields)
+		overrides["downbeats"] = fields
+		return nil
+	}
+	if !isJSONIntegerList(positions) {
+		return errors.New("downbeats positions must be an integer array")
+	}
+	stampManualTrust(fields)
+	overrides["downbeats"] = fields
+	return nil
+}
+
+// preferCanonicalOverrideField returns the canonical value when both forms
+// exist, otherwise moves the first accepted legacy alias into canonical form.
+func preferCanonicalOverrideField(fields map[string]any, canonical string, aliases ...string) (any, bool) {
+	value, present := fields[canonical]
+	for _, alias := range aliases {
+		legacyValue, hasLegacyValue := fields[alias]
+		if !present && hasLegacyValue {
+			value, present = legacyValue, true
+			fields[canonical] = legacyValue
+		}
+		delete(fields, alias)
+	}
+	return value, present
+}
+
+func stampManualTrust(fields map[string]any) {
+	fields["confidence"] = 1.0
+	fields["provenance"] = manualAnalysisOverrideProvenance
+}
+
+func clearManualTrust(fields map[string]any) {
+	delete(fields, "confidence")
+	delete(fields, "provenance")
+}
+
+func isFiniteJSONNumber(value any) bool {
+	number, ok := value.(float64)
+	return ok && !math.IsNaN(number) && !math.IsInf(number, 0)
+}
+
+func isJSONInteger(value any) bool {
+	number, ok := value.(float64)
+	return ok && !math.IsNaN(number) && !math.IsInf(number, 0) && math.Trunc(number) == number
+}
+
+func isJSONIntegerList(value any) bool {
+	values, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range values {
+		if !isJSONInteger(item) {
+			return false
+		}
+	}
+	return true
 }

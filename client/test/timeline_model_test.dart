@@ -613,6 +613,53 @@ void main() {
       expect(model.clips.single.placement.sourceEndMs, 1500);
       expect(model.clips.single.timelineStartMs, 250);
     });
+
+    test('fromQueuePlan keeps free snap default placement contiguous', () {
+      final queuePlan = plan(
+        name: 'Queue timing',
+        clips: [
+          planClip(
+            clipId: 'queue-1',
+            queueItemId: 'queue-1',
+            trackId: '1',
+            sourceEndMs: 20000,
+            timelineStartMs: 0,
+          ),
+          planClip(
+            clipId: 'queue-2',
+            queueItemId: 'queue-2',
+            trackId: '2',
+            sourceEndMs: 20000,
+            timelineStartMs: 0,
+          ),
+        ],
+      );
+      const tempo = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        downbeatsMs: [0, 4000, 8000, 12000, 16000],
+        downbeatConfidence: 0.9,
+      );
+
+      final locked = TimelineModel.fromQueuePlan(
+        queuePlan,
+        trackOrder: const ['1', '2'],
+        sourceDurationMsFor: (_) => 20000,
+        tempoMetadataFor: (_) => tempo,
+        useTempoDefaultStarts: true,
+      );
+      final free = TimelineModel.fromQueuePlan(
+        queuePlan,
+        trackOrder: const ['1', '2'],
+        sourceDurationMsFor: (_) => 20000,
+        tempoMetadataFor: (_) => tempo,
+        useTempoDefaultStarts: true,
+        snapMode: BeatSnapMode.free,
+      );
+
+      expect(locked.clips.map((clip) => clip.timelineStartMs), [0, 12000]);
+      expect(free.clips.map((clip) => clip.timelineStartMs), [0, 20000]);
+    });
   });
 }
 

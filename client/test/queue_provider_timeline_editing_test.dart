@@ -623,6 +623,103 @@ void main() {
     expect(refreshed.analysis?.summary?.waveform?.peaks, isNotEmpty);
   });
 
+  test('hydration cache compaction preserves distinct timing provenance',
+      () async {
+    final hydrated = Completer<void>();
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'updated_at': '2026-07-10T12:00:00Z',
+            'summary': {
+              'bpm': {
+                'value': 120,
+                'confidence': 0.9,
+                'provenance': 'analyzer-bpm',
+              },
+              'beat_grid': {
+                'bpm': 120,
+                'offset_ms': 25,
+                'beats_ms': [25, 525, 1025],
+                'confidence': 0.9,
+                'provenance': 'analyzer-grid',
+              },
+              'downbeats': {
+                'positions_ms': [25],
+                'confidence': 0.9,
+                'provenance': 'analyzer-downbeat',
+              },
+              'waveform': {
+                'sample_count': 2,
+                'peaks': [0.2, 0.8],
+              },
+            },
+            'overrides': {
+              'bpm': {'value': 124, 'provenance': 'bpm-source'},
+              'beat_grid': {
+                'offset_ms': 87,
+                'beats_ms': [87, 571, 1055],
+                'provenance': 'grid-source',
+              },
+              'downbeats': {
+                'positions_ms': [87],
+                'provenance': 'downbeat-source',
+              },
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    provider.addListener(() {
+      if (!hydrated.isCompleted) hydrated.complete();
+    });
+
+    final track = _track(playbackTrackId: '42');
+    provider.trackWithAnalysis(track);
+    await hydrated.future.timeout(const Duration(seconds: 1));
+    expect(
+      provider
+          .trackWithAnalysis(track, requestHydration: false)
+          .analysis
+          ?.summary
+          ?.waveform
+          ?.peaks,
+      [0.2, 0.8],
+    );
+
+    provider.clearAnalysisHydrationInterest();
+    final compacted =
+        provider.trackWithAnalysis(track, requestHydration: false).analysis!;
+    final overrides = compacted.overrides!;
+    final json = overrides.toJson();
+    final tempo = ClipTempoMetadata.fromSessionJson(
+      ClipTempoMetadata.fromAnalysisSummary(
+        compacted.summary?.toJson(),
+        overrides: json,
+      ).toJson(),
+    );
+
+    expect(compacted.summary?.waveform, isNull);
+    expect(overrides.beatGridOffsetMs, 87);
+    expect(overrides.bpmProvenance, 'bpm-source');
+    expect(overrides.beatGridProvenance, 'grid-source');
+    expect(overrides.downbeatProvenance, 'downbeat-source');
+    expect(json['bpm']['provenance'], 'bpm-source');
+    expect(json['beat_grid']['provenance'], 'grid-source');
+    expect(json['downbeats']['provenance'], 'downbeat-source');
+    expect(tempo.beatGridOffsetMs, 87);
+    expect(tempo.bpmProvenance, 'bpm-source');
+    expect(tempo.beatGridProvenance, 'grid-source');
+    expect(tempo.downbeatProvenance, 'downbeat-source');
+    provider.dispose();
+  });
+
   test('explicit compact override clear replaces cached detailed override',
       () async {
     final hydrated = Completer<void>();

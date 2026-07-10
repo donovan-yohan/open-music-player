@@ -12,6 +12,8 @@ const (
 	maxCompactDownbeatPositions = 2048
 	maxCompactLabelLength       = 128
 	maxCompactProvenanceLength  = 256
+	manualOverrideConfidence    = 1.0
+	manualOverrideProvenance    = "manual_override"
 )
 
 type compactAnalysisDocument struct {
@@ -51,8 +53,64 @@ type compactDownbeats struct {
 
 func projectCompactAnalysis(summaryJSON, overridesJSON json.RawMessage) (json.RawMessage, json.RawMessage) {
 	base := decodeCompactAnalysis(summaryJSON)
-	overrides := decodeCompactAnalysis(overridesJSON)
+	overrides := normalizeManualCompactTimingOverrides(decodeCompactAnalysis(overridesJSON))
 	return encodeCompactAnalysis(mergeCompactAnalysis(base, overrides)), encodeCompactAnalysis(overrides)
+}
+
+// Legacy rows can predate explicit manual confidence/provenance fields. The
+// compact projection is the shared list/queue boundary, so normalize there as
+// well as at the write API before merging with analyzer facts.
+func normalizeManualCompactTimingOverrides(overrides compactAnalysisDocument) compactAnalysisDocument {
+	overrides.BPM = trustedManualCompactNumberValue(overrides.BPM)
+	overrides.BeatGrid = trustedManualCompactBeatGrid(overrides.BeatGrid)
+	overrides.Downbeats = trustedManualCompactDownbeats(overrides.Downbeats)
+	return overrides
+}
+
+func trustedManualCompactNumberValue(value *compactNumberValue) *compactNumberValue {
+	if value == nil || value.Value == nil {
+		return value
+	}
+	confidence := manualOverrideConfidence
+	provenance := manualOverrideProvenance
+	return &compactNumberValue{
+		Value:      value.Value,
+		Confidence: &confidence,
+		Provenance: &provenance,
+	}
+}
+
+func trustedManualCompactBeatGrid(value *compactBeatGrid) *compactBeatGrid {
+	if value == nil || (value.BPM == nil && value.OffsetMS == nil && value.BeatsMS == nil) {
+		return value
+	}
+	if value.BPM == nil && value.BeatsMS == nil {
+		return &compactBeatGrid{
+			OffsetMS: value.OffsetMS,
+		}
+	}
+	confidence := manualOverrideConfidence
+	provenance := manualOverrideProvenance
+	return &compactBeatGrid{
+		BPM:        value.BPM,
+		OffsetMS:   value.OffsetMS,
+		BeatsMS:    value.BeatsMS,
+		Confidence: &confidence,
+		Provenance: &provenance,
+	}
+}
+
+func trustedManualCompactDownbeats(value *compactDownbeats) *compactDownbeats {
+	if value == nil || value.PositionsMS == nil {
+		return value
+	}
+	confidence := manualOverrideConfidence
+	provenance := manualOverrideProvenance
+	return &compactDownbeats{
+		PositionsMS: value.PositionsMS,
+		Confidence:  &confidence,
+		Provenance:  &provenance,
+	}
 }
 
 func decodeCompactAnalysis(payload json.RawMessage) compactAnalysisDocument {
@@ -75,7 +133,7 @@ func decodeCompactNumberValue(raw json.RawMessage) *compactNumberValue {
 		return &compactNumberValue{Value: value}
 	}
 	fields := decodeCompactObject(raw)
-	value := decodeFiniteFloat(fields["value"])
+	value := decodeFiniteFloat(firstCompactField(fields, "value", "nativeBpm"))
 	if value == nil {
 		return nil
 	}
@@ -109,8 +167,8 @@ func decodeCompactBeatGrid(raw json.RawMessage) *compactBeatGrid {
 	}
 	grid := &compactBeatGrid{
 		BPM:        decodeFiniteFloat(fields["bpm"]),
-		OffsetMS:   decodeInt64(fields["offset_ms"]),
-		BeatsMS:    decodeBoundedIntArray(fields["beats_ms"], maxCompactBeatPositions),
+		OffsetMS:   decodeInt64(firstCompactField(fields, "offset_ms", "offsetMs")),
+		BeatsMS:    decodeBoundedIntArray(firstCompactField(fields, "beats_ms", "beatsMs"), maxCompactBeatPositions),
 		Confidence: decodeFiniteFloat(fields["confidence"]),
 		Provenance: decodeBoundedString(fields["provenance"], maxCompactProvenanceLength),
 	}
@@ -129,7 +187,7 @@ func decodeCompactDownbeats(raw json.RawMessage) *compactDownbeats {
 		return nil
 	}
 	downbeats := &compactDownbeats{
-		PositionsMS: decodeBoundedIntArray(fields["positions_ms"], maxCompactDownbeatPositions),
+		PositionsMS: decodeBoundedIntArray(firstCompactField(fields, "positions_ms", "positionsMs"), maxCompactDownbeatPositions),
 		Confidence:  decodeFiniteFloat(fields["confidence"]),
 		Provenance:  decodeBoundedString(fields["provenance"], maxCompactProvenanceLength),
 	}
@@ -145,6 +203,15 @@ func decodeCompactObject(raw json.RawMessage) map[string]json.RawMessage {
 		return nil
 	}
 	return fields
+}
+
+func firstCompactField(fields map[string]json.RawMessage, names ...string) json.RawMessage {
+	for _, name := range names {
+		if value, ok := fields[name]; ok {
+			return value
+		}
+	}
+	return nil
 }
 
 func decodeFiniteFloat(raw json.RawMessage) *float64 {

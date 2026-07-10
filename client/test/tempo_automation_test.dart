@@ -210,6 +210,7 @@ void main() {
         },
       });
       expect(generated.downbeatConfidence, 0.54);
+      expect(generated.downbeatProvenance, isNull);
       expect(generated.hasDownbeats, isFalse);
 
       final corrected = ClipTempoMetadata.fromAnalysisSummary(
@@ -227,7 +228,27 @@ void main() {
         },
       );
       expect(corrected.downbeatConfidence, 1);
+      expect(corrected.downbeatProvenance, manualTempoProvenance);
       expect(corrected.hasDownbeats, isTrue);
+    });
+
+    test('bare downbeats arrays preserve markers and explicit clears', () {
+      final generated = ClipTempoMetadata.fromAnalysisSummary({
+        'bpm': {'value': 120, 'confidence': 0.9},
+        'downbeats': [0, 2000],
+      });
+      final corrected = ClipTempoMetadata.fromAnalysisSummary(
+        {
+          'bpm': {'value': 120, 'confidence': 0.9},
+          'downbeats': [0, 2000],
+        },
+        overrides: const {'downbeats': []},
+      );
+
+      expect(generated.downbeatsMs, [0, 2000]);
+      expect(corrected.downbeatsMs, isEmpty);
+      expect(corrected.downbeatConfidence, 1.0);
+      expect(corrected.downbeatProvenance, manualTempoProvenance);
     });
 
     test(

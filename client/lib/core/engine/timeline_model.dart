@@ -276,6 +276,7 @@ class TimelineModel {
     String Function(String trackId, int index)? clipIdFor,
     String Function(String trackId, int index)? queueItemIdFor,
     bool useTempoDefaultStarts = false,
+    BeatSnapMode snapMode = BeatSnapMode.downbeat,
   }) {
     final remainingPlanClips = List<MixPlanClip>.from(plan.clips);
     var cursor = 0;
@@ -318,6 +319,7 @@ class TimelineModel {
           incomingSelectedDurationMs: sourceEndMs - sourceStartMs,
           incomingTempo: tempo,
           fallbackStartMs: baselineTimelineStartMs,
+          snapMode: snapMode,
         );
       }
 

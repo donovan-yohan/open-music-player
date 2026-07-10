@@ -341,13 +341,21 @@ void main() {
             'camelot': {'value': '6A'},
           },
           'analysisOverrides': {
-            'bpm': {'value': 124.0, 'confidence': 1.0},
+            'bpm': {
+              'value': 124.0,
+              'confidence': 1.0,
+              'provenance': 'manual_override',
+            },
             'beat_grid': {
               'bpm': 124.0,
               'beats_ms': [120, 604, 1088],
+              'confidence': 1.0,
+              'provenance': 'manual_override',
             },
             'downbeats': {
               'positions_ms': [120, 2056],
+              'confidence': 1.0,
+              'provenance': 'manual_override',
             },
             'key': {'value': 'A minor'},
             'camelot': {'value': '8A'},
@@ -360,9 +368,14 @@ void main() {
     final analysis = track.analysis!;
     expect(analysis.summary!.bpm!.numericValue, 124);
     expect(analysis.summary!.bpm!.provenance, 'manual_override');
+    expect(analysis.summary!.bpm!.confidence, 1.0);
     expect(analysis.summary!.beatGrid!.bpm, 124);
     expect(analysis.summary!.beatGrid!.beatsMs, [120, 604, 1088]);
+    expect(analysis.summary!.beatGrid!.confidence, 1.0);
+    expect(analysis.summary!.beatGrid!.provenance, 'manual_override');
     expect(analysis.summary!.downbeats!.positionsMs, [120, 2056]);
+    expect(analysis.summary!.downbeats!.confidence, 1.0);
+    expect(analysis.summary!.downbeats!.provenance, 'manual_override');
     expect(analysis.summary!.key!.textValue, 'A minor');
     expect(analysis.summary!.camelot!.textValue, '8A');
 
