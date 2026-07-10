@@ -92,6 +92,7 @@ class MixSession {
     var nextOrdinal = nextClipOrdinal;
     final normalized = <MixSessionClip>[];
     int? firstNewIndex;
+    int? firstTempoChangedIndex;
 
     for (var i = 0; i < queue.length; i++) {
       final existing = i < clips.length ? clips[i] : null;
@@ -105,13 +106,22 @@ class MixSession {
             )
           : existing.reconciledWithMediaItem(item);
       if (existing == null) firstNewIndex ??= i;
+      if (existing != null && clip.tempo != existing.tempo) {
+        firstTempoChangedIndex ??= i;
+      }
       normalized.add(clip);
       cursorMs = clip.timelineEndMs;
     }
 
-    final reflowed = firstNewIndex == null
-        ? normalized
-        : _reflowDefaultTransitions(normalized, startIndex: firstNewIndex);
+    final reflowed = firstNewIndex != null
+        ? _reflowDefaultTransitions(normalized, startIndex: firstNewIndex)
+        : firstTempoChangedIndex == null
+            ? normalized
+            : _reflowDefaultTransitions(
+                normalized,
+                startIndex: firstTempoChangedIndex,
+                preserveEditedPlacements: true,
+              );
     return MixSession(
       sessionId: sessionId,
       schemaVersion: schemaVersion,

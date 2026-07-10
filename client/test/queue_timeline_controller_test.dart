@@ -6,6 +6,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:open_music_player/core/audio/queue_timeline_controller.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
+import 'package:open_music_player/core/engine/transition_diagnostics.dart';
 
 import 'support/fake_voice.dart';
 
@@ -333,6 +334,89 @@ void main() {
       await harness.dispose();
     });
 
+    test('refreshed manual analysis rebuilds tempo diagnostics and automation',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item('1', seconds: 20),
+        _item('2', seconds: 20),
+      ]);
+
+      expect(harness.engine.model.clips.map((clip) => clip.tempo.isEmpty), [
+        isTrue,
+        isTrue,
+      ]);
+
+      await harness.controller.setQueue(
+        [
+          _item(
+            '1',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000],
+            ),
+            analysisOverrides: {
+              'bpm': {'value': 120, 'confidence': 1.0},
+              'beat_grid': {
+                'bpm': 120,
+                'beats_ms': [0, 500, 1000, 1500, 2000],
+              },
+              'downbeats': {
+                'positions_ms': [0, 4000, 8000, 12000, 16000],
+              },
+            },
+          ),
+          _item(
+            '2',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 141.18,
+              downbeatsMs: [87, 1787, 3487, 5187, 6887, 8587, 10287, 11987],
+            ),
+            analysisOverrides: {
+              'bpm': {'value': 141.18, 'confidence': 1.0},
+              'beat_grid': {
+                'bpm': 141.18,
+                'beats_ms': [87, 512, 937, 1362, 1787],
+              },
+              'downbeats': {
+                'positions_ms': [
+                  87,
+                  1787,
+                  3487,
+                  5187,
+                  6887,
+                  8587,
+                  10287,
+                  11987,
+                ],
+              },
+            },
+          ),
+        ],
+        preserveTimelineEdits: true,
+      );
+
+      final clips = harness.engine.model.clips;
+      expect(clips[0].tempo.nativeBpm, 120);
+      expect(clips[1].tempo.nativeBpm, 141.18);
+      expect(clips[1].tempo.downbeatsMs.first, 87);
+      expect(clips[1].timelineStartMs, lessThan(clips[0].timelineEndMs));
+      final overlapEndMs = clips[0].timelineEndMs < clips[1].timelineEndMs
+          ? clips[0].timelineEndMs
+          : clips[1].timelineEndMs;
+      expect(clips[0].playbackRateAt(overlapEndMs - 1), greaterThan(1));
+      expect(clips[1].playbackRateAt(clips[1].timelineStartMs), lessThan(1));
+
+      final diagnostics = diagnoseTransition(clips[0], clips[1]);
+      final codes = diagnostics.diagnostics.map((item) => item.code).toList();
+      expect(codes, isNot(contains(TransitionDiagnosticCode.missingBpm)));
+      expect(codes, isNot(contains(TransitionDiagnosticCode.missingDownbeats)));
+
+      await harness.dispose();
+    });
+
     test('tempo-adjusted clip windows drive snapshot and current index',
         () async {
       final harness = _Harness();
@@ -506,6 +590,7 @@ MediaItem _item(
   String id, {
   int seconds = 5,
   Map<String, dynamic>? analysisSummary,
+  Map<String, dynamic>? analysisOverrides,
 }) =>
     MediaItem(
       id: id,
@@ -514,6 +599,7 @@ MediaItem _item(
       extras: {
         'url': 'https://example.com/$id.mp3',
         if (analysisSummary != null) 'analysisSummary': analysisSummary,
+        if (analysisOverrides != null) 'analysisOverrides': analysisOverrides,
       },
     );
 
