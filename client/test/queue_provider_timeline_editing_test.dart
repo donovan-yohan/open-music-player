@@ -1093,6 +1093,114 @@ void main() {
     provider.dispose();
   });
 
+  test('successful reorder waits for failed reorder reconciliation', () async {
+    final firstStarted = Completer<void>();
+    final secondStarted = Completer<void>();
+    final releaseFirst = Completer<void>();
+    final firstTrack = _track(
+      id: '41',
+      queueItemId: 'queue-41',
+      playbackTrackId: '41',
+    );
+    final secondTrack = _track(
+      id: '42',
+      queueItemId: 'queue-42',
+      playbackTrackId: '42',
+    );
+    final thirdTrack = _track(
+      id: '43',
+      queueItemId: 'queue-43',
+      playbackTrackId: '43',
+    );
+    var serverTracks = [firstTrack, secondTrack, thirdTrack];
+    var queueRequests = 0;
+    var reorderRequests = 0;
+    Map<String, dynamic>? successfulRequest;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+          queueRequests++;
+          return http.Response(
+            jsonEncode({
+              'items': serverTracks.map((track) => track.toJson()).toList(),
+              'currentPosition': 0,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path.endsWith('/mix-plans')) {
+          return http.Response(
+            jsonEncode({'data': []}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.method == 'PUT' &&
+            request.url.path.endsWith('/queue/reorder')) {
+          reorderRequests++;
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          if (reorderRequests == 1) {
+            firstStarted.complete();
+            await releaseFirst.future;
+            return http.Response('', 500);
+          }
+
+          successfulRequest = body;
+          secondStarted.complete();
+          final queueItemId = body['queueItemId'] as String;
+          final toPosition = body['toPosition'] as int;
+          final fromPosition = serverTracks.indexWhere(
+            (track) => track.queueItemId == queueItemId,
+          );
+          final reordered = List<Track>.from(serverTracks);
+          final moved = reordered.removeAt(fromPosition);
+          reordered.insert(toPosition, moved);
+          serverTracks = reordered;
+          return http.Response(
+            jsonEncode({
+              'items': serverTracks.map((track) => track.toJson()).toList(),
+              'currentPosition': 1,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return http.Response('', 404);
+      }),
+    );
+
+    await provider.loadQueue();
+    final first = provider.reorderQueue(0, 2);
+    await firstStarted.future.timeout(const Duration(seconds: 1));
+    expect(
+      provider.queue.tracks.map((track) => track.queueItemId),
+      ['queue-42', 'queue-43', 'queue-41'],
+    );
+
+    final second = provider.reorderQueue(1, 0);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    expect(secondStarted.isCompleted, isFalse);
+
+    releaseFirst.complete();
+    await first;
+    await secondStarted.future.timeout(const Duration(seconds: 1));
+    await second;
+
+    expect(queueRequests, 2);
+    expect(successfulRequest, {
+      'queueItemId': 'queue-43',
+      'toPosition': 0,
+    });
+    expect(
+      provider.queue.tracks.map((track) => track.queueItemId),
+      ['queue-43', 'queue-41', 'queue-42'],
+    );
+    expect(provider.error, isNull);
+    provider.dispose();
+  });
+
   test('off-queue analysis authority is bounded and evicts oldest floors', () {
     final provider = QueueProvider(
       mockQueueApiClient((_) async => http.Response('', 404)),
@@ -1153,15 +1261,37 @@ void main() {
       129,
       (index) {
         final id = index + 1;
+        final baseAnalysis = _tempoAnalysis(
+          durationMs: 600000,
+          updatedAt: revision,
+        );
+        final analysis = index == 0
+            ? TrackAnalysis.fromJson(
+                status: 'analyzed',
+                summary: baseAnalysis.summary?.toJson(),
+                overrides: {
+                  'beat_grid': {
+                    'beats_ms': List<int>.generate(
+                      20000,
+                      (marker) => marker * 10,
+                    ),
+                  },
+                  'downbeats': {
+                    'positions_ms': List<int>.generate(
+                      5000,
+                      (marker) => marker * 40,
+                    ),
+                  },
+                },
+                updatedAt: revision,
+              )
+            : baseAnalysis;
         return _track(
           id: '$id',
           queueItemId: 'queue-$id',
           playbackTrackId: '$id',
           duration: 600,
-          analysis: _tempoAnalysis(
-            durationMs: 600000,
-            updatedAt: revision,
-          ),
+          analysis: analysis,
         );
       },
       growable: false,
@@ -1209,6 +1339,14 @@ void main() {
       );
       expect(
         resolved.analysis?.summary?.downbeats?.positionsMs.length,
+        lessThanOrEqualTo(64),
+      );
+      expect(
+        resolved.analysis?.overrides?.beatsMs?.length ?? 0,
+        lessThanOrEqualTo(128),
+      );
+      expect(
+        resolved.analysis?.overrides?.downbeatsMs?.length ?? 0,
         lessThanOrEqualTo(64),
       );
     }

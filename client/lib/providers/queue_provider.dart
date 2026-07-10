@@ -363,244 +363,256 @@ class QueueProvider extends ChangeNotifier {
     List<String> trackIds, {
     bool playNext = false,
   }) async {
-    final operationGeneration = _beginQueueOperation();
-    _notifyListeners();
-    try {
-      _error = null;
-      final updatedQueue = await _runQueueMutation(
-        () => _apiClient.addToQueue(
+    await _runQueueMutation(() async {
+      final operationGeneration = _beginQueueOperation();
+      _notifyListeners();
+      try {
+        _error = null;
+        final updatedQueue = await _apiClient.addToQueue(
           trackIds: trackIds,
           position: playNext ? 'next' : 'last',
-        ),
-      );
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
-      _rememberQueueAnalyses();
-      _pruneTimingState();
-      _notifyListeners();
-    } catch (e) {
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      await _reconcileQueueAfterMutationFailure(operationGeneration);
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _error = e.toString();
-      _notifyListeners();
-    }
+        );
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
+        _rememberQueueAnalyses();
+        _pruneTimingState();
+        _notifyListeners();
+      } catch (e) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        await _reconcileQueueAfterMutationFailure(operationGeneration);
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _error = e.toString();
+        _notifyListeners();
+      }
+    });
   }
 
   Future<void> addSourceCandidate(
     DiscoveryCandidate candidate, {
     bool playNext = false,
   }) async {
-    final operationGeneration = _beginQueueOperation();
-    _notifyListeners();
-    try {
-      _error = null;
-      final updatedQueue = await _runQueueMutation(
-        () => _apiClient.addSourceCandidateToQueue(
+    await _runQueueMutation(() async {
+      final operationGeneration = _beginQueueOperation();
+      _notifyListeners();
+      try {
+        _error = null;
+        final updatedQueue = await _apiClient.addSourceCandidateToQueue(
           candidate: candidate,
           position: playNext ? 'next' : 'last',
-        ),
-      );
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
-      _rememberQueueAnalyses();
-      _pruneTimingState();
-      _notifyListeners();
-    } catch (e) {
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      await _reconcileQueueAfterMutationFailure(operationGeneration);
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _error = e.toString();
-      _notifyListeners();
-      rethrow;
-    }
+        );
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
+        _rememberQueueAnalyses();
+        _pruneTimingState();
+        _notifyListeners();
+      } catch (e) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        await _reconcileQueueAfterMutationFailure(operationGeneration);
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _error = e.toString();
+        _notifyListeners();
+        rethrow;
+      }
+    });
   }
 
   Future<void> removeFromQueue(int position) async {
     if (position < 0 || position >= _queue.tracks.length) return;
+    final queueItemId = _queue.tracks[position].queueItemId;
 
-    final operationGeneration = _beginQueueOperation();
-
-    final previousQueue = _queue;
-    final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
-    final previousTimelineStarts = Map<String, int>.from(
-      _timelineStartOverrides,
-    );
-    final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
-
-    // Optimistic update
-    final newTracks = List<Track>.from(_queue.tracks);
-    final removedTrack = newTracks.removeAt(position);
-    _trimRanges = Map<String, TrimRange>.from(_trimRanges);
-    _timelineStartOverrides = Map<String, int>.from(_timelineStartOverrides);
-    for (final key in _trackTimingKeys(removedTrack)) {
-      _trimRanges.remove(key);
-      _timelineStartOverrides.remove(key);
-    }
-
-    int newCurrentIndex = _queue.currentIndex;
-    if (position < _queue.currentIndex) {
-      newCurrentIndex--;
-    } else if (position == _queue.currentIndex) {
-      newCurrentIndex = newCurrentIndex.clamp(-1, newTracks.length - 1);
-    }
-    _queue = QueueState(
-      tracks: newTracks,
-      currentIndex: newCurrentIndex,
-      repeatMode: _queue.repeatMode,
-      shuffled: _queue.shuffled,
-    );
-    _pruneTimingState();
-    _pruneAnalysisAuthorityState();
-    _notifyListeners();
-
-    try {
-      final updatedQueue = await _runQueueMutation(
-        () => _apiClient.removeQueueItem(removedTrack.queueItemId),
+    await _runQueueMutation(() async {
+      final currentPosition = _queue.tracks.indexWhere(
+        (track) => track.queueItemId == queueItemId,
       );
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
-      _rememberQueueAnalyses();
+      if (currentPosition < 0) return;
+
+      final operationGeneration = _beginQueueOperation();
+      final previousQueue = _queue;
+      final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
+      final previousTimelineStarts = Map<String, int>.from(
+        _timelineStartOverrides,
+      );
+      final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
+
+      final newTracks = List<Track>.from(_queue.tracks);
+      final removedTrack = newTracks.removeAt(currentPosition);
+      _trimRanges = Map<String, TrimRange>.from(_trimRanges);
+      _timelineStartOverrides = Map<String, int>.from(_timelineStartOverrides);
+      for (final key in _trackTimingKeys(removedTrack)) {
+        _trimRanges.remove(key);
+        _timelineStartOverrides.remove(key);
+      }
+
+      int newCurrentIndex = _queue.currentIndex;
+      if (currentPosition < _queue.currentIndex) {
+        newCurrentIndex--;
+      } else if (currentPosition == _queue.currentIndex) {
+        newCurrentIndex = newCurrentIndex.clamp(-1, newTracks.length - 1);
+      }
+      _queue = QueueState(
+        tracks: newTracks,
+        currentIndex: newCurrentIndex,
+        repeatMode: _queue.repeatMode,
+        shuffled: _queue.shuffled,
+      );
       _pruneTimingState();
+      _pruneAnalysisAuthorityState();
       _notifyListeners();
-    } catch (e) {
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+
+      try {
+        final updatedQueue = await _apiClient.removeQueueItem(queueItemId);
         if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
+        _rememberQueueAnalyses();
+        _pruneTimingState();
+        _notifyListeners();
+      } catch (e) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+          if (!_isCurrentQueueOperation(operationGeneration)) return;
+          _error = e.toString();
+          _notifyListeners();
+          return;
+        }
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(previousQueue);
+        _rememberQueueAnalyses();
+        _trimRanges = previousTrimRanges;
+        _timelineStartOverrides = previousTimelineStarts;
+        _mixPlanClips = previousMixPlanClips;
         _error = e.toString();
         _notifyListeners();
-        return;
       }
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _queue = _queueWithAuthoritativeAnalysis(previousQueue);
-      _rememberQueueAnalyses();
-      _trimRanges = previousTrimRanges;
-      _timelineStartOverrides = previousTimelineStarts;
-      _mixPlanClips = previousMixPlanClips;
-      _error = e.toString();
-      _notifyListeners();
-    }
+    });
   }
 
   Future<void> retryTrack(Track track) async {
-    final operationGeneration = _beginQueueOperation();
-    _error = null;
-    _notifyListeners();
+    final queueItemId = track.queueItemId;
+    await _runQueueMutation(() async {
+      final operationGeneration = _beginQueueOperation();
+      _error = null;
+      _notifyListeners();
 
-    try {
-      final updatedQueue = await _runQueueMutation(
-        () => _apiClient.retryQueueItem(track.queueItemId),
-      );
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
-      _rememberQueueAnalyses();
-      _pruneTimingState();
-      _notifyListeners();
-    } catch (e) {
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      await _reconcileQueueAfterMutationFailure(operationGeneration);
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _error = e.toString();
-      _notifyListeners();
-    }
+      try {
+        final updatedQueue = await _apiClient.retryQueueItem(queueItemId);
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
+        _rememberQueueAnalyses();
+        _pruneTimingState();
+        _notifyListeners();
+      } catch (e) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        await _reconcileQueueAfterMutationFailure(operationGeneration);
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _error = e.toString();
+        _notifyListeners();
+      }
+    });
   }
 
   Future<void> reorderQueue(int oldIndex, int newIndex) async {
     if (oldIndex == newIndex) return;
     if (oldIndex < 0 || oldIndex >= _queue.tracks.length) return;
     if (newIndex < 0 || newIndex >= _queue.tracks.length) return;
+    final queueItemId = _queue.tracks[oldIndex].queueItemId;
 
-    final operationGeneration = _beginQueueOperation();
-
-    final previousQueue = _queue;
-
-    // Optimistic update
-    final newTracks = List<Track>.from(_queue.tracks);
-    final track = newTracks.removeAt(oldIndex);
-    newTracks.insert(newIndex, track);
-
-    int newCurrentIndex = _queue.currentIndex;
-    if (oldIndex == _queue.currentIndex) {
-      newCurrentIndex = newIndex;
-    } else if (oldIndex < _queue.currentIndex &&
-        newIndex >= _queue.currentIndex) {
-      newCurrentIndex--;
-    } else if (oldIndex > _queue.currentIndex &&
-        newIndex <= _queue.currentIndex) {
-      newCurrentIndex++;
-    }
-
-    _queue = QueueState(
-      tracks: newTracks,
-      currentIndex: newCurrentIndex,
-      repeatMode: _queue.repeatMode,
-      shuffled: _queue.shuffled,
-    );
-    _notifyListeners();
-
-    try {
-      final updatedQueue = await _runQueueMutation(
-        () => _apiClient.reorderQueue(
-          queueItemId: track.queueItemId,
-          toPosition: newIndex,
-        ),
+    await _runQueueMutation(() async {
+      final currentOldIndex = _queue.tracks.indexWhere(
+        (track) => track.queueItemId == queueItemId,
       );
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
-      _rememberQueueAnalyses();
-      _pruneTimingState();
+      if (currentOldIndex < 0 || _queue.tracks.isEmpty) return;
+      final currentNewIndex = newIndex.clamp(0, _queue.tracks.length - 1);
+      if (currentOldIndex == currentNewIndex) return;
+
+      final operationGeneration = _beginQueueOperation();
+      final previousQueue = _queue;
+      final newTracks = List<Track>.from(_queue.tracks);
+      final movedTrack = newTracks.removeAt(currentOldIndex);
+      newTracks.insert(currentNewIndex, movedTrack);
+
+      int newCurrentIndex = _queue.currentIndex;
+      if (currentOldIndex == _queue.currentIndex) {
+        newCurrentIndex = currentNewIndex;
+      } else if (currentOldIndex < _queue.currentIndex &&
+          currentNewIndex >= _queue.currentIndex) {
+        newCurrentIndex--;
+      } else if (currentOldIndex > _queue.currentIndex &&
+          currentNewIndex <= _queue.currentIndex) {
+        newCurrentIndex++;
+      }
+
+      _queue = QueueState(
+        tracks: newTracks,
+        currentIndex: newCurrentIndex,
+        repeatMode: _queue.repeatMode,
+        shuffled: _queue.shuffled,
+      );
       _notifyListeners();
-    } catch (e) {
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+
+      try {
+        final updatedQueue = await _apiClient.reorderQueue(
+          queueItemId: queueItemId,
+          toPosition: currentNewIndex,
+        );
         if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
+        _rememberQueueAnalyses();
+        _pruneTimingState();
+        _notifyListeners();
+      } catch (e) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+          if (!_isCurrentQueueOperation(operationGeneration)) return;
+          _error = e.toString();
+          _notifyListeners();
+          return;
+        }
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(previousQueue);
+        _rememberQueueAnalyses();
         _error = e.toString();
         _notifyListeners();
-        return;
       }
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _queue = _queueWithAuthoritativeAnalysis(previousQueue);
-      _rememberQueueAnalyses();
-      _error = e.toString();
-      _notifyListeners();
-    }
+    });
   }
 
   Future<void> clearQueue() async {
-    final operationGeneration = _beginQueueOperation();
-    final previousQueue = _queue;
-    final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
-    final previousTimelineStarts = Map<String, int>.from(
-      _timelineStartOverrides,
-    );
-    final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
+    await _runQueueMutation(() async {
+      final operationGeneration = _beginQueueOperation();
+      final previousQueue = _queue;
+      final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
+      final previousTimelineStarts = Map<String, int>.from(
+        _timelineStartOverrides,
+      );
+      final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
 
-    _queue = QueueState.empty();
-    _trimRanges = {};
-    _timelineStartOverrides = {};
-    _mixPlanClips = {};
-    _pruneAnalysisAuthorityState();
-    _notifyListeners();
+      _queue = QueueState.empty();
+      _trimRanges = {};
+      _timelineStartOverrides = {};
+      _mixPlanClips = {};
+      _pruneAnalysisAuthorityState();
+      _notifyListeners();
 
-    try {
-      await _runQueueMutation(_apiClient.clearQueue);
-    } catch (e) {
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+      try {
+        await _apiClient.clearQueue();
+      } catch (e) {
         if (!_isCurrentQueueOperation(operationGeneration)) return;
+        if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+          if (!_isCurrentQueueOperation(operationGeneration)) return;
+          _error = e.toString();
+          _notifyListeners();
+          return;
+        }
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(previousQueue);
+        _rememberQueueAnalyses();
+        _trimRanges = previousTrimRanges;
+        _timelineStartOverrides = previousTimelineStarts;
+        _mixPlanClips = previousMixPlanClips;
         _error = e.toString();
         _notifyListeners();
-        return;
       }
-      if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _queue = _queueWithAuthoritativeAnalysis(previousQueue);
-      _rememberQueueAnalyses();
-      _trimRanges = previousTrimRanges;
-      _timelineStartOverrides = previousTimelineStarts;
-      _mixPlanClips = previousMixPlanClips;
-      _error = e.toString();
-      _notifyListeners();
-    }
+    });
   }
 
   /// Move a track's entry point to [ms]. Clamped via [TrimRange].
@@ -1226,6 +1238,7 @@ class QueueProvider extends ChangeNotifier {
 
   TrackAnalysis _compactRevisionSnapshot(TrackAnalysis analysis) {
     final sourceSummary = analysis.summary;
+    final sourceOverrides = analysis.overrides;
     final beatGrid = sourceSummary?.beatGrid;
     final downbeats = sourceSummary?.downbeats;
     final summary = sourceSummary == null
@@ -1258,10 +1271,31 @@ class QueueProvider extends ChangeNotifier {
             camelot: sourceSummary.camelot,
             energy: sourceSummary.energy,
           );
-    return TrackAnalysis.fromJson(
-      status: analysis.status.name,
-      summary: summary?.toJson(),
-      overrides: analysis.overrides?.toJson(),
+    final overrides = sourceOverrides == null
+        ? null
+        : TrackAnalysisOverrides(
+            bpm: sourceOverrides.bpm,
+            bpmConfidence: sourceOverrides.bpmConfidence,
+            beatsMs: sourceOverrides.beatsMs == null
+                ? null
+                : _boundedMarkerPositions(
+                    sourceOverrides.beatsMs!,
+                    _maxRetainedBeatPositions,
+                  ),
+            downbeatsMs: sourceOverrides.downbeatsMs == null
+                ? null
+                : _boundedMarkerPositions(
+                    sourceOverrides.downbeatsMs!,
+                    _maxRetainedDownbeatPositions,
+                  ),
+            musicalKey: sourceOverrides.musicalKey,
+            camelot: sourceOverrides.camelot,
+            provenance: sourceOverrides.provenance,
+          );
+    return TrackAnalysis(
+      status: analysis.status,
+      summary: summary,
+      overrides: overrides,
       overridesPresent: analysis.overridesPresent,
       updatedAt: analysis.updatedAt,
     );
