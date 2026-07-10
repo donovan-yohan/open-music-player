@@ -242,6 +242,24 @@ void main() {
       expect(incoming.timelineMsForSourcePosition(2125), closeTo(7500, 2));
     });
 
+    test('does not apply BPM automation that would break shared tempo lock',
+        () {
+      final model = TimelineModel(
+        clips: [
+          _tempoClip('outgoing', 0, nativeBpm: 60),
+          _tempoClip('incoming', 5000, nativeBpm: 220),
+        ],
+      );
+
+      final outgoing = model.clips.firstWhere((clip) => clip.id == 'outgoing');
+      final incoming = model.clips.firstWhere((clip) => clip.id == 'incoming');
+
+      expect(outgoing.rateAutomation.segments, isEmpty);
+      expect(incoming.rateAutomation.segments, isEmpty);
+      expect(outgoing.playbackRateAt(7500), 1);
+      expect(incoming.playbackRateAt(7500), 1);
+    });
+
     test('overlap BPM automation preserves existing base rates', () {
       final model = TimelineModel(
         clips: [

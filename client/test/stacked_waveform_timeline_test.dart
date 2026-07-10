@@ -951,6 +951,56 @@ void main() {
     );
   });
 
+  testWidgets('selected transition hint surfaces out-of-range BPM sync', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 160);
+    final incoming = _track('t2', 'Paper Planes', 160);
+    final timeline = TimelineModel(
+      clips: [
+        _mixClip(
+          't1',
+          0,
+          160000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 60,
+            bpmConfidence: 0.9,
+            downbeatsMs: [0, 8000, 16000, 24000],
+          ),
+        ),
+        _mixClip(
+          't2',
+          8000,
+          160000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 220,
+            bpmConfidence: 0.9,
+            downbeatsMs: [0, 8000, 16000, 24000],
+          ),
+        ),
+      ],
+    );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      timelineModel: timeline,
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+
+    final hint = find.byKey(const ValueKey('timeline_transition_hint_t1'));
+    expect(hint, findsOneWidget);
+    expect(
+      find.descendant(of: hint, matching: find.textContaining('Tempo range')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('selected lane exposes pitch fallback from live clip state', (
     tester,
   ) async {

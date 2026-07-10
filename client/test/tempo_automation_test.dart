@@ -26,6 +26,18 @@ void main() {
       expect(plan.incomingSegment.endRate, closeTo(1.0, 0.0001));
       expect(plan.outgoingSegment.rateAt(7500), closeTo(1.125, 0.0001));
       expect(plan.incomingSegment.rateAt(7500), closeTo(0.9, 0.0001));
+
+      for (final ms in [5000, 6250, 7500, 8750, 10000]) {
+        final outgoingEffectiveBpm =
+            outgoing.nativeBpm! * plan.outgoingSegment.rateAt(ms);
+        final incomingEffectiveBpm =
+            incoming.nativeBpm! * plan.incomingSegment.rateAt(ms);
+        expect(
+          incomingEffectiveBpm,
+          closeTo(outgoingEffectiveBpm, 0.0001),
+          reason: 'clips must share the same transition BPM at $ms ms',
+        );
+      }
     });
 
     test('keeps caller base rates while targeting shared BPMs', () {
@@ -93,7 +105,8 @@ void main() {
       );
     });
 
-    test('clamps extreme tempo pulls to supported playback rates', () {
+    test('falls back when exact tempo sync would exceed safe playback rates',
+        () {
       const outgoing = ClipTempoMetadata(
         nativeBpm: 60,
         bpmConfidence: 0.95,
@@ -108,10 +121,16 @@ void main() {
         overlapEndMs: 4000,
         outgoingTempo: outgoing,
         incomingTempo: incoming,
-      )!;
+      );
 
-      expect(plan.outgoingSegment.endRate, maxTempoAutomationRate);
-      expect(plan.incomingSegment.startRate, minTempoAutomationRate);
+      expect(plan, isNull);
+      expect(
+        tempoTransitionTargetsAreAchievable(
+          outgoingTempo: outgoing,
+          incomingTempo: incoming,
+        ),
+        isFalse,
+      );
     });
   });
 
