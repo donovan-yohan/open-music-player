@@ -279,6 +279,80 @@ void main() {
       expect(playback.currentIndex, 0);
       playback.dispose();
     });
+
+    test('analysis refresh backfills beat-aware overlap for default queue',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final playback = _playbackState();
+
+      await playback.playQueue([
+        _track(1, seconds: 20),
+        _track(2, seconds: 20),
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.timelineModel.clips[1].timelineStartMs, 20000);
+
+      await playback.refreshTrackAnalysis(
+        '1',
+        _analysis(
+          bpm: 120,
+          downbeatsMs: [0, 4000, 8000, 12000, 16000],
+        ),
+      );
+      await playback.refreshTrackAnalysis(
+        '2',
+        _analysis(
+          bpm: 120,
+          downbeatsMs: [0, 4000, 8000, 12000, 16000],
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      final clips = playback.timelineModel.clips;
+      expect(clips[0].tempo.nativeBpm, 120);
+      expect(clips[1].tempo.nativeBpm, 120);
+      expect(clips[1].timelineStartMs, 12000);
+      expect(clips[0].playbackRateAt(12000), 1);
+      expect(clips[1].playbackRateAt(12000), 1);
+      playback.dispose();
+    });
+
+    test('analysis refresh preserves non-default timeline placement', () async {
+      SharedPreferences.setMockInitialValues({});
+      final playback = _playbackState();
+
+      await playback.playQueue([
+        _track(1, seconds: 20),
+        _track(2, seconds: 20),
+      ]);
+      await playback.setQueueTimelineStartMs(
+        1,
+        23000,
+        snapToDownbeat: false,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      await playback.refreshTrackAnalysis(
+        '1',
+        _analysis(
+          bpm: 120,
+          downbeatsMs: [0, 4000, 8000, 12000, 16000],
+        ),
+      );
+      await playback.refreshTrackAnalysis(
+        '2',
+        _analysis(
+          bpm: 120,
+          downbeatsMs: [0, 4000, 8000, 12000, 16000],
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.timelineModel.clips[1].tempo.nativeBpm, 120);
+      expect(playback.timelineModel.clips[1].timelineStartMs, 23000);
+      playback.dispose();
+    });
   });
 }
 

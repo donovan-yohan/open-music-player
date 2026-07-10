@@ -120,6 +120,22 @@ class MixSession {
     );
   }
 
+  MixSession reflowDefaultTransitionsFrom(int startIndex) {
+    if (clips.isEmpty) return this;
+    final reflowed = _reflowDefaultTransitions(
+      clips,
+      startIndex: startIndex,
+      preserveEditedPlacements: true,
+    );
+    if (_sameClipPlacements(clips, reflowed)) return this;
+    return MixSession(
+      sessionId: sessionId,
+      schemaVersion: schemaVersion,
+      clips: List.unmodifiable(reflowed),
+      nextClipOrdinal: nextClipOrdinal,
+    );
+  }
+
   MixSession insertAt(int index, MediaItem item) {
     final insertIndex = index.clamp(0, clips.length).toInt();
     final nextClips = <MixSessionClip>[];
@@ -749,15 +765,26 @@ int _nextOrdinalAfter(List<MixSessionClip> clips) {
 List<MixSessionClip> _reflowDefaultTransitions(
   List<MixSessionClip> clips, {
   required int startIndex,
+  bool preserveEditedPlacements = false,
 }) {
   if (clips.isEmpty) return clips;
   final next = List<MixSessionClip>.from(clips);
   if (startIndex >= next.length) return next;
   final first = startIndex.clamp(0, next.length - 1).toInt();
+  var reflowingContiguousDefaults = true;
 
   for (var index = first; index < next.length; index++) {
-    final previous = index == 0 ? null : next[index - 1];
+    final originalPrevious = index == 0 ? null : clips[index - 1];
+    final originalFallbackStartMs = originalPrevious?.timelineEndMs ?? 0;
     final clip = next[index];
+    if (preserveEditedPlacements &&
+        (!reflowingContiguousDefaults ||
+            clip.timelineStartMs != originalFallbackStartMs)) {
+      reflowingContiguousDefaults = false;
+      continue;
+    }
+
+    final previous = index == 0 ? null : next[index - 1];
     final fallbackStartMs = previous?.timelineEndMs ?? 0;
     next[index] = clip.withPlacement(
       clip.placement.withTimelineStartMs(
@@ -767,6 +794,17 @@ List<MixSessionClip> _reflowDefaultTransitions(
   }
 
   return next;
+}
+
+bool _sameClipPlacements(
+  List<MixSessionClip> first,
+  List<MixSessionClip> second,
+) {
+  if (first.length != second.length) return false;
+  for (var i = 0; i < first.length; i++) {
+    if (first[i].placement != second[i].placement) return false;
+  }
+  return true;
 }
 
 int _defaultTimelineStartAfter(

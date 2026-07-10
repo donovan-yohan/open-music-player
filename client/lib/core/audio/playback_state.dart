@@ -431,13 +431,16 @@ class PlaybackState extends ChangeNotifier {
     if (normalizedTrackId.isEmpty || queue.isEmpty) return;
 
     var changed = false;
+    int? firstChangedIndex;
     final refreshedQueue = <MediaItem>[];
-    for (final item in queue) {
+    for (var index = 0; index < queue.length; index++) {
+      final item = queue[index];
       if (_mediaItemMatchesAnalysisTrack(item, normalizedTrackId)) {
         refreshedQueue.add(
           _mediaItemWithAnalysis(item, normalizedTrackId, analysis),
         );
         changed = true;
+        firstChangedIndex ??= index;
       } else {
         refreshedQueue.add(item);
       }
@@ -451,6 +454,7 @@ class PlaybackState extends ChangeNotifier {
       initialIndex: index,
       initialPosition: _queueController.livePosition,
       preserveTimelineEdits: true,
+      reflowDefaultTransitionsFromIndex: firstChangedIndex,
     );
   }
 
