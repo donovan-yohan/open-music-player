@@ -61,8 +61,9 @@ See `docs/context-map.md` for the fuller map and harness table.
 - Deterministic dev-cycle evidence path:
   `scripts/agentic-cycle --run --evidence /tmp/omp-cycle.json`
 - Release/closeout audit: `scripts/release-audit --pr <number> --issue <number>`
-- Build checks: `scripts/build`; `scripts/build analyzer` verifies the pinned
-  Beat This/librosa image and model checksum
+- Build checks: `scripts/build client` builds the Android arm64 debug APK;
+  `scripts/build analyzer` verifies the pinned Beat This/librosa image and
+  model checksum
 - Local backend smoke: `scripts/smoke`
 - Isolated backend smoke: `scripts/smoke isolated`
 - Download/worker smoke: `scripts/smoke e2e`
