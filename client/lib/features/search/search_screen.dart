@@ -15,6 +15,7 @@ import '../../core/services/search_service.dart';
 import '../../models/track.dart';
 import '../../providers/queue_provider.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
+import '../../shared/widgets/song_metadata_chips.dart';
 import 'search_local_logic.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -373,16 +374,9 @@ class _SearchScreenState extends State<SearchScreen> {
   Future<void> _playLocalTrack(local.TrackResult track) async {
     final id = track.id;
     if (id == null) return;
-    await context.read<PlaybackState>().playQueue([
-      {
-        'id': id,
-        'title': track.title,
-        'artist': track.artist,
-        'album': track.album,
-        'duration': track.duration != null ? track.duration! ~/ 1000 : 0,
-        'artwork_url': track.coverUrl,
-      },
-    ]);
+    await context
+        .read<PlaybackState>()
+        .playQueue([_localTrackPlaybackJson(track)]);
   }
 
   Future<void> _enqueueLocalTrack(local.TrackResult track) async {
@@ -391,14 +385,7 @@ class _SearchScreenState extends State<SearchScreen> {
     final playback = context.read<PlaybackState>();
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await playback.enqueue({
-        'id': id,
-        'title': track.title,
-        'artist': track.artist,
-        'album': track.album,
-        'duration': track.duration != null ? track.duration! ~/ 1000 : 0,
-        'artwork_url': track.coverUrl,
-      });
+      await playback.enqueue(_localTrackPlaybackJson(track));
       if (!mounted) return;
       messenger.showSnackBar(
         SnackBar(content: Text('Added "${track.title}" to queue')),
@@ -410,6 +397,21 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
   }
+
+  Map<String, dynamic> _localTrackPlaybackJson(local.TrackResult track) => {
+        'id': track.id,
+        'title': track.title,
+        'artist': track.artist,
+        'album': track.album,
+        'duration': track.duration != null ? track.duration! ~/ 1000 : 0,
+        'artwork_url': track.coverUrl,
+        if (track.analysis != null)
+          'analysisStatus': track.analysis!.status.name,
+        if (track.analysis?.summary != null)
+          'analysisSummary': track.analysis!.summary!.toJson(),
+        if (track.analysis?.overrides != null)
+          'analysisOverrides': track.analysis!.overrides!.toJson(),
+      };
 
   String _friendlyLocalError(Object error) {
     if (error is local_api.ApiException) return error.message;
@@ -885,9 +887,23 @@ class _SearchScreenState extends State<SearchScreen> {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontWeight: FontWeight.w600),
         ),
-        subtitle: subtitle.isEmpty
+        subtitle: subtitle.isEmpty && track.analysis == null
             ? null
-            : Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (subtitle.isNotEmpty)
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  SongMetadataChips(
+                    analysis: track.analysis,
+                    topSpacing: 3,
+                  ),
+                ],
+              ),
         trailing: playable
             ? IconButton(
                 tooltip: 'Play',

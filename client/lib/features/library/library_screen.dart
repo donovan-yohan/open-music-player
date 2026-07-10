@@ -227,6 +227,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
         'cover_art_url',
         'mb_recording_id',
         'mb_suggestions',
+        'analysis_status',
+        'analysis_summary',
       ],
     );
 
@@ -869,6 +871,12 @@ class _TrackListTileState extends State<_TrackListTile> {
         'album': track.displayAlbum,
         'duration': track.durationMs != null ? track.durationMs! ~/ 1000 : 0,
         'artwork_url': track.coverArtUrl,
+        if (track.analysis != null)
+          'analysisStatus': track.analysis!.status.name,
+        if (track.analysis?.summary != null)
+          'analysisSummary': track.analysis!.summary!.toJson(),
+        if (track.analysis?.overrides != null)
+          'analysisOverrides': track.analysis!.overrides!.toJson(),
       });
     } catch (_) {
       if (!context.mounted) return;
@@ -954,10 +962,19 @@ class _TrackListTileState extends State<_TrackListTile> {
             ],
           ],
         ),
-        subtitle: Text(
-          track.displayArtist,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              track.displayArtist,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            SongMetadataChips(
+              analysis: track.analysis,
+              topSpacing: 3,
+            ),
+          ],
         ),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,

@@ -15,15 +15,21 @@ import 'playlist_selection.dart';
 
 class PlaylistDetailScreen extends StatefulWidget {
   final int playlistId;
+  final PlaylistService? playlistService;
 
-  const PlaylistDetailScreen({super.key, required this.playlistId});
+  const PlaylistDetailScreen({
+    super.key,
+    required this.playlistId,
+    this.playlistService,
+  });
 
   @override
   State<PlaylistDetailScreen> createState() => _PlaylistDetailScreenState();
 }
 
 class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
-  late final PlaylistService _playlistService;
+  late final PlaylistService _playlistService = widget.playlistService ??
+      PlaylistService(api: ApiClient(storage: SecureStorage()));
 
   Playlist? _playlist;
   bool _isLoading = true;
@@ -35,10 +41,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   @override
   void initState() {
     super.initState();
-    final storage = SecureStorage();
-    final api = ApiClient(storage: storage);
-    _playlistService = PlaylistService(api: api);
-
     _loadPlaylist();
   }
 

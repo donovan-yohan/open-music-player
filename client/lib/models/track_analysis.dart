@@ -13,11 +13,7 @@ class TrackAnalysis {
   final TrackAnalysisSummary? summary;
   final TrackAnalysisOverrides? overrides;
 
-  const TrackAnalysis({
-    required this.status,
-    this.summary,
-    this.overrides,
-  });
+  const TrackAnalysis({required this.status, this.summary, this.overrides});
 
   factory TrackAnalysis.fromJson({
     Object? status,
@@ -25,8 +21,9 @@ class TrackAnalysis {
     Object? overrides,
   }) {
     final parsedStatus = parseTrackAnalysisStatus(status);
-    final baseSummary =
-        summary == null ? null : TrackAnalysisSummary.fromJson(summary);
+    final baseSummary = summary == null
+        ? null
+        : TrackAnalysisSummary.fromJson(summary);
     final parsedOverrides = TrackAnalysisOverrides.fromJson(overrides);
     final effectiveSummary = parsedOverrides == null
         ? baseSummary
@@ -54,6 +51,35 @@ class TrackAnalysis {
       if (overrides != null) 'overrides': overrides!.toJson(),
     };
   }
+}
+
+/// Reads analysis fields from any track-list payload shape.
+///
+/// API surfaces use a mix of camelCase and snake_case. Overrides remain the
+/// source of truth and are applied by [TrackAnalysis.fromJson] before callers
+/// read BPM or key metadata.
+TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
+  final rawStatus = json['analysisStatus'] ?? json['analysis_status'];
+  final rawSummary = json['analysisSummary'] ?? json['analysis_summary'];
+  final summaryMap = _readMap(rawSummary);
+  final rawOverrides =
+      json['analysisOverrides'] ??
+      json['analysis_overrides'] ??
+      summaryMap?['overrides'];
+  if (rawStatus == null && rawSummary == null && rawOverrides == null) {
+    return null;
+  }
+
+  final analysis = TrackAnalysis.fromJson(
+    status: rawStatus,
+    summary: rawSummary,
+    overrides: rawOverrides,
+  );
+  if (analysis.status == TrackAnalysisStatus.unknown &&
+      !analysis.hasDisplayableSummary) {
+    return null;
+  }
+  return analysis;
 }
 
 TrackAnalysisStatus parseTrackAnalysisStatus(Object? value) {
@@ -124,29 +150,27 @@ class TrackAnalysisOverrides {
     final bpmMap = _readMap(map['bpm']);
     final beatGrid = _readMap(map['beat_grid'] ?? map['beatGrid']);
     final downbeats = _readMap(map['downbeats']);
-    final beatsRaw = _firstPresent(
-      [
-        map['beatGridMs'],
-        map['beatsMs'],
-        beatGrid?['beats_ms'],
-        beatGrid?['beatsMs'],
-      ],
-    );
-    final downbeatsRaw = _firstPresent(
-      [
-        map['downbeatsMs'],
-        downbeats?['positions_ms'],
-        downbeats?['positionsMs'],
-      ],
-    );
+    final beatsRaw = _firstPresent([
+      map['beatGridMs'],
+      map['beatsMs'],
+      beatGrid?['beats_ms'],
+      beatGrid?['beatsMs'],
+    ]);
+    final downbeatsRaw = _firstPresent([
+      map['downbeatsMs'],
+      downbeats?['positions_ms'],
+      downbeats?['positionsMs'],
+    ]);
     final keyValue = AnalysisValue.fromJson(map['key'] ?? map['musicalKey']);
     final camelotValue = AnalysisValue.fromJson(map['camelot']);
 
     final overrides = TrackAnalysisOverrides(
-      bpm: bpmValue?.numericValue?.toDouble() ??
+      bpm:
+          bpmValue?.numericValue?.toDouble() ??
           _readDouble(map['nativeBpm']) ??
           _readDouble(beatGrid?['bpm']),
-      bpmConfidence: _readDouble(map['bpmConfidence']) ??
+      bpmConfidence:
+          _readDouble(map['bpmConfidence']) ??
           _readDouble(bpmMap?['confidence']) ??
           _readDouble(beatGrid?['confidence']),
       beatsMs: beatsRaw == null ? null : _readIntList(beatsRaw),
@@ -168,8 +192,7 @@ class TrackAnalysisOverrides {
 
   TrackAnalysisSummary applyTo(TrackAnalysisSummary base) {
     final source = provenance ?? 'manual_override';
-    final effectiveBpmConfidence =
-        bpmConfidence ?? (bpm == null ? null : 1.0);
+    final effectiveBpmConfidence = bpmConfidence ?? (bpm == null ? null : 1.0);
     return TrackAnalysisSummary(
       bpm: bpm == null
           ? base.bpm
@@ -223,8 +246,7 @@ class TrackAnalysisOverrides {
 
   Map<String, dynamic> toJson() {
     final source = provenance ?? 'manual_override';
-    final effectiveBpmConfidence =
-        bpmConfidence ?? (bpm == null ? null : 1.0);
+    final effectiveBpmConfidence = bpmConfidence ?? (bpm == null ? null : 1.0);
     return {
       if (bpm != null)
         'bpm': {
@@ -242,20 +264,10 @@ class TrackAnalysisOverrides {
           'provenance': source,
         },
       if (downbeatsMs != null)
-        'downbeats': {
-          'positions_ms': downbeatsMs,
-          'provenance': source,
-        },
+        'downbeats': {'positions_ms': downbeatsMs, 'provenance': source},
       if (musicalKey != null)
-        'key': {
-          'value': musicalKey,
-          'provenance': source,
-        },
-      if (camelot != null)
-        'camelot': {
-          'value': camelot,
-          'provenance': source,
-        },
+        'key': {'value': musicalKey, 'provenance': source},
+      if (camelot != null) 'camelot': {'value': camelot, 'provenance': source},
       if (provenance != null) 'provenance': provenance,
     };
   }

@@ -73,6 +73,12 @@ void main() {
             'durationMs': 208000,
             'coverArtUrl': 'http://x/cover.jpg',
             'mbRecordingId': 'rec-1',
+            'analysisStatus': 'analyzed',
+            'analysisSummary': {
+              'bpm': {'value': 128},
+              'key': {'value': 'Am'},
+              'camelot': {'value': '8A'},
+            },
           }
         ]),
         TrackResult.fromJson,
@@ -87,10 +93,19 @@ void main() {
       expect(t.duration, 208000);
       expect(t.coverUrl, 'http://x/cover.jpg');
       expect(t.mbid, 'rec-1');
+      expect(t.analysis?.summary?.bpm?.numericValue, 128);
+      expect(t.analysis?.summary?.key?.textValue, 'Am');
+      expect(t.analysis?.summary?.camelot?.textValue, '8A');
     });
 
-    test('rejects the legacy "results"-only envelope (proves the shape fix)', () {
-      final legacy = {'results': <dynamic>[], 'total': 0, 'limit': 20, 'offset': 0};
+    test('rejects the legacy "results"-only envelope (proves the shape fix)',
+        () {
+      final legacy = {
+        'results': <dynamic>[],
+        'total': 0,
+        'limit': 20,
+        'offset': 0
+      };
       expect(
         () => SearchResponse.fromJson(legacy, TrackResult.fromJson),
         throwsA(anything),
@@ -106,9 +121,10 @@ void main() {
       expect(t.title, 'Local Only');
     });
 
-    test('TrackResult coerces a double-valued duration instead of throwing', () {
-      final t = TrackResult.fromJson(
-          {'id': 1, 'title': 'X', 'durationMs': 208000.0});
+    test('TrackResult coerces a double-valued duration instead of throwing',
+        () {
+      final t =
+          TrackResult.fromJson({'id': 1, 'title': 'X', 'durationMs': 208000.0});
       expect(t.duration, 208000);
     });
 

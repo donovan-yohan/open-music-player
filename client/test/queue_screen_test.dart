@@ -131,7 +131,19 @@ void main() {
       ..fakeQueue = [
         _mediaItem(1, 'Already Played', seconds: 90),
         _mediaItem(2, 'Now Playing', seconds: 120),
-        _mediaItem(3, 'Next Song', seconds: 150),
+        _mediaItem(
+          3,
+          'Next Song',
+          seconds: 150,
+          extras: {
+            'analysisStatus': 'analyzed',
+            'analysisSummary': {
+              'bpm': {'value': 132},
+              'key': {'value': 'Bm'},
+              'camelot': {'value': '10A'},
+            },
+          },
+        ),
       ]
       ..fakeCurrentIndex = 1
       ..fakePosition = const Duration(seconds: 30)
@@ -153,6 +165,8 @@ void main() {
     expect(find.text('Up Next'), findsNothing);
     expect(find.text('Already Played'), findsOneWidget);
     expect(find.text('Next Song'), findsOneWidget);
+    expect(find.text('132 BPM'), findsOneWidget);
+    expect(find.text('10A'), findsOneWidget);
     expect(find.byKey(const PageStorageKey('queue_list_view')), findsNothing);
 
     await tester.tap(find.text('Next Song'));
@@ -287,7 +301,8 @@ void main() {
       await pumpQueueScreen(tester);
 
       expect(find.text('124 BPM'), findsOneWidget);
-      expect(find.text('A minor · 8A'), findsOneWidget);
+      expect(find.text('8A'), findsOneWidget);
+      expect(find.text('A minor · 8A'), findsNothing);
       expect(find.text('Energy 73%'), findsOneWidget);
       expect(find.text('Waveform 6 samples'), findsOneWidget);
       expect(find.text('Intro 0:00-0:16'), findsOneWidget);

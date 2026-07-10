@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/track_analysis.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
+import '../shared/widgets/song_metadata_chips.dart';
 import 'queue_waveform_trim_control.dart';
 
 class QueueItem extends StatelessWidget {
@@ -156,6 +157,7 @@ class QueueItem extends StatelessWidget {
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     _buildStatusChip(context),
+                    SongMetadataChips(analysis: track.analysis),
                     ..._buildAnalysisChips(context),
                     if (onEditAnalysis != null)
                       IconButton(
@@ -268,7 +270,15 @@ class QueueItem extends StatelessWidget {
 
     if (analysis.status == TrackAnalysisStatus.analyzed &&
         analysis.hasDisplayableSummary) {
-      return analysis.summary!.displayLabels.take(10).map((label) {
+      final summary = analysis.summary!;
+      final keyLabel = [
+        summary.key?.textValue,
+        summary.camelot?.textValue,
+      ].whereType<String>().join(' · ');
+      return summary.displayLabels
+          .where((label) => !label.endsWith(' BPM') && label != keyLabel)
+          .take(8)
+          .map((label) {
         return _AnalysisChip(
           key: ValueKey('analysis_${track.id}_${label.hashCode}'),
           label: label,

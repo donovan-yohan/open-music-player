@@ -8,6 +8,7 @@ import '../../core/errors/error_widgets.dart';
 import '../../core/services/api_client.dart';
 import '../../shared/models/models.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
+import '../../shared/widgets/song_metadata_chips.dart';
 import '../../core/services/home_service.dart';
 import 'home_state.dart';
 
@@ -274,10 +275,19 @@ class _TrackTile extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-        subtitle: Text(
-          track.displayArtist,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              track.displayArtist,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            SongMetadataChips(
+              analysis: track.analysis,
+              topSpacing: 3,
+            ),
+          ],
         ),
       ),
     );

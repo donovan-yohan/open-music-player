@@ -19,9 +19,7 @@ class SettingsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Settings'),
-      ),
+      appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         children: const [
           _AccountSection(),
@@ -48,9 +46,9 @@ class _SectionHeader extends StatelessWidget {
       child: Text(
         title,
         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.bold,
-            ),
+          color: Theme.of(context).colorScheme.primary,
+          fontWeight: FontWeight.bold,
+        ),
       ),
     );
   }
@@ -87,16 +85,17 @@ class _AccountSection extends ConsumerWidget {
                   : 'Device biometric or screen lock is not available on this platform.',
             ),
             value: authState.biometricUnlockEnabled,
-            onChanged: authState.isLoading ||
-                    !authState.biometricUnlockAvailable
+            onChanged:
+                authState.isLoading || !authState.biometricUnlockAvailable
                 ? null
                 : (enabled) => _setBiometricUnlock(context, authState, enabled),
           ),
           ListTile(
             leading: const Icon(Icons.logout),
             title: const Text('Log out'),
-            subtitle:
-                const Text('Clears tokens and biometric unlock enrollment'),
+            subtitle: const Text(
+              'Clears tokens and biometric unlock enrollment',
+            ),
             onTap: () => _showLogoutDialog(context, ref),
           ),
           ListTile(
@@ -105,9 +104,7 @@ class _AccountSection extends ConsumerWidget {
             subtitle: const Text('Songs you played, newest first'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(
-                builder: (_) => const ListeningHistoryScreen(),
-              ),
+              MaterialPageRoute(builder: (_) => const ListeningHistoryScreen()),
             ),
           ),
         ] else
@@ -118,8 +115,10 @@ class _AccountSection extends ConsumerWidget {
             onTap: () => context.go('/login'),
           ),
         ListTile(
-          leading: Icon(Icons.delete_forever,
-              color: Theme.of(context).colorScheme.error),
+          leading: Icon(
+            Icons.delete_forever,
+            color: Theme.of(context).colorScheme.error,
+          ),
           title: Text(
             'Delete account',
             style: TextStyle(color: Theme.of(context).colorScheme.error),
@@ -145,8 +144,8 @@ class _AccountSection extends ConsumerWidget {
         content: Text(
           success
               ? enabled
-                  ? 'Biometric unlock enabled for this installed app session.'
-                  : 'Biometric unlock disabled.'
+                    ? 'Biometric unlock enabled for this installed app session.'
+                    : 'Biometric unlock disabled.'
               : authState.error ?? 'Could not update biometric unlock.',
         ),
         backgroundColor: success ? null : Theme.of(context).colorScheme.error,
@@ -192,8 +191,9 @@ class _AccountSection extends ConsumerWidget {
             children: [
               CheckboxListTile(
                 title: const Text('Clear cached data'),
-                subtitle:
-                    const Text('Remove downloaded music and cached content'),
+                subtitle: const Text(
+                  'Remove downloaded music and cached content',
+                ),
                 value: clearCache,
                 onChanged: (value) =>
                     setState(() => clearCache = value ?? false),
@@ -384,7 +384,8 @@ class _StorageSection extends ConsumerWidget {
           onTap: () {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                  content: Text('Downloads screen not yet implemented')),
+                content: Text('Downloads screen not yet implemented'),
+              ),
             );
           },
         ),
@@ -420,9 +421,9 @@ class _StorageSection extends ConsumerWidget {
             onPressed: () {
               Navigator.pop(context);
               notifier.clearCache();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Cache cleared')),
-              );
+              ScaffoldMessenger.of(
+                context,
+              ).showSnackBar(const SnackBar(content: Text('Cache cleared')));
             },
             child: const Text('Clear'),
           ),
@@ -479,6 +480,16 @@ class _AppearanceSection extends ConsumerWidget {
           onTap: () =>
               _showThemePicker(context, settings.themeMode, settingsNotifier),
         ),
+        ListTile(
+          leading: const Icon(Icons.music_note_outlined),
+          title: const Text('Key notation'),
+          subtitle: Text(settings.keyNotation.displayName),
+          onTap: () => _showKeyNotationPicker(
+            context,
+            settings.keyNotation,
+            settingsNotifier,
+          ),
+        ),
       ],
     );
   }
@@ -501,6 +512,33 @@ class _AppearanceSection extends ConsumerWidget {
               if (value != null) {
                 notifier.setThemeMode(value);
               }
+              Navigator.pop(context);
+            },
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  void _showKeyNotationPicker(
+    BuildContext context,
+    KeyNotation currentNotation,
+    SettingsNotifier notifier,
+  ) {
+    showDialog(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Key notation'),
+        children: KeyNotation.values.map((notation) {
+          return RadioListTile<KeyNotation>(
+            title: Text(notation.displayName),
+            subtitle: Text(
+              notation == KeyNotation.camelot ? '8A, 11B' : 'Am, F# major',
+            ),
+            value: notation,
+            groupValue: currentNotation,
+            onChanged: (value) {
+              if (value != null) notifier.setKeyNotation(value);
               Navigator.pop(context);
             },
           );
@@ -542,7 +580,8 @@ class _AboutSection extends StatelessWidget {
               leading: const Icon(Icons.info_outline),
               title: const Text('Version'),
               subtitle: Text(
-                  '$version${buildNumber.isNotEmpty ? ' ($buildNumber)' : ''}'),
+                '$version${buildNumber.isNotEmpty ? ' ($buildNumber)' : ''}',
+              ),
             );
           },
         ),
@@ -560,10 +599,8 @@ class _AboutSection extends StatelessWidget {
           leading: const Icon(Icons.code_outlined),
           title: const Text('Open source licenses'),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () => showLicensePage(
-            context: context,
-            applicationName: 'Sound Q',
-          ),
+          onTap: () =>
+              showLicensePage(context: context, applicationName: 'Sound Q'),
         ),
         ListTile(
           leading: const Icon(Icons.privacy_tip_outlined),

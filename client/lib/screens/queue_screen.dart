@@ -307,6 +307,9 @@ class _QueueScreenState extends State<QueueScreen> {
                   item.duration?.inMilliseconds ?? 0,
                 ),
                 coverArtUrl: item.artUri?.toString(),
+                analysis: trackAnalysisFromTrackJson(
+                  Map<String, dynamic>.from(item.extras ?? const {}),
+                ),
                 isCurrent: entry.isCurrent,
                 onTap: entry.isCurrent
                     ? null
@@ -465,6 +468,9 @@ class _QueueScreenState extends State<QueueScreen> {
       duration: duration.inSeconds,
       coverUrl: item.artUri?.toString(),
       addedAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+      analysis: trackAnalysisFromTrackJson(
+        Map<String, dynamic>.from(item.extras ?? const {}),
+      ),
     );
     return provider.trackWithAnalysis(track);
   }

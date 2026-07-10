@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../../../core/models/models.dart';
+import '../../../shared/widgets/song_metadata_chips.dart';
 
 class TrackTile extends StatelessWidget {
   final TrackResult track;
@@ -25,7 +26,8 @@ class TrackTile extends StatelessWidget {
                   imageUrl: track.coverUrl!,
                   fit: BoxFit.cover,
                   placeholder: (context, url) => _buildPlaceholder(context),
-                  errorWidget: (context, url, error) => _buildPlaceholder(context),
+                  errorWidget: (context, url, error) =>
+                      _buildPlaceholder(context),
                 )
               : _buildPlaceholder(context),
         ),
@@ -35,13 +37,22 @@ class TrackTile extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Text(
-        [track.artist, track.album].whereType<String>().join(' - '),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            [track.artist, track.album].whereType<String>().join(' - '),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+          SongMetadataChips(
+            analysis: track.analysis,
+            topSpacing: 3,
+          ),
+        ],
       ),
       trailing: Text(
         track.formattedDuration,

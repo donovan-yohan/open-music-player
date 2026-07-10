@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
 import '../models/waveform.dart';
+import '../shared/widgets/song_metadata_chips.dart';
 import 'timeline_waveform_painter.dart';
 
 /// Visual role of a lane in the stacked timeline. Drives emphasis (contrast,
@@ -82,15 +83,25 @@ class TimelineLaneHeader extends StatelessWidget {
                         ),
                       ],
                     ),
-                    Text(
-                      track.artist ?? 'Unknown artist',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: muted
-                            ? theme.disabledColor
-                            : theme.colorScheme.onSurfaceVariant,
+                    LayoutBuilder(
+                      builder: (context, constraints) => Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              track.artist ?? 'Unknown artist',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: muted
+                                    ? theme.disabledColor
+                                    : theme.colorScheme.onSurfaceVariant,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (constraints.maxWidth >= 150)
+                            SongMetadataChips(analysis: track.analysis),
+                        ],
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),

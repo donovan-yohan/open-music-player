@@ -1,3 +1,5 @@
+import '../../models/track_analysis.dart';
+
 class LibraryTrack {
   final int id;
   final String title;
@@ -8,6 +10,7 @@ class LibraryTrack {
   final DateTime addedAt;
   final String? coverArtUrl;
   final String? mbRecordingId;
+  final TrackAnalysis? analysis;
 
   const LibraryTrack({
     required this.id,
@@ -19,6 +22,7 @@ class LibraryTrack {
     required this.addedAt,
     this.coverArtUrl,
     this.mbRecordingId,
+    this.analysis,
   });
 
   factory LibraryTrack.fromJson(Map<String, dynamic> json) {
@@ -32,6 +36,7 @@ class LibraryTrack {
       addedAt: DateTime.parse(json['added_at'] as String),
       coverArtUrl: json['cover_art_url'] as String?,
       mbRecordingId: json['mb_recording_id'] as String?,
+      analysis: trackAnalysisFromTrackJson(json),
     );
   }
 
@@ -46,6 +51,11 @@ class LibraryTrack {
       'added_at': addedAt.toIso8601String(),
       'cover_art_url': coverArtUrl,
       'mb_recording_id': mbRecordingId,
+      if (analysis != null) 'analysis_status': analysis!.status.name,
+      if (analysis?.summary != null)
+        'analysis_summary': analysis!.summary!.toJson(),
+      if (analysis?.overrides != null)
+        'analysis_overrides': analysis!.overrides!.toJson(),
     };
   }
 

@@ -1,3 +1,5 @@
+import '../../models/track_analysis.dart';
+
 /// MusicBrainz match suggestion for unverified tracks
 class MBSuggestion {
   final String mbRecordingId;
@@ -32,7 +34,8 @@ class MBSuggestion {
       albumMbid: json['album_mbid'] as String?,
       duration: json['duration'] as int?,
       confidence: (json['confidence'] as num).toDouble(),
-      matchReasons: (json['match_reasons'] as List<dynamic>?)
+      matchReasons:
+          (json['match_reasons'] as List<dynamic>?)
               ?.map((e) => e as String)
               .toList() ??
           [],
@@ -97,6 +100,7 @@ class Track {
   final int? fileSizeBytes;
   final Map<String, dynamic>? metadata;
   final List<MBSuggestion> mbSuggestions;
+  final TrackAnalysis? analysis;
 
   /// Whether the current user has liked (favorited) this track. Sourced from
   /// the `is_liked` flag on the GET /library response.
@@ -122,6 +126,7 @@ class Track {
     this.fileSizeBytes,
     this.metadata,
     this.mbSuggestions = const [],
+    this.analysis,
     this.isLiked = false,
     required this.createdAt,
     required this.updatedAt,
@@ -130,18 +135,24 @@ class Track {
   /// Serializes this library track into the map shape `PlaybackState.playQueue`
   /// expects: numeric `id` for signed-URL issuance, `duration` in whole seconds.
   Map<String, dynamic> toPlaybackJson() => {
-        'id': id,
-        'title': title,
-        'artist': artist,
-        'album': album,
-        'duration': durationMs != null ? durationMs! ~/ 1000 : 0,
-        'artwork_url': metadata?['cover_art_url'],
-      };
+    'id': id,
+    'title': title,
+    'artist': artist,
+    'album': album,
+    'duration': durationMs != null ? durationMs! ~/ 1000 : 0,
+    'artwork_url': metadata?['cover_art_url'],
+    if (analysis != null) 'analysisStatus': analysis!.status.name,
+    if (analysis?.summary != null)
+      'analysisSummary': analysis!.summary!.toJson(),
+    if (analysis?.overrides != null)
+      'analysisOverrides': analysis!.overrides!.toJson(),
+  };
 
   factory Track.fromJson(Map<String, dynamic> json) {
     // Parse MB suggestions from the mb_suggestions field
     final suggestionsJson = json['mb_suggestions'] as List<dynamic>?;
-    final suggestions = suggestionsJson
+    final suggestions =
+        suggestionsJson
             ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
             .toList() ??
         [];
@@ -152,13 +163,14 @@ class Track {
       id: id,
       identityHash:
           _optionalString(json['identityHash'] ?? json['identity_hash']) ??
-              'track-$id',
+          'track-$id',
       title: json['title'] as String,
       artist: json['artist'] as String?,
       album: json['album'] as String?,
       durationMs: _optionalInt(json['durationMs'] ?? json['duration_ms']),
       version: json['version'] as String?,
-      mbRecordingId: json['mbRecordingId'] as String? ??
+      mbRecordingId:
+          json['mbRecordingId'] as String? ??
           json['mb_recording_id'] as String?,
       mbReleaseId:
           json['mbReleaseId'] as String? ?? json['mb_release_id'] as String?,
@@ -171,10 +183,12 @@ class Track {
           json['sourceType'] as String? ?? json['source_type'] as String?,
       storageKey:
           json['storageKey'] as String? ?? json['storage_key'] as String?,
-      fileSizeBytes:
-          _optionalInt(json['fileSizeBytes'] ?? json['file_size_bytes']),
+      fileSizeBytes: _optionalInt(
+        json['fileSizeBytes'] ?? json['file_size_bytes'],
+      ),
       metadata: json['metadata_json'] as Map<String, dynamic>?,
       mbSuggestions: suggestions,
+      analysis: trackAnalysisFromTrackJson(json),
       isLiked: json['isLiked'] as bool? ?? json['is_liked'] as bool? ?? false,
       createdAt: _dateTimeValue(json['createdAt'] ?? json['created_at']),
       updatedAt: _dateTimeValue(json['updatedAt'] ?? json['updated_at']),
@@ -203,10 +217,12 @@ class Track {
       storageKey: json['storage_key'] as String?,
       fileSizeBytes: json['file_size_bytes'] as int?,
       metadata: json['metadata_json'] as Map<String, dynamic>?,
-      mbSuggestions: suggestionsJson
+      mbSuggestions:
+          suggestionsJson
               ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
               .toList() ??
           [],
+      analysis: trackAnalysisFromTrackJson(json),
       isLiked: json['is_liked'] as bool? ?? false,
       createdAt:
           DateTime.tryParse(json['created_at'] as String? ?? '') ?? addedAt,
@@ -234,6 +250,11 @@ class Track {
       'file_size_bytes': fileSizeBytes,
       'metadata_json': metadata,
       'mb_suggestions': mbSuggestions.map((s) => s.toJson()).toList(),
+      if (analysis != null) 'analysis_status': analysis!.status.name,
+      if (analysis?.summary != null)
+        'analysis_summary': analysis!.summary!.toJson(),
+      if (analysis?.overrides != null)
+        'analysis_overrides': analysis!.overrides!.toJson(),
       'is_liked': isLiked,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
@@ -337,6 +358,7 @@ class Track {
     int? fileSizeBytes,
     Map<String, dynamic>? metadata,
     List<MBSuggestion>? mbSuggestions,
+    TrackAnalysis? analysis,
     bool? isLiked,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -359,6 +381,7 @@ class Track {
       fileSizeBytes: fileSizeBytes ?? this.fileSizeBytes,
       metadata: metadata ?? this.metadata,
       mbSuggestions: mbSuggestions ?? this.mbSuggestions,
+      analysis: analysis ?? this.analysis,
       isLiked: isLiked ?? this.isLiked,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,

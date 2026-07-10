@@ -35,6 +35,8 @@ Track _analyzedTrack(
   String title,
   int duration, {
   double bpm = 120,
+  String? key,
+  String? camelot,
   double confidence = 0.9,
   List<int> downbeatsMs = const [0, 4000, 8000, 12000, 16000],
 }) =>
@@ -46,6 +48,8 @@ Track _analyzedTrack(
         status: TrackAnalysisStatus.analyzed,
         summary: TrackAnalysisSummary(
           bpm: AnalysisValue(value: bpm, confidence: confidence),
+          key: key == null ? null : AnalysisValue(value: key),
+          camelot: camelot == null ? null : AnalysisValue(value: camelot),
           downbeats: DownbeatSummary(positionsMs: downbeatsMs),
         ),
       ),
@@ -396,6 +400,28 @@ void main() {
     // Edge teaser chips stay out of the timeline chrome; lane rows carry identity.
     expect(find.byKey(const ValueKey('right_future_teaser')), findsNothing);
     expect(find.byKey(const ValueKey('left_history_teaser')), findsNothing);
+  });
+
+  testWidgets('timeline lane shows BPM and Camelot metadata when space allows',
+      (
+    tester,
+  ) async {
+    await _pump(
+      tester,
+      previous: null,
+      current: _analyzedTrack(
+        't1',
+        'Midnight Drive',
+        180,
+        bpm: 128,
+        key: 'Am',
+        camelot: '8A',
+      ),
+      upcoming: [],
+    );
+
+    expect(find.text('128 BPM'), findsOneWidget);
+    expect(find.text('8A'), findsOneWidget);
   });
 
   testWidgets('requests denser waveform data as timeline zoom increases', (

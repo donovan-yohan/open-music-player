@@ -1,4 +1,5 @@
 import 'mb_suggestion.dart';
+import '../../models/track_analysis.dart';
 
 class Track {
   final String id;
@@ -16,6 +17,7 @@ class Track {
   final DateTime addedAt;
   final bool mbVerified;
   final List<MBSuggestion> mbSuggestions;
+  final TrackAnalysis? analysis;
 
   const Track({
     required this.id,
@@ -33,6 +35,7 @@ class Track {
     required this.addedAt,
     this.mbVerified = false,
     this.mbSuggestions = const [],
+    this.analysis,
   });
 
   factory Track.fromJson(Map<String, dynamic> json) {
@@ -52,13 +55,15 @@ class Track {
       addedAt: json['addedAt'] != null
           ? DateTime.parse(json['addedAt'] as String)
           : json['added_at'] != null
-              ? DateTime.parse(json['added_at'] as String)
-              : DateTime.now(),
+          ? DateTime.parse(json['added_at'] as String)
+          : DateTime.now(),
       mbVerified: json['mbVerified'] ?? json['mb_verified'] ?? false,
-      mbSuggestions: (json['mbSuggestions'] ?? json['mb_suggestions'] as List<dynamic>?)
+      mbSuggestions:
+          (json['mbSuggestions'] ?? json['mb_suggestions'] as List<dynamic>?)
               ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
               .toList() ??
           [],
+      analysis: trackAnalysisFromTrackJson(json),
     );
   }
 
@@ -79,6 +84,11 @@ class Track {
       'addedAt': addedAt.toIso8601String(),
       'mbVerified': mbVerified,
       'mbSuggestions': mbSuggestions.map((s) => s.toJson()).toList(),
+      if (analysis != null) 'analysisStatus': analysis!.status.name,
+      if (analysis?.summary != null)
+        'analysisSummary': analysis!.summary!.toJson(),
+      if (analysis?.overrides != null)
+        'analysisOverrides': analysis!.overrides!.toJson(),
     };
   }
 
@@ -112,6 +122,7 @@ class Track {
     DateTime? addedAt,
     bool? mbVerified,
     List<MBSuggestion>? mbSuggestions,
+    TrackAnalysis? analysis,
   }) {
     return Track(
       id: id ?? this.id,
@@ -129,6 +140,7 @@ class Track {
       addedAt: addedAt ?? this.addedAt,
       mbVerified: mbVerified ?? this.mbVerified,
       mbSuggestions: mbSuggestions ?? this.mbSuggestions,
+      analysis: analysis ?? this.analysis,
     );
   }
 }
@@ -147,6 +159,7 @@ class TrackResult {
   final String? releaseDate;
   final String? coverUrl;
   final int? score;
+  final TrackAnalysis? analysis;
 
   const TrackResult({
     this.id,
@@ -161,6 +174,7 @@ class TrackResult {
     this.releaseDate,
     this.coverUrl,
     this.score,
+    this.analysis,
   });
 
   factory TrackResult.fromJson(Map<String, dynamic> json) {
@@ -181,6 +195,7 @@ class TrackResult {
       releaseDate: json['releaseDate'] as String?,
       coverUrl: (json['coverArtUrl'] ?? json['coverUrl']) as String?,
       score: (json['score'] as num?)?.toInt(),
+      analysis: trackAnalysisFromTrackJson(json),
     );
   }
 

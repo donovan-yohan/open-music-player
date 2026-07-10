@@ -61,11 +61,17 @@ class SettingsNotifier extends StateNotifier<SettingsModel> {
     state = state.copyWith(themeMode: mode);
     _saveSettings();
   }
+
+  void setKeyNotation(KeyNotation notation) {
+    state = state.copyWith(keyNotation: notation);
+    _saveSettings();
+  }
 }
 
 /// Provider for settings state
-final settingsProvider =
-    StateNotifierProvider<SettingsNotifier, SettingsModel>((ref) {
-  final prefs = ref.watch(sharedPreferencesProvider);
-  return SettingsNotifier(prefs);
-});
+final settingsProvider = StateNotifierProvider<SettingsNotifier, SettingsModel>(
+  (ref) {
+    final prefs = ref.watch(sharedPreferencesProvider);
+    return SettingsNotifier(prefs);
+  },
+);

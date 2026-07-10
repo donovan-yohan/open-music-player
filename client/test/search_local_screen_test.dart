@@ -41,6 +41,12 @@ class _FakeSearchApi extends local_api.ApiClient {
             'title': 'Come as You Are',
             'artist': 'Nirvana',
             'album': 'Nevermind',
+            'analysisStatus': 'analyzed',
+            'analysisSummary': {
+              'bpm': {'value': 120},
+              'key': {'value': 'Am'},
+              'camelot': {'value': '8A'},
+            },
           }
         ],
       '/search/artists' => [
@@ -144,6 +150,8 @@ void main() {
     expect(find.text('Come as You Are'), findsOneWidget); // song
     expect(find.text('12 tracks in library'), findsOneWidget); // artist section
     expect(find.text('Nevermind'), findsOneWidget); // album title
+    expect(find.text('120 BPM'), findsOneWidget);
+    expect(find.text('8A'), findsOneWidget);
     expect(find.byKey(const ValueKey('search_local_results')), findsOneWidget);
   });
 

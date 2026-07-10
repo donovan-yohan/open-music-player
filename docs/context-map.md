@@ -59,6 +59,25 @@ domain concept moves or a new production harness becomes canonical.
 - Guardrail: waveform UI should degrade to dense synthetic data when analysis is
   missing, but should prefer backend spectral-band summaries when available.
 
+### Song Analysis Metadata
+
+- Backend list projections: `backend/internal/db/track_repository.go`,
+  `backend/internal/db/playlist_repository.go`,
+  `backend/internal/db/play_event_repository.go`.
+- Client normalization: `trackAnalysisFromTrackJson` in
+  `client/lib/models/track_analysis.dart`; this is the casing and manual
+  override boundary for track-list payloads.
+- Shared presentation: `client/lib/shared/widgets/song_metadata_chips.dart`;
+  key notation is persisted through `SettingsModel` and `settingsProvider`.
+- Surface coverage: home, search, library/local browse, playlists, history,
+  queue list, and timeline lane headers.
+- Tests: `client/test/song_metadata_chips_test.dart`,
+  `client/test/song_metadata_surface_wiring_test.dart`, and
+  `backend/internal/db/track_analysis_projection_integration_test.go`.
+- Guardrail: list surfaces must preserve analysis when converting a track into
+  a playback/queue payload. Do not format BPM or musical/Camelot keys in each
+  surface; use the shared formatter and chip component.
+
 ### Schema And Storage
 
 - Schema authority: `backend/internal/db/db.go`.

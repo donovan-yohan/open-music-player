@@ -5,6 +5,7 @@ import '../../core/audio/playback_state.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/library_service.dart';
 import '../../shared/models/track.dart';
+import '../../shared/widgets/song_metadata_chips.dart';
 
 /// Loads the tracks a local artist/album page should render. Returns the full
 /// (already-filtered) track list for the header + list.
@@ -222,10 +223,19 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            subtitle: Text(
-              track.displayArtist,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  track.displayArtist,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                SongMetadataChips(
+                  analysis: track.analysis,
+                  topSpacing: 3,
+                ),
+              ],
             ),
             trailing: Text(
               track.formattedDuration,

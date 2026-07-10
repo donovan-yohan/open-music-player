@@ -45,6 +45,16 @@ enum AppThemeMode {
   }
 }
 
+enum KeyNotation {
+  camelot,
+  musical;
+
+  String get displayName => switch (this) {
+    KeyNotation.camelot => 'Camelot',
+    KeyNotation.musical => 'Musical key',
+  };
+}
+
 /// Application settings model
 class SettingsModel {
   final AudioQuality streamingQuality;
@@ -52,6 +62,7 @@ class SettingsModel {
   final bool gaplessPlayback;
   final int crossfadeDuration;
   final AppThemeMode themeMode;
+  final KeyNotation keyNotation;
 
   const SettingsModel({
     this.streamingQuality = AudioQuality.high,
@@ -59,6 +70,7 @@ class SettingsModel {
     this.gaplessPlayback = true,
     this.crossfadeDuration = 0,
     this.themeMode = AppThemeMode.system,
+    this.keyNotation = KeyNotation.camelot,
   });
 
   SettingsModel copyWith({
@@ -67,6 +79,7 @@ class SettingsModel {
     bool? gaplessPlayback,
     int? crossfadeDuration,
     AppThemeMode? themeMode,
+    KeyNotation? keyNotation,
   }) {
     return SettingsModel(
       streamingQuality: streamingQuality ?? this.streamingQuality,
@@ -74,6 +87,7 @@ class SettingsModel {
       gaplessPlayback: gaplessPlayback ?? this.gaplessPlayback,
       crossfadeDuration: crossfadeDuration ?? this.crossfadeDuration,
       themeMode: themeMode ?? this.themeMode,
+      keyNotation: keyNotation ?? this.keyNotation,
     );
   }
 
@@ -84,6 +98,7 @@ class SettingsModel {
       'gaplessPlayback': gaplessPlayback,
       'crossfadeDuration': crossfadeDuration,
       'themeMode': themeMode.index,
+      'keyNotation': keyNotation.name,
     };
   }
 
@@ -94,6 +109,18 @@ class SettingsModel {
       gaplessPlayback: json['gaplessPlayback'] ?? true,
       crossfadeDuration: json['crossfadeDuration'] ?? 0,
       themeMode: AppThemeMode.values[json['themeMode'] ?? 0],
+      keyNotation: _keyNotationFromJson(json['keyNotation']),
     );
   }
+}
+
+KeyNotation _keyNotationFromJson(Object? value) {
+  if (value is int && value >= 0 && value < KeyNotation.values.length) {
+    return KeyNotation.values[value];
+  }
+  final normalized = value?.toString().trim().toLowerCase();
+  return switch (normalized) {
+    'musical' || 'musical_key' || 'raw' => KeyNotation.musical,
+    _ => KeyNotation.camelot,
+  };
 }

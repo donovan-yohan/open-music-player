@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import '../../models/track_analysis.dart';
 import '../models/track.dart';
 import '../models/library_track.dart';
+import 'song_metadata_chips.dart';
 
 class TrackTile extends StatelessWidget {
   final String title;
@@ -16,6 +18,7 @@ class TrackTile extends StatelessWidget {
   final bool showDragHandle;
   final bool isCurrent;
   final String? activeLabel;
+  final TrackAnalysis? analysis;
 
   const TrackTile({
     super.key,
@@ -31,6 +34,7 @@ class TrackTile extends StatelessWidget {
     this.showDragHandle = false,
     this.isCurrent = false,
     this.activeLabel,
+    this.analysis,
   });
 
   factory TrackTile.fromTrack(
@@ -56,6 +60,7 @@ class TrackTile extends StatelessWidget {
       showDragHandle: showDragHandle,
       isCurrent: isCurrent,
       activeLabel: activeLabel,
+      analysis: track.analysis,
     );
   }
 
@@ -82,6 +87,7 @@ class TrackTile extends StatelessWidget {
       showDragHandle: showDragHandle,
       isCurrent: isCurrent,
       activeLabel: activeLabel,
+      analysis: track.analysis,
     );
   }
 
@@ -100,6 +106,14 @@ class TrackTile extends StatelessWidget {
             color: activeColor.withValues(alpha: 0.85),
           )
         : theme.textTheme.bodySmall;
+    final subtitle = [
+      artist,
+      album,
+    ].where((value) => value != null && value.isNotEmpty).join(' • ');
+    final summary = analysis?.summary;
+    final hasMetadata = summary?.bpm?.numericValue != null ||
+        summary?.key?.textValue != null ||
+        summary?.camelot?.textValue != null;
 
     return Container(
       decoration: BoxDecoration(
@@ -119,12 +133,25 @@ class TrackTile extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: titleStyle,
         ),
-        subtitle: Text(
-          [artist, album].where((s) => s != null && s.isNotEmpty).join(' • '),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: subtitleStyle,
-        ),
+        subtitle: subtitle.isEmpty && !hasMetadata
+            ? null
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (subtitle.isNotEmpty)
+                    Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: subtitleStyle,
+                    ),
+                  if (hasMetadata)
+                    SongMetadataChips(
+                      analysis: analysis,
+                      topSpacing: 3,
+                    ),
+                ],
+              ),
         trailing: trailing ?? _buildTrailing(context),
       ),
     );
@@ -164,11 +191,7 @@ class TrackTile extends StatelessWidget {
             ),
           )
         else if (isCurrent) ...[
-          Icon(
-            Icons.equalizer,
-            size: 18,
-            color: theme.colorScheme.primary,
-          ),
+          Icon(Icons.equalizer, size: 18, color: theme.colorScheme.primary),
           const SizedBox(width: 8),
         ],
         Text(
@@ -248,10 +271,7 @@ class _CoverArtPlaceholder extends StatelessWidget {
         color: theme.colorScheme.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(4),
       ),
-      child: Icon(
-        Icons.music_note,
-        color: theme.colorScheme.onSurfaceVariant,
-      ),
+      child: Icon(Icons.music_note, color: theme.colorScheme.onSurfaceVariant),
     );
   }
 }

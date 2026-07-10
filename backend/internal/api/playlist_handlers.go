@@ -87,14 +87,16 @@ type PlaylistWithTracksResponse struct {
 }
 
 type TrackResponse struct {
-	ID            int64      `json:"id"`
-	Title         string     `json:"title"`
-	Artist        string     `json:"artist,omitempty"`
-	Album         string     `json:"album,omitempty"`
-	DurationMs    int        `json:"durationMs,omitempty"`
-	MBRecordingID *uuid.UUID `json:"mbRecordingId,omitempty"`
-	MBReleaseID   *uuid.UUID `json:"mbReleaseId,omitempty"`
-	MBArtistID    *uuid.UUID `json:"mbArtistId,omitempty"`
+	ID              int64           `json:"id"`
+	Title           string          `json:"title"`
+	Artist          string          `json:"artist,omitempty"`
+	Album           string          `json:"album,omitempty"`
+	DurationMs      int             `json:"durationMs,omitempty"`
+	MBRecordingID   *uuid.UUID      `json:"mbRecordingId,omitempty"`
+	MBReleaseID     *uuid.UUID      `json:"mbReleaseId,omitempty"`
+	MBArtistID      *uuid.UUID      `json:"mbArtistId,omitempty"`
+	AnalysisStatus  string          `json:"analysisStatus,omitempty"`
+	AnalysisSummary json.RawMessage `json:"analysisSummary,omitempty"`
 }
 
 type PaginatedPlaylistResponse struct {
@@ -615,6 +617,12 @@ func mapTrackResponses(in []db.Track) []TrackResponse {
 		}
 		if t.DurationMs.Valid {
 			track.DurationMs = int(t.DurationMs.Int32)
+		}
+		if t.AnalysisStatus.Valid {
+			track.AnalysisStatus = t.AnalysisStatus.String
+		}
+		if len(t.AnalysisSummary) > 0 && string(t.AnalysisSummary) != "{}" {
+			track.AnalysisSummary = t.AnalysisSummary
 		}
 		tracks = append(tracks, track)
 	}
