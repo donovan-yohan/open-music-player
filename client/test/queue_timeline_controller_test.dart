@@ -506,6 +506,50 @@ void main() {
       await harness.dispose();
     });
 
+    test('manual moves keep offset production downbeats runtime-aligned',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item(
+          'still-here',
+          seconds: 184,
+          analysisSummary: _analysisSummary(
+            bpm: 72.73,
+            downbeatsMs: List<int>.generate(56, (index) => 112 + index * 3300),
+          ),
+        ),
+        _item(
+          'csirac',
+          seconds: 202,
+          analysisSummary: _analysisSummary(
+            bpm: 72.73,
+            downbeatsMs: List<int>.generate(62, (index) => 562 + index * 3300),
+          ),
+        ),
+      ]);
+
+      final initialStart =
+          harness.controller.timelineClipForIndex(1)!.timelineStartMs;
+      // The widget preview snaps against global zero, which is 112ms earlier
+      // than this outgoing track's analyzed downbeat grid.
+      await harness.controller.setTimelineStartMs(1, initialStart + 3300 - 112);
+
+      final diagnostics = diagnoseTransition(
+        harness.engine.model.clips[0],
+        harness.engine.model.clips[1],
+      );
+      expect(
+        diagnostics.diagnostics.map((item) => item.code),
+        contains(TransitionDiagnosticCode.beatLocked),
+      );
+      expect(
+        diagnostics.diagnostics.map((item) => item.code),
+        isNot(contains(TransitionDiagnosticCode.downbeatOffset)),
+      );
+
+      await harness.dispose();
+    });
+
     test('refreshed manual analysis rebuilds tempo diagnostics and automation',
         () async {
       final harness = _Harness();

@@ -95,9 +95,9 @@ Future<void> _pump(
   VoidCallback? onScrubStart,
   ValueChanged<int>? onScrubUpdate,
   Future<void> Function(int)? onScrubEnd,
-  void Function(Track, int)? onTimelineStartChanged,
-  void Function(Track, int)? onTrimStartChanged,
-  void Function(Track, int)? onTrimEndChanged,
+  TimelineClipEditCallback? onTimelineStartChanged,
+  TimelineClipEditCallback? onTrimStartChanged,
+  TimelineClipEditCallback? onTrimEndChanged,
   bool settle = true,
 }) async {
   tester.view.physicalSize = size;
@@ -1818,6 +1818,90 @@ void main() {
       isNotEmpty,
       reason: 'non-button metadata must not consume waveform drag gestures',
     );
+  });
+
+  testWidgets('completed async edit replaces optimistic preview with live lock',
+      (tester) async {
+    final outgoingDownbeats =
+        List<int>.generate(56, (index) => 112 + index * 3300);
+    final incomingDownbeats =
+        List<int>.generate(62, (index) => 562 + index * 3300);
+    final outgoing = _analyzedTrack(
+      'still-here',
+      'Still Here',
+      184,
+      bpm: 72.73,
+      downbeatsMs: outgoingDownbeats,
+    );
+    final incoming = _analyzedTrack(
+      'csirac',
+      'CSIRAC',
+      202,
+      bpm: 72.73,
+      downbeatsMs: incomingDownbeats,
+    );
+    final outgoingTempo = ClipTempoMetadata(
+      nativeBpm: 72.73,
+      bpmConfidence: 0.62,
+      downbeatsMs: outgoingDownbeats,
+    );
+    final incomingTempo = ClipTempoMetadata(
+      nativeBpm: 72.73,
+      bpmConfidence: 0.62,
+      downbeatsMs: incomingDownbeats,
+    );
+    final committed = Completer<void>();
+    int? requestedStartMs;
+
+    Future<void> commitPlacement(Track track, int valueMs) async {
+      requestedStartMs = valueMs;
+      await committed.future;
+    }
+
+    TimelineModel modelAt(int incomingStartMs) => TimelineModel(
+          clips: [
+            _mixClip('still-here', 0, 184000, tempo: outgoingTempo),
+            _mixClip(
+              'csirac',
+              incomingStartMs,
+              202000,
+              tempo: incomingTempo,
+            ),
+          ],
+        );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: outgoing,
+      upcoming: [incoming],
+      timelineModel: modelAt(171150),
+      onTimelineStartChanged: commitPlacement,
+    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_csirac')));
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_clip_body_drag_csirac')),
+      const Offset(-30, 0),
+    );
+    await tester.pump();
+
+    expect(requestedStartMs, isNotNull);
+    final authoritativeStartMs = requestedStartMs! + 112;
+    await _pump(
+      tester,
+      previous: null,
+      current: outgoing,
+      upcoming: [incoming],
+      timelineModel: modelAt(authoritativeStartMs),
+      onTimelineStartChanged: commitPlacement,
+      settle: false,
+    );
+    committed.complete();
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Beat locked'), findsWidgets);
+    expect(find.textContaining('Downbeat -112ms'), findsNothing);
   });
 
   testWidgets('trim handles beat body drag hit-testing in edit mode', (

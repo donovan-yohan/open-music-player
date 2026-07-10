@@ -378,7 +378,7 @@ class _QueueScreenState extends State<QueueScreen> {
       onScrubUpdate: playback.updateTimelineScrub,
       onScrubEnd: playback.endTimelineScrub,
       onTimelineStartChanged: (track, ms) {
-        _pauseThenEditTimeline(
+        return _pauseThenEditTimeline(
           playback,
           () => playback.setQueueTimelineStartMs(
             _playbackQueueIndex(track),
@@ -388,13 +388,13 @@ class _QueueScreenState extends State<QueueScreen> {
         );
       },
       onTrimStartChanged: (track, ms) {
-        _pauseThenEditTimeline(
+        return _pauseThenEditTimeline(
           playback,
           () => playback.setQueueTrimStartMs(_playbackQueueIndex(track), ms),
         );
       },
       onTrimEndChanged: (track, ms) {
-        _pauseThenEditTimeline(
+        return _pauseThenEditTimeline(
           playback,
           () => playback.setQueueTrimEndMs(_playbackQueueIndex(track), ms),
         );
@@ -570,14 +570,12 @@ class _QueueScreenState extends State<QueueScreen> {
   int _playbackQueueIndex(Track track) =>
       int.tryParse(track.queueItemId) ?? int.tryParse(track.id) ?? 0;
 
-  void _pauseThenEditTimeline(
+  Future<void> _pauseThenEditTimeline(
     PlaybackState playback,
     Future<void> Function() edit,
-  ) {
-    unawaited(() async {
-      await playback.pause();
-      await edit();
-    }());
+  ) async {
+    await playback.pause();
+    await edit();
   }
 
   void _movePlaybackTimelineTrack(
@@ -588,9 +586,11 @@ class _QueueScreenState extends State<QueueScreen> {
     final oldIndex = _playbackQueueIndex(track);
     final newIndex = (oldIndex + delta).clamp(0, playback.queue.length - 1);
     if (newIndex == oldIndex) return;
-    _pauseThenEditTimeline(
-      playback,
-      () => playback.reorderPlaybackQueue(oldIndex, newIndex),
+    unawaited(
+      _pauseThenEditTimeline(
+        playback,
+        () => playback.reorderPlaybackQueue(oldIndex, newIndex),
+      ),
     );
   }
 

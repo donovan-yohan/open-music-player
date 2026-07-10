@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -18,6 +19,10 @@ typedef TimelineAnalysisEditCallback = void Function(
 typedef TimelinePitchModeChangedCallback = void Function(
   Track track,
   String pitchMode,
+);
+typedef TimelineClipEditCallback = FutureOr<void> Function(
+  Track track,
+  int valueMs,
 );
 
 /// Stacked compact-waveform timeline for the phone-first mix planner
@@ -44,9 +49,9 @@ class StackedWaveformTimeline extends StatefulWidget {
   final TrimRange Function(Track) trimRangeFor;
   final TimelineClip Function(Track, TimelineClip)? clipFor;
   final String Function(Track)? pitchModeFor;
-  final void Function(Track, int)? onTimelineStartChanged;
-  final void Function(Track, int)? onTrimStartChanged;
-  final void Function(Track, int)? onTrimEndChanged;
+  final TimelineClipEditCallback? onTimelineStartChanged;
+  final TimelineClipEditCallback? onTrimStartChanged;
+  final TimelineClipEditCallback? onTrimEndChanged;
   final ValueChanged<Track>? onMoveEarlier;
   final ValueChanged<Track>? onMoveLater;
   final TimelineAnalysisEditCallback? onEditAnalysis;
@@ -1148,7 +1153,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                           useIncrementalDelta: true,
                         )
                     : null,
-            onHorizontalDragEnd: (_) => _finishClipDrag(lane),
+            onHorizontalDragEnd: (_) => unawaited(_finishClipDrag(lane)),
             onHorizontalDragCancel: () => _cancelClipDrag(lane.track.id),
             onLongPressStart: selected && widget.onTimelineStartChanged != null
                 ? (_) => _beginClipDrag(lane)
@@ -1161,7 +1166,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                           details.offsetFromOrigin.dx,
                         )
                     : null,
-            onLongPressEnd: (_) => _finishClipDrag(lane),
+            onLongPressEnd: (_) => unawaited(_finishClipDrag(lane)),
             onLongPressCancel: () => _cancelClipDrag(lane.track.id),
             child: body,
           ),
@@ -1174,7 +1179,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             enabled: widget.onTrimStartChanged != null,
             onDragStart: () => _beginTrimDrag(lane, _TrimEdge.start),
             onDragUpdate: (deltaPx) => _updateTrimDrag(lane, viewport, deltaPx),
-            onDragEnd: () => _finishTrimDrag(lane),
+            onDragEnd: () => unawaited(_finishTrimDrag(lane)),
             onDragCancel: () => _cancelTrimDrag(lane.track.id),
           ),
           _trimHandle(
@@ -1184,7 +1189,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
             enabled: widget.onTrimEndChanged != null,
             onDragStart: () => _beginTrimDrag(lane, _TrimEdge.end),
             onDragUpdate: (deltaPx) => _updateTrimDrag(lane, viewport, deltaPx),
-            onDragEnd: () => _finishTrimDrag(lane),
+            onDragEnd: () => unawaited(_finishTrimDrag(lane)),
             onDragCancel: () => _cancelTrimDrag(lane.track.id),
           ),
         ],
@@ -1225,7 +1230,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     });
   }
 
-  void _finishClipDrag(_LaneModel lane) {
+  Future<void> _finishClipDrag(_LaneModel lane) async {
     if (_activeClipDragTrackId != lane.track.id) return;
     final preview = _previewClipFor(lane.track, lane.clip) ?? lane.clip;
     final startClip = _activeClipDragStartClip;
@@ -1233,9 +1238,18 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _activeClipDragTrackId = null;
       _activeClipDragStartClip = null;
     });
-    if (startClip == null ||
-        preview.timelineStartMs != startClip.timelineStartMs) {
-      widget.onTimelineStartChanged?.call(lane.track, preview.timelineStartMs);
+    try {
+      if (startClip == null ||
+          preview.timelineStartMs != startClip.timelineStartMs) {
+        await widget.onTimelineStartChanged?.call(
+          lane.track,
+          preview.timelineStartMs,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _removePreviewClip(lane.track.id));
+      }
     }
   }
 
@@ -1293,7 +1307,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     setState(() => _storePreviewClip(lane.track, next));
   }
 
-  void _finishTrimDrag(_LaneModel lane) {
+  Future<void> _finishTrimDrag(_LaneModel lane) async {
     if (_activeTrimTrackId != lane.track.id) return;
     final edge = _activeTrimEdge;
     final preview = _previewClipFor(lane.track, lane.clip) ?? lane.clip;
@@ -1303,18 +1317,30 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _activeTrimEdge = null;
       _activeTrimStartClip = null;
     });
-    if (edge == null || startClip == null) return;
-    switch (edge) {
-      case _TrimEdge.start:
-        if (preview.sourceStartMs != startClip.sourceStartMs) {
-          widget.onTrimStartChanged?.call(lane.track, preview.sourceStartMs);
-        }
-        break;
-      case _TrimEdge.end:
-        if (preview.sourceEndMs != startClip.sourceEndMs) {
-          widget.onTrimEndChanged?.call(lane.track, preview.sourceEndMs);
-        }
-        break;
+    try {
+      if (edge == null || startClip == null) return;
+      switch (edge) {
+        case _TrimEdge.start:
+          if (preview.sourceStartMs != startClip.sourceStartMs) {
+            await widget.onTrimStartChanged?.call(
+              lane.track,
+              preview.sourceStartMs,
+            );
+          }
+          break;
+        case _TrimEdge.end:
+          if (preview.sourceEndMs != startClip.sourceEndMs) {
+            await widget.onTrimEndChanged?.call(
+              lane.track,
+              preview.sourceEndMs,
+            );
+          }
+          break;
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _removePreviewClip(lane.track.id));
+      }
     }
   }
 
