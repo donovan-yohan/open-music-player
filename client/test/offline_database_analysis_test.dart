@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -236,6 +237,91 @@ void main() {
       afterDuplicateBulkInsert.tracks.single.analysis?.updatedAt,
       newerRevision,
     );
+  });
+
+  test('v5 migration preserves revisionless analysis on analysisless insert',
+      () async {
+    sqfliteFfiInit();
+    final directory = await Directory.systemTemp.createTemp('omp_offline_v5_');
+    final path = '${directory.path}/open_music_player.db';
+    addTearDown(() async {
+      await databaseFactoryFfi.deleteDatabase(path);
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
+
+    final v5 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: 5,
+        onCreate: (db, _) async {
+          await db.execute('''
+            CREATE TABLE tracks (
+              id INTEGER PRIMARY KEY,
+              identity_hash TEXT NOT NULL,
+              title TEXT NOT NULL,
+              artist TEXT,
+              album TEXT,
+              duration_ms INTEGER,
+              version TEXT,
+              mb_recording_id TEXT,
+              mb_release_id TEXT,
+              mb_artist_id TEXT,
+              mb_verified INTEGER DEFAULT 0,
+              source_url TEXT,
+              source_type TEXT,
+              storage_key TEXT,
+              file_size_bytes INTEGER,
+              analysis_status TEXT,
+              analysis_summary TEXT,
+              analysis_overrides TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+          ''');
+          await db.insert('tracks', {
+            'id': 44,
+            'identity_hash': 'track-44',
+            'title': 'iPod Touch',
+            'artist': 'Ninajirachi',
+            'duration_ms': 196000,
+            'analysis_status': 'analyzed',
+            'analysis_summary': jsonEncode({
+              'bpm': {'value': 141.18},
+              'camelot': {'value': '11A'},
+            }),
+            'created_at': '2026-01-01T00:00:00.000Z',
+            'updated_at': '2026-01-01T00:00:00.000Z',
+          });
+        },
+      ),
+    );
+    await v5.close();
+
+    final offline = OfflineDatabase(
+      databaseFactory: databaseFactoryFfi,
+      databasePathProvider: () async => path,
+    );
+    final migrated = await offline.database;
+    addTearDown(migrated.close);
+    final analysisless = Track(
+      id: 44,
+      identityHash: 'track-44',
+      title: 'iPod Touch',
+      artist: 'Ninajirachi',
+      durationMs: 196000,
+      createdAt: DateTime.utc(2026, 1, 1),
+      updatedAt: DateTime.utc(2026, 1, 2),
+    );
+
+    await offline.updateTrackAnalysis(analysisless);
+    await offline.updateTrackAnalyses([analysisless]);
+    await offline.insertTrack(analysisless);
+
+    final stored = await offline.getTrack(44);
+    expect(stored?.analysis?.status, TrackAnalysisStatus.analyzed);
+    expect(stored?.analysis?.summary?.bpm?.numericValue, 141.18);
+    expect(stored?.analysis?.summary?.camelot?.textValue, '11A');
+    expect(stored?.analysis?.updatedAt, isNull);
   });
 }
 

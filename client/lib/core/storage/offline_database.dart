@@ -299,9 +299,15 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
             .microsecondsSinceEpoch;
     final incomingRevisionUs =
         track.analysis?.updatedAt?.toUtc().microsecondsSinceEpoch;
-    if (storedRevisionUs == null ||
-        (incomingRevisionUs != null &&
-            incomingRevisionUs >= storedRevisionUs)) {
+    final storedHasAnalysis = stored['analysis_status'] != null ||
+        stored['analysis_summary'] != null ||
+        stored['analysis_overrides'] != null;
+    final preserveStoredAnalysis =
+        (storedHasAnalysis && incomingRevisionUs == null) ||
+            (storedRevisionUs != null &&
+                (incomingRevisionUs == null ||
+                    incomingRevisionUs < storedRevisionUs));
+    if (!preserveStoredAnalysis) {
       return values;
     }
 
@@ -331,6 +337,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   }
 
   Future<void> updateTrackAnalysis(Track track) async {
+    if (track.analysis == null) return;
     final db = await database;
     final update = _trackAnalysisUpdate(track);
     await db.update(
@@ -342,7 +349,10 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   }
 
   Future<void> updateTrackAnalyses(Iterable<Track> tracks) async {
-    final updates = tracks.map(_trackAnalysisUpdate).toList(growable: false);
+    final updates = tracks
+        .where((track) => track.analysis != null)
+        .map(_trackAnalysisUpdate)
+        .toList(growable: false);
     if (updates.isEmpty) return;
 
     final db = await database;
