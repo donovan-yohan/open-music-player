@@ -82,6 +82,7 @@ Future<void> _pump(
   ValueChanged<Track>? onMoveEarlier,
   ValueChanged<Track>? onMoveLater,
   TimelineAnalysisEditCallback? onEditAnalysis,
+  TimelinePitchModeChangedCallback? onPitchModeChanged,
   TimelineWaveformData Function(Track, int)? waveformFor,
   TimelineClip Function(Track, TimelineClip)? clipFor,
   TimelineModel? timelineModel,
@@ -127,6 +128,7 @@ Future<void> _pump(
           onMoveEarlier: onMoveEarlier,
           onMoveLater: onMoveLater,
           onEditAnalysis: onEditAnalysis,
+          onPitchModeChanged: onPitchModeChanged,
         ),
       ),
     ),
@@ -1197,6 +1199,40 @@ void main() {
       find.descendant(of: chip, matching: find.textContaining('0.90x')),
       findsOneWidget,
     );
+  });
+
+  testWidgets('selected lane toggles pitch mode', (tester) async {
+    final current = _track('t1', 'Midnight Drive', 240);
+    final calls = <({Track track, String pitchMode})>[];
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: const [],
+      timelineModel: TimelineModel(
+        clips: [
+          _mixClip(
+            't1',
+            0,
+            240000,
+            pitchMode: pitchModePreserve,
+          ),
+        ],
+      ),
+      onPitchModeChanged: (track, pitchMode) {
+        calls.add((track: track, pitchMode: pitchMode));
+      },
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_pitch_mode_t1')));
+    await tester.pumpAndSettle();
+
+    expect(calls, hasLength(1));
+    expect(calls.single.track.id, 't1');
+    expect(calls.single.pitchMode, pitchModeFollowTempo);
   });
 
   testWidgets('floating options panel controls snap marker mode', (

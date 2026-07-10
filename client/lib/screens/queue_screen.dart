@@ -400,6 +400,10 @@ class _QueueScreenState extends State<QueueScreen> {
       },
       onMoveEarlier: (track) => _movePlaybackTimelineTrack(playback, track, -1),
       onMoveLater: (track) => _movePlaybackTimelineTrack(playback, track, 1),
+      onPitchModeChanged: (track, pitchMode) => playback.setQueuePitchMode(
+        _playbackQueueIndex(track),
+        pitchMode,
+      ),
       onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
           _showAnalysisCorrectionSheet(
         context,

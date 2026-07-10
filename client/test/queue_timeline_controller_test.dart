@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:open_music_player/core/audio/queue_timeline_controller.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
 import 'package:open_music_player/core/engine/transition_diagnostics.dart';
 
@@ -200,6 +201,36 @@ void main() {
         'session_1_item_0',
         'session_1_item_2',
       ]);
+      expect(currentVoice.isPlaying, isTrue);
+      expect(currentVoice.pauseCount, 0);
+      expect(currentVoice.seekLog, isEmpty);
+      expect(currentVoice.releaseCount, 0);
+
+      await harness.dispose();
+    });
+
+    test('pitch mode update preserves the active playing voice', () async {
+      final voices = <_CountingVoice>[];
+      final harness = _Harness(
+        voiceFactory: () {
+          final voice = _CountingVoice('v${voices.length}');
+          voices.add(voice);
+          return voice;
+        },
+      );
+      await harness.controller.setQueue([_item('1')]);
+      await harness.controller.play();
+
+      final currentVoice = voices.first;
+      currentVoice.clearInteractionLog();
+      await harness.controller.setPitchMode(0, pitchModeFollowTempo);
+
+      expect(harness.controller.session.clips.single.pitchMode,
+          pitchModeFollowTempo);
+      expect(harness.controller.snapshot.cues.single.pitchMode,
+          pitchModeFollowTempo);
+      expect(harness.engine.model.clips.single.rateAutomation.pitchMode,
+          pitchModeFollowTempo);
       expect(currentVoice.isPlaying, isTrue);
       expect(currentVoice.pauseCount, 0);
       expect(currentVoice.seekLog, isEmpty);
