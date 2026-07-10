@@ -248,6 +248,7 @@ class VoicePool {
     _started = false;
     _coordinatedResumeInProgress = false;
     _pendingLevelUpdateMs = null;
+    final levelUpdateDrain = _levelUpdateDrain;
     for (final sub in _subscriptions) {
       await sub.cancel();
     }
@@ -256,12 +257,17 @@ class VoicePool {
     _gainTimer?.cancel();
     _driftTimer = null;
     _gainTimer = null;
-    final levelUpdateDrain = _levelUpdateDrain;
-    if (levelUpdateDrain != null) await levelUpdateDrain;
-    await _releaseLeaving(const {});
-    _clearPitchFallbacks();
-    _clock.releaseHold();
-    _publishStatus();
+    try {
+      if (levelUpdateDrain != null) await levelUpdateDrain;
+    } finally {
+      try {
+        await _releaseLeaving(const {});
+      } finally {
+        _clearPitchFallbacks();
+        _clock.releaseHold();
+        _publishStatus();
+      }
+    }
   }
 
   Future<void> playActiveFromClock() {
@@ -608,12 +614,19 @@ class VoicePool {
 
     final drain = _drainActiveVoiceLevels();
     _levelUpdateDrain = drain;
-    unawaited(drain.whenComplete(() {
+    void finishDrain() {
       _levelUpdateDrain = null;
       if (_started && _pendingLevelUpdateMs != null) {
         _scheduleActiveVoiceLevels(_pendingLevelUpdateMs!);
       }
-    }));
+    }
+
+    unawaited(
+      drain.then<void>(
+        (_) => finishDrain(),
+        onError: (Object _, StackTrace __) => finishDrain(),
+      ),
+    );
   }
 
   Future<void> _drainActiveVoiceLevels() async {

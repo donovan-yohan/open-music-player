@@ -333,7 +333,11 @@ void main() {
       expect(session.transitionSnapMode, BeatSnapMode.downbeat);
       expect(session.clips[1].timelineStartMs, 22000);
 
-      final phraseLocked = session.withTransitionSnapMode(BeatSnapMode.beat16);
+      final free = session.withTransitionSnapMode(BeatSnapMode.free);
+      expect(free.transitionSnapMode, BeatSnapMode.free);
+      expect(free.clips[1].timelineStartMs, 22000);
+
+      final phraseLocked = free.withTransitionSnapMode(BeatSnapMode.beat16);
       expect(phraseLocked.transitionSnapMode, BeatSnapMode.beat16);
       expect(phraseLocked.clips[1].timelineStartMs, 24000);
 

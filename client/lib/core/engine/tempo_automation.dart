@@ -834,16 +834,24 @@ int defaultTransitionOverlapMsForTempo({
 int downbeatSnapToleranceMs(
   ClipTempoMetadata tempo, {
   BeatSnapMode snapMode = BeatSnapMode.downbeat,
+  double baseRate = 1,
 }) {
   final bpm = tempo.nativeBpm;
   if (bpm == null || bpm <= 0) return 900;
+  final effectiveBpm = effectiveBpmForRate(
+    nativeBpm: bpm,
+    rate: baseRate,
+  );
   final beatStride = switch (snapMode) {
     BeatSnapMode.free => 1,
     BeatSnapMode.downbeat || BeatSnapMode.beat4 => 4,
     BeatSnapMode.beat1 => 1,
     BeatSnapMode.beat16 => 16,
   };
-  return math.max(900, (60000 / bpm * beatStride / 2).round());
+  return math.max(
+    900,
+    (60000 / effectiveBpm * beatStride / 2).round(),
+  );
 }
 
 int defaultDownbeatLockedTransitionStartMs({
@@ -884,6 +892,7 @@ int defaultDownbeatLockedTransitionStartMs({
     toleranceMs: downbeatSnapToleranceMs(
       outgoingTempo,
       snapMode: snapMode,
+      baseRate: outgoingBaseRate,
     ),
   );
 

@@ -855,6 +855,7 @@ class QueueTimelineController {
       toleranceMs: downbeatSnapToleranceMs(
         outgoing.tempo,
         snapMode: _session.transitionSnapMode,
+        baseRate: outgoing.playbackRate,
       ),
     );
     if (snappedStart == null) return requested;

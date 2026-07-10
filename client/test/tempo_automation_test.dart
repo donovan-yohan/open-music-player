@@ -297,6 +297,49 @@ void main() {
       expect(start, 2000);
     });
 
+    test('scales snap tolerance into the outgoing timeline rate', () {
+      const tempo = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        downbeatsMs: [0, 2000, 4000, 6000, 8000],
+      );
+      final tolerance = downbeatSnapToleranceMs(
+        tempo,
+        snapMode: BeatSnapMode.beat16,
+        baseRate: 0.5,
+      );
+
+      expect(tolerance, 8000);
+      expect(
+        snapIncomingStartToNearestDownbeat(
+          requestedStartMs: 24000,
+          incomingSourceStartMs: 0,
+          incomingTempo: tempo,
+          outgoingTimelineStartMs: 0,
+          outgoingSourceStartMs: 0,
+          outgoingTempo: tempo,
+          outgoingBaseRate: 0.5,
+          snapMode: BeatSnapMode.beat16,
+          toleranceMs: tolerance,
+        ),
+        16000,
+      );
+      expect(
+        snapIncomingStartToNearestDownbeat(
+          requestedStartMs: 24001,
+          incomingSourceStartMs: 0,
+          incomingTempo: tempo,
+          outgoingTimelineStartMs: 0,
+          outgoingSourceStartMs: 0,
+          outgoingTempo: tempo,
+          outgoingBaseRate: 0.5,
+          snapMode: BeatSnapMode.beat16,
+          toleranceMs: tolerance,
+        ),
+        isNull,
+      );
+    });
+
     test('uses tempo-matched rate for offset incoming downbeat alignment', () {
       const outgoing = ClipTempoMetadata(
         nativeBpm: 120,

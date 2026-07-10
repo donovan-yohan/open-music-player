@@ -405,6 +405,21 @@ void main() {
       await harness.dispose();
     });
 
+    test('removing the last item preserves the transition snap mode', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([_item('1')]);
+      await harness.controller.setTransitionSnapMode(BeatSnapMode.beat16);
+
+      await harness.controller.removeFromQueue(0);
+
+      expect(harness.controller.queue, isEmpty);
+      expect(harness.controller.transitionSnapMode, BeatSnapMode.beat16);
+      await harness.controller.addToQueue(_item('2'));
+      expect(harness.controller.transitionSnapMode, BeatSnapMode.beat16);
+
+      await harness.dispose();
+    });
+
     test('default transitions align offset downbeats at BPM-matched start rate',
         () async {
       final harness = _Harness();

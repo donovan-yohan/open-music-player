@@ -372,6 +372,39 @@ void main() {
     expect(a.pitchLog.last, closeTo(1, 0.0001));
   });
 
+  test('stop releases all teardown state after a level update fails', () async {
+    for (final voice in voices) {
+      voice.pitchSupported = false;
+    }
+    await pool.loadMix(
+      TimelineModel(
+        clips: [
+          _clip(
+            'a',
+            0,
+            rateAutomation: const PlaybackRateAutomation(baseRate: 1.25),
+          ),
+        ],
+      ),
+    );
+    final voice = pool.activeVoices['a'] as FakeVoice;
+    expect(pool.hasPitchFallback, isTrue);
+    final gate = Completer<void>();
+    final levelUpdateStarted = voice.blockNextSetVolume(gate);
+    voice.nextSetVolumeError = StateError('level update failed');
+    await levelUpdateStarted.timeout(const Duration(milliseconds: 500));
+    clock.holdForBuffering();
+
+    final stop = pool.stop();
+    gate.complete();
+
+    await expectLater(stop, throwsA(isA<StateError>()));
+    expect(voice.releaseCount, 1);
+    expect(pool.activeVoices, isEmpty);
+    expect(pool.pitchFallbackClipIds, isEmpty);
+    expect(clock.isBufferingHeld, isFalse);
+  });
+
   test('prepare timeout starts ready voices and late-joins slow layer muted',
       () async {
     resolver.delayByClip['b'] = const Duration(milliseconds: 80);
@@ -835,6 +868,7 @@ class FakeVoice implements Voice {
   Completer<void>? _seekStarted;
   Completer<void>? _setSpeedGate;
   Completer<void>? _setSpeedStarted;
+  Object? nextSetVolumeError;
 
   Future<void> blockNextSetVolume(Completer<void> gate) {
     _setVolumeGate = gate;
@@ -907,6 +941,9 @@ class FakeVoice implements Voice {
       _setVolumeStarted?.complete();
       await gate.future;
     }
+    final error = nextSetVolumeError;
+    nextSetVolumeError = null;
+    if (error != null) throw error;
   }
 
   @override

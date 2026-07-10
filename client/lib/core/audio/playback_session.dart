@@ -330,6 +330,11 @@ class MixSession {
 
   MixSession withTransitionSnapMode(BeatSnapMode mode) {
     if (mode == transitionSnapMode) return this;
+    final autoManagedModes = transitionSnapMode == BeatSnapMode.free
+        ? BeatSnapMode.values.where(
+            (candidate) => candidate != BeatSnapMode.free,
+          )
+        : <BeatSnapMode>[transitionSnapMode];
     final reflowed = mode == BeatSnapMode.free
         ? clips
         : _reflowDefaultTransitions(
@@ -337,10 +342,12 @@ class MixSession {
             startIndex: 0,
             snapMode: mode,
             preserveEditedPlacements: true,
-            wasAutoManagedPlacement: (index) => _wasAutoManagedPlacement(
-              clips,
-              index,
-              snapMode: transitionSnapMode,
+            wasAutoManagedPlacement: (index) => autoManagedModes.any(
+              (candidate) => _wasAutoManagedPlacement(
+                clips,
+                index,
+                snapMode: candidate,
+              ),
             ),
           );
     return MixSession(

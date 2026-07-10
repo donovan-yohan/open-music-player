@@ -177,7 +177,11 @@ int? beatAlignmentCorrectionMs({
     }
   }
   if (nearestDistance >
-      downbeatSnapToleranceMs(outgoing.tempo, snapMode: snapMode)) {
+      downbeatSnapToleranceMs(
+        outgoing.tempo,
+        snapMode: snapMode,
+        baseRate: outgoing.playbackRate,
+      )) {
     return null;
   }
   return nearestOutgoingMs - incomingAnchorMs;
