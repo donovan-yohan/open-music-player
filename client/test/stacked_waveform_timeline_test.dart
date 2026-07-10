@@ -397,20 +397,28 @@ void main() {
     await _pump(
       tester,
       previous: null,
-      current: _track('t1', 'Midnight Drive', 420),
-      upcoming: [_track('t2', 'Paper Planes', 420)],
+      current: _track('t1', 'Midnight Drive', 1800),
+      upcoming: [],
       waveformFor: (track, targetSampleCount) {
         requested.add(targetSampleCount);
         return richWaveformForTrack(track, sampleCount: targetSampleCount);
       },
     );
     final before = requested.reduce(math.max);
+    requested.clear();
 
-    await _pinchZoom(tester);
-    final after = requested.reduce(math.max);
+    final zoomedRequests = <int>[];
+    for (var i = 0; i < 4; i++) {
+      await _pinchZoom(tester);
+      expect(requested, isNotEmpty);
+      zoomedRequests.add(requested.reduce(math.max));
+      requested.clear();
+    }
 
-    expect(after, greaterThan(before));
-    expect(after, lessThanOrEqualTo(4096));
+    expect(zoomedRequests.first, greaterThan(before));
+    expect(zoomedRequests.last, greaterThan(4096));
+    expect(zoomedRequests.last, lessThanOrEqualTo(65536));
+    expect(zoomedRequests, orderedEquals(zoomedRequests.toList()..sort()));
   });
 
   testWidgets(
@@ -419,18 +427,21 @@ void main() {
       await _pump(
         tester,
         previous: null,
-        current: _track('t1', 'Midnight Drive', 420),
-        upcoming: [_track('t2', 'Paper Planes', 420)],
+        current: _track('t1', 'Midnight Drive', 1800),
+        upcoming: [],
       );
       final before = _waveformPainter(tester, 't1').waveform;
 
-      await _pinchZoom(tester);
+      for (var i = 0; i < 4; i++) {
+        await _pinchZoom(tester);
+      }
       final after = _waveformPainter(tester, 't1').waveform;
 
       expect(before, isNotNull);
       expect(before!.frames.length, greaterThanOrEqualTo(512));
       expect(after, isNotNull);
       expect(after!.frames.length, greaterThan(before.frames.length));
+      expect(after.frames.length, greaterThan(4096));
       expect(
         after.frames.map((frame) => frame.low).toSet().length,
         greaterThan(8),
