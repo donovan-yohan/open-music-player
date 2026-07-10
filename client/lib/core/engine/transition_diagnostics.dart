@@ -21,6 +21,8 @@ enum TransitionDiagnosticCode {
   tempoMatched,
   tempoShift,
   largeTempoShift,
+  pitchLockRequired,
+  pitchFollowsTempo,
   harmonicCompatible,
   harmonicClash,
 }
@@ -132,6 +134,7 @@ TransitionDiagnostics diagnoseTransition(MixClip first, MixClip second) {
         overlapStartMs: overlapStartMs,
         overlapEndMs: overlapEndMs,
       ),
+      ..._pitchDiagnostics(outgoing, incoming),
       ..._harmonicDiagnostics(outgoing, incoming),
     ],
   );
@@ -233,6 +236,66 @@ List<TransitionDiagnostic> _tempoDiagnostics(
       detail:
           'BPMs are close enough for a transparent transition: ${_bpm(outgoing.tempo)} to ${_bpm(incoming.tempo)}.',
     ),
+  ];
+}
+
+List<TransitionDiagnostic> _pitchDiagnostics(
+  MixClip outgoing,
+  MixClip incoming,
+) {
+  if (!_hasBpm(outgoing.tempo) ||
+      !_hasBpm(incoming.tempo) ||
+      !_hasReliableConfidence(outgoing.tempo) ||
+      !_hasReliableConfidence(incoming.tempo) ||
+      !tempoTransitionTargetsAreAchievable(
+        outgoingTempo: outgoing.tempo,
+        incomingTempo: incoming.tempo,
+        outgoingBaseRate: outgoing.rateAutomation.baseRate,
+        incomingBaseRate: incoming.rateAutomation.baseRate,
+      )) {
+    return const [];
+  }
+
+  final outgoingRate = _rateForTargetBpm(outgoing, incoming.tempo.nativeBpm!);
+  final incomingRate = _rateForTargetBpm(incoming, outgoing.tempo.nativeBpm!);
+  final shifted = <String>[];
+  final locked = <String>[];
+
+  void classify(MixClip clip, String side, double transitionRate) {
+    if ((transitionRate - clip.rateAutomation.baseRate).abs() < 0.005) {
+      return;
+    }
+    final pitchFactor = pitchFactorForRate(
+      rate: transitionRate,
+      pitchMode: clip.rateAutomation.pitchMode,
+    );
+    if ((pitchFactor - 1).abs() < 0.005) {
+      locked.add(side);
+    } else {
+      shifted.add(side);
+    }
+  }
+
+  classify(outgoing, 'outgoing', outgoingRate);
+  classify(incoming, 'incoming', incomingRate);
+
+  return [
+    if (shifted.isNotEmpty)
+      TransitionDiagnostic(
+        severity: TransitionDiagnosticSeverity.warning,
+        code: TransitionDiagnosticCode.pitchFollowsTempo,
+        label: 'Pitch shift',
+        detail:
+            'Tempo matching changes ${_missingSideText(shifted)} playback speed and pitch will follow tempo.',
+      ),
+    if (locked.isNotEmpty)
+      TransitionDiagnostic(
+        severity: TransitionDiagnosticSeverity.info,
+        code: TransitionDiagnosticCode.pitchLockRequired,
+        label: 'Pitch lock',
+        detail:
+            'Tempo matching changes ${_missingSideText(locked)} playback speed; key lock must stay available to avoid pitch shift.',
+      ),
   ];
 }
 
