@@ -57,6 +57,7 @@ MixClip _mixClip(
   int durationMs, {
   GainEnvelope envelope = const GainEnvelope.flat(),
   ClipTempoMetadata tempo = ClipTempoMetadata.empty,
+  String pitchMode = pitchModePreserve,
 }) =>
     MixClip(
       placement: TimelineClip.clamped(
@@ -69,6 +70,7 @@ MixClip _mixClip(
       ),
       envelope: envelope,
       tempo: tempo,
+      pitchMode: pitchMode,
     );
 
 Future<void> _pump(
@@ -997,6 +999,56 @@ void main() {
     expect(hint, findsOneWidget);
     expect(
       find.descendant(of: hint, matching: find.textContaining('Tempo range')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('selected transition hint surfaces required pitch lock', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 160);
+    final incoming = _track('t2', 'Paper Planes', 160);
+    final timeline = TimelineModel(
+      clips: [
+        _mixClip(
+          't1',
+          0,
+          160000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 120,
+            bpmConfidence: 0.9,
+            downbeatsMs: [0, 8000, 16000, 24000],
+          ),
+        ),
+        _mixClip(
+          't2',
+          8000,
+          160000,
+          tempo: const ClipTempoMetadata(
+            nativeBpm: 130,
+            bpmConfidence: 0.9,
+            downbeatsMs: [0, 8000, 16000, 24000],
+          ),
+        ),
+      ],
+    );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      timelineModel: timeline,
+      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+    );
+
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
+    await tester.pumpAndSettle();
+
+    final hint = find.byKey(const ValueKey('timeline_transition_hint_t1'));
+    expect(hint, findsOneWidget);
+    expect(
+      find.descendant(of: hint, matching: find.textContaining('Pitch lock')),
       findsOneWidget,
     );
   });

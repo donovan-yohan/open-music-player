@@ -232,6 +232,47 @@ void main() {
     expect(diagnostics.hasWarnings, isTrue);
   });
 
+  test('reports pitch lock when tempo matching preserves pitch', () {
+    final diagnostics = diagnoseTransition(
+      _clip('outgoing', 0, tempo: _tempo(nativeBpm: 120)),
+      _clip('incoming', 8000, tempo: _tempo(nativeBpm: 130)),
+    );
+
+    final pitch = diagnostics.diagnostics.firstWhere(
+      (diagnostic) =>
+          diagnostic.code == TransitionDiagnosticCode.pitchLockRequired,
+    );
+    expect(pitch.label, 'Pitch lock');
+    expect(pitch.detail, contains('current and next playback speed'));
+    expect(pitch.detail, contains('key lock'));
+    expect(diagnostics.hasWarnings, isFalse);
+  });
+
+  test('warns when tempo matching is configured to shift pitch', () {
+    final diagnostics = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: _tempo(nativeBpm: 100),
+        pitchMode: pitchModeFollowTempo,
+      ),
+      _clip(
+        'incoming',
+        8000,
+        tempo: _tempo(nativeBpm: 125),
+        pitchMode: pitchModeFollowTempo,
+      ),
+    );
+
+    final pitch = diagnostics.diagnostics.firstWhere(
+      (diagnostic) =>
+          diagnostic.code == TransitionDiagnosticCode.pitchFollowsTempo,
+    );
+    expect(pitch.label, 'Pitch shift');
+    expect(pitch.detail, contains('pitch will follow tempo'));
+    expect(diagnostics.hasWarnings, isTrue);
+  });
+
   test('derives harmonic compatibility from musical keys without Camelot', () {
     final diagnostics = diagnoseTransition(
       _clip(
@@ -300,6 +341,7 @@ MixClip _clip(
   String id,
   int timelineStartMs, {
   ClipTempoMetadata tempo = ClipTempoMetadata.empty,
+  String pitchMode = pitchModePreserve,
 }) {
   return MixClip(
     placement: TimelineClip.clamped(
@@ -311,15 +353,17 @@ MixClip _clip(
       timelineStartMs: timelineStartMs,
     ),
     tempo: tempo,
+    pitchMode: pitchMode,
   );
 }
 
 ClipTempoMetadata _tempo({
+  double nativeBpm = 120,
   String? musicalKey,
   String? camelot,
 }) {
   return ClipTempoMetadata(
-    nativeBpm: 120,
+    nativeBpm: nativeBpm,
     bpmConfidence: 0.9,
     downbeatsMs: const [0, 8000, 16000],
     musicalKey: musicalKey,
