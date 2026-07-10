@@ -214,7 +214,7 @@ func TestRunAnalysisSerializesConfiguredAnalyzerWork(t *testing.T) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if client.maxActive != 1 {
-		t.Fatalf("max concurrent analyses = %d, want 1", client.maxActive)
+		t.Fatalf("max concurrent analysis jobs = %d, want 1", client.maxActive)
 	}
 }
 
