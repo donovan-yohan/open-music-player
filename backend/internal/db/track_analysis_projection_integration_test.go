@@ -19,7 +19,9 @@ func TestTrackAnalysisProjectsIntoSongListingsAgainstPostgres(t *testing.T) {
 		SummaryJSON: json.RawMessage(`{
 			"bpm":{"value":120},
 			"key":{"value":"Gm"},
-			"camelot":{"value":"6A"}
+			"camelot":{"value":"6A"},
+			"waveform":{"sample_count":65536,"peaks":[0.1,0.9],"resolutions":{"65536":{"peaks":[0.1,0.9]}}},
+			"transients":{"strongest_ms":[100,200]}
 		}`),
 	}); err != nil {
 		t.Fatalf("store analysis: %v", err)
@@ -103,5 +105,11 @@ func assertProjectedTrackAnalysis(t *testing.T, track Track) {
 	}
 	if got := summary["camelot"]["value"]; got != "8A" {
 		t.Fatalf("projected Camelot key = %#v, want 8A override", got)
+	}
+	if _, ok := summary["waveform"]; ok {
+		t.Fatal("compact song-list projection must omit waveform arrays")
+	}
+	if _, ok := summary["transients"]; ok {
+		t.Fatal("compact song-list projection must omit transient arrays")
 	}
 }

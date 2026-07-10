@@ -19,32 +19,16 @@ const (
 	AnalysisStatusUnsupported = "unsupported"
 )
 
+// List and queue responses need beat-lock metadata immediately, but full
+// multi-resolution waveforms belong on the per-track analysis endpoint. Keeping
+// those arrays out of collection responses avoids multi-megabyte payloads.
 const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NULL ELSE (jsonb_strip_nulls(jsonb_build_object(
 	'bpm', ta.summary_json->'bpm',
 	'beat_grid', ta.summary_json->'beat_grid',
 	'downbeats', ta.summary_json->'downbeats',
 	'key', ta.summary_json->'key',
 	'camelot', ta.summary_json->'camelot',
-	'energy', ta.summary_json->'energy',
-	'loudness', ta.summary_json->'loudness',
-	'true_peak', ta.summary_json->'true_peak',
-	'genre_hints', ta.summary_json->'genre_hints',
-	'tag_hints', ta.summary_json->'tag_hints',
-	'waveform', CASE WHEN ta.summary_json ? 'waveform' THEN jsonb_strip_nulls(jsonb_build_object(
-		'peaks', ta.summary_json->'waveform'->'peaks',
-		'rms', ta.summary_json->'waveform'->'rms',
-		'sample_count', ta.summary_json->'waveform'->'sample_count',
-		'resolutions', ta.summary_json->'waveform'->'resolutions',
-		'spectral_bands', ta.summary_json->'waveform'->'spectral_bands',
-		'confidence', ta.summary_json->'waveform'->'confidence',
-		'provenance', ta.summary_json->'waveform'->'provenance'
-	)) END,
-	'transients', ta.summary_json->'transients',
-	'silence', ta.summary_json->'silence',
-	'intro', ta.summary_json->'intro',
-	'outro', ta.summary_json->'outro',
-	'trim', ta.summary_json->'trim',
-	'cue_candidates', ta.summary_json->'cue_candidates'
+	'energy', ta.summary_json->'energy'
 )) || COALESCE(ta.overrides_json, '{}'::jsonb)) END`
 
 var ErrTrackAnalysisNotFound = errors.New("track analysis not found")

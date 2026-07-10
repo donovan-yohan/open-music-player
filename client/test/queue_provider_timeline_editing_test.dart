@@ -130,7 +130,7 @@ void main() {
     expect(identical(provider.waveformFor(track, 900), detail), isTrue);
   });
 
-  test('playback tracks lazily attach backend analysis by media item track id',
+  test('compact playback analysis lazily hydrates full waveform by track id',
       () async {
     final notified = Completer<void>();
     var analysisRequests = 0;
@@ -183,10 +183,12 @@ void main() {
       id: 'playback_queue_0',
       queueItemId: '0',
       playbackTrackId: '42',
-      analysis: null,
+      analysis: _tempoAnalysis(),
     );
 
-    expect(provider.trackWithAnalysis(playbackTrack).analysis, isNull);
+    final compact = provider.trackWithAnalysis(playbackTrack);
+    expect(compact.analysis?.summary?.bpm?.numericValue, 120);
+    expect(compact.analysis?.summary?.waveform, isNull);
     await notified.future.timeout(const Duration(seconds: 1));
 
     final enriched = provider.trackWithAnalysis(playbackTrack);

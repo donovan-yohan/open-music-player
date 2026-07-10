@@ -77,6 +77,9 @@ domain concept moves or a new production harness becomes canonical.
 - Guardrail: list surfaces must preserve analysis when converting a track into
   a playback/queue payload. Do not format BPM or musical/Camelot keys in each
   surface; use the shared formatter and chip component.
+- Guardrail: collection responses carry compact tempo/key/downbeat summaries,
+  never multi-resolution waveform arrays. Timeline detail hydrates through the
+  per-track analysis endpoint.
 
 ### Schema And Storage
 

@@ -122,8 +122,9 @@ class QueueProvider extends ChangeNotifier {
     );
   }
 
-  /// Playback media items do not carry queue API analysis fields, so attach
-  /// cached analysis by backend track ID and fetch it lazily when needed.
+  /// Attach hydrated analysis by backend track ID. Collection responses carry
+  /// tempo metadata but intentionally omit large waveform arrays, so the
+  /// timeline hydrates those arrays lazily from the per-track endpoint.
   Track trackWithAnalysis(Track track) {
     final trackId = _analysisTrackId(track);
     if (trackId == null) {
@@ -139,7 +140,11 @@ class QueueProvider extends ChangeNotifier {
     }
 
     if (track.analysis != null) {
-      _analysisByTrackId[key] = track.analysis!;
+      if (_hasWaveformDetail(track.analysis!)) {
+        _analysisByTrackId[key] = track.analysis!;
+      } else {
+        _fetchAnalysisIfNeeded(trackId);
+      }
       return track;
     }
 
@@ -830,7 +835,18 @@ class QueueProvider extends ChangeNotifier {
     final analysis = track.analysis;
     final trackId = _analysisTrackId(track);
     if (analysis == null || trackId == null) return;
-    _analysisByTrackId[trackId.toString()] = analysis;
+    if (_hasWaveformDetail(analysis)) {
+      _analysisByTrackId[trackId.toString()] = analysis;
+    }
+  }
+
+  bool _hasWaveformDetail(TrackAnalysis analysis) {
+    final waveform = analysis.summary?.waveform;
+    return waveform != null &&
+        ((waveform.sampleCount ?? 0) > 0 ||
+            waveform.peaks.isNotEmpty ||
+            waveform.spectralBands.isNotEmpty ||
+            waveform.resolutions.isNotEmpty);
   }
 
   void _fetchAnalysisIfNeeded(int trackId) {
