@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,37 +42,58 @@ type AnalysisStore interface {
 }
 
 const (
-	maxYTDLPOutputBytes = 256 * 1024 * 1024
-	maxYTDLPLogBytes    = 64 * 1024
-	analysisQueueSize   = 256
+	maxYTDLPOutputBytes             = 256 * 1024 * 1024
+	maxYTDLPLogBytes                = 64 * 1024
+	analysisQueueSize               = 256
+	analysisShutdownRecoveryWorkers = 4
+	analysisShutdownRecoveryReserve = time.Second
+	analysisShutdownRecoveryTimeout = 2 * time.Second
 )
+
+type analysisTask struct {
+	id      uint64
+	request analyzer.Request
+}
 
 // Processor handles the full download and matching pipeline
 type Processor struct {
-	matcher        *matcher.Matcher
-	trackRepo      *db.TrackRepository
-	libraryRepo    *db.LibraryRepository
-	playlistRepo   *db.PlaylistRepository
-	importRepo     *playlistimport.ImportRepository
-	sourceRepo     *playlistimport.TrackSourceRepository
-	analysisRepo   AnalysisStore
-	analyzerClient analyzer.Client
-	analysisQueue  chan analyzer.Request
-	storage        ObjectStorage
+	matcher                 *matcher.Matcher
+	trackRepo               *db.TrackRepository
+	libraryRepo             *db.LibraryRepository
+	playlistRepo            *db.PlaylistRepository
+	importRepo              *playlistimport.ImportRepository
+	sourceRepo              *playlistimport.TrackSourceRepository
+	analysisRepo            AnalysisStore
+	analyzerClient          analyzer.Client
+	analysisQueue           chan analysisTask
+	analysisStop            chan struct{}
+	analysisCtx             context.Context
+	analysisCancel          context.CancelFunc
+	analysisMu              sync.Mutex
+	analysisTasks           sync.WaitGroup
+	analysisWorkers         sync.WaitGroup
+	analysisOutstanding     map[uint64]analyzer.Request
+	analysisNextTaskID      uint64
+	analysisStopping        bool
+	requireAnalyzerIdentity bool
+	expectedAnalyzer        string
+	expectedAnalyzerVersion string
+	storage                 ObjectStorage
 }
 
 // ProcessorConfig holds configuration for the processor
 type ProcessorConfig struct {
-	Matcher             *matcher.Matcher
-	TrackRepo           *db.TrackRepository
-	LibraryRepo         *db.LibraryRepository
-	PlaylistRepo        *db.PlaylistRepository
-	ImportRepo          *playlistimport.ImportRepository
-	SourceRepo          *playlistimport.TrackSourceRepository
-	AnalysisRepo        AnalysisStore
-	AnalyzerClient      analyzer.Client
-	AnalysisConcurrency int
-	Storage             ObjectStorage
+	Matcher                 *matcher.Matcher
+	TrackRepo               *db.TrackRepository
+	LibraryRepo             *db.LibraryRepository
+	PlaylistRepo            *db.PlaylistRepository
+	ImportRepo              *playlistimport.ImportRepository
+	SourceRepo              *playlistimport.TrackSourceRepository
+	AnalysisRepo            AnalysisStore
+	AnalyzerClient          analyzer.Client
+	AnalysisConcurrency     int
+	RequireAnalyzerIdentity bool
+	Storage                 ObjectStorage
 }
 
 // New creates a new Processor instance
@@ -84,20 +106,28 @@ func New(config *ProcessorConfig) *Processor {
 		analysisConcurrency = 4
 	}
 	processor := &Processor{
-		matcher:        config.Matcher,
-		trackRepo:      config.TrackRepo,
-		libraryRepo:    config.LibraryRepo,
-		playlistRepo:   config.PlaylistRepo,
-		importRepo:     config.ImportRepo,
-		sourceRepo:     config.SourceRepo,
-		analysisRepo:   config.AnalysisRepo,
-		analyzerClient: config.AnalyzerClient,
-		storage:        config.Storage,
+		matcher:                 config.Matcher,
+		trackRepo:               config.TrackRepo,
+		libraryRepo:             config.LibraryRepo,
+		playlistRepo:            config.PlaylistRepo,
+		importRepo:              config.ImportRepo,
+		sourceRepo:              config.SourceRepo,
+		analysisRepo:            config.AnalysisRepo,
+		analyzerClient:          config.AnalyzerClient,
+		requireAnalyzerIdentity: config.RequireAnalyzerIdentity,
+		storage:                 config.Storage,
 	}
 	if processor.analysisRepo != nil && processor.analyzerClient != nil {
-		processor.analysisQueue = make(chan analyzer.Request, analysisQueueSize)
+		processor.analysisCtx, processor.analysisCancel = context.WithCancel(context.Background())
+		processor.analysisQueue = make(chan analysisTask, analysisQueueSize)
+		processor.analysisStop = make(chan struct{})
+		processor.analysisOutstanding = make(map[uint64]analyzer.Request)
 		for range analysisConcurrency {
-			go processor.analysisWorker()
+			processor.analysisWorkers.Add(1)
+			go func() {
+				defer processor.analysisWorkers.Done()
+				processor.analysisWorker()
+			}()
 		}
 	}
 	return processor
@@ -748,8 +778,11 @@ func (p *Processor) enqueueAnalysis(ctx context.Context, track *db.Track, metada
 	if p.analysisRepo == nil || p.analyzerClient == nil || track == nil || metadata == nil {
 		return
 	}
+	expectedAnalyzer, expectedVersion := p.analyzerIdentity()
 	provenance, _ := json.Marshal(map[string]interface{}{
-		"trigger": "post_download",
+		"trigger":                   "post_download",
+		"expected_analyzer":         expectedAnalyzer,
+		"expected_analyzer_version": expectedVersion,
 		"source": map[string]interface{}{
 			"storage_key": metadata.StorageKey,
 			"source_type": metadata.SourceType,
@@ -760,75 +793,302 @@ func (p *Processor) enqueueAnalysis(ctx context.Context, track *db.Track, metada
 		log.Printf("Warning: failed to request audio analysis for track %d: %v", track.ID, err)
 		return
 	}
+	if p.requireAnalyzerIdentity && expectedAnalyzer == "" {
+		log.Printf("Deferred audio analysis for track %d until analyzer identity is available", track.ID)
+		return
+	}
 	req := analyzer.Request{
-		TrackID:       track.ID,
-		StorageKey:    metadata.StorageKey,
-		SourceURL:     metadata.SourceURL,
-		SourceType:    metadata.SourceType,
-		DurationMs:    metadata.DurationMs,
-		Title:         metadata.Title,
-		Artist:        metadata.Artist,
-		SchemaVersion: analyzer.SchemaVersion,
+		TrackID:                 track.ID,
+		StorageKey:              metadata.StorageKey,
+		SourceURL:               metadata.SourceURL,
+		SourceType:              metadata.SourceType,
+		DurationMs:              metadata.DurationMs,
+		Title:                   metadata.Title,
+		Artist:                  metadata.Artist,
+		SchemaVersion:           analyzer.SchemaVersion,
+		ExpectedAnalyzer:        expectedAnalyzer,
+		ExpectedAnalyzerVersion: expectedVersion,
 	}
 	if err := p.scheduleAnalysis(ctx, req); err != nil {
-		p.markAnalysisSchedulingFailed(track.ID, err)
+		p.markAnalysisSchedulingFailed(req, err)
 		log.Printf("Warning: failed to schedule audio analysis for track %d: %v", track.ID, err)
 	}
 }
 
+func (p *Processor) SetAnalyzerIdentity(analyzerName, analyzerVersion string) {
+	if p == nil {
+		return
+	}
+	p.analysisMu.Lock()
+	defer p.analysisMu.Unlock()
+	p.expectedAnalyzer = strings.TrimSpace(analyzerName)
+	p.expectedAnalyzerVersion = strings.TrimSpace(analyzerVersion)
+}
+
+func (p *Processor) analyzerIdentity() (string, string) {
+	p.analysisMu.Lock()
+	defer p.analysisMu.Unlock()
+	return p.expectedAnalyzer, p.expectedAnalyzerVersion
+}
+
 func (p *Processor) scheduleAnalysis(ctx context.Context, req analyzer.Request) error {
-	if p.analysisQueue == nil {
+	p.analysisMu.Lock()
+	if p.analysisQueue == nil || p.analysisStopping {
+		p.analysisMu.Unlock()
 		return fmt.Errorf("audio analysis queue is unavailable")
 	}
+	p.analysisTasks.Add(1)
+	p.analysisNextTaskID++
+	task := analysisTask{id: p.analysisNextTaskID, request: req}
+	p.analysisOutstanding[task.id] = req
+	queue := p.analysisQueue
+	stop := p.analysisStop
+	p.analysisMu.Unlock()
 	select {
-	case p.analysisQueue <- req:
+	case queue <- task:
 		return nil
 	case <-ctx.Done():
+		p.finishAnalysisTask(task.id)
 		return ctx.Err()
+	case <-stop:
+		p.finishAnalysisTask(task.id)
+		return errors.New("audio analysis queue is shutting down")
 	}
 }
 
 func (p *Processor) analysisWorker() {
-	for req := range p.analysisQueue {
-		p.runAnalysis(req)
+	for {
+		select {
+		case task := <-p.analysisQueue:
+			if p.analysisCtx.Err() == nil {
+				p.runAnalysis(task.request)
+			}
+			p.finishAnalysisTask(task.id)
+		case <-p.analysisCtx.Done():
+			return
+		}
 	}
 }
 
-func (p *Processor) markAnalysisSchedulingFailed(trackID int64, scheduleErr error) {
+// Shutdown stops submissions and drains cooperative work until the caller's
+// recovery reserve. Outstanding rows then use an independent bounded recovery
+// context while the database is still open. A client that ignores cancellation
+// may keep its goroutine, but cannot hold shutdown open or store a late result.
+func (p *Processor) Shutdown(ctx context.Context) error {
+	if p == nil || p.analysisQueue == nil {
+		return nil
+	}
+	p.analysisMu.Lock()
+	if !p.analysisStopping {
+		p.analysisStopping = true
+		close(p.analysisStop)
+	}
+	p.analysisMu.Unlock()
+
+	drained := make(chan struct{})
+	go func() {
+		p.analysisTasks.Wait()
+		close(drained)
+	}()
+	recoveryTimer, recoveryStart := analysisRecoveryTimer(ctx)
+	if recoveryTimer != nil {
+		defer recoveryTimer.Stop()
+	}
+	var shutdownErr error
+	select {
+	case <-drained:
+		p.analysisCancel()
+		p.analysisWorkers.Wait()
+		return nil
+	case <-ctx.Done():
+		shutdownErr = ctx.Err()
+	case <-recoveryStart:
+		shutdownErr = context.DeadlineExceeded
+	}
+
+	outstanding := p.outstandingAnalysisRequests()
+	p.analysisCancel()
+	recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), analysisShutdownRecoveryTimeout)
+	defer recoveryCancel()
+	p.recoverAnalysisRows(recoveryCtx, outstanding, fmt.Errorf("analysis canceled during shutdown: %w", shutdownErr))
+	p.drainAnalysisQueue(recoveryCtx)
+	return shutdownErr
+}
+
+func analysisRecoveryTimer(ctx context.Context) (*time.Timer, <-chan time.Time) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil, nil
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		timer := time.NewTimer(0)
+		return timer, timer.C
+	}
+	reserve := remaining * 3 / 4
+	if reserve > analysisShutdownRecoveryReserve {
+		reserve = analysisShutdownRecoveryReserve
+	}
+	timer := time.NewTimer(remaining - reserve)
+	return timer, timer.C
+}
+
+func (p *Processor) outstandingAnalysisRequests() []analyzer.Request {
+	p.analysisMu.Lock()
+	defer p.analysisMu.Unlock()
+	latest := make(map[int64]struct {
+		id      uint64
+		request analyzer.Request
+	})
+	for id, req := range p.analysisOutstanding {
+		current, ok := latest[req.TrackID]
+		if !ok || id > current.id {
+			latest[req.TrackID] = struct {
+				id      uint64
+				request analyzer.Request
+			}{id: id, request: req}
+		}
+	}
+	requests := make([]analyzer.Request, 0, len(latest))
+	for _, task := range latest {
+		requests = append(requests, task.request)
+	}
+	return requests
+}
+
+func (p *Processor) drainAnalysisQueue(ctx context.Context) {
+	for {
+		select {
+		case task := <-p.analysisQueue:
+			p.finishAnalysisTask(task.id)
+		case <-ctx.Done():
+			return
+		default:
+			return
+		}
+	}
+}
+
+func (p *Processor) finishAnalysisTask(taskID uint64) {
+	p.analysisMu.Lock()
+	_, outstanding := p.analysisOutstanding[taskID]
+	if outstanding {
+		delete(p.analysisOutstanding, taskID)
+	}
+	p.analysisMu.Unlock()
+	if outstanding {
+		p.analysisTasks.Done()
+	}
+}
+
+func (p *Processor) recoverAnalysisRows(ctx context.Context, requests []analyzer.Request, recoveryErr error) {
+	if len(requests) == 0 || recoveryErr == nil {
+		return
+	}
+	jobs := make(chan analyzer.Request, len(requests))
+	for _, req := range requests {
+		jobs <- req
+	}
+	close(jobs)
+
+	var workers sync.WaitGroup
+	workerCount := min(analysisShutdownRecoveryWorkers, len(requests))
+	for range workerCount {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for req := range jobs {
+				p.markAnalysisSchedulingFailedWithContext(ctx, req, recoveryErr)
+			}
+		}()
+	}
+	// The SQL-backed AnalysisStore honors context cancellation. Join every
+	// recovery worker so database.Close cannot race a late recovery write.
+	workers.Wait()
+}
+
+func (p *Processor) markAnalysisSchedulingFailed(req analyzer.Request, scheduleErr error) {
 	if p.analysisRepo == nil || scheduleErr == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	provenance, _ := json.Marshal(map[string]interface{}{"trigger": "analysis_queue"})
-	if err := p.analysisRepo.MarkFailed(ctx, trackID, scheduleErr.Error(), provenance); err != nil {
-		log.Printf("Warning: failed to mark unscheduled analysis for track %d failed: %v", trackID, err)
+	p.markAnalysisSchedulingFailedWithContext(ctx, req, scheduleErr)
+}
+
+func (p *Processor) markAnalysisSchedulingFailedWithContext(ctx context.Context, req analyzer.Request, scheduleErr error) {
+	if p.analysisRepo == nil || scheduleErr == nil {
+		return
+	}
+	provenance, _ := json.Marshal(map[string]interface{}{
+		"trigger":                   "analysis_queue",
+		"expected_analyzer":         req.ExpectedAnalyzer,
+		"expected_analyzer_version": req.ExpectedAnalyzerVersion,
+	})
+	if err := p.analysisRepo.MarkFailed(ctx, req.TrackID, scheduleErr.Error(), provenance); err != nil && !errors.Is(err, db.ErrAnalysisResultSuperseded) {
+		log.Printf("Warning: failed to mark unscheduled analysis for track %d failed: %v", req.TrackID, err)
 	}
 }
 
 func (p *Processor) runAnalysis(req analyzer.Request) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	parent := p.analysisCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
-	provenance, _ := json.Marshal(map[string]interface{}{"trigger": "analyzer_client"})
+	provenance, _ := json.Marshal(map[string]interface{}{
+		"trigger":                   "analyzer_client",
+		"expected_analyzer":         req.ExpectedAnalyzer,
+		"expected_analyzer_version": req.ExpectedAnalyzerVersion,
+	})
 	if err := p.analysisRepo.MarkAnalyzing(ctx, req.TrackID, provenance); err != nil {
+		if errors.Is(err, db.ErrAnalysisResultSuperseded) {
+			log.Printf("Discarded superseded analysis request for track %d", req.TrackID)
+			return
+		}
+		if ctx.Err() != nil && !p.analysisShutdownCanceled() {
+			p.markAnalysisSchedulingFailed(req, fmt.Errorf("analysis canceled before start: %w", ctx.Err()))
+			return
+		}
 		log.Printf("Warning: failed to mark track %d analyzing: %v", req.TrackID, err)
 		return
 	}
 	result, err := p.analyzerClient.Analyze(ctx, req)
 	if err != nil {
-		if errors.Is(err, analyzer.ErrUnsupported) {
-			_ = p.analysisRepo.MarkUnsupported(ctx, req.TrackID, err.Error(), provenance)
+		if p.analysisShutdownCanceled() {
 			return
 		}
-		_ = p.analysisRepo.MarkFailed(ctx, req.TrackID, err.Error(), provenance)
+		terminalCtx, terminalCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer terminalCancel()
+		if errors.Is(err, analyzer.ErrUnsupported) {
+			_ = p.analysisRepo.MarkUnsupported(terminalCtx, req.TrackID, err.Error(), provenance)
+			return
+		}
+		_ = p.analysisRepo.MarkFailed(terminalCtx, req.TrackID, err.Error(), provenance)
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		if p.analysisShutdownCanceled() {
+			return
+		}
+		terminalCtx, terminalCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer terminalCancel()
+		_ = p.analysisRepo.MarkFailed(terminalCtx, req.TrackID, err.Error(), provenance)
 		return
 	}
 	if err := p.analysisRepo.StoreResult(ctx, req.TrackID, db.AnalysisResult{
-		SchemaVersion:  result.SchemaVersion,
-		SummaryJSON:    result.SummaryJSON,
-		ArtifactsJSON:  result.ArtifactsJSON,
-		ProvenanceJSON: result.ProvenanceJSON,
+		SchemaVersion:   result.SchemaVersion,
+		SummaryJSON:     result.SummaryJSON,
+		ArtifactsJSON:   result.ArtifactsJSON,
+		ProvenanceJSON:  result.ProvenanceJSON,
+		Analyzer:        result.Analyzer,
+		AnalyzerVersion: result.AnalyzerVersion,
 	}); err != nil {
+		if errors.Is(err, db.ErrAnalysisResultSuperseded) {
+			log.Printf("Discarded superseded analysis result for track %d", req.TrackID)
+			return
+		}
 		log.Printf("Warning: failed to store analysis result for track %d: %v", req.TrackID, err)
 		return
 	}
@@ -837,6 +1097,12 @@ func (p *Processor) runAnalysis(req analyzer.Request) {
 			log.Printf("Warning: failed to apply analysis genre hint for track %d: %v", req.TrackID, err)
 		}
 	}
+}
+
+func (p *Processor) analysisShutdownCanceled() bool {
+	p.analysisMu.Lock()
+	defer p.analysisMu.Unlock()
+	return p.analysisStopping && p.analysisCtx != nil && p.analysisCtx.Err() != nil
 }
 
 func firstNonEmpty(values ...string) string {

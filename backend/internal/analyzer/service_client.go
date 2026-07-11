@@ -32,9 +32,21 @@ type ServiceConfig struct {
 // ServiceClient calls an external analyzer service that implements the #90
 // analysis contract over HTTP.
 type ServiceClient struct {
-	endpoint  string
-	authToken string
-	client    *http.Client
+	endpoint       string
+	healthEndpoint string
+	authToken      string
+	client         *http.Client
+}
+
+// Info is the versioned identity advertised by the analyzer health endpoint.
+// It is deliberately separate from analysis provenance so startup maintenance
+// can avoid invalidating rows when the analyzer is unavailable.
+type Info struct {
+	Status          string `json:"status"`
+	Analyzer        string `json:"analyzer"`
+	AnalyzerVersion string `json:"analyzer_version"`
+	TempoModel      string `json:"tempo_model"`
+	KeyModel        string `json:"key_model"`
 }
 
 // NewServiceClient returns nil when the optional analyzer is disabled. When it
@@ -52,6 +64,10 @@ func NewServiceClient(config ServiceConfig) (*ServiceClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	healthEndpoint, err := analyzerHealthEndpoint(baseURL)
+	if err != nil {
+		return nil, err
+	}
 	timeout := config.Timeout
 	if timeout <= 0 {
 		timeout = defaultServiceTimeout
@@ -65,13 +81,22 @@ func NewServiceClient(config ServiceConfig) (*ServiceClient, error) {
 		client = &copy
 	}
 	return &ServiceClient{
-		endpoint:  endpoint,
-		authToken: strings.TrimSpace(config.AuthToken),
-		client:    client,
+		endpoint:       endpoint,
+		healthEndpoint: healthEndpoint,
+		authToken:      strings.TrimSpace(config.AuthToken),
+		client:         client,
 	}, nil
 }
 
 func analyzerEndpoint(baseURL string) (string, error) {
+	return analyzerServiceEndpoint(baseURL, "analyze")
+}
+
+func analyzerHealthEndpoint(baseURL string) (string, error) {
+	return analyzerServiceEndpoint(baseURL, "health")
+}
+
+func analyzerServiceEndpoint(baseURL, suffix string) (string, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
 		return "", fmt.Errorf("parse analyzer base URL: %w", err)
@@ -79,10 +104,54 @@ func analyzerEndpoint(baseURL string) (string, error) {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return "", fmt.Errorf("analyzer base URL must include scheme and host: %q", baseURL)
 	}
-	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/analyze"
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/" + suffix
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
+}
+
+// Info returns the analyzer's health/version identity for startup reconciliation.
+func (c *ServiceClient) Info(ctx context.Context) (Info, error) {
+	if c == nil || c.client == nil || c.healthEndpoint == "" {
+		return Info{}, errors.New("analyzer service client is unavailable")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.healthEndpoint, nil)
+	if err != nil {
+		return Info{}, fmt.Errorf("build analyzer health request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+	if c.authToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	resp, err := c.client.Do(httpReq)
+	if err != nil {
+		return Info{}, fmt.Errorf("call analyzer health endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAnalyzerResponseBytes+1))
+	if err != nil {
+		return Info{}, fmt.Errorf("read analyzer health response: %w", err)
+	}
+	if len(body) > maxAnalyzerResponseBytes {
+		return Info{}, fmt.Errorf("analyzer health response exceeds %d byte limit", maxAnalyzerResponseBytes)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return Info{}, fmt.Errorf("analyzer health endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var info Info
+	if err := json.Unmarshal(body, &info); err != nil {
+		return Info{}, fmt.Errorf("parse analyzer health response: %w", err)
+	}
+	if strings.TrimSpace(info.Analyzer) == "" || strings.TrimSpace(info.AnalyzerVersion) == "" {
+		return Info{}, errors.New("analyzer health response missing analyzer identity")
+	}
+	if !strings.EqualFold(strings.TrimSpace(info.Status), "healthy") {
+		return Info{}, fmt.Errorf("analyzer health response status is %q", info.Status)
+	}
+	if strings.TrimSpace(info.TempoModel) == "" || strings.TrimSpace(info.KeyModel) == "" {
+		return Info{}, errors.New("analyzer health response missing model identity")
+	}
+	return info, nil
 }
 
 func (c *ServiceClient) Analyze(ctx context.Context, req Request) (*Result, error) {
@@ -91,14 +160,16 @@ func (c *ServiceClient) Analyze(ctx context.Context, req Request) (*Result, erro
 		schemaVersion = SchemaVersion
 	}
 	payload, err := json.Marshal(serviceRequest{
-		SchemaVersion: schemaVersion,
-		TrackID:       req.TrackID,
-		StorageKey:    req.StorageKey,
-		SourceURL:     req.SourceURL,
-		SourceType:    req.SourceType,
-		DurationMs:    req.DurationMs,
-		Title:         req.Title,
-		Artist:        req.Artist,
+		SchemaVersion:           schemaVersion,
+		TrackID:                 req.TrackID,
+		StorageKey:              req.StorageKey,
+		SourceURL:               req.SourceURL,
+		SourceType:              req.SourceType,
+		DurationMs:              req.DurationMs,
+		Title:                   req.Title,
+		Artist:                  req.Artist,
+		ExpectedAnalyzer:        strings.TrimSpace(req.ExpectedAnalyzer),
+		ExpectedAnalyzerVersion: strings.TrimSpace(req.ExpectedAnalyzerVersion),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode analyzer request: %w", err)
@@ -148,18 +219,23 @@ func (c *ServiceClient) Analyze(ctx context.Context, req Request) (*Result, erro
 	if result.SchemaVersion <= 0 {
 		result.SchemaVersion = SchemaVersion
 	}
+	if err := ValidateResultIdentity(req, result); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
 type serviceRequest struct {
-	SchemaVersion int    `json:"schema_version"`
-	TrackID       int64  `json:"track_id"`
-	StorageKey    string `json:"storage_key,omitempty"`
-	SourceURL     string `json:"source_url,omitempty"`
-	SourceType    string `json:"source_type,omitempty"`
-	DurationMs    int    `json:"duration_ms,omitempty"`
-	Title         string `json:"title,omitempty"`
-	Artist        string `json:"artist,omitempty"`
+	SchemaVersion           int    `json:"schema_version"`
+	TrackID                 int64  `json:"track_id"`
+	StorageKey              string `json:"storage_key,omitempty"`
+	SourceURL               string `json:"source_url,omitempty"`
+	SourceType              string `json:"source_type,omitempty"`
+	DurationMs              int    `json:"duration_ms,omitempty"`
+	Title                   string `json:"title,omitempty"`
+	Artist                  string `json:"artist,omitempty"`
+	ExpectedAnalyzer        string `json:"expected_analyzer,omitempty"`
+	ExpectedAnalyzerVersion string `json:"expected_analyzer_version,omitempty"`
 }
 
 type serviceResponse struct {

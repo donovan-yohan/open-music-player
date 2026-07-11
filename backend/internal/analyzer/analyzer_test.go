@@ -10,9 +10,11 @@ func TestFixtureClientReturnsDJAnalysisArtifacts(t *testing.T) {
 	client := NewFixtureClient("testdata/synthetic_analysis.json")
 
 	result, err := client.Analyze(context.Background(), Request{
-		TrackID:    42,
-		StorageKey: "tracks/fixture/synthetic.wav",
-		DurationMs: 197500,
+		TrackID:                 42,
+		StorageKey:              "tracks/fixture/synthetic.wav",
+		DurationMs:              197500,
+		ExpectedAnalyzer:        "fixture",
+		ExpectedAnalyzerVersion: "fixture-v2",
 	})
 	if err != nil {
 		t.Fatalf("Analyze returned error: %v", err)
@@ -58,6 +60,19 @@ func TestFixtureClientReturnsDJAnalysisArtifacts(t *testing.T) {
 	}
 	if provenance["analyzer"] != "fixture" || provenance["analyzer_version"] != "fixture-v2" {
 		t.Fatalf("provenance = %#v, want fixture fixture-v2", provenance)
+	}
+}
+
+func TestFixtureClientRejectsUnexpectedAnalyzerVersion(t *testing.T) {
+	client := NewFixtureClient("")
+	_, err := client.Analyze(context.Background(), Request{
+		TrackID:                 42,
+		StorageKey:              "tracks/fixture/song.wav",
+		ExpectedAnalyzer:        "fixture",
+		ExpectedAnalyzerVersion: "fixture-v3",
+	})
+	if err == nil {
+		t.Fatal("Analyze accepted fixture with unexpected analyzer version")
 	}
 }
 

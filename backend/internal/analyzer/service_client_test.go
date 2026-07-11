@@ -45,6 +45,9 @@ func TestServiceClientPostsAnalyzerContractAndParsesResponse(t *testing.T) {
 		if payload.TrackID != 77 || payload.StorageKey != "tracks/user/song.wav" || payload.SourceType != "youtube" {
 			t.Fatalf("payload = %#v", payload)
 		}
+		if payload.ExpectedAnalyzer != "fixture" || payload.ExpectedAnalyzerVersion != "fixture-v2" {
+			t.Fatalf("expected analyzer identity missing from payload: %#v", payload)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(fixture)
 	}))
@@ -60,14 +63,16 @@ func TestServiceClientPostsAnalyzerContractAndParsesResponse(t *testing.T) {
 		t.Fatalf("NewServiceClient returned error: %v", err)
 	}
 	result, err := client.Analyze(context.Background(), Request{
-		TrackID:       77,
-		StorageKey:    "tracks/user/song.wav",
-		SourceURL:     "https://youtu.be/example",
-		SourceType:    "youtube",
-		DurationMs:    197500,
-		Title:         "Fixture Song",
-		Artist:        "Fixture Artist",
-		SchemaVersion: SchemaVersion,
+		TrackID:                 77,
+		StorageKey:              "tracks/user/song.wav",
+		SourceURL:               "https://youtu.be/example",
+		SourceType:              "youtube",
+		DurationMs:              197500,
+		Title:                   "Fixture Song",
+		Artist:                  "Fixture Artist",
+		SchemaVersion:           SchemaVersion,
+		ExpectedAnalyzer:        "fixture",
+		ExpectedAnalyzerVersion: "fixture-v2",
 	})
 	if err != nil {
 		t.Fatalf("Analyze returned error: %v", err)
@@ -94,7 +99,7 @@ func TestServiceClientPostsAnalyzerContractAndParsesResponse(t *testing.T) {
 func TestServiceClientAcceptsPersistenceJSONFieldNames(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{\"schema_version\":1,\"summary_json\":{\"bpm\":{\"value\":128}},\"artifacts_json\":{},\"provenance_json\":{\"analyzer\":\"fake\"}}"))
+		_, _ = w.Write([]byte("{\"schema_version\":1,\"summary_json\":{\"bpm\":{\"value\":128}},\"artifacts_json\":{},\"provenance_json\":{\"analyzer\":\"fake\",\"analyzer_version\":\"v1\"}}"))
 	}))
 	defer server.Close()
 
@@ -181,6 +186,43 @@ func TestServiceClientRejectsMissingSummary(t *testing.T) {
 	}
 }
 
+func TestServiceClientRejectsResultFromUnexpectedAnalyzerVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"schema_version":1,"summary":{},"artifacts":{},"provenance":{"analyzer":"omp-mir-analyzer","analyzer_version":"old-version"}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewServiceClient returned error: %v", err)
+	}
+	_, err = client.Analyze(context.Background(), Request{
+		TrackID:                 1,
+		StorageKey:              "tracks/fixture.wav",
+		ExpectedAnalyzer:        "omp-mir-analyzer",
+		ExpectedAnalyzerVersion: "2026-07-11-3",
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match expected") {
+		t.Fatalf("Analyze error = %v, want analyzer identity mismatch", err)
+	}
+}
+
+func TestServiceClientRejectsBlankResultIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"schema_version":1,"summary":{},"artifacts":{},"provenance":{"analyzer":"","analyzer_version":""}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewServiceClient returned error: %v", err)
+	}
+	_, err = client.Analyze(context.Background(), Request{TrackID: 1, StorageKey: "tracks/fixture.wav"})
+	if err == nil || !strings.Contains(err.Error(), "missing analyzer identity") {
+		t.Fatalf("Analyze error = %v, want missing analyzer identity", err)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -221,5 +263,82 @@ func TestServiceClientRejectsOversizeResponse(t *testing.T) {
 			t.Fatalf("Analyze accepted oversize response; result summary = %s", result.SummaryJSON)
 		}
 		t.Fatalf("Analyze error = %v, want response size failure", err)
+	}
+}
+
+func TestServiceClientInfoReturnsVersionedAnalyzerIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/analyzer/health" {
+			t.Fatalf("path = %s, want /analyzer/health", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"status":"healthy","analyzer":"omp-mir-analyzer","analyzer_version":"2026-07-11-3","tempo_model":"beat-this-v3","key_model":"librosa-v1"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewServiceClient(ServiceConfig{
+		Enabled:   true,
+		BaseURL:   server.URL + "/analyzer",
+		AuthToken: "secret-token",
+	})
+	if err != nil {
+		t.Fatalf("NewServiceClient returned error: %v", err)
+	}
+	info, err := client.Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info returned error: %v", err)
+	}
+	if info.Analyzer != "omp-mir-analyzer" || info.AnalyzerVersion != "2026-07-11-3" {
+		t.Fatalf("Info = %#v, want analyzer identity", info)
+	}
+}
+
+func TestServiceClientInfoRejectsMissingAnalyzerIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"healthy","analyzer_version":"2026-07-11-3"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewServiceClient returned error: %v", err)
+	}
+	if _, err := client.Info(context.Background()); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("Info error = %v, want missing identity error", err)
+	}
+}
+
+func TestServiceClientInfoRejectsUnhealthyStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"starting","analyzer":"omp-mir-analyzer","analyzer_version":"2026-07-11-3","tempo_model":"tempo-v3","key_model":"key-v1"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewServiceClient returned error: %v", err)
+	}
+	if _, err := client.Info(context.Background()); err == nil || !strings.Contains(err.Error(), "status") {
+		t.Fatalf("Info error = %v, want unhealthy status error", err)
+	}
+}
+
+func TestServiceClientInfoRejectsBlankModelIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"healthy","analyzer":"omp-mir-analyzer","analyzer_version":"2026-07-11-3","tempo_model":"","key_model":"key-v1"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewServiceClient returned error: %v", err)
+	}
+	if _, err := client.Info(context.Background()); err == nil || !strings.Contains(err.Error(), "model identity") {
+		t.Fatalf("Info error = %v, want missing model identity error", err)
 	}
 }

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -34,6 +36,161 @@ import (
 )
 
 const version = "1.0.0"
+
+const (
+	// Startup drains stale rows in repeated bounded batches so queue pressure and
+	// database transactions stay predictable without requiring another restart.
+	startupAnalyzerRepairLimit   = 50
+	startupAnalyzerRepairWorkers = 4
+	startupAnalyzerRepairTimeout = 15 * time.Second
+	startupAnalyzerRetryInterval = 30 * time.Second
+)
+
+type analyzerInfoClient interface {
+	Info(ctx context.Context) (analyzer.Info, error)
+}
+
+type analyzerVersionStore interface {
+	MarkStaleByAnalyzerVersion(ctx context.Context, analyzerName, analyzerVersion string) (int64, error)
+}
+
+type analyzerMaintenanceTrackStore interface {
+	GetMaintenanceCandidates(ctx context.Context, includeMetadata, includeAnalysis bool, staleAfter time.Duration, limit int) ([]db.Track, error)
+}
+
+type analyzerMaintenanceProcessor interface {
+	SetAnalyzerIdentity(analyzerName, analyzerVersion string)
+	RequestAnalysisRepair(ctx context.Context, track *db.Track, opts processor.AnalysisRepairOptions) (processor.AnalysisRepairResult, error)
+}
+
+type analyzerMaintenanceReport struct {
+	Analyzer        string
+	AnalyzerVersion string
+	MarkedStale     int64
+	Candidates      int
+	Queued          int
+	Skipped         int
+	Failures        int
+	Batches         int
+}
+
+// reconcileAnalyzerVersion invalidates rows owned by another analyzer version,
+// then drains stale work in bounded batches. Analysis overrides are owned by
+// the repository and are never modified by this reconciliation.
+func reconcileAnalyzerVersion(
+	ctx context.Context,
+	client analyzerInfoClient,
+	analyses analyzerVersionStore,
+	tracks analyzerMaintenanceTrackStore,
+	repairs analyzerMaintenanceProcessor,
+) (analyzerMaintenanceReport, error) {
+	report := analyzerMaintenanceReport{}
+	if client == nil || analyses == nil || tracks == nil || repairs == nil {
+		return report, nil
+	}
+	infoCtx, infoCancel := context.WithTimeout(ctx, startupAnalyzerRepairTimeout)
+	defer infoCancel()
+	info, err := client.Info(infoCtx)
+	if err != nil {
+		return report, err
+	}
+	report.Analyzer = info.Analyzer
+	report.AnalyzerVersion = info.AnalyzerVersion
+	repairs.SetAnalyzerIdentity(info.Analyzer, info.AnalyzerVersion)
+	markNewlyStale := func() (int64, error) {
+		marked, markErr := analyses.MarkStaleByAnalyzerVersion(ctx, info.Analyzer, info.AnalyzerVersion)
+		report.MarkedStale += marked
+		return marked, markErr
+	}
+	if _, err := markNewlyStale(); err != nil {
+		return report, err
+	}
+	for {
+		candidates, err := tracks.GetMaintenanceCandidates(ctx, false, true, 0, startupAnalyzerRepairLimit)
+		if err != nil {
+			return report, err
+		}
+		if len(candidates) == 0 {
+			marked, err := markNewlyStale()
+			if err != nil {
+				return report, err
+			}
+			if marked == 0 {
+				return report, nil
+			}
+			continue
+		}
+		if len(candidates) > startupAnalyzerRepairLimit {
+			candidates = candidates[:startupAnalyzerRepairLimit]
+		}
+		report.Batches++
+		report.Candidates += len(candidates)
+		batchQueued, batchSkipped, batchFailures := queueAnalyzerRepairBatch(ctx, repairs, candidates, info)
+		report.Queued += batchQueued
+		report.Skipped += batchSkipped
+		report.Failures += batchFailures
+		if batchFailures > 0 {
+			return report, fmt.Errorf("%d analyzer repairs failed to queue", batchFailures)
+		}
+		if batchQueued == 0 {
+			marked, err := markNewlyStale()
+			if err != nil {
+				return report, err
+			}
+			if marked == 0 {
+				return report, nil
+			}
+		}
+	}
+}
+
+// queueAnalyzerRepairBatch claims stale rows with bounded concurrency. The
+// repository claim is idempotent, so concurrent startup retries can safely
+// race without turning a stale batch into duplicate analyzer work.
+func queueAnalyzerRepairBatch(ctx context.Context, repairs analyzerMaintenanceProcessor, candidates []db.Track, info analyzer.Info) (queued, skipped, failures int) {
+	type outcome struct {
+		queued bool
+		err    error
+	}
+	workers := startupAnalyzerRepairWorkers
+	if workers > len(candidates) {
+		workers = len(candidates)
+	}
+	if workers == 0 {
+		return 0, 0, 0
+	}
+
+	semaphore := make(chan struct{}, workers)
+	outcomes := make(chan outcome, len(candidates))
+	var wg sync.WaitGroup
+	for index := range candidates {
+		semaphore <- struct{}{}
+		track := candidates[index]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-semaphore }()
+			result, err := repairs.RequestAnalysisRepair(ctx, &track, processor.AnalysisRepairOptions{
+				OnlyStale:               true,
+				ExpectedAnalyzer:        info.Analyzer,
+				ExpectedAnalyzerVersion: info.AnalyzerVersion,
+			})
+			outcomes <- outcome{queued: result.Queued, err: err}
+		}()
+	}
+	wg.Wait()
+	close(outcomes)
+	for outcome := range outcomes {
+		if outcome.err != nil {
+			failures++
+		} else if outcome.queued {
+			queued++
+		} else {
+			skipped++
+		}
+	}
+	return queued, skipped, failures
+}
 
 func main() {
 	// Initialize structured logger
@@ -196,17 +353,53 @@ func main() {
 
 	// Initialize job processor with matching integration
 	jobProcessor := processor.New(&processor.ProcessorConfig{
-		Matcher:             matcherService,
-		TrackRepo:           trackRepo,
-		LibraryRepo:         libraryRepo,
-		PlaylistRepo:        playlistRepo,
-		ImportRepo:          playlistImportRepo,
-		SourceRepo:          trackSourceRepo,
-		AnalysisRepo:        analysisRepo,
-		AnalyzerClient:      analyzerClient,
-		AnalysisConcurrency: cfg.AnalyzerConcurrency,
-		Storage:             storageClient,
+		Matcher:                 matcherService,
+		TrackRepo:               trackRepo,
+		LibraryRepo:             libraryRepo,
+		PlaylistRepo:            playlistRepo,
+		ImportRepo:              playlistImportRepo,
+		SourceRepo:              trackSourceRepo,
+		AnalysisRepo:            analysisRepo,
+		AnalyzerClient:          analyzerClient,
+		AnalysisConcurrency:     cfg.AnalyzerConcurrency,
+		RequireAnalyzerIdentity: serviceAnalyzerClient != nil,
+		Storage:                 storageClient,
 	})
+	stopAnalyzerMaintenance := func() {}
+	if serviceAnalyzerClient != nil {
+		maintenanceCtx, maintenanceCancel := context.WithCancel(context.Background())
+		stopAnalyzerMaintenance = maintenanceCancel
+		go func() {
+			for {
+				report, err := reconcileAnalyzerVersion(
+					maintenanceCtx,
+					serviceAnalyzerClient,
+					analysisRepo,
+					trackRepo,
+					jobProcessor,
+				)
+				if err == nil {
+					log.Info(ctx, "Analyzer version reconciliation completed", map[string]interface{}{
+						"analyzer":         report.Analyzer,
+						"analyzer_version": report.AnalyzerVersion,
+						"marked_stale":     report.MarkedStale,
+						"batches":          report.Batches,
+						"candidates":       report.Candidates,
+						"queued":           report.Queued,
+						"skipped":          report.Skipped,
+						"failures":         report.Failures,
+					})
+					return
+				}
+				log.Error(ctx, "Analyzer version reconciliation will retry", nil, err)
+				select {
+				case <-maintenanceCtx.Done():
+					return
+				case <-time.After(startupAnalyzerRetryInterval):
+				}
+			}
+		}()
+	}
 	maintenanceHandlers := api.NewMaintenanceHandlers(trackRepo, jobProcessor)
 
 	// Initialize Redis-backed download and playback queue services only when enabled.
@@ -313,7 +506,9 @@ func main() {
 	}
 
 	// Graceful shutdown handling
+	shutdownComplete := make(chan struct{})
 	go func() {
+		defer close(shutdownComplete)
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		sig := <-sigChan
@@ -321,6 +516,7 @@ func main() {
 		log.Info(ctx, "Received shutdown signal", map[string]interface{}{
 			"signal": sig.String(),
 		})
+		stopAnalyzerMaintenance()
 
 		// Stop accepting new requests
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -328,13 +524,16 @@ func main() {
 
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Error(ctx, "HTTP server shutdown error", nil, err)
+			_ = server.Close()
 		}
-
 		// Stop download workers (waits for current jobs to finish)
 		if downloadService != nil {
 			if err := downloadService.Stop(shutdownCtx); err != nil {
 				log.Error(ctx, "Download service shutdown error", nil, err)
 			}
+		}
+		if err := jobProcessor.Shutdown(shutdownCtx); err != nil {
+			log.Error(ctx, "Analysis worker shutdown error", nil, err)
 		}
 
 		log.Info(ctx, "Server shutdown complete", nil)
@@ -344,8 +543,12 @@ func main() {
 		"addr": cfg.ServerAddr,
 	})
 
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Error(ctx, "Server failed to start", nil, err)
+	serveErr := server.ListenAndServe()
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		log.Error(ctx, "Server failed to start", nil, serveErr)
 		os.Exit(1)
+	}
+	if serveErr == http.ErrServerClosed {
+		<-shutdownComplete
 	}
 }

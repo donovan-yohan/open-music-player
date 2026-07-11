@@ -904,10 +904,11 @@ func (r *TrackRepository) GetMaintenanceCandidates(ctx context.Context, includeM
 	}
 
 	query := `
-		SELECT DISTINCT t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
+		SELECT t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
 			   t.mb_recording_id, t.mb_release_id, t.mb_artist_id, t.mb_verified,
 			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
-			   t.metadata_json, t.metadata_status, t.metadata_confidence, t.metadata_provenance,
+			   COALESCE(t.metadata_json, '{}'::jsonb), t.metadata_status, t.metadata_confidence,
+			   COALESCE(t.metadata_provenance, '{}'::jsonb),
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at
 		FROM tracks t
 		LEFT JOIN track_analysis ta ON ta.track_id = t.id
@@ -926,7 +927,13 @@ func (r *TrackRepository) GetMaintenanceCandidates(ctx context.Context, includeM
 				OR (ta.status IN ('pending', 'analyzing') AND ta.updated_at < NOW() - ($3::bigint * INTERVAL '1 second'))
 			)
 		)
-		ORDER BY t.updated_at ASC, t.id ASC
+		ORDER BY CASE
+				WHEN $2::boolean AND ta.status = 'stale' THEN 0
+				WHEN $2::boolean AND ta.status IN ('pending', 'analyzing')
+					AND ta.updated_at < NOW() - ($3::bigint * INTERVAL '1 second') THEN 1
+				ELSE 2
+			 END,
+		         t.updated_at ASC, t.id ASC
 		LIMIT $4
 	`
 
