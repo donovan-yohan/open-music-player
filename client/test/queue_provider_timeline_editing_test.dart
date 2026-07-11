@@ -139,11 +139,117 @@ void main() {
     expect(overview.downbeatsMs, [0]);
     expect(overview.transientsMs, [750]);
     expect(overview.silenceRanges.single.endMs, 250);
-    expect(overview.frames.length, 512);
-    expect(detail.frames.length, 1024);
-    expect(closeDetail.frames.length, 4096);
-    expect(provider.waveformFor(track, 100000).frames.length, 4096);
+    expect(overview.frames.length, 4);
+    expect(detail.frames.length, 4);
+    expect(closeDetail.frames.length, 4);
+    expect(provider.waveformFor(track, 100000).frames.length, 4);
     expect(identical(provider.waveformFor(track, 900), detail), isTrue);
+  });
+
+  test('timeline waveform cache retains real 65k detail and 80Hz frames', () {
+    final provider = QueueProvider(ApiClient());
+    final highResolution = _track(
+      duration: 120,
+      analysis: TrackAnalysis(
+        status: TrackAnalysisStatus.analyzed,
+        summary: TrackAnalysisSummary(
+          waveform: WaveformSummary(
+            peaks: List<double>.filled(65536, 0.5),
+          ),
+        ),
+      ),
+    );
+    final eightyHz = _track(
+      id: '80hz',
+      queueItemId: 'queue-80hz',
+      duration: 120,
+      analysis: TrackAnalysis(
+        status: TrackAnalysisStatus.analyzed,
+        summary: TrackAnalysisSummary(
+          waveform: WaveformSummary(
+            peaks: List<double>.filled(9600, 0.5),
+          ),
+        ),
+      ),
+    );
+
+    expect(
+        provider.waveformFor(highResolution, 65536).frames, hasLength(65536));
+    expect(provider.waveformFor(eightyHz, 65536).frames, hasLength(9600));
+  });
+
+  test('waveform cache is flat, source-shared, and counts peak bytes', () {
+    final provider = QueueProvider(ApiClient());
+    final analysis = TrackAnalysis(
+      status: TrackAnalysisStatus.analyzed,
+      updatedAt: DateTime.utc(2026, 1, 1),
+      summary: TrackAnalysisSummary(
+        waveform: WaveformSummary(peaks: List<double>.filled(2048, 0.5)),
+      ),
+    );
+    final first = _track(
+      id: 'shared-row',
+      queueItemId: 'queue-a',
+      playbackTrackId: '42',
+      analysis: analysis,
+    );
+    final duplicate = _track(
+      id: 'shared-row',
+      queueItemId: 'queue-b',
+      playbackTrackId: '42',
+      analysis: analysis,
+    );
+
+    final detail = provider.waveformFor(first, 1024);
+    expect(identical(provider.waveformFor(duplicate, 1024), detail), isTrue);
+    expect(provider.cachedWaveformEntryCount, 1);
+
+    provider.waveformFor(first, 2048);
+    expect(provider.cachedWaveformEntryCount, 2);
+    final beforePeaks = provider.cachedWaveformByteCount;
+    expect(
+      identical(
+        provider.waveformPeaksFor(first),
+        provider.waveformPeaksFor(duplicate),
+      ),
+      isTrue,
+    );
+    expect(provider.cachedWaveformEntryCount, 3);
+    expect(provider.cachedWaveformByteCount, greaterThan(beforePeaks));
+  });
+
+  test('waveform cache enforces true frame and byte LRU budgets', () {
+    final provider = QueueProvider(ApiClient());
+    final analysis = TrackAnalysis(
+      status: TrackAnalysisStatus.analyzed,
+      updatedAt: DateTime.utc(2026, 1, 1),
+      summary: TrackAnalysisSummary(
+        waveform: WaveformSummary(
+          peaks: List<double>.filled(65536, 0.5),
+        ),
+      ),
+    );
+    Track sourceTrack(int index) => _track(
+          id: 'source-$index',
+          queueItemId: 'queue-$index',
+          playbackTrackId: '${100 + index}',
+          analysis: analysis,
+        );
+
+    final first = provider.waveformFor(sourceTrack(0), 65536);
+    final second = provider.waveformFor(sourceTrack(1), 65536);
+    provider.waveformFor(sourceTrack(2), 65536);
+    expect(
+        identical(provider.waveformFor(sourceTrack(0), 65536), first), isTrue);
+    provider.waveformFor(sourceTrack(3), 65536);
+
+    expect(provider.cachedWaveformFrameCount, lessThanOrEqualTo(196608));
+    expect(
+        provider.cachedWaveformByteCount, lessThanOrEqualTo(12 * 1024 * 1024));
+    expect(
+        identical(provider.waveformFor(sourceTrack(0), 65536), first), isTrue);
+    expect(identical(provider.waveformFor(sourceTrack(1), 65536), second),
+        isFalse);
   });
 
   test('compact playback analysis lazily hydrates full waveform by track id',

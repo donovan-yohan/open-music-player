@@ -41,6 +41,8 @@ void main() {
                       ),
                     ),
                   ),
+                  viewportPixelsPerMs: 1,
+                  viewportOriginMs: 0,
                   trim: TrimRange.full(120000),
                   role: LaneRole.current,
                   accent: Colors.orange,
@@ -84,6 +86,40 @@ void main() {
     final quietPixel = quiet.bytes.sublist(offset, offset + 4);
 
     expect(densePixel, orderedEquals(quietPixel));
+  });
+
+  testWidgets('DPR3 border overlays an 8px waveform without insetting it', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 8,
+            height: 8,
+            child: TimelineClipWidget(
+              track: _track(),
+              peaks: const [1, 1],
+              viewportPixelsPerMs: 1,
+              viewportOriginMs: 0,
+              trim: TrimRange.full(120000),
+              role: LaneRole.current,
+              accent: Colors.orange,
+              stateLabel: 'Now playing',
+              showInLaneChip: false,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      tester.getSize(find.byKey(const ValueKey('timeline_waveform_t1'))),
+      const Size(8, 8),
+      reason: 'the 2.5px active border must paint over, not reduce, the body',
+    );
   });
 }
 

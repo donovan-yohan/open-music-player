@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/lib/pq"
@@ -40,7 +41,10 @@ const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NUL
 		'energy', ta.summary_json->'energy'
 	)) END`
 
-var ErrTrackAnalysisNotFound = errors.New("track analysis not found")
+var (
+	ErrTrackAnalysisNotFound    = errors.New("track analysis not found")
+	ErrAnalysisResultSuperseded = errors.New("analysis result superseded by newer analyzer request")
+)
 
 type TrackAnalysis struct {
 	TrackID        int64
@@ -67,10 +71,12 @@ type AnalysisCompact struct {
 }
 
 type AnalysisResult struct {
-	SchemaVersion  int
-	SummaryJSON    json.RawMessage
-	ArtifactsJSON  json.RawMessage
-	ProvenanceJSON json.RawMessage
+	SchemaVersion   int
+	SummaryJSON     json.RawMessage
+	ArtifactsJSON   json.RawMessage
+	ProvenanceJSON  json.RawMessage
+	Analyzer        string
+	AnalyzerVersion string
 }
 
 type AnalysisRepairRequest struct {
@@ -109,7 +115,7 @@ func (r *AnalysisRepository) RequestAnalysis(ctx context.Context, trackID int64,
 	return err
 }
 
-func (r *AnalysisRepository) RequestRepairAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage, force bool, staleAfter time.Duration) (AnalysisRepairRequest, error) {
+func (r *AnalysisRepository) RequestRepairAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage, force, onlyStale bool, staleAfter time.Duration) (AnalysisRepairRequest, error) {
 	if staleAfter <= 0 {
 		staleAfter = 30 * time.Minute
 	}
@@ -133,6 +139,10 @@ func (r *AnalysisRepository) RequestRepairAnalysis(ctx context.Context, trackID 
 	}
 
 	if errors.Is(err, sql.ErrNoRows) {
+		if onlyStale {
+			result.Reason = "not_stale"
+			return result, tx.Commit()
+		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO track_analysis (track_id, status, provenance_json, requested_at, updated_at)
 			VALUES ($1, $2, COALESCE($3::jsonb, '{}'::jsonb), NOW(), NOW())
@@ -151,7 +161,16 @@ func (r *AnalysisRepository) RequestRepairAnalysis(ctx context.Context, trackID 
 
 	result.PreviousStatus = status
 	result.Status = status
-	stale := time.Since(updatedAt) >= staleAfter
+	// A stale analysis is either explicitly invalidated by provenance or an
+	// abandoned in-flight request. The startup repair selector returns both, so
+	// the claim operation must use the same definition or old pending rows can
+	// remain stranded behind completed failures forever.
+	stale := status == AnalysisStatusStale ||
+		((status == AnalysisStatusPending || status == AnalysisStatusAnalyzing) && time.Since(updatedAt) >= staleAfter)
+	if onlyStale && !stale {
+		result.Reason = "not_stale"
+		return result, tx.Commit()
+	}
 	if !force {
 		switch status {
 		case AnalysisStatusAnalyzed:
@@ -209,14 +228,74 @@ func (r *AnalysisRepository) MarkAnalyzing(ctx context.Context, trackID int64, p
 			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || COALESCE($3::jsonb, '{}'::jsonb),
 			updated_at = NOW()
 		WHERE track_id = $1
+		  AND status IN ($4, $5, $6)
+		  AND (
+			COALESCE(provenance_json->>'expected_analyzer', '') = ''
+			OR provenance_json->>'expected_analyzer' = COALESCE($3::jsonb->>'expected_analyzer', '')
+		  )
+		  AND (
+			COALESCE(provenance_json->>'expected_analyzer_version', '') = ''
+			OR provenance_json->>'expected_analyzer_version' = COALESCE($3::jsonb->>'expected_analyzer_version', '')
+		  )
 	`
-	return r.execTrackAnalysisUpdate(ctx, query, trackID, AnalysisStatusAnalyzing, nullableRawJSON(provenance))
+	updated, err := r.db.ExecContext(
+		ctx,
+		query,
+		trackID,
+		AnalysisStatusAnalyzing,
+		nullableRawJSON(provenance),
+		AnalysisStatusPending,
+		AnalysisStatusAnalyzed,
+		AnalysisStatusStale,
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := updated.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrAnalysisResultSuperseded
+	}
+	return nil
 }
 
 func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, result AnalysisResult) error {
 	schemaVersion := result.SchemaVersion
 	if schemaVersion <= 0 {
 		schemaVersion = 1
+	}
+	var provenance struct {
+		Analyzer        string `json:"analyzer"`
+		AnalyzerVersion string `json:"analyzer_version"`
+	}
+	if len(result.ProvenanceJSON) > 0 {
+		if err := json.Unmarshal(result.ProvenanceJSON, &provenance); err != nil {
+			return err
+		}
+	}
+	analyzerName := result.Analyzer
+	analyzerVersion := result.AnalyzerVersion
+	if analyzerName == "" {
+		analyzerName = provenance.Analyzer
+	} else if provenance.Analyzer == "" || analyzerName != provenance.Analyzer {
+		return fmt.Errorf(
+			"%w: result analyzer %q does not match provenance analyzer %q",
+			ErrAnalysisResultSuperseded,
+			analyzerName,
+			provenance.Analyzer,
+		)
+	}
+	if analyzerVersion == "" {
+		analyzerVersion = provenance.AnalyzerVersion
+	} else if provenance.AnalyzerVersion == "" || analyzerVersion != provenance.AnalyzerVersion {
+		return fmt.Errorf(
+			"%w: result analyzer version %q does not match provenance analyzer version %q",
+			ErrAnalysisResultSuperseded,
+			analyzerVersion,
+			provenance.AnalyzerVersion,
+		)
 	}
 	query := `
 		INSERT INTO track_analysis (
@@ -233,16 +312,44 @@ func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, res
 			started_at = COALESCE(track_analysis.started_at, EXCLUDED.started_at),
 			completed_at = EXCLUDED.completed_at,
 			updated_at = NOW()
+			WHERE (
+				track_analysis.status = $9
+			) AND (
+				COALESCE(track_analysis.provenance_json->>'expected_analyzer', '') = ''
+			OR (
+				NULLIF($7, '') IS NOT NULL
+				AND track_analysis.provenance_json->>'expected_analyzer' = $7
+			)
+		) AND (
+			COALESCE(track_analysis.provenance_json->>'expected_analyzer_version', '') = ''
+			OR (
+				NULLIF($8, '') IS NOT NULL
+				AND track_analysis.provenance_json->>'expected_analyzer_version' = $8
+			)
+		)
 	`
-	_, err := r.db.ExecContext(ctx, query,
+	stored, err := r.db.ExecContext(ctx, query,
 		trackID,
 		schemaVersion,
 		AnalysisStatusAnalyzed,
 		nullableRawJSON(result.SummaryJSON),
 		nullableRawJSON(result.ArtifactsJSON),
 		nullableRawJSON(result.ProvenanceJSON),
+		analyzerName,
+		analyzerVersion,
+		AnalysisStatusAnalyzing,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	rows, err := stored.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrAnalysisResultSuperseded
+	}
+	return nil
 }
 
 func (r *AnalysisRepository) SetOverrides(ctx context.Context, trackID int64, overrides json.RawMessage) (*TrackAnalysis, error) {
@@ -288,8 +395,38 @@ func (r *AnalysisRepository) markTerminal(ctx context.Context, trackID int64, st
 			completed_at = NOW(),
 			updated_at = NOW()
 		WHERE track_id = $1
+		  AND status IN ($5, $6, $7)
+		  AND (
+			COALESCE(provenance_json->>'expected_analyzer', '') = ''
+			OR provenance_json->>'expected_analyzer' = COALESCE($4::jsonb->>'expected_analyzer', '')
+		  )
+		  AND (
+			COALESCE(provenance_json->>'expected_analyzer_version', '') = ''
+			OR provenance_json->>'expected_analyzer_version' = COALESCE($4::jsonb->>'expected_analyzer_version', '')
+		  )
 	`
-	return r.execTrackAnalysisUpdate(ctx, query, trackID, status, errText, nullableRawJSON(provenance))
+	updated, err := r.db.ExecContext(
+		ctx,
+		query,
+		trackID,
+		status,
+		errText,
+		nullableRawJSON(provenance),
+		AnalysisStatusPending,
+		AnalysisStatusAnalyzing,
+		AnalysisStatusStale,
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := updated.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrAnalysisResultSuperseded
+	}
+	return nil
 }
 
 func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, analyzerName, analyzerVersion string) (int64, error) {
@@ -297,6 +434,8 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 		UPDATE track_analysis
 		SET status = $3,
 			provenance_json = COALESCE(provenance_json, '{}'::jsonb) || jsonb_build_object(
+				'expected_analyzer', NULLIF($1, ''),
+				'expected_analyzer_version', NULLIF($2, ''),
 				'stale', jsonb_build_object(
 					'reason', 'analyzer_version_changed',
 					'required_analyzer', NULLIF($1, ''),
@@ -307,13 +446,50 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 				)
 			),
 			updated_at = NOW()
-		WHERE status = $4
+		WHERE status IN ($4, $5, $6, $7)
 		  AND (
-			(NULLIF($1, '') IS NOT NULL AND COALESCE(provenance_json->>'analyzer', '') <> $1)
-			OR (NULLIF($2, '') IS NOT NULL AND COALESCE(provenance_json->>'analyzer_version', '') <> $2)
+			(
+				status = $4
+				AND (
+					(NULLIF($1, '') IS NOT NULL AND COALESCE(provenance_json->>'analyzer', '') <> $1)
+					OR (NULLIF($2, '') IS NOT NULL AND COALESCE(provenance_json->>'analyzer_version', '') <> $2)
+				)
+			)
+			OR (
+				status IN ($5, $6)
+				AND (
+					(NULLIF($1, '') IS NOT NULL AND COALESCE(NULLIF(provenance_json->>'expected_analyzer', ''), provenance_json->>'analyzer', '') <> $1)
+					OR (NULLIF($2, '') IS NOT NULL AND COALESCE(NULLIF(provenance_json->>'expected_analyzer_version', ''), provenance_json->>'analyzer_version', '') <> $2)
+				)
+			)
+			OR (
+				status = $7
+				AND (
+					(
+						NULLIF($1, '') IS NOT NULL
+						AND COALESCE(NULLIF(provenance_json->>'expected_analyzer', ''), NULLIF(provenance_json->>'analyzer', '')) IS NOT NULL
+						AND COALESCE(NULLIF(provenance_json->>'expected_analyzer', ''), provenance_json->>'analyzer') <> $1
+					)
+					OR (
+						NULLIF($2, '') IS NOT NULL
+						AND COALESCE(NULLIF(provenance_json->>'expected_analyzer_version', ''), NULLIF(provenance_json->>'analyzer_version', '')) IS NOT NULL
+						AND COALESCE(NULLIF(provenance_json->>'expected_analyzer_version', ''), provenance_json->>'analyzer_version') <> $2
+					)
+				)
+			)
 		  )
 	`
-	result, err := r.db.ExecContext(ctx, query, analyzerName, analyzerVersion, AnalysisStatusStale, AnalysisStatusAnalyzed)
+	result, err := r.db.ExecContext(
+		ctx,
+		query,
+		analyzerName,
+		analyzerVersion,
+		AnalysisStatusStale,
+		AnalysisStatusAnalyzed,
+		AnalysisStatusPending,
+		AnalysisStatusAnalyzing,
+		AnalysisStatusFailed,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -391,19 +567,4 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 		return nil, err
 	}
 	return result, nil
-}
-
-func (r *AnalysisRepository) execTrackAnalysisUpdate(ctx context.Context, query string, args ...any) error {
-	result, err := r.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return ErrTrackAnalysisNotFound
-	}
-	return nil
 }

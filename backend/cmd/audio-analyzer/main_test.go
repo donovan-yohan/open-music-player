@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -153,11 +154,31 @@ func TestAnalyzeHTTPReturnsRetryableStatusForMIRFailure(t *testing.T) {
 	}
 }
 
+func TestAnalyzeHTTPRejectsMismatchedExpectedAnalyzerIdentity(t *testing.T) {
+	server := &analyzerServer{}
+	body := bytes.NewBufferString(`{"schema_version":1,"track_id":42,"storage_key":"tracks/test.wav","expected_analyzer":"omp-mir-analyzer","expected_analyzer_version":"old-version"}`)
+	request := httptest.NewRequest(http.MethodPost, "/analyze", body)
+	response := httptest.NewRecorder()
+
+	server.handleAnalyze(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusConflict, response.Body.String())
+	}
+}
+
 func TestValidateMIRRuntimeAcceptsReadyHelper(t *testing.T) {
 	tempDir := t.TempDir()
 	helperPath := filepath.Join(tempDir, "helper.py")
 	modelPath := filepath.Join(tempDir, "model.ckpt")
-	if err := os.WriteFile(helperPath, []byte("print('{\"status\":\"ready\"}')\n"), 0o600); err != nil {
+	ready := fmt.Sprintf(
+		`{"status":"ready","analyzer":%q,"analyzer_version":%q,"tempo_model":%q,"key_model":%q}`,
+		analyzerName,
+		analyzerVersion,
+		tempoModelVersion,
+		keyModelVersion,
+	)
+	if err := os.WriteFile(helperPath, []byte("print("+fmt.Sprintf("%q", ready)+")\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(modelPath, []byte("model"), 0o600); err != nil {
@@ -173,12 +194,35 @@ func TestValidateMIRRuntimeAcceptsReadyHelper(t *testing.T) {
 func TestValidateMIRRuntimeRejectsMissingModel(t *testing.T) {
 	tempDir := t.TempDir()
 	helperPath := filepath.Join(tempDir, "helper.py")
-	if err := os.WriteFile(helperPath, []byte("print('{\"status\":\"ready\"}')\n"), 0o600); err != nil {
+	if err := os.WriteFile(helperPath, []byte("print('{}')\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	err := validateMIRRuntime(context.Background(), helperPath, filepath.Join(tempDir, "missing.ckpt"))
 	if err == nil || !strings.Contains(err.Error(), "beat model unavailable") {
 		t.Fatalf("validateMIRRuntime() error = %v, want missing model", err)
+	}
+}
+
+func TestValidateMIRRuntimeRejectsMismatchedModelIdentity(t *testing.T) {
+	tempDir := t.TempDir()
+	helperPath := filepath.Join(tempDir, "helper.py")
+	modelPath := filepath.Join(tempDir, "model.ckpt")
+	output := fmt.Sprintf(
+		`{"status":"ready","analyzer":%q,"analyzer_version":%q,"tempo_model":"wrong-tempo","key_model":%q}`,
+		analyzerName,
+		analyzerVersion,
+		keyModelVersion,
+	)
+	if err := os.WriteFile(helperPath, []byte("print("+fmt.Sprintf("%q", output)+")\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(modelPath, []byte("model"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := validateMIRRuntime(context.Background(), helperPath, modelPath)
+	if err == nil || !strings.Contains(err.Error(), "model identity") {
+		t.Fatalf("validateMIRRuntime() error = %v, want model identity mismatch", err)
 	}
 }
 

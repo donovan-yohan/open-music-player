@@ -38,6 +38,10 @@ class WaveformTimeRange {
 }
 
 class TimelineWaveformData {
+  static const double maxUsefulFrameSpacingPx = 5;
+  static const int _estimatedFrameBytes = 48;
+  static const int _estimatedMarkerBytes = 4;
+
   final List<WaveformFrame> frames;
   final int durationMs;
   final List<int> beatsMs;
@@ -46,6 +50,8 @@ class TimelineWaveformData {
   final List<WaveformTimeRange> silenceRanges;
   final bool analyzed;
   final String resolutionLabel;
+  final int sourceStartMs;
+  final int? _coveredSourceFrameCount;
 
   const TimelineWaveformData({
     required this.frames,
@@ -56,7 +62,11 @@ class TimelineWaveformData {
     this.silenceRanges = const [],
     this.analyzed = false,
     this.resolutionLabel = 'synthetic',
-  });
+    this.sourceStartMs = 0,
+    int? coveredSourceFrameCount,
+  }) : _coveredSourceFrameCount = coveredSourceFrameCount;
+
+  int get coveredSourceFrameCount => _coveredSourceFrameCount ?? frames.length;
 
   List<double> get peaks =>
       frames.map((frame) => frame.peak).toList(growable: false);
@@ -67,33 +77,75 @@ class TimelineWaveformData {
       transientsMs.isNotEmpty ||
       silenceRanges.isNotEmpty;
 
+  int get estimatedByteSize =>
+      frames.length * _estimatedFrameBytes +
+      (beatsMs.length + downbeatsMs.length + transientsMs.length) *
+          _estimatedMarkerBytes +
+      silenceRanges.length * _estimatedMarkerBytes * 2 +
+      256;
+
   TimelineWaveformData sliced({
     required int sourceStartMs,
     required int sourceEndMs,
     required int targetSampleCount,
   }) {
     final safeDuration = math.max(1, durationMs);
-    final safeStart = sourceStartMs.clamp(0, safeDuration).toInt();
-    final safeEnd = sourceEndMs.clamp(safeStart + 1, safeDuration).toInt();
+    final localRequestedStart = sourceStartMs - this.sourceStartMs;
+    final localRequestedEnd = sourceEndMs - this.sourceStartMs;
+    final safeStart =
+        localRequestedStart.clamp(0, math.max(0, safeDuration - 1)).toInt();
+    final safeEnd =
+        localRequestedEnd.clamp(safeStart + 1, safeDuration).toInt();
     final startFraction = safeStart / safeDuration;
     final endFraction = safeEnd / safeDuration;
-    final slicedFrames = _resampleFrames(
+    final selectedFrames = _coveredFrames(
       frames,
-      targetSampleCount,
       startFraction: startFraction,
       endFraction: endFraction,
     );
+    final safeTarget = targetSampleCount.clamp(1, 131072).toInt();
+    final slicedFrames = analyzed
+        ? selectedFrames.length <= safeTarget
+            ? List<WaveformFrame>.unmodifiable(selectedFrames)
+            : _aggregateFramesPeakPreserving(selectedFrames, safeTarget)
+        : _resampleFrames(
+            frames,
+            safeTarget,
+            startFraction: startFraction,
+            endFraction: endFraction,
+          );
     final localDurationMs = safeEnd - safeStart;
+    final absoluteStartMs = this.sourceStartMs + safeStart;
+    final absoluteEndMs = this.sourceStartMs + safeEnd;
+    final coveredStart = (startFraction * coveredSourceFrameCount).floor();
+    final coveredEnd = (endFraction * coveredSourceFrameCount).ceil();
 
     return TimelineWaveformData(
       frames: slicedFrames,
       durationMs: localDurationMs,
-      beatsMs: _localMarkers(beatsMs, safeStart, safeEnd),
-      downbeatsMs: _localMarkers(downbeatsMs, safeStart, safeEnd),
-      transientsMs: _localMarkers(transientsMs, safeStart, safeEnd),
+      beatsMs: _localMarkersWithGuards(
+        beatsMs,
+        currentSourceStartMs: this.sourceStartMs,
+        sliceStartMs: absoluteStartMs,
+        sliceEndMs: absoluteEndMs,
+      ),
+      downbeatsMs: _localMarkersWithGuards(
+        downbeatsMs,
+        currentSourceStartMs: this.sourceStartMs,
+        sliceStartMs: absoluteStartMs,
+        sliceEndMs: absoluteEndMs,
+      ),
+      transientsMs: _localMarkersWithGuards(
+        transientsMs,
+        currentSourceStartMs: this.sourceStartMs,
+        sliceStartMs: absoluteStartMs,
+        sliceEndMs: absoluteEndMs,
+      ),
       silenceRanges: _localRanges(silenceRanges, safeStart, safeEnd),
       analyzed: analyzed,
       resolutionLabel: resolutionLabel,
+      sourceStartMs: absoluteStartMs,
+      coveredSourceFrameCount: math.max(0, coveredEnd - coveredStart),
     );
   }
 
@@ -110,7 +162,13 @@ class TimelineWaveformData {
     final normalizedPeaks = peaks.isEmpty
         ? mockWaveformPeaks('empty', barCount: targetSampleCount)
         : peaks;
-    final resampledPeaks = _resampleDoubles(normalizedPeaks, targetSampleCount);
+    final safeTarget = targetSampleCount.clamp(1, 131072).toInt();
+    final resampledPeaks = analyzed
+        ? _aggregateDoublesPeakPreserving(
+            normalizedPeaks,
+            math.min(normalizedPeaks.length, safeTarget),
+          )
+        : _resampleDoubles(normalizedPeaks, safeTarget);
     final frames = <WaveformFrame>[];
     for (var i = 0; i < resampledPeaks.length; i++) {
       final peak = resampledPeaks[i].clamp(0.02, 1.0).toDouble();
@@ -146,38 +204,45 @@ TimelineWaveformData richWaveformForTrack(
   Track track, {
   int sampleCount = 128,
 }) {
-  final safeSampleCount = sampleCount.clamp(256, 131072).toInt();
   final summary = track.analysis?.summary;
   final waveform = summary?.waveform;
   final analyzedPeaks = waveform?.peaks ?? const <double>[];
-  final fallbackPeaks = mockWaveformPeaks(
-    _waveformCacheKey(track),
-    barCount: safeSampleCount,
-  );
-  final peaks = analyzedPeaks.isNotEmpty ? analyzedPeaks : fallbackPeaks;
+  final availableAnalyzedSamples =
+      analyzedPeaks.isEmpty ? null : analyzedPeaks.length;
+  final safeSampleCount = availableAnalyzedSamples == null
+      ? sampleCount.clamp(256, 131072).toInt()
+      : math.min(
+          sampleCount.clamp(1, 131072).toInt(),
+          availableAnalyzedSamples,
+        );
   final rms = waveform?.rms ?? const <double>[];
   final lowBands = waveform?.spectralBands['low']?.values ?? const <double>[];
   final midBands = waveform?.spectralBands['mid']?.values ?? const <double>[];
   final highBands = waveform?.spectralBands['high']?.values ?? const <double>[];
-  final seed = _seedFromId(_waveformCacheKey(track));
-  final frames = _buildSpectralFrames(
-    peaks: _resampleDoubles(peaks, safeSampleCount),
-    rms: rms.isEmpty ? const [] : _resampleDoubles(rms, safeSampleCount),
-    lowBands: lowBands.isEmpty
-        ? const []
-        : _resampleDoubles(lowBands, safeSampleCount),
-    midBands: midBands.isEmpty
-        ? const []
-        : _resampleDoubles(midBands, safeSampleCount),
-    highBands: highBands.isEmpty
-        ? const []
-        : _resampleDoubles(highBands, safeSampleCount),
-    seed: seed,
-    durationMs: track.durationMs,
-    beatsMs: summary?.beatGrid?.beatsMs ?? const [],
-    downbeatsMs: summary?.downbeats?.positionsMs ?? const [],
-    analyzed: analyzedPeaks.isNotEmpty,
-  );
+  final frames = analyzedPeaks.isNotEmpty
+      ? _buildAnalyzedFrames(
+          peaks: analyzedPeaks,
+          rms: rms,
+          lowBands: lowBands,
+          midBands: midBands,
+          highBands: highBands,
+          targetCount: safeSampleCount,
+        )
+      : _buildSpectralFrames(
+          peaks: mockWaveformPeaks(
+            _waveformCacheKey(track),
+            barCount: safeSampleCount,
+          ),
+          rms: const [],
+          lowBands: const [],
+          midBands: const [],
+          highBands: const [],
+          seed: _seedFromId(_waveformCacheKey(track)),
+          durationMs: track.durationMs,
+          beatsMs: summary?.beatGrid?.beatsMs ?? const [],
+          downbeatsMs: summary?.downbeats?.positionsMs ?? const [],
+          analyzed: false,
+        );
 
   return TimelineWaveformData(
     frames: frames,
@@ -189,7 +254,127 @@ TimelineWaveformData richWaveformForTrack(
     analyzed: analyzedPeaks.isNotEmpty,
     resolutionLabel:
         analyzedPeaks.isNotEmpty ? _analysisResolutionLabel(waveform) : 'live',
+    coveredSourceFrameCount:
+        analyzedPeaks.isNotEmpty ? analyzedPeaks.length : frames.length,
   );
+}
+
+/// The timeline may decimate these frames for display, but must never invent
+/// higher-detail analyzed frames by interpolation.
+int? waveformAvailableSampleCountForTrack(Track track) {
+  final available = track.analysis?.summary?.waveform?.peaks.length ?? 0;
+  return available > 0 ? available : null;
+}
+
+int? waveformCoveredSampleCountForTrack(
+  Track track, {
+  required int sourceStartMs,
+  required int sourceEndMs,
+}) {
+  final available = waveformAvailableSampleCountForTrack(track);
+  if (available == null || available <= 0 || track.durationMs <= 0) return null;
+  final start = sourceStartMs.clamp(0, track.durationMs);
+  final end = sourceEndMs.clamp(start, track.durationMs);
+  final firstBin = (start * available / track.durationMs).floor();
+  final lastBin = (end * available / track.durationMs).ceil();
+  return math.max(0, lastBin - firstBin);
+}
+
+double waveformMaxUsefulPixelsPerSecond({
+  required int realFrameCount,
+  required int timelineDurationMs,
+}) {
+  if (realFrameCount <= 0 || timelineDurationMs <= 0) return 0;
+  return realFrameCount *
+      TimelineWaveformData.maxUsefulFrameSpacingPx /
+      (timelineDurationMs / 1000);
+}
+
+List<WaveformFrame> _buildAnalyzedFrames({
+  required List<double> peaks,
+  required List<double> rms,
+  required List<double> lowBands,
+  required List<double> midBands,
+  required List<double> highBands,
+  required int targetCount,
+}) {
+  if (peaks.isEmpty || targetCount <= 0) return const [];
+  final sourceCount = peaks.length;
+  final safeTarget = math.min(sourceCount, targetCount);
+  return List<WaveformFrame>.generate(safeTarget, (index) {
+    final start = (index * sourceCount / safeTarget).floor();
+    final end = math.max(
+      start + 1,
+      ((index + 1) * sourceCount / safeTarget).ceil(),
+    );
+    final peak = _maxNormalized(peaks, start, end, fallback: 0.02);
+    return WaveformFrame(
+      peak: peak,
+      rms: _maxProportional(
+        rms,
+        sourceStart: start,
+        sourceEnd: end,
+        sourceCount: sourceCount,
+        fallback: peak * 0.66,
+      ),
+      low: _maxProportional(
+        lowBands,
+        sourceStart: start,
+        sourceEnd: end,
+        sourceCount: sourceCount,
+        fallback: 0.48,
+      ),
+      mid: _maxProportional(
+        midBands,
+        sourceStart: start,
+        sourceEnd: end,
+        sourceCount: sourceCount,
+        fallback: 0.52,
+      ),
+      high: _maxProportional(
+        highBands,
+        sourceStart: start,
+        sourceEnd: end,
+        sourceCount: sourceCount,
+        fallback: 0.24,
+      ),
+    );
+  }, growable: false);
+}
+
+double _maxProportional(
+  List<double> values, {
+  required int sourceStart,
+  required int sourceEnd,
+  required int sourceCount,
+  required double fallback,
+}) {
+  if (values.isEmpty || sourceCount <= 0) {
+    return fallback.clamp(0.01, 1.0).toDouble();
+  }
+  final start = (sourceStart * values.length / sourceCount)
+      .floor()
+      .clamp(0, values.length - 1);
+  final end = math
+      .max(start + 1, (sourceEnd * values.length / sourceCount).ceil())
+      .clamp(start + 1, values.length);
+  return _maxNormalized(values, start, end, fallback: fallback);
+}
+
+double _maxNormalized(
+  List<double> values,
+  int start,
+  int end, {
+  required double fallback,
+}) {
+  if (values.isEmpty || start >= values.length || end <= start) {
+    return fallback.clamp(0.01, 1.0).toDouble();
+  }
+  var maximum = fallback;
+  for (var index = start; index < math.min(end, values.length); index++) {
+    maximum = math.max(maximum, values[index]);
+  }
+  return maximum.clamp(0.01, 1.0).toDouble();
 }
 
 /// Deterministic mock waveform peaks for a track.
@@ -434,11 +619,32 @@ String _analysisResolutionLabel(WaveformSummary? waveform) {
   return detail.name ?? 'analysis';
 }
 
-List<int> _localMarkers(List<int> markers, int startMs, int endMs) {
-  return markers
-      .where((marker) => marker >= startMs && marker <= endMs)
-      .map((marker) => marker - startMs)
-      .toList(growable: false);
+List<int> _localMarkersWithGuards(
+  List<int> markers, {
+  required int currentSourceStartMs,
+  required int sliceStartMs,
+  required int sliceEndMs,
+}) {
+  if (markers.isEmpty) return const [];
+  final absolute = markers
+      .map((marker) => marker + currentSourceStartMs)
+      .toSet()
+      .toList()
+    ..sort();
+  var first = 0;
+  while (first < absolute.length && absolute[first] < sliceStartMs) {
+    first++;
+  }
+  var end = first;
+  while (end < absolute.length && absolute[end] <= sliceEndMs) {
+    end++;
+  }
+  final guardedStart = math.max(0, first - 1);
+  final guardedEnd = math.min(absolute.length, end + 1);
+  return [
+    for (var index = guardedStart; index < guardedEnd; index++)
+      absolute[index] - sliceStartMs,
+  ];
 }
 
 List<WaveformTimeRange> _localRanges(
@@ -480,6 +686,76 @@ List<WaveformFrame> _resampleFrames(
     final right = source.ceil().clamp(0, frames.length - 1);
     if (left == right) return frames[left];
     return frames[left].lerp(frames[right], source - left);
+  }, growable: false);
+}
+
+List<WaveformFrame> _coveredFrames(
+  List<WaveformFrame> frames, {
+  required double startFraction,
+  required double endFraction,
+}) {
+  if (frames.isEmpty) return const [];
+  final start = (startFraction.clamp(0.0, 1.0) * frames.length)
+      .floor()
+      .clamp(0, frames.length - 1);
+  final end = (endFraction.clamp(0.0, 1.0) * frames.length)
+      .ceil()
+      .clamp(start + 1, frames.length);
+  return frames.sublist(start, end);
+}
+
+List<WaveformFrame> _aggregateFramesPeakPreserving(
+  List<WaveformFrame> frames,
+  int targetCount,
+) {
+  if (frames.isEmpty || targetCount <= 0) return const [];
+  final safeTarget = math.min(frames.length, targetCount);
+  return List<WaveformFrame>.generate(safeTarget, (index) {
+    final start = (index * frames.length / safeTarget).floor();
+    final end = math.max(
+      start + 1,
+      ((index + 1) * frames.length / safeTarget).ceil(),
+    );
+    var peak = 0.0;
+    var rms = 0.0;
+    var low = 0.0;
+    var mid = 0.0;
+    var high = 0.0;
+    for (var source = start; source < math.min(end, frames.length); source++) {
+      final frame = frames[source];
+      peak = math.max(peak, frame.peak);
+      rms = math.max(rms, frame.rms);
+      low = math.max(low, frame.low);
+      mid = math.max(mid, frame.mid);
+      high = math.max(high, frame.high);
+    }
+    return WaveformFrame(
+      peak: peak,
+      rms: rms,
+      low: low,
+      mid: mid,
+      high: high,
+    );
+  }, growable: false);
+}
+
+List<double> _aggregateDoublesPeakPreserving(
+  List<double> values,
+  int targetCount,
+) {
+  if (values.isEmpty || targetCount <= 0) return const [];
+  final safeTarget = math.min(values.length, targetCount);
+  return List<double>.generate(safeTarget, (index) {
+    final start = (index * values.length / safeTarget).floor();
+    final end = math.max(
+      start + 1,
+      ((index + 1) * values.length / safeTarget).ceil(),
+    );
+    var peak = 0.0;
+    for (var source = start; source < math.min(end, values.length); source++) {
+      peak = math.max(peak, values[source]);
+    }
+    return peak.clamp(0.0, 1.0).toDouble();
   }, growable: false);
 }
 

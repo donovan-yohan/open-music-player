@@ -26,8 +26,11 @@ type MetadataRepairResult struct {
 }
 
 type AnalysisRepairOptions struct {
-	Force      bool
-	StaleAfter time.Duration
+	Force                   bool
+	OnlyStale               bool
+	StaleAfter              time.Duration
+	ExpectedAnalyzer        string
+	ExpectedAnalyzerVersion string
 }
 
 type AnalysisRepairResult struct {
@@ -40,7 +43,7 @@ type AnalysisRepairResult struct {
 }
 
 type analysisRepairStore interface {
-	RequestRepairAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage, force bool, staleAfter time.Duration) (db.AnalysisRepairRequest, error)
+	RequestRepairAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage, force, onlyStale bool, staleAfter time.Duration) (db.AnalysisRepairRequest, error)
 }
 
 func (p *Processor) RepairMetadata(ctx context.Context, track *db.Track, opts MetadataRepairOptions) (MetadataRepairResult, error) {
@@ -104,14 +107,31 @@ func (p *Processor) RequestAnalysisRepair(ctx context.Context, track *db.Track, 
 		result.WaitingOn = "storage"
 		return result, nil
 	}
+	expectedAnalyzer := strings.TrimSpace(opts.ExpectedAnalyzer)
+	expectedAnalyzerVersion := strings.TrimSpace(opts.ExpectedAnalyzerVersion)
+	if expectedAnalyzer == "" && expectedAnalyzerVersion == "" {
+		expectedAnalyzer, expectedAnalyzerVersion = p.analyzerIdentity()
+	}
+	if (expectedAnalyzer == "") != (expectedAnalyzerVersion == "") {
+		return result, fmt.Errorf("expected analyzer identity requires both name and version")
+	}
+	if p.requireAnalyzerIdentity && expectedAnalyzer == "" {
+		result.Status = "skipped"
+		result.Reason = "analyzer_identity_unavailable"
+		result.WaitingOn = "analyzer"
+		return result, nil
+	}
 	staleAfter := opts.StaleAfter
 	if staleAfter <= 0 {
 		staleAfter = defaultAnalysisRepairStaleAfter
 	}
 
 	provenance, _ := json.Marshal(map[string]interface{}{
-		"trigger": "maintenance_repair",
-		"force":   opts.Force,
+		"trigger":                   "maintenance_repair",
+		"force":                     opts.Force,
+		"only_stale":                opts.OnlyStale,
+		"expected_analyzer":         expectedAnalyzer,
+		"expected_analyzer_version": expectedAnalyzerVersion,
 		"source": map[string]interface{}{
 			"storage_key": track.StorageKey.String,
 			"source_type": nullableString(track.SourceType),
@@ -126,7 +146,7 @@ func (p *Processor) RequestAnalysisRepair(ctx context.Context, track *db.Track, 
 		result.WaitingOn = "analysis_store"
 		return result, nil
 	}
-	repair, err := repairer.RequestRepairAnalysis(ctx, track.ID, provenance, opts.Force, staleAfter)
+	repair, err := repairer.RequestRepairAnalysis(ctx, track.ID, provenance, opts.Force, opts.OnlyStale, staleAfter)
 	if err != nil {
 		return result, err
 	}
@@ -142,17 +162,19 @@ func (p *Processor) RequestAnalysisRepair(ctx context.Context, track *db.Track, 
 	}
 
 	req := analyzer.Request{
-		TrackID:       track.ID,
-		StorageKey:    track.StorageKey.String,
-		SourceURL:     nullableString(track.SourceURL),
-		SourceType:    nullableString(track.SourceType),
-		DurationMs:    int(nullableInt32(track.DurationMs)),
-		Title:         track.Title,
-		Artist:        nullableString(track.Artist),
-		SchemaVersion: analyzer.SchemaVersion,
+		TrackID:                 track.ID,
+		StorageKey:              track.StorageKey.String,
+		SourceURL:               nullableString(track.SourceURL),
+		SourceType:              nullableString(track.SourceType),
+		DurationMs:              int(nullableInt32(track.DurationMs)),
+		Title:                   track.Title,
+		Artist:                  nullableString(track.Artist),
+		SchemaVersion:           analyzer.SchemaVersion,
+		ExpectedAnalyzer:        expectedAnalyzer,
+		ExpectedAnalyzerVersion: expectedAnalyzerVersion,
 	}
 	if err := p.scheduleAnalysis(ctx, req); err != nil {
-		p.markAnalysisSchedulingFailed(track.ID, err)
+		p.markAnalysisSchedulingFailed(req, err)
 		return result, fmt.Errorf("schedule analysis repair: %w", err)
 	}
 	return result, nil

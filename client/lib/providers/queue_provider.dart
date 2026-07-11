@@ -22,6 +22,8 @@ class QueueProvider extends ChangeNotifier {
   static const int _maxRetainedAnalysisAuthorityEntries = 128;
   static const int _maxRetainedBeatPositions = 128;
   static const int _maxRetainedDownbeatPositions = 64;
+  static const int _maxCachedWaveformFrames = 196608;
+  static const int _maxCachedWaveformBytes = 12 * 1024 * 1024;
   static const Duration _maxAnalysisRetryDelay = Duration(minutes: 2);
 
   final ApiClient _apiClient;
@@ -41,8 +43,8 @@ class QueueProvider extends ChangeNotifier {
   Map<String, TrimRange> _trimRanges = {};
   Map<String, int> _timelineStartOverrides = {};
   Map<String, MixPlanClip> _mixPlanClips = {};
-  final Map<String, List<double>> _waveformPeaks = {};
-  final Map<String, Map<int, TimelineWaveformData>> _timelineWaveforms = {};
+  final LinkedHashMap<_TimelineWaveformCacheKey, _CachedTimelineWaveform>
+      _timelineWaveforms = LinkedHashMap();
   final Map<String, TrackAnalysis> _analysisByTrackId = {};
   final Map<String, int> _appliedCompactAnalysisSignatures = {};
   final Map<String, TrackAnalysis> _lastIncomingAnalysisByTrackId = {};
@@ -85,6 +87,21 @@ class QueueProvider extends ChangeNotifier {
 
   @visibleForTesting
   int get retainedAnalysisAuthorityCount => _analysisAuthorityKeys().length;
+
+  @visibleForTesting
+  int get cachedWaveformEntryCount => _timelineWaveforms.length;
+
+  @visibleForTesting
+  int get cachedWaveformFrameCount => _timelineWaveforms.values.fold<int>(
+        0,
+        (total, entry) => total + entry.waveform.frames.length,
+      );
+
+  @visibleForTesting
+  int get cachedWaveformByteCount => _timelineWaveforms.values.fold<int>(
+        0,
+        (total, entry) => total + entry.estimatedByteSize,
+      );
 
   Map<String, TrimRange> get trimRanges => Map.unmodifiable(_trimRanges);
   Map<String, MixPlanClip> get mixPlanClips => Map.unmodifiable(_mixPlanClips);
@@ -142,24 +159,34 @@ class QueueProvider extends ChangeNotifier {
   /// Deterministic mock waveform peaks for a track until backend peak data is
   /// available.
   List<double> waveformPeaksFor(Track track) {
-    final cacheKey = _trackWaveformKey(track);
-    return _waveformPeaks.putIfAbsent(
-      cacheKey,
-      () => waveformFor(track, 64).peaks,
-    );
+    final entry = _waveformCacheEntry(track, 64);
+    final peaks = entry.peaks;
+    _trimTimelineWaveformCache();
+    return peaks;
   }
 
-  TimelineWaveformData waveformFor(Track track, int targetSampleCount) {
+  TimelineWaveformData waveformFor(Track track, int targetSampleCount) =>
+      _waveformCacheEntry(track, targetSampleCount).waveform;
+
+  _CachedTimelineWaveform _waveformCacheEntry(
+    Track track,
+    int targetSampleCount,
+  ) {
     final bucket = _waveformSampleBucket(targetSampleCount);
-    final cacheKey = _trackWaveformKey(track);
-    final perTrack = _timelineWaveforms.putIfAbsent(
-      cacheKey,
-      () => <int, TimelineWaveformData>{},
+    final cacheKey = _TimelineWaveformCacheKey(
+      trackRevision: _trackWaveformKey(track),
+      bucket: bucket,
     );
-    return perTrack.putIfAbsent(
-      bucket,
-      () => richWaveformForTrack(track, sampleCount: bucket),
-    );
+    final cached = _timelineWaveforms.remove(cacheKey);
+    if (cached != null) {
+      _timelineWaveforms[cacheKey] = cached;
+      return cached;
+    }
+    final waveform = richWaveformForTrack(track, sampleCount: bucket);
+    final entry = _CachedTimelineWaveform(waveform);
+    _timelineWaveforms[cacheKey] = entry;
+    _trimTimelineWaveformCache();
+    return entry;
   }
 
   /// Attach hydrated analysis by backend track ID. Collection responses carry
@@ -989,14 +1016,14 @@ class QueueProvider extends ChangeNotifier {
         _trimRanges = {};
         _timelineStartOverrides = {};
         _mixPlanClips = {};
-        _waveformPeaks.clear();
         _timelineWaveforms.clear();
       }
       return;
     }
 
     final localTimingKeys = _queue.tracks.expand(_localTimingKeys).toSet();
-    final trackIds = _queue.tracks.map((track) => track.id).toSet();
+    final waveformSourceKeys =
+        _queue.tracks.map(_trackWaveformSourceKey).toSet();
     final queueItemIds = _queue.tracks
         .map((track) => track.queueItemId)
         .where((id) => id.isNotEmpty)
@@ -1024,23 +1051,11 @@ class QueueProvider extends ChangeNotifier {
         _storeMixPlanClip(clip);
       }
     }
-    _waveformPeaks.removeWhere(
-      (cacheKey, _) =>
-          !_cacheKeyMatchesAny(cacheKey, trackIds) &&
-          !_cacheKeyMatchesAny(cacheKey, queueItemIds),
-    );
     _timelineWaveforms.removeWhere(
-      (cacheKey, _) =>
-          !_cacheKeyMatchesAny(cacheKey, trackIds) &&
-          !_cacheKeyMatchesAny(cacheKey, queueItemIds),
+      (cacheKey, _) => waveformSourceKeys.every(
+        (sourceKey) => !cacheKey.trackRevision.startsWith('$sourceKey|'),
+      ),
     );
-  }
-
-  bool _cacheKeyMatchesAny(String cacheKey, Set<String> ids) {
-    for (final id in ids) {
-      if (cacheKey == id || cacheKey.startsWith('$id|')) return true;
-    }
-    return false;
   }
 
   Iterable<String> _localTimingKeys(Track track) sync* {
@@ -1068,39 +1083,65 @@ class QueueProvider extends ChangeNotifier {
   }
 
   String _trackWaveformKey(Track track) {
-    final analysisTrackId = _analysisTrackId(track);
     final analysis = track.analysis;
+    final waveform = analysis?.summary?.waveform;
+    final peaks = waveform?.peaks ?? const <double>[];
     final analysisKey = analysis == null
         ? 'analysis:none'
         : [
             'analysis:${analysis.status.name}',
+            'updated:${analysis.updatedAt?.microsecondsSinceEpoch ?? 'none'}',
             'bpm:${analysis.summary?.bpm?.numericValue ?? 'none'}',
             'beats:${analysis.summary?.beatGrid?.beatsMs.length ?? 0}',
             'downbeats:${analysis.summary?.downbeats?.positionsMs.length ?? 0}',
             'key:${analysis.summary?.key?.textValue ?? ''}',
             'camelot:${analysis.summary?.camelot?.textValue ?? ''}',
             'overrides:${analysis.overrides?.toJson()}',
-            'waveform:${analysis.summary?.waveform?.sampleCount ?? 0}',
+            'waveform:${peaks.length}',
+            'first:${peaks.isEmpty ? 'none' : peaks.first}',
+            'last:${peaks.isEmpty ? 'none' : peaks.last}',
             'bands:${analysis.summary?.waveform?.spectralBands.length ?? 0}',
           ].join('|');
-    final suffix = [
-      if (analysisTrackId != null) 'track:$analysisTrackId',
-      analysisKey,
-    ].join('|');
+    return '${_trackWaveformSourceKey(track)}|$analysisKey';
+  }
 
-    for (final key in _trackTimingKeys(track)) {
-      return '$key|$suffix';
+  String _trackWaveformSourceKey(Track track) {
+    final analysisTrackId = _analysisTrackId(track);
+    if (analysisTrackId != null) return 'track:$analysisTrackId';
+    final playbackTrackId = track.playbackTrackId;
+    if (playbackTrackId != null && playbackTrackId.isNotEmpty) {
+      return 'playback:$playbackTrackId';
     }
-    return '${track.id}|$suffix';
+    final candidateId = track.sourceCandidateId;
+    if (candidateId != null && candidateId.isNotEmpty) {
+      return 'candidate:$candidateId';
+    }
+    final sourceUrl = track.sourceUrl;
+    if (sourceUrl != null && sourceUrl.isNotEmpty) {
+      return 'source:$sourceUrl';
+    }
+    return 'id:${track.id}';
   }
 
   int _waveformSampleBucket(int targetSampleCount) {
-    final target = targetSampleCount.clamp(256, 4096).toInt();
-    var bucket = 512;
-    while (bucket < target && bucket < 4096) {
+    final target = targetSampleCount.clamp(8, 65536).toInt();
+    var bucket = 8;
+    while (bucket < target && bucket < 65536) {
       bucket *= 2;
     }
-    return bucket.clamp(512, 4096).toInt();
+    return bucket.clamp(8, 65536).toInt();
+  }
+
+  void _trimTimelineWaveformCache() {
+    var retainedFrames = cachedWaveformFrameCount;
+    var retainedBytes = cachedWaveformByteCount;
+    while (_timelineWaveforms.isNotEmpty &&
+        (retainedFrames > _maxCachedWaveformFrames ||
+            retainedBytes > _maxCachedWaveformBytes)) {
+      final removed = _timelineWaveforms.remove(_timelineWaveforms.keys.first)!;
+      retainedFrames -= removed.waveform.frames.length;
+      retainedBytes -= removed.estimatedByteSize;
+    }
   }
 
   void _rememberQueueAnalyses() {
@@ -1838,11 +1879,10 @@ class QueueProvider extends ChangeNotifier {
 
   void _invalidateAnalysisCache(String trackId) {
     _analysisRevision++;
-    _waveformPeaks.removeWhere(
-      (cacheKey, _) => cacheKey.contains('|track:$trackId|'),
-    );
     _timelineWaveforms.removeWhere(
-      (cacheKey, _) => cacheKey.contains('|track:$trackId|'),
+      (cacheKey, _) =>
+          cacheKey.trackRevision.startsWith('track:$trackId|') ||
+          cacheKey.trackRevision.contains('|track:$trackId|'),
     );
     _enrichedTrackCache.removeWhere(
       (cacheKey, _) => cacheKey.endsWith('|$trackId'),
@@ -1918,4 +1958,35 @@ class _EnrichedTrackCacheEntry {
     required this.analysis,
     required this.result,
   });
+}
+
+class _TimelineWaveformCacheKey {
+  final String trackRevision;
+  final int bucket;
+
+  const _TimelineWaveformCacheKey({
+    required this.trackRevision,
+    required this.bucket,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is _TimelineWaveformCacheKey &&
+      other.trackRevision == trackRevision &&
+      other.bucket == bucket;
+
+  @override
+  int get hashCode => Object.hash(trackRevision, bucket);
+}
+
+class _CachedTimelineWaveform {
+  final TimelineWaveformData waveform;
+  List<double>? _peaks;
+
+  _CachedTimelineWaveform(this.waveform);
+
+  List<double> get peaks => _peaks ??= waveform.peaks;
+
+  int get estimatedByteSize =>
+      waveform.estimatedByteSize + (_peaks?.length ?? 0) * 8 + 128;
 }

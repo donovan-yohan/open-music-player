@@ -4,6 +4,9 @@ const double minTempoAutomationRate = 0.5;
 const double maxTempoAutomationRate = 2.0;
 const double reliableBpmConfidenceFloor = 0.55;
 const double reliableDownbeatConfidenceFloor = 0.55;
+const int minReliableBeatGridMarkers = 4;
+const double minReliableBeatIntervalMedianRatio = 0.45;
+const double maxReliableBeatIntervalMedianRatio = 1.8;
 const int defaultTransitionPhraseBeats = 16;
 const int minDefaultTransitionOverlapMs = 4000;
 const int maxDefaultTransitionOverlapMs = 12000;
@@ -60,12 +63,40 @@ class ClipTempoMetadata {
     return confidence == null || confidence >= reliableBpmConfidenceFloor;
   }
 
+  /// Raw analyzer ordinals can establish phase only when their timing is locally
+  /// coherent. BPM octave ambiguity and gradual tempo changes are valid; nearby
+  /// duplicates, missing cells, and abrupt interval jumps are not.
+  bool get hasReliableBeatGrid {
+    if (beatsMs.length < minReliableBeatGridMarkers ||
+        !_isStrictlyIncreasingNonNegative(beatsMs)) {
+      return false;
+    }
+
+    final explicitlyManual = _isManualBeatGridProvenance(beatGridProvenance);
+    if (explicitlyManual) return true;
+    final confidence = bpmConfidence;
+    if (confidence != null &&
+        (!confidence.isFinite || confidence < reliableBpmConfidenceFloor)) {
+      return false;
+    }
+    return _hasStructurallyReliableBeatIntervals(beatsMs);
+  }
+
   bool get hasDownbeatMarkers => downbeatsMs.isNotEmpty;
 
   bool get hasReliableDownbeats {
-    if (!hasDownbeatMarkers) return false;
+    if (!hasDownbeatMarkers || !_isStrictlyIncreasingNonNegative(downbeatsMs)) {
+      return false;
+    }
+    if (beatsMs.isNotEmpty) {
+      if (!_isStrictlyIncreasingNonNegative(beatsMs)) return false;
+      if (!_downbeatsFollowBeatGrid(beatsMs, downbeatsMs)) {
+        return false;
+      }
+    }
     final confidence = downbeatConfidence;
-    return confidence == null || confidence >= reliableDownbeatConfidenceFloor;
+    return confidence == null ||
+        (confidence.isFinite && confidence >= reliableDownbeatConfidenceFloor);
   }
 
   /// Preserves the existing auto-lock contract for callers that use this name.
@@ -286,7 +317,7 @@ class _ClipTempoOverrides {
           _readString(map['provenance']),
       downbeatProvenance: _readString(downbeats?['provenance']) ??
           _readString(map['provenance']),
-      hasTrustedBeatGridOverride: beatGridBpm != null || beatsMs != null,
+      hasTrustedBeatGridOverride: beatsMs != null,
       musicalKey: _readAnalysisText(key),
       camelot: _readAnalysisText(map['camelot']),
     );
@@ -398,6 +429,24 @@ class PlaybackRateAutomation {
       baseRate: baseRate,
       pitchMode: pitchMode,
       segments: List.unmodifiable(next),
+    );
+  }
+
+  /// Rate segments use absolute mix time, so they follow a moved placement.
+  PlaybackRateAutomation shiftedTimelineMs(int deltaMs) {
+    if (deltaMs == 0 || segments.isEmpty) return this;
+    return PlaybackRateAutomation(
+      baseRate: baseRate,
+      pitchMode: pitchMode,
+      segments: List.unmodifiable([
+        for (final segment in segments)
+          PlaybackRateSegment(
+            startMs: segment.startMs + deltaMs,
+            endMs: segment.endMs + deltaMs,
+            startRate: segment.startRate,
+            endRate: segment.endRate,
+          ),
+      ]),
     );
   }
 
@@ -841,7 +890,7 @@ List<int> beatMarkersForSnapMode(
   ClipTempoMetadata tempo,
   BeatSnapMode snapMode,
 ) {
-  final beats = tempo.hasReliableBpm
+  final beats = tempo.hasReliableBeatGrid
       ? _sortedUniqueNonNegative(tempo.beatsMs)
       : const <int>[];
   final downbeats = tempo.hasDownbeats
@@ -863,6 +912,59 @@ List<int> beatMarkersForSnapMode(
 List<int> _sortedUniqueNonNegative(List<int> values) {
   final sorted = values.where((value) => value >= 0).toSet().toList()..sort();
   return sorted;
+}
+
+bool _isStrictlyIncreasingNonNegative(List<int> values) {
+  if (values.isEmpty || values.first < 0) return false;
+  for (var index = 1; index < values.length; index++) {
+    if (values[index] <= values[index - 1]) return false;
+  }
+  return true;
+}
+
+bool _downbeatsFollowBeatGrid(List<int> beats, List<int> downbeats) {
+  final beatSet = beats.toSet();
+  for (final downbeat in downbeats) {
+    if (downbeat >= beats.first && downbeat <= beats.last) {
+      if (!beatSet.contains(downbeat)) return false;
+      continue;
+    }
+    if (beats.length < 2) return false;
+    final beforeGrid = downbeat < beats.first;
+    final anchor = beforeGrid ? beats.first : beats.last;
+    final interval = beforeGrid
+        ? beats[1] - beats.first
+        : beats.last - beats[beats.length - 2];
+    if (interval <= 0 || (downbeat - anchor).abs() % interval != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool _isManualBeatGridProvenance(String? provenance) =>
+    provenance?.trim().toLowerCase() == manualTempoProvenance;
+
+bool _hasStructurallyReliableBeatIntervals(List<int> sortedBeats) {
+  if (sortedBeats.length < 2) return false;
+  final intervals = <int>[
+    for (var index = 1; index < sortedBeats.length; index++)
+      sortedBeats[index] - sortedBeats[index - 1],
+  ];
+  final median = _medianInt(intervals);
+  if (median <= 0) return false;
+  for (final interval in intervals) {
+    if (interval < median * minReliableBeatIntervalMedianRatio ||
+        interval > median * maxReliableBeatIntervalMedianRatio) {
+      return false;
+    }
+  }
+  return true;
+}
+
+int _medianInt(List<int> values) {
+  final sorted = [...values]..sort();
+  return sorted[sorted.length ~/ 2];
 }
 
 List<int> _strideMarkers(List<int> markers, int stride) {

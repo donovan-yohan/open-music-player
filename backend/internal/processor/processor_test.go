@@ -42,8 +42,10 @@ type fakeAnalysisStore struct {
 	storeResultCount int
 	storedResult     db.AnalysisResult
 	storeResultCh    chan db.AnalysisResult
+	storeResultErr   error
 	failedCount      int
 	unsupportedCount int
+	closed           bool
 }
 
 type legacyAnalysisStore struct {
@@ -53,13 +55,15 @@ type legacyAnalysisStore struct {
 func (s *fakeAnalysisStore) RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.assertOpenLocked()
 	s.requestCount++
 	return nil
 }
 
-func (s *fakeAnalysisStore) RequestRepairAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage, force bool, staleAfter time.Duration) (db.AnalysisRepairRequest, error) {
+func (s *fakeAnalysisStore) RequestRepairAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage, force, onlyStale bool, staleAfter time.Duration) (db.AnalysisRepairRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.assertOpenLocked()
 	s.repairCount++
 	if s.repairResult.TrackID == 0 {
 		s.repairResult.TrackID = trackID
@@ -70,12 +74,14 @@ func (s *fakeAnalysisStore) RequestRepairAnalysis(ctx context.Context, trackID i
 func (s *fakeAnalysisStore) MarkAnalyzing(ctx context.Context, trackID int64, provenance json.RawMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.assertOpenLocked()
 	s.analyzingCount++
 	return nil
 }
 
 func (s *fakeAnalysisStore) StoreResult(ctx context.Context, trackID int64, result db.AnalysisResult) error {
 	s.mu.Lock()
+	s.assertOpenLocked()
 	s.storeResultCount++
 	s.storedResult = result
 	ch := s.storeResultCh
@@ -83,12 +89,13 @@ func (s *fakeAnalysisStore) StoreResult(ctx context.Context, trackID int64, resu
 	if ch != nil {
 		ch <- result
 	}
-	return nil
+	return s.storeResultErr
 }
 
 func (s *fakeAnalysisStore) MarkFailed(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.assertOpenLocked()
 	s.failedCount++
 	return nil
 }
@@ -96,8 +103,37 @@ func (s *fakeAnalysisStore) MarkFailed(ctx context.Context, trackID int64, errTe
 func (s *fakeAnalysisStore) MarkUnsupported(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.assertOpenLocked()
 	s.unsupportedCount++
 	return nil
+}
+
+func (s *fakeAnalysisStore) closeForTest() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+}
+
+func (s *fakeAnalysisStore) assertOpenLocked() {
+	if s.closed {
+		panic("analysis store write after close")
+	}
+}
+
+type delayedRecoveryAnalysisStore struct {
+	*fakeAnalysisStore
+	delay time.Duration
+}
+
+func (s *delayedRecoveryAnalysisStore) MarkFailed(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
+	timer := time.NewTimer(s.delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return s.fakeAnalysisStore.MarkFailed(ctx, trackID, errText, provenance)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *legacyAnalysisStore) RequestAnalysis(ctx context.Context, trackID int64, provenance json.RawMessage) error {
@@ -127,12 +163,22 @@ type fakeAnalyzerClient struct {
 	err      error
 }
 
+type contextAwareAnalyzerClient struct {
+	started chan context.Context
+	release chan struct{}
+}
+
 type blockingAnalyzerClient struct {
 	mu        sync.Mutex
 	active    int
 	maxActive int
 	started   chan int64
 	release   chan struct{}
+}
+
+type nonCooperativeAnalyzerClient struct {
+	started chan int64
+	release chan struct{}
 }
 
 func sqlNullString(value string) sql.NullString {
@@ -151,6 +197,20 @@ func (c *fakeAnalyzerClient) Analyze(ctx context.Context, req analyzer.Request) 
 		return nil, c.err
 	}
 	return c.result, nil
+}
+
+func (c *contextAwareAnalyzerClient) Analyze(ctx context.Context, _ analyzer.Request) (*analyzer.Result, error) {
+	c.started <- ctx
+	<-c.release
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &analyzer.Result{
+		SchemaVersion:  analyzer.SchemaVersion,
+		SummaryJSON:    json.RawMessage(`{}`),
+		ArtifactsJSON:  json.RawMessage(`{}`),
+		ProvenanceJSON: json.RawMessage(`{}`),
+	}, nil
 }
 
 func (c *blockingAnalyzerClient) Analyze(ctx context.Context, req analyzer.Request) (*analyzer.Result, error) {
@@ -174,6 +234,17 @@ func (c *blockingAnalyzerClient) Analyze(ctx context.Context, req analyzer.Reque
 		SummaryJSON:    json.RawMessage(`{}`),
 		ArtifactsJSON:  json.RawMessage(`{}`),
 		ProvenanceJSON: json.RawMessage(`{}`),
+	}, nil
+}
+
+func (c *nonCooperativeAnalyzerClient) Analyze(_ context.Context, req analyzer.Request) (*analyzer.Result, error) {
+	c.started <- req.TrackID
+	<-c.release
+	return &analyzer.Result{
+		SchemaVersion:  analyzer.SchemaVersion,
+		SummaryJSON:    json.RawMessage(`{"bpm":{"value":128}}`),
+		ArtifactsJSON:  json.RawMessage(`{}`),
+		ProvenanceJSON: json.RawMessage(`{"analyzer":"fixture","analyzer_version":"v1"}`),
 	}, nil
 }
 
@@ -261,6 +332,34 @@ func TestEnqueueAnalysisSkipsPendingRowWhenAnalyzerClientMissing(t *testing.T) {
 	}
 }
 
+func TestEnqueueAnalysisDefersRequiredIdentityWithoutCallingAnalyzer(t *testing.T) {
+	store := &fakeAnalysisStore{}
+	client := &fakeAnalyzerClient{requests: make(chan analyzer.Request, 1)}
+	processor := New(&ProcessorConfig{
+		AnalysisRepo:            store,
+		AnalyzerClient:          client,
+		RequireAnalyzerIdentity: true,
+	})
+
+	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42}, &TrackMetadata{
+		StorageKey: "tracks/fixture/job-fixture.wav",
+	})
+
+	if store.requestCount != 1 {
+		t.Fatalf("RequestAnalysis called %d time(s), want one deferred pending row", store.requestCount)
+	}
+	select {
+	case req := <-client.requests:
+		t.Fatalf("analyzer ran without a required identity: %+v", req)
+	default:
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := processor.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+}
+
 func TestRepairMetadataSkipsUserEditedWithoutForce(t *testing.T) {
 	processor := &Processor{}
 	result, err := processor.RepairMetadata(context.Background(), &db.Track{
@@ -292,6 +391,35 @@ func TestRequestAnalysisRepairSkipsWhenAnalyzerClientMissing(t *testing.T) {
 	}
 	if store.repairCount != 0 {
 		t.Fatalf("repair store called %d time(s) without analyzer client", store.repairCount)
+	}
+}
+
+func TestRequestAnalysisRepairWaitsForRequiredAnalyzerIdentity(t *testing.T) {
+	store := &fakeAnalysisStore{}
+	client := &fakeAnalyzerClient{requests: make(chan analyzer.Request, 1)}
+	processor := New(&ProcessorConfig{
+		AnalysisRepo:            store,
+		AnalyzerClient:          client,
+		RequireAnalyzerIdentity: true,
+	})
+
+	result, err := processor.RequestAnalysisRepair(context.Background(), &db.Track{
+		ID:         42,
+		StorageKey: sqlNullString("tracks/fixture/job-fixture.wav"),
+	}, AnalysisRepairOptions{})
+	if err != nil {
+		t.Fatalf("RequestAnalysisRepair returned error: %v", err)
+	}
+	if result.Status != "skipped" || result.Reason != "analyzer_identity_unavailable" || result.WaitingOn != "analyzer" {
+		t.Fatalf("result = %+v, want analyzer identity wait", result)
+	}
+	if store.repairCount != 0 {
+		t.Fatalf("repair store called %d time(s) without required analyzer identity", store.repairCount)
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := processor.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
 	}
 }
 
@@ -366,6 +494,7 @@ func TestRequestAnalysisRepairQueuesAndRunsAnalyzer(t *testing.T) {
 		},
 	}
 	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
+	processor.SetAnalyzerIdentity("omp-mir-analyzer", "2026-07-11-3")
 
 	result, err := processor.RequestAnalysisRepair(context.Background(), &db.Track{
 		ID:         42,
@@ -386,6 +515,9 @@ func TestRequestAnalysisRepairQueuesAndRunsAnalyzer(t *testing.T) {
 		if req.TrackID != 42 || req.StorageKey != "tracks/fixture/job-fixture.wav" {
 			t.Fatalf("request = %+v", req)
 		}
+		if req.ExpectedAnalyzer != "omp-mir-analyzer" || req.ExpectedAnalyzerVersion != "2026-07-11-3" {
+			t.Fatalf("request missing expected analyzer identity: %+v", req)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for analyzer request")
 	}
@@ -393,6 +525,347 @@ func TestRequestAnalysisRepairQueuesAndRunsAnalyzer(t *testing.T) {
 	case <-store.storeResultCh:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for stored result")
+	}
+}
+
+func TestRequestAnalysisRepairWorkerOutlivesStartupMaintenanceContext(t *testing.T) {
+	store := &fakeAnalysisStore{
+		repairResult:  db.AnalysisRepairRequest{TrackID: 42, Status: db.AnalysisStatusPending, Queued: true},
+		storeResultCh: make(chan db.AnalysisResult, 1),
+	}
+	client := &contextAwareAnalyzerClient{
+		started: make(chan context.Context, 1),
+		release: make(chan struct{}),
+	}
+	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
+	maintenanceCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result, err := processor.RequestAnalysisRepair(maintenanceCtx, &db.Track{
+		ID:         42,
+		StorageKey: sqlNullString("tracks/fixture/job-fixture.wav"),
+	}, AnalysisRepairOptions{})
+	if err != nil || !result.Queued {
+		t.Fatalf("RequestAnalysisRepair = %+v, %v; want queued repair", result, err)
+	}
+	cancel()
+	select {
+	case workerCtx := <-client.started:
+		if err := workerCtx.Err(); err != nil {
+			t.Fatalf("worker inherited canceled maintenance context: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for analyzer worker")
+	}
+	close(client.release)
+	select {
+	case <-store.storeResultCh:
+	case <-time.After(time.Second):
+		t.Fatal("queued repair did not finish after maintenance context cancellation")
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
+	defer shutdownCancel()
+	if err := processor.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+}
+
+func TestAnalysisWorkerShutdownDrainsQueuedWorkAndStopsSubmissions(t *testing.T) {
+	store := &fakeAnalysisStore{storeResultCh: make(chan db.AnalysisResult, 2)}
+	client := &fakeAnalyzerClient{result: &analyzer.Result{
+		SchemaVersion:  analyzer.SchemaVersion,
+		SummaryJSON:    json.RawMessage(`{}`),
+		ArtifactsJSON:  json.RawMessage(`{}`),
+		ProvenanceJSON: json.RawMessage(`{"analyzer":"fixture","analyzer_version":"v1"}`),
+	}}
+	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
+	for trackID := int64(1); trackID <= 2; trackID++ {
+		if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: trackID}); err != nil {
+			t.Fatalf("schedule track %d: %v", trackID, err)
+		}
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := processor.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+	if store.storeResultCount != 2 {
+		t.Fatalf("stored results = %d, want 2", store.storeResultCount)
+	}
+	if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 3}); err == nil {
+		t.Fatal("scheduleAnalysis accepted work after shutdown")
+	}
+}
+
+func TestAnalysisWorkerShutdownDeadlineCancelsActiveAndQueuedRows(t *testing.T) {
+	store := &fakeAnalysisStore{}
+	client := &blockingAnalyzerClient{
+		started: make(chan int64, analysisQueueSize+1),
+		release: make(chan struct{}),
+	}
+	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
+	if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for active analysis")
+	}
+	if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := processor.Shutdown(shutdownCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v, want deadline exceeded", err)
+	}
+	store.mu.Lock()
+	failed := store.failedCount
+	store.mu.Unlock()
+	if failed != 2 {
+		t.Fatalf("failed rows = %d, want active and queued rows marked failed", failed)
+	}
+}
+
+func TestAnalysisWorkerShutdownDeadlineSurvivesNonCooperativeAnalyzer(t *testing.T) {
+	store := &fakeAnalysisStore{}
+	client := &nonCooperativeAnalyzerClient{
+		started: make(chan int64, 1),
+		release: make(chan struct{}),
+	}
+	processor := New(&ProcessorConfig{
+		AnalysisRepo:        store,
+		AnalyzerClient:      client,
+		AnalysisConcurrency: 1,
+	})
+	if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for non-cooperative analysis")
+	}
+	if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	const shutdownTimeout = 80 * time.Millisecond
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	started := time.Now()
+	err := processor.Shutdown(shutdownCtx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > shutdownTimeout+100*time.Millisecond {
+		t.Fatalf("Shutdown took %s, exceeded hard deadline %s", elapsed, shutdownTimeout)
+	}
+	store.mu.Lock()
+	failedBeforeRelease := store.failedCount
+	storedBeforeRelease := store.storeResultCount
+	store.mu.Unlock()
+	if failedBeforeRelease != 2 {
+		t.Fatalf("recoverable rows = %d, want active and queued rows", failedBeforeRelease)
+	}
+	if storedBeforeRelease != 0 {
+		t.Fatalf("stored results before release = %d, want 0", storedBeforeRelease)
+	}
+
+	close(client.release)
+	settleCtx, settleCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer settleCancel()
+	if err := processor.Shutdown(settleCtx); err != nil {
+		t.Fatalf("second Shutdown after analyzer release returned error: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.storeResultCount != 0 {
+		t.Fatalf("late analyzer result stored %d time(s), want 0", store.storeResultCount)
+	}
+	if store.failedCount != 2 {
+		t.Fatalf("recovery writes = %d, want exactly one per row", store.failedCount)
+	}
+}
+
+func TestAnalysisWorkerShutdownRecoversRowsWithPreExpiredContext(t *testing.T) {
+	store := &fakeAnalysisStore{}
+	client := &nonCooperativeAnalyzerClient{
+		started: make(chan int64, 1),
+		release: make(chan struct{}),
+	}
+	processor := New(&ProcessorConfig{
+		AnalysisRepo:        store,
+		AnalyzerClient:      client,
+		AnalysisConcurrency: 1,
+	})
+	if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for non-cooperative analysis")
+	}
+	if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	started := time.Now()
+	err := processor.Shutdown(expiredCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > analysisShutdownRecoveryTimeout+500*time.Millisecond {
+		t.Fatalf("Shutdown took %s with pre-expired context", elapsed)
+	}
+	store.mu.Lock()
+	failed := store.failedCount
+	stored := store.storeResultCount
+	store.mu.Unlock()
+	if failed != 2 || stored != 0 {
+		t.Fatalf("recovery state = failed:%d stored:%d, want 2/0", failed, stored)
+	}
+
+	store.closeForTest()
+	close(client.release)
+	waitForWaitGroup(t, &processor.analysisTasks, time.Second, "analysis tasks")
+	waitForWaitGroup(t, &processor.analysisWorkers, time.Second, "analysis workers")
+}
+
+func TestAnalysisWorkerShutdownRecoveryCanExceedCallerReserve(t *testing.T) {
+	baseStore := &fakeAnalysisStore{}
+	store := &delayedRecoveryAnalysisStore{
+		fakeAnalysisStore: baseStore,
+		delay:             analysisShutdownRecoveryReserve + 100*time.Millisecond,
+	}
+	client := &blockingAnalyzerClient{
+		started: make(chan int64, 2),
+		release: make(chan struct{}),
+	}
+	processor := New(&ProcessorConfig{
+		AnalysisRepo:        store,
+		AnalyzerClient:      client,
+		AnalysisConcurrency: 1,
+	})
+	if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for active analysis")
+	}
+	if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	callerCtx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := processor.Shutdown(callerCtx)
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v, want deadline exceeded", err)
+	}
+	if elapsed < store.delay {
+		t.Fatalf("Shutdown returned in %s before delayed recovery %s completed", elapsed, store.delay)
+	}
+	if elapsed > analysisShutdownRecoveryTimeout+500*time.Millisecond {
+		t.Fatalf("Shutdown took %s, exceeded bounded recovery window", elapsed)
+	}
+	baseStore.mu.Lock()
+	failed := baseStore.failedCount
+	stored := baseStore.storeResultCount
+	baseStore.mu.Unlock()
+	if failed != 2 || stored != 0 {
+		t.Fatalf("recovery state = failed:%d stored:%d, want 2/0", failed, stored)
+	}
+	waitForWaitGroup(t, &processor.analysisTasks, time.Second, "analysis tasks")
+	waitForWaitGroup(t, &processor.analysisWorkers, time.Second, "analysis workers")
+}
+
+func waitForWaitGroup(t *testing.T, group *sync.WaitGroup, timeout time.Duration, label string) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		group.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+func TestAnalysisWorkerShutdownUnblocksSenderOnFullQueue(t *testing.T) {
+	store := &fakeAnalysisStore{}
+	client := &blockingAnalyzerClient{
+		started: make(chan int64, analysisQueueSize+1),
+		release: make(chan struct{}),
+	}
+	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
+	if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	<-client.started
+	for trackID := int64(2); trackID <= analysisQueueSize+1; trackID++ {
+		if err := processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: trackID}); err != nil {
+			t.Fatalf("fill queue at track %d: %v", trackID, err)
+		}
+	}
+
+	scheduleDone := make(chan error, 1)
+	go func() {
+		scheduleDone <- processor.scheduleAnalysis(context.Background(), analyzer.Request{TrackID: 999})
+	}()
+	select {
+	case err := <-scheduleDone:
+		t.Fatalf("full-queue schedule returned before shutdown: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := processor.Shutdown(shutdownCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v, want deadline exceeded", err)
+	}
+	select {
+	case err := <-scheduleDone:
+		if err == nil || !strings.Contains(err.Error(), "shutting down") {
+			t.Fatalf("blocked schedule error = %v, want shutdown error", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("full-queue sender remained blocked after shutdown")
+	}
+	store.mu.Lock()
+	failed := store.failedCount
+	store.mu.Unlock()
+	if failed != analysisQueueSize+1 {
+		t.Fatalf("failed rows = %d, want active plus %d queued rows", failed, analysisQueueSize)
+	}
+}
+
+func TestRunAnalysisDiscardsSupersededVersionWithoutTerminalOverwrite(t *testing.T) {
+	store := &fakeAnalysisStore{storeResultErr: db.ErrAnalysisResultSuperseded}
+	client := &fakeAnalyzerClient{result: &analyzer.Result{
+		SchemaVersion:   analyzer.SchemaVersion,
+		SummaryJSON:     json.RawMessage(`{}`),
+		ArtifactsJSON:   json.RawMessage(`{}`),
+		ProvenanceJSON:  json.RawMessage(`{"analyzer":"omp-mir-analyzer","analyzer_version":"old"}`),
+		Analyzer:        "omp-mir-analyzer",
+		AnalyzerVersion: "old",
+	}}
+	processor := &Processor{analysisRepo: store, analyzerClient: client}
+
+	processor.runAnalysis(analyzer.Request{TrackID: 42})
+
+	if store.failedCount != 0 || store.unsupportedCount != 0 {
+		t.Fatalf("superseded result changed terminal state: failed=%d unsupported=%d", store.failedCount, store.unsupportedCount)
 	}
 }
 
@@ -408,6 +881,7 @@ func TestEnqueueAnalysisRunsConfiguredAnalyzerAndStoresResult(t *testing.T) {
 		},
 	}
 	processor := New(&ProcessorConfig{AnalysisRepo: store, AnalyzerClient: client})
+	processor.SetAnalyzerIdentity("omp-mir-analyzer", "2026-07-11-3")
 
 	processor.enqueueAnalysis(context.Background(), &db.Track{ID: 42}, &TrackMetadata{
 		StorageKey: "tracks/fixture/job-fixture.wav",
@@ -422,6 +896,9 @@ func TestEnqueueAnalysisRunsConfiguredAnalyzerAndStoresResult(t *testing.T) {
 	case req := <-client.requests:
 		if req.TrackID != 42 || req.StorageKey != "tracks/fixture/job-fixture.wav" || req.SchemaVersion != analyzer.SchemaVersion {
 			t.Fatalf("analyzer request = %#v", req)
+		}
+		if req.ExpectedAnalyzer != "omp-mir-analyzer" || req.ExpectedAnalyzerVersion != "2026-07-11-3" {
+			t.Fatalf("normal analysis request missing current analyzer identity: %#v", req)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for analyzer request")

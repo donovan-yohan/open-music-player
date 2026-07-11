@@ -27,9 +27,10 @@ const (
 	defaultWaveformHz   = 80
 	defaultMIRHelper    = "/app/audio_mir.py"
 	defaultBeatModel    = "/app/models/beat_this-final0.ckpt"
-	analyzerVersion     = "2026-07-10-3"
-	tempoModelVersion   = "beat-this-final0-v1.1.0"
-	keyModelVersion     = "librosa-cqt-krumhansl-v1"
+	analyzerName        = "omp-mir-analyzer"
+	analyzerVersion     = "2026-07-11-3"
+	tempoModelVersion   = "beat-this-final0-v1.1.0-audio2frames-postprocessor-dynamic-meter-posterior-v3"
+	keyModelVersion     = "librosa-0.11.0-cqt-krumhansl-v1"
 	maxRequestBytes     = 1 << 20
 	maxMIRResponseBytes = 2 << 20
 	maxDecodedPCMBytes  = 96 << 20
@@ -38,14 +39,16 @@ const (
 )
 
 type analyzeRequest struct {
-	SchemaVersion int    `json:"schema_version"`
-	TrackID       int64  `json:"track_id"`
-	StorageKey    string `json:"storage_key"`
-	SourceURL     string `json:"source_url"`
-	SourceType    string `json:"source_type"`
-	DurationMs    int    `json:"duration_ms"`
-	Title         string `json:"title"`
-	Artist        string `json:"artist"`
+	SchemaVersion           int    `json:"schema_version"`
+	TrackID                 int64  `json:"track_id"`
+	StorageKey              string `json:"storage_key"`
+	SourceURL               string `json:"source_url"`
+	SourceType              string `json:"source_type"`
+	DurationMs              int    `json:"duration_ms"`
+	Title                   string `json:"title"`
+	Artist                  string `json:"artist"`
+	ExpectedAnalyzer        string `json:"expected_analyzer"`
+	ExpectedAnalyzerVersion string `json:"expected_analyzer_version"`
 }
 
 type analyzerServer struct {
@@ -146,6 +149,7 @@ func main() {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":           "healthy",
+			"analyzer":         analyzerName,
 			"analyzer_version": analyzerVersion,
 			"tempo_model":      tempoModelVersion,
 			"key_model":        keyModelVersion,
@@ -178,6 +182,16 @@ func (s *analyzerServer) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.StorageKey) == "" {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "storage_key is required"})
+		return
+	}
+	expectedAnalyzer := strings.TrimSpace(req.ExpectedAnalyzer)
+	expectedVersion := strings.TrimSpace(req.ExpectedAnalyzerVersion)
+	if (expectedAnalyzer == "") != (expectedVersion == "") {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": "expected analyzer identity requires both name and version"})
+		return
+	}
+	if expectedAnalyzer != "" && (expectedAnalyzer != analyzerName || expectedVersion != analyzerVersion) {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "analyzer identity does not match requested version"})
 		return
 	}
 
@@ -317,13 +331,23 @@ func validateMIRRuntime(ctx context.Context, helperPath, modelPath string) error
 		return fmt.Errorf("MIR helper check failed: %s", detail)
 	}
 	var status struct {
-		Status string `json:"status"`
+		Status          string `json:"status"`
+		Analyzer        string `json:"analyzer"`
+		AnalyzerVersion string `json:"analyzer_version"`
+		TempoModel      string `json:"tempo_model"`
+		KeyModel        string `json:"key_model"`
 	}
 	if err := json.Unmarshal(output, &status); err != nil {
 		return fmt.Errorf("parse MIR helper check: %w", err)
 	}
 	if status.Status != "ready" {
 		return fmt.Errorf("MIR helper reported status %q", status.Status)
+	}
+	if status.Analyzer != analyzerName || status.AnalyzerVersion != analyzerVersion {
+		return fmt.Errorf("MIR helper analyzer identity %q@%q does not match %q@%q", status.Analyzer, status.AnalyzerVersion, analyzerName, analyzerVersion)
+	}
+	if status.TempoModel != tempoModelVersion || status.KeyModel != keyModelVersion {
+		return fmt.Errorf("MIR helper model identity tempo=%q key=%q does not match tempo=%q key=%q", status.TempoModel, status.KeyModel, tempoModelVersion, keyModelVersion)
 	}
 	return nil
 }
@@ -727,7 +751,7 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 		"waveform_resolution": "multi_resolution",
 	}
 	provenance := map[string]any{
-		"analyzer":         "omp-mir-analyzer",
+		"analyzer":         analyzerName,
 		"analyzer_version": analyzerVersion,
 		"model_versions": map[string]any{
 			"waveform": "pcm-rms-v1",
