@@ -10,6 +10,7 @@ import 'package:open_music_player/core/engine/gain_envelope.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
+import 'package:open_music_player/models/timeline_viewport.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/models/trim_range.dart';
@@ -23,9 +24,13 @@ Track _track(
   String title,
   int duration, {
   TrackAnalysis? analysis,
+  String? queueItemId,
+  String? playbackTrackId,
 }) =>
     Track(
       id: id,
+      queueItemId: queueItemId,
+      playbackTrackId: playbackTrackId,
       title: title,
       artist: 'Artist $id',
       duration: duration,
@@ -66,6 +71,9 @@ MixClip _mixClip(
   String id,
   int startMs,
   int durationMs, {
+  String? clipId,
+  String? trackId,
+  String? queueItemId,
   GainEnvelope envelope = const GainEnvelope.flat(),
   ClipTempoMetadata tempo = ClipTempoMetadata.empty,
   String pitchMode = pitchModePreserve,
@@ -73,14 +81,15 @@ MixClip _mixClip(
 }) =>
     MixClip(
       placement: TimelineClip.clamped(
-        id: 'clip_$id',
-        trackId: id,
+        id: clipId ?? 'clip_$id',
+        trackId: trackId ?? id,
         sourceDurationMs: durationMs,
         sourceStartMs: 0,
         sourceEndMs: durationMs,
         timelineStartMs: startMs,
       ),
       envelope: envelope,
+      queueItemId: queueItemId,
       tempo: tempo,
       pitchMode: pitchMode,
       rateAutomation: rateAutomation,
@@ -92,6 +101,7 @@ Future<void> _pump(
   required Track current,
   required List<Track> upcoming,
   Size size = const Size(390, 844),
+  double devicePixelRatio = 1,
   TextScaler textScaler = TextScaler.noScaling,
   ValueChanged<Track>? onMoveEarlier,
   ValueChanged<Track>? onMoveLater,
@@ -100,6 +110,7 @@ Future<void> _pump(
   BeatSnapMode transitionSnapMode = BeatSnapMode.downbeat,
   ValueChanged<BeatSnapMode>? onTransitionSnapModeChanged,
   TimelineWaveformData Function(Track, int)? waveformFor,
+  TrimRange Function(Track)? trimRangeFor,
   TimelineClip Function(Track, TimelineClip)? clipFor,
   TimelineModel? timelineModel,
   Set<String> pitchFallbackClipIds = const {},
@@ -115,7 +126,7 @@ Future<void> _pump(
   bool settle = true,
 }) async {
   tester.view.physicalSize = size;
-  tester.view.devicePixelRatio = 1;
+  tester.view.devicePixelRatio = devicePixelRatio;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
 
@@ -132,7 +143,8 @@ Future<void> _pump(
           upcomingTracks: upcoming,
           peaksFor: (t) => mockWaveformPeaks(t.id),
           waveformFor: waveformFor,
-          trimRangeFor: (t) => TrimRange.full(t.durationMs),
+          trimRangeFor:
+              trimRangeFor ?? (track) => TrimRange.full(track.durationMs),
           clipFor: clipFor,
           timelineModel: timelineModel,
           pitchFallbackClipIds: pitchFallbackClipIds,
@@ -162,6 +174,11 @@ Future<void> _pump(
   }
 }
 
+class _StableWaveformSource {
+  TimelineWaveformData waveformFor(Track track, int sampleCount) =>
+      richWaveformForTrack(track, sampleCount: sampleCount);
+}
+
 Future<void> _pinchZoom(
   WidgetTester tester, {
   double startDistance = 80,
@@ -188,6 +205,31 @@ TimelineWaveformPainter _waveformPainter(WidgetTester tester, String trackId) {
     find.byKey(ValueKey('timeline_waveform_$trackId')),
   );
   return paint.painter! as TimelineWaveformPainter;
+}
+
+({int frames, int bytes}) _activeWaveformCacheUsage(WidgetTester tester) {
+  final paintersByCache =
+      <TimelineWaveformPaintCache, TimelineWaveformPainter>{};
+  for (final paint
+      in tester.widgetList<CustomPaint>(find.byType(CustomPaint))) {
+    final painter = paint.painter;
+    if (painter is TimelineWaveformPainter) {
+      paintersByCache.putIfAbsent(painter.paintCache, () => painter);
+    }
+  }
+
+  var frames = 0;
+  var bytes = 0;
+  for (final entry in paintersByCache.entries) {
+    final painter = entry.value;
+    final waveform = painter.waveform;
+    frames += waveform?.frames.length ?? painter.peaks.length;
+    bytes += (waveform?.estimatedByteSize ?? 0) +
+        painter.peaks.length * 8 +
+        entry.key.estimatedByteSize +
+        128;
+  }
+  return (frames: frames, bytes: bytes);
 }
 
 void main() {
@@ -345,6 +387,49 @@ void main() {
     }
   });
 
+  testWidgets('8px clip clamp keeps the shared viewport timing scale', (
+    tester,
+  ) async {
+    final current = _track('tiny-1', 'Tiny one', 1);
+    final incoming = _track('tiny-2', 'Tiny two', 1);
+    final timeline = TimelineModel(
+      clips: [
+        _mixClip('tiny-1', 0, 1),
+        _mixClip('tiny-2', 1, 1),
+      ],
+      autoTempoTransitions: false,
+    );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [incoming],
+      timelineModel: timeline,
+      transitionSnapMode: BeatSnapMode.free,
+    );
+
+    const expectedPixelsPerMs = TimelineViewport.maxPixelsPerSecond / 1000;
+    for (final trackId in ['tiny-1', 'tiny-2']) {
+      final waveform = find.byKey(ValueKey('timeline_waveform_$trackId'));
+      final clip = find.byKey(ValueKey('timeline_clip_$trackId'));
+      final painter = _waveformPainter(tester, trackId);
+      expect(tester.getSize(clip).width, 8);
+      expect(tester.getSize(waveform).width, 8);
+      expect(painter.viewportPixelsPerMs, expectedPixelsPerMs);
+      expect(painter.viewportOriginMs, 0);
+      expect(
+        timelineWaveformXForSourcePosition(
+          mixClip: painter.mixClip!,
+          sourcePositionMs: painter.mixClip!.placement.sourceEndMs,
+          width: tester.getSize(waveform).width,
+          viewportPixelsPerMs: painter.viewportPixelsPerMs,
+        ),
+        expectedPixelsPerMs,
+      );
+    }
+  });
+
   for (final textScale in [1.3, 1.49]) {
     testWidgets(
       'timeline hides sub-120px identity at ${textScale}x text scale',
@@ -417,7 +502,21 @@ void main() {
     test('downbeat trim snap prefers analyzed downbeat markers', () {
       const tempo = ClipTempoMetadata(
         nativeBpm: 120,
-        beatsMs: [0, 500, 1000, 1500, 2000, 2500, 3000, 3500],
+        beatsMs: [
+          250,
+          750,
+          1250,
+          1750,
+          2250,
+          2750,
+          3250,
+          3750,
+          4250,
+          4750,
+          5250,
+          5750,
+          6250,
+        ],
         downbeatsMs: [250, 2250, 4250, 6250],
       );
 
@@ -432,7 +531,7 @@ void main() {
       );
     });
 
-    test('clip movement snaps with analyzed tempo offset', () {
+    test('clip movement snaps to an actual analyzed marker', () {
       const tempo = ClipTempoMetadata(
         nativeBpm: 124,
         beatsMs: [120, 604, 1088, 1572],
@@ -445,7 +544,7 @@ void main() {
           clip: clip,
           tempo: tempo,
         ),
-        1332,
+        968,
       );
     });
 
@@ -463,7 +562,27 @@ void main() {
           clip: clip,
           tempo: tempo,
         ),
-        3500,
+        4000,
+      );
+    });
+
+    test('variable-grid placement does not collapse to the median interval',
+        () {
+      const tempo = ClipTempoMetadata(
+        nativeBpm: 145,
+        bpmConfidence: 0.9,
+        beatsMs: [0, 300, 680, 1093, 1513, 1933, 2453, 2866],
+        beatGridProvenance: 'beat-this-final0-v1.1.0-phase-fit-v1',
+      );
+
+      expect(
+        snapTimelineStartMsToMusicalGrid(
+          requestedStartMs: 1460,
+          mode: SnapMarkerMode.beat1,
+          clip: clip,
+          tempo: tempo,
+        ),
+        1513,
       );
     });
 
@@ -483,6 +602,40 @@ void main() {
         ),
         2120,
       );
+    });
+
+    test('interactive Beat1/4/16 ignore malformed analyzer ordinals', () {
+      const malformed = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        beatsMs: [0, 500, 1000, 1300, 2500, 3000, 3500, 4000],
+        beatGridProvenance: 'beat-this-final0-v1.1.0-phase-fit-v1',
+      );
+
+      for (final mode in [
+        SnapMarkerMode.beat1,
+        SnapMarkerMode.beat4,
+        SnapMarkerMode.beat16,
+      ]) {
+        expect(
+          snapSourceMsToMusicalGrid(
+            requestedSourceMs: 1980,
+            mode: mode,
+            clip: clip,
+            tempo: malformed,
+          ),
+          1980,
+        );
+        expect(
+          snapTimelineStartMsToMusicalGrid(
+            requestedStartMs: 1110,
+            mode: mode,
+            clip: clip,
+            tempo: malformed,
+          ),
+          1110,
+        );
+      }
     });
 
     test('free mode preserves requested timing', () {
@@ -635,17 +788,182 @@ void main() {
     requested.clear();
 
     final zoomedRequests = <int>[];
+    var bucketHits = 0;
     for (var i = 0; i < 4; i++) {
       await _pinchZoom(tester);
-      expect(requested, isNotEmpty);
+      if (requested.isEmpty) {
+        bucketHits++;
+        continue;
+      }
       zoomedRequests.add(requested.reduce(math.max));
       requested.clear();
     }
 
+    expect(zoomedRequests, isNotEmpty);
     expect(zoomedRequests.first, greaterThan(before));
     expect(zoomedRequests.last, greaterThan(4096));
     expect(zoomedRequests.last, lessThanOrEqualTo(65536));
     expect(zoomedRequests, orderedEquals(zoomedRequests.toList()..sort()));
+    expect(bucketHits, greaterThan(0));
+  });
+
+  testWidgets('80Hz analysis caps zoom density at real frame detail', (
+    tester,
+  ) async {
+    final requested = <int>[];
+    final current = _track(
+      '80hz',
+      'Eighty Hertz',
+      120,
+      analysis: TrackAnalysis(
+        status: TrackAnalysisStatus.analyzed,
+        summary: TrackAnalysisSummary(
+          waveform: WaveformSummary(peaks: List<double>.filled(9600, 0.5)),
+        ),
+      ),
+    );
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [],
+      waveformFor: (track, targetSampleCount) {
+        requested.add(targetSampleCount);
+        return richWaveformForTrack(track, sampleCount: targetSampleCount);
+      },
+    );
+
+    for (var i = 0; i < 6; i++) {
+      await _pinchZoom(tester);
+    }
+
+    final painter = _waveformPainter(tester, '80hz');
+    expect(requested.reduce(math.max), lessThanOrEqualTo(9600));
+    expect(
+      painter.waveform!.frames.length,
+      greaterThanOrEqualTo(
+        painter.viewportPixelsPerMs * 1000 * current.duration / 5,
+      ),
+    );
+  });
+
+  testWidgets('trimmed 80Hz zoom cap uses covered frames and rate duration', (
+    tester,
+  ) async {
+    final current = _track(
+      'trimmed-80hz',
+      'Trimmed Eighty Hertz',
+      120,
+      analysis: TrackAnalysis(
+        status: TrackAnalysisStatus.analyzed,
+        summary: TrackAnalysisSummary(
+          waveform: WaveformSummary(peaks: List<double>.filled(9600, 0.5)),
+        ),
+      ),
+    );
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: const [],
+      timelineModel: TimelineModel(
+        autoTempoTransitions: false,
+        clips: [
+          MixClip(
+            placement: TimelineClip.clamped(
+              id: 'trimmed-80hz-clip',
+              trackId: 'trimmed-80hz',
+              sourceDurationMs: 120000,
+              sourceStartMs: 30000,
+              sourceEndMs: 90000,
+              timelineStartMs: 0,
+            ),
+            rateAutomation: const PlaybackRateAutomation(baseRate: 0.5),
+          ),
+        ],
+      ),
+    );
+
+    for (var index = 0; index < 6; index++) {
+      await _pinchZoom(tester);
+    }
+
+    final painter = _waveformPainter(tester, 'trimmed-80hz');
+    expect(painter.mixClip!.timelineDurationMs, 120000);
+    expect(painter.waveform!.coveredSourceFrameCount, 4800);
+    expect(painter.waveform!.frames.length, lessThanOrEqualTo(4800));
+    final maxUsefulPps = waveformMaxUsefulPixelsPerSecond(
+      realFrameCount: 4800,
+      timelineDurationMs: painter.mixClip!.timelineDurationMs,
+    );
+    expect(maxUsefulPps, 200);
+    expect(
+      painter.viewportPixelsPerMs * 1000,
+      lessThanOrEqualTo(maxUsefulPps),
+    );
+  });
+
+  testWidgets('same callback method tear-off keeps the waveform cache', (
+    tester,
+  ) async {
+    final source = _StableWaveformSource();
+    final current = _track('stable', 'Stable Cache', 120);
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [],
+      waveformFor: source.waveformFor,
+    );
+    final firstCache = _waveformPainter(tester, 'stable').paintCache;
+
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [],
+      waveformFor: source.waveformFor,
+    );
+
+    expect(
+      identical(_waveformPainter(tester, 'stable').paintCache, firstCache),
+      isTrue,
+    );
+  });
+
+  testWidgets('bounds waveform samples by rendered physical width', (
+    tester,
+  ) async {
+    final current = _track('short', 'Short', 30);
+    final next = _track('long', 'Long', 270);
+    final requested = <String, int>{};
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next],
+      size: const Size(1280, 2400),
+      devicePixelRatio: 3,
+      timelineModel: TimelineModel(
+        clips: [_mixClip('short', 0, 30000), _mixClip('long', 30000, 270000)],
+      ),
+      waveformFor: (track, targetSampleCount) {
+        requested[track.id] = targetSampleCount;
+        return richWaveformForTrack(
+          track,
+          sampleCount: targetSampleCount,
+        );
+      },
+    );
+
+    final renderedWidth =
+        tester.getSize(find.byKey(const ValueKey('timeline_clip_short'))).width;
+    final physicalPixelBudget =
+        (renderedWidth * 3 / 1.25).round().clamp(8, 65536).toInt();
+
+    expect(requested['short'], greaterThanOrEqualTo(physicalPixelBudget));
+    expect(requested['short'], lessThan(physicalPixelBudget * 2));
+    expect(requested['short'], lessThan(512));
   });
 
   testWidgets(
@@ -959,6 +1277,89 @@ void main() {
       expect(find.byKey(ValueKey('timeline_lane_header_$id')), findsOneWidget);
       expect(find.byKey(ValueKey('timeline_clip_$id')), findsOneWidget);
     }
+  });
+
+  testWidgets(
+      'duplicate sources keep queue-item lane ownership and shared geometry',
+      (tester) async {
+    final first = _track(
+      'shared-row',
+      'First duplicate',
+      120,
+      queueItemId: 'queue-a',
+      playbackTrackId: '42',
+    );
+    final second = _track(
+      'shared-row',
+      'Second duplicate',
+      120,
+      queueItemId: 'queue-b',
+      playbackTrackId: '42',
+    );
+    final edited = <String>[];
+
+    await _pump(
+      tester,
+      previous: null,
+      current: first,
+      upcoming: [second],
+      size: const Size(390, 1000),
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: TimelineModel(
+        clips: [
+          _mixClip(
+            'first-source',
+            0,
+            120000,
+            clipId: 'clip-a',
+            trackId: '42',
+            queueItemId: 'queue-a',
+          ),
+          _mixClip(
+            'second-source',
+            120000,
+            120000,
+            clipId: 'clip-b',
+            trackId: '42',
+            queueItemId: 'queue-b',
+          ),
+        ],
+      ),
+      onTimelineStartChanged: (track, _) async {
+        edited.add(track.queueItemId);
+      },
+    );
+
+    expect(find.byKey(const ValueKey('timeline_clip_queue-a')), findsOneWidget);
+    expect(find.byKey(const ValueKey('timeline_clip_queue-b')), findsOneWidget);
+    expect(
+      identical(
+        _waveformPainter(tester, 'queue-a').paintCache,
+        _waveformPainter(tester, 'queue-b').paintCache,
+      ),
+      isTrue,
+      reason: 'duplicate lanes may share immutable frame geometry',
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_body_drag_queue-b')),
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('timeline_trim_start_queue-b')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('timeline_trim_start_queue-a')),
+      findsNothing,
+    );
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_clip_body_drag_queue-b')),
+      const Offset(24, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(edited, ['queue-b']);
   });
 
   testWidgets('renders previous lane without edge teaser chips', (
@@ -2216,6 +2617,54 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('semantic Beat 4 movement does not lock to malformed ordinals', (
+    tester,
+  ) async {
+    const initialStartMs = 1000;
+    const malformedTempo = ClipTempoMetadata(
+      nativeBpm: 120,
+      bpmConfidence: 0.9,
+      beatsMs: [0, 500, 1000, 1300, 2500, 3000, 3500, 4000],
+      beatGridProvenance: 'beat-this-final0-v1.1.0-phase-fit-v1',
+    );
+    final starts = <int>[];
+    final semantics = tester.ensureSemantics();
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Malformed grid', 10),
+      upcoming: const [],
+      transitionSnapMode: BeatSnapMode.beat4,
+      timelineModel: TimelineModel(
+        clips: [
+          _mixClip(
+            't1',
+            initialStartMs,
+            10000,
+            tempo: malformedTempo,
+          ),
+        ],
+        autoTempoTransitions: false,
+      ),
+      onTimelineStartChanged: (_, startMs) => starts.add(startMs),
+    );
+
+    final node = tester.getSemantics(
+      find.byKey(const ValueKey('timeline_clip_semantics_t1')),
+    );
+    tester.binding.performSemanticsAction(
+      ui.SemanticsActionEvent(
+        type: SemanticsAction.increase,
+        viewId: tester.view.viewId,
+        nodeId: node.id,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(starts, [initialStartMs + 1]);
+    semantics.dispose();
+  });
+
   testWidgets('semantic decrease moves an editable incoming clip', (
     tester,
   ) async {
@@ -2564,6 +3013,265 @@ void main() {
     },
   );
 
+  testWidgets('13 trimmed 80Hz lanes keep pan misses and recent slices bounded',
+      (
+    tester,
+  ) async {
+    final analyzerPeaks = List<double>.generate(
+      48000,
+      (index) => index % 997 == 0 ? 1 : 0.45,
+      growable: false,
+    );
+    final analysis = TrackAnalysis(
+      status: TrackAnalysisStatus.analyzed,
+      updatedAt: DateTime.utc(2026, 1, 1),
+      summary: TrackAnalysisSummary(
+        waveform: WaveformSummary(peaks: analyzerPeaks),
+      ),
+    );
+    final tracks = [
+      for (var index = 0; index < 13; index++)
+        _track(
+          'pan-$index',
+          'Pan track $index',
+          600,
+          queueItemId: 'pan-lane-$index',
+          playbackTrackId: '${1000 + index}',
+          analysis: analysis,
+        ),
+    ];
+    final trimStarts = {
+      for (var index = 0; index < tracks.length; index++)
+        tracks[index].queueItemId: 60000 + index * 1000,
+    };
+    TrimRange trimFor(Track track) {
+      final start = trimStarts[track.queueItemId]!;
+      return TrimRange.clamped(
+        trackDurationMs: track.durationMs,
+        startOffsetMs: start,
+        endOffsetMs: start + 300000,
+      );
+    }
+
+    final source = TimelineWaveformData(
+      durationMs: 600000,
+      analyzed: true,
+      frames: [
+        for (final peak in analyzerPeaks)
+          WaveformFrame(
+            peak: peak,
+            rms: peak * 0.65,
+            low: 0.4,
+            mid: 0.6,
+            high: 0.3,
+          ),
+      ],
+      beatsMs: [for (var ms = 0; ms <= 600000; ms += 413) ms],
+      downbeatsMs: [for (var ms = 0; ms <= 600000; ms += 1652) ms],
+      transientsMs: [for (var ms = 125; ms <= 600000; ms += 500) ms],
+    );
+    var clipBuilds = 0;
+    var waveformBuilds = 0;
+    TimelineWaveformData waveformFor(Track track, int samples) {
+      waveformBuilds++;
+      return source;
+    }
+
+    TimelineClip clipFor(Track track, TimelineClip fallback) {
+      clipBuilds++;
+      return fallback.withTimelineStartMs(0);
+    }
+
+    expect(waveformAvailableSampleCountForTrack(tracks.first), 48000);
+    expect(
+      waveformCoveredSampleCountForTrack(
+        tracks.first,
+        sourceStartMs: 60000,
+        sourceEndMs: 360000,
+      ),
+      24000,
+    );
+    expect(600000 / analyzerPeaks.length, 12.5);
+    const selectedRealFrames = 24000;
+    final activeSampleCap = timelineWaveformActiveSampleCap(tracks.length);
+    expect(activeSampleCap, 4096);
+    expect(
+      selectedRealFrames * tracks.length,
+      greaterThan(timelineWaveformCacheFrameBudget),
+      reason: 'the uncapped 13-lane source demand must exceed the frame budget',
+    );
+    expect(
+      (selectedRealFrames * 56 + 384) * tracks.length,
+      greaterThan(timelineWaveformCacheByteBudget),
+      reason: 'uncapped immutable frames and peaks alone must exceed 12 MiB',
+    );
+
+    await _pump(
+      tester,
+      previous: null,
+      current: tracks.first,
+      upcoming: tracks.skip(1).toList(),
+      size: const Size(1280, 4500),
+      devicePixelRatio: 3,
+      clipFor: clipFor,
+      waveformFor: waveformFor,
+      trimRangeFor: trimFor,
+    );
+    for (var index = 0; index < 4; index++) {
+      await _pinchZoom(tester);
+    }
+
+    final painters = tester
+        .widgetList<CustomPaint>(find.byType(CustomPaint))
+        .map((paint) => paint.painter)
+        .whereType<TimelineWaveformPainter>()
+        .toList(growable: false);
+    expect(painters, hasLength(tracks.length));
+    for (final painter in painters) {
+      expect(painter.waveform!.frames, hasLength(activeSampleCap));
+    }
+    final caches = painters.map((painter) => painter.paintCache).toSet();
+    expect(caches, hasLength(tracks.length));
+    expect(caches.every((cache) => cache.geometryTrimCount == 0), isTrue);
+    final postPaintUsage = _activeWaveformCacheUsage(tester);
+    expect(
+      postPaintUsage.frames,
+      lessThanOrEqualTo(timelineWaveformCacheFrameBudget),
+      reason: '13 post-paint lanes must stay inside the aggregate frame budget',
+    );
+    expect(
+      postPaintUsage.bytes,
+      lessThanOrEqualTo(timelineWaveformCacheByteBudget),
+      reason: '13 post-paint lanes must stay inside the aggregate byte budget',
+    );
+    final geometryBefore = {
+      for (final cache in caches)
+        cache: (
+          frames: cache.frameGeometryBuildCount,
+          misses: cache.frameGeometryMissCount,
+          markers: cache.markerGeometryBuildCount,
+          paints: cache.paintCount,
+        ),
+    };
+    final clipBuildsBefore = clipBuilds;
+    final waveformBuildsBefore = waveformBuilds;
+
+    const moveCount = 24;
+    final surface = tester.getRect(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+    );
+    final start = Offset(surface.right - 40, surface.top + 260);
+    final end = Offset(start.dx - 120, start.dy);
+    final gesture = await tester.startGesture(start);
+    for (var step = 1; step <= moveCount; step++) {
+      await gesture.moveTo(Offset.lerp(start, end, step / moveCount)!);
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(clipBuilds, clipBuildsBefore);
+    expect(waveformBuilds, waveformBuildsBefore);
+    var paintDelta = 0;
+    var geometryMissDelta = 0;
+    final paintDeltas = <int>[];
+    for (final entry in geometryBefore.entries) {
+      expect(entry.key.frameGeometryBuildCount, entry.value.frames);
+      expect(entry.key.markerGeometryBuildCount, entry.value.markers);
+      final misses = entry.key.frameGeometryMissCount - entry.value.misses;
+      expect(misses, lessThanOrEqualTo(128));
+      geometryMissDelta += misses;
+      final delta = entry.key.paintCount - entry.value.paints;
+      paintDeltas.add(delta);
+      paintDelta += delta;
+    }
+    expect(
+      paintDelta,
+      lessThanOrEqualTo(moveCount * caches.length),
+      reason: 'each active lane may repaint once per pan step: $paintDeltas',
+    );
+    expect(
+      geometryMissDelta,
+      lessThanOrEqualTo(caches.length * 128),
+      reason: 'panning may only extend each retained visible geometry window',
+    );
+    await gesture.up();
+    await tester.pump();
+
+    final callsAfterPan = waveformBuilds;
+    final missesAfterPan = {
+      for (final cache in caches) cache: cache.frameGeometryMissCount,
+    };
+    await _pump(
+      tester,
+      previous: null,
+      current: tracks.first,
+      upcoming: tracks.skip(1).toList(),
+      size: const Size(1280, 4500),
+      devicePixelRatio: 3,
+      clipFor: clipFor,
+      waveformFor: waveformFor,
+      trimRangeFor: trimFor,
+    );
+    expect(
+      waveformBuilds,
+      callsAfterPan,
+      reason: 'active slices must remain cache hits across a parent rebuild',
+    );
+    final rebuiltPainters = tester
+        .widgetList<CustomPaint>(find.byType(CustomPaint))
+        .map((paint) => paint.painter)
+        .whereType<TimelineWaveformPainter>()
+        .toList(growable: false);
+    expect(
+      rebuiltPainters.map((painter) => painter.paintCache),
+      unorderedEquals(caches),
+    );
+    for (final entry in missesAfterPan.entries) {
+      expect(entry.key.frameGeometryMissCount, entry.value);
+      expect(entry.key.geometryTrimCount, 0);
+    }
+    final rebuiltUsage = _activeWaveformCacheUsage(tester);
+    expect(
+      rebuiltUsage.frames,
+      lessThanOrEqualTo(timelineWaveformCacheFrameBudget),
+    );
+    expect(
+      rebuiltUsage.bytes,
+      lessThanOrEqualTo(timelineWaveformCacheByteBudget),
+    );
+
+    trimStarts[tracks.first.queueItemId] = 72500;
+    await _pump(
+      tester,
+      previous: null,
+      current: tracks.first,
+      upcoming: tracks.skip(1).toList(),
+      size: const Size(1280, 4500),
+      devicePixelRatio: 3,
+      clipFor: clipFor,
+      waveformFor: waveformFor,
+      trimRangeFor: trimFor,
+    );
+    expect(waveformBuilds, callsAfterPan + 1);
+
+    final callsAfterNewTrim = waveformBuilds;
+    trimStarts[tracks.first.queueItemId] = 60000;
+    await _pump(
+      tester,
+      previous: null,
+      current: tracks.first,
+      upcoming: tracks.skip(1).toList(),
+      size: const Size(1280, 4500),
+      devicePixelRatio: 3,
+      clipFor: clipFor,
+      waveformFor: waveformFor,
+      trimRangeFor: trimFor,
+    );
+    expect(
+      waveformBuilds,
+      callsAfterNewTrim,
+      reason: 'the recent committed trim slice must remain an LRU hit',
+    );
+  });
+
   testWidgets('caches waveform slices until the analysis revision changes', (
     tester,
   ) async {
@@ -2651,7 +3359,7 @@ void main() {
     expect(calls, firstCalls);
   });
 
-  testWidgets('evicts the oldest waveform slice when the cache is bounded', (
+  testWidgets('committed trim slices use a true byte and frame LRU', (
     tester,
   ) async {
     var calls = 0;
@@ -2659,8 +3367,9 @@ void main() {
     final track = _track('t1', 'Cache bounds', 600);
     final source = TimelineWaveformData(
       durationMs: 600000,
+      analyzed: true,
       frames: List<WaveformFrame>.filled(
-        2048,
+        65536,
         const WaveformFrame(
           peak: 0.7,
           rms: 0.4,
@@ -2681,7 +3390,22 @@ void main() {
           sourceEndMs: sourceStartMs + 300000,
         );
 
-    for (var index = 0; index < 13; index++) {
+    await _pump(
+      tester,
+      previous: null,
+      current: track,
+      upcoming: const [],
+      waveformFor: waveformFor,
+      clipFor: clipFor,
+      size: const Size(1280, 844),
+      devicePixelRatio: 3,
+    );
+    for (var index = 0; index < 4; index++) {
+      await _pinchZoom(tester);
+    }
+
+    const trimCount = 48;
+    for (var index = 1; index <= trimCount; index++) {
       sourceStartMs = index * 1000;
       await _pump(
         tester,
@@ -2690,9 +3414,28 @@ void main() {
         upcoming: const [],
         waveformFor: waveformFor,
         clipFor: clipFor,
+        size: const Size(1280, 844),
+        devicePixelRatio: 3,
       );
     }
-    expect(calls, 13);
+    final callsAfterPopulation = calls;
+
+    sourceStartMs = (trimCount - 1) * 1000;
+    await _pump(
+      tester,
+      previous: null,
+      current: track,
+      upcoming: const [],
+      waveformFor: waveformFor,
+      clipFor: clipFor,
+      size: const Size(1280, 844),
+      devicePixelRatio: 3,
+    );
+    expect(
+      calls,
+      callsAfterPopulation,
+      reason: 'a recent committed trim must hit',
+    );
 
     sourceStartMs = 0;
     await _pump(
@@ -2702,8 +3445,402 @@ void main() {
       upcoming: const [],
       waveformFor: waveformFor,
       clipFor: clipFor,
+      size: const Size(1280, 844),
+      devicePixelRatio: 3,
     );
-    expect(calls, 14, reason: 'the thirteenth key evicts the oldest slice');
+    expect(
+      calls,
+      callsAfterPopulation + 1,
+      reason: 'the byte LRU evicts the oldest trim',
+    );
+  });
+
+  testWidgets('aggregate eviction clears the oldest inactive geometry', (
+    tester,
+  ) async {
+    var calls = 0;
+    var sourceStartMs = 0;
+    final track = _track('paint-budget', 'Paint budget', 600);
+    final source = TimelineWaveformData(
+      durationMs: 600000,
+      analyzed: true,
+      frames: List<WaveformFrame>.filled(
+        65536,
+        const WaveformFrame(
+          peak: 0.7,
+          rms: 0.4,
+          low: 0.5,
+          mid: 0.6,
+          high: 0.3,
+        ),
+      ),
+    );
+    TimelineWaveformData waveformFor(Track track, int samples) {
+      calls++;
+      return source;
+    }
+
+    TimelineClip clipFor(Track track, TimelineClip fallback) =>
+        fallback.withSourceRange(
+          sourceStartMs: sourceStartMs,
+          sourceEndMs: sourceStartMs + 300000,
+        );
+
+    TimelineWaveformPaintCache? oldestCache;
+    for (var index = 0; index < 21; index++) {
+      sourceStartMs = index * 1000;
+      await _pump(
+        tester,
+        previous: null,
+        current: track,
+        upcoming: const [],
+        waveformFor: waveformFor,
+        clipFor: clipFor,
+        size: const Size(5120, 2532),
+        devicePixelRatio: 3,
+      );
+      expect(
+        _waveformPainter(tester, 'paint-budget').waveform!.frames.length,
+        4096,
+      );
+      oldestCache ??= _waveformPainter(tester, 'paint-budget').paintCache;
+    }
+    final callsAfterPopulation = calls;
+    expect(oldestCache!.frameGeometryEntryCount, 0);
+    expect(oldestCache.geometryTrimCount, 1);
+    expect(oldestCache.trimmedGeometryByteCount, greaterThan(0));
+
+    sourceStartMs = 0;
+    await _pump(
+      tester,
+      previous: null,
+      current: track,
+      upcoming: const [],
+      waveformFor: waveformFor,
+      clipFor: clipFor,
+      size: const Size(5120, 2532),
+      devicePixelRatio: 3,
+    );
+    expect(
+      calls,
+      callsAfterPopulation + 1,
+      reason: 'the oldest inactive slice must be absent from the global LRU',
+    );
+
+    final callsAfterOldestMiss = calls;
+    sourceStartMs = 20000;
+    await _pump(
+      tester,
+      previous: null,
+      current: track,
+      upcoming: const [],
+      waveformFor: waveformFor,
+      clipFor: clipFor,
+      size: const Size(5120, 2532),
+      devicePixelRatio: 3,
+    );
+    expect(
+      calls,
+      callsAfterOldestMiss,
+      reason: 'post-paint eviction must retain the most recent trim',
+    );
+  });
+
+  testWidgets('successful trim promotes its preview slice into the LRU', (
+    tester,
+  ) async {
+    var calls = 0;
+    var committedStartMs = 0;
+    int? requestedStartMs;
+    final persistence = Completer<void>();
+    final track = _track('trim-success', 'Trim success', 240);
+    final source = TimelineWaveformData(
+      durationMs: 240000,
+      analyzed: true,
+      frames: List<WaveformFrame>.filled(
+        8192,
+        const WaveformFrame(
+          peak: 0.8,
+          rms: 0.5,
+          low: 0.3,
+          mid: 0.7,
+          high: 0.4,
+        ),
+      ),
+    );
+    TimelineWaveformData waveformFor(Track track, int samples) {
+      calls++;
+      return source;
+    }
+
+    await _pump(
+      tester,
+      previous: null,
+      current: track,
+      upcoming: const [],
+      transitionSnapMode: BeatSnapMode.free,
+      waveformFor: waveformFor,
+      clipFor: (_, fallback) => fallback.withSourceRange(
+        sourceStartMs: committedStartMs,
+        sourceEndMs: 220000,
+      ),
+      onTrimStartChanged: (_, startMs) async {
+        requestedStartMs = startMs;
+        await persistence.future;
+        committedStartMs = startMs;
+      },
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_trim-success')),
+    );
+    await tester.pumpAndSettle();
+    final callsBeforePreview = calls;
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_trim_start_trim-success')),
+      const Offset(70, 0),
+    );
+    await tester.pump();
+    expect(requestedStartMs, isNotNull);
+    expect(calls, greaterThan(callsBeforePreview));
+    final callsAfterPreview = calls;
+
+    persistence.complete();
+    await tester.pumpAndSettle();
+    expect(committedStartMs, requestedStartMs);
+    expect(
+      calls,
+      callsAfterPreview,
+      reason: 'the first committed rebuild must hit the promoted preview slice',
+    );
+  });
+
+  testWidgets('failed and cancelled trims discard preview slices', (
+    tester,
+  ) async {
+    var calls = 0;
+    var committedStartMs = 0;
+    int? failedStartMs;
+    final failedPersistence = Completer<void>();
+    final track = _track('trim-discard', 'Trim discard', 240);
+    final source = TimelineWaveformData(
+      durationMs: 240000,
+      analyzed: true,
+      frames: List<WaveformFrame>.filled(
+        8192,
+        const WaveformFrame(
+          peak: 0.8,
+          rms: 0.5,
+          low: 0.3,
+          mid: 0.7,
+          high: 0.4,
+        ),
+      ),
+    );
+    TimelineWaveformData waveformFor(Track track, int samples) {
+      calls++;
+      return source;
+    }
+
+    Future<void> pumpTimeline(TimelineClipEditCallback callback) => _pump(
+          tester,
+          previous: null,
+          current: track,
+          upcoming: const [],
+          transitionSnapMode: BeatSnapMode.free,
+          waveformFor: waveformFor,
+          clipFor: (_, fallback) => fallback.withSourceRange(
+            sourceStartMs: committedStartMs,
+            sourceEndMs: 220000,
+          ),
+          onTrimStartChanged: callback,
+        );
+
+    await pumpTimeline((_, startMs) async {
+      failedStartMs = startMs;
+      await failedPersistence.future;
+    });
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_trim-discard')),
+    );
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_trim_start_trim-discard')),
+      const Offset(70, 0),
+    );
+    await tester.pump();
+    final callsAfterFailedPreview = calls;
+    failedPersistence.completeError(StateError('trim persistence failed'));
+    await tester.pump();
+    expect(tester.takeException(), isA<StateError>());
+    expect(tester.takeException(), isNull);
+    await tester.pump();
+
+    committedStartMs = failedStartMs!;
+    await pumpTimeline((_, __) {});
+    expect(
+      calls,
+      callsAfterFailedPreview + 1,
+      reason: 'a failed preview slice must not enter the committed LRU',
+    );
+
+    committedStartMs = 40000;
+    await pumpTimeline((_, __) {});
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_trim-discard')),
+    );
+    await tester.pumpAndSettle();
+    final trimHandle = find.byKey(
+      const ValueKey('timeline_trim_start_trim-discard'),
+    );
+    final gesture = await tester.startGesture(tester.getCenter(trimHandle));
+    for (var move = 0; move < 3; move++) {
+      await gesture.moveBy(const Offset(40, 0));
+      await tester.pump();
+    }
+    final cancelledStartMs = _waveformPainter(tester, 'trim-discard')
+        .mixClip!
+        .placement
+        .sourceStartMs;
+    final callsAfterCancelledPreview = calls;
+    expect(cancelledStartMs, greaterThan(40000));
+
+    tester.widget<GestureDetector>(trimHandle).onHorizontalDragCancel!();
+    await tester.pump();
+    await gesture.cancel();
+    await tester.pumpAndSettle();
+    committedStartMs = cancelledStartMs;
+    await pumpTimeline((_, __) {});
+    expect(
+      calls,
+      callsAfterCancelledPreview + 1,
+      reason: 'a cancelled preview slice must not enter the committed LRU',
+    );
+  });
+
+  testWidgets('only the current trim generation can promote a preview slice', (
+    tester,
+  ) async {
+    var calls = 0;
+    var committedStartMs = 0;
+    final requestedStarts = <int>[];
+    final completions = <Completer<void>>[];
+    final track = _track(
+      'trim-generation',
+      'Trim generation',
+      240,
+      queueItemId: 'trim-generation-lane',
+    );
+    final other = _track(
+      'other-generation',
+      'Other generation',
+      240,
+      queueItemId: 'other-generation-lane',
+    );
+    final source = TimelineWaveformData(
+      durationMs: 240000,
+      analyzed: true,
+      frames: List<WaveformFrame>.filled(
+        8192,
+        const WaveformFrame(
+          peak: 0.8,
+          rms: 0.5,
+          low: 0.3,
+          mid: 0.7,
+          high: 0.4,
+        ),
+      ),
+    );
+    TimelineWaveformData waveformFor(Track track, int samples) {
+      calls++;
+      return source;
+    }
+
+    Future<void> persistTrim(Track track, int startMs) async {
+      requestedStarts.add(startMs);
+      final completion = Completer<void>();
+      completions.add(completion);
+      await completion.future;
+    }
+
+    TimelineClip clipFor(Track candidate, TimelineClip fallback) =>
+        candidate.queueItemId == track.queueItemId
+            ? fallback.withSourceRange(
+                sourceStartMs: committedStartMs,
+                sourceEndMs: 220000,
+              )
+            : fallback;
+
+    Future<void> pumpTrack(Track current) => _pump(
+          tester,
+          previous: null,
+          current: current,
+          upcoming: const [],
+          transitionSnapMode: BeatSnapMode.free,
+          waveformFor: waveformFor,
+          clipFor: clipFor,
+          onTrimStartChanged: persistTrim,
+        );
+
+    await pumpTrack(track);
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_trim-generation-lane')),
+    );
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(
+        const ValueKey('timeline_trim_start_trim-generation-lane'),
+      ),
+      const Offset(55, 0),
+    );
+    await tester.pump();
+    expect(completions, hasLength(1));
+
+    await pumpTrack(other);
+    await pumpTrack(track);
+    await tester.tap(
+      find.byKey(const ValueKey('timeline_clip_trim-generation-lane')),
+    );
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byKey(
+        const ValueKey('timeline_trim_start_trim-generation-lane'),
+      ),
+      const Offset(105, 0),
+    );
+    await tester.pump();
+    expect(completions, hasLength(2));
+    expect(requestedStarts[1], isNot(requestedStarts[0]));
+    final callsAfterSecondPreview = calls;
+
+    completions[0].complete();
+    await tester.pump();
+    expect(calls, callsAfterSecondPreview);
+    expect(
+      _waveformPainter(tester, 'trim-generation-lane')
+          .mixClip!
+          .placement
+          .sourceStartMs,
+      requestedStarts[1],
+      reason: 'a stale successful generation must not remove the newer preview',
+    );
+
+    committedStartMs = requestedStarts[1];
+    completions[1].complete();
+    await tester.pumpAndSettle();
+    expect(
+      calls,
+      callsAfterSecondPreview,
+      reason: 'the matching generation must promote and hit on commit',
+    );
+
+    committedStartMs = requestedStarts[0];
+    await pumpTrack(track);
+    expect(
+      calls,
+      callsAfterSecondPreview + 1,
+      reason: 'the stale generation preview must remain discarded',
+    );
   });
 
   testWidgets('snap options change advisory semantics from info to warning', (
@@ -2859,6 +3996,84 @@ void main() {
       find.byKey(const ValueKey('timeline_trim_start_t2')),
       findsOneWidget,
     );
+  });
+
+  testWidgets('first swipe rebases an incoming ramp without changing mapping', (
+    tester,
+  ) async {
+    const initialStartMs = 180000;
+    const initialSegmentStartMs = 190000;
+    final commit = Completer<void>();
+    const automation = PlaybackRateAutomation(
+      baseRate: 1,
+      segments: [
+        PlaybackRateSegment(
+          startMs: initialSegmentStartMs,
+          endMs: 220000,
+          startRate: 0.8,
+          endRate: 1.2,
+        ),
+      ],
+    );
+    final original = _mixClip(
+      't2',
+      initialStartMs,
+      240000,
+      rateAutomation: automation,
+    );
+    var waveformBuilds = 0;
+    TimelineWaveformData waveformFor(Track track, int sampleCount) {
+      waveformBuilds++;
+      return richWaveformForTrack(track, sampleCount: sampleCount);
+    }
+
+    await _pump(
+      tester,
+      previous: null,
+      current: _track('t1', 'Midnight Drive', 240),
+      upcoming: [_track('t2', 'Paper Planes', 240)],
+      transitionSnapMode: BeatSnapMode.free,
+      timelineModel: TimelineModel(
+        clips: [_mixClip('t1', 0, 240000), original],
+        autoTempoTransitions: false,
+      ),
+      waveformFor: waveformFor,
+      onTimelineStartChanged: (_, __) => commit.future,
+    );
+    final waveformBuildsBeforeDrag = waveformBuilds;
+
+    final body = find.byKey(const ValueKey('timeline_clip_body_drag_t2'));
+    final start = tester.getCenter(body);
+    final gesture = await tester.startGesture(start);
+    for (final delta in const [
+      Offset(-24, 1),
+      Offset(-24, 1),
+      Offset(-24, 0)
+    ]) {
+      await gesture.moveBy(delta);
+      await tester.pump(const Duration(milliseconds: 8));
+    }
+    final preview = _waveformPainter(tester, 't2').mixClip!;
+    final delta = preview.timelineStartMs - initialStartMs;
+
+    expect(waveformBuilds, waveformBuildsBeforeDrag);
+    expect(delta, isNot(0));
+    expect(
+      preview.rateAutomation.segments.single.startMs,
+      initialSegmentStartMs + delta,
+    );
+    expect(preview.timelineDurationMs, original.timelineDurationMs);
+    expect(
+      preview.sourcePositionAt(preview.timelineStartMs + 16000) -
+          preview.placement.sourceStartMs,
+      original.sourcePositionAt(initialStartMs + 16000) -
+          original.placement.sourceStartMs,
+    );
+
+    await gesture.up();
+    await tester.pump();
+    commit.complete();
+    await tester.pumpAndSettle();
   });
 
   testWidgets('tap selects an editable clip without persisting placement', (
@@ -3077,7 +4292,14 @@ void main() {
     await tester.pump();
 
     expect(requestedStartMs, isNotNull);
-    final authoritativeStartMs = requestedStartMs! + 112;
+    final requestedModel = modelAt(requestedStartMs!);
+    final correction = beatAlignmentCorrectionMs(
+      outgoing: requestedModel.clips.first,
+      incoming: requestedModel.clips.last,
+      snapMode: BeatSnapMode.downbeat,
+    );
+    expect(correction, isNotNull);
+    final authoritativeStartMs = requestedStartMs! + correction!;
     await _pump(
       tester,
       previous: null,
@@ -3091,7 +4313,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Beat locked'), findsWidgets);
-    expect(find.textContaining('Downbeat -112ms'), findsNothing);
+    expect(find.textContaining('Downbeat '), findsNothing);
   });
 
   testWidgets('busy placement blocks a quick second drag then re-enables edits',

@@ -195,6 +195,209 @@ void main() {
       );
     });
 
+    test('does not derive Beat4 or Beat16 from low or malformed analyzer grids',
+        () {
+      const lowConfidenceGrid = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.54,
+        beatsMs: [0, 500, 1000, 1500, 2000],
+        beatGridProvenance: 'beat-this-final0-v1.1.0-phase-fit-v1',
+      );
+      const malformedGrid = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        beatsMs: [0, 500, 1000, 1300, 2500, 3000, 3500, 4000],
+        beatGridProvenance: 'beat-this-final0-v1.1.0-phase-fit-v1',
+      );
+      const duplicateGrid = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        beatsMs: [0, 500, 1000, 1000, 1500, 2000],
+        beatGridProvenance: 'beat-this-final0-v1.1.0-phase-fit-v1',
+      );
+
+      expect(lowConfidenceGrid.hasReliableBeatGrid, isFalse);
+      expect(malformedGrid.hasReliableBeatGrid, isFalse);
+      expect(duplicateGrid.hasReliableBeatGrid, isFalse);
+      for (final tempo in [lowConfidenceGrid, malformedGrid, duplicateGrid]) {
+        expect(beatMarkersForSnapMode(tempo, BeatSnapMode.beat4), isEmpty);
+        expect(beatMarkersForSnapMode(tempo, BeatSnapMode.beat16), isEmpty);
+        expect(
+          snapIncomingStartToNearestDownbeat(
+            requestedStartMs: 1000,
+            incomingSourceStartMs: 0,
+            incomingTempo: tempo,
+            outgoingTimelineStartMs: 0,
+            outgoingSourceStartMs: 0,
+            outgoingTempo: reliable120,
+            snapMode: BeatSnapMode.beat4,
+          ),
+          isNull,
+        );
+      }
+    });
+
+    test('manual beat grids remain trusted regardless of BPM fit', () {
+      const manualGrid = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.1,
+        beatsMs: [0, 700, 1500, 2400, 3400, 4500, 5700, 7000],
+        beatGridProvenance: manualTempoProvenance,
+      );
+
+      expect(manualGrid.hasReliableBeatGrid, isTrue);
+      expect(
+        beatMarkersForSnapMode(manualGrid, BeatSnapMode.beat4),
+        [0, 3400],
+      );
+    });
+
+    test('manual BPM alone cannot bless a malformed analyzer beat grid', () {
+      const bpmOnlyManual = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 1,
+        bpmProvenance: manualTempoProvenance,
+        beatsMs: [0, 500, 1000, 1080, 1180, 1300, 1800],
+        beatGridProvenance: 'beat-this-final0-v1.1.0-phase-fit-v1',
+      );
+      const jitteredTrustedGrid = ClipTempoMetadata(
+        nativeBpm: 145,
+        bpmConfidence: 0.9,
+        beatsMs: [0, 300, 680, 1093, 1513, 1933, 2453, 2866],
+        beatGridProvenance: 'beat-this-final0-v1.1.0-phase-fit-v1',
+      );
+      const duplicateBurst = ClipTempoMetadata(
+        nativeBpm: 145,
+        bpmConfidence: 0.9,
+        beatsMs: [0, 413, 826, 1239, 1325, 1455, 1868, 2281],
+        beatGridProvenance: 'beat-this-final0-v1.1.0-phase-fit-v1',
+      );
+
+      expect(bpmOnlyManual.hasReliableBeatGrid, isFalse);
+      expect(jitteredTrustedGrid.hasReliableBeatGrid, isTrue);
+      expect(duplicateBurst.hasReliableBeatGrid, isFalse);
+
+      final parsedBpmOnlyOverride = ClipTempoMetadata.fromAnalysisSummary(
+        const {
+          'bpm': {'value': 120, 'confidence': 0.9},
+          'beat_grid': {
+            'beats_ms': [0, 500, 1000, 1080, 1180, 1300, 1800],
+            'provenance': 'beat-this-final0-v1.1.0-phase-fit-v1',
+          },
+        },
+        overrides: const {'bpm': 130},
+      );
+      expect(parsedBpmOnlyOverride.bpmProvenance, manualTempoProvenance);
+      expect(
+        parsedBpmOnlyOverride.beatGridProvenance,
+        'beat-this-final0-v1.1.0-phase-fit-v1',
+      );
+      expect(parsedBpmOnlyOverride.hasReliableBeatGrid, isFalse);
+    });
+
+    test('validates original marker order, uniqueness, and downbeat relation',
+        () {
+      const outOfOrder = ClipTempoMetadata(
+        beatsMs: [0, 500, 1500, 1000],
+        beatGridProvenance: manualTempoProvenance,
+      );
+      const negative = ClipTempoMetadata(
+        beatsMs: [-500, 0, 500, 1000],
+        beatGridProvenance: manualTempoProvenance,
+      );
+      const duplicate = ClipTempoMetadata(
+        beatsMs: [0, 500, 500, 1000],
+        beatGridProvenance: manualTempoProvenance,
+      );
+      const unrelatedDownbeats = ClipTempoMetadata(
+        beatsMs: [0, 500, 1000, 1500, 2000],
+        downbeatsMs: [0, 1250],
+      );
+      const validDownbeats = ClipTempoMetadata(
+        beatsMs: [0, 500, 1000, 1500, 2000],
+        downbeatsMs: [0, 2000],
+      );
+
+      expect(outOfOrder.hasReliableBeatGrid, isFalse);
+      expect(negative.hasReliableBeatGrid, isFalse);
+      expect(duplicate.hasReliableBeatGrid, isFalse);
+      expect(unrelatedDownbeats.hasReliableDownbeats, isFalse);
+      expect(validDownbeats.hasReliableDownbeats, isTrue);
+    });
+
+    test('rebases absolute rate automation without changing its mapping', () {
+      const automation = PlaybackRateAutomation(
+        baseRate: 1,
+        segments: [
+          PlaybackRateSegment(
+            startMs: 1000,
+            endMs: 5000,
+            startRate: 0.8,
+            endRate: 1.2,
+          ),
+        ],
+      );
+      final moved = automation.shiftedTimelineMs(3200);
+
+      expect(moved.segments.single.startMs, 4200);
+      expect(moved.segments.single.endMs, 8200);
+      expect(
+        moved.sourceElapsedMs(timelineStartMs: 3200, timelineMs: 7200),
+        automation.sourceElapsedMs(timelineStartMs: 0, timelineMs: 4000),
+      );
+      expect(
+        moved.timelineMsForSelectedSource(
+              timelineStartMs: 3200,
+              sourceDurationMs: 9000,
+            ) -
+            3200,
+        automation.timelineMsForSelectedSource(
+          timelineStartMs: 0,
+          sourceDurationMs: 9000,
+        ),
+      );
+    });
+
+    test('regular grids remain eligible when confidence is absent', () {
+      const grid = ClipTempoMetadata(
+        nativeBpm: 120,
+        beatsMs: [0, 500, 1000, 1500, 2000, 2500, 3000, 3500],
+      );
+
+      expect(grid.hasReliableBeatGrid, isTrue);
+      expect(beatMarkersForSnapMode(grid, BeatSnapMode.beat4), [0, 2000]);
+    });
+
+    test('half and double BPM grids are not rejected by BPM octave labels', () {
+      const halfTimeGrid = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        beatsMs: [0, 1000, 2000, 3000, 4000, 5000, 6000, 7000],
+      );
+      const doubleTimeGrid = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        beatsMs: [0, 250, 500, 750, 1000, 1250, 1500, 1750],
+      );
+
+      expect(halfTimeGrid.hasReliableBeatGrid, isTrue);
+      expect(doubleTimeGrid.hasReliableBeatGrid, isTrue);
+    });
+
+    test('locally regular variable-tempo grids remain eligible', () {
+      const variableTempoGrid = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        beatsMs: [0, 500, 1010, 1530, 2065, 2615, 3180, 3760],
+      );
+
+      expect(variableTempoGrid.hasReliableBeatGrid, isTrue);
+      expect(
+        beatMarkersForSnapMode(variableTempoGrid, BeatSnapMode.beat4),
+        [0, 2065],
+      );
+    });
+
     test('analysis parsing retains downbeat confidence and trusts corrections',
         () {
       final generated = ClipTempoMetadata.fromAnalysisSummary({

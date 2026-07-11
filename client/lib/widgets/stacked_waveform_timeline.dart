@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ import '../models/track.dart';
 import '../models/trim_range.dart';
 import '../models/waveform.dart';
 import 'timeline_clip_widget.dart';
+import 'timeline_waveform_painter.dart';
 
 typedef TimelineAnalysisEditCallback = void Function(
   Track track, {
@@ -25,6 +27,48 @@ typedef TimelineClipEditCallback = FutureOr<void> Function(
   Track track,
   int valueMs,
 );
+
+@visibleForTesting
+const int timelineWaveformCacheFrameBudget = 196608;
+
+@visibleForTesting
+const int timelineWaveformCacheByteBudget = 12 * 1024 * 1024;
+
+const int _timelineWaveformFrameAndPeakBytes = 48 + 8;
+const int _timelineWaveformSliceBaseBytes = 256 + 128;
+const int _timelineWaveformActiveMarkerReserveBytes = 64 * 1024;
+const int _timelineWaveformMinSamples = 8;
+const int _timelineWaveformMaxSamples = 65536;
+
+@visibleForTesting
+int timelineWaveformActiveSampleCap(int activeLaneCount) {
+  final lanes = math.max(1, activeLaneCount);
+  var candidate = _timelineWaveformMinSamples;
+  var result = candidate;
+  while (candidate <= _timelineWaveformMaxSamples) {
+    final estimatedSliceBytes = _timelineWaveformSliceBaseBytes +
+        candidate * _timelineWaveformFrameAndPeakBytes +
+        TimelineWaveformPaintCache.maxRetainedByteSizeForFrameCount(
+          candidate,
+        ) +
+        _timelineWaveformActiveMarkerReserveBytes;
+    if (candidate * lanes > timelineWaveformCacheFrameBudget ||
+        estimatedSliceBytes * lanes > timelineWaveformCacheByteBudget) {
+      break;
+    }
+    result = candidate;
+    candidate *= 2;
+  }
+  return result;
+}
+
+String _timelineLaneId(Track track) =>
+    track.queueItemId.isNotEmpty ? track.queueItemId : track.id;
+
+String _mixClipLaneId(MixClip clip) {
+  final queueItemId = clip.queueItemId;
+  return queueItemId != null && queueItemId.isNotEmpty ? queueItemId : clip.id;
+}
 
 /// Stacked compact-waveform timeline for the phone-first mix planner
 /// (~390x844), wired to the live mix engine when a [timelineModel] and
@@ -135,14 +179,6 @@ extension on SnapMarkerMode {
         SnapMarkerMode.beat16 => 16,
       };
 
-  int get beatStride => switch (this) {
-        SnapMarkerMode.free => 0,
-        SnapMarkerMode.downbeat => 0,
-        SnapMarkerMode.beat1 => 1,
-        SnapMarkerMode.beat4 => 4,
-        SnapMarkerMode.beat16 => 16,
-      };
-
   String get label => switch (this) {
         SnapMarkerMode.free => 'Free',
         SnapMarkerMode.downbeat => 'Downbeat',
@@ -199,8 +235,33 @@ int snapTimelineStartMsToMusicalGrid({
   if (intervalMs <= 1) return safeRequestedStartMs;
 
   final targetAnchorMs = safeRequestedStartMs + anchorDeltaMs;
-  final snappedAnchorMs = _snapToInterval(targetAnchorMs, intervalMs);
+  final snappedAnchorMs = _snapToAvailableMarkerGrid(
+    targetAnchorMs,
+    grid.markersMs,
+    fallbackIntervalMs: intervalMs,
+  );
   return math.max(0, snappedAnchorMs - anchorDeltaMs);
+}
+
+int _snapToAvailableMarkerGrid(
+  int targetMs,
+  List<int> markers, {
+  required int fallbackIntervalMs,
+}) {
+  if (markers.isEmpty) return _snapToInterval(targetMs, fallbackIntervalMs);
+  if (targetMs >= markers.first && targetMs <= markers.last) {
+    return _nearestMarker(markers, targetMs)!;
+  }
+
+  final anchor = targetMs < markers.first ? markers.first : markers.last;
+  final edgeInterval = markers.length < 2
+      ? fallbackIntervalMs
+      : targetMs < markers.first
+          ? markers[1] - markers.first
+          : markers.last - markers[markers.length - 2];
+  final interval = edgeInterval > 0 ? edgeInterval : fallbackIntervalMs;
+  if (interval <= 1) return targetMs;
+  return anchor + (((targetMs - anchor) / interval).round() * interval);
 }
 
 @visibleForTesting
@@ -233,74 +294,20 @@ int snapSourceMsToMusicalGrid({
 }
 
 _SnapGrid _snapGridFor(SnapMarkerMode mode, ClipTempoMetadata tempo) {
-  if (mode == SnapMarkerMode.downbeat) {
-    final downbeats = _sortedUniqueInts(tempo.downbeatsMs);
-    if (downbeats.isNotEmpty) {
-      return _SnapGrid(
-        markersMs: downbeats,
-        intervalMs: downbeats.length >= 2
-            ? _medianIntervalMs(downbeats)
-            : _fourBeatIntervalMs(tempo),
-      );
-    }
-
-    final beats = _sortedUniqueInts(tempo.beatsMs);
-    if (beats.length >= 2) {
-      return _SnapGrid(
-        markersMs: _strideMarkers(beats, 4),
-        intervalMs: _medianIntervalMs(beats) * 4,
-      );
-    }
-
-    final interval = _fourBeatIntervalMs(tempo);
-    return _SnapGrid(intervalMs: interval ?? _fallbackSnapIntervalMs(mode));
+  if (mode == SnapMarkerMode.free) {
+    return const _SnapGrid(intervalMs: 1);
   }
 
-  final stride = mode.beatStride;
-  if (stride <= 0) return const _SnapGrid(intervalMs: 1);
-
-  final beats = _sortedUniqueInts(tempo.beatsMs);
-  if (beats.length >= 2) {
-    return _SnapGrid(
-      markersMs: _strideMarkers(beats, stride),
-      intervalMs: _medianIntervalMs(beats) * stride,
-    );
+  var markers = beatMarkersForSnapMode(tempo, mode.beatSnapMode);
+  if (mode == SnapMarkerMode.downbeat && markers.isEmpty) {
+    markers = beatMarkersForSnapMode(tempo, BeatSnapMode.beat4);
   }
+  if (markers.isEmpty) return const _SnapGrid(intervalMs: 1);
 
-  final downbeats = _sortedUniqueInts(tempo.downbeatsMs);
-  if (downbeats.isNotEmpty) {
-    final markers = stride <= 4 ? downbeats : _strideMarkers(downbeats, 4);
-    final interval = downbeats.length >= 2
-        ? _medianIntervalMs(downbeats) * (stride <= 4 ? 1 : 4)
-        : null;
-    return _SnapGrid(markersMs: markers, intervalMs: interval);
-  }
-
-  final bpm = tempo.nativeBpm;
-  if (bpm != null && bpm.isFinite && bpm > 0) {
-    return _SnapGrid(intervalMs: (60000 / bpm * stride).round());
-  }
-
-  return _SnapGrid(intervalMs: _fallbackSnapIntervalMs(mode));
-}
-
-int? _fourBeatIntervalMs(ClipTempoMetadata tempo) {
-  final bpm = tempo.nativeBpm;
-  if (bpm != null && bpm.isFinite && bpm > 0) {
-    return (60000 / bpm * 4).round();
-  }
-  return null;
-}
-
-List<int> _strideMarkers(List<int> markers, int stride) {
-  if (markers.isEmpty) return const [];
-  if (stride <= 1) return markers;
-  return [for (var i = 0; i < markers.length; i += stride) markers[i]];
-}
-
-List<int> _sortedUniqueInts(List<int> values) {
-  final sorted = values.where((value) => value >= 0).toSet().toList()..sort();
-  return List.unmodifiable(sorted);
+  return _SnapGrid(
+    markersMs: markers,
+    intervalMs: markers.length >= 2 ? _medianIntervalMs(markers) : 1,
+  );
 }
 
 int? _nearestMarker(Iterable<int> markers, int targetMs) {
@@ -360,13 +367,14 @@ class _LaneModel {
   });
 
   TimelineClip get clip => mixClip.placement;
+  String get laneId => _timelineLaneId(track);
   int get timelineStartMs => mixClip.timelineStartMs;
   int get timelineEndMs => mixClip.timelineEndMs;
 }
 
 class _WaveformSliceCacheKey {
   final String trackId;
-  final String analysisRevision;
+  final Object analysisRevision;
   final int sourceStartMs;
   final int sourceEndMs;
   final int sampleCount;
@@ -401,14 +409,107 @@ class _WaveformSliceCacheKey {
 class _WaveformSlice {
   final TimelineWaveformData waveform;
   final List<double> peaks;
+  final TimelineWaveformPaintCache paintCache;
 
-  const _WaveformSlice({required this.waveform, required this.peaks});
+  _WaveformSlice({
+    required this.waveform,
+    required this.peaks,
+    required VoidCallback onPaintCacheSizeChanged,
+  }) : paintCache = TimelineWaveformPaintCache(
+          onSizeChanged: onPaintCacheSizeChanged,
+        );
+
+  int get estimatedBytes =>
+      waveform.estimatedByteSize +
+      peaks.length * 8 +
+      paintCache.estimatedByteSize +
+      128;
+}
+
+class _PreviewWaveformSlice {
+  final int generation;
+  final _WaveformSliceCacheKey cacheKey;
+  final _WaveformSlice slice;
+
+  const _PreviewWaveformSlice({
+    required this.generation,
+    required this.cacheKey,
+    required this.slice,
+  });
+}
+
+typedef _WaveformSliceLeaseCallback = void Function(
+  String laneId,
+  _WaveformSlice slice,
+);
+
+class _ActiveWaveformSliceLease extends StatefulWidget {
+  final String laneId;
+  final _WaveformSlice slice;
+  final _WaveformSliceLeaseCallback onAttach;
+  final _WaveformSliceLeaseCallback onDetach;
+  final Widget child;
+
+  const _ActiveWaveformSliceLease({
+    required this.laneId,
+    required this.slice,
+    required this.onAttach,
+    required this.onDetach,
+    required this.child,
+  });
+
+  @override
+  State<_ActiveWaveformSliceLease> createState() =>
+      _ActiveWaveformSliceLeaseState();
+}
+
+class _ActiveWaveformSliceLeaseState extends State<_ActiveWaveformSliceLease> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onAttach(widget.laneId, widget.slice);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ActiveWaveformSliceLease oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.laneId == widget.laneId &&
+        identical(oldWidget.slice, widget.slice)) {
+      return;
+    }
+    oldWidget.onDetach(oldWidget.laneId, oldWidget.slice);
+    widget.onAttach(widget.laneId, widget.slice);
+  }
+
+  @override
+  void dispose() {
+    widget.onDetach(widget.laneId, widget.slice);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+class _ResolvedTimelineLayout {
+  final Map<Track, MixClip> placed;
+  final MixClip currentClip;
+  final List<MixClip> placedClips;
+  final int totalMs;
+
+  const _ResolvedTimelineLayout({
+    required this.placed,
+    required this.currentClip,
+    required this.placedClips,
+    required this.totalMs,
+  });
 }
 
 enum _TimelineEditKind { placement, trimStart, trimEnd, pitchMode }
 
 class _TimelineEditTransaction {
   final int epoch;
+  final String laneId;
   final Track track;
   final FutureOr<void> Function() operation;
   final int? previewGeneration;
@@ -416,6 +517,7 @@ class _TimelineEditTransaction {
 
   const _TimelineEditTransaction({
     required this.epoch,
+    required this.laneId,
     required this.track,
     required this.operation,
     required this.previewGeneration,
@@ -426,10 +528,14 @@ class _TimelineEditTransaction {
 class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   static const double _minZoom = 0.5;
   static const double _maxZoom = TimelineViewport.maxPixelsPerSecond;
-  static const double _waveformPixelsPerSample = 1.25;
-  static const int _minWaveformSamples = 512;
-  static const int _maxWaveformSamples = 65536;
-  static const int _maxCachedWaveformSlices = 12;
+  static const double _waveformPhysicalPixelsPerSample = 1.25;
+  static const int _minWaveformSamples = _timelineWaveformMinSamples;
+  static const int _maxWaveformSamples = _timelineWaveformMaxSamples;
+  static const int _maxCachedWaveformFrames = timelineWaveformCacheFrameBudget;
+  static const int _maxAggregateWaveformBytes = timelineWaveformCacheByteBudget;
+  static const int _maxCachedTempoMetadata = 32;
+  static const double _waveformPaintWindowPx = 96;
+  static const double _laneScrollCacheExtentPx = 160;
   static const double _selectionControlsWidth = 96;
   static const double _scrubEdgeScrollZonePx = 56;
   static const double _scrubMaxEdgeScrollPx = 32;
@@ -450,7 +556,15 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   final Map<String, TimelineClip> _previewClips = {};
   final Map<String, int> _previewGenerations = {};
   final Map<String, _TimelineEditTransaction> _timelineEditTransactions = {};
-  final Map<_WaveformSliceCacheKey, _WaveformSlice> _waveformSliceCache = {};
+  final LinkedHashMap<_WaveformSliceCacheKey, _WaveformSlice>
+      _waveformSliceCache = LinkedHashMap();
+  final LinkedHashMap<String, _PreviewWaveformSlice> _previewWaveformSlices =
+      LinkedHashMap();
+  final Map<String, _WaveformSlice> _activeWaveformSlices = {};
+  final Set<_WaveformSlice> _pendingWaveformGeometryReleases =
+      HashSet<_WaveformSlice>.identity();
+  final Map<Object, ClipTempoMetadata> _tempoMetadataCache = {};
+  _ResolvedTimelineLayout? _resolvedLayout;
   TimelineViewport? _scaleStartViewport;
   double? _scaleStartZoom;
   double? _scaleLastLocalFocalX;
@@ -467,6 +581,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   double _laneViewportHeight = 0;
   String? _lastVisibleLaneSignature;
   bool _visibleLaneReportScheduled = false;
+  bool _waveformBudgetEnforcementScheduled = false;
   Timer? _visibleLaneDebounce;
 
   @override
@@ -493,6 +608,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   @override
   void didUpdateWidget(covariant StackedWaveformTimeline oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _resolvedLayout = null;
 
     _pruneTimelineEditOwnership(_renderedLaneIds(widget));
 
@@ -503,8 +619,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _livePlayheadMs.value = widget.playheadPositionMs;
     }
 
-    if (!identical(oldWidget.waveformFor, widget.waveformFor)) {
+    if (oldWidget.waveformFor != widget.waveformFor) {
       _waveformSliceCache.clear();
+      _previewWaveformSlices.clear();
     }
 
     if (oldWidget.transitionSnapMode != widget.transitionSnapMode &&
@@ -513,7 +630,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _snapMode = _snapMarkerModeFor(widget.transitionSnapMode);
     }
 
-    if (oldWidget.currentTrack.id != widget.currentTrack.id) {
+    if (_timelineLaneId(oldWidget.currentTrack) !=
+        _timelineLaneId(widget.currentTrack)) {
       if (_isScrubbing || _preserveViewportForScrub) {
         if (!_isScrubbing) {
           _preserveViewportForScrub = false;
@@ -547,56 +665,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     BuildContext context,
     double paneWidth,
   ) {
-    // --- Resolve global placement from the live engine model when available. ---
-    final ordered = <Track>[
-      if (widget.previousTrack != null) widget.previousTrack!,
-      widget.currentTrack,
-      ...widget.upcomingTracks,
-    ];
-
-    final placed = <Track, MixClip>{};
-    final usedLiveClipIds = <String>{};
-    var cursor = 0;
-    for (var index = 0; index < ordered.length; index++) {
-      final track = ordered[index];
-      final trim = widget.trimRangeFor(track);
-      final defaultClip = TimelineClip.clamped(
-        id: 'clip_${track.id}',
-        trackId: track.id,
-        sourceDurationMs: track.durationMs,
-        sourceStartMs: trim.startOffsetMs,
-        sourceEndMs: trim.endOffsetMs,
-        timelineStartMs: cursor,
-      );
-      final liveClip = _liveClipForTrack(track, usedLiveClipIds);
-      final baseClip = liveClip?.placement ??
-          widget.clipFor?.call(track, defaultClip) ??
-          defaultClip;
-      final clip = _previewClipFor(track, baseClip) ?? baseClip;
-      final trackTempo = _tempoForTrack(track);
-      final mixClip = liveClip == null
-          ? MixClip(
-              placement: clip,
-              tempo: trackTempo,
-              pitchMode: widget.pitchModeFor?.call(track) ?? pitchModePreserve,
-            )
-          : _copyMixClipWithPlacement(
-              liveClip,
-              clip,
-              fallbackTempo: trackTempo,
-            );
-      placed[track] = mixClip;
-
-      final nextTrack = index + 1 < ordered.length ? ordered[index + 1] : null;
-      if (nextTrack != null) {
-        cursor = _defaultTimelineStartAfter(mixClip, nextTrack);
-      }
-    }
-
-    final currentClip = placed[widget.currentTrack]!;
-    final totalMs = placed.values
-        .map((c) => c.timelineEndMs)
-        .fold<int>(0, (a, b) => a > b ? a : b);
+    final layout = _resolveTimelineLayout();
+    final placed = layout.placed;
+    final currentClip = layout.currentClip;
+    final totalMs = layout.totalMs;
     _engineBacked = widget.positionMsStream != null ||
         (widget.timelineModel?.clips.isNotEmpty ?? false);
     _timelineDurationMs = totalMs;
@@ -608,9 +680,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         ? TimelineViewport.minPixelsPerSecond
         : (paneWidth / (totalMs / 1000));
     final basePps = math.max(fitPps, TimelineViewport.minPixelsPerSecond);
+    final effectiveMaxPps = _effectiveMaxPixelsPerSecond(placed);
     final pps = (basePps * _zoom).clamp(
       TimelineViewport.minPixelsPerSecond,
-      TimelineViewport.maxPixelsPerSecond,
+      effectiveMaxPps,
     );
     final viewportOffsetMs = _manualOffsetMs ??
         (currentClip.timelineStartMs - 60000).clamp(0, totalMs);
@@ -664,7 +737,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         ),
       );
     }
-    final placedClips = placed.values.toList(growable: false);
+    final placedClips = layout.placedClips;
     final selectedLane = _selectedLaneForRegion(lanes);
 
     final overlapBands = _buildOverlapBands(
@@ -712,17 +785,26 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                         _latestLanes = lanes;
                         _laneViewportHeight = constraints.maxHeight;
                         _scheduleVisibleLaneReport();
+                        final activeLaneCapacity = _activeWaveformLaneCapacity(
+                          lanes,
+                          constraints.maxHeight,
+                        );
+                        final activeSampleCap = timelineWaveformActiveSampleCap(
+                          activeLaneCapacity,
+                        );
                         return ListView.builder(
                           key: const PageStorageKey('timeline_lane_scroll'),
                           controller: _laneScrollController,
-                          scrollCacheExtent:
-                              const ScrollCacheExtent.pixels(160),
+                          scrollCacheExtent: const ScrollCacheExtent.pixels(
+                            _laneScrollCacheExtentPx,
+                          ),
                           itemCount: lanes.length,
                           itemBuilder: (context, index) => _buildLane(
                             context,
                             lanes[index],
                             viewport,
                             paneWidth,
+                            activeSampleCap,
                           ),
                         );
                       },
@@ -906,24 +988,43 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     widget.onVisibleTracksChanged!(List<Track>.unmodifiable(visible));
   }
 
+  int _activeWaveformLaneCapacity(
+    List<_LaneModel> lanes,
+    double viewportHeight,
+  ) {
+    if (lanes.isEmpty) return 1;
+    final minLaneHeight = lanes
+        .map((lane) => lane.height)
+        .reduce(math.min)
+        .clamp(1.0, double.infinity);
+    final coveredHeight =
+        math.max(0.0, viewportHeight) + _laneScrollCacheExtentPx * 2;
+    final guardedCapacity = (coveredHeight / minLaneHeight).ceil() + 2;
+    return guardedCapacity.clamp(1, lanes.length).toInt();
+  }
+
   String _timelineTrackIdentity(Track track) =>
-      '${track.queueItemId}|${track.id}|${track.playbackTrackId ?? ''}';
+      '${_timelineLaneId(track)}|${track.id}|${track.playbackTrackId ?? ''}';
 
   Set<String> _renderedLaneIds(StackedWaveformTimeline timeline) => {
-        if (timeline.previousTrack case final previous?) previous.id,
-        timeline.currentTrack.id,
-        for (final track in timeline.upcomingTracks) track.id,
+        if (timeline.previousTrack case final previous?)
+          _timelineLaneId(previous),
+        _timelineLaneId(timeline.currentTrack),
+        for (final track in timeline.upcomingTracks) _timelineLaneId(track),
       };
 
   void _pruneTimelineEditOwnership(Set<String> renderedLaneIds) {
     _timelineEditTransactions.removeWhere(
-      (_, transaction) => !renderedLaneIds.contains(transaction.track.id),
+      (_, transaction) => !renderedLaneIds.contains(transaction.laneId),
     );
     _previewClips.removeWhere(
       (trackId, _) => !renderedLaneIds.contains(trackId),
     );
     _previewGenerations.removeWhere(
       (trackId, _) => !renderedLaneIds.contains(trackId),
+    );
+    _previewWaveformSlices.removeWhere(
+      (laneId, _) => !renderedLaneIds.contains(laneId),
     );
 
     if (!renderedLaneIds.contains(_activeClipDragTrackId)) {
@@ -947,6 +1048,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     _timelineEditTransactions.clear();
     _previewClips.clear();
     _previewGenerations.clear();
+    _previewWaveformSlices.clear();
+    _activeWaveformSlices.clear();
+    _pendingWaveformGeometryReleases.clear();
     _activeClipDragTrackId = null;
     _activeClipDragStartClip = null;
     _activeClipDragGeneration = null;
@@ -954,6 +1058,68 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     _activeTrimEdge = null;
     _activeTrimStartClip = null;
     _activeTrimGeneration = null;
+    _resolvedLayout = null;
+  }
+
+  _ResolvedTimelineLayout _resolveTimelineLayout() {
+    final cached = _resolvedLayout;
+    if (cached != null) return cached;
+
+    final ordered = <Track>[
+      if (widget.previousTrack != null) widget.previousTrack!,
+      widget.currentTrack,
+      ...widget.upcomingTracks,
+    ];
+    final placed = <Track, MixClip>{};
+    final usedLiveClipIds = <String>{};
+    var cursor = 0;
+    for (var index = 0; index < ordered.length; index++) {
+      final track = ordered[index];
+      final trim = widget.trimRangeFor(track);
+      final laneId = _timelineLaneId(track);
+      final defaultClip = TimelineClip.clamped(
+        id: 'clip_$laneId',
+        trackId: track.id,
+        sourceDurationMs: track.durationMs,
+        sourceStartMs: trim.startOffsetMs,
+        sourceEndMs: trim.endOffsetMs,
+        timelineStartMs: cursor,
+      );
+      final liveClip = _liveClipForTrack(track, usedLiveClipIds);
+      final baseClip = liveClip?.placement ??
+          widget.clipFor?.call(track, defaultClip) ??
+          defaultClip;
+      final clip = _previewClipFor(track, baseClip) ?? baseClip;
+      final trackTempo = _tempoForTrack(track);
+      final mixClip = liveClip == null
+          ? MixClip(
+              placement: clip,
+              queueItemId: laneId,
+              tempo: trackTempo,
+              pitchMode: widget.pitchModeFor?.call(track) ?? pitchModePreserve,
+            )
+          : _copyMixClipWithPlacement(
+              liveClip,
+              clip,
+              fallbackTempo: trackTempo,
+            );
+      placed[track] = mixClip;
+
+      if (index + 1 < ordered.length) {
+        cursor = _defaultTimelineStartAfter(mixClip, ordered[index + 1]);
+      }
+    }
+
+    final currentClip = placed[widget.currentTrack]!;
+    final placedClips = List<MixClip>.unmodifiable(placed.values);
+    final totalMs =
+        placedClips.map((clip) => clip.timelineEndMs).fold<int>(0, math.max);
+    return _resolvedLayout = _ResolvedTimelineLayout(
+      placed: Map<Track, MixClip>.unmodifiable(placed),
+      currentClip: currentClip,
+      placedClips: placedClips,
+      totalMs: totalMs,
+    );
   }
 
   MixClip? _liveClipForTrack(Track track, Set<String> usedClipIds) {
@@ -970,27 +1136,51 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   }
 
   TimelineClip? _previewClipFor(Track track, TimelineClip fallback) =>
-      _previewClips[track.id];
+      _previewClips[_timelineLaneId(track)];
 
   void _storePreviewClip(Track track, TimelineClip clip) {
-    _previewClips[track.id] = clip;
+    final laneId = _timelineLaneId(track);
+    if (_previewClips[laneId] == clip) return;
+    _previewClips[laneId] = clip;
+    _resolvedLayout = null;
   }
 
-  int _claimPreview(String trackId) {
+  int _claimPreview(String laneId) {
     final generation = ++_nextPreviewGeneration;
-    _previewGenerations[trackId] = generation;
+    _previewGenerations[laneId] = generation;
     return generation;
   }
 
-  void _removePreviewClip(String trackId, {int? generation}) {
-    if (generation != null && _previewGenerations[trackId] != generation) {
+  void _removePreviewClip(String laneId, {int? generation}) {
+    if (generation != null && _previewGenerations[laneId] != generation) {
       return;
     }
-    _previewClips.remove(trackId);
-    _previewGenerations.remove(trackId);
+    if (_previewClips.remove(laneId) != null) {
+      _resolvedLayout = null;
+    }
+    _previewGenerations.remove(laneId);
+    _previewWaveformSlices.remove(laneId);
   }
 
-  bool _isTrackSelected(String trackId) => _selectedTrackId == trackId;
+  bool _promotePreviewWaveformSlice(String laneId, int? generation) {
+    if (generation == null || _previewGenerations[laneId] != generation) {
+      return false;
+    }
+    final previewClip = _previewClips[laneId];
+    final cachedPreview = _previewWaveformSlices[laneId];
+    if (previewClip == null ||
+        cachedPreview == null ||
+        cachedPreview.generation != generation ||
+        cachedPreview.cacheKey.sourceStartMs != previewClip.sourceStartMs ||
+        cachedPreview.cacheKey.sourceEndMs != previewClip.sourceEndMs) {
+      return false;
+    }
+    _previewWaveformSlices.remove(laneId);
+    _cacheWaveformSlice(cachedPreview.cacheKey, cachedPreview.slice);
+    return true;
+  }
+
+  bool _isLaneSelected(String laneId) => _selectedTrackId == laneId;
 
   MixClip _copyMixClipWithPlacement(
     MixClip clip,
@@ -1006,7 +1196,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       playbackRate: clip.playbackRate,
       pitchMode: clip.pitchMode,
       tempo: tempo,
-      rateAutomation: clip.rateAutomation,
+      rateAutomation: clip.rateAutomation.shiftedTimelineMs(
+        placement.timelineStartMs - clip.timelineStartMs,
+      ),
     );
   }
 
@@ -1033,10 +1225,17 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   ClipTempoMetadata _tempoForTrack(Track track) {
     final analysis = track.analysis;
     if (analysis == null) return ClipTempoMetadata.empty;
-    return ClipTempoMetadata.fromAnalysisSummary(
+    final cached = _tempoMetadataCache[analysis];
+    if (cached != null) return cached;
+    final tempo = ClipTempoMetadata.fromAnalysisSummary(
       analysis.summary?.toJson(),
       overrides: analysis.overrides?.toJson(),
     );
+    if (_tempoMetadataCache.length >= _maxCachedTempoMetadata) {
+      _tempoMetadataCache.remove(_tempoMetadataCache.keys.first);
+    }
+    _tempoMetadataCache[analysis] = tempo;
+    return tempo;
   }
 
   int _defaultTimelineStartAfter(MixClip outgoing, Track incomingTrack) {
@@ -1068,9 +1267,27 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   _WaveformSlice _waveformSliceForClip(
     Track track,
     TimelineClip clip,
+    String laneId,
+    bool preview,
     double width,
+    double devicePixelRatio,
+    double viewportPixelsPerSecond,
+    int activeSampleCap,
   ) {
-    final sampleCount = _targetWaveformSamples(width);
+    final sampleCount = _targetWaveformSamples(
+      clip,
+      width,
+      devicePixelRatio,
+      viewportPixelsPerSecond,
+      activeSampleCap,
+    );
+    final selectedDurationMs = math.max(1, clip.selectedDurationMs);
+    final sourceSampleCount = (sampleCount *
+            math.max(selectedDurationMs, track.durationMs) /
+            selectedDurationMs)
+        .ceil()
+        .clamp(_minWaveformSamples, _maxWaveformSamples)
+        .toInt();
     final cacheKey = _WaveformSliceCacheKey(
       trackId: track.playbackTrackId ?? track.id,
       analysisRevision: _analysisRevisionFor(track),
@@ -1078,43 +1295,310 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       sourceEndMs: clip.sourceEndMs,
       sampleCount: sampleCount,
     );
-    final cached = _waveformSliceCache[cacheKey];
-    if (cached != null) return cached;
+    if (preview) {
+      final generation = _previewGenerations[laneId];
+      final cachedPreview = _previewWaveformSlices.remove(laneId);
+      if (cachedPreview != null &&
+          generation != null &&
+          cachedPreview.generation == generation &&
+          cachedPreview.cacheKey == cacheKey) {
+        _markWaveformSliceActive(laneId, cachedPreview.slice);
+        _previewWaveformSlices[laneId] = cachedPreview;
+        _enforceWaveformCacheBudget();
+        return cachedPreview.slice;
+      }
+      final committed = _waveformSliceCache.remove(cacheKey);
+      if (committed != null) {
+        _markWaveformSliceActive(laneId, committed);
+        _waveformSliceCache[cacheKey] = committed;
+        _enforceWaveformCacheBudget();
+        return committed;
+      }
+    } else {
+      final cached = _waveformSliceCache.remove(cacheKey);
+      if (cached != null) {
+        _markWaveformSliceActive(laneId, cached);
+        _waveformSliceCache[cacheKey] = cached;
+        _enforceWaveformCacheBudget();
+        return cached;
+      }
+    }
 
     final waveformFor = widget.waveformFor;
     final source = waveformFor == null
-        ? richWaveformForTrack(track, sampleCount: sampleCount)
-        : waveformFor(track, sampleCount);
+        ? richWaveformForTrack(track, sampleCount: sourceSampleCount)
+        : waveformFor(track, sourceSampleCount);
     final waveform = source.sliced(
       sourceStartMs: clip.sourceStartMs,
       sourceEndMs: clip.sourceEndMs,
       targetSampleCount: sampleCount,
     );
-    final slice = _WaveformSlice(waveform: waveform, peaks: waveform.peaks);
-    if (_waveformSliceCache.length >= _maxCachedWaveformSlices) {
-      _waveformSliceCache.remove(_waveformSliceCache.keys.first);
+    final slice = _WaveformSlice(
+      waveform: waveform,
+      peaks: waveform.peaks,
+      onPaintCacheSizeChanged: _scheduleWaveformCacheBudgetEnforcement,
+    );
+    _markWaveformSliceActive(laneId, slice);
+    if (preview) {
+      final generation = _previewGenerations[laneId];
+      if (generation != null) {
+        _previewWaveformSlices[laneId] = _PreviewWaveformSlice(
+          generation: generation,
+          cacheKey: cacheKey,
+          slice: slice,
+        );
+        _enforceWaveformCacheBudget();
+      }
+    } else {
+      _cacheWaveformSlice(cacheKey, slice);
     }
-    _waveformSliceCache[cacheKey] = slice;
     return slice;
   }
 
-  String _analysisRevisionFor(Track track) {
+  Object _analysisRevisionFor(Track track) {
     final analysis = track.analysis;
     if (analysis == null) return 'none';
-    return [
-      analysis.status.name,
-      analysis.updatedAt?.toUtc().microsecondsSinceEpoch ?? 0,
-      analysis.summary?.toJson().toString() ?? '',
-      analysis.overrides?.toJson().toString() ?? '',
-    ].join('|');
+    final summary = analysis.summary;
+    final waveform = summary?.waveform;
+    final peaks = waveform?.peaks ?? const <double>[];
+    return Object.hash(
+      analysis.status,
+      analysis.updatedAt?.microsecondsSinceEpoch,
+      peaks.length,
+      peaks.isEmpty ? null : peaks.first,
+      peaks.isEmpty ? null : peaks.last,
+      summary?.beatGrid?.beatsMs.length,
+      summary?.downbeats?.positionsMs.length,
+      summary?.transients?.strongestMs.length,
+      analysis.overrides?.toJson().toString(),
+    );
   }
 
-  int _targetWaveformSamples(double clipWidth) {
+  int _targetWaveformSamples(
+    TimelineClip clip,
+    double clipWidth,
+    double devicePixelRatio,
+    double viewportPixelsPerSecond,
+    int activeSampleCap,
+  ) {
     if (!clipWidth.isFinite || clipWidth <= 0) return _minWaveformSamples;
-    return (clipWidth / _waveformPixelsPerSample)
+    final pixelRatio = devicePixelRatio.isFinite && devicePixelRatio > 0
+        ? devicePixelRatio
+        : 1.0;
+    final screenSamples =
+        clipWidth * pixelRatio / _waveformPhysicalPixelsPerSample;
+    final zoomSamples = clip.selectedDurationMs /
+        1000 *
+        viewportPixelsPerSecond /
+        TimelineWaveformData.maxUsefulFrameSpacingPx;
+    final target = math
+        .max(screenSamples, zoomSamples)
         .round()
         .clamp(_minWaveformSamples, _maxWaveformSamples)
         .toInt();
+    return math.min(_waveformSampleBucket(target), activeSampleCap).toInt();
+  }
+
+  int _waveformSampleBucket(int target) {
+    var bucket = _minWaveformSamples;
+    while (bucket < target && bucket < _maxWaveformSamples) {
+      bucket *= 2;
+    }
+    return bucket.clamp(_minWaveformSamples, _maxWaveformSamples).toInt();
+  }
+
+  void _cacheWaveformSlice(
+    _WaveformSliceCacheKey cacheKey,
+    _WaveformSlice slice,
+  ) {
+    if (slice.waveform.frames.length > _maxCachedWaveformFrames ||
+        slice.estimatedBytes > _maxAggregateWaveformBytes) {
+      return;
+    }
+    _waveformSliceCache.remove(cacheKey);
+    _waveformSliceCache[cacheKey] = slice;
+    _enforceWaveformCacheBudget();
+  }
+
+  void _markWaveformSliceActive(String laneId, _WaveformSlice slice) {
+    final previous = _activeWaveformSlices[laneId];
+    _activeWaveformSlices[laneId] = slice;
+    if (previous != null && !identical(previous, slice)) {
+      _queueWaveformGeometryRelease(previous);
+    }
+  }
+
+  void _attachActiveWaveformSlice(String laneId, _WaveformSlice slice) {
+    _markWaveformSliceActive(laneId, slice);
+    _scheduleWaveformCacheBudgetEnforcement();
+  }
+
+  void _detachActiveWaveformSlice(String laneId, _WaveformSlice slice) {
+    if (identical(_activeWaveformSlices[laneId], slice)) {
+      _activeWaveformSlices.remove(laneId);
+      _scheduleWaveformCacheBudgetEnforcement();
+    }
+  }
+
+  void _scheduleWaveformCacheBudgetEnforcement() {
+    if (!mounted || _waveformBudgetEnforcementScheduled) return;
+    _waveformBudgetEnforcementScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _releasePendingWaveformGeometry();
+        _enforceWaveformCacheBudget(allowActiveGeometryTrim: true);
+        _releasePendingWaveformGeometry();
+      }
+      _waveformBudgetEnforcementScheduled = false;
+    });
+  }
+
+  void _enforceWaveformCacheBudget({bool allowActiveGeometryTrim = false}) {
+    final activeSlices = HashSet<_WaveformSlice>.identity()
+      ..addAll(_activeWaveformSlices.values);
+
+    while (true) {
+      final usage = _waveformCacheUsage();
+      if (usage.frames <= _maxCachedWaveformFrames &&
+          usage.bytes <= _maxAggregateWaveformBytes) {
+        return;
+      }
+      if (_evictOldestInactiveWaveformSlice(activeSlices)) {
+        continue;
+      }
+      if (allowActiveGeometryTrim &&
+          usage.bytes > _maxAggregateWaveformBytes &&
+          _trimActiveWaveformGeometry(
+            activeSlices,
+            usage.bytes - _maxAggregateWaveformBytes,
+          )) {
+        continue;
+      }
+      if (allowActiveGeometryTrim) {
+        assert(
+          usage.frames <= _maxCachedWaveformFrames &&
+              usage.bytes <= _maxAggregateWaveformBytes,
+          'Mounted waveform allocations exceeded their pre-build budget',
+        );
+      }
+      return;
+    }
+  }
+
+  ({int frames, int bytes}) _waveformCacheUsage() {
+    final seen = HashSet<_WaveformSlice>.identity();
+    var frames = 0;
+    var bytes = 0;
+
+    void include(_WaveformSlice slice) {
+      if (!seen.add(slice)) return;
+      frames += slice.waveform.frames.length;
+      bytes += slice.estimatedBytes;
+    }
+
+    for (final slice in _activeWaveformSlices.values) {
+      include(slice);
+    }
+    for (final slice in _waveformSliceCache.values) {
+      include(slice);
+    }
+    for (final preview in _previewWaveformSlices.values) {
+      include(preview.slice);
+    }
+    return (frames: frames, bytes: bytes);
+  }
+
+  bool _evictOldestInactiveWaveformSlice(
+    Set<_WaveformSlice> activeSlices,
+  ) {
+    for (final entry in _waveformSliceCache.entries.toList(growable: false)) {
+      if (activeSlices.contains(entry.value)) continue;
+      _waveformSliceCache.remove(entry.key);
+      _queueWaveformGeometryRelease(entry.value);
+      return true;
+    }
+    for (final entry
+        in _previewWaveformSlices.entries.toList(growable: false)) {
+      if (activeSlices.contains(entry.value.slice)) continue;
+      _previewWaveformSlices.remove(entry.key);
+      _queueWaveformGeometryRelease(entry.value.slice);
+      return true;
+    }
+    return false;
+  }
+
+  void _queueWaveformGeometryRelease(_WaveformSlice slice) {
+    _pendingWaveformGeometryReleases.add(slice);
+    _scheduleWaveformCacheBudgetEnforcement();
+  }
+
+  void _releasePendingWaveformGeometry() {
+    for (final slice
+        in _pendingWaveformGeometryReleases.toList(growable: false)) {
+      final stillRetained = _activeWaveformSlices.values.any(
+            (value) => identical(value, slice),
+          ) ||
+          _waveformSliceCache.values.any((value) => identical(value, slice)) ||
+          _previewWaveformSlices.values.any(
+            (value) => identical(value.slice, slice),
+          );
+      if (!stillRetained) {
+        slice.paintCache.clearRetainedGeometry();
+      }
+    }
+    _pendingWaveformGeometryReleases.clear();
+  }
+
+  bool _trimActiveWaveformGeometry(
+    Set<_WaveformSlice> activeSlices,
+    int bytesToFree,
+  ) {
+    final caches = HashSet<TimelineWaveformPaintCache>.identity();
+    for (final slice in activeSlices) {
+      caches.add(slice.paintCache);
+    }
+    final ordered = caches.toList(growable: false)
+      ..sort(
+        (first, second) =>
+            second.estimatedByteSize.compareTo(first.estimatedByteSize),
+      );
+    var remaining = bytesToFree;
+    var freedAny = false;
+    for (final cache in ordered) {
+      if (remaining <= 0) break;
+      final target = math.max(
+        TimelineWaveformPaintCache.minimumRetainedByteSize,
+        cache.estimatedByteSize - remaining,
+      );
+      final freed = cache.trimRetainedGeometryToBytes(target);
+      if (freed <= 0) continue;
+      remaining -= freed;
+      freedAny = true;
+    }
+    return freedAny;
+  }
+
+  double _effectiveMaxPixelsPerSecond(Map<Track, MixClip> placed) {
+    var maxPixelsPerSecond = TimelineViewport.maxPixelsPerSecond;
+    for (final entry in placed.entries) {
+      final clip = entry.value;
+      final available = waveformCoveredSampleCountForTrack(
+        entry.key,
+        sourceStartMs: clip.placement.sourceStartMs,
+        sourceEndMs: clip.placement.sourceEndMs,
+      );
+      if (available == null || available <= 0 || clip.timelineDurationMs <= 0) {
+        continue;
+      }
+      maxPixelsPerSecond = math.min(
+        maxPixelsPerSecond,
+        waveformMaxUsefulPixelsPerSecond(
+          realFrameCount: available,
+          timelineDurationMs: clip.timelineDurationMs,
+        ),
+      );
+    }
+    return math.max(TimelineViewport.minPixelsPerSecond, maxPixelsPerSecond);
   }
 
   MixClip? _dominantClipAt(List<MixClip> clips, int timelineMs) {
@@ -1227,7 +1711,11 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           Positioned(
             key: bands.isEmpty
                 ? const ValueKey('transition_window')
-                : ValueKey('timeline_overlap_band_${first.id}_${second.id}'),
+                : ValueKey(
+                    'timeline_overlap_band_'
+                    '${_mixClipLaneId(first)}_'
+                    '${_mixClipLaneId(second)}',
+                  ),
             left: left,
             top: 0,
             bottom: 0,
@@ -1257,6 +1745,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     _LaneModel lane,
     TimelineViewport viewport,
     double paneWidth,
+    int activeSampleCap,
   ) {
     final left = viewport.msToX(lane.timelineStartMs);
     final width = (viewport.msToX(lane.timelineEndMs) -
@@ -1281,6 +1770,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                 width,
                 left,
                 paneWidth,
+                activeSampleCap,
               ),
             ),
             _buildLaneIdentity(
@@ -1307,7 +1797,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     if (width <= 0) return const SizedBox.shrink();
 
     return Positioned(
-      key: ValueKey('timeline_lane_span_${lane.track.id}'),
+      key: ValueKey('timeline_lane_span_${lane.laneId}'),
       left: left,
       top: 8,
       bottom: 8,
@@ -1356,7 +1846,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           child: SizedBox(
             width: width,
             child: TimelineLaneHeader(
-              key: ValueKey('timeline_lane_header_${lane.track.id}'),
+              key: ValueKey('timeline_lane_header_${lane.laneId}'),
               track: lane.track,
               role: lane.role,
               statusLabel: lane.status,
@@ -1375,30 +1865,43 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     double clipWidth,
     double clipLeft,
     double paneWidth,
+    int activeSampleCap,
   ) {
-    final selected = _isTrackSelected(lane.track.id);
+    final laneId = lane.laneId;
+    final selected = _isLaneSelected(laneId);
     final editBusy = _isTimelineEditBusy(lane.track);
     final canMove = widget.onTimelineStartChanged != null && !editBusy;
     final selectedTrim = TrimRange.full(lane.clip.selectedDurationMs);
     final waveformSlice = _waveformSliceForClip(
       lane.track,
       lane.clip,
+      laneId,
+      _previewClips[laneId] == lane.clip,
       clipWidth,
+      MediaQuery.devicePixelRatioOf(context),
+      viewport.pixelsPerSecond,
+      activeSampleCap,
     );
     final visibleStartPx = (-clipLeft).clamp(0.0, clipWidth).toDouble();
     final visibleEndPx =
         (paneWidth - clipLeft).clamp(0.0, clipWidth).toDouble();
-    final visibleStartFraction =
-        clipWidth <= 0 ? 0.0 : visibleStartPx / clipWidth;
-    final visibleEndFraction = clipWidth <= 0 ? 1.0 : visibleEndPx / clipWidth;
+    final paintWindow = _waveformPaintWindow(
+      visibleStartPx: visibleStartPx,
+      visibleEndPx: visibleEndPx,
+      clipWidth: clipWidth,
+    );
     final body = TimelineClipWidget(
       track: lane.track,
+      laneId: laneId,
       peaks: waveformSlice.peaks,
       waveform: waveformSlice.waveform,
       mixClip: lane.mixClip,
       mappingRevision: lane.mixClip.rateAutomation,
-      visibleStartFraction: visibleStartFraction,
-      visibleEndFraction: visibleEndFraction,
+      paintCache: waveformSlice.paintCache,
+      viewportPixelsPerMs: viewport.pixelsPerSecond / 1000,
+      viewportOriginMs: viewport.offsetMs,
+      visibleStartFraction: paintWindow.startFraction,
+      visibleEndFraction: paintWindow.endFraction,
       trim: selectedTrim,
       role: lane.role,
       accent: lane.accent,
@@ -1409,102 +1912,140 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       showInLaneChip: false,
     );
 
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: Semantics(
-            key: ValueKey('timeline_clip_semantics_${lane.track.id}'),
-            label: editBusy
-                ? 'Saving ${lane.track.title} timeline edit'
-                : widget.onTimelineStartChanged == null
-                    ? 'Select ${lane.track.title} in timeline'
-                    : 'Move ${lane.track.title} in timeline',
-            container: true,
-            button: true,
-            onTap: () => _selectTrack(lane.track.id),
-            onIncrease: canMove ? () => _moveClipFromSemantics(lane, 1) : null,
-            onDecrease: canMove ? () => _moveClipFromSemantics(lane, -1) : null,
-            child: GestureDetector(
-              key: ValueKey('timeline_clip_body_drag_${lane.track.id}'),
-              excludeFromSemantics: true,
-              behavior: HitTestBehavior.opaque,
-              onTap: () => _selectTrack(lane.track.id),
-              onHorizontalDragStart: canMove
-                  ? (_) => _beginClipDrag(lane)
-                  : editBusy
-                      ? (_) {}
-                      : null,
-              onHorizontalDragUpdate: canMove
-                  ? (details) => _updateClipDrag(
-                        lane,
-                        viewport,
-                        details.primaryDelta ?? 0,
-                        useIncrementalDelta: true,
-                      )
-                  : editBusy
-                      ? (_) {}
-                      : null,
-              onHorizontalDragEnd: canMove
-                  ? (_) => _finishClipDrag(lane)
-                  : editBusy
-                      ? (_) {}
-                      : null,
-              onHorizontalDragCancel: canMove
-                  ? () => _cancelClipDrag(lane.track.id)
-                  : editBusy
-                      ? () {}
-                      : null,
-              onLongPressStart:
-                  selected && canMove ? (_) => _beginClipDrag(lane) : null,
-              onLongPressMoveUpdate: selected && canMove
-                  ? (details) => _updateClipDrag(
-                        lane,
-                        viewport,
-                        details.offsetFromOrigin.dx,
-                      )
-                  : null,
-              onLongPressEnd:
-                  selected && canMove ? (_) => _finishClipDrag(lane) : null,
-              onLongPressCancel: selected && canMove
-                  ? () => _cancelClipDrag(lane.track.id)
-                  : null,
-              child: body,
+    return _ActiveWaveformSliceLease(
+      laneId: laneId,
+      slice: waveformSlice,
+      onAttach: _attachActiveWaveformSlice,
+      onDetach: _detachActiveWaveformSlice,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: Semantics(
+              key: ValueKey('timeline_clip_semantics_$laneId'),
+              label: editBusy
+                  ? 'Saving ${lane.track.title} timeline edit'
+                  : widget.onTimelineStartChanged == null
+                      ? 'Select ${lane.track.title} in timeline'
+                      : 'Move ${lane.track.title} in timeline',
+              container: true,
+              button: true,
+              onTap: () => _selectLane(laneId),
+              onIncrease:
+                  canMove ? () => _moveClipFromSemantics(lane, 1) : null,
+              onDecrease:
+                  canMove ? () => _moveClipFromSemantics(lane, -1) : null,
+              child: GestureDetector(
+                key: ValueKey('timeline_clip_body_drag_$laneId'),
+                excludeFromSemantics: true,
+                behavior: HitTestBehavior.opaque,
+                onTap: () => _selectLane(laneId),
+                onHorizontalDragStart: canMove
+                    ? (_) => _beginClipDrag(lane)
+                    : editBusy
+                        ? (_) {}
+                        : null,
+                onHorizontalDragUpdate: canMove
+                    ? (details) => _updateClipDrag(
+                          lane,
+                          viewport,
+                          details.primaryDelta ?? 0,
+                          useIncrementalDelta: true,
+                        )
+                    : editBusy
+                        ? (_) {}
+                        : null,
+                onHorizontalDragEnd: canMove
+                    ? (_) => _finishClipDrag(lane)
+                    : editBusy
+                        ? (_) {}
+                        : null,
+                onHorizontalDragCancel: canMove
+                    ? () => _cancelClipDrag(laneId)
+                    : editBusy
+                        ? () {}
+                        : null,
+                onLongPressStart:
+                    selected && canMove ? (_) => _beginClipDrag(lane) : null,
+                onLongPressMoveUpdate: selected && canMove
+                    ? (details) => _updateClipDrag(
+                          lane,
+                          viewport,
+                          details.offsetFromOrigin.dx,
+                        )
+                    : null,
+                onLongPressEnd:
+                    selected && canMove ? (_) => _finishClipDrag(lane) : null,
+                onLongPressCancel:
+                    selected && canMove ? () => _cancelClipDrag(laneId) : null,
+                child: body,
+              ),
             ),
           ),
-        ),
-        if (selected) ...[
-          _trimHandle(
-            key: ValueKey('timeline_trim_start_${lane.track.id}'),
-            alignStart: true,
-            accent: lane.accent,
-            enabled: widget.onTrimStartChanged != null && !editBusy,
-            onDragStart: () => _beginTrimDrag(lane, _TrimEdge.start),
-            onDragUpdate: (deltaPx) => _updateTrimDrag(lane, viewport, deltaPx),
-            onDragEnd: () => _finishTrimDrag(lane),
-            onDragCancel: () => _cancelTrimDrag(lane.track.id),
-          ),
-          _trimHandle(
-            key: ValueKey('timeline_trim_end_${lane.track.id}'),
-            alignStart: false,
-            accent: lane.accent,
-            enabled: widget.onTrimEndChanged != null && !editBusy,
-            onDragStart: () => _beginTrimDrag(lane, _TrimEdge.end),
-            onDragUpdate: (deltaPx) => _updateTrimDrag(lane, viewport, deltaPx),
-            onDragEnd: () => _finishTrimDrag(lane),
-            onDragCancel: () => _cancelTrimDrag(lane.track.id),
-          ),
+          if (selected) ...[
+            _trimHandle(
+              key: ValueKey('timeline_trim_start_$laneId'),
+              alignStart: true,
+              accent: lane.accent,
+              enabled: widget.onTrimStartChanged != null && !editBusy,
+              onDragStart: () => _beginTrimDrag(lane, _TrimEdge.start),
+              onDragUpdate: (deltaPx) =>
+                  _updateTrimDrag(lane, viewport, deltaPx),
+              onDragEnd: () => _finishTrimDrag(lane),
+              onDragCancel: () => _cancelTrimDrag(laneId),
+            ),
+            _trimHandle(
+              key: ValueKey('timeline_trim_end_$laneId'),
+              alignStart: false,
+              accent: lane.accent,
+              enabled: widget.onTrimEndChanged != null && !editBusy,
+              onDragStart: () => _beginTrimDrag(lane, _TrimEdge.end),
+              onDragUpdate: (deltaPx) =>
+                  _updateTrimDrag(lane, viewport, deltaPx),
+              onDragEnd: () => _finishTrimDrag(lane),
+              onDragCancel: () => _cancelTrimDrag(laneId),
+            ),
+          ],
         ],
-      ],
+      ),
+    );
+  }
+
+  ({double startFraction, double endFraction}) _waveformPaintWindow({
+    required double visibleStartPx,
+    required double visibleEndPx,
+    required double clipWidth,
+  }) {
+    if (clipWidth <= 0) return (startFraction: 0, endFraction: 1);
+    if (visibleEndPx <= visibleStartPx) {
+      final edge = visibleStartPx >= clipWidth ? 1.0 : 0.0;
+      return (startFraction: edge, endFraction: edge);
+    }
+    final startPx =
+        (((visibleStartPx - _waveformPaintWindowPx) / _waveformPaintWindowPx)
+                    .floor() *
+                _waveformPaintWindowPx)
+            .clamp(0.0, clipWidth)
+            .toDouble();
+    final endPx =
+        (((visibleEndPx + _waveformPaintWindowPx) / _waveformPaintWindowPx)
+                    .ceil() *
+                _waveformPaintWindowPx)
+            .clamp(startPx, clipWidth)
+            .toDouble();
+    return (
+      startFraction: startPx / clipWidth,
+      endFraction: endPx / clipWidth,
     );
   }
 
   void _beginClipDrag(_LaneModel lane) {
     if (_isTimelineEditBusy(lane.track)) return;
+    final laneId = lane.laneId;
     setState(() {
-      _selectedTrackId = lane.track.id;
-      _activeClipDragTrackId = lane.track.id;
+      _selectedTrackId = laneId;
+      _activeClipDragTrackId = laneId;
       _activeClipDragStartClip = lane.clip;
-      _activeClipDragGeneration = _claimPreview(lane.track.id);
+      _activeClipDragGeneration = _claimPreview(laneId);
       _storePreviewClip(lane.track, lane.clip);
     });
   }
@@ -1515,7 +2056,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     double deltaPx, {
     bool useIncrementalDelta = false,
   }) {
-    if (_activeClipDragTrackId != lane.track.id) return;
+    if (_activeClipDragTrackId != lane.laneId) return;
     final baseClip = useIncrementalDelta
         ? (_previewClipFor(lane.track, lane.clip) ?? lane.clip)
         : _activeClipDragStartClip;
@@ -1565,7 +2106,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   }
 
   void _finishClipDrag(_LaneModel lane) {
-    if (_activeClipDragTrackId != lane.track.id) return;
+    final laneId = lane.laneId;
+    if (_activeClipDragTrackId != laneId) return;
     final preview = _previewClipFor(lane.track, lane.clip) ?? lane.clip;
     final startClip = _activeClipDragStartClip;
     final generation = _activeClipDragGeneration;
@@ -1577,7 +2119,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _activeClipDragGeneration = null;
       if (!changed) {
         _removePreviewClip(
-          lane.track.id,
+          laneId,
           generation: generation,
         );
       }
@@ -1585,6 +2127,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     if (!changed) return;
     _startTimelineEdit(
       track: lane.track,
+      laneId: laneId,
       callback: widget.onTimelineStartChanged,
       valueMs: preview.timelineStartMs,
       previewGeneration: generation,
@@ -1594,17 +2137,19 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   void _startTimelineEdit({
     required Track track,
+    String? laneId,
     required TimelineClipEditCallback? callback,
     required int valueMs,
     required _TimelineEditKind kind,
     int? previewGeneration,
   }) {
-    final laneId = track.id;
-    if (callback == null || _timelineEditTransactions.containsKey(laneId)) {
+    final resolvedLaneId = laneId ?? _timelineLaneId(track);
+    if (callback == null ||
+        _timelineEditTransactions.containsKey(resolvedLaneId)) {
       if (mounted && previewGeneration != null) {
         setState(
           () => _removePreviewClip(
-            track.id,
+            resolvedLaneId,
             generation: previewGeneration,
           ),
         );
@@ -1614,21 +2159,24 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
     final transaction = _TimelineEditTransaction(
       epoch: _timelineEditEpoch,
+      laneId: resolvedLaneId,
       track: track,
       operation: () => callback(track, valueMs),
       previewGeneration: previewGeneration,
       kind: kind,
     );
-    setState(() => _timelineEditTransactions[laneId] = transaction);
-    unawaited(_runTimelineEdit(laneId, transaction));
+    setState(() => _timelineEditTransactions[resolvedLaneId] = transaction);
+    unawaited(_runTimelineEdit(resolvedLaneId, transaction));
   }
 
   Future<void> _runTimelineEdit(
     String laneId,
     _TimelineEditTransaction transaction,
   ) async {
+    var succeeded = false;
     try {
       await transaction.operation();
+      succeeded = true;
     } catch (error, stackTrace) {
       _reportTimelineEditError(transaction, error, stackTrace);
     }
@@ -1641,8 +2189,16 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
     setState(() {
       _timelineEditTransactions.remove(laneId);
+      if (succeeded &&
+          (transaction.kind == _TimelineEditKind.trimStart ||
+              transaction.kind == _TimelineEditKind.trimEnd)) {
+        _promotePreviewWaveformSlice(
+          transaction.laneId,
+          transaction.previewGeneration,
+        );
+      }
       _removePreviewClip(
-        transaction.track.id,
+        transaction.laneId,
         generation: transaction.previewGeneration,
       );
     });
@@ -1672,7 +2228,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   }
 
   bool _isTimelineEditBusy(Track track) =>
-      _timelineEditTransactions.containsKey(track.id);
+      _timelineEditTransactions.containsKey(_timelineLaneId(track));
 
   void _cancelClipDrag(String trackId) {
     if (_activeClipDragTrackId != trackId) return;
@@ -1687,12 +2243,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
   void _beginTrimDrag(_LaneModel lane, _TrimEdge edge) {
     if (_isTimelineEditBusy(lane.track)) return;
+    final laneId = lane.laneId;
     setState(() {
-      _selectedTrackId = lane.track.id;
-      _activeTrimTrackId = lane.track.id;
+      _selectedTrackId = laneId;
+      _activeTrimTrackId = laneId;
       _activeTrimEdge = edge;
       _activeTrimStartClip = lane.clip;
-      _activeTrimGeneration = _claimPreview(lane.track.id);
+      _activeTrimGeneration = _claimPreview(laneId);
       _storePreviewClip(lane.track, lane.clip);
     });
   }
@@ -1702,7 +2259,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     TimelineViewport viewport,
     double deltaPx,
   ) {
-    if (_activeTrimTrackId != lane.track.id) return;
+    if (_activeTrimTrackId != lane.laneId) return;
     final edge = _activeTrimEdge;
     if (edge == null) return;
     final baseClip = _previewClipFor(lane.track, lane.clip) ?? lane.clip;
@@ -1733,7 +2290,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   }
 
   void _finishTrimDrag(_LaneModel lane) {
-    if (_activeTrimTrackId != lane.track.id) return;
+    final laneId = lane.laneId;
+    if (_activeTrimTrackId != laneId) return;
     final edge = _activeTrimEdge;
     final preview = _previewClipFor(lane.track, lane.clip) ?? lane.clip;
     final startClip = _activeTrimStartClip;
@@ -1766,7 +2324,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _activeTrimGeneration = null;
       if (valueMs == null || kind == null) {
         _removePreviewClip(
-          lane.track.id,
+          laneId,
           generation: generation,
         );
       }
@@ -1774,6 +2332,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     if (valueMs == null || kind == null) return;
     _startTimelineEdit(
       track: lane.track,
+      laneId: laneId,
       callback: callback,
       valueMs: valueMs,
       previewGeneration: generation,
@@ -1793,9 +2352,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     });
   }
 
-  void _selectTrack(String trackId) {
-    if (_selectedTrackId == trackId) return;
-    setState(() => _selectedTrackId = trackId);
+  void _selectLane(String laneId) {
+    if (_selectedTrackId == laneId) return;
+    setState(() => _selectedTrackId = laneId);
   }
 
   void _clearSelectedTrack() {
@@ -1868,7 +2427,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           widget.clipTempoStates.containsKey(lane.mixClip.id);
       final hasPitchFallback =
           widget.pitchFallbackClipIds.contains(lane.mixClip.id);
-      if (_isTrackSelected(lane.track.id) &&
+      if (_isLaneSelected(lane.laneId) &&
           (_hasTimelineSelectionControls(lane) ||
               !lane.mixClip.tempo.isEmpty ||
               hasRuntimeTempo ||
@@ -1896,13 +2455,14 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   ) {
     final theme = Theme.of(context);
     final track = lane.track;
+    final laneId = lane.laneId;
     final movable =
         lane.role == LaneRole.upcoming || lane.role == LaneRole.collapsed;
     final hasControls = _hasTimelineSelectionControls(lane);
     final tempoChip = _selectedTempoChip(context, lane, playheadMs);
     final transitionHint = _selectedTransitionHint(context, lane, peerClips);
     return DecoratedBox(
-      key: ValueKey('timeline_selection_region_${track.id}'),
+      key: ValueKey('timeline_selection_region_$laneId'),
       decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
         border: Border(bottom: BorderSide(color: theme.dividerColor)),
@@ -1929,18 +2489,14 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                 child: Align(
                   alignment: Alignment.topRight,
                   child: Material(
-                    key: ValueKey('timeline_selection_toolbar_${track.id}'),
+                    key: ValueKey('timeline_selection_toolbar_$laneId'),
                     color: theme.colorScheme.surface.withValues(alpha: 0.78),
                     borderRadius: BorderRadius.circular(8),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         if (widget.onPitchModeChanged != null)
-                          _pitchModeMenu(
-                            track,
-                            lane.mixClip,
-                            _isTimelineEditBusy(track),
-                          ),
+                          _pitchModeMenu(lane, _isTimelineEditBusy(track)),
                         if (widget.onEditAnalysis != null ||
                             (movable &&
                                 (widget.onMoveEarlier != null ||
@@ -2005,7 +2561,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     return Tooltip(
       message: labels.join(' · '),
       child: Container(
-        key: ValueKey('timeline_tempo_${lane.track.id}'),
+        key: ValueKey('timeline_tempo_${lane.laneId}'),
         constraints: const BoxConstraints(maxWidth: 184),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
         child: Text(
@@ -2024,13 +2580,16 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   bool _hasPitchFallback(MixClip clip) =>
       widget.pitchFallbackClipIds.contains(clip.id);
 
-  Widget _pitchModeMenu(Track track, MixClip clip, bool editBusy) {
+  Widget _pitchModeMenu(_LaneModel lane, bool editBusy) {
+    final track = lane.track;
+    final clip = lane.mixClip;
+    final laneId = lane.laneId;
     final followsTempo = pitchModeFollowsTempo(clip.rateAutomation.pitchMode);
     final label = followsTempo
         ? 'Pitch follows tempo'
         : 'Key lock: preserve pitch while tempo changes';
     return Semantics(
-      key: ValueKey('timeline_pitch_mode_semantics_${track.id}'),
+      key: ValueKey('timeline_pitch_mode_semantics_$laneId'),
       label: label,
       button: true,
       enabled: !editBusy,
@@ -2042,15 +2601,15 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         child: AbsorbPointer(
           absorbing: editBusy,
           child: PopupMenuButton<String>(
-            key: ValueKey('timeline_pitch_mode_${track.id}'),
+            key: ValueKey('timeline_pitch_mode_$laneId'),
             tooltip: label,
             enabled: !editBusy,
             initialValue:
                 followsTempo ? pitchModeFollowTempo : pitchModePreserve,
-            onSelected: (mode) => _startPitchModeEdit(track, mode),
+            onSelected: (mode) => _startPitchModeEdit(track, laneId, mode),
             itemBuilder: (context) => [
               CheckedPopupMenuItem(
-                key: ValueKey('timeline_pitch_key_lock_${track.id}'),
+                key: ValueKey('timeline_pitch_key_lock_$laneId'),
                 value: pitchModePreserve,
                 checked: !followsTempo,
                 child: const Text(
@@ -2058,7 +2617,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                 ),
               ),
               CheckedPopupMenuItem(
-                key: ValueKey('timeline_pitch_follows_tempo_${track.id}'),
+                key: ValueKey('timeline_pitch_follows_tempo_$laneId'),
                 value: pitchModeFollowTempo,
                 checked: followsTempo,
                 child: const Text('Pitch follows tempo'),
@@ -2075,15 +2634,15 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
   }
 
-  void _startPitchModeEdit(Track track, String pitchMode) {
+  void _startPitchModeEdit(Track track, String laneId, String pitchMode) {
     final callback = widget.onPitchModeChanged;
-    final laneId = track.id;
     if (callback == null || _timelineEditTransactions.containsKey(laneId)) {
       return;
     }
 
     final transaction = _TimelineEditTransaction(
       epoch: _timelineEditEpoch,
+      laneId: laneId,
       track: track,
       operation: () => callback(track, pitchMode),
       previewGeneration: null,
@@ -2094,8 +2653,9 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   }
 
   Widget _trackActionsMenu(Track track, _LaneModel lane, bool movable) {
+    final laneId = lane.laneId;
     return PopupMenuButton<_TimelineTrackAction>(
-      key: ValueKey('timeline_track_actions_${track.id}'),
+      key: ValueKey('timeline_track_actions_$laneId'),
       tooltip: 'Track actions for ${track.title}',
       onSelected: (action) {
         switch (action) {
@@ -2119,19 +2679,19 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       itemBuilder: (context) => [
         if (widget.onEditAnalysis != null)
           PopupMenuItem(
-            key: ValueKey('timeline_correct_analysis_${track.id}'),
+            key: ValueKey('timeline_correct_analysis_$laneId'),
             value: _TimelineTrackAction.correctAnalysis,
             child: const Text('Correct analysis'),
           ),
         if (movable && widget.onMoveEarlier != null)
           PopupMenuItem(
-            key: ValueKey('timeline_move_earlier_${track.id}'),
+            key: ValueKey('timeline_move_earlier_$laneId'),
             value: _TimelineTrackAction.moveEarlierInQueue,
             child: const Text('Move earlier in queue'),
           ),
         if (movable && widget.onMoveLater != null)
           PopupMenuItem(
-            key: ValueKey('timeline_move_later_${track.id}'),
+            key: ValueKey('timeline_move_later_$laneId'),
             value: _TimelineTrackAction.moveLaterInQueue,
             child: const Text('Move later in queue'),
           ),
@@ -2169,7 +2729,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       label:
           'Selected transition ${diagnostics.severity.name}. ${_formatClock(diagnostics.overlapDurationMs)}. ${diagnostics.semanticsLabel}',
       child: Container(
-        key: ValueKey('timeline_transition_hint_${lane.track.id}'),
+        key: ValueKey('timeline_transition_hint_${lane.laneId}'),
         constraints: const BoxConstraints(maxWidth: 250),
         margin: const EdgeInsets.fromLTRB(6, 0, 6, 6),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
@@ -2421,7 +2981,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       final nextPps = (startViewport.pixelsPerSecond * (nextZoom / startZoom))
           .clamp(
             TimelineViewport.minPixelsPerSecond,
-            TimelineViewport.maxPixelsPerSecond,
+            _effectiveMaxPixelsPerSecond(_resolveTimelineLayout().placed),
           )
           .toDouble();
       final focalX =
@@ -2564,7 +3124,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         builder: (context, setSheetState) {
           void updateSnap(SnapMarkerMode mode) {
             if (!mounted) return;
-            setState(() => _snapMode = mode);
+            setState(() {
+              _snapMode = mode;
+              _resolvedLayout = null;
+            });
             setSheetState(() {});
             widget.onTransitionSnapModeChanged?.call(mode.beatSnapMode);
           }

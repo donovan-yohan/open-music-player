@@ -18,6 +18,7 @@ enum LaneRole { previous, current, upcoming, collapsed }
 /// queue rows while letting ended songs disappear off the left edge.
 class TimelineLaneHeader extends StatelessWidget {
   final Track track;
+  final String? laneId;
   final LaneRole role;
   final String statusLabel;
   final Color accent;
@@ -25,6 +26,7 @@ class TimelineLaneHeader extends StatelessWidget {
   const TimelineLaneHeader({
     super.key,
     required this.track,
+    this.laneId,
     required this.role,
     required this.statusLabel,
     required this.accent,
@@ -233,11 +235,18 @@ class TimelineLaneHeader extends StatelessWidget {
 /// outline for the current lane, and a lightweight in-lane chip carrying the
 /// short title / state / selected duration.
 class TimelineClipWidget extends StatelessWidget {
+  static const double _maxBoundaryPhysicalWidth = 4096;
+  static const double _maxBoundaryPhysicalHeight = 512;
+
   final Track track;
+  final String? laneId;
   final List<double> peaks;
   final TimelineWaveformData? waveform;
   final MixClip? mixClip;
   final Object? mappingRevision;
+  final TimelineWaveformPaintCache? paintCache;
+  final double viewportPixelsPerMs;
+  final int viewportOriginMs;
   final double visibleStartFraction;
   final double visibleEndFraction;
   final TrimRange trim;
@@ -252,10 +261,14 @@ class TimelineClipWidget extends StatelessWidget {
   const TimelineClipWidget({
     super.key,
     required this.track,
+    this.laneId,
     required this.peaks,
     this.waveform,
     this.mixClip,
     this.mappingRevision,
+    this.paintCache,
+    required this.viewportPixelsPerMs,
+    required this.viewportOriginMs,
     this.visibleStartFraction = 0,
     this.visibleEndFraction = 1,
     required this.trim,
@@ -270,6 +283,13 @@ class TimelineClipWidget extends StatelessWidget {
 
   bool get _active => role == LaneRole.current;
   bool get _muted => role == LaneRole.previous;
+  String get _laneIdentity {
+    final explicitLaneId = laneId;
+    if (explicitLaneId != null && explicitLaneId.isNotEmpty) {
+      return explicitLaneId;
+    }
+    return track.queueItemId.isNotEmpty ? track.queueItemId : track.id;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -279,51 +299,81 @@ class TimelineClipWidget extends StatelessWidget {
         (_muted ? 0.45 : 0.62 + (gainScalar * 0.38)).clamp(0.0, 1.0).toDouble();
     final waveColor = accent.withValues(alpha: waveAlpha);
 
-    return Container(
-      key: ValueKey('timeline_clip_${track.id}'),
-      decoration: BoxDecoration(
-        color: accent.withValues(
-          alpha: _active ? 0.10 + gainScalar * 0.08 : 0.05,
-        ),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(
-          color: _active ? accent : accent.withValues(alpha: 0.35),
-          width: _active ? 1.5 + gainScalar : 1,
-        ),
-      ),
+    return ClipRRect(
+      key: ValueKey('timeline_clip_$_laneIdentity'),
+      borderRadius: BorderRadius.circular(6),
       clipBehavior: Clip.antiAlias,
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: CustomPaint(
-              key: ValueKey('timeline_waveform_${track.id}'),
-              painter: TimelineWaveformPainter(
-                peaks: peaks,
-                waveform: waveform,
-                mixClip: mixClip,
-                mappingRevision: mappingRevision,
-                visibleStartFraction: visibleStartFraction,
-                visibleEndFraction: visibleEndFraction,
-                color: waveColor,
-                dimColor: theme.disabledColor.withValues(alpha: 0.35),
-                handleColor: accent.withValues(alpha: 0.9),
-                snapMarkerColor: accent.withValues(alpha: 0.62),
-                trimStartFraction: trim.startFraction,
-                trimEndFraction: trim.endFraction,
-                snapMarkerCount: snapMarkerCount,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: accent.withValues(
+            alpha: _active ? 0.10 + gainScalar * 0.08 : 0.05,
+          ),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final waveformPaint = CustomPaint(
+                    key: ValueKey('timeline_waveform_$_laneIdentity'),
+                    painter: TimelineWaveformPainter(
+                      peaks: peaks,
+                      waveform: waveform,
+                      mixClip: mixClip,
+                      mappingRevision: mappingRevision,
+                      laneIdentity: _laneIdentity,
+                      paintCache: paintCache,
+                      viewportPixelsPerMs: viewportPixelsPerMs,
+                      viewportOriginMs: viewportOriginMs,
+                      visibleStartFraction: visibleStartFraction,
+                      visibleEndFraction: visibleEndFraction,
+                      color: waveColor,
+                      dimColor: theme.disabledColor.withValues(alpha: 0.35),
+                      handleColor: accent.withValues(alpha: 0.9),
+                      snapMarkerColor: accent.withValues(alpha: 0.62),
+                      trimStartFraction: trim.startFraction,
+                      trimEndFraction: trim.endFraction,
+                      snapMarkerCount: snapMarkerCount,
+                    ),
+                  );
+                  final devicePixelRatio =
+                      MediaQuery.devicePixelRatioOf(context);
+                  final isolatePaint =
+                      constraints.maxWidth * devicePixelRatio <=
+                              _maxBoundaryPhysicalWidth &&
+                          constraints.maxHeight * devicePixelRatio <=
+                              _maxBoundaryPhysicalHeight;
+                  return isolatePaint
+                      ? RepaintBoundary(child: waveformPaint)
+                      : waveformPaint;
+                },
               ),
             ),
-          ),
-          if (showInLaneChip)
-            Positioned(left: 4, top: 4, right: 4, child: _inLaneChip(theme)),
-          if (showGainBadge)
-            Positioned(
-              key: ValueKey('timeline_gain_${track.id}'),
-              right: 6,
-              bottom: 6,
-              child: _gainBadge(theme, gainScalar),
+            if (showInLaneChip)
+              Positioned(left: 4, top: 4, right: 4, child: _inLaneChip(theme)),
+            if (showGainBadge)
+              Positioned(
+                key: ValueKey('timeline_gain_$_laneIdentity'),
+                right: 6,
+                bottom: 6,
+                child: _gainBadge(theme, gainScalar),
+              ),
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: _active ? accent : accent.withValues(alpha: 0.35),
+                      width: _active ? 1.5 + gainScalar : 1,
+                    ),
+                  ),
+                ),
+              ),
             ),
-        ],
+          ],
+        ),
       ),
     );
   }
