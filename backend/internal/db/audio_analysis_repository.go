@@ -456,10 +456,25 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 				)
 			)
 			OR (
-				status IN ($5, $6, $7)
+				status IN ($5, $6)
 				AND (
 					(NULLIF($1, '') IS NOT NULL AND COALESCE(NULLIF(provenance_json->>'expected_analyzer', ''), provenance_json->>'analyzer', '') <> $1)
 					OR (NULLIF($2, '') IS NOT NULL AND COALESCE(NULLIF(provenance_json->>'expected_analyzer_version', ''), provenance_json->>'analyzer_version', '') <> $2)
+				)
+			)
+			OR (
+				status = $7
+				AND (
+					(
+						NULLIF($1, '') IS NOT NULL
+						AND COALESCE(NULLIF(provenance_json->>'expected_analyzer', ''), NULLIF(provenance_json->>'analyzer', '')) IS NOT NULL
+						AND COALESCE(NULLIF(provenance_json->>'expected_analyzer', ''), provenance_json->>'analyzer') <> $1
+					)
+					OR (
+						NULLIF($2, '') IS NOT NULL
+						AND COALESCE(NULLIF(provenance_json->>'expected_analyzer_version', ''), NULLIF(provenance_json->>'analyzer_version', '')) IS NOT NULL
+						AND COALESCE(NULLIF(provenance_json->>'expected_analyzer_version', ''), provenance_json->>'analyzer_version') <> $2
+					)
 				)
 			)
 		  )

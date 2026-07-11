@@ -513,8 +513,19 @@ func TestMaintenanceCandidatesPrioritizeStaleAnalysisAgainstPostgres(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := analysisRepo.MarkStaleByAnalyzerVersion(ctx, "fixture", "fixture-v2"); err != nil {
+	marked, err := analysisRepo.MarkStaleByAnalyzerVersion(ctx, "fixture", "fixture-v2")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if marked != 1 {
+		t.Fatalf("marked stale = %d, want only explicit v1 analysis", marked)
+	}
+	failedAnalysis, err := analysisRepo.GetByTrackID(ctx, failedTrack.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failedAnalysis.Status != AnalysisStatusFailed {
+		t.Fatalf("ordinary failure status = %q, want %q", failedAnalysis.Status, AnalysisStatusFailed)
 	}
 
 	candidates, err := trackRepo.GetMaintenanceCandidates(ctx, false, true, time.Minute, 1)
