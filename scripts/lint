@@ -23,6 +23,18 @@ run_backend() {
   )
 }
 
+run_analyzer() {
+  (
+    cache_dir="$(mktemp -d)"
+    trap 'rm -rf "$cache_dir"' EXIT
+    PYTHONPYCACHEPREFIX="$cache_dir" python3 -m py_compile \
+      "$ROOT/backend/cmd/audio-analyzer/audio_mir.py" \
+      "$ROOT/backend/cmd/audio-analyzer/audio_mir_test.py"
+    docker compose -f "$ROOT/docker-compose.yml" config --quiet
+    docker compose -f "$ROOT/docker-compose.local-low-memory.yml" config --quiet
+  )
+}
+
 run_client() {
   (
     cd "$ROOT/client"
@@ -48,6 +60,9 @@ case "$TARGET" in
   backend)
     run_backend
     ;;
+  analyzer)
+    run_analyzer
+    ;;
   client)
     run_client
     ;;
@@ -57,11 +72,12 @@ case "$TARGET" in
   all)
     run_delivery
     run_backend
+    run_analyzer
     run_client
     run_extension
     ;;
   *)
-    echo "usage: scripts/lint [delivery|harness|backend|client|extension|all]" >&2
+    echo "usage: scripts/lint [delivery|harness|backend|analyzer|client|extension|all]" >&2
     exit 2
     ;;
 esac

@@ -6,6 +6,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      target: server-runtime
     container_name: omp-backend
     restart: unless-stopped
     ports:
@@ -34,6 +35,7 @@ services:
       MINIO_USE_SSL: "false"
       S3_USE_PATH_STYLE: "true"
       ANALYZER_BASE_URL: http://analyzer:18190
+      ANALYZER_CONCURRENCY: ${ANALYZER_CONCURRENCY:-1}
 
       # Auth
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
@@ -64,11 +66,14 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      target: analyzer-runtime
     container_name: omp-analyzer
     restart: unless-stopped
-    entrypoint: ["/app/audio-analyzer"]
     environment:
       ANALYZER_ADDR: ":18190"
+      ANALYZER_CONCURRENCY: ${ANALYZER_CONCURRENCY:-1}
+      ANALYZER_MIR_HELPER: /app/audio_mir.py
+      ANALYZER_BEAT_MODEL: /app/models/beat_this-final0.ckpt
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}

@@ -2,6 +2,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
+import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
@@ -440,6 +441,135 @@ void main() {
       expect(clip.tempo.downbeatsMs, [120, 2056]);
       expect(clip.tempo.musicalKey, 'A minor');
       expect(clip.tempo.camelot, '8A');
+    });
+
+    test('bare downbeats survive full analysis through queue and session', () {
+      final state = QueueState.fromJson({
+        'items': [
+          {
+            'id': 'bare-downbeats',
+            'queueItemId': 'bare-downbeats',
+            'trackId': 42,
+            'title': 'Bare Downbeats',
+            'duration': 240,
+            'playbackState': 'playable',
+            'analysisStatus': 'analyzed',
+            'analysisSummary': {
+              'bpm': {'value': 120, 'confidence': 0.9},
+              'downbeats': [0, 2000],
+            },
+            'analysisOverrides': {
+              'downbeats': [120, 2120]
+            },
+          },
+        ],
+      });
+      final track = state.tracks.single;
+      final session = MixSession.fromQueue(
+        sessionId: 'bare_downbeats',
+        queue: [
+          MediaItem(
+            id: track.id,
+            title: track.title,
+            duration: const Duration(seconds: 240),
+            extras: track.toPlaybackJson(),
+          ),
+        ],
+      );
+
+      expect(track.analysis?.summary?.downbeats?.positionsMs, [120, 2120]);
+      expect(session.clips.single.tempo.downbeatsMs, [120, 2120]);
+      expect(session.clips.single.tempo.downbeatConfidence, 1.0);
+    });
+
+    test('bare downbeat override empty array clears session markers', () {
+      final state = QueueState.fromJson({
+        'items': [
+          {
+            'id': 'clear-downbeats',
+            'queueItemId': 'clear-downbeats',
+            'trackId': 43,
+            'title': 'Clear Downbeats',
+            'duration': 240,
+            'playbackState': 'playable',
+            'analysisStatus': 'analyzed',
+            'analysisSummary': {
+              'bpm': {'value': 120, 'confidence': 0.9},
+              'downbeats': [0, 2000],
+            },
+            'analysisOverrides': {'downbeats': []},
+          },
+        ],
+      });
+      final track = state.tracks.single;
+      final session = MixSession.fromQueue(
+        sessionId: 'clear_downbeats',
+        queue: [
+          MediaItem(
+            id: track.id,
+            title: track.title,
+            duration: const Duration(seconds: 240),
+            extras: track.toPlaybackJson(),
+          ),
+        ],
+      );
+
+      expect(track.analysis?.summary?.downbeats?.positionsMs, isEmpty);
+      expect(session.clips.single.tempo.downbeatsMs, isEmpty);
+      expect(session.clips.single.tempo.downbeatConfidence, 1.0);
+    });
+
+    test('offset-only grid override retains analyzer BPM confidence', () {
+      final session = MixSession.fromQueue(
+        sessionId: 'offset_only_grid',
+        queue: [
+          const MediaItem(
+            id: 'a',
+            title: 'Track a',
+            duration: Duration(seconds: 20),
+            extras: {
+              'analysisSummary': {
+                'beat_grid': {
+                  'bpm': 120,
+                  'confidence': 0.2,
+                  'provenance': 'analyzer',
+                },
+              },
+              'analysisOverrides': {
+                'beat_grid': {'offset_ms': 87},
+              },
+            },
+          ),
+          const MediaItem(
+            id: 'b',
+            title: 'Track b',
+            duration: Duration(seconds: 20),
+            extras: {
+              'analysisSummary': {
+                'beat_grid': {
+                  'bpm': 120,
+                  'confidence': 0.2,
+                  'provenance': 'analyzer',
+                },
+              },
+              'analysisOverrides': {
+                'beat_grid': {'offset_ms': 87},
+              },
+            },
+          ),
+        ],
+      );
+
+      expect(session.clips.map((clip) => clip.tempo.bpmConfidence), [0.2, 0.2]);
+      expect(
+          session.clips.map((clip) => clip.tempo.beatGridOffsetMs), [87, 87]);
+      expect(session.clips.map((clip) => clip.tempo.bpmProvenance),
+          ['analyzer', 'analyzer']);
+      expect(session.clips.map((clip) => clip.tempo.beatGridProvenance),
+          ['analyzer', 'analyzer']);
+      expect(session.clips.map((clip) => clip.tempo.hasReliableBpm),
+          [false, false]);
+      expect(session.clips.map((clip) => clip.timelineStartMs), [0, 20000]);
     });
 
     test('normalizing an existing session refreshes tempo from media items',

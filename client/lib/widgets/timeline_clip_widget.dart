@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import '../core/engine/timeline_model.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
 import '../models/waveform.dart';
+import '../shared/widgets/song_metadata_chips.dart';
 import 'timeline_waveform_painter.dart';
 
 /// Visual role of a lane in the stacked timeline. Drives emphasis (contrast,
@@ -30,10 +32,26 @@ class TimelineLaneHeader extends StatelessWidget {
 
   bool get _active => role == LaneRole.current;
 
+  static double heightForTextScale(double textScale) {
+    final safeScale = textScale.clamp(1.0, 4.0);
+    if (safeScale < 1.3) {
+      return (48 + ((safeScale - 1) * 12)).clamp(48, 52).toDouble();
+    }
+    if (safeScale <= 2) {
+      return (140 + ((safeScale - 1.3) * (4 / 0.7))).clamp(140, 144).toDouble();
+    }
+    return (144 + ((safeScale - 2) * 115)).clamp(144, 374).toDouble();
+  }
+
+  static double minimumVisibleWidthForTextScale(double textScale) =>
+      textScale >= 1.3 ? 140 : 56;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final muted = role == LaneRole.previous;
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final headerHeight = heightForTextScale(textScale);
 
     return Semantics(
       container: true,
@@ -45,7 +63,7 @@ class TimelineLaneHeader extends StatelessWidget {
         ),
         borderRadius: BorderRadius.circular(8),
         child: Container(
-          height: 48,
+          height: headerHeight,
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(8),
@@ -53,52 +71,133 @@ class TimelineLaneHeader extends StatelessWidget {
               color: accent.withValues(alpha: _active ? 0.42 : 0.18),
             ),
           ),
-          child: Row(
-            children: [
-              _artwork(theme),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
+          child: textScale >= 1.3
+              ? _accessibleLayout(theme, muted)
+              : Row(
                   children: [
-                    Row(
-                      children: [
-                        if (_active) ...[
-                          Icon(Icons.equalizer, size: 13, color: accent),
-                          const SizedBox(width: 3),
-                        ],
-                        Expanded(
-                          child: Text(
-                            track.title,
-                            style: theme.textTheme.labelMedium?.copyWith(
-                              fontWeight:
-                                  _active ? FontWeight.bold : FontWeight.w600,
-                              color: muted ? theme.disabledColor : null,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Text(
-                      track.artist ?? 'Unknown artist',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: muted
-                            ? theme.disabledColor
-                            : theme.colorScheme.onSurfaceVariant,
+                    _artwork(theme),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final largeText =
+                              textScale >= 1.2 || constraints.maxWidth < 190;
+                          if (largeText) {
+                            return Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                _titleRow(
+                                  theme,
+                                  muted,
+                                  '${track.title} · ${track.artist ?? 'Unknown artist'}',
+                                ),
+                                const SizedBox(height: 2),
+                                Flexible(
+                                  child: SongMetadataChips(
+                                    analysis: track.analysis,
+                                    singleLine: true,
+                                    compact: true,
+                                  ),
+                                ),
+                              ],
+                            );
+                          }
+
+                          return Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _titleRow(theme, muted, track.title),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      track.artist ?? 'Unknown artist',
+                                      style:
+                                          theme.textTheme.bodySmall?.copyWith(
+                                        color: muted
+                                            ? theme.disabledColor
+                                            : theme
+                                                .colorScheme.onSurfaceVariant,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (constraints.maxWidth >= 150)
+                                    Flexible(
+                                      flex: 2,
+                                      child: Align(
+                                        alignment: Alignment.centerRight,
+                                        child: SongMetadataChips(
+                                          analysis: track.analysis,
+                                          singleLine: true,
+                                          compact: true,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          );
+                        },
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),
-              ),
-            ],
-          ),
         ),
       ),
+    );
+  }
+
+  Widget _accessibleLayout(ThemeData theme, bool muted) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            _artwork(theme),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _titleRow(
+                theme,
+                muted,
+                '${track.title} · ${track.artist ?? 'Unknown artist'}',
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        Expanded(
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: SongMetadataChips(analysis: track.analysis),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _titleRow(ThemeData theme, bool muted, String title) {
+    return Row(
+      children: [
+        if (_active) ...[
+          Icon(Icons.equalizer, size: 13, color: accent),
+          const SizedBox(width: 3),
+        ],
+        Expanded(
+          child: Text(
+            title,
+            style: theme.textTheme.labelMedium?.copyWith(
+              fontWeight: _active ? FontWeight.bold : FontWeight.w600,
+              color: muted ? theme.disabledColor : null,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
     );
   }
 
@@ -137,6 +236,8 @@ class TimelineClipWidget extends StatelessWidget {
   final Track track;
   final List<double> peaks;
   final TimelineWaveformData? waveform;
+  final MixClip? mixClip;
+  final Object? mappingRevision;
   final double visibleStartFraction;
   final double visibleEndFraction;
   final TrimRange trim;
@@ -153,6 +254,8 @@ class TimelineClipWidget extends StatelessWidget {
     required this.track,
     required this.peaks,
     this.waveform,
+    this.mixClip,
+    this.mappingRevision,
     this.visibleStartFraction = 0,
     this.visibleEndFraction = 1,
     required this.trim,
@@ -197,6 +300,8 @@ class TimelineClipWidget extends StatelessWidget {
               painter: TimelineWaveformPainter(
                 peaks: peaks,
                 waveform: waveform,
+                mixClip: mixClip,
+                mappingRevision: mappingRevision,
                 visibleStartFraction: visibleStartFraction,
                 visibleEndFraction: visibleEndFraction,
                 color: waveColor,
@@ -228,7 +333,7 @@ class TimelineClipWidget extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: theme.colorScheme.inverseSurface.withValues(alpha: 0.78),
+        color: theme.colorScheme.inverseSurface,
         borderRadius: BorderRadius.circular(10),
       ),
       child: Text(

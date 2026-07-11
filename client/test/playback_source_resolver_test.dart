@@ -15,6 +15,7 @@ Map<String, dynamic> trackMap(
   int id, {
   Map<String, dynamic>? analysisSummary,
   Map<String, dynamic>? analysisOverrides,
+  String? analysisUpdatedAt,
 }) =>
     {
       'id': id,
@@ -24,6 +25,7 @@ Map<String, dynamic> trackMap(
       'duration': 100 + id,
       if (analysisSummary != null) 'analysisSummary': analysisSummary,
       if (analysisOverrides != null) 'analysisOverrides': analysisOverrides,
+      if (analysisUpdatedAt != null) 'analysisUpdatedAt': analysisUpdatedAt,
     };
 
 void main() {
@@ -147,10 +149,18 @@ void main() {
       };
 
       final item = await resolver.resolveTrack(
-        trackMap(1, analysisSummary: analysisSummary),
+        trackMap(
+          1,
+          analysisSummary: analysisSummary,
+          analysisUpdatedAt: '2026-07-10T11:00:00.123456Z',
+        ),
       );
 
       expect(item.extras?['analysisSummary'], analysisSummary);
+      expect(
+        item.extras?['analysisUpdatedAt'],
+        '2026-07-10T11:00:00.123456Z',
+      );
       expect(item.extras?['analysisRef'], '1');
     });
 

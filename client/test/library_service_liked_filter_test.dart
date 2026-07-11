@@ -58,6 +58,7 @@ void main() {
       expect(fields, contains('title'));
       expect(fields, contains('duration_ms'));
       expect(fields, contains('is_liked'));
+      expect(fields, contains('analysis_updated_at'));
     });
   });
 

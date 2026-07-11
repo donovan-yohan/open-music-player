@@ -1,3 +1,7 @@
+import 'dart:convert';
+
+import '../../models/track_analysis.dart';
+
 /// MusicBrainz match suggestion for unverified tracks
 class MBSuggestion {
   final String mbRecordingId;
@@ -97,6 +101,7 @@ class Track {
   final int? fileSizeBytes;
   final Map<String, dynamic>? metadata;
   final List<MBSuggestion> mbSuggestions;
+  final TrackAnalysis? analysis;
 
   /// Whether the current user has liked (favorited) this track. Sourced from
   /// the `is_liked` flag on the GET /library response.
@@ -122,6 +127,7 @@ class Track {
     this.fileSizeBytes,
     this.metadata,
     this.mbSuggestions = const [],
+    this.analysis,
     this.isLiked = false,
     required this.createdAt,
     required this.updatedAt,
@@ -136,6 +142,13 @@ class Track {
         'album': album,
         'duration': durationMs != null ? durationMs! ~/ 1000 : 0,
         'artwork_url': metadata?['cover_art_url'],
+        if (analysis != null) 'analysisStatus': analysis!.status.name,
+        if (analysis?.summary != null)
+          'analysisSummary': analysis!.summary!.toJson(),
+        if (analysis?.overrides != null)
+          'analysisOverrides': analysis!.overrides!.toJson(),
+        if (analysis?.updatedAt != null)
+          'analysisUpdatedAt': analysis!.updatedAt!.toUtc().toIso8601String(),
       };
 
   factory Track.fromJson(Map<String, dynamic> json) {
@@ -171,10 +184,12 @@ class Track {
           json['sourceType'] as String? ?? json['source_type'] as String?,
       storageKey:
           json['storageKey'] as String? ?? json['storage_key'] as String?,
-      fileSizeBytes:
-          _optionalInt(json['fileSizeBytes'] ?? json['file_size_bytes']),
+      fileSizeBytes: _optionalInt(
+        json['fileSizeBytes'] ?? json['file_size_bytes'],
+      ),
       metadata: json['metadata_json'] as Map<String, dynamic>?,
       mbSuggestions: suggestions,
+      analysis: trackAnalysisFromTrackJson(json),
       isLiked: json['isLiked'] as bool? ?? json['is_liked'] as bool? ?? false,
       createdAt: _dateTimeValue(json['createdAt'] ?? json['created_at']),
       updatedAt: _dateTimeValue(json['updatedAt'] ?? json['updated_at']),
@@ -207,6 +222,7 @@ class Track {
               ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
               .toList() ??
           [],
+      analysis: trackAnalysisFromTrackJson(json),
       isLiked: json['is_liked'] as bool? ?? false,
       createdAt:
           DateTime.tryParse(json['created_at'] as String? ?? '') ?? addedAt,
@@ -234,6 +250,13 @@ class Track {
       'file_size_bytes': fileSizeBytes,
       'metadata_json': metadata,
       'mb_suggestions': mbSuggestions.map((s) => s.toJson()).toList(),
+      if (analysis != null) 'analysis_status': analysis!.status.name,
+      if (analysis?.summary != null)
+        'analysis_summary': analysis!.summary!.toJson(),
+      if (analysis?.overrides != null)
+        'analysis_overrides': analysis!.overrides!.toJson(),
+      if (analysis?.updatedAt != null)
+        'analysis_updated_at': analysis!.updatedAt!.toUtc().toIso8601String(),
       'is_liked': isLiked,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
@@ -257,6 +280,18 @@ class Track {
       'source_type': sourceType,
       'storage_key': storageKey,
       'file_size_bytes': fileSizeBytes,
+      if (analysis != null) 'analysis_status': analysis!.status.name,
+      if (analysis?.summary != null)
+        'analysis_summary': jsonEncode(
+          _compactAnalysisSummaryJson(analysis!.summary!),
+        ),
+      if (analysis?.overrides != null)
+        'analysis_overrides': jsonEncode(analysis!.overrides!.toJson()),
+      if (analysis?.updatedAt != null)
+        'analysis_updated_at': analysis!.updatedAt!.toUtc().toIso8601String(),
+      if (analysis?.updatedAt != null)
+        'analysis_updated_at_us':
+            analysis!.updatedAt!.toUtc().microsecondsSinceEpoch,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
     };
@@ -280,6 +315,12 @@ class Track {
       storageKey: map['storage_key'] as String?,
       fileSizeBytes: map['file_size_bytes'] as int?,
       metadata: null,
+      analysis: trackAnalysisFromTrackJson({
+        'analysis_status': map['analysis_status'],
+        'analysis_summary': _decodeJsonColumn(map['analysis_summary']),
+        'analysis_overrides': _decodeJsonColumn(map['analysis_overrides']),
+        'analysis_updated_at': map['analysis_updated_at'],
+      }),
       createdAt: DateTime.parse(map['created_at'] as String),
       updatedAt: DateTime.parse(map['updated_at'] as String),
     );
@@ -337,6 +378,7 @@ class Track {
     int? fileSizeBytes,
     Map<String, dynamic>? metadata,
     List<MBSuggestion>? mbSuggestions,
+    TrackAnalysis? analysis,
     bool? isLiked,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -359,6 +401,7 @@ class Track {
       fileSizeBytes: fileSizeBytes ?? this.fileSizeBytes,
       metadata: metadata ?? this.metadata,
       mbSuggestions: mbSuggestions ?? this.mbSuggestions,
+      analysis: analysis ?? this.analysis,
       isLiked: isLiked ?? this.isLiked,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
@@ -388,4 +431,31 @@ DateTime _dateTimeValue(dynamic value) {
     if (parsed != null) return parsed;
   }
   return DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+}
+
+Object? _decodeJsonColumn(Object? value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is! String || value.trim().isEmpty) return null;
+  try {
+    return jsonDecode(value);
+  } on FormatException {
+    return null;
+  }
+}
+
+Map<String, dynamic> _compactAnalysisSummaryJson(
+  TrackAnalysisSummary summary,
+) {
+  final json = summary.toJson();
+  return {
+    for (final key in const [
+      'bpm',
+      'beat_grid',
+      'downbeats',
+      'key',
+      'camelot',
+      'energy',
+    ])
+      if (json[key] != null) key: json[key],
+  };
 }

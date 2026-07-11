@@ -168,6 +168,89 @@ void main() {
       downbeatsMs: [0, 4000, 8000, 12000, 16000],
     );
 
+    test('low-confidence downbeats never drive automatic phrase locking', () {
+      const lowConfidenceDownbeats = ClipTempoMetadata(
+        nativeBpm: 120,
+        bpmConfidence: 0.9,
+        downbeatsMs: [0, 2000, 4000, 6000],
+        downbeatConfidence: 0.54,
+      );
+
+      expect(lowConfidenceDownbeats.hasDownbeats, isFalse);
+      expect(
+        beatMarkersForSnapMode(
+          lowConfidenceDownbeats,
+          BeatSnapMode.downbeat,
+        ),
+        isEmpty,
+      );
+      expect(
+        defaultTransitionOverlapMsForTempo(
+          outgoingSelectedDurationMs: 20000,
+          outgoingTempo: reliable120,
+          incomingSelectedDurationMs: 20000,
+          incomingTempo: lowConfidenceDownbeats,
+        ),
+        0,
+      );
+    });
+
+    test('analysis parsing retains downbeat confidence and trusts corrections',
+        () {
+      final generated = ClipTempoMetadata.fromAnalysisSummary({
+        'bpm': {'value': 120, 'confidence': 0.9},
+        'beat_grid': {
+          'bpm': 120,
+          'confidence': 0.9,
+          'beats_ms': [0, 500, 1000, 1500],
+        },
+        'downbeats': {
+          'positions_ms': [0, 2000],
+          'confidence': 0.54,
+        },
+      });
+      expect(generated.downbeatConfidence, 0.54);
+      expect(generated.downbeatProvenance, isNull);
+      expect(generated.hasDownbeats, isFalse);
+
+      final corrected = ClipTempoMetadata.fromAnalysisSummary(
+        {
+          'bpm': {'value': 120, 'confidence': 0.9},
+          'downbeats': {
+            'positions_ms': [0, 2000],
+            'confidence': 0.54,
+          },
+        },
+        overrides: {
+          'downbeats': {
+            'positions_ms': [250, 2250],
+          },
+        },
+      );
+      expect(corrected.downbeatConfidence, 1);
+      expect(corrected.downbeatProvenance, manualTempoProvenance);
+      expect(corrected.hasDownbeats, isTrue);
+    });
+
+    test('bare downbeats arrays preserve markers and explicit clears', () {
+      final generated = ClipTempoMetadata.fromAnalysisSummary({
+        'bpm': {'value': 120, 'confidence': 0.9},
+        'downbeats': [0, 2000],
+      });
+      final corrected = ClipTempoMetadata.fromAnalysisSummary(
+        {
+          'bpm': {'value': 120, 'confidence': 0.9},
+          'downbeats': [0, 2000],
+        },
+        overrides: const {'downbeats': []},
+      );
+
+      expect(generated.downbeatsMs, [0, 2000]);
+      expect(corrected.downbeatsMs, isEmpty);
+      expect(corrected.downbeatConfidence, 1.0);
+      expect(corrected.downbeatProvenance, manualTempoProvenance);
+    });
+
     test(
       'uses a bounded phrase overlap when both clips have reliable grids',
       () {

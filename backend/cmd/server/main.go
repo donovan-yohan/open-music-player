@@ -196,15 +196,16 @@ func main() {
 
 	// Initialize job processor with matching integration
 	jobProcessor := processor.New(&processor.ProcessorConfig{
-		Matcher:        matcherService,
-		TrackRepo:      trackRepo,
-		LibraryRepo:    libraryRepo,
-		PlaylistRepo:   playlistRepo,
-		ImportRepo:     playlistImportRepo,
-		SourceRepo:     trackSourceRepo,
-		AnalysisRepo:   analysisRepo,
-		AnalyzerClient: analyzerClient,
-		Storage:        storageClient,
+		Matcher:             matcherService,
+		TrackRepo:           trackRepo,
+		LibraryRepo:         libraryRepo,
+		PlaylistRepo:        playlistRepo,
+		ImportRepo:          playlistImportRepo,
+		SourceRepo:          trackSourceRepo,
+		AnalysisRepo:        analysisRepo,
+		AnalyzerClient:      analyzerClient,
+		AnalysisConcurrency: cfg.AnalyzerConcurrency,
+		Storage:             storageClient,
 	})
 	maintenanceHandlers := api.NewMaintenanceHandlers(trackRepo, jobProcessor)
 

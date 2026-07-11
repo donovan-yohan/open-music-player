@@ -775,6 +775,10 @@ void main() {
         _item('2'),
         _item('3'),
       ], initialIndex: 1);
+      final queueItemIdByTrack = {
+        for (final cue in harness.controller.snapshot.cues)
+          cue.trackId: cue.queueItemId,
+      };
 
       await harness.controller.reorderQueue(2, 0);
 
@@ -785,8 +789,249 @@ void main() {
       ]);
       expect(harness.controller.currentIndex, 2);
       expect(harness.controller.currentMediaItem?.id, '2');
+      expect(
+        harness.controller.snapshot.cues.map((cue) => cue.queueItemId),
+        [
+          queueItemIdByTrack['3'],
+          queueItemIdByTrack['1'],
+          queueItemIdByTrack['2'],
+        ],
+      );
+      expect(
+        harness.controller.snapshot.cues.map((cue) => cue.queueIndex),
+        [0, 1, 2],
+      );
+      expect(
+        harness.engine.model.clips.map((clip) => clip.queueItemId),
+        [
+          queueItemIdByTrack['3'],
+          queueItemIdByTrack['1'],
+          queueItemIdByTrack['2'],
+        ],
+      );
 
       await harness.dispose();
+    });
+
+    test('duplicate library tracks retain distinct occurrence IDs on reorder',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item('duplicate', title: 'First occurrence'),
+        _item('duplicate', title: 'Second occurrence'),
+      ]);
+      final queueItemIdByTitle = {
+        for (final cue in harness.controller.snapshot.cues)
+          cue.mediaItem.title: cue.queueItemId,
+      };
+
+      expect(queueItemIdByTitle.values.toSet(), hasLength(2));
+
+      await harness.controller.reorderQueue(1, 0);
+
+      expect(harness.controller.queue.map((item) => item.title), [
+        'Second occurrence',
+        'First occurrence',
+      ]);
+      expect(
+        harness.controller.snapshot.cues.map((cue) => cue.queueItemId),
+        [
+          queueItemIdByTitle['Second occurrence'],
+          queueItemIdByTitle['First occurrence'],
+        ],
+      );
+      expect(
+        harness.controller.snapshot.cues.map((cue) => cue.trackId),
+        ['duplicate', 'duplicate'],
+      );
+      expect(
+        harness.engine.model.clips.map((clip) => clip.queueItemId),
+        [
+          queueItemIdByTitle['Second occurrence'],
+          queueItemIdByTitle['First occurrence'],
+        ],
+      );
+
+      await harness.controller.setTimelineStartMsByQueueItemId(
+        queueItemIdByTitle['Second occurrence']!,
+        1234,
+        snapToDownbeat: false,
+      );
+
+      expect(
+        harness.controller.session.clips
+            .singleWhere(
+              (clip) =>
+                  clip.queueItemId == queueItemIdByTitle['Second occurrence'],
+            )
+            .timelineStartMs,
+        1234,
+      );
+      expect(
+        harness.controller.session.clips
+            .singleWhere(
+              (clip) =>
+                  clip.queueItemId == queueItemIdByTitle['First occurrence'],
+            )
+            .timelineStartMs,
+        isNot(1234),
+      );
+
+      await harness.dispose();
+    });
+
+    test('queue-item placement resolves after a queued reorder', () async {
+      final pauseBarrier = _PauseBarrier();
+      final voices = <_PauseBarrierVoice>[];
+      final harness = _Harness(
+        voiceFactory: () {
+          final voice = _PauseBarrierVoice(
+            'v${voices.length}',
+            pauseBarrier,
+          );
+          voices.add(voice);
+          return voice;
+        },
+      );
+      addTearDown(() async {
+        pauseBarrier.release();
+        await harness.dispose();
+      });
+      await harness.controller.setQueue([
+        _item('1'),
+        _item('2'),
+        _item('3'),
+      ]);
+      await harness.controller.play();
+      final queueItemId = harness.controller.snapshot.cues[1].queueItemId;
+
+      pauseBarrier.arm();
+      final pause = harness.controller.pause();
+      await pauseBarrier.entered.timeout(const Duration(seconds: 1));
+      final reorder = harness.controller.reorderQueue(1, 2);
+      pauseBarrier.release();
+      await pause.timeout(const Duration(seconds: 1));
+      final edit = harness.controller.setTimelineStartMsByQueueItemId(
+        queueItemId,
+        1234,
+        snapToDownbeat: false,
+      );
+
+      await Future.wait([reorder, edit]).timeout(const Duration(seconds: 1));
+
+      expect(harness.controller.queue.map((item) => item.id), ['1', '3', '2']);
+      expect(harness.controller.session.clips[2].queueItemId, queueItemId);
+      expect(harness.controller.session.clips[2].timelineStartMs, 1234);
+      expect(
+        harness.controller.session.clips
+            .where((clip) => clip.queueItemId != queueItemId)
+            .map((clip) => clip.timelineStartMs),
+        isNot(contains(1234)),
+      );
+    });
+
+    test('removed queue-item placement is a no-op on the command chain',
+        () async {
+      final pauseBarrier = _PauseBarrier();
+      final harness = _Harness(
+        voiceFactory: () => _PauseBarrierVoice('v', pauseBarrier),
+      );
+      addTearDown(() async {
+        pauseBarrier.release();
+        await harness.dispose();
+      });
+      await harness.controller.setQueue([
+        _item('1'),
+        _item('2'),
+        _item('3'),
+      ]);
+      await harness.controller.play();
+      final removedQueueItemId =
+          harness.controller.snapshot.cues[1].queueItemId;
+
+      pauseBarrier.arm();
+      final pause = harness.controller.pause();
+      await pauseBarrier.entered.timeout(const Duration(seconds: 1));
+      final remove = harness.controller.removeFromQueue(1);
+      pauseBarrier.release();
+      await pause.timeout(const Duration(seconds: 1));
+      final edit = harness.controller.setTimelineStartMsByQueueItemId(
+        removedQueueItemId,
+        1234,
+        snapToDownbeat: false,
+      );
+
+      await Future.wait([remove, edit]).timeout(const Duration(seconds: 1));
+
+      expect(harness.controller.queue.map((item) => item.id), ['1', '3']);
+      expect(
+        harness.controller.session.clips.map((clip) => clip.queueItemId),
+        isNot(contains(removedQueueItemId)),
+      );
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        isNot(contains(1234)),
+      );
+    });
+
+    test('queue-item trim pitch and move serialize without nested commands',
+        () async {
+      final pauseBarrier = _PauseBarrier();
+      final harness = _Harness(
+        voiceFactory: () => _PauseBarrierVoice('v', pauseBarrier),
+      );
+      addTearDown(() async {
+        pauseBarrier.release();
+        await harness.dispose();
+      });
+      await harness.controller.setQueue([
+        _item('1'),
+        _item('2'),
+        _item('3'),
+      ]);
+      await harness.controller.play();
+      final queueItemId = harness.controller.snapshot.cues[1].queueItemId;
+
+      pauseBarrier.arm();
+      final pause = harness.controller.pause();
+      await pauseBarrier.entered.timeout(const Duration(seconds: 1));
+      final reorder = harness.controller.reorderQueue(1, 2);
+      pauseBarrier.release();
+      await pause.timeout(const Duration(seconds: 1));
+
+      final trimStart = harness.controller.setSourceStartMsByQueueItemId(
+        queueItemId,
+        500,
+      );
+      final trimEnd = harness.controller.setSourceEndMsByQueueItemId(
+        queueItemId,
+        4500,
+      );
+      final pitch = harness.controller.setPitchModeByQueueItemId(
+        queueItemId,
+        pitchModeFollowTempo,
+      );
+      final move = harness.controller.moveQueueItemByQueueItemId(
+        queueItemId,
+        -1,
+      );
+
+      await Future.wait([
+        reorder,
+        trimStart,
+        trimEnd,
+        pitch,
+        move,
+      ]).timeout(const Duration(seconds: 1));
+
+      expect(harness.controller.queue.map((item) => item.id), ['1', '2', '3']);
+      final clip = harness.controller.session.clips.singleWhere(
+        (clip) => clip.queueItemId == queueItemId,
+      );
+      expect(harness.controller.session.clips.indexOf(clip), 1);
+      expect(clip.sourceStartMs, 500);
+      expect(clip.sourceEndMs, 4500);
+      expect(clip.pitchMode, pitchModeFollowTempo);
     });
 
     test('loop one repeats a non-last item on natural completion', () async {
@@ -884,12 +1129,13 @@ void main() {
 MediaItem _item(
   String id, {
   int seconds = 5,
+  String? title,
   Map<String, dynamic>? analysisSummary,
   Map<String, dynamic>? analysisOverrides,
 }) =>
     MediaItem(
       id: id,
-      title: 'Track $id',
+      title: title ?? 'Track $id',
       duration: Duration(seconds: seconds),
       extras: {
         'url': 'https://example.com/$id.mp3',
@@ -980,6 +1226,52 @@ class _BlockingPlayVoice extends FakeVoice {
   Future<void> release() async {
     await pause();
     await super.release();
+  }
+}
+
+class _PauseBarrier {
+  Completer<void>? _entered;
+  Completer<void>? _released;
+
+  void arm() {
+    if (_released != null) throw StateError('pause barrier already armed');
+    _entered = Completer<void>();
+    _released = Completer<void>();
+  }
+
+  Future<void> get entered {
+    final entered = _entered;
+    if (entered == null) throw StateError('pause barrier is not armed');
+    return entered.future;
+  }
+
+  Future<void> waitIfArmed() async {
+    final released = _released;
+    if (released == null) return;
+    final entered = _entered!;
+    if (!entered.isCompleted) entered.complete();
+    await released.future;
+    if (identical(_released, released)) {
+      _entered = null;
+      _released = null;
+    }
+  }
+
+  void release() {
+    final released = _released;
+    if (released != null && !released.isCompleted) released.complete();
+  }
+}
+
+class _PauseBarrierVoice extends FakeVoice {
+  _PauseBarrierVoice(super.debugId, this.pauseBarrier);
+
+  final _PauseBarrier pauseBarrier;
+
+  @override
+  Future<void> pause() async {
+    await super.pause();
+    await pauseBarrier.waitIfArmed();
   }
 }
 

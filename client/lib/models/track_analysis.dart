@@ -12,17 +12,23 @@ class TrackAnalysis {
   final TrackAnalysisStatus status;
   final TrackAnalysisSummary? summary;
   final TrackAnalysisOverrides? overrides;
+  final bool overridesPresent;
+  final DateTime? updatedAt;
 
   const TrackAnalysis({
     required this.status,
     this.summary,
     this.overrides,
-  });
+    bool? overridesPresent,
+    this.updatedAt,
+  }) : overridesPresent = overridesPresent ?? overrides != null;
 
   factory TrackAnalysis.fromJson({
     Object? status,
     Object? summary,
     Object? overrides,
+    bool? overridesPresent,
+    Object? updatedAt,
   }) {
     final parsedStatus = parseTrackAnalysisStatus(status);
     final baseSummary =
@@ -35,6 +41,8 @@ class TrackAnalysis {
       status: parsedStatus,
       summary: effectiveSummary,
       overrides: parsedOverrides,
+      overridesPresent: overridesPresent ?? overrides != null,
+      updatedAt: _readDateTime(updatedAt),
     );
   }
 
@@ -51,9 +59,59 @@ class TrackAnalysis {
     return {
       'status': status.name,
       if (summary != null) 'summary': summary!.toJson(),
-      if (overrides != null) 'overrides': overrides!.toJson(),
+      if (overridesPresent) 'overrides': overrides?.toJson() ?? const {},
+      if (updatedAt != null) 'updated_at': updatedAt!.toUtc().toIso8601String(),
     };
   }
+}
+
+/// Reads analysis fields from any track-list payload shape.
+///
+/// API surfaces use a mix of camelCase and snake_case. Overrides remain the
+/// source of truth and are applied by [TrackAnalysis.fromJson] before callers
+/// read BPM or key metadata.
+TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
+  final rawStatus = json['analysisStatus'] ?? json['analysis_status'];
+  final rawSummary = json['analysisSummary'] ?? json['analysis_summary'];
+  final rawUpdatedAt = json['analysisUpdatedAt'] ?? json['analysis_updated_at'];
+  final summaryMap = _readMap(rawSummary);
+  final hasCamelCaseOverrides = json.containsKey('analysisOverrides');
+  final hasSnakeCaseOverrides = json.containsKey('analysis_overrides');
+  final hasSummaryOverrides = summaryMap?.containsKey('overrides') ?? false;
+  final overridesPresent =
+      hasCamelCaseOverrides || hasSnakeCaseOverrides || hasSummaryOverrides;
+  final rawOverrides = hasCamelCaseOverrides
+      ? json['analysisOverrides']
+      : hasSnakeCaseOverrides
+          ? json['analysis_overrides']
+          : summaryMap?['overrides'];
+  if (rawStatus == null &&
+      rawSummary == null &&
+      !overridesPresent &&
+      rawUpdatedAt == null) {
+    return null;
+  }
+
+  final analysis = TrackAnalysis.fromJson(
+    status: rawStatus,
+    summary: rawSummary,
+    overrides: rawOverrides,
+    overridesPresent: overridesPresent,
+    updatedAt: rawUpdatedAt,
+  );
+  if (analysis.status == TrackAnalysisStatus.unknown &&
+      !analysis.hasDisplayableSummary &&
+      !analysis.overridesPresent &&
+      analysis.updatedAt == null) {
+    return null;
+  }
+  return analysis;
+}
+
+DateTime? _readDateTime(Object? value) {
+  if (value is DateTime) return value.toUtc();
+  if (value is! String || value.trim().isEmpty) return null;
+  return DateTime.tryParse(value)?.toUtc();
 }
 
 TrackAnalysisStatus parseTrackAnalysisStatus(Object? value) {
@@ -100,20 +158,28 @@ TrackAnalysisStatus parseTrackAnalysisStatus(Object? value) {
 class TrackAnalysisOverrides {
   final double? bpm;
   final double? bpmConfidence;
+  final int? beatGridOffsetMs;
   final List<int>? beatsMs;
   final List<int>? downbeatsMs;
   final String? musicalKey;
   final String? camelot;
   final String? provenance;
+  final String? bpmProvenance;
+  final String? beatGridProvenance;
+  final String? downbeatProvenance;
 
   const TrackAnalysisOverrides({
     this.bpm,
     this.bpmConfidence,
+    this.beatGridOffsetMs,
     this.beatsMs,
     this.downbeatsMs,
     this.musicalKey,
     this.camelot,
     this.provenance,
+    this.bpmProvenance,
+    this.beatGridProvenance,
+    this.downbeatProvenance,
   });
 
   static TrackAnalysisOverrides? fromJson(Object? json) {
@@ -124,21 +190,18 @@ class TrackAnalysisOverrides {
     final bpmMap = _readMap(map['bpm']);
     final beatGrid = _readMap(map['beat_grid'] ?? map['beatGrid']);
     final downbeats = _readMap(map['downbeats']);
-    final beatsRaw = _firstPresent(
-      [
-        map['beatGridMs'],
-        map['beatsMs'],
-        beatGrid?['beats_ms'],
-        beatGrid?['beatsMs'],
-      ],
-    );
-    final downbeatsRaw = _firstPresent(
-      [
-        map['downbeatsMs'],
-        downbeats?['positions_ms'],
-        downbeats?['positionsMs'],
-      ],
-    );
+    final beatsRaw = _firstPresent([
+      map['beatGridMs'],
+      map['beatsMs'],
+      beatGrid?['beats_ms'],
+      beatGrid?['beatsMs'],
+    ]);
+    final downbeatsRaw = _firstPresent([
+      map['downbeatsMs'],
+      downbeats == null
+          ? map['downbeats']
+          : downbeats['positions_ms'] ?? downbeats['positionsMs'],
+    ]);
     final keyValue = AnalysisValue.fromJson(map['key'] ?? map['musicalKey']);
     final camelotValue = AnalysisValue.fromJson(map['camelot']);
 
@@ -149,11 +212,26 @@ class TrackAnalysisOverrides {
       bpmConfidence: _readDouble(map['bpmConfidence']) ??
           _readDouble(bpmMap?['confidence']) ??
           _readDouble(beatGrid?['confidence']),
+      beatGridOffsetMs: _readInt(
+        map['beatGridOffsetMs'] ??
+            map['offsetMs'] ??
+            beatGrid?['offset_ms'] ??
+            beatGrid?['offsetMs'],
+      ),
       beatsMs: beatsRaw == null ? null : _readIntList(beatsRaw),
       downbeatsMs: downbeatsRaw == null ? null : _readIntList(downbeatsRaw),
       musicalKey: keyValue?.textValue ?? _readString(map['musicalKey']),
       camelot: camelotValue?.textValue,
-      provenance: _readString(map['provenance']),
+      provenance: _readString(map['provenance']) ??
+          _readString(bpmMap?['provenance']) ??
+          _readString(beatGrid?['provenance']) ??
+          _readString(downbeats?['provenance']),
+      bpmProvenance:
+          _readString(bpmMap?['provenance']) ?? _readString(map['provenance']),
+      beatGridProvenance: _readString(beatGrid?['provenance']) ??
+          _readString(map['provenance']),
+      downbeatProvenance: _readString(downbeats?['provenance']) ??
+          _readString(map['provenance']),
     );
     return overrides.isEmpty ? null : overrides;
   }
@@ -161,6 +239,7 @@ class TrackAnalysisOverrides {
   bool get isEmpty =>
       bpm == null &&
       bpmConfidence == null &&
+      beatGridOffsetMs == null &&
       beatsMs == null &&
       downbeatsMs == null &&
       musicalKey == null &&
@@ -168,31 +247,38 @@ class TrackAnalysisOverrides {
 
   TrackAnalysisSummary applyTo(TrackAnalysisSummary base) {
     final source = provenance ?? 'manual_override';
-    final effectiveBpmConfidence =
-        bpmConfidence ?? (bpm == null ? null : 1.0);
+    final bpmSource = bpmProvenance ?? source;
+    final beatGridSource = beatGridProvenance ?? source;
+    final downbeatSource = downbeatProvenance ?? source;
+    final effectiveBpmConfidence = bpm == null ? null : 1.0;
+    final hasTrustedBeatGridOverride = bpm != null || beatsMs != null;
+    final effectiveBeatGridConfidence = hasTrustedBeatGridOverride ? 1.0 : null;
     return TrackAnalysisSummary(
       bpm: bpm == null
           ? base.bpm
           : AnalysisValue(
               value: bpm!,
               confidence: effectiveBpmConfidence ?? base.bpm?.confidence,
-              provenance: source,
+              provenance: bpmSource,
             ),
-      beatGrid: (bpm == null && beatsMs == null)
+      beatGrid: (bpm == null && beatGridOffsetMs == null && beatsMs == null)
           ? base.beatGrid
           : BeatGridSummary(
               bpm: bpm ?? base.beatGrid?.bpm,
-              offsetMs: base.beatGrid?.offsetMs,
+              offsetMs: beatGridOffsetMs ?? base.beatGrid?.offsetMs,
               beatsMs: beatsMs ?? base.beatGrid?.beatsMs ?? const [],
-              confidence: effectiveBpmConfidence ?? base.beatGrid?.confidence,
-              provenance: source,
+              confidence:
+                  effectiveBeatGridConfidence ?? base.beatGrid?.confidence,
+              provenance: hasTrustedBeatGridOverride
+                  ? beatGridSource
+                  : base.beatGrid?.provenance,
             ),
       downbeats: downbeatsMs == null
           ? base.downbeats
           : DownbeatSummary(
               positionsMs: downbeatsMs!,
-              confidence: base.downbeats?.confidence,
-              provenance: source,
+              confidence: 1.0,
+              provenance: downbeatSource,
             ),
       key: musicalKey == null
           ? base.key
@@ -223,39 +309,38 @@ class TrackAnalysisOverrides {
 
   Map<String, dynamic> toJson() {
     final source = provenance ?? 'manual_override';
-    final effectiveBpmConfidence =
-        bpmConfidence ?? (bpm == null ? null : 1.0);
+    final bpmSource = bpmProvenance ?? source;
+    final beatGridSource = beatGridProvenance ?? source;
+    final downbeatSource = downbeatProvenance ?? source;
+    final effectiveBpmConfidence = bpm == null ? null : 1.0;
+    final hasTrustedBeatGridOverride = bpm != null || beatsMs != null;
+    final effectiveBeatGridConfidence = hasTrustedBeatGridOverride ? 1.0 : null;
     return {
       if (bpm != null)
         'bpm': {
           'value': bpm,
           if (effectiveBpmConfidence != null)
             'confidence': effectiveBpmConfidence,
-          'provenance': source,
+          'provenance': bpmSource,
         },
-      if (bpm != null || effectiveBpmConfidence != null || beatsMs != null)
+      if (bpm != null || beatGridOffsetMs != null || beatsMs != null)
         'beat_grid': {
           if (bpm != null) 'bpm': bpm,
-          if (effectiveBpmConfidence != null)
-            'confidence': effectiveBpmConfidence,
+          if (beatGridOffsetMs != null) 'offset_ms': beatGridOffsetMs,
+          if (effectiveBeatGridConfidence != null)
+            'confidence': effectiveBeatGridConfidence,
           if (beatsMs != null) 'beats_ms': beatsMs,
-          'provenance': source,
+          if (hasTrustedBeatGridOverride) 'provenance': beatGridSource,
         },
       if (downbeatsMs != null)
         'downbeats': {
           'positions_ms': downbeatsMs,
-          'provenance': source,
+          'confidence': 1.0,
+          'provenance': downbeatSource,
         },
       if (musicalKey != null)
-        'key': {
-          'value': musicalKey,
-          'provenance': source,
-        },
-      if (camelot != null)
-        'camelot': {
-          'value': camelot,
-          'provenance': source,
-        },
+        'key': {'value': musicalKey, 'provenance': source},
+      if (camelot != null) 'camelot': {'value': camelot, 'provenance': source},
       if (provenance != null) 'provenance': provenance,
     };
   }
@@ -523,6 +608,9 @@ class DownbeatSummary {
   });
 
   static DownbeatSummary? fromJson(Object? json) {
+    if (json is List) {
+      return DownbeatSummary(positionsMs: _readIntList(json));
+    }
     final map = _readMap(json);
     if (map == null) return null;
     return DownbeatSummary(

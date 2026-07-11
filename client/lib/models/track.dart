@@ -65,7 +65,7 @@ class Track {
         '';
     final status = _parseQueueStatus(json);
     final canPlayOverride = json['canPlay'] as bool?;
-    final analysis = _parseAnalysis(json);
+    final analysis = trackAnalysisFromTrackJson(json);
 
     return Track(
       id: id,
@@ -90,28 +90,6 @@ class Track {
       canRetry: json['canRetry'] as bool? ?? status == TrackQueueStatus.failed,
       analysis: analysis,
     );
-  }
-
-  static TrackAnalysis? _parseAnalysis(Map<String, dynamic> json) {
-    final rawStatus = json['analysisStatus'] ?? json['analysis_status'];
-    final rawSummary = json['analysisSummary'] ?? json['analysis_summary'];
-    final rawOverrides = json['analysisOverrides'] ??
-        json['analysis_overrides'] ??
-        TrackAnalysisOverrides.fromJson(rawSummary?['overrides'])?.toJson();
-    if (rawStatus == null && rawSummary == null && rawOverrides == null) {
-      return null;
-    }
-
-    final analysis = TrackAnalysis.fromJson(
-      status: rawStatus,
-      summary: rawSummary,
-      overrides: rawOverrides,
-    );
-    if (analysis.status == TrackAnalysisStatus.unknown &&
-        !analysis.hasDisplayableSummary) {
-      return null;
-    }
-    return analysis;
   }
 
   static int _parseDuration(
@@ -214,6 +192,8 @@ class Track {
         'analysisSummary': analysis!.summary!.toJson(),
       if (analysis?.overrides != null)
         'analysisOverrides': analysis!.overrides!.toJson(),
+      if (analysis?.updatedAt != null)
+        'analysisUpdatedAt': analysis!.updatedAt!.toUtc().toIso8601String(),
     };
   }
 
@@ -230,6 +210,8 @@ class Track {
         'analysisSummary': analysis!.summary!.toJson(),
       if (analysis?.overrides != null)
         'analysisOverrides': analysis!.overrides!.toJson(),
+      if (analysis?.updatedAt != null)
+        'analysisUpdatedAt': analysis!.updatedAt!.toUtc().toIso8601String(),
     };
   }
 

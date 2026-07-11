@@ -9,9 +9,42 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   static Database? _database;
   static Future<Database>? _openingDatabase;
   static const String _dbName = 'open_music_player.db';
-  static const int _dbVersion = 3;
+  static const int _dbVersion = 6;
+
+  final Future<Database> Function()? _databaseProvider;
+  final DatabaseFactory? _databaseFactory;
+  final Future<String> Function()? _databasePathProvider;
+  Database? _customDatabase;
+  Future<Database>? _openingCustomDatabase;
+
+  OfflineDatabase({
+    Future<Database> Function()? databaseProvider,
+    DatabaseFactory? databaseFactory,
+    Future<String> Function()? databasePathProvider,
+  })  : _databaseProvider = databaseProvider,
+        _databaseFactory = databaseFactory,
+        _databasePathProvider = databasePathProvider;
 
   Future<Database> get database async {
+    final provider = _databaseProvider;
+    if (provider != null) return provider();
+
+    if (_databaseFactory != null || _databasePathProvider != null) {
+      final existing = _customDatabase;
+      if (existing != null) return existing;
+
+      final opening = _openingCustomDatabase ??= _initDatabase();
+      try {
+        final db = await opening;
+        _customDatabase = db;
+        return db;
+      } finally {
+        if (identical(_openingCustomDatabase, opening)) {
+          _openingCustomDatabase = null;
+        }
+      }
+    }
+
     final existing = _database;
     if (existing != null) return existing;
 
@@ -28,8 +61,22 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   }
 
   Future<Database> _initDatabase() async {
-    final dbPath = await getDatabasesPath();
-    final path = join(dbPath, _dbName);
+    final customPathProvider = _databasePathProvider;
+    final path = customPathProvider == null
+        ? join(await getDatabasesPath(), _dbName)
+        : await customPathProvider();
+
+    final customFactory = _databaseFactory;
+    if (customFactory != null) {
+      return customFactory.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: _dbVersion,
+          onCreate: _onCreate,
+          onUpgrade: _onUpgrade,
+        ),
+      );
+    }
 
     return openDatabase(
       path,
@@ -57,6 +104,11 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
         source_type TEXT,
         storage_key TEXT,
         file_size_bytes INTEGER,
+        analysis_status TEXT,
+        analysis_summary TEXT,
+        analysis_overrides TEXT,
+        analysis_updated_at TEXT,
+        analysis_updated_at_us INTEGER,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -142,6 +194,35 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     if (oldVersion < 3) {
       await _createPlaybackCacheTable(db);
     }
+
+    // v4: retain compact musical analysis for downloaded/offline song rows.
+    if (oldVersion < 4) {
+      await db.execute('ALTER TABLE tracks ADD COLUMN analysis_status TEXT');
+      await db.execute('ALTER TABLE tracks ADD COLUMN analysis_summary TEXT');
+      await db.execute('ALTER TABLE tracks ADD COLUMN analysis_overrides TEXT');
+    }
+
+    // v5: downloads made before local Library membership was enforced must
+    // remain discoverable through the Downloaded filter after upgrade.
+    if (oldVersion < 5) {
+      await db.execute('''
+        INSERT OR IGNORE INTO library_tracks (track_id, added_at)
+        SELECT track_id, downloaded_at
+        FROM downloaded_tracks
+        WHERE status = 'completed'
+      ''');
+    }
+
+    // v6: preserve the server analysis revision so offline writes cannot
+    // replace a corrected analysis with an older collection snapshot.
+    if (oldVersion < 6) {
+      await db.execute(
+        'ALTER TABLE tracks ADD COLUMN analysis_updated_at TEXT',
+      );
+      await db.execute(
+        'ALTER TABLE tracks ADD COLUMN analysis_updated_at_us INTEGER',
+      );
+    }
   }
 
   Future<void> _createPlaybackCacheTable(Database db) async {
@@ -167,24 +248,79 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   @override
   Future<void> insertTrack(Track track) async {
     final db = await database;
-    await db.insert(
-      'tracks',
-      track.toDbMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await db.transaction((txn) async {
+      final values = await _trackValuesPreservingNewerAnalysis(txn, track);
+      await txn.insert(
+        'tracks',
+        values,
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    });
   }
 
   Future<void> insertTracks(List<Track> tracks) async {
     final db = await database;
-    final batch = db.batch();
-    for (final track in tracks) {
-      batch.insert(
-        'tracks',
-        track.toDbMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+    await db.transaction((txn) async {
+      for (final track in tracks) {
+        final values = await _trackValuesPreservingNewerAnalysis(txn, track);
+        await txn.insert(
+          'tracks',
+          values,
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    });
+  }
+
+  Future<Map<String, Object?>> _trackValuesPreservingNewerAnalysis(
+    DatabaseExecutor executor,
+    Track track,
+  ) async {
+    final values = Map<String, Object?>.from(track.toDbMap());
+    final existing = await executor.query(
+      'tracks',
+      columns: const [
+        'analysis_status',
+        'analysis_summary',
+        'analysis_overrides',
+        'analysis_updated_at',
+        'analysis_updated_at_us',
+      ],
+      where: 'id = ?',
+      whereArgs: [track.id],
+      limit: 1,
+    );
+    if (existing.isEmpty) return values;
+
+    final stored = existing.single;
+    final storedRevisionUs = stored['analysis_updated_at_us'] as int? ??
+        DateTime.tryParse(stored['analysis_updated_at'] as String? ?? '')
+            ?.toUtc()
+            .microsecondsSinceEpoch;
+    final incomingRevisionUs =
+        track.analysis?.updatedAt?.toUtc().microsecondsSinceEpoch;
+    final storedHasAnalysis = stored['analysis_status'] != null ||
+        stored['analysis_summary'] != null ||
+        stored['analysis_overrides'] != null;
+    final preserveStoredAnalysis =
+        (storedHasAnalysis && incomingRevisionUs == null) ||
+            (storedRevisionUs != null &&
+                (incomingRevisionUs == null ||
+                    incomingRevisionUs < storedRevisionUs));
+    if (!preserveStoredAnalysis) {
+      return values;
     }
-    await batch.commit(noResult: true);
+
+    for (final column in const [
+      'analysis_status',
+      'analysis_summary',
+      'analysis_overrides',
+      'analysis_updated_at',
+      'analysis_updated_at_us',
+    ]) {
+      values[column] = stored[column];
+    }
+    return values;
   }
 
   Future<Track?> getTrack(int id) async {
@@ -198,6 +334,86 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     final db = await database;
     final maps = await db.query('tracks', orderBy: 'title ASC');
     return maps.map((m) => Track.fromDbMap(m)).toList();
+  }
+
+  Future<void> updateTrackAnalysis(Track track) async {
+    if (track.analysis == null) return;
+    final db = await database;
+    final update = _trackAnalysisUpdate(track);
+    await db.update(
+      'tracks',
+      update.values,
+      where: update.where,
+      whereArgs: update.whereArgs,
+    );
+  }
+
+  Future<void> updateTrackAnalyses(Iterable<Track> tracks) async {
+    final updates = tracks
+        .where((track) => track.analysis != null)
+        .map(_trackAnalysisUpdate)
+        .toList(growable: false);
+    if (updates.isEmpty) return;
+
+    final db = await database;
+    final batch = db.batch();
+    for (final update in updates) {
+      batch.update(
+        'tracks',
+        update.values,
+        where: update.where,
+        whereArgs: update.whereArgs,
+      );
+    }
+    await batch.commit(noResult: true, continueOnError: true);
+  }
+
+  ({
+    Map<String, Object?> values,
+    String where,
+    List<Object?> whereArgs,
+  }) _trackAnalysisUpdate(Track track) {
+    final values = track.toDbMap();
+    final status = values['analysis_status'];
+    final summary = values['analysis_summary'];
+    final overrides = values['analysis_overrides'];
+    final analysisUpdatedAt = values['analysis_updated_at'];
+    final analysisUpdatedAtUs = values['analysis_updated_at_us'];
+    final changedConditions = <String>[];
+    final whereArgs = <Object?>[track.id];
+
+    final revisionCondition = analysisUpdatedAtUs == null
+        ? 'analysis_updated_at_us IS NULL'
+        : '(analysis_updated_at_us IS NULL OR analysis_updated_at_us <= ?)';
+    if (analysisUpdatedAtUs != null) whereArgs.add(analysisUpdatedAtUs);
+
+    void addChangedCondition(String column, Object? value) {
+      if (value == null) {
+        changedConditions.add('$column IS NOT NULL');
+      } else {
+        changedConditions.add('($column IS NULL OR $column != ?)');
+        whereArgs.add(value);
+      }
+    }
+
+    addChangedCondition('analysis_status', status);
+    addChangedCondition('analysis_summary', summary);
+    addChangedCondition('analysis_overrides', overrides);
+    addChangedCondition('analysis_updated_at', analysisUpdatedAt);
+    addChangedCondition('analysis_updated_at_us', analysisUpdatedAtUs);
+
+    return (
+      values: <String, Object?>{
+        'analysis_status': status,
+        'analysis_summary': summary,
+        'analysis_overrides': overrides,
+        'analysis_updated_at': analysisUpdatedAt,
+        'analysis_updated_at_us': analysisUpdatedAtUs,
+      },
+      where:
+          'id = ? AND $revisionCondition AND (${changedConditions.join(' OR ')})',
+      whereArgs: whereArgs,
+    );
   }
 
   // Downloaded track operations
@@ -439,6 +655,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   }
 
   // Library operations
+  @override
   Future<void> addToLibrary(int trackId) async {
     final db = await database;
     await db.insert(

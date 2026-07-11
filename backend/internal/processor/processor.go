@@ -43,6 +43,7 @@ type AnalysisStore interface {
 const (
 	maxYTDLPOutputBytes = 256 * 1024 * 1024
 	maxYTDLPLogBytes    = 64 * 1024
+	analysisQueueSize   = 256
 )
 
 // Processor handles the full download and matching pipeline
@@ -55,25 +56,34 @@ type Processor struct {
 	sourceRepo     *playlistimport.TrackSourceRepository
 	analysisRepo   AnalysisStore
 	analyzerClient analyzer.Client
+	analysisQueue  chan analyzer.Request
 	storage        ObjectStorage
 }
 
 // ProcessorConfig holds configuration for the processor
 type ProcessorConfig struct {
-	Matcher        *matcher.Matcher
-	TrackRepo      *db.TrackRepository
-	LibraryRepo    *db.LibraryRepository
-	PlaylistRepo   *db.PlaylistRepository
-	ImportRepo     *playlistimport.ImportRepository
-	SourceRepo     *playlistimport.TrackSourceRepository
-	AnalysisRepo   AnalysisStore
-	AnalyzerClient analyzer.Client
-	Storage        ObjectStorage
+	Matcher             *matcher.Matcher
+	TrackRepo           *db.TrackRepository
+	LibraryRepo         *db.LibraryRepository
+	PlaylistRepo        *db.PlaylistRepository
+	ImportRepo          *playlistimport.ImportRepository
+	SourceRepo          *playlistimport.TrackSourceRepository
+	AnalysisRepo        AnalysisStore
+	AnalyzerClient      analyzer.Client
+	AnalysisConcurrency int
+	Storage             ObjectStorage
 }
 
 // New creates a new Processor instance
 func New(config *ProcessorConfig) *Processor {
-	return &Processor{
+	analysisConcurrency := config.AnalysisConcurrency
+	if analysisConcurrency <= 0 {
+		analysisConcurrency = 1
+	}
+	if analysisConcurrency > 4 {
+		analysisConcurrency = 4
+	}
+	processor := &Processor{
 		matcher:        config.Matcher,
 		trackRepo:      config.TrackRepo,
 		libraryRepo:    config.LibraryRepo,
@@ -84,6 +94,13 @@ func New(config *ProcessorConfig) *Processor {
 		analyzerClient: config.AnalyzerClient,
 		storage:        config.Storage,
 	}
+	if processor.analysisRepo != nil && processor.analyzerClient != nil {
+		processor.analysisQueue = make(chan analyzer.Request, analysisQueueSize)
+		for range analysisConcurrency {
+			go processor.analysisWorker()
+		}
+	}
+	return processor
 }
 
 // ProcessResult contains the result of processing a download job
@@ -753,7 +770,40 @@ func (p *Processor) enqueueAnalysis(ctx context.Context, track *db.Track, metada
 		Artist:        metadata.Artist,
 		SchemaVersion: analyzer.SchemaVersion,
 	}
-	go p.runAnalysis(req)
+	if err := p.scheduleAnalysis(ctx, req); err != nil {
+		p.markAnalysisSchedulingFailed(track.ID, err)
+		log.Printf("Warning: failed to schedule audio analysis for track %d: %v", track.ID, err)
+	}
+}
+
+func (p *Processor) scheduleAnalysis(ctx context.Context, req analyzer.Request) error {
+	if p.analysisQueue == nil {
+		return fmt.Errorf("audio analysis queue is unavailable")
+	}
+	select {
+	case p.analysisQueue <- req:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *Processor) analysisWorker() {
+	for req := range p.analysisQueue {
+		p.runAnalysis(req)
+	}
+}
+
+func (p *Processor) markAnalysisSchedulingFailed(trackID int64, scheduleErr error) {
+	if p.analysisRepo == nil || scheduleErr == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	provenance, _ := json.Marshal(map[string]interface{}{"trigger": "analysis_queue"})
+	if err := p.analysisRepo.MarkFailed(ctx, trackID, scheduleErr.Error(), provenance); err != nil {
+		log.Printf("Warning: failed to mark unscheduled analysis for track %d failed: %v", trackID, err)
+	}
 }
 
 func (p *Processor) runAnalysis(req analyzer.Request) {

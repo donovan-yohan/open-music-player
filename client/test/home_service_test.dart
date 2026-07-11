@@ -33,7 +33,13 @@ void main() {
           {
             'id': 1,
             'title': 'Highway to Hell',
-            'coverArtUrl': 'http://c/1.jpg'
+            'coverArtUrl': 'http://c/1.jpg',
+            'analysisStatus': 'analyzed',
+            'analysisSummary': {
+              'bpm': {'value': 128},
+              'key': {'value': 'Am'},
+              'camelot': {'value': '8A'},
+            },
           },
         ],
         'limit': 5,
@@ -48,6 +54,12 @@ void main() {
       expect(tracks.first.title, 'Highway to Hell');
       // coverArtUrl is folded into playback artwork so it survives.
       expect(tracks.first.toPlaybackJson()['artwork_url'], 'http://c/1.jpg');
+      expect(tracks.first.analysis?.summary?.bpm?.numericValue, 128);
+      expect(tracks.first.analysis?.summary?.camelot?.textValue, '8A');
+      expect(
+        tracks.first.toPlaybackJson()['analysisSummary']['key']['value'],
+        'Am',
+      );
     });
 
     test('topTracks -> GET /me/plays/top with days + limit', () async {

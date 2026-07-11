@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -22,15 +23,18 @@ func getCoverArtURL(releaseID *uuid.UUID) string {
 }
 
 type RecordingResponse struct {
-	ID            int64      `json:"id"`
-	Title         string     `json:"title"`
-	Artist        string     `json:"artist,omitempty"`
-	Album         string     `json:"album,omitempty"`
-	DurationMs    int        `json:"durationMs,omitempty"`
-	CoverArtUrl   string     `json:"coverArtUrl,omitempty"`
-	MBRecordingID *uuid.UUID `json:"mbRecordingId,omitempty"`
-	MBReleaseID   *uuid.UUID `json:"mbReleaseId,omitempty"`
-	MBArtistID    *uuid.UUID `json:"mbArtistId,omitempty"`
+	ID                int64           `json:"id"`
+	Title             string          `json:"title"`
+	Artist            string          `json:"artist,omitempty"`
+	Album             string          `json:"album,omitempty"`
+	DurationMs        int             `json:"durationMs,omitempty"`
+	CoverArtUrl       string          `json:"coverArtUrl,omitempty"`
+	MBRecordingID     *uuid.UUID      `json:"mbRecordingId,omitempty"`
+	MBReleaseID       *uuid.UUID      `json:"mbReleaseId,omitempty"`
+	MBArtistID        *uuid.UUID      `json:"mbArtistId,omitempty"`
+	AnalysisStatus    string          `json:"analysisStatus,omitempty"`
+	AnalysisSummary   json.RawMessage `json:"analysisSummary,omitempty"`
+	AnalysisUpdatedAt string          `json:"analysisUpdatedAt,omitempty"`
 }
 
 type ArtistResponse struct {
@@ -219,6 +223,15 @@ func toRecordingResponses(tracks []db.Track) []RecordingResponse {
 		}
 		if t.DurationMs.Valid {
 			rec.DurationMs = int(t.DurationMs.Int32)
+		}
+		if t.AnalysisStatus.Valid {
+			rec.AnalysisStatus = t.AnalysisStatus.String
+		}
+		if len(t.AnalysisSummary) > 0 && string(t.AnalysisSummary) != "{}" {
+			rec.AnalysisSummary = t.AnalysisSummary
+		}
+		if t.AnalysisUpdatedAt.Valid {
+			rec.AnalysisUpdatedAt = t.AnalysisUpdatedAt.Time.UTC().Format(time.RFC3339Nano)
 		}
 		recordings = append(recordings, rec)
 	}

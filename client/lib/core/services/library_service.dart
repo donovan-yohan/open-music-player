@@ -108,6 +108,9 @@ class LibraryService {
         'cover_art_url',
         'mb_recording_id',
         'is_liked',
+        'analysis_status',
+        'analysis_summary',
+        'analysis_updated_at',
       ],
     );
   }

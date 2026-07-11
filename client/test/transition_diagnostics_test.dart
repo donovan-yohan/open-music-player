@@ -70,6 +70,76 @@ void main() {
     expect(diagnostics.hasWarnings, isTrue);
   });
 
+  test('distinguishes low-confidence downbeat markers from missing markers',
+      () {
+    final diagnostics = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [0, 8000, 16000],
+          downbeatConfidence: 0.9,
+        ),
+      ),
+      _clip(
+        'incoming',
+        8000,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [0, 8000, 16000],
+          downbeatConfidence: 0.419,
+        ),
+      ),
+    );
+
+    final warning = diagnostics.diagnostics.firstWhere(
+      (diagnostic) =>
+          diagnostic.code == TransitionDiagnosticCode.lowDownbeatConfidence,
+    );
+    expect(warning.label, 'Incoming downbeat confidence 42%');
+    expect(warning.isDownbeatLockAdvisory, isTrue);
+    expect(
+      diagnostics.diagnostics.map((diagnostic) => diagnostic.code),
+      isNot(contains(TransitionDiagnosticCode.missingDownbeats)),
+    );
+  });
+
+  test('marks downbeat advisories informational when snap mode is free', () {
+    final diagnostics = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [0, 8000],
+          downbeatConfidence: 0.9,
+        ),
+      ),
+      _clip(
+        'incoming',
+        8000,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [0, 8000],
+          downbeatConfidence: 0.419,
+        ),
+      ),
+      snapMode: BeatSnapMode.free,
+    );
+
+    final warning = diagnostics.diagnostics.firstWhere(
+      (diagnostic) =>
+          diagnostic.code == TransitionDiagnosticCode.lowDownbeatConfidence,
+    );
+    expect(warning.severity, TransitionDiagnosticSeverity.info);
+    expect(diagnostics.hasWarnings, isFalse);
+  });
+
   test('warns when downbeats are offset inside the overlap', () {
     final diagnostics = diagnoseTransition(
       _clip(
@@ -132,6 +202,137 @@ void main() {
     expect(codes, isNot(contains(TransitionDiagnosticCode.downbeatOffset)));
   });
 
+  test('beat lock requires both markers inside the exact overlap', () {
+    final outside = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [7999],
+          downbeatConfidence: 0.9,
+        ),
+      ),
+      _clip(
+        'incoming',
+        8000,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [1],
+          downbeatConfidence: 0.9,
+        ),
+      ),
+    );
+    final inside = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [8001],
+          downbeatConfidence: 0.9,
+        ),
+      ),
+      _clip(
+        'incoming',
+        8000,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [1],
+          downbeatConfidence: 0.9,
+        ),
+      ),
+    );
+
+    expect(
+      outside.diagnostics.map((diagnostic) => diagnostic.code),
+      isNot(contains(TransitionDiagnosticCode.beatLocked)),
+    );
+    expect(
+      outside.diagnostics.map((diagnostic) => diagnostic.code),
+      contains(TransitionDiagnosticCode.downbeatOffset),
+    );
+    expect(
+      inside.diagnostics.map((diagnostic) => diagnostic.code),
+      contains(TransitionDiagnosticCode.beatLocked),
+    );
+  });
+
+  test('markers at the overlap end cannot prove beat lock', () {
+    final diagnostics = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [16000],
+          downbeatConfidence: 0.9,
+        ),
+      ),
+      _clip(
+        'incoming',
+        8000,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [8000],
+          downbeatConfidence: 0.9,
+        ),
+      ),
+    );
+    final codes = diagnostics.diagnostics.map((item) => item.code);
+
+    expect(diagnostics.overlapEndMs, 16000);
+    expect(codes, isNot(contains(TransitionDiagnosticCode.beatLocked)));
+    expect(codes, contains(TransitionDiagnosticCode.downbeatOffset));
+    expect(
+      diagnostics.diagnostics
+          .firstWhere(
+            (item) => item.code == TransitionDiagnosticCode.downbeatOffset,
+          )
+          .label,
+      'Downbeat +0ms',
+    );
+  });
+
+  test('inside pair takes precedence over a nearer tolerance-only pair', () {
+    final diagnostics = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [9000, 16000],
+          downbeatConfidence: 0.9,
+        ),
+      ),
+      _clip(
+        'incoming',
+        8000,
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 120,
+          bpmConfidence: 0.9,
+          downbeatsMs: [1010, 8001],
+          downbeatConfidence: 0.9,
+        ),
+      ),
+    );
+    final codes = diagnostics.diagnostics.map((item) => item.code);
+    final lock = diagnostics.diagnostics.firstWhere(
+      (item) => item.code == TransitionDiagnosticCode.beatLocked,
+    );
+
+    expect(codes, contains(TransitionDiagnosticCode.beatLocked));
+    expect(codes, isNot(contains(TransitionDiagnosticCode.downbeatOffset)));
+    expect(lock.detail, 'Nearest downbeats are 10ms apart.');
+  });
+
   test('missing BPM and downbeat labels identify the missing side', () {
     final diagnostics = diagnoseTransition(
       _clip(
@@ -150,6 +351,10 @@ void main() {
       'No next BPM',
       'No next downbeat',
     ]);
+    expect(
+      diagnostics.diagnostics.map((diagnostic) => diagnostic.code),
+      contains(TransitionDiagnosticCode.missingDownbeats),
+    );
     expect(
       diagnostics.diagnostics.first.detail,
       contains('Missing next BPM'),
@@ -194,9 +399,68 @@ void main() {
     final codes = diagnostics.diagnostics.map((diagnostic) => diagnostic.code);
     expect(correctedTempo.nativeBpm, closeTo(141.18, 0.001));
     expect(correctedTempo.downbeatsMs.take(2).toList(), [87, 1787]);
+    expect(correctedTempo.downbeatConfidence, 1.0);
+    expect(correctedTempo.downbeatProvenance, manualTempoProvenance);
     expect(codes, isNot(contains(TransitionDiagnosticCode.missingBpm)));
     expect(codes, isNot(contains(TransitionDiagnosticCode.missingDownbeats)));
     expect(codes, contains(TransitionDiagnosticCode.beatLocked));
+  });
+
+  test('manual downbeat correction clears the analyzer confidence warning', () {
+    final correctedTempo = ClipTempoMetadata.fromAnalysisSummary(
+      {
+        'bpm': {'value': 120, 'confidence': 0.9},
+        'downbeats': {
+          'positions_ms': [0, 4000, 8000, 12000],
+          'confidence': 0.419,
+        },
+      },
+      overrides: const {
+        'downbeats': {
+          'positions_ms': [100, 4100, 8100, 12100],
+        },
+      },
+    );
+    final diagnostics = diagnoseTransition(
+      _clip('outgoing', 0, tempo: correctedTempo),
+      _clip('incoming', 8000, tempo: correctedTempo),
+    );
+
+    expect(correctedTempo.downbeatConfidence, 1.0);
+    expect(correctedTempo.downbeatProvenance, manualTempoProvenance);
+    expect(
+      diagnostics.diagnostics.map((diagnostic) => diagnostic.code),
+      isNot(contains(TransitionDiagnosticCode.lowDownbeatConfidence)),
+    );
+  });
+
+  test('reports trustworthy markers outside selected clips as unusable', () {
+    const trustworthyMarkers = ClipTempoMetadata(
+      nativeBpm: 120,
+      bpmConfidence: 0.9,
+      downbeatsMs: [0],
+      downbeatConfidence: 0.9,
+    );
+    final diagnostics = diagnoseTransition(
+      _clip(
+        'outgoing',
+        0,
+        sourceStartMs: 8000,
+        tempo: trustworthyMarkers,
+      ),
+      _clip(
+        'incoming',
+        4000,
+        sourceStartMs: 8000,
+        tempo: trustworthyMarkers,
+      ),
+    );
+
+    final warning = diagnostics.diagnostics.firstWhere(
+      (diagnostic) =>
+          diagnostic.code == TransitionDiagnosticCode.noUsableDownbeatMarker,
+    );
+    expect(warning.label, 'No usable downbeat');
   });
 
   test('warns on large tempo pulls and incompatible keys', () {
@@ -373,6 +637,8 @@ MixClip _clip(
   String id,
   int timelineStartMs, {
   int durationMs = 16000,
+  int sourceStartMs = 0,
+  int? sourceEndMs,
   ClipTempoMetadata tempo = ClipTempoMetadata.empty,
   String pitchMode = pitchModePreserve,
 }) {
@@ -381,8 +647,8 @@ MixClip _clip(
       id: id,
       trackId: id,
       sourceDurationMs: durationMs,
-      sourceStartMs: 0,
-      sourceEndMs: durationMs,
+      sourceStartMs: sourceStartMs,
+      sourceEndMs: sourceEndMs ?? durationMs,
       timelineStartMs: timelineStartMs,
     ),
     tempo: tempo,

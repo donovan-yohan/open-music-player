@@ -69,6 +69,7 @@ type QueueItemResponse struct {
 	AnalysisStatus    string           `json:"analysisStatus,omitempty"`
 	AnalysisSummary   json.RawMessage  `json:"analysisSummary,omitempty"`
 	AnalysisOverrides json.RawMessage  `json:"analysisOverrides,omitempty"`
+	AnalysisUpdatedAt string           `json:"analysisUpdatedAt,omitempty"`
 	CanPlay           bool             `json:"canPlay"`
 	CanRetry          bool             `json:"canRetry"`
 	CanRemove         bool             `json:"canRemove"`
@@ -509,6 +510,9 @@ func buildQueueItemResponse(item QueueItem, updatedAt time.Time, job *download.D
 			response.AnalysisStatus = compact.Status
 			response.AnalysisSummary = compact.SummaryJSON
 			response.AnalysisOverrides = compact.OverridesJSON
+			if !compact.UpdatedAt.IsZero() {
+				response.AnalysisUpdatedAt = compact.UpdatedAt.UTC().Format(time.RFC3339Nano)
+			}
 		}
 	}
 	return response

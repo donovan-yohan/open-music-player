@@ -43,6 +43,9 @@ type Track struct {
 	MetadataProvenance json.RawMessage
 	CoverArtURL        sql.NullString
 	MetadataUserEdited bool
+	AnalysisStatus     sql.NullString
+	AnalysisSummary    json.RawMessage
+	AnalysisUpdatedAt  sql.NullTime
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
@@ -98,13 +101,18 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 			FROM tracks
 			WHERE to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(artist, '') || ' ' || COALESCE(album, '')) @@ to_tsquery('english', $1)
 		)
-		SELECT id, identity_hash, title, artist, album, duration_ms, version,
-			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
-			   source_url, source_type, storage_key, file_size_bytes,
-			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
-			   cover_art_url, metadata_user_edited, created_at, updated_at, total_count
-		FROM search_results
-		ORDER BY rank DESC, title ASC
+		SELECT sr.id, sr.identity_hash, sr.title, sr.artist, sr.album, sr.duration_ms, sr.version,
+			   sr.mb_recording_id, sr.mb_release_id, sr.mb_artist_id, sr.mb_verified,
+			   sr.source_url, sr.source_type, sr.storage_key, sr.file_size_bytes,
+			   sr.metadata_json, sr.metadata_status, sr.metadata_confidence, sr.metadata_provenance,
+			   sr.cover_art_url, sr.metadata_user_edited, sr.created_at, sr.updated_at,
+			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
+			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
+			   ta.updated_at,
+			   sr.total_count
+		FROM search_results sr
+		LEFT JOIN track_analysis ta ON ta.track_id = sr.id
+		ORDER BY sr.rank DESC, sr.title ASC
 		LIMIT $2 OFFSET $3
 	`
 
@@ -118,16 +126,19 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 	var total int
 	for rows.Next() {
 		var t Track
+		var analysisOverrides json.RawMessage
 		err := rows.Scan(
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
-			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt, &total,
+			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
+			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt, &total,
 		)
 		if err != nil {
 			return nil, 0, err
 		}
+		t.AnalysisSummary, _ = projectCompactAnalysis(t.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, t)
 	}
 
@@ -175,13 +186,18 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 					  similarity(COALESCE(album, ''), $1)
 				  ) >= $4
 		)
-		SELECT id, identity_hash, title, artist, album, duration_ms, version,
-			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
-			   source_url, source_type, storage_key, file_size_bytes,
-			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
-			   cover_art_url, metadata_user_edited, created_at, updated_at, total_count
-		FROM search_results
-		ORDER BY rank DESC, title ASC
+		SELECT sr.id, sr.identity_hash, sr.title, sr.artist, sr.album, sr.duration_ms, sr.version,
+			   sr.mb_recording_id, sr.mb_release_id, sr.mb_artist_id, sr.mb_verified,
+			   sr.source_url, sr.source_type, sr.storage_key, sr.file_size_bytes,
+			   sr.metadata_json, sr.metadata_status, sr.metadata_confidence, sr.metadata_provenance,
+			   sr.cover_art_url, sr.metadata_user_edited, sr.created_at, sr.updated_at,
+			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
+			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
+			   ta.updated_at,
+			   sr.total_count
+		FROM search_results sr
+		LEFT JOIN track_analysis ta ON ta.track_id = sr.id
+		ORDER BY sr.rank DESC, sr.title ASC
 		LIMIT $2 OFFSET $3
 	`
 
@@ -195,16 +211,19 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 	var total int
 	for rows.Next() {
 		var t Track
+		var analysisOverrides json.RawMessage
 		err := rows.Scan(
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
-			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt, &total,
+			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
+			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt, &total,
 		)
 		if err != nil {
 			return nil, 0, err
 		}
+		t.AnalysisSummary, _ = projectCompactAnalysis(t.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, t)
 	}
 

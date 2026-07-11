@@ -599,7 +599,10 @@ String? _analysisRefForMediaItem(MediaItem item) {
 
 String? _analysisVersionForMediaItem(MediaItem item) {
   final extras = item.extras ?? const <String, dynamic>{};
-  return extras['analysisVersion']?.toString();
+  return (extras['analysisVersion'] ??
+          extras['analysisUpdatedAt'] ??
+          extras['analysis_updated_at'])
+      ?.toString();
 }
 
 class PlaybackCue {

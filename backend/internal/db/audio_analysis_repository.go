@@ -19,33 +19,26 @@ const (
 	AnalysisStatusUnsupported = "unsupported"
 )
 
-const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NULL ELSE (jsonb_strip_nulls(jsonb_build_object(
-	'bpm', ta.summary_json->'bpm',
-	'beat_grid', ta.summary_json->'beat_grid',
-	'downbeats', ta.summary_json->'downbeats',
-	'key', ta.summary_json->'key',
-	'camelot', ta.summary_json->'camelot',
-	'energy', ta.summary_json->'energy',
-	'loudness', ta.summary_json->'loudness',
-	'true_peak', ta.summary_json->'true_peak',
-	'genre_hints', ta.summary_json->'genre_hints',
-	'tag_hints', ta.summary_json->'tag_hints',
-	'waveform', CASE WHEN ta.summary_json ? 'waveform' THEN jsonb_strip_nulls(jsonb_build_object(
-		'peaks', ta.summary_json->'waveform'->'peaks',
-		'rms', ta.summary_json->'waveform'->'rms',
-		'sample_count', ta.summary_json->'waveform'->'sample_count',
-		'resolutions', ta.summary_json->'waveform'->'resolutions',
-		'spectral_bands', ta.summary_json->'waveform'->'spectral_bands',
-		'confidence', ta.summary_json->'waveform'->'confidence',
-		'provenance', ta.summary_json->'waveform'->'provenance'
-	)) END,
-	'transients', ta.summary_json->'transients',
-	'silence', ta.summary_json->'silence',
-	'intro', ta.summary_json->'intro',
-	'outro', ta.summary_json->'outro',
-	'trim', ta.summary_json->'trim',
-	'cue_candidates', ta.summary_json->'cue_candidates'
-)) || COALESCE(ta.overrides_json, '{}'::jsonb)) END`
+// List and queue responses need beat-lock metadata immediately, but full
+// multi-resolution waveforms belong on the per-track analysis endpoint. Keeping
+// those arrays out of collection responses avoids multi-megabyte payloads.
+const analysisCompactOverridesExpression = `jsonb_strip_nulls(jsonb_build_object(
+	'bpm', ta.overrides_json->'bpm',
+	'beat_grid', ta.overrides_json->'beat_grid',
+	'downbeats', ta.overrides_json->'downbeats',
+	'key', ta.overrides_json->'key',
+	'camelot', ta.overrides_json->'camelot',
+	'energy', ta.overrides_json->'energy'
+))`
+
+const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(
+		'bpm', ta.summary_json->'bpm',
+		'beat_grid', ta.summary_json->'beat_grid',
+		'downbeats', ta.summary_json->'downbeats',
+		'key', ta.summary_json->'key',
+		'camelot', ta.summary_json->'camelot',
+		'energy', ta.summary_json->'energy'
+	)) END`
 
 var ErrTrackAnalysisNotFound = errors.New("track analysis not found")
 
@@ -70,6 +63,7 @@ type AnalysisCompact struct {
 	Status        string
 	SummaryJSON   json.RawMessage
 	OverridesJSON json.RawMessage
+	UpdatedAt     time.Time
 }
 
 type AnalysisResult struct {
@@ -364,7 +358,9 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 		return result, nil
 	}
 	query := `
-		SELECT track_id, status, ` + analysisCompactSummaryExpression + ` AS summary_json, overrides_json
+		SELECT track_id, status, ` + analysisCompactSummaryExpression + ` AS summary_json,
+		       ` + analysisCompactOverridesExpression + ` AS overrides_json,
+		       updated_at
 		FROM track_analysis
 		AS ta
 		WHERE track_id = ANY($1)
@@ -376,9 +372,19 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 	defer rows.Close()
 	for rows.Next() {
 		var compact AnalysisCompact
-		if err := rows.Scan(&compact.TrackID, &compact.Status, &compact.SummaryJSON, &compact.OverridesJSON); err != nil {
+		if err := rows.Scan(
+			&compact.TrackID,
+			&compact.Status,
+			&compact.SummaryJSON,
+			&compact.OverridesJSON,
+			&compact.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
+		compact.SummaryJSON, compact.OverridesJSON = projectCompactAnalysis(
+			compact.SummaryJSON,
+			compact.OverridesJSON,
+		)
 		result[compact.TrackID] = compact
 	}
 	if err := rows.Err(); err != nil {

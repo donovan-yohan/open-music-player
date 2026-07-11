@@ -9,6 +9,9 @@ import '../../shared/models/models.dart';
 abstract class OfflineDownloadStore {
   Future<void> insertTrack(Track track);
 
+  /// Makes an explicitly downloaded track discoverable in the offline Library.
+  Future<void> addToLibrary(int trackId);
+
   Future<void> insertDownloadedTrack(DownloadedTrack download);
 
   Future<void> updateDownloadStatus(

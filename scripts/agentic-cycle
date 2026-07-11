@@ -134,10 +134,15 @@ def components_for(files: Iterable[str]) -> set[str]:
     for path in files:
         if path.startswith("backend/"):
             components.add("backend")
+            if path.startswith("backend/cmd/audio-analyzer/") or path == "backend/Dockerfile":
+                components.add("analyzer")
         elif path.startswith("client/"):
             components.add("client")
         elif path.startswith("extension/"):
             components.add("extension")
+        elif path.startswith("docker-compose"):
+            components.add("analyzer")
+            components.add("delivery")
         elif path in {"AGENTS.md", "CLAUDE.md"} or path.startswith(
             ("docs/", ".github/", "scripts/")
         ):
@@ -236,6 +241,30 @@ def plan_gates(
         if include_smoke:
             gates.append(
                 Gate("isolated smoke", ("scripts/smoke", "isolated"), "local API smoke")
+            )
+
+    if "analyzer" in components:
+        gates.extend(
+            [
+                Gate(
+                    "analyzer lint",
+                    ("scripts/lint", "analyzer"),
+                    "Python syntax and Compose target checks",
+                ),
+                Gate(
+                    "analyzer tests",
+                    ("scripts/test", "analyzer"),
+                    "MIR post-processing regression tests",
+                ),
+            ]
+        )
+        if include_build:
+            gates.append(
+                Gate(
+                    "analyzer image",
+                    ("scripts/build", "analyzer"),
+                    "pinned MIR dependencies and model image",
+                )
             )
 
     if "client" in components:
@@ -412,6 +441,12 @@ def self_test() -> int:
             ["backend/internal/api/auth.go"],
             "security-protocol-destructive",
             {"backend"},
+            False,
+        ),
+        (
+            ["backend/cmd/audio-analyzer/audio_mir.py"],
+            "behavior-runtime",
+            {"backend", "analyzer"},
             False,
         ),
         (

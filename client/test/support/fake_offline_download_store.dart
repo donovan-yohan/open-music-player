@@ -11,11 +11,17 @@ import 'package:open_music_player/shared/models/models.dart';
 class FakeOfflineDownloadStore implements OfflineDownloadStore {
   final Map<int, Track> tracks = {};
   final Map<int, DownloadedTrack> downloads = {};
+  final Set<int> libraryTrackIds = {};
   int statusUpdateCount = 0;
 
   @override
   Future<void> insertTrack(Track track) async {
     tracks[track.id] = track;
+  }
+
+  @override
+  Future<void> addToLibrary(int trackId) async {
+    libraryTrackIds.add(trackId);
   }
 
   @override

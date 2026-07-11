@@ -19,14 +19,14 @@ class MiniPlayer extends StatelessWidget {
         final item = playback.currentItem!;
         final progress = playback.duration.inMilliseconds > 0
             ? playback.position.inMilliseconds /
-                  playback.duration.inMilliseconds
+                playback.duration.inMilliseconds
             : 0.0;
 
         return GestureDetector(
           onTap: () => context.push('/player'),
           child: Container(
             key: const ValueKey('spotify_like_mini_player'),
-            height: 64,
+            constraints: const BoxConstraints(minHeight: 64),
             margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
             decoration: BoxDecoration(
               color: AppTheme.darkCard,
@@ -41,6 +41,7 @@ class MiniPlayer extends StatelessWidget {
             ),
             clipBehavior: Clip.antiAlias,
             child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
                 LinearProgressIndicator(
                   value: progress.clamp(0.0, 1.0),
@@ -50,80 +51,82 @@ class MiniPlayer extends StatelessWidget {
                     AppTheme.brandColor,
                   ),
                 ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Row(
-                      children: [
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: item.artUri != null
-                              ? Image.network(
-                                  item.artUri.toString(),
-                                  width: 48,
-                                  height: 48,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) =>
-                                      _buildPlaceholder(),
-                                )
-                              : _buildPlaceholder(),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              PlaybackContextLabel(
-                                playback.playbackContext,
-                                style: const TextStyle(
-                                  color: AppTheme.brandColor,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 0.2,
-                                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: item.artUri != null
+                            ? Image.network(
+                                item.artUri.toString(),
+                                width: 48,
+                                height: 48,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) =>
+                                    _buildPlaceholder(),
+                              )
+                            : _buildPlaceholder(),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            PlaybackContextLabel(
+                              playback.playbackContext,
+                              style: const TextStyle(
+                                color: AppTheme.brandColor,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 0,
                               ),
-                              Text(
-                                item.title,
-                                style: const TextStyle(
-                                  color: AppTheme.lightText,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                            ),
+                            Text(
+                              item.title,
+                              style: const TextStyle(
+                                color: AppTheme.lightText,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
                               ),
-                              const SizedBox(height: 2),
-                              Text(
-                                item.artist ?? 'Unknown Artist',
-                                style: const TextStyle(
-                                  color: AppTheme.greyText,
-                                  fontSize: 12,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              item.artist ?? 'Unknown Artist',
+                              style: const TextStyle(
+                                color: AppTheme.greyText,
+                                fontSize: 12,
                               ),
-                            ],
-                          ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
                         ),
-                        IconButton(
-                          icon: Icon(
-                            playback.isPlaying ? Icons.pause : Icons.play_arrow,
-                            color: AppTheme.lightText,
-                          ),
-                          tooltip: playback.isPlaying ? 'Pause' : 'Play',
-                          onPressed: playback.togglePlayPause,
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          playback.isPlaying ? Icons.pause : Icons.play_arrow,
+                          color: AppTheme.lightText,
                         ),
-                        IconButton(
-                          icon: const Icon(
-                            Icons.queue_music,
-                            color: AppTheme.lightText,
-                          ),
-                          tooltip: 'Open queue',
-                          onPressed: () => context.go('/queue'),
+                        tooltip: playback.isPlaying ? 'Pause' : 'Play',
+                        onPressed: playback.togglePlayPause,
+                      ),
+                      IconButton(
+                        icon: const Icon(
+                          Icons.queue_music,
+                          color: AppTheme.lightText,
                         ),
-                      ],
-                    ),
+                        tooltip: 'Open queue',
+                        onPressed: () => context.go('/queue'),
+                      ),
+                    ],
                   ),
                 ),
               ],

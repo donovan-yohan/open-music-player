@@ -8,6 +8,7 @@ domain concept moves or a new production harness becomes canonical.
 | Component | Path | Runtime role | Primary checks |
 | --- | --- | --- | --- |
 | Backend API | `backend/` | Go REST API, auth, library, queue, downloads, storage, analysis persistence | `scripts/test backend`, `scripts/lint backend`, `scripts/build backend` |
+| Audio analyzer | `backend/cmd/audio-analyzer/`, `backend/Dockerfile` target `analyzer-runtime` | Beat/downbeat, BPM, key/Camelot, waveform, and spectral analysis | `scripts/lint analyzer`, `scripts/test analyzer`, `scripts/build analyzer` |
 | Flutter client | `client/` | Mobile/web/desktop app, playback engine, queue timeline, settings/build metadata | `scripts/test client`, `scripts/lint client`, `scripts/build client` |
 | Browser extension | `extension/` | Share/import surface for YouTube/SoundCloud style sources | `scripts/test extension`, `scripts/lint extension`, `scripts/build extension` |
 | Local stack | `docker-compose*.yml`, `scripts/local-low-memory.sh` | Postgres, Redis, MinIO, backend/analyzer dogfood services, worker-free backend test dependencies | `scripts/dev`, `scripts/dev test-infra`, `scripts/smoke`, `scripts/smoke e2e` |
@@ -51,6 +52,8 @@ domain concept moves or a new production harness becomes canonical.
 
 - Analyzer service: `backend/cmd/audio-analyzer/`,
   `backend/internal/analyzer/`.
+- Beat/downbeat and key engine: `backend/cmd/audio-analyzer/audio_mir.py`;
+  Beat This supplies tracked markers and librosa CQT supplies tonal chroma.
 - Stored summaries: `backend/internal/db/audio_analysis_repository.go`,
   `backend/internal/api/analysis.go`.
 - Client models/rendering: `client/lib/models/track_analysis.dart`,
@@ -58,6 +61,46 @@ domain concept moves or a new production harness becomes canonical.
   `client/lib/widgets/timeline_waveform_painter.dart`.
 - Guardrail: waveform UI should degrade to dense synthetic data when analysis is
   missing, but should prefer backend spectral-band summaries when available.
+- Guardrail: generated BPM/key metadata must come from the MIR helper. Do not
+  reintroduce transient-bucket tempo or zero-crossing pitch-class proxies as a
+  silent fallback; analyzer failures must remain visible and retryable.
+
+### Song Analysis Metadata
+
+- Backend list projections: `backend/internal/db/track_repository.go`,
+  `backend/internal/db/playlist_repository.go`,
+  `backend/internal/db/play_event_repository.go`.
+- Client normalization: `trackAnalysisFromTrackJson` in
+  `client/lib/models/track_analysis.dart`; this is the casing and manual
+  override boundary for track-list payloads.
+- Shared presentation: `client/lib/shared/widgets/song_metadata_chips.dart`;
+  key notation is persisted through `SettingsModel` and `settingsProvider`.
+- Surface coverage: home, search, library/local browse, playlists, history,
+  queue list, and timeline lane headers.
+- Tests: `client/test/song_metadata_chips_test.dart`,
+  `client/test/song_metadata_surface_wiring_test.dart`,
+  `client/test/queue_provider_timeline_editing_test.dart`,
+  `client/test/offline_database_analysis_test.dart`,
+  `backend/internal/db/analysis_compact_test.go`, and
+  `backend/internal/db/track_analysis_projection_integration_test.go`.
+- Guardrail: list surfaces must preserve analysis when converting a track into
+  a playback/queue payload. Do not format BPM or musical/Camelot keys in each
+  surface; use the shared formatter and chip component.
+- Guardrail: collection responses carry compact tempo/key/downbeat summaries,
+  never multi-resolution waveform arrays. `analysis_compact.go` is the typed
+  projection boundary: it deep-merges overrides, rejects malformed nested
+  values, and caps beat/downbeat arrays before a collection payload is emitted.
+  Timeline detail hydrates through the per-track analysis endpoint.
+- Guardrail: detailed waveform caches apply each compact snapshot once, deep
+  merge current musical facts, reject stale GET completions by generation, cap
+  hydration at three requests, and own their cooldown retry timers. Playback
+  position rebuilds reuse enriched timeline tracks instead of rehashing the
+  queue.
+- Offline storage: schema v5 persists compact analysis fields on local track
+  rows and migrates existing completed downloads into local Library membership.
+  New downloads enforce membership immediately; remote Library pages publish
+  first and batch-backfill matching rows asynchronously so BPM/key chips remain
+  available after the device goes offline.
 
 ### Schema And Storage
 
@@ -97,6 +140,8 @@ domain concept moves or a new production harness becomes canonical.
 | Need | Command | Notes |
 | --- | --- | --- |
 | Fast backend check | `scripts/test backend` | Runs `go test ./...` from `backend/`. |
+| Analyzer post-processing | `scripts/test analyzer` | Builds the lightweight synthetic MIR unit-test target. |
+| Full analyzer image | `scripts/build analyzer` | Builds pinned CPU PyTorch, Beat This, librosa, and checksum-verified model layers. |
 | Delivery scaffold check | `scripts/agentic-harness` | Validates required agent docs, root scripts, CI wiring, JSON/Python/Bash syntax, and secret-like values. |
 | Adversarial delivery check | `scripts/agentic-harness` | Fails scaffold drift, missing doctrine-vs-harness policy text, and direct-to-main script/workflow bypass patterns. |
 | Exact-head dev-cycle plan | `scripts/agentic-cycle --base origin/main` | Classifies changed files, assigns a gate risk tier, lists required component checks, and names Android dogfood when needed. |

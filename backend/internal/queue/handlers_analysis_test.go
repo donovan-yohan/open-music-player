@@ -22,8 +22,9 @@ func TestBuildQueueResponseWithAnalysisCompact(t *testing.T) {
 	}
 	summary := json.RawMessage(`{"bpm":{"value":124,"confidence":0.94,"provenance":"fixture"},"beat_grid":{"beats_ms":[320,804]},"loudness":{"integrated_lufs":-11.8}}`)
 	overrides := json.RawMessage(`{"bpm":{"value":126,"provenance":"manual_override"},"downbeats":{"positions_ms":[500]}}`)
+	revision := time.Date(2026, 7, 10, 11, 0, 0, 123456789, time.UTC)
 	resp := buildQueueResponseWithAnalysis(state, nil, map[int64]db.AnalysisCompact{
-		trackID: {TrackID: trackID, Status: db.AnalysisStatusAnalyzed, SummaryJSON: summary, OverridesJSON: overrides},
+		trackID: {TrackID: trackID, Status: db.AnalysisStatusAnalyzed, SummaryJSON: summary, OverridesJSON: overrides, UpdatedAt: revision},
 	})
 	if len(resp.Items) != 1 {
 		t.Fatalf("items len = %d, want 1", len(resp.Items))
@@ -37,6 +38,9 @@ func TestBuildQueueResponseWithAnalysisCompact(t *testing.T) {
 	}
 	if string(item.AnalysisOverrides) != string(overrides) {
 		t.Fatalf("analysis overrides = %s, want %s", item.AnalysisOverrides, overrides)
+	}
+	if item.AnalysisUpdatedAt != "2026-07-10T11:00:00.123456789Z" {
+		t.Fatalf("analysis updated at = %q", item.AnalysisUpdatedAt)
 	}
 }
 

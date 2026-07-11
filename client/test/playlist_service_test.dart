@@ -101,6 +101,31 @@ void main() {
     });
   });
 
+  test('getPlaylist preserves compact track analysis', () async {
+    final playlist = _playlistJson(trackCount: 1)
+      ..['tracks'] = [
+        {
+          'id': 9,
+          'title': 'Something Comforting',
+          'analysisStatus': 'analyzed',
+          'analysisSummary': {
+            'bpm': {'value': 122.5},
+            'key': {'value': 'F#m'},
+            'camelot': {'value': '11A'},
+          },
+        },
+      ];
+    final adapter = _CapturingAdapter(playlist);
+
+    final result = await _service(adapter).getPlaylist(1);
+
+    expect(adapter.captured!.uri.path, endsWith('/playlists/1'));
+    expect(result.tracks, hasLength(1));
+    expect(result.tracks!.single.analysis?.summary?.bpm?.numericValue, 122.5);
+    expect(result.tracks!.single.analysis?.summary?.key?.textValue, 'F#m');
+    expect(result.tracks!.single.analysis?.summary?.camelot?.textValue, '11A');
+  });
+
   group('create/update send coverUrl + isPublic', () {
     test('createPlaylist includes coverUrl and isPublic', () async {
       final adapter = _CapturingAdapter(_playlistJson());

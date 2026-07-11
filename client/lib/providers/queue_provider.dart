@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 import '../core/discovery/discovery_models.dart';
@@ -15,8 +16,17 @@ import '../core/engine/timeline_model.dart';
 
 class QueueProvider extends ChangeNotifier {
   static const String queueTimingMixPlanName = 'Queue timing';
+  static const Duration defaultAnalysisRetryCooldown = Duration(seconds: 15);
+  static const int _maxConcurrentAnalysisRequests = 3;
+  static const int _maxAnalysisRequestAttempts = 4;
+  static const int _maxRetainedAnalysisAuthorityEntries = 128;
+  static const int _maxRetainedBeatPositions = 128;
+  static const int _maxRetainedDownbeatPositions = 64;
+  static const Duration _maxAnalysisRetryDelay = Duration(minutes: 2);
 
   final ApiClient _apiClient;
+  final DateTime Function() _analysisClock;
+  final Duration _analysisRetryCooldown;
   QueueState _queue = QueueState.empty();
   bool _isLoading = false;
   String? _error;
@@ -34,9 +44,35 @@ class QueueProvider extends ChangeNotifier {
   final Map<String, List<double>> _waveformPeaks = {};
   final Map<String, Map<int, TimelineWaveformData>> _timelineWaveforms = {};
   final Map<String, TrackAnalysis> _analysisByTrackId = {};
+  final Map<String, int> _appliedCompactAnalysisSignatures = {};
+  final Map<String, TrackAnalysis> _lastIncomingAnalysisByTrackId = {};
+  final Map<String, DateTime> _analysisRevisionFloors = {};
+  final Map<String, TrackAnalysis> _analysisRevisionSnapshots = {};
+  final Map<String, int> _analysisGenerations = {};
+  final Map<String, Future<void>> _analysisOverrideMutationTails = {};
+  final Map<String, TrackAnalysis> _authoritativeAnalysisLocks = {};
+  final LinkedHashSet<String> _analysisAuthorityLru = LinkedHashSet<String>();
+  Future<void>? _queueMutationTail;
+  int _queueOperationGeneration = 0;
+  final Set<String> _analysisHydrationInterest = {};
   final Set<String> _analysisRequestsInFlight = {};
+  final Set<String> _analysisRequestsQueued = {};
+  final Queue<_AnalysisRequest> _analysisRequestQueue =
+      Queue<_AnalysisRequest>();
+  final Map<String, DateTime> _analysisLastRequestedAt = {};
+  final Map<String, Timer> _analysisRetryTimers = {};
+  final Map<String, int> _analysisRequestAttempts = {};
+  final Map<String, int> _analysisTransportFailures = {};
+  final Set<String> _analysisPermanentFailures = {};
+  final Map<String, _EnrichedTrackCacheEntry> _enrichedTrackCache = {};
+  int _analysisRevision = 0;
 
-  QueueProvider(this._apiClient);
+  QueueProvider(
+    this._apiClient, {
+    DateTime Function()? analysisClock,
+    Duration analysisRetryCooldown = defaultAnalysisRetryCooldown,
+  })  : _analysisClock = analysisClock ?? DateTime.now,
+        _analysisRetryCooldown = analysisRetryCooldown;
 
   QueueState get queue => _queue;
   bool get isLoading => _isLoading;
@@ -45,6 +81,10 @@ class QueueProvider extends ChangeNotifier {
   Track? get currentTrack => _queue.currentTrack;
   List<Track> get upNext => _queue.upNext;
   bool get isEmpty => _queue.isEmpty;
+  int get analysisRevision => _analysisRevision;
+
+  @visibleForTesting
+  int get retainedAnalysisAuthorityCount => _analysisAuthorityKeys().length;
 
   Map<String, TrimRange> get trimRanges => Map.unmodifiable(_trimRanges);
   Map<String, MixPlanClip> get mixPlanClips => Map.unmodifiable(_mixPlanClips);
@@ -122,46 +162,145 @@ class QueueProvider extends ChangeNotifier {
     );
   }
 
-  /// Playback media items do not carry queue API analysis fields, so attach
-  /// cached analysis by backend track ID and fetch it lazily when needed.
-  Track trackWithAnalysis(Track track) {
+  /// Attach hydrated analysis by backend track ID. Collection responses carry
+  /// tempo metadata but intentionally omit large waveform arrays, so the
+  /// timeline hydrates those arrays lazily from the per-track endpoint.
+  Track trackWithAnalysis(
+    Track track, {
+    bool requestHydration = true,
+  }) {
     final trackId = _analysisTrackId(track);
     if (trackId == null) {
       return track;
     }
 
     final key = trackId.toString();
-    final cached = _analysisByTrackId[key];
-    if (cached != null) {
-      return identical(cached, track.analysis)
-          ? track
-          : track.copyWith(analysis: cached);
+    final incoming = track.analysis;
+    if (incoming != null &&
+        !identical(_lastIncomingAnalysisByTrackId[key], incoming)) {
+      _lastIncomingAnalysisByTrackId[key] = incoming;
+      _ingestIncomingAnalysis(key, incoming);
     }
 
-    if (track.analysis != null) {
-      _analysisByTrackId[key] = track.analysis!;
-      return track;
+    if (requestHydration) {
+      _analysisHydrationInterest.add(key);
+      _fetchAnalysisIfNeeded(trackId);
+    }
+    final cached = _analysisByTrackId[key] ??
+        _authoritativeAnalysisLocks[key] ??
+        _analysisRevisionSnapshots[key];
+    final result = cached == null || identical(cached, incoming)
+        ? track
+        : _enrichedTrack(track, key, cached);
+    if (cached != null) _touchAnalysisAuthority(key);
+    _pruneAnalysisAuthorityState();
+    return result;
+  }
+
+  /// Retains detailed analysis only for tracks rendered by the timeline.
+  ///
+  /// Collection payloads already carry compact BPM/key metadata. Waveform
+  /// arrays are hydrated only while a timeline lane needs them, which keeps
+  /// removed tracks and hidden history from continuing background work.
+  void setAnalysisHydrationInterest(Iterable<Track> tracks) {
+    final retainedTracks = tracks.toList(growable: false);
+    final next = <String>{};
+    for (final track in retainedTracks) {
+      final trackId = _analysisTrackId(track);
+      if (trackId != null) next.add(trackId.toString());
     }
 
-    _fetchAnalysisIfNeeded(trackId);
-    return track;
+    final removed = _analysisHydrationInterest.difference(next);
+    if (removed.isNotEmpty) {
+      for (final key in removed) {
+        _releaseAnalysisHydration(key);
+      }
+      _analysisRequestQueue.removeWhere(
+        (request) => removed.contains(request.trackId.toString()),
+      );
+    }
+    _analysisHydrationInterest
+      ..clear()
+      ..addAll(next);
+
+    for (final track in retainedTracks) {
+      final trackId = _analysisTrackId(track);
+      if (trackId == null) continue;
+      final key = trackId.toString();
+      final incoming = track.analysis;
+      if (incoming != null &&
+          !identical(_lastIncomingAnalysisByTrackId[key], incoming)) {
+        _lastIncomingAnalysisByTrackId[key] = incoming;
+        _ingestIncomingAnalysis(key, incoming);
+      }
+      _fetchAnalysisIfNeeded(trackId);
+    }
+    _pruneAnalysisAuthorityState();
+  }
+
+  void clearAnalysisHydrationInterest() {
+    if (_analysisHydrationInterest.isEmpty) return;
+    setAnalysisHydrationInterest(const <Track>[]);
   }
 
   Future<TrackAnalysis> updateAnalysisOverrides(
     Track track,
     TrackAnalysisOverrides overrides,
-  ) async {
+  ) {
     final trackId = _analysisTrackId(track);
     if (trackId == null) {
       throw ApiException('Track does not have a backend analysis id', 400);
     }
 
+    final key = trackId.toString();
+    final previous = _analysisOverrideMutationTails[key];
+    final result = () async {
+      if (previous != null) {
+        try {
+          await previous;
+        } catch (_) {
+          // A newer correction should still run after an older save fails.
+        }
+      }
+      return _performAnalysisOverrideUpdate(
+        trackId: trackId,
+        key: key,
+        overrides: overrides,
+      );
+    }();
+    late final Future<void> tail;
+    tail = result.then<void>((_) {}, onError: (_, __) {});
+    _analysisOverrideMutationTails[key] = tail;
+    unawaited(
+      tail.whenComplete(() {
+        if (identical(_analysisOverrideMutationTails[key], tail)) {
+          _analysisOverrideMutationTails.remove(key);
+          _pruneAnalysisAuthorityState();
+        }
+      }),
+    );
+    return result;
+  }
+
+  Future<TrackAnalysis> _performAnalysisOverrideUpdate({
+    required int trackId,
+    required String key,
+    required TrackAnalysisOverrides overrides,
+  }) async {
     final analysis = await _apiClient.updateTrackAnalysisOverrides(
       trackId,
       overrides,
     );
-    final key = trackId.toString();
+    if (_disposed) return analysis;
+    _rememberAnalysisRevision(key, analysis);
+    _authoritativeAnalysisLocks[key] = _compactRevisionSnapshot(analysis);
+    _touchAnalysisAuthority(key);
+    _advanceAnalysisGeneration(key);
     _analysisByTrackId[key] = analysis;
+    _lastIncomingAnalysisByTrackId[key] = analysis;
+    _appliedCompactAnalysisSignatures[key] =
+        _analysisCompactSignature(analysis);
+    _resetAnalysisRequestState(key);
     _invalidateAnalysisCache(key);
     _queue = QueueState(
       tracks: [
@@ -174,27 +313,46 @@ class QueueProvider extends ChangeNotifier {
       repeatMode: _queue.repeatMode,
       shuffled: _queue.shuffled,
     );
+    _pruneAnalysisAuthorityState();
     _notifyListeners();
     return analysis;
   }
 
   Future<void> loadQueue() async {
+    final operationGeneration = _beginQueueOperation(loading: true);
     _isLoading = true;
     _error = null;
     _notifyListeners();
 
     try {
-      _queue = await _apiClient.getQueue();
-      if (_disposed) return;
+      while (_queueMutationTail != null) {
+        final pendingMutation = _queueMutationTail!;
+        await pendingMutation;
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        if (identical(_queueMutationTail, pendingMutation)) {
+          _queueMutationTail = null;
+        }
+      }
+      while (_analysisOverrideMutationTails.isNotEmpty) {
+        await Future.wait(
+          _analysisOverrideMutationTails.values.toList(growable: false),
+        );
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+      }
+      final loadedQueue = await _apiClient.getQueue();
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
+      _queue = _queueWithAuthoritativeAnalysis(loadedQueue);
       _rememberQueueAnalyses();
       _pruneTimingState();
-      await _loadQueueTimingMixPlan();
-      if (_disposed) return;
+      await _loadQueueTimingMixPlan(
+        operationGeneration: operationGeneration,
+      );
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
     } catch (e) {
-      if (_disposed) return;
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
       _error = e.toString();
     } finally {
-      if (!_disposed) {
+      if (_isCurrentQueueOperation(operationGeneration)) {
         _isLoading = false;
         _notifyListeners();
       }
@@ -205,176 +363,256 @@ class QueueProvider extends ChangeNotifier {
     List<String> trackIds, {
     bool playNext = false,
   }) async {
-    try {
-      _error = null;
-      _queue = await _apiClient.addToQueue(
-        trackIds: trackIds,
-        position: playNext ? 'next' : 'last',
-      );
-      _rememberQueueAnalyses();
-      _pruneTimingState();
+    await _runQueueMutation(() async {
+      final operationGeneration = _beginQueueOperation();
       _notifyListeners();
-    } catch (e) {
-      _error = e.toString();
-      _notifyListeners();
-    }
+      try {
+        _error = null;
+        final updatedQueue = await _apiClient.addToQueue(
+          trackIds: trackIds,
+          position: playNext ? 'next' : 'last',
+        );
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
+        _rememberQueueAnalyses();
+        _pruneTimingState();
+        _notifyListeners();
+      } catch (e) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        await _reconcileQueueAfterMutationFailure(operationGeneration);
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _error = e.toString();
+        _notifyListeners();
+      }
+    });
   }
 
   Future<void> addSourceCandidate(
     DiscoveryCandidate candidate, {
     bool playNext = false,
   }) async {
-    try {
-      _error = null;
-      _queue = await _apiClient.addSourceCandidateToQueue(
-        candidate: candidate,
-        position: playNext ? 'next' : 'last',
-      );
-      _rememberQueueAnalyses();
-      _pruneTimingState();
+    await _runQueueMutation(() async {
+      final operationGeneration = _beginQueueOperation();
       _notifyListeners();
-    } catch (e) {
-      _error = e.toString();
-      _notifyListeners();
-      rethrow;
-    }
+      try {
+        _error = null;
+        final updatedQueue = await _apiClient.addSourceCandidateToQueue(
+          candidate: candidate,
+          position: playNext ? 'next' : 'last',
+        );
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
+        _rememberQueueAnalyses();
+        _pruneTimingState();
+        _notifyListeners();
+      } catch (e) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        await _reconcileQueueAfterMutationFailure(operationGeneration);
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _error = e.toString();
+        _notifyListeners();
+        rethrow;
+      }
+    });
   }
 
   Future<void> removeFromQueue(int position) async {
     if (position < 0 || position >= _queue.tracks.length) return;
+    final queueItemId = _queue.tracks[position].queueItemId;
 
-    final previousQueue = _queue;
-    final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
-    final previousTimelineStarts = Map<String, int>.from(
-      _timelineStartOverrides,
-    );
-    final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
+    await _runQueueMutation(() async {
+      final currentPosition = _queue.tracks.indexWhere(
+        (track) => track.queueItemId == queueItemId,
+      );
+      if (currentPosition < 0) return;
 
-    // Optimistic update
-    final newTracks = List<Track>.from(_queue.tracks);
-    final removedTrack = newTracks.removeAt(position);
-    _trimRanges = Map<String, TrimRange>.from(_trimRanges);
-    _timelineStartOverrides = Map<String, int>.from(_timelineStartOverrides);
-    for (final key in _trackTimingKeys(removedTrack)) {
-      _trimRanges.remove(key);
-      _timelineStartOverrides.remove(key);
-    }
+      final operationGeneration = _beginQueueOperation();
+      final previousQueue = _queue;
+      final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
+      final previousTimelineStarts = Map<String, int>.from(
+        _timelineStartOverrides,
+      );
+      final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
 
-    int newCurrentIndex = _queue.currentIndex;
-    if (position < _queue.currentIndex) {
-      newCurrentIndex--;
-    } else if (position == _queue.currentIndex) {
-      newCurrentIndex = newCurrentIndex.clamp(-1, newTracks.length - 1);
-    }
-    _queue = QueueState(
-      tracks: newTracks,
-      currentIndex: newCurrentIndex,
-      repeatMode: _queue.repeatMode,
-      shuffled: _queue.shuffled,
-    );
-    _pruneTimingState();
-    _notifyListeners();
+      final newTracks = List<Track>.from(_queue.tracks);
+      final removedTrack = newTracks.removeAt(currentPosition);
+      _trimRanges = Map<String, TrimRange>.from(_trimRanges);
+      _timelineStartOverrides = Map<String, int>.from(_timelineStartOverrides);
+      for (final key in _trackTimingKeys(removedTrack)) {
+        _trimRanges.remove(key);
+        _timelineStartOverrides.remove(key);
+      }
 
-    try {
-      _queue = await _apiClient.removeQueueItem(removedTrack.queueItemId);
-      _rememberQueueAnalyses();
+      int newCurrentIndex = _queue.currentIndex;
+      if (currentPosition < _queue.currentIndex) {
+        newCurrentIndex--;
+      } else if (currentPosition == _queue.currentIndex) {
+        newCurrentIndex = newCurrentIndex.clamp(-1, newTracks.length - 1);
+      }
+      _queue = QueueState(
+        tracks: newTracks,
+        currentIndex: newCurrentIndex,
+        repeatMode: _queue.repeatMode,
+        shuffled: _queue.shuffled,
+      );
       _pruneTimingState();
+      _pruneAnalysisAuthorityState();
       _notifyListeners();
-    } catch (e) {
-      _queue = previousQueue;
-      _trimRanges = previousTrimRanges;
-      _timelineStartOverrides = previousTimelineStarts;
-      _mixPlanClips = previousMixPlanClips;
-      _error = e.toString();
-      _notifyListeners();
-    }
+
+      try {
+        final updatedQueue = await _apiClient.removeQueueItem(queueItemId);
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
+        _rememberQueueAnalyses();
+        _pruneTimingState();
+        _notifyListeners();
+      } catch (e) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+          if (!_isCurrentQueueOperation(operationGeneration)) return;
+          _error = e.toString();
+          _notifyListeners();
+          return;
+        }
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(previousQueue);
+        _rememberQueueAnalyses();
+        _trimRanges = previousTrimRanges;
+        _timelineStartOverrides = previousTimelineStarts;
+        _mixPlanClips = previousMixPlanClips;
+        _error = e.toString();
+        _notifyListeners();
+      }
+    });
   }
 
   Future<void> retryTrack(Track track) async {
-    _error = null;
-    _notifyListeners();
+    final queueItemId = track.queueItemId;
+    await _runQueueMutation(() async {
+      final operationGeneration = _beginQueueOperation();
+      _error = null;
+      _notifyListeners();
 
-    try {
-      _queue = await _apiClient.retryQueueItem(track.queueItemId);
-      _rememberQueueAnalyses();
-      _pruneTimingState();
-      _notifyListeners();
-    } catch (e) {
-      _error = e.toString();
-      _notifyListeners();
-    }
+      try {
+        final updatedQueue = await _apiClient.retryQueueItem(queueItemId);
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
+        _rememberQueueAnalyses();
+        _pruneTimingState();
+        _notifyListeners();
+      } catch (e) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        await _reconcileQueueAfterMutationFailure(operationGeneration);
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _error = e.toString();
+        _notifyListeners();
+      }
+    });
   }
 
   Future<void> reorderQueue(int oldIndex, int newIndex) async {
     if (oldIndex == newIndex) return;
     if (oldIndex < 0 || oldIndex >= _queue.tracks.length) return;
     if (newIndex < 0 || newIndex >= _queue.tracks.length) return;
+    final queueItemId = _queue.tracks[oldIndex].queueItemId;
 
-    final previousQueue = _queue;
-
-    // Optimistic update
-    final newTracks = List<Track>.from(_queue.tracks);
-    final track = newTracks.removeAt(oldIndex);
-    newTracks.insert(newIndex, track);
-
-    int newCurrentIndex = _queue.currentIndex;
-    if (oldIndex == _queue.currentIndex) {
-      newCurrentIndex = newIndex;
-    } else if (oldIndex < _queue.currentIndex &&
-        newIndex >= _queue.currentIndex) {
-      newCurrentIndex--;
-    } else if (oldIndex > _queue.currentIndex &&
-        newIndex <= _queue.currentIndex) {
-      newCurrentIndex++;
-    }
-
-    _queue = QueueState(
-      tracks: newTracks,
-      currentIndex: newCurrentIndex,
-      repeatMode: _queue.repeatMode,
-      shuffled: _queue.shuffled,
-    );
-    _notifyListeners();
-
-    try {
-      _queue = await _apiClient.reorderQueue(
-        queueItemId: track.queueItemId,
-        toPosition: newIndex,
+    await _runQueueMutation(() async {
+      final currentOldIndex = _queue.tracks.indexWhere(
+        (track) => track.queueItemId == queueItemId,
       );
-      _rememberQueueAnalyses();
-      _pruneTimingState();
+      if (currentOldIndex < 0 || _queue.tracks.isEmpty) return;
+      final currentNewIndex = newIndex.clamp(0, _queue.tracks.length - 1);
+      if (currentOldIndex == currentNewIndex) return;
+
+      final operationGeneration = _beginQueueOperation();
+      final previousQueue = _queue;
+      final newTracks = List<Track>.from(_queue.tracks);
+      final movedTrack = newTracks.removeAt(currentOldIndex);
+      newTracks.insert(currentNewIndex, movedTrack);
+
+      int newCurrentIndex = _queue.currentIndex;
+      if (currentOldIndex == _queue.currentIndex) {
+        newCurrentIndex = currentNewIndex;
+      } else if (currentOldIndex < _queue.currentIndex &&
+          currentNewIndex >= _queue.currentIndex) {
+        newCurrentIndex--;
+      } else if (currentOldIndex > _queue.currentIndex &&
+          currentNewIndex <= _queue.currentIndex) {
+        newCurrentIndex++;
+      }
+
+      _queue = QueueState(
+        tracks: newTracks,
+        currentIndex: newCurrentIndex,
+        repeatMode: _queue.repeatMode,
+        shuffled: _queue.shuffled,
+      );
       _notifyListeners();
-    } catch (e) {
-      _queue = previousQueue;
-      _error = e.toString();
-      _notifyListeners();
-    }
+
+      try {
+        final updatedQueue = await _apiClient.reorderQueue(
+          queueItemId: queueItemId,
+          toPosition: currentNewIndex,
+        );
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
+        _rememberQueueAnalyses();
+        _pruneTimingState();
+        _notifyListeners();
+      } catch (e) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+          if (!_isCurrentQueueOperation(operationGeneration)) return;
+          _error = e.toString();
+          _notifyListeners();
+          return;
+        }
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(previousQueue);
+        _rememberQueueAnalyses();
+        _error = e.toString();
+        _notifyListeners();
+      }
+    });
   }
 
   Future<void> clearQueue() async {
-    final previousQueue = _queue;
-    final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
-    final previousTimelineStarts = Map<String, int>.from(
-      _timelineStartOverrides,
-    );
-    final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
+    await _runQueueMutation(() async {
+      final operationGeneration = _beginQueueOperation();
+      final previousQueue = _queue;
+      final previousTrimRanges = Map<String, TrimRange>.from(_trimRanges);
+      final previousTimelineStarts = Map<String, int>.from(
+        _timelineStartOverrides,
+      );
+      final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
 
-    _queue = QueueState.empty();
-    _trimRanges = {};
-    _timelineStartOverrides = {};
-    _mixPlanClips = {};
-    _notifyListeners();
-
-    try {
-      await _apiClient.clearQueue();
-    } catch (e) {
-      _queue = previousQueue;
-      _trimRanges = previousTrimRanges;
-      _timelineStartOverrides = previousTimelineStarts;
-      _mixPlanClips = previousMixPlanClips;
-      _error = e.toString();
+      _queue = QueueState.empty();
+      _trimRanges = {};
+      _timelineStartOverrides = {};
+      _mixPlanClips = {};
+      _pruneAnalysisAuthorityState();
       _notifyListeners();
-    }
+
+      try {
+        await _apiClient.clearQueue();
+      } catch (e) {
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        if (await _reconcileQueueAfterMutationFailure(operationGeneration)) {
+          if (!_isCurrentQueueOperation(operationGeneration)) return;
+          _error = e.toString();
+          _notifyListeners();
+          return;
+        }
+        if (!_isCurrentQueueOperation(operationGeneration)) return;
+        _queue = _queueWithAuthoritativeAnalysis(previousQueue);
+        _rememberQueueAnalyses();
+        _trimRanges = previousTrimRanges;
+        _timelineStartOverrides = previousTimelineStarts;
+        _mixPlanClips = previousMixPlanClips;
+        _error = e.toString();
+        _notifyListeners();
+      }
+    });
   }
 
   /// Move a track's entry point to [ms]. Clamped via [TrimRange].
@@ -461,7 +699,52 @@ class QueueProvider extends ChangeNotifier {
     _notifyListeners();
   }
 
-  Future<void> _loadQueueTimingMixPlan() async {
+  int _beginQueueOperation({bool loading = false}) {
+    _isLoading = loading;
+    _error = null;
+    return ++_queueOperationGeneration;
+  }
+
+  bool _isCurrentQueueOperation(int generation) =>
+      !_disposed && generation == _queueOperationGeneration;
+
+  Future<T> _runQueueMutation<T>(Future<T> Function() mutation) {
+    final previous = _queueMutationTail;
+    final result = () async {
+      if (previous != null) await previous;
+      return mutation();
+    }();
+    late final Future<void> tail;
+    tail = result.then<void>((_) {}, onError: (_, __) {});
+    _queueMutationTail = tail;
+    unawaited(
+      tail.whenComplete(() {
+        if (identical(_queueMutationTail, tail)) {
+          _queueMutationTail = null;
+        }
+      }),
+    );
+    return result;
+  }
+
+  Future<bool> _reconcileQueueAfterMutationFailure(int generation) async {
+    try {
+      final loadedQueue = await _apiClient.getQueue();
+      if (!_isCurrentQueueOperation(generation)) return false;
+      _queue = _queueWithAuthoritativeAnalysis(loadedQueue);
+      _rememberQueueAnalyses();
+      _pruneTimingState();
+      await _loadQueueTimingMixPlan(operationGeneration: generation);
+      return _isCurrentQueueOperation(generation);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _loadQueueTimingMixPlan({
+    required int operationGeneration,
+  }) async {
+    if (!_isCurrentQueueOperation(operationGeneration)) return;
     if (_queue.tracks.isEmpty) {
       _activeMixPlanId = null;
       _activeMixPlanVersion = null;
@@ -471,7 +754,7 @@ class QueueProvider extends ChangeNotifier {
 
     try {
       final plans = await _apiClient.listMixPlans();
-      if (_disposed) return;
+      if (!_isCurrentQueueOperation(operationGeneration)) return;
       final plan = plans.cast<MixPlan?>().firstWhere(
             (plan) => plan?.name == queueTimingMixPlanName,
             orElse: () => null,
@@ -824,38 +1107,725 @@ class QueueProvider extends ChangeNotifier {
     for (final track in _queue.tracks) {
       _rememberTrackAnalysis(track);
     }
+    _pruneAnalysisAuthorityState();
+  }
+
+  QueueState _queueWithAuthoritativeAnalysis(QueueState queue) {
+    final tracks = <Track>[];
+    for (final track in queue.tracks) {
+      final trackId = _analysisTrackId(track);
+      if (trackId == null) {
+        tracks.add(track);
+        continue;
+      }
+
+      final key = trackId.toString();
+      final incoming = track.analysis;
+      if (incoming != null) {
+        _lastIncomingAnalysisByTrackId[key] = incoming;
+        _ingestIncomingAnalysis(key, incoming);
+      }
+      final resolved = _authoritativeAnalysisLocks[key] ??
+          _analysisByTrackId[key] ??
+          _analysisRevisionSnapshots[key] ??
+          incoming;
+      tracks.add(
+        resolved == null || identical(resolved, incoming)
+            ? track
+            : track.copyWith(analysis: resolved),
+      );
+    }
+    return QueueState(
+      tracks: tracks,
+      currentIndex: queue.currentIndex,
+      repeatMode: queue.repeatMode,
+      shuffled: queue.shuffled,
+    );
   }
 
   void _rememberTrackAnalysis(Track track) {
     final analysis = track.analysis;
     final trackId = _analysisTrackId(track);
     if (analysis == null || trackId == null) return;
-    _analysisByTrackId[trackId.toString()] = analysis;
+    final key = trackId.toString();
+    _lastIncomingAnalysisByTrackId[key] = analysis;
+    _ingestIncomingAnalysis(key, analysis);
+  }
+
+  bool _ingestIncomingAnalysis(String key, TrackAnalysis analysis) {
+    if (!_acceptIncomingAnalysis(key, analysis)) return false;
+
+    _touchAnalysisAuthority(key);
+    _rememberAnalysisRevision(key, analysis);
+    final signature = _analysisCompactSignature(analysis);
+    final cached = _analysisByTrackId[key];
+    if (_hasWaveformDetail(analysis)) {
+      if (!identical(cached, analysis)) {
+        _advanceAnalysisGeneration(key);
+        _analysisByTrackId[key] = analysis;
+        _appliedCompactAnalysisSignatures[key] = signature;
+        _resetAnalysisRequestState(key);
+        _invalidateAnalysisCache(key);
+      }
+      return true;
+    }
+
+    // Collection snapshots can remain pending after a newer per-track GET has
+    // returned analyzed detail. Apply each distinct compact snapshot once so a
+    // rebuild never downgrades that hydrated result back to the stale state.
+    if (_appliedCompactAnalysisSignatures[key] == signature) {
+      if (cached != null && _analysisRevisionSupersedes(analysis, cached)) {
+        _advanceAnalysisGeneration(key);
+        _analysisByTrackId[key] = analysis;
+        _resetAnalysisRequestState(key);
+        _invalidateAnalysisCache(key);
+      }
+      return true;
+    }
+
+    _advanceAnalysisGeneration(key);
+    _appliedCompactAnalysisSignatures[key] = signature;
+    final preservesCachedDetail = cached != null &&
+        _hasWaveformDetail(cached) &&
+        !_analysisRevisionSupersedes(analysis, cached);
+    _analysisByTrackId[key] = preservesCachedDetail
+        ? _mergeDetailedAnalysis(cached, analysis)
+        : analysis;
+    _resetAnalysisRequestState(key);
+    _invalidateAnalysisCache(key);
+    return true;
+  }
+
+  bool _acceptIncomingAnalysis(String key, TrackAnalysis analysis) {
+    if (_analysisPredatesFloor(key, analysis)) return false;
+
+    final authoritative = _authoritativeAnalysisLocks[key];
+    if (authoritative == null || identical(authoritative, analysis)) {
+      return true;
+    }
+
+    final incomingRevision = analysis.updatedAt;
+    if (incomingRevision == null) {
+      return _analysisCompactSignature(analysis) ==
+          _analysisCompactSignature(authoritative);
+    }
+
+    final authoritativeRevision = authoritative.updatedAt;
+    if (authoritativeRevision != null &&
+        incomingRevision.isBefore(authoritativeRevision)) {
+      return false;
+    }
+    _authoritativeAnalysisLocks.remove(key);
+    return true;
+  }
+
+  bool _analysisPredatesFloor(String key, TrackAnalysis analysis) {
+    final floor = _analysisRevisionFloors[key];
+    if (floor == null) return false;
+    final revision = analysis.updatedAt;
+    return revision == null || revision.isBefore(floor);
+  }
+
+  void _rememberAnalysisRevision(String key, TrackAnalysis analysis) {
+    final revision = analysis.updatedAt;
+    if (revision == null) return;
+    final floor = _analysisRevisionFloors[key];
+    if (floor != null && revision.isBefore(floor)) return;
+    _analysisRevisionFloors[key] = revision;
+    _analysisRevisionSnapshots[key] = _compactRevisionSnapshot(analysis);
+    _touchAnalysisAuthority(key);
+  }
+
+  TrackAnalysis _compactRevisionSnapshot(TrackAnalysis analysis) {
+    final sourceSummary = analysis.summary;
+    final sourceOverrides = analysis.overrides;
+    final beatGrid = sourceSummary?.beatGrid;
+    final downbeats = sourceSummary?.downbeats;
+    final summary = sourceSummary == null
+        ? null
+        : TrackAnalysisSummary(
+            bpm: sourceSummary.bpm,
+            beatGrid: beatGrid == null
+                ? null
+                : BeatGridSummary(
+                    bpm: beatGrid.bpm,
+                    offsetMs: beatGrid.offsetMs,
+                    beatsMs: _boundedMarkerPositions(
+                      beatGrid.beatsMs,
+                      _maxRetainedBeatPositions,
+                    ),
+                    confidence: beatGrid.confidence,
+                    provenance: beatGrid.provenance,
+                  ),
+            downbeats: downbeats == null
+                ? null
+                : DownbeatSummary(
+                    positionsMs: _boundedMarkerPositions(
+                      downbeats.positionsMs,
+                      _maxRetainedDownbeatPositions,
+                    ),
+                    confidence: downbeats.confidence,
+                    provenance: downbeats.provenance,
+                  ),
+            key: sourceSummary.key,
+            camelot: sourceSummary.camelot,
+            energy: sourceSummary.energy,
+          );
+    final overrides = sourceOverrides == null
+        ? null
+        : TrackAnalysisOverrides(
+            bpm: sourceOverrides.bpm,
+            bpmConfidence: sourceOverrides.bpmConfidence,
+            beatGridOffsetMs: sourceOverrides.beatGridOffsetMs,
+            beatsMs: sourceOverrides.beatsMs == null
+                ? null
+                : _boundedMarkerPositions(
+                    sourceOverrides.beatsMs!,
+                    _maxRetainedBeatPositions,
+                  ),
+            downbeatsMs: sourceOverrides.downbeatsMs == null
+                ? null
+                : _boundedMarkerPositions(
+                    sourceOverrides.downbeatsMs!,
+                    _maxRetainedDownbeatPositions,
+                  ),
+            musicalKey: sourceOverrides.musicalKey,
+            camelot: sourceOverrides.camelot,
+            provenance: sourceOverrides.provenance,
+            bpmProvenance: sourceOverrides.bpmProvenance,
+            beatGridProvenance: sourceOverrides.beatGridProvenance,
+            downbeatProvenance: sourceOverrides.downbeatProvenance,
+          );
+    return TrackAnalysis(
+      status: analysis.status,
+      summary: summary,
+      overrides: overrides,
+      overridesPresent: analysis.overridesPresent,
+      updatedAt: analysis.updatedAt,
+    );
+  }
+
+  List<int> _boundedMarkerPositions(List<int> positions, int limit) {
+    if (positions.length <= limit) {
+      return List<int>.unmodifiable(positions);
+    }
+    final headLength = limit ~/ 2;
+    final tailLength = limit - headLength;
+    return List<int>.unmodifiable([
+      ...positions.take(headLength),
+      ...positions.skip(positions.length - tailLength),
+    ]);
+  }
+
+  bool _analysisRevisionSupersedes(
+    TrackAnalysis incoming,
+    TrackAnalysis cached,
+  ) {
+    final incomingRevision = incoming.updatedAt;
+    if (incomingRevision == null) return false;
+    final cachedRevision = cached.updatedAt;
+    return cachedRevision == null || incomingRevision.isAfter(cachedRevision);
+  }
+
+  bool _hasWaveformDetail(TrackAnalysis analysis) {
+    final waveform = analysis.summary?.waveform;
+    return waveform != null &&
+        ((waveform.sampleCount ?? 0) > 0 ||
+            waveform.peaks.isNotEmpty ||
+            waveform.spectralBands.isNotEmpty ||
+            waveform.resolutions.isNotEmpty);
   }
 
   void _fetchAnalysisIfNeeded(int trackId) {
     final key = trackId.toString();
-    if (_analysisByTrackId.containsKey(key) ||
-        _analysisRequestsInFlight.contains(key)) {
+    if (!_analysisHydrationInterest.contains(key) ||
+        !_analysisNeedsHydration(key)) {
+      return;
+    }
+    if (_analysisRequestsInFlight.contains(key) ||
+        _analysisRequestsQueued.contains(key)) {
       return;
     }
 
+    final now = _analysisClock();
+    final lastRequestedAt = _analysisLastRequestedAt[key];
+    if (lastRequestedAt != null &&
+        now.difference(lastRequestedAt) < _analysisRetryCooldown) {
+      _scheduleAnalysisRetry(
+        trackId,
+        _analysisRetryCooldown - now.difference(lastRequestedAt),
+      );
+      return;
+    }
+
+    _analysisRequestsQueued.add(key);
+    _analysisRequestQueue.add(
+      _AnalysisRequest(
+        trackId: trackId,
+        generation: _analysisGenerations[key] ?? 0,
+      ),
+    );
+    _drainAnalysisRequests();
+  }
+
+  bool _analysisNeedsHydration(String key) {
+    if (_analysisPermanentFailures.contains(key) ||
+        (_analysisTransportFailures[key] ?? 0) >= _maxAnalysisRequestAttempts) {
+      return false;
+    }
+    final cached = _analysisByTrackId[key];
+    if (cached == null) return true;
+    if (_hasWaveformDetail(cached) &&
+        cached.status == TrackAnalysisStatus.analyzed) {
+      _cancelAnalysisRetry(key);
+      return false;
+    }
+    if (cached.status == TrackAnalysisStatus.failed ||
+        cached.status == TrackAnalysisStatus.unsupported) {
+      _cancelAnalysisRetry(key);
+      return false;
+    }
+    return true;
+  }
+
+  void _drainAnalysisRequests() {
+    while (!_disposed &&
+        _analysisRequestsInFlight.length < _maxConcurrentAnalysisRequests &&
+        _analysisRequestQueue.isNotEmpty) {
+      final request = _analysisRequestQueue.removeFirst();
+      final trackId = request.trackId;
+      final key = trackId.toString();
+      _analysisRequestsQueued.remove(key);
+      if (_analysisRequestsInFlight.contains(key) ||
+          !_analysisHydrationInterest.contains(key)) {
+        continue;
+      }
+      if ((_analysisGenerations[key] ?? 0) != request.generation) {
+        _fetchAnalysisIfNeeded(trackId);
+        continue;
+      }
+      if (!_analysisNeedsHydration(key)) {
+        continue;
+      }
+      _startAnalysisRequest(request);
+    }
+  }
+
+  void _startAnalysisRequest(_AnalysisRequest request) {
+    final trackId = request.trackId;
+    final key = trackId.toString();
+    final generation = request.generation;
+    _analysisLastRequestedAt[key] = _analysisClock();
+    _analysisRequestAttempts[key] = (_analysisRequestAttempts[key] ?? 0) + 1;
     _analysisRequestsInFlight.add(key);
     unawaited(() async {
+      var shouldRetry = false;
       try {
         final analysis = await _apiClient.getTrackAnalysis(trackId);
         if (_disposed) return;
-        _analysisByTrackId[key] = analysis;
+        if (!_analysisHydrationInterest.contains(key) ||
+            (_analysisGenerations[key] ?? 0) != generation) {
+          return;
+        }
+
+        if (!_ingestIncomingAnalysis(key, analysis)) {
+          shouldRetry = true;
+          return;
+        }
+        _analysisPermanentFailures.remove(key);
+        _analysisTransportFailures.remove(key);
+        final accepted = _analysisByTrackId[key] ?? analysis;
+        if (_hasWaveformDetail(accepted) &&
+            accepted.status == TrackAnalysisStatus.analyzed) {
+          _analysisLastRequestedAt.remove(key);
+          _analysisRequestAttempts.remove(key);
+          _cancelAnalysisRetry(key);
+        } else {
+          shouldRetry = analysis.status != TrackAnalysisStatus.failed &&
+              analysis.status != TrackAnalysisStatus.unsupported;
+        }
         _invalidateAnalysisCache(key);
         _notifyListeners();
-      } catch (_) {
+      } catch (error) {
         // Analysis is progressive enhancement. Playback and queue editing must
         // keep working if an individual track has no analyzed artifact yet.
+        shouldRetry = _isRetryableAnalysisError(error);
+        if (shouldRetry) {
+          _analysisTransportFailures[key] =
+              (_analysisTransportFailures[key] ?? 0) + 1;
+        } else {
+          _analysisPermanentFailures.add(key);
+        }
       } finally {
         _analysisRequestsInFlight.remove(key);
+        if (!_disposed) {
+          final stillInterested = _analysisHydrationInterest.contains(key);
+          final sameGeneration = (_analysisGenerations[key] ?? 0) == generation;
+          if (shouldRetry && stillInterested && sameGeneration) {
+            _scheduleAnalysisRetry(trackId, _analysisRetryDelay(key));
+          } else if (stillInterested && !sameGeneration) {
+            _fetchAnalysisIfNeeded(trackId);
+          }
+          _drainAnalysisRequests();
+          _pruneAnalysisAuthorityState();
+        }
       }
     }());
   }
+
+  void _scheduleAnalysisRetry(int trackId, Duration delay) {
+    final key = trackId.toString();
+    if (_disposed ||
+        !_analysisHydrationInterest.contains(key) ||
+        !_analysisNeedsHydration(key) ||
+        _analysisRetryTimers.containsKey(key)) {
+      return;
+    }
+    final generation = _analysisGenerations[key] ?? 0;
+    final retryDelay = delay.isNegative ? Duration.zero : delay;
+    _analysisRetryTimers[key] = Timer(retryDelay, () {
+      _analysisRetryTimers.remove(key);
+      if (_disposed ||
+          !_analysisHydrationInterest.contains(key) ||
+          (_analysisGenerations[key] ?? 0) != generation) {
+        return;
+      }
+      _analysisLastRequestedAt.remove(key);
+      _fetchAnalysisIfNeeded(trackId);
+    });
+  }
+
+  Duration _analysisRetryDelay(String key) {
+    final attempt = (_analysisRequestAttempts[key] ?? 1).clamp(1, 16);
+    final multiplier = 1 << (attempt - 1);
+    final milliseconds = (_analysisRetryCooldown.inMilliseconds * multiplier)
+        .clamp(0, _maxAnalysisRetryDelay.inMilliseconds)
+        .toInt();
+    return Duration(milliseconds: milliseconds);
+  }
+
+  bool _isRetryableAnalysisError(Object error) {
+    if (error is! ApiException) return true;
+    final statusCode = error.statusCode;
+    return statusCode <= 0 ||
+        statusCode == 408 ||
+        statusCode == 425 ||
+        statusCode == 429 ||
+        statusCode >= 500;
+  }
+
+  void _cancelAnalysisRetry(String key) {
+    _analysisRetryTimers.remove(key)?.cancel();
+  }
+
+  void _resetAnalysisRequestState(String key) {
+    _analysisLastRequestedAt.remove(key);
+    _analysisRequestAttempts.remove(key);
+    _analysisTransportFailures.remove(key);
+    _analysisPermanentFailures.remove(key);
+    _cancelAnalysisRetry(key);
+  }
+
+  Set<String> _analysisAuthorityKeys() => <String>{
+        ..._analysisRevisionFloors.keys,
+        ..._analysisRevisionSnapshots.keys,
+        ..._analysisGenerations.keys,
+        ..._authoritativeAnalysisLocks.keys,
+        ..._appliedCompactAnalysisSignatures.keys,
+        ..._lastIncomingAnalysisByTrackId.keys,
+        ..._analysisByTrackId.keys,
+        ..._analysisLastRequestedAt.keys,
+        ..._analysisRequestAttempts.keys,
+        ..._analysisTransportFailures.keys,
+        ..._analysisPermanentFailures,
+        ..._analysisRequestsQueued,
+        ..._analysisRequestsInFlight,
+        ..._analysisRetryTimers.keys,
+      };
+
+  Set<String> _activeAnalysisAuthorityKeys() {
+    final active = <String>{
+      ..._analysisHydrationInterest,
+      ..._analysisOverrideMutationTails.keys,
+      ..._analysisRequestsInFlight,
+    };
+    for (final track in _queue.tracks) {
+      final trackId = _analysisTrackId(track);
+      if (trackId != null) active.add(trackId.toString());
+    }
+    return active;
+  }
+
+  void _touchAnalysisAuthority(String key) {
+    _analysisAuthorityLru
+      ..remove(key)
+      ..add(key);
+  }
+
+  void _pruneAnalysisAuthorityState() {
+    if (_disposed) return;
+
+    // Detailed waveform payloads only belong to visible timeline lanes. The
+    // revision snapshots and correction locks below are compact metadata.
+    final detailKeys = <String>{
+      ..._analysisByTrackId.keys,
+      ..._lastIncomingAnalysisByTrackId.keys,
+    };
+    for (final key in detailKeys) {
+      if (_analysisHydrationInterest.contains(key)) continue;
+      final cached = _analysisByTrackId[key];
+      final compactedAnalysis =
+          cached != null && _analysisNeedsAuthorityCompaction(cached);
+      if (cached != null && compactedAnalysis) {
+        _analysisByTrackId[key] = _compactRevisionSnapshot(cached);
+      }
+      final removedIncoming = _lastIncomingAnalysisByTrackId.remove(key);
+      if (compactedAnalysis || removedIncoming != null) {
+        _invalidateAnalysisCache(key);
+      }
+    }
+
+    final authorityKeys = _analysisAuthorityKeys();
+    _analysisAuthorityLru.removeWhere(
+      (key) => !authorityKeys.contains(key),
+    );
+    for (final key in authorityKeys) {
+      _analysisAuthorityLru.add(key);
+    }
+
+    final active = _activeAnalysisAuthorityKeys();
+    var retainedOffQueue =
+        _analysisAuthorityLru.where((key) => !active.contains(key)).length;
+    while (retainedOffQueue > _maxRetainedAnalysisAuthorityEntries) {
+      String? evicted;
+      for (final key in _analysisAuthorityLru) {
+        if (!active.contains(key)) {
+          evicted = key;
+          break;
+        }
+      }
+      if (evicted == null) break;
+      _evictAnalysisAuthority(evicted);
+      retainedOffQueue--;
+    }
+  }
+
+  void _evictAnalysisAuthority(String key) {
+    _analysisAuthorityLru.remove(key);
+    _analysisRevisionFloors.remove(key);
+    _analysisRevisionSnapshots.remove(key);
+    _analysisGenerations.remove(key);
+    _authoritativeAnalysisLocks.remove(key);
+    _appliedCompactAnalysisSignatures.remove(key);
+    _lastIncomingAnalysisByTrackId.remove(key);
+    _analysisByTrackId.remove(key);
+    _analysisLastRequestedAt.remove(key);
+    _analysisRequestAttempts.remove(key);
+    _analysisTransportFailures.remove(key);
+    _analysisPermanentFailures.remove(key);
+    _analysisRequestsQueued.remove(key);
+    _analysisRequestQueue.removeWhere(
+      (request) => request.trackId.toString() == key,
+    );
+    _cancelAnalysisRetry(key);
+    _invalidateAnalysisCache(key);
+  }
+
+  bool _analysisNeedsAuthorityCompaction(TrackAnalysis analysis) {
+    final summary = analysis.summary;
+    if (summary == null) return false;
+    return _hasWaveformDetail(analysis) ||
+        (summary.beatGrid?.beatsMs.length ?? 0) > _maxRetainedBeatPositions ||
+        (summary.downbeats?.positionsMs.length ?? 0) >
+            _maxRetainedDownbeatPositions ||
+        summary.loudness != null ||
+        summary.truePeak != null ||
+        summary.transients != null ||
+        summary.silence != null ||
+        summary.intro != null ||
+        summary.outro != null ||
+        summary.sections.isNotEmpty ||
+        summary.cueCandidates.isNotEmpty;
+  }
+
+  void _releaseAnalysisHydration(String key) {
+    _advanceAnalysisGeneration(key);
+    _analysisRequestsQueued.remove(key);
+    _resetAnalysisRequestState(key);
+    _analysisByTrackId.remove(key);
+    _appliedCompactAnalysisSignatures.remove(key);
+    _lastIncomingAnalysisByTrackId.remove(key);
+    _invalidateAnalysisCache(key);
+    _pruneAnalysisAuthorityState();
+  }
+
+  void _advanceAnalysisGeneration(String key) {
+    _analysisGenerations[key] = (_analysisGenerations[key] ?? 0) + 1;
+    _touchAnalysisAuthority(key);
+  }
+
+  TrackAnalysis _mergeDetailedAnalysis(
+    TrackAnalysis detailed,
+    TrackAnalysis incoming,
+  ) {
+    final baseSummary = incoming.overridesPresent
+        ? _summaryWithoutAppliedOverrides(detailed)
+        : detailed.summary?.toJson() ?? const <String, dynamic>{};
+    final summary = _deepMergeAnalysisMaps(
+      baseSummary,
+      incoming.summary?.toJson() ?? const <String, dynamic>{},
+    );
+    final overrides = incoming.overridesPresent
+        ? incoming.overrides?.toJson() ?? const <String, dynamic>{}
+        : detailed.overrides?.toJson();
+    return TrackAnalysis.fromJson(
+      status: incoming.status.name,
+      summary: summary.isEmpty ? null : summary,
+      overrides: overrides,
+      overridesPresent: incoming.overridesPresent || detailed.overridesPresent,
+      updatedAt: incoming.updatedAt ?? detailed.updatedAt,
+    );
+  }
+
+  Map<String, dynamic> _summaryWithoutAppliedOverrides(
+    TrackAnalysis analysis,
+  ) {
+    final summary = Map<String, dynamic>.from(
+      analysis.summary?.toJson() ?? const <String, dynamic>{},
+    );
+    final overrides = analysis.overrides;
+    if (overrides == null) return summary;
+
+    if (overrides.bpm != null) summary.remove('bpm');
+    final beatGrid = _mutableNestedMap(summary, 'beat_grid');
+    if (beatGrid != null) {
+      if (overrides.bpm != null) {
+        beatGrid
+          ..remove('bpm')
+          ..remove('confidence')
+          ..remove('provenance');
+      }
+      if (overrides.beatsMs != null) {
+        beatGrid
+          ..remove('beats_ms')
+          ..remove('confidence')
+          ..remove('provenance');
+      }
+      if (overrides.beatGridOffsetMs != null) {
+        beatGrid.remove('offset_ms');
+      }
+      if (beatGrid.isEmpty) summary.remove('beat_grid');
+    }
+    if (overrides.downbeatsMs != null) summary.remove('downbeats');
+    if (overrides.musicalKey != null) summary.remove('key');
+    if (overrides.camelot != null) summary.remove('camelot');
+    return summary;
+  }
+
+  Map<String, dynamic>? _mutableNestedMap(
+    Map<String, dynamic> parent,
+    String key,
+  ) {
+    final value = parent[key];
+    if (value is! Map) return null;
+    final result = Map<String, dynamic>.from(value);
+    parent[key] = result;
+    return result;
+  }
+
+  Map<String, dynamic> _deepMergeAnalysisMaps(
+    Map<String, dynamic> base,
+    Map<String, dynamic> incoming,
+  ) {
+    final merged = Map<String, dynamic>.from(base);
+    for (final entry in incoming.entries) {
+      final existing = merged[entry.key];
+      final value = entry.value;
+      if (existing is Map && value is Map) {
+        merged[entry.key] = _deepMergeAnalysisMaps(
+          Map<String, dynamic>.from(existing),
+          Map<String, dynamic>.from(value),
+        );
+      } else {
+        merged[entry.key] = value;
+      }
+    }
+    return merged;
+  }
+
+  Track _enrichedTrack(
+      Track track, String analysisKey, TrackAnalysis analysis) {
+    final cacheKey = '${track.queueItemId}|${track.id}|$analysisKey';
+    final cached = _enrichedTrackCache[cacheKey];
+    if (cached != null &&
+        identical(cached.source, track) &&
+        identical(cached.analysis, analysis)) {
+      return cached.result;
+    }
+    final result = track.copyWith(analysis: analysis);
+    _enrichedTrackCache[cacheKey] = _EnrichedTrackCacheEntry(
+      source: track,
+      analysis: analysis,
+      result: result,
+    );
+    return result;
+  }
+
+  int _analysisCompactSignature(TrackAnalysis analysis) {
+    final summary = analysis.summary;
+    final beatGrid = summary?.beatGrid;
+    final downbeats = summary?.downbeats;
+    return Object.hash(
+      analysis.status,
+      analysis.overridesPresent,
+      _analysisValueSignature(summary?.bpm),
+      beatGrid == null
+          ? null
+          : Object.hash(
+              beatGrid.bpm,
+              beatGrid.offsetMs,
+              beatGrid.confidence,
+              beatGrid.provenance,
+              Object.hashAll(beatGrid.beatsMs),
+            ),
+      downbeats == null
+          ? null
+          : Object.hash(
+              downbeats.confidence,
+              downbeats.provenance,
+              Object.hashAll(downbeats.positionsMs),
+            ),
+      _analysisValueSignature(summary?.key),
+      _analysisValueSignature(summary?.camelot),
+      _analysisValueSignature(summary?.energy),
+      _analysisOverridesSignature(analysis.overrides),
+    );
+  }
+
+  int? _analysisOverridesSignature(TrackAnalysisOverrides? overrides) =>
+      overrides == null
+          ? null
+          : Object.hash(
+              overrides.bpm,
+              overrides.bpmConfidence,
+              overrides.beatGridOffsetMs,
+              overrides.beatsMs == null
+                  ? null
+                  : Object.hashAll(overrides.beatsMs!),
+              overrides.downbeatsMs == null
+                  ? null
+                  : Object.hashAll(overrides.downbeatsMs!),
+              overrides.musicalKey,
+              overrides.camelot,
+              overrides.provenance,
+              overrides.bpmProvenance,
+              overrides.beatGridProvenance,
+              overrides.downbeatProvenance,
+            );
+
+  int? _analysisValueSignature(AnalysisValue? value) => value == null
+      ? null
+      : Object.hash(value.value, value.confidence, value.provenance);
 
   int? _analysisTrackId(Track track) {
     for (final candidate in [track.playbackTrackId, track.id]) {
@@ -867,11 +1837,15 @@ class QueueProvider extends ChangeNotifier {
   }
 
   void _invalidateAnalysisCache(String trackId) {
+    _analysisRevision++;
     _waveformPeaks.removeWhere(
-      (cacheKey, _) => cacheKey.contains('track:$trackId'),
+      (cacheKey, _) => cacheKey.contains('|track:$trackId|'),
     );
     _timelineWaveforms.removeWhere(
-      (cacheKey, _) => cacheKey.contains('track:$trackId'),
+      (cacheKey, _) => cacheKey.contains('|track:$trackId|'),
+    );
+    _enrichedTrackCache.removeWhere(
+      (cacheKey, _) => cacheKey.endsWith('|$trackId'),
     );
   }
 
@@ -916,6 +1890,32 @@ class QueueProvider extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    for (final timer in _analysisRetryTimers.values) {
+      timer.cancel();
+    }
+    _analysisRetryTimers.clear();
+    _analysisHydrationInterest.clear();
+    _analysisRequestQueue.clear();
+    _analysisRequestsQueued.clear();
     super.dispose();
   }
+}
+
+class _AnalysisRequest {
+  final int trackId;
+  final int generation;
+
+  const _AnalysisRequest({required this.trackId, required this.generation});
+}
+
+class _EnrichedTrackCacheEntry {
+  final Track source;
+  final TrackAnalysis analysis;
+  final Track result;
+
+  const _EnrichedTrackCacheEntry({
+    required this.source,
+    required this.analysis,
+    required this.result,
+  });
 }

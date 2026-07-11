@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/track_analysis.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
+import '../shared/widgets/song_metadata_chips.dart';
 import 'queue_waveform_trim_control.dart';
 
 class QueueItem extends StatelessWidget {
@@ -65,85 +66,120 @@ class QueueItem extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  // Left-edge vertical reorder grip (only it starts reorder).
-                  if (reorderHandle != null) ...[
-                    reorderHandle!,
-                    const SizedBox(width: 8),
-                  ],
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final trailingFraction = reorderHandle == null ? 0.4 : 0.32;
+                  final trailingMinWidth = reorderHandle == null ? 96.0 : 88.0;
+                  final trailingMaxWidth =
+                      (constraints.maxWidth * trailingFraction)
+                          .clamp(trailingMinWidth, 160.0)
+                          .toDouble();
+                  return Row(
+                    children: [
+                      // Left-edge vertical reorder grip (only it starts reorder).
+                      if (reorderHandle != null) ...[
+                        reorderHandle!,
+                        const SizedBox(width: 8),
+                      ],
 
-                  // Album art thumbnail
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: SizedBox(
-                      width: 48,
-                      height: 48,
-                      child: track.coverUrl != null
-                          ? Image.network(
-                              track.coverUrl!,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => _buildPlaceholder(),
-                            )
-                          : _buildPlaceholder(),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
+                      // Album art thumbnail
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: SizedBox(
+                          width: 48,
+                          height: 48,
+                          child: track.coverUrl != null
+                              ? Image.network(
+                                  track.coverUrl!,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) =>
+                                      _buildPlaceholder(),
+                                )
+                              : _buildPlaceholder(),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
 
-                  // Track info
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
+                      // Track info
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            if (isPlaying) ...[
-                              Icon(
-                                Icons.equalizer,
-                                size: 16,
-                                color: colorScheme.primary,
-                              ),
-                              const SizedBox(width: 4),
-                            ],
-                            Expanded(
-                              child: Text(
-                                track.title,
-                                style: TextStyle(
-                                  fontWeight: isPlaying
-                                      ? FontWeight.bold
-                                      : FontWeight.w500,
-                                  color: isPlaying ? colorScheme.primary : null,
+                            Row(
+                              children: [
+                                if (isPlaying) ...[
+                                  Icon(
+                                    Icons.equalizer,
+                                    size: 16,
+                                    color: colorScheme.primary,
+                                  ),
+                                  const SizedBox(width: 4),
+                                ],
+                                Expanded(
+                                  child: Text(
+                                    track.title,
+                                    style: TextStyle(
+                                      fontWeight: isPlaying
+                                          ? FontWeight.bold
+                                          : FontWeight.w500,
+                                      color: isPlaying
+                                          ? colorScheme.primary
+                                          : null,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
                                 ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              track.artist ?? 'Unknown artist',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(color: Colors.grey[600]),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ],
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          track.artist ?? 'Unknown artist',
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(color: Colors.grey[600]),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(width: 8),
+                      ConstrainedBox(
+                        key: const ValueKey('queue_item_metadata_trailing'),
+                        constraints: BoxConstraints(
+                          maxWidth: trailingMaxWidth,
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          track.formattedDuration,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(color: Colors.grey[600]),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Align(
+                              widthFactor: 1,
+                              alignment: Alignment.centerRight,
+                              child: SongMetadataChips(
+                                analysis: track.analysis,
+                                singleLine: true,
+                                compact: true,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              track.formattedDuration,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(color: Colors.grey[600]),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
-                  ),
-                ],
+                      ),
+                    ],
+                  );
+                },
               ),
               Padding(
                 padding: EdgeInsets.only(
@@ -227,12 +263,14 @@ class QueueItem extends StatelessWidget {
           children: [
             Icon(icon, size: 14, color: color),
             const SizedBox(width: 4),
-            Text(
-              label,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: color,
-                    fontWeight: FontWeight.w700,
-                  ),
+            Flexible(
+              child: Text(
+                label,
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: color,
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
             ),
           ],
         ),
@@ -268,7 +306,15 @@ class QueueItem extends StatelessWidget {
 
     if (analysis.status == TrackAnalysisStatus.analyzed &&
         analysis.hasDisplayableSummary) {
-      return analysis.summary!.displayLabels.take(10).map((label) {
+      final summary = analysis.summary!;
+      final keyLabel = [
+        summary.key?.textValue,
+        summary.camelot?.textValue,
+      ].whereType<String>().join(' · ');
+      return summary.displayLabels
+          .where((label) => !label.endsWith(' BPM') && label != keyLabel)
+          .take(8)
+          .map((label) {
         return _AnalysisChip(
           key: ValueKey('analysis_${track.id}_${label.hashCode}'),
           label: label,

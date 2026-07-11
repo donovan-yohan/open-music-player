@@ -19,14 +19,34 @@ void main() {
           'playedAt': DateTime.now()
               .subtract(const Duration(minutes: 5))
               .toIso8601String(),
-          'track': {'id': 7, 'title': 'Repeat Song', 'artist': 'Artist'},
+          'track': {
+            'id': 7,
+            'title': 'Repeat Song',
+            'artist': 'Artist',
+            'analysisStatus': 'analyzed',
+            'analysisSummary': {
+              'bpm': {'value': 126},
+              'key': {'value': 'Am'},
+              'camelot': {'value': '8A'},
+            },
+          },
         },
         {
           'id': 1,
           'playedAt': DateTime.now()
               .subtract(const Duration(hours: 1))
               .toIso8601String(),
-          'track': {'id': 7, 'title': 'Repeat Song', 'artist': 'Artist'},
+          'track': {
+            'id': 7,
+            'title': 'Repeat Song',
+            'artist': 'Artist',
+            'analysisStatus': 'analyzed',
+            'analysisSummary': {
+              'bpm': {'value': 126},
+              'key': {'value': 'Am'},
+              'camelot': {'value': '8A'},
+            },
+          },
         },
       ],
     }));
@@ -44,6 +64,8 @@ void main() {
     expect(find.text('Listening History'), findsOneWidget);
     expect(find.text('Repeat Song'), findsNWidgets(2));
     expect(find.text('5m ago'), findsOneWidget);
+    expect(find.text('126 BPM'), findsNWidgets(2));
+    expect(find.text('8A'), findsNWidgets(2));
 
     await tester.tap(find.text('Repeat Song').first);
     await tester.pumpAndSettle();

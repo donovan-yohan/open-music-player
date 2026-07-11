@@ -16,6 +16,8 @@ enum TransitionDiagnosticCode {
   missingBpm,
   lowBpmConfidence,
   missingDownbeats,
+  lowDownbeatConfidence,
+  noUsableDownbeatMarker,
   downbeatOffset,
   tempoOutOfRange,
   tempoMatched,
@@ -39,6 +41,13 @@ class TransitionDiagnostic {
     required this.label,
     required this.detail,
   });
+
+  /// Lets callers without snap-mode context classify beat-lock advice later.
+  bool get isDownbeatLockAdvisory =>
+      code == TransitionDiagnosticCode.missingDownbeats ||
+      code == TransitionDiagnosticCode.lowDownbeatConfidence ||
+      code == TransitionDiagnosticCode.noUsableDownbeatMarker ||
+      code == TransitionDiagnosticCode.downbeatOffset;
 }
 
 class TransitionDiagnostics {
@@ -96,7 +105,11 @@ class TransitionDiagnostics {
       .join('. ');
 }
 
-TransitionDiagnostics diagnoseTransition(MixClip first, MixClip second) {
+TransitionDiagnostics diagnoseTransition(
+  MixClip first,
+  MixClip second, {
+  BeatSnapMode? snapMode,
+}) {
   final outgoing =
       first.timelineStartMs <= second.timelineStartMs ? first : second;
   final incoming = identical(outgoing, first) ? second : first;
@@ -133,6 +146,7 @@ TransitionDiagnostics diagnoseTransition(MixClip first, MixClip second) {
         incoming: incoming,
         overlapStartMs: overlapStartMs,
         overlapEndMs: overlapEndMs,
+        snapMode: snapMode,
       ),
       ..._pitchDiagnostics(outgoing, incoming),
       ..._harmonicDiagnostics(outgoing, incoming),
@@ -319,43 +333,75 @@ List<TransitionDiagnostic> _downbeatDiagnostics({
   required MixClip incoming,
   required int overlapStartMs,
   required int overlapEndMs,
+  required BeatSnapMode? snapMode,
 }) {
-  if (!outgoing.tempo.hasDownbeats || !incoming.tempo.hasDownbeats) {
-    final missing = <String>[];
-    if (!outgoing.tempo.hasDownbeats) missing.add('outgoing');
-    if (!incoming.tempo.hasDownbeats) missing.add('incoming');
-    return [
+  final diagnostics = <TransitionDiagnostic>[];
+  final missing = <String>[];
+  if (!outgoing.tempo.hasDownbeatMarkers) missing.add('outgoing');
+  if (!incoming.tempo.hasDownbeatMarkers) missing.add('incoming');
+  if (missing.isNotEmpty) {
+    diagnostics.add(
       TransitionDiagnostic(
-        severity: TransitionDiagnosticSeverity.warning,
+        severity: _downbeatAdvisorySeverity(snapMode),
         code: TransitionDiagnosticCode.missingDownbeats,
         label: _missingLabel('downbeat', missing),
         detail:
             'Missing ${_missingSideText(missing)} downbeat markers; transition cannot be verified as phrase-locked.',
       ),
-    ];
+    );
+  }
+
+  final lowConfidence = <String>[];
+  if (outgoing.tempo.hasDownbeatMarkers &&
+      !outgoing.tempo.hasReliableDownbeats) {
+    lowConfidence.add('outgoing');
+  }
+  if (incoming.tempo.hasDownbeatMarkers &&
+      !incoming.tempo.hasReliableDownbeats) {
+    lowConfidence.add('incoming');
+  }
+  for (final side in lowConfidence) {
+    final confidence = side == 'outgoing'
+        ? outgoing.tempo.downbeatConfidence
+        : incoming.tempo.downbeatConfidence;
+    diagnostics.add(
+      TransitionDiagnostic(
+        severity: _downbeatAdvisorySeverity(snapMode),
+        code: TransitionDiagnosticCode.lowDownbeatConfidence,
+        label:
+            '${_diagnosticSideLabel(side)} downbeat confidence ${_confidencePercent(confidence)}',
+        detail:
+            '${_diagnosticSideLabel(side)} downbeat markers are present, but their ${_confidencePercent(confidence)} confidence is below the ${_percent(reliableDownbeatConfidenceFloor)} auto-lock threshold.',
+      ),
+    );
+  }
+  if (diagnostics.isNotEmpty) {
+    return diagnostics;
   }
 
   final outgoingDownbeats = _globalDownbeatsFor(outgoing);
   final incomingDownbeats = _globalDownbeatsFor(incoming);
-  final delta = _nearestDownbeatDelta(
+  final match = _nearestDownbeatMatch(
     outgoingDownbeats: outgoingDownbeats,
     incomingDownbeats: incomingDownbeats,
     overlapStartMs: overlapStartMs,
     overlapEndMs: overlapEndMs,
   );
-  if (delta == null) {
-    return const [
+  if (match == null) {
+    return [
       TransitionDiagnostic(
-        severity: TransitionDiagnosticSeverity.warning,
-        code: TransitionDiagnosticCode.missingDownbeats,
-        label: 'No downbeat',
-        detail: 'No downbeat marker lands near the current overlap.',
+        severity: _downbeatAdvisorySeverity(snapMode),
+        code: TransitionDiagnosticCode.noUsableDownbeatMarker,
+        label: 'No usable downbeat',
+        detail:
+            'Trustworthy markers do not produce a transformed downbeat in the current overlap window.',
       ),
     ];
   }
 
+  final delta = match.delta;
   final absDelta = delta.abs();
-  if (absDelta <= beatLockToleranceMs) {
+  if (match.bothInsideOverlap && absDelta <= beatLockToleranceMs) {
     return [
       TransitionDiagnostic(
         severity: TransitionDiagnosticSeverity.info,
@@ -369,7 +415,7 @@ List<TransitionDiagnostic> _downbeatDiagnostics({
   final direction = delta > 0 ? 'late' : 'early';
   return [
     TransitionDiagnostic(
-      severity: TransitionDiagnosticSeverity.warning,
+      severity: _downbeatAdvisorySeverity(snapMode),
       code: TransitionDiagnosticCode.downbeatOffset,
       label: 'Downbeat ${delta >= 0 ? '+' : ''}${delta}ms',
       detail: 'Incoming downbeat is ${absDelta}ms $direction.',
@@ -448,13 +494,37 @@ List<int> _globalDownbeatsFor(MixClip clip) {
   return sorted;
 }
 
-int? _nearestDownbeatDelta({
+class _DownbeatMatch {
+  final int delta;
+  final bool bothInsideOverlap;
+
+  const _DownbeatMatch({
+    required this.delta,
+    required this.bothInsideOverlap,
+  });
+}
+
+_DownbeatMatch? _nearestDownbeatMatch({
   required List<int> outgoingDownbeats,
   required List<int> incomingDownbeats,
   required int overlapStartMs,
   required int overlapEndMs,
 }) {
   if (outgoingDownbeats.isEmpty || incomingDownbeats.isEmpty) return null;
+
+  final outgoingInside = outgoingDownbeats
+      .where((ms) => ms >= overlapStartMs && ms < overlapEndMs)
+      .toList(growable: false);
+  final incomingInside = incomingDownbeats
+      .where((ms) => ms >= overlapStartMs && ms < overlapEndMs)
+      .toList(growable: false);
+  final insideMatch = _nearestDownbeatPair(
+    outgoingDownbeats: outgoingInside,
+    incomingDownbeats: incomingInside,
+    bothInsideOverlap: true,
+  );
+  if (insideMatch != null) return insideMatch;
+
   final windowStart = overlapStartMs - downbeatWarningToleranceMs;
   final windowEnd = overlapEndMs + downbeatWarningToleranceMs;
   final outgoing = outgoingDownbeats
@@ -463,13 +533,25 @@ int? _nearestDownbeatDelta({
   final incoming = incomingDownbeats
       .where((ms) => ms >= windowStart && ms <= windowEnd)
       .toList(growable: false);
-  final outgoingCandidates = outgoing.isEmpty ? outgoingDownbeats : outgoing;
-  final incomingCandidates = incoming.isEmpty ? incomingDownbeats : incoming;
+
+  return _nearestDownbeatPair(
+    outgoingDownbeats: outgoing,
+    incomingDownbeats: incoming,
+    bothInsideOverlap: false,
+  );
+}
+
+_DownbeatMatch? _nearestDownbeatPair({
+  required List<int> outgoingDownbeats,
+  required List<int> incomingDownbeats,
+  required bool bothInsideOverlap,
+}) {
+  if (outgoingDownbeats.isEmpty || incomingDownbeats.isEmpty) return null;
 
   int? bestDelta;
   int? bestDistance;
-  for (final incomingMs in incomingCandidates) {
-    for (final outgoingMs in outgoingCandidates) {
+  for (final incomingMs in incomingDownbeats) {
+    for (final outgoingMs in outgoingDownbeats) {
       final delta = incomingMs - outgoingMs;
       final distance = delta.abs();
       if (bestDistance == null || distance < bestDistance) {
@@ -478,10 +560,26 @@ int? _nearestDownbeatDelta({
       }
     }
   }
-  return bestDelta;
+  return bestDelta == null
+      ? null
+      : _DownbeatMatch(
+          delta: bestDelta,
+          bothInsideOverlap: bothInsideOverlap,
+        );
 }
 
 String _percent(double value) => '${(value * 100).round()}%';
+
+String _confidencePercent(double? value) {
+  if (value == null || !value.isFinite) return 'unknown';
+  return _percent(value.clamp(0.0, 1.0).toDouble());
+}
+
+TransitionDiagnosticSeverity _downbeatAdvisorySeverity(
+        BeatSnapMode? snapMode) =>
+    snapMode == BeatSnapMode.free
+        ? TransitionDiagnosticSeverity.info
+        : TransitionDiagnosticSeverity.warning;
 
 String _missingLabel(String subject, List<String> missing) {
   if (missing.length == 1) return 'No ${_sideLabel(missing.single)} $subject';
@@ -499,6 +597,17 @@ String _sideLabel(String side) {
       return 'current';
     case 'incoming':
       return 'next';
+    default:
+      return side;
+  }
+}
+
+String _diagnosticSideLabel(String side) {
+  switch (side) {
+    case 'outgoing':
+      return 'Outgoing';
+    case 'incoming':
+      return 'Incoming';
     default:
       return side;
   }

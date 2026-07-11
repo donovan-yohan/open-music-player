@@ -108,16 +108,46 @@ class PlaybackState extends ChangeNotifier {
         ms,
         snapToDownbeat: snapToDownbeat,
       );
+  Future<void> setQueueTimelineStartMsByQueueItemId(
+    String queueItemId,
+    int ms, {
+    bool snapToDownbeat = true,
+  }) =>
+      _queueController.setTimelineStartMsByQueueItemId(
+        queueItemId,
+        ms,
+        snapToDownbeat: snapToDownbeat,
+      );
   Future<void> setQueueTrimStartMs(int index, int ms) =>
       _queueController.setSourceStartMs(index, ms);
+  Future<void> setQueueTrimStartMsByQueueItemId(
+    String queueItemId,
+    int ms,
+  ) =>
+      _queueController.setSourceStartMsByQueueItemId(queueItemId, ms);
   Future<void> setQueueTrimEndMs(int index, int ms) =>
       _queueController.setSourceEndMs(index, ms);
+  Future<void> setQueueTrimEndMsByQueueItemId(
+    String queueItemId,
+    int ms,
+  ) =>
+      _queueController.setSourceEndMsByQueueItemId(queueItemId, ms);
   Future<void> setQueuePitchMode(int index, String pitchMode) =>
       _queueController.setPitchMode(index, pitchMode);
+  Future<void> setQueuePitchModeByQueueItemId(
+    String queueItemId,
+    String pitchMode,
+  ) =>
+      _queueController.setPitchModeByQueueItemId(queueItemId, pitchMode);
   Future<void> setTransitionSnapMode(BeatSnapMode mode) =>
       _queueController.setTransitionSnapMode(mode);
   Future<void> reorderPlaybackQueue(int oldIndex, int newIndex) =>
       _queueController.reorderQueue(oldIndex, newIndex);
+  Future<void> movePlaybackQueueItemByQueueItemId(
+    String queueItemId,
+    int delta,
+  ) =>
+      _queueController.moveQueueItemByQueueItemId(queueItemId, delta);
 
   void beginTimelineScrub() => _queueController.engine.beginScrub();
   void updateTimelineScrub(int globalMs) =>
@@ -495,6 +525,14 @@ class PlaybackState extends ChangeNotifier {
     } else {
       extras['analysisOverrides'] = overrides.toJson();
       extras.remove('analysis_overrides');
+    }
+    if (analysis.updatedAt == null) {
+      extras.remove('analysisUpdatedAt');
+      extras.remove('analysis_updated_at');
+    } else {
+      extras['analysisUpdatedAt'] =
+          analysis.updatedAt!.toUtc().toIso8601String();
+      extras.remove('analysis_updated_at');
     }
     return item.copyWith(extras: extras);
   }

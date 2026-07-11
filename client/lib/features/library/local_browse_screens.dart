@@ -5,6 +5,7 @@ import '../../core/audio/playback_state.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/library_service.dart';
 import '../../shared/models/track.dart';
+import '../../shared/widgets/song_metadata_chips.dart';
 
 /// Loads the tracks a local artist/album page should render. Returns the full
 /// (already-filtered) track list for the header + list.
@@ -125,8 +126,7 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content:
-              Text(playback.playbackError ?? 'Could not start playback.'),
+          content: Text(playback.playbackError ?? 'Could not start playback.'),
           backgroundColor: Colors.red,
         ),
       );
@@ -227,9 +227,20 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-            trailing: Text(
-              track.formattedDuration,
-              style: Theme.of(context).textTheme.bodySmall,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SongMetadataChips(
+                  analysis: track.analysis,
+                  singleLine: true,
+                  compact: true,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  track.formattedDuration,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
             ),
             onTap: () => _play(startIndex: index - 1),
           );

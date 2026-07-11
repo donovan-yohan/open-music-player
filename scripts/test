@@ -11,14 +11,26 @@ run_delivery() {
 run_backend() {
   (
     cd "$ROOT/backend"
+    go_test_args=()
+    if [ -n "${OMP_POSTGRES_TEST_DSN:-${QA_DATABASE_URL:-${DATABASE_URL:-}}}" ]; then
+      # Integration packages truncate shared fixtures; one DSN requires
+      # package-serial execution to prevent cross-package deadlocks.
+      go_test_args+=(-p 1)
+    fi
     if [ -n "${BACKEND_GO_TEST_ARGS:-}" ]; then
       # shellcheck disable=SC2206
       extra_args=(${BACKEND_GO_TEST_ARGS})
-      go test "${extra_args[@]}" ./...
-    else
-      go test ./...
+      go_test_args+=("${extra_args[@]}")
     fi
+    go test "${go_test_args[@]}" ./...
   )
+}
+
+run_analyzer() {
+  docker build \
+    --target analyzer-test \
+    --tag open-music-player-analyzer-test:local \
+    "$ROOT/backend"
 }
 
 run_client() {
@@ -53,6 +65,9 @@ case "$TARGET" in
   backend)
     run_backend
     ;;
+  analyzer)
+    run_analyzer
+    ;;
   client)
     run_client
     ;;
@@ -62,11 +77,12 @@ case "$TARGET" in
   all)
     run_delivery
     run_backend
+    run_analyzer
     run_client
     run_extension
     ;;
   *)
-    echo "usage: scripts/test [delivery|harness|backend|client|extension|all]" >&2
+    echo "usage: scripts/test [delivery|harness|backend|analyzer|client|extension|all]" >&2
     exit 2
     ;;
 esac

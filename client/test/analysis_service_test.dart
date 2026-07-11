@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/services/analysis_service.dart';
 import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/models/track_analysis.dart';
@@ -44,6 +45,7 @@ void main() {
       final api = _CapturingApiClient({
         'track_id': 42,
         'status': 'analyzed',
+        'updated_at': '2026-07-10T11:00:00.123456Z',
         'summary': {
           'bpm': {'value': 128},
           'beat_grid': {
@@ -94,6 +96,10 @@ void main() {
 
       expect(api.capturedEndpoint, '/tracks/42/analysis');
       expect(analysis.status, TrackAnalysisStatus.analyzed);
+      expect(
+        analysis.updatedAt,
+        DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 456),
+      );
       expect(analysis.summary?.bpm?.numericValue, 128);
       expect(analysis.summary?.key?.textValue, 'A minor');
       expect(analysis.summary?.camelot?.textValue, '8A');
@@ -119,13 +125,20 @@ void main() {
       final api = _CapturingApiClient({
         'track_id': 42,
         'status': 'analyzed',
+        'updated_at': '2026-07-10T11:00:00.123457Z',
         'summary': {
           'bpm': {'value': 118},
         },
         'overrides': {
-          'bpm': {'value': 124, 'confidence': 1.0},
+          'bpm': {
+            'value': 124,
+            'confidence': 1.0,
+            'provenance': 'manual_override',
+          },
           'downbeats': {
             'positions_ms': [120, 2056],
+            'confidence': 1.0,
+            'provenance': 'manual_override',
           },
         },
       });
@@ -141,12 +154,34 @@ void main() {
 
       expect(api.capturedEndpoint, '/tracks/42/analysis/overrides');
       expect(api.capturedBody?['overrides']['bpm']['value'], 124);
+      expect(api.capturedBody?['overrides']['bpm']['confidence'], 1.0);
+      expect(
+        api.capturedBody?['overrides']['bpm']['provenance'],
+        'manual_override',
+      );
       expect(
         api.capturedBody?['overrides']['downbeats']['positions_ms'],
         [120, 2056],
       );
+      expect(api.capturedBody?['overrides']['downbeats']['confidence'], 1.0);
+      expect(
+        api.capturedBody?['overrides']['downbeats']['provenance'],
+        'manual_override',
+      );
       expect(analysis.summary?.bpm?.numericValue, 124);
+      expect(analysis.summary?.bpm?.confidence, 1.0);
+      expect(analysis.summary?.bpm?.provenance, 'manual_override');
       expect(analysis.summary?.downbeats?.positionsMs, [120, 2056]);
+      expect(analysis.summary?.downbeats?.confidence, 1.0);
+      expect(
+        analysis.summary?.downbeats?.provenance,
+        'manual_override',
+      );
+      expect(analysis.overrides?.provenance, 'manual_override');
+      expect(
+        analysis.updatedAt,
+        DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 457),
+      );
     });
 
     test('manual BPM overrides default to trusted confidence when omitted',
@@ -172,7 +207,96 @@ void main() {
       expect(api.capturedBody?['overrides']['beat_grid']['confidence'], 1.0);
       expect(analysis.summary?.bpm?.numericValue, 124);
       expect(analysis.summary?.bpm?.confidence, 1.0);
+      expect(analysis.summary?.bpm?.provenance, 'manual_override');
       expect(analysis.summary?.beatGrid?.confidence, 1.0);
+      expect(analysis.summary?.beatGrid?.provenance, 'manual_override');
+    });
+
+    test('nested timing provenance stays scoped to its corrected field', () {
+      final analysis = TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'bpm': {
+            'value': 118,
+            'confidence': 0.2,
+            'provenance': 'analyzer',
+          },
+          'beat_grid': {
+            'bpm': 118,
+            'beats_ms': [0, 508],
+            'confidence': 0.2,
+            'provenance': 'analyzer',
+          },
+          'downbeats': {
+            'positions_ms': [0],
+            'confidence': 0.2,
+            'provenance': 'analyzer',
+          },
+        },
+        overrides: {
+          'provenance': 'legacy-manual',
+          'bpm': {'value': 124, 'provenance': 'bpm-manual'},
+          'beat_grid': {
+            'beats_ms': [120, 604],
+            'provenance': 'grid-manual',
+          },
+          'downbeats': {
+            'positions_ms': [120],
+            'provenance': 'downbeat-manual',
+          },
+        },
+      );
+
+      expect(analysis.summary?.bpm?.provenance, 'bpm-manual');
+      expect(analysis.summary?.beatGrid?.provenance, 'grid-manual');
+      expect(analysis.summary?.downbeats?.provenance, 'downbeat-manual');
+      expect(analysis.summary?.bpm?.confidence, 1.0);
+      expect(analysis.summary?.beatGrid?.confidence, 1.0);
+      expect(analysis.summary?.downbeats?.confidence, 1.0);
+    });
+
+    test('offset-only detail hydration preserves analyzer trust', () async {
+      final api = _CapturingApiClient({
+        'track_id': 42,
+        'status': 'analyzed',
+        'summary': {
+          'bpm': {
+            'value': 120,
+            'confidence': 0.2,
+            'provenance': 'analyzer-bpm',
+          },
+          'beat_grid': {
+            'bpm': 120,
+            'offset_ms': 25,
+            'beats_ms': [25, 525, 1025],
+            'confidence': 0.2,
+            'provenance': 'analyzer-grid',
+          },
+        },
+        'overrides': {
+          'beat_grid': {'offset_ms': 87},
+        },
+      });
+
+      final analysis = await AnalysisService(api).getTrackAnalysis(42);
+      final tempo = ClipTempoMetadata.fromAnalysisSummary(
+        analysis.summary?.toJson(),
+        overrides: analysis.overrides?.toJson(),
+      );
+      final restored = ClipTempoMetadata.fromSessionJson(tempo.toJson());
+
+      expect(analysis.overrides?.beatGridOffsetMs, 87);
+      expect(analysis.overrides?.toJson()['beat_grid'], {'offset_ms': 87});
+      expect(analysis.summary?.beatGrid?.offsetMs, 87);
+      expect(analysis.summary?.beatGrid?.confidence, 0.2);
+      expect(analysis.summary?.beatGrid?.provenance, 'analyzer-grid');
+      expect(analysis.summary?.bpm?.confidence, 0.2);
+      expect(analysis.summary?.bpm?.provenance, 'analyzer-bpm');
+      expect(restored.beatGridOffsetMs, 87);
+      expect(restored.bpmConfidence, 0.2);
+      expect(restored.bpmProvenance, 'analyzer-bpm');
+      expect(restored.beatGridProvenance, 'analyzer-grid');
+      expect(restored.hasReliableBpm, isFalse);
     });
 
     test('tolerates a pending analysis with no summary', () async {

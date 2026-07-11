@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -42,6 +43,7 @@ type LibraryTrackResponse struct {
 	MBSuggestions      []matcher.MBSuggestion `json:"mb_suggestions,omitempty"`
 	AnalysisStatus     string                 `json:"analysis_status,omitempty"`
 	AnalysisSummary    json.RawMessage        `json:"analysis_summary,omitempty"`
+	AnalysisUpdatedAt  string                 `json:"analysis_updated_at,omitempty"`
 }
 
 type LibraryListResponse struct {
@@ -93,7 +95,7 @@ func (s *FieldSelector) Include(field string) bool {
 // genre (exact match; "Unknown" matches tracks with no genre),
 // artist (exact match, local artist listing), album (exact match, local album listing),
 // fields (comma-separated field selection).
-// Available fields: id, title, artist, album, duration_ms, mb_verified, genre, added_at, cover_art_url, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, is_liked, analysis_status, analysis_summary
+// Available fields: id, title, artist, album, duration_ms, mb_verified, genre, added_at, cover_art_url, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, is_liked, analysis_status, analysis_summary, analysis_updated_at
 //
 // Note: liked/is_liked here are scoped to the caller's library — this endpoint
 // lists the library, optionally filtered to liked tracks. A standalone "Liked
@@ -234,6 +236,9 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 			if err := json.Unmarshal(t.AnalysisSummary, &summary); err == nil {
 				track["analysis_summary"] = summary
 			}
+		}
+		if fields.Include("analysis_updated_at") && t.AnalysisUpdatedAt.Valid {
+			track["analysis_updated_at"] = t.AnalysisUpdatedAt.Time.UTC().Format(time.RFC3339Nano)
 		}
 		// Include suggestions for unverified tracks
 		if fields.Include("mb_suggestions") && !t.MBVerified && len(t.MetadataJSON) > 0 {
