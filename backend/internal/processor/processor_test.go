@@ -552,7 +552,7 @@ func TestRequestAnalysisRepairWorkerOutlivesStartupMaintenanceContext(t *testing
 	select {
 	case workerCtx := <-client.started:
 		if err := workerCtx.Err(); err != nil {
-			t.Fatalf("worker inherited cancelled maintenance context: %v", err)
+			t.Fatalf("worker inherited canceled maintenance context: %v", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for analyzer worker")

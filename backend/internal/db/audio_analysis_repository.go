@@ -552,18 +552,3 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 	}
 	return result, nil
 }
-
-func (r *AnalysisRepository) execTrackAnalysisUpdate(ctx context.Context, query string, args ...any) error {
-	result, err := r.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		return ErrTrackAnalysisNotFound
-	}
-	return nil
-}

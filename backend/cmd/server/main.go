@@ -80,12 +80,12 @@ type analyzerMaintenanceReport struct {
 func reconcileAnalyzerVersion(
 	ctx context.Context,
 	client analyzerInfoClient,
-	analyses analyzerVersionStore,
+	analysisStore analyzerVersionStore,
 	tracks analyzerMaintenanceTrackStore,
 	repairs analyzerMaintenanceProcessor,
 ) (analyzerMaintenanceReport, error) {
 	report := analyzerMaintenanceReport{}
-	if client == nil || analyses == nil || tracks == nil || repairs == nil {
+	if client == nil || analysisStore == nil || tracks == nil || repairs == nil {
 		return report, nil
 	}
 	infoCtx, infoCancel := context.WithTimeout(ctx, startupAnalyzerRepairTimeout)
@@ -98,7 +98,7 @@ func reconcileAnalyzerVersion(
 	report.AnalyzerVersion = info.AnalyzerVersion
 	repairs.SetAnalyzerIdentity(info.Analyzer, info.AnalyzerVersion)
 	markNewlyStale := func() (int64, error) {
-		marked, markErr := analyses.MarkStaleByAnalyzerVersion(ctx, info.Analyzer, info.AnalyzerVersion)
+		marked, markErr := analysisStore.MarkStaleByAnalyzerVersion(ctx, info.Analyzer, info.AnalyzerVersion)
 		report.MarkedStale += marked
 		return marked, markErr
 	}
