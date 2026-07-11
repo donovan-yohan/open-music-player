@@ -446,7 +446,7 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 				)
 			),
 			updated_at = NOW()
-		WHERE status IN ($4, $5, $6)
+		WHERE status IN ($4, $5, $6, $7)
 		  AND (
 			(
 				status = $4
@@ -456,7 +456,7 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 				)
 			)
 			OR (
-				status IN ($5, $6)
+				status IN ($5, $6, $7)
 				AND (
 					(NULLIF($1, '') IS NOT NULL AND COALESCE(NULLIF(provenance_json->>'expected_analyzer', ''), provenance_json->>'analyzer', '') <> $1)
 					OR (NULLIF($2, '') IS NOT NULL AND COALESCE(NULLIF(provenance_json->>'expected_analyzer_version', ''), provenance_json->>'analyzer_version', '') <> $2)
@@ -473,6 +473,7 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 		AnalysisStatusAnalyzed,
 		AnalysisStatusPending,
 		AnalysisStatusAnalyzing,
+		AnalysisStatusFailed,
 	)
 	if err != nil {
 		return 0, err

@@ -222,6 +222,81 @@ func TestAnalysisRepositorySupersedesActiveOldVersionAgainstPostgres(t *testing.
 	}
 }
 
+func TestAnalysisRepositoryRequeuesSupersededFailedAnalysisAgainstPostgres(t *testing.T) {
+	database, ctx := newPostgresAnalysisTestDB(t)
+	trackRepo := NewTrackRepository(database)
+	analysisRepo := NewAnalysisRepository(database)
+
+	createFailedTrack := func(title, analyzerVersion string) *Track {
+		t.Helper()
+		track, _, err := trackRepo.CreateTrackFromMetadata(
+			ctx,
+			"Fixture Artist",
+			title,
+			"",
+			120000,
+			WithStorage("tracks/fixture/"+analyzerVersion+"-failure.wav", 1024),
+			WithMetadata(json.RawMessage(`{}`)),
+		)
+		if err != nil {
+			t.Fatalf("create %s: %v", title, err)
+		}
+		provenance := json.RawMessage(`{"expected_analyzer":"fixture","expected_analyzer_version":"` + analyzerVersion + `"}`)
+		if err := analysisRepo.RequestAnalysis(ctx, track.ID, provenance); err != nil {
+			t.Fatalf("request %s: %v", title, err)
+		}
+		if err := analysisRepo.MarkAnalyzing(ctx, track.ID, provenance); err != nil {
+			t.Fatalf("mark %s analyzing: %v", title, err)
+		}
+		if err := analysisRepo.MarkFailed(ctx, track.ID, "fixture failure", provenance); err != nil {
+			t.Fatalf("mark %s failed: %v", title, err)
+		}
+		return track
+	}
+
+	failedV1 := createFailedTrack("Failed by analyzer v1", "fixture-v1")
+	failedV2 := createFailedTrack("Failed by analyzer v2", "fixture-v2")
+
+	marked, err := analysisRepo.MarkStaleByAnalyzerVersion(ctx, "fixture", "fixture-v2")
+	if err != nil {
+		t.Fatalf("mark stale for v2: %v", err)
+	}
+	if marked != 1 {
+		t.Fatalf("marked stale = %d, want only the v1 failure", marked)
+	}
+
+	staleV1, err := analysisRepo.GetByTrackID(ctx, failedV1.ID)
+	if err != nil {
+		t.Fatalf("get v1 failure: %v", err)
+	}
+	if staleV1.Status != AnalysisStatusStale {
+		t.Fatalf("v1 status = %q, want %q", staleV1.Status, AnalysisStatusStale)
+	}
+	preservedV2, err := analysisRepo.GetByTrackID(ctx, failedV2.ID)
+	if err != nil {
+		t.Fatalf("get v2 failure: %v", err)
+	}
+	if preservedV2.Status != AnalysisStatusFailed {
+		t.Fatalf("v2 status = %q, want same-version failure preserved", preservedV2.Status)
+	}
+
+	repairProvenance := json.RawMessage(`{"trigger":"startup_reconcile","expected_analyzer":"fixture","expected_analyzer_version":"fixture-v2"}`)
+	firstRepair, err := analysisRepo.RequestRepairAnalysis(ctx, failedV1.ID, repairProvenance, false, true, time.Minute)
+	if err != nil {
+		t.Fatalf("queue stale v1 repair: %v", err)
+	}
+	if !firstRepair.Queued || firstRepair.PreviousStatus != AnalysisStatusStale || firstRepair.Reason != "stale_analysis" {
+		t.Fatalf("first repair = %+v, want one queued stale repair", firstRepair)
+	}
+	secondRepair, err := analysisRepo.RequestRepairAnalysis(ctx, failedV1.ID, repairProvenance, false, true, time.Minute)
+	if err != nil {
+		t.Fatalf("repeat v2 reconciliation repair: %v", err)
+	}
+	if secondRepair.Queued || secondRepair.Reason != "not_stale" {
+		t.Fatalf("second repair = %+v, want idempotent not_stale", secondRepair)
+	}
+}
+
 func TestAnalysisRepositoryRepairsExpiredActiveAnalysisWhenOnlyStaleAgainstPostgres(t *testing.T) {
 	database, ctx := newPostgresAnalysisTestDB(t)
 	trackRepo := NewTrackRepository(database)
