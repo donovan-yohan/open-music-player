@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:audio_service/audio_service.dart' as audio_service;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
@@ -61,6 +62,26 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Future<void> dragReorderHandle(
+    WidgetTester tester,
+    Finder handle,
+    Offset offset,
+  ) async {
+    final gesture = await tester.startGesture(tester.getCenter(handle));
+    await tester.pump(kPressTimeout);
+    final distance = offset.distance;
+    if (distance > 10) {
+      await gesture.moveBy(offset / distance * 10);
+      await tester.pump();
+      await gesture.moveBy(offset / distance * (distance - 10));
+    } else {
+      await gesture.moveBy(offset);
+    }
+    await tester.pump();
+    await gesture.up();
+    await tester.pumpAndSettle();
+  }
+
   tearDown(() => playbackState.dispose());
 
   test('converts list reorder offsets into absolute queue indices', () {
@@ -90,29 +111,6 @@ void main() {
         hasActiveTrack: false,
       ),
       const (1, 0),
-    );
-  });
-
-  test('drag target follows multi-slot vertical drag distance', () {
-    expect(
-      queueListDragTargetIndex(relativeIndex: 0, itemCount: 4, dragDeltaY: 20),
-      0,
-    );
-    expect(
-      queueListDragTargetIndex(relativeIndex: 0, itemCount: 4, dragDeltaY: 140),
-      2,
-    );
-    expect(
-      queueListDragTargetIndex(
-        relativeIndex: 3,
-        itemCount: 4,
-        dragDeltaY: -140,
-      ),
-      1,
-    );
-    expect(
-      queueListDragTargetIndex(relativeIndex: 2, itemCount: 4, dragDeltaY: 500),
-      3,
     );
   });
 
@@ -185,6 +183,10 @@ void main() {
     expect(find.text('Next Song'), findsOneWidget);
     expect(find.text('132 BPM'), findsOneWidget);
     expect(find.text('10A'), findsOneWidget);
+    expect(find.byKey(const ValueKey('reorder_handle_1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('reorder_handle_2')), findsOneWidget);
+    expect(find.byKey(const ValueKey('reorder_handle_3')), findsOneWidget);
+    expect(find.byIcon(Icons.drag_handle), findsNWidgets(3));
     expect(find.byKey(const PageStorageKey('queue_list_view')), findsNothing);
 
     await tester.tap(find.text('Next Song'));
@@ -289,7 +291,7 @@ void main() {
     await pumpQueueScreen(tester);
 
     await tester.drag(
-      find.byKey(const ValueKey('remove_playback_queue_2_3')),
+      find.byKey(const ValueKey('remove_playback_queue_3')),
       const Offset(-500, 0),
     );
     await tester.pumpAndSettle();
@@ -325,6 +327,7 @@ void main() {
     expect(
       tester.getSemantics(find.byKey(const ValueKey('reorder_handle_t2'))),
       matchesSemantics(
+        isButton: true,
         label: 'Reorder Paper Planes',
         hint: 'Drag vertically to move this queued track',
       ),
@@ -1148,23 +1151,109 @@ void main() {
     expect(playbackState.transitionSnapModeCalls, [BeatSnapMode.beat16]);
   });
 
-  testWidgets('touch-dragging the list reorder handle reorders Up Next', (
+  testWidgets(
+    'server queue gives every row an immediate literal drag handle without whole-row handles',
+    (tester) async {
+      await pumpQueueScreen(tester);
+
+      final list = tester.widget<ReorderableListView>(
+        find.byKey(const PageStorageKey('queue_list_view')),
+      );
+      expect(list.buildDefaultDragHandles, isFalse);
+      expect(list.onReorderItem, isNotNull);
+      expect(find.byType(ReorderableDragStartListener), findsNWidgets(3));
+      expect(find.byType(ReorderableDelayedDragStartListener), findsNothing);
+      expect(find.byKey(const ValueKey('reorder_handle_t1')), findsOneWidget);
+      expect(find.byKey(const ValueKey('reorder_handle_t2')), findsOneWidget);
+      expect(find.byKey(const ValueKey('reorder_handle_t3')), findsOneWidget);
+      expect(find.byIcon(Icons.drag_handle), findsNWidgets(3));
+    },
+  );
+
+  testWidgets('dragging duplicate playback occurrences uses queue item ids', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(390, 844);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(
+          7,
+          'Duplicate',
+          seconds: 60,
+          extras: {'queueItemId': 'occurrence-a'},
+        ),
+        _mediaItem(
+          7,
+          'Duplicate',
+          seconds: 180,
+          extras: {'queueItemId': 'occurrence-b'},
+        ),
+        _mediaItem(
+          8,
+          'Other',
+          seconds: 90,
+          extras: {'queueItemId': 'occurrence-c'},
+        ),
+      ]
+      ..fakeCurrentIndex = 1;
 
     await pumpQueueScreen(tester);
 
-    await tester.drag(
-      find.byKey(const ValueKey('reorder_handle_t2')),
-      const Offset(0, 80),
+    expect(
+      find.byKey(const ValueKey('reorder_handle_occurrence-a')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('reorder_handle_occurrence-b')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey('reorder_handle_occurrence-c')),
+      findsOneWidget,
+    );
+
+    final source = find.byKey(const ValueKey('reorder_handle_occurrence-a'));
+    final destination =
+        find.byKey(const ValueKey('reorder_handle_occurrence-c'));
+    await dragReorderHandle(
+      tester,
+      source,
+      Offset(
+        0,
+        tester.getRect(destination).bottom - tester.getCenter(source).dy + 24,
+      ),
     );
     await tester.pumpAndSettle();
 
-    expect(apiClient.reorders, [const (1, 2)]);
+    expect(playbackState.reorderCalls, [const (0, 1)]);
+    expect(playbackState.queueItemIdAt(1), 'occurrence-a');
+    expect(playbackState.removeFromQueueCalls, isEmpty);
+  });
+
+  testWidgets(
+      'dragging the current playback row preserves its current identity', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'History', seconds: 60),
+        _mediaItem(2, 'Current', seconds: 120),
+        _mediaItem(3, 'Next', seconds: 180),
+      ]
+      ..fakeCurrentIndex = 1;
+
+    await pumpQueueScreen(tester);
+    final source = find.byKey(const ValueKey('reorder_handle_2'));
+    final destination = find.byKey(const ValueKey('reorder_handle_1'));
+    await dragReorderHandle(
+      tester,
+      source,
+      Offset(0, tester.getCenter(destination).dy - tester.getCenter(source).dy),
+    );
+    await tester.pumpAndSettle();
+
+    expect(playbackState.reorderCalls, [const (1, 0)]);
+    expect(playbackState.fakeCurrentIndex, 0);
+    expect(playbackState.currentItem?.title, 'Current');
   });
 
   testWidgets('held placement follows its cue across queue reorder', (

@@ -91,24 +91,16 @@ void main() {
 }
 
 Widget _productionReorderHandle(Track track) {
-  var dragDeltaY = 0.0;
   return Semantics(
     key: ValueKey('reorder_handle_${track.id}'),
     container: true,
     explicitChildNodes: true,
     label: 'Reorder ${track.title}',
     hint: 'Drag vertically to move this queued track',
-    child: GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onVerticalDragStart: (_) => dragDeltaY = 0,
-      onVerticalDragUpdate: (details) => dragDeltaY += details.delta.dy,
-      onVerticalDragEnd: (_) => dragDeltaY = 0,
-      onVerticalDragCancel: () => dragDeltaY = 0,
-      child: const SizedBox(
-        width: 44,
-        height: 64,
-        child: Center(child: Icon(Icons.drag_indicator)),
-      ),
+    child: const SizedBox(
+      width: 44,
+      height: 48,
+      child: Center(child: Icon(Icons.drag_handle)),
     ),
   );
 }

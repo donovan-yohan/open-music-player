@@ -33,8 +33,6 @@ class ListeningQueueEntry {
   final bool isCurrent;
 }
 
-const double _queueReorderItemExtentPx = 64.0;
-
 (int, int) queueListReorderIndices({
   required int relativeOldIndex,
   required int relativeNewIndex,
@@ -46,20 +44,6 @@ const double _queueReorderItemExtentPx = 64.0;
     firstMovableIndex + relativeOldIndex,
     firstMovableIndex + relativeNewIndex,
   );
-}
-
-int queueListDragTargetIndex({
-  required int relativeIndex,
-  required int itemCount,
-  required double dragDeltaY,
-}) {
-  const dragThresholdPx = 24.0;
-  if (dragDeltaY.abs() < dragThresholdPx || itemCount <= 1) {
-    return relativeIndex;
-  }
-
-  final delta = (dragDeltaY / _queueReorderItemExtentPx).round();
-  return (relativeIndex + delta).clamp(0, itemCount - 1);
 }
 
 @visibleForTesting
@@ -301,7 +285,7 @@ class _QueueScreenState extends State<QueueScreen> {
         _buildPlaybackQueueHeader(context, playbackView),
         Expanded(
           child: _viewMode == _QueueViewMode.list
-              ? _buildPlaybackQueueList(playback, entries)
+              ? _buildPlaybackQueueList(playback, entries, playbackView.cues)
               : _buildPlaybackTimelineView(
                   context,
                   provider,
@@ -389,44 +373,65 @@ class _QueueScreenState extends State<QueueScreen> {
   Widget _buildPlaybackQueueList(
     PlaybackState playback,
     List<ListeningQueueEntry> entries,
+    List<PlaybackCue> cues,
   ) {
-    return CustomScrollView(
+    return ReorderableListView.builder(
       key: const PageStorageKey('playback_queue_list_view'),
-      slivers: [
-        SliverList.builder(
-          itemCount: entries.length,
-          itemBuilder: (context, index) {
-            final entry = entries[index];
-            final item = entry.item;
-            return _buildSwipeToRemoveQueueItem(
-              context: context,
-              key: ValueKey('remove_playback_queue_${entry.index}_${item.id}'),
-              enabled: !entry.isCurrent,
-              label: item.title,
-              onRemove: () => _removePlaybackQueueEntry(playback, entry),
-              child: TrackTile(
-                key: ValueKey('playback_queue_${entry.index}_${item.id}'),
-                title: item.title,
-                artist: item.artist,
-                album: item.album,
-                duration: _formatQueueRuntime(
-                  item.duration?.inMilliseconds ?? 0,
-                ),
-                coverArtUrl: item.artUri?.toString(),
-                analysis: trackAnalysisFromTrackJson(
-                  Map<String, dynamic>.from(item.extras ?? const {}),
-                ),
-                isCurrent: entry.isCurrent,
-                onTap: entry.isCurrent
-                    ? null
-                    : () => _skipToPlaybackIndex(playback, entry),
-              ),
-            );
-          },
-        ),
-        const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
-      ],
+      buildDefaultDragHandles: false,
+      padding: const EdgeInsets.only(bottom: 100),
+      itemCount: entries.length,
+      onReorderItem: (oldIndex, newIndex) {
+        if (oldIndex == newIndex) return;
+        unawaited(playback.reorderPlaybackQueue(oldIndex, newIndex));
+      },
+      itemBuilder: (context, index) {
+        final entry = entries[index];
+        final item = entry.item;
+        final queueItemId = _queueItemIdForPlaybackEntry(cues, entry);
+        return _buildSwipeToRemoveQueueItem(
+          context: context,
+          key: ValueKey('remove_playback_queue_$queueItemId'),
+          enabled: !entry.isCurrent,
+          label: item.title,
+          onRemove: () => _removePlaybackQueueEntry(playback, entry),
+          child: TrackTile(
+            key: ValueKey('playback_queue_$queueItemId'),
+            title: item.title,
+            artist: item.artist,
+            album: item.album,
+            duration: _formatQueueRuntime(item.duration?.inMilliseconds ?? 0),
+            coverArtUrl: item.artUri?.toString(),
+            analysis: trackAnalysisFromTrackJson(
+              Map<String, dynamic>.from(item.extras ?? const {}),
+            ),
+            leading: _buildReorderHandle(
+              queueItemId: queueItemId,
+              title: item.title,
+              index: index,
+            ),
+            isCurrent: entry.isCurrent,
+            onTap: entry.isCurrent
+                ? null
+                : () => _skipToPlaybackIndex(playback, entry),
+          ),
+        );
+      },
     );
+  }
+
+  String _queueItemIdForPlaybackEntry(
+    List<PlaybackCue> cues,
+    ListeningQueueEntry entry,
+  ) {
+    for (final cue in cues) {
+      if (cue.queueIndex == entry.index && cue.mediaItem.id == entry.item.id) {
+        return cue.queueItemId;
+      }
+    }
+    // A queue snapshot normally carries a cue for every item. Keep the list
+    // renderable during a transient snapshot update while avoiding track-ID
+    // keys, which are not unique for duplicate queued occurrences.
+    return 'unresolved_${entry.index}_${entry.item.id}';
   }
 
   Widget _buildPlaybackTimelineView(
@@ -1186,92 +1191,56 @@ class _QueueScreenState extends State<QueueScreen> {
     final hasActiveTrack =
         currentIndex >= 0 && currentIndex < provider.queue.tracks.length;
 
-    return CustomScrollView(
+    return ReorderableListView.builder(
       key: const PageStorageKey('queue_list_view'),
-      slivers: [
-        SliverList.builder(
-          itemCount: tracks.length,
-          itemBuilder: (context, absoluteIndex) {
-            final track = tracks[absoluteIndex];
-            final isCurrent = hasActiveTrack && absoluteIndex == currentIndex;
-            final canEdit = !hasActiveTrack || absoluteIndex > currentIndex;
-            final relativeIndex = hasActiveTrack
-                ? absoluteIndex - currentIndex - 1
-                : absoluteIndex;
-            final movableCount = hasActiveTrack
-                ? tracks.length - currentIndex - 1
-                : tracks.length;
+      buildDefaultDragHandles: false,
+      padding: const EdgeInsets.only(bottom: 100),
+      itemCount: tracks.length,
+      onReorderItem: (oldIndex, newIndex) {
+        if (oldIndex == newIndex) return;
+        unawaited(provider.reorderQueue(oldIndex, newIndex));
+      },
+      itemBuilder: (context, absoluteIndex) {
+        final track = tracks[absoluteIndex];
+        final isCurrent = hasActiveTrack && absoluteIndex == currentIndex;
+        final canEdit = !hasActiveTrack || absoluteIndex > currentIndex;
 
-            return _buildSwipeToRemoveQueueItem(
-              context: context,
-              key: ValueKey('remove_queue_${track.id}'),
-              enabled: canEdit,
-              label: track.title,
-              onRemove: () => provider.removeFromQueue(absoluteIndex),
-              child: QueueItem(
-                key: ValueKey(
-                  isCurrent ? 'queue_current_${track.id}' : track.id,
-                ),
-                track: track,
-                isPlaying: isCurrent,
-                reorderHandle: canEdit
-                    ? _buildReorderHandle(
-                        track,
-                        relativeIndex,
-                        onDragReorder: (dragDeltaY) {
-                          final relativeNewIndex = queueListDragTargetIndex(
-                            relativeIndex: relativeIndex,
-                            itemCount: movableCount,
-                            dragDeltaY: dragDeltaY,
-                          );
-                          if (relativeNewIndex == relativeIndex) return;
-                          final (
-                            absoluteOldIndex,
-                            absoluteNewIndex,
-                          ) = queueListReorderIndices(
-                            relativeOldIndex: relativeIndex,
-                            relativeNewIndex: relativeNewIndex,
-                            currentIndex: currentIndex,
-                            hasActiveTrack: hasActiveTrack,
-                          );
-                          provider.reorderQueue(
-                            absoluteOldIndex,
-                            absoluteNewIndex,
-                          );
-                        },
-                      )
-                    : null,
-                showTrimControls: canEdit,
-                trimRange: canEdit ? provider.trimRangeFor(track) : null,
-                waveformPeaks:
-                    canEdit ? provider.waveformPeaksFor(track) : const [],
-                onTrimStartChanged: canEdit
-                    ? (ms) => provider.setStartOffsetMs(track, ms)
-                    : null,
-                onTrimEndChanged:
-                    canEdit ? (ms) => provider.setEndOffsetMs(track, ms) : null,
-                onPlay: track.queueStatus == TrackQueueStatus.playable &&
-                        track.canPlay
+        return _buildSwipeToRemoveQueueItem(
+          context: context,
+          key: ValueKey('remove_queue_${track.queueItemId}'),
+          enabled: canEdit,
+          label: track.title,
+          onRemove: () => provider.removeFromQueue(absoluteIndex),
+          child: QueueItem(
+            key: ValueKey('queue_item_${track.queueItemId}'),
+            track: track,
+            isPlaying: isCurrent,
+            reorderHandle: _buildReorderHandle(
+              queueItemId: track.queueItemId,
+              title: track.title,
+              index: absoluteIndex,
+            ),
+            showTrimControls: canEdit,
+            trimRange: canEdit ? provider.trimRangeFor(track) : null,
+            waveformPeaks:
+                canEdit ? provider.waveformPeaksFor(track) : const [],
+            onTrimStartChanged:
+                canEdit ? (ms) => provider.setStartOffsetMs(track, ms) : null,
+            onTrimEndChanged:
+                canEdit ? (ms) => provider.setEndOffsetMs(track, ms) : null,
+            onPlay:
+                track.queueStatus == TrackQueueStatus.playable && track.canPlay
                     ? () => _playFromQueue(context, provider, track)
                     : null,
-                onRetry:
-                    track.canRetry ? () => provider.retryTrack(track) : null,
-                onRemove: canEdit
-                    ? () => provider.removeFromQueue(absoluteIndex)
-                    : null,
-                onEditAnalysis: _canEditAnalysis(track)
-                    ? () => _showAnalysisCorrectionSheet(
-                          context,
-                          provider,
-                          track,
-                        )
-                    : null,
-              ),
-            );
-          },
-        ),
-        const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
-      ],
+            onRetry: track.canRetry ? () => provider.retryTrack(track) : null,
+            onRemove:
+                canEdit ? () => provider.removeFromQueue(absoluteIndex) : null,
+            onEditAnalysis: _canEditAnalysis(track)
+                ? () => _showAnalysisCorrectionSheet(context, provider, track)
+                : null,
+          ),
+        );
+      },
     );
   }
 
@@ -1333,20 +1302,29 @@ class _QueueScreenState extends State<QueueScreen> {
     }
   }
 
-  /// Left-edge vertical grip. Only this widget starts a reorder drag, keeping
-  /// reorder distinct from the waveform trim surface.
-  Widget _buildReorderHandle(
-    Track track,
-    int _, {
-    required ValueChanged<double> onDragReorder,
+  /// Left-edge vertical grip. Only this widget starts a reorder drag.
+  Widget _buildReorderHandle({
+    required String queueItemId,
+    required String title,
+    required int index,
   }) {
     return Semantics(
-      key: ValueKey('reorder_handle_${track.id}'),
+      key: ValueKey('reorder_handle_$queueItemId'),
       container: true,
       explicitChildNodes: true,
-      label: 'Reorder ${track.title}',
+      button: true,
+      label: 'Reorder $title',
       hint: 'Drag vertically to move this queued track',
-      child: _QueueReorderHandle(onDragReorder: onDragReorder),
+      child: ReorderableDragStartListener(
+        index: index,
+        child: SizedBox(
+          width: 44,
+          height: 48,
+          child: Center(
+            child: Icon(Icons.drag_handle, color: Colors.grey[500]),
+          ),
+        ),
+      ),
     );
   }
 
@@ -1500,40 +1478,4 @@ String _formatQueueRuntime(int ms) {
     return '$hours:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
   return '$minutes:${seconds.toString().padLeft(2, '0')}';
-}
-
-class _QueueReorderHandle extends StatefulWidget {
-  final ValueChanged<double> onDragReorder;
-
-  const _QueueReorderHandle({required this.onDragReorder});
-
-  @override
-  State<_QueueReorderHandle> createState() => _QueueReorderHandleState();
-}
-
-class _QueueReorderHandleState extends State<_QueueReorderHandle> {
-  double _dragDeltaY = 0;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onVerticalDragStart: (_) => _dragDeltaY = 0,
-      onVerticalDragUpdate: (details) {
-        _dragDeltaY += details.delta.dy;
-      },
-      onVerticalDragEnd: (_) {
-        widget.onDragReorder(_dragDeltaY);
-        _dragDeltaY = 0;
-      },
-      onVerticalDragCancel: () => _dragDeltaY = 0,
-      child: SizedBox(
-        width: 44,
-        height: _queueReorderItemExtentPx,
-        child: Center(
-          child: Icon(Icons.drag_indicator, color: Colors.grey[500]),
-        ),
-      ),
-    );
-  }
 }

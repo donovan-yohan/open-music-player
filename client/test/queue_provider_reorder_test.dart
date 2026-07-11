@@ -99,4 +99,91 @@ void main() {
       ]);
     },
   );
+
+  test('reorderQueue keeps duplicate source occurrences distinct by queue id',
+      () async {
+    final initialItems = [
+      _track('occurrence-a', 'shared-source'),
+      _track('occurrence-b', 'shared-source'),
+      _track('occurrence-c', 'other-source'),
+    ];
+    String? reorderBody;
+    final provider = QueueProvider(
+      mockQueueApiClient(
+        (request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(_queueJson(initialItems), 200);
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.endsWith('/queue/reorder')) {
+            reorderBody = request.body;
+            return http.Response(
+              _queueJson([
+                initialItems[1],
+                initialItems[0],
+                initialItems[2],
+              ]),
+              200,
+            );
+          }
+          return http.Response('{}', 404);
+        },
+      ),
+    );
+
+    await provider.loadQueue();
+    await provider.reorderQueue(1, 0);
+
+    expect(jsonDecode(reorderBody!), {
+      'queueItemId': 'occurrence-b',
+      'toPosition': 0,
+    });
+    expect(
+      provider.queue.tracks.map((track) => track.queueItemId).toList(),
+      ['occurrence-b', 'occurrence-a', 'occurrence-c'],
+    );
+  });
+
+  test('reorderQueue moves the current occurrence and its current index',
+      () async {
+    final initialItems = [
+      _track('history', '1'),
+      _track('current', '2'),
+      _track('next', '3'),
+    ];
+    final provider = QueueProvider(
+      mockQueueApiClient(
+        (request) async {
+          if (request.method == 'GET' && request.url.path.endsWith('/queue')) {
+            return http.Response(
+              _queueJson(initialItems, currentPosition: 1),
+              200,
+            );
+          }
+          if (request.method == 'PUT' &&
+              request.url.path.endsWith('/queue/reorder')) {
+            expect(jsonDecode(request.body), {
+              'queueItemId': 'current',
+              'toPosition': 0,
+            });
+            return http.Response(
+              _queueJson([
+                initialItems[1],
+                initialItems[0],
+                initialItems[2],
+              ], currentPosition: 0),
+              200,
+            );
+          }
+          return http.Response('{}', 404);
+        },
+      ),
+    );
+
+    await provider.loadQueue();
+    await provider.reorderQueue(1, 0);
+
+    expect(provider.queue.currentIndex, 0);
+    expect(provider.queue.currentTrack?.queueItemId, 'current');
+  });
 }
