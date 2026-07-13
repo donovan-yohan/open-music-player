@@ -72,6 +72,7 @@ class _SearchScreenState extends State<SearchScreen> {
   bool _isAsking = false;
   String _askedPrompt = '';
   String? _assistError;
+  String? _sourceSelectionStatus;
 
   // A prompt that begins with an absolute http(s) URL is routed to the assist
   // endpoint even from Search mode: its direct-URL resolver grounds the link
@@ -374,9 +375,9 @@ class _SearchScreenState extends State<SearchScreen> {
   Future<void> _playLocalTrack(local.TrackResult track) async {
     final id = track.id;
     if (id == null) return;
-    await context
-        .read<PlaybackState>()
-        .playQueue([_localTrackPlaybackJson(track)]);
+    await context.read<PlaybackState>().playQueue([
+      _localTrackPlaybackJson(track),
+    ]);
   }
 
   Future<void> _enqueueLocalTrack(local.TrackResult track) async {
@@ -496,7 +497,94 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
-  Future<void> _queueCandidate(DiscoveryCandidate candidate) async {
+  Future<void> _chooseCandidate(
+    DiscoveryCandidate candidate,
+    DiscoverySelectionSession? selection,
+  ) async {
+    if (selection == null || !selection.isPresent || selection.isExpired) {
+      _showSelectionRecoveryError();
+      return;
+    }
+    if (selection.isRecommended(candidate)) {
+      await _submitSourceChoice(
+        candidate,
+        selection,
+        SourceSelectionAction.accepted,
+      );
+      return;
+    }
+
+    final reason = await _promptForOverrideReason(candidate);
+    if (reason == null || !mounted) return;
+    await _submitSourceChoice(
+      candidate,
+      selection,
+      SourceSelectionAction.overridden,
+      reason: reason,
+    );
+  }
+
+  Future<String?> _promptForOverrideReason(DiscoveryCandidate candidate) async {
+    final controller = TextEditingController(text: 'I prefer this version.');
+    final reason = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => Padding(
+        padding: EdgeInsets.fromLTRB(
+          20,
+          0,
+          20,
+          MediaQuery.viewInsetsOf(sheetContext).bottom + 20,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Choose alternate source',
+              style: Theme.of(sheetContext).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 6),
+            Text(candidate.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 12),
+            TextField(
+              key: const ValueKey('source_override_reason'),
+              controller: controller,
+              maxLength: 2000,
+              minLines: 2,
+              maxLines: 4,
+              textCapitalization: TextCapitalization.sentences,
+              decoration: const InputDecoration(labelText: 'Why this source?'),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton(
+                onPressed: () {
+                  final value = controller.text.trim();
+                  Navigator.of(
+                    sheetContext,
+                  ).pop(value.isEmpty ? 'I prefer this version.' : value);
+                },
+                child: const Text('Choose source'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    // The route can still rebuild while its dismissal animation runs. The
+    // short-lived sheet owns this controller for that transition.
+    return reason;
+  }
+
+  Future<void> _submitSourceChoice(
+    DiscoveryCandidate candidate,
+    DiscoverySelectionSession selection,
+    SourceSelectionAction action, {
+    String? reason,
+  }) async {
     final key = _candidateKey(candidate);
     final provider = context.read<QueueProvider>();
     if (!candidate.downloadable ||
@@ -512,12 +600,22 @@ class _SearchScreenState extends State<SearchScreen> {
     _ensurePolling();
 
     try {
-      await provider.addSourceCandidate(candidate);
-    } catch (error) {
+      final decision = await context.read<ApiClient>().createSourceSelection(
+            sessionId: selection.sessionId,
+            candidateId: candidate.candidateId,
+            action: action,
+            reason: reason,
+          );
+      await provider.addSourceDecision(decision.id);
       if (!mounted) return;
       setState(() {
-        _searchError = _friendlyApiError(error);
+        _sourceSelectionStatus = action == SourceSelectionAction.accepted
+            ? 'Selected ${candidate.title} as recommended. ${candidate.sourceQuality?.debugReason ?? ''}'
+            : 'Selected ${candidate.title}. ${decision.reason ?? reason ?? ''}';
       });
+    } catch (error) {
+      if (!mounted) return;
+      _showSelectionRecoveryError();
     } finally {
       if (mounted) {
         setState(() {
@@ -526,6 +624,19 @@ class _SearchScreenState extends State<SearchScreen> {
         _ensurePolling();
       }
     }
+  }
+
+  void _showSelectionRecoveryError() {
+    const message =
+        'That source choice expired or is unavailable. Run the search again.';
+    if (!mounted) return;
+    setState(() {
+      if (_assistMode) {
+        _assistError = message;
+      } else {
+        _searchError = message;
+      }
+    });
   }
 
   Future<void> _refreshQueue({bool force = false}) async {
@@ -696,6 +807,7 @@ class _SearchScreenState extends State<SearchScreen> {
   List<Widget> _buildSearchModeBody(QueueProvider queueProvider) {
     return [
       if (_searchError != null) _buildErrorCard(_searchError!, _runSearch),
+      if (_sourceSelectionStatus != null) _buildSourceSelectionStatus(),
       if (_response != null) _buildProviderRow(_response!.providers),
       const SizedBox(height: 12),
       _buildResultsSection(queueProvider),
@@ -738,10 +850,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
     final hasActiveQuery = _localQuery.isNotEmpty || _isLocalSearching;
     return [
-      if (hasActiveQuery) ...[
-        _buildTypeChips(),
-        const SizedBox(height: 12),
-      ],
+      if (hasActiveQuery) ...[_buildTypeChips(), const SizedBox(height: 12)],
       _buildLocalResultsSection(),
     ];
   }
@@ -764,10 +873,9 @@ class _SearchScreenState extends State<SearchScreen> {
                 'Recent searches',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context)
-                    .textTheme
-                    .titleSmall
-                    ?.copyWith(fontWeight: FontWeight.w700),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
               ),
             ),
             TextButton(
@@ -876,9 +984,10 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _buildLocalTrackTile(local.TrackResult track) {
     final playable = track.id != null;
-    final subtitle = [track.artist, track.album]
-        .where((value) => value != null && value.isNotEmpty)
-        .join(' • ');
+    final subtitle = [
+      track.artist,
+      track.album,
+    ].where((value) => value != null && value.isNotEmpty).join(' • ');
     final tile = Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
@@ -892,11 +1001,7 @@ class _SearchScreenState extends State<SearchScreen> {
         ),
         subtitle: subtitle.isEmpty
             ? null
-            : Text(
-                subtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
+            : Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -946,9 +1051,10 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Widget _buildLocalAlbumTile(local.AlbumResult album) {
-    final subtitle = [album.artist, album.releaseYear]
-        .where((value) => value != null && value.isNotEmpty)
-        .join(' • ');
+    final subtitle = [
+      album.artist,
+      album.releaseYear,
+    ].where((value) => value != null && value.isNotEmpty).join(' • ');
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
@@ -989,11 +1095,13 @@ class _SearchScreenState extends State<SearchScreen> {
             : assist
                 ? 'that live Porter Robinson Shelter from YouTube...'
                 : 'iPod Touch, Ninajirachi, live set...',
-        prefixIcon: Icon(library
-            ? Icons.library_music
-            : assist
-                ? Icons.auto_awesome
-                : Icons.travel_explore),
+        prefixIcon: Icon(
+          library
+              ? Icons.library_music
+              : assist
+                  ? Icons.auto_awesome
+                  : Icons.travel_explore,
+        ),
         suffixIcon: _queryController.text.isNotEmpty
             ? IconButton(
                 tooltip: _assistMode ? 'Clear prompt' : 'Clear search',
@@ -1043,6 +1151,10 @@ class _SearchScreenState extends State<SearchScreen> {
     }
 
     final widgets = <Widget>[];
+
+    if (_sourceSelectionStatus != null) {
+      widgets.add(_buildSourceSelectionStatus());
+    }
 
     // Status banners explain a degraded model and always keep a one-tap path
     // back to normal discovery search.
@@ -1098,7 +1210,13 @@ class _SearchScreenState extends State<SearchScreen> {
       widgets.add(const SizedBox(height: 8));
       widgets.add(_buildSectionHeader(Icons.link, 'Direct link'));
       for (final candidate in response.candidates) {
-        widgets.add(_buildResultTile(queueProvider, candidate));
+        widgets.add(
+          _buildResultTile(
+            queueProvider,
+            candidate,
+            selection: response.effectiveSelection,
+          ),
+        );
       }
     }
 
@@ -1107,7 +1225,13 @@ class _SearchScreenState extends State<SearchScreen> {
         response.search?.sections ?? const <DiscoverySearchSection>[];
     for (final section in sections) {
       widgets.add(const SizedBox(height: 8));
-      widgets.add(_buildSearchSection(queueProvider, section));
+      widgets.add(
+        _buildSearchSection(
+          queueProvider,
+          section,
+          selection: response.effectiveSelection,
+        ),
+      );
     }
 
     // Honest empty state: the assistant ran but could ground nothing actionable.
@@ -1365,7 +1489,11 @@ class _SearchScreenState extends State<SearchScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         for (final section in sections) ...[
-          _buildSearchSection(queueProvider, section),
+          _buildSearchSection(
+            queueProvider,
+            section,
+            selection: _response?.selection,
+          ),
           const SizedBox(height: 16),
         ],
       ],
@@ -1374,8 +1502,9 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _buildSearchSection(
     QueueProvider queueProvider,
-    DiscoverySearchSection section,
-  ) {
+    DiscoverySearchSection section, {
+    DiscoverySelectionSession? selection,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1384,7 +1513,11 @@ class _SearchScreenState extends State<SearchScreen> {
         ...section.items.map((item) {
           final candidate = item.candidate;
           if (candidate != null) {
-            return _buildResultTile(queueProvider, candidate);
+            return _buildResultTile(
+              queueProvider,
+              candidate,
+              selection: selection,
+            );
           }
           return _buildEntityTile(item);
         }),
@@ -1475,8 +1608,9 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _buildResultTile(
     QueueProvider queueProvider,
-    DiscoveryCandidate candidate,
-  ) {
+    DiscoveryCandidate candidate, {
+    DiscoverySelectionSession? selection,
+  }) {
     final queuedTrack = _queuedTrackFor(queueProvider, candidate);
     final pending = _pendingCandidateKeys.contains(_candidateKey(candidate));
     return Card(
@@ -1525,6 +1659,10 @@ class _SearchScreenState extends State<SearchScreen> {
                         const SizedBox(height: 5),
                         _buildSourceQualityChip(candidate.sourceQuality!),
                       ],
+                      if (selection?.isRecommended(candidate) ?? false) ...[
+                        const SizedBox(height: 5),
+                        _buildRecommendedSourceChip(),
+                      ],
                     ],
                   ),
                 ),
@@ -1535,11 +1673,67 @@ class _SearchScreenState extends State<SearchScreen> {
                   queuedTrack,
                   pending: pending,
                   mobile: mobile,
+                  selection: selection,
                 ),
               ],
             ),
           );
         },
+      ),
+    );
+  }
+
+  Widget _buildRecommendedSourceChip() {
+    final colors = Theme.of(context).colorScheme;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: DecoratedBox(
+        key: const ValueKey('source_recommended_chip'),
+        decoration: BoxDecoration(
+          color: colors.primaryContainer,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.recommend, size: 13, color: colors.onPrimaryContainer),
+              const SizedBox(width: 4),
+              Text(
+                'Recommended',
+                style: TextStyle(
+                  color: colors.onPrimaryContainer,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSourceSelectionStatus() {
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      key: const ValueKey('source_selection_status'),
+      color: colors.primaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Row(
+          children: [
+            Icon(Icons.fact_check_outlined, color: colors.onPrimaryContainer),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _sourceSelectionStatus!,
+                style: TextStyle(color: colors.onPrimaryContainer),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1646,9 +1840,7 @@ class _SearchScreenState extends State<SearchScreen> {
                   ),
                   _buildSourceQualityDetailPill(
                     icon: Icons.check_circle_outline,
-                    label: _humanizeSourceQualityToken(
-                      quality.recommendation,
-                    ),
+                    label: _humanizeSourceQualityToken(quality.recommendation),
                   ),
                   _buildSourceQualityDetailPill(
                     icon: Icons.speed,
@@ -1662,17 +1854,11 @@ class _SearchScreenState extends State<SearchScreen> {
               ),
               if (quality.warnings.isNotEmpty) ...[
                 const SizedBox(height: 18),
-                _buildSourceQualityDetailSection(
-                  'Warnings',
-                  quality.warnings,
-                ),
+                _buildSourceQualityDetailSection('Warnings', quality.warnings),
               ],
               if (quality.reasons.isNotEmpty) ...[
                 const SizedBox(height: 18),
-                _buildSourceQualityDetailSection(
-                  'Reasons',
-                  quality.reasons,
-                ),
+                _buildSourceQualityDetailSection('Reasons', quality.reasons),
               ],
               if (quality.provenance.isNotEmpty) ...[
                 const SizedBox(height: 18),
@@ -1727,10 +1913,7 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildSourceQualityDetailSection(
-    String title,
-    List<String> values,
-  ) {
+  Widget _buildSourceQualityDetailSection(String title, List<String> values) {
     final theme = Theme.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1771,6 +1954,7 @@ class _SearchScreenState extends State<SearchScreen> {
     Track? queuedTrack, {
     required bool pending,
     required bool mobile,
+    required DiscoverySelectionSession? selection,
   }) {
     final queued = queuedTrack != null || pending;
     if (queued) {
@@ -1798,12 +1982,14 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
 
-    final onPressed =
-        !candidate.downloadable ? null : () => _queueCandidate(candidate);
+    final onPressed = !candidate.downloadable
+        ? null
+        : () => _chooseCandidate(candidate, selection);
+    final recommended = selection?.isRecommended(candidate) ?? false;
 
     if (mobile) {
       return IconButton.filledTonal(
-        tooltip: 'Queue',
+        tooltip: recommended ? 'Use recommended source' : 'Choose source',
         onPressed: onPressed,
         visualDensity: VisualDensity.compact,
         constraints: const BoxConstraints.tightFor(width: 40, height: 40),
@@ -1821,7 +2007,10 @@ class _SearchScreenState extends State<SearchScreen> {
         minimumSize: const Size(84, 36),
       ),
       icon: const Icon(Icons.playlist_add, size: 18),
-      label: const Text('Queue', style: TextStyle(fontSize: 13)),
+      label: Text(
+        recommended ? 'Use' : 'Choose',
+        style: const TextStyle(fontSize: 13),
+      ),
     );
   }
 

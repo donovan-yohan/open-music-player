@@ -2,6 +2,31 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/discovery/discovery_models.dart';
 
 void main() {
+  test('discovery response retains its server-owned selection session', () {
+    final response = DiscoverySearchResponse.fromJson({
+      'query': 'city pop',
+      'selectionSessionId': '11111111-1111-1111-1111-111111111111',
+      'recommendedCandidateId': 'youtube:abc',
+      'selectionExpiresAt': '2099-01-01T00:00:00Z',
+      'results': [
+        {
+          'candidateId': 'youtube:abc',
+          'provider': 'youtube',
+          'title': 'Plastic Love',
+          'downloadable': true,
+          'playable': false,
+        },
+      ],
+    });
+
+    expect(
+      response.selection?.sessionId,
+      '11111111-1111-1111-1111-111111111111',
+    );
+    expect(response.selection?.isRecommended(response.results.single), isTrue);
+    expect(response.selection?.isExpired, isFalse);
+  });
+
   test('discovery response parses candidate metadata', () {
     final response = DiscoverySearchResponse.fromJson({
       'query': 'city pop',
@@ -107,8 +132,10 @@ void main() {
     });
 
     expect(quality.label, 'Visualizer');
-    expect(quality.debugReason,
-        'candidate appears to be a visualizer; verify clean audio');
+    expect(
+      quality.debugReason,
+      'candidate appears to be a visualizer; verify clean audio',
+    );
   });
 
   test('grouped search response parses entity and source sections', () {

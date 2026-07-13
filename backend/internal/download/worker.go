@@ -27,6 +27,16 @@ const (
 // JobProcessor is the function signature for processing a download job
 type JobProcessor func(ctx context.Context, job *DownloadJob, progress func(int)) error
 
+// JobLifecycle mirrors source-decision jobs into durable storage. Implementations
+// must treat jobs without a source-selection decision as a no-op so legacy
+// direct-download and playlist-import jobs keep their existing lifecycle.
+type JobLifecycle interface {
+	Sync(context.Context, *DownloadJob) error
+	Complete(context.Context, *DownloadJob) error
+	Fail(context.Context, *DownloadJob, error) error
+	Requeue(context.Context, *DownloadJob, int) error
+}
+
 // WorkerPool manages a pool of workers that process download jobs
 type WorkerPool struct {
 	queue       *Queue
@@ -34,6 +44,7 @@ type WorkerPool struct {
 	maxRetries  int
 	jobTimeout  time.Duration
 	processor   JobProcessor
+	lifecycle   JobLifecycle
 
 	wg         sync.WaitGroup
 	stopChan   chan struct{}
@@ -47,6 +58,7 @@ type WorkerPoolConfig struct {
 	WorkerCount *int
 	MaxRetries  int
 	JobTimeout  time.Duration
+	Lifecycle   JobLifecycle
 }
 
 // NewWorkerPool creates a new worker pool
@@ -79,6 +91,7 @@ func NewWorkerPool(queue *Queue, processor JobProcessor, config *WorkerPoolConfi
 		maxRetries:  maxRetries,
 		jobTimeout:  jobTimeout,
 		processor:   processor,
+		lifecycle:   config.Lifecycle,
 		stopChan:    make(chan struct{}),
 	}
 }
@@ -186,10 +199,25 @@ func (wp *WorkerPool) processJob(ctx context.Context, workerID int, job *Downloa
 		log.Printf("Worker %d: failed to update job status to downloading: %v", workerID, err)
 		return
 	}
+	job.Status = StatusDownloading
+	job.Progress = 0
+	job.Error = ""
+	if wp.lifecycle != nil {
+		if err := wp.lifecycle.Sync(ctx, job); err != nil {
+			wp.handleJobFailure(ctx, workerID, job, err)
+			return
+		}
+	}
 
 	progressFn := func(progress int) {
+		job.Progress = progress
 		if err := wp.queue.UpdateStatus(ctx, job.ID, job.Status, progress, ""); err != nil {
 			log.Printf("Worker %d: failed to update progress: %v", workerID, err)
+		}
+		if wp.lifecycle != nil {
+			if err := wp.lifecycle.Sync(ctx, job); err != nil {
+				log.Printf("Worker %d: failed to mirror progress for job %s: %v", workerID, job.ID, err)
+			}
 		}
 	}
 
@@ -198,6 +226,16 @@ func (wp *WorkerPool) processJob(ctx context.Context, workerID int, job *Downloa
 	if err != nil {
 		wp.handleJobFailure(ctx, workerID, job, err)
 		return
+	}
+
+	if wp.lifecycle != nil {
+		// The SQL adapter attaches the track to its decision in the same
+		// transaction that marks durable completion. Do this before Redis
+		// publishes completion so a visible complete state is never ahead.
+		if err := wp.lifecycle.Complete(ctx, job); err != nil {
+			wp.handleJobFailure(ctx, workerID, job, err)
+			return
+		}
 	}
 
 	if job.TrackID != nil {
@@ -217,31 +255,52 @@ func (wp *WorkerPool) processJob(ctx context.Context, workerID int, job *Downloa
 func (wp *WorkerPool) handleJobFailure(ctx context.Context, workerID int, job *DownloadJob, jobErr error) {
 	errMsg := jobErr.Error()
 	log.Printf("Worker %d: job %s failed: %v", workerID, job.ID, jobErr)
+	if isRetryable(jobErr) && job.RetryCount < wp.maxRetries {
+		retrying := *job
+		retrying.Status = StatusQueued
+		retrying.Progress = 0
+		retrying.Error = ""
+		retrying.RetryCount++
+		if wp.lifecycle != nil {
+			if err := wp.lifecycle.Requeue(ctx, &retrying, retrying.RetryCount); err != nil {
+				log.Printf("Worker %d: failed to persist retry for job %s: %v", workerID, job.ID, err)
+				return
+			}
+		}
+		prepared, err := wp.queue.PrepareRetry(ctx, job.ID)
+		if err != nil {
+			log.Printf("Worker %d: failed to prepare retry for job %s: %v", workerID, job.ID, err)
+			return
+		}
+		backoff := calculateBackoff(prepared.RetryCount - 1)
+		log.Printf("Worker %d: scheduling retry for job %s in %v (attempt %d/%d)",
+			workerID, job.ID, backoff, prepared.RetryCount, wp.maxRetries)
+
+		time.Sleep(backoff)
+		if err := wp.queue.PublishQueuedRetry(ctx, job.ID); err != nil {
+			log.Printf("Worker %d: failed to requeue job for retry: %v", workerID, err)
+		}
+		return
+	}
 
 	if err := wp.queue.UpdateStatus(ctx, job.ID, StatusFailed, job.Progress, errMsg); err != nil {
 		log.Printf("Worker %d: failed to update job status to failed: %v", workerID, err)
 		return
 	}
-
-	updatedJob, err := wp.queue.GetJob(ctx, job.ID)
-	if err != nil {
-		log.Printf("Worker %d: failed to get updated job: %v", workerID, err)
-		return
-	}
-
-	if updatedJob.CanRetry(wp.maxRetries) {
-		backoff := calculateBackoff(updatedJob.RetryCount)
-		log.Printf("Worker %d: scheduling retry for job %s in %v (attempt %d/%d)",
-			workerID, job.ID, backoff, updatedJob.RetryCount+1, wp.maxRetries)
-
-		time.Sleep(backoff)
-
-		if err := wp.queue.IncrementRetry(ctx, job.ID); err != nil {
-			log.Printf("Worker %d: failed to requeue job for retry: %v", workerID, err)
+	job.Status = StatusFailed
+	job.Error = errMsg
+	if wp.lifecycle != nil {
+		if err := wp.lifecycle.Fail(ctx, job, jobErr); err != nil {
+			log.Printf("Worker %d: failed to mirror job failure for %s: %v", workerID, job.ID, err)
 		}
-	} else {
-		log.Printf("Worker %d: job %s exceeded max retries (%d)", workerID, job.ID, wp.maxRetries)
 	}
+}
+
+type retryableError interface{ Retryable() bool }
+
+func isRetryable(err error) bool {
+	var classified retryableError
+	return !errors.As(err, &classified) || classified.Retryable()
 }
 
 // calculateBackoff calculates the exponential backoff duration for a given retry count

@@ -13,6 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 )
 
@@ -68,10 +71,14 @@ type ProviderSummary struct {
 }
 
 type SearchResponse struct {
-	Query     string            `json:"query"`
-	Results   []Candidate       `json:"results"`
-	Sections  []SearchSection   `json:"sections"`
-	Providers []ProviderSummary `json:"providers"`
+	Query                  string            `json:"query"`
+	Results                []Candidate       `json:"results"`
+	Sections               []SearchSection   `json:"sections"`
+	Providers              []ProviderSummary `json:"providers"`
+	SelectionRequired      bool              `json:"selectionRequired"`
+	SelectionSessionID     string            `json:"selectionSessionId,omitempty"`
+	RecommendedCandidateID string            `json:"recommendedCandidateId,omitempty"`
+	SelectionExpiresAt     *time.Time        `json:"selectionExpiresAt,omitempty"`
 }
 
 type SearchSection struct {
@@ -457,9 +464,14 @@ func (s *Service) normalizeRequestedProviders(requested []string) []string {
 }
 
 type Handlers struct {
-	service  *Service
-	resolver *URLResolver
-	assist   *AssistService
+	service        *Service
+	resolver       *URLResolver
+	assist         *AssistService
+	selectionStore sourceSelectionStore
+}
+
+type sourceSelectionStore interface {
+	CreateSession(context.Context, *db.SourceSelectionSession) error
 }
 
 // NewHandlers builds discovery handlers with a disabled-but-functional assist
@@ -477,19 +489,28 @@ func NewHandlers(service *Service) *Handlers {
 // service so both validate pasted URLs identically; a future custom validator
 // registry then applies to both at once.
 func NewHandlersWithAssist(service *Service, assist *AssistService) *Handlers {
+	return NewHandlersWithAssistAndSelectionStore(service, assist, nil)
+}
+
+// NewHandlersWithAssistAndSelectionStore wires the server-owned source
+// selection session store. A nil store intentionally leaves discovery disabled
+// for legacy embeddings rather than returning un-gated candidates.
+func NewHandlersWithAssistAndSelectionStore(service *Service, assist *AssistService, selectionStore sourceSelectionStore) *Handlers {
 	resolver := NewURLResolver(nil)
 	if assist == nil {
 		assist = NewAssistService(AssistConfig{Search: service})
 	}
 	assist.resolver = resolver
 	return &Handlers{
-		service:  service,
-		resolver: resolver,
-		assist:   assist,
+		service:        service,
+		resolver:       resolver,
+		assist:         assist,
+		selectionStore: selectionStore,
 	}
 }
 
 func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
+	userCtx := auth.GetUserFromContext(r.Context())
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if query == "" {
 		writeError(w, http.StatusBadRequest, "INVALID_QUERY", "q is required")
@@ -502,7 +523,44 @@ func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "NO_PROVIDERS", "no discovery providers can be attempted")
 		return
 	}
+	if userCtx != nil && !h.persistSelection(w, r, userCtx.UserID, &resp, "discovery_search") {
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+const sourceSelectionSessionTTL = 15 * time.Minute
+
+func (h *Handlers) persistSelection(w http.ResponseWriter, r *http.Request, userID uuid.UUID, response *SearchResponse, selectionContext string) bool {
+	if len(response.Results) == 0 {
+		response.SelectionRequired = false
+		return true
+	}
+	if h.selectionStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "SOURCE_SELECTION_UNAVAILABLE", "source selection persistence is unavailable")
+		return false
+	}
+	snapshot, err := json.Marshal(response.Results)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to persist source selection")
+		return false
+	}
+	recommended := response.Results[0].CandidateID
+	if strings.TrimSpace(recommended) == "" {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to persist source selection")
+		return false
+	}
+	expiresAt := time.Now().Add(sourceSelectionSessionTTL)
+	session := &db.SourceSelectionSession{UserID: userID, Query: response.Query, Context: selectionContext, Candidates: snapshot, RecommendedCandidateID: recommended, ExpiresAt: expiresAt}
+	if err := h.selectionStore.CreateSession(r.Context(), session); err != nil {
+		writeError(w, http.StatusInternalServerError, "SOURCE_SELECTION_PERSISTENCE_FAILED", "failed to persist source selection")
+		return false
+	}
+	response.SelectionRequired = true
+	response.SelectionSessionID = session.ID.String()
+	response.RecommendedCandidateID = recommended
+	response.SelectionExpiresAt = &session.ExpiresAt
+	return true
 }
 
 func splitCSV(value string) []string {

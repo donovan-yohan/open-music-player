@@ -1,14 +1,47 @@
+import '../../models/queue_state.dart';
+
+class DiscoverySelectionSession {
+  final String sessionId;
+  final String recommendedCandidateId;
+  final DateTime? expiresAt;
+
+  const DiscoverySelectionSession({
+    required this.sessionId,
+    required this.recommendedCandidateId,
+    this.expiresAt,
+  });
+
+  factory DiscoverySelectionSession.fromJson(Map<String, dynamic> json) {
+    return DiscoverySelectionSession(
+      sessionId: json['selectionSessionId'] as String? ?? '',
+      recommendedCandidateId: json['recommendedCandidateId'] as String? ?? '',
+      expiresAt: _readDate(json['selectionExpiresAt']),
+    );
+  }
+
+  bool get isPresent =>
+      sessionId.isNotEmpty && recommendedCandidateId.isNotEmpty;
+
+  bool get isExpired =>
+      expiresAt != null && !expiresAt!.isAfter(DateTime.now());
+
+  bool isRecommended(DiscoveryCandidate candidate) =>
+      candidate.candidateId == recommendedCandidateId;
+}
+
 class DiscoverySearchResponse {
   final String query;
   final List<DiscoveryCandidate> results;
   final List<DiscoverySearchSection> sections;
   final List<DiscoveryProviderSummary> providers;
+  final DiscoverySelectionSession? selection;
 
   const DiscoverySearchResponse({
     required this.query,
     required this.results,
     required this.sections,
     required this.providers,
+    this.selection,
   });
 
   factory DiscoverySearchResponse.fromJson(Map<String, dynamic> json) {
@@ -47,6 +80,7 @@ class DiscoverySearchResponse {
                 DiscoveryProviderSummary.fromJson(item as Map<String, dynamic>),
           )
           .toList(),
+      selection: _selectionFromJson(json),
     );
   }
 }
@@ -187,7 +221,8 @@ class DiscoveryCandidate {
 
   factory DiscoveryCandidate.fromJson(Map<String, dynamic> json) {
     final metadata = _readMap(json['metadata']);
-    final sourceQualityJson = _readOptionalMap(json['sourceQuality']) ??
+    final sourceQualityJson =
+        _readOptionalMap(json['sourceQuality']) ??
         _readOptionalMap(metadata['sourceQuality']);
     return DiscoveryCandidate(
       candidateId: json['candidateId'] as String? ?? '',
@@ -213,7 +248,8 @@ class DiscoveryCandidate {
 
   factory DiscoveryCandidate.fromQueueItemJson(Map<String, dynamic> json) {
     final metadata = _readMap(json['metadata']);
-    final sourceQualityJson = _readOptionalMap(json['sourceQuality']) ??
+    final sourceQualityJson =
+        _readOptionalMap(json['sourceQuality']) ??
         _readOptionalMap(metadata['sourceQuality']);
     return DiscoveryCandidate(
       candidateId: json['candidateId'] as String? ?? '',
@@ -237,6 +273,8 @@ class DiscoveryCandidate {
     );
   }
 
+  /// Legacy adapters may still serialize candidates for their own contracts.
+  /// Discovery queueing must use a server-owned source decision instead.
   Map<String, dynamic> toQueueJson() {
     final queueMetadata = Map<String, dynamic>.from(metadata);
     if (sourceQuality != null &&
@@ -344,11 +382,11 @@ class DiscoverySourceQuality {
       'altered_audio' => 'Altered',
       'direct_url' => 'Direct URL',
       _ => switch (recommendation) {
-          'preferred' => 'Preferred',
-          'acceptable' => 'Acceptable',
-          'avoid' => 'Avoid',
-          _ => 'Review',
-        },
+        'preferred' => 'Preferred',
+        'acceptable' => 'Acceptable',
+        'avoid' => 'Avoid',
+        _ => 'Review',
+      },
     };
   }
 
@@ -383,8 +421,9 @@ class DiscoveryProviderSummary {
       status: json['status'] as String? ?? 'unknown',
       resultCount: json['resultCount'] as int? ?? 0,
       elapsedMs: json['elapsedMs'] as int? ?? 0,
-      errorMessage:
-          error is Map<String, dynamic> ? error['message'] as String? : null,
+      errorMessage: error is Map<String, dynamic>
+          ? error['message'] as String?
+          : null,
     );
   }
 }
@@ -407,6 +446,7 @@ class DiscoveryAssistResponse {
   final List<DiscoveryCandidate> candidates;
   final List<String> caveats;
   final DiscoveryAssistError? error;
+  final DiscoverySelectionSession? selection;
 
   const DiscoveryAssistResponse({
     required this.status,
@@ -417,6 +457,7 @@ class DiscoveryAssistResponse {
     this.candidates = const [],
     this.caveats = const [],
     this.error,
+    this.selection,
   });
 
   factory DiscoveryAssistResponse.fromJson(Map<String, dynamic> json) {
@@ -427,8 +468,8 @@ class DiscoveryAssistResponse {
     final rawStatus = (json['status'] as String? ?? '').trim();
     final status =
         const {'ok', 'disabled', 'clarification', 'error'}.contains(rawStatus)
-            ? rawStatus
-            : 'error';
+        ? rawStatus
+        : 'error';
     return DiscoveryAssistResponse(
       // A missing/blank status is treated as an error so the UI never silently
       // renders an unlabelled/unknown envelope as a success or empty screen.
@@ -454,6 +495,7 @@ class DiscoveryAssistResponse {
       error: errorJson is Map<String, dynamic>
           ? DiscoveryAssistError.fromJson(errorJson)
           : null,
+      selection: _selectionFromJson(json),
     );
   }
 
@@ -468,6 +510,118 @@ class DiscoveryAssistResponse {
   /// Whether anything queueable/searchable was grounded. Drives the
   /// "no results" empty state independently of the disabled/error banners.
   bool get hasGroundedResults => hasCandidates || hasSearchResults;
+
+  /// Search assist can carry the selection envelope at the top level or in
+  /// its nested discovery result. Prefer the envelope that owns the candidate.
+  DiscoverySelectionSession? get effectiveSelection =>
+      selection?.isPresent == true ? selection : search?.selection;
+}
+
+enum SourceSelectionAction { accepted, overridden }
+
+extension SourceSelectionActionJson on SourceSelectionAction {
+  String get jsonValue => name;
+}
+
+class SourceSelectionDecision {
+  final String id;
+  final String? sessionId;
+  final String selectedCandidateId;
+  final String recommendedCandidateId;
+  final SourceSelectionAction action;
+  final String origin;
+  final String? reason;
+  final DiscoveryCandidate selectedCandidate;
+  final DiscoverySourceQuality? sourceQuality;
+  final String? downloadJobId;
+  final int? trackId;
+  final DateTime? createdAt;
+
+  const SourceSelectionDecision({
+    required this.id,
+    this.sessionId,
+    required this.selectedCandidateId,
+    required this.recommendedCandidateId,
+    required this.action,
+    required this.origin,
+    this.reason,
+    required this.selectedCandidate,
+    this.sourceQuality,
+    this.downloadJobId,
+    this.trackId,
+    this.createdAt,
+  });
+
+  factory SourceSelectionDecision.fromJson(Map<String, dynamic> json) {
+    final candidate = _readOptionalMap(json['selectedCandidate']) ?? const {};
+    final quality = _readOptionalMap(json['sourceQuality']);
+    return SourceSelectionDecision(
+      id: json['id'] as String? ?? '',
+      sessionId: _blankToNull(json['sessionId'] as String?),
+      selectedCandidateId: json['selectedCandidateId'] as String? ?? '',
+      recommendedCandidateId: json['recommendedCandidateId'] as String? ?? '',
+      action: json['action'] == 'overridden'
+          ? SourceSelectionAction.overridden
+          : SourceSelectionAction.accepted,
+      origin: json['origin'] as String? ?? '',
+      reason: _blankToNull(json['reason'] as String?),
+      selectedCandidate: DiscoveryCandidate.fromJson(candidate),
+      sourceQuality: quality == null
+          ? null
+          : DiscoverySourceQuality.fromJson(quality),
+      downloadJobId: _blankToNull(json['downloadJobId'] as String?),
+      trackId: _readInt(json['trackId']),
+      createdAt: _readDate(json['createdAt']),
+    );
+  }
+}
+
+class SourceSelectionListResponse {
+  final List<SourceSelectionDecision> items;
+  final int limit;
+  final int offset;
+
+  const SourceSelectionListResponse({
+    required this.items,
+    required this.limit,
+    required this.offset,
+  });
+
+  factory SourceSelectionListResponse.fromJson(Map<String, dynamic> json) =>
+      SourceSelectionListResponse(
+        items: (json['items'] as List<dynamic>? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(SourceSelectionDecision.fromJson)
+            .toList(),
+        limit: _readInt(json['limit']) ?? 20,
+        offset: _readInt(json['offset']) ?? 0,
+      );
+}
+
+class SourceDecisionQueueResponse {
+  final QueueState queue;
+  final String downloadJobId;
+  final bool idempotent;
+
+  const SourceDecisionQueueResponse({
+    required this.queue,
+    required this.downloadJobId,
+    required this.idempotent,
+  });
+
+  factory SourceDecisionQueueResponse.fromJson(Map<String, dynamic> json) {
+    final queue = _readOptionalMap(json['queue']);
+    if (queue == null) {
+      throw const FormatException(
+        'Source decision queue response has no queue.',
+      );
+    }
+    return SourceDecisionQueueResponse(
+      queue: QueueState.fromJson(queue),
+      downloadJobId: json['downloadJobId'] as String? ?? '',
+      idempotent: json['idempotent'] as bool? ?? false,
+    );
+  }
 }
 
 /// Grounded echo of how OMP interpreted the request. [detectedUrl] is only ever
@@ -598,11 +752,12 @@ class DiscoveryQueueItem {
     bool? canRemove,
     this.addedAt,
     this.updatedAt,
-  })  : playbackState = playbackState ?? status ?? 'queued',
-        canPlay = canPlay ??
-            ((playbackState ?? status ?? '') == 'playable' && trackId != null),
-        canRetry = canRetry ?? ((playbackState ?? status ?? '') == 'failed'),
-        canRemove = canRemove ?? true;
+  }) : playbackState = playbackState ?? status ?? 'queued',
+       canPlay =
+           canPlay ??
+           ((playbackState ?? status ?? '') == 'playable' && trackId != null),
+       canRetry = canRetry ?? ((playbackState ?? status ?? '') == 'failed'),
+       canRemove = canRemove ?? true;
 
   factory DiscoveryQueueItem.fromJson(Map<String, dynamic> json) {
     final sourceJson = json['sourceCandidate'];
@@ -611,20 +766,23 @@ class DiscoveryQueueItem {
         : DiscoveryCandidate.fromQueueItemJson(json);
     final queueItemId = json['queueItemId'] as String?;
     final trackId = _readInt(json['trackId']);
-    final rawState = json['playbackState'] as String? ??
+    final rawState =
+        json['playbackState'] as String? ??
         (trackId != null ? 'playable' : 'queued');
     final playbackState = _normalizePlaybackState(rawState);
-    final progress = _readInt(json['progress']) ??
+    final progress =
+        _readInt(json['progress']) ??
         (playbackState == 'playable'
             ? 100
             : playbackState == 'failed'
-                ? 0
-                : 0);
+            ? 0
+            : 0);
     final error = _blankToNull(json['error'] as String?);
     final downloadJobId = json['downloadJobId'] as String?;
 
     return DiscoveryQueueItem(
-      localId: queueItemId ??
+      localId:
+          queueItemId ??
           candidate.candidateId.ifNotEmpty ??
           downloadJobId ??
           candidate.sourceUrl,
@@ -638,7 +796,8 @@ class DiscoveryQueueItem {
       progress: progress,
       trackId: trackId,
       error: error,
-      canPlay: json['canPlay'] as bool? ??
+      canPlay:
+          json['canPlay'] as bool? ??
           (playbackState == 'playable' && trackId != null),
       canRetry: json['canRetry'] as bool? ?? playbackState == 'failed',
       canRemove: json['canRemove'] as bool? ?? true,
@@ -763,6 +922,11 @@ Map<String, dynamic>? _readOptionalMap(Object? value) {
     return value.map((key, entry) => MapEntry(key.toString(), entry));
   }
   return null;
+}
+
+DiscoverySelectionSession? _selectionFromJson(Map<String, dynamic> json) {
+  final selection = DiscoverySelectionSession.fromJson(json);
+  return selection.isPresent ? selection : null;
 }
 
 List<String> _readStringList(Object? value) {

@@ -3,9 +3,12 @@ package discovery
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/validators"
 )
@@ -164,7 +167,11 @@ type ResolveURLRequest struct {
 // ResolveURLResponse wraps the single resolved candidate. It is intentionally a
 // thin envelope so #75/#76 can grow the response without a breaking change.
 type ResolveURLResponse struct {
-	Candidate Candidate `json:"candidate"`
+	Candidate              Candidate  `json:"candidate"`
+	SelectionRequired      bool       `json:"selectionRequired"`
+	SelectionSessionID     string     `json:"selectionSessionId,omitempty"`
+	RecommendedCandidateID string     `json:"recommendedCandidateId,omitempty"`
+	SelectionExpiresAt     *time.Time `json:"selectionExpiresAt,omitempty"`
 }
 
 // ResolveURL handles POST /api/v1/discovery/resolve-url. It converts one pasted
@@ -172,13 +179,14 @@ type ResolveURLResponse struct {
 // and mutates no queue. Resolver failures are contained here and never affect
 // GET /api/v1/discovery/search, which runs through a separate code path.
 func (h *Handlers) ResolveURL(w http.ResponseWriter, r *http.Request) {
+	userCtx := auth.GetUserFromContext(r.Context())
 	if h.resolver == nil {
 		writeError(w, http.StatusServiceUnavailable, "RESOLVER_DISABLED", "url resolver is unavailable")
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, resolveURLMaxRequestBodyBytes)
 	var req ResolveURLRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeStrictResolveURL(r.Body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
 		return
 	}
@@ -198,5 +206,27 @@ func (h *Handlers) ResolveURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, ResolveURLResponse{Candidate: candidate})
+	response := SearchResponse{Query: strings.TrimSpace(req.URL), Results: []Candidate{candidate}}
+	if userCtx != nil {
+		if !h.persistSelection(w, r, userCtx.UserID, &response, "resolve_url") {
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, ResolveURLResponse{
+		Candidate: candidate, SelectionRequired: response.SelectionRequired,
+		SelectionSessionID: response.SelectionSessionID, RecommendedCandidateID: response.RecommendedCandidateID,
+		SelectionExpiresAt: response.SelectionExpiresAt,
+	})
+}
+
+func decodeStrictResolveURL(body io.Reader, request *ResolveURLRequest) error {
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(request); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("request must contain one JSON object")
+	}
+	return nil
 }

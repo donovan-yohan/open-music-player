@@ -1,21 +1,47 @@
 package api
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
 )
 
-type DownloadHandlers struct {
-	downloadService *download.Service
+const maxCreateDownloadBodyBytes = 16 * 1024
+
+type trustedDownloadIngestion interface {
+	CreateTrustedDownload(context.Context, uuid.UUID, string, download.SourceCandidate, string) (*db.SourceSelectionDownload, error)
+	EnqueueTrustedDownload(context.Context, *db.SourceSelectionDownload, db.SourceSelectionDownloadEnqueuer) (*download.DownloadJob, error)
 }
 
-func NewDownloadHandlers(downloadService *download.Service) *DownloadHandlers {
+type downloadService interface {
+	db.SourceSelectionDownloadEnqueuer
+	GetJob(context.Context, string) (*download.DownloadJob, error)
+	GetUserJobs(context.Context, string) ([]*download.DownloadJob, error)
+}
+
+type DownloadHandlers struct {
+	downloadService downloadService
+	ingestion       trustedDownloadIngestion
+}
+
+func NewDownloadHandlers(downloadService downloadService, ingestion ...trustedDownloadIngestion) *DownloadHandlers {
+	var trustedIngestion trustedDownloadIngestion
+	if len(ingestion) > 0 {
+		trustedIngestion = ingestion[0]
+	}
 	return &DownloadHandlers{
 		downloadService: downloadService,
+		ingestion:       trustedIngestion,
 	}
 }
 
@@ -34,8 +60,9 @@ type PageMetadata struct {
 
 // CreateDownloadResponse represents the response for a created download job
 type CreateDownloadResponse struct {
-	JobID  string `json:"job_id"`
-	Status string `json:"status"`
+	JobID            string `json:"job_id"`
+	Status           string `json:"status"`
+	SourceDecisionID string `json:"sourceDecisionId"`
 }
 
 // DownloadErrorResponse represents an error response
@@ -67,46 +94,84 @@ func (h *DownloadHandlers) CreateDownload(w http.ResponseWriter, r *http.Request
 	}
 
 	var req CreateDownloadRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCreateDownloadRequest(w, r, &req); err != nil {
 		writeDownloadError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
 		return
 	}
-
-	req.URL = strings.TrimSpace(req.URL)
-	if req.URL == "" {
-		writeDownloadError(w, http.StatusBadRequest, "INVALID_REQUEST", "url is required")
-		return
-	}
-
-	if req.SourceType == "" {
-		writeDownloadError(w, http.StatusBadRequest, "INVALID_REQUEST", "source_type is required")
-		return
-	}
-	if err := download.ValidateUserFacingURL(req.URL); err != nil {
-		writeDownloadError(w, http.StatusBadRequest, "INVALID_URL", "url must be an absolute http(s) URL")
-		return
-	}
-
-	// Validate source type
-	validSourceTypes := map[string]bool{
-		"youtube":    true,
-		"soundcloud": true,
-	}
-	if !validSourceTypes[req.SourceType] {
-		writeDownloadError(w, http.StatusBadRequest, "UNSUPPORTED_SOURCE", "unsupported source type")
-		return
-	}
-
-	job, err := h.downloadService.EnqueueDownload(r.Context(), userCtx.UserID.String(), req.URL, req.SourceType, nil)
+	candidate, err := normalizedDirectCandidate(req)
 	if err != nil {
-		writeDownloadError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to create download job")
+		writeDownloadError(w, http.StatusBadRequest, "INVALID_URL", err.Error())
+		return
+	}
+	if h.ingestion == nil || h.downloadService == nil {
+		writeDownloadError(w, http.StatusServiceUnavailable, "DOWNLOAD_UNAVAILABLE", "download processing is unavailable")
+		return
+	}
+	persisted, err := h.ingestion.CreateTrustedDownload(r.Context(), userCtx.UserID, db.SourceSelectionOriginDirectURL, candidate, "server-normalized authenticated direct/share URL")
+	if err != nil {
+		writeDownloadError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to persist trusted download")
+		return
+	}
+	job, err := h.ingestion.EnqueueTrustedDownload(r.Context(), persisted, h.downloadService)
+	if err != nil {
+		writeDownloadError(w, http.StatusInternalServerError, "DOWNLOAD_ENQUEUE_FAILED", "failed to enqueue trusted download")
 		return
 	}
 
 	writeDownloadJSON(w, http.StatusCreated, CreateDownloadResponse{
-		JobID:  job.ID,
-		Status: job.Status,
+		JobID: job.ID, Status: job.Status, SourceDecisionID: persisted.Decision.ID.String(),
 	})
+}
+
+func decodeCreateDownloadRequest(w http.ResponseWriter, r *http.Request, req *CreateDownloadRequest) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxCreateDownloadBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(req); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("multiple JSON values")
+	}
+	if len(strings.TrimSpace(req.URL)) == 0 || len(req.URL) > 4096 || len(req.SourceType) > 50 || len(req.PageMetadata.Title) > 500 || len(req.PageMetadata.Thumbnail) > 2048 {
+		return fmt.Errorf("request fields exceed limits")
+	}
+	return nil
+}
+
+func normalizedDirectCandidate(req CreateDownloadRequest) (download.SourceCandidate, error) {
+	rawURL := strings.TrimSpace(req.URL)
+	if err := download.ValidateUserFacingURL(rawURL); err != nil {
+		return download.SourceCandidate{}, fmt.Errorf("url must be an absolute http(s) URL")
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.User != nil {
+		return download.SourceCandidate{}, fmt.Errorf("url must be an absolute http(s) URL")
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	if parsed.Scheme != "https" {
+		return download.SourceCandidate{}, fmt.Errorf("url must use https")
+	}
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Fragment = ""
+	host := parsed.Hostname()
+	provider := ""
+	switch {
+	case host == "youtube.com" || strings.HasSuffix(host, ".youtube.com") || host == "youtu.be":
+		provider = "youtube"
+	case host == "soundcloud.com" || strings.HasSuffix(host, ".soundcloud.com"):
+		provider = "soundcloud"
+	default:
+		return download.SourceCandidate{}, fmt.Errorf("unsupported source URL")
+	}
+	normalized := parsed.String()
+	digest := sha256.Sum256([]byte(normalized))
+	sourceID := fmt.Sprintf("%x", digest[:16])
+	title := strings.TrimSpace(req.PageMetadata.Title)
+	if title == "" {
+		title = "Shared " + provider + " source"
+	}
+	return download.SourceCandidate{CandidateID: provider + ":" + sourceID, Provider: provider, SourceID: sourceID, SourceURL: normalized, Title: title, ThumbnailURL: strings.TrimSpace(req.PageMetadata.Thumbnail), Metadata: map[string]interface{}{"trustedIngestion": true, "origin": db.SourceSelectionOriginDirectURL}}, nil
 }
 
 // GetJob handles GET /api/v1/downloads/{job_id}

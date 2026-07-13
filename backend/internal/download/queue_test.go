@@ -90,6 +90,32 @@ func TestQueue_GetJob(t *testing.T) {
 	queue.Dequeue(ctx, 1*time.Second)
 }
 
+func TestQueue_EnsureCandidateWithIDRestoresDequeuedJobWithoutDuplicates(t *testing.T) {
+	queue := newTestQueue(t)
+	ctx := context.Background()
+	candidate := SourceCandidate{CandidateID: "youtube:test", Provider: "youtube", SourceID: "test", SourceURL: "https://example.com/test", Title: "Test"}
+
+	job, err := queue.EnqueueCandidateWithID(ctx, "00000000-0000-4000-8000-000000000001", "user-ensure", candidate, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Dequeue(ctx, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.EnsureCandidateWithID(ctx, job.ID, job.UserID, candidate, nil); err != nil {
+		t.Fatal(err)
+	}
+	if length, err := queue.QueueLength(ctx); err != nil || length != 1 {
+		t.Fatalf("restored queue length = %d, %v; want 1, nil", length, err)
+	}
+	if _, err := queue.EnsureCandidateWithID(ctx, job.ID, job.UserID, candidate, nil); err != nil {
+		t.Fatal(err)
+	}
+	if length, err := queue.QueueLength(ctx); err != nil || length != 1 {
+		t.Fatalf("idempotent queue length = %d, %v; want 1, nil", length, err)
+	}
+}
+
 func TestQueue_UpdateStatus(t *testing.T) {
 	queue := newTestQueue(t)
 

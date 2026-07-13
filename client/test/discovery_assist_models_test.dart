@@ -11,6 +11,9 @@ void main() {
         'searchQuery': 'porter robinson shelter live',
         'providers': ['youtube', 'soundcloud'],
       },
+      'selectionSessionId': '11111111-1111-1111-1111-111111111111',
+      'recommendedCandidateId': 'youtube:abc',
+      'selectionExpiresAt': '2099-01-01T00:00:00Z',
       'search': {
         'query': 'porter robinson shelter live',
         'results': [
@@ -55,16 +58,17 @@ void main() {
     // those are exclusive to the resolver path.
     expect(response.hasCandidates, isFalse);
     expect(response.hasGroundedResults, isTrue);
+    expect(
+      response.effectiveSelection?.sessionId,
+      '11111111-1111-1111-1111-111111111111',
+    );
   });
 
   test('parses a direct-URL assist envelope with a grounded candidate', () {
     final response = DiscoveryAssistResponse.fromJson({
       'status': 'ok',
       'assistantText': 'I recognized a direct link. Confirm to add it.',
-      'intent': {
-        'kind': 'direct_url',
-        'detectedUrl': 'https://youtu.be/abc',
-      },
+      'intent': {'kind': 'direct_url', 'detectedUrl': 'https://youtu.be/abc'},
       'candidates': [
         {
           'candidateId': 'youtube:abc',

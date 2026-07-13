@@ -62,7 +62,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
 
-      expect(queueClient.postedSourceCandidates, 1);
+      expect(queueClient.postedSourceDecisions, 1);
       expect(
         queueProvider.queue.tracks.single.sourceCandidateId,
         'youtube:abc',
@@ -74,8 +74,9 @@ void main() {
         findsOneWidget,
       );
 
-      await tester
-          .tap(find.byKey(const ValueKey('search_view_queue_youtube:abc')));
+      await tester.tap(
+        find.byKey(const ValueKey('search_view_queue_youtube:abc')),
+      );
       await tester.pumpAndSettle();
 
       expect(find.text('queue landing'), findsOneWidget);
@@ -88,11 +89,11 @@ void main() {
 /// transport. The POST body contract itself is covered by
 /// queue_api_client_contract_test.dart.
 class _QueueMutationClient extends ApiClient {
-  int postedSourceCandidates = 0;
+  int postedSourceDecisions = 0;
 
   @override
   Future<QueueState> getQueue() async => QueueState.fromJson(
-        postedSourceCandidates == 0 ? _emptyQueue() : _queuedSourceQueue(),
+        postedSourceDecisions == 0 ? _emptyQueue() : _queuedSourceQueue(),
       );
 
   @override
@@ -100,12 +101,16 @@ class _QueueMutationClient extends ApiClient {
       const [];
 
   @override
-  Future<QueueState> addSourceCandidateToQueue({
-    required DiscoveryCandidate candidate,
+  Future<SourceDecisionQueueResponse> addSourceDecisionToQueue({
+    required String sourceDecisionId,
     String position = 'last',
   }) async {
-    postedSourceCandidates++;
-    return QueueState.fromJson(_queuedSourceQueue());
+    postedSourceDecisions++;
+    return SourceDecisionQueueResponse(
+      queue: QueueState.fromJson(_queuedSourceQueue()),
+      downloadJobId: 'job_1',
+      idempotent: false,
+    );
   }
 }
 
@@ -121,6 +126,9 @@ class _SearchResultAdapter implements HttpClientAdapter {
         jsonEncode({
           'query': options.queryParameters['q'] ?? 'plastic love',
           'results': [_candidateJson()],
+          'selectionSessionId': '11111111-1111-1111-1111-111111111111',
+          'recommendedCandidateId': 'youtube:abc',
+          'selectionExpiresAt': '2099-01-01T00:00:00Z',
           'providers': [
             {
               'provider': 'youtube',
@@ -131,6 +139,26 @@ class _SearchResultAdapter implements HttpClientAdapter {
           ],
         }),
         200,
+        headers: {
+          Headers.contentTypeHeader: [Headers.jsonContentType],
+        },
+      );
+    }
+
+    if (options.method == 'POST' && options.path == '/source-selections') {
+      return ResponseBody.fromString(
+        jsonEncode({
+          'id': 'decision-1',
+          'sessionId': '11111111-1111-1111-1111-111111111111',
+          'selectedCandidateId': 'youtube:abc',
+          'recommendedCandidateId': 'youtube:abc',
+          'action': 'accepted',
+          'origin': 'search',
+          'selectedCandidate': _candidateJson(),
+          'sourceQuality': const {},
+          'createdAt': '2026-07-13T00:00:00Z',
+        }),
+        201,
         headers: {
           Headers.contentTypeHeader: [Headers.jsonContentType],
         },

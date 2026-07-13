@@ -2,11 +2,17 @@ package discovery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 )
 
@@ -15,6 +21,19 @@ type fakeProvider struct {
 	items []Candidate
 	err   error
 	delay time.Duration
+}
+
+type captureSelectionStore struct {
+	session *db.SourceSelectionSession
+	err     error
+}
+
+func (s *captureSelectionStore) CreateSession(_ context.Context, session *db.SourceSelectionSession) error {
+	s.session = session
+	if session.ID == uuid.Nil {
+		session.ID = uuid.New()
+	}
+	return s.err
 }
 
 func (p fakeProvider) Name() string { return p.name }
@@ -312,5 +331,38 @@ func TestServiceSearchMusicBrainzTimeoutUsesTimeoutSummary(t *testing.T) {
 	}
 	if !sawTimedOutMusicBrainz {
 		t.Fatalf("missing timed out musicbrainz provider summary: %#v", resp.Providers)
+	}
+}
+
+func TestSearchHandlerPersistsRankedSelectionSession(t *testing.T) {
+	store := &captureSelectionStore{}
+	h := NewHandlersWithAssistAndSelectionStore(NewService(ServiceConfig{Providers: []Provider{fakeProvider{name: "youtube", items: []Candidate{{CandidateID: "first", Provider: "youtube", SourceURL: "https://example.test/1", Title: "First", Downloadable: true, Metadata: map[string]interface{}{"sourceQuality": map[string]interface{}{"score": 99}}}, {CandidateID: "second", Provider: "youtube", SourceURL: "https://example.test/2", Title: "Second", Downloadable: true}}}}, DefaultProviders: []string{"youtube"}}), nil, store)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/discovery/search?q=first", nil)
+	request = request.WithContext(context.WithValue(request.Context(), auth.UserContextKey, &auth.UserContext{UserID: uuid.New()}))
+	recorder := httptest.NewRecorder()
+	h.Search(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if store.session == nil || store.session.RecommendedCandidateID != "first" || len(store.session.Candidates) == 0 {
+		t.Fatalf("persisted session = %#v", store.session)
+	}
+	var body SearchResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.SelectionRequired || body.SelectionSessionID == "" || body.RecommendedCandidateID != "first" || body.SelectionExpiresAt == nil {
+		t.Fatalf("selection envelope = %#v", body)
+	}
+}
+
+func TestSearchHandlerFailsWhenSelectionPersistenceFails(t *testing.T) {
+	h := NewHandlersWithAssistAndSelectionStore(NewService(ServiceConfig{Providers: []Provider{fakeProvider{name: "youtube", items: []Candidate{{CandidateID: "first", Provider: "youtube", SourceURL: "https://example.test/1", Title: "First", Downloadable: true}}}}, DefaultProviders: []string{"youtube"}}), nil, &captureSelectionStore{err: errors.New("db unavailable")})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/discovery/search?q=first", nil)
+	request = request.WithContext(context.WithValue(request.Context(), auth.UserContextKey, &auth.UserContext{UserID: uuid.New()}))
+	recorder := httptest.NewRecorder()
+	h.Search(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
 }

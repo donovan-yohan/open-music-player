@@ -60,12 +60,12 @@ class DiscoveryService {
   }
 
   Future<DiscoveryQueueState> addQueueItem(
-    DiscoveryCandidate candidate, {
+    String sourceDecisionId, {
     String position = 'last',
   }) async {
     final response = await _apiClient.post<Map<String, dynamic>>(
       '/queue/items',
-      data: {'position': position, 'sourceCandidate': candidate.toQueueJson()},
+      data: {'position': position, 'sourceDecisionId': sourceDecisionId},
     );
 
     final data = response.data;

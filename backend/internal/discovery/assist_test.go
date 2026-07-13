@@ -3,13 +3,16 @@ package discovery
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/openmusicplayer/backend/internal/aiassist"
+	"github.com/openmusicplayer/backend/internal/auth"
 )
 
 // fakeAssistClient is a deterministic stand-in for the OpenAI-compatible model.
@@ -405,6 +408,89 @@ func TestAssistHandlerDefaultIsDisabledAnd200(t *testing.T) {
 		if strings.Contains(raw, forbidden) {
 			t.Fatalf("assist response unexpectedly contains %q: %s", forbidden, raw)
 		}
+	}
+}
+
+func assistRequestForUser(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/discovery/assist", strings.NewReader(body))
+	return req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.UserContext{UserID: uuid.New()}))
+}
+
+func TestAssistHandlerPersistsDirectCandidateSelection(t *testing.T) {
+	store := &captureSelectionStore{}
+	service := NewService(ServiceConfig{})
+	h := NewHandlersWithAssistAndSelectionStore(service, NewAssistService(AssistConfig{Search: service}), store)
+	rec := httptest.NewRecorder()
+	h.Assist(rec, assistRequestForUser(`{"prompt":"add https://www.youtube.com/watch?v=dQw4w9WgXcQ"}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var response AssistResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if store.session == nil || len(store.session.Candidates) == 0 || store.session.Context != "discovery_assist_direct_url" {
+		t.Fatalf("persisted session = %#v", store.session)
+	}
+	if !response.SelectionRequired || response.SelectionSessionID == "" || response.RecommendedCandidateID == "" || response.SelectionExpiresAt == nil {
+		t.Fatalf("selection metadata = %#v", response)
+	}
+}
+
+func TestAssistHandlerPersistsNestedSearchSelection(t *testing.T) {
+	store := &captureSelectionStore{}
+	provider := fakeProvider{name: "youtube", items: []Candidate{{CandidateID: "youtube:found", Provider: "youtube", SourceURL: "https://example.test/found", Title: "Found", Downloadable: true}}}
+	service := NewService(ServiceConfig{Providers: []Provider{provider}, DefaultProviders: []string{"youtube"}})
+	assist := NewAssistService(AssistConfig{Client: &fakeAssistClient{intent: &aiassist.Intent{Kind: aiassist.KindSearch, SearchQuery: "found", Providers: []string{"youtube"}}}, Search: service})
+	h := NewHandlersWithAssistAndSelectionStore(service, assist, store)
+	rec := httptest.NewRecorder()
+	h.Assist(rec, assistRequestForUser(`{"prompt":"find found"}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var response AssistResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if store.session == nil || store.session.Query != "found" || store.session.Context != "discovery_assist_search" {
+		t.Fatalf("persisted session = %#v", store.session)
+	}
+	if response.Search == nil || !response.SelectionRequired || response.SelectionSessionID == "" || response.RecommendedCandidateID != "youtube:found" || response.SelectionExpiresAt == nil {
+		t.Fatalf("assist response = %#v", response)
+	}
+}
+
+func TestAssistHandlerEmptyOutcomeExplicitlyHasNoSelection(t *testing.T) {
+	store := &captureSelectionStore{}
+	service := NewService(ServiceConfig{})
+	h := NewHandlersWithAssistAndSelectionStore(service, NewAssistService(AssistConfig{Search: service}), store)
+	rec := httptest.NewRecorder()
+	h.Assist(rec, assistRequestForUser(`{"prompt":"find something"}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var response AssistResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if store.session != nil || response.SelectionRequired || response.SelectionSessionID != "" || response.RecommendedCandidateID != "" || response.SelectionExpiresAt != nil {
+		t.Fatalf("empty assist selection = %#v, session=%#v", response, store.session)
+	}
+}
+
+func TestAssistHandlerFailsWhenSelectionPersistenceFails(t *testing.T) {
+	service := NewService(ServiceConfig{})
+	h := NewHandlersWithAssistAndSelectionStore(service, NewAssistService(AssistConfig{Search: service}), &captureSelectionStore{err: errors.New("db unavailable")})
+	rec := httptest.NewRecorder()
+	h.Assist(rec, assistRequestForUser(`{"prompt":"add https://www.youtube.com/watch?v=dQw4w9WgXcQ"}`))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "SOURCE_SELECTION_PERSISTENCE_FAILED") {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
 	}
 }
 

@@ -22,12 +22,14 @@ func TestStartImportReusesExistingTracksQueuesNewTracksAndPreservesSourceOrder(t
 	tracks := &fakeTrackSources{bySourceID: map[string]*db.Track{"known": {ID: 42, Title: "Known"}}}
 	library := &fakeLibrary{}
 	downloader := &fakeDownloader{}
+	selections := &fakeSourceSelections{}
+	ingestion := &fakeTrustedIngestion{}
 	enumerator := &fakeEnumerator{entries: []Entry{
 		{SourceID: "known", SourceURL: "https://www.youtube.com/watch?v=known", Title: "Known"},
 		{SourceID: "new", SourceURL: "https://www.youtube.com/watch?v=new", Title: "New"},
 		{SourceID: "gone", SourceURL: "https://www.youtube.com/watch?v=gone", Title: "Gone", Unavailable: true, Error: "private video"},
 	}}
-	service := NewService(Config{Store: store, Playlists: playlists, Tracks: tracks, Library: library, Downloader: downloader, Enumerator: enumerator, MaxItems: 10})
+	service := NewService(Config{Store: store, Playlists: playlists, Tracks: tracks, Library: library, Downloader: downloader, Selections: selections, Ingestion: ingestion, Enumerator: enumerator, MaxItems: 10})
 
 	result, err := service.StartImport(ctx, userID, ImportRequest{URL: "https://music.youtube.com/playlist?list=PLfixture", Name: "mix"})
 	if err != nil {
@@ -65,6 +67,9 @@ func TestStartImportReusesExistingTracksQueuesNewTracksAndPreservesSourceOrder(t
 	}
 	if itemsBySource["gone"].Status != ItemStatusFailed || itemsBySource["gone"].Error.String != "private video" {
 		t.Fatalf("unavailable item not tracked as failed: %+v", itemsBySource["gone"])
+	}
+	if len(selections.created) != 2 || len(selections.attachedTracks) != 1 || len(ingestion.persisted) != 1 {
+		t.Fatalf("trusted decisions/persistence = %d/%d/%d, want 2/1/1", len(selections.created), len(selections.attachedTracks), len(ingestion.persisted))
 	}
 }
 
@@ -147,6 +152,21 @@ func TestStartImportMarksJobFailedWhenCreateItemFails(t *testing.T) {
 		if !job.Error.Valid || !strings.Contains(job.Error.String, "create playlist import item") {
 			t.Fatalf("job error = %+v, want create item failure", job.Error)
 		}
+	}
+}
+
+func TestStartImportFailsItemBeforeEnqueueWhenTrustedJobPersistenceFails(t *testing.T) {
+	store := newFakeStore()
+	downloader := &fakeDownloader{}
+	selections := &fakeSourceSelections{}
+	ingestion := &fakeTrustedIngestion{createErr: errors.New("persist durable job")}
+	service := NewService(Config{Store: store, Playlists: &fakePlaylists{}, Tracks: &fakeTrackSources{bySourceID: map[string]*db.Track{}}, Downloader: downloader, Selections: selections, Ingestion: ingestion, Enumerator: &fakeEnumerator{entries: []Entry{{SourceID: "new", SourceURL: "https://www.youtube.com/watch?v=new", Title: "New"}}}})
+	result, err := service.StartImport(context.Background(), uuid.MustParse("11111111-1111-1111-1111-111111111111"), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(downloader.jobs) != 0 || len(selections.created) != 1 || result.Items[0].Status != ItemStatusFailed {
+		t.Fatalf("download/decision/item = %d/%d/%+v", len(downloader.jobs), len(selections.created), result.Items[0])
 	}
 }
 
@@ -297,10 +317,42 @@ func (l *fakeLibrary) AddTrackToLibrary(_ context.Context, userID uuid.UUID, tra
 
 type fakeDownloader struct{ jobs []*download.DownloadJob }
 
-func (d *fakeDownloader) EnqueuePlaylistImportItem(_ context.Context, userID string, candidate download.SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*download.DownloadJob, error) {
-	job := &download.DownloadJob{ID: uuid.NewString(), UserID: userID, URL: candidate.SourceURL, SourceType: candidate.Provider, SourceID: candidate.SourceID, Title: candidate.Title, PlaylistImportJobID: importJobID, PlaylistImportItemID: importItemID, PlaylistID: playlistID, PlaylistPosition: playlistPosition}
+func (d *fakeDownloader) EnqueuePlaylistImportItemWithID(_ context.Context, jobID, userID string, candidate download.SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*download.DownloadJob, error) {
+	job := &download.DownloadJob{ID: jobID, UserID: userID, URL: candidate.SourceURL, SourceType: candidate.Provider, SourceID: candidate.SourceID, Title: candidate.Title, PlaylistImportJobID: importJobID, PlaylistImportItemID: importItemID, PlaylistID: playlistID, PlaylistPosition: playlistPosition}
 	d.jobs = append(d.jobs, job)
 	return job, nil
+}
+
+type fakeSourceSelections struct {
+	created        []*db.SourceSelectionDecision
+	attachedTracks []int64
+}
+
+func (s *fakeSourceSelections) CreateTrustedSourceSelectionDecision(_ context.Context, userID uuid.UUID, origin string, candidate db.TrustedSourceSelectionCandidate, _ string) (*db.SourceSelectionDecision, error) {
+	decision := &db.SourceSelectionDecision{ID: uuid.New(), UserID: userID, Origin: origin, SelectedCandidateID: candidate.CandidateID}
+	s.created = append(s.created, decision)
+	return decision, nil
+}
+func (s *fakeSourceSelections) AttachTrackForUser(_ context.Context, _ uuid.UUID, _ uuid.UUID, trackID int64) error {
+	s.attachedTracks = append(s.attachedTracks, trackID)
+	return nil
+}
+
+type fakeTrustedIngestion struct {
+	persisted []*db.SourceSelectionDownload
+	createErr error
+}
+
+func (s *fakeTrustedIngestion) CreateDownloadForDecision(_ context.Context, userID uuid.UUID, decision *db.SourceSelectionDecision, candidate download.SourceCandidate) (*db.SourceSelectionDownload, error) {
+	if s.createErr != nil {
+		return nil, s.createErr
+	}
+	persisted := &db.SourceSelectionDownload{Decision: decision, Job: &download.DownloadJob{ID: uuid.NewString(), UserID: userID.String(), Status: download.StatusQueued}, Candidate: candidate}
+	s.persisted = append(s.persisted, persisted)
+	return persisted, nil
+}
+func (s *fakeTrustedIngestion) EnqueueTrustedPlaylistDownload(ctx context.Context, persisted *db.SourceSelectionDownload, enqueuer db.SourceSelectionPlaylistDownloadEnqueuer, importJobID string, importItemID, playlistID int64, playlistPosition int) (*download.DownloadJob, error) {
+	return enqueuer.EnqueuePlaylistImportItemWithID(ctx, persisted.Job.ID, persisted.Job.UserID, persisted.Candidate, importJobID, importItemID, playlistID, playlistPosition)
 }
 
 type fakeEnumerator struct{ entries []Entry }
