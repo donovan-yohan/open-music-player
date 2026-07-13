@@ -283,7 +283,14 @@ def check_ci_wires_harness() -> None:
 def check_local_dev_contracts() -> None:
     required_phrases = {
         ".gitignore": ["outputs/", "deploy/.env"],
-        "scripts/dev": ["test-infra", "test-infra-isolated"],
+        "scripts/dev": [
+            "test-infra",
+            "test-infra-isolated",
+            "flutter-web",
+            "OMP_WEB_PORT",
+            "OMP_FLUTTER_API_BASE_URL",
+            "-d web-server",
+        ],
         "scripts/local-low-memory.sh": ["test-infra", "WORKER_COUNT=0"],
         "docs/LOW_MEMORY_LOCAL_DEV.md": [
             "scripts/dev test-infra",
