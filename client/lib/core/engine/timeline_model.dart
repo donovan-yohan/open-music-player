@@ -7,6 +7,8 @@ import 'tempo_automation.dart';
 
 /// A timeline clip plus playback/source metadata used by the mix engine.
 class MixClip {
+  static const int _maxProjectedBeatMarkerCacheEntries = 2;
+
   final TimelineClip placement;
   final GainEnvelope envelope;
   final String audioSourceRef;
@@ -15,6 +17,7 @@ class MixClip {
   final String pitchMode;
   final ClipTempoMetadata tempo;
   final PlaybackRateAutomation rateAutomation;
+  final List<_ProjectedBeatMarkerCacheEntry> _projectedBeatMarkerCache = [];
 
   MixClip({
     required this.placement,
@@ -57,6 +60,19 @@ class MixClip {
 
   double playbackRateAt(int timelineMs) => rateAutomation.rateAt(timelineMs);
 
+  double tempoScaleAt(int timelineMs) =>
+      rateAutomation.tempoScaleAt(timelineMs);
+
+  double? effectiveBpmAt(int timelineMs, {double transportRate = 1}) {
+    final nativeBpm = tempo.nativeBpm;
+    if (nativeBpm == null) return null;
+    return effectiveBpmForRate(
+      nativeBpm: nativeBpm,
+      rate: playbackRateAt(timelineMs) * transportRate,
+      tempoScale: tempoScaleAt(timelineMs),
+    );
+  }
+
   int sourcePositionAt(int timelineMs) {
     final elapsed = rateAutomation.sourceElapsedMs(
       timelineStartMs: timelineStartMs,
@@ -78,6 +94,38 @@ class MixClip {
       maxTimelineMs: timelineEndMs,
     );
   }
+
+  /// Memoizes projections by source-list identity for this immutable clip.
+  ///
+  /// Placement and automation are fixed for a [MixClip] lifecycle, so a
+  /// projection only changes when the source marker list instance changes.
+  /// Keeping two entries covers the waveform and analysis lists without a
+  /// process-wide cache or unbounded retention.
+  List<int> projectTempoSegmentBeatMarkers(List<int> sourceMarkers) {
+    for (final entry in _projectedBeatMarkerCache) {
+      if (identical(entry.sourceMarkers, sourceMarkers)) {
+        return entry.projectedMarkers;
+      }
+    }
+
+    final projected = projectBeatMarkersForTempoSegments(
+      sourceMarkers,
+      timelineMsForSourcePosition: timelineMsForSourcePosition,
+      tempoScaleAt: tempoScaleAt,
+    );
+    if (_projectedBeatMarkerCache.length ==
+        _maxProjectedBeatMarkerCacheEntries) {
+      _projectedBeatMarkerCache.removeAt(0);
+    }
+    _projectedBeatMarkerCache.add(
+      _ProjectedBeatMarkerCacheEntry(sourceMarkers, projected),
+    );
+    return projected;
+  }
+
+  /// Exposes bounded cache instrumentation for regression tests.
+  int get projectedBeatMarkerCacheEntryCount =>
+      _projectedBeatMarkerCache.length;
 
   MixClip withRateAutomation(PlaybackRateAutomation automation) => MixClip(
         placement: placement,
@@ -126,6 +174,14 @@ class MixClip {
       );
 }
 
+class _ProjectedBeatMarkerCacheEntry {
+  final List<int> sourceMarkers;
+  final List<int> projectedMarkers;
+
+  const _ProjectedBeatMarkerCacheEntry(
+      this.sourceMarkers, this.projectedMarkers);
+}
+
 int? beatAlignmentCorrectionMs({
   required MixClip outgoing,
   required MixClip incoming,
@@ -142,10 +198,7 @@ int? beatAlignmentCorrectionMs({
   );
   if (overlapEndMs <= overlapStartMs) return null;
 
-  final incomingMarkers = beatMarkersForSnapMode(
-    incoming.tempo,
-    snapMode,
-  ).where(
+  final incomingMarkers = _alignmentMarkersForClip(incoming, snapMode).where(
     (sourceMs) =>
         sourceMs >= incoming.placement.sourceStartMs &&
         sourceMs <= incoming.placement.sourceEndMs,
@@ -154,10 +207,7 @@ int? beatAlignmentCorrectionMs({
   final incomingAnchorMs = incoming.timelineMsForSourcePosition(
     incomingMarkers.first,
   );
-  final outgoingMarkers = beatMarkersForSnapMode(
-    outgoing.tempo,
-    snapMode,
-  )
+  final outgoingMarkers = _alignmentMarkersForClip(outgoing, snapMode)
       .where(
         (sourceMs) =>
             sourceMs >= outgoing.placement.sourceStartMs &&
@@ -181,10 +231,39 @@ int? beatAlignmentCorrectionMs({
         outgoing.tempo,
         snapMode: snapMode,
         baseRate: outgoing.playbackRate,
+        tempoScale: outgoing.tempoScaleAt(nearestOutgoingMs),
       )) {
     return null;
   }
   return nearestOutgoingMs - incomingAnchorMs;
+}
+
+List<int> _alignmentMarkersForClip(MixClip clip, BeatSnapMode snapMode) {
+  final downbeats = beatMarkersForSnapMode(
+    clip.tempo,
+    BeatSnapMode.downbeat,
+  );
+  final beats = clip.tempo.hasReliableBeatGrid
+      ? clip.projectTempoSegmentBeatMarkers(clip.tempo.beatsMs)
+      : const <int>[];
+
+  return switch (snapMode) {
+    BeatSnapMode.free => const [],
+    BeatSnapMode.downbeat => downbeats,
+    BeatSnapMode.beat1 => beats.isNotEmpty ? beats : downbeats,
+    BeatSnapMode.beat4 =>
+      downbeats.isNotEmpty ? downbeats : _strideMarkers(beats, 4),
+    BeatSnapMode.beat16 => downbeats.isNotEmpty
+        ? _strideMarkers(downbeats, 4)
+        : _strideMarkers(beats, 16),
+  };
+}
+
+List<int> _strideMarkers(List<int> markers, int stride) {
+  if (markers.isEmpty || stride <= 1) return markers;
+  return [
+    for (var index = 0; index < markers.length; index += stride) markers[index],
+  ];
 }
 
 /// Pure timeline arrangement model for Phase 1 of the mix engine.

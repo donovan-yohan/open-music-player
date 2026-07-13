@@ -5,10 +5,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:open_music_player/core/engine/tempo_automation.dart';
+import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/track.dart';
+import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/models/waveform.dart';
 import 'package:open_music_player/widgets/timeline_clip_widget.dart';
+import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
 
 void main() {
   testWidgets('dense waveform remains below the opaque gain badge', (
@@ -120,6 +124,313 @@ void main() {
       const Size(8, 8),
       reason: 'the 2.5px active border must paint over, not reduce, the body',
     );
+  });
+
+  testWidgets('projects beat density only within tempo-scaled segments', (
+    tester,
+  ) async {
+    final waveform = TimelineWaveformData.fromPeaks(
+      const [0.5],
+      durationMs: 1000,
+      beatsMs: const [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+      downbeatsMs: const [0, 400, 800],
+    );
+    final clip = MixClip(
+      placement: TimelineClip.clamped(
+        id: 'scaled',
+        trackId: 't1',
+        sourceDurationMs: 1000,
+        sourceStartMs: 0,
+        sourceEndMs: 1000,
+        timelineStartMs: 0,
+      ),
+      rateAutomation: const PlaybackRateAutomation(
+        segments: [
+          PlaybackRateSegment(
+            startMs: 200,
+            endMs: 400,
+            startRate: 1,
+            endRate: 1,
+            tempoScale: 2,
+          ),
+          PlaybackRateSegment(
+            startMs: 600,
+            endMs: 800,
+            startRate: 1,
+            endRate: 1,
+            tempoScale: 0.5,
+          ),
+        ],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 80,
+          child: TimelineClipWidget(
+            track: _track(),
+            peaks: const [0.5],
+            waveform: waveform,
+            mixClip: clip,
+            viewportPixelsPerMs: 1,
+            viewportOriginMs: 0,
+            trim: TrimRange.full(1000),
+            role: LaneRole.current,
+            accent: Colors.orange,
+            stateLabel: 'Now playing',
+            showInLaneChip: false,
+          ),
+        ),
+      ),
+    );
+
+    final painter = tester
+        .widget<CustomPaint>(
+          find.byKey(const ValueKey('timeline_waveform_t1')),
+        )
+        .painter! as TimelineWaveformPainter;
+
+    expect(identical(painter.waveform, waveform), isTrue);
+    expect(
+      painter.projectedBeatMarkers,
+      [0, 100, 200, 250, 300, 350, 400, 500, 600, 800, 900, 1000],
+    );
+    expect(painter.waveform!.downbeatsMs, waveform.downbeatsMs);
+  });
+
+  testWidgets('projects trimmed waveform beats using absolute source positions',
+      (
+    tester,
+  ) async {
+    const sourceStartMs = 5000;
+    const waveform = TimelineWaveformData(
+      durationMs: 1000,
+      sourceStartMs: sourceStartMs,
+      frames: [
+        WaveformFrame(peak: 0.5, rms: 0.5, low: 0.5, mid: 0.5, high: 0.5),
+      ],
+      beatsMs: [
+        0,
+        100,
+        200,
+        300,
+        400,
+        500,
+        600,
+        700,
+        800,
+        900,
+        1000,
+      ],
+    );
+    final clip = MixClip(
+      placement: TimelineClip.clamped(
+        id: 'trimmed-scaled',
+        trackId: 't1',
+        sourceDurationMs: 6000,
+        sourceStartMs: sourceStartMs,
+        sourceEndMs: sourceStartMs + 1000,
+        timelineStartMs: 0,
+      ),
+      rateAutomation: const PlaybackRateAutomation(
+        segments: [
+          PlaybackRateSegment(
+            startMs: 200,
+            endMs: 400,
+            startRate: 1,
+            endRate: 1,
+            tempoScale: 2,
+          ),
+          PlaybackRateSegment(
+            startMs: 600,
+            endMs: 800,
+            startRate: 1,
+            endRate: 1,
+            tempoScale: 0.5,
+          ),
+        ],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 80,
+          child: TimelineClipWidget(
+            track: _track(),
+            peaks: const [0.5],
+            waveform: waveform,
+            mixClip: clip,
+            viewportPixelsPerMs: 1,
+            viewportOriginMs: 0,
+            trim: TrimRange.full(1000),
+            role: LaneRole.current,
+            accent: Colors.orange,
+            stateLabel: 'Now playing',
+            showInLaneChip: false,
+          ),
+        ),
+      ),
+    );
+
+    final painter = tester
+        .widget<CustomPaint>(
+          find.byKey(const ValueKey('timeline_waveform_t1')),
+        )
+        .painter! as TimelineWaveformPainter;
+
+    expect(
+      painter.projectedBeatMarkers,
+      [0, 100, 200, 250, 300, 350, 400, 500, 600, 800, 900, 1000],
+    );
+    expect(
+      painter.projectedBeatMarkers!.every(
+        (marker) => marker >= 0 && marker <= waveform.durationMs,
+      ),
+      isTrue,
+      reason: 'painter markers must remain local to the trimmed waveform',
+    );
+  });
+
+  testWidgets('scaled rebuilds retain waveform and paint cache identity', (
+    tester,
+  ) async {
+    final waveform = TimelineWaveformData.fromPeaks(
+      const [0.2, 0.5, 0.8, 0.4],
+      durationMs: 1000,
+      beatsMs: const [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000],
+      downbeatsMs: const [0, 400, 800],
+    );
+    final clip = MixClip(
+      placement: TimelineClip.clamped(
+        id: 'scaled-cache',
+        trackId: 't1',
+        sourceDurationMs: 1000,
+        sourceStartMs: 0,
+        sourceEndMs: 1000,
+        timelineStartMs: 0,
+      ),
+      rateAutomation: const PlaybackRateAutomation(
+        segments: [
+          PlaybackRateSegment(
+            startMs: 200,
+            endMs: 400,
+            startRate: 1,
+            endRate: 1,
+            tempoScale: 2,
+          ),
+          PlaybackRateSegment(
+            startMs: 600,
+            endMs: 800,
+            startRate: 1,
+            endRate: 1,
+            tempoScale: 0.5,
+          ),
+        ],
+      ),
+    );
+    final cache = TimelineWaveformPaintCache();
+
+    Widget build(Color accent) => MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 80,
+            child: TimelineClipWidget(
+              track: _track(),
+              peaks: waveform.peaks,
+              waveform: waveform,
+              mixClip: clip,
+              mappingRevision: clip.rateAutomation,
+              paintCache: cache,
+              viewportPixelsPerMs: 0.3,
+              viewportOriginMs: 0,
+              trim: TrimRange.full(1000),
+              role: LaneRole.current,
+              accent: accent,
+              stateLabel: 'Now playing',
+              showInLaneChip: false,
+            ),
+          ),
+        );
+
+    await tester.pumpWidget(build(Colors.orange));
+    final first = tester
+        .widget<CustomPaint>(
+          find.byKey(const ValueKey('timeline_waveform_t1')),
+        )
+        .painter! as TimelineWaveformPainter;
+    expect(identical(first.waveform, waveform), isTrue);
+    expect(cache.frameGeometryBuildCount, 1);
+    expect(cache.markerGeometryBuildCount, 1);
+
+    await tester.pumpWidget(build(Colors.teal));
+    final rebuilt = tester
+        .widget<CustomPaint>(
+          find.byKey(const ValueKey('timeline_waveform_t1')),
+        )
+        .painter! as TimelineWaveformPainter;
+    expect(identical(rebuilt.waveform, waveform), isTrue);
+    expect(
+      identical(rebuilt.projectedBeatMarkers, first.projectedBeatMarkers),
+      isTrue,
+    );
+    expect(clip.projectedBeatMarkerCacheEntryCount, 1);
+    expect(cache.paintCount, 2);
+    expect(cache.frameGeometryBuildCount, 1);
+    expect(cache.markerGeometryBuildCount, 1);
+  });
+
+  testWidgets('preserves waveform identity when no tempo scale is selected', (
+    tester,
+  ) async {
+    final waveform = TimelineWaveformData.fromPeaks(
+      const [0.5],
+      durationMs: 1000,
+      beatsMs: const [0, 500, 1000],
+    );
+    final clip = MixClip(
+      placement: TimelineClip.clamped(
+        id: 'unscaled',
+        trackId: 't1',
+        sourceDurationMs: 1000,
+        sourceStartMs: 0,
+        sourceEndMs: 1000,
+        timelineStartMs: 0,
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 80,
+          child: TimelineClipWidget(
+            track: _track(),
+            peaks: const [0.5],
+            waveform: waveform,
+            mixClip: clip,
+            viewportPixelsPerMs: 1,
+            viewportOriginMs: 0,
+            trim: TrimRange.full(1000),
+            role: LaneRole.current,
+            accent: Colors.orange,
+            stateLabel: 'Now playing',
+            showInLaneChip: false,
+          ),
+        ),
+      ),
+    );
+
+    final painter = tester
+        .widget<CustomPaint>(
+          find.byKey(const ValueKey('timeline_waveform_t1')),
+        )
+        .painter! as TimelineWaveformPainter;
+
+    expect(identical(painter.waveform, waveform), isTrue);
   });
 }
 

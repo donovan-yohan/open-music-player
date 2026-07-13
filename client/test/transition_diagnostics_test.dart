@@ -512,7 +512,7 @@ void main() {
         'incoming',
         8000,
         tempo: const ClipTempoMetadata(
-          nativeBpm: 220,
+          nativeBpm: 500,
           bpmConfidence: 0.9,
           downbeatsMs: [0, 8000, 16000],
         ),

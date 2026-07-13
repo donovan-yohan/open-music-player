@@ -10,6 +10,8 @@ const double maxReliableBeatIntervalMedianRatio = 1.8;
 const int defaultTransitionPhraseBeats = 16;
 const int minDefaultTransitionOverlapMs = 4000;
 const int maxDefaultTransitionOverlapMs = 12000;
+const List<double> tempoOctaveScales = [0.5, 1, 2];
+const double _preferredTransitionBpm = 128;
 const String manualTempoProvenance = 'manual_override';
 const String pitchModePreserve = 'preserve';
 const String pitchModeFollowTempo = 'followTempo';
@@ -373,11 +375,16 @@ class PlaybackRateSegment {
   final double startRate;
   final double endRate;
 
+  /// Octave interpretation selected for this transition. This never rewrites
+  /// analyzer/manual BPM metadata or its source marker timestamps.
+  final double tempoScale;
+
   const PlaybackRateSegment({
     required this.startMs,
     required this.endMs,
     required this.startRate,
     required this.endRate,
+    this.tempoScale = 1,
   });
 
   int get durationMs => endMs - startMs;
@@ -401,10 +408,12 @@ class PlaybackRateSegment {
       other.startMs == startMs &&
       other.endMs == endMs &&
       other.startRate == startRate &&
-      other.endRate == endRate;
+      other.endRate == endRate &&
+      other.tempoScale == tempoScale;
 
   @override
-  int get hashCode => Object.hash(startMs, endMs, startRate, endRate);
+  int get hashCode =>
+      Object.hash(startMs, endMs, startRate, endRate, tempoScale);
 }
 
 class PlaybackRateAutomation {
@@ -445,6 +454,7 @@ class PlaybackRateAutomation {
             endMs: segment.endMs + deltaMs,
             startRate: segment.startRate,
             endRate: segment.endRate,
+            tempoScale: segment.tempoScale,
           ),
       ]),
     );
@@ -457,6 +467,13 @@ class PlaybackRateAutomation {
     return baseRate
         .clamp(minTempoAutomationRate, maxTempoAutomationRate)
         .toDouble();
+  }
+
+  double tempoScaleAt(int timelineMs) {
+    for (final segment in segments.reversed) {
+      if (segment.contains(timelineMs)) return segment.tempoScale;
+    }
+    return 1;
   }
 
   int sourceElapsedMs({required int timelineStartMs, required int timelineMs}) {
@@ -594,13 +611,36 @@ class ClipTempoRuntimeState {
       );
 }
 
+class TempoTransitionBpmPair {
+  /// BPM values after selecting the octave interpretation. Raw analyzer/manual
+  /// metadata remains on [ClipTempoMetadata].
+  final double outgoingBpm;
+  final double incomingBpm;
+  final double outgoingTempoScale;
+  final double incomingTempoScale;
+
+  const TempoTransitionBpmPair({
+    required this.outgoingBpm,
+    required this.incomingBpm,
+    required this.outgoingTempoScale,
+    required this.incomingTempoScale,
+  });
+
+  double get outgoingEffectiveBpm => outgoingBpm;
+  double get incomingEffectiveBpm => incomingBpm;
+}
+
 class TempoTransitionRatePlan {
   final PlaybackRateSegment outgoingSegment;
   final PlaybackRateSegment incomingSegment;
+  final double outgoingTempoScale;
+  final double incomingTempoScale;
 
   const TempoTransitionRatePlan({
     required this.outgoingSegment,
     required this.incomingSegment,
+    required this.outgoingTempoScale,
+    required this.incomingTempoScale,
   });
 
   PlaybackRateAutomation applyToOutgoing(PlaybackRateAutomation automation) =>
@@ -608,6 +648,72 @@ class TempoTransitionRatePlan {
 
   PlaybackRateAutomation applyToIncoming(PlaybackRateAutomation automation) =>
       automation.withSegment(incomingSegment);
+}
+
+TempoTransitionBpmPair? resolveTempoTransitionBpmPair({
+  required ClipTempoMetadata outgoingTempo,
+  required ClipTempoMetadata incomingTempo,
+  double outgoingBaseRate = 1,
+  double incomingBaseRate = 1,
+}) {
+  final outgoingRawBpm = outgoingTempo.nativeBpm;
+  final incomingRawBpm = incomingTempo.nativeBpm;
+  if (outgoingRawBpm == null ||
+      !outgoingRawBpm.isFinite ||
+      outgoingRawBpm <= 0 ||
+      incomingRawBpm == null ||
+      !incomingRawBpm.isFinite ||
+      incomingRawBpm <= 0) {
+    return null;
+  }
+
+  TempoTransitionBpmPair? best;
+  var bestRateAdjustment = double.infinity;
+  var bestPulseDistance = double.infinity;
+  var bestScaleDistance = double.infinity;
+  const epsilon = 0.000001;
+  final safeOutgoingBaseRate = _safeBaseRate(outgoingBaseRate);
+  final safeIncomingBaseRate = _safeBaseRate(incomingBaseRate);
+
+  for (final outgoingScale in tempoOctaveScales) {
+    final outgoingBpm = outgoingRawBpm * outgoingScale;
+    for (final incomingScale in tempoOctaveScales) {
+      final incomingBpm = incomingRawBpm * incomingScale;
+      final outgoingEndRate = incomingBpm * safeIncomingBaseRate / outgoingBpm;
+      final incomingStartRate =
+          outgoingBpm * safeOutgoingBaseRate / incomingBpm;
+      if (!_isSafeTempoRate(outgoingEndRate) ||
+          !_isSafeTempoRate(incomingStartRate)) {
+        continue;
+      }
+
+      final rateAdjustment = (outgoingEndRate - safeOutgoingBaseRate).abs() +
+          (incomingStartRate - safeIncomingBaseRate).abs();
+      // Equivalent rate pulls are resolved into the DJ-usable pulse range,
+      // before preferring interpretations closest to raw 1x values.
+      final pulseDistance = (outgoingBpm - _preferredTransitionBpm).abs() +
+          (incomingBpm - _preferredTransitionBpm).abs();
+      final scaleDistance =
+          (outgoingScale - 1).abs() + (incomingScale - 1).abs();
+      final isBetter = rateAdjustment < bestRateAdjustment - epsilon ||
+          ((rateAdjustment - bestRateAdjustment).abs() <= epsilon &&
+              (pulseDistance < bestPulseDistance - epsilon ||
+                  ((pulseDistance - bestPulseDistance).abs() <= epsilon &&
+                      scaleDistance < bestScaleDistance - epsilon)));
+      if (!isBetter) continue;
+
+      best = TempoTransitionBpmPair(
+        outgoingTempoScale: outgoingScale,
+        incomingTempoScale: incomingScale,
+        outgoingBpm: outgoingBpm,
+        incomingBpm: incomingBpm,
+      );
+      bestRateAdjustment = rateAdjustment;
+      bestPulseDistance = pulseDistance;
+      bestScaleDistance = scaleDistance;
+    }
+  }
+  return best;
 }
 
 TempoTransitionRatePlan? planTempoMatchedTransition({
@@ -623,50 +729,41 @@ TempoTransitionRatePlan? planTempoMatchedTransition({
     return null;
   }
 
-  final outgoingBpm = outgoingTempo.nativeBpm;
-  final incomingBpm = incomingTempo.nativeBpm;
-  if (outgoingBpm == null ||
-      outgoingBpm <= 0 ||
-      incomingBpm == null ||
-      incomingBpm <= 0) {
-    return null;
-  }
-  if (!tempoTransitionTargetsAreAchievable(
+  final bpmPair = resolveTempoTransitionBpmPair(
     outgoingTempo: outgoingTempo,
     incomingTempo: incomingTempo,
     outgoingBaseRate: outgoingBaseRate,
     incomingBaseRate: incomingBaseRate,
-  )) {
-    return null;
-  }
+  );
+  if (bpmPair == null) return null;
 
   final transitionStartBpm = effectiveBpmForRate(
-    nativeBpm: outgoingBpm,
+    nativeBpm: bpmPair.outgoingBpm,
     rate: outgoingBaseRate,
   );
   final transitionEndBpm = effectiveBpmForRate(
-    nativeBpm: incomingBpm,
+    nativeBpm: bpmPair.incomingBpm,
     rate: incomingBaseRate,
   );
 
   final outgoingStartRate = playbackRateForTargetBpm(
     baseRate: outgoingBaseRate,
-    nativeBpm: outgoingBpm,
+    nativeBpm: bpmPair.outgoingBpm,
     targetBpm: transitionStartBpm,
   );
   final outgoingEndRate = playbackRateForTargetBpm(
     baseRate: outgoingBaseRate,
-    nativeBpm: outgoingBpm,
+    nativeBpm: bpmPair.outgoingBpm,
     targetBpm: transitionEndBpm,
   );
   final incomingStartRate = playbackRateForTargetBpm(
     baseRate: incomingBaseRate,
-    nativeBpm: incomingBpm,
+    nativeBpm: bpmPair.incomingBpm,
     targetBpm: transitionStartBpm,
   );
   final incomingEndRate = playbackRateForTargetBpm(
     baseRate: incomingBaseRate,
-    nativeBpm: incomingBpm,
+    nativeBpm: bpmPair.incomingBpm,
     targetBpm: transitionEndBpm,
   );
 
@@ -676,13 +773,17 @@ TempoTransitionRatePlan? planTempoMatchedTransition({
       endMs: overlapEndMs,
       startRate: outgoingStartRate,
       endRate: outgoingEndRate,
+      tempoScale: bpmPair.outgoingTempoScale,
     ),
     incomingSegment: PlaybackRateSegment(
       startMs: overlapStartMs,
       endMs: overlapEndMs,
       startRate: incomingStartRate,
       endRate: incomingEndRate,
+      tempoScale: bpmPair.incomingTempoScale,
     ),
+    outgoingTempoScale: bpmPair.outgoingTempoScale,
+    incomingTempoScale: bpmPair.incomingTempoScale,
   );
 }
 
@@ -692,53 +793,26 @@ bool tempoTransitionTargetsAreAchievable({
   double outgoingBaseRate = 1,
   double incomingBaseRate = 1,
 }) {
-  final outgoingBpm = outgoingTempo.nativeBpm;
-  final incomingBpm = incomingTempo.nativeBpm;
-  if (outgoingBpm == null ||
-      outgoingBpm <= 0 ||
-      incomingBpm == null ||
-      incomingBpm <= 0) {
-    return false;
-  }
-
-  final transitionStartBpm = effectiveBpmForRate(
-    nativeBpm: outgoingBpm,
-    rate: outgoingBaseRate,
-  );
-  final transitionEndBpm = effectiveBpmForRate(
-    nativeBpm: incomingBpm,
-    rate: incomingBaseRate,
-  );
-
-  return playbackRateCanReachTargetBpm(
-        baseRate: outgoingBaseRate,
-        nativeBpm: outgoingBpm,
-        targetBpm: transitionStartBpm,
-      ) &&
-      playbackRateCanReachTargetBpm(
-        baseRate: outgoingBaseRate,
-        nativeBpm: outgoingBpm,
-        targetBpm: transitionEndBpm,
-      ) &&
-      playbackRateCanReachTargetBpm(
-        baseRate: incomingBaseRate,
-        nativeBpm: incomingBpm,
-        targetBpm: transitionStartBpm,
-      ) &&
-      playbackRateCanReachTargetBpm(
-        baseRate: incomingBaseRate,
-        nativeBpm: incomingBpm,
-        targetBpm: transitionEndBpm,
-      );
+  return resolveTempoTransitionBpmPair(
+        outgoingTempo: outgoingTempo,
+        incomingTempo: incomingTempo,
+        outgoingBaseRate: outgoingBaseRate,
+        incomingBaseRate: incomingBaseRate,
+      ) !=
+      null;
 }
 
 double effectiveBpmForRate({
   required double nativeBpm,
   required double rate,
+  double tempoScale = 1,
 }) {
   if (!nativeBpm.isFinite || nativeBpm <= 0) return 0;
-  return nativeBpm * _safeBaseRate(rate);
+  return nativeBpm * tempoScale * _safeBaseRate(rate);
 }
+
+bool _isSafeTempoRate(double rate) =>
+    rate >= minTempoAutomationRate && rate <= maxTempoAutomationRate;
 
 bool playbackRateCanReachTargetBpm({
   required double baseRate,
@@ -886,12 +960,10 @@ int? snapIncomingStartToNearestDownbeat({
   return math.max(0, snapped);
 }
 
-List<int> beatMarkersForSnapMode(
-  ClipTempoMetadata tempo,
-  BeatSnapMode snapMode,
-) {
+List<int> beatMarkersForSnapMode(ClipTempoMetadata tempo, BeatSnapMode snapMode,
+    {double tempoScale = 1}) {
   final beats = tempo.hasReliableBeatGrid
-      ? _sortedUniqueNonNegative(tempo.beatsMs)
+      ? normalizedBeatMarkersForTempo(tempo, tempoScale: tempoScale)
       : const <int>[];
   final downbeats = tempo.hasDownbeats
       ? _sortedUniqueNonNegative(tempo.downbeatsMs)
@@ -907,6 +979,81 @@ List<int> beatMarkersForSnapMode(
         ? _strideMarkers(downbeats, 4)
         : _strideMarkers(beats, 16),
   };
+}
+
+/// Projects a reliable raw beat grid into the selected octave interpretation.
+/// Source timestamps are not stored back into [ClipTempoMetadata], and phrase
+/// downbeats remain raw anchors rather than interpolated beats.
+List<int> normalizedBeatMarkersForTempo(
+  ClipTempoMetadata tempo, {
+  double tempoScale = 1,
+}) {
+  return normalizeBeatMarkerTimestamps(tempo.beatsMs, tempoScale: tempoScale);
+}
+
+List<int> normalizeBeatMarkerTimestamps(
+  List<int> sourceMarkers, {
+  double tempoScale = 1,
+}) {
+  final raw = _sortedUniqueNonNegative(sourceMarkers);
+  if (raw.length < 2 || tempoScale == 1) return raw;
+  if (tempoScale >= 1.5) {
+    final markers = <int>[];
+    for (var index = 0; index + 1 < raw.length; index++) {
+      final current = raw[index];
+      final next = raw[index + 1];
+      markers
+        ..add(current)
+        ..add(current + ((next - current) / 2).round());
+    }
+    markers.add(raw.last);
+    return markers;
+  }
+  if (tempoScale <= 0.75) return _strideMarkers(raw, 2);
+  return raw;
+}
+
+/// Projects raw beat markers only where a tempo-scale segment is active.
+///
+/// The callbacks keep this helper independent from timeline placement while
+/// ensuring marker decisions use their actual global timeline positions.
+List<int> projectBeatMarkersForTempoSegments(
+  List<int> sourceMarkers, {
+  required int Function(int sourcePositionMs) timelineMsForSourcePosition,
+  required double Function(int timelineMs) tempoScaleAt,
+}) {
+  final raw = _sortedUniqueNonNegative(sourceMarkers);
+  if (raw.length < 2) return raw;
+
+  final projected = <int>[];
+  var halfTimeRunIndex = 0;
+  var wasHalfTime = false;
+  for (final marker in raw) {
+    final scale = tempoScaleAt(timelineMsForSourcePosition(marker));
+    final isHalfTime = scale <= 0.75;
+    if (!isHalfTime) {
+      projected.add(marker);
+      wasHalfTime = false;
+      continue;
+    }
+
+    if (!wasHalfTime) halfTimeRunIndex = 0;
+    if (halfTimeRunIndex.isEven) projected.add(marker);
+    halfTimeRunIndex++;
+    wasHalfTime = true;
+  }
+
+  for (var index = 0; index + 1 < raw.length; index++) {
+    final current = raw[index];
+    final next = raw[index + 1];
+    final midpoint = current + ((next - current) / 2).round();
+    if (midpoint <= current || midpoint >= next) continue;
+    if (tempoScaleAt(timelineMsForSourcePosition(midpoint)) >= 1.5) {
+      projected.add(midpoint);
+    }
+  }
+
+  return _sortedUniqueNonNegative(projected);
 }
 
 List<int> _sortedUniqueNonNegative(List<int> values) {
@@ -994,29 +1141,23 @@ int _incomingDownbeatTimelineOffsetMs({
   final safeSourceDeltaMs = math.max(0, sourceDeltaMs);
   if (safeSourceDeltaMs == 0) return 0;
 
-  final incomingBpm = incomingTempo.nativeBpm;
-  final outgoingBpm = outgoingTempo.nativeBpm;
-  if (incomingTempo.hasReliableBpm &&
-      outgoingTempo.hasReliableBpm &&
-      incomingBpm != null &&
-      incomingBpm > 0 &&
-      outgoingBpm != null &&
-      outgoingBpm > 0 &&
-      playbackRateCanReachTargetBpm(
-        baseRate: incomingBaseRate,
-        nativeBpm: incomingBpm,
-        targetBpm: effectiveBpmForRate(
-          nativeBpm: outgoingBpm,
-          rate: outgoingBaseRate,
-        ),
-      )) {
+  final bpmPair = incomingTempo.hasReliableBpm && outgoingTempo.hasReliableBpm
+      ? resolveTempoTransitionBpmPair(
+          outgoingTempo: outgoingTempo,
+          incomingTempo: incomingTempo,
+          outgoingBaseRate: outgoingBaseRate,
+          incomingBaseRate: incomingBaseRate,
+        )
+      : null;
+  if (bpmPair != null) {
+    final outgoingEffectiveBpm = effectiveBpmForRate(
+      nativeBpm: bpmPair.outgoingBpm,
+      rate: outgoingBaseRate,
+    );
     final incomingStartRate = playbackRateForTargetBpm(
       baseRate: incomingBaseRate,
-      nativeBpm: incomingBpm,
-      targetBpm: effectiveBpmForRate(
-        nativeBpm: outgoingBpm,
-        rate: outgoingBaseRate,
-      ),
+      nativeBpm: bpmPair.incomingBpm,
+      targetBpm: outgoingEffectiveBpm,
     );
     if (incomingStartRate > 0) {
       return (safeSourceDeltaMs / incomingStartRate).round();
@@ -1042,10 +1183,14 @@ int defaultTransitionOverlapMsForTempo({
     return 0;
   }
 
-  final outgoingBpm = outgoingTempo.nativeBpm;
-  if (outgoingBpm == null || outgoingBpm <= 0 || phraseBeats <= 0) return 0;
+  if (phraseBeats <= 0) return 0;
+  final bpmPair = resolveTempoTransitionBpmPair(
+    outgoingTempo: outgoingTempo,
+    incomingTempo: incomingTempo,
+  );
+  if (bpmPair == null) return 0;
 
-  final beatMs = 60000 / outgoingBpm;
+  final beatMs = 60000 / bpmPair.outgoingBpm;
   final phraseMs = (beatMs * phraseBeats).round();
   final safeMinOverlapMs = math.max(0, minOverlapMs);
   final safeMaxOverlapMs = math.max(
@@ -1066,12 +1211,14 @@ int downbeatSnapToleranceMs(
   ClipTempoMetadata tempo, {
   BeatSnapMode snapMode = BeatSnapMode.downbeat,
   double baseRate = 1,
+  double tempoScale = 1,
 }) {
   final bpm = tempo.nativeBpm;
   if (bpm == null || bpm <= 0) return 900;
   final effectiveBpm = effectiveBpmForRate(
     nativeBpm: bpm,
     rate: baseRate,
+    tempoScale: tempoScale,
   );
   final beatStride = switch (snapMode) {
     BeatSnapMode.free => 1,

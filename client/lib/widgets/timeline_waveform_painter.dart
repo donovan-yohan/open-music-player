@@ -265,6 +265,7 @@ class TimelineWaveformPaintCache {
     required double width,
     required double viewportPixelsPerMs,
     required int viewportOriginMs,
+    required List<int>? projectedBeatMarkers,
   }) {
     final placement = mixClip?.placement;
     final explicitLaneIdentity = laneIdentity;
@@ -306,7 +307,7 @@ class TimelineWaveformPaintCache {
         );
 
     final markers = _TimelineMarkerPaintGeometry(
-      beats: select(waveform.beatsMs, 7),
+      beats: select(projectedBeatMarkers ?? waveform.beatsMs, 7),
       downbeats: select(waveform.downbeatsMs, 14),
       transients: select(waveform.transientsMs, 10),
     );
@@ -621,6 +622,7 @@ int _localSourcePositionForTimelineFraction(
 class TimelineWaveformPainter extends CustomPainter {
   final List<double> peaks;
   final TimelineWaveformData? waveform;
+  final List<int>? projectedBeatMarkers;
   final MixClip? mixClip;
   final Object? mappingRevision;
   final String? laneIdentity;
@@ -640,6 +642,7 @@ class TimelineWaveformPainter extends CustomPainter {
   TimelineWaveformPainter({
     required this.peaks,
     this.waveform,
+    this.projectedBeatMarkers,
     this.mixClip,
     this.mappingRevision,
     this.laneIdentity,
@@ -721,6 +724,7 @@ class TimelineWaveformPainter extends CustomPainter {
           width: size.width,
           viewportPixelsPerMs: viewportPixelsPerMs,
           viewportOriginMs: viewportOriginMs,
+          projectedBeatMarkers: projectedBeatMarkers,
         ),
         visibleStartFraction: startFraction,
         visibleEndFraction: endFraction,

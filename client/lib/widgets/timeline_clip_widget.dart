@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:flutter/material.dart';
 import '../core/engine/timeline_model.dart';
 import '../models/track.dart';
@@ -235,6 +237,8 @@ class TimelineLaneHeader extends StatelessWidget {
 /// outline for the current lane, and a lightweight in-lane chip carrying the
 /// short title / state / selected duration.
 class TimelineClipWidget extends StatelessWidget {
+  static final Expando<_OffsetMarkerViews> _offsetMarkerViews = Expando();
+
   static const double _maxBoundaryPhysicalWidth = 4096;
   static const double _maxBoundaryPhysicalHeight = 512;
 
@@ -298,6 +302,7 @@ class TimelineClipWidget extends StatelessWidget {
     final waveAlpha =
         (_muted ? 0.45 : 0.62 + (gainScalar * 0.38)).clamp(0.0, 1.0).toDouble();
     final waveColor = accent.withValues(alpha: waveAlpha);
+    final projectedBeatMarkers = _projectedBeatMarkersForSelectedTempoScale();
 
     return ClipRRect(
       key: ValueKey('timeline_clip_$_laneIdentity'),
@@ -320,6 +325,7 @@ class TimelineClipWidget extends StatelessWidget {
                     painter: TimelineWaveformPainter(
                       peaks: peaks,
                       waveform: waveform,
+                      projectedBeatMarkers: projectedBeatMarkers,
                       mixClip: mixClip,
                       mappingRevision: mappingRevision,
                       laneIdentity: _laneIdentity,
@@ -378,6 +384,32 @@ class TimelineClipWidget extends StatelessWidget {
     );
   }
 
+  List<int>? _projectedBeatMarkersForSelectedTempoScale() {
+    final source = waveform;
+    final clip = mixClip;
+    if (source == null || clip == null) return null;
+    if (!clip.rateAutomation.segments.any(
+      (segment) => segment.tempoScale != 1,
+    )) {
+      return null;
+    }
+    final sourceStartMs = source.sourceStartMs;
+    final absoluteMarkers = _markersOffsetBy(source.beatsMs, sourceStartMs);
+    final projectedMarkers =
+        clip.projectTempoSegmentBeatMarkers(absoluteMarkers);
+    return _markersOffsetBy(projectedMarkers, -sourceStartMs);
+  }
+
+  static List<int> _markersOffsetBy(List<int> markers, int offsetMs) {
+    if (offsetMs == 0) return markers;
+    final views = _offsetMarkerViews[markers] ?? _OffsetMarkerViews();
+    _offsetMarkerViews[markers] = views;
+    return views.byOffset.putIfAbsent(
+      offsetMs,
+      () => _OffsetMarkerList(markers, offsetMs),
+    );
+  }
+
   Widget _gainBadge(ThemeData theme, double gainScalar) {
     final gainPercent = (gainScalar * 100).round();
     return Container(
@@ -426,6 +458,33 @@ class TimelineClipWidget extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+class _OffsetMarkerViews {
+  final Map<int, List<int>> byOffset = {};
+}
+
+class _OffsetMarkerList extends ListBase<int> {
+  final List<int> _source;
+  final int _offsetMs;
+
+  _OffsetMarkerList(this._source, this._offsetMs);
+
+  @override
+  int get length => _source.length;
+
+  @override
+  int operator [](int index) => _source[index] + _offsetMs;
+
+  @override
+  void operator []=(int index, int value) {
+    throw UnsupportedError('Marker offset views are read-only.');
+  }
+
+  @override
+  set length(int value) {
+    throw UnsupportedError('Marker offset views are read-only.');
   }
 }
 

@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
+import 'package:open_music_player/core/engine/timeline_model.dart';
+import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
   group('tempo-matched transition planner', () {
@@ -124,7 +126,7 @@ void main() {
         bpmConfidence: 0.95,
       );
       const incoming = ClipTempoMetadata(
-        nativeBpm: 220,
+        nativeBpm: 500,
         bpmConfidence: 0.95,
       );
 
@@ -142,6 +144,179 @@ void main() {
           incomingTempo: incoming,
         ),
         isFalse,
+      );
+    });
+
+    test('normalizes 70 BPM to its 140 BPM octave for a 145 BPM transition',
+        () {
+      const outgoing = ClipTempoMetadata(
+        nativeBpm: 145,
+        bpmConfidence: 0.93,
+      );
+      const incoming = ClipTempoMetadata(
+        nativeBpm: 70,
+        bpmConfidence: 0.91,
+      );
+
+      final pair = resolveTempoTransitionBpmPair(
+        outgoingTempo: outgoing,
+        incomingTempo: incoming,
+      )!;
+      final plan = planTempoMatchedTransition(
+        overlapStartMs: 0,
+        overlapEndMs: 4000,
+        outgoingTempo: outgoing,
+        incomingTempo: incoming,
+      )!;
+
+      expect(pair.outgoingBpm, 145);
+      expect(pair.incomingBpm, 140);
+      expect(pair.outgoingTempoScale, 1);
+      expect(pair.incomingTempoScale, 2);
+      expect(plan.incomingSegment.tempoScale, 2);
+      expect(plan.incomingSegment.startRate, closeTo(145 / 140, 0.0001));
+      expect(plan.incomingSegment.startRate, lessThan(1.1));
+      expect(
+        effectiveBpmForRate(
+          nativeBpm: incoming.nativeBpm!,
+          rate: plan.incomingSegment.startRate,
+          tempoScale: plan.incomingSegment.tempoScale,
+        ),
+        closeTo(145, 0.0001),
+      );
+      expect(incoming.nativeBpm, 70);
+      expect(incoming.bpmConfidence, 0.91);
+    });
+
+    test('normalizes the inverse 140 BPM and 72.5 BPM pairing', () {
+      const outgoing = ClipTempoMetadata(nativeBpm: 140, bpmConfidence: 0.9);
+      const incoming = ClipTempoMetadata(nativeBpm: 72.5, bpmConfidence: 0.9);
+
+      final plan = planTempoMatchedTransition(
+        overlapStartMs: 0,
+        overlapEndMs: 4000,
+        outgoingTempo: outgoing,
+        incomingTempo: incoming,
+      )!;
+
+      expect(plan.outgoingSegment.tempoScale, 1);
+      expect(plan.incomingSegment.tempoScale, 2);
+      expect(plan.incomingSegment.startRate, closeTo(140 / 145, 0.0001));
+      expect(plan.incomingSegment.startRate, greaterThan(0.9));
+    });
+
+    test(
+        'projects selected double-time beat markers without changing downbeats',
+        () {
+      const tempo = ClipTempoMetadata(
+        nativeBpm: 70,
+        bpmConfidence: 0.9,
+        beatsMs: [0, 857, 1714, 2571],
+        downbeatsMs: [0, 3428],
+      );
+
+      expect(
+        beatMarkersForSnapMode(
+          tempo,
+          BeatSnapMode.beat1,
+          tempoScale: 2,
+        ),
+        [0, 429, 857, 1286, 1714, 2143, 2571],
+      );
+      expect(
+        beatMarkersForSnapMode(
+          tempo,
+          BeatSnapMode.downbeat,
+          tempoScale: 2,
+        ),
+        tempo.downbeatsMs,
+      );
+      expect(tempo.beatsMs, [0, 857, 1714, 2571]);
+    });
+
+    test('shifts the projected tempo-scaled visual range with automation', () {
+      const raw = [0, 100, 200, 300, 400, 500, 600];
+      const automation = PlaybackRateAutomation(
+        segments: [
+          PlaybackRateSegment(
+            startMs: 200,
+            endMs: 400,
+            startRate: 1,
+            endRate: 1,
+            tempoScale: 2,
+          ),
+        ],
+      );
+      final shifted = automation.shiftedTimelineMs(400);
+
+      final original = projectBeatMarkersForTempoSegments(
+        raw,
+        timelineMsForSourcePosition: (sourceMs) => sourceMs,
+        tempoScaleAt: automation.tempoScaleAt,
+      );
+      final moved = projectBeatMarkersForTempoSegments(
+        raw,
+        timelineMsForSourcePosition: (sourceMs) => sourceMs + 400,
+        tempoScaleAt: shifted.tempoScaleAt,
+      );
+
+      expect(original, [0, 100, 200, 250, 300, 350, 400, 500, 600]);
+      expect(moved, original);
+      expect(original.where((marker) => !raw.contains(marker)), [250, 350]);
+      expect(
+        moved
+            .where((marker) => !raw.contains(marker))
+            .map((marker) => marker + 400),
+        [650, 750],
+      );
+    });
+
+    test('bounds projection caching to the immutable clip lifecycle', () {
+      final sourceMarkers = [0, 100, 200, 300, 400, 500, 600];
+      final clip = MixClip(
+        placement: TimelineClip.clamped(
+          id: 'projection-cache',
+          trackId: 'track',
+          sourceDurationMs: 1000,
+          sourceStartMs: 0,
+          sourceEndMs: 1000,
+          timelineStartMs: 0,
+        ),
+        rateAutomation: const PlaybackRateAutomation(
+          segments: [
+            PlaybackRateSegment(
+              startMs: 200,
+              endMs: 400,
+              startRate: 1,
+              endRate: 1,
+              tempoScale: 2,
+            ),
+          ],
+        ),
+      );
+
+      final first = clip.projectTempoSegmentBeatMarkers(sourceMarkers);
+      final repeated = clip.projectTempoSegmentBeatMarkers(sourceMarkers);
+
+      expect(identical(repeated, first), isTrue);
+      expect(clip.projectedBeatMarkerCacheEntryCount, 1);
+
+      clip.projectTempoSegmentBeatMarkers(List<int>.from(sourceMarkers));
+      clip.projectTempoSegmentBeatMarkers(List<int>.from(sourceMarkers));
+
+      expect(clip.projectedBeatMarkerCacheEntryCount, 2);
+      expect(
+        MixClip(
+          placement: TimelineClip.clamped(
+            id: 'separate-projection-cache',
+            trackId: 'track',
+            sourceDurationMs: 1000,
+            sourceStartMs: 0,
+            sourceEndMs: 1000,
+            timelineStartMs: 0,
+          ),
+        ).projectedBeatMarkerCacheEntryCount,
+        0,
       );
     });
 
@@ -469,6 +644,39 @@ void main() {
       },
     );
 
+    test('uses normalized BPM for phrase duration in both octave directions',
+        () {
+      const slow = ClipTempoMetadata(
+        nativeBpm: 70,
+        bpmConfidence: 0.9,
+        downbeatsMs: [0, 3429, 6857, 10286],
+      );
+      const fast = ClipTempoMetadata(
+        nativeBpm: 145,
+        bpmConfidence: 0.9,
+        downbeatsMs: [0, 1655, 3310, 4966, 6621],
+      );
+
+      expect(
+        defaultTransitionOverlapMsForTempo(
+          outgoingSelectedDurationMs: 20000,
+          outgoingTempo: fast,
+          incomingSelectedDurationMs: 20000,
+          incomingTempo: slow,
+        ),
+        6621,
+      );
+      expect(
+        defaultTransitionOverlapMsForTempo(
+          outgoingSelectedDurationMs: 20000,
+          outgoingTempo: slow,
+          incomingSelectedDurationMs: 20000,
+          incomingTempo: fast,
+        ),
+        6857,
+      );
+    });
+
     test('handles inverted overlap bounds defensively', () {
       expect(
         defaultTransitionOverlapMsForTempo(
@@ -659,6 +867,58 @@ void main() {
         start + (incomingFaster.downbeatsMs.first / 0.8).round(),
         16000,
       );
+    });
+
+    test('places 70 BPM and 145 BPM downbeats at the normalized rate', () {
+      const slow = ClipTempoMetadata(
+        nativeBpm: 70,
+        bpmConfidence: 0.9,
+        downbeatsMs: [1714, 5143, 8571],
+      );
+      const fast = ClipTempoMetadata(
+        nativeBpm: 145,
+        bpmConfidence: 0.9,
+        downbeatsMs: [0, 1655, 3310, 4966],
+      );
+
+      final start = snapIncomingStartToNearestDownbeat(
+        requestedStartMs: 3310,
+        incomingSourceStartMs: 0,
+        incomingTempo: slow,
+        outgoingTimelineStartMs: 0,
+        outgoingSourceStartMs: 0,
+        outgoingTempo: fast,
+        toleranceMs: 1,
+      );
+
+      expect(start, 1655);
+      expect(start! + (1714 / (145 / 140)).round(), 3310);
+    });
+
+    test('places 145 BPM and 70 BPM downbeats at the normalized rate', () {
+      const slow = ClipTempoMetadata(
+        nativeBpm: 70,
+        bpmConfidence: 0.9,
+        downbeatsMs: [0, 3429, 6857],
+      );
+      const fast = ClipTempoMetadata(
+        nativeBpm: 145,
+        bpmConfidence: 0.9,
+        downbeatsMs: [1714, 3379, 5034],
+      );
+
+      final start = snapIncomingStartToNearestDownbeat(
+        requestedStartMs: 3429,
+        incomingSourceStartMs: 0,
+        incomingTempo: fast,
+        outgoingTimelineStartMs: 0,
+        outgoingSourceStartMs: 0,
+        outgoingTempo: slow,
+        toleranceMs: 1,
+      );
+
+      expect(start, 1654);
+      expect(start! + (1714 / (140 / 145)).round(), 3429);
     });
 
     test(
