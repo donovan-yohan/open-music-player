@@ -7,6 +7,8 @@ import 'tempo_automation.dart';
 
 /// A timeline clip plus playback/source metadata used by the mix engine.
 class MixClip {
+  static const int _maxProjectedBeatMarkerCacheEntries = 2;
+
   final TimelineClip placement;
   final GainEnvelope envelope;
   final String audioSourceRef;
@@ -15,6 +17,7 @@ class MixClip {
   final String pitchMode;
   final ClipTempoMetadata tempo;
   final PlaybackRateAutomation rateAutomation;
+  final List<_ProjectedBeatMarkerCacheEntry> _projectedBeatMarkerCache = [];
 
   MixClip({
     required this.placement,
@@ -92,6 +95,38 @@ class MixClip {
     );
   }
 
+  /// Memoizes projections by source-list identity for this immutable clip.
+  ///
+  /// Placement and automation are fixed for a [MixClip] lifecycle, so a
+  /// projection only changes when the source marker list instance changes.
+  /// Keeping two entries covers the waveform and analysis lists without a
+  /// process-wide cache or unbounded retention.
+  List<int> projectTempoSegmentBeatMarkers(List<int> sourceMarkers) {
+    for (final entry in _projectedBeatMarkerCache) {
+      if (identical(entry.sourceMarkers, sourceMarkers)) {
+        return entry.projectedMarkers;
+      }
+    }
+
+    final projected = projectBeatMarkersForTempoSegments(
+      sourceMarkers,
+      timelineMsForSourcePosition: timelineMsForSourcePosition,
+      tempoScaleAt: tempoScaleAt,
+    );
+    if (_projectedBeatMarkerCache.length ==
+        _maxProjectedBeatMarkerCacheEntries) {
+      _projectedBeatMarkerCache.removeAt(0);
+    }
+    _projectedBeatMarkerCache.add(
+      _ProjectedBeatMarkerCacheEntry(sourceMarkers, projected),
+    );
+    return projected;
+  }
+
+  /// Exposes bounded cache instrumentation for regression tests.
+  int get projectedBeatMarkerCacheEntryCount =>
+      _projectedBeatMarkerCache.length;
+
   MixClip withRateAutomation(PlaybackRateAutomation automation) => MixClip(
         placement: placement,
         envelope: envelope,
@@ -137,6 +172,14 @@ class MixClip {
         tempo,
         rateAutomation,
       );
+}
+
+class _ProjectedBeatMarkerCacheEntry {
+  final List<int> sourceMarkers;
+  final List<int> projectedMarkers;
+
+  const _ProjectedBeatMarkerCacheEntry(
+      this.sourceMarkers, this.projectedMarkers);
 }
 
 int? beatAlignmentCorrectionMs({
@@ -201,11 +244,7 @@ List<int> _alignmentMarkersForClip(MixClip clip, BeatSnapMode snapMode) {
     BeatSnapMode.downbeat,
   );
   final beats = clip.tempo.hasReliableBeatGrid
-      ? projectBeatMarkersForTempoSegments(
-          clip.tempo.beatsMs,
-          timelineMsForSourcePosition: clip.timelineMsForSourcePosition,
-          tempoScaleAt: clip.tempoScaleAt,
-        )
+      ? clip.projectTempoSegmentBeatMarkers(clip.tempo.beatsMs)
       : const <int>[];
 
   return switch (snapMode) {

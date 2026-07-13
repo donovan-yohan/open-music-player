@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
@@ -390,11 +389,7 @@ class TimelineClipWidget extends StatelessWidget {
     )) {
       return null;
     }
-    return projectBeatMarkersForTempoSegments(
-      source.beatsMs,
-      timelineMsForSourcePosition: clip.timelineMsForSourcePosition,
-      tempoScaleAt: clip.tempoScaleAt,
-    );
+    return clip.projectTempoSegmentBeatMarkers(source.beatsMs);
   }
 
   Widget _gainBadge(ThemeData theme, double gainScalar) {

@@ -1,7 +1,6 @@
 import 'dart:collection';
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../core/engine/timeline_model.dart';
@@ -63,7 +62,6 @@ class _TimelineMarkerCacheKey {
   final Object? mappingRevision;
   final int widthMicropixels;
   final int pixelsPerMsMicros;
-  final List<int>? projectedBeatMarkers;
 
   const _TimelineMarkerCacheKey({
     required this.waveform,
@@ -74,7 +72,6 @@ class _TimelineMarkerCacheKey {
     required this.mappingRevision,
     required this.widthMicropixels,
     required this.pixelsPerMsMicros,
-    required this.projectedBeatMarkers,
   });
 
   @override
@@ -87,8 +84,7 @@ class _TimelineMarkerCacheKey {
       other.sourceEndMs == sourceEndMs &&
       other.mappingRevision == mappingRevision &&
       other.widthMicropixels == widthMicropixels &&
-      other.pixelsPerMsMicros == pixelsPerMsMicros &&
-      listEquals(other.projectedBeatMarkers, projectedBeatMarkers);
+      other.pixelsPerMsMicros == pixelsPerMsMicros;
 
   @override
   int get hashCode => Object.hash(
@@ -100,7 +96,6 @@ class _TimelineMarkerCacheKey {
         mappingRevision,
         widthMicropixels,
         pixelsPerMsMicros,
-        Object.hashAll(projectedBeatMarkers ?? const <int>[]),
       );
 }
 
@@ -289,7 +284,6 @@ class TimelineWaveformPaintCache {
       mappingRevision: mappingRevision,
       widthMicropixels: (width * 1000000).round(),
       pixelsPerMsMicros: (viewportPixelsPerMs * 1000000).round(),
-      projectedBeatMarkers: projectedBeatMarkers,
     );
     final cached = _markersByLane.remove(cacheKey);
     if (cached != null) {
@@ -801,7 +795,6 @@ class TimelineWaveformPainter extends CustomPainter {
   bool shouldRepaint(covariant TimelineWaveformPainter old) =>
       old.peaks != peaks ||
       old.waveform != waveform ||
-      !listEquals(old.projectedBeatMarkers, projectedBeatMarkers) ||
       old.mixClip != mixClip ||
       old.mappingRevision != mappingRevision ||
       old.laneIdentity != laneIdentity ||

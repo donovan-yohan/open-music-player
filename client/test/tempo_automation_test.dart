@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
+import 'package:open_music_player/core/engine/timeline_model.dart';
+import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
   group('tempo-matched transition planner', () {
@@ -266,6 +268,55 @@ void main() {
             .where((marker) => !raw.contains(marker))
             .map((marker) => marker + 400),
         [650, 750],
+      );
+    });
+
+    test('bounds projection caching to the immutable clip lifecycle', () {
+      final sourceMarkers = [0, 100, 200, 300, 400, 500, 600];
+      final clip = MixClip(
+        placement: TimelineClip.clamped(
+          id: 'projection-cache',
+          trackId: 'track',
+          sourceDurationMs: 1000,
+          sourceStartMs: 0,
+          sourceEndMs: 1000,
+          timelineStartMs: 0,
+        ),
+        rateAutomation: const PlaybackRateAutomation(
+          segments: [
+            PlaybackRateSegment(
+              startMs: 200,
+              endMs: 400,
+              startRate: 1,
+              endRate: 1,
+              tempoScale: 2,
+            ),
+          ],
+        ),
+      );
+
+      final first = clip.projectTempoSegmentBeatMarkers(sourceMarkers);
+      final repeated = clip.projectTempoSegmentBeatMarkers(sourceMarkers);
+
+      expect(identical(repeated, first), isTrue);
+      expect(clip.projectedBeatMarkerCacheEntryCount, 1);
+
+      clip.projectTempoSegmentBeatMarkers(List<int>.from(sourceMarkers));
+      clip.projectTempoSegmentBeatMarkers(List<int>.from(sourceMarkers));
+
+      expect(clip.projectedBeatMarkerCacheEntryCount, 2);
+      expect(
+        MixClip(
+          placement: TimelineClip.clamped(
+            id: 'separate-projection-cache',
+            trackId: 'track',
+            sourceDurationMs: 1000,
+            sourceStartMs: 0,
+            sourceEndMs: 1000,
+            timelineStartMs: 0,
+          ),
+        ).projectedBeatMarkerCacheEntryCount,
+        0,
       );
     });
 

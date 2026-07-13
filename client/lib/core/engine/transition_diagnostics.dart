@@ -270,26 +270,19 @@ List<TransitionDiagnostic> _pitchDiagnostics(
   MixClip outgoing,
   MixClip incoming,
 ) {
-  if (!_hasBpm(outgoing.tempo) ||
-      !_hasBpm(incoming.tempo) ||
-      !_hasReliableConfidence(outgoing.tempo) ||
-      !_hasReliableConfidence(incoming.tempo) ||
-      resolveTempoTransitionBpmPair(
-            outgoingTempo: outgoing.tempo,
-            incomingTempo: incoming.tempo,
-            outgoingBaseRate: outgoing.rateAutomation.baseRate,
-            incomingBaseRate: incoming.rateAutomation.baseRate,
-          ) ==
-          null) {
-    return const [];
-  }
-
   final bpmPair = resolveTempoTransitionBpmPair(
     outgoingTempo: outgoing.tempo,
     incomingTempo: incoming.tempo,
     outgoingBaseRate: outgoing.rateAutomation.baseRate,
     incomingBaseRate: incoming.rateAutomation.baseRate,
-  )!;
+  );
+  if (!_hasBpm(outgoing.tempo) ||
+      !_hasBpm(incoming.tempo) ||
+      !_hasReliableConfidence(outgoing.tempo) ||
+      !_hasReliableConfidence(incoming.tempo) ||
+      bpmPair == null) {
+    return const [];
+  }
 
   final transitionStartBpm = effectiveBpmForRate(
     nativeBpm: bpmPair.outgoingBpm,

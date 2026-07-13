@@ -278,7 +278,11 @@ void main() {
         )
         .painter! as TimelineWaveformPainter;
     expect(identical(rebuilt.waveform, waveform), isTrue);
-    expect(rebuilt.projectedBeatMarkers, first.projectedBeatMarkers);
+    expect(
+      identical(rebuilt.projectedBeatMarkers, first.projectedBeatMarkers),
+      isTrue,
+    );
+    expect(clip.projectedBeatMarkerCacheEntryCount, 1);
     expect(cache.paintCount, 2);
     expect(cache.frameGeometryBuildCount, 1);
     expect(cache.markerGeometryBuildCount, 1);
