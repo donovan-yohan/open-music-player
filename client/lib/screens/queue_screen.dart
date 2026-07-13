@@ -277,23 +277,28 @@ class _QueueScreenState extends State<QueueScreen> {
     BuildContext context,
     _PlaybackViewState playbackView,
   ) {
+    final colors = Theme.of(context).colorScheme;
     final queue = playbackView.queue;
     final contextLabel = _playbackContextLabel(playbackView.playbackContext);
     final currentNumber = playbackView.currentIndex == null
         ? null
         : playbackView.currentIndex!.clamp(0, queue.length - 1).toInt() + 1;
     final stackedHeader = _usesStackedQueueHeader(context);
+    final usesMobileHeader = MediaQuery.sizeOf(context).width < 960;
+    final headerForeground = usesMobileHeader ? colors.onPrimary : null;
     final title = Text(
       'Playback Queue',
       style: Theme.of(
         context,
-      ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+      ).textTheme.headlineSmall?.copyWith(
+            color: headerForeground,
+            fontWeight: FontWeight.w700,
+          ),
     );
 
     return Container(
-      color: MediaQuery.sizeOf(context).width < 960
-          ? AppTheme.orange
-          : Colors.transparent,
+      key: const ValueKey('playback_queue_header'),
+      color: usesMobileHeader ? AppTheme.orange : Colors.transparent,
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -327,7 +332,7 @@ class _QueueScreenState extends State<QueueScreen> {
                   '${_formatQueueRuntime(remainingMs)} remaining',
                 ].join(' • '),
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      color: headerForeground ?? colors.onSurfaceVariant,
                     ),
               );
             },
@@ -842,7 +847,10 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   Widget _buildQueueHeader(BuildContext context, QueueProvider provider) {
+    final colors = Theme.of(context).colorScheme;
     final stackedHeader = _usesStackedQueueHeader(context);
+    final usesMobileHeader = MediaQuery.sizeOf(context).width < 960;
+    final headerForeground = usesMobileHeader ? colors.onPrimary : null;
     final status = Selector<PlaybackState, Duration>(
       selector: (_, playback) => playback.position,
       builder: (context, position, _) =>
@@ -851,6 +859,7 @@ class _QueueScreenState extends State<QueueScreen> {
     final menu = PopupMenuButton<String>(
       key: const ValueKey('queue_header_menu'),
       tooltip: 'Queue actions',
+      iconColor: headerForeground,
       onSelected: (value) => _handleMenuAction(context, value),
       itemBuilder: (context) => [
         const PopupMenuItem(
@@ -864,9 +873,8 @@ class _QueueScreenState extends State<QueueScreen> {
       ],
     );
     return Container(
-      color: MediaQuery.sizeOf(context).width < 960
-          ? AppTheme.orange
-          : Colors.transparent,
+      key: const ValueKey('queue_header'),
+      color: usesMobileHeader ? AppTheme.orange : Colors.transparent,
       padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
       child: stackedHeader
           ? Column(
@@ -878,14 +886,21 @@ class _QueueScreenState extends State<QueueScreen> {
                   ],
                 ),
                 const SizedBox(height: 8),
-                _buildViewSwitch(context, expanded: true),
+                _buildViewSwitch(
+                  context,
+                  expanded: true,
+                  foregroundColor: headerForeground,
+                ),
               ],
             )
           : Row(
               children: [
                 Expanded(child: status),
                 const SizedBox(width: 8),
-                _buildViewSwitch(context),
+                _buildViewSwitch(
+                  context,
+                  foregroundColor: headerForeground,
+                ),
                 menu,
               ],
             ),
@@ -951,7 +966,11 @@ class _QueueScreenState extends State<QueueScreen> {
       MediaQuery.sizeOf(context).width < 960 ||
       MediaQuery.textScalerOf(context).scale(1) >= 1.3;
 
-  Widget _buildViewSwitch(BuildContext context, {bool expanded = false}) {
+  Widget _buildViewSwitch(
+    BuildContext context, {
+    bool expanded = false,
+    Color? foregroundColor,
+  }) {
     final textScale = MediaQuery.textScalerOf(context).scale(1);
     final showLabels = textScale < 2.5;
     final showIcons = textScale < 1.3 || !showLabels;
@@ -979,6 +998,11 @@ class _QueueScreenState extends State<QueueScreen> {
         ],
         selected: {_viewMode},
         showSelectedIcon: false,
+        style: foregroundColor == null
+            ? null
+            : ButtonStyle(
+                foregroundColor: WidgetStatePropertyAll(foregroundColor),
+              ),
         onSelectionChanged: (selection) {
           final next = selection.single;
           if (next == _QueueViewMode.list) {

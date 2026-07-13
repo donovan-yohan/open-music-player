@@ -30,15 +30,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final player = Consumer<PlaybackState>(
       builder: (context, playback, _) {
         final colors = Theme.of(context).colorScheme;
+        final background = Theme.of(context).scaffoldBackgroundColor;
         final item = playback.currentItem;
         final queueModeAvailable = _queueModeAvailable(playback);
         final activeTimeMode =
             queueModeAvailable ? _timeMode : _PlayerTimeMode.song;
 
         return Scaffold(
-          backgroundColor: AppTheme.background,
+          backgroundColor: background,
           appBar: AppBar(
-            backgroundColor: AppTheme.background,
+            backgroundColor: background,
             leading: IconButton(
               icon: const Icon(Icons.keyboard_arrow_down),
               onPressed: () => Navigator.of(context).pop(),

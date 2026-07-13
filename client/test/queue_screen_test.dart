@@ -196,6 +196,54 @@ void main() {
     expect(playbackState.skipToIndexCalls, [2]);
   });
 
+  testWidgets('mobile playback queue header text contrasts with orange', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [_mediaItem(1, 'Now Playing')]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+
+    final header = tester.widget<Container>(
+      find.byKey(const ValueKey('playback_queue_header')),
+    );
+    for (final finder in [
+      find.text('Playback Queue'),
+      find.text('1 of 1 • 1:00 remaining'),
+    ]) {
+      expect(
+        _contrastRatio(_effectiveTextColor(tester, finder), header.color!),
+        greaterThanOrEqualTo(4.5),
+      );
+    }
+  });
+
+  testWidgets('mobile import queue header controls contrast with orange', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpQueueScreen(tester);
+
+    final header = tester.widget<Container>(
+      find.byKey(const ValueKey('queue_header')),
+    );
+    for (final finder in [find.text('List'), find.text('Timeline')]) {
+      expect(
+        _contrastRatio(_effectiveTextColor(tester, finder), header.color!),
+        greaterThanOrEqualTo(4.5),
+      );
+    }
+  });
+
   testWidgets('2x text stacks queue view labels without wrapping', (
     tester,
   ) async {

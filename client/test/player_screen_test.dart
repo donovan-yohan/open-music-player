@@ -48,12 +48,52 @@ void main() {
       final title = find.byKey(const ValueKey('player_track_title'));
       final titleElement = tester.element(title);
       expect(Theme.of(titleElement).brightness, Brightness.dark);
+      final background = _scaffoldBackground(tester);
+      expect(background, AppTheme.background);
       expect(
-        _contrastRatio(_effectiveTextColor(tester, title), AppTheme.background),
+        _contrastRatio(_effectiveTextColor(tester, title), background),
         greaterThanOrEqualTo(4.5),
       );
       expect(tester.takeException(), isNull, reason: 'text scale $scale');
     }
+  });
+
+  testWidgets('desktop player inherits readable light theme colors', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      ListenableProvider<PlaybackState>.value(
+        value: _FakePlaybackState(),
+        child: MaterialApp(
+          theme: AppTheme.lightTheme,
+          home: const PlayerScreen(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final title = find.byKey(const ValueKey('player_track_title'));
+    final artist = find.byKey(const ValueKey('player_track_artist'));
+    final songInfo = find.byTooltip('Song info');
+    final background = _scaffoldBackground(tester);
+
+    expect(Theme.of(tester.element(title)).brightness, Brightness.light);
+    expect(background, AppTheme.lightBackground);
+    for (final finder in [title, artist]) {
+      expect(
+        _contrastRatio(_effectiveTextColor(tester, finder), background),
+        greaterThanOrEqualTo(4.5),
+      );
+    }
+    expect(
+      _contrastRatio(_effectiveIconColor(tester, songInfo), background),
+      greaterThanOrEqualTo(4.5),
+    );
   });
 
   testWidgets('progress slider previews scrub and commits once', (
@@ -304,6 +344,12 @@ Color _effectiveTextColor(WidgetTester tester, Finder finder) {
   final text = tester.widget<Text>(finder);
   return text.style?.color ?? DefaultTextStyle.of(element).style.color!;
 }
+
+Color _effectiveIconColor(WidgetTester tester, Finder finder) =>
+    IconTheme.of(tester.element(finder)).color!;
+
+Color _scaffoldBackground(WidgetTester tester) =>
+    tester.widget<Scaffold>(find.byType(Scaffold)).backgroundColor!;
 
 class _FakePlaybackState extends Fake implements PlaybackState {
   _FakePlaybackState({
