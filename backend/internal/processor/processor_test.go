@@ -14,10 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/analyzer"
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/matcher"
+	"github.com/openmusicplayer/backend/internal/playlistimport"
 )
 
 type fakeObjectStorage struct {
@@ -948,6 +951,187 @@ func TestRunAnalysisAppliesGenreHintAgainstPostgres(t *testing.T) {
 	}
 	if !genre.Valid || genre.String != "house" {
 		t.Fatalf("genre = %#v, want house", genre)
+	}
+}
+
+func TestAttachPlaylistImportTrackBackfillsSourceEntryIdempotently(t *testing.T) {
+	database, ctx := newProcessorPostgresTestDB(t)
+	userID := uuid.New()
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO users (id, email, username, password_hash)
+		VALUES ($1, $2, 'processor-source', 'x')
+	`, userID, "processor-source-"+userID.String()+"@example.test"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	playlistRepo := db.NewPlaylistRepository(database)
+	playlist := &db.Playlist{UserID: userID, Name: "Queued source import"}
+	if err := playlistRepo.Create(ctx, playlist); err != nil {
+		t.Fatalf("create playlist: %v", err)
+	}
+	trackRepo := db.NewTrackRepository(database)
+	track, created, err := trackRepo.CreateTrackFromMetadata(ctx, "Source Artist", "Queued source track", "", 180000)
+	if err != nil || !created {
+		t.Fatalf("create track = (%#v, %v, %v), want created track", track, created, err)
+	}
+
+	sourceRepo := db.NewPlaylistSourceRepository(database)
+	if err := sourceRepo.ApplyResolvedMapping(ctx, &db.PlaylistSourceBinding{
+		PlaylistID:          playlist.ID,
+		UserID:              userID,
+		Provider:            "youtube",
+		ProviderPlaylistID:  "PL_processor_source",
+		CanonicalURL:        "https://www.youtube.com/playlist?list=PL_processor_source",
+		SnapshotFingerprint: sql.NullString{String: "processor-source-snapshot", Valid: true},
+	}, []db.ResolvedPlaylistSourceEntry{{
+		ProviderEntryID: "stable-queued-entry",
+		SourceURL:       "https://www.youtube.com/watch?v=queued-entry",
+		SourceOrder:     0,
+	}}); err != nil {
+		t.Fatalf("apply source mapping: %v", err)
+	}
+	_, sourceEntries, err := sourceRepo.LoadBinding(ctx, userID, playlist.ID)
+	if err != nil || len(sourceEntries) != 1 {
+		t.Fatalf("load source entry = (%#v, %v), want one entry", sourceEntries, err)
+	}
+	var sourceBindingID int64
+	if err := database.QueryRowContext(ctx, `SELECT source_binding_id FROM playlist_source_entries WHERE id = $1`, sourceEntries[0].ID).Scan(&sourceBindingID); err != nil {
+		t.Fatalf("load source binding ID: %v", err)
+	}
+	var conflictingSourceEntryID int64
+	if err := database.QueryRowContext(ctx, `
+		INSERT INTO playlist_source_entries (source_binding_id, provider_entry_id, source_url, source_order)
+		VALUES ($1, 'conflicting-entry', 'https://www.youtube.com/watch?v=conflicting-entry', 1)
+		RETURNING id
+	`, sourceBindingID).Scan(&conflictingSourceEntryID); err != nil {
+		t.Fatalf("create conflicting source entry: %v", err)
+	}
+
+	importJobID := uuid.New()
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO playlist_import_jobs (id, user_id, playlist_id, source_url, status)
+		VALUES ($1, $2, $3, $4, 'importing')
+	`, importJobID, userID, playlist.ID, "https://www.youtube.com/playlist?list=PL_processor_source"); err != nil {
+		t.Fatalf("create import job: %v", err)
+	}
+	var importItemID int64
+	if err := database.QueryRowContext(ctx, `
+		INSERT INTO playlist_import_items
+			(import_job_id, source_index, playlist_position, source_id, source_url, title, status, download_job_id)
+		VALUES ($1, 1, 0, 'stable-queued-entry', 'https://www.youtube.com/watch?v=queued-entry', 'Queued source track', 'queued', 'queued-job')
+		RETURNING id
+	`, importJobID).Scan(&importItemID); err != nil {
+		t.Fatalf("create queued import item: %v", err)
+	}
+
+	processor := New(&ProcessorConfig{
+		PlaylistRepo: playlistRepo,
+		ImportRepo:   playlistimport.NewImportRepository(database),
+	})
+	job := &download.DownloadJob{
+		ID:                   "queued-job",
+		PlaylistImportJobID:  importJobID.String(),
+		PlaylistImportItemID: importItemID,
+		PlaylistID:           playlist.ID,
+		PlaylistPosition:     0,
+	}
+	if err := processor.attachPlaylistImportTrack(ctx, job, track.ID); err != nil {
+		t.Fatalf("complete queued import item: %v", err)
+	}
+	if err := processor.attachPlaylistImportTrack(ctx, job, track.ID); err != nil {
+		t.Fatalf("retry queued import item: %v", err)
+	}
+	importRepo := playlistimport.NewImportRepository(database)
+	if err := importRepo.AssociateItemSourceEntry(ctx, importItemID, sourceEntries[0].ID); err != nil {
+		t.Fatalf("associate completed import item: %v", err)
+	}
+	if err := importRepo.AssociateItemSourceEntry(ctx, importItemID, sourceEntries[0].ID); err != nil {
+		t.Fatalf("retry completed import association: %v", err)
+	}
+	if err := importRepo.AssociateItemSourceEntry(ctx, importItemID, conflictingSourceEntryID); !errors.Is(err, db.ErrPlaylistImportSourceLinkConflict) {
+		t.Fatalf("conflicting import association error = %v, want %v", err, db.ErrPlaylistImportSourceLinkConflict)
+	}
+
+	var status string
+	var itemTrackID, sourceEntryID, sourceTrackID sql.NullInt64
+	if err := database.QueryRowContext(ctx, `
+		SELECT i.status, i.track_id, i.playlist_source_entry_id, e.track_id
+		FROM playlist_import_items AS i
+		LEFT JOIN playlist_source_entries AS e ON e.id = i.playlist_source_entry_id
+		WHERE i.id = $1
+	`, importItemID).Scan(&status, &itemTrackID, &sourceEntryID, &sourceTrackID); err != nil {
+		t.Fatalf("load completed import item: %v", err)
+	}
+	if status != playlistimport.ItemStatusImported || !itemTrackID.Valid || itemTrackID.Int64 != track.ID || !sourceEntryID.Valid || !sourceTrackID.Valid || sourceTrackID.Int64 != track.ID {
+		t.Fatalf("completed import = status:%q item_track:%#v source_entry:%#v source_track:%#v, want linked imported track %d", status, itemTrackID, sourceEntryID, sourceTrackID, track.ID)
+	}
+	var membershipCount int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = $1 AND track_id = $2`, playlist.ID, track.ID).Scan(&membershipCount); err != nil {
+		t.Fatalf("count playlist membership: %v", err)
+	}
+	if membershipCount != 1 {
+		t.Fatalf("playlist membership count = %d, want 1 after retry", membershipCount)
+	}
+	var importedItems, queuedItems int
+	if err := database.QueryRowContext(ctx, `SELECT imported_items, queued_items FROM playlist_import_jobs WHERE id = $1`, importJobID).Scan(&importedItems, &queuedItems); err != nil {
+		t.Fatalf("load import counts: %v", err)
+	}
+	if importedItems != 1 || queuedItems != 0 {
+		t.Fatalf("import counts = imported:%d queued:%d, want 1/0", importedItems, queuedItems)
+	}
+
+	legacyTrack, created, err := trackRepo.CreateTrackFromMetadata(ctx, "Legacy Artist", "Legacy queued track", "", 180000)
+	if err != nil || !created {
+		t.Fatalf("create legacy track = (%#v, %v, %v), want created track", legacyTrack, created, err)
+	}
+	legacyJobID := uuid.New()
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO playlist_import_jobs (id, user_id, playlist_id, source_url, status)
+		VALUES ($1, $2, $3, $4, 'importing')
+	`, legacyJobID, userID, playlist.ID, "https://www.youtube.com/playlist?list=legacy"); err != nil {
+		t.Fatalf("create legacy import job: %v", err)
+	}
+	var legacyItemID int64
+	if err := database.QueryRowContext(ctx, `
+		INSERT INTO playlist_import_items
+			(import_job_id, source_index, playlist_position, source_id, source_url, title, status, download_job_id)
+		VALUES ($1, 1, 1, 'legacy-entry', 'https://www.youtube.com/watch?v=legacy-entry', 'Legacy queued track', 'queued', 'legacy-job')
+		RETURNING id
+	`, legacyJobID).Scan(&legacyItemID); err != nil {
+		t.Fatalf("create legacy import item: %v", err)
+	}
+	legacyJob := &download.DownloadJob{
+		ID:                   "legacy-job",
+		PlaylistImportJobID:  legacyJobID.String(),
+		PlaylistImportItemID: legacyItemID,
+		PlaylistID:           playlist.ID,
+		PlaylistPosition:     1,
+	}
+	if err := processor.attachPlaylistImportTrack(ctx, legacyJob, legacyTrack.ID); err != nil {
+		t.Fatalf("complete legacy import item: %v", err)
+	}
+	var legacyStatus string
+	var legacyItemTrackID sql.NullInt64
+	if err := database.QueryRowContext(ctx, `
+		SELECT status, track_id
+		FROM playlist_import_items
+		WHERE id = $1
+	`, legacyItemID).Scan(&legacyStatus, &legacyItemTrackID); err != nil {
+		t.Fatalf("load legacy import item: %v", err)
+	}
+	if legacyStatus != playlistimport.ItemStatusImported || !legacyItemTrackID.Valid || legacyItemTrackID.Int64 != legacyTrack.ID {
+		t.Fatalf("legacy import = status:%q track:%#v, want imported track %d", legacyStatus, legacyItemTrackID, legacyTrack.ID)
+	}
+	var legacyMembershipCount int
+	if err := database.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM playlist_tracks
+		WHERE playlist_id = $1 AND track_id = $2
+	`, playlist.ID, legacyTrack.ID).Scan(&legacyMembershipCount); err != nil {
+		t.Fatalf("count legacy playlist membership: %v", err)
+	}
+	if legacyMembershipCount != 1 {
+		t.Fatalf("legacy playlist membership count = %d, want 1", legacyMembershipCount)
 	}
 }
 

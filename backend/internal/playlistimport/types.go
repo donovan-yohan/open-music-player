@@ -52,24 +52,32 @@ type ImportJob struct {
 }
 
 type ImportItem struct {
-	ID               int64
-	ImportJobID      uuid.UUID
-	SourceIndex      int
-	PlaylistPosition int
-	SourceID         string
-	SourceURL        string
-	Title            string
-	Artist           string
-	Album            string
-	Uploader         string
-	DurationMs       int
-	ThumbnailURL     string
-	Status           string
-	Error            sql.NullString
-	TrackID          sql.NullInt64
-	DownloadJobID    sql.NullString
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                    int64
+	ImportJobID           uuid.UUID
+	SourceIndex           int
+	PlaylistPosition      int
+	SourceID              string
+	SourceURL             string
+	Title                 string
+	Artist                string
+	Album                 string
+	Uploader              string
+	DurationMs            int
+	ThumbnailURL          string
+	Status                string
+	Error                 sql.NullString
+	TrackID               sql.NullInt64
+	PlaylistSourceEntryID sql.NullInt64
+	DownloadJobID         sql.NullString
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+// ItemSourceEntryAssociation links one import item to a stable provider entry.
+// Both IDs are validated and updated as one transaction by ImportRepository.
+type ItemSourceEntryAssociation struct {
+	ItemID        int64
+	SourceEntryID int64
 }
 
 type PlaylistMetadata struct {

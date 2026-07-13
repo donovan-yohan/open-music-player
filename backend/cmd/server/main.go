@@ -283,6 +283,7 @@ func main() {
 	libraryRepo := db.NewLibraryRepository(database)
 	analysisRepo := db.NewAnalysisRepository(database)
 	playlistRepo := db.NewPlaylistRepository(database)
+	playlistSourceRepo := db.NewPlaylistSourceRepository(database)
 	playlistImportRepo := playlistimport.NewImportRepository(database)
 	trackSourceRepo := playlistimport.NewTrackSourceRepository(database)
 	mixPlanRepo := db.NewMixPlanRepository(database)
@@ -398,6 +399,7 @@ func main() {
 		PlaylistRepo:            playlistRepo,
 		ImportRepo:              playlistImportRepo,
 		SourceRepo:              trackSourceRepo,
+		PlaylistSourceRepo:      playlistSourceRepo,
 		AnalysisRepo:            analysisRepo,
 		AnalyzerClient:          analyzerClient,
 		AnalysisConcurrency:     cfg.AnalyzerConcurrency,
@@ -477,15 +479,18 @@ func main() {
 			"workers": cfg.WorkerCount,
 		})
 		downloadHandlers = api.NewDownloadHandlers(downloadService, sourceSelectionIngestion)
+		ytdlpEnumerator := playlistimport.NewYTDLPEnumerator()
 		playlistImportService := playlistimport.NewService(playlistimport.Config{
-			Store:      playlistImportRepo,
-			Playlists:  playlistRepo,
-			Tracks:     trackSourceRepo,
-			Library:    libraryRepo,
-			Downloader: downloadService,
-			Selections: sourceSelectionRepo,
-			Ingestion:  sourceSelectionIngestion,
-			Enumerator: playlistimport.NewYTDLPEnumerator(),
+			Store:          playlistImportRepo,
+			Playlists:      playlistRepo,
+			Tracks:         trackSourceRepo,
+			Library:        libraryRepo,
+			Downloader:     downloadService,
+			Selections:     sourceSelectionRepo,
+			Ingestion:      sourceSelectionIngestion,
+			Enumerator:     ytdlpEnumerator,
+			SourceAdapter:  ytdlpEnumerator,
+			SourceBindings: playlistSourceRepo,
 		})
 		playlistImportHandlers = api.NewPlaylistImportHandlers(playlistImportService)
 
