@@ -34,8 +34,6 @@ class ListeningQueueEntry {
   final bool isCurrent;
 }
 
-const double _queueReorderItemExtentPx = 64.0;
-
 (int, int) queueListReorderIndices({
   required int relativeOldIndex,
   required int relativeNewIndex,
@@ -47,20 +45,6 @@ const double _queueReorderItemExtentPx = 64.0;
     firstMovableIndex + relativeOldIndex,
     firstMovableIndex + relativeNewIndex,
   );
-}
-
-int queueListDragTargetIndex({
-  required int relativeIndex,
-  required int itemCount,
-  required double dragDeltaY,
-}) {
-  const dragThresholdPx = 24.0;
-  if (dragDeltaY.abs() < dragThresholdPx || itemCount <= 1) {
-    return relativeIndex;
-  }
-
-  final delta = (dragDeltaY / _queueReorderItemExtentPx).round();
-  return (relativeIndex + delta).clamp(0, itemCount - 1);
 }
 
 @visibleForTesting
@@ -87,8 +71,9 @@ int listeningQueueRemainingMs({
   required Duration currentPosition,
 }) {
   if (queue.isEmpty) return 0;
-  final start =
-      currentIndex == null ? 0 : currentIndex.clamp(0, queue.length).toInt();
+  final start = currentIndex == null
+      ? 0
+      : currentIndex.clamp(0, queue.length).toInt();
   var total = 0;
   for (var i = start; i < queue.length; i++) {
     final durationMs = queue[i].duration?.inMilliseconds ?? 0;
@@ -197,67 +182,68 @@ class _QueueScreenState extends State<QueueScreen> {
         child: Consumer<QueueProvider>(
           builder: (context, provider, _) =>
               Selector<PlaybackState, _PlaybackViewState>(
-            selector: (_, playback) => _PlaybackViewState.read(playback),
-            shouldRebuild: (previous, next) => !previous.hasSameStructure(next),
-            builder: (context, playbackView, _) {
-              _adoptHydrationProvider(provider);
-              if (_viewMode == _QueueViewMode.list) {
-                _clearAnalysisHydration(provider);
-              }
-              if (playbackView.queue.isNotEmpty) {
-                return _buildPlaybackQueueView(
-                  context,
-                  provider,
-                  playbackView,
-                );
-              }
+                selector: (_, playback) => _PlaybackViewState.read(playback),
+                shouldRebuild: (previous, next) =>
+                    !previous.hasSameStructure(next),
+                builder: (context, playbackView, _) {
+                  _adoptHydrationProvider(provider);
+                  if (_viewMode == _QueueViewMode.list) {
+                    _clearAnalysisHydration(provider);
+                  }
+                  if (playbackView.queue.isNotEmpty) {
+                    return _buildPlaybackQueueView(
+                      context,
+                      provider,
+                      playbackView,
+                    );
+                  }
 
-              if (provider.isLoading) {
-                _clearAnalysisHydration(provider);
-                return const SoundQSurfaceState(
-                  type: SoundQSurfaceStateType.loading,
-                  title: 'Loading queue',
-                );
-              }
+                  if (provider.isLoading) {
+                    _clearAnalysisHydration(provider);
+                    return const SoundQSurfaceState(
+                      type: SoundQSurfaceStateType.loading,
+                      title: 'Loading queue',
+                    );
+                  }
 
-              if (provider.error != null) {
-                _clearAnalysisHydration(provider);
-                return SoundQSurfaceState(
-                  type: SoundQSurfaceStateType.error,
-                  title: 'Error loading queue',
-                  message: provider.error!,
-                  action: ElevatedButton(
-                    onPressed: () => provider.loadQueue(),
-                    child: const Text('Retry'),
-                  ),
-                );
-              }
+                  if (provider.error != null) {
+                    _clearAnalysisHydration(provider);
+                    return SoundQSurfaceState(
+                      type: SoundQSurfaceStateType.error,
+                      title: 'Error loading queue',
+                      message: provider.error!,
+                      action: ElevatedButton(
+                        onPressed: () => provider.loadQueue(),
+                        child: const Text('Retry'),
+                      ),
+                    );
+                  }
 
-              if (provider.isEmpty) {
-                _clearAnalysisHydration(provider);
-                return const SoundQSurfaceState(
-                  type: SoundQSurfaceStateType.empty,
-                  title: 'Your queue is empty',
-                  message: 'Add songs to start playing',
-                );
-              }
+                  if (provider.isEmpty) {
+                    _clearAnalysisHydration(provider);
+                    return const SoundQSurfaceState(
+                      type: SoundQSurfaceStateType.empty,
+                      title: 'Your queue is empty',
+                      message: 'Add songs to start playing',
+                    );
+                  }
 
-              return Column(
-                children: [
-                  _buildQueueHeader(context, provider),
-                  Expanded(
-                    child: _viewMode == _QueueViewMode.list
-                        ? _buildListView(context, provider)
-                        : _buildTimelineView(
-                            context,
-                            provider,
-                            playbackView,
-                          ),
-                  ),
-                ],
-              );
-            },
-          ),
+                  return Column(
+                    children: [
+                      _buildQueueHeader(context, provider),
+                      Expanded(
+                        child: _viewMode == _QueueViewMode.list
+                            ? _buildListView(context, provider)
+                            : _buildTimelineView(
+                                context,
+                                provider,
+                                playbackView,
+                              ),
+                      ),
+                    ],
+                  );
+                },
+              ),
         ),
       ),
     );
@@ -279,12 +265,8 @@ class _QueueScreenState extends State<QueueScreen> {
         _buildPlaybackQueueHeader(context, playbackView),
         Expanded(
           child: _viewMode == _QueueViewMode.list
-              ? _buildPlaybackQueueList(playback, entries)
-              : _buildPlaybackTimelineView(
-                  context,
-                  provider,
-                  playbackView,
-                ),
+              ? _buildPlaybackQueueList(playback, entries, playbackView.cues)
+              : _buildPlaybackTimelineView(context, provider, playbackView),
         ),
       ],
     );
@@ -302,9 +284,9 @@ class _QueueScreenState extends State<QueueScreen> {
     final stackedHeader = _usesStackedQueueHeader(context);
     final title = Text(
       'Playback Queue',
-      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-            fontWeight: FontWeight.w700,
-          ),
+      style: Theme.of(
+        context,
+      ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
     );
 
     return Padding(
@@ -341,8 +323,8 @@ class _QueueScreenState extends State<QueueScreen> {
                   '${_formatQueueRuntime(remainingMs)} remaining',
                 ].join(' • '),
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               );
             },
           ),
@@ -367,44 +349,65 @@ class _QueueScreenState extends State<QueueScreen> {
   Widget _buildPlaybackQueueList(
     PlaybackState playback,
     List<ListeningQueueEntry> entries,
+    List<PlaybackCue> cues,
   ) {
-    return CustomScrollView(
+    return ReorderableListView.builder(
       key: const PageStorageKey('playback_queue_list_view'),
-      slivers: [
-        SliverList.builder(
-          itemCount: entries.length,
-          itemBuilder: (context, index) {
-            final entry = entries[index];
-            final item = entry.item;
-            return _buildSwipeToRemoveQueueItem(
-              context: context,
-              key: ValueKey('remove_playback_queue_${entry.index}_${item.id}'),
-              enabled: !entry.isCurrent,
-              label: item.title,
-              onRemove: () => _removePlaybackQueueEntry(playback, entry),
-              child: TrackTile(
-                key: ValueKey('playback_queue_${entry.index}_${item.id}'),
-                title: item.title,
-                artist: item.artist,
-                album: item.album,
-                duration: _formatQueueRuntime(
-                  item.duration?.inMilliseconds ?? 0,
-                ),
-                coverArtUrl: item.artUri?.toString(),
-                analysis: trackAnalysisFromTrackJson(
-                  Map<String, dynamic>.from(item.extras ?? const {}),
-                ),
-                isCurrent: entry.isCurrent,
-                onTap: entry.isCurrent
-                    ? null
-                    : () => _skipToPlaybackIndex(playback, entry),
-              ),
-            );
-          },
-        ),
-        const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
-      ],
+      buildDefaultDragHandles: false,
+      padding: const EdgeInsets.only(bottom: 100),
+      itemCount: entries.length,
+      onReorderItem: (oldIndex, newIndex) {
+        if (oldIndex == newIndex) return;
+        unawaited(playback.reorderPlaybackQueue(oldIndex, newIndex));
+      },
+      itemBuilder: (context, index) {
+        final entry = entries[index];
+        final item = entry.item;
+        final queueItemId = _queueItemIdForPlaybackEntry(cues, entry);
+        return _buildSwipeToRemoveQueueItem(
+          context: context,
+          key: ValueKey('remove_playback_queue_$queueItemId'),
+          enabled: !entry.isCurrent,
+          label: item.title,
+          onRemove: () => _removePlaybackQueueEntry(playback, entry),
+          child: TrackTile(
+            key: ValueKey('playback_queue_$queueItemId'),
+            title: item.title,
+            artist: item.artist,
+            album: item.album,
+            duration: _formatQueueRuntime(item.duration?.inMilliseconds ?? 0),
+            coverArtUrl: item.artUri?.toString(),
+            analysis: trackAnalysisFromTrackJson(
+              Map<String, dynamic>.from(item.extras ?? const {}),
+            ),
+            leading: _buildReorderHandle(
+              queueItemId: queueItemId,
+              title: item.title,
+              index: index,
+            ),
+            isCurrent: entry.isCurrent,
+            onTap: entry.isCurrent
+                ? null
+                : () => _skipToPlaybackIndex(playback, entry),
+          ),
+        );
+      },
     );
+  }
+
+  String _queueItemIdForPlaybackEntry(
+    List<PlaybackCue> cues,
+    ListeningQueueEntry entry,
+  ) {
+    for (final cue in cues) {
+      if (cue.queueIndex == entry.index && cue.mediaItem.id == entry.item.id) {
+        return cue.queueItemId;
+      }
+    }
+    // A queue snapshot normally carries a cue for every item. Keep the list
+    // renderable during a transient snapshot update while avoiding track-ID
+    // keys, which are not unique for duplicate queued occurrences.
+    return 'unresolved_${entry.index}_${entry.item.id}';
   }
 
   Widget _buildPlaybackTimelineView(
@@ -418,8 +421,9 @@ class _QueueScreenState extends State<QueueScreen> {
       _clearAnalysisHydration(provider);
       return const SizedBox.shrink();
     }
-    final currentIndex =
-        playbackView.currentIndex?.clamp(0, queue.length - 1).toInt();
+    final currentIndex = playbackView.currentIndex
+        ?.clamp(0, queue.length - 1)
+        .toInt();
     if (currentIndex == null) {
       _clearAnalysisHydration(provider);
       return const Center(child: Text('Start playback to edit the timeline'));
@@ -491,20 +495,16 @@ class _QueueScreenState extends State<QueueScreen> {
         return _pauseThenEditPlaybackQueueItem(
           playback,
           track.queueItemId,
-          (queueItemId) => playback.setQueueTrimStartMsByQueueItemId(
-            queueItemId,
-            ms,
-          ),
+          (queueItemId) =>
+              playback.setQueueTrimStartMsByQueueItemId(queueItemId, ms),
         );
       },
       onTrimEndChanged: (track, ms) {
         return _pauseThenEditPlaybackQueueItem(
           playback,
           track.queueItemId,
-          (queueItemId) => playback.setQueueTrimEndMsByQueueItemId(
-            queueItemId,
-            ms,
-          ),
+          (queueItemId) =>
+              playback.setQueueTrimEndMsByQueueItemId(queueItemId, ms),
         );
       },
       onMoveEarlier: (track) => _movePlaybackTimelineTrack(playback, track, -1),
@@ -513,10 +513,8 @@ class _QueueScreenState extends State<QueueScreen> {
         return _pauseThenEditPlaybackQueueItem(
           playback,
           track.queueItemId,
-          (queueItemId) => playback.setQueuePitchModeByQueueItemId(
-            queueItemId,
-            pitchMode,
-          ),
+          (queueItemId) =>
+              playback.setQueuePitchModeByQueueItemId(queueItemId, pitchMode),
         );
       },
       onTransitionSnapModeChanged: (mode) {
@@ -527,11 +525,11 @@ class _QueueScreenState extends State<QueueScreen> {
       },
       onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
           _showAnalysisCorrectionSheet(
-        context,
-        provider,
-        track,
-        initialFirstDownbeatMs: initialFirstDownbeatMs,
-      ),
+            context,
+            provider,
+            track,
+            initialFirstDownbeatMs: initialFirstDownbeatMs,
+          ),
       onVisibleTracksChanged: (tracks) =>
           _updateVisibleAnalysisHydration(provider, tracks),
     );
@@ -559,8 +557,9 @@ class _QueueScreenState extends State<QueueScreen> {
     final currentCue = cuesByQueueIndex[currentIndex];
     if (currentCue == null) return null;
     final currentSource = _playbackTrackFor(queue[currentIndex], currentCue);
-    final previousCue =
-        currentIndex > 0 ? cuesByQueueIndex[currentIndex - 1] : null;
+    final previousCue = currentIndex > 0
+        ? cuesByQueueIndex[currentIndex - 1]
+        : null;
     final previousSource = previousCue == null
         ? null
         : _playbackTrackFor(queue[currentIndex - 1], previousCue);
@@ -592,10 +591,7 @@ class _QueueScreenState extends State<QueueScreen> {
     );
     final previous = previousSource == null
         ? null
-        : provider.trackWithAnalysis(
-            previousSource,
-            requestHydration: false,
-          );
+        : provider.trackWithAnalysis(previousSource, requestHydration: false);
     final upcoming = [
       for (final track in upcomingSources)
         provider.trackWithAnalysis(track, requestHydration: false),
@@ -663,10 +659,7 @@ class _QueueScreenState extends State<QueueScreen> {
     return result;
   }
 
-  Track _playbackTrackFor(
-    audio_service.MediaItem item,
-    PlaybackCue cue,
-  ) {
+  Track _playbackTrackFor(audio_service.MediaItem item, PlaybackCue cue) {
     final duration = item.duration ?? Duration.zero;
     final track = Track(
       id: cue.queueItemId,
@@ -728,7 +721,9 @@ class _QueueScreenState extends State<QueueScreen> {
           return;
         }
         unawaited(
-          playback.refreshTrackAnalysis(trackId, analysis).whenComplete(
+          playback
+              .refreshTrackAnalysis(trackId, analysis)
+              .whenComplete(
                 () => _analysisRefreshesInFlight.remove(refreshKey),
               ),
         );
@@ -840,10 +835,8 @@ class _QueueScreenState extends State<QueueScreen> {
       _pauseThenEditPlaybackQueueItem(
         playback,
         track.queueItemId,
-        (queueItemId) => playback.movePlaybackQueueItemByQueueItemId(
-          queueItemId,
-          delta,
-        ),
+        (queueItemId) =>
+            playback.movePlaybackQueueItemByQueueItemId(queueItemId, delta),
       ),
     );
   }
@@ -875,7 +868,12 @@ class _QueueScreenState extends State<QueueScreen> {
       child: stackedHeader
           ? Column(
               children: [
-                Row(children: [Expanded(child: status), menu]),
+                Row(
+                  children: [
+                    Expanded(child: status),
+                    menu,
+                  ],
+                ),
                 const SizedBox(height: 8),
                 _buildViewSwitch(context, expanded: true),
               ],
@@ -949,10 +947,7 @@ class _QueueScreenState extends State<QueueScreen> {
   bool _usesStackedQueueHeader(BuildContext context) =>
       MediaQuery.textScalerOf(context).scale(1) >= 1.3;
 
-  Widget _buildViewSwitch(
-    BuildContext context, {
-    bool expanded = false,
-  }) {
+  Widget _buildViewSwitch(BuildContext context, {bool expanded = false}) {
     final textScale = MediaQuery.textScalerOf(context).scale(1);
     final showLabels = textScale < 2.5;
     final showIcons = textScale < 1.3 || !showLabels;
@@ -1040,18 +1035,17 @@ class _QueueScreenState extends State<QueueScreen> {
     );
     final tracks = hydrationSources
         .map(
-          (track) => provider.trackWithAnalysis(
-            track,
-            requestHydration: false,
-          ),
+          (track) => provider.trackWithAnalysis(track, requestHydration: false),
         )
         .toList(growable: false);
     final renderedCurrentIndex = currentIndex - firstRenderedIndex;
     final currentTrack = tracks[renderedCurrentIndex];
-    final upNext =
-        tracks.skip(renderedCurrentIndex + 1).toList(growable: false);
-    final previousTrack =
-        renderedCurrentIndex > 0 ? tracks[renderedCurrentIndex - 1] : null;
+    final upNext = tracks
+        .skip(renderedCurrentIndex + 1)
+        .toList(growable: false);
+    final previousTrack = renderedCurrentIndex > 0
+        ? tracks[renderedCurrentIndex - 1]
+        : null;
 
     final playback = playbackView.playback;
     return StackedWaveformTimeline(
@@ -1081,11 +1075,11 @@ class _QueueScreenState extends State<QueueScreen> {
       onPitchModeChanged: provider.setPitchMode,
       onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
           _showAnalysisCorrectionSheet(
-        context,
-        provider,
-        track,
-        initialFirstDownbeatMs: initialFirstDownbeatMs,
-      ),
+            context,
+            provider,
+            track,
+            initialFirstDownbeatMs: initialFirstDownbeatMs,
+          ),
       onVisibleTracksChanged: (tracks) =>
           _updateVisibleAnalysisHydration(provider, tracks),
     );
@@ -1099,7 +1093,8 @@ class _QueueScreenState extends State<QueueScreen> {
     required List<Track> sources,
     required Iterable<Track> initialSources,
   }) {
-    final contextChanged = !identical(_hydrationQueueIdentity, queueIdentity) ||
+    final contextChanged =
+        !identical(_hydrationQueueIdentity, queueIdentity) ||
         _hydrationCurrentIndex != currentIndex ||
         _hydrationUsesPlaybackQueue != usesPlaybackQueue;
     if (contextChanged) {
@@ -1171,92 +1166,60 @@ class _QueueScreenState extends State<QueueScreen> {
     final hasActiveTrack =
         currentIndex >= 0 && currentIndex < provider.queue.tracks.length;
 
-    return CustomScrollView(
+    return ReorderableListView.builder(
       key: const PageStorageKey('queue_list_view'),
-      slivers: [
-        SliverList.builder(
-          itemCount: tracks.length,
-          itemBuilder: (context, absoluteIndex) {
-            final track = tracks[absoluteIndex];
-            final isCurrent = hasActiveTrack && absoluteIndex == currentIndex;
-            final canEdit = !hasActiveTrack || absoluteIndex > currentIndex;
-            final relativeIndex = hasActiveTrack
-                ? absoluteIndex - currentIndex - 1
-                : absoluteIndex;
-            final movableCount = hasActiveTrack
-                ? tracks.length - currentIndex - 1
-                : tracks.length;
+      buildDefaultDragHandles: false,
+      padding: const EdgeInsets.only(bottom: 100),
+      itemCount: tracks.length,
+      onReorderItem: (oldIndex, newIndex) {
+        if (oldIndex == newIndex) return;
+        unawaited(provider.reorderQueue(oldIndex, newIndex));
+      },
+      itemBuilder: (context, absoluteIndex) {
+        final track = tracks[absoluteIndex];
+        final isCurrent = hasActiveTrack && absoluteIndex == currentIndex;
+        final canEdit = !hasActiveTrack || absoluteIndex > currentIndex;
 
-            return _buildSwipeToRemoveQueueItem(
-              context: context,
-              key: ValueKey('remove_queue_${track.id}'),
-              enabled: canEdit,
-              label: track.title,
-              onRemove: () => provider.removeFromQueue(absoluteIndex),
-              child: QueueItem(
-                key: ValueKey(
-                  isCurrent ? 'queue_current_${track.id}' : track.id,
-                ),
-                track: track,
-                isPlaying: isCurrent,
-                reorderHandle: canEdit
-                    ? _buildReorderHandle(
-                        track,
-                        relativeIndex,
-                        onDragReorder: (dragDeltaY) {
-                          final relativeNewIndex = queueListDragTargetIndex(
-                            relativeIndex: relativeIndex,
-                            itemCount: movableCount,
-                            dragDeltaY: dragDeltaY,
-                          );
-                          if (relativeNewIndex == relativeIndex) return;
-                          final (
-                            absoluteOldIndex,
-                            absoluteNewIndex,
-                          ) = queueListReorderIndices(
-                            relativeOldIndex: relativeIndex,
-                            relativeNewIndex: relativeNewIndex,
-                            currentIndex: currentIndex,
-                            hasActiveTrack: hasActiveTrack,
-                          );
-                          provider.reorderQueue(
-                            absoluteOldIndex,
-                            absoluteNewIndex,
-                          );
-                        },
-                      )
-                    : null,
-                showTrimControls: canEdit,
-                trimRange: canEdit ? provider.trimRangeFor(track) : null,
-                waveformPeaks:
-                    canEdit ? provider.waveformPeaksFor(track) : const [],
-                onTrimStartChanged: canEdit
-                    ? (ms) => provider.setStartOffsetMs(track, ms)
-                    : null,
-                onTrimEndChanged:
-                    canEdit ? (ms) => provider.setEndOffsetMs(track, ms) : null,
-                onPlay: track.queueStatus == TrackQueueStatus.playable &&
-                        track.canPlay
-                    ? () => _playFromQueue(context, provider, track)
-                    : null,
-                onRetry:
-                    track.canRetry ? () => provider.retryTrack(track) : null,
-                onRemove: canEdit
-                    ? () => provider.removeFromQueue(absoluteIndex)
-                    : null,
-                onEditAnalysis: _canEditAnalysis(track)
-                    ? () => _showAnalysisCorrectionSheet(
-                          context,
-                          provider,
-                          track,
-                        )
-                    : null,
-              ),
-            );
-          },
-        ),
-        const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
-      ],
+        return _buildSwipeToRemoveQueueItem(
+          context: context,
+          key: ValueKey('remove_queue_${track.queueItemId}'),
+          enabled: canEdit,
+          label: track.title,
+          onRemove: () => provider.removeFromQueue(absoluteIndex),
+          child: QueueItem(
+            key: ValueKey('queue_item_${track.queueItemId}'),
+            track: track,
+            isPlaying: isCurrent,
+            reorderHandle: _buildReorderHandle(
+              queueItemId: track.queueItemId,
+              title: track.title,
+              index: absoluteIndex,
+            ),
+            showTrimControls: canEdit,
+            trimRange: canEdit ? provider.trimRangeFor(track) : null,
+            waveformPeaks: canEdit
+                ? provider.waveformPeaksFor(track)
+                : const [],
+            onTrimStartChanged: canEdit
+                ? (ms) => provider.setStartOffsetMs(track, ms)
+                : null,
+            onTrimEndChanged: canEdit
+                ? (ms) => provider.setEndOffsetMs(track, ms)
+                : null,
+            onPlay:
+                track.queueStatus == TrackQueueStatus.playable && track.canPlay
+                ? () => _playFromQueue(context, provider, track)
+                : null,
+            onRetry: track.canRetry ? () => provider.retryTrack(track) : null,
+            onRemove: canEdit
+                ? () => provider.removeFromQueue(absoluteIndex)
+                : null,
+            onEditAnalysis: _canEditAnalysis(track)
+                ? () => _showAnalysisCorrectionSheet(context, provider, track)
+                : null,
+          ),
+        );
+      },
     );
   }
 
@@ -1318,20 +1281,29 @@ class _QueueScreenState extends State<QueueScreen> {
     }
   }
 
-  /// Left-edge vertical grip. Only this widget starts a reorder drag, keeping
-  /// reorder distinct from the waveform trim surface.
-  Widget _buildReorderHandle(
-    Track track,
-    int _, {
-    required ValueChanged<double> onDragReorder,
+  /// Left-edge vertical grip. Only this widget starts a reorder drag.
+  Widget _buildReorderHandle({
+    required String queueItemId,
+    required String title,
+    required int index,
   }) {
     return Semantics(
-      key: ValueKey('reorder_handle_${track.id}'),
+      key: ValueKey('reorder_handle_$queueItemId'),
       container: true,
       explicitChildNodes: true,
-      label: 'Reorder ${track.title}',
+      button: true,
+      label: 'Reorder $title',
       hint: 'Drag vertically to move this queued track',
-      child: _QueueReorderHandle(onDragReorder: onDragReorder),
+      child: ReorderableDragStartListener(
+        index: index,
+        child: SizedBox(
+          width: 44,
+          height: 48,
+          child: Center(
+            child: Icon(Icons.drag_handle, color: Colors.grey[500]),
+          ),
+        ),
+      ),
     );
   }
 
@@ -1416,9 +1388,9 @@ class _QueueScreenState extends State<QueueScreen> {
       final trackId = _analysisTrackId(track);
       if (trackId != null && context.mounted) {
         await context.read<PlaybackState>().refreshTrackAnalysis(
-              trackId,
-              analysis,
-            );
+          trackId,
+          analysis,
+        );
       }
     } catch (_) {
       if (!context.mounted) return;
@@ -1485,40 +1457,4 @@ String _formatQueueRuntime(int ms) {
     return '$hours:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
   return '$minutes:${seconds.toString().padLeft(2, '0')}';
-}
-
-class _QueueReorderHandle extends StatefulWidget {
-  final ValueChanged<double> onDragReorder;
-
-  const _QueueReorderHandle({required this.onDragReorder});
-
-  @override
-  State<_QueueReorderHandle> createState() => _QueueReorderHandleState();
-}
-
-class _QueueReorderHandleState extends State<_QueueReorderHandle> {
-  double _dragDeltaY = 0;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onVerticalDragStart: (_) => _dragDeltaY = 0,
-      onVerticalDragUpdate: (details) {
-        _dragDeltaY += details.delta.dy;
-      },
-      onVerticalDragEnd: (_) {
-        widget.onDragReorder(_dragDeltaY);
-        _dragDeltaY = 0;
-      },
-      onVerticalDragCancel: () => _dragDeltaY = 0,
-      child: SizedBox(
-        width: 44,
-        height: _queueReorderItemExtentPx,
-        child: Center(
-          child: Icon(Icons.drag_indicator, color: Colors.grey[500]),
-        ),
-      ),
-    );
-  }
 }

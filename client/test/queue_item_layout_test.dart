@@ -6,22 +6,22 @@ import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/widgets/queue_item.dart';
 
 TrackAnalysis _analysis() => TrackAnalysis.fromJson(
-      status: 'analyzed',
-      summary: {
-        'bpm': {'value': 128},
-        'key': {'value': 'Am'},
-        'camelot': {'value': '8A'},
-      },
-    );
+  status: 'analyzed',
+  summary: {
+    'bpm': {'value': 128},
+    'key': {'value': 'Am'},
+    'camelot': {'value': '8A'},
+  },
+);
 
 Track _track() => Track(
-      id: 'responsive-row',
-      title: 'A long queue title that must retain usable row width',
-      artist: 'A long queue artist that must retain usable row width',
-      duration: 218,
-      addedAt: DateTime.utc(2026),
-      analysis: _analysis(),
-    );
+  id: 'responsive-row',
+  title: 'A long queue title that must retain usable row width',
+  artist: 'A long queue artist that must retain usable row width',
+  duration: 218,
+  addedAt: DateTime.utc(2026),
+  analysis: _analysis(),
+);
 
 void main() {
   testWidgets('narrow QueueItem includes reorder handle at 2x and 3x text', (
@@ -91,24 +91,16 @@ void main() {
 }
 
 Widget _productionReorderHandle(Track track) {
-  var dragDeltaY = 0.0;
   return Semantics(
     key: ValueKey('reorder_handle_${track.id}'),
     container: true,
     explicitChildNodes: true,
     label: 'Reorder ${track.title}',
     hint: 'Drag vertically to move this queued track',
-    child: GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onVerticalDragStart: (_) => dragDeltaY = 0,
-      onVerticalDragUpdate: (details) => dragDeltaY += details.delta.dy,
-      onVerticalDragEnd: (_) => dragDeltaY = 0,
-      onVerticalDragCancel: () => dragDeltaY = 0,
-      child: const SizedBox(
-        width: 44,
-        height: 64,
-        child: Center(child: Icon(Icons.drag_indicator)),
-      ),
+    child: const SizedBox(
+      width: 44,
+      height: 48,
+      child: Center(child: Icon(Icons.drag_handle)),
     ),
   );
 }
