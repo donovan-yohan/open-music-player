@@ -22,6 +22,8 @@ class MiniPlayer extends StatelessWidget {
                 playback.duration.inMilliseconds
             : 0.0;
 
+        final colors = Theme.of(context).colorScheme;
+        final playerTheme = SoundQPlayerTheme.of(context);
         return GestureDetector(
           onTap: () => context.push('/player'),
           child: Container(
@@ -29,15 +31,8 @@ class MiniPlayer extends StatelessWidget {
             constraints: const BoxConstraints(minHeight: 64),
             margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
             decoration: BoxDecoration(
-              color: AppTheme.darkCard,
+              color: colors.surfaceContainerHigh,
               borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.3),
-                  blurRadius: 8,
-                  offset: const Offset(0, -2),
-                ),
-              ],
             ),
             clipBehavior: Clip.antiAlias,
             child: Column(
@@ -46,10 +41,9 @@ class MiniPlayer extends StatelessWidget {
                 LinearProgressIndicator(
                   value: progress.clamp(0.0, 1.0),
                   minHeight: 2,
-                  backgroundColor: AppTheme.darkSurface,
-                  valueColor: const AlwaysStoppedAnimation<Color>(
-                    AppTheme.brandColor,
-                  ),
+                  backgroundColor: playerTheme.waveformBase,
+                  valueColor:
+                      AlwaysStoppedAnimation<Color>(playerTheme.playhead),
                 ),
                 Padding(
                   padding: const EdgeInsets.symmetric(
@@ -67,9 +61,9 @@ class MiniPlayer extends StatelessWidget {
                                 height: 48,
                                 fit: BoxFit.cover,
                                 errorBuilder: (_, __, ___) =>
-                                    _buildPlaceholder(),
+                                    _buildPlaceholder(context),
                               )
-                            : _buildPlaceholder(),
+                            : _buildPlaceholder(context),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -80,8 +74,8 @@ class MiniPlayer extends StatelessWidget {
                           children: [
                             PlaybackContextLabel(
                               playback.playbackContext,
-                              style: const TextStyle(
-                                color: AppTheme.brandColor,
+                              style: TextStyle(
+                                color: playerTheme.playhead,
                                 fontSize: 10,
                                 fontWeight: FontWeight.w600,
                                 letterSpacing: 0,
@@ -89,8 +83,8 @@ class MiniPlayer extends StatelessWidget {
                             ),
                             Text(
                               item.title,
-                              style: const TextStyle(
-                                color: AppTheme.lightText,
+                              style: TextStyle(
+                                color: colors.onSurface,
                                 fontSize: 14,
                                 fontWeight: FontWeight.w500,
                               ),
@@ -100,8 +94,8 @@ class MiniPlayer extends StatelessWidget {
                             const SizedBox(height: 2),
                             Text(
                               item.artist ?? 'Unknown Artist',
-                              style: const TextStyle(
-                                color: AppTheme.greyText,
+                              style: TextStyle(
+                                color: colors.onSurfaceVariant,
                                 fontSize: 12,
                               ),
                               maxLines: 1,
@@ -113,15 +107,15 @@ class MiniPlayer extends StatelessWidget {
                       IconButton(
                         icon: Icon(
                           playback.isPlaying ? Icons.pause : Icons.play_arrow,
-                          color: AppTheme.lightText,
+                          color: colors.onSurface,
                         ),
                         tooltip: playback.isPlaying ? 'Pause' : 'Play',
                         onPressed: playback.togglePlayPause,
                       ),
                       IconButton(
-                        icon: const Icon(
+                        icon: Icon(
                           Icons.queue_music,
-                          color: AppTheme.lightText,
+                          color: colors.onSurface,
                         ),
                         tooltip: 'Open queue',
                         onPressed: () => context.go('/queue'),
@@ -137,12 +131,13 @@ class MiniPlayer extends StatelessWidget {
     );
   }
 
-  Widget _buildPlaceholder() {
+  Widget _buildPlaceholder(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Container(
       width: 48,
       height: 48,
-      color: AppTheme.darkSurface,
-      child: const Icon(Icons.music_note, color: AppTheme.greyText, size: 24),
+      color: colors.surfaceContainerHighest,
+      child: Icon(Icons.music_note, color: colors.onSurfaceVariant, size: 24),
     );
   }
 }

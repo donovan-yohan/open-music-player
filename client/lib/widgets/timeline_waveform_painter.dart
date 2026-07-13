@@ -614,10 +614,9 @@ int _localSourcePositionForTimelineFraction(
 
 /// Paints a compact, transient-preserving waveform for a single timeline clip.
 ///
-/// When rich analysis is available, each vertical slice is an RGB/EQ blend:
-/// low energy contributes red, mid contributes green, and high contributes blue.
-/// Overlaps naturally read as yellow, cyan, violet, pink, and white.
-/// Beat, downbeat, transient, and silence metadata sit on top of the waveform
+/// Rich analysis controls waveform geometry while the lane supplies its single
+/// semantic color. Beat, downbeat, transient, and silence metadata sit on top
+/// of the waveform
 /// and are density-thinned so dense zoom levels stay readable.
 class TimelineWaveformPainter extends CustomPainter {
   final List<double> peaks;
@@ -731,29 +730,18 @@ class TimelineWaveformPainter extends CustomPainter {
     final midY = size.height / 2;
     final slot = size.width / frameCount;
     final strokeWidth = _sliceStrokeWidth(slot);
-    final glowPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.butt
-      ..blendMode = BlendMode.plus
-      ..strokeWidth = (strokeWidth * 2.8).clamp(0.8, 4.8).toDouble();
     final corePaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.butt
       ..blendMode = BlendMode.srcOver
       ..strokeWidth = strokeWidth;
-    final rmsPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.butt
-      ..blendMode = BlendMode.plus
-      ..strokeWidth = (strokeWidth * 0.46).clamp(0.35, 1.1).toDouble();
 
     for (var i = frameRange.start; i < frameRange.end; i++) {
       final frame = paintCache._frameGeometryAt(i);
       final frac = (i + 0.5) / frameCount;
       final inTrim = frac >= trimStartFraction && frac <= trimEndFraction;
-      final alpha = inTrim ? 1.0 : 0.34;
+      final alpha = inTrim ? 1.0 : 0.46;
       final peak = frame.peak;
-      final rms = frame.rms;
       final localSourceMs = safeSourceDurationMs <= 0
           ? 0
           : (((i + 0.5) * safeSourceDurationMs) / frameCount).round();
@@ -763,28 +751,12 @@ class TimelineWaveformPainter extends CustomPainter {
         size.width,
       );
       final peakHeight = (peak.clamp(0.0, 1.0).toDouble()) * (size.height - 2);
-      final rmsHeight = (rms.clamp(0.0, 1.0).toDouble()) * (size.height - 2);
       if (peakHeight <= 0) continue;
-
-      glowPaint.color = _withAlpha(frame.haloColor, alpha * 0.16);
-      canvas.drawLine(
-        Offset(cx, midY - peakHeight / 2),
-        Offset(cx, midY + peakHeight / 2),
-        glowPaint,
-      );
-
-      corePaint.color = _withAlpha(frame.coreColor, alpha);
+      corePaint.color = _withAlpha(inTrim ? color : dimColor, alpha);
       canvas.drawLine(
         Offset(cx, midY - peakHeight / 2),
         Offset(cx, midY + peakHeight / 2),
         corePaint,
-      );
-
-      rmsPaint.color = _withAlpha(frame.rmsColor, alpha * 0.78);
-      canvas.drawLine(
-        Offset(cx, midY - rmsHeight / 2),
-        Offset(cx, midY + rmsHeight / 2),
-        rmsPaint,
       );
     }
 

@@ -39,6 +39,7 @@ void main() {
           ),
         ),
       );
+      await tester.pumpAndSettle();
     } finally {
       FlutterError.onError = previousOnError;
     }
@@ -56,4 +57,76 @@ void main() {
       expect(size.height, greaterThanOrEqualTo(48));
     }
   });
+
+  testWidgets('player controls use theme roles and keep callbacks wired', (
+    tester,
+  ) async {
+    for (final theme in [AppTheme.lightTheme, AppTheme.darkTheme]) {
+      final calls = <String>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: theme,
+          home: Scaffold(
+            body: PlaybackControls(
+              isPlaying: false,
+              shuffleEnabled: true,
+              loopMode: LoopMode.all,
+              onShuffle: () => calls.add('shuffle'),
+              onPrevious: () => calls.add('previous'),
+              onPlayPause: () => calls.add('play'),
+              onNext: () => calls.add('next'),
+              onLoop: () => calls.add('loop'),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final surface = theme.colorScheme.surface;
+      for (final icon in [
+        Icons.shuffle,
+        Icons.skip_previous,
+        Icons.skip_next,
+        Icons.repeat,
+      ]) {
+        final color = tester.widget<Icon>(find.byIcon(icon)).color!;
+        expect(
+          _contrastRatio(color, surface),
+          greaterThanOrEqualTo(3),
+          reason: '${theme.brightness.name} $icon: $color on $surface',
+        );
+      }
+
+      final playSurface = tester.widget<DecoratedBox>(
+        find.byKey(const ValueKey('player_play_pause_surface')),
+      );
+      final playBackground = (playSurface.decoration as BoxDecoration).color!;
+      final playIcon = tester.widget<Icon>(find.byIcon(Icons.play_arrow));
+      expect(
+        _contrastRatio(playIcon.color!, playBackground),
+        greaterThanOrEqualTo(3),
+      );
+
+      for (final icon in [
+        Icons.shuffle,
+        Icons.skip_previous,
+        Icons.play_arrow,
+        Icons.skip_next,
+        Icons.repeat,
+      ]) {
+        await tester.tap(find.byIcon(icon));
+      }
+      expect(calls, ['shuffle', 'previous', 'play', 'next', 'loop']);
+    }
+  });
+}
+
+double _contrastRatio(Color first, Color second) {
+  final firstLuminance = first.computeLuminance();
+  final secondLuminance = second.computeLuminance();
+  final lighter =
+      firstLuminance > secondLuminance ? firstLuminance : secondLuminance;
+  final darker =
+      firstLuminance > secondLuminance ? secondLuminance : firstLuminance;
+  return (lighter + 0.05) / (darker + 0.05);
 }

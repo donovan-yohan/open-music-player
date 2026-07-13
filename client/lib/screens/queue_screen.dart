@@ -15,6 +15,7 @@ import '../models/trim_range.dart';
 import '../providers/queue_provider.dart';
 import '../shared/widgets/track_tile.dart';
 import '../widgets/queue_item.dart';
+import '../shared/widgets/soundq_status_chip.dart';
 import '../widgets/analysis_correction_sheet.dart';
 import '../widgets/stacked_waveform_timeline.dart';
 
@@ -213,54 +214,31 @@ class _QueueScreenState extends State<QueueScreen> {
 
               if (provider.isLoading) {
                 _clearAnalysisHydration(provider);
-                return const Center(child: CircularProgressIndicator());
+                return const SoundQSurfaceState(
+                  type: SoundQSurfaceStateType.loading,
+                  title: 'Loading queue',
+                );
               }
 
               if (provider.error != null) {
                 _clearAnalysisHydration(provider);
-                return Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          'Error loading queue',
-                          style: Theme.of(context).textTheme.titleMedium,
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 8),
-                        Text(provider.error!, textAlign: TextAlign.center),
-                        const SizedBox(height: 16),
-                        ElevatedButton(
-                          onPressed: () => provider.loadQueue(),
-                          child: const Text('Retry'),
-                        ),
-                      ],
-                    ),
+                return SoundQSurfaceState(
+                  type: SoundQSurfaceStateType.error,
+                  title: 'Error loading queue',
+                  message: provider.error!,
+                  action: ElevatedButton(
+                    onPressed: () => provider.loadQueue(),
+                    child: const Text('Retry'),
                   ),
                 );
               }
 
               if (provider.isEmpty) {
                 _clearAnalysisHydration(provider);
-                return const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.queue_music, size: 64, color: Colors.grey),
-                      SizedBox(height: 16),
-                      Text(
-                        'Your queue is empty',
-                        style: TextStyle(fontSize: 18, color: Colors.grey),
-                      ),
-                      SizedBox(height: 8),
-                      Text(
-                        'Add songs to start playing',
-                        style: TextStyle(color: Colors.grey),
-                      ),
-                    ],
-                  ),
+                return const SoundQSurfaceState(
+                  type: SoundQSurfaceStateType.empty,
+                  title: 'Your queue is empty',
+                  message: 'Add songs to start playing',
                 );
               }
 
@@ -456,7 +434,10 @@ class _QueueScreenState extends State<QueueScreen> {
       currentIndex: currentIndex,
     );
     if (timelineTracks == null) {
-      return const Center(child: CircularProgressIndicator());
+      return const SoundQSurfaceState(
+        type: SoundQSurfaceStateType.loading,
+        title: 'Loading playback queue',
+      );
     }
     final current = timelineTracks.current;
     final previous = timelineTracks.previous;
@@ -1025,7 +1006,11 @@ class _QueueScreenState extends State<QueueScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.timeline, size: 48, color: Colors.grey),
+              Icon(
+                Icons.timeline,
+                size: 48,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
               const SizedBox(height: 12),
               Text(
                 'Start playback to use Timeline view',
