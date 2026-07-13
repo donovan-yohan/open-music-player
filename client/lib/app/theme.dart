@@ -1,5 +1,161 @@
 import 'package:flutter/material.dart';
 
+/// Immutable SoundQPlayerTheme extension for timeline/audio UI.
+class SoundQPlayerTheme extends ThemeExtension<SoundQPlayerTheme> {
+  const SoundQPlayerTheme({
+    required this.queueColor,
+    required this.statusColor,
+    required this.queuePendingColor,
+    required this.queueDownloadingColor,
+    required this.queuePlayableColor,
+    required this.queueFailedColor,
+    required this.waveformBase,
+    required this.waveformBeat,
+    required this.waveformPlayhead,
+    required this.waveformSelection,
+    required this.playheadColor,
+    required this.selectionColor,
+    required this.timelineColor,
+  });
+
+  final Color queueColor;
+  final Color statusColor;
+  final Color queuePendingColor;
+  final Color queueDownloadingColor;
+  final Color queuePlayableColor;
+  final Color queueFailedColor;
+  final Color waveformBase;
+  final Color waveformBeat;
+  final Color waveformPlayhead;
+  final Color waveformSelection;
+  final Color playheadColor;
+  final Color selectionColor;
+  final Color timelineColor;
+
+  // Queue/player aliases keep call sites role-based instead of palette-based.
+  Color get queueActive => selectionColor;
+  Color get queuePending => queuePendingColor;
+  Color get queueDownloading => queueDownloadingColor;
+  Color get queuePlayable => queuePlayableColor;
+  Color get queueFailed => queueFailedColor;
+  Color get statusMuted => statusColor;
+  Color get waveformTrimmed => timelineColor;
+  Color get waveformPlayable => waveformBeat;
+  Color get playhead => playheadColor;
+  Color get selection => selectionColor;
+  Color get timelinePrevious => statusColor;
+  Color get timelineCurrent => playheadColor;
+  Color get timelineUpcoming => waveformBeat;
+  Color get timelineGrid => timelineColor;
+
+  static SoundQPlayerTheme of(BuildContext context) =>
+      Theme.of(context).extension<SoundQPlayerTheme>() ??
+      (Theme.of(context).brightness == Brightness.dark ? dark : light);
+
+  @override
+  SoundQPlayerTheme copyWith({
+    Color? queueColor,
+    Color? statusColor,
+    Color? queuePendingColor,
+    Color? queueDownloadingColor,
+    Color? queuePlayableColor,
+    Color? queueFailedColor,
+    Color? waveformBase,
+    Color? waveformBeat,
+    Color? waveformPlayhead,
+    Color? waveformSelection,
+    Color? playheadColor,
+    Color? selectionColor,
+    Color? timelineColor,
+  }) {
+    return SoundQPlayerTheme(
+      queueColor: queueColor ?? this.queueColor,
+      statusColor: statusColor ?? this.statusColor,
+      queuePendingColor: queuePendingColor ?? this.queuePendingColor,
+      queueDownloadingColor:
+          queueDownloadingColor ?? this.queueDownloadingColor,
+      queuePlayableColor: queuePlayableColor ?? this.queuePlayableColor,
+      queueFailedColor: queueFailedColor ?? this.queueFailedColor,
+      waveformBase: waveformBase ?? this.waveformBase,
+      waveformBeat: waveformBeat ?? this.waveformBeat,
+      waveformPlayhead: waveformPlayhead ?? this.waveformPlayhead,
+      waveformSelection: waveformSelection ?? this.waveformSelection,
+      playheadColor: playheadColor ?? this.playheadColor,
+      selectionColor: selectionColor ?? this.selectionColor,
+      timelineColor: timelineColor ?? this.timelineColor,
+    );
+  }
+
+  @override
+  SoundQPlayerTheme lerp(SoundQPlayerTheme? other, double t) {
+    if (other == null) return this;
+    return SoundQPlayerTheme(
+      queueColor: Color.lerp(queueColor, other.queueColor, t) ?? queueColor,
+      statusColor: Color.lerp(statusColor, other.statusColor, t) ?? statusColor,
+      queuePendingColor:
+          Color.lerp(queuePendingColor, other.queuePendingColor, t) ??
+              queuePendingColor,
+      queueDownloadingColor:
+          Color.lerp(queueDownloadingColor, other.queueDownloadingColor, t) ??
+              queueDownloadingColor,
+      queuePlayableColor:
+          Color.lerp(queuePlayableColor, other.queuePlayableColor, t) ??
+              queuePlayableColor,
+      queueFailedColor:
+          Color.lerp(queueFailedColor, other.queueFailedColor, t) ??
+              queueFailedColor,
+      waveformBase:
+          Color.lerp(waveformBase, other.waveformBase, t) ?? waveformBase,
+      waveformBeat:
+          Color.lerp(waveformBeat, other.waveformBeat, t) ?? waveformBeat,
+      waveformPlayhead:
+          Color.lerp(waveformPlayhead, other.waveformPlayhead, t) ??
+              waveformPlayhead,
+      waveformSelection:
+          Color.lerp(waveformSelection, other.waveformSelection, t) ??
+              waveformSelection,
+      playheadColor:
+          Color.lerp(playheadColor, other.playheadColor, t) ?? playheadColor,
+      selectionColor:
+          Color.lerp(selectionColor, other.selectionColor, t) ?? selectionColor,
+      timelineColor:
+          Color.lerp(timelineColor, other.timelineColor, t) ?? timelineColor,
+    );
+  }
+
+  static const SoundQPlayerTheme dark = SoundQPlayerTheme(
+    queueColor: Color(0xFF211A13),
+    statusColor: Color(0xFFA89F90),
+    queuePendingColor: Color(0xFFFFC857),
+    queueDownloadingColor: Color(0xFF39C6B6),
+    queuePlayableColor: Color(0xFF57D68D),
+    queueFailedColor: Color(0xFFFF6B5F),
+    waveformBase: Color(0xFF211A13),
+    waveformBeat: Color(0xFF39C6B6),
+    waveformPlayhead: Color(0xFFFF5A00),
+    waveformSelection: Color(0x3DFF5A00),
+    playheadColor: Color(0xFFFF5A00),
+    selectionColor: Color(0x3DFF5A00),
+    timelineColor: Color(0xFF32281F),
+  );
+
+  static const SoundQPlayerTheme light = SoundQPlayerTheme(
+    queueColor: Color(0xFFECECEA),
+    statusColor: Color(0xFF5E554C),
+    queuePendingColor: Color(0xFF8A5B00),
+    queueDownloadingColor: Color(0xFF007F73),
+    queuePlayableColor: Color(0xFF1B6E3C),
+    queueFailedColor: Color(0xFFB3261E),
+    waveformBase: Color(0xFFECECEA),
+    waveformBeat: Color(0xFF007F73),
+    waveformPlayhead: Color(0xFFC74400),
+    waveformSelection: Color(0x3DC74400),
+    playheadColor: Color(0xFFC74400),
+    selectionColor: Color(0x3DC74400),
+    timelineColor: Color(0xFFC8C2BC),
+  );
+}
+
 /// Source-of-truth tokens for the first Sound Q visual-system slice.
 class AppTheme {
   // Dark semantic color tokens.
@@ -64,11 +220,11 @@ class AppTheme {
   static const Color greyText = textSecondary;
 
   static const List<String> _fontFallback = <String>[
-    'Noto Sans CJK JP',
-    'Noto Sans JP',
-    'Roboto Condensed',
-    'Roboto',
-    'Arial',
+    "Noto Sans CJK JP",
+    "Noto Sans JP",
+    "Roboto Condensed",
+    "Roboto",
+    "Arial"
   ];
 
   static const _SoundQPalette _darkPalette = _SoundQPalette(
@@ -109,11 +265,14 @@ class AppTheme {
     onOrange: Colors.white,
   );
 
-  static ThemeData get darkTheme => _buildTheme(_darkPalette);
+  static ThemeData get darkTheme =>
+      _buildTheme(_darkPalette, SoundQPlayerTheme.dark);
 
-  static ThemeData get lightTheme => _buildTheme(_lightPalette);
+  static ThemeData get lightTheme =>
+      _buildTheme(_lightPalette, SoundQPlayerTheme.light);
 
-  static ThemeData _buildTheme(_SoundQPalette palette) {
+  static ThemeData _buildTheme(
+      _SoundQPalette palette, SoundQPlayerTheme playerTheme) {
     final colorScheme = ColorScheme(
       brightness: palette.brightness,
       primary: palette.orange,
@@ -137,6 +296,7 @@ class AppTheme {
       useMaterial3: true,
       brightness: palette.brightness,
       colorScheme: colorScheme,
+      extensions: <ThemeExtension<dynamic>>[playerTheme],
       scaffoldBackgroundColor: palette.background,
       canvasColor: palette.background,
       cardColor: palette.surfaceRaised,

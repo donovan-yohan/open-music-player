@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../app/theme.dart';
 import '../models/trim_range.dart';
 
 /// Inline waveform trim surface for a queued track.
@@ -36,6 +37,7 @@ class QueueWaveformTrimControl extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final playerTheme = SoundQPlayerTheme.of(context);
 
     return Semantics(
       label: 'Waveform trim',
@@ -67,8 +69,8 @@ class QueueWaveformTrimControl extends StatelessWidget {
                           peaks: peaks,
                           startFraction: range.startFraction,
                           endFraction: range.endFraction,
-                          playableColor: colorScheme.primary,
-                          trimmedColor: colorScheme.outlineVariant,
+                          playableColor: playerTheme.waveformPlayable,
+                          trimmedColor: playerTheme.waveformTrimmed,
                         ),
                       ),
                     ),
@@ -79,7 +81,7 @@ class QueueWaveformTrimControl extends StatelessWidget {
                       centerX: startX,
                       width: width,
                       semanticLabel: 'Trim start',
-                      color: colorScheme.primary,
+                      color: playerTheme.playhead,
                       onChanged: onStartChanged,
                       xToMs: xToMs,
                     ),
@@ -90,7 +92,7 @@ class QueueWaveformTrimControl extends StatelessWidget {
                       centerX: endX,
                       width: width,
                       semanticLabel: 'Trim end',
-                      color: colorScheme.primary,
+                      color: playerTheme.playhead,
                       onChanged: onEndChanged,
                       xToMs: xToMs,
                     ),
@@ -105,7 +107,9 @@ class QueueWaveformTrimControl extends StatelessWidget {
             _label(),
             style: Theme.of(
               context,
-            ).textTheme.labelSmall?.copyWith(color: Colors.grey[700]),
+            ).textTheme.labelSmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
           ),
         ],
       ),

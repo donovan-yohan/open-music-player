@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../../../app/theme.dart';
 import '../../../models/track_analysis.dart';
 
 /// A single labelled fact shown in the song-info sheet (e.g. "Tempo" / "128 BPM").
@@ -151,6 +150,7 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
@@ -163,7 +163,7 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
                 width: 36,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: AppTheme.darkCard,
+                  color: colors.outlineVariant,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -171,10 +171,11 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
             const SizedBox(height: 16),
             Text(
               widget.title,
-              style: const TextStyle(
+              key: const ValueKey('song_info_sheet_title'),
+              style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.bold,
-                color: AppTheme.lightText,
+                color: colors.onSurface,
               ),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
@@ -182,7 +183,10 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
             const SizedBox(height: 4),
             Text(
               widget.artist ?? 'Unknown Artist',
-              style: const TextStyle(fontSize: 14, color: AppTheme.greyText),
+              style: TextStyle(
+                fontSize: 14,
+                color: colors.onSurfaceVariant,
+              ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -208,7 +212,7 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
                 }
                 return Column(
                   children: [
-                    for (final row in display.rows) _buildRow(row),
+                    for (final row in display.rows) _buildRow(context, row),
                   ],
                 );
               },
@@ -219,7 +223,8 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
     );
   }
 
-  Widget _buildRow(SongInfoRow row) {
+  Widget _buildRow(BuildContext context, SongInfoRow row) {
+    final colors = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -227,14 +232,14 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
         children: [
           Text(
             row.label,
-            style: const TextStyle(fontSize: 14, color: AppTheme.greyText),
+            style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
           ),
           Text(
             row.value,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w600,
-              color: AppTheme.lightText,
+              color: colors.onSurface,
             ),
           ),
         ],
@@ -243,17 +248,17 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
   }
 
   Widget _buildUnavailable(String? message) {
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 16),
       child: Column(
         children: [
-          const Icon(Icons.analytics_outlined,
-              color: AppTheme.greyText, size: 32),
+          Icon(Icons.analytics_outlined, color: color, size: 32),
           const SizedBox(height: 12),
           Text(
             message ?? 'Analysis unavailable for this track.',
             textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 14, color: AppTheme.greyText),
+            style: TextStyle(fontSize: 14, color: color),
           ),
         ],
       ),

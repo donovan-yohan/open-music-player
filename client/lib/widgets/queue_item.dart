@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import '../app/theme.dart';
 import '../models/track_analysis.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
 import '../shared/widgets/song_metadata_chips.dart';
+import '../shared/widgets/soundq_status_chip.dart';
 import 'queue_waveform_trim_control.dart';
 
 class QueueItem extends StatelessWidget {
@@ -54,11 +56,10 @@ class QueueItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final playerTheme = SoundQPlayerTheme.of(context);
 
     return Material(
-      color: isPlaying
-          ? colorScheme.primaryContainer.withValues(alpha: 0.3)
-          : null,
+      color: isPlaying ? playerTheme.queueActive : null,
       child: InkWell(
         onTap: onTap,
         child: Padding(
@@ -93,9 +94,9 @@ class QueueItem extends StatelessWidget {
                                   track.coverUrl!,
                                   fit: BoxFit.cover,
                                   errorBuilder: (_, __, ___) =>
-                                      _buildPlaceholder(),
+                                      _buildPlaceholder(context),
                                 )
-                              : _buildPlaceholder(),
+                              : _buildPlaceholder(context),
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -138,7 +139,8 @@ class QueueItem extends StatelessWidget {
                               style: Theme.of(context)
                                   .textTheme
                                   .bodySmall
-                                  ?.copyWith(color: Colors.grey[600]),
+                                  ?.copyWith(
+                                      color: colorScheme.onSurfaceVariant),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -170,7 +172,8 @@ class QueueItem extends StatelessWidget {
                               style: Theme.of(context)
                                   .textTheme
                                   .bodySmall
-                                  ?.copyWith(color: Colors.grey[600]),
+                                  ?.copyWith(
+                                      color: colorScheme.onSurfaceVariant),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -208,7 +211,7 @@ class QueueItem extends StatelessWidget {
                         icon: const Icon(Icons.close, size: 20),
                         tooltip: 'Remove ${track.title}',
                         onPressed: onRemove,
-                        color: Colors.grey[600],
+                        color: colorScheme.onSurfaceVariant,
                       ),
                   ],
                 ),
@@ -223,58 +226,34 @@ class QueueItem extends StatelessWidget {
   }
 
   Widget _buildStatusChip(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final (label, color, icon) = switch (track.queueStatus) {
+    final (label, status, icon) = switch (track.queueStatus) {
       TrackQueueStatus.pending => (
           'Pending',
-          Colors.orange,
+          SoundQStatus.pending,
           Icons.hourglass_top,
         ),
       TrackQueueStatus.downloading => (
           'Downloading',
-          Colors.blue,
+          SoundQStatus.downloading,
           Icons.downloading,
         ),
       TrackQueueStatus.failed => (
           'Failed',
-          colorScheme.error,
+          SoundQStatus.failed,
           Icons.error_outline,
         ),
       TrackQueueStatus.playable => (
           'Playable',
-          Colors.green,
+          SoundQStatus.playable,
           Icons.check_circle,
         ),
     };
 
-    return Semantics(
-      label: '$label status',
-      child: Container(
-        key: ValueKey('queue_status_${track.id}'),
-        constraints: const BoxConstraints(minHeight: 32),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: color.withValues(alpha: 0.5)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 14, color: color),
-            const SizedBox(width: 4),
-            Flexible(
-              child: Text(
-                label,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                      color: color,
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
-            ),
-          ],
-        ),
-      ),
+    return SoundQStatusChip(
+      key: ValueKey('queue_status_${track.id}'),
+      label: label,
+      status: status,
+      icon: icon,
     );
   }
 
@@ -295,8 +274,9 @@ class QueueItem extends StatelessWidget {
       icon: Icon(isPlaying ? Icons.equalizer : Icons.play_arrow, size: 20),
       tooltip: isPlaying ? 'Playing ${track.title}' : 'Play ${track.title}',
       onPressed: playable ? onPlay : null,
-      color:
-          isPlaying ? Theme.of(context).colorScheme.primary : Colors.grey[700],
+      color: isPlaying
+          ? SoundQPlayerTheme.of(context).playhead
+          : Theme.of(context).colorScheme.onSurfaceVariant,
     );
   }
 
@@ -336,16 +316,17 @@ class QueueItem extends StatelessWidget {
     }
 
     final colorScheme = Theme.of(context).colorScheme;
+    final playerTheme = SoundQPlayerTheme.of(context);
     final (label, icon, color) = switch (analysis.status) {
       TrackAnalysisStatus.pending => (
           'Analysis pending',
           Icons.hourglass_empty,
-          Colors.orange,
+          playerTheme.queuePending,
         ),
       TrackAnalysisStatus.analyzing => (
           'Analyzing',
           Icons.auto_graph,
-          Colors.blue,
+          playerTheme.queueDownloading,
         ),
       TrackAnalysisStatus.failed => (
           'Analysis failed',
@@ -355,17 +336,17 @@ class QueueItem extends StatelessWidget {
       TrackAnalysisStatus.stale => (
           'Analysis refreshing',
           Icons.refresh,
-          Colors.orange,
+          playerTheme.queuePending,
         ),
       TrackAnalysisStatus.unsupported => (
           'Analysis unsupported',
           Icons.block,
-          Colors.grey,
+          playerTheme.statusMuted,
         ),
       TrackAnalysisStatus.unknown => (
           'Analysis unavailable',
           Icons.analytics_outlined,
-          Colors.grey,
+          playerTheme.statusMuted,
         ),
       TrackAnalysisStatus.analyzed => (
           'Analysis ready',
@@ -410,10 +391,11 @@ class QueueItem extends StatelessWidget {
     );
   }
 
-  Widget _buildPlaceholder() {
+  Widget _buildPlaceholder(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Container(
-      color: Colors.grey[300],
-      child: Icon(Icons.music_note, color: Colors.grey[500], size: 24),
+      color: colors.surfaceContainerHighest,
+      child: Icon(Icons.music_note, color: colors.onSurfaceVariant, size: 24),
     );
   }
 }
