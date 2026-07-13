@@ -30,6 +30,14 @@ run_client() {
   )
 }
 
+run_client_web() {
+  (
+    cd "$ROOT/client"
+    flutter pub get
+    flutter build web --release --no-pub
+  )
+}
+
 run_extension() {
   (
     cd "$ROOT/extension"
@@ -50,6 +58,9 @@ case "$TARGET" in
   client)
     run_client
     ;;
+  client-web)
+    run_client_web
+    ;;
   extension)
     run_extension
     ;;
@@ -60,7 +71,7 @@ case "$TARGET" in
     run_extension
     ;;
   *)
-    echo "usage: scripts/build [backend|analyzer|client|extension|all]" >&2
+    echo "usage: scripts/build [backend|analyzer|client|client-web|extension|all]" >&2
     exit 2
     ;;
 esac

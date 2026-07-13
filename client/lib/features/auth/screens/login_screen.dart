@@ -3,6 +3,8 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../../core/auth/auth_state.dart';
 
+const _brandLogoAsset = 'assets/brand/soundq-logo.png';
+
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -97,8 +99,8 @@ class _LoginScreenState extends State<LoginScreen> {
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(20),
                         child: Image.asset(
-                          'assets/brand/soundq-placeholder-logo.png',
-                          fit: BoxFit.cover,
+                          _brandLogoAsset,
+                          fit: BoxFit.contain,
                           errorBuilder: (context, error, stackTrace) {
                             return Icon(
                               Icons.music_note,
