@@ -44,10 +44,10 @@ func (l *SourceSelectionDownloadLifecycle) Sync(ctx context.Context, job *downlo
 		UPDATE download_jobs
 		SET status = $3, progress = $4, error = NULL,
 			updated_at = clock_timestamp(),
-			started_at = CASE WHEN $3 = 'downloading' AND started_at IS NULL THEN clock_timestamp() ELSE started_at END
+			started_at = CASE WHEN $5 = 'downloading' AND started_at IS NULL THEN clock_timestamp() ELSE started_at END
 		WHERE id = $1 AND user_id = $2
-			AND EXISTS (SELECT 1 FROM source_selection_decisions WHERE id = $5 AND user_id = $2 AND download_job_id = $1)
-	`, link.jobID, link.jobUserID, job.Status, job.Progress, link.decisionID)
+			AND EXISTS (SELECT 1 FROM source_selection_decisions WHERE id = $6 AND user_id = $2 AND download_job_id = $1)
+	`, link.jobID, link.jobUserID, job.Status, job.Progress, job.Status, link.decisionID)
 	return err
 }
 

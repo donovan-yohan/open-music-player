@@ -164,6 +164,56 @@ func TestSourceSelectionDownloadLifecycleFailureAndRecoveryAreOwnerSafe(t *testi
 	}
 }
 
+func TestSourceSelectionDownloadLifecycleSyncsAndRetriesDirectURLJob(t *testing.T) {
+	database, repo, ctx := newSourceSelectionTestRepository(t)
+	userID := seedSourceSelectionUser(t, database, "lifecycle-direct-url-retry@test.local")
+	candidate := download.SourceCandidate{
+		CandidateID: "youtube:direct-retry",
+		Provider:    "youtube",
+		SourceID:    "direct-retry",
+		SourceURL:   "https://www.youtube.com/watch?v=direct-retry",
+		Title:       "Direct URL retry",
+	}
+	persisted, err := NewSourceSelectionIngestion(database, repo).CreateTrustedDownload(
+		ctx,
+		userID,
+		SourceSelectionOriginDirectURL,
+		candidate,
+		"server-normalized authenticated direct/share URL",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lifecycle := NewSourceSelectionDownloadLifecycle(database)
+	job := *persisted.Job
+	job.Status = download.StatusDownloading
+	job.Progress = 17
+	if err := lifecycle.Sync(ctx, &job); err != nil {
+		t.Fatalf("sync direct URL job before processing: %v", err)
+	}
+
+	var status string
+	var progress, retryCount int
+	var startedAt time.Time
+	if err := database.QueryRowContext(ctx, `SELECT status, progress, retry_count, started_at FROM download_jobs WHERE id = $1`, job.ID).Scan(&status, &progress, &retryCount, &startedAt); err != nil {
+		t.Fatal(err)
+	}
+	if status != download.StatusDownloading || progress != 17 || retryCount != 0 || startedAt.IsZero() {
+		t.Fatalf("direct URL sync = (%q, %d, %d, %v)", status, progress, retryCount, startedAt)
+	}
+
+	if err := lifecycle.Requeue(ctx, &job, 1); err != nil {
+		t.Fatalf("persist direct URL retry: %v", err)
+	}
+	if err := database.QueryRowContext(ctx, `SELECT status, progress, retry_count FROM download_jobs WHERE id = $1`, job.ID).Scan(&status, &progress, &retryCount); err != nil {
+		t.Fatal(err)
+	}
+	if status != download.StatusQueued || progress != 0 || retryCount != 1 {
+		t.Fatalf("direct URL retry = (%q, %d, %d)", status, progress, retryCount)
+	}
+}
+
 func TestSourceSelectionRecoveryRestoresPlaylistMetadataAndPlaybackIntent(t *testing.T) {
 	database, repo, ctx := newSourceSelectionTestRepository(t)
 	userID := seedSourceSelectionUser(t, database, "lifecycle-playlist-recovery@test.local")
