@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -181,10 +182,20 @@ func NewDefaultServiceWithCatalog(catalog MusicCatalog) *Service {
 // on the default source providers. A nil judge preserves deterministic ranking.
 func NewDefaultServiceWithCatalogAndSourceQualityJudge(catalog MusicCatalog, judge SourceQualityJudge) *Service {
 	providers := []Provider{
-		NewYTDLPProvider("youtube", "ytsearch", "https://www.youtube.com/watch?v="),
+		NewYouTubeProvider(),
 		NewYTDLPProvider("soundcloud", "scsearch", ""),
 	}
 	return NewService(ServiceConfig{Providers: providers, DefaultProviders: []string{"youtube", "soundcloud"}, MusicCatalog: catalog, SourceQualityJudge: judge})
+}
+
+// NewYouTubeProvider searches both the ordinary YouTube video index and the
+// YouTube Music songs surface. The latter is required because label-provided
+// audio is not reliably present in ordinary video search results.
+func NewYouTubeProvider() Provider {
+	return newCombinedProvider("youtube", []Provider{
+		NewYTDLPProvider("youtube", "ytsearch", "https://www.youtube.com/watch?v="),
+		NewYouTubeMusicProvider("youtube"),
+	})
 }
 
 func (s *Service) Search(ctx context.Context, query string, requested []string, limit int) SearchResponse {
@@ -594,10 +605,18 @@ type YTDLPProvider struct {
 	name      string
 	prefix    string
 	urlPrefix string
+	music     bool
 }
 
 func NewYTDLPProvider(name, prefix, urlPrefix string) *YTDLPProvider {
 	return &YTDLPProvider{name: name, prefix: prefix, urlPrefix: urlPrefix}
+}
+
+// NewYouTubeMusicProvider queries yt-dlp's YouTube Music songs surface. It
+// intentionally keeps the canonical youtube provider name so resolver, queue,
+// and downloader handling remain identical to ordinary YouTube candidates.
+func NewYouTubeMusicProvider(name string) *YTDLPProvider {
+	return &YTDLPProvider{name: name, music: true, urlPrefix: "https://www.youtube.com/watch?v="}
 }
 
 func (p *YTDLPProvider) Name() string { return p.name }
@@ -606,8 +625,8 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 	if _, err := exec.LookPath("yt-dlp"); err != nil {
 		return nil, &providerFailure{code: ErrProviderDisabled, status: ProviderStatusDisabled, err: fmt.Errorf("yt-dlp is not installed for provider %s", p.name)}
 	}
-	searchArg := fmt.Sprintf("%s%d:%s", p.prefix, limit, query)
-	cmd := exec.CommandContext(ctx, "yt-dlp", "--dump-json", "--skip-download", "--flat-playlist", searchArg)
+	searchArg := p.searchArg(query, limit)
+	cmd := exec.CommandContext(ctx, "yt-dlp", "--dump-json", "--skip-download", searchArg)
 	out, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -634,6 +653,7 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 			sourceURL = stringValue(raw, "webpage_url")
 		}
 		title := stringValue(raw, "title")
+		metadata := ytdlpCandidateMetadata(raw, p.name, p.music)
 		items = append(items, Candidate{
 			CandidateID:  buildCandidateID(p.name, id, sourceURL),
 			Provider:     p.name,
@@ -646,8 +666,96 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 			ThumbnailURL: stringValue(raw, "thumbnail"),
 			Downloadable: sourceURL != "",
 			Playable:     false,
-			Metadata:     map[string]interface{}{"providerRawType": stringValue(raw, "_type")},
+			Metadata:     metadata,
 		})
+	}
+	return items, nil
+}
+
+func (p *YTDLPProvider) searchArg(query string, limit int) string {
+	if p.music {
+		musicURL := &url.URL{Scheme: "https", Host: "music.youtube.com", Path: "/search"}
+		values := musicURL.Query()
+		values.Set("q", query)
+		musicURL.RawQuery = values.Encode()
+		musicURL.Fragment = "songs"
+		return musicURL.String()
+	}
+	return fmt.Sprintf("%s%d:%s", p.prefix, limit, query)
+}
+
+func ytdlpCandidateMetadata(raw map[string]interface{}, provider string, music bool) map[string]interface{} {
+	metadata := map[string]interface{}{"providerRawType": stringValue(raw, "_type")}
+	if music {
+		metadata["discoverySurface"] = "youtube_music_songs"
+	} else if provider == "youtube" {
+		metadata["discoverySurface"] = "youtube_search"
+	} else {
+		metadata["discoverySurface"] = provider + "_search"
+	}
+	for _, key := range []string{"description", "track", "album", "artist", "label", "release_date", "release_year", "channel", "channel_id", "uploader_id", "categories", "tags"} {
+		if value, ok := raw[key]; ok && value != nil {
+			metadata[key] = value
+		}
+	}
+	return metadata
+}
+
+// combinedProvider keeps one public provider identity while acquiring multiple
+// independent surfaces. It returns successes even when one surface fails.
+type combinedProvider struct {
+	name      string
+	providers []Provider
+}
+
+func newCombinedProvider(name string, providers []Provider) *combinedProvider {
+	return &combinedProvider{name: name, providers: providers}
+}
+
+func (p *combinedProvider) Name() string { return p.name }
+
+func (p *combinedProvider) Search(ctx context.Context, query string, limit int) ([]Candidate, error) {
+	type result struct {
+		items []Candidate
+		err   error
+	}
+	results := make([]result, len(p.providers))
+	var wg sync.WaitGroup
+	for index, provider := range p.providers {
+		wg.Add(1)
+		go func(index int, provider Provider) {
+			defer wg.Done()
+			items, err := provider.Search(ctx, query, limit)
+			results[index] = result{items: items, err: err}
+		}(index, provider)
+	}
+	wg.Wait()
+
+	items := make([]Candidate, 0, limit*len(p.providers))
+	seen := make(map[string]struct{})
+	var errs []string
+	for _, result := range results {
+		if result.err != nil {
+			errs = append(errs, result.err.Error())
+			continue
+		}
+		for _, candidate := range result.items {
+			key := candidate.CandidateID
+			if key == "" {
+				key = candidate.SourceURL
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			items = append(items, candidate)
+		}
+	}
+	if len(items) > 0 {
+		return items, nil
+	}
+	if len(errs) > 0 {
+		return nil, &providerFailure{code: ErrProviderBadResponse, status: ProviderStatusFailed, err: fmt.Errorf("all %s search surfaces failed: %s", p.name, strings.Join(errs, "; "))}
 	}
 	return items, nil
 }
