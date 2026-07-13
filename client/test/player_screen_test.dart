@@ -13,8 +13,52 @@ import 'package:open_music_player/features/player/player_screen.dart';
 import 'package:provider/provider.dart';
 
 void main() {
-  testWidgets('progress slider previews scrub and commits once',
-      (tester) async {
+  testWidgets('mobile Sound Q player keeps its controls usable at large text', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    for (final scale in [1.0, 2.0, 3.0]) {
+      final playback = _FakePlaybackState();
+      await tester.pumpWidget(
+        ListenableProvider<PlaybackState>.value(
+          value: playback,
+          child: MaterialApp(
+            theme: AppTheme.lightTheme,
+            home: MediaQuery(
+              data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+              child: const PlayerScreen(),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byKey(const ValueKey('player_art_placeholder')), findsOne);
+      expect(find.byKey(const ValueKey('player_graphic_progress')), findsOne);
+      expect(find.byKey(const ValueKey('player_play_pause_surface')), findsOne);
+      expect(find.byIcon(Icons.shuffle), findsOneWidget);
+      expect(find.byIcon(Icons.skip_previous), findsOneWidget);
+      expect(find.byIcon(Icons.skip_next), findsOneWidget);
+      expect(find.byIcon(Icons.repeat), findsOneWidget);
+      expect(find.byTooltip('Song info'), findsOneWidget);
+      final title = find.byKey(const ValueKey('player_track_title'));
+      final titleElement = tester.element(title);
+      expect(Theme.of(titleElement).brightness, Brightness.dark);
+      expect(
+        _contrastRatio(_effectiveTextColor(tester, title), AppTheme.background),
+        greaterThanOrEqualTo(4.5),
+      );
+      expect(tester.takeException(), isNull, reason: 'text scale $scale');
+    }
+  });
+
+  testWidgets('progress slider previews scrub and commits once', (
+    tester,
+  ) async {
     final playback = _FakePlaybackState();
     tester.view.physicalSize = const Size(1200, 2200);
     tester.view.devicePixelRatio = 1;
@@ -44,8 +88,9 @@ void main() {
     ]);
   });
 
-  testWidgets('queue time mode displays context and scrubs global timeline',
-      (tester) async {
+  testWidgets('queue time mode displays context and scrubs global timeline', (
+    tester,
+  ) async {
     final playback = _FakePlaybackState(
       playbackContext: const PlaybackContext(
         kind: PlaybackContextKind.playlist,
@@ -101,8 +146,9 @@ void main() {
     ]);
   });
 
-  testWidgets('shows pitch lock fallback warning when snapshot reports it',
-      (tester) async {
+  testWidgets('shows pitch lock fallback warning when snapshot reports it', (
+    tester,
+  ) async {
     final playback = _FakePlaybackState(
       snapshot: const PlaybackSnapshot(
         sessionId: 'session_test',
@@ -178,9 +224,7 @@ void main() {
               ListenableProvider<PlaybackState>.value(value: playback),
               Provider<ApiClient>(
                 create: (_) => ApiClient(
-                  httpClient: MockClient(
-                    (_) async => http.Response('{}', 404),
-                  ),
+                  httpClient: MockClient((_) async => http.Response('{}', 404)),
                 ),
               ),
             ],
@@ -221,7 +265,9 @@ void main() {
           find.text('Pitch lock unavailable. Tempo match may alter pitch.'),
         );
         expect(
-            _contrastRatio(warningText.style!.color!, surface), atLeast(4.5));
+          _contrastRatio(warningText.style!.color!, surface),
+          atLeast(4.5),
+        );
 
         final secondary = tester.widget<Icon>(find.byIcon(Icons.devices));
         expect(_contrastRatio(secondary.color!, surface), atLeast(3));
@@ -231,11 +277,7 @@ void main() {
         slider.onChanged?.call(0.5);
         slider.onChangeEnd?.call(0.5);
         await tester.pump();
-        expect(playback.scrubEvents, [
-          'begin',
-          'update:30000',
-          'end:30000',
-        ]);
+        expect(playback.scrubEvents, ['begin', 'update:30000', 'end:30000']);
 
         await tester.tap(find.byTooltip('Song info'));
         await tester.pumpAndSettle();
@@ -249,10 +291,18 @@ void main() {
           atLeast(4.5),
         );
         expect(
-            find.text('Analysis unavailable for this track.'), findsOneWidget);
+          find.text('Analysis unavailable for this track.'),
+          findsOneWidget,
+        );
       }
     },
   );
+}
+
+Color _effectiveTextColor(WidgetTester tester, Finder finder) {
+  final element = tester.element(finder);
+  final text = tester.widget<Text>(finder);
+  return text.style?.color ?? DefaultTextStyle.of(element).style.color!;
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {

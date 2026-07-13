@@ -55,15 +55,36 @@ class QueueItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isMobilePoster = MediaQuery.sizeOf(context).width < 960;
+    if (!isMobilePoster) return _buildItem(context, isMobilePoster: false);
+    return Theme(
+      data: AppTheme.darkTheme,
+      child: Builder(
+        builder: (context) => _buildItem(context, isMobilePoster: true),
+      ),
+    );
+  }
+
+  Widget _buildItem(
+    BuildContext context, {
+    required bool isMobilePoster,
+  }) {
     final colorScheme = Theme.of(context).colorScheme;
     final playerTheme = SoundQPlayerTheme.of(context);
 
     return Material(
-      color: isPlaying ? playerTheme.queueActive : null,
+      color: isPlaying
+          ? playerTheme.queueActive
+          : isMobilePoster
+              ? AppTheme.surface
+              : null,
       child: InkWell(
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: isMobilePoster ? 10 : 8,
+          ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -85,7 +106,9 @@ class QueueItem extends StatelessWidget {
 
                       // Album art thumbnail
                       ClipRRect(
-                        borderRadius: BorderRadius.circular(4),
+                        borderRadius: BorderRadius.circular(
+                          isMobilePoster ? 0 : 4,
+                        ),
                         child: SizedBox(
                           width: 48,
                           height: 48,
@@ -124,7 +147,9 @@ class QueueItem extends StatelessWidget {
                                           ? FontWeight.bold
                                           : FontWeight.w500,
                                       color: isPlaying
-                                          ? colorScheme.primary
+                                          ? isMobilePoster
+                                              ? AppTheme.orange
+                                              : colorScheme.primary
                                           : null,
                                     ),
                                     maxLines: 1,
@@ -140,7 +165,8 @@ class QueueItem extends StatelessWidget {
                                   .textTheme
                                   .bodySmall
                                   ?.copyWith(
-                                      color: colorScheme.onSurfaceVariant),
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
@@ -150,9 +176,7 @@ class QueueItem extends StatelessWidget {
                       const SizedBox(width: 8),
                       ConstrainedBox(
                         key: const ValueKey('queue_item_metadata_trailing'),
-                        constraints: BoxConstraints(
-                          maxWidth: trailingMaxWidth,
-                        ),
+                        constraints: BoxConstraints(maxWidth: trailingMaxWidth),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.end,
                           mainAxisSize: MainAxisSize.min,
@@ -173,7 +197,8 @@ class QueueItem extends StatelessWidget {
                                   .textTheme
                                   .bodySmall
                                   ?.copyWith(
-                                      color: colorScheme.onSurfaceVariant),
+                                    color: colorScheme.onSurfaceVariant,
+                                  ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),

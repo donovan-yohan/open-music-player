@@ -10,7 +10,7 @@ class MiniPlayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<PlaybackState>(
+    final miniPlayer = Consumer<PlaybackState>(
       builder: (context, playback, _) {
         if (!playback.hasTrack) {
           return const SizedBox.shrink();
@@ -24,16 +24,24 @@ class MiniPlayer extends StatelessWidget {
 
         final colors = Theme.of(context).colorScheme;
         final playerTheme = SoundQPlayerTheme.of(context);
+        final isMobilePoster = MediaQuery.sizeOf(context).width < 960;
         return GestureDetector(
           onTap: () => context.push('/player'),
           child: Container(
             key: const ValueKey('spotify_like_mini_player'),
             constraints: const BoxConstraints(minHeight: 64),
-            margin: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-            decoration: BoxDecoration(
-              color: colors.surfaceContainerHigh,
-              borderRadius: BorderRadius.circular(12),
-            ),
+            margin: isMobilePoster
+                ? EdgeInsets.zero
+                : const EdgeInsets.fromLTRB(8, 0, 8, 8),
+            decoration: isMobilePoster
+                ? const BoxDecoration(
+                    color: AppTheme.surfaceRaised,
+                    border: Border(top: BorderSide(color: AppTheme.outline)),
+                  )
+                : BoxDecoration(
+                    color: colors.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
             clipBehavior: Clip.antiAlias,
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -42,8 +50,9 @@ class MiniPlayer extends StatelessWidget {
                   value: progress.clamp(0.0, 1.0),
                   minHeight: 2,
                   backgroundColor: playerTheme.waveformBase,
-                  valueColor:
-                      AlwaysStoppedAnimation<Color>(playerTheme.playhead),
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    playerTheme.playhead,
+                  ),
                 ),
                 Padding(
                   padding: const EdgeInsets.symmetric(
@@ -53,7 +62,9 @@ class MiniPlayer extends StatelessWidget {
                   child: Row(
                     children: [
                       ClipRRect(
-                        borderRadius: BorderRadius.circular(4),
+                        borderRadius: BorderRadius.circular(
+                          isMobilePoster ? 0 : 4,
+                        ),
                         child: item.artUri != null
                             ? Image.network(
                                 item.artUri.toString(),
@@ -107,16 +118,20 @@ class MiniPlayer extends StatelessWidget {
                       IconButton(
                         icon: Icon(
                           playback.isPlaying ? Icons.pause : Icons.play_arrow,
-                          color: colors.onSurface,
+                          color: isMobilePoster
+                              ? AppTheme.background
+                              : colors.onSurface,
                         ),
                         tooltip: playback.isPlaying ? 'Pause' : 'Play',
                         onPressed: playback.togglePlayPause,
+                        style: isMobilePoster
+                            ? IconButton.styleFrom(
+                                backgroundColor: AppTheme.orange,
+                              )
+                            : null,
                       ),
                       IconButton(
-                        icon: Icon(
-                          Icons.queue_music,
-                          color: colors.onSurface,
-                        ),
+                        icon: Icon(Icons.queue_music, color: colors.onSurface),
                         tooltip: 'Open queue',
                         onPressed: () => context.go('/queue'),
                       ),
@@ -129,6 +144,8 @@ class MiniPlayer extends StatelessWidget {
         );
       },
     );
+    if (MediaQuery.sizeOf(context).width >= 960) return miniPlayer;
+    return Theme(data: AppTheme.darkTheme, child: miniPlayer);
   }
 
   Widget _buildPlaceholder(BuildContext context) {

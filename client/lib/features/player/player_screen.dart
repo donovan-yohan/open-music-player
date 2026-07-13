@@ -27,7 +27,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<PlaybackState>(
+    final player = Consumer<PlaybackState>(
       builder: (context, playback, _) {
         final colors = Theme.of(context).colorScheme;
         final item = playback.currentItem;
@@ -36,9 +36,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
             queueModeAvailable ? _timeMode : _PlayerTimeMode.song;
 
         return Scaffold(
-          backgroundColor: Theme.of(context).colorScheme.surface,
+          backgroundColor: AppTheme.background,
           appBar: AppBar(
-            backgroundColor: Colors.transparent,
+            backgroundColor: AppTheme.background,
             leading: IconButton(
               icon: const Icon(Icons.keyboard_arrow_down),
               onPressed: () => Navigator.of(context).pop(),
@@ -97,39 +97,55 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   child: LayoutBuilder(
                     builder: (context, constraints) {
                       final horizontalPadding =
-                          constraints.maxWidth <= 360 ? 20.0 : 32.0;
+                          constraints.maxWidth <= 360 ? 20.0 : 24.0;
+                      final artExtent = (constraints.maxHeight * 0.38)
+                          .clamp(208.0, 440.0)
+                          .toDouble();
 
-                      return Padding(
-                        padding:
-                            EdgeInsets.symmetric(horizontal: horizontalPadding),
-                        child: Column(
-                          children: [
-                            const Spacer(flex: 1),
-                            _buildAlbumArt(context, item.artUri?.toString()),
-                            const Spacer(flex: 1),
-                            _buildTrackInfo(
-                              context,
-                              _displayTitle(item, playback, activeTimeMode),
-                              _displaySubtitle(playback, activeTimeMode),
-                            ),
-                            if (playback
-                                .snapshot.pitchPreservationFallback) ...[
+                      return SingleChildScrollView(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: horizontalPadding,
+                          vertical: 12,
+                        ),
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minHeight: constraints.maxHeight - 24,
+                          ),
+                          child: Column(
+                            children: [
                               const SizedBox(height: 12),
-                              _buildPitchFallbackWarning(context),
+                              SizedBox.square(
+                                dimension: artExtent,
+                                child: _buildAlbumArt(
+                                  context,
+                                  item.artUri?.toString(),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              _buildTrackInfo(
+                                context,
+                                _displayTitle(item, playback, activeTimeMode),
+                                _displaySubtitle(playback, activeTimeMode),
+                              ),
+                              if (playback
+                                  .snapshot.pitchPreservationFallback) ...[
+                                const SizedBox(height: 12),
+                                _buildPitchFallbackWarning(context),
+                              ],
+                              const SizedBox(height: 24),
+                              _buildProgressBar(
+                                context,
+                                playback,
+                                activeTimeMode,
+                                queueModeAvailable: queueModeAvailable,
+                              ),
+                              const SizedBox(height: 24),
+                              _buildControls(playback),
+                              const SizedBox(height: 16),
+                              _buildSecondaryControls(context),
+                              const SizedBox(height: 12),
                             ],
-                            const SizedBox(height: 24),
-                            _buildProgressBar(
-                              context,
-                              playback,
-                              activeTimeMode,
-                              queueModeAvailable: queueModeAvailable,
-                            ),
-                            const SizedBox(height: 24),
-                            _buildControls(playback),
-                            const SizedBox(height: 16),
-                            _buildSecondaryControls(context),
-                            const Spacer(flex: 1),
-                          ],
+                          ),
                         ),
                       );
                     },
@@ -138,6 +154,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
         );
       },
     );
+    if (MediaQuery.sizeOf(context).width >= 960) return player;
+    return Theme(data: AppTheme.darkTheme, child: player);
   }
 
   Widget _buildPitchFallbackWarning(BuildContext context) {
@@ -149,18 +167,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
       decoration: BoxDecoration(
         color: warning.withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: warning.withValues(alpha: 0.55),
-        ),
+        border: Border.all(color: warning.withValues(alpha: 0.55)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.tune,
-            size: 18,
-            color: warning,
-          ),
+          Icon(Icons.tune, size: 18, color: warning),
           const SizedBox(width: 8),
           Flexible(
             child: Text(
@@ -202,9 +214,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           if (trackId == null || trackId <= 0) {
             // No numeric track id (e.g. a placeholder item) — surface the
             // read-only "unavailable" state without hitting the API.
-            return Future<TrackAnalysis>.error(
-              StateError('missing track id'),
-            );
+            return Future<TrackAnalysis>.error(StateError('missing track id'));
           }
           return analysisService.getTrackAnalysis(trackId);
         },
@@ -215,42 +225,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget _buildAlbumArt(BuildContext context, String? artUrl) {
     return AspectRatio(
       aspectRatio: 1,
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.4),
-              blurRadius: 30,
-              offset: const Offset(0, 10),
-            ),
-          ],
+      child: DecoratedBox(
+        decoration: const BoxDecoration(
+          border: Border.fromBorderSide(BorderSide(color: AppTheme.orange)),
         ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: artUrl != null
-              ? Image.network(
-                  artUrl,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => _buildArtPlaceholder(context),
-                )
-              : _buildArtPlaceholder(context),
-        ),
+        child: artUrl != null
+            ? Image.network(
+                artUrl,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => _buildArtPlaceholder(context),
+              )
+            : _buildArtPlaceholder(context),
       ),
     );
   }
 
   Widget _buildArtPlaceholder(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
     return Container(
       key: const ValueKey('player_art_placeholder'),
-      color: colors.surfaceContainerHighest,
-      child: Center(
-        child: Icon(
-          Icons.music_note,
-          size: 80,
-          color: colors.onSurfaceVariant,
-        ),
+      color: AppTheme.surfaceRaised,
+      child: const Center(
+        child: Icon(Icons.music_note, size: 80, color: AppTheme.orange),
       ),
     );
   }
@@ -287,11 +282,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return '$kind · $countLabel';
   }
 
-  Widget _buildTrackInfo(
-    BuildContext context,
-    String title,
-    String? artist,
-  ) {
+  Widget _buildTrackInfo(BuildContext context, String title, String? artist) {
     final colors = Theme.of(context).colorScheme;
     return Column(
       children: [
@@ -299,8 +290,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
           title,
           key: const ValueKey('player_track_title'),
           style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.bold,
+            fontSize: 24,
+            fontWeight: FontWeight.w800,
             color: colors.onSurface,
           ),
           textAlign: TextAlign.center,
@@ -311,10 +302,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         Text(
           artist ?? 'Unknown Artist',
           key: const ValueKey('player_track_artist'),
-          style: TextStyle(
-            fontSize: 16,
-            color: colors.onSurfaceVariant,
-          ),
+          style: TextStyle(fontSize: 15, color: colors.onSurfaceVariant),
           textAlign: TextAlign.center,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
@@ -341,9 +329,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final canSeek = duration.inMilliseconds > 0;
 
     Duration positionForValue(double value) {
-      return Duration(
-        milliseconds: (value * duration.inMilliseconds).round(),
-      );
+      return Duration(milliseconds: (value * duration.inMilliseconds).round());
     }
 
     return Column(
@@ -373,18 +359,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ],
         SliderTheme(
           data: SliderThemeData(
-            trackHeight: 4,
+            trackHeight: 8,
             thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
             overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
             activeTrackColor: playerTheme.playhead,
             inactiveTrackColor: playerTheme.waveformBase,
-            thumbColor: colors.onSurface,
+            thumbColor: AppTheme.orange,
             overlayColor: playerTheme.selection,
           ),
           child: Slider(
+            key: const ValueKey('player_graphic_progress'),
             value: canSeek
-                ? (position.inMilliseconds / duration.inMilliseconds)
-                    .clamp(0.0, 1.0)
+                ? (position.inMilliseconds / duration.inMilliseconds).clamp(
+                    0.0,
+                    1.0,
+                  )
                 : 0.0,
             onChangeStart: canSeek
                 ? (_) {
@@ -426,17 +415,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
             children: [
               Text(
                 _formatDuration(position),
-                style: TextStyle(
-                  fontSize: 12,
-                  color: colors.onSurfaceVariant,
-                ),
+                style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
               ),
               Text(
                 _formatDuration(duration),
-                style: TextStyle(
-                  fontSize: 12,
-                  color: colors.onSurfaceVariant,
-                ),
+                style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
               ),
             ],
           ),
@@ -538,14 +521,11 @@ class PlaybackControls extends StatelessWidget {
               dimension: playButtonSize,
               child: DecoratedBox(
                 key: const ValueKey('player_play_pause_surface'),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: colors.onSurface,
-                ),
+                decoration: const BoxDecoration(color: AppTheme.orange),
                 child: IconButton(
                   icon: Icon(
                     isPlaying ? Icons.pause : Icons.play_arrow,
-                    color: colors.surface,
+                    color: AppTheme.background,
                   ),
                   iconSize: playButtonSize < 72 ? 36 : 40,
                   onPressed: onPlayPause,

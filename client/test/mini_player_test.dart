@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
+import 'package:open_music_player/app/theme.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/features/player/widgets/mini_player.dart';
@@ -26,6 +27,7 @@ void main() {
         ListenableProvider<PlaybackState>.value(
           value: playback,
           child: MaterialApp(
+            theme: AppTheme.lightTheme,
             builder: (context, child) => MediaQuery(
               data: MediaQuery.of(
                 context,
@@ -53,6 +55,23 @@ void main() {
 
       expect(height2x, greaterThan(64));
       expect(height3x, greaterThan(height2x));
+      final title = find.text('EVERYTHING I HAVE EVER WANTED');
+      final titleElement = tester.element(title);
+      expect(Theme.of(titleElement).brightness, Brightness.dark);
+      expect(
+        _contrastRatio(
+          _effectiveTextColor(tester, title),
+          AppTheme.surfaceRaised,
+        ),
+        greaterThanOrEqualTo(4.5),
+      );
+      expect(find.byTooltip('Pause'), findsOneWidget);
+      expect(find.byTooltip('Open queue'), findsOneWidget);
+      final pauseIcon = tester.widget<Icon>(find.byIcon(Icons.pause));
+      expect(
+        _contrastRatio(pauseIcon.color!, AppTheme.orange),
+        greaterThanOrEqualTo(4.5),
+      );
     } finally {
       FlutterError.onError = previousOnError;
     }
@@ -64,6 +83,21 @@ void main() {
       isEmpty,
     );
   });
+}
+
+Color _effectiveTextColor(WidgetTester tester, Finder finder) {
+  final element = tester.element(finder);
+  final text = tester.widget<Text>(finder);
+  return text.style?.color ?? DefaultTextStyle.of(element).style.color!;
+}
+
+double _contrastRatio(Color foreground, Color background) {
+  final lighter = foreground.computeLuminance() > background.computeLuminance()
+      ? foreground
+      : background;
+  final darker = identical(lighter, foreground) ? background : foreground;
+  return (lighter.computeLuminance() + 0.05) /
+      (darker.computeLuminance() + 0.05);
 }
 
 class _MiniPlayerPlaybackState extends Fake implements PlaybackState {

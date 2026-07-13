@@ -6,22 +6,22 @@ import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/widgets/queue_item.dart';
 
 TrackAnalysis _analysis() => TrackAnalysis.fromJson(
-  status: 'analyzed',
-  summary: {
-    'bpm': {'value': 128},
-    'key': {'value': 'Am'},
-    'camelot': {'value': '8A'},
-  },
-);
+      status: 'analyzed',
+      summary: {
+        'bpm': {'value': 128},
+        'key': {'value': 'Am'},
+        'camelot': {'value': '8A'},
+      },
+    );
 
 Track _track() => Track(
-  id: 'responsive-row',
-  title: 'A long queue title that must retain usable row width',
-  artist: 'A long queue artist that must retain usable row width',
-  duration: 218,
-  addedAt: DateTime.utc(2026),
-  analysis: _analysis(),
-);
+      id: 'responsive-row',
+      title: 'A long queue title that must retain usable row width',
+      artist: 'A long queue artist that must retain usable row width',
+      duration: 218,
+      addedAt: DateTime.utc(2026),
+      analysis: _analysis(),
+    );
 
 void main() {
   testWidgets('narrow QueueItem includes reorder handle at 2x and 3x text', (
@@ -67,7 +67,7 @@ void main() {
         tester
             .getSize(find.byKey(ValueKey('reorder_handle_${track.id}')))
             .width,
-        44,
+        48,
       );
       expect(trailing.width, lessThanOrEqualTo((320 - 32) * 0.32 + 0.01));
       expect(metadata.right, closeTo(trailing.right, 0.01));
@@ -98,7 +98,7 @@ Widget _productionReorderHandle(Track track) {
     label: 'Reorder ${track.title}',
     hint: 'Drag vertically to move this queued track',
     child: const SizedBox(
-      width: 44,
+      width: 48,
       height: 48,
       child: Center(child: Icon(Icons.drag_handle)),
     ),
