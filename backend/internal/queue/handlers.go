@@ -365,7 +365,7 @@ func (h *Handlers) enqueueDecisionCandidate(r *http.Request, userID, jobID strin
 			return h.downloadService.EnsureSourceCandidateWithID(r.Context(), jobID, userID, toDownloadCandidate(candidate), mbRecordingID)
 		}
 	}
-	state, err = h.service.EnsureSourceCandidateWithID(r.Context(), userID, queueItemID, candidate, jobID, position)
+	_, err = h.service.EnsureSourceCandidateWithID(r.Context(), userID, queueItemID, candidate, jobID, position)
 	if err != nil {
 		return nil, err
 	}
@@ -725,16 +725,6 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 }
 
 // writeError writes an error response
-func writeSourceDecisionResponse(w http.ResponseWriter, ctx context.Context, h *Handlers, state *QueueState, job *download.DownloadJob, jobID string, idempotent bool) {
-	qResp := h.buildQueueResponse(ctx, state, map[string]*download.DownloadJob{jobID: job})
-	writeJSON(w, http.StatusOK, SourceDecisionResponse{Queue: qResp, DownloadJobID: jobID, Idempotent: idempotent})
-}
-
-func writeSourceDecisionResponseFromState(w http.ResponseWriter, ctx context.Context, h *Handlers, state *QueueState, jobID string, idempotent bool) {
-	job, _ := h.downloadService.GetJob(ctx, jobID)
-	writeSourceDecisionResponse(w, ctx, h, state, job, jobID, idempotent)
-}
-
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
