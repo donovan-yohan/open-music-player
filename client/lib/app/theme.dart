@@ -302,6 +302,7 @@ class AppTheme {
       cardColor: palette.surfaceRaised,
       dividerColor: palette.outline,
       disabledColor: palette.textSecondary.withValues(alpha: 0.55),
+      focusColor: palette.orange.withValues(alpha: 0.28),
       appBarTheme: AppBarTheme(
         backgroundColor: palette.background,
         foregroundColor: palette.textPrimary,
@@ -350,6 +351,22 @@ class AppTheme {
                 : palette.textSecondary,
           );
         }),
+      ),
+      navigationRailTheme: NavigationRailThemeData(
+        backgroundColor: palette.background,
+        indicatorColor: palette.orange,
+        selectedIconTheme: IconThemeData(color: palette.onOrange),
+        unselectedIconTheme: IconThemeData(color: palette.textSecondary),
+        selectedLabelTextStyle: _textStyle(
+          color: palette.orange,
+          size: 14,
+          weight: FontWeight.w700,
+        ),
+        unselectedLabelTextStyle: _textStyle(
+          color: palette.textSecondary,
+          size: 14,
+          weight: FontWeight.w600,
+        ),
       ),
       cardTheme: CardThemeData(
         color: palette.surfaceRaised,

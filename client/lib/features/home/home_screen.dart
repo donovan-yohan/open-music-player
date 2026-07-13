@@ -175,6 +175,41 @@ class _HomeContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final viewportWidth = MediaQuery.sizeOf(context).width;
+      if (viewportWidth >= 960) {
+        return _DesktopHomeContent(
+          sections: sections,
+          onPlayTrack: onPlayTrack,
+          onOpenPlaylist: onOpenPlaylist,
+          columns: viewportWidth >= 1440 ? 4 : 3,
+        );
+      }
+      return _MobileHomeContent(
+        sections: sections,
+        onPlayTrack: onPlayTrack,
+        onEnqueueTrack: onEnqueueTrack,
+        onOpenPlaylist: onOpenPlaylist,
+      );
+    });
+  }
+}
+
+class _MobileHomeContent extends StatelessWidget {
+  const _MobileHomeContent({
+    required this.sections,
+    required this.onPlayTrack,
+    required this.onEnqueueTrack,
+    required this.onOpenPlaylist,
+  });
+
+  final HomeSections sections;
+  final void Function(List<Track> tracks, int startIndex) onPlayTrack;
+  final Future<void> Function(Track track) onEnqueueTrack;
+  final void Function(Playlist playlist) onOpenPlaylist;
+
+  @override
+  Widget build(BuildContext context) {
     return ListView(
       padding: const EdgeInsets.symmetric(vertical: 8),
       children: [
@@ -198,6 +233,163 @@ class _HomeContent extends StatelessWidget {
             onOpen: onOpenPlaylist,
           ),
       ],
+    );
+  }
+}
+
+class _DesktopHomeContent extends StatelessWidget {
+  const _DesktopHomeContent({
+    required this.sections,
+    required this.onPlayTrack,
+    required this.onOpenPlaylist,
+    required this.columns,
+  });
+
+  final HomeSections sections;
+  final void Function(List<Track> tracks, int startIndex) onPlayTrack;
+  final void Function(Playlist playlist) onOpenPlaylist;
+  final int columns;
+
+  @override
+  Widget build(BuildContext context) {
+    final tracks = [...sections.recentlyPlayed, ...sections.topTracks];
+    final items = <_DesktopPosterItem>[
+      for (var i = 0; i < tracks.length; i++)
+        _DesktopPosterItem.track(track: tracks[i], index: i),
+      for (final playlist in sections.playlists)
+        _DesktopPosterItem.playlist(playlist: playlist),
+    ];
+    return Stack(
+      children: [
+        Positioned(
+          right: -18,
+          top: -52,
+          child: ExcludeSemantics(
+            child: Text(
+              '39',
+              style: TextStyle(
+                color: Theme.of(context)
+                    .colorScheme
+                    .primary
+                    .withValues(alpha: 0.14),
+                fontSize: 184,
+                fontWeight: FontWeight.w800,
+                height: 1,
+              ),
+            ),
+          ),
+        ),
+        CustomScrollView(
+          key: const ValueKey('soundq_desktop_home'),
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(32, 28, 32, 112),
+              sliver: SliverList(
+                delegate: SliverChildListDelegate.fixed([
+                  Text('Your rotation',
+                      style: Theme.of(context).textTheme.headlineMedium),
+                  const SizedBox(height: 6),
+                  Text('Recent tracks, top plays, and playlists.',
+                      style: Theme.of(context).textTheme.bodyMedium),
+                  const SizedBox(height: 24),
+                ]),
+              ),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(32, 0, 32, 112),
+              sliver: SliverGrid(
+                key: ValueKey('soundq_desktop_home_grid_$columns'),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: columns,
+                  mainAxisSpacing: 16,
+                  crossAxisSpacing: 16,
+                  childAspectRatio: 0.82,
+                ),
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final item = items[index];
+                    return _DesktopPoster(
+                      item: item,
+                      onTap: item.track == null
+                          ? () => onOpenPlaylist(item.playlist!)
+                          : () => onPlayTrack(tracks, item.index!),
+                    );
+                  },
+                  childCount: items.length,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _DesktopPosterItem {
+  const _DesktopPosterItem.track({required this.track, required this.index})
+      : playlist = null;
+  const _DesktopPosterItem.playlist({required this.playlist})
+      : track = null,
+        index = null;
+
+  final Track? track;
+  final Playlist? playlist;
+  final int? index;
+
+  String get title => track?.title ?? playlist!.name;
+  String get subtitle =>
+      track?.displayArtist ?? '${playlist!.trackCount} tracks';
+  String? get imageUrl =>
+      track?.metadata?['cover_art_url'] as String? ??
+      track?.coverArtThumbnailUrl ??
+      playlist?.coverUrl;
+}
+
+class _DesktopPoster extends StatelessWidget {
+  const _DesktopPoster({required this.item, required this.onTap});
+
+  final _DesktopPosterItem item;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: colors.surfaceContainerHigh,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: SizedBox.expand(
+                  child: item.imageUrl == null || item.imageUrl!.isEmpty
+                      ? const _CoverPlaceholder()
+                      : CachedNetworkImage(
+                          imageUrl: item.imageUrl!,
+                          fit: BoxFit.cover,
+                          errorWidget: (_, __, ___) =>
+                              const _CoverPlaceholder(),
+                        ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(item.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 2),
+              Text(item.subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
