@@ -29,6 +29,11 @@ const (
 	SourceQualityAcceptable = "acceptable"
 	SourceQualityReview     = "review"
 	SourceQualityAvoid      = "avoid"
+
+	// sourceQualityMaxModelScoreMovement is intentionally small: model judgments
+	// are evidence on top of deterministic source-quality signals, not authority.
+	sourceQualityMaxModelScoreMovement = 15
+	sourceQualityModelEvidencePrefix   = "model evidence: "
 )
 
 // SourceQuality is the auditable deterministic judgment attached to source
@@ -145,34 +150,40 @@ func rankSourceCandidatesWithQualities(candidates []Candidate, qualities map[str
 
 func applySourceQualityJudgments(qualities map[string]SourceQuality, judgments []SourceQualityJudgment) {
 	for _, judgment := range judgments {
-		if _, ok := qualities[judgment.CandidateID]; !ok {
+		deterministic, ok := qualities[judgment.CandidateID]
+		if !ok {
 			continue
 		}
-		qualities[judgment.CandidateID] = normalizeJudgedSourceQuality(judgment.Quality)
+		qualities[judgment.CandidateID] = blendSourceQualityJudgment(deterministic, judgment.Quality)
 	}
 }
 
-func normalizeJudgedSourceQuality(quality SourceQuality) SourceQuality {
-	quality.Score = clampInt(quality.Score, 0, 100)
-	if !knownSourceQualityClassification(quality.Classification) {
-		quality.Classification = SourceQualityUnknown
-	}
-	if !knownSourceQualityRecommendation(quality.Recommendation) {
-		quality.Recommendation = recommendationForScore(quality.Score)
-	}
-	if quality.Confidence < 0 {
-		quality.Confidence = 0
-	}
-	if quality.Confidence > 1 {
-		quality.Confidence = 1
-	}
-	quality.Confidence = math.Round(quality.Confidence*100) / 100
-	quality.Reasons = uniqueStrings(quality.Reasons)
-	quality.Warnings = uniqueStrings(quality.Warnings)
-	if strings.TrimSpace(quality.Provenance) == "" {
-		quality.Provenance = "source_quality_judge"
+func blendSourceQualityJudgment(deterministic, model SourceQuality) SourceQuality {
+	modelScore := clampInt(model.Score, 0, 100)
+	quality := deterministic
+	quality.Score = clampInt(modelScore, deterministic.Score-sourceQualityMaxModelScoreMovement, deterministic.Score+sourceQualityMaxModelScoreMovement)
+	quality.Recommendation = recommendationForScore(quality.Score)
+	quality.Confidence = confidenceForScore(quality.Score)
+	quality.Reasons = appendModelEvidence(deterministic.Reasons, model.Reasons)
+	quality.Warnings = appendModelEvidence(deterministic.Warnings, model.Warnings)
+	quality.Provenance = deterministic.Provenance + "+model:"
+	if provenance := strings.TrimSpace(model.Provenance); provenance != "" {
+		quality.Provenance += provenance
+	} else {
+		quality.Provenance += "source_quality_judge"
 	}
 	return quality
+}
+
+func appendModelEvidence(deterministic, model []string) []string {
+	combined := append([]string{}, deterministic...)
+	for _, value := range model {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			combined = append(combined, sourceQualityModelEvidencePrefix+value)
+		}
+	}
+	return uniqueStrings(combined)
 }
 
 // EvaluateSourceQuality scores one candidate against a user query. It prefers

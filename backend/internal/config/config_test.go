@@ -174,6 +174,78 @@ func TestLoadMetadataLLMExplicitEnable(t *testing.T) {
 	}
 }
 
+func TestLoadSourceQualityLLMDisabledByDefault(t *testing.T) {
+	withUnsetSourceQualityLLMEnv(t)
+
+	cfg := Load()
+	if cfg.SourceQualityLLMEnabled {
+		t.Fatal("SourceQualityLLMEnabled = true with no config, want disabled")
+	}
+	if cfg.SourceQualityLLMBaseURL != "http://localhost:11434" {
+		t.Fatalf("SourceQualityLLMBaseURL = %q, want local Ollama default", cfg.SourceQualityLLMBaseURL)
+	}
+	if cfg.SourceQualityLLMModel != "source-quality-judge" {
+		t.Fatalf("SourceQualityLLMModel = %q, want source-quality-judge", cfg.SourceQualityLLMModel)
+	}
+	if cfg.SourceQualityLLMTimeout != 1500*time.Millisecond {
+		t.Fatalf("SourceQualityLLMTimeout = %s, want default 1500ms", cfg.SourceQualityLLMTimeout)
+	}
+	if cfg.SourceQualityLLMAPIKey != "" {
+		t.Fatal("SourceQualityLLMAPIKey should be empty when OLLAMA_API_KEY is unset")
+	}
+}
+
+func TestLoadSourceQualityLLMUsesExplicitValuesAndCarriesOptionalAPIKey(t *testing.T) {
+	withUnsetSourceQualityLLMEnv(t)
+	t.Setenv("SOURCE_QUALITY_LLM_ENABLED", "true")
+	t.Setenv("SOURCE_QUALITY_LLM_BASE_URL", "http://source-quality.example:11434")
+	t.Setenv("SOURCE_QUALITY_LLM_MODEL", "quality-model")
+	t.Setenv("SOURCE_QUALITY_LLM_TIMEOUT_MS", "1200")
+	t.Setenv("OLLAMA_API_KEY", "source-quality-secret")
+
+	cfg := Load()
+	if !cfg.SourceQualityLLMEnabled {
+		t.Fatal("SourceQualityLLMEnabled = false despite explicit enable")
+	}
+	if cfg.SourceQualityLLMBaseURL != "http://source-quality.example:11434" || cfg.SourceQualityLLMModel != "quality-model" {
+		t.Fatalf("source-quality LLM config not loaded: base=%q model=%q", cfg.SourceQualityLLMBaseURL, cfg.SourceQualityLLMModel)
+	}
+	if cfg.SourceQualityLLMTimeout != 1200*time.Millisecond {
+		t.Fatalf("SourceQualityLLMTimeout = %s, want 1200ms", cfg.SourceQualityLLMTimeout)
+	}
+	if cfg.SourceQualityLLMAPIKey == "" {
+		t.Fatal("optional Ollama API key was not retained")
+	}
+}
+
+func TestLoadSourceQualityLLMFallsBackToOllamaValues(t *testing.T) {
+	withUnsetSourceQualityLLMEnv(t)
+	t.Setenv("OLLAMA_BASE_URL", "http://ollama.example:11434")
+	t.Setenv("OLLAMA_MODEL", "shared-ollama-model")
+
+	cfg := Load()
+	if cfg.SourceQualityLLMBaseURL != "http://ollama.example:11434" {
+		t.Fatalf("SourceQualityLLMBaseURL = %q, want OLLAMA_BASE_URL fallback", cfg.SourceQualityLLMBaseURL)
+	}
+	if cfg.SourceQualityLLMModel != "shared-ollama-model" {
+		t.Fatalf("SourceQualityLLMModel = %q, want OLLAMA_MODEL fallback", cfg.SourceQualityLLMModel)
+	}
+}
+
+func TestLoadSourceQualityLLMDefaultsInvalidTimeout(t *testing.T) {
+	for _, value := range []string{"nope", "0", "-1"} {
+		t.Run(value, func(t *testing.T) {
+			withUnsetSourceQualityLLMEnv(t)
+			t.Setenv("SOURCE_QUALITY_LLM_TIMEOUT_MS", value)
+
+			cfg := Load()
+			if cfg.SourceQualityLLMTimeout != 1500*time.Millisecond {
+				t.Fatalf("SourceQualityLLMTimeout = %s, want default 1500ms for %q", cfg.SourceQualityLLMTimeout, value)
+			}
+		})
+	}
+}
+
 func TestLoadAnalyzerDisabledByDefault(t *testing.T) {
 	for _, key := range []string{"ANALYZER_ENABLED", "ANALYZER_BASE_URL", "ANALYZER_AUTH_TOKEN", "ANALYZER_TIMEOUT_MS", "ANALYZER_CONCURRENCY"} {
 		withUnsetEnv(t, key)
@@ -236,6 +308,21 @@ func withUnsetCORSAllowedOrigins(t *testing.T) {
 	t.Helper()
 	withUnsetEnv(t, "OMP_CORS_ALLOWED_ORIGINS")
 	withUnsetEnv(t, "CORS_ALLOWED_ORIGINS")
+}
+
+func withUnsetSourceQualityLLMEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"SOURCE_QUALITY_LLM_ENABLED",
+		"SOURCE_QUALITY_LLM_BASE_URL",
+		"SOURCE_QUALITY_LLM_MODEL",
+		"SOURCE_QUALITY_LLM_TIMEOUT_MS",
+		"OLLAMA_BASE_URL",
+		"OLLAMA_MODEL",
+		"OLLAMA_API_KEY",
+	} {
+		withUnsetEnv(t, key)
+	}
 }
 
 func withUnsetEnv(t *testing.T, key string) {

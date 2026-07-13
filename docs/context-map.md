@@ -48,6 +48,18 @@ domain concept moves or a new production harness becomes canonical.
 - Guardrail: authenticated client calls should use the unified API client path
   unless a feature explicitly crosses into offline/local storage.
 
+### Source-Quality Discovery Judge
+
+- Configuration and server wiring: `backend/internal/config/config.go`,
+  `backend/cmd/server/main.go`, `docker-compose*.yml`, `.env.example`.
+- Discovery seam and contract tests: `backend/internal/discovery/source_quality*`.
+- Guardrail: the optional Ollama judge is disabled by default. Any disabled or
+  adapter-error path must retain deterministic source-quality ranking.
+- Runtime URL: native backend defaults to `http://localhost:11434`; Compose
+  defaults to `http://host.docker.internal:11434` and maps that name to the
+  Linux host gateway. Set `SOURCE_QUALITY_LLM_BASE_URL` explicitly for a
+  tailnet or other remote provider; never commit a remote endpoint or secret.
+
 ### Audio Analysis And DJ Waveforms
 
 - Analyzer service: `backend/cmd/audio-analyzer/`,

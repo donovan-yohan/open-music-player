@@ -37,6 +37,16 @@ services:
       ANALYZER_BASE_URL: http://analyzer:18190
       ANALYZER_CONCURRENCY: ${ANALYZER_CONCURRENCY:-1}
 
+      # Optional source-quality judge. Keep model host and credentials in the
+      # operator environment; discovery remains deterministic while disabled.
+      SOURCE_QUALITY_LLM_ENABLED: ${SOURCE_QUALITY_LLM_ENABLED:-false}
+      SOURCE_QUALITY_LLM_BASE_URL: ${SOURCE_QUALITY_LLM_BASE_URL:-http://host.docker.internal:11434}
+      SOURCE_QUALITY_LLM_MODEL: ${SOURCE_QUALITY_LLM_MODEL:-}
+      SOURCE_QUALITY_LLM_TIMEOUT_MS: ${SOURCE_QUALITY_LLM_TIMEOUT_MS:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+
       # Auth
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
 
@@ -59,6 +69,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - omp-network
 

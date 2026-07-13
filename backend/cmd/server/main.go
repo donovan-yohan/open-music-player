@@ -74,6 +74,26 @@ type analyzerMaintenanceReport struct {
 	Batches         int
 }
 
+// newSourceQualityJudge creates the optional discovery dependency exclusively
+// from the loaded server configuration. A disabled config produces nil, which
+// keeps discovery on deterministic ranking.
+func newSourceQualityJudge(cfg *config.Config) discovery.SourceQualityJudge {
+	if cfg == nil {
+		return nil
+	}
+	judge := discovery.NewOllamaSourceQualityJudge(discovery.OllamaSourceQualityConfig{
+		Enabled: cfg.SourceQualityLLMEnabled,
+		BaseURL: cfg.SourceQualityLLMBaseURL,
+		Model:   cfg.SourceQualityLLMModel,
+		Timeout: cfg.SourceQualityLLMTimeout,
+		APIKey:  cfg.SourceQualityLLMAPIKey,
+	})
+	if judge == nil {
+		return nil
+	}
+	return judge
+}
+
 // reconcileAnalyzerVersion invalidates rows owned by another analyzer version,
 // then drains stale work in bounded batches. Analysis overrides are owned by
 // the repository and are never modified by this reconciliation.
@@ -258,7 +278,8 @@ func main() {
 	searchHandlers := search.NewHandlers(trackRepo)
 	mbClient := musicbrainz.NewClient(redisCache)
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
-	discoveryService := discovery.NewDefaultServiceWithCatalog(mbClient)
+	sourceQualityJudge := newSourceQualityJudge(cfg)
+	discoveryService := discovery.NewDefaultServiceWithCatalogAndSourceQualityJudge(mbClient, sourceQualityJudge)
 	// AI assist is grounded against discovery/resolution; a nil client (unset or
 	// disabled config) degrades to the disabled envelope without breaking search.
 	assistClient := aiassist.NewClient(aiassist.Config{
