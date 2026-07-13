@@ -200,6 +200,101 @@ void main() {
     expect(painter.waveform!.downbeatsMs, waveform.downbeatsMs);
   });
 
+  testWidgets('projects trimmed waveform beats using absolute source positions',
+      (
+    tester,
+  ) async {
+    const sourceStartMs = 5000;
+    const waveform = TimelineWaveformData(
+      durationMs: 1000,
+      sourceStartMs: sourceStartMs,
+      frames: [
+        WaveformFrame(peak: 0.5, rms: 0.5, low: 0.5, mid: 0.5, high: 0.5),
+      ],
+      beatsMs: [
+        0,
+        100,
+        200,
+        300,
+        400,
+        500,
+        600,
+        700,
+        800,
+        900,
+        1000,
+      ],
+    );
+    final clip = MixClip(
+      placement: TimelineClip.clamped(
+        id: 'trimmed-scaled',
+        trackId: 't1',
+        sourceDurationMs: 6000,
+        sourceStartMs: sourceStartMs,
+        sourceEndMs: sourceStartMs + 1000,
+        timelineStartMs: 0,
+      ),
+      rateAutomation: const PlaybackRateAutomation(
+        segments: [
+          PlaybackRateSegment(
+            startMs: 200,
+            endMs: 400,
+            startRate: 1,
+            endRate: 1,
+            tempoScale: 2,
+          ),
+          PlaybackRateSegment(
+            startMs: 600,
+            endMs: 800,
+            startRate: 1,
+            endRate: 1,
+            tempoScale: 0.5,
+          ),
+        ],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 80,
+          child: TimelineClipWidget(
+            track: _track(),
+            peaks: const [0.5],
+            waveform: waveform,
+            mixClip: clip,
+            viewportPixelsPerMs: 1,
+            viewportOriginMs: 0,
+            trim: TrimRange.full(1000),
+            role: LaneRole.current,
+            accent: Colors.orange,
+            stateLabel: 'Now playing',
+            showInLaneChip: false,
+          ),
+        ),
+      ),
+    );
+
+    final painter = tester
+        .widget<CustomPaint>(
+          find.byKey(const ValueKey('timeline_waveform_t1')),
+        )
+        .painter! as TimelineWaveformPainter;
+
+    expect(
+      painter.projectedBeatMarkers,
+      [0, 100, 200, 250, 300, 350, 400, 500, 600, 800, 900, 1000],
+    );
+    expect(
+      painter.projectedBeatMarkers!.every(
+        (marker) => marker >= 0 && marker <= waveform.durationMs,
+      ),
+      isTrue,
+      reason: 'painter markers must remain local to the trimmed waveform',
+    );
+  });
+
   testWidgets('scaled rebuilds retain waveform and paint cache identity', (
     tester,
   ) async {

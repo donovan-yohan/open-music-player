@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:flutter/material.dart';
 import '../core/engine/timeline_model.dart';
 import '../models/track.dart';
@@ -235,6 +237,8 @@ class TimelineLaneHeader extends StatelessWidget {
 /// outline for the current lane, and a lightweight in-lane chip carrying the
 /// short title / state / selected duration.
 class TimelineClipWidget extends StatelessWidget {
+  static final Expando<_OffsetMarkerViews> _offsetMarkerViews = Expando();
+
   static const double _maxBoundaryPhysicalWidth = 4096;
   static const double _maxBoundaryPhysicalHeight = 512;
 
@@ -389,7 +393,21 @@ class TimelineClipWidget extends StatelessWidget {
     )) {
       return null;
     }
-    return clip.projectTempoSegmentBeatMarkers(source.beatsMs);
+    final sourceStartMs = source.sourceStartMs;
+    final absoluteMarkers = _markersOffsetBy(source.beatsMs, sourceStartMs);
+    final projectedMarkers =
+        clip.projectTempoSegmentBeatMarkers(absoluteMarkers);
+    return _markersOffsetBy(projectedMarkers, -sourceStartMs);
+  }
+
+  static List<int> _markersOffsetBy(List<int> markers, int offsetMs) {
+    if (offsetMs == 0) return markers;
+    final views = _offsetMarkerViews[markers] ?? _OffsetMarkerViews();
+    _offsetMarkerViews[markers] = views;
+    return views.byOffset.putIfAbsent(
+      offsetMs,
+      () => _OffsetMarkerList(markers, offsetMs),
+    );
   }
 
   Widget _gainBadge(ThemeData theme, double gainScalar) {
@@ -440,6 +458,33 @@ class TimelineClipWidget extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+class _OffsetMarkerViews {
+  final Map<int, List<int>> byOffset = {};
+}
+
+class _OffsetMarkerList extends ListBase<int> {
+  final List<int> _source;
+  final int _offsetMs;
+
+  _OffsetMarkerList(this._source, this._offsetMs);
+
+  @override
+  int get length => _source.length;
+
+  @override
+  int operator [](int index) => _source[index] + _offsetMs;
+
+  @override
+  void operator []=(int index, int value) {
+    throw UnsupportedError('Marker offset views are read-only.');
+  }
+
+  @override
+  set length(int value) {
+    throw UnsupportedError('Marker offset views are read-only.');
   }
 }
 
