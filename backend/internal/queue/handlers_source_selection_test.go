@@ -20,12 +20,22 @@ import (
 
 type fakeQueueHandlerService struct {
 	state         *QueueState
+	getErr        error
+	getErrAfter   int
+	getCalls      int
 	addTrackCalls int
 	removedIDs    []string
 }
 
 func (s *fakeQueueHandlerService) GetQueue(context.Context, string) (*QueueState, error) {
-	return s.state, nil
+	s.getCalls++
+	if s.getErrAfter > 0 && s.getCalls >= s.getErrAfter {
+		return nil, s.getErr
+	}
+	if s.getErrAfter > 0 {
+		return s.state, nil
+	}
+	return s.state, s.getErr
 }
 func (s *fakeQueueHandlerService) AddToQueue(_ context.Context, _ string, trackID int64, _ string) (*QueueState, error) {
 	s.addTrackCalls++
@@ -291,6 +301,16 @@ func TestSourceDecisionAttachFailureRollsBackButEnqueueFailureKeepsDurableIntent
 				t.Fatalf("enqueue failure should retain durable intent: store=%#v removed=%#v", store.calls, service.removedIDs)
 			}
 		})
+	}
+}
+
+func TestSourceDecisionQueueReturnsErrorWhenQueueResponseCannotLoad(t *testing.T) {
+	service := &fakeQueueHandlerService{state: &QueueState{}, getErr: errors.New("queue read failed"), getErrAfter: 2}
+	h := NewHandlersWithSourceSelections(service, &fakeQueueDownloadService{}, nil, &fakeSourceDecisionRepository{decision: sourceDecisionForQueue(t, sourceDecisionSnapshot(t, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", ""))}, &fakeDurableDownloadJobStore{})
+	rec := httptest.NewRecorder()
+	h.AddQueueItem(rec, queueDecisionRequest(`{"sourceDecisionId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}`))
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "failed to load queued source") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -170,11 +170,65 @@ func TestStartImportFailsItemBeforeEnqueueWhenTrustedJobPersistenceFails(t *test
 	}
 }
 
+func TestStartImportNormalizesURLOnlyEntriesAndKeepsPlaylistIntentQualityHonest(t *testing.T) {
+	store := newFakeStore()
+	selections := &fakeSourceSelections{}
+	service := NewService(Config{Store: store, Playlists: &fakePlaylists{}, Tracks: &fakeTrackSources{bySourceID: map[string]*db.Track{}}, Downloader: &fakeDownloader{}, Selections: selections, Ingestion: &fakeTrustedIngestion{}, Enumerator: &fakeEnumerator{entries: []Entry{{SourceURL: "https://youtu.be/dQw4w9WgXcQ", Title: "URL only"}}}})
+	result, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Items[0].SourceID != "dQw4w9WgXcQ" || len(selections.candidates) != 1 {
+		t.Fatalf("url-only item = %#v candidates=%#v", result.Items[0], selections.candidates)
+	}
+	quality := selections.candidates[0].SourceQuality
+	if selections.created[0].Origin != db.SourceSelectionOriginPlaylistExplicit || quality.Score != 0 || quality.Confidence != 0 || quality.Classification != "unknown" || quality.Recommendation != "review" {
+		t.Fatalf("playlist quality = %#v decision=%#v", quality, selections.created[0])
+	}
+}
+
+func TestStartImportRejectsUnresolvableURLOnlyEntryBeforeTrustedDecision(t *testing.T) {
+	store := newFakeStore()
+	selections := &fakeSourceSelections{}
+	service := NewService(Config{Store: store, Playlists: &fakePlaylists{}, Tracks: &fakeTrackSources{bySourceID: map[string]*db.Track{}}, Downloader: &fakeDownloader{}, Selections: selections, Ingestion: &fakeTrustedIngestion{}, Enumerator: &fakeEnumerator{entries: []Entry{{SourceURL: "https://www.youtube.com/watch", Title: "Broken"}}}})
+	result, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Items[0].Status != ItemStatusFailed || !strings.Contains(result.Items[0].Error.String, "does not resolve") || len(selections.created) != 0 {
+		t.Fatalf("url-only rejection = %#v decisions=%d", result.Items[0], len(selections.created))
+	}
+}
+
+func TestStartImportRetriesQueuedItemPersistenceWithoutDuplicateDownload(t *testing.T) {
+	store := newFakeStore()
+	store.markQueuedErrs = []error{errors.New("temporary item store failure")}
+	downloader := &fakeDownloader{}
+	service := NewService(Config{Store: store, Playlists: &fakePlaylists{}, Tracks: &fakeTrackSources{bySourceID: map[string]*db.Track{}}, Downloader: downloader, Selections: &fakeSourceSelections{}, Ingestion: &fakeTrustedIngestion{}, Enumerator: &fakeEnumerator{entries: []Entry{{SourceID: "new", SourceURL: "https://www.youtube.com/watch?v=new", Title: "New"}}}})
+	result, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if err != nil || result.Items[0].Status != ItemStatusQueued || len(downloader.jobs) != 1 || store.markQueuedCalls != 2 {
+		t.Fatalf("queued retry result=%#v err=%v downloads=%d calls=%d", result, err, len(downloader.jobs), store.markQueuedCalls)
+	}
+}
+
+func TestStartImportPropagatesPersistentQueuedItemStoreFailure(t *testing.T) {
+	store := newFakeStore()
+	store.markQueuedErrs = []error{errors.New("first failure"), errors.New("retry failure")}
+	downloader := &fakeDownloader{}
+	service := NewService(Config{Store: store, Playlists: &fakePlaylists{}, Tracks: &fakeTrackSources{bySourceID: map[string]*db.Track{}}, Downloader: downloader, Selections: &fakeSourceSelections{}, Ingestion: &fakeTrustedIngestion{}, Enumerator: &fakeEnumerator{entries: []Entry{{SourceID: "new", SourceURL: "https://www.youtube.com/watch?v=new", Title: "New"}}}})
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if err == nil || !strings.Contains(err.Error(), "mark playlist import item queued") || len(downloader.jobs) != 1 || store.markQueuedCalls != 2 {
+		t.Fatalf("persistent queue-item error=%v downloads=%d calls=%d", err, len(downloader.jobs), store.markQueuedCalls)
+	}
+}
+
 type fakeStore struct {
-	jobs          map[uuid.UUID]*ImportJob
-	items         map[int64]*ImportItem
-	next          int64
-	createItemErr error
+	jobs            map[uuid.UUID]*ImportJob
+	items           map[int64]*ImportItem
+	next            int64
+	createItemErr   error
+	markQueuedErrs  []error
+	markQueuedCalls int
 }
 
 func newFakeStore() *fakeStore {
@@ -220,6 +274,12 @@ func (s *fakeStore) CreateItem(_ context.Context, item *ImportItem) error {
 	return nil
 }
 func (s *fakeStore) MarkItemQueued(_ context.Context, itemID int64, downloadJobID string) error {
+	s.markQueuedCalls++
+	if len(s.markQueuedErrs) > 0 {
+		err := s.markQueuedErrs[0]
+		s.markQueuedErrs = s.markQueuedErrs[1:]
+		return err
+	}
 	item := s.items[itemID]
 	item.Status = ItemStatusQueued
 	item.DownloadJobID = sql.NullString{String: downloadJobID, Valid: true}
@@ -326,11 +386,13 @@ func (d *fakeDownloader) EnqueuePlaylistImportItemWithID(_ context.Context, jobI
 type fakeSourceSelections struct {
 	created        []*db.SourceSelectionDecision
 	attachedTracks []int64
+	candidates     []db.TrustedSourceSelectionCandidate
 }
 
 func (s *fakeSourceSelections) CreateTrustedSourceSelectionDecision(_ context.Context, userID uuid.UUID, origin string, candidate db.TrustedSourceSelectionCandidate, _ string) (*db.SourceSelectionDecision, error) {
 	decision := &db.SourceSelectionDecision{ID: uuid.New(), UserID: userID, Origin: origin, SelectedCandidateID: candidate.CandidateID}
 	s.created = append(s.created, decision)
+	s.candidates = append(s.candidates, candidate)
 	return decision, nil
 }
 func (s *fakeSourceSelections) AttachTrackForUser(_ context.Context, _ uuid.UUID, _ uuid.UUID, trackID int64) error {

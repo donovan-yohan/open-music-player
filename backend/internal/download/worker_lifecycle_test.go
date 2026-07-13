@@ -8,8 +8,10 @@ import (
 )
 
 type recordingJobLifecycle struct {
-	mu    sync.Mutex
-	calls []string
+	mu         sync.Mutex
+	calls      []string
+	requeueErr error
+	failErr    error
 }
 
 func (l *recordingJobLifecycle) Sync(_ context.Context, job *DownloadJob) error {
@@ -30,14 +32,50 @@ func (l *recordingJobLifecycle) Fail(_ context.Context, _ *DownloadJob, _ error)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.calls = append(l.calls, "failed")
-	return nil
+	return l.failErr
 }
 
 func (l *recordingJobLifecycle) Requeue(_ context.Context, _ *DownloadJob, _ int) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.calls = append(l.calls, "requeue")
-	return nil
+	return l.requeueErr
+}
+
+func TestWorkerPoolRetryPreparationFailuresReconcileToFailed(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		requeueErr error
+		prepareErr error
+	}{
+		{name: "durable requeue fails", requeueErr: errors.New("sql unavailable")},
+		{name: "redis preparation fails after durable requeue", prepareErr: errors.New("redis unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queue := newTestQueue(t)
+			lifecycle := &recordingJobLifecycle{requeueErr: tc.requeueErr}
+			pool := NewWorkerPool(queue, nil, &WorkerPoolConfig{WorkerCount: workerCountPtr(0), MaxRetries: 1, Lifecycle: lifecycle})
+			if tc.prepareErr != nil {
+				pool.prepareRetry = func(context.Context, string) (*DownloadJob, error) { return nil, tc.prepareErr }
+			}
+			job, err := queue.Enqueue(context.Background(), "test-user", "https://example.test/audio", "youtube", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := queue.UpdateStatus(context.Background(), job.ID, StatusDownloading, 0, ""); err != nil {
+				t.Fatal(err)
+			}
+			job.Status = StatusDownloading
+			pool.handleJobFailure(context.Background(), 0, job, errors.New("temporary failure"))
+			updated, err := queue.GetJob(context.Background(), job.ID)
+			if err != nil || updated.Status != StatusFailed || updated.Error == "" {
+				t.Fatalf("retry cleanup = %#v, %v", updated, err)
+			}
+			if got := lifecycle.snapshot(); !sameStrings(got, []string{"requeue", "failed"}) {
+				t.Fatalf("lifecycle calls = %#v", got)
+			}
+		})
+	}
 }
 
 func (l *recordingJobLifecycle) snapshot() []string {

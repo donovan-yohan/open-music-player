@@ -3,6 +3,7 @@ package download
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"sync"
@@ -39,12 +40,13 @@ type JobLifecycle interface {
 
 // WorkerPool manages a pool of workers that process download jobs
 type WorkerPool struct {
-	queue       *Queue
-	workerCount int
-	maxRetries  int
-	jobTimeout  time.Duration
-	processor   JobProcessor
-	lifecycle   JobLifecycle
+	queue        *Queue
+	workerCount  int
+	maxRetries   int
+	jobTimeout   time.Duration
+	processor    JobProcessor
+	lifecycle    JobLifecycle
+	prepareRetry func(context.Context, string) (*DownloadJob, error)
 
 	wg         sync.WaitGroup
 	stopChan   chan struct{}
@@ -85,7 +87,7 @@ func NewWorkerPool(queue *Queue, processor JobProcessor, config *WorkerPoolConfi
 		jobTimeout = DefaultJobTimeout
 	}
 
-	return &WorkerPool{
+	pool := &WorkerPool{
 		queue:       queue,
 		workerCount: workerCount,
 		maxRetries:  maxRetries,
@@ -94,6 +96,10 @@ func NewWorkerPool(queue *Queue, processor JobProcessor, config *WorkerPoolConfi
 		lifecycle:   config.Lifecycle,
 		stopChan:    make(chan struct{}),
 	}
+	if queue != nil {
+		pool.prepareRetry = queue.PrepareRetry
+	}
+	return pool
 }
 
 // Start launches the worker pool
@@ -264,12 +270,14 @@ func (wp *WorkerPool) handleJobFailure(ctx context.Context, workerID int, job *D
 		if wp.lifecycle != nil {
 			if err := wp.lifecycle.Requeue(ctx, &retrying, retrying.RetryCount); err != nil {
 				log.Printf("Worker %d: failed to persist retry for job %s: %v", workerID, job.ID, err)
+				wp.failRetryPreparation(ctx, workerID, job, fmt.Errorf("persist retry: %w", err))
 				return
 			}
 		}
-		prepared, err := wp.queue.PrepareRetry(ctx, job.ID)
+		prepared, err := wp.prepareRetry(ctx, job.ID)
 		if err != nil {
 			log.Printf("Worker %d: failed to prepare retry for job %s: %v", workerID, job.ID, err)
+			wp.failRetryPreparation(ctx, workerID, job, fmt.Errorf("prepare retry: %w", err))
 			return
 		}
 		backoff := calculateBackoff(prepared.RetryCount - 1)
@@ -292,6 +300,24 @@ func (wp *WorkerPool) handleJobFailure(ctx context.Context, workerID int, job *D
 	if wp.lifecycle != nil {
 		if err := wp.lifecycle.Fail(ctx, job, jobErr); err != nil {
 			log.Printf("Worker %d: failed to mirror job failure for %s: %v", workerID, job.ID, err)
+		}
+	}
+}
+
+// failRetryPreparation reconciles retry setup failures to a terminal state. A
+// durable requeue may have completed before Redis preparation fails, so both
+// stores are explicitly failed rather than leaving an invisible downloading job.
+func (wp *WorkerPool) failRetryPreparation(ctx context.Context, workerID int, job *DownloadJob, cause error) {
+	failure := fmt.Errorf("retry preparation failed: %w", cause)
+	if err := wp.queue.UpdateStatus(ctx, job.ID, StatusFailed, job.Progress, failure.Error()); err != nil {
+		log.Printf("Worker %d: failed to mark retry preparation failure for job %s in Redis: %v", workerID, job.ID, err)
+	}
+	failed := *job
+	failed.Status = StatusFailed
+	failed.Error = failure.Error()
+	if wp.lifecycle != nil {
+		if err := wp.lifecycle.Fail(ctx, &failed, failure); err != nil {
+			log.Printf("Worker %d: failed to mark retry preparation failure for job %s durable: %v", workerID, job.ID, err)
 		}
 	}
 }

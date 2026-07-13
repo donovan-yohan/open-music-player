@@ -272,7 +272,11 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 		writeQueueDecisionEnqueueError(w, err)
 		return
 	}
-	state, _ := h.service.GetQueue(r.Context(), userCtx.UserID.String())
+	state, err := h.service.GetQueue(r.Context(), userCtx.UserID.String())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load queued source")
+		return
+	}
 	status := http.StatusAccepted
 	if jobAlreadyPublished {
 		status = http.StatusOK

@@ -116,6 +116,55 @@ func TestQueue_EnsureCandidateWithIDRestoresDequeuedJobWithoutDuplicates(t *test
 	}
 }
 
+func TestQueue_EnsureWithIDReturnsTerminalJobsUnchanged(t *testing.T) {
+	ctx := context.Background()
+	candidate := SourceCandidate{CandidateID: "youtube:new", Provider: "youtube", SourceID: "new", SourceURL: "https://example.com/new", Title: "New"}
+	for _, status := range []string{StatusComplete, StatusFailed} {
+		t.Run(status, func(t *testing.T) {
+			queue := newTestQueue(t)
+			job, err := queue.EnqueueCandidateWithID(ctx, "00000000-0000-4000-8000-00000000000"+map[string]string{StatusComplete: "2", StatusFailed: "3"}[status], "user-terminal", SourceCandidate{CandidateID: "youtube:original", Provider: "youtube", SourceID: "original", SourceURL: "https://example.com/original", Title: "Original"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := queue.Dequeue(ctx, time.Second); err != nil {
+				t.Fatal(err)
+			}
+			if err := queue.UpdateStatus(ctx, job.ID, status, 100, "terminal"); err != nil {
+				t.Fatal(err)
+			}
+			got, err := queue.EnsureCandidateWithID(ctx, job.ID, job.UserID, candidate, nil)
+			if err != nil || got.Status != status || got.CandidateID != "youtube:original" {
+				t.Fatalf("candidate ensure = %#v, %v", got, err)
+			}
+			if length, err := queue.QueueLength(ctx); err != nil || length != 0 {
+				t.Fatalf("terminal queue length = %d, %v", length, err)
+			}
+		})
+	}
+}
+
+func TestQueue_EnsurePlaylistImportItemWithIDReturnsTerminalJobUnchanged(t *testing.T) {
+	queue := newTestQueue(t)
+	ctx := context.Background()
+	job, err := queue.EnqueuePlaylistImportItemWithID(ctx, "00000000-0000-4000-8000-000000000004", "user-terminal", SourceCandidate{CandidateID: "youtube:original", Provider: "youtube", SourceID: "original", SourceURL: "https://example.com/original", Title: "Original"}, "import", 1, 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queue.Dequeue(ctx, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := queue.UpdateStatus(ctx, job.ID, StatusComplete, 100, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := queue.EnsurePlaylistImportItemWithID(ctx, job.ID, job.UserID, SourceCandidate{CandidateID: "youtube:new", Provider: "youtube", SourceID: "new", SourceURL: "https://example.com/new", Title: "New"}, "other", 9, 8, 7)
+	if err != nil || got.Status != StatusComplete || got.PlaylistImportItemID != 1 || got.CandidateID != "youtube:original" {
+		t.Fatalf("playlist ensure = %#v, %v", got, err)
+	}
+	if length, err := queue.QueueLength(ctx); err != nil || length != 0 {
+		t.Fatalf("terminal queue length = %d, %v", length, err)
+	}
+}
+
 func TestQueue_UpdateStatus(t *testing.T) {
 	queue := newTestQueue(t)
 

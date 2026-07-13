@@ -136,6 +136,7 @@ func (q *Queue) EnsureCandidateWithID(ctx context.Context, jobID, userID string,
 				return nil, fmt.Errorf("check queued job: %w", positionErr)
 			}
 		}
+		return job, nil
 	} else if !errors.Is(err, ErrJobNotFound) {
 		return nil, err
 	}
@@ -167,6 +168,7 @@ func (q *Queue) EnsurePlaylistImportItemWithID(ctx context.Context, jobID, userI
 			}
 			return job, nil
 		}
+		return job, nil
 	} else if !errors.Is(err, ErrJobNotFound) {
 		return nil, err
 	}

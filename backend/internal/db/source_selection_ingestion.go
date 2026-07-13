@@ -60,10 +60,30 @@ func (s *SourceSelectionIngestion) CreateDownloadForDecision(ctx context.Context
 		return nil, fmt.Errorf("create durable source-selection download job: %w", err)
 	}
 	if err := s.decisions.AttachDownloadJobForUser(ctx, userID, decision.ID, uuid.MustParse(job.ID)); err != nil {
-		_ = s.markFailed(ctx, userID, job.ID, fmt.Errorf("attach source selection decision: %w", err))
+		if cleanupErr := s.markUnlinkedFailed(ctx, userID, job.ID, fmt.Errorf("attach source selection decision: %w", err)); cleanupErr != nil {
+			return nil, fmt.Errorf("attach source selection decision: %w; cleanup failed: %v", err, cleanupErr)
+		}
 		return nil, err
 	}
 	return &SourceSelectionDownload{Decision: decision, Job: job, Candidate: candidate}, nil
+}
+
+// markUnlinkedFailed cleans up a job created before decision attachment. It is
+// intentionally not guarded by source_selection_decisions because attachment is
+// the operation that failed.
+func (s *SourceSelectionIngestion) markUnlinkedFailed(ctx context.Context, userID uuid.UUID, jobID string, cause error) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE download_jobs SET status = 'failed', error = $3, updated_at = clock_timestamp(), completed_at = clock_timestamp() WHERE id = $1 AND user_id = $2`, jobID, userID, cause.Error())
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("verify unlinked job cleanup: %w", err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("unlinked job cleanup updated %d rows", updated)
+	}
+	return nil
 }
 
 func (s *SourceSelectionIngestion) EnqueueTrustedPlaylistDownload(ctx context.Context, persisted *SourceSelectionDownload, enqueuer SourceSelectionPlaylistDownloadEnqueuer, importJobID string, importItemID, playlistID int64, playlistPosition int) (*download.DownloadJob, error) {
