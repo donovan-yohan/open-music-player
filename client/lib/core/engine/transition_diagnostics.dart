@@ -188,12 +188,13 @@ List<TransitionDiagnostic> _tempoDiagnostics(
     ];
   }
 
-  if (!tempoTransitionTargetsAreAchievable(
+  final bpmPair = resolveTempoTransitionBpmPair(
     outgoingTempo: outgoing.tempo,
     incomingTempo: incoming.tempo,
     outgoingBaseRate: outgoing.rateAutomation.baseRate,
     incomingBaseRate: incoming.rateAutomation.baseRate,
-  )) {
+  );
+  if (bpmPair == null) {
     return [
       TransitionDiagnostic(
         severity: TransitionDiagnosticSeverity.warning,
@@ -206,17 +207,22 @@ List<TransitionDiagnostic> _tempoDiagnostics(
   }
 
   final transitionStartBpm = effectiveBpmForRate(
-    nativeBpm: outgoing.tempo.nativeBpm!,
+    nativeBpm: bpmPair.outgoingBpm,
     rate: outgoing.rateAutomation.baseRate,
   );
   final transitionEndBpm = effectiveBpmForRate(
-    nativeBpm: incoming.tempo.nativeBpm!,
+    nativeBpm: bpmPair.incomingBpm,
     rate: incoming.rateAutomation.baseRate,
   );
-  final outgoingEndRate = _rateForTargetBpm(outgoing, transitionEndBpm);
+  final outgoingEndRate = _rateForTargetBpm(
+    outgoing,
+    transitionEndBpm,
+    tempoScale: bpmPair.outgoingTempoScale,
+  );
   final incomingStartRate = _rateForTargetBpm(
     incoming,
     transitionStartBpm,
+    tempoScale: bpmPair.incomingTempoScale,
   );
   final outgoingShift =
       _relativeRateShift(outgoing.playbackRate, outgoingEndRate);
@@ -268,25 +274,41 @@ List<TransitionDiagnostic> _pitchDiagnostics(
       !_hasBpm(incoming.tempo) ||
       !_hasReliableConfidence(outgoing.tempo) ||
       !_hasReliableConfidence(incoming.tempo) ||
-      !tempoTransitionTargetsAreAchievable(
-        outgoingTempo: outgoing.tempo,
-        incomingTempo: incoming.tempo,
-        outgoingBaseRate: outgoing.rateAutomation.baseRate,
-        incomingBaseRate: incoming.rateAutomation.baseRate,
-      )) {
+      resolveTempoTransitionBpmPair(
+            outgoingTempo: outgoing.tempo,
+            incomingTempo: incoming.tempo,
+            outgoingBaseRate: outgoing.rateAutomation.baseRate,
+            incomingBaseRate: incoming.rateAutomation.baseRate,
+          ) ==
+          null) {
     return const [];
   }
 
+  final bpmPair = resolveTempoTransitionBpmPair(
+    outgoingTempo: outgoing.tempo,
+    incomingTempo: incoming.tempo,
+    outgoingBaseRate: outgoing.rateAutomation.baseRate,
+    incomingBaseRate: incoming.rateAutomation.baseRate,
+  )!;
+
   final transitionStartBpm = effectiveBpmForRate(
-    nativeBpm: outgoing.tempo.nativeBpm!,
+    nativeBpm: bpmPair.outgoingBpm,
     rate: outgoing.rateAutomation.baseRate,
   );
   final transitionEndBpm = effectiveBpmForRate(
-    nativeBpm: incoming.tempo.nativeBpm!,
+    nativeBpm: bpmPair.incomingBpm,
     rate: incoming.rateAutomation.baseRate,
   );
-  final outgoingRate = _rateForTargetBpm(outgoing, transitionEndBpm);
-  final incomingRate = _rateForTargetBpm(incoming, transitionStartBpm);
+  final outgoingRate = _rateForTargetBpm(
+    outgoing,
+    transitionEndBpm,
+    tempoScale: bpmPair.outgoingTempoScale,
+  );
+  final incomingRate = _rateForTargetBpm(
+    incoming,
+    transitionStartBpm,
+    tempoScale: bpmPair.incomingTempoScale,
+  );
   final shifted = <String>[];
   final locked = <String>[];
 
@@ -463,14 +485,18 @@ bool _hasReliableConfidence(ClipTempoMetadata tempo) {
   return confidence == null || confidence >= reliableBpmConfidenceFloor;
 }
 
-double _rateForTargetBpm(MixClip clip, double targetBpm) {
+double _rateForTargetBpm(
+  MixClip clip,
+  double targetBpm, {
+  double tempoScale = 1,
+}) {
   final nativeBpm = clip.tempo.nativeBpm;
   if (nativeBpm == null || nativeBpm <= 0) {
     return clip.rateAutomation.baseRate;
   }
   return rawPlaybackRateForTargetBpm(
     baseRate: clip.rateAutomation.baseRate,
-    nativeBpm: nativeBpm,
+    nativeBpm: nativeBpm * tempoScale,
     targetBpm: targetBpm,
   ).clamp(minTempoAutomationRate, maxTempoAutomationRate).toDouble();
 }

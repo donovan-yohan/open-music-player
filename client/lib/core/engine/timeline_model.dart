@@ -57,6 +57,19 @@ class MixClip {
 
   double playbackRateAt(int timelineMs) => rateAutomation.rateAt(timelineMs);
 
+  double tempoScaleAt(int timelineMs) =>
+      rateAutomation.tempoScaleAt(timelineMs);
+
+  double? effectiveBpmAt(int timelineMs, {double transportRate = 1}) {
+    final nativeBpm = tempo.nativeBpm;
+    if (nativeBpm == null) return null;
+    return effectiveBpmForRate(
+      nativeBpm: nativeBpm,
+      rate: playbackRateAt(timelineMs) * transportRate,
+      tempoScale: tempoScaleAt(timelineMs),
+    );
+  }
+
   int sourcePositionAt(int timelineMs) {
     final elapsed = rateAutomation.sourceElapsedMs(
       timelineStartMs: timelineStartMs,
@@ -142,10 +155,7 @@ int? beatAlignmentCorrectionMs({
   );
   if (overlapEndMs <= overlapStartMs) return null;
 
-  final incomingMarkers = beatMarkersForSnapMode(
-    incoming.tempo,
-    snapMode,
-  ).where(
+  final incomingMarkers = _alignmentMarkersForClip(incoming, snapMode).where(
     (sourceMs) =>
         sourceMs >= incoming.placement.sourceStartMs &&
         sourceMs <= incoming.placement.sourceEndMs,
@@ -154,10 +164,7 @@ int? beatAlignmentCorrectionMs({
   final incomingAnchorMs = incoming.timelineMsForSourcePosition(
     incomingMarkers.first,
   );
-  final outgoingMarkers = beatMarkersForSnapMode(
-    outgoing.tempo,
-    snapMode,
-  )
+  final outgoingMarkers = _alignmentMarkersForClip(outgoing, snapMode)
       .where(
         (sourceMs) =>
             sourceMs >= outgoing.placement.sourceStartMs &&
@@ -181,10 +188,43 @@ int? beatAlignmentCorrectionMs({
         outgoing.tempo,
         snapMode: snapMode,
         baseRate: outgoing.playbackRate,
+        tempoScale: outgoing.tempoScaleAt(nearestOutgoingMs),
       )) {
     return null;
   }
   return nearestOutgoingMs - incomingAnchorMs;
+}
+
+List<int> _alignmentMarkersForClip(MixClip clip, BeatSnapMode snapMode) {
+  final downbeats = beatMarkersForSnapMode(
+    clip.tempo,
+    BeatSnapMode.downbeat,
+  );
+  final beats = clip.tempo.hasReliableBeatGrid
+      ? projectBeatMarkersForTempoSegments(
+          clip.tempo.beatsMs,
+          timelineMsForSourcePosition: clip.timelineMsForSourcePosition,
+          tempoScaleAt: clip.tempoScaleAt,
+        )
+      : const <int>[];
+
+  return switch (snapMode) {
+    BeatSnapMode.free => const [],
+    BeatSnapMode.downbeat => downbeats,
+    BeatSnapMode.beat1 => beats.isNotEmpty ? beats : downbeats,
+    BeatSnapMode.beat4 =>
+      downbeats.isNotEmpty ? downbeats : _strideMarkers(beats, 4),
+    BeatSnapMode.beat16 => downbeats.isNotEmpty
+        ? _strideMarkers(downbeats, 4)
+        : _strideMarkers(beats, 16),
+  };
+}
+
+List<int> _strideMarkers(List<int> markers, int stride) {
+  if (markers.isEmpty || stride <= 1) return markers;
+  return [
+    for (var index = 0; index < markers.length; index += stride) markers[index],
+  ];
 }
 
 /// Pure timeline arrangement model for Phase 1 of the mix engine.

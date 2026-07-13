@@ -2522,21 +2522,20 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final runtime = widget.clipTempoStates[lane.mixClip.id];
     final modeledSpeed = lane.mixClip.playbackRateAt(playheadMs);
     final effectiveSpeed = runtime?.effectiveSpeed ?? modeledSpeed;
-    final effectiveBpm = runtime?.effectiveBpm ??
-        (tempo.nativeBpm == null
-            ? null
-            : effectiveBpmForRate(
-                nativeBpm: tempo.nativeBpm!,
-                rate: effectiveSpeed,
-              ));
+    final effectiveBpm =
+        runtime?.effectiveBpm ?? lane.mixClip.effectiveBpmAt(playheadMs);
+    final formattedEffectiveBpm =
+        effectiveBpm == null ? null : _formatBpm(effectiveBpm);
+    final formattedNativeBpm =
+        tempo.nativeBpm == null ? null : _formatBpm(tempo.nativeBpm!);
     final showLiveTempo =
         runtime != null || (effectiveSpeed - 1).abs() >= 0.005;
     final labels = <String>[
-      if (showLiveTempo && effectiveBpm != null && effectiveBpm > 0)
-        'Live ${_formatBpm(effectiveBpm)} BPM',
+      if (showLiveTempo && formattedEffectiveBpm != null)
+        'Live $formattedEffectiveBpm BPM',
       if ((effectiveSpeed - 1).abs() >= 0.005)
         '${effectiveSpeed.toStringAsFixed(2)}x',
-      if (tempo.nativeBpm != null) '${_formatBpm(tempo.nativeBpm!)} BPM',
+      if (formattedNativeBpm != null) '$formattedNativeBpm BPM',
       if (tempo.bpmConfidence != null)
         '${(tempo.bpmConfidence!.clamp(0, 1) * 100).round()}%',
       if (_formatKey(tempo.musicalKey, tempo.camelot) != null)
@@ -3448,7 +3447,7 @@ String _formatClock(int ms) {
   return '$m:${s.toString().padLeft(2, '0')}';
 }
 
-String _formatBpm(double bpm) {
-  if (bpm.roundToDouble() == bpm) return bpm.round().toString();
-  return bpm.toStringAsFixed(1);
+String? _formatBpm(double bpm) {
+  if (!bpm.isFinite || bpm <= 0) return null;
+  return bpm.round().toString();
 }

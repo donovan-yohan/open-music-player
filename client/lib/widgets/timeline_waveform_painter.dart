@@ -1,6 +1,7 @@
 import 'dart:collection';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../core/engine/timeline_model.dart';
@@ -62,6 +63,7 @@ class _TimelineMarkerCacheKey {
   final Object? mappingRevision;
   final int widthMicropixels;
   final int pixelsPerMsMicros;
+  final List<int>? projectedBeatMarkers;
 
   const _TimelineMarkerCacheKey({
     required this.waveform,
@@ -72,6 +74,7 @@ class _TimelineMarkerCacheKey {
     required this.mappingRevision,
     required this.widthMicropixels,
     required this.pixelsPerMsMicros,
+    required this.projectedBeatMarkers,
   });
 
   @override
@@ -84,7 +87,8 @@ class _TimelineMarkerCacheKey {
       other.sourceEndMs == sourceEndMs &&
       other.mappingRevision == mappingRevision &&
       other.widthMicropixels == widthMicropixels &&
-      other.pixelsPerMsMicros == pixelsPerMsMicros;
+      other.pixelsPerMsMicros == pixelsPerMsMicros &&
+      listEquals(other.projectedBeatMarkers, projectedBeatMarkers);
 
   @override
   int get hashCode => Object.hash(
@@ -96,6 +100,7 @@ class _TimelineMarkerCacheKey {
         mappingRevision,
         widthMicropixels,
         pixelsPerMsMicros,
+        Object.hashAll(projectedBeatMarkers ?? const <int>[]),
       );
 }
 
@@ -265,6 +270,7 @@ class TimelineWaveformPaintCache {
     required double width,
     required double viewportPixelsPerMs,
     required int viewportOriginMs,
+    required List<int>? projectedBeatMarkers,
   }) {
     final placement = mixClip?.placement;
     final explicitLaneIdentity = laneIdentity;
@@ -283,6 +289,7 @@ class TimelineWaveformPaintCache {
       mappingRevision: mappingRevision,
       widthMicropixels: (width * 1000000).round(),
       pixelsPerMsMicros: (viewportPixelsPerMs * 1000000).round(),
+      projectedBeatMarkers: projectedBeatMarkers,
     );
     final cached = _markersByLane.remove(cacheKey);
     if (cached != null) {
@@ -306,7 +313,7 @@ class TimelineWaveformPaintCache {
         );
 
     final markers = _TimelineMarkerPaintGeometry(
-      beats: select(waveform.beatsMs, 7),
+      beats: select(projectedBeatMarkers ?? waveform.beatsMs, 7),
       downbeats: select(waveform.downbeatsMs, 14),
       transients: select(waveform.transientsMs, 10),
     );
@@ -621,6 +628,7 @@ int _localSourcePositionForTimelineFraction(
 class TimelineWaveformPainter extends CustomPainter {
   final List<double> peaks;
   final TimelineWaveformData? waveform;
+  final List<int>? projectedBeatMarkers;
   final MixClip? mixClip;
   final Object? mappingRevision;
   final String? laneIdentity;
@@ -640,6 +648,7 @@ class TimelineWaveformPainter extends CustomPainter {
   TimelineWaveformPainter({
     required this.peaks,
     this.waveform,
+    this.projectedBeatMarkers,
     this.mixClip,
     this.mappingRevision,
     this.laneIdentity,
@@ -721,6 +730,7 @@ class TimelineWaveformPainter extends CustomPainter {
           width: size.width,
           viewportPixelsPerMs: viewportPixelsPerMs,
           viewportOriginMs: viewportOriginMs,
+          projectedBeatMarkers: projectedBeatMarkers,
         ),
         visibleStartFraction: startFraction,
         visibleEndFraction: endFraction,
@@ -791,6 +801,7 @@ class TimelineWaveformPainter extends CustomPainter {
   bool shouldRepaint(covariant TimelineWaveformPainter old) =>
       old.peaks != peaks ||
       old.waveform != waveform ||
+      !listEquals(old.projectedBeatMarkers, projectedBeatMarkers) ||
       old.mixClip != mixClip ||
       old.mappingRevision != mappingRevision ||
       old.laneIdentity != laneIdentity ||

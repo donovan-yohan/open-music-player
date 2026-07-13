@@ -56,7 +56,7 @@ void main() {
       ),
     );
 
-    expect(find.text('141.2 BPM'), findsOneWidget);
+    expect(find.text('141 BPM'), findsOneWidget);
     expect(find.text('11A'), findsOneWidget);
     expect(find.text('F#m'), findsNothing);
   });
@@ -82,7 +82,7 @@ void main() {
     );
 
     for (final entry in <(Key, String)>[
-      (const ValueKey('song_metadata_bpm_chip'), '141.2 BPM'),
+      (const ValueKey('song_metadata_bpm_chip'), '141 BPM'),
       (const ValueKey('song_metadata_key_chip'), '11A'),
     ]) {
       final chipCenter = tester.getCenter(find.byKey(entry.$1));
@@ -121,7 +121,7 @@ void main() {
     final chip = find.byKey(const ValueKey('song_metadata_bpm_chip'));
     expect(tester.getSize(chip).height, 18);
     expect(
-      (tester.getCenter(chip).dy - tester.getCenter(find.text('141.2 BPM')).dy)
+      (tester.getCenter(chip).dy - tester.getCenter(find.text('141 BPM')).dy)
           .abs(),
       lessThan(0.5),
     );
@@ -171,19 +171,20 @@ void main() {
     expect(minor11.border, isNull);
   });
 
-  testWidgets('uses opaque solid fills without outline borders',
-      (tester) async {
+  testWidgets('uses opaque solid fills without outline borders', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(body: SongMetadataChips(analysis: _analysis())),
       ),
     );
 
-    for (final label in ['141.2 BPM', '11A']) {
+    for (final label in ['141 BPM', '11A']) {
       final chip = find.ancestor(
         of: find.text(label),
         matching: find.byKey(
-          label == '141.2 BPM'
+          label == '141 BPM'
               ? const ValueKey('song_metadata_bpm_chip')
               : const ValueKey('song_metadata_key_chip'),
         ),
@@ -348,7 +349,7 @@ void main() {
       );
       expect(group.right, closeTo(availableWidth, 0.01));
       for (final entry in <(Key, String)>[
-        (const ValueKey('song_metadata_bpm_chip'), '141.2 BPM'),
+        (const ValueKey('song_metadata_bpm_chip'), '141 BPM'),
         (const ValueKey('song_metadata_key_chip'), '11A'),
       ]) {
         final chip = find.byKey(entry.$1);
@@ -391,10 +392,17 @@ void main() {
     expect(labels.camelot, '6A');
   });
 
-  test('BPM formatter removes a decimal after rounding to an integer', () {
+  test('BPM formatter rounds valid values to the nearest whole BPM', () {
     expect(SongMetadataFormatter.formatBpm(120.95), '121 BPM');
     expect(SongMetadataFormatter.formatBpm(138.08), '138 BPM');
-    expect(SongMetadataFormatter.formatBpm(141.18), '141.2 BPM');
+    expect(SongMetadataFormatter.formatBpm(137.95), '138 BPM');
+    expect(SongMetadataFormatter.formatBpm(72.73), '73 BPM');
+    expect(SongMetadataFormatter.formatBpm(141.18), '141 BPM');
+    expect(SongMetadataFormatter.formatBpm(null), isNull);
+    expect(SongMetadataFormatter.formatBpm(double.nan), isNull);
+    expect(SongMetadataFormatter.formatBpm(double.infinity), isNull);
+    expect(SongMetadataFormatter.formatBpm(0), isNull);
+    expect(SongMetadataFormatter.formatBpm(-1), isNull);
   });
 }
 

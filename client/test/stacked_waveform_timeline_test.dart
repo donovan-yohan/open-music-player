@@ -260,7 +260,7 @@ void main() {
       ),
     );
 
-    for (final label in ['184.6 BPM', '9A']) {
+    for (final label in ['185 BPM', '9A']) {
       final paragraph = tester.renderObject<RenderParagraph>(find.text(label));
       expect(paragraph.didExceedMaxLines, isFalse, reason: label);
     }
@@ -297,9 +297,9 @@ void main() {
       ),
     );
 
-    expect(find.text('141.2 BPM'), findsOneWidget);
+    expect(find.text('141 BPM'), findsOneWidget);
     expect(find.text('F-sharp minor'), findsOneWidget);
-    for (final label in ['141.2 BPM', 'F-sharp minor']) {
+    for (final label in ['141 BPM', 'F-sharp minor']) {
       final paragraph = tester.renderObject<RenderParagraph>(find.text(label));
       expect(paragraph.didExceedMaxLines, isFalse, reason: label);
     }
@@ -337,7 +337,7 @@ void main() {
         ),
       );
 
-      expect(find.text('141.2 BPM'), findsOneWidget);
+      expect(find.text('141 BPM'), findsOneWidget);
       expect(
         find.text(textScale == 1.3 ? '11A' : 'F-sharp minor'),
         findsOneWidget,
@@ -365,7 +365,7 @@ void main() {
           expect(keyBounds.top, greaterThan(bpmBounds.top));
         }
         for (final label in [
-          '141.2 BPM',
+          '141 BPM',
           textScale == 1.3 ? '11A' : 'F-sharp minor',
         ]) {
           final paragraph = tester.renderObject<RenderParagraph>(
@@ -1249,7 +1249,7 @@ void main() {
       expect(
         find.descendant(
           of: find.byKey(const ValueKey('timeline_tempo_t2')),
-          matching: find.textContaining('141.2 BPM'),
+          matching: find.textContaining('141 BPM'),
         ),
         findsOneWidget,
       );
@@ -1671,7 +1671,7 @@ void main() {
           8000,
           160000,
           tempo: const ClipTempoMetadata(
-            nativeBpm: 220,
+            nativeBpm: 500,
             bpmConfidence: 0.9,
             downbeatsMs: [0, 8000, 16000, 24000],
           ),
@@ -1845,8 +1845,11 @@ void main() {
     final chip = find.byKey(const ValueKey('timeline_tempo_t1'));
     expect(chip, findsOneWidget);
     expect(
-      find.descendant(
-          of: chip, matching: find.textContaining('Live 112.5 BPM')),
+      find.descendant(of: chip, matching: find.textContaining('Live 113 BPM')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: chip, matching: find.textContaining('125 BPM')),
       findsOneWidget,
     );
     expect(
@@ -1862,8 +1865,7 @@ void main() {
     await tester.pump();
 
     expect(
-      find.descendant(
-          of: chip, matching: find.textContaining('Live 137.5 BPM')),
+      find.descendant(of: chip, matching: find.textContaining('Live 138 BPM')),
       findsOneWidget,
     );
     expect(
@@ -1871,8 +1873,7 @@ void main() {
       findsOneWidget,
     );
     expect(
-      find.descendant(
-          of: chip, matching: find.textContaining('Live 112.5 BPM')),
+      find.descendant(of: chip, matching: find.textContaining('Live 113 BPM')),
       findsNothing,
     );
     expect(waveformBuilds, buildsAfterSelection);
@@ -1918,7 +1919,7 @@ void main() {
     final chip = find.byKey(const ValueKey('timeline_tempo_t2'));
     expect(chip, findsOneWidget);
     expect(
-      find.descendant(of: chip, matching: find.textContaining('141.2 BPM')),
+      find.descendant(of: chip, matching: find.textContaining('141 BPM')),
       findsOneWidget,
     );
     expect(find.textContaining('Beat locked'), findsWidgets);

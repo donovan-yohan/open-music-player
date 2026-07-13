@@ -157,6 +157,102 @@ void main() {
   });
 
   group('TimelineModel placement math', () {
+    test('aligns only markers inside a double-time automation segment', () {
+      final outgoing = MixClip(
+        placement: placement(
+          id: 'outgoing',
+          sourceDurationMs: 1000,
+          sourceEndMs: 1000,
+        ),
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 70,
+          bpmConfidence: 0.9,
+          beatsMs: [0, 100, 200, 300, 400, 500],
+        ),
+        rateAutomation: const PlaybackRateAutomation(
+          segments: [
+            PlaybackRateSegment(
+              startMs: 100,
+              endMs: 300,
+              startRate: 1,
+              endRate: 1,
+              tempoScale: 2,
+            ),
+          ],
+        ),
+      );
+      final incoming = MixClip(
+        placement: placement(
+          id: 'incoming',
+          timelineStartMs: 100,
+          sourceDurationMs: 1000,
+          sourceEndMs: 1000,
+        ),
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 70,
+          bpmConfidence: 0.9,
+          beatsMs: [250, 350, 450, 550],
+        ),
+      );
+
+      expect(
+        beatAlignmentCorrectionMs(
+          outgoing: outgoing,
+          incoming: incoming,
+          snapMode: BeatSnapMode.beat1,
+        ),
+        -50,
+      );
+    });
+
+    test('aligns only markers inside a half-time automation segment', () {
+      final outgoing = MixClip(
+        placement: placement(
+          id: 'outgoing',
+          sourceDurationMs: 1000,
+          sourceEndMs: 1000,
+        ),
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 140,
+          bpmConfidence: 0.9,
+          beatsMs: [0, 100, 200, 300, 400, 500],
+        ),
+        rateAutomation: const PlaybackRateAutomation(
+          segments: [
+            PlaybackRateSegment(
+              startMs: 100,
+              endMs: 300,
+              startRate: 1,
+              endRate: 1,
+              tempoScale: 0.5,
+            ),
+          ],
+        ),
+      );
+      final incoming = MixClip(
+        placement: placement(
+          id: 'incoming',
+          timelineStartMs: 100,
+          sourceDurationMs: 1000,
+          sourceEndMs: 1000,
+        ),
+        tempo: const ClipTempoMetadata(
+          nativeBpm: 140,
+          bpmConfidence: 0.9,
+          beatsMs: [150, 250, 350, 450],
+        ),
+      );
+
+      expect(
+        beatAlignmentCorrectionMs(
+          outgoing: outgoing,
+          incoming: incoming,
+          snapMode: BeatSnapMode.beat1,
+        ),
+        50,
+      );
+    });
+
     test('uses half-open clip boundaries with no active-set flicker', () {
       final model = TimelineModel(
         clips: [
@@ -308,7 +404,7 @@ void main() {
       final model = TimelineModel(
         clips: [
           _tempoClip('outgoing', 0, nativeBpm: 60),
-          _tempoClip('incoming', 5000, nativeBpm: 220),
+          _tempoClip('incoming', 5000, nativeBpm: 500),
         ],
       );
 

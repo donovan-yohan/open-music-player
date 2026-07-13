@@ -36,15 +36,7 @@ abstract final class SongMetadataFormatter {
   static String? formatBpm(num? bpm) {
     final value = bpm?.toDouble();
     if (value == null || !value.isFinite || value <= 0) return null;
-    final nearestInteger = value.round();
-    if ((value - nearestInteger).abs() <= 0.15) {
-      return '$nearestInteger BPM';
-    }
-    final rounded = (value * 10).round() / 10;
-    final text = rounded % 1 == 0
-        ? rounded.toInt().toString()
-        : rounded.toStringAsFixed(1);
-    return '$text BPM';
+    return '${value.round()} BPM';
   }
 
   static String? formatKey({
@@ -101,10 +93,7 @@ class SongMetadataChips extends StatelessWidget {
       ProviderScope.containerOf(context, listen: false);
     } on StateError {
       return _MetadataChipGroup(
-        labels: SongMetadataFormatter.labelsFor(
-          analysis,
-          KeyNotation.camelot,
-        ),
+        labels: SongMetadataFormatter.labelsFor(analysis, KeyNotation.camelot),
         topSpacing: topSpacing,
         singleLine: singleLine,
         compact: compact,
@@ -341,10 +330,7 @@ class _CamelotChipColors {
       dark ? (isMinor ? 0.78 : 0.92) : (isMinor ? 0.58 : 0.72),
     ).toColor();
     final foreground = _highestContrastForeground(background);
-    return _CamelotChipColors(
-      background: background,
-      foreground: foreground,
-    );
+    return _CamelotChipColors(background: background, foreground: foreground);
   }
 
   static Color _highestContrastForeground(Color background) {

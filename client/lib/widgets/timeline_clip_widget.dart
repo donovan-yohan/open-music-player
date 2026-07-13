@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
@@ -298,6 +299,7 @@ class TimelineClipWidget extends StatelessWidget {
     final waveAlpha =
         (_muted ? 0.45 : 0.62 + (gainScalar * 0.38)).clamp(0.0, 1.0).toDouble();
     final waveColor = accent.withValues(alpha: waveAlpha);
+    final projectedBeatMarkers = _projectedBeatMarkersForSelectedTempoScale();
 
     return ClipRRect(
       key: ValueKey('timeline_clip_$_laneIdentity'),
@@ -320,6 +322,7 @@ class TimelineClipWidget extends StatelessWidget {
                     painter: TimelineWaveformPainter(
                       peaks: peaks,
                       waveform: waveform,
+                      projectedBeatMarkers: projectedBeatMarkers,
                       mixClip: mixClip,
                       mappingRevision: mappingRevision,
                       laneIdentity: _laneIdentity,
@@ -375,6 +378,22 @@ class TimelineClipWidget extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+
+  List<int>? _projectedBeatMarkersForSelectedTempoScale() {
+    final source = waveform;
+    final clip = mixClip;
+    if (source == null || clip == null) return null;
+    if (!clip.rateAutomation.segments.any(
+      (segment) => segment.tempoScale != 1,
+    )) {
+      return null;
+    }
+    return projectBeatMarkersForTempoSegments(
+      source.beatsMs,
+      timelineMsForSourcePosition: clip.timelineMsForSourcePosition,
+      tempoScaleAt: clip.tempoScaleAt,
     );
   }
 

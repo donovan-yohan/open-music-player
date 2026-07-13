@@ -1159,7 +1159,9 @@ class QueueTimelineController {
       clipId: clip.id,
       effectiveSpeed: speed,
       nativeBpm: nativeBpm,
-      effectiveBpm: nativeBpm == null ? null : nativeBpm * speed,
+      effectiveBpm: nativeBpm == null
+          ? null
+          : clip.effectiveBpmAt(globalMs, transportRate: _engine.clock.rate),
       pitchMode: clip.rateAutomation.pitchMode,
       pitchFallback: pitchFallback,
     );
