@@ -691,7 +691,10 @@ func (p *YTDLPProvider) searchArg(query string, limit int) string {
 }
 
 func (p *YTDLPProvider) commandArgs(query string, limit int) []string {
-	return []string{"--playlist-end", strconv.Itoa(limit), "--dump-json", "--skip-download", p.searchArg(query, limit)}
+	// Search surfaces expose a playlist-like result set. Flattening it prevents
+	// yt-dlp from resolving every result's full watch metadata before discovery
+	// can rank candidates under the provider deadline.
+	return []string{"--flat-playlist", "--playlist-end", strconv.Itoa(limit), "--dump-json", "--skip-download", p.searchArg(query, limit)}
 }
 
 func ytdlpCandidateMetadata(raw map[string]interface{}, provider string, music bool) map[string]interface{} {

@@ -175,7 +175,14 @@ func TestYouTubeMusicSearchArgTargetsSongsSurface(t *testing.T) {
 
 func TestYouTubeMusicSearchPassesLimitToSongsPlaylist(t *testing.T) {
 	provider := NewYouTubeMusicProvider("youtube")
-	if got, want := provider.commandArgs("Ninajirachi iPod Touch", 10), []string{"--playlist-end", "10", "--dump-json", "--skip-download", "https://music.youtube.com/search?q=Ninajirachi+iPod+Touch#songs"}; !reflect.DeepEqual(got, want) {
+	if got, want := provider.commandArgs("Ninajirachi iPod Touch", 10), []string{"--flat-playlist", "--playlist-end", "10", "--dump-json", "--skip-download", "https://music.youtube.com/search?q=Ninajirachi+iPod+Touch#songs"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("yt-dlp args = %#v, want %#v", got, want)
+	}
+}
+
+func TestYouTubeSearchUsesFlatPlaylistAcquisition(t *testing.T) {
+	provider := NewYTDLPProvider("youtube", "ytsearch", "https://www.youtube.com/watch?v=")
+	if got, want := provider.commandArgs("Ninajirachi iPod Touch", 10), []string{"--flat-playlist", "--playlist-end", "10", "--dump-json", "--skip-download", "ytsearch10:Ninajirachi iPod Touch"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("yt-dlp args = %#v, want %#v", got, want)
 	}
 }
@@ -194,6 +201,37 @@ func TestYouTubeMusicCandidatesNeverExceedRequestedLimit(t *testing.T) {
 	}
 	if got, want := items[1].SourceID, "two"; got != want {
 		t.Fatalf("last bounded source id = %q, want %q", got, want)
+	}
+}
+
+func TestFlatYouTubeMusicCandidateRetainsSongsSurfaceEvidence(t *testing.T) {
+	provider := NewYouTubeMusicProvider("youtube")
+	items := provider.candidatesFromOutput(`{"id":"xtRVa4kOBt4","title":"iPod Touch","uploader":"Ninajirachi - Topic","duration":211}`, 10)
+	if len(items) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(items))
+	}
+	candidate := items[0]
+	if candidate.SourceURL != "https://www.youtube.com/watch?v=xtRVa4kOBt4" || candidate.Uploader != "Ninajirachi - Topic" || candidate.DurationMs != 211000 {
+		t.Fatalf("flat candidate = %#v, want source URL, uploader, and duration", candidate)
+	}
+	if candidate.Metadata["discoverySurface"] != "youtube_music_songs" {
+		t.Fatalf("flat candidate metadata = %#v, want YouTube Music songs surface", candidate.Metadata)
+	}
+}
+
+func TestCombinedProviderReturnsSuccessfulSurfaceWhenOtherTimesOut(t *testing.T) {
+	combined := newCombinedProvider("youtube", []Provider{
+		fakeProvider{name: "youtube-video", delay: 50 * time.Millisecond},
+		fakeProvider{name: "youtube-music", items: []Candidate{{CandidateID: "youtube:audio", Provider: "youtube", SourceURL: "https://www.youtube.com/watch?v=audio", Title: "Audio", Downloadable: true}}},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	items, err := combined.Search(ctx, "Audio", 10)
+	if err != nil {
+		t.Fatalf("combined search error = %v, want successful music surface", err)
+	}
+	if len(items) != 1 || items[0].CandidateID != "youtube:audio" {
+		t.Fatalf("combined items = %#v, want successful music surface", items)
 	}
 }
 
