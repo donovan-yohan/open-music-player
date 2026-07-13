@@ -625,8 +625,7 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 	if _, err := exec.LookPath("yt-dlp"); err != nil {
 		return nil, &providerFailure{code: ErrProviderDisabled, status: ProviderStatusDisabled, err: fmt.Errorf("yt-dlp is not installed for provider %s", p.name)}
 	}
-	searchArg := p.searchArg(query, limit)
-	cmd := exec.CommandContext(ctx, "yt-dlp", "--dump-json", "--skip-download", searchArg)
+	cmd := exec.CommandContext(ctx, "yt-dlp", p.commandArgs(query, limit)...)
 	out, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -634,9 +633,16 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 		}
 		return nil, &providerFailure{code: ErrProviderBadResponse, status: ProviderStatusFailed, err: fmt.Errorf("yt-dlp search failed for %s: %w", p.name, err)}
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	return p.candidatesFromOutput(string(out), limit), nil
+}
+
+func (p *YTDLPProvider) candidatesFromOutput(output string, limit int) []Candidate {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
 	items := make([]Candidate, 0, len(lines))
 	for _, line := range lines {
+		if len(items) >= limit {
+			break
+		}
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -669,7 +675,7 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 			Metadata:     metadata,
 		})
 	}
-	return items, nil
+	return items
 }
 
 func (p *YTDLPProvider) searchArg(query string, limit int) string {
@@ -682,6 +688,10 @@ func (p *YTDLPProvider) searchArg(query string, limit int) string {
 		return musicURL.String()
 	}
 	return fmt.Sprintf("%s%d:%s", p.prefix, limit, query)
+}
+
+func (p *YTDLPProvider) commandArgs(query string, limit int) []string {
+	return []string{"--playlist-end", strconv.Itoa(limit), "--dump-json", "--skip-download", p.searchArg(query, limit)}
 }
 
 func ytdlpCandidateMetadata(raw map[string]interface{}, provider string, music bool) map[string]interface{} {

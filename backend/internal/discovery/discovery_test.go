@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -168,6 +170,30 @@ func TestYouTubeMusicSearchArgTargetsSongsSurface(t *testing.T) {
 	provider := NewYouTubeMusicProvider("youtube")
 	if got, want := provider.searchArg("Ninajirachi iPod Touch", 10), "https://music.youtube.com/search?q=Ninajirachi+iPod+Touch#songs"; got != want {
 		t.Fatalf("search arg = %q, want %q", got, want)
+	}
+}
+
+func TestYouTubeMusicSearchPassesLimitToSongsPlaylist(t *testing.T) {
+	provider := NewYouTubeMusicProvider("youtube")
+	if got, want := provider.commandArgs("Ninajirachi iPod Touch", 10), []string{"--playlist-end", "10", "--dump-json", "--skip-download", "https://music.youtube.com/search?q=Ninajirachi+iPod+Touch#songs"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("yt-dlp args = %#v, want %#v", got, want)
+	}
+}
+
+func TestYouTubeMusicCandidatesNeverExceedRequestedLimit(t *testing.T) {
+	provider := NewYouTubeMusicProvider("youtube")
+	output := strings.Join([]string{
+		`{"id":"one","url":"https://music.youtube.com/watch?v=one","title":"One"}`,
+		`{"id":"two","url":"https://music.youtube.com/watch?v=two","title":"Two"}`,
+		`{"id":"three","url":"https://music.youtube.com/watch?v=three","title":"Three"}`,
+	}, "\n")
+
+	items := provider.candidatesFromOutput(output, 2)
+	if got, want := len(items), 2; got != want {
+		t.Fatalf("candidate count = %d, want %d", got, want)
+	}
+	if got, want := items[1].SourceID, "two"; got != want {
+		t.Fatalf("last bounded source id = %q, want %q", got, want)
 	}
 }
 
