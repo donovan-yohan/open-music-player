@@ -29,13 +29,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Widget build(BuildContext context) {
     return Consumer<PlaybackState>(
       builder: (context, playback, _) {
+        final colors = Theme.of(context).colorScheme;
         final item = playback.currentItem;
         final queueModeAvailable = _queueModeAvailable(playback);
         final activeTimeMode =
             queueModeAvailable ? _timeMode : _PlayerTimeMode.song;
 
         return Scaffold(
-          backgroundColor: AppTheme.darkBackground,
+          backgroundColor: Theme.of(context).colorScheme.surface,
           appBar: AppBar(
             backgroundColor: Colors.transparent,
             leading: IconButton(
@@ -44,11 +45,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
             title: Column(
               children: [
-                const Text(
+                Text(
                   'PLAYING FROM',
                   style: TextStyle(
                     fontSize: 11,
-                    color: AppTheme.greyText,
+                    color: colors.onSurfaceVariant,
                     letterSpacing: 1.2,
                   ),
                 ),
@@ -56,9 +57,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   playback.playbackContext?.label ??
                       item?.album ??
                       'Unknown Album',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
+                    color: colors.onSurface,
                   ),
                 ),
               ],
@@ -83,10 +85,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ],
           ),
           body: item == null
-              ? const Center(
+              ? Center(
                   child: Text(
                     'No track playing',
-                    style: TextStyle(color: AppTheme.greyText),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                 )
               : SafeArea(
@@ -101,19 +105,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         child: Column(
                           children: [
                             const Spacer(flex: 1),
-                            _buildAlbumArt(item.artUri?.toString()),
+                            _buildAlbumArt(context, item.artUri?.toString()),
                             const Spacer(flex: 1),
                             _buildTrackInfo(
+                              context,
                               _displayTitle(item, playback, activeTimeMode),
                               _displaySubtitle(playback, activeTimeMode),
                             ),
                             if (playback
                                 .snapshot.pitchPreservationFallback) ...[
                               const SizedBox(height: 12),
-                              _buildPitchFallbackWarning(),
+                              _buildPitchFallbackWarning(context),
                             ],
                             const SizedBox(height: 24),
                             _buildProgressBar(
+                              context,
                               playback,
                               activeTimeMode,
                               queueModeAvailable: queueModeAvailable,
@@ -121,7 +127,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             const SizedBox(height: 24),
                             _buildControls(playback),
                             const SizedBox(height: 16),
-                            _buildSecondaryControls(playback),
+                            _buildSecondaryControls(context),
                             const Spacer(flex: 1),
                           ],
                         ),
@@ -134,30 +140,33 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildPitchFallbackWarning() {
+  Widget _buildPitchFallbackWarning(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final warning = SoundQPlayerTheme.of(context).queuePending;
     return Container(
+      key: const ValueKey('player_pitch_fallback_warning'),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: AppTheme.brandColor.withValues(alpha: 0.14),
+        color: warning.withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-          color: AppTheme.brandColor.withValues(alpha: 0.45),
+          color: warning.withValues(alpha: 0.55),
         ),
       ),
-      child: const Row(
+      child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
             Icons.tune,
             size: 18,
-            color: AppTheme.brandColor,
+            color: warning,
           ),
-          SizedBox(width: 8),
+          const SizedBox(width: 8),
           Flexible(
             child: Text(
               'Pitch lock unavailable. Tempo match may alter pitch.',
               style: TextStyle(
-                color: AppTheme.lightText,
+                color: colors.onSurface,
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
               ),
@@ -184,7 +193,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final analysisService = AnalysisService(context.read<ApiClient>());
     showModalBottomSheet(
       context: context,
-      backgroundColor: AppTheme.darkSurface,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHigh,
       showDragHandle: false,
       builder: (_) => SongInfoSheet(
         title: item.title,
@@ -203,7 +212,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildAlbumArt(String? artUrl) {
+  Widget _buildAlbumArt(BuildContext context, String? artUrl) {
     return AspectRatio(
       aspectRatio: 1,
       child: Container(
@@ -223,22 +232,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ? Image.network(
                   artUrl,
                   fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => _buildArtPlaceholder(),
+                  errorBuilder: (_, __, ___) => _buildArtPlaceholder(context),
                 )
-              : _buildArtPlaceholder(),
+              : _buildArtPlaceholder(context),
         ),
       ),
     );
   }
 
-  Widget _buildArtPlaceholder() {
+  Widget _buildArtPlaceholder(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Container(
-      color: AppTheme.darkCard,
-      child: const Center(
+      key: const ValueKey('player_art_placeholder'),
+      color: colors.surfaceContainerHighest,
+      child: Center(
         child: Icon(
           Icons.music_note,
           size: 80,
-          color: AppTheme.greyText,
+          color: colors.onSurfaceVariant,
         ),
       ),
     );
@@ -276,15 +287,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return '$kind · $countLabel';
   }
 
-  Widget _buildTrackInfo(String title, String? artist) {
+  Widget _buildTrackInfo(
+    BuildContext context,
+    String title,
+    String? artist,
+  ) {
+    final colors = Theme.of(context).colorScheme;
     return Column(
       children: [
         Text(
           title,
-          style: const TextStyle(
+          key: const ValueKey('player_track_title'),
+          style: TextStyle(
             fontSize: 22,
             fontWeight: FontWeight.bold,
-            color: AppTheme.lightText,
+            color: colors.onSurface,
           ),
           textAlign: TextAlign.center,
           maxLines: 2,
@@ -293,9 +310,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         const SizedBox(height: 8),
         Text(
           artist ?? 'Unknown Artist',
-          style: const TextStyle(
+          key: const ValueKey('player_track_artist'),
+          style: TextStyle(
             fontSize: 16,
-            color: AppTheme.greyText,
+            color: colors.onSurfaceVariant,
           ),
           textAlign: TextAlign.center,
           maxLines: 1,
@@ -306,11 +324,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Widget _buildProgressBar(
+    BuildContext context,
     PlaybackState playback,
     _PlayerTimeMode mode, {
     required bool queueModeAvailable,
   }) {
     final snapshot = playback.snapshot;
+    final colors = Theme.of(context).colorScheme;
+    final playerTheme = SoundQPlayerTheme.of(context);
     final position = mode == _PlayerTimeMode.queue
         ? snapshot.globalPosition
         : playback.position;
@@ -355,10 +376,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
             trackHeight: 4,
             thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
             overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
-            activeTrackColor: AppTheme.brandColor,
-            inactiveTrackColor: AppTheme.darkCard,
-            thumbColor: AppTheme.lightText,
-            overlayColor: AppTheme.brandColor.withValues(alpha: 0.2),
+            activeTrackColor: playerTheme.playhead,
+            inactiveTrackColor: playerTheme.waveformBase,
+            thumbColor: colors.onSurface,
+            overlayColor: playerTheme.selection,
           ),
           child: Slider(
             value: canSeek
@@ -405,16 +426,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
             children: [
               Text(
                 _formatDuration(position),
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12,
-                  color: AppTheme.greyText,
+                  color: colors.onSurfaceVariant,
                 ),
               ),
               Text(
                 _formatDuration(duration),
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12,
-                  color: AppTheme.greyText,
+                  color: colors.onSurfaceVariant,
                 ),
               ),
             ],
@@ -437,20 +458,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildSecondaryControls(PlaybackState playback) {
+  Widget _buildSecondaryControls(BuildContext context) {
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         IconButton(
-          icon: const Icon(Icons.devices, color: AppTheme.greyText),
+          icon: Icon(Icons.devices, color: color),
           onPressed: () {},
         ),
         IconButton(
-          icon: const Icon(Icons.favorite_border, color: AppTheme.greyText),
+          icon: Icon(Icons.favorite_border, color: color),
           onPressed: () {},
         ),
         IconButton(
-          icon: const Icon(Icons.share, color: AppTheme.greyText),
+          icon: Icon(Icons.share, color: color),
           onPressed: () {},
         ),
       ],
@@ -489,6 +511,8 @@ class PlaybackControls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final playerTheme = SoundQPlayerTheme.of(context);
     return LayoutBuilder(
       builder: (context, constraints) {
         final playButtonSize = constraints.maxWidth < 296 ? 64.0 : 72.0;
@@ -498,27 +522,30 @@ class PlaybackControls extends StatelessWidget {
           children: [
             _ControlIconButton(
               icon: Icons.shuffle,
-              color: shuffleEnabled ? AppTheme.brandColor : AppTheme.greyText,
+              color: shuffleEnabled
+                  ? playerTheme.playhead
+                  : colors.onSurfaceVariant,
               iconSize: 28,
               onPressed: onShuffle,
             ),
             _ControlIconButton(
               icon: Icons.skip_previous,
-              color: AppTheme.lightText,
+              color: colors.onSurface,
               iconSize: 40,
               onPressed: onPrevious,
             ),
             SizedBox.square(
               dimension: playButtonSize,
               child: DecoratedBox(
-                decoration: const BoxDecoration(
+                key: const ValueKey('player_play_pause_surface'),
+                decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: AppTheme.lightText,
+                  color: colors.onSurface,
                 ),
                 child: IconButton(
                   icon: Icon(
                     isPlaying ? Icons.pause : Icons.play_arrow,
-                    color: Colors.black,
+                    color: colors.surface,
                   ),
                   iconSize: playButtonSize < 72 ? 36 : 40,
                   onPressed: onPlayPause,
@@ -527,15 +554,15 @@ class PlaybackControls extends StatelessWidget {
             ),
             _ControlIconButton(
               icon: Icons.skip_next,
-              color: AppTheme.lightText,
+              color: colors.onSurface,
               iconSize: 40,
               onPressed: onNext,
             ),
             _ControlIconButton(
               icon: _loopIcon(loopMode),
               color: loopMode != LoopMode.off
-                  ? AppTheme.brandColor
-                  : AppTheme.greyText,
+                  ? playerTheme.playhead
+                  : colors.onSurfaceVariant,
               iconSize: 28,
               onPressed: onLoop,
             ),

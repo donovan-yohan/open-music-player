@@ -317,6 +317,8 @@ class _MetadataChip extends StatelessWidget {
   }
 }
 
+/// Camelot is music notation rather than a queue or playback state; retaining
+/// its stable wheel preserves quick harmonic scanning and contrast guarantees.
 class _CamelotChipColors {
   const _CamelotChipColors({
     required this.background,
@@ -330,10 +332,6 @@ class _CamelotChipColors {
     if (camelot == null || camelot.length < 2) return null;
     final number = int.tryParse(camelot.substring(0, camelot.length - 1));
     if (number == null || number < 1 || number > 12) return null;
-
-    // Camelot neighbors are harmonic neighbors, so wheel position maps
-    // directly around the hue spectrum. A/B variants share a hue while their
-    // fill brightness distinguishes minor from major.
     final isMinor = camelot.endsWith('A');
     final dark = theme.brightness == Brightness.dark;
     final background = HSVColor.fromAHSV(

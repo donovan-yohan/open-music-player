@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollCacheExtent;
+import '../app/theme.dart';
 import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
 import '../core/engine/transition_diagnostics.dart';
@@ -150,10 +151,6 @@ class StackedWaveformTimeline extends StatefulWidget {
   /// Timeline metadata is overlaid on top of the lane so the waveform keeps the
   /// full phone width for direct manipulation.
   static const double railWidth = 0;
-
-  static const Color currentAccent = Color(0xFFE65100); // high-contrast orange
-  static const Color previousAccent = Color(0xFF607D8B);
-  static const Color upcomingAccent = Color(0xFF1565C0);
 
   @override
   State<StackedWaveformTimeline> createState() =>
@@ -696,6 +693,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
 
     // --- Build lane models in stack order (history → future, top to bottom). ---
     final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final playerTheme = SoundQPlayerTheme.of(context);
     final laneHeightExtra = math.max(
       0.0,
       TimelineLaneHeader.heightForTextScale(textScale) - 64,
@@ -707,7 +705,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           track: widget.previousTrack!,
           mixClip: placed[widget.previousTrack!]!,
           role: LaneRole.previous,
-          accent: StackedWaveformTimeline.previousAccent,
+          accent: playerTheme.timelinePrevious,
           status: 'Played',
           height: 114 + laneHeightExtra,
         ),
@@ -718,7 +716,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         track: widget.currentTrack,
         mixClip: currentClip,
         role: LaneRole.current,
-        accent: StackedWaveformTimeline.currentAccent,
+        accent: playerTheme.timelineCurrent,
         status: 'Now playing',
         height: 146 + laneHeightExtra,
       ),
@@ -731,7 +729,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           track: upcoming[i],
           mixClip: placed[upcoming[i]]!,
           role: collapsed ? LaneRole.collapsed : LaneRole.upcoming,
-          accent: StackedWaveformTimeline.upcomingAccent,
+          accent: playerTheme.timelineUpcoming,
           status: i == 0 ? 'Up next' : 'Later',
           height: (collapsed ? 84 : 114) + laneHeightExtra,
         ),
@@ -2721,9 +2719,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final theme = Theme.of(context);
     final accent = switch (diagnostics.severity) {
       TransitionDiagnosticSeverity.error => theme.colorScheme.error,
-      TransitionDiagnosticSeverity.warning => const Color(0xFFFF8F00),
+      TransitionDiagnosticSeverity.warning =>
+        SoundQPlayerTheme.of(context).queuePending,
       TransitionDiagnosticSeverity.info =>
-        StackedWaveformTimeline.currentAccent,
+        SoundQPlayerTheme.of(context).timelineCurrent,
     };
     return Semantics(
       label:
@@ -2908,9 +2907,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     final theme = Theme.of(context);
     final accent = switch (diagnostics.severity) {
       TransitionDiagnosticSeverity.error => theme.colorScheme.error,
-      TransitionDiagnosticSeverity.warning => const Color(0xFFFF8F00),
+      TransitionDiagnosticSeverity.warning =>
+        SoundQPlayerTheme.of(context).queuePending,
       TransitionDiagnosticSeverity.info =>
-        StackedWaveformTimeline.currentAccent,
+        SoundQPlayerTheme.of(context).timelineCurrent,
     };
     final alpha = (0.025 + gain * 0.055).clamp(0.025, 0.08).toDouble();
     final labels = diagnostics.compactLabels.take(2).toList(growable: false);

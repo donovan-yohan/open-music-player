@@ -50,11 +50,9 @@ void main() {
           builder: textScaler == null
               ? null
               : (context, child) => MediaQuery(
-                    data: MediaQuery.of(
-                      context,
-                    ).copyWith(textScaler: textScaler),
-                    child: child!,
-                  ),
+                  data: MediaQuery.of(context).copyWith(textScaler: textScaler),
+                  child: child!,
+                ),
           home: const QueueScreen(),
         ),
       ),
@@ -213,18 +211,17 @@ void main() {
     FlutterError.onError = flutterErrors.add;
 
     try {
-      await pumpQueueScreen(
-        tester,
-        textScaler: const TextScaler.linear(2),
-      );
+      await pumpQueueScreen(tester, textScaler: const TextScaler.linear(2));
     } finally {
       FlutterError.onError = previousOnError;
     }
 
     final title = find.text('Playback Queue');
     final viewSwitch = find.byKey(const ValueKey('queue_view_switch'));
-    expect(tester.getBottomLeft(title).dy,
-        lessThan(tester.getTopLeft(viewSwitch).dy));
+    expect(
+      tester.getBottomLeft(title).dy,
+      lessThan(tester.getTopLeft(viewSwitch).dy),
+    );
     for (final label in ['List', 'Timeline']) {
       expect(find.text(label), findsOneWidget);
       expect(tester.getSize(find.text(label)).height, lessThan(50));
@@ -237,9 +234,7 @@ void main() {
     );
   });
 
-  testWidgets('3x text uses tooltip-labeled queue view icons', (
-    tester,
-  ) async {
+  testWidgets('3x text uses tooltip-labeled queue view icons', (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -252,10 +247,7 @@ void main() {
     FlutterError.onError = flutterErrors.add;
 
     try {
-      await pumpQueueScreen(
-        tester,
-        textScaler: const TextScaler.linear(3),
-      );
+      await pumpQueueScreen(tester, textScaler: const TextScaler.linear(3));
     } finally {
       FlutterError.onError = previousOnError;
     }
@@ -264,7 +256,9 @@ void main() {
       find.byKey(const ValueKey('queue_view_switch')),
     );
     expect(
-        segmented.segments.every((segment) => segment.label == null), isTrue);
+      segmented.segments.every((segment) => segment.label == null),
+      isTrue,
+    );
     expect(segmented.segments.map((segment) => segment.tooltip), [
       'List view',
       'Timeline view',
@@ -474,7 +468,9 @@ void main() {
     apiClient.releaseHeldAnalysisRequests();
     await tester.pumpAndSettle();
     expect(
-        apiClient.analysisRequests.any((trackId) => trackId >= 1515), isTrue);
+      apiClient.analysisRequests.any((trackId) => trackId >= 1515),
+      isTrue,
+    );
 
     await tester.drag(scroll, const Offset(0, 3000));
     await tester.pump(const Duration(milliseconds: 121));
@@ -499,12 +495,12 @@ void main() {
     await second.loadQueue();
 
     Widget host(QueueProvider provider) => MultiProvider(
-          providers: [
-            ChangeNotifierProvider<QueueProvider>.value(value: provider),
-            ListenableProvider<PlaybackState>.value(value: playbackState),
-          ],
-          child: const MaterialApp(home: QueueScreen()),
-        );
+      providers: [
+        ChangeNotifierProvider<QueueProvider>.value(value: provider),
+        ListenableProvider<PlaybackState>.value(value: playbackState),
+      ],
+      child: const MaterialApp(home: QueueScreen()),
+    );
 
     await tester.pumpWidget(host(first));
     await tester.pumpAndSettle();
@@ -534,10 +530,7 @@ void main() {
     expect(builtLanes, greaterThan(0));
     expect(builtLanes, lessThan(20));
     expect(provider.waveformCalls, lessThan(20));
-    expect(
-      find.byKey(const ValueKey('timeline_clip_t100')),
-      findsNothing,
-    );
+    expect(find.byKey(const ValueKey('timeline_clip_t100')), findsNothing);
   });
 
   testWidgets(
@@ -557,8 +550,9 @@ void main() {
       playbackState.fakePosition = const Duration(seconds: 45);
 
       await pumpQueueScreen(tester);
-      final provider =
-          tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+      final provider = tester
+          .element(find.byType(QueueScreen))
+          .read<QueueProvider>();
       final currentTrack = provider.currentTrack!;
       await provider.setStartOffsetMs(currentTrack, 30000);
       await provider.setEndOffsetMs(currentTrack, 90000);
@@ -671,9 +665,7 @@ void main() {
     (tester) async {
       apiClient.useAnalysisFixture();
       playbackState
-        ..fakeQueue = [
-          _mediaItem(101, 'Analyzed Track', seconds: 198),
-        ]
+        ..fakeQueue = [_mediaItem(101, 'Analyzed Track', seconds: 198)]
         ..fakeCurrentIndex = 0;
 
       await pumpQueueScreen(tester);
@@ -684,7 +676,12 @@ void main() {
       expect(playbackState.analysisRefreshes.single.trackId, '101');
       expect(
         playbackState
-            .analysisRefreshes.single.analysis.summary?.bpm?.numericValue,
+            .analysisRefreshes
+            .single
+            .analysis
+            .summary
+            ?.bpm
+            ?.numericValue,
         124,
       );
       expect(
@@ -789,8 +786,9 @@ void main() {
     playbackState.fakeTimelineModel = TimelineModel(
       clips: [MixClip(placement: placement)],
     );
-    final provider =
-        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+    final provider = tester
+        .element(find.byType(QueueScreen))
+        .read<QueueProvider>();
     provider.applyMixPlanClips(const <MixPlanClip>[]);
     await tester.pumpAndSettle();
 
@@ -818,9 +816,7 @@ void main() {
         timelinePositionMs: 32000,
       );
       await tester.pump();
-      await tester.tap(
-        find.byKey(const ValueKey('timeline_track_actions_t1')),
-      );
+      await tester.tap(find.byKey(const ValueKey('timeline_track_actions_t1')));
       await tester.pumpAndSettle();
       await tester.tap(
         find.byKey(const ValueKey('timeline_correct_analysis_t1')),
@@ -857,28 +853,20 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       apiClient.useAnalysisFixture();
       playbackState
-        ..fakeQueue = [
-          _mediaItem(101, 'Analyzed Track', seconds: 198),
-        ]
+        ..fakeQueue = [_mediaItem(101, 'Analyzed Track', seconds: 198)]
         ..fakeCurrentIndex = 0;
 
       await pumpQueueScreen(tester);
       await tester.tap(find.text('Timeline'));
       await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('timeline_clip_101')));
+      await tester.pumpAndSettle();
       await tester.tap(
-        find.byKey(const ValueKey('timeline_clip_101')),
+        find.byKey(const ValueKey('timeline_track_actions_101')),
       );
       await tester.pumpAndSettle();
       await tester.tap(
-        find.byKey(
-          const ValueKey('timeline_track_actions_101'),
-        ),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(
-          const ValueKey('timeline_correct_analysis_101'),
-        ),
+        find.byKey(const ValueKey('timeline_correct_analysis_101')),
       );
       await tester.pumpAndSettle();
 
@@ -906,8 +894,9 @@ void main() {
       expect(refreshed?.bpm?.numericValue, 141.18);
       expect(refreshed?.downbeats?.positionsMs.first, 87);
 
-      final refreshedSummary = playbackState
-          .fakeQueue.single.extras?['analysisSummary'] as Map<String, dynamic>;
+      final refreshedSummary =
+          playbackState.fakeQueue.single.extras?['analysisSummary']
+              as Map<String, dynamic>;
       expect(refreshedSummary['bpm']['value'], 141.18);
       expect(refreshedSummary['downbeats']['positions_ms'].first, 87);
     },
@@ -993,8 +982,9 @@ void main() {
 
     await pumpQueueScreen(tester);
 
-    final provider =
-        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+    final provider = tester
+        .element(find.byType(QueueScreen))
+        .read<QueueProvider>();
     final track = provider.upNext.first;
 
     await provider.setStartOffsetMs(track, 42000);
@@ -1034,9 +1024,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
       await tester.pumpAndSettle();
-      await tester.tap(
-        find.byKey(const ValueKey('timeline_track_actions_t2')),
-      );
+      await tester.tap(find.byKey(const ValueKey('timeline_track_actions_t2')));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('timeline_move_later_t2')));
       await tester.pumpAndSettle();
@@ -1062,10 +1050,13 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final provider =
-        tester.element(find.byType(QueueScreen)).read<QueueProvider>();
+    final provider = tester
+        .element(find.byType(QueueScreen))
+        .read<QueueProvider>();
     expect(
-        provider.pitchModeFor(provider.queue.tracks[1]), pitchModeFollowTempo);
+      provider.pitchModeFor(provider.queue.tracks[1]),
+      pitchModeFollowTempo,
+    );
   });
 
   testWidgets('timeline drag uses scrub lifecycle instead of direct seek', (
@@ -1094,62 +1085,52 @@ void main() {
     tester,
   ) async {
     playbackState
-      ..fakeQueue = [
-        _mediaItem(1, 'Current Song', seconds: 120),
-      ]
+      ..fakeQueue = [_mediaItem(1, 'Current Song', seconds: 120)]
       ..fakeCurrentIndex = 0;
 
     await pumpQueueScreen(tester);
 
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
-    await tester.tap(
-      find.byKey(const ValueKey('timeline_clip_1')),
-    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('timeline_pitch_mode_1')));
     await tester.pumpAndSettle();
     await tester.tap(
-      find.byKey(const ValueKey('timeline_pitch_mode_1')),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(
-      find.byKey(
-        const ValueKey('timeline_pitch_follows_tempo_1'),
-      ),
+      find.byKey(const ValueKey('timeline_pitch_follows_tempo_1')),
     );
     await tester.pumpAndSettle();
 
-    expect(playbackState.pitchModeCalls, [
-      (0, pitchModeFollowTempo),
-    ]);
+    expect(playbackState.pitchModeCalls, [(0, pitchModeFollowTempo)]);
     expect(playbackState.queueItemMutationCalls, [
       (operation: 'pitch', queueItemId: '1'),
     ]);
     expect(playbackState.pauseCalls, 1);
   });
 
-  testWidgets('live timeline beat-lock choice updates canonical playback mode',
-      (
-    tester,
-  ) async {
-    playbackState
-      ..fakeQueue = [
-        _mediaItem(1, 'Current Song', seconds: 120),
-        _mediaItem(2, 'Next Song', seconds: 120),
-      ]
-      ..fakeCurrentIndex = 0
-      ..fakeIsPlaying = true;
+  testWidgets(
+    'live timeline beat-lock choice updates canonical playback mode',
+    (tester) async {
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(1, 'Current Song', seconds: 120),
+          _mediaItem(2, 'Next Song', seconds: 120),
+        ]
+        ..fakeCurrentIndex = 0
+        ..fakeIsPlaying = true;
 
-    await pumpQueueScreen(tester);
-    await tester.tap(find.text('Timeline'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('timeline_options_fab')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('timeline_snap_beat16')));
-    await tester.pumpAndSettle();
+      await pumpQueueScreen(tester);
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('timeline_options_fab')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('timeline_snap_beat16')));
+      await tester.pumpAndSettle();
 
-    expect(playbackState.pauseCalls, 1);
-    expect(playbackState.transitionSnapModeCalls, [BeatSnapMode.beat16]);
-  });
+      expect(playbackState.pauseCalls, 1);
+      expect(playbackState.transitionSnapModeCalls, [BeatSnapMode.beat16]);
+    },
+  );
 
   testWidgets(
     'server queue gives every row an immediate literal drag handle without whole-row handles',
@@ -1212,8 +1193,9 @@ void main() {
     );
 
     final source = find.byKey(const ValueKey('reorder_handle_occurrence-a'));
-    final destination =
-        find.byKey(const ValueKey('reorder_handle_occurrence-c'));
+    final destination = find.byKey(
+      const ValueKey('reorder_handle_occurrence-c'),
+    );
     await dragReorderHandle(
       tester,
       source,
@@ -1230,31 +1212,34 @@ void main() {
   });
 
   testWidgets(
-      'dragging the current playback row preserves its current identity', (
-    tester,
-  ) async {
-    playbackState
-      ..fakeQueue = [
-        _mediaItem(1, 'History', seconds: 60),
-        _mediaItem(2, 'Current', seconds: 120),
-        _mediaItem(3, 'Next', seconds: 180),
-      ]
-      ..fakeCurrentIndex = 1;
+    'dragging the current playback row preserves its current identity',
+    (tester) async {
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(1, 'History', seconds: 60),
+          _mediaItem(2, 'Current', seconds: 120),
+          _mediaItem(3, 'Next', seconds: 180),
+        ]
+        ..fakeCurrentIndex = 1;
 
-    await pumpQueueScreen(tester);
-    final source = find.byKey(const ValueKey('reorder_handle_2'));
-    final destination = find.byKey(const ValueKey('reorder_handle_1'));
-    await dragReorderHandle(
-      tester,
-      source,
-      Offset(0, tester.getCenter(destination).dy - tester.getCenter(source).dy),
-    );
-    await tester.pumpAndSettle();
+      await pumpQueueScreen(tester);
+      final source = find.byKey(const ValueKey('reorder_handle_2'));
+      final destination = find.byKey(const ValueKey('reorder_handle_1'));
+      await dragReorderHandle(
+        tester,
+        source,
+        Offset(
+          0,
+          tester.getCenter(destination).dy - tester.getCenter(source).dy,
+        ),
+      );
+      await tester.pumpAndSettle();
 
-    expect(playbackState.reorderCalls, [const (1, 0)]);
-    expect(playbackState.fakeCurrentIndex, 0);
-    expect(playbackState.currentItem?.title, 'Current');
-  });
+      expect(playbackState.reorderCalls, [const (1, 0)]);
+      expect(playbackState.fakeCurrentIndex, 0);
+      expect(playbackState.currentItem?.title, 'Current');
+    },
+  );
 
   testWidgets('held placement follows its cue across queue reorder', (
     tester,
@@ -1322,9 +1307,7 @@ void main() {
     );
     expect(
       tester
-          .getSemantics(
-            find.byKey(const ValueKey('timeline_clip_semantics_2')),
-          )
+          .getSemantics(find.byKey(const ValueKey('timeline_clip_semantics_2')))
           .label,
       contains('Saving Paper Planes timeline edit'),
     );
@@ -1482,9 +1465,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('timeline_clip_2')));
     await tester.pumpAndSettle();
-    await tester.tap(
-      find.byKey(const ValueKey('timeline_track_actions_2')),
-    );
+    await tester.tap(find.byKey(const ValueKey('timeline_track_actions_2')));
     await tester.pumpAndSettle();
     final pauseGate = playbackState.holdNextPause();
     await tester.tap(find.byKey(const ValueKey('timeline_move_later_2')));
@@ -1500,8 +1481,12 @@ void main() {
     expect(playbackState.queueItemMutationCalls, [
       (operation: 'move:1', queueItemId: '2'),
     ]);
-    expect(
-        playbackState.fakeQueue.map((item) => item.id), ['1', '3', '4', '2']);
+    expect(playbackState.fakeQueue.map((item) => item.id), [
+      '1',
+      '3',
+      '4',
+      '2',
+    ]);
   });
 
   testWidgets('duplicate playback tracks keep distinct cue identities', (
@@ -1550,9 +1535,7 @@ void main() {
       tester
           .widget<TimelineClipWidget>(
             find.ancestor(
-              of: find.byKey(
-                const ValueKey('timeline_clip_occurrence_a'),
-              ),
+              of: find.byKey(const ValueKey('timeline_clip_occurrence_a')),
               matching: find.byType(TimelineClipWidget),
             ),
           )
@@ -1564,9 +1547,7 @@ void main() {
       tester
           .widget<TimelineClipWidget>(
             find.ancestor(
-              of: find.byKey(
-                const ValueKey('timeline_clip_occurrence_b'),
-              ),
+              of: find.byKey(const ValueKey('timeline_clip_occurrence_b')),
               matching: find.byType(TimelineClipWidget),
             ),
           )
@@ -1576,9 +1557,7 @@ void main() {
     );
 
     await tester.drag(
-      find.byKey(
-        const ValueKey('timeline_clip_body_drag_occurrence_b'),
-      ),
+      find.byKey(const ValueKey('timeline_clip_body_drag_occurrence_b')),
       const Offset(-30, 0),
     );
     await tester.pumpAndSettle();
@@ -1636,9 +1615,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        find.byKey(
-          const ValueKey('timeline_selection_toolbar_2'),
-        ),
+        find.byKey(const ValueKey('timeline_selection_toolbar_2')),
         findsNothing,
       );
       final incomingFinder = find.byKey(
@@ -1672,11 +1649,11 @@ void main() {
       expect(call.$3, isTrue);
       expect(playbackState.fakeTimelineModel.clips[1].timelineStartMs, call.$2);
       expect(
-          tester.getRect(incomingFinder).left, isNot(closeTo(before.left, 1)));
+        tester.getRect(incomingFinder).left,
+        isNot(closeTo(before.left, 1)),
+      );
       expect(
-        find.byKey(
-          const ValueKey('timeline_selection_toolbar_2'),
-        ),
+        find.byKey(const ValueKey('timeline_selection_toolbar_2')),
         findsOneWidget,
       );
       expect(playbackState.pauseCalls, 1);
@@ -1699,9 +1676,7 @@ void main() {
 
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
-    await tester.tap(
-      find.byKey(const ValueKey('timeline_clip_1')),
-    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_1')));
     await tester.pumpAndSettle();
 
     await tester.drag(
@@ -1713,9 +1688,7 @@ void main() {
     expect(playbackState.pauseCalls, greaterThan(0));
     expect(playbackState.trimStartCalls, isNotEmpty);
 
-    await tester.tap(
-      find.byKey(const ValueKey('timeline_clip_2')),
-    );
+    await tester.tap(find.byKey(const ValueKey('timeline_clip_2')));
     await tester.pumpAndSettle();
     await tester.drag(
       find.byKey(const ValueKey('timeline_clip_body_drag_2')),
@@ -1726,15 +1699,9 @@ void main() {
     expect(playbackState.timelineStartCalls, isNotEmpty);
     expect(playbackState.timelineStartCalls.last.$3, isTrue);
 
-    await tester.tap(
-      find.byKey(
-        const ValueKey('timeline_track_actions_2'),
-      ),
-    );
+    await tester.tap(find.byKey(const ValueKey('timeline_track_actions_2')));
     await tester.pumpAndSettle();
-    await tester.tap(
-      find.byKey(const ValueKey('timeline_move_later_2')),
-    );
+    await tester.tap(find.byKey(const ValueKey('timeline_move_later_2')));
     await tester.pumpAndSettle();
 
     expect(playbackState.reorderCalls, [const (1, 2)]);
@@ -1809,7 +1776,7 @@ void main() {
 class _FakePlaybackState extends Fake implements PlaybackState {
   final _notifier = _PlaybackStateNotifier();
   final List<({List<Map<String, dynamic>> tracks, int startIndex})>
-      playQueueCalls = [];
+  playQueueCalls = [];
   final _timelinePositions = StreamController<int>.broadcast();
   final List<String> scrubEvents = [];
   final List<int> skipToIndexCalls = [];
@@ -1976,8 +1943,8 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   audio_service.MediaItem? get currentItem => fakeCurrentIndex == null
       ? null
       : fakeQueue.isEmpty
-          ? null
-          : fakeQueue[fakeCurrentIndex!.clamp(0, fakeQueue.length - 1)];
+      ? null
+      : fakeQueue[fakeCurrentIndex!.clamp(0, fakeQueue.length - 1)];
 
   @override
   PlaybackContext? get playbackContext => fakeContext;
@@ -1996,28 +1963,29 @@ class _FakePlaybackState extends Fake implements PlaybackState {
 
   @override
   PlaybackSnapshot get snapshot => PlaybackSnapshot(
-        sessionId: 'fake_session',
-        cues: _fakeCues,
-        currentCueId: fakeCurrentIndex != null &&
-                fakeCurrentIndex! >= 0 &&
-                fakeCurrentIndex! < _fakeCues.length
-            ? _fakeCues[fakeCurrentIndex!].cueId
-            : null,
-        currentQueueIndex: fakeCurrentIndex,
-        currentMediaItem: currentItem,
-        localPosition: fakePosition,
-        localDuration: currentItem?.duration ?? Duration.zero,
-        globalPosition: Duration(milliseconds: fakeTimelinePositionMs),
-        globalDuration: Duration(
-          milliseconds: fakeQueue.fold<int>(
-            0,
-            (total, item) => total + (item.duration?.inMilliseconds ?? 0),
-          ),
-        ),
-        playing: fakeIsPlaying,
-        processingState: ProcessingState.ready,
-        activeVoiceCount: fakeIsPlaying ? 1 : 0,
-      );
+    sessionId: 'fake_session',
+    cues: _fakeCues,
+    currentCueId:
+        fakeCurrentIndex != null &&
+            fakeCurrentIndex! >= 0 &&
+            fakeCurrentIndex! < _fakeCues.length
+        ? _fakeCues[fakeCurrentIndex!].cueId
+        : null,
+    currentQueueIndex: fakeCurrentIndex,
+    currentMediaItem: currentItem,
+    localPosition: fakePosition,
+    localDuration: currentItem?.duration ?? Duration.zero,
+    globalPosition: Duration(milliseconds: fakeTimelinePositionMs),
+    globalDuration: Duration(
+      milliseconds: fakeQueue.fold<int>(
+        0,
+        (total, item) => total + (item.duration?.inMilliseconds ?? 0),
+      ),
+    ),
+    playing: fakeIsPlaying,
+    processingState: ProcessingState.ready,
+    activeVoiceCount: fakeIsPlaying ? 1 : 0,
+  );
 
   @override
   TimelineClip? timelineClipForQueueIndex(int index) {
@@ -2098,9 +2066,11 @@ class _FakePlaybackState extends Fake implements PlaybackState {
       );
       fakeTimelineModel = TimelineModel(
         clips: [
-          for (var clipIndex = 0;
-              clipIndex < fakeTimelineModel.clips.length;
-              clipIndex++)
+          for (
+            var clipIndex = 0;
+            clipIndex < fakeTimelineModel.clips.length;
+            clipIndex++
+          )
             clipIndex == modelClipIndex
                 ? updated
                 : fakeTimelineModel.clips[clipIndex],
@@ -2122,11 +2092,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
     ));
     final index = _queueIndexForQueueItemId(queueItemId);
     if (index == null) return;
-    await setQueueTimelineStartMs(
-      index,
-      ms,
-      snapToDownbeat: snapToDownbeat,
-    );
+    await setQueueTimelineStartMs(index, ms, snapToDownbeat: snapToDownbeat);
   }
 
   @override
@@ -2177,10 +2143,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
     String queueItemId,
     String pitchMode,
   ) async {
-    queueItemMutationCalls.add((
-      operation: 'pitch',
-      queueItemId: queueItemId,
-    ));
+    queueItemMutationCalls.add((operation: 'pitch', queueItemId: queueItemId));
     final index = _queueIndexForQueueItemId(queueItemId);
     if (index == null) return;
     await setQueuePitchMode(index, pitchMode);
@@ -2265,9 +2228,11 @@ class _FakePlaybackState extends Fake implements PlaybackState {
     if (index < fakeTimelineModel.clips.length) {
       fakeTimelineModel = TimelineModel(
         clips: [
-          for (var clipIndex = 0;
-              clipIndex < fakeTimelineModel.clips.length;
-              clipIndex++)
+          for (
+            var clipIndex = 0;
+            clipIndex < fakeTimelineModel.clips.length;
+            clipIndex++
+          )
             if (clipIndex != index) fakeTimelineModel.clips[clipIndex],
         ],
       );
@@ -2333,33 +2298,31 @@ audio_service.MediaItem _mediaItem(
   String title, {
   int seconds = 60,
   Map<String, dynamic>? extras,
-}) =>
-    audio_service.MediaItem(
-      id: id.toString(),
-      title: title,
-      artist: 'Queue Artist',
-      album: 'Queue Album',
-      duration: Duration(seconds: seconds),
-      extras: extras,
-    );
+}) => audio_service.MediaItem(
+  id: id.toString(),
+  title: title,
+  artist: 'Queue Artist',
+  album: 'Queue Album',
+  duration: Duration(seconds: seconds),
+  extras: extras,
+);
 
 MixClip _playbackMixClip({
   required String queueItemId,
   required String playbackTrackId,
   required int timelineStartMs,
   int durationMs = 240000,
-}) =>
-    MixClip(
-      placement: TimelineClip.clamped(
-        id: 'cue_$queueItemId',
-        trackId: playbackTrackId,
-        sourceDurationMs: durationMs,
-        sourceStartMs: 0,
-        sourceEndMs: durationMs,
-        timelineStartMs: timelineStartMs,
-      ),
-      queueItemId: queueItemId,
-    );
+}) => MixClip(
+  placement: TimelineClip.clamped(
+    id: 'cue_$queueItemId',
+    trackId: playbackTrackId,
+    sourceDurationMs: durationMs,
+    sourceStartMs: 0,
+    sourceEndMs: durationMs,
+    timelineStartMs: timelineStartMs,
+  ),
+  queueItemId: queueItemId,
+);
 
 class _PlaybackStateNotifier extends ChangeNotifier {
   void emit() => notifyListeners();
@@ -2433,10 +2396,10 @@ class _FakeQueueApiClient extends ApiClient {
   final List<(int, int)> reorders = [];
   final List<String> retriedQueueItemIds = [];
   final List<({int trackId, TrackAnalysisOverrides overrides})>
-      analysisOverrideUpdates = [];
+  analysisOverrideUpdates = [];
   final List<int> analysisRequests = [];
   final List<({int trackId, Completer<TrackAnalysis> completer})>
-      _heldAnalysisRequests = [];
+  _heldAnalysisRequests = [];
   bool failLoads = false;
   bool deferLoad = false;
   bool hydrateAnalysisFixture = false;
@@ -2613,18 +2576,18 @@ class _FakeQueueApiClient extends ApiClient {
   void useCompactAnalysisFixture({int currentIndex = 0, int trackCount = 2}) {
     hydrateAnalysisFixture = true;
     TrackAnalysis compact(double bpm) => TrackAnalysis.fromJson(
-          status: 'analyzed',
-          summary: {
-            'bpm': {'value': bpm},
-            'beat_grid': {
-              'bpm': bpm,
-              'beats_ms': [0, 500, 1000],
-            },
-            'downbeats': {
-              'positions_ms': [0],
-            },
-          },
-        );
+      status: 'analyzed',
+      summary: {
+        'bpm': {'value': bpm},
+        'beat_grid': {
+          'bpm': bpm,
+          'beats_ms': [0, 500, 1000],
+        },
+        'downbeats': {
+          'positions_ms': [0],
+        },
+      },
+    );
 
     _state = QueueState(
       tracks: [
@@ -2795,8 +2758,7 @@ class _FakeQueueApiClient extends ApiClient {
   Future<MixPlan> createMixPlan({
     required String name,
     required List<MixPlanClip> clips,
-  }) async =>
-      _fakeMixPlan(name: name, clips: clips, version: 1);
+  }) async => _fakeMixPlan(name: name, clips: clips, version: 1);
 
   @override
   Future<MixPlan> updateMixPlan({
@@ -2812,22 +2774,21 @@ class _FakeQueueApiClient extends ApiClient {
     required String name,
     required List<MixPlanClip> clips,
     required int version,
-  }) =>
-      MixPlan(
-        id: id,
-        schemaVersion: 1,
-        name: name,
-        clips: clips,
-        summary: MixPlanSummary(
-          clipCount: clips.length,
-          trackIds: clips.map((clip) => clip.trackId).toList(),
-          durationMs: clips.fold<int>(
-            0,
-            (max, clip) => clip.timelineEndMs > max ? clip.timelineEndMs : max,
-          ),
-        ),
-        version: version,
-        createdAt: DateTime(2026),
-        updatedAt: DateTime(2026),
-      );
+  }) => MixPlan(
+    id: id,
+    schemaVersion: 1,
+    name: name,
+    clips: clips,
+    summary: MixPlanSummary(
+      clipCount: clips.length,
+      trackIds: clips.map((clip) => clip.trackId).toList(),
+      durationMs: clips.fold<int>(
+        0,
+        (max, clip) => clip.timelineEndMs > max ? clip.timelineEndMs : max,
+      ),
+    ),
+    version: version,
+    createdAt: DateTime(2026),
+    updatedAt: DateTime(2026),
+  );
 }

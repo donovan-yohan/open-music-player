@@ -1,10 +1,14 @@
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:open_music_player/app/theme.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/features/player/player_screen.dart';
 import 'package:provider/provider.dart';
 
@@ -134,6 +138,121 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets(
+    'player surfaces resolve semantic contrast and preserve scrub and sheet wiring',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 2200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      for (final theme in [AppTheme.lightTheme, AppTheme.darkTheme]) {
+        final playback = _FakePlaybackState(
+          currentItem: const MediaItem(
+            id: 'placeholder',
+            title: 'Theme Track',
+            artist: 'Theme Artist',
+            duration: Duration(minutes: 1),
+          ),
+          snapshot: const PlaybackSnapshot(
+            sessionId: 'session_theme',
+            cues: [],
+            currentCueId: 'cue_1',
+            currentQueueIndex: 0,
+            currentMediaItem: _FakePlaybackState.testItem,
+            localPosition: Duration(seconds: 10),
+            localDuration: Duration(minutes: 1),
+            globalPosition: Duration(seconds: 10),
+            globalDuration: Duration(minutes: 1),
+            playing: false,
+            processingState: ProcessingState.ready,
+            activeVoiceCount: 1,
+            pitchPreservationFallback: true,
+          ),
+        );
+
+        await tester.pumpWidget(
+          MultiProvider(
+            providers: [
+              ListenableProvider<PlaybackState>.value(value: playback),
+              Provider<ApiClient>(
+                create: (_) => ApiClient(
+                  httpClient: MockClient(
+                    (_) async => http.Response('{}', 404),
+                  ),
+                ),
+              ),
+            ],
+            child: MaterialApp(
+              key: ValueKey(theme.brightness),
+              theme: theme,
+              home: const PlayerScreen(),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        final surface = theme.colorScheme.surface;
+        final title = tester.widget<Text>(
+          find.byKey(const ValueKey('player_track_title')),
+        );
+        final artist = tester.widget<Text>(
+          find.byKey(const ValueKey('player_track_artist')),
+        );
+        expect(_contrastRatio(title.style!.color!, surface), atLeast(4.5));
+        expect(_contrastRatio(artist.style!.color!, surface), atLeast(4.5));
+
+        final placeholder = tester.widget<Container>(
+          find.byKey(const ValueKey('player_art_placeholder')),
+        );
+        final placeholderIcon = tester.widget<Icon>(
+          find.descendant(
+            of: find.byKey(const ValueKey('player_art_placeholder')),
+            matching: find.byIcon(Icons.music_note),
+          ),
+        );
+        expect(
+          _contrastRatio(placeholderIcon.color!, placeholder.color!),
+          atLeast(3),
+        );
+
+        final warningText = tester.widget<Text>(
+          find.text('Pitch lock unavailable. Tempo match may alter pitch.'),
+        );
+        expect(
+            _contrastRatio(warningText.style!.color!, surface), atLeast(4.5));
+
+        final secondary = tester.widget<Icon>(find.byIcon(Icons.devices));
+        expect(_contrastRatio(secondary.color!, surface), atLeast(3));
+
+        final slider = tester.widget<Slider>(find.byType(Slider));
+        slider.onChangeStart?.call(0.1);
+        slider.onChanged?.call(0.5);
+        slider.onChangeEnd?.call(0.5);
+        await tester.pump();
+        expect(playback.scrubEvents, [
+          'begin',
+          'update:30000',
+          'end:30000',
+        ]);
+
+        await tester.tap(find.byTooltip('Song info'));
+        await tester.pumpAndSettle();
+
+        final sheet = tester.widget<BottomSheet>(find.byType(BottomSheet));
+        final sheetTitle = tester.widget<Text>(
+          find.byKey(const ValueKey('song_info_sheet_title')),
+        );
+        expect(
+          _contrastRatio(sheetTitle.style!.color!, sheet.backgroundColor!),
+          atLeast(4.5),
+        );
+        expect(
+            find.text('Analysis unavailable for this track.'), findsOneWidget);
+      }
+    },
+  );
 }
 
 class _FakePlaybackState extends Fake implements PlaybackState {
@@ -141,8 +260,10 @@ class _FakePlaybackState extends Fake implements PlaybackState {
     PlaybackContext? playbackContext,
     List<MediaItem>? queue,
     PlaybackSnapshot? snapshot,
+    MediaItem? currentItem,
   })  : _playbackContext = playbackContext,
         _queue = queue ?? const [testItem],
+        _currentItem = currentItem ?? testItem,
         _snapshot = snapshot ??
             const PlaybackSnapshot(
               sessionId: 'session_test',
@@ -169,11 +290,12 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   final scrubEvents = <String>[];
   final PlaybackContext? _playbackContext;
   final List<MediaItem> _queue;
+  final MediaItem _currentItem;
   final PlaybackSnapshot _snapshot;
   int seekCalls = 0;
 
   @override
-  MediaItem? get currentItem => testItem;
+  MediaItem? get currentItem => _currentItem;
 
   @override
   List<MediaItem> get queue => _queue;
@@ -250,4 +372,16 @@ class _FakePlaybackState extends Fake implements PlaybackState {
 
   @override
   Future<void> cycleLoopMode() async {}
+}
+
+Matcher atLeast(num value) => greaterThanOrEqualTo(value);
+
+double _contrastRatio(Color first, Color second) {
+  final firstLuminance = first.computeLuminance();
+  final secondLuminance = second.computeLuminance();
+  final lighter =
+      firstLuminance > secondLuminance ? firstLuminance : secondLuminance;
+  final darker =
+      firstLuminance > secondLuminance ? secondLuminance : firstLuminance;
+  return (lighter + 0.05) / (darker + 0.05);
 }

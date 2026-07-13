@@ -89,6 +89,174 @@ void main() {
       playback.dispose();
     });
 
+    test('restore protects persisted session from seeded emissions', () async {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_startup_gate',
+        queue: [
+          const MediaItem(
+            id: '1',
+            title: 'Track 1',
+            duration: Duration(seconds: 30),
+          ),
+          const MediaItem(
+            id: '2',
+            title: 'Track 2',
+            duration: Duration(seconds: 45),
+          ),
+        ],
+      ).withPlacementAt(
+        1,
+        TimelineClip.clamped(
+          id: 'ignored',
+          trackId: '2',
+          sourceDurationMs: 45000,
+          sourceStartMs: 5000,
+          sourceEndMs: 40000,
+          timelineStartMs: 25000,
+        ),
+      );
+      final storedSnapshot = QueueSnapshot(
+        tracks: [_track(1, seconds: 30), _track(2, seconds: 45)],
+        currentIndex: 1,
+        positionMs: 12000,
+        session: session,
+      );
+      SharedPreferences.setMockInitialValues({
+        QueuePersistenceStore.storageKey: storedSnapshot.encode(),
+      });
+      final store = QueuePersistenceStore();
+      final playback = _playbackState(persistence: store);
+
+      // Queue and index streams emit their seeded empty values before startup
+      // calls restore. They must not erase the durable snapshot.
+      await Future<void>.delayed(Duration.zero);
+      final beforeRestore = await store.load();
+      expect(beforeRestore.tracks, hasLength(2));
+      expect(beforeRestore.session?.sessionId, 'session_startup_gate');
+
+      await playback.restore();
+      await Future<void>.delayed(Duration.zero);
+
+      final afterRestore = await store.load();
+      expect(playback.queue.map((item) => item.id), ['1', '2']);
+      expect(playback.currentIndex, 1);
+      expect(playback.position, const Duration(seconds: 12));
+      expect(playback.timelineModel.clips[1].placement.sourceStartMs, 5000);
+      expect(afterRestore.tracks, hasLength(2));
+      expect(afterRestore.session?.sessionId, 'session_startup_gate');
+      expect(afterRestore.session?.clips[1].placement.timelineStartMs, 25000);
+
+      await playback.removeFromQueue(1);
+      await playback.removeFromQueue(0);
+      await Future<void>.delayed(Duration.zero);
+
+      expect((await store.load()).isEmpty, isTrue);
+      playback.dispose();
+    });
+
+    test('queue mutation during restore resolve wins and is persisted',
+        () async {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_delayed_restore',
+        queue: [
+          const MediaItem(
+            id: '1',
+            title: 'Track 1',
+            duration: Duration(seconds: 30),
+          ),
+          const MediaItem(
+            id: '2',
+            title: 'Track 2',
+            duration: Duration(seconds: 45),
+          ),
+        ],
+      ).withPlacementAt(
+        1,
+        TimelineClip.clamped(
+          id: 'ignored',
+          trackId: '2',
+          sourceDurationMs: 45000,
+          sourceStartMs: 5000,
+          sourceEndMs: 40000,
+          timelineStartMs: 25000,
+        ),
+      );
+      final store = _ControllableQueuePersistenceStore();
+      final signed = _DelayedSignedRequester();
+      final playback = _playbackState(
+        signedAudioUrlService: signed.service,
+        persistence: store,
+      );
+
+      final restore = playback.restore();
+      await store.waitForLoad();
+      store.completeLoad(
+        QueueSnapshot(
+          tracks: [_track(1, seconds: 30), _track(2, seconds: 45)],
+          currentIndex: 1,
+          positionMs: 12000,
+          session: session,
+        ),
+      );
+      await signed.waitForRequestCount(1);
+
+      final mutation = playback.playQueue([_track(3, seconds: 60)]);
+      await signed.waitForRequestCount(2);
+      signed.completeRequest(1);
+      await mutation;
+
+      expect(playback.queue.map((item) => item.id), ['3']);
+      expect(store.savedSnapshots, isEmpty);
+
+      signed.completeRequest(0);
+      await restore;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.queue.map((item) => item.id), ['3']);
+      expect(store.savedSnapshots, isNotEmpty);
+      expect(store.savedSnapshots.last.tracks.single['id'], 3);
+      expect(store.savedSnapshots.last.session?.sessionId,
+          isNot('session_delayed_restore'));
+      playback.dispose();
+    });
+
+    test('empty restore opens persistence without replaying startup seeds',
+        () async {
+      final store = _ControllableQueuePersistenceStore();
+      final playback = _playbackState(persistence: store);
+
+      final restore = playback.restore();
+      await store.waitForLoad();
+      store.completeLoad(const QueueSnapshot());
+      await restore;
+
+      expect(store.savedSnapshots, isEmpty);
+
+      await playback.playQueue([_track(4, seconds: 30)]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(store.savedSnapshots.last.tracks.single['id'], 4);
+      playback.dispose();
+    });
+
+    test('restore failure opens persistence for later queue changes', () async {
+      final store = _ControllableQueuePersistenceStore();
+      final playback = _playbackState(persistence: store);
+
+      final restore = playback.restore();
+      await store.waitForLoad();
+      store.failLoad(StateError('test load failure'));
+      await restore;
+
+      expect(store.savedSnapshots, isEmpty);
+
+      await playback.playQueue([_track(5, seconds: 30)]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(store.savedSnapshots.last.tracks.single['id'], 5);
+      playback.dispose();
+    });
+
     test('playQueue start index exposes local position and current media item',
         () async {
       final playback = _playbackState();
@@ -361,7 +529,10 @@ void main() {
   });
 }
 
-PlaybackState _playbackState({SignedAudioUrlService? signedAudioUrlService}) {
+PlaybackState _playbackState({
+  SignedAudioUrlService? signedAudioUrlService,
+  QueuePersistenceStore? persistence,
+}) {
   final clock = DefaultTimelineClock(
     now: () => DateTime.utc(2026),
     uiTickInterval: const Duration(hours: 1),
@@ -387,7 +558,7 @@ PlaybackState _playbackState({SignedAudioUrlService? signedAudioUrlService}) {
             'unavailable': <Map<String, dynamic>>[],
           };
         }),
-    persistence: QueuePersistenceStore(),
+    persistence: persistence ?? QueuePersistenceStore(),
   );
 }
 
@@ -432,6 +603,29 @@ class _SignedRequest {
 
   final List<int> trackIds;
   final Completer<Map<String, dynamic>> completer = Completer();
+}
+
+class _ControllableQueuePersistenceStore extends QueuePersistenceStore {
+  final Completer<void> _loadStarted = Completer<void>();
+  final Completer<QueueSnapshot> _loadResult = Completer<QueueSnapshot>();
+  final List<QueueSnapshot> savedSnapshots = <QueueSnapshot>[];
+
+  @override
+  Future<QueueSnapshot> load() {
+    if (!_loadStarted.isCompleted) _loadStarted.complete();
+    return _loadResult.future;
+  }
+
+  Future<void> waitForLoad() => _loadStarted.future;
+
+  void completeLoad(QueueSnapshot snapshot) => _loadResult.complete(snapshot);
+
+  void failLoad(Object error) => _loadResult.completeError(error);
+
+  @override
+  Future<void> save(QueueSnapshot snapshot) async {
+    savedSnapshots.add(snapshot);
+  }
 }
 
 Map<String, dynamic> _track(int id, {required int seconds}) => {

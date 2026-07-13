@@ -3,6 +3,8 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../core/auth/auth_state.dart';
 
+const _brandLogoAsset = 'assets/brand/soundq-logo.png';
+
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
 
@@ -50,10 +52,10 @@ class _SplashScreenState extends State<SplashScreen> {
             ClipRRect(
               borderRadius: BorderRadius.circular(24),
               child: Image.asset(
-                'assets/brand/soundq-placeholder-logo.png',
+                _brandLogoAsset,
                 width: 132,
                 height: 132,
-                fit: BoxFit.cover,
+                fit: BoxFit.contain,
                 errorBuilder: (context, error, stackTrace) {
                   return Icon(
                     Icons.music_note,

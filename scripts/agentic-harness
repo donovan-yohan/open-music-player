@@ -89,7 +89,10 @@ def repo_files() -> list[Path]:
         rel = Path(raw.decode())
         if any(part in SKIP_PARTS for part in rel.parts):
             continue
-        files.append(ROOT / rel)
+        path = ROOT / rel
+        # `git ls-files` keeps index-deleted paths until the change is staged.
+        if path.exists():
+            files.append(path)
     return files
 
 
@@ -280,7 +283,14 @@ def check_ci_wires_harness() -> None:
 def check_local_dev_contracts() -> None:
     required_phrases = {
         ".gitignore": ["outputs/", "deploy/.env"],
-        "scripts/dev": ["test-infra", "test-infra-isolated"],
+        "scripts/dev": [
+            "test-infra",
+            "test-infra-isolated",
+            "flutter-web",
+            "OMP_WEB_PORT",
+            "OMP_FLUTTER_API_BASE_URL",
+            "-d web-server",
+        ],
         "scripts/local-low-memory.sh": ["test-infra", "WORKER_COUNT=0"],
         "docs/LOW_MEMORY_LOCAL_DEV.md": [
             "scripts/dev test-infra",
@@ -322,6 +332,19 @@ def check_python_syntax(files: list[Path]) -> None:
             ast.parse(path.read_text(errors="replace"), filename=str(path))
         except SyntaxError as exc:
             fail(f"{rel(path)}: python syntax error: {exc}")
+
+
+def check_soundq_brand_assets() -> None:
+    result = subprocess.run(
+        ["python3", "scripts/generate_soundq_brand_assets.py", "--check"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        fail(f"Sound Q generated assets are stale: {detail}")
 
 
 def check_bash_syntax(files: list[Path]) -> None:
@@ -490,6 +513,7 @@ def main() -> int:
     check_local_dev_contracts()
     check_json_syntax(files)
     check_python_syntax(files)
+    check_soundq_brand_assets()
     check_bash_syntax(files)
     check_secret_scan(files)
     check_review_bypass_guards(files)
