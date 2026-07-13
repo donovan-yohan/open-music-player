@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,9 @@ func TestStartImportResolvedSnapshotPersistsDisabledBindingAndMappings(t *testin
 	}
 	if bindingStore.calls != 1 {
 		t.Fatalf("ApplyResolvedMapping calls = %d, want 1", bindingStore.calls)
+	}
+	if store.associateItemsCalls != 1 || store.associatedItemCount != 4 {
+		t.Fatalf("batch associations = %d calls for %d items, want 1 call for 4 items", store.associateItemsCalls, store.associatedItemCount)
 	}
 	binding := bindingStore.binding
 	if binding == nil || binding.SyncEnabled || binding.Provider != "youtube" || binding.ProviderPlaylistID != "PLresolved" || binding.CanonicalURL != snapshot.Source.CanonicalURL {
@@ -288,7 +292,7 @@ func TestStartImportResolvedMappingFailureMarksJobFailed(t *testing.T) {
 
 func TestStartImportPropagatesSourceEntryAssociationFailure(t *testing.T) {
 	store := newFakeStore()
-	store.associateItemErr = errors.New("source entry association failed")
+	store.associateItemsErr = errors.New("source entry association failed")
 	bindingStore := &fakeSourceBindingStore{}
 	service := NewService(Config{
 		Store:      store,
@@ -305,7 +309,7 @@ func TestStartImportPropagatesSourceEntryAssociationFailure(t *testing.T) {
 	})
 
 	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
-	if err == nil || !strings.Contains(err.Error(), "associate playlist import item") {
+	if err == nil || !strings.Contains(err.Error(), "associate playlist import source entries") {
 		t.Fatalf("StartImport error = %v, want association failure", err)
 	}
 	if bindingStore.loadCalls != 1 || len(store.jobs) != 1 {
@@ -314,6 +318,34 @@ func TestStartImportPropagatesSourceEntryAssociationFailure(t *testing.T) {
 	for _, job := range store.jobs {
 		if job.Status != JobStatusFailed {
 			t.Fatalf("job status = %q, want %q", job.Status, JobStatusFailed)
+		}
+	}
+}
+
+func TestAssociateItemsWithSourceEntriesUsesOneBatchForFiveHundredItems(t *testing.T) {
+	store := newFakeStore()
+	service := &Service{store: store}
+	items := make([]ImportItem, 0, DefaultMaxItems)
+	sourceEntries := make([]db.PlaylistSourceEntry, 0, DefaultMaxItems)
+	for index := 0; index < DefaultMaxItems; index++ {
+		itemID := int64(index + 1)
+		providerEntryID := fmt.Sprintf("batch-entry-%03d", index)
+		item := ImportItem{ID: itemID, SourceID: providerEntryID}
+		items = append(items, item)
+		store.items[itemID] = &item
+		sourceEntries = append(sourceEntries, db.PlaylistSourceEntry{ID: itemID, ProviderEntryID: providerEntryID})
+	}
+
+	if err := service.associateItemsWithSourceEntries(context.Background(), items, sourceEntries); err != nil {
+		t.Fatalf("associate 500 source entries: %v", err)
+	}
+	if store.associateItemsCalls != 1 || store.associatedItemCount != DefaultMaxItems {
+		t.Fatalf("batch associations = %d calls for %d items, want one call for %d items", store.associateItemsCalls, store.associatedItemCount, DefaultMaxItems)
+	}
+	for _, itemID := range []int64{1, DefaultMaxItems} {
+		item := store.items[itemID]
+		if !item.PlaylistSourceEntryID.Valid || item.PlaylistSourceEntryID.Int64 != itemID {
+			t.Fatalf("item %d source entry = %+v, want %d", itemID, item.PlaylistSourceEntryID, itemID)
 		}
 	}
 }
@@ -486,13 +518,15 @@ func TestStartImportPropagatesPersistentQueuedItemStoreFailure(t *testing.T) {
 }
 
 type fakeStore struct {
-	jobs             map[uuid.UUID]*ImportJob
-	items            map[int64]*ImportItem
-	next             int64
-	createItemErr    error
-	associateItemErr error
-	markQueuedErrs   []error
-	markQueuedCalls  int
+	jobs                map[uuid.UUID]*ImportJob
+	items               map[int64]*ImportItem
+	next                int64
+	createItemErr       error
+	associateItemsErr   error
+	associateItemsCalls int
+	associatedItemCount int
+	markQueuedErrs      []error
+	markQueuedCalls     int
 }
 
 func newFakeStore() *fakeStore {
@@ -537,12 +571,16 @@ func (s *fakeStore) CreateItem(_ context.Context, item *ImportItem) error {
 	s.items[item.ID] = &copy
 	return nil
 }
-func (s *fakeStore) AssociateItemSourceEntry(_ context.Context, itemID, sourceEntryID int64) error {
-	if s.associateItemErr != nil {
-		return s.associateItemErr
+func (s *fakeStore) AssociateItemSourceEntries(_ context.Context, associations []ItemSourceEntryAssociation) error {
+	s.associateItemsCalls++
+	s.associatedItemCount += len(associations)
+	if s.associateItemsErr != nil {
+		return s.associateItemsErr
 	}
-	item := s.items[itemID]
-	item.PlaylistSourceEntryID = sql.NullInt64{Int64: sourceEntryID, Valid: true}
+	for _, association := range associations {
+		item := s.items[association.ItemID]
+		item.PlaylistSourceEntryID = sql.NullInt64{Int64: association.SourceEntryID, Valid: true}
+	}
 	return nil
 }
 func (s *fakeStore) MarkItemQueued(_ context.Context, itemID int64, downloadJobID string) error {

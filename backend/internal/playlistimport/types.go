@@ -73,6 +73,13 @@ type ImportItem struct {
 	UpdatedAt             time.Time
 }
 
+// ItemSourceEntryAssociation links one import item to a stable provider entry.
+// Both IDs are validated and updated as one transaction by ImportRepository.
+type ItemSourceEntryAssociation struct {
+	ItemID        int64
+	SourceEntryID int64
+}
+
 type PlaylistMetadata struct {
 	Title string
 }

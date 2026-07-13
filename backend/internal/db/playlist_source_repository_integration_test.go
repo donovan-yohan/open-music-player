@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -231,5 +232,67 @@ func TestPlaylistSourceApplyResolvedMappingRejectsInvalidReplacementAtomically(t
 	}
 	if membership := playlistSourceMembership(t, database, playlist.ID); len(membership) != 1 || membership[0] != trackID {
 		t.Fatalf("membership after rejected replacement = %v, want [%d]", membership, trackID)
+	}
+}
+
+func TestPlaylistSourceApplyResolvedMappingBulkFiveHundredEntries(t *testing.T) {
+	database, ctx := newPlaylistSourceTestDB(t)
+	playlistRepo := NewPlaylistRepository(database)
+	trackRepo := NewTrackRepository(database)
+	sourceRepo := NewPlaylistSourceRepository(database)
+	userID := seedPlaylistSourceUser(t, database, "bulk-resolved@example.test")
+	playlist := &Playlist{UserID: userID, Name: "Bulk resolved source playlist"}
+	if err := playlistRepo.Create(ctx, playlist); err != nil {
+		t.Fatalf("create playlist: %v", err)
+	}
+	firstTrackID := seedPlaylistSourceTrack(t, trackRepo, ctx, "first duplicate track")
+	secondTrackID := seedPlaylistSourceTrack(t, trackRepo, ctx, "second bulk track")
+
+	entries := make([]ResolvedPlaylistSourceEntry, 0, 500)
+	for index := 0; index < 500; index++ {
+		entry := ResolvedPlaylistSourceEntry{
+			ProviderEntryID: fmt.Sprintf("bulk-entry-%03d", index),
+			SourceURL:       fmt.Sprintf("https://provider.test/bulk/%03d", index),
+			SourceOrder:     index,
+		}
+		switch index {
+		case 0, 347:
+			entry.TrackID = firstTrackID
+		case 189:
+			entry.TrackID = secondTrackID
+		}
+		entries = append(entries, entry)
+	}
+
+	binding := newPlaylistSourceBinding(playlist.ID, userID, "bulk-snapshot")
+	if err := sourceRepo.ApplyResolvedMapping(ctx, binding, entries); err != nil {
+		t.Fatalf("apply 500 entry mapping: %v", err)
+	}
+	_, mappedEntries, err := sourceRepo.LoadBinding(ctx, userID, playlist.ID)
+	if err != nil {
+		t.Fatalf("load bulk mapping: %v", err)
+	}
+	if len(mappedEntries) != 500 {
+		t.Fatalf("mapped entry count = %d, want 500", len(mappedEntries))
+	}
+	if !mappedEntries[0].TrackID.Valid || mappedEntries[0].TrackID.Int64 != firstTrackID ||
+		mappedEntries[1].TrackID.Valid || !mappedEntries[189].TrackID.Valid || mappedEntries[189].TrackID.Int64 != secondTrackID ||
+		!mappedEntries[347].TrackID.Valid || mappedEntries[347].TrackID.Int64 != firstTrackID {
+		t.Fatalf("bulk mapping did not preserve nullable and duplicate tracks: first=%+v unresolved=%+v second=%+v duplicate=%+v", mappedEntries[0], mappedEntries[1], mappedEntries[189], mappedEntries[347])
+	}
+	if membership := playlistSourceMembership(t, database, playlist.ID); len(membership) != 2 || membership[0] != firstTrackID || membership[1] != secondTrackID {
+		t.Fatalf("bulk membership = %v, want first duplicate occurrence ordering", membership)
+	}
+
+	stableID := mappedEntries[347].ID
+	if err := sourceRepo.ApplyResolvedMapping(ctx, binding, entries); err != nil {
+		t.Fatalf("reapply 500 entry mapping: %v", err)
+	}
+	after, remappedEntries, err := sourceRepo.LoadBinding(ctx, userID, playlist.ID)
+	if err != nil {
+		t.Fatalf("load idempotent bulk mapping: %v", err)
+	}
+	if after.SnapshotGeneration != 1 || remappedEntries[347].ID != stableID {
+		t.Fatalf("idempotent bulk mapping = generation %d stable entry %d, want 1 and %d", after.SnapshotGeneration, remappedEntries[347].ID, stableID)
 	}
 }

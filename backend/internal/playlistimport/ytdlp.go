@@ -41,6 +41,9 @@ func (e *YTDLPEnumerator) Enumerate(ctx context.Context, sourceURL string, maxIt
 	if err != nil {
 		return PlaylistMetadata{}, nil, err
 	}
+	if result.stdoutTruncated {
+		return PlaylistMetadata{}, nil, fmt.Errorf("parse yt-dlp playlist metadata: %w: yt-dlp output exceeded limit", playlistsync.ErrIncompleteSnapshot)
+	}
 
 	var payload ytdlpPlaylist
 	if err := json.Unmarshal(result.stdout, &payload); err != nil {
@@ -48,7 +51,7 @@ func (e *YTDLPEnumerator) Enumerate(ctx context.Context, sourceURL string, maxIt
 		// fallback instead of pretending enumeration broke. this is annoying but real.
 		entries, scanErr := parseYTDLPLines(result.stdout, sourceURL, maxItems)
 		if scanErr != nil {
-			return PlaylistMetadata{}, nil, fmt.Errorf("parse yt-dlp playlist metadata: %w", err)
+			return PlaylistMetadata{}, nil, fmt.Errorf("parse yt-dlp playlist metadata: %w", scanErr)
 		}
 		return PlaylistMetadata{}, entries, nil
 	}
@@ -116,8 +119,8 @@ func (e *YTDLPEnumerator) Resolve(ctx context.Context, sourceURL string) (playli
 	entries := make([]playlistsync.Entry, 0, len(payload.Entries))
 	for index, raw := range payload.Entries {
 		entry := raw.toEntry(index + 1)
-		if entry.SourceID == "" || entry.Error != "" {
-			return playlistsync.Snapshot{}, fmt.Errorf("%w: entry %d is missing or unavailable", playlistsync.ErrIncompleteSnapshot, index)
+		if entry.SourceID == "" {
+			return playlistsync.Snapshot{}, fmt.Errorf("%w: entry %d is missing stable identity", playlistsync.ErrIncompleteSnapshot, index)
 		}
 		if entry.SourceURL == "" {
 			entry.SourceURL = youtubeWatchURL(entry.SourceID)
@@ -236,7 +239,8 @@ func youtubePlaylistID(rawURL string) (string, error) {
 
 func isYouTubeHost(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	return host == "youtube.com" || strings.HasSuffix(host, ".youtube.com")
+	return host == "youtube.com" || strings.HasSuffix(host, ".youtube.com") ||
+		host == "youtu.be" || strings.HasSuffix(host, ".youtu.be")
 }
 
 func canonicalYouTubePlaylistURL(playlistID string) string {

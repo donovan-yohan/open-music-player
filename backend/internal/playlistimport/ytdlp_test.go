@@ -28,6 +28,8 @@ const completeYTDLPPlaylistFixture = `{
       "webpage_url": "https://www.youtube.com/watch?v=video-two",
       "title": "Second track",
       "uploader": "Second uploader",
+      "availability": "private",
+      "error": "This video is unavailable",
       "duration_ms": 92000
     }
   ]
@@ -74,6 +76,9 @@ func TestYTDLPResolveCanonicalizesSourceAndPreservesEntryOrder(t *testing.T) {
 	}
 	if snapshot.Entries[0].Metadata.DurationMS != 61500 || snapshot.Entries[1].Metadata.DurationMS != 92000 {
 		t.Fatalf("entry durations = %d/%d, want 61500/92000", snapshot.Entries[0].Metadata.DurationMS, snapshot.Entries[1].Metadata.DurationMS)
+	}
+	if !snapshot.Entries[1].Metadata.Unavailable || snapshot.Entries[1].Metadata.Error != "This video is unavailable" {
+		t.Fatalf("unavailable entry metadata = %#v, want unavailable with provider error", snapshot.Entries[1].Metadata)
 	}
 	if !containsArg(args, "--yes-playlist") || containsArg(args, "--playlist-end") {
 		t.Fatalf("Resolve args = %#v, want full-playlist resolution without a cap", args)
@@ -197,6 +202,52 @@ func TestYTDLPEnumeratePreservesCappedJSONAndLineFallbacks(t *testing.T) {
 			}
 			if !containsArgPair(args, "--playlist-end", tt.wantCapArg) || containsArg(args, "--yes-playlist") {
 				t.Fatalf("Enumerate args = %#v, want capped legacy invocation", args)
+			}
+		})
+	}
+}
+
+func TestYTDLPEnumerateRejectsTruncatedStdout(t *testing.T) {
+	enumerator := &YTDLPEnumerator{run: fixtureRunner(completeYTDLPPlaylistFixture, true, new([]string))}
+	_, _, err := enumerator.Enumerate(context.Background(), "https://www.youtube.com/playlist?list=PLfixture", 2)
+	if !errors.Is(err, playlistsync.ErrIncompleteSnapshot) {
+		t.Fatalf("Enumerate error = %v, want ErrIncompleteSnapshot", err)
+	}
+}
+
+func TestYTDLPEnumerateWrapsLineScannerError(t *testing.T) {
+	fixture := strings.Repeat("x", maxEnumeratorOutputBytes+1)
+	_, scanErr := parseYTDLPLines([]byte(fixture), "https://www.youtube.com/playlist?list=PLfixture", 2)
+	if scanErr == nil {
+		t.Fatal("parseYTDLPLines returned nil error for an oversized line")
+	}
+
+	enumerator := &YTDLPEnumerator{run: fixtureRunner(fixture, false, new([]string))}
+	_, _, err := enumerator.Enumerate(context.Background(), "https://www.youtube.com/playlist?list=PLfixture", 2)
+	if !errors.Is(err, scanErr) {
+		t.Fatalf("Enumerate error = %v, want wrapped scanner error %v", err, scanErr)
+	}
+}
+
+func TestIsYouTubeHostAcceptsYouTubeFamilies(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{host: "youtube.com", want: true},
+		{host: "music.youtube.com", want: true},
+		{host: "youtube.com.", want: true},
+		{host: "youtu.be", want: true},
+		{host: "sub.youtu.be", want: true},
+		{host: "youtu.be.", want: true},
+		{host: "youtube.com.example.test", want: false},
+		{host: "example.test", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			if got := isYouTubeHost(tt.host); got != tt.want {
+				t.Fatalf("isYouTubeHost(%q) = %t, want %t", tt.host, got, tt.want)
 			}
 		})
 	}

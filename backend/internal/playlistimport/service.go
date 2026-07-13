@@ -42,7 +42,7 @@ type JobStore interface {
 	GetJob(ctx context.Context, id uuid.UUID) (*ImportJob, error)
 	ListItems(ctx context.Context, jobID uuid.UUID) ([]ImportItem, error)
 	CreateItem(ctx context.Context, item *ImportItem) error
-	AssociateItemSourceEntry(ctx context.Context, itemID, sourceEntryID int64) error
+	AssociateItemSourceEntries(ctx context.Context, associations []ItemSourceEntryAssociation) error
 	MarkItemQueued(ctx context.Context, itemID int64, downloadJobID string) error
 	MarkItemImported(ctx context.Context, itemID int64, trackID int64) error
 	MarkItemFailed(ctx context.Context, itemID int64, message string) error
@@ -371,14 +371,19 @@ func (s *Service) associateItemsWithSourceEntries(ctx context.Context, items []I
 			sourceEntryIDs[providerEntryID] = sourceEntry.ID
 		}
 	}
+	associations := make([]ItemSourceEntryAssociation, 0, len(items))
 	for _, item := range items {
 		sourceEntryID, exists := sourceEntryIDs[strings.TrimSpace(item.SourceID)]
 		if !exists {
 			continue
 		}
-		if err := s.store.AssociateItemSourceEntry(ctx, item.ID, sourceEntryID); err != nil {
-			return fmt.Errorf("associate playlist import item %d with source entry %d: %w", item.ID, sourceEntryID, err)
-		}
+		associations = append(associations, ItemSourceEntryAssociation{ItemID: item.ID, SourceEntryID: sourceEntryID})
+	}
+	if len(associations) == 0 {
+		return nil
+	}
+	if err := s.store.AssociateItemSourceEntries(ctx, associations); err != nil {
+		return fmt.Errorf("associate playlist import source entries: %w", err)
 	}
 	return nil
 }

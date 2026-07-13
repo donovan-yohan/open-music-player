@@ -182,33 +182,40 @@ func (r *PlaylistSourceRepository) ApplyResolvedMapping(ctx context.Context, bin
 		return err
 	}
 
-	for _, entry := range entries {
-		var trackID any
-		if entry.TrackID > 0 {
-			trackID = entry.TrackID
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO playlist_source_entries
-				(source_binding_id, provider_entry_id, source_url, track_id, source_order)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (source_binding_id, provider_entry_id) DO UPDATE
-			SET source_url = EXCLUDED.source_url,
-				track_id = EXCLUDED.track_id,
-				source_order = EXCLUDED.source_order,
-				updated_at = clock_timestamp()
-		`, binding.ID, entry.ProviderEntryID, entry.SourceURL, trackID, entry.SourceOrder); err != nil {
-			return err
-		}
-		if entry.TrackID == 0 {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO playlist_tracks (playlist_id, track_id, position)
-			VALUES ($1, $2, $3)
-			ON CONFLICT (playlist_id, track_id) DO NOTHING
-		`, binding.PlaylistID, entry.TrackID, entry.SourceOrder); err != nil {
-			return err
-		}
+	providerEntryIDs, sourceURLs, trackIDs, sourceOrders := resolvedPlaylistSourceEntryColumns(entries)
+	if _, err := tx.ExecContext(ctx, `
+		WITH input AS (
+			SELECT provider_entry_id, source_url, NULLIF(track_id, '')::bigint AS track_id, source_order
+			FROM unnest($2::text[], $3::text[], $4::text[], $5::integer[])
+				AS input(provider_entry_id, source_url, track_id, source_order)
+		)
+		INSERT INTO playlist_source_entries
+			(source_binding_id, provider_entry_id, source_url, track_id, source_order)
+		SELECT $1, provider_entry_id, source_url, track_id, source_order
+		FROM input
+		ON CONFLICT (source_binding_id, provider_entry_id) DO UPDATE
+		SET source_url = EXCLUDED.source_url,
+			track_id = EXCLUDED.track_id,
+			source_order = EXCLUDED.source_order,
+			updated_at = clock_timestamp()
+	`, binding.ID, pq.Array(providerEntryIDs), pq.Array(sourceURLs), pq.Array(trackIDs), pq.Array(sourceOrders)); err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		WITH input AS (
+			SELECT NULLIF(track_id, '')::bigint AS track_id, source_order
+			FROM unnest($2::text[], $3::integer[])
+				AS input(track_id, source_order)
+		)
+		INSERT INTO playlist_tracks (playlist_id, track_id, position)
+		SELECT $1, track_id, MIN(source_order)
+		FROM input
+		WHERE track_id IS NOT NULL
+		GROUP BY track_id
+		ON CONFLICT (playlist_id, track_id) DO NOTHING
+	`, binding.PlaylistID, pq.Array(trackIDs), pq.Array(sourceOrders)); err != nil {
+		return err
 	}
 
 	// Source entries lead in provider order. Existing non-source membership is
@@ -533,4 +540,25 @@ func resolvedTrackIDs(entries []ResolvedPlaylistSourceEntry) []int64 {
 		ids = append(ids, entry.TrackID)
 	}
 	return ids
+}
+
+// resolvedPlaylistSourceEntryColumns returns parallel arrays for the bounded
+// UNNEST writes in ApplyResolvedMapping. An empty track ID is deliberately
+// converted back to SQL NULL in the query so unresolved entries remain stable.
+func resolvedPlaylistSourceEntryColumns(entries []ResolvedPlaylistSourceEntry) ([]string, []string, []string, []int) {
+	providerIDs := make([]string, 0, len(entries))
+	sourceURLs := make([]string, 0, len(entries))
+	trackIDs := make([]string, 0, len(entries))
+	sourceOrders := make([]int, 0, len(entries))
+	for _, entry := range entries {
+		providerIDs = append(providerIDs, entry.ProviderEntryID)
+		sourceURLs = append(sourceURLs, entry.SourceURL)
+		if entry.TrackID > 0 {
+			trackIDs = append(trackIDs, fmt.Sprintf("%d", entry.TrackID))
+		} else {
+			trackIDs = append(trackIDs, "")
+		}
+		sourceOrders = append(sourceOrders, entry.SourceOrder)
+	}
+	return providerIDs, sourceURLs, trackIDs, sourceOrders
 }

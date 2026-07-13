@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"github.com/openmusicplayer/backend/internal/db"
 )
@@ -97,9 +99,20 @@ func (r *ImportRepository) CreateItem(ctx context.Context, item *ImportItem) err
 	).Scan(&item.ID, &item.CreatedAt, &item.UpdatedAt)
 }
 
+// AssociateItemSourceEntry remains for the completion path's compatibility
+// callers. Import orchestration uses AssociateItemSourceEntries directly.
 func (r *ImportRepository) AssociateItemSourceEntry(ctx context.Context, itemID, sourceEntryID int64) error {
-	if itemID <= 0 || sourceEntryID <= 0 {
-		return fmt.Errorf("playlist import item and source entry IDs must be positive")
+	return r.AssociateItemSourceEntries(ctx, []ItemSourceEntryAssociation{{ItemID: itemID, SourceEntryID: sourceEntryID}})
+}
+
+// AssociateItemSourceEntries associates all supplied items atomically. It locks
+// the items and source entries before validating ownership and conflicts, then
+// applies the links and any completion-before-association track backfills with
+// bounded set-based updates.
+func (r *ImportRepository) AssociateItemSourceEntries(ctx context.Context, associations []ItemSourceEntryAssociation) error {
+	itemIDs, sourceEntryIDs, err := associationIDs(associations)
+	if err != nil || len(itemIDs) == 0 {
+		return err
 	}
 
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -108,66 +121,183 @@ func (r *ImportRepository) AssociateItemSourceEntry(ctx context.Context, itemID,
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var playlistID int64
-	var existingSourceEntryID sql.NullInt64
-	var itemStatus string
-	var trackID sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `
-		SELECT j.playlist_id, i.playlist_source_entry_id, i.status, i.track_id
-		FROM playlist_import_items AS i
-		JOIN playlist_import_jobs AS j ON j.id = i.import_job_id
-		WHERE i.id = $1
-		FOR UPDATE OF i, j
-	`, itemID).Scan(&playlistID, &existingSourceEntryID, &itemStatus, &trackID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("playlist import item %d not found", itemID)
-		}
+	items, err := loadAssociationItems(ctx, tx, itemIDs)
+	if err != nil {
 		return err
 	}
-	if existingSourceEntryID.Valid && existingSourceEntryID.Int64 != sourceEntryID {
-		return db.ErrPlaylistImportSourceLinkConflict
-	}
-
-	var sourceEntryTrackID sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `
-		SELECT e.track_id
-		FROM playlist_source_entries AS e
-		JOIN playlist_source_bindings AS b ON b.id = e.source_binding_id
-		WHERE e.id = $1 AND b.playlist_id = $2
-		FOR UPDATE OF e
-	`, sourceEntryID, playlistID).Scan(&sourceEntryTrackID); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("playlist source entry %d is not owned by playlist %d", sourceEntryID, playlistID)
-		}
+	sourceEntries, err := loadAssociationSourceEntries(ctx, tx, sourceEntryIDs)
+	if err != nil {
 		return err
 	}
 
-	if itemStatus == ItemStatusImported && trackID.Valid {
-		if sourceEntryTrackID.Valid && sourceEntryTrackID.Int64 != trackID.Int64 {
-			return db.ErrPlaylistSourceEntryTrackConflict
+	links := make([]ItemSourceEntryAssociation, 0, len(associations))
+	backfills := make(map[int64]int64)
+	for _, association := range associations {
+		item, exists := items[association.ItemID]
+		if !exists {
+			return fmt.Errorf("playlist import item %d not found", association.ItemID)
 		}
-		if !sourceEntryTrackID.Valid {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE playlist_source_entries
-				SET track_id = $2, updated_at = clock_timestamp()
-				WHERE id = $1
-			`, sourceEntryID, trackID.Int64); err != nil {
-				return err
+		sourceEntry, exists := sourceEntries[association.SourceEntryID]
+		if !exists || sourceEntry.PlaylistID != item.PlaylistID {
+			return fmt.Errorf("playlist source entry %d is not owned by playlist %d", association.SourceEntryID, item.PlaylistID)
+		}
+		if item.SourceEntryID.Valid && item.SourceEntryID.Int64 != association.SourceEntryID {
+			return db.ErrPlaylistImportSourceLinkConflict
+		}
+
+		if item.Status == ItemStatusImported && item.TrackID.Valid {
+			if sourceEntry.TrackID.Valid && sourceEntry.TrackID.Int64 != item.TrackID.Int64 {
+				return db.ErrPlaylistSourceEntryTrackConflict
+			}
+			if !sourceEntry.TrackID.Valid {
+				if existingTrackID, exists := backfills[association.SourceEntryID]; exists && existingTrackID != item.TrackID.Int64 {
+					return db.ErrPlaylistSourceEntryTrackConflict
+				}
+				backfills[association.SourceEntryID] = item.TrackID.Int64
 			}
 		}
-	}
 
-	if !existingSourceEntryID.Valid {
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE playlist_import_items
-			SET playlist_source_entry_id = $2, updated_at = clock_timestamp()
-			WHERE id = $1
-		`, itemID, sourceEntryID); err != nil {
-			return err
+		if !item.SourceEntryID.Valid {
+			links = append(links, association)
 		}
 	}
 
+	if err := backfillAssociationSourceEntries(ctx, tx, backfills); err != nil {
+		return err
+	}
+	if err := linkAssociationItems(ctx, tx, links); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+type associationItem struct {
+	PlaylistID    int64
+	SourceEntryID sql.NullInt64
+	Status        string
+	TrackID       sql.NullInt64
+}
+
+type associationSourceEntry struct {
+	PlaylistID int64
+	TrackID    sql.NullInt64
+}
+
+func associationIDs(associations []ItemSourceEntryAssociation) ([]int64, []int64, error) {
+	itemIDs := make([]int64, 0, len(associations))
+	sourceEntryIDs := make([]int64, 0, len(associations))
+	seenItems := make(map[int64]struct{}, len(associations))
+	seenSourceEntries := make(map[int64]struct{}, len(associations))
+	for _, association := range associations {
+		if association.ItemID <= 0 || association.SourceEntryID <= 0 {
+			return nil, nil, fmt.Errorf("playlist import item and source entry IDs must be positive")
+		}
+		if _, exists := seenItems[association.ItemID]; exists {
+			return nil, nil, fmt.Errorf("playlist import item %d appears more than once in an association batch", association.ItemID)
+		}
+		seenItems[association.ItemID] = struct{}{}
+		itemIDs = append(itemIDs, association.ItemID)
+		if _, exists := seenSourceEntries[association.SourceEntryID]; !exists {
+			seenSourceEntries[association.SourceEntryID] = struct{}{}
+			sourceEntryIDs = append(sourceEntryIDs, association.SourceEntryID)
+		}
+	}
+	sort.Slice(itemIDs, func(i, j int) bool { return itemIDs[i] < itemIDs[j] })
+	sort.Slice(sourceEntryIDs, func(i, j int) bool { return sourceEntryIDs[i] < sourceEntryIDs[j] })
+	return itemIDs, sourceEntryIDs, nil
+}
+
+func loadAssociationItems(ctx context.Context, tx *sql.Tx, itemIDs []int64) (map[int64]associationItem, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT i.id, j.playlist_id, i.playlist_source_entry_id, i.status, i.track_id
+		FROM playlist_import_items AS i
+		JOIN playlist_import_jobs AS j ON j.id = i.import_job_id
+		WHERE i.id = ANY($1::bigint[])
+		ORDER BY i.id
+		FOR UPDATE OF i, j
+	`, pq.Array(itemIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make(map[int64]associationItem, len(itemIDs))
+	for rows.Next() {
+		var id int64
+		var item associationItem
+		if err := rows.Scan(&id, &item.PlaylistID, &item.SourceEntryID, &item.Status, &item.TrackID); err != nil {
+			return nil, err
+		}
+		items[id] = item
+	}
+	return items, rows.Err()
+}
+
+func loadAssociationSourceEntries(ctx context.Context, tx *sql.Tx, sourceEntryIDs []int64) (map[int64]associationSourceEntry, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT e.id, b.playlist_id, e.track_id
+		FROM playlist_source_entries AS e
+		JOIN playlist_source_bindings AS b ON b.id = e.source_binding_id
+		WHERE e.id = ANY($1::bigint[])
+		ORDER BY e.id
+		FOR UPDATE OF e, b
+	`, pq.Array(sourceEntryIDs))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	entries := make(map[int64]associationSourceEntry, len(sourceEntryIDs))
+	for rows.Next() {
+		var id int64
+		var entry associationSourceEntry
+		if err := rows.Scan(&id, &entry.PlaylistID, &entry.TrackID); err != nil {
+			return nil, err
+		}
+		entries[id] = entry
+	}
+	return entries, rows.Err()
+}
+
+func backfillAssociationSourceEntries(ctx context.Context, tx *sql.Tx, backfills map[int64]int64) error {
+	if len(backfills) == 0 {
+		return nil
+	}
+	sourceEntryIDs := make([]int64, 0, len(backfills))
+	for sourceEntryID := range backfills {
+		sourceEntryIDs = append(sourceEntryIDs, sourceEntryID)
+	}
+	sort.Slice(sourceEntryIDs, func(i, j int) bool { return sourceEntryIDs[i] < sourceEntryIDs[j] })
+	trackIDs := make([]int64, 0, len(sourceEntryIDs))
+	for _, sourceEntryID := range sourceEntryIDs {
+		trackIDs = append(trackIDs, backfills[sourceEntryID])
+	}
+	_, err := tx.ExecContext(ctx, `
+		UPDATE playlist_source_entries AS e
+		SET track_id = input.track_id, updated_at = clock_timestamp()
+		FROM unnest($1::bigint[], $2::bigint[]) AS input(source_entry_id, track_id)
+		WHERE e.id = input.source_entry_id AND e.track_id IS NULL
+	`, pq.Array(sourceEntryIDs), pq.Array(trackIDs))
+	return err
+}
+
+func linkAssociationItems(ctx context.Context, tx *sql.Tx, associations []ItemSourceEntryAssociation) error {
+	if len(associations) == 0 {
+		return nil
+	}
+	itemIDs := make([]int64, 0, len(associations))
+	sourceEntryIDs := make([]int64, 0, len(associations))
+	for _, association := range associations {
+		itemIDs = append(itemIDs, association.ItemID)
+		sourceEntryIDs = append(sourceEntryIDs, association.SourceEntryID)
+	}
+	_, err := tx.ExecContext(ctx, `
+		UPDATE playlist_import_items AS i
+		SET playlist_source_entry_id = input.source_entry_id, updated_at = clock_timestamp()
+		FROM unnest($1::bigint[], $2::bigint[]) AS input(item_id, source_entry_id)
+		WHERE i.id = input.item_id AND i.playlist_source_entry_id IS NULL
+	`, pq.Array(itemIDs), pq.Array(sourceEntryIDs))
+	return err
 }
 
 func (r *ImportRepository) MarkItemQueued(ctx context.Context, itemID int64, downloadJobID string) error {
