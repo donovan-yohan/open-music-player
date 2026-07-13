@@ -73,6 +73,7 @@ class _SearchScreenState extends State<SearchScreen> {
   String _askedPrompt = '';
   String? _assistError;
   String? _sourceSelectionStatus;
+  String? _sourceSelectionRetryDecisionId;
 
   // A prompt that begins with an absolute http(s) URL is routed to the assist
   // endpoint even from Search mode: its direct-URL resolver grounds the link
@@ -132,6 +133,10 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   void _onQueryChanged(String value) {
+    if (_sourceSelectionStatus != null ||
+        _sourceSelectionRetryDecisionId != null) {
+      setState(_clearSourceSelectionStatus);
+    }
     if (_scope == SearchScope.library) {
       final next = value.trim();
       _debounceTimer?.cancel();
@@ -183,6 +188,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
     if (searchText.isEmpty) {
       setState(() {
+        _clearSourceSelectionStatus();
         _query = '';
         _response = null;
         _searchError = null;
@@ -192,6 +198,7 @@ class _SearchScreenState extends State<SearchScreen> {
     }
 
     setState(() {
+      _clearSourceSelectionStatus();
       _query = searchText;
       _isSearching = true;
       _searchError = null;
@@ -231,6 +238,7 @@ class _SearchScreenState extends State<SearchScreen> {
   // single source of truth the mode toggle, clear, and fallback paths all route
   // through, so the "inactive mode is fully reset" invariant cannot drift.
   void _resetAssist() {
+    _clearSourceSelectionStatus();
     _assistRequestSerial++;
     _assistResponse = null;
     _assistError = null;
@@ -239,6 +247,7 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   void _resetSearch() {
+    _clearSourceSelectionStatus();
     _searchRequestSerial++;
     _response = null;
     _searchError = null;
@@ -272,6 +281,7 @@ class _SearchScreenState extends State<SearchScreen> {
     _debounceTimer?.cancel();
     setState(() {
       _scope = scope;
+      _clearSourceSelectionStatus();
       _resetLocalSearch();
     });
     final text = _queryController.text.trim();
@@ -284,6 +294,7 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   void _resetLocalSearch() {
+    _clearSourceSelectionStatus();
     _localRequestSerial++;
     _localResults = const LocalSearchResults();
     _localError = null;
@@ -468,6 +479,7 @@ class _SearchScreenState extends State<SearchScreen> {
     final requestId = ++_assistRequestSerial;
 
     setState(() {
+      _clearSourceSelectionStatus();
       _askedPrompt = text;
       _isAsking = true;
       _assistError = null;
@@ -526,57 +538,63 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Future<String?> _promptForOverrideReason(DiscoveryCandidate candidate) async {
     final controller = TextEditingController(text: 'I prefer this version.');
-    final reason = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (sheetContext) => Padding(
-        padding: EdgeInsets.fromLTRB(
-          20,
-          0,
-          20,
-          MediaQuery.viewInsetsOf(sheetContext).bottom + 20,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Choose alternate source',
-              style: Theme.of(sheetContext).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 6),
-            Text(candidate.title, maxLines: 2, overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 12),
-            TextField(
-              key: const ValueKey('source_override_reason'),
-              controller: controller,
-              maxLength: 2000,
-              minLines: 2,
-              maxLines: 4,
-              textCapitalization: TextCapitalization.sentences,
-              decoration: const InputDecoration(labelText: 'Why this source?'),
-            ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton(
-                onPressed: () {
-                  final value = controller.text.trim();
-                  Navigator.of(
-                    sheetContext,
-                  ).pop(value.isEmpty ? 'I prefer this version.' : value);
-                },
-                child: const Text('Choose source'),
+    try {
+      return await showModalBottomSheet<String>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (sheetContext) => Padding(
+          padding: EdgeInsets.fromLTRB(
+            20,
+            0,
+            20,
+            MediaQuery.viewInsetsOf(sheetContext).bottom + 20,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Choose alternate source',
+                style: Theme.of(sheetContext).textTheme.titleLarge,
               ),
-            ),
-          ],
+              const SizedBox(height: 6),
+              Text(candidate.title,
+                  maxLines: 2, overflow: TextOverflow.ellipsis),
+              const SizedBox(height: 12),
+              TextField(
+                key: const ValueKey('source_override_reason'),
+                controller: controller,
+                maxLength: 2000,
+                minLines: 2,
+                maxLines: 4,
+                textCapitalization: TextCapitalization.sentences,
+                decoration:
+                    const InputDecoration(labelText: 'Why this source?'),
+              ),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton(
+                  onPressed: () {
+                    final value = controller.text.trim();
+                    Navigator.of(
+                      sheetContext,
+                    ).pop(value.isEmpty ? 'I prefer this version.' : value);
+                  },
+                  child: const Text('Choose source'),
+                ),
+              ),
+            ],
+          ),
         ),
-      ),
-    );
-    // The route can still rebuild while its dismissal animation runs. The
-    // short-lived sheet owns this controller for that transition.
-    return reason;
+      );
+    } finally {
+      // The modal completes before its dismissal animation stops rebuilding
+      // the TextField, so keep the controller alive through that transition.
+      await Future<void>.delayed(kThemeAnimationDuration);
+      controller.dispose();
+    }
   }
 
   Future<void> _submitSourceChoice(
@@ -599,23 +617,34 @@ class _SearchScreenState extends State<SearchScreen> {
     });
     _ensurePolling();
 
+    SourceSelectionDecision? decision;
     try {
-      final decision = await context.read<ApiClient>().createSourceSelection(
-            sessionId: selection.sessionId,
-            candidateId: candidate.candidateId,
-            action: action,
-            reason: reason,
-          );
-      await provider.addSourceDecision(decision.id);
+      final createdDecision =
+          await context.read<ApiClient>().createSourceSelection(
+                sessionId: selection.sessionId,
+                candidateId: candidate.candidateId,
+                action: action,
+                reason: reason,
+              );
+      decision = createdDecision;
+      await provider.addSourceDecision(createdDecision.id);
       if (!mounted) return;
       setState(() {
         _sourceSelectionStatus = action == SourceSelectionAction.accepted
             ? 'Selected ${candidate.title} as recommended. ${candidate.sourceQuality?.debugReason ?? ''}'
-            : 'Selected ${candidate.title}. ${decision.reason ?? reason ?? ''}';
+            : 'Selected ${candidate.title}. ${createdDecision.reason ?? reason ?? ''}';
       });
     } catch (error) {
       if (!mounted) return;
-      _showSelectionRecoveryError();
+      if (decision != null) {
+        setState(() {
+          _sourceSelectionRetryDecisionId = decision!.id;
+          _sourceSelectionStatus =
+              'Source choice saved. Queue is unavailable; retry adding it.';
+        });
+      } else {
+        _showSelectionRecoveryError();
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -624,6 +653,30 @@ class _SearchScreenState extends State<SearchScreen> {
         _ensurePolling();
       }
     }
+  }
+
+  Future<void> _retrySourceSelectionQueue() async {
+    final decisionId = _sourceSelectionRetryDecisionId;
+    if (decisionId == null) return;
+    try {
+      await context.read<QueueProvider>().addSourceDecision(decisionId);
+      if (!mounted) return;
+      setState(() {
+        _sourceSelectionRetryDecisionId = null;
+        _sourceSelectionStatus = 'Source choice added to queue.';
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _sourceSelectionStatus =
+            'Source choice saved. Queue is unavailable; retry adding it.';
+      });
+    }
+  }
+
+  void _clearSourceSelectionStatus() {
+    _sourceSelectionStatus = null;
+    _sourceSelectionRetryDecisionId = null;
   }
 
   void _showSelectionRecoveryError() {
@@ -1214,7 +1267,7 @@ class _SearchScreenState extends State<SearchScreen> {
           _buildResultTile(
             queueProvider,
             candidate,
-            selection: response.effectiveSelection,
+            selection: response.directSelection,
           ),
         );
       }
@@ -1229,7 +1282,7 @@ class _SearchScreenState extends State<SearchScreen> {
         _buildSearchSection(
           queueProvider,
           section,
-          selection: response.effectiveSelection,
+          selection: response.searchSelection,
         ),
       );
     }
@@ -1288,6 +1341,14 @@ class _SearchScreenState extends State<SearchScreen> {
                 ],
               ),
             ),
+            if (_sourceSelectionRetryDecisionId != null) ...[
+              const SizedBox(width: 8),
+              TextButton(
+                key: const ValueKey('source_selection_retry'),
+                onPressed: _retrySourceSelectionQueue,
+                child: const Text('Retry queue'),
+              ),
+            ],
           ],
         ),
       ),

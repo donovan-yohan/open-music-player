@@ -27,12 +27,14 @@ void main() {
     required Map<String, dynamic> assistEnvelope,
     int assistStatus = 200,
     Future<void>? assistGate,
+    int failQueueAttempts = 0,
   }) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
+    final queueClient = _QueueClient(failQueueAttempts: failQueueAttempts);
     final discoveryClient = ApiClient(
       storage: SecureStorage(),
       dio: Dio()
@@ -40,9 +42,9 @@ void main() {
           assistEnvelope,
           assistStatus: assistStatus,
           assistGate: assistGate,
+          sourceSelectionRequests: queueClient.sourceSelectionRequests,
         ),
     );
-    final queueClient = _QueueClient();
 
     await tester.pumpWidget(
       MultiProvider(
@@ -213,12 +215,69 @@ void main() {
     expect(find.text('Choose alternate source'), findsOneWidget);
     await tester.enterText(
       find.byKey(const ValueKey('source_override_reason')),
-      'I prefer this mix.',
+      '  I prefer this mix.  ',
     );
     await tester.tap(find.text('Choose source'));
     await tester.pumpAndSettle();
 
     expect(queueClient.addItemRequests, 1);
+    expect(queueClient.sourceSelectionRequests, [
+      {
+        'sessionId': '11111111-1111-1111-1111-111111111111',
+        'candidateId': 'youtube:alternate',
+        'action': 'overridden',
+        'reason': 'I prefer this mix.',
+      },
+    ]);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('queue failure retries the saved decision without recreating it',
+      (tester) async {
+    final queueClient = await pumpSearch(
+      tester,
+      assistEnvelope: _directUrlEnvelope,
+      failQueueAttempts: 1,
+    );
+
+    await enterAssistMode(tester, 'https://youtu.be/abc');
+    await tester.tap(find.byIcon(Icons.playlist_add));
+    await tester.pumpAndSettle();
+
+    expect(queueClient.addItemRequests, 1);
+    expect(queueClient.sourceSelectionRequests, hasLength(1));
+    expect(find.textContaining('Source choice saved'), findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('source_selection_retry')), findsOneWidget);
+    expect(find.textContaining('source choice expired'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('source_selection_retry')));
+    await tester.pumpAndSettle();
+
+    expect(queueClient.addItemRequests, 2);
+    expect(queueClient.lastAddBody?['sourceDecisionId'], 'decision-1');
+    expect(queueClient.sourceSelectionRequests, hasLength(1));
+    expect(find.textContaining('Source choice added to queue'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('query changes clear source selection confirmation',
+      (tester) async {
+    await pumpSearch(tester, assistEnvelope: _directUrlEnvelope);
+
+    await enterAssistMode(tester, 'https://youtu.be/abc');
+    await tester.tap(find.byIcon(Icons.playlist_add));
+    await tester.pumpAndSettle();
+    expect(
+        find.byKey(const ValueKey('source_selection_status')), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('search_assist_input')),
+      'a different prompt',
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('source_selection_status')), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
@@ -427,11 +486,11 @@ const Map<String, dynamic> _searchEnvelope = {
   'status': 'ok',
   'assistantText': "Here's what I found from your sources.",
   'intent': {'kind': 'search', 'searchQuery': 'porter robinson shelter'},
-  'selectionSessionId': '11111111-1111-1111-1111-111111111111',
-  'recommendedCandidateId': 'youtube:abc',
-  'selectionExpiresAt': '2099-01-01T00:00:00Z',
   'search': {
     'query': 'porter robinson shelter',
+    'selectionSessionId': '11111111-1111-1111-1111-111111111111',
+    'recommendedCandidateId': 'youtube:abc',
+    'selectionExpiresAt': '2099-01-01T00:00:00Z',
     'results': [_candidateJson],
     'providers': [
       {
@@ -520,11 +579,13 @@ class _DiscoveryAdapter implements HttpClientAdapter {
     this.assistEnvelope, {
     this.assistStatus = 200,
     this.assistGate,
+    required this.sourceSelectionRequests,
   });
 
   final Map<String, dynamic> assistEnvelope;
   final int assistStatus;
   final Future<void>? assistGate;
+  final List<Map<String, dynamic>> sourceSelectionRequests;
 
   @override
   Future<ResponseBody> fetch(
@@ -563,13 +624,16 @@ class _DiscoveryAdapter implements HttpClientAdapter {
       });
     }
     if (options.method == 'POST' && options.path == '/source-selections') {
+      final request = Map<String, dynamic>.from(options.data as Map);
+      sourceSelectionRequests.add(request);
       return _json({
         'id': 'decision-1',
-        'sessionId': '11111111-1111-1111-1111-111111111111',
-        'selectedCandidateId': 'youtube:abc',
+        'sessionId': request['sessionId'],
+        'selectedCandidateId': request['candidateId'],
         'recommendedCandidateId': 'youtube:abc',
-        'action': 'accepted',
+        'action': request['action'],
         'origin': 'assist',
+        'reason': request['reason'],
         'selectedCandidate': _candidateJson,
         'sourceQuality': _candidateJson['metadata']?['sourceQuality'] ?? {},
         'createdAt': '2026-07-13T00:00:00Z',
@@ -595,8 +659,12 @@ class _DiscoveryAdapter implements HttpClientAdapter {
 }
 
 class _QueueClient extends ApiClient {
+  _QueueClient({this.failQueueAttempts = 0});
+
   int addItemRequests = 0;
+  int failQueueAttempts;
   Map<String, dynamic>? lastAddBody;
+  final List<Map<String, dynamic>> sourceSelectionRequests = [];
   bool _queued = false;
 
   @override
@@ -613,6 +681,10 @@ class _QueueClient extends ApiClient {
   }) async {
     addItemRequests++;
     lastAddBody = {'position': position, 'sourceDecisionId': sourceDecisionId};
+    if (failQueueAttempts > 0) {
+      failQueueAttempts--;
+      throw StateError('queue unavailable');
+    }
     _queued = true;
     return SourceDecisionQueueResponse(
       queue: QueueState.fromJson(_queueJson()),

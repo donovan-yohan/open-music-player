@@ -43,7 +43,7 @@ class QueueProvider extends ChangeNotifier {
   Map<String, int> _timelineStartOverrides = {};
   Map<String, MixPlanClip> _mixPlanClips = {};
   final LinkedHashMap<_TimelineWaveformCacheKey, _CachedTimelineWaveform>
-  _timelineWaveforms = LinkedHashMap();
+      _timelineWaveforms = LinkedHashMap();
   final Map<String, TrackAnalysis> _analysisByTrackId = {};
   final Map<String, int> _appliedCompactAnalysisSignatures = {};
   final Map<String, TrackAnalysis> _lastIncomingAnalysisByTrackId = {};
@@ -72,8 +72,8 @@ class QueueProvider extends ChangeNotifier {
     this._apiClient, {
     DateTime Function()? analysisClock,
     Duration analysisRetryCooldown = defaultAnalysisRetryCooldown,
-  }) : _analysisClock = analysisClock ?? DateTime.now,
-       _analysisRetryCooldown = analysisRetryCooldown;
+  })  : _analysisClock = analysisClock ?? DateTime.now,
+        _analysisRetryCooldown = analysisRetryCooldown;
 
   QueueState get queue => _queue;
   bool get isLoading => _isLoading;
@@ -92,15 +92,15 @@ class QueueProvider extends ChangeNotifier {
 
   @visibleForTesting
   int get cachedWaveformFrameCount => _timelineWaveforms.values.fold<int>(
-    0,
-    (total, entry) => total + entry.waveform.frames.length,
-  );
+        0,
+        (total, entry) => total + entry.waveform.frames.length,
+      );
 
   @visibleForTesting
   int get cachedWaveformByteCount => _timelineWaveforms.values.fold<int>(
-    0,
-    (total, entry) => total + entry.estimatedByteSize,
-  );
+        0,
+        (total, entry) => total + entry.estimatedByteSize,
+      );
 
   Map<String, TrimRange> get trimRanges => Map.unmodifiable(_trimRanges);
   Map<String, MixPlanClip> get mixPlanClips => Map.unmodifiable(_mixPlanClips);
@@ -209,8 +209,7 @@ class QueueProvider extends ChangeNotifier {
       _analysisHydrationInterest.add(key);
       _fetchAnalysisIfNeeded(trackId);
     }
-    final cached =
-        _analysisByTrackId[key] ??
+    final cached = _analysisByTrackId[key] ??
         _authoritativeAnalysisLocks[key] ??
         _analysisRevisionSnapshots[key];
     final result = cached == null || identical(cached, incoming)
@@ -410,6 +409,8 @@ class QueueProvider extends ChangeNotifier {
     });
   }
 
+  /// Re-throws queue failures after reconciling provider state so callers can
+  /// retain the already-persisted source decision and offer an idempotent retry.
   Future<void> addSourceDecision(
     String sourceDecisionId, {
     bool playNext = false,
@@ -780,9 +781,9 @@ class QueueProvider extends ChangeNotifier {
       final plans = await _apiClient.listMixPlans();
       if (!_isCurrentQueueOperation(operationGeneration)) return;
       final plan = plans.cast<MixPlan?>().firstWhere(
-        (plan) => plan?.name == queueTimingMixPlanName,
-        orElse: () => null,
-      );
+            (plan) => plan?.name == queueTimingMixPlanName,
+            orElse: () => null,
+          );
       if (plan == null) {
         _activeMixPlanId = null;
         _activeMixPlanVersion = null;
@@ -870,8 +871,7 @@ class QueueProvider extends ChangeNotifier {
       if (trackId == null) continue;
 
       final existing = _mixPlanClipFor(track);
-      final existingClipId =
-          existing != null &&
+      final existingClipId = existing != null &&
               existing.hasExplicitQueueItemId &&
               existing.queueItemId == track.queueItemId
           ? existing.clipId
@@ -988,8 +988,7 @@ class QueueProvider extends ChangeNotifier {
 
   ClipTempoMetadata _tempoMetadataForTrack(Track track) {
     final analysisTrackId = _analysisTrackId(track);
-    final analysis =
-        track.analysis ??
+    final analysis = track.analysis ??
         (analysisTrackId == null
             ? null
             : _analysisByTrackId[analysisTrackId.toString()]);
@@ -1021,9 +1020,8 @@ class QueueProvider extends ChangeNotifier {
     }
 
     final localTimingKeys = _queue.tracks.expand(_localTimingKeys).toSet();
-    final waveformSourceKeys = _queue.tracks
-        .map(_trackWaveformSourceKey)
-        .toSet();
+    final waveformSourceKeys =
+        _queue.tracks.map(_trackWaveformSourceKey).toSet();
     final queueItemIds = _queue.tracks
         .map((track) => track.queueItemId)
         .where((id) => id.isNotEmpty)
@@ -1041,8 +1039,7 @@ class QueueProvider extends ChangeNotifier {
     Set<String>? playbackTrackIds;
     for (final clip in clips) {
       final hasQueueItemIdentity = queueItemIds.contains(clip.queueItemId);
-      final hasLegacyTrackIdentity =
-          !clip.hasExplicitQueueItemId &&
+      final hasLegacyTrackIdentity = !clip.hasExplicitQueueItemId &&
           (playbackTrackIds ??= _queue.tracks
                   .map(_mixPlanTrackId)
                   .whereType<String>()
@@ -1167,8 +1164,7 @@ class QueueProvider extends ChangeNotifier {
         _lastIncomingAnalysisByTrackId[key] = incoming;
         _ingestIncomingAnalysis(key, incoming);
       }
-      final resolved =
-          _authoritativeAnalysisLocks[key] ??
+      final resolved = _authoritativeAnalysisLocks[key] ??
           _analysisByTrackId[key] ??
           _analysisRevisionSnapshots[key] ??
           incoming;
@@ -1228,8 +1224,7 @@ class QueueProvider extends ChangeNotifier {
 
     _advanceAnalysisGeneration(key);
     _appliedCompactAnalysisSignatures[key] = signature;
-    final preservesCachedDetail =
-        cached != null &&
+    final preservesCachedDetail = cached != null &&
         _hasWaveformDetail(cached) &&
         !_analysisRevisionSupersedes(analysis, cached);
     _analysisByTrackId[key] = preservesCachedDetail
@@ -1485,8 +1480,7 @@ class QueueProvider extends ChangeNotifier {
           _analysisRequestAttempts.remove(key);
           _cancelAnalysisRetry(key);
         } else {
-          shouldRetry =
-              analysis.status != TrackAnalysisStatus.failed &&
+          shouldRetry = analysis.status != TrackAnalysisStatus.failed &&
               analysis.status != TrackAnalysisStatus.unsupported;
         }
         _invalidateAnalysisCache(key);
@@ -1572,21 +1566,21 @@ class QueueProvider extends ChangeNotifier {
   }
 
   Set<String> _analysisAuthorityKeys() => <String>{
-    ..._analysisRevisionFloors.keys,
-    ..._analysisRevisionSnapshots.keys,
-    ..._analysisGenerations.keys,
-    ..._authoritativeAnalysisLocks.keys,
-    ..._appliedCompactAnalysisSignatures.keys,
-    ..._lastIncomingAnalysisByTrackId.keys,
-    ..._analysisByTrackId.keys,
-    ..._analysisLastRequestedAt.keys,
-    ..._analysisRequestAttempts.keys,
-    ..._analysisTransportFailures.keys,
-    ..._analysisPermanentFailures,
-    ..._analysisRequestsQueued,
-    ..._analysisRequestsInFlight,
-    ..._analysisRetryTimers.keys,
-  };
+        ..._analysisRevisionFloors.keys,
+        ..._analysisRevisionSnapshots.keys,
+        ..._analysisGenerations.keys,
+        ..._authoritativeAnalysisLocks.keys,
+        ..._appliedCompactAnalysisSignatures.keys,
+        ..._lastIncomingAnalysisByTrackId.keys,
+        ..._analysisByTrackId.keys,
+        ..._analysisLastRequestedAt.keys,
+        ..._analysisRequestAttempts.keys,
+        ..._analysisTransportFailures.keys,
+        ..._analysisPermanentFailures,
+        ..._analysisRequestsQueued,
+        ..._analysisRequestsInFlight,
+        ..._analysisRetryTimers.keys,
+      };
 
   Set<String> _activeAnalysisAuthorityKeys() {
     final active = <String>{
@@ -1637,9 +1631,8 @@ class QueueProvider extends ChangeNotifier {
     }
 
     final active = _activeAnalysisAuthorityKeys();
-    var retainedOffQueue = _analysisAuthorityLru
-        .where((key) => !active.contains(key))
-        .length;
+    var retainedOffQueue =
+        _analysisAuthorityLru.where((key) => !active.contains(key)).length;
     while (retainedOffQueue > _maxRetainedAnalysisAuthorityEntries) {
       String? evicted;
       for (final key in _analysisAuthorityLru) {
@@ -1849,22 +1842,24 @@ class QueueProvider extends ChangeNotifier {
 
   int? _analysisOverridesSignature(TrackAnalysisOverrides? overrides) =>
       overrides == null
-      ? null
-      : Object.hash(
-          overrides.bpm,
-          overrides.bpmConfidence,
-          overrides.beatGridOffsetMs,
-          overrides.beatsMs == null ? null : Object.hashAll(overrides.beatsMs!),
-          overrides.downbeatsMs == null
-              ? null
-              : Object.hashAll(overrides.downbeatsMs!),
-          overrides.musicalKey,
-          overrides.camelot,
-          overrides.provenance,
-          overrides.bpmProvenance,
-          overrides.beatGridProvenance,
-          overrides.downbeatProvenance,
-        );
+          ? null
+          : Object.hash(
+              overrides.bpm,
+              overrides.bpmConfidence,
+              overrides.beatGridOffsetMs,
+              overrides.beatsMs == null
+                  ? null
+                  : Object.hashAll(overrides.beatsMs!),
+              overrides.downbeatsMs == null
+                  ? null
+                  : Object.hashAll(overrides.downbeatsMs!),
+              overrides.musicalKey,
+              overrides.camelot,
+              overrides.provenance,
+              overrides.bpmProvenance,
+              overrides.beatGridProvenance,
+              overrides.downbeatProvenance,
+            );
 
   int? _analysisValueSignature(AnalysisValue? value) => value == null
       ? null

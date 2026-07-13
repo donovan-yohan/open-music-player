@@ -221,8 +221,7 @@ class DiscoveryCandidate {
 
   factory DiscoveryCandidate.fromJson(Map<String, dynamic> json) {
     final metadata = _readMap(json['metadata']);
-    final sourceQualityJson =
-        _readOptionalMap(json['sourceQuality']) ??
+    final sourceQualityJson = _readOptionalMap(json['sourceQuality']) ??
         _readOptionalMap(metadata['sourceQuality']);
     return DiscoveryCandidate(
       candidateId: json['candidateId'] as String? ?? '',
@@ -248,8 +247,7 @@ class DiscoveryCandidate {
 
   factory DiscoveryCandidate.fromQueueItemJson(Map<String, dynamic> json) {
     final metadata = _readMap(json['metadata']);
-    final sourceQualityJson =
-        _readOptionalMap(json['sourceQuality']) ??
+    final sourceQualityJson = _readOptionalMap(json['sourceQuality']) ??
         _readOptionalMap(metadata['sourceQuality']);
     return DiscoveryCandidate(
       candidateId: json['candidateId'] as String? ?? '',
@@ -382,11 +380,11 @@ class DiscoverySourceQuality {
       'altered_audio' => 'Altered',
       'direct_url' => 'Direct URL',
       _ => switch (recommendation) {
-        'preferred' => 'Preferred',
-        'acceptable' => 'Acceptable',
-        'avoid' => 'Avoid',
-        _ => 'Review',
-      },
+          'preferred' => 'Preferred',
+          'acceptable' => 'Acceptable',
+          'avoid' => 'Avoid',
+          _ => 'Review',
+        },
     };
   }
 
@@ -421,9 +419,8 @@ class DiscoveryProviderSummary {
       status: json['status'] as String? ?? 'unknown',
       resultCount: json['resultCount'] as int? ?? 0,
       elapsedMs: json['elapsedMs'] as int? ?? 0,
-      errorMessage: error is Map<String, dynamic>
-          ? error['message'] as String?
-          : null,
+      errorMessage:
+          error is Map<String, dynamic> ? error['message'] as String? : null,
     );
   }
 }
@@ -468,8 +465,8 @@ class DiscoveryAssistResponse {
     final rawStatus = (json['status'] as String? ?? '').trim();
     final status =
         const {'ok', 'disabled', 'clarification', 'error'}.contains(rawStatus)
-        ? rawStatus
-        : 'error';
+            ? rawStatus
+            : 'error';
     return DiscoveryAssistResponse(
       // A missing/blank status is treated as an error so the UI never silently
       // renders an unlabelled/unknown envelope as a success or empty screen.
@@ -511,10 +508,11 @@ class DiscoveryAssistResponse {
   /// "no results" empty state independently of the disabled/error banners.
   bool get hasGroundedResults => hasCandidates || hasSearchResults;
 
-  /// Search assist can carry the selection envelope at the top level or in
-  /// its nested discovery result. Prefer the envelope that owns the candidate.
-  DiscoverySelectionSession? get effectiveSelection =>
-      selection?.isPresent == true ? selection : search?.selection;
+  /// Session owned by top-level direct candidates from the assist resolver.
+  DiscoverySelectionSession? get directSelection => selection;
+
+  /// Session owned by candidates in the nested discovery search response.
+  DiscoverySelectionSession? get searchSelection => search?.selection;
 }
 
 enum SourceSelectionAction { accepted, overridden }
@@ -566,9 +564,8 @@ class SourceSelectionDecision {
       origin: json['origin'] as String? ?? '',
       reason: _blankToNull(json['reason'] as String?),
       selectedCandidate: DiscoveryCandidate.fromJson(candidate),
-      sourceQuality: quality == null
-          ? null
-          : DiscoverySourceQuality.fromJson(quality),
+      sourceQuality:
+          quality == null ? null : DiscoverySourceQuality.fromJson(quality),
       downloadJobId: _blankToNull(json['downloadJobId'] as String?),
       trackId: _readInt(json['trackId']),
       createdAt: _readDate(json['createdAt']),
@@ -752,12 +749,11 @@ class DiscoveryQueueItem {
     bool? canRemove,
     this.addedAt,
     this.updatedAt,
-  }) : playbackState = playbackState ?? status ?? 'queued',
-       canPlay =
-           canPlay ??
-           ((playbackState ?? status ?? '') == 'playable' && trackId != null),
-       canRetry = canRetry ?? ((playbackState ?? status ?? '') == 'failed'),
-       canRemove = canRemove ?? true;
+  })  : playbackState = playbackState ?? status ?? 'queued',
+        canPlay = canPlay ??
+            ((playbackState ?? status ?? '') == 'playable' && trackId != null),
+        canRetry = canRetry ?? ((playbackState ?? status ?? '') == 'failed'),
+        canRemove = canRemove ?? true;
 
   factory DiscoveryQueueItem.fromJson(Map<String, dynamic> json) {
     final sourceJson = json['sourceCandidate'];
@@ -766,23 +762,20 @@ class DiscoveryQueueItem {
         : DiscoveryCandidate.fromQueueItemJson(json);
     final queueItemId = json['queueItemId'] as String?;
     final trackId = _readInt(json['trackId']);
-    final rawState =
-        json['playbackState'] as String? ??
+    final rawState = json['playbackState'] as String? ??
         (trackId != null ? 'playable' : 'queued');
     final playbackState = _normalizePlaybackState(rawState);
-    final progress =
-        _readInt(json['progress']) ??
+    final progress = _readInt(json['progress']) ??
         (playbackState == 'playable'
             ? 100
             : playbackState == 'failed'
-            ? 0
-            : 0);
+                ? 0
+                : 0);
     final error = _blankToNull(json['error'] as String?);
     final downloadJobId = json['downloadJobId'] as String?;
 
     return DiscoveryQueueItem(
-      localId:
-          queueItemId ??
+      localId: queueItemId ??
           candidate.candidateId.ifNotEmpty ??
           downloadJobId ??
           candidate.sourceUrl,
@@ -796,8 +789,7 @@ class DiscoveryQueueItem {
       progress: progress,
       trackId: trackId,
       error: error,
-      canPlay:
-          json['canPlay'] as bool? ??
+      canPlay: json['canPlay'] as bool? ??
           (playbackState == 'playable' && trackId != null),
       canRetry: json['canRetry'] as bool? ?? playbackState == 'failed',
       canRemove: json['canRemove'] as bool? ?? true,

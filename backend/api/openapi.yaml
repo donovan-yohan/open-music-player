@@ -733,6 +733,7 @@ paths:
                 $ref: '#/components/schemas/MixPlanListResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
     post:
       tags:
         - MixPlans
@@ -836,7 +837,6 @@ paths:
                 $ref: '#/components/schemas/DownloadListResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
-
     post:
       tags:
         - Downloads
@@ -859,6 +859,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
   /downloads/{job_id}:
     get:
@@ -1045,6 +1047,9 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '413':
           description: Source selection request exceeds the documented body limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /source-selections/{id}:
     get:
@@ -1099,6 +1104,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '409':
           $ref: '#/components/responses/Conflict'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
   /queue/items/{queueItemId}:
     delete:
@@ -2584,7 +2593,7 @@ components:
         action: { type: string, enum: [accepted, overridden] }
         origin: { type: string }
         reason: { type: string, nullable: true }
-        selectedCandidate: { $ref: '#/components/schemas/QueueSourceCandidate' }
+        selectedCandidate: { $ref: '#/components/schemas/DiscoveryCandidate' }
         sourceQuality: { type: object, additionalProperties: true }
         downloadJobId: { type: string, format: uuid, nullable: true }
         trackId: { type: integer, format: int64, nullable: true }
