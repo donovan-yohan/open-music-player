@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -55,7 +56,7 @@ func (r *ImportRepository) ListItems(ctx context.Context, jobID uuid.UUID) ([]Im
 	query := `
 		SELECT id, import_job_id, source_index, playlist_position, source_id, source_url,
 		       title, artist, album, uploader, duration_ms, thumbnail_url, status, error,
-		       track_id, download_job_id, created_at, updated_at
+		       track_id, playlist_source_entry_id, download_job_id, created_at, updated_at
 		FROM playlist_import_items
 		WHERE import_job_id = $1
 		ORDER BY source_index ASC
@@ -71,7 +72,7 @@ func (r *ImportRepository) ListItems(ctx context.Context, jobID uuid.UUID) ([]Im
 		if err := rows.Scan(
 			&item.ID, &item.ImportJobID, &item.SourceIndex, &item.PlaylistPosition, &item.SourceID, &item.SourceURL,
 			&item.Title, &item.Artist, &item.Album, &item.Uploader, &item.DurationMs, &item.ThumbnailURL, &item.Status, &item.Error,
-			&item.TrackID, &item.DownloadJobID, &item.CreatedAt, &item.UpdatedAt,
+			&item.TrackID, &item.PlaylistSourceEntryID, &item.DownloadJobID, &item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -84,14 +85,89 @@ func (r *ImportRepository) CreateItem(ctx context.Context, item *ImportItem) err
 	query := `
 		INSERT INTO playlist_import_items (
 			import_job_id, source_index, playlist_position, source_id, source_url,
-			title, artist, album, uploader, duration_ms, thumbnail_url, status, error
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			title, artist, album, uploader, duration_ms, thumbnail_url, status, error,
+			playlist_source_entry_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		RETURNING id, created_at, updated_at
 	`
 	return r.db.QueryRowContext(ctx, query,
 		item.ImportJobID, item.SourceIndex, item.PlaylistPosition, item.SourceID, item.SourceURL,
 		item.Title, item.Artist, item.Album, item.Uploader, item.DurationMs, item.ThumbnailURL, item.Status, item.Error,
+		item.PlaylistSourceEntryID,
 	).Scan(&item.ID, &item.CreatedAt, &item.UpdatedAt)
+}
+
+func (r *ImportRepository) AssociateItemSourceEntry(ctx context.Context, itemID, sourceEntryID int64) error {
+	if itemID <= 0 || sourceEntryID <= 0 {
+		return fmt.Errorf("playlist import item and source entry IDs must be positive")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var playlistID int64
+	var existingSourceEntryID sql.NullInt64
+	var itemStatus string
+	var trackID sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT j.playlist_id, i.playlist_source_entry_id, i.status, i.track_id
+		FROM playlist_import_items AS i
+		JOIN playlist_import_jobs AS j ON j.id = i.import_job_id
+		WHERE i.id = $1
+		FOR UPDATE OF i, j
+	`, itemID).Scan(&playlistID, &existingSourceEntryID, &itemStatus, &trackID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("playlist import item %d not found", itemID)
+		}
+		return err
+	}
+	if existingSourceEntryID.Valid && existingSourceEntryID.Int64 != sourceEntryID {
+		return db.ErrPlaylistImportSourceLinkConflict
+	}
+
+	var sourceEntryTrackID sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT e.track_id
+		FROM playlist_source_entries AS e
+		JOIN playlist_source_bindings AS b ON b.id = e.source_binding_id
+		WHERE e.id = $1 AND b.playlist_id = $2
+		FOR UPDATE OF e
+	`, sourceEntryID, playlistID).Scan(&sourceEntryTrackID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("playlist source entry %d is not owned by playlist %d", sourceEntryID, playlistID)
+		}
+		return err
+	}
+
+	if itemStatus == ItemStatusImported && trackID.Valid {
+		if sourceEntryTrackID.Valid && sourceEntryTrackID.Int64 != trackID.Int64 {
+			return db.ErrPlaylistSourceEntryTrackConflict
+		}
+		if !sourceEntryTrackID.Valid {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE playlist_source_entries
+				SET track_id = $2, updated_at = clock_timestamp()
+				WHERE id = $1
+			`, sourceEntryID, trackID.Int64); err != nil {
+				return err
+			}
+		}
+	}
+
+	if !existingSourceEntryID.Valid {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE playlist_import_items
+			SET playlist_source_entry_id = $2, updated_at = clock_timestamp()
+			WHERE id = $1
+		`, itemID, sourceEntryID); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 func (r *ImportRepository) MarkItemQueued(ctx context.Context, itemID int64, downloadJobID string) error {
@@ -109,6 +185,126 @@ func (r *ImportRepository) MarkItemImported(ctx context.Context, itemID int64, t
 		SET status = $2, track_id = $3, error = NULL, updated_at = NOW()
 		WHERE id = $1
 	`, itemID, ItemStatusImported, trackID)
+	return err
+}
+
+// CompletePlaylistImportItem atomically completes a queued import item. Linked
+// items update their exact source entry before completion; legacy items retain
+// the playlist-membership-only behavior.
+func (r *ImportRepository) CompletePlaylistImportItem(ctx context.Context, itemID, trackID int64) error {
+	if itemID <= 0 || trackID <= 0 {
+		return fmt.Errorf("playlist import item and track IDs must be positive")
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var importJobID uuid.UUID
+	var playlistID int64
+	var playlistPosition int
+	var sourceEntryID sql.NullInt64
+	var existingTrackID sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT i.import_job_id, j.playlist_id, i.playlist_position,
+			i.playlist_source_entry_id, i.track_id
+		FROM playlist_import_items AS i
+		JOIN playlist_import_jobs AS j ON j.id = i.import_job_id
+		WHERE i.id = $1
+		FOR UPDATE OF i, j
+	`, itemID).Scan(&importJobID, &playlistID, &playlistPosition, &sourceEntryID, &existingTrackID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if existingTrackID.Valid && existingTrackID.Int64 != trackID {
+		return fmt.Errorf("playlist import item %d already points to track %d", itemID, existingTrackID.Int64)
+	}
+
+	if sourceEntryID.Valid {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE playlist_source_entries
+			SET track_id = $2, updated_at = clock_timestamp()
+			WHERE id = $1 AND (track_id IS NULL OR track_id = $2)
+		`, sourceEntryID.Int64, trackID)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			return fmt.Errorf("playlist source entry %d is missing or points to another track", sourceEntryID.Int64)
+		}
+	}
+
+	if playlistPosition < 0 {
+		playlistPosition = 0
+	}
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO playlist_tracks (playlist_id, track_id, position)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (playlist_id, track_id) DO NOTHING
+	`, playlistID, trackID, playlistPosition)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows > 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE playlists SET updated_at = clock_timestamp() WHERE id = $1`, playlistID); err != nil {
+			return err
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE playlist_import_items
+		SET status = $2, track_id = $3, error = NULL, updated_at = clock_timestamp()
+		WHERE id = $1
+	`, itemID, ItemStatusImported, trackID); err != nil {
+		return err
+	}
+	if err := refreshPlaylistImportJobCounts(ctx, tx, importJobID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func refreshPlaylistImportJobCounts(ctx context.Context, tx *sql.Tx, importJobID uuid.UUID) error {
+	_, err := tx.ExecContext(ctx, `
+		WITH counts AS (
+			SELECT import_job_id,
+				COUNT(*)::int AS total_items,
+				COUNT(*) FILTER (WHERE status = 'imported')::int AS imported_items,
+				COUNT(*) FILTER (WHERE status IN ('pending', 'queued'))::int AS queued_items,
+				COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_items,
+				COUNT(*) FILTER (WHERE status = 'skipped_duplicate')::int AS skipped_items
+			FROM playlist_import_items
+			WHERE import_job_id = $1
+			GROUP BY import_job_id
+		)
+		UPDATE playlist_import_jobs AS j
+		SET total_items = c.total_items,
+			imported_items = c.imported_items,
+			queued_items = c.queued_items,
+			failed_items = c.failed_items,
+			skipped_items = c.skipped_items,
+			status = CASE
+				WHEN c.queued_items > 0 THEN 'importing'
+				WHEN c.failed_items > 0 AND c.imported_items + c.skipped_items = 0 THEN 'failed'
+				WHEN c.failed_items > 0 THEN 'partial_failure'
+				ELSE 'complete'
+			END,
+			updated_at = clock_timestamp()
+		FROM counts AS c
+		WHERE j.id = c.import_job_id
+	`, importJobID)
 	return err
 }
 

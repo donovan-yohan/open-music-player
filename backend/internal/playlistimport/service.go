@@ -2,9 +2,12 @@ package playlistimport
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"net/url"
 	"strings"
 
@@ -12,6 +15,7 @@ import (
 
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
+	"github.com/openmusicplayer/backend/internal/playlistsync"
 	"github.com/openmusicplayer/backend/internal/validators"
 )
 
@@ -27,11 +31,18 @@ type Enumerator interface {
 	Enumerate(ctx context.Context, sourceURL string, maxItems int) (PlaylistMetadata, []Entry, error)
 }
 
+type SourceBindingStore interface {
+	UpsertBinding(ctx context.Context, binding *db.PlaylistSourceBinding) error
+	ApplyResolvedMapping(ctx context.Context, binding *db.PlaylistSourceBinding, entries []db.ResolvedPlaylistSourceEntry) error
+	LoadBinding(ctx context.Context, userID uuid.UUID, playlistID int64) (*db.PlaylistSourceBinding, []db.PlaylistSourceEntry, error)
+}
+
 type JobStore interface {
 	CreateJob(ctx context.Context, job *ImportJob) error
 	GetJob(ctx context.Context, id uuid.UUID) (*ImportJob, error)
 	ListItems(ctx context.Context, jobID uuid.UUID) ([]ImportItem, error)
 	CreateItem(ctx context.Context, item *ImportItem) error
+	AssociateItemSourceEntry(ctx context.Context, itemID, sourceEntryID int64) error
 	MarkItemQueued(ctx context.Context, itemID int64, downloadJobID string) error
 	MarkItemImported(ctx context.Context, itemID int64, trackID int64) error
 	MarkItemFailed(ctx context.Context, itemID int64, message string) error
@@ -76,20 +87,24 @@ type Service struct {
 	selections SourceSelectionStore
 	ingestion  TrustedIngestion
 	enumerator Enumerator
+	adapter    playlistsync.SourceAdapter
+	bindings   SourceBindingStore
 	maxItems   int
 	sourceType string
 }
 
 type Config struct {
-	Store      JobStore
-	Playlists  PlaylistStore
-	Tracks     TrackSourceStore
-	Library    LibraryStore
-	Downloader DownloadEnqueuer
-	Selections SourceSelectionStore
-	Ingestion  TrustedIngestion
-	Enumerator Enumerator
-	MaxItems   int
+	Store          JobStore
+	Playlists      PlaylistStore
+	Tracks         TrackSourceStore
+	Library        LibraryStore
+	Downloader     DownloadEnqueuer
+	Selections     SourceSelectionStore
+	Ingestion      TrustedIngestion
+	Enumerator     Enumerator
+	SourceAdapter  playlistsync.SourceAdapter
+	SourceBindings SourceBindingStore
+	MaxItems       int
 }
 
 func NewService(cfg Config) *Service {
@@ -109,6 +124,8 @@ func NewService(cfg Config) *Service {
 		selections: cfg.Selections,
 		ingestion:  cfg.Ingestion,
 		enumerator: cfg.Enumerator,
+		adapter:    cfg.SourceAdapter,
+		bindings:   cfg.SourceBindings,
 		maxItems:   maxItems,
 		sourceType: "youtube",
 	}
@@ -122,6 +139,31 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 	playlistID, err := s.resolvePlaylist(ctx, userID, req)
 	if err != nil {
 		return nil, err
+	}
+
+	var metadata PlaylistMetadata
+	var entries []Entry
+	var snapshot *playlistsync.Snapshot
+	var binding *db.PlaylistSourceBinding
+	adapterBacked := s.adapter != nil && s.bindings != nil
+	if adapterBacked {
+		resolved, resolveErr := s.adapter.Resolve(ctx, strings.TrimSpace(req.URL))
+		if resolveErr != nil {
+			return nil, fmt.Errorf("resolve playlist source: %w", resolveErr)
+		}
+		if validateErr := playlistsync.ValidateComplete(resolved); validateErr != nil {
+			return nil, fmt.Errorf("validate playlist source snapshot: %w", validateErr)
+		}
+		metadata = PlaylistMetadata{Title: resolved.Source.Metadata.Title}
+		entries = entriesFromSnapshot(resolved)
+		if len(entries) > limit {
+			return nil, ErrLimitExceeded
+		}
+		binding = resolvedBinding(userID, playlistID, resolved)
+		if err := s.bindings.UpsertBinding(ctx, binding); err != nil {
+			return nil, fmt.Errorf("reserve playlist source binding: %w", err)
+		}
+		snapshot = &resolved
 	}
 
 	job := &ImportJob{
@@ -146,10 +188,12 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 		}
 	}()
 
-	metadata, entries, err := s.enumerator.Enumerate(ctx, job.SourceURL, limit+1)
-	if err != nil {
-		markJobFailed(err.Error())
-		return nil, fmt.Errorf("enumerate playlist: %w", err)
+	if !adapterBacked {
+		metadata, entries, err = s.enumerator.Enumerate(ctx, job.SourceURL, limit+1)
+		if err != nil {
+			markJobFailed(err.Error())
+			return nil, fmt.Errorf("enumerate playlist: %w", err)
+		}
 	}
 	if metadata.Title != "" {
 		job.SourceTitle = sql.NullString{String: metadata.Title, Valid: true}
@@ -290,6 +334,18 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 		item.Status = ItemStatusQueued
 		item.DownloadJobID = sql.NullString{String: queued.ID, Valid: true}
 	}
+	if snapshot != nil {
+		if err := s.bindings.ApplyResolvedMapping(ctx, binding, resolvedMappings(*snapshot, items)); err != nil {
+			return nil, fmt.Errorf("apply playlist source mapping: %w", err)
+		}
+		_, sourceEntries, err := s.bindings.LoadBinding(ctx, userID, playlistID)
+		if err != nil {
+			return nil, fmt.Errorf("load playlist source entries: %w", err)
+		}
+		if err := s.associateItemsWithSourceEntries(ctx, items, sourceEntries); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.store.RefreshJobCounts(ctx, job.ID); err != nil {
 		return nil, fmt.Errorf("refresh playlist import counts: %w", err)
 	}
@@ -302,6 +358,104 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 		items = freshItems
 	}
 	return &ImportResult{Job: job, Items: items}, nil
+}
+
+func (s *Service) associateItemsWithSourceEntries(ctx context.Context, items []ImportItem, sourceEntries []db.PlaylistSourceEntry) error {
+	sourceEntryIDs := make(map[string]int64, len(sourceEntries))
+	for _, sourceEntry := range sourceEntries {
+		providerEntryID := strings.TrimSpace(sourceEntry.ProviderEntryID)
+		if providerEntryID == "" || sourceEntry.ID <= 0 {
+			continue
+		}
+		if _, exists := sourceEntryIDs[providerEntryID]; !exists {
+			sourceEntryIDs[providerEntryID] = sourceEntry.ID
+		}
+	}
+	for _, item := range items {
+		sourceEntryID, exists := sourceEntryIDs[strings.TrimSpace(item.SourceID)]
+		if !exists {
+			continue
+		}
+		if err := s.store.AssociateItemSourceEntry(ctx, item.ID, sourceEntryID); err != nil {
+			return fmt.Errorf("associate playlist import item %d with source entry %d: %w", item.ID, sourceEntryID, err)
+		}
+	}
+	return nil
+}
+
+func entriesFromSnapshot(snapshot playlistsync.Snapshot) []Entry {
+	entries := make([]Entry, 0, len(snapshot.Entries))
+	for index, resolved := range snapshot.Entries {
+		entries = append(entries, Entry{
+			Index:        index + 1,
+			SourceID:     resolved.StableID,
+			SourceURL:    resolved.SourceURL,
+			Title:        resolved.Metadata.Title,
+			Artist:       resolved.Metadata.Artist,
+			Album:        resolved.Metadata.Album,
+			Uploader:     resolved.Metadata.Uploader,
+			DurationMs:   resolved.Metadata.DurationMS,
+			ThumbnailURL: resolved.Metadata.ThumbnailURL,
+			Unavailable:  resolved.Metadata.Unavailable,
+			Error:        resolved.Metadata.Error,
+		})
+	}
+	return entries
+}
+
+func resolvedBinding(userID uuid.UUID, playlistID int64, snapshot playlistsync.Snapshot) *db.PlaylistSourceBinding {
+	return &db.PlaylistSourceBinding{
+		PlaylistID:          playlistID,
+		UserID:              userID,
+		Provider:            snapshot.Source.Provider,
+		ProviderPlaylistID:  snapshot.Source.PlaylistID,
+		CanonicalURL:        snapshot.Source.CanonicalURL,
+		SyncEnabled:         false,
+		SnapshotFingerprint: sql.NullString{String: snapshotFingerprint(snapshot), Valid: true},
+	}
+}
+
+func resolvedMappings(snapshot playlistsync.Snapshot, items []ImportItem) []db.ResolvedPlaylistSourceEntry {
+	itemsByIndex := make(map[int]ImportItem, len(items))
+	for _, item := range items {
+		itemsByIndex[item.SourceIndex] = item
+	}
+
+	mappings := make([]db.ResolvedPlaylistSourceEntry, 0, len(snapshot.Entries))
+	seen := make(map[string]struct{}, len(snapshot.Entries))
+	for index, entry := range snapshot.Entries {
+		if _, exists := seen[entry.StableID]; exists {
+			continue
+		}
+		seen[entry.StableID] = struct{}{}
+		mapping := db.ResolvedPlaylistSourceEntry{
+			ProviderEntryID: entry.StableID,
+			SourceURL:       entry.SourceURL,
+			SourceOrder:     index,
+		}
+		if item, exists := itemsByIndex[index+1]; exists && item.Status == ItemStatusImported && item.TrackID.Valid && item.TrackID.Int64 > 0 {
+			mapping.TrackID = item.TrackID.Int64
+		}
+		mappings = append(mappings, mapping)
+	}
+	return mappings
+}
+
+func snapshotFingerprint(snapshot playlistsync.Snapshot) string {
+	digest := sha256.New()
+	writeFingerprintPart(digest, snapshot.Source.Provider)
+	writeFingerprintPart(digest, snapshot.Source.PlaylistID)
+	writeFingerprintPart(digest, snapshot.Source.CanonicalURL)
+	for _, entry := range snapshot.Entries {
+		writeFingerprintPart(digest, entry.StableID)
+		writeFingerprintPart(digest, entry.SourceURL)
+	}
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
+func writeFingerprintPart(digest hash.Hash, value string) {
+	_, _ = fmt.Fprintf(digest, "%d:", len(value))
+	_, _ = digest.Write([]byte(value))
 }
 
 // markItemQueued is idempotent. A store error can be an interrupted response

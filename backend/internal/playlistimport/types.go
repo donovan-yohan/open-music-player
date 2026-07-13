@@ -52,24 +52,25 @@ type ImportJob struct {
 }
 
 type ImportItem struct {
-	ID               int64
-	ImportJobID      uuid.UUID
-	SourceIndex      int
-	PlaylistPosition int
-	SourceID         string
-	SourceURL        string
-	Title            string
-	Artist           string
-	Album            string
-	Uploader         string
-	DurationMs       int
-	ThumbnailURL     string
-	Status           string
-	Error            sql.NullString
-	TrackID          sql.NullInt64
-	DownloadJobID    sql.NullString
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                    int64
+	ImportJobID           uuid.UUID
+	SourceIndex           int
+	PlaylistPosition      int
+	SourceID              string
+	SourceURL             string
+	Title                 string
+	Artist                string
+	Album                 string
+	Uploader              string
+	DurationMs            int
+	ThumbnailURL          string
+	Status                string
+	Error                 sql.NullString
+	TrackID               sql.NullInt64
+	PlaylistSourceEntryID sql.NullInt64
+	DownloadJobID         sql.NullString
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type PlaylistMetadata struct {

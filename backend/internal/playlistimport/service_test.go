@@ -12,6 +12,7 @@ import (
 
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
+	"github.com/openmusicplayer/backend/internal/playlistsync"
 )
 
 func TestStartImportReusesExistingTracksQueuesNewTracksAndPreservesSourceOrder(t *testing.T) {
@@ -70,6 +71,268 @@ func TestStartImportReusesExistingTracksQueuesNewTracksAndPreservesSourceOrder(t
 	}
 	if len(selections.created) != 2 || len(selections.attachedTracks) != 1 || len(ingestion.persisted) != 1 {
 		t.Fatalf("trusted decisions/persistence = %d/%d/%d, want 2/1/1", len(selections.created), len(selections.attachedTracks), len(ingestion.persisted))
+	}
+}
+
+func TestStartImportResolvedSnapshotPersistsDisabledBindingAndMappings(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	snapshot := playlistsync.Snapshot{
+		Source: playlistsync.Source{
+			Provider:     "youtube",
+			PlaylistID:   "PLresolved",
+			CanonicalURL: "https://www.youtube.com/playlist?list=PLresolved",
+			Metadata:     playlistsync.SourceMetadata{Title: "Resolved fixture"},
+		},
+		Complete: true,
+		Entries: []playlistsync.Entry{
+			{StableID: "known", SourceURL: "https://www.youtube.com/watch?v=known", Metadata: playlistsync.EntryMetadata{Title: "Known"}},
+			{StableID: "new", SourceURL: "https://www.youtube.com/watch?v=new", Metadata: playlistsync.EntryMetadata{Title: "New"}},
+			{StableID: "missing", SourceURL: "https://www.youtube.com/watch?v=missing", Metadata: playlistsync.EntryMetadata{Unavailable: true, Error: "private video"}},
+			{StableID: "known", SourceURL: "https://www.youtube.com/watch?v=known", Metadata: playlistsync.EntryMetadata{Title: "Duplicate known"}},
+		},
+	}
+	store := newFakeStore()
+	bindingStore := &fakeSourceBindingStore{}
+	adapter := &fakeSourceAdapter{snapshot: snapshot}
+	enumerator := &fakeEnumerator{}
+	service := NewService(Config{
+		Store:          store,
+		Playlists:      &fakePlaylists{},
+		Tracks:         &fakeTrackSources{bySourceID: map[string]*db.Track{"known": {ID: 42, Title: "Known"}}},
+		Library:        &fakeLibrary{},
+		Downloader:     &fakeDownloader{},
+		Selections:     &fakeSourceSelections{},
+		Ingestion:      &fakeTrustedIngestion{},
+		Enumerator:     enumerator,
+		SourceAdapter:  adapter,
+		SourceBindings: bindingStore,
+	})
+
+	result, err := service.StartImport(context.Background(), userID, ImportRequest{URL: "https://music.youtube.com/playlist?list=PLresolved"})
+	if err != nil {
+		t.Fatalf("StartImport returned error: %v", err)
+	}
+	if adapter.calls != 1 || enumerator.calls != 0 {
+		t.Fatalf("resolution calls = adapter %d, enumerator %d; want one adapter call and no enumeration", adapter.calls, enumerator.calls)
+	}
+	if bindingStore.calls != 1 {
+		t.Fatalf("ApplyResolvedMapping calls = %d, want 1", bindingStore.calls)
+	}
+	binding := bindingStore.binding
+	if binding == nil || binding.SyncEnabled || binding.Provider != "youtube" || binding.ProviderPlaylistID != "PLresolved" || binding.CanonicalURL != snapshot.Source.CanonicalURL {
+		t.Fatalf("binding = %+v, want disabled resolved source binding", binding)
+	}
+	if !binding.SnapshotFingerprint.Valid || binding.SnapshotFingerprint.String == "" || binding.SnapshotFingerprint.String != snapshotFingerprint(snapshot) {
+		t.Fatalf("snapshot fingerprint = %+v, want deterministic non-empty fingerprint", binding.SnapshotFingerprint)
+	}
+	if got := bindingStore.entries; len(got) != 3 {
+		t.Fatalf("resolved mappings = %#v, want three unique provider entries", got)
+	} else {
+		wantIDs := []string{"known", "new", "missing"}
+		wantTracks := []int64{42, 0, 0}
+		for index, entry := range got {
+			if entry.ProviderEntryID != wantIDs[index] || entry.SourceOrder != index || entry.TrackID != wantTracks[index] {
+				t.Fatalf("mapping %d = %+v, want provider ID %q, order %d, track %d", index, entry, wantIDs[index], index, wantTracks[index])
+			}
+		}
+	}
+	if result.Job == nil || result.Job.PlaylistID != 1001 {
+		t.Fatalf("result job = %+v, want imported playlist job", result.Job)
+	}
+	itemsBySource := make(map[string]ImportItem, len(result.Items))
+	var firstKnown, duplicateKnown ImportItem
+	for _, item := range result.Items {
+		itemsBySource[item.SourceID] = item
+		if item.SourceIndex == 1 {
+			firstKnown = item
+		}
+		if item.SourceIndex == 4 {
+			duplicateKnown = item
+		}
+	}
+	for _, sourceID := range []string{"known", "new", "missing"} {
+		item := itemsBySource[sourceID]
+		if !item.PlaylistSourceEntryID.Valid || item.PlaylistSourceEntryID.Int64 <= 0 {
+			t.Fatalf("item %q source entry ID = %+v, want associated source entry", sourceID, item.PlaylistSourceEntryID)
+		}
+	}
+	if firstKnown.PlaylistSourceEntryID.Int64 != 1 || duplicateKnown.PlaylistSourceEntryID.Int64 != 1 {
+		t.Fatalf("duplicate source entry IDs = %d/%d, want both first source entry ID 1", firstKnown.PlaylistSourceEntryID.Int64, duplicateKnown.PlaylistSourceEntryID.Int64)
+	}
+}
+
+func TestStartImportResolvedSnapshotFailurePersistsNothing(t *testing.T) {
+	tests := []struct {
+		name     string
+		adapter  *fakeSourceAdapter
+		wantText string
+	}{
+		{name: "adapter error", adapter: &fakeSourceAdapter{err: errors.New("provider unavailable")}, wantText: "resolve playlist source"},
+		{name: "incomplete snapshot", adapter: &fakeSourceAdapter{snapshot: playlistsync.Snapshot{Complete: false}}, wantText: "validate playlist source snapshot"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeStore()
+			bindingStore := &fakeSourceBindingStore{}
+			downloader := &fakeDownloader{}
+			service := NewService(Config{
+				Store:          store,
+				Playlists:      &fakePlaylists{},
+				SourceAdapter:  tt.adapter,
+				SourceBindings: bindingStore,
+				Downloader:     downloader,
+			})
+
+			_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+			if err == nil || !strings.Contains(err.Error(), tt.wantText) {
+				t.Fatalf("StartImport error = %v, want %q", err, tt.wantText)
+			}
+			if bindingStore.upsertCalls != 0 || bindingStore.calls != 0 {
+				t.Fatalf("source binding calls = upsert %d, apply %d; want 0/0", bindingStore.upsertCalls, bindingStore.calls)
+			}
+			if len(store.jobs) != 0 || len(store.items) != 0 || len(downloader.jobs) != 0 {
+				t.Fatalf("side effects after snapshot failure: jobs=%d items=%d downloads=%d, want 0/0/0", len(store.jobs), len(store.items), len(downloader.jobs))
+			}
+		})
+	}
+}
+
+func TestStartImportResolvedSnapshotReservationFailurePersistsNothing(t *testing.T) {
+	store := newFakeStore()
+	downloader := &fakeDownloader{}
+	bindingStore := &fakeSourceBindingStore{upsertErr: errors.New("binding reservation failed")}
+	service := NewService(Config{
+		Store:      store,
+		Playlists:  &fakePlaylists{},
+		Downloader: downloader,
+		SourceAdapter: &fakeSourceAdapter{snapshot: playlistsync.Snapshot{
+			Source:   playlistsync.Source{Provider: "youtube", PlaylistID: "PLfixture", CanonicalURL: "https://www.youtube.com/playlist?list=PLfixture"},
+			Complete: true,
+			Entries:  []playlistsync.Entry{{StableID: "entry", SourceURL: "https://www.youtube.com/watch?v=entry"}},
+		}},
+		SourceBindings: bindingStore,
+	})
+
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if err == nil || !strings.Contains(err.Error(), "reserve playlist source binding") {
+		t.Fatalf("StartImport error = %v, want binding reservation failure", err)
+	}
+	if bindingStore.upsertCalls != 1 || bindingStore.calls != 0 || len(store.jobs) != 0 || len(store.items) != 0 || len(downloader.jobs) != 0 {
+		t.Fatalf("reservation failure side effects: upsert=%d apply=%d jobs=%d items=%d downloads=%d, want 1/0/0/0/0", bindingStore.upsertCalls, bindingStore.calls, len(store.jobs), len(store.items), len(downloader.jobs))
+	}
+}
+
+func TestStartImportResolvedSnapshotEnforcesMaxItemsAfterResolve(t *testing.T) {
+	snapshot := playlistsync.Snapshot{
+		Source:   playlistsync.Source{Provider: "youtube", PlaylistID: "PLfixture", CanonicalURL: "https://www.youtube.com/playlist?list=PLfixture"},
+		Complete: true,
+		Entries: []playlistsync.Entry{
+			{StableID: "one", SourceURL: "https://www.youtube.com/watch?v=one"},
+			{StableID: "two", SourceURL: "https://www.youtube.com/watch?v=two"},
+		},
+	}
+	store := newFakeStore()
+	bindingStore := &fakeSourceBindingStore{}
+	adapter := &fakeSourceAdapter{snapshot: snapshot}
+	service := NewService(Config{
+		Store:          store,
+		Playlists:      &fakePlaylists{},
+		SourceAdapter:  adapter,
+		SourceBindings: bindingStore,
+		MaxItems:       1,
+	})
+
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("StartImport error = %v, want ErrLimitExceeded", err)
+	}
+	if adapter.calls != 1 || bindingStore.calls != 0 {
+		t.Fatalf("resolution/apply calls = %d/%d, want 1/0", adapter.calls, bindingStore.calls)
+	}
+	if len(store.jobs) != 0 || len(store.items) != 0 {
+		t.Fatalf("side effects after oversized snapshot: jobs=%d items=%d, want 0/0", len(store.jobs), len(store.items))
+	}
+}
+
+func TestStartImportResolvedMappingFailureMarksJobFailed(t *testing.T) {
+	userID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	store := newFakeStore()
+	bindingStore := &fakeSourceBindingStore{err: errors.New("mapping propagation failed")}
+	service := NewService(Config{
+		Store:      store,
+		Playlists:  &fakePlaylists{},
+		Tracks:     &fakeTrackSources{bySourceID: map[string]*db.Track{"known": {ID: 42}}},
+		Library:    &fakeLibrary{},
+		Selections: &fakeSourceSelections{},
+		SourceAdapter: &fakeSourceAdapter{snapshot: playlistsync.Snapshot{
+			Source:   playlistsync.Source{Provider: "youtube", PlaylistID: "PLfixture", CanonicalURL: "https://www.youtube.com/playlist?list=PLfixture"},
+			Complete: true,
+			Entries:  []playlistsync.Entry{{StableID: "known", SourceURL: "https://www.youtube.com/watch?v=known"}},
+		}},
+		SourceBindings: bindingStore,
+	})
+
+	_, err := service.StartImport(context.Background(), userID, ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if err == nil || !strings.Contains(err.Error(), "apply playlist source mapping") {
+		t.Fatalf("StartImport error = %v, want mapping propagation failure", err)
+	}
+	if bindingStore.calls != 1 {
+		t.Fatalf("ApplyResolvedMapping calls = %d, want 1", bindingStore.calls)
+	}
+	for _, job := range store.jobs {
+		if job.Status != JobStatusFailed {
+			t.Fatalf("job status = %q, want %q", job.Status, JobStatusFailed)
+		}
+	}
+}
+
+func TestStartImportPropagatesSourceEntryAssociationFailure(t *testing.T) {
+	store := newFakeStore()
+	store.associateItemErr = errors.New("source entry association failed")
+	bindingStore := &fakeSourceBindingStore{}
+	service := NewService(Config{
+		Store:      store,
+		Playlists:  &fakePlaylists{},
+		Tracks:     &fakeTrackSources{bySourceID: map[string]*db.Track{"known": {ID: 42}}},
+		Library:    &fakeLibrary{},
+		Selections: &fakeSourceSelections{},
+		SourceAdapter: &fakeSourceAdapter{snapshot: playlistsync.Snapshot{
+			Source:   playlistsync.Source{Provider: "youtube", PlaylistID: "PLfixture", CanonicalURL: "https://www.youtube.com/playlist?list=PLfixture"},
+			Complete: true,
+			Entries:  []playlistsync.Entry{{StableID: "known", SourceURL: "https://www.youtube.com/watch?v=known"}},
+		}},
+		SourceBindings: bindingStore,
+	})
+
+	_, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"})
+	if err == nil || !strings.Contains(err.Error(), "associate playlist import item") {
+		t.Fatalf("StartImport error = %v, want association failure", err)
+	}
+	if bindingStore.loadCalls != 1 || len(store.jobs) != 1 {
+		t.Fatalf("post-apply state: loads=%d jobs=%d, want 1/1", bindingStore.loadCalls, len(store.jobs))
+	}
+	for _, job := range store.jobs {
+		if job.Status != JobStatusFailed {
+			t.Fatalf("job status = %q, want %q", job.Status, JobStatusFailed)
+		}
+	}
+}
+
+func TestStartImportEnumeratorOnlyPathDoesNotUseSourceBindingStore(t *testing.T) {
+	store := newFakeStore()
+	bindingStore := &fakeSourceBindingStore{}
+	service := NewService(Config{
+		Store:          store,
+		Playlists:      &fakePlaylists{},
+		Enumerator:     &fakeEnumerator{entries: []Entry{{SourceID: "unavailable", SourceURL: "https://www.youtube.com/watch?v=unavailable", Unavailable: true}}},
+		SourceBindings: bindingStore,
+	})
+
+	if _, err := service.StartImport(context.Background(), uuid.New(), ImportRequest{URL: "https://www.youtube.com/playlist?list=PLfixture"}); err != nil {
+		t.Fatalf("StartImport returned error: %v", err)
+	}
+	if bindingStore.calls != 0 {
+		t.Fatalf("legacy path applied source mappings %d times, want 0", bindingStore.calls)
 	}
 }
 
@@ -223,12 +486,13 @@ func TestStartImportPropagatesPersistentQueuedItemStoreFailure(t *testing.T) {
 }
 
 type fakeStore struct {
-	jobs            map[uuid.UUID]*ImportJob
-	items           map[int64]*ImportItem
-	next            int64
-	createItemErr   error
-	markQueuedErrs  []error
-	markQueuedCalls int
+	jobs             map[uuid.UUID]*ImportJob
+	items            map[int64]*ImportItem
+	next             int64
+	createItemErr    error
+	associateItemErr error
+	markQueuedErrs   []error
+	markQueuedCalls  int
 }
 
 func newFakeStore() *fakeStore {
@@ -271,6 +535,14 @@ func (s *fakeStore) CreateItem(_ context.Context, item *ImportItem) error {
 	s.next++
 	copy := *item
 	s.items[item.ID] = &copy
+	return nil
+}
+func (s *fakeStore) AssociateItemSourceEntry(_ context.Context, itemID, sourceEntryID int64) error {
+	if s.associateItemErr != nil {
+		return s.associateItemErr
+	}
+	item := s.items[itemID]
+	item.PlaylistSourceEntryID = sql.NullInt64{Int64: sourceEntryID, Valid: true}
 	return nil
 }
 func (s *fakeStore) MarkItemQueued(_ context.Context, itemID int64, downloadJobID string) error {
@@ -417,8 +689,76 @@ func (s *fakeTrustedIngestion) EnqueueTrustedPlaylistDownload(ctx context.Contex
 	return enqueuer.EnqueuePlaylistImportItemWithID(ctx, persisted.Job.ID, persisted.Job.UserID, persisted.Candidate, importJobID, importItemID, playlistID, playlistPosition)
 }
 
-type fakeEnumerator struct{ entries []Entry }
+type fakeEnumerator struct {
+	entries []Entry
+	calls   int
+}
 
 func (e *fakeEnumerator) Enumerate(_ context.Context, _ string, _ int) (PlaylistMetadata, []Entry, error) {
+	e.calls++
 	return PlaylistMetadata{Title: "Fixture"}, e.entries, nil
+}
+
+type fakeSourceAdapter struct {
+	snapshot playlistsync.Snapshot
+	err      error
+	calls    int
+}
+
+func (a *fakeSourceAdapter) Resolve(_ context.Context, _ string) (playlistsync.Snapshot, error) {
+	a.calls++
+	return a.snapshot, a.err
+}
+
+type fakeSourceBindingStore struct {
+	binding       *db.PlaylistSourceBinding
+	entries       []db.ResolvedPlaylistSourceEntry
+	sourceEntries []db.PlaylistSourceEntry
+	err           error
+	upsertErr     error
+	loadErr       error
+	calls         int
+	upsertCalls   int
+	loadCalls     int
+}
+
+func (s *fakeSourceBindingStore) UpsertBinding(_ context.Context, binding *db.PlaylistSourceBinding) error {
+	s.upsertCalls++
+	if s.upsertErr != nil {
+		return s.upsertErr
+	}
+	copy := *binding
+	s.binding = &copy
+	return nil
+}
+
+func (s *fakeSourceBindingStore) ApplyResolvedMapping(_ context.Context, binding *db.PlaylistSourceBinding, entries []db.ResolvedPlaylistSourceEntry) error {
+	s.calls++
+	if binding != nil {
+		copy := *binding
+		s.binding = &copy
+	}
+	s.entries = append([]db.ResolvedPlaylistSourceEntry(nil), entries...)
+	if s.err != nil {
+		return s.err
+	}
+	s.sourceEntries = make([]db.PlaylistSourceEntry, 0, len(entries))
+	for index, entry := range entries {
+		s.sourceEntries = append(s.sourceEntries, db.PlaylistSourceEntry{
+			ID:              int64(index + 1),
+			ProviderEntryID: entry.ProviderEntryID,
+			SourceURL:       entry.SourceURL,
+			SourceOrder:     entry.SourceOrder,
+		})
+	}
+	return s.err
+}
+
+func (s *fakeSourceBindingStore) LoadBinding(_ context.Context, _ uuid.UUID, _ int64) (*db.PlaylistSourceBinding, []db.PlaylistSourceEntry, error) {
+	s.loadCalls++
+	if s.loadErr != nil {
+		return nil, nil, s.loadErr
+	}
+	entries := append([]db.PlaylistSourceEntry(nil), s.sourceEntries...)
+	return s.binding, entries, nil
 }

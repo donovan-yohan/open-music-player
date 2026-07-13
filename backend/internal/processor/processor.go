@@ -63,6 +63,7 @@ type Processor struct {
 	playlistRepo            *db.PlaylistRepository
 	importRepo              *playlistimport.ImportRepository
 	sourceRepo              *playlistimport.TrackSourceRepository
+	playlistSourceRepo      *db.PlaylistSourceRepository
 	analysisRepo            AnalysisStore
 	analyzerClient          analyzer.Client
 	analysisQueue           chan analysisTask
@@ -89,6 +90,7 @@ type ProcessorConfig struct {
 	PlaylistRepo            *db.PlaylistRepository
 	ImportRepo              *playlistimport.ImportRepository
 	SourceRepo              *playlistimport.TrackSourceRepository
+	PlaylistSourceRepo      *db.PlaylistSourceRepository
 	AnalysisRepo            AnalysisStore
 	AnalyzerClient          analyzer.Client
 	AnalysisConcurrency     int
@@ -112,6 +114,7 @@ func New(config *ProcessorConfig) *Processor {
 		playlistRepo:            config.PlaylistRepo,
 		importRepo:              config.ImportRepo,
 		sourceRepo:              config.SourceRepo,
+		playlistSourceRepo:      config.PlaylistSourceRepo,
 		analysisRepo:            config.AnalysisRepo,
 		analyzerClient:          config.AnalyzerClient,
 		requireAnalyzerIdentity: config.RequireAnalyzerIdentity,
@@ -737,6 +740,12 @@ func (p *Processor) recordTrackSource(ctx context.Context, job *download.Downloa
 func (p *Processor) attachPlaylistImportTrack(ctx context.Context, job *download.DownloadJob, trackID int64) error {
 	if job == nil || job.PlaylistImportItemID == 0 {
 		return nil
+	}
+	if p.importRepo != nil {
+		return p.importRepo.CompletePlaylistImportItem(ctx, job.PlaylistImportItemID, trackID)
+	}
+	if p.playlistSourceRepo != nil {
+		return p.playlistSourceRepo.CompletePlaylistImportItem(ctx, job.PlaylistImportItemID, trackID)
 	}
 	if p.playlistRepo != nil && job.PlaylistID != 0 {
 		if err := p.playlistRepo.AddTrackAtPosition(ctx, job.PlaylistID, trackID, job.PlaylistPosition); err != nil && !errors.Is(err, db.ErrTrackAlreadyInPlaylist) {
