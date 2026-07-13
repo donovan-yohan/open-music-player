@@ -8,9 +8,31 @@ import (
 	"time"
 
 	"github.com/openmusicplayer/backend/internal/analyzer"
+	"github.com/openmusicplayer/backend/internal/config"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/processor"
 )
+
+func TestNewSourceQualityJudgeDisabledConfigReturnsNil(t *testing.T) {
+	judge := newSourceQualityJudge(&config.Config{SourceQualityLLMEnabled: false})
+	if judge != nil {
+		t.Fatal("disabled source-quality config should not construct a judge")
+	}
+}
+
+func TestNewSourceQualityJudgeEnabledConfigConstructsOllamaJudge(t *testing.T) {
+	judge := newSourceQualityJudge(&config.Config{
+		SourceQualityLLMEnabled: true,
+		SourceQualityLLMBaseURL: "http://ollama.example:11434",
+		SourceQualityLLMModel:   "source-quality-judge",
+		SourceQualityLLMTimeout: time.Second,
+		SourceQualityLLMAPIKey:  "test-secret",
+	})
+	if _, ok := judge.(*discovery.OllamaSourceQualityJudge); !ok {
+		t.Fatalf("newSourceQualityJudge() = %T, want *discovery.OllamaSourceQualityJudge", judge)
+	}
+}
 
 type startupInfoClient struct {
 	info analyzer.Info

@@ -162,15 +162,21 @@ func NewService(cfg ServiceConfig) *Service {
 }
 
 func NewDefaultService() *Service {
-	return NewDefaultServiceWithCatalog(nil)
+	return NewDefaultServiceWithCatalogAndSourceQualityJudge(nil, nil)
 }
 
 func NewDefaultServiceWithCatalog(catalog MusicCatalog) *Service {
+	return NewDefaultServiceWithCatalogAndSourceQualityJudge(catalog, nil)
+}
+
+// NewDefaultServiceWithCatalogAndSourceQualityJudge installs an optional judge
+// on the default source providers. A nil judge preserves deterministic ranking.
+func NewDefaultServiceWithCatalogAndSourceQualityJudge(catalog MusicCatalog, judge SourceQualityJudge) *Service {
 	providers := []Provider{
 		NewYTDLPProvider("youtube", "ytsearch", "https://www.youtube.com/watch?v="),
 		NewYTDLPProvider("soundcloud", "scsearch", ""),
 	}
-	return NewService(ServiceConfig{Providers: providers, DefaultProviders: []string{"youtube", "soundcloud"}, MusicCatalog: catalog})
+	return NewService(ServiceConfig{Providers: providers, DefaultProviders: []string{"youtube", "soundcloud"}, MusicCatalog: catalog, SourceQualityJudge: judge})
 }
 
 func (s *Service) Search(ctx context.Context, query string, requested []string, limit int) SearchResponse {

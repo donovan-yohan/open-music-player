@@ -57,6 +57,15 @@ type Config struct {
 	MetadataLLMModel   string
 	MetadataLLMTimeout time.Duration
 
+	// Optional Ollama source-quality judge. Disabled by default; discovery keeps
+	// deterministic ranking when it is disabled or returns an error. APIKey is a
+	// secret and must never be logged or returned to callers.
+	SourceQualityLLMEnabled bool
+	SourceQualityLLMBaseURL string
+	SourceQualityLLMModel   string
+	SourceQualityLLMTimeout time.Duration
+	SourceQualityLLMAPIKey  string
+
 	// Optional out-of-process audio analyzer. Disabled unless configured so the
 	// processor never creates unserviceable pending analysis rows by default.
 	AnalyzerEnabled     bool
@@ -86,6 +95,20 @@ func Load() *Config {
 	metadataLLMBaseURL := strings.TrimSpace(getEnvOrDefault("METADATA_LLM_BASE_URL", getEnvOrDefault("OLLAMA_BASE_URL", "http://localhost:11434")))
 	metadataLLMModel := strings.TrimSpace(getEnvOrDefault("METADATA_LLM_MODEL", os.Getenv("OLLAMA_MODEL")))
 	metadataLLMEnabled := parseBoolEnv("METADATA_LLM_ENABLED", false)
+	sourceQualityLLMBaseURL := strings.TrimSpace(os.Getenv("SOURCE_QUALITY_LLM_BASE_URL"))
+	if sourceQualityLLMBaseURL == "" {
+		sourceQualityLLMBaseURL = strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL"))
+	}
+	if sourceQualityLLMBaseURL == "" {
+		sourceQualityLLMBaseURL = "http://localhost:11434"
+	}
+	sourceQualityLLMModel := strings.TrimSpace(os.Getenv("SOURCE_QUALITY_LLM_MODEL"))
+	if sourceQualityLLMModel == "" {
+		sourceQualityLLMModel = strings.TrimSpace(os.Getenv("OLLAMA_MODEL"))
+	}
+	if sourceQualityLLMModel == "" {
+		sourceQualityLLMModel = "source-quality-judge"
+	}
 	analyzerBaseURL := strings.TrimSpace(os.Getenv("ANALYZER_BASE_URL"))
 	analyzerEnabled := parseBoolEnv("ANALYZER_ENABLED", analyzerBaseURL != "")
 
@@ -132,6 +155,13 @@ func Load() *Config {
 		MetadataLLMBaseURL: metadataLLMBaseURL,
 		MetadataLLMModel:   metadataLLMModel,
 		MetadataLLMTimeout: parseDurationMsEnv("METADATA_LLM_TIMEOUT_MS", 5*time.Second),
+
+		// Source-quality LLM configuration
+		SourceQualityLLMEnabled: parseBoolEnv("SOURCE_QUALITY_LLM_ENABLED", false),
+		SourceQualityLLMBaseURL: sourceQualityLLMBaseURL,
+		SourceQualityLLMModel:   sourceQualityLLMModel,
+		SourceQualityLLMTimeout: parseDurationMsEnv("SOURCE_QUALITY_LLM_TIMEOUT_MS", 1500*time.Millisecond),
+		SourceQualityLLMAPIKey:  strings.TrimSpace(os.Getenv("OLLAMA_API_KEY")),
 
 		// Audio analyzer service configuration
 		AnalyzerEnabled:     analyzerEnabled,
