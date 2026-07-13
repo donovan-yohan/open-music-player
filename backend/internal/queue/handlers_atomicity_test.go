@@ -1,73 +1,33 @@
 package queue
 
 import (
-	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strings"
 	"testing"
-
-	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
-
-	"github.com/openmusicplayer/backend/internal/auth"
-	"github.com/openmusicplayer/backend/internal/download"
 )
 
 func TestAddQueueItemQueuePersistenceFailureDoesNotEnqueueSourceCandidateDownload(t *testing.T) {
-	redisURL := os.Getenv("REDIS_URL")
-	if redisURL == "" {
-		t.Skip("REDIS_URL is required for queue/download atomicity integration test")
+	service := &fakeQueueHandlerService{state: &QueueState{Items: []QueueItem{}}}
+	downloads := &fakeQueueDownloadService{}
+	decision := sourceDecisionForQueue(t, sourceDecisionSnapshot(t, "https://www.youtube.com/watch?v=persist-fail", ""))
+	repo := &fakeSourceDecisionRepository{
+		decision:  decision,
+		attachErr: errors.New("queue intent persistence failed"),
 	}
-
-	ctx := context.Background()
-	downloadService, err := download.NewService(&download.ServiceConfig{
-		RedisURL:    redisURL,
-		WorkerCount: 0,
-		MaxRetries:  0,
-	}, nil)
-	if err != nil {
-		t.Skipf("Redis not available: %v", err)
-	}
-	defer downloadService.Stop(ctx)
-
-	queueService := &Service{client: redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})}
-	defer queueService.client.Close()
-
-	userID := uuid.New()
-	beforeJobs, err := downloadService.GetUserJobs(ctx, userID.String())
-	if err != nil {
-		t.Fatalf("download jobs before request: %v", err)
-	}
-
-	h := NewHandlers(queueService, downloadService)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/queue/items", strings.NewReader(`{
+	h := NewHandlersWithSourceSelections(service, downloads, nil, repo, &fakeDurableDownloadJobStore{})
+	req := queueDecisionRequest(`{
 		"position": "last",
-		"sourceCandidate": {
-			"candidateId": "yt:persist-fail",
-			"provider": "youtube",
-			"sourceUrl": "https://example.test/watch?v=persist-fail",
-			"title": "Persist Fail"
-		}
-	}`))
-	req.Header.Set("Content-Type", "application/json")
-	req = req.WithContext(context.WithValue(req.Context(), auth.UserContextKey, &auth.UserContext{
-		UserID: userID,
-		Email:  "user@example.test",
-	}))
+		"sourceDecisionId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	}`)
 	rec := httptest.NewRecorder()
 
 	h.AddQueueItem(rec, req)
 
-	afterJobs, err := downloadService.GetUserJobs(ctx, userID.String())
-	if err != nil {
-		t.Fatalf("download jobs after request: %v", err)
-	}
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("AddQueueItem queue persistence failure status = %d, want %d; body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
 	}
-	if len(afterJobs) != len(beforeJobs) {
-		t.Fatalf("download job count for user changed from %d to %d when queue persistence failed", len(beforeJobs), len(afterJobs))
+	if len(downloads.enqueued) != 0 {
+		t.Fatalf("download enqueue count changed to %d when queue intent persistence failed", len(downloads.enqueued))
 	}
 }
