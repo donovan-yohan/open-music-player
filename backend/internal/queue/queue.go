@@ -209,14 +209,25 @@ func resolveInsertPosition(state *QueueState, position string) (int, bool, error
 
 // AddSourceCandidate adds a non-playable discovery candidate to the queue.
 func (s *Service) AddSourceCandidate(ctx context.Context, userID string, candidate SourceCandidate, downloadJobID, position string) (*QueueState, error) {
+	return s.EnsureSourceCandidateWithID(ctx, userID, uuid.NewString(), candidate, downloadJobID, position)
+}
+
+// EnsureSourceCandidateWithID adds one source item for a durable intent. The
+// stable item ID keeps restart recovery idempotent.
+func (s *Service) EnsureSourceCandidateWithID(ctx context.Context, userID, queueItemID string, candidate SourceCandidate, downloadJobID, position string) (*QueueState, error) {
 	state, err := s.GetQueue(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
+	for _, item := range state.Items {
+		if item.ID == queueItemID || item.DownloadJobID == downloadJobID {
+			return state, nil
+		}
+	}
 
 	now := time.Now()
 	newItem := QueueItem{
-		ID:            uuid.NewString(),
+		ID:            queueItemID,
 		Kind:          "source",
 		PlaybackState: "queued",
 		DownloadJobID: downloadJobID,

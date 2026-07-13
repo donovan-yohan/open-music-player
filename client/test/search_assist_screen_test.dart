@@ -27,12 +27,14 @@ void main() {
     required Map<String, dynamic> assistEnvelope,
     int assistStatus = 200,
     Future<void>? assistGate,
+    int failQueueAttempts = 0,
   }) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
+    final queueClient = _QueueClient(failQueueAttempts: failQueueAttempts);
     final discoveryClient = ApiClient(
       storage: SecureStorage(),
       dio: Dio()
@@ -40,9 +42,9 @@ void main() {
           assistEnvelope,
           assistStatus: assistStatus,
           assistGate: assistGate,
+          sourceSelectionRequests: queueClient.sourceSelectionRequests,
         ),
     );
-    final queueClient = _QueueClient();
 
     await tester.pumpWidget(
       MultiProvider(
@@ -63,7 +65,9 @@ void main() {
     await tester.tap(find.text('Assist'));
     await tester.pump();
     await tester.enterText(
-        find.byKey(const ValueKey('search_assist_input')), prompt);
+      find.byKey(const ValueKey('search_assist_input')),
+      prompt,
+    );
     await tester.testTextInput.receiveAction(TextInputAction.done);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
@@ -81,7 +85,9 @@ void main() {
 
       // Grounded assistant text + candidate card are rendered.
       expect(
-          find.text("Here's what I found from your sources."), findsOneWidget);
+        find.text("Here's what I found from your sources."),
+        findsOneWidget,
+      );
       expect(find.text('Porter Robinson - Shelter (Live)'), findsOneWidget);
       expect(find.text('Live'), findsOneWidget);
       expect(find.byIcon(Icons.playlist_add), findsOneWidget);
@@ -94,45 +100,46 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
 
       expect(queueClient.addItemRequests, 1);
-      // The explicit tap queues exactly the grounded candidate — not a
-      // fabricated or mismatched one.
-      final sent =
-          queueClient.lastAddBody?['sourceCandidate'] as Map<String, dynamic>?;
-      expect(sent?['candidateId'], 'youtube:abc');
-      expect(sent?['sourceUrl'], 'https://youtube.com/watch?v=abc');
-      expect(sent?['metadata'], containsPair('sourceQuality', isA<Map>()));
+      // Queueing is decision-only. The selected candidate never appears in
+      // the queue request, so URL or MusicBrainz identity cannot be supplied
+      // by the client after the server-owned choice is made.
+      expect(queueClient.lastAddBody, {
+        'position': 'last',
+        'sourceDecisionId': 'decision-1',
+      });
+      expect(queueClient.lastAddBody!.containsKey('sourceCandidate'), isFalse);
+      expect(
+        find.textContaining('Selected Porter Robinson - Shelter (Live)'),
+        findsOneWidget,
+      );
 
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
 
-  testWidgets(
-    'source quality chip opens auditable ranking details',
-    (tester) async {
-      await pumpSearch(
-        tester,
-        assistEnvelope: _searchEnvelope,
-      );
+  testWidgets('source quality chip opens auditable ranking details', (
+    tester,
+  ) async {
+    await pumpSearch(tester, assistEnvelope: _searchEnvelope);
 
-      await enterAssistMode(tester, 'that live porter robinson shelter');
+    await enterAssistMode(tester, 'that live porter robinson shelter');
 
-      await tester.tap(
-        find.byKey(const ValueKey('source_quality_chip_live_acceptable')),
-      );
-      await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('source_quality_chip_live_acceptable')),
+    );
+    await tester.pumpAndSettle();
 
-      expect(find.text('Source quality'), findsOneWidget);
-      expect(find.text('Acceptable'), findsOneWidget);
-      expect(find.text('73/100'), findsOneWidget);
-      expect(find.text('79%'), findsOneWidget);
-      expect(find.text('Reasons'), findsOneWidget);
-      expect(find.text('query asked for live content'), findsOneWidget);
-      expect(find.text('Provenance'), findsOneWidget);
-      expect(find.text('deterministic_source_quality_v1'), findsOneWidget);
+    expect(find.text('Source quality'), findsOneWidget);
+    expect(find.text('Acceptable'), findsOneWidget);
+    expect(find.text('73/100'), findsOneWidget);
+    expect(find.text('79%'), findsOneWidget);
+    expect(find.text('Reasons'), findsOneWidget);
+    expect(find.text('query asked for live content'), findsOneWidget);
+    expect(find.text('Provenance'), findsOneWidget);
+    expect(find.text('deterministic_source_quality_v1'), findsOneWidget);
 
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets(
     'pasting a URL in search mode auto-routes to assist and shows a queueable candidate',
@@ -161,6 +168,119 @@ void main() {
     },
   );
 
+  testWidgets('expired source selection asks the user to rerun assist',
+      (tester) async {
+    final queueClient = await pumpSearch(
+      tester,
+      assistEnvelope: {
+        ..._directUrlEnvelope,
+        'selectionExpiresAt': '2000-01-01T00:00:00Z',
+      },
+    );
+
+    await enterAssistMode(tester, 'https://youtu.be/abc');
+    await tester.tap(find.byIcon(Icons.playlist_add));
+    await tester.pump();
+
+    expect(find.textContaining('source choice expired'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+    expect(queueClient.addItemRequests, 0);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('alternate source asks for a bounded override reason',
+      (tester) async {
+    final queueClient = await pumpSearch(
+      tester,
+      assistEnvelope: {
+        ..._directUrlEnvelope,
+        'candidates': [
+          ..._directUrlEnvelope['candidates'] as List<dynamic>,
+          {
+            'candidateId': 'youtube:alternate',
+            'provider': 'youtube',
+            'sourceId': 'alternate',
+            'sourceUrl': 'https://youtu.be/alternate',
+            'title': 'Alternate mix',
+            'downloadable': true,
+            'playable': false,
+          },
+        ],
+      },
+    );
+
+    await enterAssistMode(tester, 'https://youtu.be/abc');
+    await tester.tap(find.byIcon(Icons.playlist_add).last);
+    await tester.pumpAndSettle();
+    expect(find.text('Choose alternate source'), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('source_override_reason')),
+      '  I prefer this mix.  ',
+    );
+    await tester.tap(find.text('Choose source'));
+    await tester.pumpAndSettle();
+
+    expect(queueClient.addItemRequests, 1);
+    expect(queueClient.sourceSelectionRequests, [
+      {
+        'sessionId': '11111111-1111-1111-1111-111111111111',
+        'candidateId': 'youtube:alternate',
+        'action': 'overridden',
+        'reason': 'I prefer this mix.',
+      },
+    ]);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('queue failure retries the saved decision without recreating it',
+      (tester) async {
+    final queueClient = await pumpSearch(
+      tester,
+      assistEnvelope: _directUrlEnvelope,
+      failQueueAttempts: 1,
+    );
+
+    await enterAssistMode(tester, 'https://youtu.be/abc');
+    await tester.tap(find.byIcon(Icons.playlist_add));
+    await tester.pumpAndSettle();
+
+    expect(queueClient.addItemRequests, 1);
+    expect(queueClient.sourceSelectionRequests, hasLength(1));
+    expect(find.textContaining('Source choice saved'), findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('source_selection_retry')), findsOneWidget);
+    expect(find.textContaining('source choice expired'), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('source_selection_retry')));
+    await tester.pumpAndSettle();
+
+    expect(queueClient.addItemRequests, 2);
+    expect(queueClient.lastAddBody?['sourceDecisionId'], 'decision-1');
+    expect(queueClient.sourceSelectionRequests, hasLength(1));
+    expect(find.textContaining('Source choice added to queue'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('query changes clear source selection confirmation',
+      (tester) async {
+    await pumpSearch(tester, assistEnvelope: _directUrlEnvelope);
+
+    await enterAssistMode(tester, 'https://youtu.be/abc');
+    await tester.tap(find.byIcon(Icons.playlist_add));
+    await tester.pumpAndSettle();
+    expect(
+        find.byKey(const ValueKey('source_selection_status')), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('search_assist_input')),
+      'a different prompt',
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('source_selection_status')), findsNothing);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets(
     'disabled assist state shows a graceful banner and Search directly falls back to discovery search',
     (tester) async {
@@ -186,35 +306,30 @@ void main() {
     },
   );
 
-  testWidgets(
-    'assist surfaces provider caveats and provenance honestly',
-    (tester) async {
-      await pumpSearch(tester, assistEnvelope: _caveatEnvelope);
+  testWidgets('assist surfaces provider caveats and provenance honestly', (
+    tester,
+  ) async {
+    await pumpSearch(tester, assistEnvelope: _caveatEnvelope);
 
-      await enterAssistMode(tester, 'find me something');
+    await enterAssistMode(tester, 'find me something');
 
-      expect(find.text('Heads up'), findsOneWidget);
-      expect(
-        find.textContaining('youtube provider failed'),
-        findsWidgets,
-      );
+    expect(find.text('Heads up'), findsOneWidget);
+    expect(find.textContaining('youtube provider failed'), findsWidgets);
 
-      await tester.pumpWidget(const SizedBox.shrink());
-    },
-  );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets(
     'assist error envelope shows the error banner with Retry and Search directly',
     (tester) async {
-      final queueClient =
-          await pumpSearch(tester, assistEnvelope: _errorEnvelope);
+      final queueClient = await pumpSearch(
+        tester,
+        assistEnvelope: _errorEnvelope,
+      );
 
       await enterAssistMode(tester, 'find me something');
 
-      expect(
-        find.textContaining('assistant is unavailable'),
-        findsOneWidget,
-      );
+      expect(find.textContaining('assistant is unavailable'), findsOneWidget);
       expect(find.text('Retry'), findsOneWidget);
       expect(find.text('Search directly'), findsOneWidget);
 
@@ -244,7 +359,9 @@ void main() {
       // banner that keeps the search-directly fallback.
       expect(find.byType(CircularProgressIndicator), findsNothing);
       expect(
-          find.byKey(const ValueKey('assist_status_banner')), findsOneWidget);
+        find.byKey(const ValueKey('assist_status_banner')),
+        findsOneWidget,
+      );
 
       await tester.tap(find.byKey(const ValueKey('assist_search_directly')));
       await tester.pump();
@@ -273,10 +390,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
 
       // The chip re-ran assist with the chosen option as the prompt.
-      expect(
-        find.byKey(const ValueKey('search_assist_input')),
-        findsOneWidget,
-      );
+      expect(find.byKey(const ValueKey('search_assist_input')), findsOneWidget);
       expect(find.text('The 2016 single'), findsWidgets);
 
       await tester.pumpWidget(const SizedBox.shrink());
@@ -374,13 +488,16 @@ const Map<String, dynamic> _searchEnvelope = {
   'intent': {'kind': 'search', 'searchQuery': 'porter robinson shelter'},
   'search': {
     'query': 'porter robinson shelter',
+    'selectionSessionId': '11111111-1111-1111-1111-111111111111',
+    'recommendedCandidateId': 'youtube:abc',
+    'selectionExpiresAt': '2099-01-01T00:00:00Z',
     'results': [_candidateJson],
     'providers': [
       {
         'provider': 'youtube',
         'status': 'ok',
         'resultCount': 1,
-        'elapsedMs': 20
+        'elapsedMs': 20,
       },
     ],
   },
@@ -391,6 +508,9 @@ const Map<String, dynamic> _directUrlEnvelope = {
   'assistantText':
       'I recognized a direct link. Confirm to add it to your queue.',
   'intent': {'kind': 'direct_url', 'detectedUrl': 'https://youtu.be/abc'},
+  'selectionSessionId': '11111111-1111-1111-1111-111111111111',
+  'recommendedCandidateId': 'youtube:abc',
+  'selectionExpiresAt': '2099-01-01T00:00:00Z',
   'candidates': [
     {
       'candidateId': 'youtube:abc',
@@ -459,11 +579,13 @@ class _DiscoveryAdapter implements HttpClientAdapter {
     this.assistEnvelope, {
     this.assistStatus = 200,
     this.assistGate,
+    required this.sourceSelectionRequests,
   });
 
   final Map<String, dynamic> assistEnvelope;
   final int assistStatus;
   final Future<void>? assistGate;
+  final List<Map<String, dynamic>> sourceSelectionRequests;
 
   @override
   Future<ResponseBody> fetch(
@@ -501,8 +623,25 @@ class _DiscoveryAdapter implements HttpClientAdapter {
         ],
       });
     }
-    return _json({'message': 'unexpected ${options.method} ${options.path}'},
-        statusCode: 404);
+    if (options.method == 'POST' && options.path == '/source-selections') {
+      final request = Map<String, dynamic>.from(options.data as Map);
+      sourceSelectionRequests.add(request);
+      return _json({
+        'id': 'decision-1',
+        'sessionId': request['sessionId'],
+        'selectedCandidateId': request['candidateId'],
+        'recommendedCandidateId': 'youtube:abc',
+        'action': request['action'],
+        'origin': 'assist',
+        'reason': request['reason'],
+        'selectedCandidate': _candidateJson,
+        'sourceQuality': _candidateJson['metadata']?['sourceQuality'] ?? {},
+        'createdAt': '2026-07-13T00:00:00Z',
+      }, statusCode: 201);
+    }
+    return _json({
+      'message': 'unexpected ${options.method} ${options.path}',
+    }, statusCode: 404);
   }
 
   ResponseBody _json(Map<String, dynamic> data, {int statusCode = 200}) {
@@ -520,8 +659,12 @@ class _DiscoveryAdapter implements HttpClientAdapter {
 }
 
 class _QueueClient extends ApiClient {
+  _QueueClient({this.failQueueAttempts = 0});
+
   int addItemRequests = 0;
+  int failQueueAttempts;
   Map<String, dynamic>? lastAddBody;
+  final List<Map<String, dynamic>> sourceSelectionRequests = [];
   bool _queued = false;
 
   @override
@@ -532,17 +675,22 @@ class _QueueClient extends ApiClient {
       const [];
 
   @override
-  Future<QueueState> addSourceCandidateToQueue({
-    required DiscoveryCandidate candidate,
+  Future<SourceDecisionQueueResponse> addSourceDecisionToQueue({
+    required String sourceDecisionId,
     String position = 'last',
   }) async {
     addItemRequests++;
-    lastAddBody = {
-      'position': position,
-      'sourceCandidate': candidate.toQueueJson(),
-    };
+    lastAddBody = {'position': position, 'sourceDecisionId': sourceDecisionId};
+    if (failQueueAttempts > 0) {
+      failQueueAttempts--;
+      throw StateError('queue unavailable');
+    }
     _queued = true;
-    return QueueState.fromJson(_queueJson());
+    return SourceDecisionQueueResponse(
+      queue: QueueState.fromJson(_queueJson()),
+      downloadJobId: 'job_1',
+      idempotent: false,
+    );
   }
 
   Map<String, dynamic> _queueJson() {

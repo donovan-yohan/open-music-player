@@ -20,30 +20,31 @@ import (
 )
 
 type Router struct {
-	mux                    *http.ServeMux
-	authHandlers           *auth.Handlers
-	authService            *auth.Service
-	searchHandlers         *search.Handlers
-	browseHandlers         *BrowseHandlers
-	musicbrainzHandlers    *musicbrainz.Handlers
-	wsHandler              *websocket.Handler
-	validatorHandlers      *validators.Handlers
-	matcherHandlers        *matcher.Handler
-	libraryHandlers        *LibraryHandlers
-	analysisHandlers       *AnalysisHandlers
-	playbackHandlers       *PlaybackHandlers
-	queueHandlers          *queue.Handlers
-	discoveryHandlers      *discovery.Handlers
-	playlistHandlers       *PlaylistHandlers
-	playlistImportHandlers *PlaylistImportHandlers
-	playlistMixHandlers    *PlaylistMixHandlers
-	mixPlanHandlers        *MixPlanHandlers
-	downloadHandlers       *DownloadHandlers
-	maintenanceHandlers    *MaintenanceHandlers
-	playEventHandlers      *PlayEventHandlers
-	healthHandler          *health.Handler
-	metricsHandler         http.HandlerFunc
-	corsAllowedOrigins     []string
+	mux                     *http.ServeMux
+	authHandlers            *auth.Handlers
+	authService             *auth.Service
+	searchHandlers          *search.Handlers
+	browseHandlers          *BrowseHandlers
+	musicbrainzHandlers     *musicbrainz.Handlers
+	wsHandler               *websocket.Handler
+	validatorHandlers       *validators.Handlers
+	matcherHandlers         *matcher.Handler
+	libraryHandlers         *LibraryHandlers
+	analysisHandlers        *AnalysisHandlers
+	playbackHandlers        *PlaybackHandlers
+	queueHandlers           *queue.Handlers
+	discoveryHandlers       *discovery.Handlers
+	playlistHandlers        *PlaylistHandlers
+	playlistImportHandlers  *PlaylistImportHandlers
+	playlistMixHandlers     *PlaylistMixHandlers
+	mixPlanHandlers         *MixPlanHandlers
+	downloadHandlers        *DownloadHandlers
+	sourceSelectionHandlers *SourceSelectionHandlers
+	maintenanceHandlers     *MaintenanceHandlers
+	playEventHandlers       *PlayEventHandlers
+	healthHandler           *health.Handler
+	metricsHandler          http.HandlerFunc
+	corsAllowedOrigins      []string
 }
 
 var defaultCORSAllowedOrigins = []string{
@@ -53,28 +54,29 @@ var defaultCORSAllowedOrigins = []string{
 
 // RouterConfig holds configuration for creating a new router
 type RouterConfig struct {
-	AuthHandlers           *auth.Handlers
-	AuthService            *auth.Service
-	SearchHandlers         *search.Handlers
-	MBClient               *musicbrainz.Client
-	MBHandlers             *musicbrainz.Handlers
-	WSHandler              *websocket.Handler
-	MatcherHandlers        *matcher.Handler
-	LibraryHandlers        *LibraryHandlers
-	AnalysisHandlers       *AnalysisHandlers
-	PlaybackHandlers       *PlaybackHandlers
-	QueueHandlers          *queue.Handlers
-	DiscoveryHandlers      *discovery.Handlers
-	PlaylistHandlers       *PlaylistHandlers
-	PlaylistImportHandlers *PlaylistImportHandlers
-	PlaylistMixHandlers    *PlaylistMixHandlers
-	MixPlanHandlers        *MixPlanHandlers
-	DownloadHandlers       *DownloadHandlers
-	MaintenanceHandlers    *MaintenanceHandlers
-	PlayEventHandlers      *PlayEventHandlers
-	HealthHandler          *health.Handler
-	Metrics                *metrics.Metrics
-	CORSAllowedOrigins     []string
+	AuthHandlers            *auth.Handlers
+	AuthService             *auth.Service
+	SearchHandlers          *search.Handlers
+	MBClient                *musicbrainz.Client
+	MBHandlers              *musicbrainz.Handlers
+	WSHandler               *websocket.Handler
+	MatcherHandlers         *matcher.Handler
+	LibraryHandlers         *LibraryHandlers
+	AnalysisHandlers        *AnalysisHandlers
+	PlaybackHandlers        *PlaybackHandlers
+	QueueHandlers           *queue.Handlers
+	DiscoveryHandlers       *discovery.Handlers
+	PlaylistHandlers        *PlaylistHandlers
+	PlaylistImportHandlers  *PlaylistImportHandlers
+	PlaylistMixHandlers     *PlaylistMixHandlers
+	MixPlanHandlers         *MixPlanHandlers
+	DownloadHandlers        *DownloadHandlers
+	SourceSelectionHandlers *SourceSelectionHandlers
+	MaintenanceHandlers     *MaintenanceHandlers
+	PlayEventHandlers       *PlayEventHandlers
+	HealthHandler           *health.Handler
+	Metrics                 *metrics.Metrics
+	CORSAllowedOrigins      []string
 }
 
 func NewRouter(authHandlers *auth.Handlers, authService *auth.Service, searchHandlers *search.Handlers, mbClient *musicbrainz.Client, mbHandlers *musicbrainz.Handlers, wsHandler *websocket.Handler, matcherHandlers *matcher.Handler, libraryHandlers *LibraryHandlers, queueHandlers *queue.Handlers, playlistHandlers *PlaylistHandlers, downloadHandlers *DownloadHandlers) *Router {
@@ -107,30 +109,31 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 	}
 
 	r := &Router{
-		mux:                    http.NewServeMux(),
-		authHandlers:           cfg.AuthHandlers,
-		authService:            cfg.AuthService,
-		searchHandlers:         cfg.SearchHandlers,
-		browseHandlers:         NewBrowseHandlers(cfg.MBClient),
-		musicbrainzHandlers:    cfg.MBHandlers,
-		wsHandler:              cfg.WSHandler,
-		validatorHandlers:      validators.NewHandlers(validatorRegistry),
-		matcherHandlers:        cfg.MatcherHandlers,
-		libraryHandlers:        cfg.LibraryHandlers,
-		analysisHandlers:       cfg.AnalysisHandlers,
-		playbackHandlers:       cfg.PlaybackHandlers,
-		queueHandlers:          cfg.QueueHandlers,
-		discoveryHandlers:      cfg.DiscoveryHandlers,
-		playlistHandlers:       cfg.PlaylistHandlers,
-		playlistImportHandlers: cfg.PlaylistImportHandlers,
-		playlistMixHandlers:    cfg.PlaylistMixHandlers,
-		mixPlanHandlers:        cfg.MixPlanHandlers,
-		downloadHandlers:       cfg.DownloadHandlers,
-		maintenanceHandlers:    cfg.MaintenanceHandlers,
-		playEventHandlers:      cfg.PlayEventHandlers,
-		healthHandler:          cfg.HealthHandler,
-		metricsHandler:         metricsHandler,
-		corsAllowedOrigins:     corsAllowedOrigins,
+		mux:                     http.NewServeMux(),
+		authHandlers:            cfg.AuthHandlers,
+		authService:             cfg.AuthService,
+		searchHandlers:          cfg.SearchHandlers,
+		browseHandlers:          NewBrowseHandlers(cfg.MBClient),
+		musicbrainzHandlers:     cfg.MBHandlers,
+		wsHandler:               cfg.WSHandler,
+		validatorHandlers:       validators.NewHandlers(validatorRegistry),
+		matcherHandlers:         cfg.MatcherHandlers,
+		libraryHandlers:         cfg.LibraryHandlers,
+		analysisHandlers:        cfg.AnalysisHandlers,
+		playbackHandlers:        cfg.PlaybackHandlers,
+		queueHandlers:           cfg.QueueHandlers,
+		discoveryHandlers:       cfg.DiscoveryHandlers,
+		playlistHandlers:        cfg.PlaylistHandlers,
+		playlistImportHandlers:  cfg.PlaylistImportHandlers,
+		playlistMixHandlers:     cfg.PlaylistMixHandlers,
+		mixPlanHandlers:         cfg.MixPlanHandlers,
+		downloadHandlers:        cfg.DownloadHandlers,
+		sourceSelectionHandlers: cfg.SourceSelectionHandlers,
+		maintenanceHandlers:     cfg.MaintenanceHandlers,
+		playEventHandlers:       cfg.PlayEventHandlers,
+		healthHandler:           cfg.HealthHandler,
+		metricsHandler:          metricsHandler,
+		corsAllowedOrigins:      corsAllowedOrigins,
 	}
 	r.setupRoutes()
 	return r
@@ -192,6 +195,16 @@ func (r *Router) setupRoutes() {
 		r.mux.HandleFunc("GET /api/v1/discovery/search", r.withAuth(unavailableHandler("Discovery search is unavailable")))
 		r.mux.HandleFunc("POST /api/v1/discovery/resolve-url", r.withAuth(unavailableHandler("Discovery URL resolver is unavailable")))
 		r.mux.HandleFunc("POST /api/v1/discovery/assist", r.withAuth(unavailableHandler("Discovery assist is unavailable")))
+	}
+	if r.sourceSelectionHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/source-selections", r.withAuth(r.sourceSelectionHandlers.Create))
+		r.mux.HandleFunc("GET /api/v1/source-selections", r.withAuth(r.sourceSelectionHandlers.List))
+		r.mux.HandleFunc("GET /api/v1/source-selections/{id}", r.withAuth(r.sourceSelectionHandlers.Get))
+	} else {
+		sourceSelectionUnavailable := r.withAuth(unavailableHandler("Source selections are unavailable"))
+		r.mux.HandleFunc("POST /api/v1/source-selections", sourceSelectionUnavailable)
+		r.mux.HandleFunc("GET /api/v1/source-selections", sourceSelectionUnavailable)
+		r.mux.HandleFunc("GET /api/v1/source-selections/{id}", sourceSelectionUnavailable)
 	}
 	r.mux.HandleFunc("GET /api/v1/artists/{mb_id}", r.withAuth(r.browseHandlers.GetArtist))
 	r.mux.HandleFunc("GET /api/v1/albums/{mb_id}", r.withAuth(r.browseHandlers.GetAlbum))

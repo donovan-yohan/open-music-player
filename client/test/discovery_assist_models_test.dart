@@ -13,6 +13,9 @@ void main() {
       },
       'search': {
         'query': 'porter robinson shelter live',
+        'selectionSessionId': '11111111-1111-1111-1111-111111111111',
+        'recommendedCandidateId': 'youtube:abc',
+        'selectionExpiresAt': '2099-01-01T00:00:00Z',
         'results': [
           {
             'candidateId': 'youtube:abc',
@@ -55,16 +58,21 @@ void main() {
     // those are exclusive to the resolver path.
     expect(response.hasCandidates, isFalse);
     expect(response.hasGroundedResults, isTrue);
+    expect(
+      response.searchSelection?.sessionId,
+      '11111111-1111-1111-1111-111111111111',
+    );
+    expect(response.directSelection, isNull);
   });
 
   test('parses a direct-URL assist envelope with a grounded candidate', () {
     final response = DiscoveryAssistResponse.fromJson({
       'status': 'ok',
       'assistantText': 'I recognized a direct link. Confirm to add it.',
-      'intent': {
-        'kind': 'direct_url',
-        'detectedUrl': 'https://youtu.be/abc',
-      },
+      'intent': {'kind': 'direct_url', 'detectedUrl': 'https://youtu.be/abc'},
+      'selectionSessionId': '22222222-2222-2222-2222-222222222222',
+      'recommendedCandidateId': 'youtube:abc',
+      'selectionExpiresAt': '2099-01-01T00:00:00Z',
       'candidates': [
         {
           'candidateId': 'youtube:abc',
@@ -87,6 +95,30 @@ void main() {
     // A direct-URL envelope carries no provider search payload.
     expect(response.hasSearchResults, isFalse);
     expect(response.hasGroundedResults, isTrue);
+    expect(
+      response.directSelection?.sessionId,
+      '22222222-2222-2222-2222-222222222222',
+    );
+    expect(response.searchSelection, isNull);
+  });
+
+  test('keeps direct and nested search selection sessions separate', () {
+    final response = DiscoveryAssistResponse.fromJson({
+      'status': 'ok',
+      'selectionSessionId': 'direct-session',
+      'recommendedCandidateId': 'youtube:direct',
+      'candidates': const [],
+      'search': {
+        'query': 'shelter',
+        'selectionSessionId': 'search-session',
+        'recommendedCandidateId': 'youtube:search',
+        'results': const [],
+        'providers': const [],
+      },
+    });
+
+    expect(response.directSelection?.sessionId, 'direct-session');
+    expect(response.searchSelection?.sessionId, 'search-session');
   });
 
   test('parses a disabled assist envelope', () {

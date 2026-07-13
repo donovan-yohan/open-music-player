@@ -32,8 +32,8 @@ class ApiClient {
   };
 
   ApiClient({SecureStorage? storage, Dio? dio})
-      : _storage = storage ?? SecureStorage(),
-        _dio = dio ?? Dio() {
+    : _storage = storage ?? SecureStorage(),
+      _dio = dio ?? Dio() {
     _dio.options.baseUrl = baseUrl;
     _dio.options.connectTimeout = const Duration(seconds: 10);
     _dio.options.receiveTimeout = const Duration(seconds: 10);
@@ -62,7 +62,8 @@ class ApiClient {
     ErrorInterceptorHandler handler,
   ) async {
     final requestOptions = error.requestOptions;
-    final shouldRefresh = error.response?.statusCode == 401 &&
+    final shouldRefresh =
+        error.response?.statusCode == 401 &&
         !_isAuthEndpoint(requestOptions) &&
         requestOptions.extra[_authRetryExtraKey] != true;
 
@@ -238,23 +239,67 @@ class ApiClient {
     return latest!;
   }
 
-  Future<QueueState> addSourceCandidateToQueue({
-    required DiscoveryCandidate candidate,
+  Future<SourceSelectionDecision> createSourceSelection({
+    required String sessionId,
+    required String candidateId,
+    required SourceSelectionAction action,
+    String? reason,
+  }) async {
+    try {
+      final response = await _dio.post(
+        '/source-selections',
+        data: {
+          'sessionId': sessionId,
+          'candidateId': candidateId,
+          'action': action.jsonValue,
+          if (reason != null && reason.trim().isNotEmpty)
+            'reason': reason.trim(),
+        },
+      );
+      return SourceSelectionDecision.fromJson(_asMap(response.data));
+    } on DioException catch (e) {
+      throw ApiException('Failed to save source selection', _statusCodeOf(e));
+    }
+  }
+
+  Future<SourceSelectionListResponse> listSourceSelections({
+    int limit = 20,
+    int offset = 0,
+  }) async {
+    try {
+      final response = await _dio.get(
+        '/source-selections',
+        queryParameters: {'limit': limit, 'offset': offset},
+      );
+      return SourceSelectionListResponse.fromJson(_asMap(response.data));
+    } on DioException catch (e) {
+      throw ApiException('Failed to load source selections', _statusCodeOf(e));
+    }
+  }
+
+  Future<SourceSelectionDecision> getSourceSelection(String id) async {
+    try {
+      final response = await _dio.get(
+        '/source-selections/${Uri.encodeComponent(id)}',
+      );
+      return SourceSelectionDecision.fromJson(_asMap(response.data));
+    } on DioException catch (e) {
+      throw ApiException('Failed to load source selection', _statusCodeOf(e));
+    }
+  }
+
+  Future<SourceDecisionQueueResponse> addSourceDecisionToQueue({
+    required String sourceDecisionId,
     String position = 'last',
   }) async {
     try {
       final response = await _dio.post(
         '/queue/items',
-        data: {
-          'position': position,
-          'sourceCandidate': candidate.toQueueJson()
-        },
+        data: {'position': position, 'sourceDecisionId': sourceDecisionId},
       );
-      final data = _asMap(response.data);
-      final queue = data['queue'];
-      return QueueState.fromJson(queue is Map<String, dynamic> ? queue : data);
+      return SourceDecisionQueueResponse.fromJson(_asMap(response.data));
     } on DioException catch (e) {
-      throw ApiException('Failed to add source to queue', _statusCodeOf(e));
+      throw ApiException('Failed to queue selected source', _statusCodeOf(e));
     }
   }
 
@@ -264,8 +309,9 @@ class ApiClient {
     Duration timeout = const Duration(seconds: 8),
   }) async {
     try {
-      final response = await _dio.post('/downloads',
-          data: {'url': url, 'source_type': sourceType}).timeout(timeout);
+      final response = await _dio
+          .post('/downloads', data: {'url': url, 'source_type': sourceType})
+          .timeout(timeout);
       return DownloadJobResponse.fromJson(_asMap(response.data));
     } on TimeoutException {
       throw ApiException('Download request timeout', 408);

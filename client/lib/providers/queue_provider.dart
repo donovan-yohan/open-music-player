@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
-import '../core/discovery/discovery_models.dart';
 import '../models/mix_plan.dart';
 import '../models/queue_state.dart';
 import '../models/timeline_clip.dart';
@@ -192,10 +191,7 @@ class QueueProvider extends ChangeNotifier {
   /// Attach hydrated analysis by backend track ID. Collection responses carry
   /// tempo metadata but intentionally omit large waveform arrays, so the
   /// timeline hydrates those arrays lazily from the per-track endpoint.
-  Track trackWithAnalysis(
-    Track track, {
-    bool requestHydration = true,
-  }) {
+  Track trackWithAnalysis(Track track, {bool requestHydration = true}) {
     final trackId = _analysisTrackId(track);
     if (trackId == null) {
       return track;
@@ -325,8 +321,9 @@ class QueueProvider extends ChangeNotifier {
     _advanceAnalysisGeneration(key);
     _analysisByTrackId[key] = analysis;
     _lastIncomingAnalysisByTrackId[key] = analysis;
-    _appliedCompactAnalysisSignatures[key] =
-        _analysisCompactSignature(analysis);
+    _appliedCompactAnalysisSignatures[key] = _analysisCompactSignature(
+      analysis,
+    );
     _resetAnalysisRequestState(key);
     _invalidateAnalysisCache(key);
     _queue = QueueState(
@@ -371,9 +368,7 @@ class QueueProvider extends ChangeNotifier {
       _queue = _queueWithAuthoritativeAnalysis(loadedQueue);
       _rememberQueueAnalyses();
       _pruneTimingState();
-      await _loadQueueTimingMixPlan(
-        operationGeneration: operationGeneration,
-      );
+      await _loadQueueTimingMixPlan(operationGeneration: operationGeneration);
       if (!_isCurrentQueueOperation(operationGeneration)) return;
     } catch (e) {
       if (!_isCurrentQueueOperation(operationGeneration)) return;
@@ -414,8 +409,10 @@ class QueueProvider extends ChangeNotifier {
     });
   }
 
-  Future<void> addSourceCandidate(
-    DiscoveryCandidate candidate, {
+  /// Re-throws queue failures after reconciling provider state so callers can
+  /// retain the already-persisted source decision and offer an idempotent retry.
+  Future<void> addSourceDecision(
+    String sourceDecisionId, {
     bool playNext = false,
   }) async {
     await _runQueueMutation(() async {
@@ -423,10 +420,11 @@ class QueueProvider extends ChangeNotifier {
       _notifyListeners();
       try {
         _error = null;
-        final updatedQueue = await _apiClient.addSourceCandidateToQueue(
-          candidate: candidate,
+        final response = await _apiClient.addSourceDecisionToQueue(
+          sourceDecisionId: sourceDecisionId,
           position: playNext ? 'next' : 'last',
         );
+        final updatedQueue = response.queue;
         if (!_isCurrentQueueOperation(operationGeneration)) return;
         _queue = _queueWithAuthoritativeAnalysis(updatedQueue);
         _rememberQueueAnalyses();
@@ -1627,9 +1625,7 @@ class QueueProvider extends ChangeNotifier {
     }
 
     final authorityKeys = _analysisAuthorityKeys();
-    _analysisAuthorityLru.removeWhere(
-      (key) => !authorityKeys.contains(key),
-    );
+    _analysisAuthorityLru.removeWhere((key) => !authorityKeys.contains(key));
     for (final key in authorityKeys) {
       _analysisAuthorityLru.add(key);
     }
@@ -1728,9 +1724,7 @@ class QueueProvider extends ChangeNotifier {
     );
   }
 
-  Map<String, dynamic> _summaryWithoutAppliedOverrides(
-    TrackAnalysis analysis,
-  ) {
+  Map<String, dynamic> _summaryWithoutAppliedOverrides(TrackAnalysis analysis) {
     final summary = Map<String, dynamic>.from(
       analysis.summary?.toJson() ?? const <String, dynamic>{},
     );
@@ -1795,7 +1789,10 @@ class QueueProvider extends ChangeNotifier {
   }
 
   Track _enrichedTrack(
-      Track track, String analysisKey, TrackAnalysis analysis) {
+    Track track,
+    String analysisKey,
+    TrackAnalysis analysis,
+  ) {
     final cacheKey = '${track.queueItemId}|${track.id}|$analysisKey';
     final cached = _enrichedTrackCache[cacheKey];
     if (cached != null &&

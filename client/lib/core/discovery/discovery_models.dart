@@ -1,14 +1,47 @@
+import '../../models/queue_state.dart';
+
+class DiscoverySelectionSession {
+  final String sessionId;
+  final String recommendedCandidateId;
+  final DateTime? expiresAt;
+
+  const DiscoverySelectionSession({
+    required this.sessionId,
+    required this.recommendedCandidateId,
+    this.expiresAt,
+  });
+
+  factory DiscoverySelectionSession.fromJson(Map<String, dynamic> json) {
+    return DiscoverySelectionSession(
+      sessionId: json['selectionSessionId'] as String? ?? '',
+      recommendedCandidateId: json['recommendedCandidateId'] as String? ?? '',
+      expiresAt: _readDate(json['selectionExpiresAt']),
+    );
+  }
+
+  bool get isPresent =>
+      sessionId.isNotEmpty && recommendedCandidateId.isNotEmpty;
+
+  bool get isExpired =>
+      expiresAt != null && !expiresAt!.isAfter(DateTime.now());
+
+  bool isRecommended(DiscoveryCandidate candidate) =>
+      candidate.candidateId == recommendedCandidateId;
+}
+
 class DiscoverySearchResponse {
   final String query;
   final List<DiscoveryCandidate> results;
   final List<DiscoverySearchSection> sections;
   final List<DiscoveryProviderSummary> providers;
+  final DiscoverySelectionSession? selection;
 
   const DiscoverySearchResponse({
     required this.query,
     required this.results,
     required this.sections,
     required this.providers,
+    this.selection,
   });
 
   factory DiscoverySearchResponse.fromJson(Map<String, dynamic> json) {
@@ -47,6 +80,7 @@ class DiscoverySearchResponse {
                 DiscoveryProviderSummary.fromJson(item as Map<String, dynamic>),
           )
           .toList(),
+      selection: _selectionFromJson(json),
     );
   }
 }
@@ -237,6 +271,8 @@ class DiscoveryCandidate {
     );
   }
 
+  /// Legacy adapters may still serialize candidates for their own contracts.
+  /// Discovery queueing must use a server-owned source decision instead.
   Map<String, dynamic> toQueueJson() {
     final queueMetadata = Map<String, dynamic>.from(metadata);
     if (sourceQuality != null &&
@@ -407,6 +443,7 @@ class DiscoveryAssistResponse {
   final List<DiscoveryCandidate> candidates;
   final List<String> caveats;
   final DiscoveryAssistError? error;
+  final DiscoverySelectionSession? selection;
 
   const DiscoveryAssistResponse({
     required this.status,
@@ -417,6 +454,7 @@ class DiscoveryAssistResponse {
     this.candidates = const [],
     this.caveats = const [],
     this.error,
+    this.selection,
   });
 
   factory DiscoveryAssistResponse.fromJson(Map<String, dynamic> json) {
@@ -454,6 +492,7 @@ class DiscoveryAssistResponse {
       error: errorJson is Map<String, dynamic>
           ? DiscoveryAssistError.fromJson(errorJson)
           : null,
+      selection: _selectionFromJson(json),
     );
   }
 
@@ -468,6 +507,118 @@ class DiscoveryAssistResponse {
   /// Whether anything queueable/searchable was grounded. Drives the
   /// "no results" empty state independently of the disabled/error banners.
   bool get hasGroundedResults => hasCandidates || hasSearchResults;
+
+  /// Session owned by top-level direct candidates from the assist resolver.
+  DiscoverySelectionSession? get directSelection => selection;
+
+  /// Session owned by candidates in the nested discovery search response.
+  DiscoverySelectionSession? get searchSelection => search?.selection;
+}
+
+enum SourceSelectionAction { accepted, overridden }
+
+extension SourceSelectionActionJson on SourceSelectionAction {
+  String get jsonValue => name;
+}
+
+class SourceSelectionDecision {
+  final String id;
+  final String? sessionId;
+  final String selectedCandidateId;
+  final String recommendedCandidateId;
+  final SourceSelectionAction action;
+  final String origin;
+  final String? reason;
+  final DiscoveryCandidate selectedCandidate;
+  final DiscoverySourceQuality? sourceQuality;
+  final String? downloadJobId;
+  final int? trackId;
+  final DateTime? createdAt;
+
+  const SourceSelectionDecision({
+    required this.id,
+    this.sessionId,
+    required this.selectedCandidateId,
+    required this.recommendedCandidateId,
+    required this.action,
+    required this.origin,
+    this.reason,
+    required this.selectedCandidate,
+    this.sourceQuality,
+    this.downloadJobId,
+    this.trackId,
+    this.createdAt,
+  });
+
+  factory SourceSelectionDecision.fromJson(Map<String, dynamic> json) {
+    final candidate = _readOptionalMap(json['selectedCandidate']) ?? const {};
+    final quality = _readOptionalMap(json['sourceQuality']);
+    return SourceSelectionDecision(
+      id: json['id'] as String? ?? '',
+      sessionId: _blankToNull(json['sessionId'] as String?),
+      selectedCandidateId: json['selectedCandidateId'] as String? ?? '',
+      recommendedCandidateId: json['recommendedCandidateId'] as String? ?? '',
+      action: json['action'] == 'overridden'
+          ? SourceSelectionAction.overridden
+          : SourceSelectionAction.accepted,
+      origin: json['origin'] as String? ?? '',
+      reason: _blankToNull(json['reason'] as String?),
+      selectedCandidate: DiscoveryCandidate.fromJson(candidate),
+      sourceQuality:
+          quality == null ? null : DiscoverySourceQuality.fromJson(quality),
+      downloadJobId: _blankToNull(json['downloadJobId'] as String?),
+      trackId: _readInt(json['trackId']),
+      createdAt: _readDate(json['createdAt']),
+    );
+  }
+}
+
+class SourceSelectionListResponse {
+  final List<SourceSelectionDecision> items;
+  final int limit;
+  final int offset;
+
+  const SourceSelectionListResponse({
+    required this.items,
+    required this.limit,
+    required this.offset,
+  });
+
+  factory SourceSelectionListResponse.fromJson(Map<String, dynamic> json) =>
+      SourceSelectionListResponse(
+        items: (json['items'] as List<dynamic>? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(SourceSelectionDecision.fromJson)
+            .toList(),
+        limit: _readInt(json['limit']) ?? 20,
+        offset: _readInt(json['offset']) ?? 0,
+      );
+}
+
+class SourceDecisionQueueResponse {
+  final QueueState queue;
+  final String downloadJobId;
+  final bool idempotent;
+
+  const SourceDecisionQueueResponse({
+    required this.queue,
+    required this.downloadJobId,
+    required this.idempotent,
+  });
+
+  factory SourceDecisionQueueResponse.fromJson(Map<String, dynamic> json) {
+    final queue = _readOptionalMap(json['queue']);
+    if (queue == null) {
+      throw const FormatException(
+        'Source decision queue response has no queue.',
+      );
+    }
+    return SourceDecisionQueueResponse(
+      queue: QueueState.fromJson(queue),
+      downloadJobId: json['downloadJobId'] as String? ?? '',
+      idempotent: json['idempotent'] as bool? ?? false,
+    );
+  }
 }
 
 /// Grounded echo of how OMP interpreted the request. [detectedUrl] is only ever
@@ -763,6 +914,11 @@ Map<String, dynamic>? _readOptionalMap(Object? value) {
     return value.map((key, entry) => MapEntry(key.toString(), entry));
   }
   return null;
+}
+
+DiscoverySelectionSession? _selectionFromJson(Map<String, dynamic> json) {
+  final selection = DiscoverySelectionSession.fromJson(json);
+  return selection.isPresent ? selection : null;
 }
 
 List<String> _readStringList(Object? value) {

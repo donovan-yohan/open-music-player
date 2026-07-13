@@ -233,7 +233,7 @@ func TestGetQueueHandlerProjectsLiveDownloadJobState(t *testing.T) {
 	}
 }
 
-func TestAddQueueItemRejectsNonHTTPSourceCandidateBeforeEnqueue(t *testing.T) {
+func TestAddQueueItemRejectsLegacySourceCandidateBeforeEnqueue(t *testing.T) {
 	h := NewHandlers(nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/queue/items", strings.NewReader(`{
 		"sourceCandidate": {
@@ -254,12 +254,12 @@ func TestAddQueueItemRejectsNonHTTPSourceCandidateBeforeEnqueue(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("AddQueueItem file:// status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "INVALID_SOURCE_URL") {
-		t.Fatalf("AddQueueItem file:// response should name INVALID_SOURCE_URL, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "INVALID_REQUEST") {
+		t.Fatalf("AddQueueItem legacy sourceCandidate response should be rejected by strict decode, got %s", rec.Body.String())
 	}
 }
 
-func TestAddQueueItemRejectsInvalidSourceCandidatePositionBeforeEnqueue(t *testing.T) {
+func TestAddQueueItemRejectsLegacySourceCandidateBeforePositionValidation(t *testing.T) {
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
 		redisURL = "redis://localhost:6380"
@@ -308,8 +308,8 @@ func TestAddQueueItemRejectsInvalidSourceCandidatePositionBeforeEnqueue(t *testi
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("AddQueueItem invalid position status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "INVALID_POSITION") {
-		t.Fatalf("AddQueueItem invalid position response should name INVALID_POSITION, got %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "INVALID_REQUEST") {
+		t.Fatalf("AddQueueItem legacy sourceCandidate response should be rejected by strict decode, got %s", rec.Body.String())
 	}
 	if len(afterJobs) != len(beforeJobs) {
 		t.Fatalf("download job count for user changed from %d to %d for invalid queue position", len(beforeJobs), len(afterJobs))

@@ -239,6 +239,8 @@ func TestResolveURLHandlerErrorStatuses(t *testing.T) {
 	}{
 		{name: "missing url", body: `{}`, wantStatus: http.StatusBadRequest, wantCode: ErrResolveURLRequired},
 		{name: "invalid json", body: `{`, wantStatus: http.StatusBadRequest, wantCode: "INVALID_REQUEST"},
+		{name: "unknown field", body: `{"url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","mbRecordingId":"tampered"}`, wantStatus: http.StatusBadRequest, wantCode: "INVALID_REQUEST"},
+		{name: "trailing json", body: `{"url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ"} {}`, wantStatus: http.StatusBadRequest, wantCode: "INVALID_REQUEST"},
 		{name: "unsupported host", body: `{"url":"https://example.com/x"}`, wantStatus: http.StatusUnprocessableEntity, wantCode: ErrResolveUnsupportedURL},
 		{name: "non-http scheme", body: `{"url":"ftp://example.com/x"}`, wantStatus: http.StatusUnprocessableEntity, wantCode: ErrResolveInvalidURL},
 	}

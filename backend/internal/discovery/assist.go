@@ -8,7 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/aiassist"
+	"github.com/openmusicplayer/backend/internal/auth"
 )
 
 // urlPattern matches an absolute http(s) URL run anywhere in a string, regardless
@@ -79,15 +82,19 @@ type AssistError struct {
 // holds only resolver-grounded direct-URL candidates; search results live in
 // Search (with its own provider summaries) so grounding provenance is explicit.
 type AssistResponse struct {
-	Status           string               `json:"status"`
-	AssistantText    string               `json:"assistantText,omitempty"`
-	Intent           *AssistIntent        `json:"intent,omitempty"`
-	Clarification    *AssistClarification `json:"clarification,omitempty"`
-	Search           *SearchResponse      `json:"search,omitempty"`
-	Candidates       []Candidate          `json:"candidates,omitempty"`
-	Caveats          []string             `json:"caveats,omitempty"`
-	SuggestedActions []AssistAction       `json:"suggestedActions,omitempty"`
-	Error            *AssistError         `json:"error,omitempty"`
+	Status                 string               `json:"status"`
+	AssistantText          string               `json:"assistantText,omitempty"`
+	Intent                 *AssistIntent        `json:"intent,omitempty"`
+	Clarification          *AssistClarification `json:"clarification,omitempty"`
+	Search                 *SearchResponse      `json:"search,omitempty"`
+	Candidates             []Candidate          `json:"candidates,omitempty"`
+	Caveats                []string             `json:"caveats,omitempty"`
+	SuggestedActions       []AssistAction       `json:"suggestedActions,omitempty"`
+	Error                  *AssistError         `json:"error,omitempty"`
+	SelectionRequired      bool                 `json:"selectionRequired"`
+	SelectionSessionID     string               `json:"selectionSessionId,omitempty"`
+	RecommendedCandidateID string               `json:"recommendedCandidateId,omitempty"`
+	SelectionExpiresAt     *time.Time           `json:"selectionExpiresAt,omitempty"`
 }
 
 // AssistService grounds a model intent against real OMP discovery and URL
@@ -386,5 +393,45 @@ func (h *Handlers) Assist(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, disabledAssistResponse())
 		return
 	}
-	writeJSON(w, http.StatusOK, h.assist.Assist(r.Context(), prompt, req.Limit))
+	response := h.assist.Assist(r.Context(), prompt, req.Limit)
+
+	// Persist selection session for direct candidates or nested search results
+	userCtx := auth.GetUserFromContext(r.Context())
+	if userCtx != nil && (len(response.Candidates) > 0 || response.Search != nil) {
+		if !h.persistAssistSelection(w, r, userCtx.UserID, prompt, &response) {
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+// persistAssistSelection applies the same durable selection contract as search
+// and resolve-url. Assist has two candidate-bearing shapes, but callers always
+// receive the metadata at the top level of the assist envelope.
+func (h *Handlers) persistAssistSelection(w http.ResponseWriter, r *http.Request, userID uuid.UUID, prompt string, response *AssistResponse) bool {
+	if response == nil {
+		return true
+	}
+	selection := SearchResponse{Query: prompt}
+	context := "discovery_assist"
+	if len(response.Candidates) > 0 {
+		selection.Results = response.Candidates
+		context = "discovery_assist_direct_url"
+	} else if response.Search != nil && len(response.Search.Results) > 0 {
+		selection = *response.Search
+		context = "discovery_assist_search"
+	}
+	if len(selection.Results) == 0 {
+		response.SelectionRequired = false
+		return true
+	}
+	if !h.persistSelection(w, r, userID, &selection, context) {
+		return false
+	}
+	response.SelectionRequired = selection.SelectionRequired
+	response.SelectionSessionID = selection.SelectionSessionID
+	response.RecommendedCandidateID = selection.RecommendedCandidateID
+	response.SelectionExpiresAt = selection.SelectionExpiresAt
+	return true
 }

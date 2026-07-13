@@ -12,6 +12,7 @@ import (
 
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/download"
+	"github.com/openmusicplayer/backend/internal/validators"
 )
 
 var (
@@ -53,7 +54,17 @@ type LibraryStore interface {
 }
 
 type DownloadEnqueuer interface {
-	EnqueuePlaylistImportItem(ctx context.Context, userID string, candidate download.SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*download.DownloadJob, error)
+	EnqueuePlaylistImportItemWithID(ctx context.Context, jobID, userID string, candidate download.SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*download.DownloadJob, error)
+}
+
+type SourceSelectionStore interface {
+	CreateTrustedSourceSelectionDecision(context.Context, uuid.UUID, string, db.TrustedSourceSelectionCandidate, string) (*db.SourceSelectionDecision, error)
+	AttachTrackForUser(context.Context, uuid.UUID, uuid.UUID, int64) error
+}
+
+type TrustedIngestion interface {
+	CreateDownloadForDecision(context.Context, uuid.UUID, *db.SourceSelectionDecision, download.SourceCandidate) (*db.SourceSelectionDownload, error)
+	EnqueueTrustedPlaylistDownload(context.Context, *db.SourceSelectionDownload, db.SourceSelectionPlaylistDownloadEnqueuer, string, int64, int64, int) (*download.DownloadJob, error)
 }
 
 type Service struct {
@@ -62,6 +73,8 @@ type Service struct {
 	tracks     TrackSourceStore
 	library    LibraryStore
 	downloader DownloadEnqueuer
+	selections SourceSelectionStore
+	ingestion  TrustedIngestion
 	enumerator Enumerator
 	maxItems   int
 	sourceType string
@@ -73,6 +86,8 @@ type Config struct {
 	Tracks     TrackSourceStore
 	Library    LibraryStore
 	Downloader DownloadEnqueuer
+	Selections SourceSelectionStore
+	Ingestion  TrustedIngestion
 	Enumerator Enumerator
 	MaxItems   int
 }
@@ -91,6 +106,8 @@ func NewService(cfg Config) *Service {
 		tracks:     cfg.Tracks,
 		library:    cfg.Library,
 		downloader: cfg.Downloader,
+		selections: cfg.Selections,
+		ingestion:  cfg.Ingestion,
 		enumerator: cfg.Enumerator,
 		maxItems:   maxItems,
 		sourceType: "youtube",
@@ -167,6 +184,23 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 			msg := firstNonEmpty(entry.Error, "playlist entry is unavailable")
 			item.Error = sql.NullString{String: msg, Valid: true}
 		} else {
+			if item.SourceID == "" {
+				resolved := validators.DefaultRegistry().Validate(item.SourceURL)
+				if !resolved.Valid || string(resolved.SourceType) != s.sourceType || resolved.MediaID == "" {
+					item.Status = ItemStatusFailed
+					item.Error = sql.NullString{String: "playlist entry source URL does not resolve to a supported media ID", Valid: true}
+				} else {
+					item.SourceID = resolved.MediaID
+					item.SourceURL = resolved.Canonical
+				}
+			}
+			if item.Status == ItemStatusFailed {
+				if err := s.store.CreateItem(ctx, &item); err != nil {
+					return nil, fmt.Errorf("create playlist import item: %w", err)
+				}
+				items = append(items, item)
+				continue
+			}
 			sourceKey := firstNonEmpty(item.SourceID, item.SourceURL)
 			if _, seen := seenSources[sourceKey]; seen {
 				item.Status = ItemStatusSkippedDuplicate
@@ -190,6 +224,21 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 		if item.Status == ItemStatusFailed || item.Status == ItemStatusSkippedDuplicate {
 			continue
 		}
+		candidate := playlistCandidate(*item, s.sourceType)
+		if s.selections == nil || s.ingestion == nil {
+			msg := "trusted source selection processing is disabled"
+			_ = s.store.MarkItemFailed(ctx, item.ID, msg)
+			item.Status = ItemStatusFailed
+			item.Error = sql.NullString{String: msg, Valid: true}
+			continue
+		}
+		decision, err := s.selections.CreateTrustedSourceSelectionDecision(ctx, userID, db.SourceSelectionOriginPlaylistExplicit, trustedPlaylistCandidate(candidate), "server-enumerated explicit playlist entry")
+		if err != nil {
+			_ = s.store.MarkItemFailed(ctx, item.ID, err.Error())
+			item.Status = ItemStatusFailed
+			item.Error = sql.NullString{String: err.Error(), Valid: true}
+			continue
+		}
 		track, err := s.tracks.FindTrackBySource(ctx, s.sourceType, item.SourceID, item.SourceURL)
 		if err == nil && track != nil {
 			if s.library != nil {
@@ -199,6 +248,12 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 					item.Error = sql.NullString{String: libErr.Error(), Valid: true}
 					continue
 				}
+			}
+			if err := s.selections.AttachTrackForUser(ctx, userID, decision.ID, track.ID); err != nil {
+				_ = s.store.MarkItemFailed(ctx, item.ID, err.Error())
+				item.Status = ItemStatusFailed
+				item.Error = sql.NullString{String: err.Error(), Valid: true}
+				continue
 			}
 			if err := s.playlists.AddTrackAtPosition(ctx, playlistID, track.ID, item.PlaylistPosition); err != nil && !errors.Is(err, db.ErrTrackAlreadyInPlaylist) {
 				_ = s.store.MarkItemFailed(ctx, item.ID, err.Error())
@@ -218,27 +273,22 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 			item.Error = sql.NullString{String: msg, Valid: true}
 			continue
 		}
-		job, err := s.downloader.EnqueuePlaylistImportItem(ctx, userID.String(), download.SourceCandidate{
-			CandidateID:  item.SourceID,
-			Provider:     s.sourceType,
-			SourceID:     item.SourceID,
-			SourceURL:    item.SourceURL,
-			Title:        item.Title,
-			Artist:       item.Artist,
-			Album:        item.Album,
-			Uploader:     item.Uploader,
-			DurationMs:   item.DurationMs,
-			ThumbnailURL: item.ThumbnailURL,
-		}, job.ID.String(), item.ID, playlistID, item.PlaylistPosition)
+		persisted, err := s.ingestion.CreateDownloadForDecision(ctx, userID, decision, candidate)
+		var queued *download.DownloadJob
+		if err == nil {
+			queued, err = s.ingestion.EnqueueTrustedPlaylistDownload(ctx, persisted, s.downloader, job.ID.String(), item.ID, playlistID, item.PlaylistPosition)
+		}
 		if err != nil {
 			_ = s.store.MarkItemFailed(ctx, item.ID, err.Error())
 			item.Status = ItemStatusFailed
 			item.Error = sql.NullString{String: err.Error(), Valid: true}
 			continue
 		}
-		_ = s.store.MarkItemQueued(ctx, item.ID, job.ID)
+		if err := s.markItemQueued(ctx, item.ID, queued.ID); err != nil {
+			return nil, fmt.Errorf("mark playlist import item queued: %w", err)
+		}
 		item.Status = ItemStatusQueued
-		item.DownloadJobID = sql.NullString{String: job.ID, Valid: true}
+		item.DownloadJobID = sql.NullString{String: queued.ID, Valid: true}
 	}
 	if err := s.store.RefreshJobCounts(ctx, job.ID); err != nil {
 		return nil, fmt.Errorf("refresh playlist import counts: %w", err)
@@ -252,6 +302,26 @@ func (s *Service) StartImport(ctx context.Context, userID uuid.UUID, req ImportR
 		items = freshItems
 	}
 	return &ImportResult{Job: job, Items: items}, nil
+}
+
+// markItemQueued is idempotent. A store error can be an interrupted response
+// after the durable update committed, so retry the same transition once before
+// reporting failure instead of creating a second download.
+func (s *Service) markItemQueued(ctx context.Context, itemID int64, downloadJobID string) error {
+	if err := s.store.MarkItemQueued(ctx, itemID, downloadJobID); err != nil {
+		if retryErr := s.store.MarkItemQueued(ctx, itemID, downloadJobID); retryErr != nil {
+			return fmt.Errorf("initial attempt: %v; retry: %w", err, retryErr)
+		}
+	}
+	return nil
+}
+
+func playlistCandidate(item ImportItem, provider string) download.SourceCandidate {
+	return download.SourceCandidate{CandidateID: provider + ":" + item.SourceID, Provider: provider, SourceID: item.SourceID, SourceURL: item.SourceURL, Title: item.Title, Artist: item.Artist, Album: item.Album, Uploader: item.Uploader, DurationMs: item.DurationMs, ThumbnailURL: item.ThumbnailURL, Metadata: map[string]interface{}{"trustedIngestion": true, "origin": db.SourceSelectionOriginPlaylistExplicit}}
+}
+
+func trustedPlaylistCandidate(candidate download.SourceCandidate) db.TrustedSourceSelectionCandidate {
+	return db.TrustedSourceSelectionCandidate{CandidateID: candidate.CandidateID, Provider: candidate.Provider, SourceID: candidate.SourceID, SourceURL: candidate.SourceURL, Title: candidate.Title, Downloadable: true, SourceQuality: &db.TrustedSourceSelectionQuality{Score: 0, Classification: "unknown", Recommendation: "review", Confidence: 0, Reasons: []string{"explicit playlist intent does not establish source quality"}, Provenance: db.SourceSelectionOriginPlaylistExplicit}}
 }
 
 func (s *Service) GetImport(ctx context.Context, userID uuid.UUID, id uuid.UUID) (*ImportResult, error) {

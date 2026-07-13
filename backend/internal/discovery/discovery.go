@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -13,6 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/musicbrainz"
 )
 
@@ -68,10 +73,14 @@ type ProviderSummary struct {
 }
 
 type SearchResponse struct {
-	Query     string            `json:"query"`
-	Results   []Candidate       `json:"results"`
-	Sections  []SearchSection   `json:"sections"`
-	Providers []ProviderSummary `json:"providers"`
+	Query                  string            `json:"query"`
+	Results                []Candidate       `json:"results"`
+	Sections               []SearchSection   `json:"sections"`
+	Providers              []ProviderSummary `json:"providers"`
+	SelectionRequired      bool              `json:"selectionRequired"`
+	SelectionSessionID     string            `json:"selectionSessionId,omitempty"`
+	RecommendedCandidateID string            `json:"recommendedCandidateId,omitempty"`
+	SelectionExpiresAt     *time.Time        `json:"selectionExpiresAt,omitempty"`
 }
 
 type SearchSection struct {
@@ -173,10 +182,20 @@ func NewDefaultServiceWithCatalog(catalog MusicCatalog) *Service {
 // on the default source providers. A nil judge preserves deterministic ranking.
 func NewDefaultServiceWithCatalogAndSourceQualityJudge(catalog MusicCatalog, judge SourceQualityJudge) *Service {
 	providers := []Provider{
-		NewYTDLPProvider("youtube", "ytsearch", "https://www.youtube.com/watch?v="),
+		NewYouTubeProvider(),
 		NewYTDLPProvider("soundcloud", "scsearch", ""),
 	}
 	return NewService(ServiceConfig{Providers: providers, DefaultProviders: []string{"youtube", "soundcloud"}, MusicCatalog: catalog, SourceQualityJudge: judge})
+}
+
+// NewYouTubeProvider searches both the ordinary YouTube video index and the
+// YouTube Music songs surface. The latter is required because label-provided
+// audio is not reliably present in ordinary video search results.
+func NewYouTubeProvider() Provider {
+	return newCombinedProvider("youtube", []Provider{
+		NewYTDLPProvider("youtube", "ytsearch", "https://www.youtube.com/watch?v="),
+		NewYouTubeMusicProvider("youtube"),
+	})
 }
 
 func (s *Service) Search(ctx context.Context, query string, requested []string, limit int) SearchResponse {
@@ -457,9 +476,14 @@ func (s *Service) normalizeRequestedProviders(requested []string) []string {
 }
 
 type Handlers struct {
-	service  *Service
-	resolver *URLResolver
-	assist   *AssistService
+	service        *Service
+	resolver       *URLResolver
+	assist         *AssistService
+	selectionStore sourceSelectionStore
+}
+
+type sourceSelectionStore interface {
+	CreateSession(context.Context, *db.SourceSelectionSession) error
 }
 
 // NewHandlers builds discovery handlers with a disabled-but-functional assist
@@ -477,19 +501,28 @@ func NewHandlers(service *Service) *Handlers {
 // service so both validate pasted URLs identically; a future custom validator
 // registry then applies to both at once.
 func NewHandlersWithAssist(service *Service, assist *AssistService) *Handlers {
+	return NewHandlersWithAssistAndSelectionStore(service, assist, nil)
+}
+
+// NewHandlersWithAssistAndSelectionStore wires the server-owned source
+// selection session store. A nil store intentionally leaves discovery disabled
+// for legacy embeddings rather than returning un-gated candidates.
+func NewHandlersWithAssistAndSelectionStore(service *Service, assist *AssistService, selectionStore sourceSelectionStore) *Handlers {
 	resolver := NewURLResolver(nil)
 	if assist == nil {
 		assist = NewAssistService(AssistConfig{Search: service})
 	}
 	assist.resolver = resolver
 	return &Handlers{
-		service:  service,
-		resolver: resolver,
-		assist:   assist,
+		service:        service,
+		resolver:       resolver,
+		assist:         assist,
+		selectionStore: selectionStore,
 	}
 }
 
 func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
+	userCtx := auth.GetUserFromContext(r.Context())
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	if query == "" {
 		writeError(w, http.StatusBadRequest, "INVALID_QUERY", "q is required")
@@ -502,7 +535,44 @@ func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "NO_PROVIDERS", "no discovery providers can be attempted")
 		return
 	}
+	if userCtx != nil && !h.persistSelection(w, r, userCtx.UserID, &resp, "discovery_search") {
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+const sourceSelectionSessionTTL = 15 * time.Minute
+
+func (h *Handlers) persistSelection(w http.ResponseWriter, r *http.Request, userID uuid.UUID, response *SearchResponse, selectionContext string) bool {
+	if len(response.Results) == 0 {
+		response.SelectionRequired = false
+		return true
+	}
+	if h.selectionStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "SOURCE_SELECTION_UNAVAILABLE", "source selection persistence is unavailable")
+		return false
+	}
+	snapshot, err := json.Marshal(response.Results)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to persist source selection")
+		return false
+	}
+	recommended := response.Results[0].CandidateID
+	if strings.TrimSpace(recommended) == "" {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to persist source selection")
+		return false
+	}
+	expiresAt := time.Now().Add(sourceSelectionSessionTTL)
+	session := &db.SourceSelectionSession{UserID: userID, Query: response.Query, Context: selectionContext, Candidates: snapshot, RecommendedCandidateID: recommended, ExpiresAt: expiresAt}
+	if err := h.selectionStore.CreateSession(r.Context(), session); err != nil {
+		writeError(w, http.StatusInternalServerError, "SOURCE_SELECTION_PERSISTENCE_FAILED", "failed to persist source selection")
+		return false
+	}
+	response.SelectionRequired = true
+	response.SelectionSessionID = session.ID.String()
+	response.RecommendedCandidateID = recommended
+	response.SelectionExpiresAt = &session.ExpiresAt
+	return true
 }
 
 func splitCSV(value string) []string {
@@ -535,20 +605,27 @@ type YTDLPProvider struct {
 	name      string
 	prefix    string
 	urlPrefix string
+	music     bool
 }
 
 func NewYTDLPProvider(name, prefix, urlPrefix string) *YTDLPProvider {
 	return &YTDLPProvider{name: name, prefix: prefix, urlPrefix: urlPrefix}
 }
 
+// NewYouTubeMusicProvider queries yt-dlp's YouTube Music songs surface. It
+// intentionally keeps the canonical youtube provider name so resolver, queue,
+// and downloader handling remain identical to ordinary YouTube candidates.
+func NewYouTubeMusicProvider(name string) *YTDLPProvider {
+	return &YTDLPProvider{name: name, music: true, urlPrefix: "https://www.youtube.com/watch?v="}
+}
+
 func (p *YTDLPProvider) Name() string { return p.name }
 
 func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]Candidate, error) {
 	if _, err := exec.LookPath("yt-dlp"); err != nil {
-		return nil, &providerFailure{code: ErrProviderDisabled, status: ProviderStatusDisabled, err: fmt.Errorf("yt-dlp is not installed for provider %s", p.name)}
+		return nil, &providerFailure{code: ErrProviderDisabled, status: ProviderStatusDisabled, err: fmt.Errorf("yt-dlp is not installed for provider %s: %w", p.name, err)}
 	}
-	searchArg := fmt.Sprintf("%s%d:%s", p.prefix, limit, query)
-	cmd := exec.CommandContext(ctx, "yt-dlp", "--dump-json", "--skip-download", "--flat-playlist", searchArg)
+	cmd := exec.CommandContext(ctx, "yt-dlp", p.commandArgs(query, limit)...)
 	out, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -556,9 +633,16 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 		}
 		return nil, &providerFailure{code: ErrProviderBadResponse, status: ProviderStatusFailed, err: fmt.Errorf("yt-dlp search failed for %s: %w", p.name, err)}
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	return p.candidatesFromOutput(string(out), limit), nil
+}
+
+func (p *YTDLPProvider) candidatesFromOutput(output string, limit int) []Candidate {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
 	items := make([]Candidate, 0, len(lines))
 	for _, line := range lines {
+		if len(items) >= limit {
+			break
+		}
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -575,6 +659,7 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 			sourceURL = stringValue(raw, "webpage_url")
 		}
 		title := stringValue(raw, "title")
+		metadata := ytdlpCandidateMetadata(raw, p.name, p.music)
 		items = append(items, Candidate{
 			CandidateID:  buildCandidateID(p.name, id, sourceURL),
 			Provider:     p.name,
@@ -587,8 +672,103 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 			ThumbnailURL: stringValue(raw, "thumbnail"),
 			Downloadable: sourceURL != "",
 			Playable:     false,
-			Metadata:     map[string]interface{}{"providerRawType": stringValue(raw, "_type")},
+			Metadata:     metadata,
 		})
+	}
+	return items
+}
+
+func (p *YTDLPProvider) searchArg(query string, limit int) string {
+	if p.music {
+		musicURL := &url.URL{Scheme: "https", Host: "music.youtube.com", Path: "/search"}
+		values := musicURL.Query()
+		values.Set("q", query)
+		musicURL.RawQuery = values.Encode()
+		musicURL.Fragment = "songs"
+		return musicURL.String()
+	}
+	return fmt.Sprintf("%s%d:%s", p.prefix, limit, query)
+}
+
+func (p *YTDLPProvider) commandArgs(query string, limit int) []string {
+	// Search surfaces expose a playlist-like result set. Flattening it prevents
+	// yt-dlp from resolving every result's full watch metadata before discovery
+	// can rank candidates under the provider deadline.
+	return []string{"--flat-playlist", "--playlist-end", strconv.Itoa(limit), "--dump-json", "--skip-download", p.searchArg(query, limit)}
+}
+
+func ytdlpCandidateMetadata(raw map[string]interface{}, provider string, music bool) map[string]interface{} {
+	metadata := map[string]interface{}{"providerRawType": stringValue(raw, "_type")}
+	if music {
+		metadata["discoverySurface"] = "youtube_music_songs"
+	} else if provider == "youtube" {
+		metadata["discoverySurface"] = "youtube_search"
+	} else {
+		metadata["discoverySurface"] = provider + "_search"
+	}
+	for _, key := range []string{"description", "track", "album", "artist", "label", "release_date", "release_year", "channel", "channel_id", "uploader_id", "categories", "tags"} {
+		if value, ok := raw[key]; ok && value != nil {
+			metadata[key] = value
+		}
+	}
+	return metadata
+}
+
+// combinedProvider keeps one public provider identity while acquiring multiple
+// independent surfaces. It returns successes even when one surface fails.
+type combinedProvider struct {
+	name      string
+	providers []Provider
+}
+
+func newCombinedProvider(name string, providers []Provider) *combinedProvider {
+	return &combinedProvider{name: name, providers: providers}
+}
+
+func (p *combinedProvider) Name() string { return p.name }
+
+func (p *combinedProvider) Search(ctx context.Context, query string, limit int) ([]Candidate, error) {
+	type result struct {
+		items []Candidate
+		err   error
+	}
+	results := make([]result, len(p.providers))
+	var wg sync.WaitGroup
+	for index, provider := range p.providers {
+		wg.Add(1)
+		go func(index int, provider Provider) {
+			defer wg.Done()
+			items, err := provider.Search(ctx, query, limit)
+			results[index] = result{items: items, err: err}
+		}(index, provider)
+	}
+	wg.Wait()
+
+	items := make([]Candidate, 0, limit*len(p.providers))
+	seen := make(map[string]struct{})
+	var errs []string
+	for _, result := range results {
+		if result.err != nil {
+			errs = append(errs, result.err.Error())
+			continue
+		}
+		for _, candidate := range result.items {
+			key := candidate.CandidateID
+			if key == "" {
+				key = candidate.SourceURL
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			items = append(items, candidate)
+		}
+	}
+	if len(items) > 0 {
+		return items, nil
+	}
+	if len(errs) > 0 {
+		return nil, &providerFailure{code: ErrProviderBadResponse, status: ProviderStatusFailed, err: fmt.Errorf("all %s search surfaces failed: %s", p.name, strings.Join(errs, "; "))}
 	}
 	return items, nil
 }

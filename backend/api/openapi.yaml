@@ -38,6 +38,8 @@ tags:
     description: Signed direct object URL issuance for playback and offline downloads
   - name: Queue
     description: Playback queue management
+  - name: SourceSelections
+    description: Server-owned discovery source decisions and audit records
 
 security:
   - BearerAuth: []
@@ -272,6 +274,83 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /discovery/search:
+    get:
+      tags: [Browse]
+      summary: Search ranked source candidates and create a short-lived selection session
+      operationId: discoverySearch
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1 }
+        - name: providers
+          in: query
+          schema: { type: string, description: Comma-separated provider names. }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 25 }
+      responses:
+        '200':
+          description: Ranked candidates; selectionRequired is false only when results is empty.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscoverySearchResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /discovery/resolve-url:
+    post:
+      tags: [Browse]
+      summary: Resolve a pasted supported URL and create a short-lived selection session
+      operationId: resolveDiscoveryURL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [url]
+              properties: { url: { type: string, format: uri } }
+      responses:
+        '200':
+          description: Resolved candidate and selection session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResolveDiscoveryURLResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/BadRequest' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /discovery/assist:
+    post:
+      tags: [Browse]
+      summary: Ground an assistant request in discovered candidates and create a selection session when candidates are returned
+      operationId: assistDiscovery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [prompt]
+              properties:
+                prompt: { type: string, minLength: 1 }
+                limit: { type: integer, minimum: 1, maximum: 25 }
+      responses:
+        '200':
+          description: Grounded assistant response. Selection metadata is top-level for direct and nested search candidates.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscoveryAssistResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
   # ============================================================================
   # Library Endpoints
@@ -654,6 +733,7 @@ paths:
                 $ref: '#/components/schemas/MixPlanListResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
     post:
       tags:
         - MixPlans
@@ -757,7 +837,6 @@ paths:
                 $ref: '#/components/schemas/DownloadListResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
-
     post:
       tags:
         - Downloads
@@ -775,11 +854,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/DownloadJob'
+                $ref: '#/components/schemas/InitiateDownloadResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
   /downloads/{job_id}:
     get:
@@ -927,11 +1008,74 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /source-selections:
+    get:
+      tags: [SourceSelections]
+      summary: List the authenticated user's source selection audit records
+      operationId: listSourceSelections
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/OffsetParam'
+      responses:
+        '200':
+          description: Source selection audit page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SourceSelectionListResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [SourceSelections]
+      summary: Create an accepted or overridden decision from a discovery session
+      operationId: createSourceSelection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSourceSelectionRequest'
+      responses:
+        '201':
+          description: Durable source selection decision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceSelectionDecision' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413':
+          description: Source selection request exceeds the documented body limit.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /source-selections/{id}:
+    get:
+      tags: [SourceSelections]
+      summary: Get an authenticated user's source selection audit record
+      operationId: getSourceSelection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Source selection decision
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceSelectionDecision' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /queue/items:
     post:
       tags:
         - Queue
-      summary: Add a playable track or source candidate to the queue
+      summary: Add a playable track or a source selected by a durable decision to the queue
       operationId: addQueueItem
       requestBody:
         required: true
@@ -941,29 +1085,29 @@ paths:
               $ref: '#/components/schemas/AddQueueItemRequest'
       responses:
         '200':
-          description: Playable track added to queue
+          description: Playable track added to queue, or an idempotent source-decision replay.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/QueueResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/QueueResponse'
+                  - $ref: '#/components/schemas/SourceDecisionQueueResponse'
         '202':
           description: Source candidate queued for download
           content:
             application/json:
               schema:
-                type: object
-                required:
-                  - queue
-                  - downloadJobId
-                properties:
-                  queue:
-                    $ref: '#/components/schemas/QueueResponse'
-                  downloadJobId:
-                    type: string
+                $ref: '#/components/schemas/SourceDecisionQueueResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
 
   /queue/items/{queueItemId}:
     delete:
@@ -1144,6 +1288,20 @@ components:
 
     NotFound:
       description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Conflict:
+      description: Request conflicts with existing state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unavailable:
+      description: Required service or persistence is unavailable
       content:
         application/json:
           schema:
@@ -2169,19 +2327,36 @@ components:
 
     InitiateDownloadRequest:
       type: object
+      additionalProperties: false
       required:
         - url
-        - source_type
       properties:
         url:
           type: string
           format: uri
+          maxLength: 4096
         source_type:
           type: string
+          deprecated: true
+          description: Legacy presentation field. Provider is derived from url server-side.
           enum: [youtube, soundcloud]
         page_metadata:
           type: object
-          additionalProperties: true
+          additionalProperties: false
+          properties:
+            title: { type: string, maxLength: 500 }
+            thumbnail: { type: string, format: uri, maxLength: 2048 }
+
+    InitiateDownloadResponse:
+      type: object
+      required: [job_id, status, sourceDecisionId]
+      properties:
+        job_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued] }
+        sourceDecisionId:
+          type: string
+          format: uuid
+          description: Durable accepted direct_url source decision created before Redis enqueue.
 
     # ========================================================================
     # Queue Schemas
@@ -2312,8 +2487,66 @@ components:
           type: string
           format: uri
 
+    DiscoveryCandidate:
+      allOf:
+        - $ref: '#/components/schemas/QueueSourceCandidate'
+        - type: object
+          required: [candidateId, downloadable, playable]
+          properties:
+            sourceId: { type: string }
+            downloadable: { type: boolean }
+            playable: { type: boolean }
+            explicit: { type: boolean, nullable: true }
+            metadata: { type: object, additionalProperties: true }
+
+    DiscoverySearchResponse:
+      type: object
+      required: [query, results, sections, providers, selectionRequired]
+      properties:
+        query: { type: string }
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/DiscoveryCandidate' }
+        sections: { type: array, items: { type: object, additionalProperties: true } }
+        providers: { type: array, items: { type: object, additionalProperties: true } }
+        selectionRequired: { type: boolean }
+        selectionSessionId: { type: string, format: uuid }
+        recommendedCandidateId: { type: string }
+        selectionExpiresAt: { type: string, format: date-time }
+
+    ResolveDiscoveryURLResponse:
+      type: object
+      required: [candidate, selectionRequired]
+      properties:
+        candidate: { $ref: '#/components/schemas/DiscoveryCandidate' }
+        selectionRequired: { type: boolean }
+        selectionSessionId: { type: string, format: uuid }
+        recommendedCandidateId: { type: string }
+        selectionExpiresAt: { type: string, format: date-time }
+
+    DiscoveryAssistResponse:
+      type: object
+      required: [status, selectionRequired]
+      properties:
+        status: { type: string, enum: [ok, disabled, clarification, error] }
+        assistantText: { type: string }
+        intent: { type: object, additionalProperties: true }
+        clarification: { type: object, additionalProperties: true }
+        search: { $ref: '#/components/schemas/DiscoverySearchResponse' }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/DiscoveryCandidate' }
+        caveats: { type: array, items: { type: string } }
+        suggestedActions: { type: array, items: { type: object, additionalProperties: true } }
+        error: { type: object, additionalProperties: true }
+        selectionRequired: { type: boolean }
+        selectionSessionId: { type: string, format: uuid }
+        recommendedCandidateId: { type: string }
+        selectionExpiresAt: { type: string, format: date-time }
+
     AddQueueItemRequest:
       type: object
+      additionalProperties: false
       properties:
         position:
           type: string
@@ -2323,14 +2556,58 @@ components:
           type: integer
           format: int64
           description: Existing playable track ID to enqueue.
-        sourceCandidate:
-          $ref: '#/components/schemas/QueueSourceCandidate'
-        mbRecordingId:
+        sourceDecisionId:
           type: string
-          description: Optional MusicBrainz recording ID attached to a source-candidate download.
+          format: uuid
+          description: Server-owned source selection decision. The candidate URL is never accepted from this request.
       oneOf:
         - required: [trackId]
-        - required: [sourceCandidate]
+        - required: [sourceDecisionId]
+
+    SourceDecisionQueueResponse:
+      type: object
+      required: [queue, downloadJobId, idempotent]
+      properties:
+        queue: { $ref: '#/components/schemas/QueueResponse' }
+        downloadJobId: { type: string, format: uuid }
+        idempotent: { type: boolean }
+
+    CreateSourceSelectionRequest:
+      type: object
+      additionalProperties: false
+      required: [sessionId, candidateId, action]
+      properties:
+        sessionId: { type: string, format: uuid }
+        candidateId: { type: string, minLength: 1 }
+        action: { type: string, enum: [accepted, overridden] }
+        reason: { type: string, maxLength: 2000 }
+
+    SourceSelectionDecision:
+      type: object
+      required: [id, selectedCandidateId, recommendedCandidateId, action, origin, selectedCandidate, sourceQuality, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        sessionId: { type: string, format: uuid, nullable: true }
+        selectedCandidateId: { type: string }
+        recommendedCandidateId: { type: string }
+        action: { type: string, enum: [accepted, overridden] }
+        origin: { type: string }
+        reason: { type: string, nullable: true }
+        selectedCandidate: { $ref: '#/components/schemas/DiscoveryCandidate' }
+        sourceQuality: { type: object, additionalProperties: true }
+        downloadJobId: { type: string, format: uuid, nullable: true }
+        trackId: { type: integer, format: int64, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    SourceSelectionListResponse:
+      type: object
+      required: [items, limit, offset]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SourceSelectionDecision' }
+        limit: { type: integer }
+        offset: { type: integer }
 
     ReorderQueueRequest:
       type: object

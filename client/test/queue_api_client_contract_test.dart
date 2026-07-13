@@ -41,8 +41,10 @@ void main() {
 
       expect(seen!.method, 'PUT');
       expect(seen!.url.path, '/api/v1/queue/reorder');
-      expect(
-          jsonDecode(seen!.body), {'queueItemId': 'queue-3', 'toPosition': 1});
+      expect(jsonDecode(seen!.body), {
+        'queueItemId': 'queue-3',
+        'toPosition': 1,
+      });
     },
   );
 
@@ -67,10 +69,7 @@ void main() {
 
     expect(seen!.method, 'POST');
     expect(seen!.url.path, '/api/v1/queue/items');
-    expect(jsonDecode(seen!.body), {
-      'trackId': 42,
-      'position': 'next',
-    });
+    expect(jsonDecode(seen!.body), {'trackId': 42, 'position': 'next'});
   });
 
   test('addToQueue validates all track IDs before posting', () async {
@@ -93,7 +92,7 @@ void main() {
   });
 
   test(
-    'addSourceCandidateToQueue accepts backend 202 source candidate enqueue response',
+    'addSourceDecisionToQueue accepts the stable decision queue envelope',
     () async {
       http.Request? seen;
       final client = mockQueueApiClient((request) async {
@@ -119,22 +118,14 @@ void main() {
               'updatedAt': '2026-06-04T00:00:00Z',
             },
             'downloadJobId': 'job_source_1',
+            'idempotent': false,
           }),
           202,
         );
       });
 
-      final state = await client.addSourceCandidateToQueue(
-        candidate: const DiscoveryCandidate(
-          candidateId: 'soundcloud:123',
-          provider: 'soundcloud',
-          sourceId: '123',
-          sourceUrl: 'https://soundcloud.test/track',
-          title: 'Queued Source',
-          durationMs: 61000,
-          downloadable: true,
-          playable: false,
-        ),
+      final response = await client.addSourceDecisionToQueue(
+        sourceDecisionId: 'dec-123',
         position: 'last',
       );
 
@@ -142,17 +133,15 @@ void main() {
       expect(seen!.url.path, '/api/v1/queue/items');
       expect(jsonDecode(seen!.body), {
         'position': 'last',
-        'sourceCandidate': {
-          'candidateId': 'soundcloud:123',
-          'provider': 'soundcloud',
-          'sourceId': '123',
-          'sourceUrl': 'https://soundcloud.test/track',
-          'title': 'Queued Source',
-          'durationMs': 61000,
-          'downloadable': true,
-        },
+        'sourceDecisionId': 'dec-123',
       });
-      final track = state.tracks.single;
+      final body = jsonDecode(seen!.body) as Map<String, dynamic>;
+      expect(body.containsKey('sourceCandidate'), isFalse);
+      expect(body.values.join(), isNot(contains('soundcloud.test')));
+      expect(body.values.join(), isNot(contains('musicbrainz')));
+      expect(response.downloadJobId, 'job_source_1');
+      expect(response.idempotent, isFalse);
+      final track = response.queue.tracks.single;
       expect(track.id, 'q_source');
       expect(track.queueItemId, 'q_source');
       expect(track.sourceCandidateId, 'soundcloud:123');
@@ -163,32 +152,92 @@ void main() {
   );
 
   test(
-    'createDownload posts a background library download request',
+    'source selection create/list/detail use the durable audit contract',
     () async {
-      http.Request? seen;
+      final seen = <http.Request>[];
       final client = mockQueueApiClient((request) async {
-        seen = request;
+        seen.add(request);
+        final decision = {
+          'id': 'decision-1',
+          'sessionId': '11111111-1111-1111-1111-111111111111',
+          'selectedCandidateId': 'youtube:alternate',
+          'recommendedCandidateId': 'youtube:recommended',
+          'action': 'overridden',
+          'origin': 'search',
+          'reason': 'I prefer the studio mix.',
+          'selectedCandidate': {
+            'candidateId': 'youtube:alternate',
+            'provider': 'youtube',
+            'title': 'Studio mix',
+            'downloadable': true,
+            'playable': false,
+          },
+          'sourceQuality': {'score': 88, 'classification': 'official_audio'},
+          'createdAt': '2026-07-13T00:00:00Z',
+        };
+        if (request.method == 'POST') {
+          return http.Response(jsonEncode(decision), 201);
+        }
+        if (request.url.path.endsWith('decision-1')) {
+          return http.Response(jsonEncode(decision), 200);
+        }
         return http.Response(
-          jsonEncode({'job_id': 'job_library_1', 'status': 'queued'}),
-          201,
+          jsonEncode({
+            'items': [decision],
+            'limit': 5,
+            'offset': 0,
+          }),
+          200,
         );
       });
 
-      final job = await client.createDownload(
-        url: 'https://youtu.be/abc123',
-        sourceType: 'youtube',
+      final created = await client.createSourceSelection(
+        sessionId: '11111111-1111-1111-1111-111111111111',
+        candidateId: 'youtube:alternate',
+        action: SourceSelectionAction.overridden,
+        reason: 'I prefer the studio mix.',
       );
+      final listed = await client.listSourceSelections(limit: 5);
+      final detail = await client.getSourceSelection('decision-1');
 
-      expect(seen!.method, 'POST');
-      expect(seen!.url.path, '/api/v1/downloads');
-      expect(jsonDecode(seen!.body), {
-        'url': 'https://youtu.be/abc123',
-        'source_type': 'youtube',
+      expect(jsonDecode(seen[0].body), {
+        'sessionId': '11111111-1111-1111-1111-111111111111',
+        'candidateId': 'youtube:alternate',
+        'action': 'overridden',
+        'reason': 'I prefer the studio mix.',
       });
-      expect(job.jobId, 'job_library_1');
-      expect(job.status, 'queued');
+      expect(seen[1].url.queryParameters, {'limit': '5', 'offset': '0'});
+      expect(seen[2].url.path, '/api/v1/source-selections/decision-1');
+      expect(created.action, SourceSelectionAction.overridden);
+      expect(listed.items.single.reason, 'I prefer the studio mix.');
+      expect(detail.selectedCandidate.title, 'Studio mix');
     },
   );
+
+  test('createDownload posts a background library download request', () async {
+    http.Request? seen;
+    final client = mockQueueApiClient((request) async {
+      seen = request;
+      return http.Response(
+        jsonEncode({'job_id': 'job_library_1', 'status': 'queued'}),
+        201,
+      );
+    });
+
+    final job = await client.createDownload(
+      url: 'https://youtu.be/abc123',
+      sourceType: 'youtube',
+    );
+
+    expect(seen!.method, 'POST');
+    expect(seen!.url.path, '/api/v1/downloads');
+    expect(jsonDecode(seen!.body), {
+      'url': 'https://youtu.be/abc123',
+      'source_type': 'youtube',
+    });
+    expect(job.jobId, 'job_library_1');
+    expect(job.status, 'queued');
+  });
 
   test('createDownload maps client-side timeout to ApiException', () async {
     final client = mockQueueApiClient((request) async {
@@ -279,64 +328,66 @@ void main() {
     expect(plans.single.version, 3);
   });
 
-  test('saveMixPlan creates and updates with the backend clip field names',
-      () async {
-    final seen = <http.Request>[];
-    final client = mockQueueApiClient((request) async {
-      seen.add(request);
-      final response = {
-        'id': request.method == 'POST' ? 'new-plan' : 'existing-plan',
+  test(
+    'saveMixPlan creates and updates with the backend clip field names',
+    () async {
+      final seen = <http.Request>[];
+      final client = mockQueueApiClient((request) async {
+        seen.add(request);
+        final response = {
+          'id': request.method == 'POST' ? 'new-plan' : 'existing-plan',
+          'schemaVersion': 1,
+          'name': 'Queue timing',
+          'clips': jsonDecode(request.body)['clips'],
+          'summary': {
+            'clipCount': 1,
+            'trackIds': [42],
+            'durationMs': 46000,
+          },
+          'version': request.method == 'POST' ? 1 : 4,
+          'createdAt': '2026-06-03T01:02:03Z',
+          'updatedAt': '2026-06-03T02:03:04Z',
+        };
+        return http.Response(
+          jsonEncode(response),
+          request.method == 'POST' ? 201 : 200,
+        );
+      });
+
+      final clips = [
+        MixPlanClip(
+          clipId: 'clip-a',
+          queueItemId: 'queue-a',
+          trackId: '42',
+          sourceStartMs: 1000,
+          sourceEndMs: 42000,
+          timelineStartMs: 5000,
+        ),
+      ];
+
+      await client.createMixPlan(name: 'Queue timing', clips: clips);
+      await client.updateMixPlan(
+        id: 'existing-plan',
+        version: 3,
+        name: 'Queue timing',
+        clips: clips,
+      );
+
+      expect(seen[0].method, 'POST');
+      expect(seen[0].url.path, '/api/v1/mix-plans');
+      expect(jsonDecode(seen[0].body), {
         'schemaVersion': 1,
         'name': 'Queue timing',
-        'clips': jsonDecode(request.body)['clips'],
-        'summary': {
-          'clipCount': 1,
-          'trackIds': [42],
-          'durationMs': 46000,
-        },
-        'version': request.method == 'POST' ? 1 : 4,
-        'createdAt': '2026-06-03T01:02:03Z',
-        'updatedAt': '2026-06-03T02:03:04Z',
-      };
-      return http.Response(
-        jsonEncode(response),
-        request.method == 'POST' ? 201 : 200,
-      );
-    });
-
-    final clips = [
-      MixPlanClip(
-        clipId: 'clip-a',
-        queueItemId: 'queue-a',
-        trackId: '42',
-        sourceStartMs: 1000,
-        sourceEndMs: 42000,
-        timelineStartMs: 5000,
-      ),
-    ];
-
-    await client.createMixPlan(name: 'Queue timing', clips: clips);
-    await client.updateMixPlan(
-      id: 'existing-plan',
-      version: 3,
-      name: 'Queue timing',
-      clips: clips,
-    );
-
-    expect(seen[0].method, 'POST');
-    expect(seen[0].url.path, '/api/v1/mix-plans');
-    expect(jsonDecode(seen[0].body), {
-      'schemaVersion': 1,
-      'name': 'Queue timing',
-      'clips': [clips.single.toJson()],
-    });
-    expect(seen[1].method, 'PUT');
-    expect(seen[1].url.path, '/api/v1/mix-plans/existing-plan');
-    expect(jsonDecode(seen[1].body), {
-      'schemaVersion': 1,
-      'name': 'Queue timing',
-      'version': 3,
-      'clips': [clips.single.toJson()],
-    });
-  });
+        'clips': [clips.single.toJson()],
+      });
+      expect(seen[1].method, 'PUT');
+      expect(seen[1].url.path, '/api/v1/mix-plans/existing-plan');
+      expect(jsonDecode(seen[1].body), {
+        'schemaVersion': 1,
+        'name': 'Queue timing',
+        'version': 3,
+        'clips': [clips.single.toJson()],
+      });
+    },
+  );
 }

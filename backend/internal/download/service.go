@@ -10,6 +10,8 @@ import (
 type Service struct {
 	queue      *Queue
 	workerPool *WorkerPool
+	lifecycle  JobLifecycle
+	maxRetries int
 }
 
 // ServiceConfig holds configuration for the download service
@@ -21,22 +23,32 @@ type ServiceConfig struct {
 }
 
 // NewService creates a new download service
-func NewService(config *ServiceConfig, processor JobProcessor) (*Service, error) {
+func NewService(config *ServiceConfig, processor JobProcessor, lifecycle ...JobLifecycle) (*Service, error) {
 	queue, err := NewQueue(config.RedisURL)
 	if err != nil {
 		return nil, err
 	}
 
 	workerCount := config.WorkerCount
-	workerPool := NewWorkerPool(queue, processor, &WorkerPoolConfig{
+	maxRetries := config.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = DefaultMaxRetries
+	}
+	workerConfig := &WorkerPoolConfig{
 		WorkerCount: &workerCount,
-		MaxRetries:  config.MaxRetries,
+		MaxRetries:  maxRetries,
 		JobTimeout:  config.JobTimeout,
-	})
+	}
+	if len(lifecycle) > 0 {
+		workerConfig.Lifecycle = lifecycle[0]
+	}
+	workerPool := NewWorkerPool(queue, processor, workerConfig)
 
 	return &Service{
 		queue:      queue,
 		workerPool: workerPool,
+		lifecycle:  workerConfig.Lifecycle,
+		maxRetries: maxRetries,
 	}, nil
 }
 
@@ -74,8 +86,23 @@ func (s *Service) EnqueueSourceCandidateWithID(ctx context.Context, jobID, userI
 	return s.queue.EnqueueCandidateWithID(ctx, jobID, userID, candidate, mbRecordingID)
 }
 
+// EnsureSourceCandidateWithID leaves an existing non-terminal Redis job alone.
+// Startup recovery uses this to remain idempotent when a previous boot already
+// restored the durable job.
+func (s *Service) EnsureSourceCandidateWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string) (*DownloadJob, error) {
+	return s.queue.EnsureCandidateWithID(ctx, jobID, userID, candidate, mbRecordingID)
+}
+
 func (s *Service) EnqueuePlaylistImportItem(ctx context.Context, userID string, candidate SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*DownloadJob, error) {
 	return s.queue.EnqueuePlaylistImportItem(ctx, userID, candidate, importJobID, importItemID, playlistID, playlistPosition)
+}
+
+func (s *Service) EnqueuePlaylistImportItemWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*DownloadJob, error) {
+	return s.queue.EnqueuePlaylistImportItemWithID(ctx, jobID, userID, candidate, importJobID, importItemID, playlistID, playlistPosition)
+}
+
+func (s *Service) EnsurePlaylistImportItemWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, importJobID string, importItemID, playlistID int64, playlistPosition int) (*DownloadJob, error) {
+	return s.queue.EnsurePlaylistImportItemWithID(ctx, jobID, userID, candidate, importJobID, importItemID, playlistID, playlistPosition)
 }
 
 // GetJob retrieves a job by ID
@@ -90,6 +117,23 @@ func (s *Service) GetUserJobs(ctx context.Context, userID string) ([]*DownloadJo
 
 // RetryJob increments retry metadata and places a failed job back on the queue.
 func (s *Service) RetryJob(ctx context.Context, jobID string) error {
+	job, err := s.queue.GetJob(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	if !job.CanRetry(s.maxRetries) {
+		return ErrJobNotRetryable
+	}
+	if s.lifecycle != nil {
+		retrying := *job
+		retrying.Status = StatusQueued
+		retrying.Progress = 0
+		retrying.Error = ""
+		retrying.RetryCount++
+		if err := s.lifecycle.Requeue(ctx, &retrying, retrying.RetryCount); err != nil {
+			return err
+		}
+	}
 	return s.queue.IncrementRetry(ctx, jobID)
 }
 

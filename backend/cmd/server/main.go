@@ -63,6 +63,22 @@ type analyzerMaintenanceProcessor interface {
 	RequestAnalysisRepair(ctx context.Context, track *db.Track, opts processor.AnalysisRepairOptions) (processor.AnalysisRepairResult, error)
 }
 
+// sourceSelectionPlaybackRecovery adapts the Redis playback queue to the
+// database lifecycle without creating a db -> queue package dependency.
+type sourceSelectionPlaybackRecovery struct {
+	service *queue.Service
+}
+
+func (r sourceSelectionPlaybackRecovery) EnsureSourceCandidateWithID(ctx context.Context, userID, queueItemID string, candidate download.SourceCandidate, downloadJobID, position string) error {
+	_, err := r.service.EnsureSourceCandidateWithID(ctx, userID, queueItemID, queue.SourceCandidate{
+		CandidateID: candidate.CandidateID, Provider: candidate.Provider, SourceID: candidate.SourceID,
+		SourceURL: candidate.SourceURL, Title: candidate.Title, Artist: candidate.Artist, Album: candidate.Album,
+		Uploader: candidate.Uploader, DurationMs: candidate.DurationMs, ThumbnailURL: candidate.ThumbnailURL,
+		Downloadable: true, Metadata: candidate.Metadata,
+	}, downloadJobID, position)
+	return err
+}
+
 type analyzerMaintenanceReport struct {
 	Analyzer        string
 	AnalyzerVersion string
@@ -271,6 +287,7 @@ func main() {
 	trackSourceRepo := playlistimport.NewTrackSourceRepository(database)
 	mixPlanRepo := db.NewMixPlanRepository(database)
 	playEventRepo := db.NewPlayEventRepository(database)
+	sourceSelectionRepo := db.NewSourceSelectionRepository(database)
 
 	// Initialize services
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
@@ -294,7 +311,8 @@ func main() {
 		Search:  discoveryService,
 		Timeout: cfg.AIAssistTimeout,
 	})
-	discoveryHandlers := discovery.NewHandlersWithAssist(discoveryService, assistService)
+	discoveryHandlers := discovery.NewHandlersWithAssistAndSelectionStore(discoveryService, assistService, sourceSelectionRepo)
+	sourceSelectionHandlers := api.NewSourceSelectionHandlers(sourceSelectionRepo)
 	log.Info(ctx, "Initialized discovery assist", map[string]interface{}{
 		"ai_assist_enabled": assistClient != nil,
 		"ai_assist_model":   cfg.AIAssistModel,
@@ -430,36 +448,48 @@ func main() {
 	var playlistImportHandlers *api.PlaylistImportHandlers
 
 	if cfg.RedisEnabled {
+		sourceSelectionLifecycle := db.NewSourceSelectionDownloadLifecycle(database)
+		sourceSelectionIngestion := db.NewSourceSelectionIngestion(database, sourceSelectionRepo)
 		downloadService, err = download.NewService(&download.ServiceConfig{
 			RedisURL:    cfg.RedisURL,
 			WorkerCount: cfg.WorkerCount,
-		}, jobProcessor.Process)
+		}, jobProcessor.Process, sourceSelectionLifecycle)
 		if err != nil {
 			log.Error(ctx, "Failed to initialize download service", nil, err)
 			os.Exit(1)
 		}
-		downloadService.Start()
-		log.Info(ctx, "Started download service", map[string]interface{}{
-			"workers": cfg.WorkerCount,
-		})
-		downloadHandlers = api.NewDownloadHandlers(downloadService)
-		playlistImportService := playlistimport.NewService(playlistimport.Config{
-			Store:      playlistImportRepo,
-			Playlists:  playlistRepo,
-			Tracks:     trackSourceRepo,
-			Library:    libraryRepo,
-			Downloader: downloadService,
-			Enumerator: playlistimport.NewYTDLPEnumerator(),
-		})
-		playlistImportHandlers = api.NewPlaylistImportHandlers(playlistImportService)
-
 		queueService, err := queue.NewService(cfg.RedisURL)
 		if err != nil {
 			log.Error(ctx, "Failed to initialize queue service", nil, err)
 			os.Exit(1)
 		}
 		defer queueService.Close()
-		queueHandlers = queue.NewHandlersWithAnalysis(queueService, downloadService, analysisRepo)
+		// Recovery happens before workers start. It restores only durable,
+		// nonterminal source-decision jobs from their persisted snapshots and is
+		// idempotent when Redis already contains the same job ID.
+		if recovered, err := sourceSelectionLifecycle.RecoverWithPlayback(ctx, downloadService, sourceSelectionPlaybackRecovery{service: queueService}, 0); err != nil {
+			log.Error(ctx, "Failed to recover source-selection downloads", nil, err)
+		} else if recovered > 0 {
+			log.Info(ctx, "Recovered source-selection downloads", map[string]interface{}{"jobs": recovered})
+		}
+		downloadService.Start()
+		log.Info(ctx, "Started download service", map[string]interface{}{
+			"workers": cfg.WorkerCount,
+		})
+		downloadHandlers = api.NewDownloadHandlers(downloadService, sourceSelectionIngestion)
+		playlistImportService := playlistimport.NewService(playlistimport.Config{
+			Store:      playlistImportRepo,
+			Playlists:  playlistRepo,
+			Tracks:     trackSourceRepo,
+			Library:    libraryRepo,
+			Downloader: downloadService,
+			Selections: sourceSelectionRepo,
+			Ingestion:  sourceSelectionIngestion,
+			Enumerator: playlistimport.NewYTDLPEnumerator(),
+		})
+		playlistImportHandlers = api.NewPlaylistImportHandlers(playlistImportService)
+
+		queueHandlers = queue.NewHandlersWithSourceSelections(queueService, downloadService, analysisRepo, sourceSelectionRepo, database)
 	}
 
 	// Initialize metrics
@@ -484,28 +514,29 @@ func main() {
 
 	// Create router with all handlers
 	router := api.NewRouterWithConfig(&api.RouterConfig{
-		AuthHandlers:           authHandlers,
-		AuthService:            authService,
-		SearchHandlers:         searchHandlers,
-		MBClient:               mbClient,
-		MBHandlers:             mbHandlers,
-		WSHandler:              wsHandler,
-		MatcherHandlers:        matcherHandlers,
-		LibraryHandlers:        libraryHandlers,
-		AnalysisHandlers:       analysisHandlers,
-		PlaybackHandlers:       playbackHandlers,
-		QueueHandlers:          queueHandlers,
-		DiscoveryHandlers:      discoveryHandlers,
-		PlaylistHandlers:       playlistHandlers,
-		PlaylistImportHandlers: playlistImportHandlers,
-		PlaylistMixHandlers:    playlistMixHandlers,
-		MixPlanHandlers:        mixPlanHandlers,
-		DownloadHandlers:       downloadHandlers,
-		MaintenanceHandlers:    maintenanceHandlers,
-		PlayEventHandlers:      playEventHandlers,
-		HealthHandler:          healthHandler,
-		Metrics:                appMetrics,
-		CORSAllowedOrigins:     cfg.CORSAllowedOrigins,
+		AuthHandlers:            authHandlers,
+		AuthService:             authService,
+		SearchHandlers:          searchHandlers,
+		MBClient:                mbClient,
+		MBHandlers:              mbHandlers,
+		WSHandler:               wsHandler,
+		MatcherHandlers:         matcherHandlers,
+		LibraryHandlers:         libraryHandlers,
+		AnalysisHandlers:        analysisHandlers,
+		PlaybackHandlers:        playbackHandlers,
+		QueueHandlers:           queueHandlers,
+		DiscoveryHandlers:       discoveryHandlers,
+		PlaylistHandlers:        playlistHandlers,
+		PlaylistImportHandlers:  playlistImportHandlers,
+		PlaylistMixHandlers:     playlistMixHandlers,
+		MixPlanHandlers:         mixPlanHandlers,
+		DownloadHandlers:        downloadHandlers,
+		SourceSelectionHandlers: sourceSelectionHandlers,
+		MaintenanceHandlers:     maintenanceHandlers,
+		PlayEventHandlers:       playEventHandlers,
+		HealthHandler:           healthHandler,
+		Metrics:                 appMetrics,
+		CORSAllowedOrigins:      cfg.CORSAllowedOrigins,
 	})
 
 	// Apply middleware chain

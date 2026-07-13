@@ -114,10 +114,78 @@ func (q *Queue) EnqueueCandidateWithID(ctx context.Context, jobID, userID string
 	})
 }
 
+// EnsureCandidateWithID restores a missing queue-list entry after a process
+// restart without creating another entry for a job that is already queued.
+func (q *Queue) EnsureCandidateWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, mbRecordingID *string) (*DownloadJob, error) {
+	job, err := q.GetJob(ctx, jobID)
+	if err == nil {
+		if job.UserID != userID {
+			return nil, fmt.Errorf("download job %s belongs to another user", jobID)
+		}
+		if !job.IsTerminal() {
+			_, positionErr := q.client.LPos(ctx, keyJobQueue, jobID, redis.LPosArgs{}).Result()
+			switch {
+			case positionErr == nil:
+				return job, nil
+			case errors.Is(positionErr, redis.Nil):
+				if err := q.client.LPush(ctx, keyJobQueue, jobID).Err(); err != nil {
+					return nil, fmt.Errorf("restore queued job: %w", err)
+				}
+				return job, nil
+			default:
+				return nil, fmt.Errorf("check queued job: %w", positionErr)
+			}
+		}
+		return job, nil
+	} else if !errors.Is(err, ErrJobNotFound) {
+		return nil, err
+	}
+	return q.EnqueueCandidateWithID(ctx, jobID, userID, candidate, mbRecordingID)
+}
+
+// EnsurePlaylistImportItemWithID restores a playlist-import job with its
+// processor metadata intact. It is separate from generic source recovery so a
+// recovered job can still attach the completed track at the intended position.
+func (q *Queue) EnsurePlaylistImportItemWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, importJobID string, importItemID, playlistID int64, playlistPosition int) (*DownloadJob, error) {
+	job, err := q.GetJob(ctx, jobID)
+	if err == nil {
+		if job.UserID != userID {
+			return nil, fmt.Errorf("download job %s belongs to another user", jobID)
+		}
+		if !job.IsTerminal() {
+			if job.PlaylistImportJobID != importJobID || job.PlaylistImportItemID != importItemID || job.PlaylistID != playlistID || job.PlaylistPosition != playlistPosition {
+				return nil, fmt.Errorf("playlist import metadata mismatch for download job %s", jobID)
+			}
+			_, positionErr := q.client.LPos(ctx, keyJobQueue, jobID, redis.LPosArgs{}).Result()
+			switch {
+			case positionErr == nil:
+			case errors.Is(positionErr, redis.Nil):
+				if err := q.client.LPush(ctx, keyJobQueue, jobID).Err(); err != nil {
+					return nil, fmt.Errorf("restore queued playlist import job: %w", err)
+				}
+			default:
+				return nil, fmt.Errorf("check queued playlist import job: %w", positionErr)
+			}
+			return job, nil
+		}
+		return job, nil
+	} else if !errors.Is(err, ErrJobNotFound) {
+		return nil, err
+	}
+	return q.EnqueuePlaylistImportItemWithID(ctx, jobID, userID, candidate, importJobID, importItemID, playlistID, playlistPosition)
+}
+
 // EnqueuePlaylistImportItem queues a playlist import item with target playlist
 // placement metadata for the processor to attach the completed/reused track.
 func (q *Queue) EnqueuePlaylistImportItem(ctx context.Context, userID string, candidate SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*DownloadJob, error) {
+	return q.EnqueuePlaylistImportItemWithID(ctx, "", userID, candidate, importJobID, importItemID, playlistID, playlistPosition)
+}
+
+// EnqueuePlaylistImportItemWithID publishes a playlist item using a durable
+// caller-provided job ID. Source-selection ingestion uses it after SQL commit.
+func (q *Queue) EnqueuePlaylistImportItemWithID(ctx context.Context, jobID, userID string, candidate SourceCandidate, importJobID string, importItemID int64, playlistID int64, playlistPosition int) (*DownloadJob, error) {
 	return q.enqueueJob(ctx, &DownloadJob{
+		ID:                   jobID,
 		UserID:               userID,
 		URL:                  candidate.SourceURL,
 		SourceType:           candidate.Provider,
@@ -270,6 +338,49 @@ func (q *Queue) IncrementRetry(ctx context.Context, jobID string) error {
 	pipe.LPush(ctx, keyJobQueue, jobID)
 	_, err = pipe.Exec(ctx)
 	return err
+}
+
+// PrepareRetry persists retry metadata before a worker waits for its backoff.
+func (q *Queue) PrepareRetry(ctx context.Context, jobID string) (*DownloadJob, error) {
+	job, err := q.GetJob(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	if job.IsTerminal() {
+		return nil, ErrJobNotRetryable
+	}
+	job.RetryCount++
+	job.Status = StatusQueued
+	job.Progress = 0
+	job.Error = ""
+	job.UpdatedAt = time.Now()
+	if err := q.saveJob(ctx, job); err != nil {
+		return nil, err
+	}
+	if err := q.publishProgress(ctx, job); err != nil {
+		return nil, err
+	}
+	return job, nil
+}
+
+// PublishQueuedRetry makes a prepared retry visible to workers without
+// duplicating an entry restored by recovery or a prior publish attempt.
+func (q *Queue) PublishQueuedRetry(ctx context.Context, jobID string) error {
+	job, err := q.GetJob(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	if job.Status != StatusQueued {
+		return ErrJobNotRetryable
+	}
+	_, err = q.client.LPos(ctx, keyJobQueue, jobID, redis.LPosArgs{}).Result()
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, redis.Nil) {
+		return fmt.Errorf("check queued retry: %w", err)
+	}
+	return q.client.LPush(ctx, keyJobQueue, jobID).Err()
 }
 
 // GetUserJobs retrieves all jobs for a specific user
