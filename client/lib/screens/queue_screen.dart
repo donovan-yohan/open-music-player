@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
 import '../core/audio/playback_context.dart';
 import '../core/audio/playback_session.dart';
+import '../app/theme.dart';
 import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
 import '../models/track.dart';
@@ -71,9 +72,8 @@ int listeningQueueRemainingMs({
   required Duration currentPosition,
 }) {
   if (queue.isEmpty) return 0;
-  final start = currentIndex == null
-      ? 0
-      : currentIndex.clamp(0, queue.length).toInt();
+  final start =
+      currentIndex == null ? 0 : currentIndex.clamp(0, queue.length).toInt();
   var total = 0;
   for (var i = start; i < queue.length; i++) {
     final durationMs = queue[i].duration?.inMilliseconds ?? 0;
@@ -176,77 +176,78 @@ class _QueueScreenState extends State<QueueScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    final queue = Scaffold(
       body: SafeArea(
         bottom: false,
         child: Consumer<QueueProvider>(
           builder: (context, provider, _) =>
               Selector<PlaybackState, _PlaybackViewState>(
-                selector: (_, playback) => _PlaybackViewState.read(playback),
-                shouldRebuild: (previous, next) =>
-                    !previous.hasSameStructure(next),
-                builder: (context, playbackView, _) {
-                  _adoptHydrationProvider(provider);
-                  if (_viewMode == _QueueViewMode.list) {
-                    _clearAnalysisHydration(provider);
-                  }
-                  if (playbackView.queue.isNotEmpty) {
-                    return _buildPlaybackQueueView(
-                      context,
-                      provider,
-                      playbackView,
-                    );
-                  }
+            selector: (_, playback) => _PlaybackViewState.read(playback),
+            shouldRebuild: (previous, next) => !previous.hasSameStructure(next),
+            builder: (context, playbackView, _) {
+              _adoptHydrationProvider(provider);
+              if (_viewMode == _QueueViewMode.list) {
+                _clearAnalysisHydration(provider);
+              }
+              if (playbackView.queue.isNotEmpty) {
+                return _buildPlaybackQueueView(
+                  context,
+                  provider,
+                  playbackView,
+                );
+              }
 
-                  if (provider.isLoading) {
-                    _clearAnalysisHydration(provider);
-                    return const SoundQSurfaceState(
-                      type: SoundQSurfaceStateType.loading,
-                      title: 'Loading queue',
-                    );
-                  }
+              if (provider.isLoading) {
+                _clearAnalysisHydration(provider);
+                return const SoundQSurfaceState(
+                  type: SoundQSurfaceStateType.loading,
+                  title: 'Loading queue',
+                );
+              }
 
-                  if (provider.error != null) {
-                    _clearAnalysisHydration(provider);
-                    return SoundQSurfaceState(
-                      type: SoundQSurfaceStateType.error,
-                      title: 'Error loading queue',
-                      message: provider.error!,
-                      action: ElevatedButton(
-                        onPressed: () => provider.loadQueue(),
-                        child: const Text('Retry'),
-                      ),
-                    );
-                  }
+              if (provider.error != null) {
+                _clearAnalysisHydration(provider);
+                return SoundQSurfaceState(
+                  type: SoundQSurfaceStateType.error,
+                  title: 'Error loading queue',
+                  message: provider.error!,
+                  action: ElevatedButton(
+                    onPressed: () => provider.loadQueue(),
+                    child: const Text('Retry'),
+                  ),
+                );
+              }
 
-                  if (provider.isEmpty) {
-                    _clearAnalysisHydration(provider);
-                    return const SoundQSurfaceState(
-                      type: SoundQSurfaceStateType.empty,
-                      title: 'Your queue is empty',
-                      message: 'Add songs to start playing',
-                    );
-                  }
+              if (provider.isEmpty) {
+                _clearAnalysisHydration(provider);
+                return const SoundQSurfaceState(
+                  type: SoundQSurfaceStateType.empty,
+                  title: 'Your queue is empty',
+                  message: 'Add songs to start playing',
+                );
+              }
 
-                  return Column(
-                    children: [
-                      _buildQueueHeader(context, provider),
-                      Expanded(
-                        child: _viewMode == _QueueViewMode.list
-                            ? _buildListView(context, provider)
-                            : _buildTimelineView(
-                                context,
-                                provider,
-                                playbackView,
-                              ),
-                      ),
-                    ],
-                  );
-                },
-              ),
+              return Column(
+                children: [
+                  _buildQueueHeader(context, provider),
+                  Expanded(
+                    child: _viewMode == _QueueViewMode.list
+                        ? _buildListView(context, provider)
+                        : _buildTimelineView(
+                            context,
+                            provider,
+                            playbackView,
+                          ),
+                  ),
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
+    if (MediaQuery.sizeOf(context).width >= 960) return queue;
+    return Theme(data: AppTheme.darkTheme, child: queue);
   }
 
   Widget _buildPlaybackQueueView(
@@ -276,21 +277,29 @@ class _QueueScreenState extends State<QueueScreen> {
     BuildContext context,
     _PlaybackViewState playbackView,
   ) {
+    final colors = Theme.of(context).colorScheme;
     final queue = playbackView.queue;
     final contextLabel = _playbackContextLabel(playbackView.playbackContext);
     final currentNumber = playbackView.currentIndex == null
         ? null
         : playbackView.currentIndex!.clamp(0, queue.length - 1).toInt() + 1;
     final stackedHeader = _usesStackedQueueHeader(context);
+    final usesMobileHeader = MediaQuery.sizeOf(context).width < 960;
+    final headerForeground = usesMobileHeader ? colors.onPrimary : null;
     final title = Text(
       'Playback Queue',
       style: Theme.of(
         context,
-      ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+      ).textTheme.headlineSmall?.copyWith(
+            color: headerForeground,
+            fontWeight: FontWeight.w700,
+          ),
     );
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+    return Container(
+      key: const ValueKey('playback_queue_header'),
+      color: usesMobileHeader ? AppTheme.orange : Colors.transparent,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -323,8 +332,8 @@ class _QueueScreenState extends State<QueueScreen> {
                   '${_formatQueueRuntime(remainingMs)} remaining',
                 ].join(' • '),
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+                      color: headerForeground ?? colors.onSurfaceVariant,
+                    ),
               );
             },
           ),
@@ -421,9 +430,8 @@ class _QueueScreenState extends State<QueueScreen> {
       _clearAnalysisHydration(provider);
       return const SizedBox.shrink();
     }
-    final currentIndex = playbackView.currentIndex
-        ?.clamp(0, queue.length - 1)
-        .toInt();
+    final currentIndex =
+        playbackView.currentIndex?.clamp(0, queue.length - 1).toInt();
     if (currentIndex == null) {
       _clearAnalysisHydration(provider);
       return const Center(child: Text('Start playback to edit the timeline'));
@@ -525,11 +533,11 @@ class _QueueScreenState extends State<QueueScreen> {
       },
       onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
           _showAnalysisCorrectionSheet(
-            context,
-            provider,
-            track,
-            initialFirstDownbeatMs: initialFirstDownbeatMs,
-          ),
+        context,
+        provider,
+        track,
+        initialFirstDownbeatMs: initialFirstDownbeatMs,
+      ),
       onVisibleTracksChanged: (tracks) =>
           _updateVisibleAnalysisHydration(provider, tracks),
     );
@@ -557,9 +565,8 @@ class _QueueScreenState extends State<QueueScreen> {
     final currentCue = cuesByQueueIndex[currentIndex];
     if (currentCue == null) return null;
     final currentSource = _playbackTrackFor(queue[currentIndex], currentCue);
-    final previousCue = currentIndex > 0
-        ? cuesByQueueIndex[currentIndex - 1]
-        : null;
+    final previousCue =
+        currentIndex > 0 ? cuesByQueueIndex[currentIndex - 1] : null;
     final previousSource = previousCue == null
         ? null
         : _playbackTrackFor(queue[currentIndex - 1], previousCue);
@@ -721,9 +728,7 @@ class _QueueScreenState extends State<QueueScreen> {
           return;
         }
         unawaited(
-          playback
-              .refreshTrackAnalysis(trackId, analysis)
-              .whenComplete(
+          playback.refreshTrackAnalysis(trackId, analysis).whenComplete(
                 () => _analysisRefreshesInFlight.remove(refreshKey),
               ),
         );
@@ -842,7 +847,10 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   Widget _buildQueueHeader(BuildContext context, QueueProvider provider) {
+    final colors = Theme.of(context).colorScheme;
     final stackedHeader = _usesStackedQueueHeader(context);
+    final usesMobileHeader = MediaQuery.sizeOf(context).width < 960;
+    final headerForeground = usesMobileHeader ? colors.onPrimary : null;
     final status = Selector<PlaybackState, Duration>(
       selector: (_, playback) => playback.position,
       builder: (context, position, _) =>
@@ -851,6 +859,7 @@ class _QueueScreenState extends State<QueueScreen> {
     final menu = PopupMenuButton<String>(
       key: const ValueKey('queue_header_menu'),
       tooltip: 'Queue actions',
+      iconColor: headerForeground,
       onSelected: (value) => _handleMenuAction(context, value),
       itemBuilder: (context) => [
         const PopupMenuItem(
@@ -863,8 +872,10 @@ class _QueueScreenState extends State<QueueScreen> {
         ),
       ],
     );
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 8, 6),
+    return Container(
+      key: const ValueKey('queue_header'),
+      color: usesMobileHeader ? AppTheme.orange : Colors.transparent,
+      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
       child: stackedHeader
           ? Column(
               children: [
@@ -875,14 +886,21 @@ class _QueueScreenState extends State<QueueScreen> {
                   ],
                 ),
                 const SizedBox(height: 8),
-                _buildViewSwitch(context, expanded: true),
+                _buildViewSwitch(
+                  context,
+                  expanded: true,
+                  foregroundColor: headerForeground,
+                ),
               ],
             )
           : Row(
               children: [
                 Expanded(child: status),
                 const SizedBox(width: 8),
-                _buildViewSwitch(context),
+                _buildViewSwitch(
+                  context,
+                  foregroundColor: headerForeground,
+                ),
                 menu,
               ],
             ),
@@ -945,9 +963,14 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   bool _usesStackedQueueHeader(BuildContext context) =>
+      MediaQuery.sizeOf(context).width < 960 ||
       MediaQuery.textScalerOf(context).scale(1) >= 1.3;
 
-  Widget _buildViewSwitch(BuildContext context, {bool expanded = false}) {
+  Widget _buildViewSwitch(
+    BuildContext context, {
+    bool expanded = false,
+    Color? foregroundColor,
+  }) {
     final textScale = MediaQuery.textScalerOf(context).scale(1);
     final showLabels = textScale < 2.5;
     final showIcons = textScale < 1.3 || !showLabels;
@@ -975,6 +998,11 @@ class _QueueScreenState extends State<QueueScreen> {
         ],
         selected: {_viewMode},
         showSelectedIcon: false,
+        style: foregroundColor == null
+            ? null
+            : ButtonStyle(
+                foregroundColor: WidgetStatePropertyAll(foregroundColor),
+              ),
         onSelectionChanged: (selection) {
           final next = selection.single;
           if (next == _QueueViewMode.list) {
@@ -1040,12 +1068,10 @@ class _QueueScreenState extends State<QueueScreen> {
         .toList(growable: false);
     final renderedCurrentIndex = currentIndex - firstRenderedIndex;
     final currentTrack = tracks[renderedCurrentIndex];
-    final upNext = tracks
-        .skip(renderedCurrentIndex + 1)
-        .toList(growable: false);
-    final previousTrack = renderedCurrentIndex > 0
-        ? tracks[renderedCurrentIndex - 1]
-        : null;
+    final upNext =
+        tracks.skip(renderedCurrentIndex + 1).toList(growable: false);
+    final previousTrack =
+        renderedCurrentIndex > 0 ? tracks[renderedCurrentIndex - 1] : null;
 
     final playback = playbackView.playback;
     return StackedWaveformTimeline(
@@ -1075,11 +1101,11 @@ class _QueueScreenState extends State<QueueScreen> {
       onPitchModeChanged: provider.setPitchMode,
       onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
           _showAnalysisCorrectionSheet(
-            context,
-            provider,
-            track,
-            initialFirstDownbeatMs: initialFirstDownbeatMs,
-          ),
+        context,
+        provider,
+        track,
+        initialFirstDownbeatMs: initialFirstDownbeatMs,
+      ),
       onVisibleTracksChanged: (tracks) =>
           _updateVisibleAnalysisHydration(provider, tracks),
     );
@@ -1093,8 +1119,7 @@ class _QueueScreenState extends State<QueueScreen> {
     required List<Track> sources,
     required Iterable<Track> initialSources,
   }) {
-    final contextChanged =
-        !identical(_hydrationQueueIdentity, queueIdentity) ||
+    final contextChanged = !identical(_hydrationQueueIdentity, queueIdentity) ||
         _hydrationCurrentIndex != currentIndex ||
         _hydrationUsesPlaybackQueue != usesPlaybackQueue;
     if (contextChanged) {
@@ -1197,23 +1222,19 @@ class _QueueScreenState extends State<QueueScreen> {
             ),
             showTrimControls: canEdit,
             trimRange: canEdit ? provider.trimRangeFor(track) : null,
-            waveformPeaks: canEdit
-                ? provider.waveformPeaksFor(track)
-                : const [],
-            onTrimStartChanged: canEdit
-                ? (ms) => provider.setStartOffsetMs(track, ms)
-                : null,
-            onTrimEndChanged: canEdit
-                ? (ms) => provider.setEndOffsetMs(track, ms)
-                : null,
+            waveformPeaks:
+                canEdit ? provider.waveformPeaksFor(track) : const [],
+            onTrimStartChanged:
+                canEdit ? (ms) => provider.setStartOffsetMs(track, ms) : null,
+            onTrimEndChanged:
+                canEdit ? (ms) => provider.setEndOffsetMs(track, ms) : null,
             onPlay:
                 track.queueStatus == TrackQueueStatus.playable && track.canPlay
-                ? () => _playFromQueue(context, provider, track)
-                : null,
+                    ? () => _playFromQueue(context, provider, track)
+                    : null,
             onRetry: track.canRetry ? () => provider.retryTrack(track) : null,
-            onRemove: canEdit
-                ? () => provider.removeFromQueue(absoluteIndex)
-                : null,
+            onRemove:
+                canEdit ? () => provider.removeFromQueue(absoluteIndex) : null,
             onEditAnalysis: _canEditAnalysis(track)
                 ? () => _showAnalysisCorrectionSheet(context, provider, track)
                 : null,
@@ -1297,7 +1318,7 @@ class _QueueScreenState extends State<QueueScreen> {
       child: ReorderableDragStartListener(
         index: index,
         child: SizedBox(
-          width: 44,
+          width: 48,
           height: 48,
           child: Center(
             child: Icon(Icons.drag_handle, color: Colors.grey[500]),
@@ -1388,9 +1409,9 @@ class _QueueScreenState extends State<QueueScreen> {
       final trackId = _analysisTrackId(track);
       if (trackId != null && context.mounted) {
         await context.read<PlaybackState>().refreshTrackAnalysis(
-          trackId,
-          analysis,
-        );
+              trackId,
+              analysis,
+            );
       }
     } catch (_) {
       if (!context.mounted) return;
