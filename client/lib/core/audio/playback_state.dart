@@ -30,6 +30,14 @@ class PlaybackState extends ChangeNotifier {
   /// save/restore a no-op.
   final QueuePersistenceStore? _persistence;
 
+  /// A configured store must be restored before seeded queue-stream emissions
+  /// are allowed to write. Otherwise a fresh controller can erase the durable
+  /// snapshot before [restore] reads it.
+  bool _persistenceReady;
+  bool _persistenceDirty = false;
+  bool _receivedInitialQueueEmission = false;
+  bool _receivedInitialIndexEmission = false;
+
   List<StreamSubscription> _subscriptions = [];
 
   bool _isPlaying = false;
@@ -164,6 +172,7 @@ class PlaybackState extends ChangeNotifier {
   })  : _queueController = QueueTimelineController(engine),
         _signedAudioUrlService = signedAudioUrlService,
         _persistence = persistence,
+        _persistenceReady = persistence == null,
         _sourceResolver = PlaybackSourceResolver(
           signedAudioUrlService: signedAudioUrlService,
           localResolver: localResolver,
@@ -195,11 +204,15 @@ class PlaybackState extends ChangeNotifier {
         notifyListeners();
       }),
       _queueController.queueStream.listen((q) {
-        _persistQueue();
+        final isStartupSeed = !_receivedInitialQueueEmission;
+        _receivedInitialQueueEmission = true;
+        _persistQueue(isStartupSeed: isStartupSeed);
         notifyListeners();
       }),
       _queueController.currentIndexStream.listen((index) {
-        _persistQueue();
+        final isStartupSeed = !_receivedInitialIndexEmission;
+        _receivedInitialIndexEmission = true;
+        _persistQueue(isStartupSeed: isStartupSeed);
         notifyListeners();
       }),
       _queueController.shuffleEnabledStream.listen((enabled) {
@@ -577,12 +590,14 @@ class PlaybackState extends ChangeNotifier {
     final store = _persistence;
     if (store == null) return;
 
-    final snapshot = await store.load();
-    if (snapshot.isEmpty) return;
-
     try {
+      final snapshot = await store.load();
+      if (snapshot.isEmpty) return;
       final items = await _sourceResolver.resolveQueue(snapshot.tracks);
       if (items.isEmpty) return;
+      // A queue change made while loading/resolving is newer than the durable
+      // startup snapshot. Leave it authoritative and replay it in [finally].
+      if (_persistenceDirty) return;
       final index = snapshot.currentIndex.clamp(0, items.length - 1);
       await _queueController.setQueue(
         items,
@@ -601,15 +616,28 @@ class PlaybackState extends ChangeNotifier {
       if (kDebugMode) {
         debugPrint('Queue restore failed: $error');
       }
+    } finally {
+      // The load/restore decision is complete, including empty and failure
+      // paths. Future queue changes may now persist, including an empty queue
+      // that deliberately clears stale storage.
+      _persistenceReady = true;
+      if (_persistenceDirty) {
+        _persistenceDirty = false;
+        _persistQueue();
+      }
     }
   }
 
   /// Fire-and-forget persistence of the current queue/index/position. A no-op
   /// when no store is configured or when nothing is queued (which clears any
   /// stale saved state).
-  void _persistQueue() {
+  void _persistQueue({bool isStartupSeed = false}) {
     final store = _persistence;
     if (store == null) return;
+    if (!_persistenceReady) {
+      if (!isStartupSeed) _persistenceDirty = true;
+      return;
+    }
 
     final currentQueue = queue;
     final snapshot = currentQueue.isEmpty
