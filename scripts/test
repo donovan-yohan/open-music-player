@@ -55,6 +55,7 @@ run_extension() {
     fi
     npm run type-check
     npm run test:auth-refresh
+    npm run test:brand-assets
   )
 }
 

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Sound Q boxed stamp mark</title>
+  <desc id="desc">Flat safety-orange on black boxed mark. Three offset strokes suggest S; the right glyph and diagonal tail suggest Q.</desc>
+  <style>
+    .ink { fill: #050505; }
+    .orange { fill: #ff5a00; }
+    .orange-stroke { stroke: #ff5a00; stroke-width: 34; fill: none; }
+  </style>
+  <rect class="ink" width="1024" height="1024" />
+  <rect x="64" y="64" width="896" height="896" rx="92" class="orange-stroke" />
+  <rect x="154" y="168" width="444" height="78" rx="24" class="orange" />
+  <rect x="112" y="302" width="390" height="78" rx="24" class="orange" />
+  <rect x="160" y="436" width="444" height="78" rx="24" class="orange" />
+  <path class="orange" fill-rule="evenodd" d="M552 352h192c101 0 182 82 182 182v178h-96V534c0-48-39-86-86-86H552v-96Zm0 150h146c53 0 96 43 96 96v28c0 53-43 96-96 96H552V502Zm92 86v48h50c13 0 24-11 24-24s-11-24-24-24h-50Z" />
+  <path class="orange" d="M690 676 874 856H742L594 714l96-38Z" />
+  <path class="ink" d="M688 716 785 856h-60L624 738l64-22Z" />
+  <path class="orange" d="M176 620h122c0 71 56 126 130 126h76v96h-76c-129 0-252-87-252-222Z" />
+</svg>
