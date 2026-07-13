@@ -623,7 +623,7 @@ func (p *YTDLPProvider) Name() string { return p.name }
 
 func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]Candidate, error) {
 	if _, err := exec.LookPath("yt-dlp"); err != nil {
-		return nil, &providerFailure{code: ErrProviderDisabled, status: ProviderStatusDisabled, err: fmt.Errorf("yt-dlp is not installed for provider %s", p.name)}
+		return nil, &providerFailure{code: ErrProviderDisabled, status: ProviderStatusDisabled, err: fmt.Errorf("yt-dlp is not installed for provider %s: %w", p.name, err)}
 	}
 	cmd := exec.CommandContext(ctx, "yt-dlp", p.commandArgs(query, limit)...)
 	out, err := cmd.Output()
