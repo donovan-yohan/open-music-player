@@ -29,6 +29,6 @@ Do not introduce glow, gradients, large ivory panels, dense sci-fi microtext, or
 
 ## Logo Assets
 
-`client/assets/brand/soundq-logo.svg` is the canonical Sound Q mark. It is a flat safety-orange (`#FF5A00`) stamp on ink black (`#050505`), with no gradients, glows, shadows, or bevels. The 16px extension icon uses the simplified `soundq-logo-micro.svg`; maskable web icons place the complete canonical mark inside the W3C centered 80%-diameter safe circle.
+`client/assets/brand/soundq-logo.png` is the canonical historical striped-Q mark, rendered in orange and black with cream and teal. It is generated cross-platform by `scripts/generate_soundq_brand_assets.py`; maskable web icons place the complete canonical mark inside the W3C centered 80%-diameter safe circle.
 
 `scripts/generate_soundq_brand_assets.py` derives the Flutter, web, Android, and extension PNGs and records their source, generator, dimension, and file hashes in `soundq-brand-assets.json`. Generation is pinned to Debian 12 FFmpeg `5.1.9-0+deb12u1` built with librsvg. The `--check` path uses only Python's standard library, invokes no renderer, and is enforced by `scripts/lint delivery`.

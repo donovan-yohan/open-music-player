@@ -23,6 +23,7 @@ void main() {
     for (final path in [
       'lib/features/auth/screens/login_screen.dart',
       'lib/features/splash/splash_screen.dart',
+      'lib/app/router.dart',
     ]) {
       final source = File(path).readAsStringSync();
       expect(source, contains(_logoAsset));

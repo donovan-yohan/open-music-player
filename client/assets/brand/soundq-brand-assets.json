@@ -1,127 +1,120 @@
 {
   "generator": {
     "path": "scripts/generate_soundq_brand_assets.py",
-    "revision": "soundq-brand-assets-v3",
-    "sha256": "fb41e94968464e49665e9b02b1c5f19c7414b85edf7cb2ca53d8b990cabf7093"
+    "revision": "soundq-brand-assets-v4",
+    "sha256": "51a364723a0025891c3cf3875bcab5171b2f11b4db883afb3fd939f0c091da9e"
   },
   "outputs": {
     "client/android/app/src/main/res/mipmap-hdpi/ic_launcher.png": {
       "height": 72,
       "render": "canonical",
-      "sha256": "e65cd1ca021423722e332ba47a89b46bedde57f0aea98cc2781e89d3aa194a4a",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "e7d23bf6058678fd655b4412936ec911baad648727543956fa1eb8ec296369d6",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 72
     },
     "client/android/app/src/main/res/mipmap-mdpi/ic_launcher.png": {
       "height": 48,
       "render": "canonical",
-      "sha256": "891b683b0ab2dddfbaecd28b8e7b1492a03a7e13e0d29f99815b26470f2b47d8",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "d88b5962b43c229c0d10fb988e27970a3f6c3a46786f81d3979d0cfd94838c9c",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 48
     },
     "client/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png": {
       "height": 96,
       "render": "canonical",
-      "sha256": "f5e81b8b8cdf5a05eebfda7a36b3fc5681f9702d7dec338532bd3585f68d77f7",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "f72cb6e13212ed8eae6ff3e67c441b2da443436a636aee966a7ced4db6efc19d",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 96
     },
     "client/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png": {
       "height": 144,
       "render": "canonical",
-      "sha256": "29a355d4345167486a2c5ffd11c329986221d5f0255dedd167f7ddcd7722ea26",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "6ed1bc0606300cd1d8941ca2e35ad95a23584cb7ddf48756d84a0dd564b779d0",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 144
     },
     "client/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png": {
       "height": 192,
       "render": "canonical",
-      "sha256": "3d759562b561694ab82917fbb9a0a545b8380df32757a15d9b1529916e6f1bbe",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "be86ecd1828f1bf9aeeed23614716a6af52c4c10d70a3ff4a941f90fe267f878",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 192
-    },
-    "client/assets/brand/soundq-logo.png": {
-      "height": 1024,
-      "render": "canonical",
-      "sha256": "c32cfd6f2bb537a6498d63486574492e81b7e620b0454df5493449f545b06513",
-      "source": "client/assets/brand/soundq-logo.svg",
-      "width": 1024
     },
     "client/web/favicon.png": {
       "height": 32,
       "render": "canonical",
-      "sha256": "6502be20af37c8651e787d5199df635657261a6e1f581df5f04842b8d01dc3b8",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "e69097400686e8c6523481e4112a833e6935fab9b7fd8ee71f96f52379443fcc",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 32
     },
     "client/web/icons/Icon-192.png": {
       "height": 192,
       "render": "canonical",
-      "sha256": "3d759562b561694ab82917fbb9a0a545b8380df32757a15d9b1529916e6f1bbe",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "be86ecd1828f1bf9aeeed23614716a6af52c4c10d70a3ff4a941f90fe267f878",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 192
     },
     "client/web/icons/Icon-512.png": {
       "height": 512,
       "render": "canonical",
-      "sha256": "881a493de1fe1dea9fe9a10462ef672e96b1dd0f3aad9ad9991d630489905271",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "49dd0524d230ba1e5097583ba813df13c6be56d557bfaecaf9602c7aed5459cb",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 512
     },
     "client/web/icons/Icon-maskable-192.png": {
       "height": 192,
       "render": "maskable-safe-zone",
-      "sha256": "1cd3008935c07df677928bd7e2e24188aa8198f1cc5ae153204c33ccb5d8fec5",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "cb8ff3eb1591ba245c64a7579f3a901f0a658f3562e79dccbe14ad57946fffdd",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 192
     },
     "client/web/icons/Icon-maskable-512.png": {
       "height": 512,
       "render": "maskable-safe-zone",
-      "sha256": "14c6563970a476dacd5e58b2c6e292580eb230e8fbcb9a0fb72cf189b8a37588",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "3b0221032b8627acb123918c7f85f7bc83c25b38e51bffc9d08cc96dc9c40916",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 512
     },
     "extension/assets/icon-128.png": {
       "height": 128,
       "render": "canonical",
-      "sha256": "e5ffe7b6b73a9bd0cdce29ae3d0799f2c02775dbb7a8ac6c889e8aaf63c12e09",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "7d26a15373dc0a4ee68378d340b97bffde2141539ad62154e1e25ad8d17fccb7",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 128
     },
     "extension/assets/icon-16.png": {
       "height": 16,
-      "render": "micro",
-      "sha256": "a09838ceb698271b7cdb50aa698ebcb6f2334ed4a5134c15d82a74cf7d16c66a",
-      "source": "client/assets/brand/soundq-logo-micro.svg",
+      "render": "canonical",
+      "sha256": "c4da1d1f918b22dd706214de0581fe73a3fa33fb2e5d1c0d5c1678eb6b982f1d",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 16
     },
     "extension/assets/icon-48.png": {
       "height": 48,
       "render": "canonical",
-      "sha256": "891b683b0ab2dddfbaecd28b8e7b1492a03a7e13e0d29f99815b26470f2b47d8",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "d88b5962b43c229c0d10fb988e27970a3f6c3a46786f81d3979d0cfd94838c9c",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 48
     },
     "extension/icons/icon128.png": {
       "height": 128,
       "render": "canonical",
-      "sha256": "e5ffe7b6b73a9bd0cdce29ae3d0799f2c02775dbb7a8ac6c889e8aaf63c12e09",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "7d26a15373dc0a4ee68378d340b97bffde2141539ad62154e1e25ad8d17fccb7",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 128
     },
     "extension/icons/icon16.png": {
       "height": 16,
-      "render": "micro",
-      "sha256": "a09838ceb698271b7cdb50aa698ebcb6f2334ed4a5134c15d82a74cf7d16c66a",
-      "source": "client/assets/brand/soundq-logo-micro.svg",
+      "render": "canonical",
+      "sha256": "c4da1d1f918b22dd706214de0581fe73a3fa33fb2e5d1c0d5c1678eb6b982f1d",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 16
     },
     "extension/icons/icon48.png": {
       "height": 48,
       "render": "canonical",
-      "sha256": "891b683b0ab2dddfbaecd28b8e7b1492a03a7e13e0d29f99815b26470f2b47d8",
-      "source": "client/assets/brand/soundq-logo.svg",
+      "sha256": "d88b5962b43c229c0d10fb988e27970a3f6c3a46786f81d3979d0cfd94838c9c",
+      "source": "client/assets/brand/soundq-logo.png",
       "width": 48
     }
   },
@@ -131,7 +124,6 @@
   },
   "schema_version": 1,
   "sources": {
-    "client/assets/brand/soundq-logo-micro.svg": "1748a96de7421754ac80237a63dae511db86d7475c40687757fde642eb239c2c",
-    "client/assets/brand/soundq-logo.svg": "c70fde3579e3104ee6a5a2c6c5a0d5eeb48126d0d636d13b37b7400de0a7e713"
+    "client/assets/brand/soundq-logo.png": "8b8ec5737c39efab15cc513772ee83360bda623c7aaf02aaa0cb4bc0c4e589f8"
   }
 }
