@@ -135,6 +135,11 @@ GoRouter createRouter(AuthState authState) {
                 const NoTransitionPage(child: QueueScreen()),
           ),
           GoRoute(
+            path: '/queue/imports',
+            pageBuilder: (context, state) =>
+                const NoTransitionPage(child: QueueScreen(showImportJobs: true)),
+          ),
+          GoRoute(
             path: '/settings',
             pageBuilder: (context, state) =>
                 const NoTransitionPage(child: SettingsScreen()),

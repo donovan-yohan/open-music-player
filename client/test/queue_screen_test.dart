@@ -38,6 +38,7 @@ void main() {
     WidgetTester tester, {
     QueueProvider? queueProvider,
     TextScaler? textScaler,
+    bool showImportJobs = false,
   }) async {
     await tester.pumpWidget(
       MultiProvider(
@@ -56,7 +57,9 @@ void main() {
                         MediaQuery.of(context).copyWith(textScaler: textScaler),
                     child: child!,
                   ),
-          home: const QueueScreen(),
+          home: QueueScreen(
+            showImportJobs: showImportJobs,
+          ),
         ),
       ),
     );
@@ -196,6 +199,53 @@ void main() {
     expect(playbackState.skipToIndexCalls, [2]);
   });
 
+  testWidgets('keeps playback and import queues separate when both have items', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [_mediaItem(99, 'Live playback only', seconds: 120)]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester, showImportJobs: false);
+
+    expect(find.text('Playback Queue'), findsOneWidget);
+    expect(find.text('Live playback only'), findsOneWidget);
+    expect(
+      find.byKey(const PageStorageKey('playback_queue_list_view')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const PageStorageKey('queue_list_view')), findsNothing);
+
+    await pumpQueueScreen(tester, showImportJobs: true);
+
+    expect(find.byKey(const PageStorageKey('queue_list_view')), findsOneWidget);
+    expect(find.text('Current Song'), findsOneWidget);
+    expect(find.text('Live playback only'), findsNothing);
+    expect(find.text('Playback Queue'), findsNothing);
+  });
+
+  testWidgets(
+    'bare QueueScreen hides nonempty imports when playback is empty',
+    (tester) async {
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<QueueProvider>(
+              create: (_) => QueueProvider(apiClient),
+            ),
+            ListenableProvider<PlaybackState>.value(value: playbackState),
+          ],
+          child: const MaterialApp(home: QueueScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Your playback queue is empty'), findsOneWidget);
+      expect(find.text('Current Song'), findsNothing);
+      expect(find.byKey(const PageStorageKey('queue_list_view')), findsNothing);
+    },
+  );
+
   testWidgets('mobile playback queue header text contrasts with orange', (
     tester,
   ) async {
@@ -231,7 +281,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
 
     final header = tester.widget<Container>(
       find.byKey(const ValueKey('queue_header')),
@@ -352,7 +402,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
 
     expect(find.byKey(const ValueKey('queue_view_switch')), findsOneWidget);
     expect(find.text('List'), findsOneWidget);
@@ -417,7 +467,7 @@ void main() {
   ) async {
     apiClient.useCompactAnalysisFixture();
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
 
@@ -433,7 +483,7 @@ void main() {
   ) async {
     apiClient.useCompactAnalysisFixture(currentIndex: -1);
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
 
@@ -446,7 +496,7 @@ void main() {
   ) async {
     apiClient.useCompactAnalysisFixture(currentIndex: 2, trackCount: 10);
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
 
@@ -507,7 +557,11 @@ void main() {
     apiClient.useCompactAnalysisFixture(currentIndex: 1, trackCount: 30);
     final provider = _TrackingQueueProvider(apiClient);
 
-    await pumpQueueScreen(tester, queueProvider: provider);
+    await pumpQueueScreen(
+      tester,
+      queueProvider: provider,
+      showImportJobs: true,
+    );
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
     final interestCount = provider.distinctInterestSignatures.length;
@@ -531,7 +585,7 @@ void main() {
       ..useCompactAnalysisFixture(currentIndex: 2, trackCount: 20)
       ..holdAnalysisRequests = true;
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
     await tester.tap(find.text('Timeline'));
     await tester.pump(const Duration(milliseconds: 150));
     expect(apiClient.analysisRequests, contains(202));
@@ -573,7 +627,7 @@ void main() {
             ChangeNotifierProvider<QueueProvider>.value(value: provider),
             ListenableProvider<PlaybackState>.value(value: playbackState),
           ],
-          child: const MaterialApp(home: QueueScreen()),
+          child: const MaterialApp(home: QueueScreen(showImportJobs: true)),
         );
 
     await tester.pumpWidget(host(first));
@@ -596,7 +650,11 @@ void main() {
     apiClient.useCompactAnalysisFixture(trackCount: 100);
     final provider = _CountingQueueProvider(apiClient);
 
-    await pumpQueueScreen(tester, queueProvider: provider);
+    await pumpQueueScreen(
+      tester,
+      queueProvider: provider,
+      showImportJobs: true,
+    );
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
 
@@ -612,7 +670,7 @@ void main() {
     (tester) async {
       playbackState.fakePosition = const Duration(seconds: 30);
 
-      await pumpQueueScreen(tester);
+      await pumpQueueScreen(tester, showImportJobs: true);
 
       expect(find.text('3 tracks · 10:11 remaining'), findsOneWidget);
     },
@@ -623,7 +681,7 @@ void main() {
     (tester) async {
       playbackState.fakePosition = const Duration(seconds: 45);
 
-      await pumpQueueScreen(tester);
+      await pumpQueueScreen(tester, showImportJobs: true);
       final provider =
           tester.element(find.byType(QueueScreen)).read<QueueProvider>();
       final currentTrack = provider.currentTrack!;
@@ -644,7 +702,7 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       apiClient.useStatusFixture();
 
-      await pumpQueueScreen(tester);
+      await pumpQueueScreen(tester, showImportJobs: true);
 
       expect(find.text('Pending'), findsOneWidget);
       expect(find.text('Downloading'), findsOneWidget);
@@ -664,7 +722,7 @@ void main() {
       addTearDown(tester.view.resetDevicePixelRatio);
       apiClient.useAnalysisFixture();
 
-      await pumpQueueScreen(tester);
+      await pumpQueueScreen(tester, showImportJobs: true);
 
       expect(find.text('124 BPM'), findsOneWidget);
       expect(find.text('8A'), findsOneWidget);
@@ -693,7 +751,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     apiClient.useAnalysisFixture();
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
     await tester.tap(find.byKey(const ValueKey('analysis_edit_t1')));
     await tester.pumpAndSettle();
 
@@ -873,7 +931,7 @@ void main() {
       apiClient.useAnalysisFixture();
       playbackState.fakeTimelinePositionMs = 16000;
 
-      await pumpQueueScreen(tester);
+      await pumpQueueScreen(tester, showImportJobs: true);
       await tester.tap(find.text('Timeline'));
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -977,7 +1035,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     apiClient.useStatusFixture();
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
     await tester.tap(find.byKey(const ValueKey('queue_play_t5')));
     await tester.pumpAndSettle();
 
@@ -1000,7 +1058,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     apiClient.useStatusFixture();
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
     await tester.tap(find.byKey(const ValueKey('queue_retry_t3')));
     await tester.pumpAndSettle();
 
@@ -1015,7 +1073,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
 
     String trimLabel() =>
         tester.widget<Text>(find.byKey(const ValueKey('trim_label_t2'))).data!;
@@ -1046,7 +1104,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
 
     final provider =
         tester.element(find.byType(QueueScreen)).read<QueueProvider>();
@@ -1068,7 +1126,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
 
     await tester.drag(
       find.byKey(const ValueKey('remove_queue_t2')),
@@ -1083,7 +1141,7 @@ void main() {
   testWidgets(
     'timeline move buttons reorder upcoming tracks after switching modes',
     (tester) async {
-      await pumpQueueScreen(tester);
+      await pumpQueueScreen(tester, showImportJobs: true);
 
       await tester.tap(find.text('Timeline'));
       await tester.pumpAndSettle();
@@ -1102,7 +1160,7 @@ void main() {
     tester,
   ) async {
     apiClient.useMixTimingFixture();
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
 
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
@@ -1126,7 +1184,7 @@ void main() {
   testWidgets('timeline drag uses scrub lifecycle instead of direct seek', (
     tester,
   ) async {
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
 
     await tester.tap(find.text('Timeline'));
     await tester.pumpAndSettle();
@@ -1199,7 +1257,7 @@ void main() {
   testWidgets(
     'server queue gives every row an immediate literal drag handle without whole-row handles',
     (tester) async {
-      await pumpQueueScreen(tester);
+      await pumpQueueScreen(tester, showImportJobs: true);
 
       final list = tester.widget<ReorderableListView>(
         find.byKey(const PageStorageKey('queue_list_view')),
@@ -1776,7 +1834,7 @@ void main() {
   ) async {
     apiClient.moveBeforePlaybackStarts();
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
 
     expect(find.text('Current'), findsNothing);
     expect(find.text('Queue'), findsNothing);
@@ -1793,7 +1851,7 @@ void main() {
   testWidgets('renders empty state', (tester) async {
     apiClient.useEmptyQueue();
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
 
     expect(find.text('Your queue is empty'), findsOneWidget);
     expect(find.byKey(const ValueKey('queue_view_switch')), findsNothing);
@@ -1802,7 +1860,7 @@ void main() {
   testWidgets('renders error state with retry action', (tester) async {
     apiClient.failLoads = true;
 
-    await pumpQueueScreen(tester);
+    await pumpQueueScreen(tester, showImportJobs: true);
 
     expect(find.text('Error loading queue'), findsOneWidget);
     expect(find.textContaining('boom'), findsOneWidget);
@@ -1822,7 +1880,7 @@ void main() {
           ),
           ListenableProvider<PlaybackState>.value(value: playbackState),
         ],
-        child: const MaterialApp(home: QueueScreen()),
+        child: const MaterialApp(home: QueueScreen(showImportJobs: true)),
       ),
     );
     await tester.pump();
