@@ -219,11 +219,17 @@ def assert_maskable_geometry(path: Path, size: int) -> None:
 
 def assert_striped_q_acceptance(path: Path) -> None:
     _, _, pixels = png_pixels(path)
-    cream = sum(is_cream(pixel) for row in pixels for pixel in row)
-    teal = sum(is_teal(pixel) for row in pixels for pixel in row)
-    if not cream:
+    found_cream = False
+    found_teal = False
+    for row in pixels:
+        for pixel in row:
+            found_cream = found_cream or is_cream(pixel)
+            found_teal = found_teal or is_teal(pixel)
+            if found_cream and found_teal:
+                return
+    if not found_cream:
         raise BrandAssetError(f'{path.relative_to(ROOT)}: striped Q mark has no cream left glyph')
-    if not teal:
+    if not found_teal:
         raise BrandAssetError(f'{path.relative_to(ROOT)}: striped Q mark has no teal center')
 
 

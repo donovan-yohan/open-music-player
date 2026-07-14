@@ -2,7 +2,7 @@
   "generator": {
     "path": "scripts/generate_soundq_brand_assets.py",
     "revision": "soundq-brand-assets-v4",
-    "sha256": "51a364723a0025891c3cf3875bcab5171b2f11b4db883afb3fd939f0c091da9e"
+    "sha256": "be60cd75f0321b98874f584ef2a02bdd29e406e9aadebd99c5a73cd4e63e0f0b"
   },
   "outputs": {
     "client/android/app/src/main/res/mipmap-hdpi/ic_launcher.png": {
