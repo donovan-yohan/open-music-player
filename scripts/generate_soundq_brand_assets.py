@@ -14,10 +14,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = Path(__file__).resolve()
 MANIFEST_PATH = ROOT / 'client/assets/brand/soundq-brand-assets.json'
-CANONICAL_SOURCE = 'client/assets/brand/soundq-logo.svg'
-MICRO_SOURCE = 'client/assets/brand/soundq-logo-micro.svg'
+CANONICAL_SOURCE = 'client/assets/brand/soundq-logo.png'
+RESTORED_CANONICAL_SOURCE_SHA256 = '8b8ec5737c39efab15cc513772ee83360bda623c7aaf02aaa0cb4bc0c4e589f8'
 GENERATOR_PATH = 'scripts/generate_soundq_brand_assets.py'
-GENERATOR_REVISION = 'soundq-brand-assets-v3'
+GENERATOR_REVISION = 'soundq-brand-assets-v4'
 EXPECTED_FFMPEG_VERSION = 'ffmpeg version 5.1.9-0+deb12u1'
 MASKABLE_SAFE_SCALE_NUMERATOR = 9
 MASKABLE_SAFE_SCALE_DENOMINATOR = 16
@@ -27,7 +27,6 @@ RENDERER_METADATA = {
 }
 
 TARGETS = {
-    'client/assets/brand/soundq-logo.png': (1024, CANONICAL_SOURCE, 'canonical'),
     'client/web/favicon.png': (32, CANONICAL_SOURCE, 'canonical'),
     'client/web/icons/Icon-192.png': (192, CANONICAL_SOURCE, 'canonical'),
     'client/web/icons/Icon-512.png': (512, CANONICAL_SOURCE, 'canonical'),
@@ -38,10 +37,10 @@ TARGETS = {
     'client/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png': (96, CANONICAL_SOURCE, 'canonical'),
     'client/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png': (144, CANONICAL_SOURCE, 'canonical'),
     'client/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png': (192, CANONICAL_SOURCE, 'canonical'),
-    'extension/assets/icon-16.png': (16, MICRO_SOURCE, 'micro'),
+    'extension/assets/icon-16.png': (16, CANONICAL_SOURCE, 'canonical'),
     'extension/assets/icon-48.png': (48, CANONICAL_SOURCE, 'canonical'),
     'extension/assets/icon-128.png': (128, CANONICAL_SOURCE, 'canonical'),
-    'extension/icons/icon16.png': (16, MICRO_SOURCE, 'micro'),
+    'extension/icons/icon16.png': (16, CANONICAL_SOURCE, 'canonical'),
     'extension/icons/icon48.png': (48, CANONICAL_SOURCE, 'canonical'),
     'extension/icons/icon128.png': (128, CANONICAL_SOURCE, 'canonical'),
 }
@@ -76,16 +75,6 @@ def parse_args() -> argparse.Namespace:
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def validate_svg_source(relative: str) -> None:
-    text = (ROOT / relative).read_text(encoding='utf-8').lower()
-    for token in ('#050505', '#ff5a00'):
-        if token not in text:
-            raise BrandAssetError(f'{relative}: missing flat palette color {token}')
-    for token in ('lineargradient', 'radialgradient', '<filter', 'fegaussianblur'):
-        if token in text:
-            raise BrandAssetError(f'{relative}: prohibited effect {token}')
 
 
 def png_chunks(path: Path) -> tuple[dict[str, int], bytes]:
@@ -180,6 +169,28 @@ def is_orange(pixel: tuple[int, int, int, int]) -> bool:
     return alpha >= 192 and red >= 180 and 30 <= green <= 150 and blue <= 48
 
 
+def is_cream(pixel: tuple[int, int, int, int]) -> bool:
+    red, green, blue, alpha = pixel
+    return alpha >= 192 and red >= 220 and green >= 215 and blue >= 190
+
+
+def is_teal(pixel: tuple[int, int, int, int]) -> bool:
+    red, green, blue, alpha = pixel
+    return alpha >= 192 and 20 <= red <= 100 and 110 <= green <= 190 and 100 <= blue <= 185
+
+
+def validate_canonical_source() -> None:
+    path = ROOT / CANONICAL_SOURCE
+    if digest(path) != RESTORED_CANONICAL_SOURCE_SHA256:
+        raise BrandAssetError(
+            f'{CANONICAL_SOURCE}: must match the restored b0eca3d striped-Q source asset'
+        )
+    header, _ = png_chunks(path)
+    if (header['width'], header['height']) != (1024, 1024):
+        raise BrandAssetError(f'{CANONICAL_SOURCE}: expected 1024x1024 source dimensions')
+    assert_striped_q_acceptance(path)
+
+
 def assert_maskable_geometry(path: Path, size: int) -> None:
     safe_side = size * MASKABLE_SAFE_SCALE_NUMERATOR // MASKABLE_SAFE_SCALE_DENOMINATOR
     if safe_side * MASKABLE_SAFE_SCALE_DENOMINATOR != size * MASKABLE_SAFE_SCALE_NUMERATOR:
@@ -206,29 +217,25 @@ def assert_maskable_geometry(path: Path, size: int) -> None:
         raise BrandAssetError(f'{path.relative_to(ROOT)}: maskable dimensions changed')
 
 
-def assert_micro_acceptance(path: Path) -> None:
-    width, height, pixels = png_pixels(path)
-    if (width, height) != (16, 16):
-        raise BrandAssetError(f'{path.relative_to(ROOT)}: micro icon must be 16x16')
-    orange = {(x, y) for y, row in enumerate(pixels) for x, pixel in enumerate(row) if is_orange(pixel)}
-    required_orange = {
-        (1, 1), (14, 1), (1, 14), (14, 14),
-        (4, 3), (3, 6), (4, 9),
-        (8, 5), (12, 7), (8, 11), (12, 11), (12, 12),
-    }
-    missing = sorted(required_orange - orange)
-    if missing:
-        raise BrandAssetError(f'{path.relative_to(ROOT)}: micro silhouette lost anchors {missing}')
-    if is_orange(pixels[8][10]):
-        raise BrandAssetError(f'{path.relative_to(ROOT)}: micro Q counter closed')
-    if len(orange) < 70:
-        raise BrandAssetError(f'{path.relative_to(ROOT)}: micro mark is too sparse')
+def assert_striped_q_acceptance(path: Path) -> None:
+    _, _, pixels = png_pixels(path)
+    found_cream = False
+    found_teal = False
+    for row in pixels:
+        for pixel in row:
+            found_cream = found_cream or is_cream(pixel)
+            found_teal = found_teal or is_teal(pixel)
+            if found_cream and found_teal:
+                return
+    if not found_cream:
+        raise BrandAssetError(f'{path.relative_to(ROOT)}: striped Q mark has no cream left glyph')
+    if not found_teal:
+        raise BrandAssetError(f'{path.relative_to(ROOT)}: striped Q mark has no teal center')
 
 
 def expected_sources() -> dict[str, str]:
     return {
         CANONICAL_SOURCE: digest(ROOT / CANONICAL_SOURCE),
-        MICRO_SOURCE: digest(ROOT / MICRO_SOURCE),
     }
 
 
@@ -236,6 +243,7 @@ def expected_inventory() -> set[str]:
     found = set()
     for directory, pattern in GENERATED_SCOPES.items():
         found.update(path.relative_to(ROOT).as_posix() for path in (ROOT / directory).glob(pattern))
+    found.discard(CANONICAL_SOURCE)
     return found
 
 
@@ -360,7 +368,6 @@ def check_manifest() -> None:
         if digest(regular) == digest(maskable):
             raise BrandAssetError(f'{maskable.relative_to(ROOT)}: must differ from regular icon')
         assert_maskable_geometry(maskable, size)
-    assert_micro_acceptance(ROOT / 'extension/assets/icon-16.png')
     if digest(ROOT / 'extension/assets/icon-16.png') != digest(ROOT / 'extension/icons/icon16.png'):
         raise BrandAssetError('16px extension micro outputs differ')
 
@@ -368,8 +375,7 @@ def check_manifest() -> None:
 def main() -> None:
     args = parse_args()
     try:
-        validate_svg_source(CANONICAL_SOURCE)
-        validate_svg_source(MICRO_SOURCE)
+        validate_canonical_source()
         if args.check:
             check_manifest()
             print(f'validated {len(TARGETS)} generated Sound Q brand assets without a renderer')

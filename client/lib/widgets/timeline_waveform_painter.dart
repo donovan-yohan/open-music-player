@@ -615,9 +615,9 @@ int _localSourcePositionForTimelineFraction(
 
 /// Paints a compact, transient-preserving waveform for a single timeline clip.
 ///
-/// Rich analysis controls waveform geometry while the lane supplies its single
-/// semantic color. Beat, downbeat, transient, and silence metadata sit on top
-/// of the waveform
+/// Rich analysis controls waveform geometry and per-frame EQ color, while raw
+/// peaks retain the lane color fallback. Beat, downbeat, transient, and
+/// silence metadata sit on top of the waveform
 /// and are density-thinned so dense zoom levels stay readable.
 class TimelineWaveformPainter extends CustomPainter {
   final List<double> peaks;
@@ -670,6 +670,7 @@ class TimelineWaveformPainter extends CustomPainter {
     final cacheByteSizeBeforePaint = paintCache.estimatedByteSize;
     paintCache._paintCount++;
     final richWaveform = waveform;
+    final hasRichFrames = richWaveform?.frames.isNotEmpty ?? false;
     final frameCount = paintCache._prepareFrameGeometry(
       peaks: peaks,
       waveform: richWaveform,
@@ -756,7 +757,8 @@ class TimelineWaveformPainter extends CustomPainter {
       );
       final peakHeight = (peak.clamp(0.0, 1.0).toDouble()) * (size.height - 2);
       if (peakHeight <= 0) continue;
-      corePaint.color = _withAlpha(inTrim ? color : dimColor, alpha);
+      final frameColor = hasRichFrames ? frame.coreColor : color;
+      corePaint.color = _withAlpha(inTrim ? frameColor : dimColor, alpha);
       canvas.drawLine(
         Offset(cx, midY - peakHeight / 2),
         Offset(cx, midY + peakHeight / 2),
@@ -801,7 +803,7 @@ class TimelineWaveformPainter extends CustomPainter {
       old.viewportPixelsPerMs != viewportPixelsPerMs ||
       old.visibleStartFraction != visibleStartFraction ||
       old.visibleEndFraction != visibleEndFraction ||
-      old.color != color ||
+      ((waveform?.frames.isEmpty ?? true) && old.color != color) ||
       old.dimColor != dimColor ||
       old.handleColor != handleColor ||
       old.snapMarkerColor != snapMarkerColor ||

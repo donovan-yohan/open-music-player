@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -21,6 +22,7 @@ TimelineWaveformPainter _painter(
   double visibleStartFraction = 0,
   double visibleEndFraction = 1,
   TimelineWaveformPaintCache? paintCache,
+  Color color = const Color(0xFF2E7D32),
 }) =>
     TimelineWaveformPainter(
       peaks: peaks,
@@ -32,7 +34,7 @@ TimelineWaveformPainter _painter(
       viewportOriginMs: viewportOriginMs,
       visibleStartFraction: visibleStartFraction,
       visibleEndFraction: visibleEndFraction,
-      color: const Color(0xFF2E7D32),
+      color: color,
       dimColor: const Color(0xFF90A4AE),
       handleColor: const Color(0xFFFFFFFF),
       snapMarkerCount: snapMarkerCount,
@@ -44,6 +46,37 @@ void _paint(TimelineWaveformPainter painter, Size size) {
   painter.paint(canvas, size);
   recorder.endRecording().dispose();
 }
+
+Future<ByteData> _rasterizePainter(
+  TimelineWaveformPainter painter,
+  Size size,
+) async {
+  final recorder = PictureRecorder();
+  final canvas = Canvas(recorder);
+  painter.paint(canvas, size);
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(size.width.round(), size.height.round());
+  picture.dispose();
+  final pixels = await image.toByteData(format: ImageByteFormat.rawRgba);
+  image.dispose();
+  return pixels!;
+}
+
+Color _pixelAt(ByteData pixels, int width, int x, int y) {
+  final offset = (y * width + x) * 4;
+  return Color.fromARGB(
+    pixels.getUint8(offset + 3),
+    pixels.getUint8(offset),
+    pixels.getUint8(offset + 1),
+    pixels.getUint8(offset + 2),
+  );
+}
+
+double _red(Color color) => color.r;
+
+double _green(Color color) => color.g;
+
+double _blue(Color color) => color.b;
 
 void main() {
   group('TimelineWaveformPainter narrow slots', () {
@@ -93,6 +126,63 @@ void main() {
 
       expect(() => _paint(painter, const Size(320, 64)), returnsNormally);
     });
+
+    test(
+      'rasterizes EQ-dominant rich frames and lane-colored raw peaks',
+      () async {
+        const size = Size(600, 100);
+        const waveform = TimelineWaveformData(
+          durationMs: 6000,
+          frames: [
+            WaveformFrame(peak: 0.8, rms: 0.8, low: 1, mid: 0, high: 0),
+            WaveformFrame(peak: 0.8, rms: 0.8, low: 0, mid: 1, high: 0),
+            WaveformFrame(peak: 0.8, rms: 0.8, low: 0, mid: 0, high: 1),
+            WaveformFrame(peak: 0.8, rms: 0.8, low: 1, mid: 1, high: 0),
+            WaveformFrame(peak: 0.8, rms: 0.8, low: 0, mid: 1, high: 1),
+            WaveformFrame(peak: 0.8, rms: 0.8, low: 1, mid: 0, high: 1),
+          ],
+        );
+        final richPixels = await _rasterizePainter(
+          _painter(waveform.peaks, waveform: waveform),
+          size,
+        );
+
+        final low = _pixelAt(richPixels, size.width.toInt(), 50, 50);
+        final mid = _pixelAt(richPixels, size.width.toInt(), 150, 50);
+        final high = _pixelAt(richPixels, size.width.toInt(), 250, 50);
+        expect(_red(low), greaterThan(_green(low)));
+        expect(_red(low), greaterThan(_blue(low)));
+        expect(_green(mid), greaterThan(_red(mid)));
+        expect(_green(mid), greaterThan(_blue(mid)));
+        expect(_blue(high), greaterThan(_red(high)));
+        expect(_blue(high), greaterThan(_green(high)));
+
+        final yellow = _pixelAt(richPixels, size.width.toInt(), 350, 50);
+        final cyan = _pixelAt(richPixels, size.width.toInt(), 450, 50);
+        final violet = _pixelAt(richPixels, size.width.toInt(), 550, 50);
+        expect(_red(yellow), greaterThan(_blue(yellow)));
+        expect(_green(yellow), greaterThan(_blue(yellow)));
+        expect(_red(yellow), closeTo(_green(yellow), 0.01));
+        expect(_green(cyan), greaterThan(_red(cyan)));
+        expect(_blue(cyan), greaterThan(_red(cyan)));
+        expect(_green(cyan), closeTo(_blue(cyan), 0.01));
+        expect(_red(violet), greaterThan(_green(violet)));
+        expect(_blue(violet), greaterThan(_green(violet)));
+        expect(_red(violet), closeTo(_blue(violet), 0.01));
+
+        final rawPixels = await _rasterizePainter(
+          _painter(
+            const [0.8, 0.8, 0.8],
+            waveform: const TimelineWaveformData(durationMs: 3000, frames: []),
+          ),
+          size,
+        );
+        expect(
+          _pixelAt(rawPixels, size.width.toInt(), 300, 50),
+          const Color(0xFF2E7D32),
+        );
+      },
+    );
 
     test('falls back to peaks when rich waveform frames are empty', () {
       const waveform = TimelineWaveformData(
@@ -831,6 +921,42 @@ void main() {
         viewportOriginMs: 5000,
       );
       expect(pannedPainter.shouldRepaint(oldPainter), isFalse);
+    });
+
+    test('lane color changes repaint only raw-peaks fallback', () {
+      const richWaveform = TimelineWaveformData(
+        durationMs: 2000,
+        frames: [
+          WaveformFrame(peak: 0.5, rms: 0.3, low: 0.8, mid: 0.2, high: 0.1),
+          WaveformFrame(peak: 0.6, rms: 0.4, low: 0.1, mid: 0.8, high: 0.2),
+        ],
+      );
+      const rawWaveform = TimelineWaveformData(
+        durationMs: 2000,
+        frames: [],
+      );
+      final richPeaks = richWaveform.peaks;
+      final richOriginal = _painter(
+        richPeaks,
+        waveform: richWaveform,
+      );
+      final richRecolored = _painter(
+        richPeaks,
+        waveform: richWaveform,
+        color: const Color(0xFFD32F2F),
+      );
+      final rawOriginal = _painter(
+        const [0.5, 0.6],
+        waveform: rawWaveform,
+      );
+      final rawRecolored = _painter(
+        const [0.5, 0.6],
+        waveform: rawWaveform,
+        color: const Color(0xFFD32F2F),
+      );
+
+      expect(richRecolored.shouldRepaint(richOriginal), isFalse);
+      expect(rawRecolored.shouldRepaint(rawOriginal), isTrue);
     });
   });
 
