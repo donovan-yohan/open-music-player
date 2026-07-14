@@ -144,7 +144,12 @@ class _PlaybackViewState {
 }
 
 class QueueScreen extends StatefulWidget {
-  const QueueScreen({super.key});
+  const QueueScreen({super.key, this.showImportJobs = false});
+
+  /// The playback queue and backend import jobs are independent domains.
+  /// `/queue` stays focused on listening, while `/queue/imports` explicitly
+  /// opts into the backend job surface.
+  final bool showImportJobs;
 
   @override
   State<QueueScreen> createState() => _QueueScreenState();
@@ -189,7 +194,15 @@ class _QueueScreenState extends State<QueueScreen> {
               if (_viewMode == _QueueViewMode.list) {
                 _clearAnalysisHydration(provider);
               }
-              if (playbackView.queue.isNotEmpty) {
+              if (!widget.showImportJobs) {
+                _clearAnalysisHydration(provider);
+                if (playbackView.queue.isEmpty) {
+                  return const SoundQSurfaceState(
+                    type: SoundQSurfaceStateType.empty,
+                    title: 'Your playback queue is empty',
+                    message: 'Play a song to start listening',
+                  );
+                }
                 return _buildPlaybackQueueView(
                   context,
                   provider,

@@ -1,13 +1,21 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:open_music_player/app/router.dart';
 import 'package:open_music_player/core/api/api_client.dart';
+import 'package:open_music_player/core/audio/playback_context.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
+import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/auth/auth_state.dart';
 import 'package:open_music_player/core/discovery/discovery_models.dart';
+import 'package:open_music_player/core/engine/tempo_automation.dart';
+import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/search/search_screen.dart';
 import 'package:open_music_player/models/mix_plan.dart';
@@ -23,7 +31,7 @@ void main() {
   });
 
   testWidgets(
-    'Search Queue action writes through QueueProvider and links to Queue',
+    'Search import actions write through QueueProvider and link to imports',
     (tester) async {
       final searchApiClient = ApiClient(
         storage: SecureStorage(),
@@ -37,7 +45,11 @@ void main() {
           GoRoute(path: '/search', builder: (_, __) => const SearchScreen()),
           GoRoute(
             path: '/queue',
-            builder: (_, __) => const Scaffold(body: Text('queue landing')),
+            builder: (_, __) => const Scaffold(body: Text('playback landing')),
+          ),
+          GoRoute(
+            path: '/queue/imports',
+            builder: (_, __) => const Scaffold(body: Text('imports landing')),
           ),
         ],
       );
@@ -68,7 +80,8 @@ void main() {
         'youtube:abc',
       );
       expect(find.text('Queued'), findsOneWidget);
-      expect(find.text('View Queue'), findsWidgets);
+      expect(find.text('View imports'), findsWidgets);
+      expect(find.text('1 item in Import queue'), findsOneWidget);
       expect(
         find.byKey(const ValueKey('search_queue_affordance')),
         findsOneWidget,
@@ -79,9 +92,200 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('queue landing'), findsOneWidget);
+      expect(find.text('imports landing'), findsOneWidget);
+
+      router.go('/search');
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.descendant(
+          of: find.byKey(const ValueKey('search_queue_affordance')),
+          matching: find.text('View imports'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('imports landing'), findsOneWidget);
+      expect(find.text('playback landing'), findsNothing);
     },
   );
+
+  testWidgets(
+    'production imports deep link uses shell and Queue tab returns to playback',
+    (tester) async {
+      final authState = _RouterAuthState(authenticated: true);
+      final queueClient = _QueueMutationClient()..postedSourceDecisions = 1;
+      final queueProvider = QueueProvider(queueClient);
+      final playbackState = _RouterPlaybackState();
+      final router = createRouter(authState);
+      addTearDown(router.dispose);
+      addTearDown(queueProvider.dispose);
+      addTearDown(playbackState.disposeFake);
+
+      await tester.pumpWidget(
+        _productionRouterHost(
+          authState: authState,
+          queueProvider: queueProvider,
+          playbackState: playbackState,
+          router: router,
+        ),
+      );
+      router.go('/queue/imports');
+      await tester.pumpAndSettle();
+
+      expect(router.routeInformationProvider.value.uri.path, '/queue/imports');
+      expect(find.byKey(const ValueKey('soundq_mobile_shell')), findsOneWidget);
+      expect(
+        find.byKey(const PageStorageKey('queue_list_view')),
+        findsOneWidget,
+      );
+      expect(find.text('Plastic Love'), findsOneWidget);
+      expect(
+        tester.widget<NavigationBar>(find.byType(NavigationBar)).selectedIndex,
+        3,
+      );
+
+      await tester.tap(find.widgetWithText(NavigationDestination, 'Queue'));
+      await tester.pumpAndSettle();
+
+      expect(router.routeInformationProvider.value.uri.path, '/queue');
+      expect(find.text('Playback Queue'), findsOneWidget);
+      expect(
+        find.byKey(const PageStorageKey('playback_queue_list_view')),
+        findsOneWidget,
+      );
+      expect(find.byKey(const PageStorageKey('queue_list_view')), findsNothing);
+    },
+  );
+
+  testWidgets('production imports deep link preserves auth redirect target', (
+    tester,
+  ) async {
+    final authState = _RouterAuthState(authenticated: false);
+    final queueProvider = QueueProvider(_QueueMutationClient());
+    final playbackState = _RouterPlaybackState();
+    final router = createRouter(authState);
+    addTearDown(router.dispose);
+    addTearDown(queueProvider.dispose);
+    addTearDown(playbackState.disposeFake);
+
+    await tester.pumpWidget(
+      _productionRouterHost(
+        authState: authState,
+        queueProvider: queueProvider,
+        playbackState: playbackState,
+        router: router,
+      ),
+    );
+    router.go('/queue/imports');
+    await tester.pumpAndSettle();
+
+    final location = router.routeInformationProvider.value.uri;
+    expect(location.path, '/login');
+    expect(location.queryParameters['next'], '/queue/imports');
+    expect(find.text('Sign in to continue'), findsOneWidget);
+    expect(find.byKey(const ValueKey('soundq_mobile_shell')), findsNothing);
+  });
+}
+
+Widget _productionRouterHost({
+  required AuthState authState,
+  required QueueProvider queueProvider,
+  required PlaybackState playbackState,
+  required GoRouter router,
+}) {
+  return MultiProvider(
+    providers: [
+      ListenableProvider<AuthState>.value(value: authState),
+      ChangeNotifierProvider<QueueProvider>.value(value: queueProvider),
+      ListenableProvider<PlaybackState>.value(value: playbackState),
+    ],
+    child: MaterialApp.router(routerConfig: router),
+  );
+}
+
+class _RouterAuthState extends Fake implements AuthState {
+  _RouterAuthState({required this.authenticated});
+
+  final bool authenticated;
+
+  @override
+  bool get hasLocalSession => authenticated;
+
+  @override
+  bool get isAuthenticated => authenticated;
+
+  @override
+  bool get isBiometricLocked => false;
+
+  @override
+  bool get isLoading => false;
+
+  @override
+  String? get error => null;
+
+  @override
+  void addListener(VoidCallback listener) {}
+
+  @override
+  void removeListener(VoidCallback listener) {}
+}
+
+class _RouterPlaybackState extends Fake implements PlaybackState {
+  final ChangeNotifier _notifier = ChangeNotifier();
+  static const item = audio_service.MediaItem(
+    id: 'playback-track',
+    title: 'Playback route track',
+    duration: Duration(minutes: 2),
+  );
+  final TimelineModel _timelineModel = TimelineModel();
+
+  @override
+  bool get hasTrack => true;
+
+  @override
+  audio_service.MediaItem get currentItem => item;
+
+  @override
+  List<audio_service.MediaItem> get queue => const [item];
+
+  @override
+  int get currentIndex => 0;
+
+  @override
+  Duration get duration => item.duration!;
+
+  @override
+  Duration get position => Duration.zero;
+
+  @override
+  bool get isPlaying => false;
+
+  @override
+  PlaybackContext? get playbackContext => null;
+
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
+
+  @override
+  TimelineModel get timelineModel => _timelineModel;
+
+  @override
+  BeatSnapMode get transitionSnapMode => BeatSnapMode.downbeat;
+
+  @override
+  int get timelinePositionMs => 0;
+
+  @override
+  Future<void> togglePlayPause() async {}
+
+  @override
+  void addListener(VoidCallback listener) => _notifier.addListener(listener);
+
+  @override
+  void removeListener(VoidCallback listener) =>
+      _notifier.removeListener(listener);
+
+  void disposeFake() => _notifier.dispose();
 }
 
 /// Drives [QueueProvider] through the unified [ApiClient] surface (method

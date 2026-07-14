@@ -2029,14 +2029,14 @@ class _SearchScreenState extends State<SearchScreen> {
             const SizedBox(height: 4),
             TextButton(
               key: ValueKey('search_view_queue_${_candidateKey(candidate)}'),
-              onPressed: _goToQueue,
+              onPressed: _goToImports,
               style: TextButton.styleFrom(
                 visualDensity: VisualDensity.compact,
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 minimumSize: const Size(0, 32),
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
-              child: const Text('View Queue', style: TextStyle(fontSize: 12)),
+              child: const Text('View imports', style: TextStyle(fontSize: 12)),
             ),
           ],
         ),
@@ -2156,14 +2156,14 @@ class _SearchScreenState extends State<SearchScreen> {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                '$count item${count == 1 ? '' : 's'} in Queue',
+                '$count item${count == 1 ? '' : 's'} in Import queue',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
             TextButton.icon(
-              onPressed: _goToQueue,
+              onPressed: _goToImports,
               icon: const Icon(Icons.open_in_new, size: 18),
-              label: const Text('View Queue'),
+              label: const Text('View imports'),
             ),
           ],
         ),
@@ -2182,8 +2182,8 @@ class _SearchScreenState extends State<SearchScreen> {
     };
   }
 
-  void _goToQueue() {
-    context.go('/queue');
+  void _goToImports() {
+    context.go('/queue/imports');
   }
 
   Widget _buildProviderRow(List<DiscoveryProviderSummary> providers) {
