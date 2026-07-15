@@ -40,6 +40,14 @@ const (
 	AssistStatusDisabled      = "disabled"
 	AssistStatusClarification = "clarification"
 	AssistStatusError         = "error"
+
+	assistVerificationSchemaVersion    = "discovery-assist-verification-v1"
+	assistVerificationRouteUserURL     = "user_url"
+	assistVerificationRouteSearch      = "model_search"
+	assistVerificationRouteClarify     = "model_clarification"
+	assistVerificationRouteUnsupported = "model_unsupported"
+	assistVerificationRouteDisabled    = "disabled"
+	assistVerificationRouteError       = "model_error"
 )
 
 // AssistRequest is the POST /api/v1/discovery/assist body.
@@ -78,11 +86,43 @@ type AssistError struct {
 	Message string `json:"message"`
 }
 
+// AssistVerification is compact, inline provenance for the assist outcome. It
+// deliberately contains only normalized routing and grounding facts, never the
+// request prompt or untrusted model text.
+type AssistVerification struct {
+	SchemaVersion      string                    `json:"schemaVersion"`
+	Route              string                    `json:"route"`
+	InterpretedQuery   string                    `json:"interpretedQuery,omitempty"`
+	RequestedProviders []string                  `json:"requestedProviders,omitempty"`
+	GroundingSources   []AssistGroundingSource   `json:"groundingSources"`
+	Checks             []AssistVerificationCheck `json:"checks"`
+	Unverified         []string                  `json:"unverified"`
+}
+
+// AssistGroundingSource names a trusted source or attempted lookup used to
+// produce an assist outcome. CandidateCount is present when that source can
+// report a count, including zero-result provider searches.
+type AssistGroundingSource struct {
+	Kind           string `json:"kind"`
+	Provider       string `json:"provider,omitempty"`
+	Status         string `json:"status,omitempty"`
+	CandidateCount *int   `json:"candidateCount,omitempty"`
+}
+
+// AssistVerificationCheck is a stable, machine-readable verification result.
+// Detail is limited to normalized status data, not user or model text.
+type AssistVerificationCheck struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
 // AssistResponse is the deterministic, future-UI-friendly envelope. Candidates
 // holds only resolver-grounded direct-URL candidates; search results live in
 // Search (with its own provider summaries) so grounding provenance is explicit.
 type AssistResponse struct {
 	Status                 string               `json:"status"`
+	Verification           AssistVerification   `json:"verification"`
 	AssistantText          string               `json:"assistantText,omitempty"`
 	Intent                 *AssistIntent        `json:"intent,omitempty"`
 	Clarification          *AssistClarification `json:"clarification,omitempty"`
@@ -187,6 +227,7 @@ func (s *AssistService) Assist(ctx context.Context, prompt string, limit int) As
 	case aiassist.KindUnsupported:
 		return AssistResponse{
 			Status:        AssistStatusOK,
+			Verification:  modelOnlyVerification(assistVerificationRouteUnsupported, "model_intent"),
 			AssistantText: firstNonEmpty(intent.AssistantText, "I can't help with that request."),
 			Intent:        &AssistIntent{Kind: aiassist.KindUnsupported},
 			Caveats:       intent.Caveats,
@@ -210,6 +251,7 @@ func (s *AssistService) searchResponse(ctx context.Context, intent *aiassist.Int
 		// Nothing groundable; ask the user to rephrase rather than guess.
 		return AssistResponse{
 			Status:        AssistStatusClarification,
+			Verification:  modelOnlyVerification(assistVerificationRouteClarify, "missing_search_query"),
 			AssistantText: firstNonEmpty(intent.AssistantText, "Could you tell me the song or artist you're looking for?"),
 			Clarification: &AssistClarification{Question: "What song, artist, or album are you looking for?"},
 			Intent:        &AssistIntent{Kind: aiassist.KindSearch},
@@ -223,6 +265,7 @@ func (s *AssistService) searchResponse(ctx context.Context, intent *aiassist.Int
 
 	return AssistResponse{
 		Status:        AssistStatusOK,
+		Verification:  searchVerification(intent, query, result.Providers, caveats),
 		AssistantText: firstNonEmpty(intent.AssistantText, "Here's what I found from your sources."),
 		Intent:        &AssistIntent{Kind: aiassist.KindSearch, SearchQuery: query, Providers: intent.Providers},
 		Search:        &result,
@@ -233,8 +276,22 @@ func (s *AssistService) searchResponse(ctx context.Context, intent *aiassist.Int
 // directURLResponse wraps a resolver-grounded candidate. The only suggested
 // action is a queue intent the user must confirm; nothing is enqueued here.
 func (s *AssistService) directURLResponse(candidate Candidate) AssistResponse {
+	candidateCount := 1
 	return AssistResponse{
-		Status:        AssistStatusOK,
+		Status: AssistStatusOK,
+		Verification: AssistVerification{
+			SchemaVersion: assistVerificationSchemaVersion,
+			Route:         assistVerificationRouteUserURL,
+			GroundingSources: []AssistGroundingSource{
+				{Kind: "user_url", Status: "pass", CandidateCount: &candidateCount},
+				{Kind: "resolver", Provider: candidate.Provider, Status: "pass", CandidateCount: &candidateCount},
+			},
+			Checks: []AssistVerificationCheck{
+				{ID: "user_url", Status: "pass"},
+				{ID: "resolver", Status: "pass"},
+			},
+			Unverified: []string{},
+		},
 		AssistantText: "I recognized a direct link. Confirm to add it to your queue.",
 		Intent:        &AssistIntent{Kind: aiassist.KindDirectURL, DetectedURL: candidate.SourceURL},
 		Candidates:    []Candidate{candidate},
@@ -251,6 +308,7 @@ func (s *AssistService) clarificationResponse(intent *aiassist.Intent) AssistRes
 	}
 	return AssistResponse{
 		Status:        AssistStatusClarification,
+		Verification:  modelOnlyVerification(assistVerificationRouteClarify, "model_intent"),
 		AssistantText: firstNonEmpty(intent.AssistantText, clar.Question),
 		Clarification: clar,
 		Intent:        &AssistIntent{Kind: aiassist.KindClarify},
@@ -264,6 +322,7 @@ func (s *AssistService) clarificationResponse(intent *aiassist.Intent) AssistRes
 func disabledAssistResponse() AssistResponse {
 	return AssistResponse{
 		Status:        AssistStatusDisabled,
+		Verification:  modelOnlyVerification(assistVerificationRouteDisabled, "model_disabled"),
 		AssistantText: "AI assist is not configured. You can still search directly or paste a YouTube/SoundCloud link.",
 		Error:         &AssistError{Code: aiassist.CodeDisabled, Message: "ai assist is disabled"},
 	}
@@ -281,9 +340,63 @@ func assistErrorResponse(err error) AssistResponse {
 	}
 	return AssistResponse{
 		Status:        AssistStatusError,
+		Verification:  modelOnlyVerification(assistVerificationRouteError, "model_response"),
 		AssistantText: "The assistant is unavailable right now. You can still search directly or paste a link.",
 		Error:         &AssistError{Code: code, Message: message},
 	}
+}
+
+func modelOnlyVerification(route, checkID string) AssistVerification {
+	status := "warn"
+	if route == assistVerificationRouteError {
+		status = "fail"
+	}
+	return AssistVerification{
+		SchemaVersion:    assistVerificationSchemaVersion,
+		Route:            route,
+		GroundingSources: []AssistGroundingSource{},
+		Checks:           []AssistVerificationCheck{{ID: checkID, Status: status}},
+		Unverified:       []string{"model_interpretation"},
+	}
+}
+
+func searchVerification(intent *aiassist.Intent, query string, providers []ProviderSummary, caveats []string) AssistVerification {
+	verification := AssistVerification{
+		SchemaVersion:      assistVerificationSchemaVersion,
+		Route:              assistVerificationRouteSearch,
+		InterpretedQuery:   verificationQuery(query),
+		RequestedProviders: append([]string(nil), intent.Providers...),
+		GroundingSources:   make([]AssistGroundingSource, 0, len(providers)),
+		Checks:             []AssistVerificationCheck{{ID: "provider_search", Status: "pass"}},
+		Unverified:         []string{},
+	}
+	if len(providers) == 0 {
+		verification.Checks[0].Status = "warn"
+		verification.Unverified = append(verification.Unverified, "provider_search")
+	}
+	for _, provider := range providers {
+		count := provider.ResultCount
+		verification.GroundingSources = append(verification.GroundingSources, AssistGroundingSource{
+			Kind:           "provider_search",
+			Provider:       provider.Provider,
+			Status:         provider.Status,
+			CandidateCount: &count,
+		})
+		if provider.Status != ProviderStatusOK {
+			verification.Checks = append(verification.Checks, AssistVerificationCheck{ID: "provider:" + provider.Provider, Status: "warn", Detail: provider.Status})
+			verification.Unverified = append(verification.Unverified, "provider:"+provider.Provider)
+		}
+	}
+	if len(caveats) > 0 {
+		verification.Checks = append(verification.Checks, AssistVerificationCheck{ID: "caveats", Status: "warn", Detail: "present"})
+		verification.Unverified = append(verification.Unverified, "model_caveats")
+	}
+	return verification
+}
+
+// verificationQuery reports the sanitized query that discovery actually used.
+func verificationQuery(query string) string {
+	return strings.TrimSpace(stripURLs(query))
 }
 
 // providerCaveats turns non-ok provider summaries into short human caveats so a

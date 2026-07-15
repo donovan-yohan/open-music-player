@@ -9,6 +9,7 @@ domain concept moves or a new production harness becomes canonical.
 | --- | --- | --- | --- |
 | Backend API | `backend/` | Go REST API, auth, library, queue, downloads, storage, analysis persistence | `scripts/test backend`, `scripts/lint backend`, `scripts/build backend` |
 | Audio analyzer | `backend/cmd/audio-analyzer/`, `backend/Dockerfile` target `analyzer-runtime` | Beat/downbeat, BPM, key/Camelot, waveform, and spectral analysis | `scripts/lint analyzer`, `scripts/test analyzer`, `scripts/build analyzer` |
+| AI assist evals | `backend/internal/aiassist/eval/`, `backend/cmd/aiassist-eval/`, `docs/AI_EVALS.md`, `scripts/eval` | Versioned, deterministic intent-evaluation corpus; replay and opt-in OpenAI-compatible live artifacts | `go test ./internal/aiassist/eval ./cmd/aiassist-eval`, `scripts/eval ai-assist --mode replay` |
 | Flutter client | `client/` | Mobile/web/desktop app, playback engine, queue timeline, settings/build metadata | `scripts/test client`, `scripts/lint client`, `scripts/build client` |
 | Browser extension | `extension/` | Share/import surface for YouTube/SoundCloud style sources | `scripts/test extension`, `scripts/lint extension`, `scripts/build extension` |
 | Local stack | `docker-compose*.yml`, `scripts/local-low-memory.sh` | Postgres, Redis, MinIO, backend/analyzer dogfood services, worker-free backend test dependencies | `scripts/dev`, `scripts/dev test-infra`, `scripts/smoke`, `scripts/smoke e2e` |
@@ -59,6 +60,20 @@ domain concept moves or a new production harness becomes canonical.
   defaults to `http://host.docker.internal:11434` and maps that name to the
   Linux host gateway. Set `SOURCE_QUALITY_LLM_BASE_URL` explicitly for a
   tailnet or other remote provider; never commit a remote endpoint or secret.
+
+### AI Assist Eval Harness
+
+- Client boundary: `backend/internal/aiassist/aiassist.go`; keep the eval
+  harness separate so it scores the production client without changing its
+  request/response contract.
+- Corpus and deterministic graders: `backend/internal/aiassist/eval/`.
+- Runner and artifact contract: `backend/cmd/aiassist-eval/`,
+  `scripts/eval ai-assist`, and `docs/AI_EVALS.md`.
+- Guardrail: replay mode is network-free and fixture-backed. Live mode is
+  explicit, requires endpoint/key/model configuration, uses `aiassist.NewClient`,
+  and writes redacted JSONL with schema/run/prompt metadata and per-case grades.
+- Guardrail: model-originated URLs and unsafe provider hints are eval failures;
+  a configured API key must never be recorded in artifacts.
 
 ### Audio Analysis And DJ Waveforms
 
@@ -152,6 +167,8 @@ domain concept moves or a new production harness becomes canonical.
 | Need | Command | Notes |
 | --- | --- | --- |
 | Fast backend check | `scripts/test backend` | Runs `go test ./...` from `backend/`. |
+| AI assist replay eval | `scripts/eval ai-assist --mode replay` | Runs the embedded 10-15 case corpus without network access and writes JSONL evidence under `/tmp` by default. |
+| AI assist focused tests | `cd backend && go test ./internal/aiassist/eval ./cmd/aiassist-eval` | Validates corpus/replay behavior, graders, live config gates, and artifact key redaction. |
 | Analyzer post-processing | `scripts/test analyzer` | Builds the lightweight synthetic MIR unit-test target. |
 | Full analyzer image | `scripts/build analyzer` | Builds pinned CPU PyTorch, Beat This, librosa, and checksum-verified model layers. |
 | Delivery scaffold check | `scripts/agentic-harness` | Validates required agent docs, root scripts, CI wiring, JSON/Python/Bash syntax, and secret-like values. |

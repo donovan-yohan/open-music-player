@@ -559,8 +559,11 @@ class _SearchScreenState extends State<SearchScreen> {
                 style: Theme.of(sheetContext).textTheme.titleLarge,
               ),
               const SizedBox(height: 6),
-              Text(candidate.title,
-                  maxLines: 2, overflow: TextOverflow.ellipsis),
+              Text(
+                candidate.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
               const SizedBox(height: 12),
               TextField(
                 key: const ValueKey('source_override_reason'),
@@ -569,8 +572,9 @@ class _SearchScreenState extends State<SearchScreen> {
                 minLines: 2,
                 maxLines: 4,
                 textCapitalization: TextCapitalization.sentences,
-                decoration:
-                    const InputDecoration(labelText: 'Why this source?'),
+                decoration: const InputDecoration(
+                  labelText: 'Why this source?',
+                ),
               ),
               const SizedBox(height: 8),
               Align(
@@ -1241,6 +1245,11 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
 
+    final verification = response.verification;
+    if (verification != null) {
+      widgets.add(_buildVerificationDisclosure(verification));
+    }
+
     final clarification = response.clarification;
     if (clarification != null && clarification.question.isNotEmpty) {
       widgets.add(_buildClarificationCard(clarification));
@@ -1412,6 +1421,202 @@ class _SearchScreenState extends State<SearchScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildVerificationDisclosure(
+    DiscoveryAssistVerification verification,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      key: const ValueKey('assist_verification_disclosure'),
+      margin: const EdgeInsets.only(bottom: 4),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: colorScheme.outlineVariant)),
+      ),
+      child: ExpansionTile(
+        initiallyExpanded: false,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 4),
+        childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
+        leading: Icon(Icons.fact_check_outlined, color: colorScheme.primary),
+        title: const Text(
+          'Why this result?',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+        children: [
+          if (verification.interpretedQuery.isNotEmpty)
+            _buildVerificationDetail(
+              icon: Icons.manage_search_outlined,
+              title: 'Interpreted query',
+              detail: verification.interpretedQuery,
+            ),
+          if (verification.groundingSources.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _buildVerificationHeading('Grounded Sources'),
+            const SizedBox(height: 4),
+            ...verification.groundingSources.map(_buildGroundingSourceRow),
+          ],
+          if (verification.checks.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _buildVerificationHeading('Checks'),
+            const SizedBox(height: 4),
+            ...verification.checks.map(_buildVerificationCheckRow),
+          ],
+          if (verification.unverified.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            _buildVerificationHeading('Not verified'),
+            const SizedBox(height: 4),
+            ...verification.unverified.map(
+              (item) => _buildVerificationDetail(
+                icon: Icons.help_outline,
+                title: _verificationLabel(item, fallback: 'Unverified item'),
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVerificationHeading(String text) {
+    return Text(
+      text,
+      style: Theme.of(
+        context,
+      ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+    );
+  }
+
+  Widget _buildGroundingSourceRow(DiscoveryAssistGroundingSource source) {
+    final provider = source.provider.isNotEmpty ? source.provider : source.kind;
+    final label = provider.isNotEmpty ? provider : 'Source';
+    final count = source.candidateCount;
+    final status = source.status.isNotEmpty ? source.status : 'unknown';
+    return _buildVerificationDetail(
+      icon: _verificationStatusIcon(status),
+      title: '$label • $count ${count == 1 ? 'candidate' : 'candidates'}',
+      detail: '${_verificationLabel(source.kind, fallback: 'Source')} • '
+          '${_verificationStatusLabel(status)}',
+      color: _verificationStatusColor(status),
+    );
+  }
+
+  Widget _buildVerificationCheckRow(DiscoveryAssistVerificationCheck check) {
+    final status = check.status.isNotEmpty ? check.status : 'unknown';
+    final title = check.id == 'grounded_sources'
+        ? 'Source grounding'
+        : _verificationLabel(check.id, fallback: 'Check');
+    return _buildVerificationDetail(
+      icon: _verificationStatusIcon(status),
+      title: title,
+      detail: check.detail.isNotEmpty
+          ? check.detail
+          : _verificationStatusLabel(status),
+      color: _verificationStatusColor(status),
+    );
+  }
+
+  Widget _buildVerificationDetail({
+    required IconData icon,
+    required String title,
+    String? detail,
+    Color? color,
+  }) {
+    final textColor = color ?? Theme.of(context).colorScheme.onSurfaceVariant;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: textColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: const TextStyle(fontSize: 13)),
+                if (detail != null && detail.isNotEmpty)
+                  Text(
+                    detail,
+                    style: TextStyle(fontSize: 12, color: textColor),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  IconData _verificationStatusIcon(String status) {
+    switch (status.trim().toLowerCase()) {
+      case 'pass':
+      case 'passed':
+      case 'ok':
+      case 'success':
+        return Icons.check_circle_outline;
+      case 'warn':
+      case 'warning':
+      case 'degraded':
+        return Icons.warning_amber_outlined;
+      case 'fail':
+      case 'failed':
+      case 'error':
+        return Icons.error_outline;
+      default:
+        return Icons.info_outline;
+    }
+  }
+
+  Color _verificationStatusColor(String status) {
+    final colorScheme = Theme.of(context).colorScheme;
+    switch (status.trim().toLowerCase()) {
+      case 'pass':
+      case 'passed':
+      case 'ok':
+      case 'success':
+        return colorScheme.primary;
+      case 'warn':
+      case 'warning':
+      case 'degraded':
+        return colorScheme.tertiary;
+      case 'fail':
+      case 'failed':
+      case 'error':
+        return colorScheme.error;
+      default:
+        return colorScheme.onSurfaceVariant;
+    }
+  }
+
+  String _verificationStatusLabel(String status) {
+    switch (status.trim().toLowerCase()) {
+      case 'pass':
+      case 'passed':
+      case 'ok':
+      case 'success':
+        return 'Passed';
+      case 'warn':
+      case 'warning':
+      case 'degraded':
+        return 'Needs attention';
+      case 'fail':
+      case 'failed':
+      case 'error':
+        return 'Did not pass';
+      default:
+        return 'Status unavailable';
+    }
+  }
+
+  String _verificationLabel(String value, {required String fallback}) {
+    final words = value
+        .trim()
+        .split(RegExp(r'[_:-]+'))
+        .where((word) => word.isNotEmpty)
+        .map((word) => '${word[0].toUpperCase()}${word.substring(1)}');
+    final label = words.join(' ');
+    return label.isEmpty ? fallback : label;
   }
 
   Widget _buildClarificationCard(DiscoveryAssistClarification clarification) {

@@ -141,6 +141,55 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
+  testWidgets('verification stays compact until the user asks why', (
+    tester,
+  ) async {
+    await pumpSearch(tester, assistEnvelope: _verificationEnvelope);
+
+    await enterAssistMode(tester, 'that live porter robinson shelter');
+
+    expect(
+      find.byKey(const ValueKey('assist_verification_disclosure')),
+      findsOneWidget,
+    );
+    expect(find.text('Why this result?'), findsOneWidget);
+    expect(find.text('Interpreted query'), findsNothing);
+    expect(find.text('Provider Soundcloud'), findsNothing);
+
+    await tester.tap(
+      find.byKey(const ValueKey('assist_verification_disclosure')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Interpreted query'), findsOneWidget);
+    expect(find.text('porter robinson shelter live'), findsOneWidget);
+    expect(find.text('youtube • 3 candidates'), findsOneWidget);
+    expect(find.text('Grounded Sources'), findsOneWidget);
+    expect(find.text('Provider Soundcloud'), findsWidgets);
+    expect(find.text('provider:soundcloud'), findsNothing);
+    expect(find.text('model_caveats'), findsNothing);
+    expect(find.byIcon(Icons.check_circle_outline), findsWidgets);
+    expect(find.byIcon(Icons.warning_amber_outlined), findsWidgets);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('assist results without verification omit the disclosure', (
+    tester,
+  ) async {
+    await pumpSearch(tester, assistEnvelope: _searchEnvelope);
+
+    await enterAssistMode(tester, 'that live porter robinson shelter');
+
+    expect(
+      find.byKey(const ValueKey('assist_verification_disclosure')),
+      findsNothing,
+    );
+    expect(find.text('Porter Robinson - Shelter (Live)'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
   testWidgets(
     'pasting a URL in search mode auto-routes to assist and shows a queueable candidate',
     (tester) async {
@@ -168,8 +217,9 @@ void main() {
     },
   );
 
-  testWidgets('expired source selection asks the user to rerun assist',
-      (tester) async {
+  testWidgets('expired source selection asks the user to rerun assist', (
+    tester,
+  ) async {
     final queueClient = await pumpSearch(
       tester,
       assistEnvelope: {
@@ -188,8 +238,9 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('alternate source asks for a bounded override reason',
-      (tester) async {
+  testWidgets('alternate source asks for a bounded override reason', (
+    tester,
+  ) async {
     final queueClient = await pumpSearch(
       tester,
       assistEnvelope: {
@@ -232,44 +283,54 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('queue failure retries the saved decision without recreating it',
-      (tester) async {
-    final queueClient = await pumpSearch(
-      tester,
-      assistEnvelope: _directUrlEnvelope,
-      failQueueAttempts: 1,
-    );
+  testWidgets(
+    'queue failure retries the saved decision without recreating it',
+    (tester) async {
+      final queueClient = await pumpSearch(
+        tester,
+        assistEnvelope: _directUrlEnvelope,
+        failQueueAttempts: 1,
+      );
 
-    await enterAssistMode(tester, 'https://youtu.be/abc');
-    await tester.tap(find.byIcon(Icons.playlist_add));
-    await tester.pumpAndSettle();
+      await enterAssistMode(tester, 'https://youtu.be/abc');
+      await tester.tap(find.byIcon(Icons.playlist_add));
+      await tester.pumpAndSettle();
 
-    expect(queueClient.addItemRequests, 1);
-    expect(queueClient.sourceSelectionRequests, hasLength(1));
-    expect(find.textContaining('Source choice saved'), findsOneWidget);
-    expect(
-        find.byKey(const ValueKey('source_selection_retry')), findsOneWidget);
-    expect(find.textContaining('source choice expired'), findsNothing);
+      expect(queueClient.addItemRequests, 1);
+      expect(queueClient.sourceSelectionRequests, hasLength(1));
+      expect(find.textContaining('Source choice saved'), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('source_selection_retry')),
+        findsOneWidget,
+      );
+      expect(find.textContaining('source choice expired'), findsNothing);
 
-    await tester.tap(find.byKey(const ValueKey('source_selection_retry')));
-    await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('source_selection_retry')));
+      await tester.pumpAndSettle();
 
-    expect(queueClient.addItemRequests, 2);
-    expect(queueClient.lastAddBody?['sourceDecisionId'], 'decision-1');
-    expect(queueClient.sourceSelectionRequests, hasLength(1));
-    expect(find.textContaining('Source choice added to queue'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
+      expect(queueClient.addItemRequests, 2);
+      expect(queueClient.lastAddBody?['sourceDecisionId'], 'decision-1');
+      expect(queueClient.sourceSelectionRequests, hasLength(1));
+      expect(
+        find.textContaining('Source choice added to queue'),
+        findsOneWidget,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 
-  testWidgets('query changes clear source selection confirmation',
-      (tester) async {
+  testWidgets('query changes clear source selection confirmation', (
+    tester,
+  ) async {
     await pumpSearch(tester, assistEnvelope: _directUrlEnvelope);
 
     await enterAssistMode(tester, 'https://youtu.be/abc');
     await tester.tap(find.byIcon(Icons.playlist_add));
     await tester.pumpAndSettle();
     expect(
-        find.byKey(const ValueKey('source_selection_status')), findsOneWidget);
+      find.byKey(const ValueKey('source_selection_status')),
+      findsOneWidget,
+    );
 
     await tester.enterText(
       find.byKey(const ValueKey('search_assist_input')),
@@ -500,6 +561,42 @@ const Map<String, dynamic> _searchEnvelope = {
         'elapsedMs': 20,
       },
     ],
+  },
+};
+
+const Map<String, dynamic> _verificationEnvelope = {
+  ..._searchEnvelope,
+  'verification': {
+    'schemaVersion': 'discovery-assist-verification-v1',
+    'route': 'model_search',
+    'interpretedQuery': 'porter robinson shelter live',
+    'requestedProviders': ['youtube', 'soundcloud'],
+    'groundingSources': [
+      {
+        'kind': 'provider_search',
+        'provider': 'youtube',
+        'status': 'ok',
+        'candidateCount': 3,
+      },
+    ],
+    'checks': [
+      {
+        'id': 'provider_search',
+        'status': 'pass',
+        'detail': 'Search results came from connected providers.',
+      },
+      {
+        'id': 'provider:soundcloud',
+        'status': 'warn',
+        'detail': 'timeout',
+      },
+      {
+        'id': 'caveats',
+        'status': 'warn',
+        'detail': 'present',
+      },
+    ],
+    'unverified': ['provider:soundcloud', 'model_caveats'],
   },
 };
 

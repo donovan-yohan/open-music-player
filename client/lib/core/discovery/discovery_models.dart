@@ -425,6 +425,90 @@ class DiscoveryProviderSummary {
   }
 }
 
+/// Explainability data for a grounded assist response.
+///
+/// This remains optional because older backends do not emit it. Individual
+/// fields are deliberately forgiving: explainability must never make an
+/// otherwise usable assist result fail to render.
+class DiscoveryAssistVerification {
+  final String schemaVersion;
+  final String route;
+  final String interpretedQuery;
+  final List<String> requestedProviders;
+  final List<DiscoveryAssistGroundingSource> groundingSources;
+  final List<DiscoveryAssistVerificationCheck> checks;
+  final List<String> unverified;
+
+  const DiscoveryAssistVerification({
+    this.schemaVersion = '',
+    this.route = '',
+    this.interpretedQuery = '',
+    this.requestedProviders = const [],
+    this.groundingSources = const [],
+    this.checks = const [],
+    this.unverified = const [],
+  });
+
+  factory DiscoveryAssistVerification.fromJson(Map<String, dynamic> json) {
+    return DiscoveryAssistVerification(
+      schemaVersion: _readString(json['schemaVersion']),
+      route: _readString(json['route']),
+      interpretedQuery: _readString(json['interpretedQuery']),
+      requestedProviders: _readStringList(json['requestedProviders']),
+      groundingSources: _readMapList(
+        json['groundingSources'],
+      ).map(DiscoveryAssistGroundingSource.fromJson).toList(),
+      checks: _readMapList(
+        json['checks'],
+      ).map(DiscoveryAssistVerificationCheck.fromJson).toList(),
+      unverified: _readStringList(json['unverified']),
+    );
+  }
+}
+
+class DiscoveryAssistGroundingSource {
+  final String kind;
+  final String provider;
+  final String status;
+  final int candidateCount;
+
+  const DiscoveryAssistGroundingSource({
+    this.kind = '',
+    this.provider = '',
+    this.status = '',
+    this.candidateCount = 0,
+  });
+
+  factory DiscoveryAssistGroundingSource.fromJson(Map<String, dynamic> json) {
+    return DiscoveryAssistGroundingSource(
+      kind: _readString(json['kind']),
+      provider: _readString(json['provider']),
+      status: _readString(json['status']),
+      candidateCount: _readInt(json['candidateCount']) ?? 0,
+    );
+  }
+}
+
+class DiscoveryAssistVerificationCheck {
+  final String id;
+  final String status;
+  final String detail;
+
+  const DiscoveryAssistVerificationCheck({
+    this.id = '',
+    this.status = '',
+    this.detail = '',
+  });
+
+  factory DiscoveryAssistVerificationCheck.fromJson(Map<String, dynamic> json) {
+    return DiscoveryAssistVerificationCheck(
+      id: _readString(json['id']),
+      status: _readString(json['status']),
+      detail: _readString(json['detail']),
+    );
+  }
+}
+
 /// Grounded AI-assist envelope returned by `POST /api/v1/discovery/assist`.
 ///
 /// The backend returns HTTP 200 for every orchestrated outcome and encodes the
@@ -444,6 +528,7 @@ class DiscoveryAssistResponse {
   final List<String> caveats;
   final DiscoveryAssistError? error;
   final DiscoverySelectionSession? selection;
+  final DiscoveryAssistVerification? verification;
 
   const DiscoveryAssistResponse({
     required this.status,
@@ -455,6 +540,7 @@ class DiscoveryAssistResponse {
     this.caveats = const [],
     this.error,
     this.selection,
+    this.verification,
   });
 
   factory DiscoveryAssistResponse.fromJson(Map<String, dynamic> json) {
@@ -462,6 +548,7 @@ class DiscoveryAssistResponse {
     final intentJson = json['intent'];
     final clarificationJson = json['clarification'];
     final errorJson = json['error'];
+    final verificationJson = json['verification'];
     final rawStatus = (json['status'] as String? ?? '').trim();
     final status =
         const {'ok', 'disabled', 'clarification', 'error'}.contains(rawStatus)
@@ -493,6 +580,9 @@ class DiscoveryAssistResponse {
           ? DiscoveryAssistError.fromJson(errorJson)
           : null,
       selection: _selectionFromJson(json),
+      verification: verificationJson == null
+          ? null
+          : DiscoveryAssistVerification.fromJson(verificationJson),
     );
   }
 
@@ -928,6 +1018,13 @@ List<String> _readStringList(Object? value) {
       .where((entry) => entry.isNotEmpty)
       .toList();
 }
+
+List<Map<String, dynamic>> _readMapList(Object? value) {
+  if (value is! List) return const [];
+  return value.map(_readOptionalMap).whereType<Map<String, dynamic>>().toList();
+}
+
+String _readString(Object? value) => value?.toString().trim() ?? '';
 
 DateTime? _readDate(Object? value) {
   if (value is! String || value.isEmpty) return null;

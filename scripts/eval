@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TARGET="${1:-}"
+
+case "$TARGET" in
+  ai-assist)
+    shift
+    cd "$ROOT/backend"
+    exec go run ./cmd/aiassist-eval "$@"
+    ;;
+  *)
+    echo "usage: scripts/eval ai-assist [--mode replay|live] [--case id[,id...]] [flags...]" >&2
+    exit 2
+    ;;
+esac
