@@ -96,6 +96,9 @@ jobs:
           DATABASE_URL: postgres://test:test@localhost:5432/openmusicplayer_test?sslmode=disable
           REDIS_URL: redis://localhost:6379
 
+      - name: Run AI assist replay eval
+        run: ../scripts/eval ai-assist --mode replay --output "$RUNNER_TEMP/ai-assist-replay.jsonl"
+
       - name: Build
         run: ../scripts/build backend
 

@@ -2526,9 +2526,10 @@ components:
 
     DiscoveryAssistResponse:
       type: object
-      required: [status, selectionRequired]
+      required: [status, verification, selectionRequired]
       properties:
         status: { type: string, enum: [ok, disabled, clarification, error] }
+        verification: { $ref: '#/components/schemas/DiscoveryAssistVerification' }
         assistantText: { type: string }
         intent: { type: object, additionalProperties: true }
         clarification: { type: object, additionalProperties: true }
@@ -2543,6 +2544,43 @@ components:
         selectionSessionId: { type: string, format: uuid }
         recommendedCandidateId: { type: string }
         selectionExpiresAt: { type: string, format: date-time }
+
+    DiscoveryAssistVerification:
+      type: object
+      required: [schemaVersion, route, groundingSources, checks, unverified]
+      properties:
+        schemaVersion: { type: string, enum: [discovery-assist-verification-v1] }
+        route: { type: string, enum: [user_url, model_search, model_clarification, model_unsupported, disabled, model_error] }
+        interpretedQuery: { type: string }
+        requestedProviders:
+          type: array
+          items: { type: string }
+        groundingSources:
+          type: array
+          items: { $ref: '#/components/schemas/DiscoveryAssistGroundingSource' }
+        checks:
+          type: array
+          items: { $ref: '#/components/schemas/DiscoveryAssistVerificationCheck' }
+        unverified:
+          type: array
+          items: { type: string }
+
+    DiscoveryAssistGroundingSource:
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string, enum: [user_url, resolver, provider_search] }
+        provider: { type: string }
+        status: { type: string }
+        candidateCount: { type: integer, minimum: 0 }
+
+    DiscoveryAssistVerificationCheck:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [pass, warn, fail] }
+        detail: { type: string }
 
     AddQueueItemRequest:
       type: object

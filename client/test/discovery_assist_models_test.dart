@@ -102,6 +102,58 @@ void main() {
     expect(response.searchSelection, isNull);
   });
 
+  test('parses verification defensively without affecting assist results', () {
+    final response = DiscoveryAssistResponse.fromJson({
+      'status': 'ok',
+      'verification': {
+        'schemaVersion': 2,
+        'route': '/discovery/assist',
+        'interpretedQuery': 'porter robinson shelter live',
+        'requestedProviders': ['youtube', null, '  ', 'soundcloud'],
+        'groundingSources': [
+          {
+            'kind': 'search',
+            'provider': 'youtube',
+            'status': 'ok',
+            'candidateCount': '3',
+          },
+          'not a source',
+        ],
+        'checks': [
+          {
+            'id': 'grounded_sources',
+            'status': 'pass',
+            'detail': 'Matches came from provider search.',
+          },
+          {'id': 12, 'status': false, 'detail': null},
+        ],
+        'unverified': ['Exact recording', 42, '  '],
+      },
+    });
+
+    final verification = response.verification;
+    expect(verification, isNotNull);
+    expect(verification!.schemaVersion, '2');
+    expect(verification.route, '/discovery/assist');
+    expect(verification.requestedProviders, ['youtube', 'soundcloud']);
+    expect(verification.groundingSources, hasLength(1));
+    expect(verification.groundingSources.single.candidateCount, 3);
+    expect(verification.checks, hasLength(2));
+    expect(verification.checks.last.id, '12');
+    expect(verification.unverified, ['Exact recording', '42']);
+    expect(response.hasGroundedResults, isFalse);
+  });
+
+  test('keeps responses from backends without verification compatible', () {
+    final response = DiscoveryAssistResponse.fromJson({
+      'status': 'ok',
+      'assistantText': 'No verification metadata yet.',
+    });
+
+    expect(response.verification, isNull);
+    expect(response.assistantText, 'No verification metadata yet.');
+  });
+
   test('keeps direct and nested search selection sessions separate', () {
     final response = DiscoveryAssistResponse.fromJson({
       'status': 'ok',

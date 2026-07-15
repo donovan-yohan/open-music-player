@@ -61,6 +61,25 @@ func mustMarshal(t *testing.T, v interface{}) string {
 	return string(b)
 }
 
+func requireVerification(t *testing.T, verification AssistVerification, route string) {
+	t.Helper()
+	if verification.SchemaVersion != assistVerificationSchemaVersion || verification.Route != route {
+		t.Fatalf("verification = %#v, want schema %q and route %q", verification, assistVerificationSchemaVersion, route)
+	}
+	if verification.GroundingSources == nil || verification.Checks == nil || verification.Unverified == nil {
+		t.Fatalf("verification must encode deterministic arrays: %#v", verification)
+	}
+}
+
+func verificationCheck(verification AssistVerification, id string) *AssistVerificationCheck {
+	for i := range verification.Checks {
+		if verification.Checks[i].ID == id {
+			return &verification.Checks[i]
+		}
+	}
+	return nil
+}
+
 func TestAssistDirectURLFromPromptResolvesWithoutModel(t *testing.T) {
 	client := &fakeAssistClient{intent: &aiassist.Intent{Kind: aiassist.KindSearch}}
 	svc := newAssistService(client)
@@ -81,6 +100,10 @@ func TestAssistDirectURLFromPromptResolvesWithoutModel(t *testing.T) {
 	}
 	if len(resp.SuggestedActions) != 1 || resp.SuggestedActions[0].Kind != "queue" {
 		t.Fatalf("expected a single non-destructive queue action: %#v", resp.SuggestedActions)
+	}
+	requireVerification(t, resp.Verification, assistVerificationRouteUserURL)
+	if len(resp.Verification.GroundingSources) != 2 || resp.Verification.GroundingSources[0].Kind != "user_url" || resp.Verification.GroundingSources[1].Kind != "resolver" {
+		t.Fatalf("direct URL grounding = %#v, want user_url then resolver", resp.Verification.GroundingSources)
 	}
 }
 
@@ -131,6 +154,13 @@ func TestAssistModelSuggestedURLIsNeverACandidate(t *testing.T) {
 		if strings.Contains(c.SourceURL, "ai-generated.example") {
 			t.Fatalf("model URL became a candidate: %#v", c)
 		}
+	}
+	requireVerification(t, resp.Verification, assistVerificationRouteSearch)
+	if resp.Verification.InterpretedQuery != "shelter live" {
+		t.Fatalf("model URL must not survive interpreted query: %#v", resp.Verification)
+	}
+	if check := verificationCheck(resp.Verification, "caveats"); check == nil || check.Status != "warn" {
+		t.Fatalf("model caveat must be marked unverified: %#v", resp.Verification)
 	}
 }
 
@@ -259,6 +289,29 @@ func TestAssistSearchGroundsAgainstDiscoveryAndShowsProvenance(t *testing.T) {
 	if len(resp.Search.Results) != 1 || resp.Search.Results[0].Title != "Shelter (Live)" {
 		t.Fatalf("grounded result missing: %#v", resp.Search)
 	}
+	requireVerification(t, resp.Verification, assistVerificationRouteSearch)
+	if resp.Verification.InterpretedQuery != "Porter Robinson Shelter live" || len(resp.Verification.RequestedProviders) != 1 || resp.Verification.RequestedProviders[0] != "youtube" {
+		t.Fatalf("search interpretation = %#v", resp.Verification)
+	}
+	if len(resp.Verification.GroundingSources) != 1 || resp.Verification.GroundingSources[0].Kind != "provider_search" || resp.Verification.GroundingSources[0].Provider != "youtube" || resp.Verification.GroundingSources[0].CandidateCount == nil || *resp.Verification.GroundingSources[0].CandidateCount != 1 {
+		t.Fatalf("provider search grounding = %#v", resp.Verification.GroundingSources)
+	}
+}
+
+func TestAssistVerificationShowsFallbackQueryUsedForSearch(t *testing.T) {
+	provider := fakeProvider{name: "youtube"}
+	client := &fakeAssistClient{intent: &aiassist.Intent{
+		Kind:          aiassist.KindSearch,
+		AssistantText: "Ninajirachi iPod Touch official audio",
+		Providers:     []string{"youtube"},
+	}}
+	svc := newAssistService(client, provider)
+
+	resp := svc.Assist(context.Background(), "find the right version", 0)
+
+	if resp.Verification.InterpretedQuery != "Ninajirachi iPod Touch official audio" {
+		t.Fatalf("verification query = %q, want the fallback query discovery used", resp.Verification.InterpretedQuery)
+	}
 }
 
 func TestAssistProviderFailureIsVisibleAndIsolated(t *testing.T) {
@@ -283,6 +336,14 @@ func TestAssistProviderFailureIsVisibleAndIsolated(t *testing.T) {
 	if !sawCaveat {
 		t.Fatalf("degraded provider not surfaced as a caveat: %#v", resp.Caveats)
 	}
+	requireVerification(t, resp.Verification, assistVerificationRouteSearch)
+	check := verificationCheck(resp.Verification, "provider:youtube")
+	if check == nil || check.Status != "warn" || check.Detail != ProviderStatusTimeout {
+		t.Fatalf("provider failure verification = %#v", resp.Verification)
+	}
+	if len(resp.Verification.Unverified) == 0 || resp.Verification.Unverified[0] != "provider:youtube" {
+		t.Fatalf("provider failure must be unverified: %#v", resp.Verification.Unverified)
+	}
 }
 
 func TestAssistClarificationPassesThrough(t *testing.T) {
@@ -299,6 +360,10 @@ func TestAssistClarificationPassesThrough(t *testing.T) {
 	}
 	if resp.Search != nil {
 		t.Fatalf("clarification must not run discovery search")
+	}
+	requireVerification(t, resp.Verification, assistVerificationRouteClarify)
+	if check := verificationCheck(resp.Verification, "model_intent"); check == nil || check.Status != "warn" {
+		t.Fatalf("clarification verification = %#v", resp.Verification)
 	}
 }
 
@@ -317,6 +382,10 @@ func TestAssistModelErrorMapsToErrorEnvelope(t *testing.T) {
 	if resp.AssistantText == "" {
 		t.Fatalf("error envelope should still carry a user-facing fallback message")
 	}
+	requireVerification(t, resp.Verification, assistVerificationRouteError)
+	if check := verificationCheck(resp.Verification, "model_response"); check == nil || check.Status != "fail" {
+		t.Fatalf("error verification = %#v", resp.Verification)
+	}
 }
 
 func TestAssistDisabledClientReturnsDisabledEnvelope(t *testing.T) {
@@ -329,6 +398,10 @@ func TestAssistDisabledClientReturnsDisabledEnvelope(t *testing.T) {
 	}
 	if resp.Error == nil || resp.Error.Code != aiassist.CodeDisabled {
 		t.Fatalf("disabled envelope = %#v, want AI_DISABLED", resp.Error)
+	}
+	requireVerification(t, resp.Verification, assistVerificationRouteDisabled)
+	if check := verificationCheck(resp.Verification, "model_disabled"); check == nil || check.Status != "warn" {
+		t.Fatalf("disabled verification = %#v", resp.Verification)
 	}
 }
 
