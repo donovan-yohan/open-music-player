@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,16 @@ _ARTIFACT_SECRET_PATTERN = re.compile(
 STATUS_GRADED = "graded"
 STATUS_SKIPPED = "skipped"
 STATUS_DRIFT = "drift"
+
+
+class CorruptRecordingError(RuntimeError):
+    """A recording file exists but its JSON could not be read.
+
+    Distinct from a *missing* recording (``_load_recording`` returns ``None``):
+    a present-but-unreadable recording is a real defect, so callers convert it to
+    a typed grading failure rather than letting a raw ``JSONDecodeError`` abort
+    the whole run.
+    """
 
 
 @dataclass
@@ -97,7 +108,10 @@ def _load_recording(arm: str, case_id: str) -> Optional[dict]:
     path = recording_path(arm, case_id)
     if not path.exists():
         return None
-    return json.loads(path.read_text())
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        raise CorruptRecordingError(f"{path}: {exc}") from exc
 
 
 def _write_recording(arm: str, case_id: str, result: AssemblyResult, base: Optional[Path]) -> None:
@@ -197,7 +211,18 @@ def run_case_arm(case: Case, world: FixtureWorld, arm: str, cfg: RunConfig) -> C
                 case, world, budget, arm, result, latency_ms, allowlist=allowlist
             )
             # Drift check against the recording (deterministic arm is hermetic).
-            recording = _load_recording(arm, case.id)
+            try:
+                recording = _load_recording(arm, case.id)
+            except CorruptRecordingError as exc:
+                # No typed-failure path exists for the deterministic drift check,
+                # so treat an unreadable recording like a missing one (skip the
+                # check) but warn distinctly instead of aborting the run.
+                print(
+                    f"warning: corrupted recording {arm}/{case.id}, "
+                    f"skipping drift check: {exc}",
+                    file=sys.stderr,
+                )
+                recording = None
             if recording is not None:
                 recorded = AssemblyResult.model_validate(recording)
                 if recorded.model_dump(exclude_none=True) != result.model_dump(exclude_none=True):
@@ -210,9 +235,22 @@ def run_case_arm(case: Case, world: FixtureWorld, arm: str, cfg: RunConfig) -> C
                 _write_recording(arm, case.id, result, cfg.record_dir)
             return outcome
 
-        # Model arm in replay: load recording or skip.
-        recording = _load_recording(arm, case.id)
-        if recording is None:
+        # Model arm in replay: load recording or skip. A present-but-unreadable
+        # recording (corrupt JSON or invalid schema) is graded as a typed failure
+        # — mirroring a malformed live completion — rather than crashing the run.
+        parse_error: Optional[str] = None
+        result: Optional[AssemblyResult] = None
+        try:
+            recording = _load_recording(arm, case.id)
+        except CorruptRecordingError as exc:
+            print(
+                f"warning: corrupted recording {arm}/{case.id}, "
+                f"grading as a typed error: {exc}",
+                file=sys.stderr,
+            )
+            recording = None
+            parse_error = f"CorruptRecordingError: {exc}"
+        if recording is None and parse_error is None:
             return CaseArmOutcome(
                 case_id=case.id,
                 arm=arm,
@@ -221,12 +259,11 @@ def run_case_arm(case: Case, world: FixtureWorld, arm: str, cfg: RunConfig) -> C
                 latency_ms=0,
                 skip_reason="recording missing",
             )
-        parse_error: Optional[str] = None
-        result: Optional[AssemblyResult] = None
-        try:
-            result = AssemblyResult.model_validate(recording)
-        except Exception as exc:
-            parse_error = f"{type(exc).__name__}: {exc}"
+        if parse_error is None:
+            try:
+                result = AssemblyResult.model_validate(recording)
+            except Exception as exc:
+                parse_error = f"{type(exc).__name__}: {exc}"
         if result is None:
             _, grades = _grade_result(case, world, budget, None, parse_error)
             return CaseArmOutcome(
@@ -397,7 +434,12 @@ def build_records(outcomes: list[CaseArmOutcome], cfg: RunConfig) -> list[dict]:
 def write_artifact(path: str, records: list[dict], api_key: str = "") -> None:
     def encode(record: dict) -> str:
         raw = json.dumps(record, ensure_ascii=False)
-        if api_key:
+        # Only literal-replace a key long enough to be a real secret. A short
+        # value (e.g. an empty or truncated key) would blanket-redact ordinary
+        # substrings across every artifact line; the regex pattern below still
+        # catches genuinely secret-shaped tokens regardless. Mirrors the Go
+        # harness redaction guard.
+        if api_key and len(api_key) >= 8:
             raw = raw.replace(api_key, "[REDACTED]")
         raw = _ARTIFACT_SECRET_PATTERN.sub("[REDACTED]", raw)
         return raw
