@@ -1,0 +1,59 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:c360-audio",
+      "provider": "youtube",
+      "sourceId": "c360-audio",
+      "sourceUrl": "https://www.youtube.com/watch?v=c360-audio",
+      "title": "Charli xcx - 360 (Official Audio)",
+      "artist": "Charli xcx",
+      "uploader": "Charli XCX - Topic",
+      "durationMs": 193000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "youtube:c360-slowed",
+      "provider": "youtube",
+      "sourceId": "c360-slowed",
+      "sourceUrl": "https://www.youtube.com/watch?v=c360-slowed",
+      "title": "Charli xcx - 360 (slowed + reverb)",
+      "artist": "Charli xcx",
+      "uploader": "slowed songs",
+      "durationMs": 197000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:c360-nightcore",
+      "provider": "youtube",
+      "sourceId": "c360-nightcore",
+      "sourceUrl": "https://www.youtube.com/watch?v=c360-nightcore",
+      "title": "Charli xcx - 360 (Sped Up Nightcore)",
+      "artist": "Charli xcx",
+      "uploader": "nightcore world",
+      "durationMs": 190000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    }
+  ],
+  "catalog": [
+    {"kind": "track", "id": "mb:recording:c360", "title": "360", "artist": "Charli xcx", "durationMs": 193000, "score": 93}
+  ],
+  "metadata": {
+    "youtube:c360-slowed": {
+      "candidateId": "youtube:c360-slowed",
+      "description": "Slowed and reverb edit.",
+      "channel": "slowed songs",
+      "channelVerified": false,
+      "uploadDate": "2024-06-10",
+      "tags": ["slowed", "reverb", "edit"]
+    }
+  }
+}

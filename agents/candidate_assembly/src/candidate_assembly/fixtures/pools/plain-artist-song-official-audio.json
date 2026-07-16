@@ -1,0 +1,82 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:nina-ipod-audio",
+      "provider": "youtube",
+      "sourceId": "nina-ipod-audio",
+      "sourceUrl": "https://www.youtube.com/watch?v=nina-ipod-audio",
+      "title": "Ninajirachi - iPod Touch (Official Audio)",
+      "artist": "Ninajirachi",
+      "uploader": "Ninajirachi - Topic",
+      "durationMs": 231000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_music_songs", "description": "Provided to YouTube by the label."}
+    },
+    {
+      "candidateId": "youtube:nina-ipod-mv",
+      "provider": "youtube",
+      "sourceId": "nina-ipod-mv",
+      "sourceUrl": "https://www.youtube.com/watch?v=nina-ipod-mv",
+      "title": "Ninajirachi - iPod Touch (Official Music Video)",
+      "artist": "Ninajirachi",
+      "uploader": "Ninajirachi",
+      "durationMs": 231000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:nina-ipod-reaction",
+      "provider": "youtube",
+      "sourceId": "nina-ipod-reaction",
+      "sourceUrl": "https://www.youtube.com/watch?v=nina-ipod-reaction",
+      "title": "Ninajirachi iPod Touch FIRST REACTION!!",
+      "artist": "",
+      "uploader": "Reaction Central",
+      "durationMs": 480000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:nina-ipod-8d",
+      "provider": "youtube",
+      "sourceId": "nina-ipod-8d",
+      "sourceUrl": "https://www.youtube.com/watch?v=nina-ipod-8d",
+      "title": "Ninajirachi - iPod Touch (8D AUDIO)",
+      "artist": "Ninajirachi",
+      "uploader": "8D Music World",
+      "durationMs": 233000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    }
+  ],
+  "catalog": [
+    {"kind": "track", "id": "mb:recording:nina-ipod", "title": "iPod Touch", "artist": "Ninajirachi", "durationMs": 231000, "score": 95},
+    {"kind": "artist", "id": "mb:artist:ninajirachi", "title": "Ninajirachi", "score": 90}
+  ],
+  "metadata": {
+    "youtube:nina-ipod-audio": {
+      "candidateId": "youtube:nina-ipod-audio",
+      "description": "Official audio provided to YouTube by the label.",
+      "channel": "Ninajirachi - Topic",
+      "channelVerified": true,
+      "uploadDate": "2024-05-10",
+      "tags": ["electronic", "official"]
+    },
+    "youtube:nina-ipod-8d": {
+      "candidateId": "youtube:nina-ipod-8d",
+      "description": "8D audio edit, use headphones.",
+      "channel": "8D Music World",
+      "channelVerified": false,
+      "uploadDate": "2024-06-01",
+      "tags": ["8d", "edit"]
+    }
+  }
+}

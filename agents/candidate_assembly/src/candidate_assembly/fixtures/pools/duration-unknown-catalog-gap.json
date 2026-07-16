@@ -1,0 +1,59 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:windowlicker-audio",
+      "provider": "youtube",
+      "sourceId": "windowlicker-audio",
+      "sourceUrl": "https://www.youtube.com/watch?v=windowlicker-audio",
+      "title": "Aphex Twin - Windowlicker (Official Audio)",
+      "artist": "Aphex Twin",
+      "uploader": "Aphex Twin - Topic",
+      "durationMs": 366000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "youtube:windowlicker-mv",
+      "provider": "youtube",
+      "sourceId": "windowlicker-mv",
+      "sourceUrl": "https://www.youtube.com/watch?v=windowlicker-mv",
+      "title": "Aphex Twin - Windowlicker (Official Video)",
+      "artist": "Aphex Twin",
+      "uploader": "Warp Records",
+      "durationMs": 366000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:windowlicker-alt",
+      "provider": "youtube",
+      "sourceId": "windowlicker-alt",
+      "sourceUrl": "https://www.youtube.com/watch?v=windowlicker-alt",
+      "title": "Aphex Twin - Windowlicker",
+      "artist": "Aphex Twin",
+      "uploader": "Warp Records",
+      "durationMs": 366000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    }
+  ],
+  "catalog": [
+    {"kind": "track", "id": "mb:recording:windowlicker", "title": "Windowlicker", "artist": "Aphex Twin", "score": 80}
+  ],
+  "metadata": {
+    "youtube:windowlicker-audio": {
+      "candidateId": "youtube:windowlicker-audio",
+      "description": "Official audio, topic channel.",
+      "channel": "Aphex Twin - Topic",
+      "channelVerified": true,
+      "uploadDate": "2012-01-01",
+      "tags": ["electronic"]
+    }
+  }
+}

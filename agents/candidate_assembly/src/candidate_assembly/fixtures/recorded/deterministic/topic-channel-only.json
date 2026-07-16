@@ -1,0 +1,104 @@
+{
+  "arm": "deterministic",
+  "budgetSpent": {
+    "elapsedMs": 0,
+    "modelCalls": 0,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "durationTargetMs": 305000,
+    "notes": "Deterministic source-quality ranking of the retrieved pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "play Jamie xx Gosh"
+    ]
+  },
+  "provenance": {
+    "model": "",
+    "orchestrator": "deterministic-go-sourcequality-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:gosh-topic",
+      "classification": "topic_audio",
+      "confidence": 0.92,
+      "evidence": [
+        {
+          "ref": "youtube:gosh-topic",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:gosh",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 1,
+      "rationale": "topic audio: YouTube topic upload is usually label-provided audio.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:gosh-mv",
+      "classification": "music_video",
+      "confidence": 0.6,
+      "evidence": [
+        {
+          "ref": "youtube:gosh-mv",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:gosh",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 2,
+      "rationale": "music video: uploader matches the artist.",
+      "warnings": [
+        "music_video"
+      ]
+    },
+    {
+      "candidateId": "youtube:gosh-live",
+      "classification": "live",
+      "confidence": 0.54,
+      "evidence": [
+        {
+          "ref": "youtube:gosh-live",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:gosh",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 3,
+      "rationale": "live: title and artist match the query terms.",
+      "warnings": [
+        "live",
+        "duration_mismatch"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "61ea56921f74",
+      "elapsedMs": 0,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "1f89a91b436f",
+      "elapsedMs": 0,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

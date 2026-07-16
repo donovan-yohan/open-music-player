@@ -1,0 +1,115 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 171884,
+    "modelCalls": 9,
+    "toolCalls": 7
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "track"
+    ],
+    "durationTargetMs": 240000,
+    "notes": "The user wants the remix track from a Skrillex DJ set; canonical remix is Nightlight (Skrillex Remix) by Boombox.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Skrillex remix",
+      "Nightlight Skrillex Remix"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:skrillex-remix-standalone",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [],
+      "rank": 1,
+      "rationale": "Official audio of the Nightlight (Skrillex Remix) by Boombox; matches canonical track exactly.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:skrillex-full-set",
+      "classification": "live",
+      "confidence": 0.5,
+      "evidence": [],
+      "rank": 2,
+      "rationale": "Full DJ set containing the remix; live recording, duration differs significantly from the standalone remix.",
+      "warnings": [
+        "live",
+        "duration_mismatch"
+      ]
+    },
+    {
+      "candidateId": "youtube:skrillex-remix-reaction",
+      "classification": "interview",
+      "confidence": 0.2,
+      "evidence": [],
+      "rank": 3,
+      "rationale": "Reaction video to the remix; much longer duration and includes commentary, not the clean remix audio.",
+      "warnings": [
+        "duration_mismatch"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "c9eeb8450973",
+      "elapsedMs": 15542,
+      "resultCount": 1,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "8cb2a1f86d54",
+      "elapsedMs": 23808,
+      "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "666a6f8eb249",
+      "elapsedMs": 32247,
+      "resultCount": 1,
+      "step": 3,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 41448,
+      "resultCount": 0,
+      "step": 4,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "c40fffe1c9ab",
+      "elapsedMs": 45083,
+      "resultCount": 3,
+      "step": 5,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 53764,
+      "resultCount": 0,
+      "step": 6,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "5dfa7840fa1c",
+      "elapsedMs": 65385,
+      "resultCount": 0,
+      "step": 7,
+      "tool": "search_sources"
+    }
+  ],
+  "unresolved": [
+    "No other versions of the remix were found; the full set and reaction are the only near-misses."
+  ]
+}

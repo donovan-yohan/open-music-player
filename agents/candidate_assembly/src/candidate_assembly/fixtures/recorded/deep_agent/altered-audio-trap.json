@@ -1,0 +1,99 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 80776,
+    "modelCalls": 5,
+    "toolCalls": 3
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "track"
+    ],
+    "durationTargetMs": 193000,
+    "notes": "No music video found; only official audio and two altered edits.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Charli xcx 360",
+      "Charli xcx 360 music video"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:c360-audio",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:c360-audio",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official audio on Topic channel, exact duration matches canonical track.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:c360-slowed",
+      "classification": "altered_audio",
+      "confidence": 0.7,
+      "evidence": [
+        {
+          "ref": "youtube:c360-slowed",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Slowed + reverb edit, duration near-canonical (4s diff under 7%).",
+      "warnings": [
+        "altered_audio"
+      ]
+    },
+    {
+      "candidateId": "youtube:c360-nightcore",
+      "classification": "altered_audio",
+      "confidence": 0.7,
+      "evidence": [
+        {
+          "ref": "youtube:c360-nightcore",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Sped-up nightcore edit, duration near-canonical (3s diff under 7%).",
+      "warnings": [
+        "altered_audio"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "c62bdf6ac3cb",
+      "elapsedMs": 2966,
+      "resultCount": 1,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "f7c629c4af4c",
+      "elapsedMs": 6627,
+      "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "83abf3d93296",
+      "elapsedMs": 25066,
+      "resultCount": 3,
+      "step": 3,
+      "tool": "search_sources"
+    }
+  ],
+  "unresolved": []
+}

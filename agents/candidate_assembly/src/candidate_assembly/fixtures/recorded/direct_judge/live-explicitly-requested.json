@@ -1,0 +1,90 @@
+{
+  "arm": "direct_judge",
+  "budgetSpent": {
+    "elapsedMs": 20440,
+    "modelCalls": 1,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "live"
+    ],
+    "notes": "Single-shot judge re-ranking of the deterministic pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "find the live version of Tame Impala The Less I Know The Better"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "direct-judge-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:tliktb-live-coachella",
+      "classification": "live",
+      "confidence": 0.88,
+      "evidence": [
+        {
+          "ref": "youtube:tliktb-live-coachella",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official live performance from Tame Impala channel, matches query exactly",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:tliktb-live-bootleg",
+      "classification": "live",
+      "confidence": 0.65,
+      "evidence": [
+        {
+          "ref": "youtube:tliktb-live-bootleg",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Live recording but unofficial fan upload, lower quality",
+      "warnings": [
+        "remix"
+      ]
+    },
+    {
+      "candidateId": "youtube:tliktb-studio-mv",
+      "classification": "music_video",
+      "confidence": 0.46,
+      "evidence": [
+        {
+          "ref": "youtube:tliktb-studio-mv",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Music video, not a live version as requested",
+      "warnings": [
+        "music_video"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "f284e4b5edd4",
+      "elapsedMs": 0,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "a31da9fff8c7",
+      "elapsedMs": 0,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

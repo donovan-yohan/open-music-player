@@ -1,0 +1,101 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:vondutch-audio",
+      "provider": "youtube",
+      "sourceId": "vondutch-audio",
+      "sourceUrl": "https://www.youtube.com/watch?v=vondutch-audio",
+      "title": "Charli xcx - Von dutch (Official Audio)",
+      "artist": "Charli xcx",
+      "uploader": "Charli XCX - Topic",
+      "durationMs": 158000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": true,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "youtube:vondutch-topic",
+      "provider": "youtube",
+      "sourceId": "vondutch-topic",
+      "sourceUrl": "https://www.youtube.com/watch?v=vondutch-topic",
+      "title": "Charli xcx - Von dutch",
+      "artist": "Charli xcx",
+      "uploader": "Charli XCX - Topic",
+      "durationMs": 158000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": true,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "soundcloud:vondutch-upload",
+      "provider": "soundcloud",
+      "sourceId": "vondutch-upload",
+      "sourceUrl": "https://soundcloud.com/charlixcx/von-dutch",
+      "title": "Charli xcx - Von dutch",
+      "artist": "Charli xcx",
+      "uploader": "Charli xcx",
+      "durationMs": 158000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": true,
+      "metadata": {"discoverySurface": "soundcloud_search"}
+    },
+    {
+      "candidateId": "youtube:vondutch-lyric",
+      "provider": "youtube",
+      "sourceId": "vondutch-lyric",
+      "sourceUrl": "https://www.youtube.com/watch?v=vondutch-lyric",
+      "title": "Charli xcx - Von dutch (Lyric Video)",
+      "artist": "Charli xcx",
+      "uploader": "Charli XCX",
+      "durationMs": 158000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": true,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:vondutch-mv",
+      "provider": "youtube",
+      "sourceId": "vondutch-mv",
+      "sourceUrl": "https://www.youtube.com/watch?v=vondutch-mv",
+      "title": "Charli xcx - Von dutch (Official Video)",
+      "artist": "Charli xcx",
+      "uploader": "Charli XCX",
+      "durationMs": 158000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": true,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:vondutch-spedup",
+      "provider": "youtube",
+      "sourceId": "vondutch-spedup",
+      "sourceUrl": "https://www.youtube.com/watch?v=vondutch-spedup",
+      "title": "Charli xcx - Von dutch (Sped Up)",
+      "artist": "Charli xcx",
+      "uploader": "Sped Up Nation",
+      "durationMs": 132000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": true,
+      "metadata": {"discoverySurface": "youtube_search"}
+    }
+  ],
+  "catalog": [
+    {"kind": "track", "id": "mb:recording:vondutch", "title": "Von dutch", "artist": "Charli xcx", "durationMs": 158000, "score": 96}
+  ],
+  "metadata": {
+    "youtube:vondutch-audio": {
+      "candidateId": "youtube:vondutch-audio",
+      "description": "Official audio.",
+      "channel": "Charli XCX - Topic",
+      "channelVerified": true,
+      "uploadDate": "2024-02-29",
+      "tags": ["pop", "official"]
+    }
+  }
+}

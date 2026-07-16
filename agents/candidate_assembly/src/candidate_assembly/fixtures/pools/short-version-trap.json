@@ -1,0 +1,59 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:rumble-full",
+      "provider": "youtube",
+      "sourceId": "rumble-full",
+      "sourceUrl": "https://www.youtube.com/watch?v=rumble-full",
+      "title": "Fred again.. - Rumble (Official Audio)",
+      "artist": "Fred again..",
+      "uploader": "Fred again.. - Topic",
+      "durationMs": 231000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "youtube:rumble-short",
+      "provider": "youtube",
+      "sourceId": "rumble-short",
+      "sourceUrl": "https://www.youtube.com/shorts/rumble-short",
+      "title": "Fred again Rumble #shorts",
+      "artist": "Fred again..",
+      "uploader": "clips daily",
+      "durationMs": 45000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:rumble-tiktok",
+      "provider": "youtube",
+      "sourceId": "rumble-tiktok",
+      "sourceUrl": "https://www.youtube.com/watch?v=rumble-tiktok",
+      "title": "Fred again - Rumble (TikTok version)",
+      "artist": "Fred again..",
+      "uploader": "tiktok audios",
+      "durationMs": 40000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    }
+  ],
+  "catalog": [
+    {"kind": "track", "id": "mb:recording:rumble", "title": "Rumble", "artist": "Fred again..", "durationMs": 231000, "score": 92}
+  ],
+  "metadata": {
+    "youtube:rumble-short": {
+      "candidateId": "youtube:rumble-short",
+      "description": "45 second short clip.",
+      "channel": "clips daily",
+      "channelVerified": false,
+      "uploadDate": "2024-03-01",
+      "tags": ["shorts", "clip"]
+    }
+  }
+}

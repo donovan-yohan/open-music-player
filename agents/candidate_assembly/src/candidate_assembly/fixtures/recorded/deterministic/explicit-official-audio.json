@@ -1,0 +1,139 @@
+{
+  "arm": "deterministic",
+  "budgetSpent": {
+    "elapsedMs": 0,
+    "modelCalls": 0,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "durationTargetMs": 158000,
+    "notes": "Deterministic source-quality ranking of the retrieved pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Find the official audio for Charli xcx Von dutch"
+    ]
+  },
+  "provenance": {
+    "model": "",
+    "orchestrator": "deterministic-go-sourcequality-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:vondutch-audio",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:vondutch-audio",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:vondutch",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 1,
+      "rationale": "official audio: title indicates official audio.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:vondutch-topic",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:vondutch-topic",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:vondutch",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 2,
+      "rationale": "official audio: YouTube Music Songs discovery surface identifies an official track.",
+      "warnings": []
+    },
+    {
+      "candidateId": "soundcloud:vondutch-upload",
+      "classification": "artist_upload",
+      "confidence": 0.73,
+      "evidence": [
+        {
+          "ref": "soundcloud:vondutch-upload",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:vondutch",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 3,
+      "rationale": "artist upload: uploader matches the artist.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:vondutch-lyric",
+      "classification": "lyric_video",
+      "confidence": 0.64,
+      "evidence": [
+        {
+          "ref": "youtube:vondutch-lyric",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:vondutch",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 4,
+      "rationale": "lyric video: uploader matches the artist.",
+      "warnings": [
+        "lyric_video"
+      ]
+    },
+    {
+      "candidateId": "youtube:vondutch-mv",
+      "classification": "music_video",
+      "confidence": 0.55,
+      "evidence": [
+        {
+          "ref": "youtube:vondutch-mv",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:vondutch",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 5,
+      "rationale": "music video: uploader matches the artist.",
+      "warnings": [
+        "music_video"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "2468008d9ab8",
+      "elapsedMs": 0,
+      "resultCount": 6,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "1e9faf1cfc39",
+      "elapsedMs": 0,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

@@ -1,0 +1,94 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 73922,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "track"
+    ],
+    "durationTargetMs": 258000,
+    "notes": "",
+    "platformPreference": [
+      "soundcloud"
+    ],
+    "searchQueries": [
+      "SOPHIE Is It Cold in the Water"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "soundcloud:sophie-cold-official",
+      "classification": "artist_upload",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-official",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official SOPHIE upload matching catalog duration exactly.",
+      "warnings": []
+    },
+    {
+      "candidateId": "soundcloud:sophie-cold-remix",
+      "classification": "remix",
+      "confidence": 0.6,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-remix",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Remix variant by another uploader; duration within 7% threshold.",
+      "warnings": [
+        "remix"
+      ]
+    },
+    {
+      "candidateId": "soundcloud:sophie-cold-snippet",
+      "classification": "artist_upload",
+      "confidence": 0.3,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-snippet",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Short snippet; duration mismatch and short version.",
+      "warnings": [
+        "duration_mismatch",
+        "short_version"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "befed54087cb",
+      "elapsedMs": 6301,
+      "resultCount": 1,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "067946637254",
+      "elapsedMs": 10692,
+      "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    }
+  ],
+  "unresolved": []
+}

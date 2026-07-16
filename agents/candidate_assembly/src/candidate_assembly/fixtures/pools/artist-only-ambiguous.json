@@ -1,0 +1,73 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:nina-pinky",
+      "provider": "youtube",
+      "sourceId": "nina-pinky",
+      "sourceUrl": "https://www.youtube.com/watch?v=nina-pinky",
+      "title": "Ninajirachi - Pinky Promise (Official Audio)",
+      "artist": "Ninajirachi",
+      "uploader": "Ninajirachi - Topic",
+      "durationMs": 200000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "youtube:nina-ipod",
+      "provider": "youtube",
+      "sourceId": "nina-ipod",
+      "sourceUrl": "https://www.youtube.com/watch?v=nina-ipod",
+      "title": "Ninajirachi - iPod Touch",
+      "artist": "Ninajirachi",
+      "uploader": "Ninajirachi - Topic",
+      "durationMs": 231000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "youtube:nina-rukus",
+      "provider": "youtube",
+      "sourceId": "nina-rukus",
+      "sourceUrl": "https://www.youtube.com/watch?v=nina-rukus",
+      "title": "Ninajirachi - Rukus",
+      "artist": "Ninajirachi",
+      "uploader": "Ninajirachi - Topic",
+      "durationMs": 195000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "youtube:nina-typebeat",
+      "provider": "youtube",
+      "sourceId": "nina-typebeat",
+      "sourceUrl": "https://www.youtube.com/watch?v=nina-typebeat",
+      "title": "Ninajirachi type beat (prod. someone)",
+      "artist": "",
+      "uploader": "beat plug",
+      "durationMs": 180000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    }
+  ],
+  "catalog": [
+    {"kind": "artist", "id": "mb:artist:ninajirachi", "title": "Ninajirachi", "score": 92}
+  ],
+  "metadata": {
+    "youtube:nina-typebeat": {
+      "candidateId": "youtube:nina-typebeat",
+      "description": "Producer type beat, not an official release.",
+      "channel": "beat plug",
+      "channelVerified": false,
+      "uploadDate": "2024-01-05",
+      "tags": ["type beat", "instrumental"]
+    }
+  }
+}

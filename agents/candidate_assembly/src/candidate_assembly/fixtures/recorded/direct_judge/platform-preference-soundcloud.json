@@ -1,0 +1,107 @@
+{
+  "arm": "direct_judge",
+  "budgetSpent": {
+    "elapsedMs": 21029,
+    "modelCalls": 1,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "durationTargetMs": 258000,
+    "notes": "Single-shot judge re-ranking of the deterministic pool.",
+    "platformPreference": [
+      "soundcloud"
+    ],
+    "searchQueries": [
+      "Find SOPHIE Is It Cold in the Water from SoundCloud"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "direct-judge-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "soundcloud:sophie-cold-official",
+      "classification": "artist_upload",
+      "confidence": 0.82,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-official",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:sophie-cold",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official full track uploaded by artist",
+      "warnings": []
+    },
+    {
+      "candidateId": "soundcloud:sophie-cold-snippet",
+      "classification": "artist_upload",
+      "confidence": 0.53,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-snippet",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:sophie-cold",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Snippet only, not full song",
+      "warnings": [
+        "short_version",
+        "duration_mismatch"
+      ]
+    },
+    {
+      "candidateId": "soundcloud:sophie-cold-remix",
+      "classification": "remix",
+      "confidence": 0.49,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-remix",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:sophie-cold",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Remix, not the original track",
+      "warnings": [
+        "remix"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "cd1d8bfc627c",
+      "elapsedMs": 0,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "eeaa1a5bccd4",
+      "elapsedMs": 0,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

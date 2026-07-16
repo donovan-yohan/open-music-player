@@ -1,0 +1,59 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:tliktb-studio",
+      "provider": "youtube",
+      "sourceId": "tliktb-studio",
+      "sourceUrl": "https://www.youtube.com/watch?v=tliktb-studio",
+      "title": "Tame Impala - The Less I Know The Better (Official Audio)",
+      "artist": "Tame Impala",
+      "uploader": "Tame Impala - Topic",
+      "durationMs": 218000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "youtube:tliktb-live",
+      "provider": "youtube",
+      "sourceId": "tliktb-live",
+      "sourceUrl": "https://www.youtube.com/watch?v=tliktb-live",
+      "title": "Tame Impala - The Less I Know The Better (Live at Coachella)",
+      "artist": "Tame Impala",
+      "uploader": "Coachella",
+      "durationMs": 300000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:tliktb-cover",
+      "provider": "youtube",
+      "sourceId": "tliktb-cover",
+      "sourceUrl": "https://www.youtube.com/watch?v=tliktb-cover",
+      "title": "The Less I Know The Better - Tame Impala (Acoustic Cover)",
+      "artist": "Tame Impala",
+      "uploader": "Cover Sessions",
+      "durationMs": 224000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    }
+  ],
+  "catalog": [
+    {"kind": "track", "id": "mb:recording:tliktb", "title": "The Less I Know The Better", "artist": "Tame Impala", "durationMs": 218000, "score": 91}
+  ],
+  "metadata": {
+    "youtube:tliktb-live": {
+      "candidateId": "youtube:tliktb-live",
+      "description": "Live performance at Coachella.",
+      "channel": "Coachella",
+      "channelVerified": true,
+      "uploadDate": "2019-04-14",
+      "tags": ["live", "festival"]
+    }
+  }
+}

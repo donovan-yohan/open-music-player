@@ -1,0 +1,59 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:creep-original",
+      "provider": "youtube",
+      "sourceId": "creep-original",
+      "sourceUrl": "https://www.youtube.com/watch?v=creep-original",
+      "title": "Radiohead - Creep (Official Audio)",
+      "artist": "Radiohead",
+      "uploader": "Radiohead - Topic",
+      "durationMs": 238000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "youtube:creep-cover",
+      "provider": "youtube",
+      "sourceId": "creep-cover",
+      "sourceUrl": "https://www.youtube.com/watch?v=creep-cover",
+      "title": "Creep - Radiohead (Acoustic Cover by Willow Grove)",
+      "artist": "Radiohead",
+      "uploader": "Willow Grove",
+      "durationMs": 250000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:creep-live",
+      "provider": "youtube",
+      "sourceId": "creep-live",
+      "sourceUrl": "https://www.youtube.com/watch?v=creep-live",
+      "title": "Radiohead - Creep (Live at Glastonbury)",
+      "artist": "Radiohead",
+      "uploader": "festival archive",
+      "durationMs": 260000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    }
+  ],
+  "catalog": [
+    {"kind": "track", "id": "mb:recording:creep", "title": "Creep", "artist": "Radiohead", "durationMs": 238000, "score": 90}
+  ],
+  "metadata": {
+    "youtube:creep-cover": {
+      "candidateId": "youtube:creep-cover",
+      "description": "Acoustic cover by an independent singer.",
+      "channel": "Willow Grove",
+      "channelVerified": false,
+      "uploadDate": "2021-08-11",
+      "tags": ["cover", "acoustic"]
+    }
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 64569,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "audio"
+    ],
+    "durationTargetMs": 238000,
+    "notes": "",
+    "platformPreference": [],
+    "searchQueries": [
+      "Radiohead Creep"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:creep-original",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "mb:recording:creep",
+          "tool": "search_catalog"
+        },
+        {
+          "ref": "youtube:creep-original",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official audio from Radiohead Topic channel, exact duration and high quality.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:creep-cover",
+      "classification": "cover",
+      "confidence": 0.6,
+      "evidence": [
+        {
+          "ref": "youtube:creep-cover",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Acoustic cover version, slight duration variance but within 7% threshold.",
+      "warnings": [
+        "cover"
+      ]
+    },
+    {
+      "candidateId": "youtube:creep-live",
+      "classification": "live",
+      "confidence": 0.5,
+      "evidence": [
+        {
+          "ref": "youtube:creep-live",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Live performance from Glastonbury, duration exceeds both thresholds.",
+      "warnings": [
+        "live",
+        "duration_mismatch"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "27d0b884aace",
+      "elapsedMs": 3498,
+      "resultCount": 1,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "c6a809342be9",
+      "elapsedMs": 7496,
+      "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    }
+  ],
+  "unresolved": []
+}

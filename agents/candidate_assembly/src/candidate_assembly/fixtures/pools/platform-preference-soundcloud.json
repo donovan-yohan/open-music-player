@@ -1,0 +1,73 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:sophie-cold-audio",
+      "provider": "youtube",
+      "sourceId": "sophie-cold-audio",
+      "sourceUrl": "https://www.youtube.com/watch?v=sophie-cold-audio",
+      "title": "SOPHIE - Is It Cold in the Water (Official Audio)",
+      "artist": "SOPHIE",
+      "uploader": "SOPHIE - Topic",
+      "durationMs": 258000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "soundcloud:sophie-cold-official",
+      "provider": "soundcloud",
+      "sourceId": "sophie-cold-official",
+      "sourceUrl": "https://soundcloud.com/sophie/is-it-cold-in-the-water",
+      "title": "SOPHIE - Is It Cold in the Water",
+      "artist": "SOPHIE",
+      "uploader": "SOPHIE",
+      "durationMs": 258000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "soundcloud_search"}
+    },
+    {
+      "candidateId": "soundcloud:sophie-cold-remix",
+      "provider": "soundcloud",
+      "sourceId": "sophie-cold-remix",
+      "sourceUrl": "https://soundcloud.com/someone/is-it-cold-in-the-water-someone-remix",
+      "title": "SOPHIE - Is It Cold in the Water (Someone's Remix)",
+      "artist": "SOPHIE",
+      "uploader": "someone remixes",
+      "durationMs": 255000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "soundcloud_search"}
+    },
+    {
+      "candidateId": "soundcloud:sophie-cold-snippet",
+      "provider": "soundcloud",
+      "sourceId": "sophie-cold-snippet",
+      "sourceUrl": "https://soundcloud.com/sophie-snippets/is-it-cold-in-the-water-snippet",
+      "title": "SOPHIE - Is It Cold in the Water (snippet)",
+      "artist": "SOPHIE",
+      "uploader": "SOPHIE snippets",
+      "durationMs": 30000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "soundcloud_search"}
+    }
+  ],
+  "catalog": [
+    {"kind": "track", "id": "mb:recording:sophie-cold", "title": "Is It Cold in the Water", "artist": "SOPHIE", "durationMs": 258000, "score": 94}
+  ],
+  "metadata": {
+    "soundcloud:sophie-cold-official": {
+      "candidateId": "soundcloud:sophie-cold-official",
+      "description": "Official upload on the artist page.",
+      "channel": "SOPHIE",
+      "channelVerified": true,
+      "uploadDate": "2018-06-15",
+      "tags": ["electronic"]
+    }
+  }
+}

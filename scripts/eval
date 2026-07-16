@@ -10,8 +10,30 @@ case "$TARGET" in
     cd "$ROOT/backend"
     exec go run ./cmd/aiassist-eval "$@"
     ;;
+  agent-search)
+    shift
+    # The bounded candidate-assembly evals live in a self-contained uv package.
+    # `uv run` syncs the (light, network-free) default environment before running;
+    # the deterministic arm shells out to the real Go sourcequality-rank scorer.
+    # Live mode (real model endpoint) additionally needs the `live` extra
+    # (openai/langchain); replay stays on the light default env and hits no network.
+    cd "$ROOT/agents/candidate_assembly"
+    mode="replay"
+    prev=""
+    for arg in "$@"; do
+      case "$arg" in
+        --mode=*) mode="${arg#--mode=}" ;;
+        live|replay) [ "$prev" = "--mode" ] && mode="$arg" ;;
+      esac
+      prev="$arg"
+    done
+    if [ "$mode" = "live" ]; then
+      exec uv run --extra live python -m candidate_assembly.evalrunner.cli "$@"
+    fi
+    exec uv run python -m candidate_assembly.evalrunner.cli "$@"
+    ;;
   *)
-    echo "usage: scripts/eval ai-assist [--mode replay|live] [--case id[,id...]] [flags...]" >&2
+    echo "usage: scripts/eval [ai-assist|agent-search] [--mode replay|live] [--case id[,id...]] [flags...]" >&2
     exit 2
     ;;
 esac

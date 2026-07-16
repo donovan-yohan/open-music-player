@@ -1,0 +1,101 @@
+{
+  "arm": "direct_judge",
+  "budgetSpent": {
+    "elapsedMs": 16440,
+    "modelCalls": 1,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "notes": "Single-shot judge re-ranking of the deterministic pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "play some ninajirachi"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "direct-judge-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:nina-ipod",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:nina-ipod",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official audio from Ninajirachi's Topic channel, matches query.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-pinky",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:nina-pinky",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Official audio from Ninajirachi's Topic channel, matches query.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-rukus",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:nina-rukus",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Official audio from Ninajirachi's Topic channel, matches query.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-typebeat",
+      "classification": "unknown",
+      "confidence": 0.64,
+      "evidence": [
+        {
+          "ref": "youtube:nina-typebeat",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 4,
+      "rationale": "Type beat not by Ninajirachi; user requested actual Ninajirachi music.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "e49c379f753a",
+      "elapsedMs": 0,
+      "resultCount": 4,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "807bb91b2def",
+      "elapsedMs": 0,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

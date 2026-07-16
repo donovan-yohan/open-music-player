@@ -1,0 +1,77 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 49003,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "audio"
+    ],
+    "durationTargetMs": 218000,
+    "notes": "",
+    "platformPreference": [],
+    "searchQueries": [
+      "Tame Impala The Less I Know The Better"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:tliktb-studio",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [],
+      "rank": 1,
+      "rationale": "Official topic audio upload; matches canonical track duration exactly; best match for 'play' request.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:tliktb-cover",
+      "classification": "cover",
+      "confidence": 0.7,
+      "evidence": [],
+      "rank": 2,
+      "rationale": "Acoustic cover version; plausible near-miss of the requested song; duration within threshold.",
+      "warnings": [
+        "cover"
+      ]
+    },
+    {
+      "candidateId": "youtube:tliktb-live",
+      "classification": "live",
+      "confidence": 0.5,
+      "evidence": [],
+      "rank": 3,
+      "rationale": "Live performance at Coachella; duration significantly longer than canonical; tagged as live and duration mismatch.",
+      "warnings": [
+        "live",
+        "duration_mismatch"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "2391785f8ffa",
+      "elapsedMs": 3075,
+      "resultCount": 1,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "a2fe20bae8b5",
+      "elapsedMs": 7346,
+      "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    }
+  ],
+  "unresolved": []
+}

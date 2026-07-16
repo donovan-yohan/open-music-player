@@ -1,0 +1,106 @@
+{
+  "arm": "deterministic",
+  "budgetSpent": {
+    "elapsedMs": 0,
+    "modelCalls": 0,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "durationTargetMs": 258000,
+    "notes": "Deterministic source-quality ranking of the retrieved pool.",
+    "platformPreference": [
+      "soundcloud"
+    ],
+    "searchQueries": [
+      "Find SOPHIE Is It Cold in the Water from SoundCloud"
+    ]
+  },
+  "provenance": {
+    "model": "",
+    "orchestrator": "deterministic-go-sourcequality-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "soundcloud:sophie-cold-official",
+      "classification": "artist_upload",
+      "confidence": 0.73,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-official",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:sophie-cold",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 1,
+      "rationale": "artist upload: uploader matches the artist.",
+      "warnings": []
+    },
+    {
+      "candidateId": "soundcloud:sophie-cold-snippet",
+      "classification": "artist_upload",
+      "confidence": 0.62,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-snippet",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:sophie-cold",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 2,
+      "rationale": "artist upload: uploader matches the artist.",
+      "warnings": [
+        "short_version",
+        "duration_mismatch"
+      ]
+    },
+    {
+      "candidateId": "soundcloud:sophie-cold-remix",
+      "classification": "remix",
+      "confidence": 0.58,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-remix",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:sophie-cold",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 3,
+      "rationale": "remix candidate ranked by the deterministic source-quality scorer.",
+      "warnings": [
+        "remix"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "cd1d8bfc627c",
+      "elapsedMs": 0,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "eeaa1a5bccd4",
+      "elapsedMs": 0,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

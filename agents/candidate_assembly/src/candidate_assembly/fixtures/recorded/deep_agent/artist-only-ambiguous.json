@@ -1,0 +1,108 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 71287,
+    "modelCalls": 9,
+    "toolCalls": 7
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "track"
+    ],
+    "notes": "Canonical track durations not found; skipped duration cross-check.",
+    "platformPreference": [],
+    "searchQueries": [
+      "ninajirachi"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:nina-pinky",
+      "classification": "official_audio",
+      "confidence": 0.9,
+      "evidence": [],
+      "rank": 1,
+      "rationale": "Official topic-channel audio upload by Ninajirachi \u2013 Pinky Promise, matches the artist request.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-ipod",
+      "classification": "official_audio",
+      "confidence": 0.9,
+      "evidence": [],
+      "rank": 2,
+      "rationale": "Official topic-channel audio upload by Ninajirachi \u2013 iPod Touch, another suitable track.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-rukus",
+      "classification": "official_audio",
+      "confidence": 0.9,
+      "evidence": [],
+      "rank": 3,
+      "rationale": "Official topic-channel audio upload by Ninajirachi \u2013 Rukus, additional track.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "a292db4b4d64",
+      "elapsedMs": 2754,
+      "resultCount": 1,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "74a44410c664",
+      "elapsedMs": 5484,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "23aa4604ca94",
+      "elapsedMs": 11460,
+      "resultCount": 4,
+      "step": 3,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "a471e9b3057f",
+      "elapsedMs": 23203,
+      "resultCount": 0,
+      "step": 4,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 29851,
+      "resultCount": 0,
+      "step": 5,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 33322,
+      "resultCount": 0,
+      "step": 6,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 36488,
+      "resultCount": 0,
+      "step": 7,
+      "tool": "inspect_source_metadata"
+    }
+  ],
+  "unresolved": [
+    "Could not retrieve catalog track durations for Ninajirachi songs; duration mismatch check not applied."
+  ]
+}

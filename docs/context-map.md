@@ -10,6 +10,7 @@ domain concept moves or a new production harness becomes canonical.
 | Backend API | `backend/` | Go REST API, auth, library, queue, downloads, storage, analysis persistence | `scripts/test backend`, `scripts/lint backend`, `scripts/build backend` |
 | Audio analyzer | `backend/cmd/audio-analyzer/`, `backend/Dockerfile` target `analyzer-runtime` | Beat/downbeat, BPM, key/Camelot, waveform, and spectral analysis | `scripts/lint analyzer`, `scripts/test analyzer`, `scripts/build analyzer` |
 | AI assist evals | `backend/internal/aiassist/eval/`, `backend/cmd/aiassist-eval/`, `docs/AI_EVALS.md`, `scripts/eval` | Versioned, deterministic intent-evaluation corpus; replay and opt-in OpenAI-compatible live artifacts | `go test ./internal/aiassist/eval ./cmd/aiassist-eval`, `scripts/eval ai-assist --mode replay` |
+| Agent search evals | `agents/candidate_assembly/`, `backend/cmd/sourcequality-rank/`, `docs/AI_EVALS.md`, `scripts/eval` | Bounded, evals-first candidate-assembly orchestrator prototype (issue #265); network-free replay gate + opt-in live model arms | `scripts/eval agent-search --mode replay`, `cd agents/candidate_assembly && uv run pytest`, `go -C backend test ./cmd/sourcequality-rank/...` |
 | Flutter client | `client/` | Mobile/web/desktop app, playback engine, queue timeline, settings/build metadata | `scripts/test client`, `scripts/lint client`, `scripts/build client` |
 | Browser extension | `extension/` | Share/import surface for YouTube/SoundCloud style sources | `scripts/test extension`, `scripts/lint extension`, `scripts/build extension` |
 | Local stack | `docker-compose*.yml`, `scripts/local-low-memory.sh` | Postgres, Redis, MinIO, backend/analyzer dogfood services, worker-free backend test dependencies | `scripts/dev`, `scripts/dev test-infra`, `scripts/smoke`, `scripts/smoke e2e` |
@@ -74,6 +75,31 @@ domain concept moves or a new production harness becomes canonical.
   and writes redacted JSONL with schema/run/prompt metadata and per-case grades.
 - Guardrail: model-originated URLs and unsafe provider hints are eval failures;
   a configured API key must never be recorded in artifacts.
+
+### Agent Search Candidate Assembly (Prototype)
+
+- Package: `agents/candidate_assembly/` (self-contained uv package; the repo's
+  only Python outside the analyzer). Additive Go: `backend/cmd/sourcequality-rank/`.
+- Contract and arms: `schemas.py` is the single source of truth; three arms
+  (`deterministic`, `direct_judge`, `deep_agent`) implement one
+  `CandidateAssembler` interface in `orchestrator.py`.
+- Tools and budgets: read-only `search_sources` / `search_catalog` /
+  `inspect_source_metadata` with deterministic retrieval in `fixture_tools.py`;
+  budgets enforced in the tool layer (`budgets.py`).
+- Verifier and graders: `validate.py` guards every arm's output; the eval runner
+  and six graders live under `evalrunner/`.
+- Runner and artifact contract: `scripts/eval agent-search` and `docs/AI_EVALS.md`.
+- Guardrail: replay mode is network-free and is the CI gate. The deterministic
+  arm ranks with the real `discovery.EvaluateSourceQuality` via the
+  `sourcequality-rank` CLI (not a Python re-implementation) and is diffed against
+  its recording; scorer drift is a failure.
+- Guardrail: the agent is a candidate-assembly orchestrator only. Tools are
+  read-only; it never creates source decisions, enqueues downloads, writes track
+  rows, or calls arbitrary URLs. This prototype does not modify the shipped
+  deterministic + optional-Ollama discovery path.
+- Guardrail: model-originated URLs, hallucinated candidate ids, ungrounded
+  action claims, and unsafe provider hints are eval failures; a configured API
+  key must never be recorded in artifacts.
 
 ### Audio Analysis And DJ Waveforms
 
@@ -169,6 +195,9 @@ domain concept moves or a new production harness becomes canonical.
 | Fast backend check | `scripts/test backend` | Runs `go test ./...` from `backend/`. |
 | AI assist replay eval | `scripts/eval ai-assist --mode replay` | Runs the embedded 10-15 case corpus without network access and writes JSONL evidence under `/tmp` by default. |
 | AI assist focused tests | `cd backend && go test ./internal/aiassist/eval ./cmd/aiassist-eval` | Validates corpus/replay behavior, graders, live config gates, and artifact key redaction. |
+| Agent search replay eval | `scripts/eval agent-search --mode replay` | Network-free candidate-assembly replay gate; grades the deterministic arm against the real Go scorer and skips model arms with missing recordings. Independent CI job `Agent Search Evals`. |
+| Agent search unit tests | `cd agents/candidate_assembly && uv run pytest` | Schemas, retrieval, graders, validator, corpus, budgets, drift, and the full replay run. |
+| Source-quality rank CLI test | `go -C backend test ./cmd/sourcequality-rank/...` | Validates the additive scorer CLI the deterministic eval arm shells out to. |
 | Analyzer post-processing | `scripts/test analyzer` | Builds the lightweight synthetic MIR unit-test target. |
 | Full analyzer image | `scripts/build analyzer` | Builds pinned CPU PyTorch, Beat This, librosa, and checksum-verified model layers. |
 | Delivery scaffold check | `scripts/agentic-harness` | Validates required agent docs, root scripts, CI wiring, JSON/Python/Bash syntax, and secret-like values. |

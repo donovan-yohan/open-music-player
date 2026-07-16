@@ -1,0 +1,96 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 42689,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "audio"
+    ],
+    "durationTargetMs": 305000,
+    "notes": "",
+    "platformPreference": [],
+    "searchQueries": [
+      "Jamie xx Gosh"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:gosh-topic",
+      "classification": "topic_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "search_catalog",
+          "tool": "search_catalog"
+        },
+        {
+          "ref": "search_sources",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official topic audio upload, matches canonical track duration exactly.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:gosh-mv",
+      "classification": "music_video",
+      "confidence": 0.8,
+      "evidence": [
+        {
+          "ref": "search_sources",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Official music video, same duration as canonical track but video format.",
+      "warnings": [
+        "music_video"
+      ]
+    },
+    {
+      "candidateId": "youtube:gosh-live",
+      "classification": "live",
+      "confidence": 0.5,
+      "evidence": [
+        {
+          "ref": "search_sources",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Live performance version, significantly longer duration than canonical track.",
+      "warnings": [
+        "live",
+        "duration_mismatch"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "9d523ac47231",
+      "elapsedMs": 4129,
+      "resultCount": 1,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "5406f0a6f889",
+      "elapsedMs": 9436,
+      "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    }
+  ],
+  "unresolved": []
+}

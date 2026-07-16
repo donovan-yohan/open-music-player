@@ -1,0 +1,93 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 92222,
+    "modelCalls": 6,
+    "toolCalls": 4
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "live"
+    ],
+    "notes": "Canonical track duration not found in catalog; duration cross-check skipped.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Tame Impala The Less I Know The Better live"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:tliktb-live-coachella",
+      "classification": "live",
+      "confidence": 0.95,
+      "evidence": [],
+      "rank": 1,
+      "rationale": "Official live recording from Coachella matches request for live version.",
+      "warnings": [
+        "live"
+      ]
+    },
+    {
+      "candidateId": "youtube:tliktb-live-bootleg",
+      "classification": "live",
+      "confidence": 0.7,
+      "evidence": [],
+      "rank": 2,
+      "rationale": "Fan-recorded live version, plausible but unofficial.",
+      "warnings": [
+        "live"
+      ]
+    },
+    {
+      "candidateId": "youtube:tliktb-studio-mv",
+      "classification": "music_video",
+      "confidence": 0.4,
+      "evidence": [],
+      "rank": 3,
+      "rationale": "Official music video, not live but same song; included as near-miss.",
+      "warnings": [
+        "music_video"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "a5d93dda4825",
+      "elapsedMs": 6837,
+      "resultCount": 0,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "7599cb1ab630",
+      "elapsedMs": 17912,
+      "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "ee8c0465d329",
+      "elapsedMs": 33504,
+      "resultCount": 3,
+      "step": 3,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "17aa77d065dd",
+      "elapsedMs": 41357,
+      "resultCount": 3,
+      "step": 4,
+      "tool": "search_sources"
+    }
+  ],
+  "unresolved": [
+    "Canonical track duration unknown because search_catalog returned empty for 'Tame Impala The Less I Know The Better' (track kind). Simplified retry not performed due to tool phase end."
+  ]
+}

@@ -1,0 +1,94 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 114350,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio"
+    ],
+    "durationTargetMs": 158000,
+    "notes": "",
+    "platformPreference": [],
+    "searchQueries": [
+      "Charli xcx Von dutch"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:vondutch-audio",
+      "classification": "official_audio",
+      "confidence": 1.0,
+      "evidence": [],
+      "rank": 1,
+      "rationale": "Official audio from Topic channel, matches duration and is the exact requested format.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:vondutch-topic",
+      "classification": "official_audio",
+      "confidence": 0.99,
+      "evidence": [],
+      "rank": 2,
+      "rationale": "Topic channel upload of the same track, official audio variant.",
+      "warnings": []
+    },
+    {
+      "candidateId": "soundcloud:vondutch-upload",
+      "classification": "artist_upload",
+      "confidence": 0.98,
+      "evidence": [],
+      "rank": 3,
+      "rationale": "Artist's own upload on SoundCloud, official audio.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:vondutch-mv",
+      "classification": "music_video",
+      "confidence": 0.9,
+      "evidence": [],
+      "rank": 4,
+      "rationale": "Official music video, not strictly audio-only but same song and duration.",
+      "warnings": [
+        "music_video"
+      ]
+    },
+    {
+      "candidateId": "youtube:vondutch-lyric",
+      "classification": "lyric_video",
+      "confidence": 0.85,
+      "evidence": [],
+      "rank": 5,
+      "rationale": "Lyric video for the same song, matches duration.",
+      "warnings": [
+        "lyric_video"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "748bcfa45e29",
+      "elapsedMs": 6583,
+      "resultCount": 1,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "27dc6539b664",
+      "elapsedMs": 11645,
+      "resultCount": 6,
+      "step": 2,
+      "tool": "search_sources"
+    }
+  ],
+  "unresolved": []
+}

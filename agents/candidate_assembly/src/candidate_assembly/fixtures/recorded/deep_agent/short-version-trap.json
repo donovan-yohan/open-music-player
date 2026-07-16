@@ -1,0 +1,80 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 49026,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio",
+      "artist_upload"
+    ],
+    "durationTargetMs": 231000,
+    "notes": "User requested the full track 'Rumble' by Fred again.., preferring downloadable audio.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Fred again Rumble"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:rumble-full",
+      "classification": "official_audio",
+      "confidence": 1.0,
+      "evidence": [],
+      "rank": 1,
+      "rationale": "Official audio from the artist's Topic channel, matches full duration and intent.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:rumble-short",
+      "classification": "music_video",
+      "confidence": 0.3,
+      "evidence": [],
+      "rank": 2,
+      "rationale": "Short clip, not the full track; duration heavily mismatched.",
+      "warnings": [
+        "short_version",
+        "duration_mismatch"
+      ]
+    },
+    {
+      "candidateId": "youtube:rumble-tiktok",
+      "classification": "unknown",
+      "confidence": 0.2,
+      "evidence": [],
+      "rank": 3,
+      "rationale": "TikTok-length snippet, not the full track; duration heavily mismatched.",
+      "warnings": [
+        "short_version",
+        "duration_mismatch"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "72fa637533cf",
+      "elapsedMs": 3476,
+      "resultCount": 1,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "26666211a718",
+      "elapsedMs": 7406,
+      "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    }
+  ],
+  "unresolved": []
+}

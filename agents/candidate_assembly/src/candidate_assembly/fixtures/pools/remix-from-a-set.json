@@ -1,0 +1,59 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:skrillex-remix-standalone",
+      "provider": "youtube",
+      "sourceId": "skrillex-remix-standalone",
+      "sourceUrl": "https://www.youtube.com/watch?v=skrillex-remix-standalone",
+      "title": "Boombox - Nightlight (Skrillex Remix)",
+      "artist": "Boombox",
+      "uploader": "Boombox - Topic",
+      "durationMs": 240000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_music_songs"}
+    },
+    {
+      "candidateId": "youtube:skrillex-full-set",
+      "provider": "youtube",
+      "sourceId": "skrillex-full-set",
+      "sourceUrl": "https://www.youtube.com/watch?v=skrillex-full-set",
+      "title": "Skrillex - Full DJ Set @ Festival 2024",
+      "artist": "Skrillex",
+      "uploader": "Festival TV",
+      "durationMs": 2880000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:skrillex-remix-reaction",
+      "provider": "youtube",
+      "sourceId": "skrillex-remix-reaction",
+      "sourceUrl": "https://www.youtube.com/watch?v=skrillex-remix-reaction",
+      "title": "Skrillex Remix REACTION - this set goes hard",
+      "artist": "",
+      "uploader": "DJ Reacts",
+      "durationMs": 600000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    }
+  ],
+  "catalog": [
+    {"kind": "track", "id": "mb:recording:nightlight-skrillex-remix", "title": "Nightlight (Skrillex Remix)", "artist": "Boombox", "durationMs": 240000, "score": 90}
+  ],
+  "metadata": {
+    "youtube:skrillex-full-set": {
+      "candidateId": "youtube:skrillex-full-set",
+      "description": "Full festival DJ set recording, 48 minutes.",
+      "channel": "Festival TV",
+      "channelVerified": false,
+      "uploadDate": "2024-07-20",
+      "tags": ["dj set", "festival", "live"]
+    }
+  }
+}
