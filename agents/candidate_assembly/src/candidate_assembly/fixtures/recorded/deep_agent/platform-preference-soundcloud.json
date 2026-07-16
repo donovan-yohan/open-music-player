@@ -1,0 +1,62 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 51591,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio"
+    ],
+    "notes": "User specifically wants the original song by SOPHIE from SoundCloud.",
+    "platformPreference": [
+      "soundcloud"
+    ],
+    "searchQueries": [
+      "SOPHIE Is It Cold in the Water"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "soundcloud:sophie-cold-official",
+      "classification": "artist_upload",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-official",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Direct official upload by SOPHIE on SoundCloud, matches title and artist, full length.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "067946637254",
+      "elapsedMs": 10913,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 19489,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "inspect_source_metadata"
+    }
+  ],
+  "unresolved": [
+    "Remix and snippet candidates were found but excluded as user requested original track."
+  ]
+}

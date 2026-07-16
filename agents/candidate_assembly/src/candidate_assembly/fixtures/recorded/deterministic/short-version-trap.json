@@ -1,0 +1,105 @@
+{
+  "arm": "deterministic",
+  "budgetSpent": {
+    "elapsedMs": 0,
+    "modelCalls": 0,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "durationTargetMs": 231000,
+    "notes": "Deterministic source-quality ranking of the retrieved pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "download Fred again Rumble full track"
+    ]
+  },
+  "provenance": {
+    "model": "",
+    "orchestrator": "deterministic-go-sourcequality-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:rumble-full",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:rumble-full",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:rumble",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 1,
+      "rationale": "official audio: title indicates official audio.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:rumble-tiktok",
+      "classification": "unknown",
+      "confidence": 0.57,
+      "evidence": [
+        {
+          "ref": "youtube:rumble-tiktok",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:rumble",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 2,
+      "rationale": "unknown candidate ranked by the deterministic source-quality scorer.",
+      "warnings": [
+        "short_version",
+        "duration_mismatch"
+      ]
+    },
+    {
+      "candidateId": "youtube:rumble-short",
+      "classification": "music_video",
+      "confidence": 0.36,
+      "evidence": [
+        {
+          "ref": "youtube:rumble-short",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:rumble",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 3,
+      "rationale": "music video candidate ranked by the deterministic source-quality scorer.",
+      "warnings": [
+        "short_version",
+        "duration_mismatch"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "b0ca1a9ac618",
+      "elapsedMs": 0,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "03c051a38ab8",
+      "elapsedMs": 0,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

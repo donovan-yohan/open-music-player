@@ -1,0 +1,89 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 53451,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "notes": "User wants to play audio from Ninajirachi, no specific track requested.",
+    "platformPreference": [
+      "youtube"
+    ],
+    "searchQueries": [
+      "ninajirachi"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:nina-pinky",
+      "classification": "official_audio",
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "ref": "search_sources: ninajirachi",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official topic audio of Ninajirachi's 'Pinky Promise', clear match for the artist.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-ipod",
+      "classification": "official_audio",
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "ref": "search_sources: ninajirachi",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Official topic audio of Ninajirachi's 'iPod Touch', direct match.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-rukus",
+      "classification": "official_audio",
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "ref": "search_sources: ninajirachi",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Official topic audio of Ninajirachi's 'Rukus', authentic track.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "85e46a83aaf1",
+      "elapsedMs": 6749,
+      "resultCount": 4,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "9b0c4e203f81",
+      "elapsedMs": 15461,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

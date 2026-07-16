@@ -1,0 +1,119 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 136930,
+    "modelCalls": 9,
+    "toolCalls": 7
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "audio",
+      "remix"
+    ],
+    "durationTargetMs": 240000,
+    "notes": "User wants the specific remix track that was played during a Skrillex DJ set. The set is not the target; the remix itself is.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Skrillex set remix",
+      "Skrillex set 2024 remix",
+      "Skrillex set tracklist"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:skrillex-remix-standalone",
+      "classification": "official_audio",
+      "confidence": 0.9,
+      "evidence": [],
+      "rank": 1,
+      "rationale": "Topic-channel upload of 'Boombox - Nightlight (Skrillex Remix)' matches the remix from the set; duration (240s) aligns with catalog entry.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:skrillex-full-set",
+      "classification": "live",
+      "confidence": 0.3,
+      "evidence": [],
+      "rank": 2,
+      "rationale": "The full DJ set contains the remix but is a live recording, not the isolated track; duration mismatch (48 min vs expected 4 min).",
+      "warnings": [
+        "duration_mismatch",
+        "live"
+      ]
+    },
+    {
+      "candidateId": "youtube:skrillex-remix-reaction",
+      "classification": "interview",
+      "confidence": 0.1,
+      "evidence": [],
+      "rank": 3,
+      "rationale": "Reaction video includes the remix but is not the original track; user likely wants the standalone audio.",
+      "warnings": [
+        "cover",
+        "not_downloadable"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "29aec970ac18",
+      "elapsedMs": 10137,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 27449,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "e8c2385598ff",
+      "elapsedMs": 33837,
+      "resultCount": 3,
+      "step": 3,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "8cb2077f5e08",
+      "elapsedMs": 45062,
+      "resultCount": 3,
+      "step": 4,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 53629,
+      "resultCount": 0,
+      "step": 5,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "18c1e32bd905",
+      "elapsedMs": 62128,
+      "resultCount": 1,
+      "step": 6,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "c14704f6eb1f",
+      "elapsedMs": 72206,
+      "resultCount": 3,
+      "step": 7,
+      "tool": "search_sources"
+    }
+  ],
+  "unresolved": [
+    "No direct track from the set identified as the exact remix; the standalone remix is the closest match.",
+    "The specific Skrillex set referenced is ambiguous; assumed to be the 2024 festival set found in search."
+  ]
+}

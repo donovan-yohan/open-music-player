@@ -1,0 +1,80 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 60172,
+    "modelCalls": 7,
+    "toolCalls": 5
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "notes": "User wants to play the original song, prefers audio format.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Radiohead Creep"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:creep-original",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:creep-original",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official audio from Radiohead Topic channel, duration matches standard track.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "720228f3baee",
+      "elapsedMs": 11085,
+      "resultCount": 0,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "3174c3075d48",
+      "elapsedMs": 14685,
+      "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 20648,
+      "resultCount": 0,
+      "step": 3,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 23902,
+      "resultCount": 0,
+      "step": 4,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 26683,
+      "resultCount": 0,
+      "step": 5,
+      "tool": "inspect_source_metadata"
+    }
+  ],
+  "unresolved": []
+}

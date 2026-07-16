@@ -1,0 +1,104 @@
+{
+  "arm": "deterministic",
+  "budgetSpent": {
+    "elapsedMs": 0,
+    "modelCalls": 0,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "durationTargetMs": 218000,
+    "notes": "Deterministic source-quality ranking of the retrieved pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "play Tame Impala The Less I Know The Better"
+    ]
+  },
+  "provenance": {
+    "model": "",
+    "orchestrator": "deterministic-go-sourcequality-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:tliktb-studio",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:tliktb-studio",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:tliktb",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 1,
+      "rationale": "official audio: title indicates official audio.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:tliktb-cover",
+      "classification": "cover",
+      "confidence": 0.61,
+      "evidence": [
+        {
+          "ref": "youtube:tliktb-cover",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:tliktb",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 2,
+      "rationale": "cover: title and artist match the query terms.",
+      "warnings": [
+        "cover"
+      ]
+    },
+    {
+      "candidateId": "youtube:tliktb-live",
+      "classification": "live",
+      "confidence": 0.54,
+      "evidence": [
+        {
+          "ref": "youtube:tliktb-live",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:tliktb",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 3,
+      "rationale": "live: title and artist match the query terms.",
+      "warnings": [
+        "live",
+        "duration_mismatch"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "cb583aac8777",
+      "elapsedMs": 0,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "d8baf76f72ea",
+      "elapsedMs": 0,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

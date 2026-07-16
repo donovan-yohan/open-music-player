@@ -1,0 +1,75 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 52007,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "live"
+    ],
+    "notes": "User wants a live performance version of Tame Impala's 'The Less I Know The Better'.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Tame Impala The Less I Know The Better live"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:tliktb-live-coachella",
+      "classification": "live",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:tliktb-live-coachella",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official live performance uploaded by Tame Impala, likely from Coachella; duration appropriate for a live take.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:tliktb-live-bootleg",
+      "classification": "live",
+      "confidence": 0.7,
+      "evidence": [
+        {
+          "ref": "youtube:tliktb-live-bootleg",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Fan-recorded live version; matches request but is unofficial and may have lower audio quality.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "5550b0fb8030",
+      "elapsedMs": 7929,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "abb56c3b660d",
+      "elapsedMs": 15492,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": [
+    "Catalog track duration for the original studio version was not available for comparison; live versions have longer durations as expected.",
+    "Only two live candidates found; no additional live versions from other platforms surfaced."
+  ]
+}

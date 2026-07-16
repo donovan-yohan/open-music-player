@@ -1,0 +1,120 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 80237,
+    "modelCalls": 8,
+    "toolCalls": 6
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio"
+    ],
+    "durationTargetMs": 158000,
+    "notes": "",
+    "platformPreference": [],
+    "searchQueries": [
+      "Charli XCX Von Dutch official audio",
+      "Charli xcx Von dutch"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:vondutch-audio",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:vondutch-audio",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "youtube:vondutch-audio",
+          "tool": "inspect_source_metadata"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Explicitly labeled 'Official Audio' from Charli XCX - Topic channel; duration matches catalog track.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:vondutch-topic",
+      "classification": "official_audio",
+      "confidence": 0.85,
+      "evidence": [
+        {
+          "ref": "youtube:vondutch-topic",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Topic channel upload without explicit official label, but likely identical to official audio; duration matches.",
+      "warnings": []
+    },
+    {
+      "candidateId": "soundcloud:vondutch-upload",
+      "classification": "artist_upload",
+      "confidence": 0.7,
+      "evidence": [
+        {
+          "ref": "soundcloud:vondutch-upload",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Uploaded by Charli xcx's official SoundCloud account; duration matches catalog track.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "19edc6ec4a52",
+      "elapsedMs": 6977,
+      "resultCount": 1,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "d01fd7692ad9",
+      "elapsedMs": 10460,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "9e5b5834355c",
+      "elapsedMs": 14498,
+      "resultCount": 6,
+      "step": 3,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "58eace6e1b18",
+      "elapsedMs": 22441,
+      "resultCount": 1,
+      "step": 4,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "e7db66cc9452",
+      "elapsedMs": 24985,
+      "resultCount": 0,
+      "step": 5,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "acd801d23356",
+      "elapsedMs": 27382,
+      "resultCount": 0,
+      "step": 6,
+      "tool": "inspect_source_metadata"
+    }
+  ],
+  "unresolved": []
+}

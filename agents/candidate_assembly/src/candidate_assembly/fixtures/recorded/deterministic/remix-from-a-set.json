@@ -1,0 +1,103 @@
+{
+  "arm": "deterministic",
+  "budgetSpent": {
+    "elapsedMs": 0,
+    "modelCalls": 0,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "remix"
+    ],
+    "durationTargetMs": 240000,
+    "notes": "Deterministic source-quality ranking of the retrieved pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "grab the remix from that Skrillex set"
+    ]
+  },
+  "provenance": {
+    "model": "",
+    "orchestrator": "deterministic-go-sourcequality-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:skrillex-remix-standalone",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:skrillex-remix-standalone",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:nightlight-skrillex-remix",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 1,
+      "rationale": "official audio: YouTube Music Songs discovery surface identifies an official track.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:skrillex-full-set",
+      "classification": "live",
+      "confidence": 0.74,
+      "evidence": [
+        {
+          "ref": "youtube:skrillex-full-set",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:nightlight-skrillex-remix",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 2,
+      "rationale": "live: query asked for live content.",
+      "warnings": [
+        "duration_mismatch"
+      ]
+    },
+    {
+      "candidateId": "youtube:skrillex-remix-reaction",
+      "classification": "interview",
+      "confidence": 0.41,
+      "evidence": [
+        {
+          "ref": "youtube:skrillex-remix-reaction",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:nightlight-skrillex-remix",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 3,
+      "rationale": "interview candidate ranked by the deterministic source-quality scorer.",
+      "warnings": [
+        "interview",
+        "duration_mismatch"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "212da446cc01",
+      "elapsedMs": 0,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "df2b038b1157",
+      "elapsedMs": 0,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

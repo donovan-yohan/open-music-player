@@ -1,0 +1,63 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 37593,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "audio"
+    ],
+    "durationTargetMs": 218000,
+    "notes": "User wants to play the original studio recording of Tame Impala's The Less I Know The Better.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Tame Impala The Less I Know The Better"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:tliktb-studio",
+      "classification": "official_audio",
+      "confidence": 1.0,
+      "evidence": [
+        {
+          "ref": "mb:recording:tliktb",
+          "tool": "search_catalog"
+        },
+        {
+          "ref": "youtube:tliktb-studio",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official audio from Tame Impala's Topic channel; exact duration match (218000ms), downloadable, no unwanted alterations.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "d074e301c2bd",
+      "elapsedMs": 5409,
+      "resultCount": 1,
+      "step": 1,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "7d80efd1342b",
+      "elapsedMs": 11088,
+      "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    }
+  ],
+  "unresolved": []
+}

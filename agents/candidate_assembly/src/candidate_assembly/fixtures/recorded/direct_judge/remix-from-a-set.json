@@ -1,0 +1,104 @@
+{
+  "arm": "direct_judge",
+  "budgetSpent": {
+    "elapsedMs": 12348,
+    "modelCalls": 1,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "remix"
+    ],
+    "durationTargetMs": 240000,
+    "notes": "Single-shot judge re-ranking of the deterministic pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "grab the remix from that Skrillex set"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "direct-judge-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:skrillex-remix-standalone",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:skrillex-remix-standalone",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:nightlight-skrillex-remix",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official audio of the exact remix requested; direct match to the user's query.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:skrillex-full-set",
+      "classification": "live",
+      "confidence": 0.65,
+      "evidence": [
+        {
+          "ref": "youtube:skrillex-full-set",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:nightlight-skrillex-remix",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Full DJ set, not the isolated remix; user wants the remix extracted from a set, not the entire set.",
+      "warnings": [
+        "duration_mismatch"
+      ]
+    },
+    {
+      "candidateId": "youtube:skrillex-remix-reaction",
+      "classification": "interview",
+      "confidence": 0.35,
+      "evidence": [
+        {
+          "ref": "youtube:skrillex-remix-reaction",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:nightlight-skrillex-remix",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Unrelated reaction video; does not contain the remix itself.",
+      "warnings": [
+        "interview",
+        "duration_mismatch"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "212da446cc01",
+      "elapsedMs": 0,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "df2b038b1157",
+      "elapsedMs": 0,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

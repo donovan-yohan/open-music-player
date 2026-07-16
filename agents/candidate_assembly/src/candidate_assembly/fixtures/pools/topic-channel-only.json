@@ -1,0 +1,59 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:gosh-topic",
+      "provider": "youtube",
+      "sourceId": "gosh-topic",
+      "sourceUrl": "https://www.youtube.com/watch?v=gosh-topic",
+      "title": "Jamie xx - Gosh",
+      "artist": "Jamie xx",
+      "uploader": "Jamie xx - Topic",
+      "durationMs": 305000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:gosh-mv",
+      "provider": "youtube",
+      "sourceId": "gosh-mv",
+      "sourceUrl": "https://www.youtube.com/watch?v=gosh-mv",
+      "title": "Jamie xx - Gosh (Official Video)",
+      "artist": "Jamie xx",
+      "uploader": "Jamie xx",
+      "durationMs": 305000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:gosh-live",
+      "provider": "youtube",
+      "sourceId": "gosh-live",
+      "sourceUrl": "https://www.youtube.com/watch?v=gosh-live",
+      "title": "Jamie xx - Gosh (Live at Glastonbury)",
+      "artist": "Jamie xx",
+      "uploader": "festival stage",
+      "durationMs": 380000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    }
+  ],
+  "catalog": [
+    {"kind": "track", "id": "mb:recording:gosh", "title": "Gosh", "artist": "Jamie xx", "durationMs": 305000, "score": 88}
+  ],
+  "metadata": {
+    "youtube:gosh-topic": {
+      "candidateId": "youtube:gosh-topic",
+      "description": "Topic channel upload, label provided.",
+      "channel": "Jamie xx - Topic",
+      "channelVerified": true,
+      "uploadDate": "2015-05-31",
+      "tags": ["electronic"]
+    }
+  }
+}

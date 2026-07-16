@@ -1,0 +1,108 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 61743,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio",
+      "artist_upload"
+    ],
+    "notes": "User wants to play the song; prefer audio over video.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Ninajirachi iPod Touch"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:nina-ipod-audio",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:nina-ipod-audio",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official audio from Topic channel, matches expected song duration, ideal for playback.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-ipod-mv",
+      "classification": "music_video",
+      "confidence": 0.6,
+      "evidence": [
+        {
+          "ref": "youtube:nina-ipod-mv",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Official music video from artist channel, but user likely prefers audio only; included as fallback.",
+      "warnings": [
+        "music_video"
+      ]
+    },
+    {
+      "candidateId": "youtube:nina-ipod-8d",
+      "classification": "altered_audio",
+      "confidence": 0.2,
+      "evidence": [
+        {
+          "ref": "youtube:nina-ipod-8d",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "8D audio remix, not original version; only consider if user wants altered audio.",
+      "warnings": [
+        "altered_audio"
+      ]
+    },
+    {
+      "candidateId": "youtube:nina-ipod-reaction",
+      "classification": "interview",
+      "confidence": 0.0,
+      "evidence": [
+        {
+          "ref": "youtube:nina-ipod-reaction",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 4,
+      "rationale": "Reaction video, not the actual song; not suitable for playback.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "4ba759d100c7",
+      "elapsedMs": 9302,
+      "resultCount": 4,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "461e8be33d18",
+      "elapsedMs": 12794,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": [
+    "Catalog search returned no results, so duration target not verified against official release."
+  ]
+}

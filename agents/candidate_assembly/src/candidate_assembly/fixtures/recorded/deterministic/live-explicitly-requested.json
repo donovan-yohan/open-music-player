@@ -1,0 +1,89 @@
+{
+  "arm": "deterministic",
+  "budgetSpent": {
+    "elapsedMs": 0,
+    "modelCalls": 0,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "live"
+    ],
+    "notes": "Deterministic source-quality ranking of the retrieved pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "find the live version of Tame Impala The Less I Know The Better"
+    ]
+  },
+  "provenance": {
+    "model": "",
+    "orchestrator": "deterministic-go-sourcequality-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:tliktb-live-coachella",
+      "classification": "live",
+      "confidence": 0.79,
+      "evidence": [
+        {
+          "ref": "youtube:tliktb-live-coachella",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "live: uploader matches the artist.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:tliktb-live-bootleg",
+      "classification": "live",
+      "confidence": 0.64,
+      "evidence": [
+        {
+          "ref": "youtube:tliktb-live-bootleg",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "live: query asked for live content.",
+      "warnings": [
+        "remix"
+      ]
+    },
+    {
+      "candidateId": "youtube:tliktb-studio-mv",
+      "classification": "music_video",
+      "confidence": 0.55,
+      "evidence": [
+        {
+          "ref": "youtube:tliktb-studio-mv",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "music video: uploader matches the artist.",
+      "warnings": [
+        "music_video"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "f284e4b5edd4",
+      "elapsedMs": 0,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "a31da9fff8c7",
+      "elapsedMs": 0,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

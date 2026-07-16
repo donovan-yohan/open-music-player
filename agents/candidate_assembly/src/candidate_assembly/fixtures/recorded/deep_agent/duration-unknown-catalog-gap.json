@@ -1,0 +1,100 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 61938,
+    "modelCalls": 5,
+    "toolCalls": 3
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "notes": "User wants audio of Aphex Twin - Windowlicker",
+    "platformPreference": [],
+    "searchQueries": [
+      "Aphex Twin Windowlicker"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:windowlicker-audio",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:windowlicker-audio",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official audio from Topic channel, matches desired audio format.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:windowlicker-mv",
+      "classification": "music_video",
+      "confidence": 0.5,
+      "evidence": [
+        {
+          "ref": "youtube:windowlicker-mv",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Official music video not preferred for audio request; included as fallback.",
+      "warnings": [
+        "music_video"
+      ]
+    },
+    {
+      "candidateId": "youtube:windowlicker-alt",
+      "classification": "unknown",
+      "confidence": 0.3,
+      "evidence": [
+        {
+          "ref": "youtube:windowlicker-alt",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Same as music video upload; less relevant.",
+      "warnings": [
+        "music_video"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "86e3e837afb5",
+      "elapsedMs": 7100,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "06f86a0d2763",
+      "elapsedMs": 12876,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 18380,
+      "resultCount": 0,
+      "step": 3,
+      "tool": "inspect_source_metadata"
+    }
+  ],
+  "unresolved": [
+    "Catalog track duration not verified; inspect_source_metadata failed for recording."
+  ]
+}

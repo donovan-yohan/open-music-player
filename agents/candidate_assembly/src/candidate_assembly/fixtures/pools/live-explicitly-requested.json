@@ -1,0 +1,57 @@
+{
+  "candidates": [
+    {
+      "candidateId": "youtube:tliktb-live-coachella",
+      "provider": "youtube",
+      "sourceId": "tliktb-live-coachella",
+      "sourceUrl": "https://www.youtube.com/watch?v=tliktb-live-coachella",
+      "title": "Tame Impala - The Less I Know The Better (Live at Coachella)",
+      "artist": "Tame Impala",
+      "uploader": "Tame Impala",
+      "durationMs": 300000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:tliktb-live-bootleg",
+      "provider": "youtube",
+      "sourceId": "tliktb-live-bootleg",
+      "sourceUrl": "https://www.youtube.com/watch?v=tliktb-live-bootleg",
+      "title": "Tame Impala - The Less I Know The Better (Live Fan Recording)",
+      "artist": "Tame Impala",
+      "uploader": "concert bootlegs",
+      "durationMs": 320000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    },
+    {
+      "candidateId": "youtube:tliktb-studio-mv",
+      "provider": "youtube",
+      "sourceId": "tliktb-studio-mv",
+      "sourceUrl": "https://www.youtube.com/watch?v=tliktb-studio-mv",
+      "title": "Tame Impala - The Less I Know The Better (Official Music Video)",
+      "artist": "Tame Impala",
+      "uploader": "Tame Impala",
+      "durationMs": 218000,
+      "downloadable": true,
+      "playable": false,
+      "explicit": false,
+      "metadata": {"discoverySurface": "youtube_search"}
+    }
+  ],
+  "catalog": [],
+  "metadata": {
+    "youtube:tliktb-live-coachella": {
+      "candidateId": "youtube:tliktb-live-coachella",
+      "description": "Live at Coachella, official channel.",
+      "channel": "Tame Impala",
+      "channelVerified": true,
+      "uploadDate": "2019-04-15",
+      "tags": ["live", "coachella"]
+    }
+  }
+}

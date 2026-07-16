@@ -1,0 +1,85 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 55335,
+    "modelCalls": 5,
+    "toolCalls": 3
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "notes": "No catalog match for duration verification; relying on official audio as best candidate.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Charli xcx 360"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:c360-audio",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [],
+      "rank": 1,
+      "rationale": "Official audio from Topic channel; matches expected duration; no alterations.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:c360-slowed",
+      "classification": "altered_audio",
+      "confidence": 0.2,
+      "evidence": [],
+      "rank": 2,
+      "rationale": "Slowed/reverb version, not original tempo.",
+      "warnings": [
+        "altered_audio"
+      ]
+    },
+    {
+      "candidateId": "youtube:c360-nightcore",
+      "classification": "altered_audio",
+      "confidence": 0.15,
+      "evidence": [],
+      "rank": 3,
+      "rationale": "Sped-up nightcore version, not original.",
+      "warnings": [
+        "altered_audio"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "777eb2eb497b",
+      "elapsedMs": 7203,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "28efcdd9b90d",
+      "elapsedMs": 13805,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 15798,
+      "resultCount": 0,
+      "step": 3,
+      "tool": "inspect_source_metadata"
+    }
+  ],
+  "unresolved": [
+    "No catalog entry found for duration comparison; slowed and sped-up variants were filtered."
+  ]
+}

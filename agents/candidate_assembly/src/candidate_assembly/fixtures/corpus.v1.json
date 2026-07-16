@@ -1,0 +1,128 @@
+{
+  "schemaVersion": "omp.agent-search.eval.corpus.v1",
+  "promptRevision": "agent-search-system-prompt-v1",
+  "cases": [
+    {
+      "id": "plain-artist-song-official-audio",
+      "prompt": "Play Ninajirachi iPod Touch",
+      "poolRef": "plain-artist-song-official-audio.json",
+      "expected": {
+        "topCandidateId": "youtube:nina-ipod-audio",
+        "topClassificationAnyOf": ["official_audio", "topic_audio"],
+        "forbiddenInTopK": {"k": 1, "classifications": ["music_video"]},
+        "platform": ["youtube"]
+      }
+    },
+    {
+      "id": "explicit-official-audio",
+      "prompt": "Find the official audio for Charli xcx Von dutch",
+      "poolRef": "explicit-official-audio.json",
+      "expected": {
+        "topCandidateId": "youtube:vondutch-audio",
+        "topClassificationAnyOf": ["official_audio", "topic_audio"],
+        "forbiddenInTopK": {"k": 3, "classifications": ["music_video", "lyric_video"]}
+      }
+    },
+    {
+      "id": "platform-preference-soundcloud",
+      "prompt": "Find SOPHIE Is It Cold in the Water from SoundCloud",
+      "poolRef": "platform-preference-soundcloud.json",
+      "expected": {
+        "topCandidateId": "soundcloud:sophie-cold-official",
+        "platform": ["soundcloud"],
+        "minRecommendations": 1
+      }
+    },
+    {
+      "id": "remix-from-a-set",
+      "prompt": "grab the remix from that Skrillex set",
+      "poolRef": "remix-from-a-set.json",
+      "expected": {
+        "topCandidateId": "youtube:skrillex-remix-standalone",
+        "requiredWarnings": {"youtube:skrillex-full-set": ["duration_mismatch"]}
+      }
+    },
+    {
+      "id": "short-version-trap",
+      "prompt": "download Fred again Rumble full track",
+      "poolRef": "short-version-trap.json",
+      "expected": {
+        "topCandidateId": "youtube:rumble-full",
+        "requiredWarnings": {"youtube:rumble-short": ["short_version", "duration_mismatch"]}
+      }
+    },
+    {
+      "id": "altered-audio-trap",
+      "prompt": "play Charli xcx 360 please",
+      "poolRef": "altered-audio-trap.json",
+      "expected": {
+        "topCandidateId": "youtube:c360-audio",
+        "topClassificationAnyOf": ["official_audio", "topic_audio"],
+        "requiredWarnings": {
+          "youtube:c360-slowed": ["altered_audio"],
+          "youtube:c360-nightcore": ["altered_audio"]
+        }
+      }
+    },
+    {
+      "id": "live-trap-not-requested",
+      "prompt": "play Tame Impala The Less I Know The Better",
+      "poolRef": "live-trap-not-requested.json",
+      "expected": {
+        "topCandidateId": "youtube:tliktb-studio",
+        "topClassificationAnyOf": ["official_audio", "topic_audio"],
+        "requiredWarnings": {"youtube:tliktb-live": ["live"]}
+      }
+    },
+    {
+      "id": "live-explicitly-requested",
+      "prompt": "find the live version of Tame Impala The Less I Know The Better",
+      "poolRef": "live-explicitly-requested.json",
+      "expected": {
+        "topCandidateId": "youtube:tliktb-live-coachella",
+        "topClassificationAnyOf": ["live"],
+        "platform": ["youtube"]
+      }
+    },
+    {
+      "id": "artist-only-ambiguous",
+      "prompt": "play some ninajirachi",
+      "poolRef": "artist-only-ambiguous.json",
+      "expected": {
+        "minRecommendations": 3,
+        "platform": ["youtube"],
+        "forbiddenInTopK": {"k": 3, "candidateIds": ["youtube:nina-typebeat"]}
+      }
+    },
+    {
+      "id": "topic-channel-only",
+      "prompt": "play Jamie xx Gosh",
+      "poolRef": "topic-channel-only.json",
+      "expected": {
+        "topCandidateId": "youtube:gosh-topic",
+        "topClassificationAnyOf": ["topic_audio"]
+      }
+    },
+    {
+      "id": "cover-versus-original",
+      "prompt": "play Radiohead Creep",
+      "poolRef": "cover-versus-original.json",
+      "expected": {
+        "topCandidateId": "youtube:creep-original",
+        "topClassificationAnyOf": ["official_audio", "topic_audio"],
+        "forbiddenInTopK": {"k": 1, "classifications": ["cover"]},
+        "requiredWarnings": {"youtube:creep-cover": ["cover"]}
+      }
+    },
+    {
+      "id": "duration-unknown-catalog-gap",
+      "prompt": "play Aphex Twin Windowlicker",
+      "poolRef": "duration-unknown-catalog-gap.json",
+      "expected": {
+        "topCandidateId": "youtube:windowlicker-audio",
+        "topClassificationAnyOf": ["official_audio", "topic_audio"],
+        "minUnresolved": 1
+      }
+    }
+  ]
+}

@@ -229,6 +229,38 @@ jobs:
           path: extension/dist-zip/extension.zip
           retention-days: 7
 
+  agent-evals:
+    name: Agent Search Evals
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.16"
+          enable-cache: true
+          cache-dependency-glob: agents/candidate_assembly/uv.lock
+
+      - name: Sync candidate-assembly package
+        working-directory: agents/candidate_assembly
+        run: uv sync
+
+      - name: Run candidate-assembly unit tests
+        working-directory: agents/candidate_assembly
+        run: uv run pytest -q
+
+      - name: Run agent-search replay eval
+        run: scripts/eval agent-search --mode replay --output "$RUNNER_TEMP/agent-search-replay.jsonl"
+
   local-smoke:
     name: Local Stack Smoke
     runs-on: ubuntu-latest

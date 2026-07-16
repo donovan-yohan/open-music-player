@@ -1,0 +1,100 @@
+{
+  "arm": "deterministic",
+  "budgetSpent": {
+    "elapsedMs": 0,
+    "modelCalls": 0,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "notes": "Deterministic source-quality ranking of the retrieved pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "play some ninajirachi"
+    ]
+  },
+  "provenance": {
+    "model": "",
+    "orchestrator": "deterministic-go-sourcequality-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:nina-pinky",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:nina-pinky",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "official audio: title indicates official audio.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-ipod",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:nina-ipod",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "official audio: YouTube Music Songs discovery surface identifies an official track.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-rukus",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:nina-rukus",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "official audio: YouTube Music Songs discovery surface identifies an official track.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-typebeat",
+      "classification": "unknown",
+      "confidence": 0.73,
+      "evidence": [
+        {
+          "ref": "youtube:nina-typebeat",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 4,
+      "rationale": "unknown: title and artist match the query terms.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "e49c379f753a",
+      "elapsedMs": 0,
+      "resultCount": 4,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "807bb91b2def",
+      "elapsedMs": 0,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

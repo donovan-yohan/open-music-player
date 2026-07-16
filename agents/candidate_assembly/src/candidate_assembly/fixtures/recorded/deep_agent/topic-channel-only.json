@@ -1,0 +1,56 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 34018,
+    "modelCalls": 4,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "audio"
+    ],
+    "durationTargetMs": 305000,
+    "notes": "User wants to play the song 'Gosh' by Jamie xx; preferred audio format.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Jamie xx Gosh"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:gosh-topic",
+      "classification": "topic_audio",
+      "confidence": 0.95,
+      "evidence": [],
+      "rank": 1,
+      "rationale": "Official topic channel audio matches the track exactly (305s) and is the best choice for playing audio.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "c12cab3c401a",
+      "elapsedMs": 4191,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "7af45267a141",
+      "elapsedMs": 10909,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": [
+    "No official audio from SoundCloud found; only YouTube topic channel available."
+  ]
+}

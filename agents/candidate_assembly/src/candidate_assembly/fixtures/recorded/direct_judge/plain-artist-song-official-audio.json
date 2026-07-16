@@ -1,0 +1,125 @@
+{
+  "arm": "direct_judge",
+  "budgetSpent": {
+    "elapsedMs": 17277,
+    "modelCalls": 1,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "durationTargetMs": 231000,
+    "notes": "Single-shot judge re-ranking of the deterministic pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Play Ninajirachi iPod Touch"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "direct-judge-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:nina-ipod-audio",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:nina-ipod-audio",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:nina-ipod",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official audio upload from Topic channel, perfect for playing the song.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:nina-ipod-mv",
+      "classification": "music_video",
+      "confidence": 0.69,
+      "evidence": [
+        {
+          "ref": "youtube:nina-ipod-mv",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:nina-ipod",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Official music video includes visuals; still acceptable but not ideal for audio-only play.",
+      "warnings": [
+        "music_video"
+      ]
+    },
+    {
+      "candidateId": "youtube:nina-ipod-8d",
+      "classification": "altered_audio",
+      "confidence": 0.53,
+      "evidence": [
+        {
+          "ref": "youtube:nina-ipod-8d",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:nina-ipod",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Altered 8D audio, not the original recording; poor quality for standard playback.",
+      "warnings": [
+        "altered_audio"
+      ]
+    },
+    {
+      "candidateId": "youtube:nina-ipod-reaction",
+      "classification": "interview",
+      "confidence": 0.41,
+      "evidence": [
+        {
+          "ref": "youtube:nina-ipod-reaction",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:nina-ipod",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 4,
+      "rationale": "Reaction video with commentary, not the actual song; irrelevant for playing.",
+      "warnings": [
+        "interview",
+        "duration_mismatch"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "42c752c73991",
+      "elapsedMs": 0,
+      "resultCount": 4,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "06d0f87a2217",
+      "elapsedMs": 0,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}

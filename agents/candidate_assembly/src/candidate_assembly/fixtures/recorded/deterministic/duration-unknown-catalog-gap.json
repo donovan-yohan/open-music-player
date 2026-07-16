@@ -1,0 +1,90 @@
+{
+  "arm": "deterministic",
+  "budgetSpent": {
+    "elapsedMs": 0,
+    "modelCalls": 0,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "notes": "Deterministic source-quality ranking of the retrieved pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "play Aphex Twin Windowlicker"
+    ]
+  },
+  "provenance": {
+    "model": "",
+    "orchestrator": "deterministic-go-sourcequality-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:windowlicker-audio",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:windowlicker-audio",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 1,
+      "rationale": "official audio: title indicates official audio.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:windowlicker-alt",
+      "classification": "unknown",
+      "confidence": 0.73,
+      "evidence": [
+        {
+          "ref": "youtube:windowlicker-alt",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "unknown: title and artist match the query terms.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:windowlicker-mv",
+      "classification": "music_video",
+      "confidence": 0.55,
+      "evidence": [
+        {
+          "ref": "youtube:windowlicker-mv",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "music video: title and artist match the query terms.",
+      "warnings": [
+        "music_video"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "d0b9a7ff4ce0",
+      "elapsedMs": 0,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "9d47f8937003",
+      "elapsedMs": 0,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": [
+    "Catalog has no canonical duration for the interpreted track; duration cross-check skipped."
+  ]
+}

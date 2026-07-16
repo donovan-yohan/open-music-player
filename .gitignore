@@ -50,3 +50,11 @@ build/
 .logs/
 outputs/
 deploy/.env
+
+# Python agents package (uv-managed)
+agents/candidate_assembly/.venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.uv-cache/

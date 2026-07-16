@@ -1,0 +1,74 @@
+{
+  "arm": "deep_agent",
+  "budgetSpent": {
+    "elapsedMs": 47361,
+    "modelCalls": 5,
+    "toolCalls": 3
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "durationTargetMs": 231000,
+    "notes": "User requested the full track 'Rumble' by Fred again.. for download; prefer official audio at original length.",
+    "platformPreference": [],
+    "searchQueries": [
+      "Fred again Rumble full track",
+      "Fred again Rumble official audio"
+    ]
+  },
+  "provenance": {
+    "jsonMode": true,
+    "model": "deepseek-v4-flash",
+    "orchestrator": "deepagents-0.6.12",
+    "toolTransport": "structured_action"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:rumble-full",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "search_sources returned youtube:rumble-full with duration 231000ms and title 'Fred again.. - Rumble (Official Audio)'",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "search_catalog confirms track duration 231000ms",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 1,
+      "rationale": "Official audio from Fred again.. Topic channel; duration 3:51 matches catalog track length; downloadable and full version.",
+      "warnings": []
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "8bcb86095402",
+      "elapsedMs": 5978,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 13226,
+      "resultCount": 0,
+      "step": 2,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "1fc95c94d097",
+      "elapsedMs": 19143,
+      "resultCount": 1,
+      "step": 3,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": [
+    "No other full-length official audio candidates found; short clips and TikTok versions excluded due to duration mismatch and likely altered content."
+  ]
+}

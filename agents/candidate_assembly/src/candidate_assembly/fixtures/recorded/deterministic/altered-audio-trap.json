@@ -1,0 +1,103 @@
+{
+  "arm": "deterministic",
+  "budgetSpent": {
+    "elapsedMs": 0,
+    "modelCalls": 0,
+    "toolCalls": 2
+  },
+  "interpretedIntent": {
+    "desiredKinds": [
+      "official_audio",
+      "topic_audio"
+    ],
+    "durationTargetMs": 193000,
+    "notes": "Deterministic source-quality ranking of the retrieved pool.",
+    "platformPreference": [],
+    "searchQueries": [
+      "play Charli xcx 360 please"
+    ]
+  },
+  "provenance": {
+    "model": "",
+    "orchestrator": "deterministic-go-sourcequality-v1",
+    "toolTransport": "none"
+  },
+  "recommendations": [
+    {
+      "candidateId": "youtube:c360-audio",
+      "classification": "official_audio",
+      "confidence": 0.95,
+      "evidence": [
+        {
+          "ref": "youtube:c360-audio",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:c360",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 1,
+      "rationale": "official audio: title indicates official audio.",
+      "warnings": []
+    },
+    {
+      "candidateId": "youtube:c360-slowed",
+      "classification": "altered_audio",
+      "confidence": 0.52,
+      "evidence": [
+        {
+          "ref": "youtube:c360-slowed",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:c360",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 2,
+      "rationale": "altered audio: title and artist match the query terms.",
+      "warnings": [
+        "altered_audio"
+      ]
+    },
+    {
+      "candidateId": "youtube:c360-nightcore",
+      "classification": "altered_audio",
+      "confidence": 0.52,
+      "evidence": [
+        {
+          "ref": "youtube:c360-nightcore",
+          "tool": "search_sources"
+        },
+        {
+          "ref": "mb:recording:c360",
+          "tool": "search_catalog"
+        }
+      ],
+      "rank": 3,
+      "rationale": "altered audio: title and artist match the query terms.",
+      "warnings": [
+        "altered_audio"
+      ]
+    }
+  ],
+  "schemaVersion": "omp.agent-search.assembly.v1",
+  "trace": [
+    {
+      "argsDigest": "f387311664b1",
+      "elapsedMs": 0,
+      "resultCount": 3,
+      "step": 1,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "de90f9eabe6d",
+      "elapsedMs": 0,
+      "resultCount": 1,
+      "step": 2,
+      "tool": "search_catalog"
+    }
+  ],
+  "unresolved": []
+}
