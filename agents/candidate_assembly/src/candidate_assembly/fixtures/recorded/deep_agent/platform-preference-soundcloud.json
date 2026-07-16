@@ -1,15 +1,16 @@
 {
   "arm": "deep_agent",
   "budgetSpent": {
-    "elapsedMs": 51591,
+    "elapsedMs": 73922,
     "modelCalls": 4,
     "toolCalls": 2
   },
   "interpretedIntent": {
     "desiredKinds": [
-      "official_audio"
+      "track"
     ],
-    "notes": "User specifically wants the original song by SOPHIE from SoundCloud.",
+    "durationTargetMs": 258000,
+    "notes": "",
     "platformPreference": [
       "soundcloud"
     ],
@@ -35,28 +36,59 @@
         }
       ],
       "rank": 1,
-      "rationale": "Direct official upload by SOPHIE on SoundCloud, matches title and artist, full length.",
+      "rationale": "Official SOPHIE upload matching catalog duration exactly.",
       "warnings": []
+    },
+    {
+      "candidateId": "soundcloud:sophie-cold-remix",
+      "classification": "remix",
+      "confidence": 0.6,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-remix",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 2,
+      "rationale": "Remix variant by another uploader; duration within 7% threshold.",
+      "warnings": [
+        "remix"
+      ]
+    },
+    {
+      "candidateId": "soundcloud:sophie-cold-snippet",
+      "classification": "artist_upload",
+      "confidence": 0.3,
+      "evidence": [
+        {
+          "ref": "soundcloud:sophie-cold-snippet",
+          "tool": "search_sources"
+        }
+      ],
+      "rank": 3,
+      "rationale": "Short snippet; duration mismatch and short version.",
+      "warnings": [
+        "duration_mismatch",
+        "short_version"
+      ]
     }
   ],
   "schemaVersion": "omp.agent-search.assembly.v1",
   "trace": [
     {
-      "argsDigest": "067946637254",
-      "elapsedMs": 10913,
-      "resultCount": 3,
+      "argsDigest": "befed54087cb",
+      "elapsedMs": 6301,
+      "resultCount": 1,
       "step": 1,
-      "tool": "search_sources"
+      "tool": "search_catalog"
     },
     {
-      "argsDigest": "eb5f5e7844fa",
-      "elapsedMs": 19489,
-      "resultCount": 0,
+      "argsDigest": "067946637254",
+      "elapsedMs": 10692,
+      "resultCount": 3,
       "step": 2,
-      "tool": "inspect_source_metadata"
+      "tool": "search_sources"
     }
   ],
-  "unresolved": [
-    "Remix and snippet candidates were found but excluded as user requested original track."
-  ]
+  "unresolved": []
 }

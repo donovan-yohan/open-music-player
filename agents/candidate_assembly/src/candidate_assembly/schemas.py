@@ -22,7 +22,7 @@ ASSEMBLY_SCHEMA_VERSION = "omp.agent-search.assembly.v1"
 CORPUS_SCHEMA_VERSION = "omp.agent-search.eval.corpus.v1"
 RUN_SCHEMA_VERSION = "omp.agent-search.eval.run.v1"
 KNOWN_FAILURES_SCHEMA_VERSION = "omp.agent-search.eval.known-failures.v1"
-PROMPT_REVISION = "agent-search-system-prompt-v1"
+PROMPT_REVISION = "agent-search-system-prompt-v2"
 
 ALLOWED_PROVIDERS: frozenset[str] = frozenset({"youtube", "soundcloud"})
 

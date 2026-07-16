@@ -1,6 +1,6 @@
 {
   "schemaVersion": "omp.agent-search.eval.corpus.v1",
-  "promptRevision": "agent-search-system-prompt-v1",
+  "promptRevision": "agent-search-system-prompt-v2",
   "cases": [
     {
       "id": "plain-artist-song-official-audio",

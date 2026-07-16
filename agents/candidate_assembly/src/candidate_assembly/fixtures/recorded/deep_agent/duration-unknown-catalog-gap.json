@@ -1,16 +1,15 @@
 {
   "arm": "deep_agent",
   "budgetSpent": {
-    "elapsedMs": 61938,
+    "elapsedMs": 72837,
     "modelCalls": 5,
     "toolCalls": 3
   },
   "interpretedIntent": {
     "desiredKinds": [
-      "official_audio",
-      "topic_audio"
+      "track"
     ],
-    "notes": "User wants audio of Aphex Twin - Windowlicker",
+    "notes": "Canonical duration not resolved; skipped duration cross-check.",
     "platformPreference": [],
     "searchQueries": [
       "Aphex Twin Windowlicker"
@@ -29,26 +28,34 @@
       "confidence": 0.95,
       "evidence": [
         {
-          "ref": "youtube:windowlicker-audio",
+          "ref": "search_sources",
           "tool": "search_sources"
+        },
+        {
+          "ref": "youtube:windowlicker-audio",
+          "tool": "inspect_source_metadata"
         }
       ],
       "rank": 1,
-      "rationale": "Official audio from Topic channel, matches desired audio format.",
+      "rationale": "Official topic audio upload of Windowlicker",
       "warnings": []
     },
     {
       "candidateId": "youtube:windowlicker-mv",
       "classification": "music_video",
-      "confidence": 0.5,
+      "confidence": 0.9,
       "evidence": [
         {
-          "ref": "youtube:windowlicker-mv",
+          "ref": "search_sources",
           "tool": "search_sources"
+        },
+        {
+          "ref": "youtube:windowlicker-mv",
+          "tool": "inspect_source_metadata"
         }
       ],
       "rank": 2,
-      "rationale": "Official music video not preferred for audio request; included as fallback.",
+      "rationale": "Official music video from Warp Records",
       "warnings": [
         "music_video"
       ]
@@ -56,45 +63,47 @@
     {
       "candidateId": "youtube:windowlicker-alt",
       "classification": "unknown",
-      "confidence": 0.3,
+      "confidence": 0.8,
       "evidence": [
         {
-          "ref": "youtube:windowlicker-alt",
+          "ref": "search_sources",
           "tool": "search_sources"
+        },
+        {
+          "ref": "youtube:windowlicker-alt",
+          "tool": "inspect_source_metadata"
         }
       ],
       "rank": 3,
-      "rationale": "Same as music video upload; less relevant.",
-      "warnings": [
-        "music_video"
-      ]
+      "rationale": "Additional upload by Warp Records; could be duplicate audio or video",
+      "warnings": []
     }
   ],
   "schemaVersion": "omp.agent-search.assembly.v1",
   "trace": [
     {
-      "argsDigest": "86e3e837afb5",
-      "elapsedMs": 7100,
-      "resultCount": 3,
-      "step": 1,
-      "tool": "search_sources"
-    },
-    {
-      "argsDigest": "06f86a0d2763",
-      "elapsedMs": 12876,
+      "argsDigest": "d4376fa2a236",
+      "elapsedMs": 3603,
       "resultCount": 1,
-      "step": 2,
+      "step": 1,
       "tool": "search_catalog"
     },
     {
-      "argsDigest": "eb5f5e7844fa",
-      "elapsedMs": 18380,
+      "argsDigest": "5cee7fd40472",
+      "elapsedMs": 8403,
       "resultCount": 0,
-      "step": 3,
+      "step": 2,
       "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "37b76911db08",
+      "elapsedMs": 13727,
+      "resultCount": 3,
+      "step": 3,
+      "tool": "search_sources"
     }
   ],
   "unresolved": [
-    "Catalog track duration not verified; inspect_source_metadata failed for recording."
+    "Could not retrieve canonical duration from MusicBrainz for 'Windowlicker'; duration mismatch warnings not applied."
   ]
 }

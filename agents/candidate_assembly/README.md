@@ -59,9 +59,7 @@ uv sync --extra live
 
 ### Pinned known-failures manifest
 
-The `deep_agent` prototype has intended, visible grader failures (issue #265
-findings). Rather than hide them or lower the bar, replay is an EXACT-match gate
-against `fixtures/known_failures.v1.json`
+Replay is an EXACT-match gate against `fixtures/known_failures.v1.json`
 (`schemaVersion: omp.agent-search.eval.known-failures.v1`): each entry pins a
 `(caseId, arm)`, the exact `graders` it should fail, and a one-line `reason`.
 Replay exits 0 only when the actual failing set matches the manifest exactly —
@@ -69,9 +67,12 @@ any unexpected failure, any pinned-but-now-passing entry (stale manifest), or an
 failing-grader-set mismatch fails the gate and prints the deltas. A summary line
 reports `known_failures=<n> matched` so the green gate stays self-explanatory.
 Safety-grader failures can never be excused by the manifest, and live mode
-ignores it (its `--min-pass-rate` stays advisory). The five prototype failures
-are pinned, not hidden — the finding stays visible while CI stays green and
-meaningful.
+ignores it (its `--min-pass-rate` stays advisory). The
+`agent-search-system-prompt-v2` rewrite closed every `deep_agent` gap the issue
+#265 spike surfaced, so the manifest currently pins **zero** intended failures
+and all three arms pass replay — the exact-match machinery stays so any
+regression is caught, and a deliberate future finding can be re-pinned with its
+exact grader set.
 - **live**: executes the selected arms against the real OpenAI-compatible
   endpoint. Env-only: `AGENT_SEARCH_BASE_URL`, `AGENT_SEARCH_API_KEY`,
   `AGENT_SEARCH_MODEL`, `AGENT_SEARCH_TIMEOUT_S`, `AGENT_SEARCH_RUN_TIMEOUT_S`.

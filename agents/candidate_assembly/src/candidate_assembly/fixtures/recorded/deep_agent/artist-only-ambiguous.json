@@ -1,19 +1,16 @@
 {
   "arm": "deep_agent",
   "budgetSpent": {
-    "elapsedMs": 53451,
-    "modelCalls": 4,
-    "toolCalls": 2
+    "elapsedMs": 71287,
+    "modelCalls": 9,
+    "toolCalls": 7
   },
   "interpretedIntent": {
     "desiredKinds": [
-      "official_audio",
-      "topic_audio"
+      "track"
     ],
-    "notes": "User wants to play audio from Ninajirachi, no specific track requested.",
-    "platformPreference": [
-      "youtube"
-    ],
+    "notes": "Canonical track durations not found; skipped duration cross-check.",
+    "platformPreference": [],
     "searchQueries": [
       "ninajirachi"
     ]
@@ -29,61 +26,83 @@
       "candidateId": "youtube:nina-pinky",
       "classification": "official_audio",
       "confidence": 0.9,
-      "evidence": [
-        {
-          "ref": "search_sources: ninajirachi",
-          "tool": "search_sources"
-        }
-      ],
+      "evidence": [],
       "rank": 1,
-      "rationale": "Official topic audio of Ninajirachi's 'Pinky Promise', clear match for the artist.",
+      "rationale": "Official topic-channel audio upload by Ninajirachi \u2013 Pinky Promise, matches the artist request.",
       "warnings": []
     },
     {
       "candidateId": "youtube:nina-ipod",
       "classification": "official_audio",
       "confidence": 0.9,
-      "evidence": [
-        {
-          "ref": "search_sources: ninajirachi",
-          "tool": "search_sources"
-        }
-      ],
+      "evidence": [],
       "rank": 2,
-      "rationale": "Official topic audio of Ninajirachi's 'iPod Touch', direct match.",
+      "rationale": "Official topic-channel audio upload by Ninajirachi \u2013 iPod Touch, another suitable track.",
       "warnings": []
     },
     {
       "candidateId": "youtube:nina-rukus",
       "classification": "official_audio",
       "confidence": 0.9,
-      "evidence": [
-        {
-          "ref": "search_sources: ninajirachi",
-          "tool": "search_sources"
-        }
-      ],
+      "evidence": [],
       "rank": 3,
-      "rationale": "Official topic audio of Ninajirachi's 'Rukus', authentic track.",
+      "rationale": "Official topic-channel audio upload by Ninajirachi \u2013 Rukus, additional track.",
       "warnings": []
     }
   ],
   "schemaVersion": "omp.agent-search.assembly.v1",
   "trace": [
     {
-      "argsDigest": "85e46a83aaf1",
-      "elapsedMs": 6749,
-      "resultCount": 4,
+      "argsDigest": "a292db4b4d64",
+      "elapsedMs": 2754,
+      "resultCount": 1,
       "step": 1,
-      "tool": "search_sources"
+      "tool": "search_catalog"
     },
     {
-      "argsDigest": "9b0c4e203f81",
-      "elapsedMs": 15461,
+      "argsDigest": "74a44410c664",
+      "elapsedMs": 5484,
       "resultCount": 0,
       "step": 2,
       "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "23aa4604ca94",
+      "elapsedMs": 11460,
+      "resultCount": 4,
+      "step": 3,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "a471e9b3057f",
+      "elapsedMs": 23203,
+      "resultCount": 0,
+      "step": 4,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 29851,
+      "resultCount": 0,
+      "step": 5,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 33322,
+      "resultCount": 0,
+      "step": 6,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 36488,
+      "resultCount": 0,
+      "step": 7,
+      "tool": "inspect_source_metadata"
     }
   ],
-  "unresolved": []
+  "unresolved": [
+    "Could not retrieve catalog track durations for Ninajirachi songs; duration mismatch check not applied."
+  ]
 }

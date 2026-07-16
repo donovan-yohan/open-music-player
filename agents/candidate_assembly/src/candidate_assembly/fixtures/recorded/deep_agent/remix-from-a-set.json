@@ -1,22 +1,20 @@
 {
   "arm": "deep_agent",
   "budgetSpent": {
-    "elapsedMs": 136930,
+    "elapsedMs": 171884,
     "modelCalls": 9,
     "toolCalls": 7
   },
   "interpretedIntent": {
     "desiredKinds": [
-      "audio",
-      "remix"
+      "track"
     ],
     "durationTargetMs": 240000,
-    "notes": "User wants the specific remix track that was played during a Skrillex DJ set. The set is not the target; the remix itself is.",
+    "notes": "The user wants the remix track from a Skrillex DJ set; canonical remix is Nightlight (Skrillex Remix) by Boombox.",
     "platformPreference": [],
     "searchQueries": [
-      "Skrillex set remix",
-      "Skrillex set 2024 remix",
-      "Skrillex set tracklist"
+      "Skrillex remix",
+      "Nightlight Skrillex Remix"
     ]
   },
   "provenance": {
@@ -29,91 +27,89 @@
     {
       "candidateId": "youtube:skrillex-remix-standalone",
       "classification": "official_audio",
-      "confidence": 0.9,
+      "confidence": 0.95,
       "evidence": [],
       "rank": 1,
-      "rationale": "Topic-channel upload of 'Boombox - Nightlight (Skrillex Remix)' matches the remix from the set; duration (240s) aligns with catalog entry.",
+      "rationale": "Official audio of the Nightlight (Skrillex Remix) by Boombox; matches canonical track exactly.",
       "warnings": []
     },
     {
       "candidateId": "youtube:skrillex-full-set",
       "classification": "live",
-      "confidence": 0.3,
+      "confidence": 0.5,
       "evidence": [],
       "rank": 2,
-      "rationale": "The full DJ set contains the remix but is a live recording, not the isolated track; duration mismatch (48 min vs expected 4 min).",
+      "rationale": "Full DJ set containing the remix; live recording, duration differs significantly from the standalone remix.",
       "warnings": [
-        "duration_mismatch",
-        "live"
+        "live",
+        "duration_mismatch"
       ]
     },
     {
       "candidateId": "youtube:skrillex-remix-reaction",
       "classification": "interview",
-      "confidence": 0.1,
+      "confidence": 0.2,
       "evidence": [],
       "rank": 3,
-      "rationale": "Reaction video includes the remix but is not the original track; user likely wants the standalone audio.",
+      "rationale": "Reaction video to the remix; much longer duration and includes commentary, not the clean remix audio.",
       "warnings": [
-        "cover",
-        "not_downloadable"
+        "duration_mismatch"
       ]
     }
   ],
   "schemaVersion": "omp.agent-search.assembly.v1",
   "trace": [
     {
-      "argsDigest": "29aec970ac18",
-      "elapsedMs": 10137,
-      "resultCount": 3,
-      "step": 1,
-      "tool": "search_sources"
-    },
-    {
-      "argsDigest": "eb5f5e7844fa",
-      "elapsedMs": 27449,
-      "resultCount": 0,
-      "step": 2,
-      "tool": "inspect_source_metadata"
-    },
-    {
-      "argsDigest": "e8c2385598ff",
-      "elapsedMs": 33837,
-      "resultCount": 3,
-      "step": 3,
-      "tool": "search_sources"
-    },
-    {
-      "argsDigest": "8cb2077f5e08",
-      "elapsedMs": 45062,
-      "resultCount": 3,
-      "step": 4,
-      "tool": "search_sources"
-    },
-    {
-      "argsDigest": "eb5f5e7844fa",
-      "elapsedMs": 53629,
-      "resultCount": 0,
-      "step": 5,
-      "tool": "inspect_source_metadata"
-    },
-    {
-      "argsDigest": "18c1e32bd905",
-      "elapsedMs": 62128,
+      "argsDigest": "c9eeb8450973",
+      "elapsedMs": 15542,
       "resultCount": 1,
-      "step": 6,
+      "step": 1,
       "tool": "search_catalog"
     },
     {
-      "argsDigest": "c14704f6eb1f",
-      "elapsedMs": 72206,
+      "argsDigest": "8cb2a1f86d54",
+      "elapsedMs": 23808,
       "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "666a6f8eb249",
+      "elapsedMs": 32247,
+      "resultCount": 1,
+      "step": 3,
+      "tool": "search_catalog"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 41448,
+      "resultCount": 0,
+      "step": 4,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "c40fffe1c9ab",
+      "elapsedMs": 45083,
+      "resultCount": 3,
+      "step": 5,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "eb5f5e7844fa",
+      "elapsedMs": 53764,
+      "resultCount": 0,
+      "step": 6,
+      "tool": "inspect_source_metadata"
+    },
+    {
+      "argsDigest": "5dfa7840fa1c",
+      "elapsedMs": 65385,
+      "resultCount": 0,
       "step": 7,
       "tool": "search_sources"
     }
   ],
   "unresolved": [
-    "No direct track from the set identified as the exact remix; the standalone remix is the closest match.",
-    "The specific Skrillex set referenced is ambiguous; assumed to be the 2024 festival set found in search."
+    "No other versions of the remix were found; the full set and reaction are the only near-misses."
   ]
 }

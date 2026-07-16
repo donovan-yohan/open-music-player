@@ -46,9 +46,11 @@ def test_real_manifest_loads_and_validates_against_corpus():
     manifest = kf.load_manifest()
     kf.validate_manifest(manifest, corpus)  # must not raise
     assert manifest.schemaVersion == KNOWN_FAILURES_SCHEMA_VERSION
-    # The pinned prototype findings: 2 grounding + 3 expected on deep_agent.
-    assert len(manifest.entries) == 5
-    assert {e.arm for e in manifest.entries} == {"deep_agent"}
+    # The agent-search-system-prompt-v2 rewrite closed every deep_agent gap, so the
+    # manifest now pins zero intended failures and all three arms pass replay. The
+    # exact-match gate machinery stays exercised below; any future pinned entry must
+    # still carry a non-empty reason and at least one grader.
+    assert manifest.entries == []
     for entry in manifest.entries:
         assert entry.reason.strip()
         assert entry.graders

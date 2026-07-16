@@ -1,7 +1,7 @@
 {
   "arm": "deep_agent",
   "budgetSpent": {
-    "elapsedMs": 37593,
+    "elapsedMs": 49003,
     "modelCalls": 4,
     "toolCalls": 2
   },
@@ -10,7 +10,7 @@
       "audio"
     ],
     "durationTargetMs": 218000,
-    "notes": "User wants to play the original studio recording of Tame Impala's The Less I Know The Better.",
+    "notes": "",
     "platformPreference": [],
     "searchQueries": [
       "Tame Impala The Less I Know The Better"
@@ -26,34 +26,48 @@
     {
       "candidateId": "youtube:tliktb-studio",
       "classification": "official_audio",
-      "confidence": 1.0,
-      "evidence": [
-        {
-          "ref": "mb:recording:tliktb",
-          "tool": "search_catalog"
-        },
-        {
-          "ref": "youtube:tliktb-studio",
-          "tool": "search_sources"
-        }
-      ],
+      "confidence": 0.95,
+      "evidence": [],
       "rank": 1,
-      "rationale": "Official audio from Tame Impala's Topic channel; exact duration match (218000ms), downloadable, no unwanted alterations.",
+      "rationale": "Official topic audio upload; matches canonical track duration exactly; best match for 'play' request.",
       "warnings": []
+    },
+    {
+      "candidateId": "youtube:tliktb-cover",
+      "classification": "cover",
+      "confidence": 0.7,
+      "evidence": [],
+      "rank": 2,
+      "rationale": "Acoustic cover version; plausible near-miss of the requested song; duration within threshold.",
+      "warnings": [
+        "cover"
+      ]
+    },
+    {
+      "candidateId": "youtube:tliktb-live",
+      "classification": "live",
+      "confidence": 0.5,
+      "evidence": [],
+      "rank": 3,
+      "rationale": "Live performance at Coachella; duration significantly longer than canonical; tagged as live and duration mismatch.",
+      "warnings": [
+        "live",
+        "duration_mismatch"
+      ]
     }
   ],
   "schemaVersion": "omp.agent-search.assembly.v1",
   "trace": [
     {
-      "argsDigest": "d074e301c2bd",
-      "elapsedMs": 5409,
+      "argsDigest": "2391785f8ffa",
+      "elapsedMs": 3075,
       "resultCount": 1,
       "step": 1,
       "tool": "search_catalog"
     },
     {
-      "argsDigest": "7d80efd1342b",
-      "elapsedMs": 11088,
+      "argsDigest": "a2fe20bae8b5",
+      "elapsedMs": 7346,
       "resultCount": 3,
       "step": 2,
       "tool": "search_sources"

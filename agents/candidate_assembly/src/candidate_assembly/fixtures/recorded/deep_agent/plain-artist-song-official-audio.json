@@ -1,18 +1,19 @@
 {
   "arm": "deep_agent",
   "budgetSpent": {
-    "elapsedMs": 61743,
+    "elapsedMs": 108171,
     "modelCalls": 4,
     "toolCalls": 2
   },
   "interpretedIntent": {
     "desiredKinds": [
-      "official_audio",
-      "topic_audio",
-      "artist_upload"
+      "track"
     ],
-    "notes": "User wants to play the song; prefer audio over video.",
-    "platformPreference": [],
+    "durationTargetMs": 231000,
+    "notes": "",
+    "platformPreference": [
+      "youtube"
+    ],
     "searchQueries": [
       "Ninajirachi iPod Touch"
     ]
@@ -30,18 +31,22 @@
       "confidence": 0.95,
       "evidence": [
         {
+          "ref": "mb:recording:nina-ipod",
+          "tool": "search_catalog"
+        },
+        {
           "ref": "youtube:nina-ipod-audio",
           "tool": "search_sources"
         }
       ],
       "rank": 1,
-      "rationale": "Official audio from Topic channel, matches expected song duration, ideal for playback.",
+      "rationale": "Official audio upload from Ninajirachi - Topic, duration matches catalog track exactly.",
       "warnings": []
     },
     {
       "candidateId": "youtube:nina-ipod-mv",
       "classification": "music_video",
-      "confidence": 0.6,
+      "confidence": 0.8,
       "evidence": [
         {
           "ref": "youtube:nina-ipod-mv",
@@ -49,7 +54,7 @@
         }
       ],
       "rank": 2,
-      "rationale": "Official music video from artist channel, but user likely prefers audio only; included as fallback.",
+      "rationale": "Official music video, same duration, but visual format; user asked for play so audio preferred.",
       "warnings": [
         "music_video"
       ]
@@ -57,7 +62,7 @@
     {
       "candidateId": "youtube:nina-ipod-8d",
       "classification": "altered_audio",
-      "confidence": 0.2,
+      "confidence": 0.7,
       "evidence": [
         {
           "ref": "youtube:nina-ipod-8d",
@@ -65,7 +70,7 @@
         }
       ],
       "rank": 3,
-      "rationale": "8D audio remix, not original version; only consider if user wants altered audio.",
+      "rationale": "8D audio edit, duration within threshold, but altered audio effect.",
       "warnings": [
         "altered_audio"
       ]
@@ -73,7 +78,7 @@
     {
       "candidateId": "youtube:nina-ipod-reaction",
       "classification": "interview",
-      "confidence": 0.0,
+      "confidence": 0.3,
       "evidence": [
         {
           "ref": "youtube:nina-ipod-reaction",
@@ -81,28 +86,29 @@
         }
       ],
       "rank": 4,
-      "rationale": "Reaction video, not the actual song; not suitable for playback.",
-      "warnings": []
+      "rationale": "Reaction video, much longer duration, not the requested song itself.",
+      "warnings": [
+        "duration_mismatch",
+        "interview"
+      ]
     }
   ],
   "schemaVersion": "omp.agent-search.assembly.v1",
   "trace": [
     {
-      "argsDigest": "4ba759d100c7",
-      "elapsedMs": 9302,
-      "resultCount": 4,
+      "argsDigest": "224fb0d0fbfa",
+      "elapsedMs": 3343,
+      "resultCount": 1,
       "step": 1,
-      "tool": "search_sources"
+      "tool": "search_catalog"
     },
     {
-      "argsDigest": "461e8be33d18",
-      "elapsedMs": 12794,
-      "resultCount": 0,
+      "argsDigest": "023ea7a14c8f",
+      "elapsedMs": 7862,
+      "resultCount": 4,
       "step": 2,
-      "tool": "search_catalog"
+      "tool": "search_sources"
     }
   ],
-  "unresolved": [
-    "Catalog search returned no results, so duration target not verified against official release."
-  ]
+  "unresolved": []
 }

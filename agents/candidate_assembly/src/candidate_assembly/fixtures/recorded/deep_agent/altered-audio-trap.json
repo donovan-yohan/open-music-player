@@ -1,19 +1,20 @@
 {
   "arm": "deep_agent",
   "budgetSpent": {
-    "elapsedMs": 55335,
+    "elapsedMs": 80776,
     "modelCalls": 5,
     "toolCalls": 3
   },
   "interpretedIntent": {
     "desiredKinds": [
-      "official_audio",
-      "topic_audio"
+      "track"
     ],
-    "notes": "No catalog match for duration verification; relying on official audio as best candidate.",
+    "durationTargetMs": 193000,
+    "notes": "No music video found; only official audio and two altered edits.",
     "platformPreference": [],
     "searchQueries": [
-      "Charli xcx 360"
+      "Charli xcx 360",
+      "Charli xcx 360 music video"
     ]
   },
   "provenance": {
@@ -27,18 +28,28 @@
       "candidateId": "youtube:c360-audio",
       "classification": "official_audio",
       "confidence": 0.95,
-      "evidence": [],
+      "evidence": [
+        {
+          "ref": "youtube:c360-audio",
+          "tool": "search_sources"
+        }
+      ],
       "rank": 1,
-      "rationale": "Official audio from Topic channel; matches expected duration; no alterations.",
+      "rationale": "Official audio on Topic channel, exact duration matches canonical track.",
       "warnings": []
     },
     {
       "candidateId": "youtube:c360-slowed",
       "classification": "altered_audio",
-      "confidence": 0.2,
-      "evidence": [],
+      "confidence": 0.7,
+      "evidence": [
+        {
+          "ref": "youtube:c360-slowed",
+          "tool": "search_sources"
+        }
+      ],
       "rank": 2,
-      "rationale": "Slowed/reverb version, not original tempo.",
+      "rationale": "Slowed + reverb edit, duration near-canonical (4s diff under 7%).",
       "warnings": [
         "altered_audio"
       ]
@@ -46,10 +57,15 @@
     {
       "candidateId": "youtube:c360-nightcore",
       "classification": "altered_audio",
-      "confidence": 0.15,
-      "evidence": [],
+      "confidence": 0.7,
+      "evidence": [
+        {
+          "ref": "youtube:c360-nightcore",
+          "tool": "search_sources"
+        }
+      ],
       "rank": 3,
-      "rationale": "Sped-up nightcore version, not original.",
+      "rationale": "Sped-up nightcore edit, duration near-canonical (3s diff under 7%).",
       "warnings": [
         "altered_audio"
       ]
@@ -58,28 +74,26 @@
   "schemaVersion": "omp.agent-search.assembly.v1",
   "trace": [
     {
-      "argsDigest": "777eb2eb497b",
-      "elapsedMs": 7203,
-      "resultCount": 3,
+      "argsDigest": "c62bdf6ac3cb",
+      "elapsedMs": 2966,
+      "resultCount": 1,
       "step": 1,
-      "tool": "search_sources"
-    },
-    {
-      "argsDigest": "28efcdd9b90d",
-      "elapsedMs": 13805,
-      "resultCount": 0,
-      "step": 2,
       "tool": "search_catalog"
     },
     {
-      "argsDigest": "eb5f5e7844fa",
-      "elapsedMs": 15798,
-      "resultCount": 0,
+      "argsDigest": "f7c629c4af4c",
+      "elapsedMs": 6627,
+      "resultCount": 3,
+      "step": 2,
+      "tool": "search_sources"
+    },
+    {
+      "argsDigest": "83abf3d93296",
+      "elapsedMs": 25066,
+      "resultCount": 3,
       "step": 3,
-      "tool": "inspect_source_metadata"
+      "tool": "search_sources"
     }
   ],
-  "unresolved": [
-    "No catalog entry found for duration comparison; slowed and sped-up variants were filtered."
-  ]
+  "unresolved": []
 }

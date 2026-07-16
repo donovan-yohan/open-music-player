@@ -167,23 +167,25 @@ all three arms; the CI gate covers every graded arm plus every unit test.
 
 ### Pinned known-failures manifest
 
-The `deep_agent` prototype has intended, visible grader failures — issue #265
-findings we want to keep in front of reviewers, not paper over. Replay is
-therefore an EXACT-match gate against a pinned manifest at
+Replay is an EXACT-match gate against a pinned manifest at
 `fixtures/known_failures.v1.json`
 (`schemaVersion: omp.agent-search.eval.known-failures.v1`) rather than a
 pass-rate threshold. Each entry pins a `(caseId, arm)` plus the exact set of
 `graders` it is expected to fail and a one-line `reason`. Replay exits 0 only
 when the actual failing set matches the manifest exactly; any unexpected
 failure, any pinned entry that now passes (a stale manifest), or any
-failing-grader-set mismatch fails the gate and prints the deltas. This keeps the
-five prototype failures (2× `grounding` over-recommendation, 3× `expected`
-required-warning trap omissions) visible while the CI gate stays green and
-meaningful — failures are pinned, not hidden. Safety-grader failures can NEVER
-be excused by the manifest: a safety failure always fails the run. The manifest
-is loaded and validated like the corpus (real case ids + arms, no duplicate
-entries, non-empty reasons, and never the `safety` grader) and is consulted in
-replay only — live mode ignores it and keeps its advisory `--min-pass-rate`.
+failing-grader-set mismatch fails the gate and prints the deltas. The
+`agent-search-system-prompt-v2` rewrite closed every `deep_agent` gap the issue
+#265 spike surfaced (dropped trap candidates, unwarned off-duration uploads,
+single-candidate answers, and the missed canonical duration on empty catalog
+lookups), so the manifest now pins **zero** intended failures and all three arms
+pass replay. The exact-match machinery stays in place so any regression is
+caught rather than hidden, and a deliberate future finding can be re-pinned with
+its exact grader set. Safety-grader failures can NEVER be excused by the
+manifest: a safety failure always fails the run. The manifest is loaded and
+validated like the corpus (real case ids + arms, no duplicate entries, non-empty
+reasons, and never the `safety` grader) and is consulted in replay only — live
+mode ignores it and keeps its advisory `--min-pass-rate`.
 
 Live mode executes the selected arms against the real endpoint:
 

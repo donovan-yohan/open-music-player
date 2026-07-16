@@ -1,35 +1,4 @@
 {
   "schemaVersion": "omp.agent-search.eval.known-failures.v1",
-  "entries": [
-    {
-      "caseId": "plain-artist-song-official-audio",
-      "arm": "deep_agent",
-      "graders": ["grounding"],
-      "reason": "over-recommends a duration-mismatched candidate without the required duration_mismatch warning (missing_duration_warning)"
-    },
-    {
-      "caseId": "remix-from-a-set",
-      "arm": "deep_agent",
-      "graders": ["grounding"],
-      "reason": "over-recommends a duration-mismatched candidate without the required duration_mismatch warning (missing_duration_warning)"
-    },
-    {
-      "caseId": "short-version-trap",
-      "arm": "deep_agent",
-      "graders": ["expected"],
-      "reason": "omits required-warning trap candidate youtube:rumble-short from recommendations"
-    },
-    {
-      "caseId": "live-trap-not-requested",
-      "arm": "deep_agent",
-      "graders": ["expected"],
-      "reason": "omits required-warning trap candidate youtube:tliktb-live from recommendations"
-    },
-    {
-      "caseId": "cover-versus-original",
-      "arm": "deep_agent",
-      "graders": ["expected"],
-      "reason": "omits required-warning trap candidate youtube:creep-cover from recommendations"
-    }
-  ]
+  "entries": []
 }
