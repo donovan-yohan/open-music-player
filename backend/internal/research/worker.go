@@ -168,7 +168,7 @@ func (w *Worker) run(ctx context.Context, claim Claim) error {
 	}()
 	result := make(chan error, 1)
 	go func() {
-		result <- w.runner.Run(runCtx, RunRequest{Snapshot: claim.Snapshot, Run: claim.Run}, workerSink{w.validator, w.repository, claim})
+		result <- w.runner.Run(runCtx, RunRequest(claim), workerSink{w.validator, w.repository, claim})
 	}()
 	tick := w.tickers(w.renew)
 	defer tick.Stop()
@@ -185,7 +185,7 @@ func (w *Worker) run(ctx context.Context, claim Claim) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-tick.Chan():
-			cancelled, err := w.repository.RenewLease(ctx, claim, w.now().Add(w.lease))
+			canceled, err := w.repository.RenewLease(ctx, claim, w.now().Add(w.lease))
 			if errors.Is(err, ErrLeaseLost) {
 				cancel()
 				return ErrLeaseLost
@@ -194,7 +194,7 @@ func (w *Worker) run(ctx context.Context, claim Claim) error {
 				cancel()
 				return err
 			}
-			if cancelled {
+			if canceled {
 				cancel()
 				_, err = w.repository.Finish(ctx, claim, JobCancelled)
 				return err

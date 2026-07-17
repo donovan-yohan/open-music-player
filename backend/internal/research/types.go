@@ -13,7 +13,7 @@ const (
 	JobCancelRequested JobStatus = "cancel_requested"
 	JobCompleted       JobStatus = "completed"
 	JobDegraded        JobStatus = "degraded"
-	JobCancelled       JobStatus = "cancelled"
+	JobCancelled       JobStatus = "cancelled" //nolint:misspell // Persisted status contract.
 )
 
 func (s JobStatus) Terminal() bool { return s == JobCompleted || s == JobDegraded || s == JobCancelled }
@@ -24,7 +24,7 @@ const (
 	RunRunning   RunStatus = "running"
 	RunCompleted RunStatus = "completed"
 	RunDegraded  RunStatus = "degraded"
-	RunCancelled RunStatus = "cancelled"
+	RunCancelled RunStatus = "cancelled" //nolint:misspell // Persisted status contract.
 	RunTimedOut  RunStatus = "timed_out"
 	RunLeaseLost RunStatus = "lease_lost"
 )
@@ -77,7 +77,7 @@ const (
 	EventLeaseRecovered   EventKind = "lease_recovered"
 	EventDegraded         EventKind = "degraded"
 	EventCancelRequested  EventKind = "cancel_requested"
-	EventCancelled        EventKind = "cancelled"
+	EventCancelled        EventKind = "cancelled" //nolint:misspell // Persisted event contract.
 	EventRetried          EventKind = "retried"
 	EventCompleted        EventKind = "completed"
 	EventReviewed         EventKind = "reviewed"

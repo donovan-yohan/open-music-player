@@ -124,7 +124,7 @@ func TestResearchSchemaConstraintsAgainstPostgres(t *testing.T) {
 		}
 	}
 
-	for _, status := range []string{"queued", "running", "cancel_requested", "completed", "degraded", "cancelled"} {
+	for _, status := range []string{"queued", "running", "cancel_requested", "completed", "degraded", "cancelled"} { //nolint:misspell // Validate the persisted status contract.
 		if _, err := database.Exec(`
 			INSERT INTO research_jobs (
 				id, user_id, idempotency_key, request_hash, request_snapshot, retry_safe,
@@ -134,7 +134,7 @@ func TestResearchSchemaConstraintsAgainstPostgres(t *testing.T) {
 			t.Errorf("corrected research job status %q was rejected: %v", status, err)
 		}
 	}
-	for _, status := range []string{"not-a-status", "cancelling", "succeeded", "failed"} {
+	for _, status := range []string{"not-a-status", "canceling", "succeeded", "failed"} {
 		if _, err := database.Exec(`
 			INSERT INTO research_jobs (
 				id, user_id, idempotency_key, request_hash, request_snapshot, retry_safe,
@@ -179,7 +179,7 @@ func TestResearchSchemaConstraintsAgainstPostgres(t *testing.T) {
 		t.Error("unknown degradation code was accepted")
 	}
 
-	for index, status := range []string{"running", "completed", "degraded", "cancelled", "timed_out", "lease_lost"} {
+	for index, status := range []string{"running", "completed", "degraded", "cancelled", "timed_out", "lease_lost"} { //nolint:misspell // Validate the persisted status contract.
 		statusJobID := insertResearchSchemaTestJob(t, database, userID, "accepted-run-status-"+status)
 		if _, err := database.Exec(`
 			INSERT INTO research_runs (id, job_id, user_id, attempt, status)
@@ -199,7 +199,8 @@ func TestResearchSchemaConstraintsAgainstPostgres(t *testing.T) {
 
 	eventKinds := []string{
 		"created", "revision_appended", "claimed", "lease_renewed", "lease_recovered", "degraded",
-		"cancel_requested", "cancelled", "retried", "completed", "reviewed", "runner_terminal",
+		"cancel_requested", "cancelled", //nolint:misspell // Validate the persisted event contract.
+		"retried", "completed", "reviewed", "runner_terminal",
 	}
 	for index, kind := range eventKinds {
 		if _, err := database.Exec(`

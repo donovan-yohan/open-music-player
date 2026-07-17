@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -68,7 +67,7 @@ func researchBaselinePayload() json.RawMessage {
 }
 
 func enhancement(claim Claim, id string) RevisionInput {
-	return RevisionInput{ID: id, Payload: json.RawMessage(fmt.Sprintf(`{"schemaVersion":"omp.research.revision.v1","stage":"direct_judge","query":"fixture song","candidates":[{"candidateId":"youtube:fixture-a","provider":"youtube","sourceUrl":"https://www.youtube.com/watch?v=fixture","title":"Fixture Song","downloadable":true,"playable":false,"sourceQuality":{"score":100,"classification":"official_audio","recommendation":"preferred","confidence":1}}],"recommendations":[{"candidateId":"youtube:fixture-a","rank":1,"confidence":1,"classification":"official_audio"}],"provenance":{"source":"candidate_assembly_worker","workerSchemaVersion":"omp.agent-search.worker.revision.v1"},"timing":{"workerInferenceMs":1}}`))}
+	return RevisionInput{ID: id, Payload: json.RawMessage(`{"schemaVersion":"omp.research.revision.v1","stage":"direct_judge","query":"fixture song","candidates":[{"candidateId":"youtube:fixture-a","provider":"youtube","sourceUrl":"https://www.youtube.com/watch?v=fixture","title":"Fixture Song","downloadable":true,"playable":false,"sourceQuality":{"score":100,"classification":"official_audio","recommendation":"preferred","confidence":1}}],"recommendations":[{"candidateId":"youtube:fixture-a","rank":1,"confidence":1,"classification":"official_audio"}],"provenance":{"source":"candidate_assembly_worker","workerSchemaVersion":"omp.agent-search.worker.revision.v1"},"timing":{"workerInferenceMs":1}}`)}
 }
 
 func TestPostgresCreateAtomicityAndSemanticIdempotency(t *testing.T) {

@@ -336,18 +336,17 @@ func (r *PostgresRepository) Claim(ctx context.Context, workerID string, leaseEx
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	type queuedJob struct{ id, owner string }
 	queued := make([]queuedJob, 0, 32)
 	for rows.Next() {
 		var item queuedJob
 		if err := rows.Scan(&item.id, &item.owner); err != nil {
-			rows.Close()
 			return nil, err
 		}
 		queued = append(queued, item)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return nil, err
 	}
 	if err := rows.Close(); err != nil {
@@ -665,11 +664,11 @@ func (r *PostgresRepository) completeClaim(ctx context.Context, claim Claim, sta
 		return nil, err
 	}
 	defer tx.Rollback()
-	owner, cancelled, err := r.verifyCompletableClaim(ctx, tx, claim)
+	owner, canceled, err := r.verifyCompletableClaim(ctx, tx, claim)
 	if err != nil {
 		return nil, err
 	}
-	if cancelled {
+	if canceled {
 		status = JobCancelled
 		degradation = Degradation{}
 	}
@@ -946,12 +945,12 @@ func (r *PostgresRepository) verifyClaim(ctx context.Context, tx *sql.Tx, claim 
 
 func (r *PostgresRepository) verifyCompletableClaim(ctx context.Context, tx *sql.Tx, claim Claim) (string, bool, error) {
 	var owner string
-	var cancelled bool
-	err := tx.QueryRowContext(ctx, `SELECT job.user_id,job.cancel_requested FROM research_runs run JOIN research_jobs job ON job.id=run.job_id WHERE run.id=$1 AND run.job_id=$2 AND run.lease_owner=$3 AND run.lease_token=$4 AND run.status='running' AND job.status IN ('running','cancel_requested') AND run.lease_until > $5 FOR UPDATE OF run,job`, claim.Run.ID, claim.Run.JobID, claim.Run.WorkerID, claim.Run.LeaseToken, r.now().UTC()).Scan(&owner, &cancelled)
+	var canceled bool
+	err := tx.QueryRowContext(ctx, `SELECT job.user_id,job.cancel_requested FROM research_runs run JOIN research_jobs job ON job.id=run.job_id WHERE run.id=$1 AND run.job_id=$2 AND run.lease_owner=$3 AND run.lease_token=$4 AND run.status='running' AND job.status IN ('running','cancel_requested') AND run.lease_until > $5 FOR UPDATE OF run,job`, claim.Run.ID, claim.Run.JobID, claim.Run.WorkerID, claim.Run.LeaseToken, r.now().UTC()).Scan(&owner, &canceled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, ErrLeaseLost
 	}
-	return owner, cancelled, err
+	return owner, canceled, err
 }
 
 type eventPayload struct {

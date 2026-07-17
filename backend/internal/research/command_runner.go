@@ -329,9 +329,9 @@ type workerAssemblyResult struct {
 	Error             *workerAssemblyError   `json:"error"`
 }
 type workerStageTiming struct {
-	LatencyMs     int64                `json:"latencyMs"`
-	ToolCalls     int                  `json:"toolCalls"`
-	ModelAttempts []workerModelAttempt `json:"modelAttempts"`
+	LatencyMs     int64                  `json:"latencyMs"`
+	ToolCalls     int                    `json:"toolCalls"`
+	ModelAttempts []TerminalModelAttempt `json:"modelAttempts"`
 }
 type workerRevisionRecord struct {
 	SchemaVersion string               `json:"schemaVersion"`
@@ -342,19 +342,12 @@ type workerRevisionRecord struct {
 	Result        workerAssemblyResult `json:"result"`
 	Timing        workerStageTiming    `json:"timing"`
 }
-type workerModelAttempt struct {
-	Stage      RevisionStage `json:"stage"`
-	Attempt    int           `json:"attempt"`
-	DurationMs int64         `json:"durationMs"`
-	Repair     bool          `json:"repair"`
-	Status     string        `json:"status"`
-}
 type workerTiming struct {
-	ProcessStartupToRequestAcceptedMs *int64               `json:"processStartupToRequestAcceptedMs"`
-	RequestAcceptedToDirectFirstMs    *int64               `json:"requestAcceptedToDirectFirstRevisionMs"`
-	RequestAcceptedToFinalMs          *int64               `json:"requestAcceptedToFinalMs"`
-	ToolCalls                         int                  `json:"toolCalls"`
-	ModelAttempts                     []workerModelAttempt `json:"modelAttempts"`
+	ProcessStartupToRequestAcceptedMs *int64                 `json:"processStartupToRequestAcceptedMs"`
+	RequestAcceptedToDirectFirstMs    *int64                 `json:"requestAcceptedToDirectFirstRevisionMs"`
+	RequestAcceptedToFinalMs          *int64                 `json:"requestAcceptedToFinalMs"`
+	ToolCalls                         int                    `json:"toolCalls"`
+	ModelAttempts                     []TerminalModelAttempt `json:"modelAttempts"`
 }
 type workerDegradation struct {
 	Stage string `json:"stage"`
@@ -371,7 +364,7 @@ type workerTerminalRecord struct {
 	Timing           workerTiming        `json:"timing"`
 }
 
-func validWorkerAttempt(value workerModelAttempt) bool {
+func validWorkerAttempt(value TerminalModelAttempt) bool {
 	return (value.Stage == StageDirectJudge || value.Stage == StageDeepAgent) && value.Attempt > 0 && value.DurationMs >= 0 && (value.Status == "success" || value.Status == "parse_error" || value.Status == "transport_error")
 }
 func validWorkerRevision(value workerRevisionRecord) bool {
@@ -419,7 +412,7 @@ func validWorkerTerminal(value workerTerminalRecord, request RunRequest, emitted
 		return len(value.Degradations) > 0
 	case "unavailable":
 		return value.RevisionsEmitted == 0 && len(value.Degradations) > 0
-	case "cancelled":
+	case "cancelled": //nolint:misspell // Preserve the worker wire contract.
 		return len(value.Degradations) > 0
 	default:
 		return false
@@ -427,23 +420,21 @@ func validWorkerTerminal(value workerTerminalRecord, request RunRequest, emitted
 }
 func knownWorkerDegradation(code string) bool {
 	switch code {
-	case "MODEL_DISABLED", "MODEL_UNAVAILABLE", "MODEL_CONFIG_ERROR", "MODEL_FAILURE", "STRUCTURED_OUTPUT_ERROR", "VALIDATION_FAILED", "BUDGET_EXCEEDED", "CANCELLED", "INVALID_REQUEST":
+	case "MODEL_DISABLED", "MODEL_UNAVAILABLE", "MODEL_CONFIG_ERROR", "MODEL_FAILURE", "STRUCTURED_OUTPUT_ERROR", "VALIDATION_FAILED", "BUDGET_EXCEEDED", "CANCELLED", "INVALID_REQUEST": //nolint:misspell // Preserve the worker protocol code.
 		return true
 	}
 	return false
 }
 func (t workerTerminalRecord) telemetry() TerminalTelemetry {
 	attempts := make([]TerminalModelAttempt, 0, len(t.Timing.ModelAttempts))
-	for _, attempt := range t.Timing.ModelAttempts {
-		attempts = append(attempts, TerminalModelAttempt{Stage: attempt.Stage, Attempt: attempt.Attempt, DurationMs: attempt.DurationMs, Repair: attempt.Repair, Status: attempt.Status})
-	}
+	attempts = append(attempts, t.Timing.ModelAttempts...)
 	return TerminalTelemetry{ProcessStartupToRequestAcceptedMs: t.Timing.ProcessStartupToRequestAcceptedMs, RequestAcceptedToDirectFirstMs: t.Timing.RequestAcceptedToDirectFirstMs, RequestAcceptedToFinalMs: t.Timing.RequestAcceptedToFinalMs, ToolCalls: t.Timing.ToolCalls, ModelAttempts: attempts}
 }
 func (t workerTerminalRecord) runnerError() error {
 	switch t.Outcome {
 	case "completed":
 		return nil
-	case "cancelled":
+	case "cancelled": //nolint:misspell // Preserve the worker wire contract.
 		return context.Canceled
 	case "unavailable", "degraded":
 		for _, d := range t.Degradations {

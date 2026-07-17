@@ -34,7 +34,7 @@ func TestRetryGuards(t *testing.T) {
 		t.Fatal("retry bound ignored")
 	}
 	if TransitionJob(JobCancelled, JobQueued) == nil {
-		t.Fatal("cancelled job retried")
+		t.Fatal("canceled job retried")
 	}
 	for _, code := range []DegradationCode{DegradationModelUnavailable, DegradationTransient, DegradationTimeout, DegradationLeaseExpired} {
 		if degradation := effectiveDegradation(Job{Attempts: 2, MaxAttempts: 2}, PublicDegradation(code)); degradation.Retryable {
@@ -168,11 +168,11 @@ func TestReviewValidation(t *testing.T) {
 func TestStopDeadlineCancelsActiveRunner(t *testing.T) {
 	r := newMemory()
 	_, _ = r.Create(context.Background(), input())
-	started, cancelled := make(chan struct{}), make(chan struct{})
+	started, canceled := make(chan struct{}), make(chan struct{})
 	w := worker(r, runnerFunc(func(ctx context.Context, _ RunRequest, _ EnhancementSink) error {
 		close(started)
 		<-ctx.Done()
-		close(cancelled)
+		close(canceled)
 		return ctx.Err()
 	}), validatorFunc{})
 	w.Start()
@@ -182,7 +182,7 @@ func TestStopDeadlineCancelsActiveRunner(t *testing.T) {
 	if !errors.Is(w.Stop(ctx), context.Canceled) {
 		t.Fatal("stop deadline was not returned")
 	}
-	<-cancelled
+	<-canceled
 }
 
 type runnerFunc func(context.Context, RunRequest, EnhancementSink) error
