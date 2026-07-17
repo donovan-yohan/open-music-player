@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/openmusicplayer/backend/internal/db"
 )
 
 func TestTransitionMatrix(t *testing.T) {
@@ -157,10 +159,10 @@ func TestWorkerTimeoutAndLeaseLossPreserveBaseline(t *testing.T) {
 	}
 }
 func TestReviewValidation(t *testing.T) {
-	if ValidateReview(ReviewInput{RevisionID: "r", RevisionNumber: 1, CandidateID: "c", Action: ReviewAccepted, IdempotencyKey: "k"}) != nil {
+	if ValidateReview(ReviewInput{CandidateID: "c", Action: ReviewAccepted, IdempotencyKey: "k"}) != nil {
 		t.Fatal("valid review")
 	}
-	if ValidateReview(ReviewInput{RevisionID: "r", RevisionNumber: 1, CandidateID: "c", Action: ReviewAccepted, IdempotencyKey: "k", Reason: string(make([]byte, 513))}) == nil {
+	if ValidateReview(ReviewInput{CandidateID: "c", Action: ReviewAccepted, IdempotencyKey: "k", Reason: string(make([]byte, 513))}) == nil {
 		t.Fatal("reason bound")
 	}
 }
@@ -267,7 +269,9 @@ func (m *memory) Retry(context.Context, string, string) (*Snapshot, error) {
 	m.s.Job.Status = JobQueued
 	return m.copyLocked(), nil
 }
-func (*memory) Review(context.Context, string, string, ReviewInput) error { return nil }
+func (*memory) Review(context.Context, string, string, ReviewInput) (*db.SourceSelectionDecision, error) {
+	return &db.SourceSelectionDecision{}, nil
+}
 func (m *memory) Claim(_ context.Context, w string, lease time.Time) (*Claim, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/openmusicplayer/backend/internal/db"
 )
 
 var (
@@ -21,7 +23,7 @@ type Repository interface {
 	Events(ctx context.Context, jobID, ownerID string, afterSequence int64, limit int) ([]Event, error)
 	Cancel(ctx context.Context, jobID, ownerID string) (*Snapshot, error)
 	Retry(ctx context.Context, jobID, ownerID string) (*Snapshot, error)
-	Review(ctx context.Context, jobID, ownerID string, input ReviewInput) error
+	Review(ctx context.Context, jobID, ownerID string, input ReviewInput) (*db.SourceSelectionDecision, error)
 	Claim(ctx context.Context, workerID string, leaseExpiresAt time.Time) (*Claim, error)
 	RenewLease(ctx context.Context, claim Claim, leaseExpiresAt time.Time) (bool, error)
 	RecoverExpiredLeases(ctx context.Context, now time.Time) (int, error)
@@ -78,9 +80,9 @@ func (s *Service) Cancel(ctx context.Context, id, owner string) (*Snapshot, erro
 func (s *Service) Retry(ctx context.Context, id, owner string) (*Snapshot, error) {
 	return s.repository.Retry(ctx, id, owner)
 }
-func (s *Service) Review(ctx context.Context, id, owner string, input ReviewInput) error {
+func (s *Service) Review(ctx context.Context, id, owner string, input ReviewInput) (*db.SourceSelectionDecision, error) {
 	if err := ValidateReview(input); err != nil {
-		return err
+		return nil, err
 	}
 	return s.repository.Review(ctx, id, owner, input)
 }

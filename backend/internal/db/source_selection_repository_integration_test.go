@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -106,6 +108,71 @@ func TestSourceSelectionMigrateFreshInitAndRerun(t *testing.T) {
 		!strings.Contains(after, "fk_source_selection_decisions_session_owner") {
 		t.Fatalf("fresh schema misses required source-selection constraints:\n%s", after)
 	}
+}
+
+func TestSourceSelectionResearchDecisionMigrationRoundTrip(t *testing.T) {
+	database, _, _ := newSourceSelectionTestRepository(t)
+	up := readSourceSelectionMigration(t, "000016_link_research_reviews_to_source_selection_decisions.up.sql")
+	down := readSourceSelectionMigration(t, "000016_link_research_reviews_to_source_selection_decisions.down.sql")
+
+	if _, err := database.Exec(down); err != nil {
+		t.Fatalf("establish pre-000016 schema: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := database.Exec(up); err != nil {
+			t.Errorf("restore 000016 schema: %v", err)
+		}
+	})
+	if _, err := database.Exec(up); err != nil {
+		t.Fatalf("apply 000016 up migration: %v", err)
+	}
+
+	userID := seedSourceSelectionUser(t, database, "research-migration@test.local")
+	jobID := insertResearchSchemaTestJob(t, database, userID.String(), "research-migration-job")
+	revisionID := insertResearchSchemaTestRevision(t, database, jobID, userID.String(), nil, "baseline", "baseline", 1)
+	reviewID := uuid.New()
+	if _, err := database.Exec(`
+		INSERT INTO research_reviews (id, job_id, revision_id, user_id, candidate_id, action, idempotency_key)
+		VALUES ($1,$2,$3,$4,'youtube:migration','accepted','research-migration-review')
+	`, reviewID, jobID, revisionID, userID); err != nil {
+		t.Fatalf("persist migration research review: %v", err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO source_selection_decisions (
+			id, research_review_id, user_id, selected_candidate_id, recommended_candidate_id,
+			action, origin, selected_candidate, source_quality
+		) VALUES ($1,$2,$3,'youtube:migration','youtube:migration','accepted','research',$4::jsonb,'{}'::jsonb)
+	`, uuid.New(), reviewID, userID, `{"candidateId":"youtube:migration","provider":"youtube","sourceUrl":"https://www.youtube.com/watch?v=migration","title":"Migration fixture","downloadable":true}`); err != nil {
+		t.Fatalf("persist migration research decision: %v", err)
+	}
+
+	if _, err := database.Exec(down); err != nil {
+		t.Fatalf("apply 000016 down migration with research decision: %v", err)
+	}
+	var researchDecisions int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM source_selection_decisions WHERE origin = 'research'`).Scan(&researchDecisions); err != nil {
+		t.Fatalf("count rolled-back research decisions: %v", err)
+	}
+	if researchDecisions != 0 {
+		t.Fatalf("research decisions survived rollback: %d", researchDecisions)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO source_selection_decisions (
+			id, user_id, selected_candidate_id, recommended_candidate_id,
+			action, origin, selected_candidate, source_quality
+		) VALUES ($1,$2,'youtube:rejected','youtube:rejected','accepted','research',$3::jsonb,'{}'::jsonb)
+	`, uuid.New(), userID, `{"candidateId":"youtube:rejected"}`); err == nil {
+		t.Fatal("pre-000016 origin constraint accepted research after rollback")
+	}
+}
+
+func readSourceSelectionMigration(t *testing.T, name string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("migrations", name))
+	if err != nil {
+		t.Fatalf("read migration %s: %v", name, err)
+	}
+	return string(raw)
 }
 
 func sourceSelectionSchemaFingerprint(t *testing.T, database *DB) string {

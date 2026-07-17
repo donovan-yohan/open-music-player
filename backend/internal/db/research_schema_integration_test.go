@@ -323,6 +323,35 @@ func TestResearchSchemaConstraintsAgainstPostgres(t *testing.T) {
 	`, uuid.New().String(), jobID, revisionID, userID); err == nil {
 		t.Error("duplicate research review idempotency key was accepted")
 	}
+	var reviewID string
+	if err := database.QueryRow(`SELECT id FROM research_reviews WHERE user_id=$1 AND idempotency_key='review-idempotency'`, userID).Scan(&reviewID); err != nil {
+		t.Fatalf("load valid research review: %v", err)
+	}
+	researchDecisionID := uuid.New().String()
+	if _, err := database.Exec(`
+		INSERT INTO source_selection_decisions (
+			id, research_review_id, user_id, selected_candidate_id, recommended_candidate_id,
+			action, origin, selected_candidate, source_quality
+		) VALUES ($1,$2,$3,'candidate-1','candidate-1','accepted','research',$4::jsonb,'{}'::jsonb)
+	`, researchDecisionID, reviewID, userID, `{"candidateId":"candidate-1","provider":"youtube","sourceUrl":"https://www.youtube.com/watch?v=fixture","title":"Fixture","downloadable":true}`); err != nil {
+		t.Fatalf("valid research source decision was rejected: %v", err)
+	}
+	if _, err := database.Exec(`
+		INSERT INTO source_selection_decisions (
+			id, research_review_id, user_id, selected_candidate_id, recommended_candidate_id,
+			action, origin, selected_candidate, source_quality
+		) VALUES ($1,$2,$3,'candidate-1','candidate-1','accepted','research',$4::jsonb,'{}'::jsonb)
+	`, uuid.New().String(), reviewID, userID, `{"candidateId":"candidate-1"}`); err == nil {
+		t.Error("duplicate research review decision was accepted")
+	}
+	if _, err := database.Exec(`
+		INSERT INTO source_selection_decisions (
+			id, user_id, selected_candidate_id, recommended_candidate_id,
+			action, origin, selected_candidate, source_quality
+		) VALUES ($1,$2,'candidate-1','candidate-1','accepted','research',$3::jsonb,'{}'::jsonb)
+	`, uuid.New().String(), userID, `{"candidateId":"candidate-1"}`); err == nil {
+		t.Error("research source decision without linked review was accepted")
+	}
 
 	if _, err := database.Exec(`
 		INSERT INTO research_user_daily_budgets (user_id, budget_day, reserved_units, consumed_units)

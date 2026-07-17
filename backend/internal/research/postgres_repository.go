@@ -725,67 +725,178 @@ func (r *PostgresRepository) completeClaim(ctx context.Context, claim Claim, sta
 	return snapshot, nil
 }
 
-func (r *PostgresRepository) Review(ctx context.Context, jobID, ownerID string, input ReviewInput) error {
+// Review resolves the current revision only after taking an owned job-row lock.
+// It writes the review, its durable source-selection decision, and the reviewed
+// event in one transaction. The idempotency advisory lock serializes replays
+// before either the review or its linked decision can be duplicated.
+func (r *PostgresRepository) Review(ctx context.Context, jobID, ownerID string, input ReviewInput) (*db.SourceSelectionDecision, error) {
 	if err := ValidateReview(input); err != nil {
-		return err
+		return nil, err
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
 	if err := lockReviewIdempotency(ctx, tx, ownerID, input.IdempotencyKey); err != nil {
-		return err
+		return nil, err
 	}
-	if _, _, err := loadJob(ctx, tx, jobID, ownerID, true); err != nil {
-		return err
+	job, _, err := loadJob(ctx, tx, jobID, ownerID, true)
+	if err != nil {
+		return nil, err
 	}
+
 	var existing struct {
-		JobID, RevisionID, CandidateID, Action, Reason string
+		ID, JobID, RevisionID, CandidateID, Action, Reason string
 	}
-	err = tx.QueryRowContext(ctx, `SELECT job_id,revision_id,candidate_id,action,COALESCE(reason,'') FROM research_reviews WHERE user_id=$1 AND idempotency_key=$2 FOR UPDATE`, ownerID, input.IdempotencyKey).Scan(&existing.JobID, &existing.RevisionID, &existing.CandidateID, &existing.Action, &existing.Reason)
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, job_id, revision_id, candidate_id, action, COALESCE(reason, '')
+		FROM research_reviews
+		WHERE user_id = $1 AND idempotency_key = $2
+		FOR UPDATE`, ownerID, input.IdempotencyKey).Scan(
+		&existing.ID, &existing.JobID, &existing.RevisionID, &existing.CandidateID, &existing.Action, &existing.Reason,
+	)
 	if err == nil {
-		if existing.JobID == jobID && existing.RevisionID == input.RevisionID && existing.CandidateID == input.CandidateID && existing.Action == string(input.Action) && existing.Reason == input.Reason {
-			return tx.Commit()
+		if existing.JobID != jobID || existing.CandidateID != input.CandidateID || existing.Action != string(input.Action) || existing.Reason != input.Reason {
+			return nil, ErrIdempotencyConflict
 		}
-		return ErrIdempotencyConflict
+		decision, err := r.researchDecisionForReview(ctx, tx, existing.ID)
+		if err == nil {
+			if err := tx.Commit(); err != nil {
+				return nil, err
+			}
+			return decision, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		// Historical reviews predate source-selection decisions. Their stored
+		// immutable revision and review fields are sufficient to bridge safely.
+		decision, err = r.createResearchDecision(ctx, tx, ownerID, existing.ID, existing.RevisionID, existing.CandidateID, ReviewAction(existing.Action), existing.Reason)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return decision, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return nil, err
 	}
-	var snapshot json.RawMessage
-	err = tx.QueryRowContext(ctx, `SELECT result_snapshot FROM research_revisions WHERE id=$1 AND job_id=$2 AND user_id=$3 AND revision_number=$4`, input.RevisionID, jobID, ownerID, input.RevisionNumber).Scan(&snapshot)
+
+	var revisionID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM research_revisions
+		WHERE job_id = $1 AND user_id = $2 AND revision_number = $3`, jobID, ownerID, job.LatestRevision).Scan(&revisionID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if _, _, err := r.researchReviewCandidate(ctx, tx, ownerID, revisionID, input.CandidateID, input.Action); err != nil {
+		return nil, err
+	}
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO research_reviews
+			(id, job_id, revision_id, user_id, candidate_id, action, reason, idempotency_key, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7, ''),$8,$9)`,
+		uuid.NewString(), jobID, revisionID, ownerID, input.CandidateID, input.Action, input.Reason, input.IdempotencyKey, r.now().UTC()); err != nil {
+		return nil, err
+	}
+	var reviewID string
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM research_reviews WHERE user_id = $1 AND idempotency_key = $2`, ownerID, input.IdempotencyKey).Scan(&reviewID); err != nil {
+		return nil, err
+	}
+	decision, err := r.createResearchDecision(ctx, tx, ownerID, reviewID, revisionID, input.CandidateID, input.Action, input.Reason)
+	if err != nil {
+		return nil, err
+	}
+	if err = r.appendEvent(ctx, tx, jobID, EventReviewed, eventPayload{RevisionID: revisionID, Revision: job.LatestRevision}); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return decision, nil
+}
+
+func (r *PostgresRepository) researchDecisionForReview(ctx context.Context, tx *sql.Tx, reviewID string) (*db.SourceSelectionDecision, error) {
+	decision := &db.SourceSelectionDecision{}
+	err := tx.QueryRowContext(ctx, sourceSelectionDecisionSelect+` WHERE research_review_id = $1`, reviewID).Scan(sourceSelectionDecisionScanTargets(decision)...)
+	return decision, err
+}
+
+// researchReviewCandidate resolves a review candidate from its immutable
+// revision before Review writes any durable review state.
+func (r *PostgresRepository) researchReviewCandidate(ctx context.Context, tx *sql.Tx, ownerID, revisionID, candidateID string, action ReviewAction) (RevisionPayload, *CandidateSnapshot, error) {
+	var snapshot json.RawMessage
+	if err := tx.QueryRowContext(ctx, `SELECT result_snapshot FROM research_revisions WHERE id = $1 AND user_id = $2`, revisionID, ownerID).Scan(&snapshot); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RevisionPayload{}, nil, ErrNotFound
+		}
+		return RevisionPayload{}, nil, err
 	}
 	payload, err := ParseRevisionPayload(snapshot)
-	if err != nil {
-		return ErrInvalidReview
+	if err != nil || len(payload.Recommendations) == 0 {
+		return RevisionPayload{}, nil, ErrInvalidReview
 	}
-	allowed := map[string]bool{}
-	for _, candidate := range payload.Candidates {
-		allowed[candidate.CandidateID] = true
-	}
-	if !allowed[input.CandidateID] || len(payload.Recommendations) == 0 {
-		return ErrInvalidReview
-	}
-	top := payload.Recommendations[0].CandidateID
-	if (input.Action == ReviewAccepted && input.CandidateID != top) || (input.Action == ReviewOverridden && input.CandidateID == top) {
-		return ErrInvalidReview
-	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO research_reviews (id,job_id,revision_id,user_id,candidate_id,action,reason,idempotency_key,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (user_id,idempotency_key) DO NOTHING`, uuid.NewString(), jobID, input.RevisionID, ownerID, input.CandidateID, input.Action, nullableReviewReason(input.Reason), input.IdempotencyKey, r.now().UTC())
-	if err != nil {
-		return err
-	}
-	if rows, _ := result.RowsAffected(); rows > 0 {
-		if err = r.appendEvent(ctx, tx, jobID, EventReviewed, eventPayload{RevisionID: input.RevisionID, Revision: input.RevisionNumber}); err != nil {
-			return err
+	for i := range payload.Candidates {
+		selected := &payload.Candidates[i]
+		if selected.CandidateID != candidateID {
+			continue
 		}
+		if !selected.Downloadable ||
+			(action == ReviewAccepted && candidateID != payload.Recommendations[0].CandidateID) ||
+			(action == ReviewOverridden && candidateID == payload.Recommendations[0].CandidateID) {
+			return RevisionPayload{}, nil, ErrInvalidReview
+		}
+		return payload, selected, nil
 	}
-	return tx.Commit()
+	return RevisionPayload{}, nil, ErrInvalidReview
+}
+
+// createResearchDecision derives every persisted candidate field from the
+// immutable revision payload. It must only be called from Review's transaction.
+func (r *PostgresRepository) createResearchDecision(ctx context.Context, tx *sql.Tx, ownerID, reviewID, revisionID, candidateID string, action ReviewAction, reason string) (*db.SourceSelectionDecision, error) {
+	payload, selected, err := r.researchReviewCandidate(ctx, tx, ownerID, revisionID, candidateID, action)
+	if err != nil {
+		return nil, err
+	}
+	candidateSnapshot, err := json.Marshal(selected)
+	if err != nil {
+		return nil, err
+	}
+	quality, err := json.Marshal(selected.SourceQuality)
+	if err != nil {
+		return nil, err
+	}
+	decision := &db.SourceSelectionDecision{ID: uuid.New()}
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO source_selection_decisions
+			(id, research_review_id, user_id, selected_candidate_id, recommended_candidate_id, action, origin, reason, selected_candidate, source_quality)
+		VALUES ($1,$2,$3,$4,$5,$6,'research',NULLIF($7, ''),$8::jsonb,$9::jsonb)
+		RETURNING id, session_id, user_id, selected_candidate_id, recommended_candidate_id, action, origin, reason,
+			selected_candidate, source_quality, download_job_id, track_id, created_at`,
+		decision.ID, reviewID, ownerID, candidateID, payload.Recommendations[0].CandidateID, action, reason, candidateSnapshot, quality,
+	).Scan(sourceSelectionDecisionScanTargets(decision)...)
+	if err != nil {
+		return nil, err
+	}
+	return decision, nil
+}
+
+const sourceSelectionDecisionSelect = `
+	SELECT id, session_id, user_id, selected_candidate_id, recommended_candidate_id, action, origin, reason,
+		selected_candidate, source_quality, download_job_id, track_id, created_at
+	FROM source_selection_decisions`
+
+func sourceSelectionDecisionScanTargets(decision *db.SourceSelectionDecision) []any {
+	return []any{&decision.ID, &decision.SessionID, &decision.UserID, &decision.SelectedCandidateID,
+		&decision.RecommendedCandidateID, &decision.Action, &decision.Origin, &decision.Reason,
+		&decision.SelectedCandidate, &decision.SourceQuality, &decision.DownloadJobID, &decision.TrackID, &decision.CreatedAt}
 }
 
 func nullableReviewReason(value string) any {

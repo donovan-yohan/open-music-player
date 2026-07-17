@@ -101,7 +101,7 @@ func CanRetry(job Job, d *Degradation) bool {
 }
 
 func ValidateReview(input ReviewInput) error {
-	if input.RevisionID == "" || input.RevisionNumber < 1 || input.CandidateID == "" || input.IdempotencyKey == "" || len(input.Reason) > 512 || (input.Action != ReviewAccepted && input.Action != ReviewOverridden) {
+	if input.CandidateID == "" || input.IdempotencyKey == "" || len(input.Reason) > 512 || (input.Action != ReviewAccepted && input.Action != ReviewOverridden) {
 		return ErrInvalidReview
 	}
 	return nil

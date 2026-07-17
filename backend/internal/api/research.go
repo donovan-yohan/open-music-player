@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/research"
 )
 
@@ -35,7 +36,7 @@ type researchJobService interface {
 	Events(context.Context, string, string, int64, int) ([]research.Event, error)
 	Cancel(context.Context, string, string) (*research.Snapshot, error)
 	Retry(context.Context, string, string) (*research.Snapshot, error)
-	Review(context.Context, string, string, research.ReviewInput) error
+	Review(context.Context, string, string, research.ReviewInput) (*db.SourceSelectionDecision, error)
 }
 
 type researchBaselineBuilder interface {
@@ -244,28 +245,18 @@ func (h *ResearchHandlers) Review(w http.ResponseWriter, r *http.Request) {
 		writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REVIEW", err.Error())
 		return
 	}
-	snapshot, err := h.service.Get(r.Context(), jobID, user.UserID.String())
-	if err != nil {
-		writeResearchServiceError(w, err)
-		return
-	}
-	if snapshot == nil || snapshot.Job.LatestRevisionID == "" || snapshot.Job.LatestRevision < 1 {
-		writeResearchError(w, http.StatusConflict, "RESEARCH_REVISION_UNAVAILABLE", "research revision is unavailable")
-		return
-	}
-	if err := h.service.Review(r.Context(), jobID, user.UserID.String(), research.ReviewInput{
-		RevisionID:     snapshot.Job.LatestRevisionID,
-		RevisionNumber: snapshot.Job.LatestRevision,
+	decision, err := h.service.Review(r.Context(), jobID, user.UserID.String(), research.ReviewInput{
 		CandidateID:    request.CandidateID,
 		Action:         research.ReviewAction(request.Action),
 		Reason:         request.Reason,
 		IdempotencyKey: idempotencyKey,
 		ReviewerID:     user.UserID.String(),
-	}); err != nil {
+	})
+	if err != nil {
 		writeResearchServiceError(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeSourceSelectionJSON(w, http.StatusCreated, sourceSelectionFromDB(decision))
 }
 
 func researchAuthenticatedUser(w http.ResponseWriter, r *http.Request) (*auth.UserContext, bool) {
@@ -328,16 +319,21 @@ func validateResearchReviewRequest(request *researchReviewRequest) error {
 	request.CandidateID = strings.TrimSpace(request.CandidateID)
 	request.Action = strings.TrimSpace(request.Action)
 	request.Reason = strings.TrimSpace(request.Reason)
-	if request.CandidateID == "" || len(request.CandidateID) > 256 || !utf8.ValidString(request.CandidateID) || strings.Contains(strings.ToLower(request.CandidateID), "http") {
+	if request.CandidateID == "" || len(request.CandidateID) > 256 || !utf8.ValidString(request.CandidateID) || researchReviewURLLike(request.CandidateID) {
 		return errors.New("candidateId is invalid")
 	}
 	if request.Action != string(research.ReviewAccepted) && request.Action != string(research.ReviewOverridden) {
 		return errors.New("action must be accepted or overridden")
 	}
-	if len(request.Reason) > 512 || !utf8.ValidString(request.Reason) || strings.Contains(strings.ToLower(request.Reason), "http") {
+	if len(request.Reason) > 512 || !utf8.ValidString(request.Reason) || researchReviewURLLike(request.Reason) {
 		return errors.New("reason is invalid")
 	}
 	return nil
+}
+
+func researchReviewURLLike(value string) bool {
+	value = strings.ToLower(value)
+	return strings.Contains(value, "://") || strings.Contains(value, "www.") || strings.Contains(value, "mailto:")
 }
 
 func researchEventsPage(r *http.Request) (int64, int, error) {
@@ -440,7 +436,9 @@ func writeResearchServiceError(w http.ResponseWriter, err error) {
 		writeResearchError(w, http.StatusConflict, "IDEMPOTENCY_CONFLICT", "Idempotency-Key conflicts with an existing request")
 	case errors.Is(err, research.ErrInvalidTransition):
 		writeResearchError(w, http.StatusConflict, "RESEARCH_JOB_CONFLICT", "research job cannot transition from its current state")
-	case errors.Is(err, research.ErrInvalidReview), errors.Is(err, research.ErrInvalidRevision), errors.Is(err, research.ErrInvalidDegradation):
+	case errors.Is(err, research.ErrInvalidReview):
+		writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REVIEW", "research review is invalid")
+	case errors.Is(err, research.ErrInvalidRevision), errors.Is(err, research.ErrInvalidDegradation):
 		writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REQUEST", "research request is invalid")
 	case errors.Is(err, research.ErrNoJobAvailable):
 		writeResearchError(w, http.StatusTooManyRequests, "RESEARCH_CAPACITY_EXHAUSTED", "research capacity is temporarily exhausted")
