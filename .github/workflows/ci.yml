@@ -254,6 +254,10 @@ jobs:
         working-directory: agents/candidate_assembly
         run: uv sync
 
+      - name: Run Go-to-Python worker contract test
+        working-directory: backend
+        run: GOFLAGS=-buildvcs=false go test ./internal/research -run '^TestCommandRunnerGoToPythonWorkerContract$'
+
       - name: Run candidate-assembly unit tests
         working-directory: agents/candidate_assembly
         run: uv run pytest -q
