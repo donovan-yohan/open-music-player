@@ -6,8 +6,11 @@ from pydantic import ValidationError
 from candidate_assembly.schemas import (
     ASSEMBLY_SCHEMA_VERSION,
     AssemblyResult,
+    DeterministicBaseline,
+    ProgressEvent,
     RawCandidate,
     Recommendation,
+    SafeEvidenceRef,
 )
 from conftest import make_result
 
@@ -84,3 +87,35 @@ def test_schema_version_is_pinned():
                 "schemaVersion": "omp.agent-search.assembly.v2",
             }
         )
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "https://example.test/candidate",
+        "sk-abcdef123456",
+        "Bearer-secret",
+        "candidate id with spaces",
+        "x" * 129,
+    ],
+)
+def test_progress_candidate_and_evidence_refs_reject_unsafe_values(unsafe):
+    with pytest.raises(ValidationError):
+        DeterministicBaseline(elapsedMs=1, validationMs=1, candidateIds=[unsafe])
+    with pytest.raises(ValidationError):
+        ProgressEvent(
+            sequence=1, kind="baseline", phase="baseline_validated", elapsedMs=1,
+            candidateIds=[unsafe],
+        )
+    with pytest.raises(ValidationError):
+        SafeEvidenceRef(tool="search_sources", ref=unsafe)
+
+
+def test_progress_candidate_and_evidence_refs_accept_fixture_identifiers():
+    baseline = DeterministicBaseline(
+        elapsedMs=1,
+        validationMs=1,
+        candidateIds=["youtube:abc_123"],
+        evidenceRefs=[SafeEvidenceRef(tool="search_sources", ref="youtube:abc_123")],
+    )
+    assert baseline.candidateIds == ["youtube:abc_123"]

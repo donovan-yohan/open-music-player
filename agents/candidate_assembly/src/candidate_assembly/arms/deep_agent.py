@@ -2,12 +2,11 @@
 
 Per the Finn-Nancy spike, the built-in DeepAgents planning + filesystem loop is
 non-terminating, so this arm drives ONLY our three read-only tools and enforces
-the same budgets as every other arm through the shared ``ToolBox``. Native
-tool-calling on the llama-swap endpoint is unverified, so the default transport
-is a structured-action loop (each step the model emits an ``AgentAction`` via
-json_schema and the runner executes the tool); a ``native`` transport is
-attempted when the probe reports tool-call support. Either way the orchestrator
-interface hides the transport and records which one was used.
+the same budgets as every other arm through the shared ``ToolBox``. The default
+transport is a structured-action loop (each step the model emits an
+``AgentAction`` via json_object and the runner executes the tool). Native tool
+support is probe- and model-dependent, but is recorded as probe evidence only;
+native execution is intentionally disabled until it has bounded instrumentation.
 
 The langchain / deepagents stack is imported lazily; this arm only runs live.
 """
@@ -16,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any, Optional
 
 from .. import go_ranker
@@ -23,7 +23,8 @@ from ..budgets import BUDGET_EXCEEDED_CODE, Budget, BudgetExceeded
 from ..fixture_tools import ToolBox, ToolError
 from ..model_client import (
     ModelConfig,
-    build_chat_model,
+    ModelAttempt,
+    StructuredOutputError,
     build_openai_client,
     complete_structured,
     make_json_object_chat,
@@ -39,6 +40,7 @@ from ..schemas import (
     FixtureWorld,
     InterpretedIntent,
     Provenance,
+    ProgressEvent,
     Recommendation,
 )
 
@@ -128,6 +130,12 @@ _FINALIZE_INSTRUCTION = (
 )
 
 
+def _max_repair_for_capacity(remaining_calls: int) -> int:
+    if remaining_calls < 1:
+        raise BudgetExceeded(BUDGET_EXCEEDED_CODE, "no model-call capacity remaining")
+    return 1 if remaining_calls >= 2 else 0
+
+
 def _finalize_messages(prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Build the finalize-step message list from the running action-loop convo.
 
@@ -139,11 +147,25 @@ def _finalize_messages(prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
 
     final_system = _SYSTEM_PROMPT + "\n\n" + schema_prompt(AgentFinalOutput)
-    return [
-        {"role": "system", "content": final_system},
-        *prior[1:],
-        {"role": "user", "content": _FINALIZE_INSTRUCTION},
-    ]
+    history = prior[1:] if prior and prior[0].get("role") == "system" else prior
+    return _append_finalize_instruction([{"role": "system", "content": final_system}, *history])
+
+
+def _append_finalize_instruction(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Preserve the conversation while keeping roles alternating after system."""
+
+    messages = [dict(message) for message in messages]
+    # The provider rejects adjacent user turns. If the last gathered observation
+    # is already a user turn, retain it and append the instruction to that turn;
+    # otherwise add the final user instruction as its own alternating turn.
+    if messages[-1]["role"] == "user":
+        messages[-1] = {
+            **messages[-1],
+            "content": messages[-1].get("content", "") + "\n\n" + _FINALIZE_INSTRUCTION,
+        }
+    else:
+        messages.append({"role": "user", "content": _FINALIZE_INSTRUCTION})
+    return messages
 
 
 class DeepAgentArm:
@@ -152,26 +174,46 @@ class DeepAgentArm:
     def assemble(
         self, case_input: CaseInput, world: FixtureWorld, budget: Budget
     ) -> AssemblyResult:
-        config = ModelConfig.from_env()
+        started = time.monotonic()
+        self._started = started
+        self.model_attempts: list[ModelAttempt] = []
+        self.progress_events: list[ProgressEvent] = []
+        self.finalization_ms: Optional[int] = None
+        self.tool_dispatch_latency_ms = 0
+        self._emit("lifecycle", "started")
         toolbox = ToolBox(world, budget)
         # Expose the tool-returned id allowlist for the grounding validator.
         self.allowlist = toolbox.allowlist
         transport = os.environ.get("AGENT_SEARCH_TOOL_TRANSPORT", "structured_action").strip()
-
+        if transport == "native":
+            self._emit("lifecycle", "failed", status="failed")
+            return self._unsupported_transport_error(toolbox)
         try:
-            if transport == "native":
-                final, model_calls, notes = self._run_native(case_input, toolbox, config, budget)
-            else:
-                transport = "structured_action"
-                final, model_calls, notes = self._run_structured_action(
-                    case_input, toolbox, config, budget
-                )
+            config = ModelConfig.from_env()
+        except Exception:
+            self._emit("lifecycle", "failed", status="failed")
+            return self._init_error(toolbox)
+        try:
+            transport = "structured_action"
+            final, model_calls, notes = self._run_structured_action(
+                case_input, toolbox, config, budget
+            )
         except BudgetExceeded as exc:
+            self._emit("lifecycle", "failed", status="failed")
             return self._budget_error(exc, toolbox, config, transport)
+        except StructuredOutputError:
+            self._emit("lifecycle", "failed", status="failed")
+            return self._model_error(toolbox, config, transport)
+        except Exception:
+            # Do not copy raw endpoint exception text into artifacts. The trace,
+            # spent attempts, and safe category remain useful for diagnosis.
+            self._emit("lifecycle", "failed", status="failed")
+            return self._model_error(toolbox, config, transport, code="MODEL_FAILURE")
 
-        return self._finalize(
+        result = self._finalize(
             final, case_input, toolbox, config, transport, model_calls, notes
         )
+        return result
 
     # -- transports -------------------------------------------------------
 
@@ -179,9 +221,9 @@ class DeepAgentArm:
         self, case_input: CaseInput, toolbox: ToolBox, config: ModelConfig, budget: Budget
     ) -> tuple[AgentFinalOutput, int, list[str]]:  # pragma: no cover - live only
         # json_object transport: the endpoint honors response_format json_object
-        # (not json_schema) and has no native tool-calling, so each step the model
-        # emits an AgentAction JSON object, the runner executes the tool, and the
-        # observation is appended. complete_structured does one bounded repair retry
+        # (not json_schema). This explicit transport emits an AgentAction JSON
+        # object, the runner executes the tool, and the observation is appended.
+        # complete_structured does one bounded repair retry
         # per step; a second failure raises StructuredOutputError, which propagates
         # to the runner's typed-failure path. Every attempt (primary + repair)
         # counts against the model-call budget.
@@ -197,9 +239,19 @@ class DeepAgentArm:
         ]
         model_calls = 0
         notes: list[str] = []
-        # Reserve at least one model call for the finalize step.
+        # Reserve at least one model call for the finalize step. A repair is only
+        # permitted when it fits within the capacity left after that reservation.
         while model_calls < budget.max_model_calls - 1:
-            step = complete_structured(chat, messages, AgentAction)
+            action_capacity = budget.max_model_calls - model_calls - 1
+            max_repair = _max_repair_for_capacity(action_capacity)
+            try:
+                step = complete_structured(
+                    chat, messages, AgentAction, max_repair=max_repair
+                )
+            except StructuredOutputError as exc:
+                self._record_attempts(exc.attempts)
+                raise
+            self._record_attempts(step.attempts)
             model_calls += step.calls_used
             notes.extend(step.provenance_notes)
             action: AgentAction = step.value
@@ -210,53 +262,29 @@ class DeepAgentArm:
             messages.append({"role": "user", "content": _json({"observation": observation})})
 
         final_messages = _finalize_messages(messages)
-        final_step = complete_structured(chat, final_messages, AgentFinalOutput)
+        self._emit("lifecycle", "finalizing", status="success")
+        final_started = time.monotonic()
+        max_repair = _max_repair_for_capacity(budget.max_model_calls - model_calls)
+        try:
+            final_step = complete_structured(
+                chat, final_messages, AgentFinalOutput, max_repair=max_repair
+            )
+        except StructuredOutputError as exc:
+            self._record_attempts(exc.attempts)
+            self.finalization_ms = int(round((time.monotonic() - final_started) * 1000))
+            raise
+        self._record_attempts(final_step.attempts)
+        self.finalization_ms = int(round((time.monotonic() - final_started) * 1000))
         model_calls += final_step.calls_used
         notes.extend(final_step.provenance_notes)
         return final_step.value, model_calls, notes
-
-    def _run_native(
-        self, case_input: CaseInput, toolbox: ToolBox, config: ModelConfig, budget: Budget
-    ) -> tuple[AgentFinalOutput, int, list[str]]:  # pragma: no cover - live only
-        # Native path: drive deepagents with ONLY our custom tools (no built-in
-        # planning/filesystem loop) and a bounded recursion limit. Selected only if
-        # a caller forces AGENT_SEARCH_TOOL_TRANSPORT=native; the probe reports the
-        # endpoint has no native tool-calling, so this stays off by default. The
-        # final assembly output still uses the json_object transport.
-        from deepagents import create_deep_agent  # type: ignore
-
-        model = build_chat_model(config, budget.max_tokens_per_completion)
-        tools = _native_tools(toolbox)
-        agent = create_deep_agent(
-            tools=tools,
-            model=model,
-            instructions=_SYSTEM_PROMPT,
-            builtin_tools=[],
-        )
-        result = agent.invoke(
-            {"messages": [{"role": "user", "content": case_input.prompt}]},
-            config={"recursion_limit": budget.recursion_limit},
-        )
-        transcript = _last_text(result)
-        client = build_openai_client(config)
-        chat = make_json_object_chat(client, config, budget.max_tokens_per_completion)
-        final_system = _SYSTEM_PROMPT + "\n\n" + schema_prompt(AgentFinalOutput)
-        final_step = complete_structured(
-            chat,
-            [
-                {"role": "system", "content": final_system},
-                {"role": "user", "content": transcript or case_input.prompt},
-                {"role": "user", "content": _FINALIZE_INSTRUCTION},
-            ],
-            AgentFinalOutput,
-        )
-        model_calls = max(1, len(tools)) + final_step.calls_used  # best-effort; runner also caps
-        return final_step.value, model_calls, final_step.provenance_notes
 
     # -- tool dispatch ----------------------------------------------------
 
     def _dispatch(self, toolbox: ToolBox, action: AgentAction) -> Any:  # pragma: no cover - live only
         args = action.args or {}
+        trace_len = len(toolbox.trace)
+        dispatched_at = time.monotonic()
         try:
             if action.action == "search_sources":
                 results = toolbox.search_sources(
@@ -274,6 +302,15 @@ class DeepAgentArm:
                 )
         except ToolError as exc:
             return {"error": {"code": exc.code, "message": exc.message}}
+        finally:
+            if len(toolbox.trace) > trace_len:
+                trace = toolbox.trace[-1]
+                self.tool_dispatch_latency_ms += int(
+                    round((time.monotonic() - dispatched_at) * 1000)
+                )
+                self._emit(
+                    "tool", "tool_completed", tool=trace.tool, result_count=trace.resultCount
+                )
         return {"error": {"code": "UNKNOWN_ACTION", "message": action.action}}
 
     # -- finalize ---------------------------------------------------------
@@ -304,7 +341,7 @@ class DeepAgentArm:
             trace=list(toolbox.trace),
             budgetSpent=BudgetSpent(
                 toolCalls=toolbox.tool_calls,
-                modelCalls=model_calls,
+                modelCalls=min(model_calls, toolbox.budget.max_model_calls),
                 elapsedMs=0,
             ),
             provenance=Provenance(
@@ -325,7 +362,11 @@ class DeepAgentArm:
             recommendations=[],
             unresolved=[],
             trace=list(toolbox.trace),
-            budgetSpent=BudgetSpent(toolCalls=toolbox.tool_calls, modelCalls=0, elapsedMs=0),
+            budgetSpent=BudgetSpent(
+                toolCalls=toolbox.tool_calls,
+                modelCalls=min(len(self.model_attempts), toolbox.budget.max_model_calls),
+                elapsedMs=0,
+            ),
             provenance=Provenance(
                 orchestrator=ORCHESTRATOR_ID,
                 model=config.model,
@@ -333,6 +374,109 @@ class DeepAgentArm:
                 jsonMode=True,
             ),
             error=AssemblyError(code=BUDGET_EXCEEDED_CODE, message=exc.message),
+        )
+
+    def _model_error(
+        self,
+        toolbox: ToolBox,
+        config: ModelConfig,
+        transport: str,
+        code: str = "STRUCTURED_OUTPUT_ERROR",
+    ) -> AssemblyResult:  # pragma: no cover - live only
+        return AssemblyResult(
+            arm=self.name,
+            interpretedIntent=InterpretedIntent(notes="model failed before finalize"),
+            recommendations=[],
+            unresolved=[],
+            trace=list(toolbox.trace),
+            budgetSpent=BudgetSpent(
+                toolCalls=toolbox.tool_calls,
+                modelCalls=min(len(self.model_attempts), toolbox.budget.max_model_calls),
+                elapsedMs=0,
+            ),
+            provenance=Provenance(
+                orchestrator=ORCHESTRATOR_ID,
+                model=config.model,
+                toolTransport=transport,  # type: ignore[arg-type]
+                jsonMode=True,
+            ),
+            error=AssemblyError(
+                code=code,
+                message="model execution failed before a final assembly result",
+                detail="partial telemetry and tool trace retained",
+            ),
+        )
+
+    def _init_error(self, toolbox: ToolBox) -> AssemblyResult:
+        return AssemblyResult(
+            arm=self.name,
+            interpretedIntent=InterpretedIntent(notes="model configuration unavailable"),
+            recommendations=[],
+            unresolved=[],
+            trace=list(toolbox.trace),
+            budgetSpent=BudgetSpent(),
+            provenance=Provenance(orchestrator=ORCHESTRATOR_ID, toolTransport="none"),
+            error=AssemblyError(
+                code="MODEL_CONFIG_ERROR",
+                message="model configuration unavailable before execution",
+            ),
+        )
+
+    def _unsupported_transport_error(self, toolbox: ToolBox) -> AssemblyResult:
+        return AssemblyResult(
+            arm=self.name,
+            interpretedIntent=InterpretedIntent(notes="native transport unavailable"),
+            recommendations=[],
+            unresolved=[],
+            trace=list(toolbox.trace),
+            budgetSpent=BudgetSpent(),
+            provenance=Provenance(orchestrator=ORCHESTRATOR_ID, toolTransport="native"),
+            error=AssemblyError(
+                code="UNSUPPORTED_TRANSPORT",
+                message="native transport is not enabled for this evaluation",
+            ),
+        )
+
+    def _record_attempts(self, attempts: list[ModelAttempt]) -> None:
+        for attempt in attempts:
+            recorded = ModelAttempt(
+                attempt=len(self.model_attempts) + 1,
+                duration_ms=attempt.duration_ms,
+                repair=attempt.repair,
+                status=attempt.status,
+            )
+            self.model_attempts.append(recorded)
+            self._emit(
+                "lifecycle",
+                "model_call",
+                attempt=recorded.attempt,
+                repair=recorded.repair,
+                status=recorded.status,
+            )
+
+    def _emit(
+        self,
+        kind: str,
+        phase: str,
+        *,
+        attempt: Optional[int] = None,
+        repair: Optional[bool] = None,
+        status: Optional[str] = None,
+        tool: Optional[str] = None,
+        result_count: Optional[int] = None,
+    ) -> None:
+        self.progress_events.append(
+            ProgressEvent(
+                sequence=len(self.progress_events) + 1,
+                kind=kind,  # type: ignore[arg-type]
+                phase=phase,  # type: ignore[arg-type]
+                elapsedMs=int(round((time.monotonic() - self._started) * 1000)),
+                attempt=attempt,
+                repair=repair,
+                status=status,  # type: ignore[arg-type]
+                tool=tool,  # type: ignore[arg-type]
+                resultCount=result_count,
+            )
         )
 
 
@@ -379,33 +523,6 @@ def _coerce_recommendations(
     for index, rec in enumerate(trimmed, start=1):
         rec.rank = index
     return trimmed
-
-
-def _native_tools(toolbox: ToolBox):  # pragma: no cover - live only
-    from langchain_core.tools import StructuredTool  # type: ignore
-
-    def search_sources(query: str, providers: Optional[list[str]] = None, limit: int = 10):
-        return [r.model_dump(exclude_none=True) for r in toolbox.search_sources(query, providers, limit)]
-
-    def search_catalog(query: str, kind: str = "track", limit: int = 8):
-        return [r.model_dump(exclude_none=True) for r in toolbox.search_catalog(query, kind, limit)]
-
-    def inspect_source_metadata(candidate_id: str):
-        return toolbox.inspect_source_metadata(candidate_id).model_dump(exclude_none=True)
-
-    return [
-        StructuredTool.from_function(search_sources),
-        StructuredTool.from_function(search_catalog),
-        StructuredTool.from_function(inspect_source_metadata),
-    ]
-
-
-def _last_text(result: Any) -> Optional[str]:  # pragma: no cover - live only
-    messages = result.get("messages") if isinstance(result, dict) else None
-    if not messages:
-        return None
-    last = messages[-1]
-    return getattr(last, "content", None) or (last.get("content") if isinstance(last, dict) else None)
 
 
 def _json(value) -> str:

@@ -185,6 +185,31 @@ def test_complete_structured_carries_coercion_note():
     assert result.provenance_notes == ["coerced_envelope"]
 
 
+def test_complete_structured_records_attempt_durations_and_repair_status():
+    chat = FakeChat(["bad", '{"name": "a", "value": 1}'])
+    ticks = iter([10.0, 10.125, 11.0, 11.25])
+    result = complete_structured(
+        chat, [{"role": "user", "content": "go"}], _Item, now=lambda: next(ticks)
+    )
+    assert [(a.duration_ms, a.repair, a.status) for a in result.attempts] == [
+        (125, False, "parse_error"),
+        (250, True, "success"),
+    ]
+
+
+def test_complete_structured_records_safe_transport_error():
+    def fail(_messages):
+        raise RuntimeError("Bearer secret-do-not-serialize")
+
+    ticks = iter([1.0, 1.5])
+    with pytest.raises(StructuredOutputError) as excinfo:
+        complete_structured(fail, [{"role": "user", "content": "go"}], _Item, now=lambda: next(ticks))
+    assert str(excinfo.value) == "model completion transport failed"
+    assert [(a.duration_ms, a.repair, a.status) for a in excinfo.value.attempts] == [
+        (500, False, "transport_error")
+    ]
+
+
 def test_complete_structured_does_not_mutate_input_messages():
     messages = [{"role": "user", "content": "go"}]
     chat = FakeChat(["bad", '{"name": "a", "value": 1}'])

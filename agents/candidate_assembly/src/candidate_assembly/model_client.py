@@ -9,10 +9,11 @@ Verified endpoint behavior (probed live): ``response_format={"type":
 "json_object"}`` is honored — grammar-enforced pure JSON arrives in
 ``message.content`` while the model's chain-of-thought is returned separately in
 ``message.reasoning_content`` (which we never read). ``response_format`` of type
-``json_schema`` is silently ignored (prose comes back), and native tool-calling
-is unsupported. So the transport here is: json_object enforcement + defensive
-content parsing + one bounded repair retry, never ``with_structured_output`` /
-``json_schema`` and never native tools.
+``json_schema`` is silently ignored (prose comes back). Native tool support is
+endpoint- and model-dependent, so the startup probe records it but does not
+change transport selection. The transport here remains: json_object enforcement
+with defensive content parsing + one bounded repair retry, never
+``with_structured_output`` / ``json_schema``.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -56,8 +58,11 @@ class StructuredOutputError(RuntimeError):
     model-call budget before it converts this into a typed failure result.
     """
 
-    def __init__(self, message: str, *, calls_used: int) -> None:
+    def __init__(
+        self, message: str, *, calls_used: int, attempts: list["ModelAttempt"]
+    ) -> None:
         self.calls_used = calls_used
+        self.attempts = attempts
         super().__init__(message)
 
 
@@ -122,24 +127,6 @@ def build_openai_client(config: ModelConfig) -> Any:
         api_key=config.api_key,
         timeout=config.timeout_s,
         max_retries=0,
-    )
-
-
-def build_chat_model(config: ModelConfig, max_tokens: int) -> Any:
-    """Construct a temperature-0 ChatOpenAI bound to the llama-swap endpoint. Only
-    the (unverified, currently unused) native deepagents loop needs this; the
-    default json_object transport uses ``build_openai_client`` instead."""
-
-    from langchain_openai import ChatOpenAI  # type: ignore
-
-    return ChatOpenAI(
-        base_url=config.base_url,
-        api_key=config.api_key,
-        model=config.model,
-        temperature=0,
-        timeout=config.timeout_s,
-        max_retries=0,
-        max_tokens=max(max_tokens, MIN_COMPLETION_TOKENS),
     )
 
 
@@ -236,6 +223,17 @@ class StructuredResult:
     value: BaseModel
     calls_used: int
     provenance_notes: list[str] = field(default_factory=list)
+    attempts: list["ModelAttempt"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ModelAttempt:
+    """Safe per-attempt transport accounting; never includes completion text."""
+
+    attempt: int
+    duration_ms: int
+    repair: bool
+    status: str
 
 
 def complete_structured(
@@ -244,6 +242,7 @@ def complete_structured(
     schema: type[BaseModel],
     coerce: Optional[Callable[[Any], tuple[Any, bool]]] = None,
     max_repair: int = 1,
+    now: Callable[[], float] = time.monotonic,
 ) -> StructuredResult:
     """Drive one primary completion plus up to ``max_repair`` bounded repairs.
 
@@ -257,14 +256,40 @@ def complete_structured(
 
     convo = list(messages)
     calls_used = 0
+    attempt_records: list[ModelAttempt] = []
     last_error = "no completion attempted"
     attempts = max_repair + 1
     for attempt in range(attempts):
-        content = chat(convo)
+        started = now()
+        try:
+            content = chat(convo)
+        except Exception as exc:
+            calls_used += 1
+            attempt_records.append(
+                ModelAttempt(
+                    attempt=attempt + 1,
+                    duration_ms=int(round((now() - started) * 1000)),
+                    repair=attempt > 0,
+                    status="transport_error",
+                )
+            )
+            raise StructuredOutputError(
+                "model completion transport failed",
+                calls_used=calls_used,
+                attempts=attempt_records,
+            ) from exc
         calls_used += 1
         try:
             value, notes = parse_structured_content(content, schema, coerce)
         except StructuredParseError as exc:
+            attempt_records.append(
+                ModelAttempt(
+                    attempt=attempt + 1,
+                    duration_ms=int(round((now() - started) * 1000)),
+                    repair=attempt > 0,
+                    status="parse_error",
+                )
+            )
             last_error = str(exc)
             if attempt >= attempts - 1:
                 break
@@ -279,8 +304,23 @@ def complete_structured(
                 },
             ]
             continue
-        return StructuredResult(value=value, calls_used=calls_used, provenance_notes=notes)
-    raise StructuredOutputError(last_error, calls_used=calls_used)
+        attempt_records.append(
+            ModelAttempt(
+                attempt=attempt + 1,
+                duration_ms=int(round((now() - started) * 1000)),
+                repair=attempt > 0,
+                status="success",
+            )
+        )
+        return StructuredResult(
+            value=value,
+            calls_used=calls_used,
+            provenance_notes=notes,
+            attempts=attempt_records,
+        )
+    raise StructuredOutputError(
+        last_error, calls_used=calls_used, attempts=attempt_records
+    )
 
 
 def schema_prompt(schema: type[BaseModel]) -> str:
@@ -326,6 +366,7 @@ def probe_structured_output(config: ModelConfig) -> dict[str, Any]:
     on a transport failure — the transport is always the json_object
     structured-action loop; native support is recorded as evidence only."""
 
+    started = time.monotonic()
     evidence: dict[str, Any] = {
         "transport": "structured_action",
         "jsonMode": False,
@@ -337,6 +378,7 @@ def probe_structured_output(config: ModelConfig) -> dict[str, Any]:
         client = build_openai_client(config)
     except Exception as exc:  # pragma: no cover - live only
         evidence["jsonModeDetail"] = f"client init failed: {type(exc).__name__}"
+        evidence["probeDurationMs"] = int(round((time.monotonic() - started) * 1000))
         return evidence
 
     try:  # pragma: no cover - live only
@@ -390,6 +432,7 @@ def probe_structured_output(config: ModelConfig) -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover - live only
         evidence["nativeToolsDetail"] = f"native tool probe failed: {type(exc).__name__}"
 
+    evidence["probeDurationMs"] = int(round((time.monotonic() - started) * 1000))
     return evidence
 
 

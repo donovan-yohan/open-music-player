@@ -22,6 +22,8 @@ from ..budgets import Budget
 from ..orchestrator import DETERMINISTIC_ARMS, build_arm
 from ..schemas import (
     ASSEMBLY_SCHEMA_VERSION,
+    ArmTelemetry,
+    DeterministicBaseline,
     RUN_SCHEMA_VERSION,
     AssemblyError,
     AssemblyResult,
@@ -32,6 +34,9 @@ from ..schemas import (
     FixtureWorld,
     InterpretedIntent,
     Provenance,
+    ProgressEvent,
+    SafeEvidenceRef,
+    is_safe_progress_reference,
 )
 from ..validate import ValidationReport, validate_result
 from . import corpus as corpus_mod
@@ -69,6 +74,9 @@ class CaseArmOutcome:
     parse_error: Optional[str] = None
     validation: Optional[ValidationReport] = None
     skip_reason: str = ""
+    telemetry: ArmTelemetry = field(default_factory=ArmTelemetry)
+    progress_events: list[ProgressEvent] = field(default_factory=list)
+    deterministic_baseline: Optional[DeterministicBaseline] = None
 
     @property
     def graded(self) -> bool:
@@ -137,6 +145,13 @@ def _typed_error_result(arm: str, code: str, message: str, budget: Budget) -> As
     )
 
 
+def _probe_duration_ms(evidence: Optional[dict]) -> Optional[int]:
+    if not evidence:
+        return None
+    value = evidence.get("probeDurationMs")
+    return value if isinstance(value, int) and value >= 0 else None
+
+
 def _grade_result(
     case: Case,
     world: FixtureWorld,
@@ -154,14 +169,16 @@ def _grade_result(
 
 def _run_arm_live(
     arm_name: str, case: Case, world: FixtureWorld, budget: Budget, limit: int
-) -> tuple[AssemblyResult, int, Optional[set[str]]]:
+) -> tuple[AssemblyResult, int, Optional[set[str]], ArmTelemetry, list[ProgressEvent]]:
     arm = build_arm(arm_name)
     case_input = CaseInput(prompt=case.prompt, limit=limit)
     started = time.monotonic()
     try:
         result = arm.assemble(case_input, world, budget)
     except Exception as exc:  # surface as a typed-error result so schema grader fails loudly.
-        result = _typed_error_result(arm_name, "ARM_ERROR", f"{type(exc).__name__}: {exc}", budget)
+        result = _typed_error_result(
+            arm_name, "ARM_ERROR", f"arm execution failed ({type(exc).__name__})", budget
+        )
     latency_ms = int(round((time.monotonic() - started) * 1000))
     # The deterministic arm freezes elapsedMs (0) so its recording stays drift
     # stable; model arms record real wall time so the wall-clock budget check has
@@ -172,7 +189,22 @@ def _run_arm_live(
     # into validation so grounding checks against real tool output in live runs
     # (recon_analyst IdAllowlist), not just pool membership.
     allowlist = getattr(arm, "allowlist", None)
-    return result, latency_ms, allowlist
+    attempts = [
+        {
+            "attempt": attempt.attempt,
+            "durationMs": attempt.duration_ms,
+            "repair": attempt.repair,
+            "status": attempt.status,
+        }
+        for attempt in getattr(arm, "model_attempts", [])
+    ]
+    telemetry = ArmTelemetry(
+        modelAttempts=attempts,
+        toolDispatchLatencyMs=getattr(arm, "tool_dispatch_latency_ms", 0),
+        finalizationMs=getattr(arm, "finalization_ms", None),
+        totalArmWallMs=latency_ms,
+    )
+    return result, latency_ms, allowlist, telemetry, list(getattr(arm, "progress_events", []))
 
 
 def _outcome_from_result(
@@ -184,8 +216,35 @@ def _outcome_from_result(
     latency_ms: int,
     parse_error: Optional[str] = None,
     allowlist: Optional[set[str]] = None,
+    telemetry: Optional[ArmTelemetry] = None,
+    progress_events: Optional[list[ProgressEvent]] = None,
+    deterministic_baseline: Optional[DeterministicBaseline] = None,
 ) -> CaseArmOutcome:
+    validation_started = time.monotonic()
     validation, grades = _grade_result(case, world, budget, result, parse_error, allowlist)
+    validation_ms = int(round((time.monotonic() - validation_started) * 1000))
+    telemetry = telemetry or ArmTelemetry(totalArmWallMs=latency_ms)
+    telemetry.validationMs = validation_ms
+    progress_events = list(progress_events or [])
+    baseline_elapsed_ms = deterministic_baseline.elapsedMs if deterministic_baseline else 0
+    if progress_events:
+        useful = bool(validation and validation.passed and result.recommendations)
+        progress_events.append(
+            ProgressEvent(
+                sequence=len(progress_events) + 1,
+                kind="validated_result",
+                phase="validated",
+                elapsedMs=baseline_elapsed_ms + latency_ms + validation_ms,
+                status="passed" if useful else "failed",
+                resultCount=len(result.recommendations),
+                candidateIds=_safe_candidate_ids(result) if useful else [],
+                evidenceRefs=_safe_evidence_refs(result) if useful else [],
+            )
+        )
+        if useful:
+            telemetry.timeToFirstUsefulValidatedResultMs = (
+                baseline_elapsed_ms + latency_ms + validation_ms
+            )
     passed = graders_mod.grades_passed(grades)
     return CaseArmOutcome(
         case_id=case.id,
@@ -197,7 +256,81 @@ def _outcome_from_result(
         result=result,
         parse_error=parse_error,
         validation=validation,
+        telemetry=telemetry,
+        progress_events=progress_events,
+        deterministic_baseline=deterministic_baseline,
     )
+
+
+def _safe_candidate_ids(result: AssemblyResult) -> list[str]:
+    return [
+        recommendation.candidateId
+        for recommendation in result.recommendations
+        if is_safe_progress_reference(recommendation.candidateId)
+    ][:25]
+
+
+def _safe_evidence_refs(result: AssemblyResult) -> list[SafeEvidenceRef]:
+    refs: list[SafeEvidenceRef] = []
+    seen: set[tuple[str, str]] = set()
+    for recommendation in result.recommendations:
+        for evidence in recommendation.evidence:
+            key = (evidence.tool, evidence.ref)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                refs.append(SafeEvidenceRef(tool=evidence.tool, ref=evidence.ref))
+            except ValueError:
+                continue
+            if len(refs) == 50:
+                return refs
+    return refs
+
+
+def _live_deterministic_baseline(
+    case: Case, world: FixtureWorld, budget: Budget, limit: int
+) -> tuple[DeterministicBaseline, ProgressEvent]:
+    result, latency_ms, allowlist, _, _ = _run_arm_live(
+        "deterministic", case, world, budget, limit
+    )
+    validation_started = time.monotonic()
+    validation = validate_result(result, world, budget, allowlist)
+    validation_ms = int(round((time.monotonic() - validation_started) * 1000))
+    elapsed_ms = latency_ms + validation_ms
+    passed = result.error is None and validation.passed
+    baseline = DeterministicBaseline(
+        elapsedMs=elapsed_ms,
+        validationMs=validation_ms,
+        candidateIds=_safe_candidate_ids(result) if passed else [],
+        evidenceRefs=_safe_evidence_refs(result) if passed else [],
+    )
+    return baseline, ProgressEvent(
+        sequence=1,
+        kind="baseline",
+        phase="baseline_validated" if passed else "failed",
+        elapsedMs=elapsed_ms,
+        status="passed" if passed else "failed",
+        resultCount=len(baseline.candidateIds),
+        candidateIds=baseline.candidateIds,
+        evidenceRefs=baseline.evidenceRefs,
+    )
+
+
+def _prepend_baseline_event(
+    baseline: ProgressEvent, model_events: list[ProgressEvent], baseline_elapsed_ms: int
+) -> list[ProgressEvent]:
+    events = [baseline]
+    for event in model_events:
+        events.append(
+            event.model_copy(
+                update={
+                    "sequence": len(events) + 1,
+                    "elapsedMs": baseline_elapsed_ms + event.elapsedMs,
+                }
+            )
+        )
+    return events
 
 
 def run_case_arm(case: Case, world: FixtureWorld, arm: str, cfg: RunConfig) -> CaseArmOutcome:
@@ -206,9 +339,13 @@ def run_case_arm(case: Case, world: FixtureWorld, arm: str, cfg: RunConfig) -> C
 
     if cfg.mode == "replay":
         if arm in DETERMINISTIC_ARMS:
-            result, latency_ms, allowlist = _run_arm_live(arm, case, world, budget, limit)
+            result, latency_ms, allowlist, telemetry, progress_events = _run_arm_live(
+                arm, case, world, budget, limit
+            )
+            telemetry.startupProbeMs = _probe_duration_ms(cfg.probe_evidence)
             outcome = _outcome_from_result(
-                case, world, budget, arm, result, latency_ms, allowlist=allowlist
+                case, world, budget, arm, result, latency_ms, allowlist=allowlist,
+                telemetry=telemetry, progress_events=progress_events,
             )
             # Drift check against the recording (deterministic arm is hermetic).
             try:
@@ -277,10 +414,26 @@ def run_case_arm(case: Case, world: FixtureWorld, arm: str, cfg: RunConfig) -> C
             )
         return _outcome_from_result(case, world, budget, arm, result, 0)
 
-    # Live mode: execute the arm for real.
-    result, latency_ms, allowlist = _run_arm_live(arm, case, world, budget, limit)
+    # Live model arms always expose a validated deterministic baseline first. It
+    # remains in the case artifact when the subsequent model path is slow or fails.
+    baseline: Optional[DeterministicBaseline] = None
+    baseline_event: Optional[ProgressEvent] = None
+    if arm not in DETERMINISTIC_ARMS:
+        baseline, baseline_event = _live_deterministic_baseline(case, world, budget, limit)
+
+    # Live mode: execute the selected arm for real.
+    result, latency_ms, allowlist, telemetry, progress_events = _run_arm_live(
+        arm, case, world, budget, limit
+    )
+    telemetry.startupProbeMs = _probe_duration_ms(cfg.probe_evidence)
+    if baseline is not None and baseline_event is not None:
+        progress_events = _prepend_baseline_event(
+            baseline_event, progress_events, baseline.elapsedMs
+        )
     outcome = _outcome_from_result(
-        case, world, budget, arm, result, latency_ms, allowlist=allowlist
+        case, world, budget, arm, result, latency_ms, allowlist=allowlist,
+        telemetry=telemetry, progress_events=progress_events,
+        deterministic_baseline=baseline,
     )
     if cfg.update_recordings and result.error is None:
         _write_recording(arm, case.id, result, cfg.record_dir)
@@ -413,6 +566,15 @@ def build_records(outcomes: list[CaseArmOutcome], cfg: RunConfig) -> list[dict]:
                 "skipReason": outcome.skip_reason or None,
                 "passed": outcome.passed,
                 "latencyMs": outcome.latency_ms,
+                "telemetry": outcome.telemetry.model_dump(exclude_none=True),
+                "deterministicBaseline": (
+                    outcome.deterministic_baseline.model_dump(exclude_none=True)
+                    if outcome.deterministic_baseline
+                    else None
+                ),
+                "progressEvents": [
+                    event.model_dump(exclude_none=True) for event in outcome.progress_events
+                ],
                 "result": _result_payload(outcome),
                 "validation": _validation_payload(outcome.validation),
                 "graders": [

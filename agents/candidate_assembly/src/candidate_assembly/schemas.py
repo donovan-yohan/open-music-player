@@ -10,9 +10,10 @@ field.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # Versioned schema identifiers (mirrors the Go eval conventions).
@@ -20,7 +21,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 ASSEMBLY_SCHEMA_VERSION = "omp.agent-search.assembly.v1"
 CORPUS_SCHEMA_VERSION = "omp.agent-search.eval.corpus.v1"
-RUN_SCHEMA_VERSION = "omp.agent-search.eval.run.v1"
+RUN_SCHEMA_VERSION = "omp.agent-search.eval.run.v3"
+PROGRESS_EVENT_SCHEMA_VERSION = "omp.agent-search.eval.progress.v2"
 KNOWN_FAILURES_SCHEMA_VERSION = "omp.agent-search.eval.known-failures.v1"
 PROMPT_REVISION = "agent-search-system-prompt-v2"
 
@@ -175,6 +177,110 @@ class BudgetSpent(StrictModel):
     elapsedMs: int = 0
 
 
+# These models belong to the eval-run artifact, not AssemblyResult. They are
+# runner-owned so a model is never asked to emit timing, progress, or error
+# accounting data that it could fabricate or contaminate with reasoning text.
+class ModelCallAttempt(StrictModel):
+    attempt: int = Field(ge=1)
+    durationMs: int = Field(ge=0)
+    repair: bool = False
+    status: Literal["success", "parse_error", "transport_error"]
+
+
+class ArmTelemetry(StrictModel):
+    startupProbeMs: Optional[int] = Field(default=None, ge=0)
+    modelAttempts: list[ModelCallAttempt] = Field(default_factory=list)
+    # Measures dispatch execution only. TraceStep.elapsedMs is cumulative and
+    # intentionally not used for model-vs-tool attribution.
+    toolDispatchLatencyMs: int = Field(default=0, ge=0)
+    finalizationMs: Optional[int] = Field(default=None, ge=0)
+    validationMs: Optional[int] = Field(default=None, ge=0)
+    totalArmWallMs: int = Field(default=0, ge=0)
+    firstPartialRevisionMs: Optional[int] = Field(default=None, ge=0)
+    timeToFirstUsefulValidatedResultMs: Optional[int] = Field(default=None, ge=0)
+
+
+_SAFE_REFERENCE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_SECRET_SHAPED_RE = re.compile(r"(?i)(?:^sk-|bearer|api[_-]?key|token|secret)")
+
+
+def is_safe_progress_reference(value: str) -> bool:
+    """Allow only bounded fixture-style IDs, never URLs, secrets, or free text."""
+
+    return bool(
+        _SAFE_REFERENCE_RE.fullmatch(value)
+        and not _SECRET_SHAPED_RE.search(value)
+        and "://" not in value
+    )
+
+
+class SafeEvidenceRef(StrictModel):
+    tool: ToolName
+    # Candidate and catalog ids are stable fixture references. URLs, arbitrary
+    # model text, and prompts are not valid progress payloads.
+    ref: str = Field(min_length=1, max_length=128)
+
+    @field_validator("ref")
+    @classmethod
+    def _safe_ref(cls, value: str) -> str:
+        if not is_safe_progress_reference(value):
+            raise ValueError("unsafe evidence reference")
+        return value
+
+
+class DeterministicBaseline(StrictModel):
+    elapsedMs: int = Field(ge=0)
+    validationMs: int = Field(ge=0)
+    candidateIds: list[str] = Field(default_factory=list, max_length=25)
+    evidenceRefs: list[SafeEvidenceRef] = Field(default_factory=list, max_length=50)
+
+    @field_validator("candidateIds")
+    @classmethod
+    def _safe_candidate_ids(cls, values: list[str]) -> list[str]:
+        if not all(is_safe_progress_reference(value) for value in values):
+            raise ValueError("unsafe candidate id")
+        return values
+
+
+class ProgressEvent(StrictModel):
+    """Safe, ordered metadata for a future asynchronous eval progress stream.
+
+    The contract intentionally has no free-form text, prompt, URL, token, or
+    provider fields. Only lifecycle, tool, and validated-result metadata may be
+    emitted by the current deep-agent arm.
+    """
+
+    schemaVersion: Literal["omp.agent-search.eval.progress.v2"] = (
+        PROGRESS_EVENT_SCHEMA_VERSION
+    )
+    sequence: int = Field(ge=1)
+    kind: Literal["baseline", "lifecycle", "tool", "validated_result"]
+    phase: Literal[
+        "started",
+        "model_call",
+        "tool_completed",
+        "finalizing",
+        "failed",
+        "baseline_validated",
+        "validated",
+    ]
+    elapsedMs: int = Field(ge=0)
+    attempt: Optional[int] = Field(default=None, ge=1)
+    repair: Optional[bool] = None
+    status: Optional[Literal["success", "parse_error", "transport_error", "passed", "failed"]] = None
+    tool: Optional[ToolName] = None
+    resultCount: Optional[int] = Field(default=None, ge=0)
+    candidateIds: list[str] = Field(default_factory=list, max_length=25)
+    evidenceRefs: list[SafeEvidenceRef] = Field(default_factory=list, max_length=50)
+
+    @field_validator("candidateIds")
+    @classmethod
+    def _safe_candidate_ids(cls, values: list[str]) -> list[str]:
+        if not all(is_safe_progress_reference(value) for value in values):
+            raise ValueError("unsafe candidate id")
+        return values
+
+
 class Provenance(StrictModel):
     orchestrator: str
     model: str = ""
@@ -220,8 +326,7 @@ class AgentFinalOutput(StrictModel):
 
 
 class AgentAction(StrictModel):
-    """Structured-action transport step (used only when native tool-calling is
-    unavailable on the live endpoint)."""
+    """Structured-action transport step selected explicitly for the live arm."""
 
     action: Literal[
         "search_sources", "search_catalog", "inspect_source_metadata", "finalize"
