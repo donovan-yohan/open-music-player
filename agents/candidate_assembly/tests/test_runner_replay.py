@@ -65,7 +65,9 @@ def test_recorded_result_matches_live_deterministic_run():
     corpus = corpus_mod.load_corpus()
     case = corpus.cases[0]
     world = corpus_mod.load_world(case)
-    result, _, _ = runner_mod._run_arm_live("deterministic", case, world, Budget.default(), 5)
+    result, _, _, _, _ = runner_mod._run_arm_live(
+        "deterministic", case, world, Budget.default(), 5
+    )
     recording = json.loads(runner_mod.recording_path("deterministic", case.id).read_text())
     from candidate_assembly.schemas import AssemblyResult
 

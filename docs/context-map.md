@@ -89,6 +89,10 @@ domain concept moves or a new production harness becomes canonical.
 - Verifier and graders: `validate.py` guards every arm's output; the eval runner
   and six graders live under `evalrunner/`.
 - Runner and artifact contract: `scripts/eval agent-search` and `docs/AI_EVALS.md`.
+  Run JSONL `v3` carries runner-owned, redacted latency telemetry plus a
+  validated deterministic baseline and ordered `progress.v2` baseline/lifecycle/
+  tool/validated-result metadata. Deterministic replay recordings remain
+  assembly-schema `v1` and contain no wall-clock data.
 - Guardrail: replay mode is network-free and is the CI gate. The deterministic
   arm ranks with the real `discovery.EvaluateSourceQuality` via the
   `sourcequality-rank` CLI (not a Python re-implementation) and is diffed against

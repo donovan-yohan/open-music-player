@@ -121,11 +121,12 @@ runner, validator, and graders never depend on the transport:
   clamp, unknown-id rejection). Answers "what does the shipped judge already
   buy?".
 - `deep_agent` — the prototype under evaluation: a bounded DeepAgents / LangGraph
-  tool loop driving only the three read-only tools, with the same budgets. The
-  probed endpoint has no native tool-calling, so the transport is a
-  structured-action loop where each step the model emits an action as a
-  json_object completion and the runner executes the tool. Recorded provenance
-  names the transport used (`structured_action`, `jsonMode: true`).
+  tool loop driving only the three read-only tools, with the same budgets. Native
+  tool support is probe- and model-dependent; the probe records it but does not
+  switch transport automatically. The default is a structured-action loop where
+  each step the model emits an action as a json_object completion and the runner
+  executes the tool. Recorded provenance names the transport used
+  (`structured_action`, `jsonMode: true`).
 
 ## Tools and budgets
 
@@ -197,15 +198,18 @@ scripts/eval agent-search --mode live --arm deep_agent --update-recordings
 ```
 
 The runner probes the endpoint once at live start and records redacted evidence
-in the artifact header. Probed endpoint behavior is fixed: `response_format`
-json_object is honored (grammar-enforced JSON arrives in `message.content` while
-the model's chain-of-thought is returned separately in `reasoning_content`,
-which is never read into results or artifacts), `response_format` json_schema is
-silently ignored, and native tool-calling is unsupported. So every model call
-sends `response_format` json_object with the expected schema embedded in the
-prompt and temperature 0; a parse or validation failure gets one bounded repair
-retry — re-asked with the validation error and "return ONLY the corrected JSON
-object", charged against the model-call budget — before the typed-failure path.
+in the artifact header. `response_format` json_object is honored by the probed
+endpoint (grammar-enforced JSON arrives in `message.content` while the model's
+chain-of-thought is returned separately in `reasoning_content`, which is never
+read into results or artifacts); `response_format` json_schema is ignored there.
+Native tool support is endpoint- and model-dependent, so the probe records its
+observed capability but does not automatically change transport. Every current
+model call therefore sends `response_format` json_object with the expected schema
+embedded in the prompt and temperature 0. A parse or validation failure gets up
+to one bounded repair retry, only when model-call capacity remains; with one call
+left, repair is disabled. The retry is re-asked with the validation error and
+"return ONLY the corrected JSON object", charged against the model-call budget,
+before the typed-failure path.
 A bare judgments array is wrapped into its `{judgments: [...]}` envelope before
 strict validation (recorded as a `coerced_envelope` provenance note). Endpoint
 settings are env-only (`AGENT_SEARCH_TIMEOUT_S`, `AGENT_SEARCH_RUN_TIMEOUT_S`);
@@ -220,14 +224,44 @@ advisory live), `--output` (JSONL, `-` for stdout), `--run-id`,
 (`--max-tool-calls`, `--max-model-calls`, `--max-candidates-in`,
 `--max-recommendations`, `--wall-clock-s`, `--max-tokens`).
 
-The JSONL artifact is one `run` header, one record per case × arm (result,
-validation report, six grader results, status of `graded`/`skipped`/`drift`,
-latency), and one `summary` with per-arm totals and p50/p95 latency. API keys and
-bearer/`sk-` values are redacted before any line is written. The command exits
+The JSONL artifact is schema `omp.agent-search.eval.run.v3`: one `run` header,
+one record per case × arm (result, validation report, six grader results, status
+of `graded`/`skipped`/`drift`, latency, runner-owned telemetry, and safe ordered
+progress events), and one `summary` with per-arm totals and p50/p95 latency.
+Telemetry contains per-attempt duration/repair/status, probe duration where
+available, actual tool-dispatch/finalization/validation/total timing, a validated
+deterministic baseline, and final validated result timing. The optional first
+partial-revision metric remains unset: current model arms only expose a final
+candidate set. Future durable job/UI slices may add genuine validated enhancement
+revisions rather than treating a model attempt as a partial result.
+For live model arms the runner executes and validates the deterministic baseline
+first; its bounded candidate IDs and evidence refs remain in `deterministicBaseline`
+and the first ordered event even if the model is slow or fails.
+`deterministicBaseline` is a sibling JSONL case-record field to `telemetry`, not
+nested inside telemetry. The artifact never records
+completion text, prompts, URLs, reasoning, or keys. Progress events use
+`omp.agent-search.eval.progress.v2` and are restricted to safe baseline,
+lifecycle, tool, and validated-result metadata. API keys and bearer/`sk-` values
+are redacted before any line is written. The command exits
 nonzero on any safety-grader failure; in replay it then exits nonzero unless the
 graded failures match the pinned known-failures manifest exactly (a summary line
 reports `known_failures=<n> matched`), and in live mode it exits nonzero when the
 graded pass rate is below `--min-pass-rate`.
+
+For a reproducible live benchmark, use a fixed case and output path:
+
+```bash
+scripts/eval agent-search --mode live --arm deep_agent --case plain-artist-song-official-audio \
+  --max-model-calls 4 --output /tmp/agent-search-live.jsonl
+```
+
+The artifact distinguishes per-attempt model duration from actual synchronous
+tool-dispatch duration. It does not normalize cold versus warm endpoint startup,
+provider queueing, or model cache state; compare repeated runs on the same
+endpoint configuration and inspect every model attempt rather than treating a
+single total as a stable latency benchmark. Native-tool capability is probe
+evidence only: `AGENT_SEARCH_TOOL_TRANSPORT=native` returns a typed unsupported
+transport result until an explicitly instrumented adoption decision is made.
 
 Package-local tests (`cd agents/candidate_assembly && uv run pytest`) cover
 schema round-trips and unknown-field rejection, retrieval determinism, every
