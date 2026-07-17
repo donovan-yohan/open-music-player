@@ -32,8 +32,8 @@ class ApiClient {
   };
 
   ApiClient({SecureStorage? storage, Dio? dio})
-    : _storage = storage ?? SecureStorage(),
-      _dio = dio ?? Dio() {
+      : _storage = storage ?? SecureStorage(),
+        _dio = dio ?? Dio() {
     _dio.options.baseUrl = baseUrl;
     _dio.options.connectTimeout = const Duration(seconds: 10);
     _dio.options.receiveTimeout = const Duration(seconds: 10);
@@ -62,8 +62,7 @@ class ApiClient {
     ErrorInterceptorHandler handler,
   ) async {
     final requestOptions = error.requestOptions;
-    final shouldRefresh =
-        error.response?.statusCode == 401 &&
+    final shouldRefresh = error.response?.statusCode == 401 &&
         !_isAuthEndpoint(requestOptions) &&
         requestOptions.extra[_authRetryExtraKey] != true;
 
@@ -156,31 +155,53 @@ class ApiClient {
   Future<Response<T>> get<T>(
     String path, {
     Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
   }) {
-    return _dio.get<T>(path, queryParameters: queryParameters);
+    return _dio.get<T>(
+      path,
+      queryParameters: queryParameters,
+      options: headers == null ? null : Options(headers: headers),
+    );
   }
 
   Future<Response<T>> post<T>(
     String path, {
     dynamic data,
     Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
   }) {
-    return _dio.post<T>(path, data: data, queryParameters: queryParameters);
+    return _dio.post<T>(
+      path,
+      data: data,
+      queryParameters: queryParameters,
+      options: headers == null ? null : Options(headers: headers),
+    );
   }
 
   Future<Response<T>> put<T>(
     String path, {
     dynamic data,
     Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
   }) {
-    return _dio.put<T>(path, data: data, queryParameters: queryParameters);
+    return _dio.put<T>(
+      path,
+      data: data,
+      queryParameters: queryParameters,
+      options: headers == null ? null : Options(headers: headers),
+    );
   }
 
   Future<Response<T>> delete<T>(
     String path, {
     Map<String, dynamic>? queryParameters,
+    Map<String, dynamic>? headers,
   }) {
-    return _dio.delete<T>(path, queryParameters: queryParameters);
+    return _dio.delete<T>(
+      path,
+      queryParameters: queryParameters,
+      options: headers == null ? null : Options(headers: headers),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -309,9 +330,8 @@ class ApiClient {
     Duration timeout = const Duration(seconds: 8),
   }) async {
     try {
-      final response = await _dio
-          .post('/downloads', data: {'url': url, 'source_type': sourceType})
-          .timeout(timeout);
+      final response = await _dio.post('/downloads',
+          data: {'url': url, 'source_type': sourceType}).timeout(timeout);
       return DownloadJobResponse.fromJson(_asMap(response.data));
     } on TimeoutException {
       throw ApiException('Download request timeout', 408);

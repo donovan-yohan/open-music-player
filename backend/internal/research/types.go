@@ -197,9 +197,9 @@ type Event struct {
 	CreatedAt   time.Time          `json:"createdAt"`
 }
 
+// ReviewInput is intentionally URL- and revision-free. The repository locks the
+// owned job and resolves its current immutable revision in the same transaction.
 type ReviewInput struct {
-	RevisionID     string       `json:"revisionId"`
-	RevisionNumber int          `json:"revisionNumber"`
 	CandidateID    string       `json:"candidateId"`
 	Action         ReviewAction `json:"action"`
 	Reason         string       `json:"reason,omitempty"`

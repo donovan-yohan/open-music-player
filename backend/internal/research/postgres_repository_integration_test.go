@@ -117,8 +117,8 @@ func TestPostgresReviewConcurrentIdempotencyConflict(t *testing.T) {
 		jobID string
 		input ReviewInput
 	}{
-		{first.Job.ID, ReviewInput{RevisionID: first.Revisions[0].ID, RevisionNumber: 1, CandidateID: "youtube:fixture-a", Action: ReviewAccepted, IdempotencyKey: key}},
-		{second.Job.ID, ReviewInput{RevisionID: second.Revisions[0].ID, RevisionNumber: 1, CandidateID: "youtube:fixture-b", Action: ReviewOverridden, IdempotencyKey: key}},
+		{first.Job.ID, ReviewInput{CandidateID: "youtube:fixture-a", Action: ReviewAccepted, IdempotencyKey: key}},
+		{second.Job.ID, ReviewInput{CandidateID: "youtube:fixture-b", Action: ReviewOverridden, IdempotencyKey: key}},
 	}
 	start := make(chan struct{})
 	errs := make(chan error, len(inputs))
@@ -131,7 +131,8 @@ func TestPostgresReviewConcurrentIdempotencyConflict(t *testing.T) {
 		}) {
 			defer wg.Done()
 			<-start
-			errs <- repo.Review(context.Background(), item.jobID, owner, item.input)
+			_, err := repo.Review(context.Background(), item.jobID, owner, item.input)
+			errs <- err
 		}(item)
 	}
 	close(start)
@@ -155,6 +156,64 @@ func TestPostgresReviewConcurrentIdempotencyConflict(t *testing.T) {
 	var records int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM research_reviews WHERE user_id=$1 AND idempotency_key=$2`, owner, key).Scan(&records); err != nil || records != 1 {
 		t.Fatalf("idempotency records=%d err=%v", records, err)
+	}
+	if err := database.QueryRow(`SELECT COUNT(*) FROM source_selection_decisions WHERE research_review_id IN (SELECT id FROM research_reviews WHERE user_id=$1 AND idempotency_key=$2)`, owner, key).Scan(&records); err != nil || records != 1 {
+		t.Fatalf("idempotency decisions=%d err=%v", records, err)
+	}
+}
+
+func TestPostgresReviewConcurrentReplayCreatesOneDecision(t *testing.T) {
+	repo, database := newPostgresResearchRepository(t, PostgresRepositoryConfig{})
+	owner := researchUser(t, database)
+	created, err := repo.Create(context.Background(), researchInput(owner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := ReviewInput{CandidateID: "youtube:fixture-a", Action: ReviewAccepted, IdempotencyKey: uuid.NewString()}
+	start := make(chan struct{})
+	results := make(chan *store.SourceSelectionDecision, 2)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			decision, err := repo.Review(context.Background(), created.Job.ID, owner, input)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- decision
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	var decisionID uuid.UUID
+	for decision := range results {
+		if decisionID == uuid.Nil {
+			decisionID = decision.ID
+		} else if decision.ID != decisionID {
+			t.Fatalf("replay returned decision %s, want %s", decision.ID, decisionID)
+		}
+	}
+	var reviews, decisions, reviewedEvents int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM research_reviews WHERE user_id=$1 AND idempotency_key=$2`, owner, input.IdempotencyKey).Scan(&reviews); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT COUNT(*) FROM source_selection_decisions WHERE research_review_id IN (SELECT id FROM research_reviews WHERE user_id=$1 AND idempotency_key=$2)`, owner, input.IdempotencyKey).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT COUNT(*) FROM research_events WHERE job_id=$1 AND kind='reviewed'`, created.Job.ID).Scan(&reviewedEvents); err != nil {
+		t.Fatal(err)
+	}
+	if reviews != 1 || decisions != 1 || reviewedEvents != 1 {
+		t.Fatalf("reviews=%d decisions=%d reviewedEvents=%d", reviews, decisions, reviewedEvents)
 	}
 }
 
@@ -504,36 +563,64 @@ func TestPostgresAtomicDailyBudgetAndGroundedReview(t *testing.T) {
 	if queued == nil || budget == nil || budget.LatestDegradation == nil || budget.LatestDegradation.Code != DegradationBudgetExhausted {
 		t.Fatalf("budget snapshots queued=%#v budget=%#v", queued, budget)
 	}
-	claim, err := repo.Claim(context.Background(), "worker", time.Now().Add(time.Minute))
+	input := ReviewInput{CandidateID: "youtube:fixture-a", Action: ReviewAccepted, IdempotencyKey: uuid.NewString()}
+	decision, err := repo.Review(context.Background(), queued.Job.ID, owner, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = repo.AppendEnhancement(context.Background(), *claim, enhancement(*claim, uuid.NewString()))
-	if err != nil {
-		t.Fatal(err)
+	if decision.Origin != store.SourceSelectionOriginResearch || decision.SessionID.Valid || decision.DownloadJobID.Valid {
+		t.Fatalf("research decision = %#v", decision)
 	}
-	input := ReviewInput{RevisionID: queued.Revisions[0].ID, RevisionNumber: 1, CandidateID: "youtube:fixture-a", Action: ReviewAccepted, IdempotencyKey: uuid.NewString()}
-	if err := repo.Review(context.Background(), queued.Job.ID, owner, input); err != nil {
-		t.Fatal(err)
-	}
-	if err := repo.Review(context.Background(), queued.Job.ID, owner, input); err != nil {
-		t.Fatalf("idempotent review: %v", err)
+	replay, err := repo.Review(context.Background(), queued.Job.ID, owner, input)
+	if err != nil || replay.ID != decision.ID {
+		t.Fatalf("idempotent review decision=%#v err=%v", replay, err)
 	}
 	conflict := input
 	conflict.CandidateID = "youtube:fixture-b"
 	conflict.Action = ReviewOverridden
-	if err := repo.Review(context.Background(), queued.Job.ID, owner, conflict); !errors.Is(err, ErrIdempotencyConflict) {
+	if _, err := repo.Review(context.Background(), queued.Job.ID, owner, conflict); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("review idempotency conflict = %v", err)
 	}
 	conflict.IdempotencyKey = uuid.NewString()
-	if err := repo.Review(context.Background(), queued.Job.ID, owner, conflict); err != nil {
+	if _, err := repo.Review(context.Background(), queued.Job.ID, owner, conflict); err != nil {
 		t.Fatalf("grounded override = %v", err)
 	}
 	invalid := input
 	invalid.CandidateID = "youtube:fixture-b"
 	invalid.IdempotencyKey = uuid.NewString()
-	if err := repo.Review(context.Background(), queued.Job.ID, owner, invalid); !errors.Is(err, ErrInvalidReview) {
+	if _, err := repo.Review(context.Background(), queued.Job.ID, owner, invalid); !errors.Is(err, ErrInvalidReview) {
 		t.Fatalf("non-top accepted = %v", err)
+	}
+}
+
+func TestPostgresReviewRejectsNondownloadableCandidateBeforeWrites(t *testing.T) {
+	repo, database := newPostgresResearchRepository(t, PostgresRepositoryConfig{})
+	owner := researchUser(t, database)
+	input := researchInput(owner)
+	input.Baseline.Payload = json.RawMessage(strings.Replace(string(input.Baseline.Payload), `"downloadable":true`, `"downloadable":false`, 1))
+	created, err := repo.Create(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := repo.Review(context.Background(), created.Job.ID, owner, ReviewInput{
+		CandidateID: "youtube:fixture-a", Action: ReviewAccepted, IdempotencyKey: uuid.NewString(),
+	}); !errors.Is(err, ErrInvalidReview) {
+		t.Fatalf("nondownloadable review = %v", err)
+	}
+
+	var reviews, reviewedEvents, decisions int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM research_reviews WHERE job_id=$1`, created.Job.ID).Scan(&reviews); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT COUNT(*) FROM research_events WHERE job_id=$1 AND kind='reviewed'`, created.Job.ID).Scan(&reviewedEvents); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT COUNT(*) FROM source_selection_decisions WHERE user_id=$1 AND origin='research'`, owner).Scan(&decisions); err != nil {
+		t.Fatal(err)
+	}
+	if reviews != 0 || reviewedEvents != 0 || decisions != 0 {
+		t.Fatalf("nondownloadable review writes reviews=%d reviewedEvents=%d decisions=%d", reviews, reviewedEvents, decisions)
 	}
 }
 

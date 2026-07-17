@@ -20,6 +20,7 @@ const (
 	SourceSelectionOriginDiscovery        = "discovery"
 	SourceSelectionOriginDirectURL        = "direct_url"
 	SourceSelectionOriginPlaylistExplicit = "playlist_explicit"
+	SourceSelectionOriginResearch         = "research"
 
 	maxSourceSelectionCandidates   = 50
 	maxSourceSelectionSnapshotSize = 48 * 1024

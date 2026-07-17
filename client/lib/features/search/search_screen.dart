@@ -8,6 +8,8 @@ import 'package:provider/provider.dart';
 import '../../core/api/api_client.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/discovery/discovery_models.dart';
+import '../../core/discovery/research_models.dart';
+import '../../core/discovery/research_service.dart';
 import '../../core/discovery/discovery_service.dart';
 import '../../core/models/models.dart' as local;
 import '../../core/services/api_client.dart' as local_api;
@@ -22,8 +24,19 @@ class SearchScreen extends StatefulWidget {
   /// Optional injection seam for tests: supply a [SearchService] wired to a
   /// capturing/fake ApiClient. Production builds construct one lazily.
   final SearchService? searchService;
+  final ResearchJobService? researchService;
+  final List<Duration> researchPollDelays;
 
-  const SearchScreen({super.key, this.searchService});
+  const SearchScreen({
+    super.key,
+    this.searchService,
+    this.researchService,
+    this.researchPollDelays = const [
+      Duration(seconds: 1),
+      Duration(seconds: 2),
+      Duration(seconds: 5),
+    ],
+  });
 
   @override
   State<SearchScreen> createState() => _SearchScreenState();
@@ -35,8 +48,10 @@ class _SearchScreenState extends State<SearchScreen> {
   final Set<String> _pendingCandidateKeys = <String>{};
   Timer? _debounceTimer;
   Timer? _pollTimer;
+  Timer? _researchPollTimer;
 
   late DiscoveryService _discoveryService;
+  late ResearchJobService _researchService;
   bool _didPrimeQueue = false;
   bool _isPollingQueue = false;
 
@@ -75,6 +90,15 @@ class _SearchScreenState extends State<SearchScreen> {
   String? _sourceSelectionStatus;
   String? _sourceSelectionRetryDecisionId;
 
+  ResearchSnapshot? _researchSnapshot;
+  List<ResearchEvent> _researchEvents = const [];
+  List<String> _researchCandidateOrder = const [];
+  int _researchEpoch = 0;
+  int _researchLastEventSequence = 0;
+  int _researchPollStep = 0;
+  bool _isCreatingResearch = false;
+  DateTime? _researchStartedAt;
+
   // A prompt that begins with an absolute http(s) URL is routed to the assist
   // endpoint even from Search mode: its direct-URL resolver grounds the link
   // into a queueable candidate without the user rewriting it, and that path
@@ -92,6 +116,8 @@ class _SearchScreenState extends State<SearchScreen> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _discoveryService = DiscoveryService(context.read<ApiClient>());
+    _researchService =
+        widget.researchService ?? ResearchService(context.read<ApiClient>());
     if (!_didPrimeQueue) {
       _didPrimeQueue = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -105,6 +131,7 @@ class _SearchScreenState extends State<SearchScreen> {
   void dispose() {
     _debounceTimer?.cancel();
     _pollTimer?.cancel();
+    _researchPollTimer?.cancel();
     _queryFocusNode.removeListener(_onFocusChanged);
     _queryFocusNode.dispose();
     _queryController.dispose();
@@ -244,6 +271,20 @@ class _SearchScreenState extends State<SearchScreen> {
     _assistError = null;
     _askedPrompt = '';
     _isAsking = false;
+    _resetResearch();
+  }
+
+  void _resetResearch() {
+    _researchEpoch++;
+    _researchPollTimer?.cancel();
+    _researchPollTimer = null;
+    _researchSnapshot = null;
+    _researchEvents = const [];
+    _researchCandidateOrder = const [];
+    _researchLastEventSequence = 0;
+    _researchPollStep = 0;
+    _isCreatingResearch = false;
+    _researchStartedAt = null;
   }
 
   void _resetSearch() {
@@ -283,6 +324,7 @@ class _SearchScreenState extends State<SearchScreen> {
       _scope = scope;
       _clearSourceSelectionStatus();
       _resetLocalSearch();
+      if (scope == SearchScope.library) _resetAssist();
     });
     final text = _queryController.text.trim();
     if (text.isEmpty) return;
@@ -467,7 +509,16 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Future<void> _runAssist({String? prompt}) async {
     final text = (prompt ?? _queryController.text).trim();
+    if (_urlPrompt.hasMatch(text)) {
+      return _runSynchronousAssist(prompt: text);
+    }
+    return _runResearch(prompt: text);
+  }
+
+  Future<void> _runSynchronousAssist({String? prompt}) async {
+    final text = (prompt ?? _queryController.text).trim();
     _debounceTimer?.cancel();
+    _resetResearch();
     if (text.isEmpty) {
       setState(_resetAssist);
       return;
@@ -509,6 +560,189 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
+  Future<void> _runResearch({String? prompt}) async {
+    final text = (prompt ?? _queryController.text).trim();
+    _debounceTimer?.cancel();
+    if (text.isEmpty) {
+      setState(_resetAssist);
+      return;
+    }
+
+    // A natural-language job supersedes any direct-url/synchronous assist
+    // request as well as older research polls.
+    _assistRequestSerial++;
+    final epoch = ++_researchEpoch;
+    _researchPollTimer?.cancel();
+    _researchPollTimer = null;
+    setState(() {
+      _clearSourceSelectionStatus();
+      _askedPrompt = text;
+      _assistResponse = null;
+      _assistError = null;
+      _isAsking = false;
+      _isCreatingResearch = true;
+      _researchSnapshot = null;
+      _researchEvents = const [];
+      _researchCandidateOrder = const [];
+      _researchLastEventSequence = 0;
+      _researchPollStep = 0;
+      _researchStartedAt = DateTime.now();
+    });
+
+    try {
+      final snapshot = await _researchService.create(query: text);
+      if (!_isCurrentResearch(epoch, snapshot.job.id)) return;
+      setState(() {
+        _applyResearchSnapshot(snapshot);
+        _isCreatingResearch = false;
+      });
+      _scheduleResearchPoll(epoch, snapshot.job.id);
+    } on ResearchException catch (error) {
+      if (!_isCurrentResearch(epoch, null)) return;
+      if (error.canFallBackToAssist) {
+        setState(() => _isCreatingResearch = false);
+        await _runSynchronousAssist(prompt: text);
+        return;
+      }
+      setState(() {
+        _isCreatingResearch = false;
+        _assistError = error.message;
+      });
+    } catch (error) {
+      if (!_isCurrentResearch(epoch, null)) return;
+      setState(() {
+        _isCreatingResearch = false;
+        _assistError = _friendlyApiError(error);
+      });
+    }
+  }
+
+  bool _isCurrentResearch(int epoch, String? jobId) {
+    if (!mounted || epoch != _researchEpoch || !_assistMode) return false;
+    final activeJob = _researchSnapshot?.job.id;
+    return jobId == null || activeJob == null || activeJob == jobId;
+  }
+
+  void _applyResearchSnapshot(ResearchSnapshot snapshot) {
+    final current = _researchSnapshot;
+    if (current != null &&
+        snapshot.job.id == current.job.id &&
+        snapshot.latestRevision.number <= current.latestRevision.number) {
+      // Job lifecycle/degradation is mutable, while revisions are immutable.
+      // Preserve the rendered revision for equal/older snapshots, but retain
+      // authoritative terminal state so polling stops promptly.
+      _researchSnapshot = ResearchSnapshot(
+        job: snapshot.job,
+        revisions: current.revisions,
+        latestDegradation: snapshot.latestDegradation,
+      );
+      return;
+    }
+    _researchSnapshot = snapshot;
+    final latestIds = snapshot.latestRevision.payload.candidates
+        .map((candidate) => candidate.candidateId)
+        .toList();
+    if (_researchCandidateOrder.isEmpty) {
+      _researchCandidateOrder = latestIds;
+    } else {
+      _researchCandidateOrder = [
+        ..._researchCandidateOrder.where(latestIds.contains),
+        ...latestIds.where((id) => !_researchCandidateOrder.contains(id)),
+      ];
+    }
+  }
+
+  void _scheduleResearchPoll(int epoch, String jobId) {
+    _researchPollTimer?.cancel();
+    final snapshot = _researchSnapshot;
+    if (snapshot == null ||
+        !snapshot.job.isActive ||
+        !_isCurrentResearch(epoch, jobId)) {
+      return;
+    }
+    final delays = widget.researchPollDelays.isEmpty
+        ? const [Duration(seconds: 1)]
+        : widget.researchPollDelays;
+    final delay = delays[_researchPollStep.clamp(0, delays.length - 1)];
+    _researchPollStep++;
+    _researchPollTimer = Timer(delay, () => _pollResearch(epoch, jobId));
+  }
+
+  Future<void> _pollResearch(int epoch, String jobId) async {
+    if (!_isCurrentResearch(epoch, jobId)) return;
+    try {
+      final results = await Future.wait([
+        _researchService.get(jobId),
+        _researchService.events(
+          jobId,
+          afterSequence: _researchLastEventSequence,
+        ),
+      ]);
+      if (!_isCurrentResearch(epoch, jobId)) return;
+      final snapshot = results[0] as ResearchSnapshot;
+      final page = results[1] as ResearchEventPage;
+      setState(() {
+        _applyResearchSnapshot(snapshot);
+        if (page.events.isNotEmpty) {
+          _researchEvents = [..._researchEvents, ...page.events];
+          _researchLastEventSequence = page.events.last.sequence;
+        }
+      });
+    } catch (_) {
+      // Keep the deterministic revision already on screen. A later poll may
+      // recover transient progress transport without replacing it with an error.
+    } finally {
+      if (_isCurrentResearch(epoch, jobId)) _scheduleResearchPoll(epoch, jobId);
+    }
+  }
+
+  Future<void> _cancelResearch() async {
+    final snapshot = _researchSnapshot;
+    if (snapshot == null || !snapshot.job.isActive) return;
+    final jobId = snapshot.job.id;
+    final epoch = ++_researchEpoch;
+    _researchPollTimer?.cancel();
+    try {
+      final next = await _researchService.cancel(jobId);
+      if (!_isCurrentResearchJob(epoch, jobId)) return;
+      setState(() {
+        _assistError = null;
+        _applyResearchSnapshot(next);
+      });
+      _scheduleResearchPoll(epoch, jobId);
+    } catch (error) {
+      if (!_isCurrentResearchJob(epoch, jobId)) return;
+      setState(() => _assistError = _friendlyApiError(error));
+      _scheduleResearchPoll(epoch, jobId);
+    }
+  }
+
+  Future<void> _retryResearch() async {
+    final snapshot = _researchSnapshot;
+    if (snapshot == null || !snapshot.job.canRetry) return;
+    final jobId = snapshot.job.id;
+    final epoch = ++_researchEpoch;
+    _researchPollTimer?.cancel();
+    try {
+      final next = await _researchService.retry(jobId);
+      if (!_isCurrentResearchJob(epoch, jobId)) return;
+      setState(() {
+        _assistError = null;
+        _researchPollStep = 0;
+        _applyResearchSnapshot(next);
+      });
+      _scheduleResearchPoll(epoch, jobId);
+    } catch (error) {
+      if (!_isCurrentResearchJob(epoch, jobId)) return;
+      setState(() => _assistError = _friendlyApiError(error));
+    }
+  }
+
+  bool _isCurrentResearchJob(int epoch, String jobId) {
+    return _isCurrentResearch(epoch, jobId) &&
+        _researchSnapshot?.job.id == jobId;
+  }
+
   Future<void> _chooseCandidate(
     DiscoveryCandidate candidate,
     DiscoverySelectionSession? selection,
@@ -536,7 +770,37 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Future<String?> _promptForOverrideReason(DiscoveryCandidate candidate) async {
+  Future<void> _chooseResearchCandidate(
+    ResearchCandidate researchCandidate,
+  ) async {
+    final snapshot = _researchSnapshot;
+    if (snapshot == null) return;
+    final candidate = researchCandidate.toDiscoveryCandidate();
+    String? recommendedId;
+    for (final recommendation
+        in snapshot.latestRevision.payload.recommendations) {
+      if (recommendation.rank == 1) {
+        recommendedId = recommendation.candidateId;
+        break;
+      }
+    }
+    if (candidate.candidateId == recommendedId) {
+      await _submitResearchChoice(candidate, SourceSelectionAction.accepted);
+      return;
+    }
+    final reason = await _promptForOverrideReason(candidate, maxLength: 512);
+    if (reason == null || !mounted) return;
+    await _submitResearchChoice(
+      candidate,
+      SourceSelectionAction.overridden,
+      reason: reason,
+    );
+  }
+
+  Future<String?> _promptForOverrideReason(
+    DiscoveryCandidate candidate, {
+    int maxLength = 2000,
+  }) async {
     final controller = TextEditingController(text: 'I prefer this version.');
     try {
       return await showModalBottomSheet<String>(
@@ -568,7 +832,7 @@ class _SearchScreenState extends State<SearchScreen> {
               TextField(
                 key: const ValueKey('source_override_reason'),
                 controller: controller,
-                maxLength: 2000,
+                maxLength: maxLength,
                 minLines: 2,
                 maxLines: 4,
                 textCapitalization: TextCapitalization.sentences,
@@ -598,6 +862,56 @@ class _SearchScreenState extends State<SearchScreen> {
       // the TextField, so keep the controller alive through that transition.
       await Future<void>.delayed(kThemeAnimationDuration);
       controller.dispose();
+    }
+  }
+
+  Future<void> _submitResearchChoice(
+    DiscoveryCandidate candidate,
+    SourceSelectionAction action, {
+    String? reason,
+  }) async {
+    final snapshot = _researchSnapshot;
+    if (snapshot == null) return;
+    final key = _candidateKey(candidate);
+    final provider = context.read<QueueProvider>();
+    if (!candidate.downloadable ||
+        _pendingCandidateKeys.contains(key) ||
+        _queuedTrackFor(provider, candidate) != null) {
+      return;
+    }
+    setState(() => _pendingCandidateKeys.add(key));
+    _ensurePolling();
+    SourceSelectionDecision? decision;
+    try {
+      decision = await _researchService.review(
+        jobId: snapshot.job.id,
+        candidateId: candidate.candidateId,
+        action: action,
+        reason: reason,
+      );
+      await provider.addSourceDecision(decision.id);
+      if (!mounted) return;
+      setState(() {
+        _sourceSelectionStatus = action == SourceSelectionAction.accepted
+            ? 'Selected ${candidate.title} as recommended.'
+            : 'Selected ${candidate.title}. ${decision?.reason ?? reason ?? ''}';
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        if (decision != null) {
+          _sourceSelectionRetryDecisionId = decision.id;
+          _sourceSelectionStatus =
+              'Source choice saved. Queue is unavailable; retry adding it.';
+        } else {
+          _assistError = 'That source choice could not be saved. Try again.';
+        }
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _pendingCandidateKeys.remove(key));
+        _ensurePolling();
+      }
     }
   }
 
@@ -1175,6 +1489,9 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   List<Widget> _buildAssistBody(QueueProvider queueProvider) {
+    if (_isCreatingResearch || _researchSnapshot != null) {
+      return _buildResearchBody(queueProvider);
+    }
     if (_assistError != null) {
       return [
         _buildAssistStatusBanner(
@@ -1311,6 +1628,131 @@ class _SearchScreenState extends State<SearchScreen> {
     }
 
     return widgets;
+  }
+
+  List<Widget> _buildResearchBody(QueueProvider queueProvider) {
+    final snapshot = _researchSnapshot;
+    if (snapshot == null) {
+      return const [
+        Padding(
+          padding: EdgeInsets.symmetric(vertical: 48),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      ];
+    }
+    final latest = snapshot.latestRevision;
+    final byId = {
+      for (final candidate in latest.payload.candidates)
+        candidate.candidateId: candidate,
+    };
+    final candidates = _researchCandidateOrder
+        .map((id) => byId[id])
+        .whereType<ResearchCandidate>()
+        .toList(growable: false);
+    String? recommendedId;
+    for (final recommendation in latest.payload.recommendations) {
+      if (recommendation.rank == 1) {
+        recommendedId = recommendation.candidateId;
+        break;
+      }
+    }
+    return [
+      if (_assistError != null)
+        _buildAssistStatusBanner(
+          icon: Icons.error_outline,
+          message: _assistError!,
+          tone: _AssistTone.error,
+          showRetry: true,
+        ),
+      if (_sourceSelectionStatus != null) _buildSourceSelectionStatus(),
+      _buildResearchStatus(snapshot),
+      const SizedBox(height: 8),
+      _buildSectionHeader(Icons.travel_explore, 'Research results'),
+      const SizedBox(height: 8),
+      for (final researchCandidate in candidates)
+        _buildResultTile(
+          queueProvider,
+          researchCandidate.toDiscoveryCandidate(),
+          stableKey: ValueKey(
+            'research_candidate_${researchCandidate.candidateId}',
+          ),
+          recommended: researchCandidate.candidateId == recommendedId,
+          onChoose: () => _chooseResearchCandidate(researchCandidate),
+        ),
+      if (candidates.isEmpty)
+        _buildEmptyPanel(
+          icon: Icons.search_off,
+          title: 'No grounded sources',
+          body:
+              'The deterministic search found no queueable sources for that prompt.',
+        ),
+    ];
+  }
+
+  Widget _buildResearchStatus(ResearchSnapshot snapshot) {
+    final colors = Theme.of(context).colorScheme;
+    final degradation = snapshot.latestDegradation;
+    final elapsed = _researchStartedAt == null
+        ? ''
+        : ' ${DateTime.now().difference(_researchStartedAt!).inSeconds}s elapsed';
+    final event = _researchEvents.isEmpty ? null : _researchEvents.last;
+    final stage = snapshot.latestRevision.payload.stage.replaceAll('_', ' ');
+    final active = snapshot.job.isActive;
+    final message = degradation == null
+        ? '${active ? 'Researching' : 'Research'}: $stage.$elapsed'
+        : 'Research degraded: ${degradation.code.replaceAll('_', ' ')}. Baseline results remain available.$elapsed';
+    return Semantics(
+      liveRegion: true,
+      label:
+          '$message${event == null ? '' : ' Latest progress: ${event.kind.replaceAll('_', ' ')}.'}',
+      child: Card(
+        key: const ValueKey('research_status'),
+        color: degradation == null
+            ? colors.secondaryContainer
+            : colors.errorContainer,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                degradation == null
+                    ? Icons.manage_search
+                    : Icons.warning_amber_outlined,
+                color: degradation == null
+                    ? colors.onSecondaryContainer
+                    : colors.onErrorContainer,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  message,
+                  style: TextStyle(
+                    color: degradation == null
+                        ? colors.onSecondaryContainer
+                        : colors.onErrorContainer,
+                  ),
+                ),
+              ),
+              if (active)
+                IconButton(
+                  key: const ValueKey('research_cancel'),
+                  tooltip: 'Cancel research',
+                  onPressed: _cancelResearch,
+                  icon: const Icon(Icons.cancel_outlined),
+                )
+              else if (snapshot.job.canRetry)
+                IconButton(
+                  key: const ValueKey('research_retry'),
+                  tooltip: 'Retry research',
+                  onPressed: _retryResearch,
+                  icon: const Icon(Icons.refresh),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildAssistantTextCard(
@@ -1876,10 +2318,14 @@ class _SearchScreenState extends State<SearchScreen> {
     QueueProvider queueProvider,
     DiscoveryCandidate candidate, {
     DiscoverySelectionSession? selection,
+    Key? stableKey,
+    bool recommended = false,
+    VoidCallback? onChoose,
   }) {
     final queuedTrack = _queuedTrackFor(queueProvider, candidate);
     final pending = _pendingCandidateKeys.contains(_candidateKey(candidate));
     return Card(
+      key: stableKey,
       margin: const EdgeInsets.only(bottom: 8),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -1925,7 +2371,8 @@ class _SearchScreenState extends State<SearchScreen> {
                         const SizedBox(height: 5),
                         _buildSourceQualityChip(candidate.sourceQuality!),
                       ],
-                      if (selection?.isRecommended(candidate) ?? false) ...[
+                      if (recommended ||
+                          (selection?.isRecommended(candidate) ?? false)) ...[
                         const SizedBox(height: 5),
                         _buildRecommendedSourceChip(),
                       ],
@@ -1940,6 +2387,8 @@ class _SearchScreenState extends State<SearchScreen> {
                   pending: pending,
                   mobile: mobile,
                   selection: selection,
+                  recommended: recommended,
+                  onChoose: onChoose,
                 ),
               ],
             ),
@@ -2221,6 +2670,8 @@ class _SearchScreenState extends State<SearchScreen> {
     required bool pending,
     required bool mobile,
     required DiscoverySelectionSession? selection,
+    bool recommended = false,
+    VoidCallback? onChoose,
   }) {
     final queued = queuedTrack != null || pending;
     if (queued) {
@@ -2250,12 +2701,13 @@ class _SearchScreenState extends State<SearchScreen> {
 
     final onPressed = !candidate.downloadable
         ? null
-        : () => _chooseCandidate(candidate, selection);
-    final recommended = selection?.isRecommended(candidate) ?? false;
+        : onChoose ?? () => _chooseCandidate(candidate, selection);
+    final isRecommended =
+        recommended || (selection?.isRecommended(candidate) ?? false);
 
     if (mobile) {
       return IconButton.filledTonal(
-        tooltip: recommended ? 'Use recommended source' : 'Choose source',
+        tooltip: isRecommended ? 'Use recommended source' : 'Choose source',
         onPressed: onPressed,
         visualDensity: VisualDensity.compact,
         constraints: const BoxConstraints.tightFor(width: 40, height: 40),
@@ -2274,7 +2726,7 @@ class _SearchScreenState extends State<SearchScreen> {
       ),
       icon: const Icon(Icons.playlist_add, size: 18),
       label: Text(
-        recommended ? 'Use' : 'Choose',
+        isRecommended ? 'Use' : 'Choose',
         style: const TextStyle(fontSize: 13),
       ),
     );

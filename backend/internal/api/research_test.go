@@ -6,12 +6,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
 
 	"github.com/openmusicplayer/backend/internal/auth"
+	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/research"
 )
 
@@ -96,6 +101,7 @@ func TestResearchServiceErrorsAreOwnershipSafeAndTyped(t *testing.T) {
 		"missing job":        {research.ErrNotFound, http.StatusNotFound},
 		"idempotency":        {research.ErrIdempotencyConflict, http.StatusConflict},
 		"invalid transition": {research.ErrInvalidTransition, http.StatusConflict},
+		"invalid review":     {research.ErrInvalidReview, http.StatusBadRequest},
 		"capacity":           {research.ErrNoJobAvailable, http.StatusTooManyRequests},
 		"unavailable":        {context.DeadlineExceeded, http.StatusServiceUnavailable},
 	} {
@@ -176,7 +182,7 @@ func TestResearchRejectsMalformedJobIDBeforeServiceLookup(t *testing.T) {
 	}
 }
 
-func TestResearchReviewUsesLatestRevisionAndRejectsProviderPayload(t *testing.T) {
+func TestResearchReviewReturnsSourceSelectionDecisionAndRejectsForbiddenPayload(t *testing.T) {
 	userID := uuid.New()
 	snapshot := researchSnapshot(researchTestJobID)
 	snapshot.Job.LatestRevisionID = "revision-2"
@@ -190,14 +196,20 @@ func TestResearchReviewUsesLatestRevisionAndRejectsProviderPayload(t *testing.T)
 
 	handlers.Review(recorder, req)
 
-	if recorder.Code != http.StatusNoContent {
+	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if service.review.RevisionID != "revision-2" || service.review.RevisionNumber != 2 || service.review.CandidateID != "youtube:abc" || service.review.Action != research.ReviewAccepted {
+	if service.review.CandidateID != "youtube:abc" || service.review.Action != research.ReviewAccepted {
 		t.Fatalf("review = %#v", service.review)
+	}
+	var response sourceSelectionResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.Origin != db.SourceSelectionOriginResearch || response.SessionID != nil || response.SelectedCandidateID != "youtube:abc" {
+		t.Fatalf("review response = %#v err=%v", response, err)
 	}
 	for _, body := range [][]byte{
 		[]byte(`{"candidateId":"youtube:abc","action":"accepted","revisionId":"client-selected"}`),
+		[]byte(`{"candidateId":"youtube:abc","action":"accepted","sessionId":"client-session"}`),
+		[]byte(`{"candidateId":"youtube:abc","action":"accepted","provider":"youtube"}`),
 		[]byte(`{"candidateId":"https://example.test","action":"accepted"}`),
 		[]byte(`{"candidateId":"youtube:abc","action":"accepted","reason":"https://example.test"}`),
 	} {
@@ -209,6 +221,55 @@ func TestResearchReviewUsesLatestRevisionAndRejectsProviderPayload(t *testing.T)
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("body %s status = %d, response = %s", body, recorder.Code, recorder.Body.String())
 		}
+	}
+}
+
+func TestResearchReviewMapsNondownloadableCandidateRejection(t *testing.T) {
+	service := &fakeResearchService{reviewErr: research.ErrInvalidReview}
+	handlers := NewResearchHandlers(service, &fakeResearchBaseline{}, 3)
+	req := newResearchAuthedRequest(uuid.New(), http.MethodPost, "/api/v1/research-jobs/"+researchTestJobID+"/reviews", []byte(`{"candidateId":"youtube:not-downloadable","action":"accepted"}`))
+	req.SetPathValue("id", researchTestJobID)
+	req.Header.Set("Idempotency-Key", "review-not-downloadable")
+	recorder := httptest.NewRecorder()
+
+	handlers.Review(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response["code"] != "INVALID_RESEARCH_REVIEW" {
+		t.Fatalf("response = %#v, err = %v", response, err)
+	}
+}
+
+func TestResearchCandidateSourceQualityRecommendationOpenAPIContract(t *testing.T) {
+	document, err := os.ReadFile("../../api/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type schema struct {
+		Properties map[string]schema `yaml:"properties"`
+		Enum       []string          `yaml:"enum"`
+	}
+	var specification struct {
+		Components struct {
+			Schemas map[string]schema `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal(document, &specification); err != nil {
+		t.Fatalf("decode OpenAPI: %v", err)
+	}
+
+	got := specification.Components.Schemas["ResearchCandidate"].Properties["sourceQuality"].Properties["recommendation"].Enum
+	want := []string{
+		discovery.SourceQualityPreferred,
+		discovery.SourceQualityAcceptable,
+		discovery.SourceQualityReview,
+		discovery.SourceQualityAvoid,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ResearchCandidate sourceQuality recommendation enum = %v, want production constants %v", got, want)
 	}
 }
 
@@ -282,9 +343,12 @@ func (s *fakeResearchService) Cancel(_ context.Context, _, _ string) (*research.
 func (s *fakeResearchService) Retry(_ context.Context, _, _ string) (*research.Snapshot, error) {
 	return s.snapshot, s.mutateErr
 }
-func (s *fakeResearchService) Review(_ context.Context, _, _ string, input research.ReviewInput) error {
+func (s *fakeResearchService) Review(_ context.Context, _, _ string, input research.ReviewInput) (*db.SourceSelectionDecision, error) {
 	s.review = input
-	return s.reviewErr
+	if s.reviewErr != nil {
+		return nil, s.reviewErr
+	}
+	return &db.SourceSelectionDecision{ID: uuid.New(), SelectedCandidateID: input.CandidateID, RecommendedCandidateID: input.CandidateID, Action: string(input.Action), Origin: db.SourceSelectionOriginResearch, SelectedCandidate: json.RawMessage(`{"candidateId":"youtube:abc"}`), SourceQuality: json.RawMessage(`{}`), CreatedAt: time.Now().UTC()}, nil
 }
 
 func newResearchAuthedRequest(userID uuid.UUID, method, target string, body []byte) *http.Request {

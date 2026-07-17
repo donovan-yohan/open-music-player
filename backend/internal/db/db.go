@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -37,6 +38,21 @@ func New(host, port, user, password, dbname string) (*DB, error) {
 }
 
 func (db *DB) Migrate() error {
+	// Multiple API processes and integration tests can initialize concurrently.
+	// A transaction-scoped lock cannot cover the legacy self-contained schema
+	// setup below, so hold one session advisory lock for the whole migration.
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(context.Background(), `SELECT pg_advisory_lock(hashtextextended('open_music_player_schema_migrate', 0))`); err != nil {
+		return fmt.Errorf("lock schema migration: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(hashtextextended('open_music_player_schema_migrate', 0))`)
+	}()
+
 	// Keep startup self-sufficient for local-first dogfood. The SQL files under
 	// internal/db/migrations are reference notes for backend-owned schema slices,
 	// but a fresh server must be able to create every backend table needed by auth,
@@ -206,6 +222,7 @@ func (db *DB) Migrate() error {
 		source_quality JSONB NOT NULL DEFAULT '{}'::jsonb,
 		download_job_id UUID REFERENCES download_jobs(id) ON DELETE SET NULL,
 		track_id BIGINT REFERENCES tracks(id) ON DELETE SET NULL,
+		research_review_id UUID,
 		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 		CONSTRAINT chk_source_selection_decisions_selected_candidate_id CHECK (
 			char_length(BTRIM(selected_candidate_id)) BETWEEN 1 AND 256
@@ -214,7 +231,7 @@ func (db *DB) Migrate() error {
 			char_length(BTRIM(recommended_candidate_id)) BETWEEN 1 AND 256
 		),
 		CONSTRAINT chk_source_selection_decisions_action CHECK (action IN ('accepted', 'overridden')),
-		CONSTRAINT chk_source_selection_decisions_origin CHECK (origin IN ('discovery', 'direct_url', 'playlist_explicit')),
+		CONSTRAINT chk_source_selection_decisions_origin CHECK (origin IN ('discovery', 'direct_url', 'playlist_explicit', 'research')),
 		CONSTRAINT chk_source_selection_decisions_reason CHECK (reason IS NULL OR char_length(BTRIM(reason)) BETWEEN 1 AND 2000),
 		CONSTRAINT chk_source_selection_decisions_candidate CHECK (
 			jsonb_typeof(selected_candidate) = 'object'
@@ -231,6 +248,10 @@ func (db *DB) Migrate() error {
 		),
 		CONSTRAINT chk_source_selection_decisions_session_owner_matches_user CHECK (
 			session_id IS NULL OR session_owner_id = user_id
+		),
+		CONSTRAINT chk_source_selection_decisions_research_review CHECK (
+			(origin = 'research' AND session_id IS NULL AND research_review_id IS NOT NULL)
+			OR (origin <> 'research' AND research_review_id IS NULL)
 		),
 		CONSTRAINT fk_source_selection_decisions_session_owner
 			FOREIGN KEY (session_id, session_owner_id)
@@ -680,7 +701,13 @@ func (db *DB) Migrate() error {
 		ON research_reviews(revision_id, created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_research_reviews_user_created
 		ON research_reviews(user_id, created_at DESC);
-
+	ALTER TABLE source_selection_decisions
+		ADD COLUMN IF NOT EXISTS research_review_id UUID;
+	ALTER TABLE source_selection_decisions
+		DROP CONSTRAINT IF EXISTS fk_source_selection_decisions_research_review;
+	ALTER TABLE source_selection_decisions
+		ADD CONSTRAINT fk_source_selection_decisions_research_review
+		FOREIGN KEY (research_review_id) REFERENCES research_reviews(id) ON DELETE CASCADE;
 	CREATE TABLE IF NOT EXISTS research_user_daily_budgets (
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		budget_day DATE NOT NULL,
@@ -705,7 +732,7 @@ func (db *DB) Migrate() error {
 
 	`
 
-	_, err := db.Exec(schema)
+	_, err = db.Exec(schema)
 	if err != nil {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
@@ -790,6 +817,22 @@ func (db *DB) refreshResearchSchemaConstraints() error {
 		CREATE INDEX idx_research_runs_expired_lease
 			ON research_runs(lease_until, id)
 			WHERE status = 'running' AND lease_until IS NOT NULL;
+
+		ALTER TABLE source_selection_decisions ADD COLUMN IF NOT EXISTS research_review_id UUID;
+		ALTER TABLE source_selection_decisions DROP CONSTRAINT IF EXISTS chk_source_selection_decisions_origin;
+		ALTER TABLE source_selection_decisions ADD CONSTRAINT chk_source_selection_decisions_origin CHECK (
+			origin IN ('discovery', 'direct_url', 'playlist_explicit', 'research')
+		);
+		ALTER TABLE source_selection_decisions DROP CONSTRAINT IF EXISTS chk_source_selection_decisions_research_review;
+		ALTER TABLE source_selection_decisions ADD CONSTRAINT chk_source_selection_decisions_research_review CHECK (
+			(origin = 'research' AND session_id IS NULL AND research_review_id IS NOT NULL)
+			OR (origin <> 'research' AND research_review_id IS NULL)
+		);
+		ALTER TABLE source_selection_decisions DROP CONSTRAINT IF EXISTS fk_source_selection_decisions_research_review;
+		ALTER TABLE source_selection_decisions ADD CONSTRAINT fk_source_selection_decisions_research_review
+			FOREIGN KEY (research_review_id) REFERENCES research_reviews(id) ON DELETE CASCADE;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_source_selection_decisions_one_per_research_review
+			ON source_selection_decisions(research_review_id) WHERE research_review_id IS NOT NULL;
 
 		ALTER TABLE research_revisions ADD COLUMN IF NOT EXISTS kind VARCHAR(16);
 		DROP INDEX IF EXISTS uq_research_revisions_terminal_run;

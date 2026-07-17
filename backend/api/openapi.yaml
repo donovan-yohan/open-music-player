@@ -1185,7 +1185,7 @@ paths:
     post:
       tags: [ResearchJobs]
       summary: Review the current immutable research revision
-      description: The server resolves the current revision. The request never accepts URLs, provider payloads, revision IDs, or a client request hash.
+      description: The server locks the owned job and resolves its current immutable revision in the same transaction. The request never accepts URLs, provider payloads, session IDs, revision IDs, or a client request hash. It creates no queue or download work.
       operationId: reviewResearchJob
       parameters:
         - $ref: '#/components/parameters/ResearchJobId'
@@ -1196,7 +1196,11 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ResearchReviewRequest' }
       responses:
-        '204': { description: Review recorded or safely replayed. }
+        '201':
+          description: Durable source selection decision recorded or safely replayed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceSelectionDecision' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -2787,7 +2791,7 @@ components:
         selectedCandidateId: { type: string }
         recommendedCandidateId: { type: string }
         action: { type: string, enum: [accepted, overridden] }
-        origin: { type: string }
+        origin: { type: string, enum: [discovery, direct_url, playlist_explicit, research] }
         reason: { type: string, nullable: true }
         selectedCandidate: { $ref: '#/components/schemas/DiscoveryCandidate' }
         sourceQuality: { type: object, additionalProperties: true }
@@ -2899,7 +2903,7 @@ components:
           properties:
             score: { type: integer, minimum: 0, maximum: 100 }
             classification: { type: string }
-            recommendation: { type: string, enum: [recommended, acceptable, caution, avoid] }
+            recommendation: { type: string, enum: [preferred, acceptable, review, avoid] }
             confidence: { type: number, minimum: 0, maximum: 1 }
             warnings: { type: array, items: { type: string } }
 

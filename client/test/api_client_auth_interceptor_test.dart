@@ -135,6 +135,59 @@ void main() {
     },
   );
 
+  test('preserves custom headers across an auth refresh retry', () async {
+    final storage = _MemoryTokenStorage(
+      accessToken: 'expired-access-token',
+      refreshToken: 'valid-refresh-token',
+    );
+    var researchAttempts = 0;
+    final seenHeaders = <Map<String, dynamic>>[];
+    final adapter = _DioAdapter((options) {
+      if (options.uri.path.endsWith('/research-jobs')) {
+        researchAttempts += 1;
+        seenHeaders.add(Map<String, dynamic>.from(options.headers));
+        if (researchAttempts == 1) {
+          return const _JsonReply({
+            'error': {'message': 'expired token'},
+          }, 401);
+        }
+        return const _JsonReply({'ok': true}, 201);
+      }
+      if (options.uri.path.endsWith('/auth/refresh')) {
+        return const _JsonReply({
+          'accessToken': 'fresh-access-token',
+          'refreshToken': 'fresh-refresh-token',
+        });
+      }
+      fail('unexpected request to ${options.uri.path}');
+    });
+    final api = _apiClient(storage: storage, adapter: adapter);
+
+    final response = await api.post<Map<String, dynamic>>(
+      '/research-jobs',
+      headers: {
+        'Idempotency-Key': 'research-create-1',
+        'X-OMP-Test': 'kept',
+      },
+      data: {'query': 'find shelter'},
+    );
+
+    expect(response.statusCode, 201);
+    expect(researchAttempts, 2);
+    expect(
+      seenHeaders.map((headers) => headers['Idempotency-Key']),
+      everyElement('research-create-1'),
+    );
+    expect(
+      seenHeaders.map((headers) => headers['X-OMP-Test']),
+      everyElement('kept'),
+    );
+    expect(seenHeaders.map((headers) => headers['Authorization']), [
+      'Bearer expired-access-token',
+      'Bearer fresh-access-token',
+    ]);
+  });
+
   test('coalesces concurrent non-auth 401 refresh attempts', () async {
     final storage = _MemoryTokenStorage(
       accessToken: 'expired-access-token',
