@@ -21,6 +21,7 @@ from typing import Any, Optional
 from .. import go_ranker
 from ..budgets import BUDGET_EXCEEDED_CODE, Budget, BudgetExceeded
 from ..fixture_tools import ToolBox, ToolError
+from ..tool_transport import model_safe_observation
 from ..model_client import (
     ModelConfig,
     ModelAttempt,
@@ -55,11 +56,11 @@ _SYSTEM_PROMPT = (
     "only ever recommend candidateIds that a tool actually returned.\n"
     "\n"
     "PROCESS. Issue one or two query variants and dedupe the results. Call "
-    "search_catalog with kind=\"track\" (the catalog kinds are exactly track, "
+    'search_catalog with kind="track" (the catalog kinds are exactly track, '
     "artist, album -- never pass a source-quality label like official_audio as "
     "the kind) to read the canonical track and its durationMs; record that "
     "durationMs as your durationTargetMs. If a search_catalog call returns "
-    "nothing, retry it ONCE with kind=\"track\" and a simplified query of just "
+    'nothing, retry it ONCE with kind="track" and a simplified query of just '
     "the artist and track title; if it is still empty, add a note to unresolved "
     "that the canonical track duration is unknown and skip the duration "
     "cross-check.\n"
@@ -120,7 +121,7 @@ _SYSTEM_PROMPT = (
 # names the exact top-level keys required, so the model switches shapes.
 _FINALIZE_INSTRUCTION = (
     "Finalize now. The tool phase is over: do NOT return an action object and do "
-    "NOT use the \"action\"/\"args\" shape. Return ONLY a single JSON object whose "
+    'NOT use the "action"/"args" shape. Return ONLY a single JSON object whose '
     "top-level keys are exactly interpretedIntent, recommendations, and unresolved, "
     "validating against the schema above. Include the winner AND every plausible "
     "near-miss of the same song you found, ranked below the winner, each tagged "
@@ -148,10 +149,14 @@ def _finalize_messages(prior: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     final_system = _SYSTEM_PROMPT + "\n\n" + schema_prompt(AgentFinalOutput)
     history = prior[1:] if prior and prior[0].get("role") == "system" else prior
-    return _append_finalize_instruction([{"role": "system", "content": final_system}, *history])
+    return _append_finalize_instruction(
+        [{"role": "system", "content": final_system}, *history]
+    )
 
 
-def _append_finalize_instruction(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _append_finalize_instruction(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Preserve the conversation while keeping roles alternating after system."""
 
     messages = [dict(message) for message in messages]
@@ -184,7 +189,9 @@ class DeepAgentArm:
         toolbox = ToolBox(world, budget)
         # Expose the tool-returned id allowlist for the grounding validator.
         self.allowlist = toolbox.allowlist
-        transport = os.environ.get("AGENT_SEARCH_TOOL_TRANSPORT", "structured_action").strip()
+        transport = os.environ.get(
+            "AGENT_SEARCH_TOOL_TRANSPORT", "structured_action"
+        ).strip()
         if transport == "native":
             self._emit("lifecycle", "failed", status="failed")
             return self._unsupported_transport_error(toolbox)
@@ -218,7 +225,11 @@ class DeepAgentArm:
     # -- transports -------------------------------------------------------
 
     def _run_structured_action(
-        self, case_input: CaseInput, toolbox: ToolBox, config: ModelConfig, budget: Budget
+        self,
+        case_input: CaseInput,
+        toolbox: ToolBox,
+        config: ModelConfig,
+        budget: Budget,
     ) -> tuple[AgentFinalOutput, int, list[str]]:  # pragma: no cover - live only
         # json_object transport: the endpoint honors response_format json_object
         # (not json_schema). This explicit transport emits an AgentAction JSON
@@ -234,7 +245,9 @@ class DeepAgentArm:
             {"role": "system", "content": action_system},
             {
                 "role": "user",
-                "content": _json({"prompt": case_input.prompt, "limit": case_input.limit}),
+                "content": _json(
+                    {"prompt": case_input.prompt, "limit": case_input.limit}
+                ),
             },
         ]
         model_calls = 0
@@ -257,8 +270,12 @@ class DeepAgentArm:
             if action.action == "finalize":
                 break
             observation = self._dispatch(toolbox, action)
-            messages.append({"role": "assistant", "content": _json(action.model_dump())})
-            messages.append({"role": "user", "content": _json({"observation": observation})})
+            messages.append(
+                {"role": "assistant", "content": _json(action.model_dump())}
+            )
+            messages.append(
+                {"role": "user", "content": _json({"observation": observation})}
+            )
 
         final_messages = _finalize_messages(messages)
         self._emit("lifecycle", "finalizing", status="success")
@@ -282,7 +299,9 @@ class DeepAgentArm:
 
     # -- tool dispatch ----------------------------------------------------
 
-    def _dispatch(self, toolbox: ToolBox, action: AgentAction) -> Any:  # pragma: no cover - live only
+    def _dispatch(
+        self, toolbox: ToolBox, action: AgentAction
+    ) -> Any:  # pragma: no cover - live only
         args = action.args or {}
         trace_len = len(toolbox.trace)
         dispatched_at = time.monotonic()
@@ -291,15 +310,17 @@ class DeepAgentArm:
                 results = toolbox.search_sources(
                     args.get("query", ""), args.get("providers"), args.get("limit", 10)
                 )
-                return [r.model_dump(exclude_none=True) for r in results]
+                return model_safe_observation(results)
             if action.action == "search_catalog":
                 results = toolbox.search_catalog(
-                    args.get("query", ""), args.get("kind", "track"), args.get("limit", 8)
+                    args.get("query", ""),
+                    args.get("kind", "track"),
+                    args.get("limit", 8),
                 )
-                return [r.model_dump(exclude_none=True) for r in results]
+                return model_safe_observation(results)
             if action.action == "inspect_source_metadata":
-                return toolbox.inspect_source_metadata(args.get("candidate_id", "")).model_dump(
-                    exclude_none=True
+                return model_safe_observation(
+                    toolbox.inspect_source_metadata(args.get("candidate_id", ""))
                 )
         except ToolError as exc:
             return {"error": {"code": exc.code, "message": exc.message}}
@@ -310,7 +331,10 @@ class DeepAgentArm:
                     round((time.monotonic() - dispatched_at) * 1000)
                 )
                 self._emit(
-                    "tool", "tool_completed", tool=trace.tool, result_count=trace.resultCount
+                    "tool",
+                    "tool_completed",
+                    tool=trace.tool,
+                    result_count=trace.resultCount,
                 )
         return {"error": {"code": "UNKNOWN_ACTION", "message": action.action}}
 
@@ -359,13 +383,17 @@ class DeepAgentArm:
     ) -> AssemblyResult:  # pragma: no cover - live only
         return AssemblyResult(
             arm=self.name,
-            interpretedIntent=InterpretedIntent(notes="budget exceeded before finalize"),
+            interpretedIntent=InterpretedIntent(
+                notes="budget exceeded before finalize"
+            ),
             recommendations=[],
             unresolved=[],
             trace=list(toolbox.trace),
             budgetSpent=BudgetSpent(
                 toolCalls=toolbox.tool_calls,
-                modelCalls=min(len(self.model_attempts), toolbox.budget.max_model_calls),
+                modelCalls=min(
+                    len(self.model_attempts), toolbox.budget.max_model_calls
+                ),
                 elapsedMs=0,
             ),
             provenance=Provenance(
@@ -392,7 +420,9 @@ class DeepAgentArm:
             trace=list(toolbox.trace),
             budgetSpent=BudgetSpent(
                 toolCalls=toolbox.tool_calls,
-                modelCalls=min(len(self.model_attempts), toolbox.budget.max_model_calls),
+                modelCalls=min(
+                    len(self.model_attempts), toolbox.budget.max_model_calls
+                ),
                 elapsedMs=0,
             ),
             provenance=Provenance(
@@ -411,7 +441,9 @@ class DeepAgentArm:
     def _init_error(self, toolbox: ToolBox) -> AssemblyResult:
         return AssemblyResult(
             arm=self.name,
-            interpretedIntent=InterpretedIntent(notes="model configuration unavailable"),
+            interpretedIntent=InterpretedIntent(
+                notes="model configuration unavailable"
+            ),
             recommendations=[],
             unresolved=[],
             trace=list(toolbox.trace),

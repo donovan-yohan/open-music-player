@@ -34,6 +34,7 @@ type Router struct {
 	playbackHandlers        *PlaybackHandlers
 	queueHandlers           *queue.Handlers
 	discoveryHandlers       *discovery.Handlers
+	agentToolsHandler       http.Handler
 	playlistHandlers        *PlaylistHandlers
 	playlistImportHandlers  *PlaylistImportHandlers
 	playlistMixHandlers     *PlaylistMixHandlers
@@ -66,6 +67,7 @@ type RouterConfig struct {
 	PlaybackHandlers        *PlaybackHandlers
 	QueueHandlers           *queue.Handlers
 	DiscoveryHandlers       *discovery.Handlers
+	AgentToolsHandler       http.Handler
 	PlaylistHandlers        *PlaylistHandlers
 	PlaylistImportHandlers  *PlaylistImportHandlers
 	PlaylistMixHandlers     *PlaylistMixHandlers
@@ -123,6 +125,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		playbackHandlers:        cfg.PlaybackHandlers,
 		queueHandlers:           cfg.QueueHandlers,
 		discoveryHandlers:       cfg.DiscoveryHandlers,
+		agentToolsHandler:       cfg.AgentToolsHandler,
 		playlistHandlers:        cfg.PlaylistHandlers,
 		playlistImportHandlers:  cfg.PlaylistImportHandlers,
 		playlistMixHandlers:     cfg.PlaylistMixHandlers,
@@ -152,6 +155,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) setupRoutes() {
+	// Private async-agent gateway. It is absent, rather than merely unauthenticated,
+	// until the server is configured with a service token.
+	if r.agentToolsHandler != nil {
+		r.mux.Handle("/internal/agent-tools/v1/", r.agentToolsHandler)
+	}
+
 	// Health check endpoints (Kubernetes-compatible)
 	if r.healthHandler != nil {
 		r.mux.HandleFunc("GET /health", r.healthHandler.HealthHandler)

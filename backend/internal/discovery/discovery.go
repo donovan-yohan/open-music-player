@@ -206,9 +206,45 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 		limit = 25
 	}
 	sourceProviders, includeCatalog := s.resolveRequest(requested)
-
 	ctx, cancel := context.WithTimeout(ctx, s.overallTimeout)
 	defer cancel()
+	raw := s.searchSourcesWithContext(ctx, query, sourceProviders, limit)
+	resp := SearchResponse{Query: query, Results: rankSourceCandidatesWithJudge(ctx, query, raw.Results, s.sourceQualityJudge), Sections: []SearchSection{}, Providers: raw.Providers}
+	sections, catalogSummary := s.buildSections(ctx, query, limit, resp.Results, includeCatalog)
+	resp.Sections = sections
+	if catalogSummary != nil {
+		resp.Providers = append(resp.Providers, *catalogSummary)
+	}
+	return resp
+}
+
+// SourceSearchResponse is the pre-ranking source-provider fanout result. It is
+// intentionally separate from Search so private research callers can inspect a
+// bounded candidate pool without running the deterministic or optional model
+// ranking twice.
+type SourceSearchResponse struct {
+	Query     string            `json:"query"`
+	Results   []Candidate       `json:"results"`
+	Providers []ProviderSummary `json:"providers"`
+}
+
+// SearchSources reuses the normal provider fanout but deliberately excludes
+// catalog lookups and ranking. Callers must not expose Candidate.SourceURL to
+// untrusted consumers.
+func (s *Service) SearchSources(ctx context.Context, query string, requested []string, limit int) SourceSearchResponse {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 25 {
+		limit = 25
+	}
+	sourceProviders, _ := s.resolveRequest(requested)
+	ctx, cancel := context.WithTimeout(ctx, s.overallTimeout)
+	defer cancel()
+	return s.searchSourcesWithContext(ctx, query, sourceProviders, limit)
+}
+
+func (s *Service) searchSourcesWithContext(ctx context.Context, query string, sourceProviders []string, limit int) SourceSearchResponse {
 
 	type result struct {
 		provider string
@@ -243,7 +279,7 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 		close(ch)
 	}()
 
-	resp := SearchResponse{Query: query, Results: []Candidate{}, Sections: []SearchSection{}, Providers: []ProviderSummary{}}
+	resp := SourceSearchResponse{Query: query, Results: []Candidate{}, Providers: []ProviderSummary{}}
 	providerItems := make(map[string][]Candidate, len(sourceProviders))
 	for res := range ch {
 		summary := ProviderSummary{Provider: res.provider, ResultCount: len(res.items), ElapsedMs: res.elapsed.Milliseconds()}
@@ -269,13 +305,37 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 	for _, providerName := range sourceProviders {
 		resp.Results = append(resp.Results, providerItems[providerName]...)
 	}
-	resp.Results = rankSourceCandidatesWithJudge(ctx, query, resp.Results, s.sourceQualityJudge)
-	sections, catalogSummary := s.buildSections(ctx, query, limit, resp.Results, includeCatalog)
-	resp.Sections = sections
-	if catalogSummary != nil {
-		resp.Providers = append(resp.Providers, *catalogSummary)
-	}
 	return resp
+}
+
+// SearchCatalog reuses the existing MusicBrainz client for one explicitly
+// requested catalog kind. It has no source-provider or ranking side effects.
+func (s *Service) SearchCatalog(ctx context.Context, query, kind string, limit int) ([]SearchItem, error) {
+	if s.musicCatalog == nil {
+		return nil, errors.New("music catalog is unavailable")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 25 {
+		limit = 25
+	}
+	if limit > 8 {
+		limit = 8
+	}
+	switch kind {
+	case "track":
+		resp, err := s.musicCatalog.SearchTracks(ctx, query, limit, 0, false)
+		return trackItems(resp), err
+	case "artist":
+		resp, err := s.musicCatalog.SearchArtists(ctx, query, limit, 0, false)
+		return artistItems(resp), err
+	case "album":
+		resp, err := s.musicCatalog.SearchAlbums(ctx, query, limit, 0, false)
+		return albumItems(resp), err
+	default:
+		return nil, fmt.Errorf("unsupported catalog kind %q", kind)
+	}
 }
 
 func (s *Service) buildSections(ctx context.Context, query string, limit int, sourceCandidates []Candidate, includeCatalog bool) ([]SearchSection, *ProviderSummary) {

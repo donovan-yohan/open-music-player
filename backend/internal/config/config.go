@@ -66,6 +66,12 @@ type Config struct {
 	SourceQualityLLMTimeout time.Duration
 	SourceQualityLLMAPIKey  string
 
+	// Private agent research gateway. The route is registered only with a
+	// service token. Firecrawl remains optional and is never needed by normal
+	// deterministic discovery.
+	AgentServiceToken string
+	FirecrawlAPIKey   string
+
 	// Optional out-of-process audio analyzer. Disabled unless configured so the
 	// processor never creates unserviceable pending analysis rows by default.
 	AnalyzerEnabled     bool
@@ -162,6 +168,9 @@ func Load() *Config {
 		SourceQualityLLMModel:   sourceQualityLLMModel,
 		SourceQualityLLMTimeout: parseDurationMsEnv("SOURCE_QUALITY_LLM_TIMEOUT_MS", 1500*time.Millisecond),
 		SourceQualityLLMAPIKey:  strings.TrimSpace(os.Getenv("OLLAMA_API_KEY")),
+
+		AgentServiceToken: strings.TrimSpace(os.Getenv("OMP_AGENT_SERVICE_TOKEN")),
+		FirecrawlAPIKey:   strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")),
 
 		// Audio analyzer service configuration
 		AnalyzerEnabled:     analyzerEnabled,

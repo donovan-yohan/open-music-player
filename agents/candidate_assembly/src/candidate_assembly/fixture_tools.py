@@ -28,6 +28,7 @@ from .budgets import (
 from .schemas import (
     CatalogEntry,
     FixtureWorld,
+    GatewayEvidence,
     RawCandidate,
     RichMetadata,
     TraceStep,
@@ -205,7 +206,9 @@ class ToolBox:
                 f"tool request exceeded {self.budget.max_request_bytes} bytes",
             )
 
-    def _record(self, tool: str, args: dict, serialized: str, result_count: int) -> None:
+    def _record(
+        self, tool: str, args: dict, serialized: str, result_count: int
+    ) -> None:
         response_bytes = len(serialized.encode("utf-8"))
         if response_bytes > self.budget.max_response_bytes:
             raise BudgetExceeded(
@@ -278,3 +281,14 @@ class ToolBox:
         serialized = json.dumps(metadata.model_dump(exclude_none=True), sort_keys=True)
         self._record("inspect_source_metadata", args, serialized, 1)
         return metadata
+
+    def extract_web(self, evidence_ref: str) -> GatewayEvidence:
+        """Keep fixture replay hermetic; evidence extraction is gateway-only."""
+
+        args = {"evidenceRef": evidence_ref}
+        self._guard_before_call(args)
+        self.tool_calls += 1
+        self._record("extract_web", args, "{}", 0)
+        raise ToolError(
+            "TOOL_DISABLED", "web extraction is disabled for fixture replay"
+        )

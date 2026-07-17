@@ -27,6 +27,35 @@ KNOWN_FAILURES_SCHEMA_VERSION = "omp.agent-search.eval.known-failures.v1"
 PROMPT_REVISION = "agent-search-system-prompt-v2"
 
 ALLOWED_PROVIDERS: frozenset[str] = frozenset({"youtube", "soundcloud"})
+GATEWAY_EVIDENCE_MAX_BYTES = 4 * 1024
+
+GatewayBackendErrorCode = Literal[
+    "SERVICE_UNAUTHORIZED",
+    "INVALID_JSON",
+    "CAPABILITY_UNAVAILABLE",
+    "CAPABILITY_RATE_LIMIT",
+    "CAPABILITY_BUSY",
+    "CAPABILITY_UNAUTHORIZED",
+    "CAPABILITY_EXPIRED",
+    "CAPABILITY_UNKNOWN",
+    "CAPABILITY_CALL_LIMIT",
+    "CAPABILITY_RESOURCE_LIMIT",
+    "INVALID_REQUEST",
+    "PROVIDER_BUSY",
+    "CATALOG_UNAVAILABLE",
+    "CANDIDATE_UNKNOWN",
+    "EVIDENCE_UNKNOWN",
+    "EVIDENCE_UNSAFE",
+    "FIRECRAWL_DISABLED",
+    "FIRECRAWL_BUSY",
+    "FIRECRAWL_RATE_LIMIT",
+    "FIRECRAWL_TIMEOUT",
+    "FIRECRAWL_FAILED",
+    "FIRECRAWL_REDIRECT",
+    "FIRECRAWL_BAD_RESPONSE",
+    "FIRECRAWL_RESPONSE_TOO_LARGE",
+    "RESPONSE_TOO_LARGE",
+]
 
 # Source-quality classification vocabulary, reused verbatim from the Go
 # discovery.source_quality constants so the Python side never invents a new
@@ -64,7 +93,12 @@ Warning = Literal[
     "not_downloadable",
 ]
 
-ToolName = Literal["search_sources", "search_catalog", "inspect_source_metadata"]
+ToolName = Literal[
+    "search_sources",
+    "search_catalog",
+    "inspect_source_metadata",
+    "extract_web",
+]
 
 
 class StrictModel(BaseModel):
@@ -202,6 +236,10 @@ class ArmTelemetry(StrictModel):
 
 _SAFE_REFERENCE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SECRET_SHAPED_RE = re.compile(r"(?i)(?:^sk-|bearer|api[_-]?key|token|secret)")
+_URL_LIKE_RE = re.compile(r"(?i)(?:https?://|w{3}\.|mailto:|ftp://)")
+_GATEWAY_SECRET_TEXT_RE = re.compile(
+    r"(?i)(?:\b(?:authorization|bearer|api[_-]?key|secret|token|password)\b|\bsk-[A-Za-z0-9_-]+)"
+)
 
 
 def is_safe_progress_reference(value: str) -> bool:
@@ -212,6 +250,294 @@ def is_safe_progress_reference(value: str) -> bool:
         and not _SECRET_SHAPED_RE.search(value)
         and "://" not in value
     )
+
+
+def is_safe_gateway_text(value: str) -> bool:
+    """Return whether text is safe to expose from the Go-owned gateway.
+
+    Gateway results are the model-facing boundary. URLs and credential-shaped
+    text are rejected here rather than relying on a downstream prompt rule.
+    """
+
+    return bool(
+        value
+        and not _URL_LIKE_RE.search(value)
+        and not _GATEWAY_SECRET_TEXT_RE.search(value)
+    )
+
+
+def _validate_gateway_text(value: Optional[str]) -> Optional[str]:
+    if value is not None and not is_safe_gateway_text(value):
+        raise ValueError("unsafe gateway text")
+    return value
+
+
+class GatewayCandidate(StrictModel):
+    """Sanitized, model-facing source candidate returned by the Go gateway.
+
+    The fixture ``RawCandidate`` intentionally retains source URLs for the Go
+    scorer. This model has no URL or arbitrary metadata fields by design.
+    """
+
+    candidateId: str = Field(min_length=1, max_length=128)
+    provider: Literal["youtube", "soundcloud"]
+    title: str = Field(min_length=1, max_length=240)
+    downloadable: bool
+    playable: bool = False
+    sourceId: Optional[str] = Field(default=None, max_length=128)
+    artist: Optional[str] = Field(default=None, max_length=180)
+    uploader: Optional[str] = Field(default=None, max_length=180)
+    durationMs: Optional[int] = Field(default=None, ge=0, le=86_400_000)
+    explicit: Optional[bool] = None
+    evidenceRefs: list[str] = Field(default_factory=list, max_length=24)
+
+    @field_validator("candidateId", "sourceId")
+    @classmethod
+    def _opaque_ids(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not is_safe_progress_reference(value):
+            raise ValueError("unsafe opaque id")
+        return value
+
+    @field_validator("title", "artist", "uploader")
+    @classmethod
+    def _safe_text(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_gateway_text(value)
+
+    @field_validator("evidenceRefs")
+    @classmethod
+    def _safe_evidence_refs(cls, values: list[str]) -> list[str]:
+        if not all(is_safe_progress_reference(value) for value in values):
+            raise ValueError("unsafe evidence reference")
+        return values
+
+
+class GatewayWireCandidate(GatewayCandidate):
+    """Strict Go wire candidate. ``metadata`` is validated then projected out."""
+
+    metadata: dict[str, str] = Field(default_factory=dict, max_length=16)
+
+    @field_validator("metadata")
+    @classmethod
+    def _safe_metadata(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(
+            not is_safe_gateway_text(key) or not is_safe_gateway_text(item)
+            for key, item in value.items()
+        ):
+            raise ValueError("unsafe gateway metadata")
+        return value
+
+
+class GatewayCatalogEntry(StrictModel):
+    kind: Literal["track", "artist", "album"]
+    id: str = Field(min_length=1, max_length=128)
+    title: str = Field(min_length=1, max_length=240)
+    artist: Optional[str] = Field(default=None, max_length=180)
+    durationMs: Optional[int] = Field(default=None, ge=0, le=86_400_000)
+    score: int = Field(default=0, ge=0, le=100)
+
+    @field_validator("id")
+    @classmethod
+    def _opaque_id(cls, value: str) -> str:
+        if not is_safe_progress_reference(value):
+            raise ValueError("unsafe opaque id")
+        return value
+
+    @field_validator("title", "artist")
+    @classmethod
+    def _safe_text(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_gateway_text(value)
+
+
+class GatewayWireCatalogEntry(StrictModel):
+    """Strict Go ``SearchItem`` wire shape, projected to ``GatewayCatalogEntry``."""
+
+    kind: Literal["track", "artist", "album"]
+    id: Optional[str] = Field(default=None, max_length=128)
+    title: str = Field(min_length=1, max_length=240)
+    subtitle: Optional[str] = Field(default=None, max_length=240)
+    artist: Optional[str] = Field(default=None, max_length=180)
+    artistMbid: Optional[str] = Field(default=None, max_length=128)
+    album: Optional[str] = Field(default=None, max_length=240)
+    albumMbid: Optional[str] = Field(default=None, max_length=128)
+    durationMs: Optional[int] = Field(default=None, ge=0, le=86_400_000)
+    releaseDate: Optional[str] = Field(default=None, max_length=32)
+    score: int = Field(default=0, ge=0, le=100)
+
+    @field_validator("id", "artistMbid", "albumMbid")
+    @classmethod
+    def _opaque_ids(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not is_safe_progress_reference(value):
+            raise ValueError("unsafe opaque id")
+        return value
+
+    @field_validator("title", "subtitle", "artist", "album", "releaseDate")
+    @classmethod
+    def _safe_text(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_gateway_text(value)
+
+
+class GatewayMetadata(StrictModel):
+    candidateId: str = Field(min_length=1, max_length=128)
+    description: Optional[str] = Field(default=None, max_length=1_000)
+    channel: Optional[str] = Field(default=None, max_length=180)
+    channelVerified: Optional[bool] = None
+    uploadDate: Optional[str] = Field(default=None, max_length=32)
+    tags: list[str] = Field(default_factory=list, max_length=24)
+    evidenceRefs: list[str] = Field(default_factory=list, max_length=24)
+    attributes: list["GatewayMetadataAttribute"] = Field(
+        default_factory=list, max_length=16
+    )
+
+    @field_validator("candidateId", "evidenceRefs")
+    @classmethod
+    def _opaque_values(cls, value):
+        values = value if isinstance(value, list) else [value]
+        if not all(
+            isinstance(item, str) and is_safe_progress_reference(item)
+            for item in values
+        ):
+            raise ValueError("unsafe opaque id")
+        return value
+
+    @field_validator("description", "channel", "uploadDate", "tags")
+    @classmethod
+    def _safe_text(cls, value):
+        values = value if isinstance(value, list) else [value]
+        if any(
+            item is not None
+            and (not isinstance(item, str) or not is_safe_gateway_text(item))
+            for item in values
+        ):
+            raise ValueError("unsafe gateway text")
+        return value
+
+
+class GatewayMetadataAttribute(StrictModel):
+    key: str = Field(min_length=1, max_length=64)
+    value: str = Field(min_length=1, max_length=512)
+
+    @field_validator("key", "value")
+    @classmethod
+    def _safe_text(cls, value: str) -> str:
+        if not is_safe_gateway_text(value):
+            raise ValueError("unsafe gateway text")
+        return value
+
+
+class GatewayEvidence(StrictModel):
+    evidenceRef: str = Field(min_length=1, max_length=128)
+    title: Optional[str] = Field(default=None, max_length=240)
+    text: str = Field(min_length=1, max_length=GATEWAY_EVIDENCE_MAX_BYTES)
+
+    @field_validator("evidenceRef")
+    @classmethod
+    def _opaque_ref(cls, value: str) -> str:
+        if not is_safe_progress_reference(value):
+            raise ValueError("unsafe evidence reference")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def _safe_title(cls, value: Optional[str]) -> Optional[str]:
+        return _validate_gateway_text(value)
+
+    @field_validator("text")
+    @classmethod
+    def _safe_evidence(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > GATEWAY_EVIDENCE_MAX_BYTES:
+            raise ValueError("gateway evidence exceeded byte limit")
+        validated = _validate_gateway_text(value)
+        assert validated is not None
+        return validated
+
+
+class GatewayCapabilityResponse(StrictModel):
+    capability: str = Field(min_length=1, max_length=512, repr=False)
+    expiresAt: str = Field(min_length=1, max_length=64)
+    maxCalls: int = Field(ge=1, le=1000)
+
+
+class GatewayBackendError(StrictModel):
+    code: GatewayBackendErrorCode
+    message: str = Field(min_length=1, max_length=1_024)
+
+
+class GatewayErrorEnvelope(StrictModel):
+    error: GatewayBackendError
+
+
+class GatewayProviderError(StrictModel):
+    code: str = Field(min_length=1, max_length=64)
+    message: str = Field(min_length=1, max_length=240)
+
+    @field_validator("code", "message")
+    @classmethod
+    def _safe_text(cls, value: str) -> str:
+        if not is_safe_gateway_text(value):
+            raise ValueError("unsafe gateway text")
+        return value
+
+
+class GatewayProviderSummary(StrictModel):
+    provider: str = Field(min_length=1, max_length=32)
+    status: str = Field(min_length=1, max_length=64)
+    resultCount: int = Field(ge=0, le=25)
+    elapsedMs: int = Field(ge=0, le=300_000)
+    error: Optional[GatewayProviderError] = None
+
+    @field_validator("provider", "status")
+    @classmethod
+    def _safe_text(cls, value: str) -> str:
+        if not is_safe_gateway_text(value):
+            raise ValueError("unsafe gateway text")
+        return value
+
+
+class GatewaySearchSourcesWireResponse(StrictModel):
+    query: str = Field(min_length=1, max_length=512)
+    candidates: list[GatewayWireCandidate] = Field(default_factory=list, max_length=12)
+    providers: list[GatewayProviderSummary] = Field(default_factory=list, max_length=2)
+
+    @field_validator("query")
+    @classmethod
+    def _safe_query(cls, value: str) -> str:
+        if not is_safe_gateway_text(value):
+            raise ValueError("unsafe gateway text")
+        return value
+
+
+class GatewaySearchCatalogWireResponse(StrictModel):
+    query: str = Field(min_length=1, max_length=512)
+    kind: Literal["track", "artist", "album"]
+    items: list[GatewayWireCatalogEntry] = Field(default_factory=list, max_length=8)
+
+    @field_validator("query")
+    @classmethod
+    def _safe_query(cls, value: str) -> str:
+        if not is_safe_gateway_text(value):
+            raise ValueError("unsafe gateway text")
+        return value
+
+
+class GatewayEvidenceWireResponse(StrictModel):
+    evidenceRef: str = Field(min_length=1, max_length=128)
+    markdown: str = Field(min_length=1, max_length=GATEWAY_EVIDENCE_MAX_BYTES)
+
+    @field_validator("evidenceRef")
+    @classmethod
+    def _safe_ref(cls, value: str) -> str:
+        if not is_safe_progress_reference(value):
+            raise ValueError("unsafe evidence reference")
+        return value
+
+    @field_validator("markdown")
+    @classmethod
+    def _safe_markdown(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > GATEWAY_EVIDENCE_MAX_BYTES:
+            raise ValueError("gateway evidence exceeded byte limit")
+        if not is_safe_gateway_text(value):
+            raise ValueError("unsafe gateway text")
+        return value
 
 
 class SafeEvidenceRef(StrictModel):
@@ -267,7 +593,9 @@ class ProgressEvent(StrictModel):
     elapsedMs: int = Field(ge=0)
     attempt: Optional[int] = Field(default=None, ge=1)
     repair: Optional[bool] = None
-    status: Optional[Literal["success", "parse_error", "transport_error", "passed", "failed"]] = None
+    status: Optional[
+        Literal["success", "parse_error", "transport_error", "passed", "failed"]
+    ] = None
     tool: Optional[ToolName] = None
     resultCount: Optional[int] = Field(default=None, ge=0)
     candidateIds: list[str] = Field(default_factory=list, max_length=25)
@@ -331,7 +659,9 @@ class ProgressEvent(StrictModel):
         if self.resultCount is None or self.status is None:
             raise ValueError(f"{self.kind} requires status and resultCount")
         if self.kind == "baseline":
-            expected_status = "passed" if self.phase == "baseline_validated" else "failed"
+            expected_status = (
+                "passed" if self.phase == "baseline_validated" else "failed"
+            )
             if self.status != expected_status:
                 raise ValueError(f"{self.phase} requires {expected_status} status")
         elif self.status not in {"passed", "failed"}:

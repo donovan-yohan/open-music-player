@@ -12,9 +12,11 @@ See `../../docs/AI_EVALS.md` for the full contract. This README is the quickstar
 
 ```
 src/candidate_assembly/
-  schemas.py        # pydantic v2 contract — single source of truth
-  budgets.py        # Budget dataclass + BudgetExceeded
-  fixture_tools.py  # read-only tools + deterministic retrieval + ToolBox enforcement
+schemas.py        # pydantic v2 contract — single source of truth
+budgets.py        # Budget dataclass + BudgetExceeded
+fixture_tools.py  # read-only tools + deterministic retrieval + ToolBox enforcement
+gateway_tools.py  # explicit Go-owned HTTP gateway adapter (not eval default)
+tool_transport.py # fixture/gateway read-only transport protocol + safe observations
   orchestrator.py   # framework-neutral CandidateAssembler protocol + arm registry
   validate.py       # deterministic post-agent verifier (the guard)
   go_ranker.py      # bridge to the real Go sourcequality-rank scorer
@@ -79,6 +81,63 @@ exact grader set.
   Pass `--update-recordings` to refresh recordings. Never commit credentials.
   `scripts/eval agent-search --mode live` runs `uv run --extra live` so the
   agent stack is present; replay stays on the light default env.
+
+## Go-owned agent-tools gateway (future worker opt-in)
+
+`GatewayToolBox` is an explicit construction seam for a future asynchronous
+candidate agent. It is **not** selected by `scripts/eval agent-search`, fixture
+replay, or synchronous discovery. Existing fixture `ToolBox` remains the
+network-free default and the replay recordings remain byte-stable.
+
+The Python side has no provider or Firecrawl client. It can only POST to the
+configured Go gateway base URL plus `/internal/agent-tools/v1`:
+
+- `POST /capabilities` uses `X-OMP-Agent-Service-Token` and returns an opaque,
+  expiring capability.
+- `POST /search-sources`, `/search-catalog`, `/inspect-source-metadata`, and
+  `/extract-web` use that capability as `Authorization: Bearer ...`.
+- The read-only tool surface is `search_sources`, `search_catalog`,
+  `inspect_source_metadata`, and `extract_web(evidence_ref)`; it has no queue,
+  download, write, or URL-fetch argument.
+
+All settings are environment-only and are required together:
+
+```bash
+export AGENT_TOOL_GATEWAY_URL=https://gateway-host.example
+export AGENT_TOOL_GATEWAY_SERVICE_TOKEN=from-a-secret-store
+export AGENT_TOOL_GATEWAY_TIMEOUT_S=5
+# Local development only; omit for HTTPS.
+# export AGENT_TOOL_GATEWAY_ALLOW_INSECURE_HTTP=true
+```
+
+`AGENT_TOOL_GATEWAY_TIMEOUT_S` must be finite and strictly positive. The base
+URL must use HTTPS without embedded credentials, query, or fragment. Plain HTTP
+is rejected even for direct `GatewayConfig` construction unless
+`allow_insecure_http=True`; the env factory accepts only the exact lowercase
+`AGENT_TOOL_GATEWAY_ALLOW_INSECURE_HTTP=true` opt-in for local development.
+Redirects are never followed, so neither the service token nor an issued bearer
+capability can be forwarded to a redirect target. The factory is deliberately
+explicit:
+
+```python
+from candidate_assembly.budgets import Budget
+from candidate_assembly.gateway_tools import build_gateway_toolbox_from_env
+
+toolbox = build_gateway_toolbox_from_env(Budget.default())
+```
+
+Gateway wire responses are strict Pydantic envelopes; bounded safe metadata is
+validated then projected out of the model-facing candidate result. Model-facing
+candidates, catalog entries, metadata attributes, and bounded evidence
+structurally reject URL fields, arbitrary metadata, URL-like text, and
+secret-shaped text. Candidate and evidence refs are opaque allowlisted IDs;
+metadata and web extraction reject unknown refs locally before a network call.
+Wire and model-facing evidence share one 4 KiB UTF-8 ceiling. Strict, bounded Go
+error envelopes preserve only allowlisted backend codes; server messages and
+unknown codes are never copied into errors or traces.
+Traces contain only timing, result counts, and argument digests. Configurations,
+errors, artifacts, and progress events never include the base URL, service token,
+capability, source URL, or response body.
 
 ## Endpoint behavior
 
