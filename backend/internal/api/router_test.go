@@ -129,7 +129,7 @@ func TestLocalFlutterAuthPreflightGetsCORSHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodOptions, "/api/v1/auth/login", nil)
 	req.Header.Set("Origin", "http://localhost:18145")
 	req.Header.Set("Access-Control-Request-Method", http.MethodPost)
-	req.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+	req.Header.Set("Access-Control-Request-Headers", "authorization, content-type, idempotency-key")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -145,6 +145,9 @@ func TestLocalFlutterAuthPreflightGetsCORSHeaders(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Authorization") {
 		t.Fatalf("Access-Control-Allow-Headers = %q, want Authorization", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Idempotency-Key") {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want Idempotency-Key", got)
 	}
 	if got := rec.Header().Get("Vary"); !strings.Contains(got, "Origin") {
 		t.Fatalf("Vary = %q, want Origin", got)

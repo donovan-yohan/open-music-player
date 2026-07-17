@@ -222,6 +222,46 @@ class DeepAgentArm:
         )
         return result
 
+    def assemble_snapshot(
+        self,
+        case_input: CaseInput,
+        toolbox: Any,
+        world: Any,
+        budget: Budget,
+        config: ModelConfig,
+    ) -> AssemblyResult:
+        """Run the existing bounded action loop over a caller-owned snapshot.
+
+        The durable worker supplies a URL-free ``SnapshotToolBox`` instead of
+        fixture retrieval. Keeping this narrow entrypoint preserves the eval
+        arm's fixture construction and recorded replay contract.
+        """
+
+        self._started = time.monotonic()
+        self.model_attempts = []
+        self.progress_events = []
+        self.finalization_ms = None
+        self.tool_dispatch_latency_ms = 0
+        self._emit("lifecycle", "started")
+        self.allowlist = toolbox.allowlist
+        transport = "structured_action"
+        try:
+            final, model_calls, notes = self._run_structured_action(
+                case_input, toolbox, config, budget
+            )
+        except BudgetExceeded as exc:
+            self._emit("lifecycle", "failed", status="failed")
+            return self._budget_error(exc, toolbox, config, transport)
+        except StructuredOutputError:
+            self._emit("lifecycle", "failed", status="failed")
+            return self._model_error(toolbox, config, transport)
+        except Exception:
+            self._emit("lifecycle", "failed", status="failed")
+            return self._model_error(toolbox, config, transport, code="MODEL_FAILURE")
+        return self._finalize(
+            final, case_input, toolbox, config, transport, model_calls, notes
+        )
+
     # -- transports -------------------------------------------------------
 
     def _run_structured_action(
@@ -521,6 +561,13 @@ def _attach_classifications(
     any scorer failure the classification is left as the model returned it."""
 
     if not recommendations:
+        return
+    supplied_quality = getattr(world, "source_quality_by_id", None)
+    if isinstance(supplied_quality, dict):
+        for rec in recommendations:
+            quality = supplied_quality.get(rec.candidateId)
+            if quality is not None:
+                rec.classification = quality.classification
         return
     candidate_dicts = []
     for rec in recommendations:

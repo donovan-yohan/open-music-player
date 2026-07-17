@@ -1,0 +1,86 @@
+package research
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+var (
+	ErrNotFound       = errors.New("research job not found")
+	ErrForbidden      = errors.New("research job is not owned by user")
+	ErrNoJobAvailable = errors.New("no research job available")
+	ErrLeaseLost      = errors.New("research job lease lost")
+)
+
+// Repository persists every mutation and its ordered event atomically. Create
+// must persist the deterministic baseline and both created/revision events.
+type Repository interface {
+	Create(ctx context.Context, input CreateInput) (*Snapshot, error)
+	Get(ctx context.Context, jobID, ownerID string) (*Snapshot, error)
+	Events(ctx context.Context, jobID, ownerID string, afterSequence int64, limit int) ([]Event, error)
+	Cancel(ctx context.Context, jobID, ownerID string) (*Snapshot, error)
+	Retry(ctx context.Context, jobID, ownerID string) (*Snapshot, error)
+	Review(ctx context.Context, jobID, ownerID string, input ReviewInput) error
+	Claim(ctx context.Context, workerID string, leaseExpiresAt time.Time) (*Claim, error)
+	RenewLease(ctx context.Context, claim Claim, leaseExpiresAt time.Time) (bool, error)
+	RecoverExpiredLeases(ctx context.Context, now time.Time) (int, error)
+	AppendEnhancement(ctx context.Context, claim Claim, input RevisionInput) (*Revision, error)
+	RecordTerminal(ctx context.Context, claim Claim, telemetry TerminalTelemetry) error
+	Degrade(ctx context.Context, claim Claim, degradation Degradation) (*Snapshot, error)
+	RetryClaim(ctx context.Context, claim Claim, retryAt time.Time) (*Snapshot, error)
+	Finish(ctx context.Context, claim Claim, status JobStatus) (*Snapshot, error)
+}
+
+type Validator interface {
+	ValidateBaseline(context.Context, RevisionInput) error
+	ValidateEnhancement(context.Context, Snapshot, RevisionInput) error
+}
+
+type ServiceConfig struct {
+	Repository Repository
+	Validator  Validator
+}
+type Service struct {
+	repository Repository
+	validator  Validator
+}
+
+func NewService(cfg ServiceConfig) *Service {
+	return &Service{repository: cfg.Repository, validator: cfg.Validator}
+}
+func (s *Service) Create(ctx context.Context, input CreateInput) (*Snapshot, error) {
+	canonical, hash, err := CanonicalRequestHash(input.Request)
+	if err != nil {
+		return nil, err
+	}
+	input.Request, input.RequestHash = canonical, hash
+	if err := ValidateCreate(input); err != nil {
+		return nil, err
+	}
+	if s.validator == nil {
+		return nil, errors.New("research validator is required")
+	}
+	if err := s.validator.ValidateBaseline(ctx, input.Baseline); err != nil {
+		return nil, err
+	}
+	return s.repository.Create(ctx, input)
+}
+func (s *Service) Get(ctx context.Context, id, owner string) (*Snapshot, error) {
+	return s.repository.Get(ctx, id, owner)
+}
+func (s *Service) Events(ctx context.Context, id, owner string, after int64, limit int) ([]Event, error) {
+	return s.repository.Events(ctx, id, owner, after, limit)
+}
+func (s *Service) Cancel(ctx context.Context, id, owner string) (*Snapshot, error) {
+	return s.repository.Cancel(ctx, id, owner)
+}
+func (s *Service) Retry(ctx context.Context, id, owner string) (*Snapshot, error) {
+	return s.repository.Retry(ctx, id, owner)
+}
+func (s *Service) Review(ctx context.Context, id, owner string, input ReviewInput) error {
+	if err := ValidateReview(input); err != nil {
+		return err
+	}
+	return s.repository.Review(ctx, id, owner, input)
+}

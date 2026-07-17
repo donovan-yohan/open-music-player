@@ -24,6 +24,9 @@ CORPUS_SCHEMA_VERSION = "omp.agent-search.eval.corpus.v1"
 RUN_SCHEMA_VERSION = "omp.agent-search.eval.run.v3"
 PROGRESS_EVENT_SCHEMA_VERSION = "omp.agent-search.eval.progress.v2"
 KNOWN_FAILURES_SCHEMA_VERSION = "omp.agent-search.eval.known-failures.v1"
+WORKER_REQUEST_SCHEMA_VERSION = "omp.agent-search.worker.request.v1"
+WORKER_REVISION_SCHEMA_VERSION = "omp.agent-search.worker.revision.v1"
+WORKER_TERMINAL_SCHEMA_VERSION = "omp.agent-search.worker.terminal.v1"
 PROMPT_REVISION = "agent-search-system-prompt-v2"
 
 ALLOWED_PROVIDERS: frozenset[str] = frozenset({"youtube", "soundcloud"})
@@ -722,6 +725,153 @@ class AgentAction(StrictModel):
         "search_sources", "search_catalog", "inspect_source_metadata", "finalize"
     ]
     args: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Durable worker protocol. The Go runner owns request construction; this
+# process receives only bounded, URL-free snapshot projections.
+# ---------------------------------------------------------------------------
+
+
+class WorkerSourceQuality(StrictModel):
+    score: int = Field(ge=0, le=100)
+    classification: Classification
+    warnings: list[Warning] = Field(default_factory=list, max_length=12)
+
+
+class WorkerCandidate(GatewayCandidate):
+    """Server-owned candidate projection for the production JSONL worker."""
+
+    sourceQuality: WorkerSourceQuality
+
+
+class WorkerBudgets(StrictModel):
+    maxToolCalls: int = Field(ge=1, le=32)
+    maxModelCalls: int = Field(ge=1, le=12)
+    recursionLimit: int = Field(ge=2, le=16)
+    maxCandidatesIn: int = Field(ge=1, le=64)
+    maxRecommendations: int = Field(ge=1, le=10)
+    wallClockMs: int = Field(ge=1_000, le=300_000)
+    maxRequestBytes: int = Field(ge=1_024, le=64 * 1024)
+    maxResponseBytes: int = Field(ge=1_024, le=128 * 1024)
+    maxTokensPerCompletion: int = Field(ge=64, le=8_192)
+
+
+class WorkerStages(StrictModel):
+    directJudge: bool
+    deepAgent: bool
+
+    @model_validator(mode="after")
+    def _at_least_one_stage(self) -> "WorkerStages":
+        if not self.directJudge and not self.deepAgent:
+            raise ValueError("at least one worker stage must be enabled")
+        return self
+
+
+class WorkerRequest(StrictModel):
+    schemaVersion: Literal["omp.agent-search.worker.request.v1"] = (
+        WORKER_REQUEST_SCHEMA_VERSION
+    )
+    jobId: str = Field(min_length=1, max_length=128)
+    runId: str = Field(min_length=1, max_length=128)
+    query: str = Field(min_length=1, max_length=512)
+    limit: int = Field(ge=1, le=10)
+    candidates: list[WorkerCandidate] = Field(min_length=1, max_length=64)
+    catalog: list[GatewayCatalogEntry] = Field(default_factory=list, max_length=16)
+    metadata: dict[str, GatewayMetadata] = Field(default_factory=dict, max_length=64)
+    budgets: WorkerBudgets
+    stages: WorkerStages
+
+    @field_validator("jobId", "runId")
+    @classmethod
+    def _safe_ids(cls, value: str) -> str:
+        if not is_safe_progress_reference(value):
+            raise ValueError("unsafe worker id")
+        return value
+
+    @field_validator("query")
+    @classmethod
+    def _safe_query(cls, value: str) -> str:
+        if not is_safe_gateway_text(value):
+            raise ValueError("unsafe worker query")
+        return value
+
+    @model_validator(mode="after")
+    def _consistent_snapshot(self) -> "WorkerRequest":
+        candidate_ids = [candidate.candidateId for candidate in self.candidates]
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("candidate ids must be unique")
+        if self.limit > self.budgets.maxRecommendations:
+            raise ValueError("limit exceeds maxRecommendations")
+        if len(self.candidates) > self.budgets.maxCandidatesIn:
+            raise ValueError("candidate count exceeds maxCandidatesIn")
+        for key, metadata in self.metadata.items():
+            if key not in candidate_ids or metadata.candidateId != key:
+                raise ValueError("metadata must be keyed by an input candidate id")
+        return self
+
+
+class WorkerStageTiming(StrictModel):
+    latencyMs: int = Field(ge=0)
+    toolCalls: int = Field(ge=0)
+    modelAttempts: list[ModelCallAttempt] = Field(default_factory=list, max_length=12)
+
+
+class WorkerRevision(StrictModel):
+    schemaVersion: Literal["omp.agent-search.worker.revision.v1"] = (
+        WORKER_REVISION_SCHEMA_VERSION
+    )
+    recordType: Literal["revision"] = "revision"
+    jobId: str
+    runId: str
+    stage: Literal["direct_judge", "deep_agent"]
+    result: AssemblyResult
+    timing: WorkerStageTiming
+
+
+class WorkerModelAttempt(StrictModel):
+    stage: Literal["direct_judge", "deep_agent"]
+    attempt: int = Field(ge=1)
+    durationMs: int = Field(ge=0)
+    repair: bool = False
+    status: Literal["success", "parse_error", "transport_error"]
+
+
+class WorkerTiming(StrictModel):
+    # Present only once the complete stdin record has passed strict validation.
+    processStartupToRequestAcceptedMs: Optional[int] = Field(default=None, ge=0)
+    requestAcceptedToDirectFirstRevisionMs: Optional[int] = Field(default=None, ge=0)
+    requestAcceptedToFinalMs: Optional[int] = Field(default=None, ge=0)
+    toolCalls: int = Field(ge=0)
+    modelAttempts: list[WorkerModelAttempt] = Field(default_factory=list, max_length=24)
+
+
+class WorkerDegradation(StrictModel):
+    stage: Literal["direct_judge", "deep_agent", "protocol"]
+    code: Literal[
+        "MODEL_DISABLED",
+        "MODEL_UNAVAILABLE",
+        "MODEL_CONFIG_ERROR",
+        "MODEL_FAILURE",
+        "STRUCTURED_OUTPUT_ERROR",
+        "VALIDATION_FAILED",
+        "BUDGET_EXCEEDED",
+        "CANCELLED",
+        "INVALID_REQUEST",
+    ]
+
+
+class WorkerTerminal(StrictModel):
+    schemaVersion: Literal["omp.agent-search.worker.terminal.v1"] = (
+        WORKER_TERMINAL_SCHEMA_VERSION
+    )
+    recordType: Literal["terminal"] = "terminal"
+    jobId: Optional[str] = Field(default=None, max_length=128)
+    runId: Optional[str] = Field(default=None, max_length=128)
+    outcome: Literal["completed", "degraded", "unavailable", "invalid_request", "cancelled"]
+    revisionsEmitted: int = Field(ge=0, le=2)
+    degradations: list[WorkerDegradation] = Field(default_factory=list, max_length=2)
+    timing: WorkerTiming
 
 
 # ---------------------------------------------------------------------------

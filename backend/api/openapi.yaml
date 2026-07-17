@@ -40,6 +40,8 @@ tags:
     description: Playback queue management
   - name: SourceSelections
     description: Server-owned discovery source decisions and audit records
+  - name: ResearchJobs
+    description: Durable, authenticated deterministic-first research snapshots and optional bounded enhancements
 
 security:
   - BearerAuth: []
@@ -1071,6 +1073,136 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /research-jobs:
+    post:
+      tags: [ResearchJobs]
+      summary: Create a durable deterministic-first research job
+      description: The server builds and persists immutable baseline revision 1 before optional enhancement. Client request hashes are not accepted.
+      operationId: createResearchJob
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateResearchJobRequest' }
+      responses:
+        '201':
+          description: Durable research snapshot with baseline revision 1
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResearchSnapshot' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /research-jobs/{id}:
+    get:
+      tags: [ResearchJobs]
+      summary: Get an authenticated user's immutable research snapshot
+      operationId: getResearchJob
+      parameters:
+        - $ref: '#/components/parameters/ResearchJobId'
+      responses:
+        '200':
+          description: Current job state and all immutable validated revisions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResearchSnapshot' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /research-jobs/{id}/events:
+    get:
+      tags: [ResearchJobs]
+      summary: Read ordered durable research events
+      operationId: getResearchJobEvents
+      parameters:
+        - $ref: '#/components/parameters/ResearchJobId'
+        - name: afterSequence
+          in: query
+          description: Return only events with a larger durable sequence number.
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          description: Maximum ordered events to return.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Strictly sequence-ordered research events
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResearchEventPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /research-jobs/{id}/cancel:
+    post:
+      tags: [ResearchJobs]
+      summary: Cancel a queued or running research job
+      operationId: cancelResearchJob
+      parameters:
+        - $ref: '#/components/parameters/ResearchJobId'
+      responses:
+        '200':
+          description: Snapshot after durable cancellation transition
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResearchSnapshot' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /research-jobs/{id}/retry:
+    post:
+      tags: [ResearchJobs]
+      summary: Retry a bounded retry-safe degraded research job
+      operationId: retryResearchJob
+      parameters:
+        - $ref: '#/components/parameters/ResearchJobId'
+      responses:
+        '200':
+          description: Snapshot after the retry transition
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResearchSnapshot' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /research-jobs/{id}/reviews:
+    post:
+      tags: [ResearchJobs]
+      summary: Review the current immutable research revision
+      description: The server resolves the current revision. The request never accepts URLs, provider payloads, revision IDs, or a client request hash.
+      operationId: reviewResearchJob
+      parameters:
+        - $ref: '#/components/parameters/ResearchJobId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResearchReviewRequest' }
+      responses:
+        '204': { description: Review recorded or safely replayed. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
   /queue/items:
     post:
       tags:
@@ -1271,6 +1403,25 @@ components:
         type: string
         format: uuid
 
+    ResearchJobId:
+      name: id
+      in: path
+      required: true
+      description: Durable research job identifier.
+      schema:
+        type: string
+        format: uuid
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Per-user idempotency key. Reusing it with different request data returns a conflict.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+
   responses:
     BadRequest:
       description: Invalid request parameters
@@ -1302,6 +1453,13 @@ components:
 
     Unavailable:
       description: Required service or persistence is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    TooManyRequests:
+      description: Per-user research capacity is temporarily exhausted.
       content:
         application/json:
           schema:
@@ -2646,6 +2804,200 @@ components:
           items: { $ref: '#/components/schemas/SourceSelectionDecision' }
         limit: { type: integer }
         offset: { type: integer }
+
+    # ========================================================================
+    # Durable Research Job Schemas
+    # ========================================================================
+    CreateResearchJobRequest:
+      type: object
+      additionalProperties: false
+      required: [query, providers, limit]
+      properties:
+        query: { type: string, minLength: 1, maxLength: 512 }
+        providers:
+          type: array
+          minItems: 1
+          maxItems: 2
+          uniqueItems: true
+          items: { type: string, enum: [youtube, soundcloud] }
+        limit: { type: integer, minimum: 1, maximum: 25 }
+
+    ResearchJob:
+      type: object
+      required: [id, status, retrySafe, attempts, maxAttempts, latestRevision, latestRevisionId, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, cancel_requested, completed, degraded, cancelled] }
+        retrySafe: { type: boolean }
+        attempts: { type: integer, minimum: 0 }
+        maxAttempts: { type: integer, minimum: 1, maximum: 10 }
+        availableAt: { type: string, format: date-time }
+        latestRevision: { type: integer, minimum: 1 }
+        latestRevisionId: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ResearchRevision:
+      type: object
+      required: [id, jobId, number, kind, payload, validatedAt]
+      properties:
+        id: { type: string }
+        jobId: { type: string }
+        number: { type: integer, minimum: 1 }
+        kind: { type: string, enum: [baseline, enhancement] }
+        payload: { $ref: '#/components/schemas/ResearchRevisionPayload' }
+        validatedAt: { type: string, format: date-time }
+
+    ResearchRevisionPayload:
+      type: object
+      required: [schemaVersion, stage, query, candidates, recommendations, provenance, timing]
+      properties:
+        schemaVersion: { type: string, enum: [omp.research.revision.v1] }
+        stage: { type: string, enum: [baseline, direct_judge, deep_agent] }
+        query: { type: string, maxLength: 512 }
+        candidates:
+          type: array
+          maxItems: 25
+          items: { $ref: '#/components/schemas/ResearchCandidate' }
+        recommendations:
+          type: array
+          maxItems: 25
+          items: { $ref: '#/components/schemas/ResearchRecommendation' }
+        provenance:
+          type: object
+          required: [source]
+          properties:
+            source: { type: string }
+            workerSchemaVersion: { type: string }
+            spawnToFirstRevisionMs: { type: integer, format: int64, minimum: 0 }
+            spawnToFinalMs: { type: integer, format: int64, minimum: 0 }
+        timing:
+          type: object
+          properties:
+            baselineBuildMs: { type: integer, format: int64, minimum: 0 }
+            workerStartupMs: { type: integer, format: int64, minimum: 0 }
+            workerInferenceMs: { type: integer, format: int64, minimum: 0 }
+
+    ResearchCandidate:
+      type: object
+      required: [candidateId, provider, sourceUrl, title, downloadable, playable, sourceQuality]
+      properties:
+        candidateId: { type: string }
+        provider: { type: string, enum: [youtube, soundcloud] }
+        sourceId: { type: string }
+        sourceUrl: { type: string, format: uri, readOnly: true }
+        title: { type: string }
+        artist: { type: string }
+        uploader: { type: string }
+        durationMs: { type: integer, minimum: 0 }
+        downloadable: { type: boolean }
+        playable: { type: boolean }
+        explicit: { type: boolean }
+        sourceQuality:
+          type: object
+          required: [score, classification, recommendation, confidence]
+          properties:
+            score: { type: integer, minimum: 0, maximum: 100 }
+            classification: { type: string }
+            recommendation: { type: string, enum: [recommended, acceptable, caution, avoid] }
+            confidence: { type: number, minimum: 0, maximum: 1 }
+            warnings: { type: array, items: { type: string } }
+
+    ResearchRecommendation:
+      type: object
+      required: [candidateId, rank, confidence, classification]
+      properties:
+        candidateId: { type: string }
+        rank: { type: integer, minimum: 1 }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        rationale: { type: string }
+        classification: { type: string }
+        warnings: { type: array, items: { type: string } }
+        evidenceRefs: { type: array, items: { type: string } }
+
+    ResearchDegradation:
+      type: object
+      required: [code, retryable]
+      properties:
+        code:
+          type: string
+          enum: [model_disabled, model_unavailable, budget_exhausted, transient, timeout, runner_terminal, validation_rejected, safety_rejected, enhancement_rejected, lease_expired, no_candidates]
+        message: { type: string }
+        retryable: { type: boolean }
+
+    ResearchTerminalTelemetry:
+      type: object
+      required: [toolCalls]
+      properties:
+        processStartupToRequestAcceptedMs: { type: integer, format: int64, minimum: 0 }
+        requestAcceptedToDirectFirstRevisionMs: { type: integer, format: int64, minimum: 0 }
+        requestAcceptedToFinalMs: { type: integer, format: int64, minimum: 0 }
+        toolCalls: { type: integer, minimum: 0 }
+        modelAttempts:
+          type: array
+          maxItems: 24
+          items:
+            type: object
+            required: [stage, attempt, durationMs, repair, status]
+            properties:
+              stage: { type: string, enum: [direct_judge, deep_agent] }
+              attempt: { type: integer, minimum: 1 }
+              durationMs: { type: integer, format: int64, minimum: 0 }
+              repair: { type: boolean }
+              status: { type: string, enum: [success, parse_error, transport_error] }
+
+    ResearchSnapshot:
+      type: object
+      required: [job, revisions]
+      properties:
+        job: { $ref: '#/components/schemas/ResearchJob' }
+        revisions:
+          type: array
+          items: { $ref: '#/components/schemas/ResearchRevision' }
+        latestDegradation: { $ref: '#/components/schemas/ResearchDegradation' }
+        latestTerminalTelemetry: { $ref: '#/components/schemas/ResearchTerminalTelemetry' }
+
+    ResearchEvent:
+      type: object
+      required: [jobId, sequence, kind, createdAt]
+      properties:
+        jobId: { type: string }
+        sequence: { type: integer, format: int64, minimum: 1 }
+        kind:
+          type: string
+          enum: [created, revision_appended, claimed, lease_renewed, lease_recovered, degraded, cancel_requested, cancelled, retried, completed, reviewed, runner_terminal]
+        runId: { type: string }
+        revisionId: { type: string }
+        revision: { type: integer, minimum: 1 }
+        degradation: { $ref: '#/components/schemas/ResearchDegradation' }
+        telemetry: { $ref: '#/components/schemas/ResearchTerminalTelemetry' }
+        createdAt: { type: string, format: date-time }
+
+    ResearchEventPage:
+      type: object
+      required: [events, afterSequence, limit]
+      properties:
+        events:
+          type: array
+          items: { $ref: '#/components/schemas/ResearchEvent' }
+        afterSequence: { type: integer, format: int64, minimum: 0 }
+        limit: { type: integer, minimum: 1, maximum: 100 }
+
+    ResearchReviewRequest:
+      type: object
+      additionalProperties: false
+      required: [candidateId, action]
+      properties:
+        candidateId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Candidate ID from the current snapshot; URLs are rejected.
+        action: { type: string, enum: [accepted, overridden] }
+        reason:
+          type: string
+          maxLength: 512
+          description: Optional bounded plain-text reason; URLs are rejected.
 
     ReorderQueueRequest:
       type: object

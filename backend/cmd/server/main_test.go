@@ -12,6 +12,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/db"
 	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/processor"
+	"github.com/openmusicplayer/backend/internal/research"
 )
 
 func TestNewSourceQualityJudgeDisabledConfigReturnsNil(t *testing.T) {
@@ -41,6 +42,97 @@ func TestNewAgentToolsHandlerRequiresServiceToken(t *testing.T) {
 	}
 	if handler := newAgentToolsHandler(&config.Config{AgentServiceToken: "service-token"}, search); handler == nil {
 		t.Fatal("agent tools should be created with service token even without Firecrawl")
+	}
+}
+
+func TestNewResearchRunnerUsesDisabledRunnerUntilResearchIsEnabled(t *testing.T) {
+	runner, err := newResearchRunner(&config.Config{ResearchEnabled: false})
+	if err != nil {
+		t.Fatalf("newResearchRunner() returned error: %v", err)
+	}
+	if _, ok := runner.(research.DisabledRunner); !ok {
+		t.Fatalf("runner = %T, want research.DisabledRunner", runner)
+	}
+}
+
+func TestNewResearchRunnerRequiresCommandWhenEnabled(t *testing.T) {
+	if _, err := newResearchRunner(&config.Config{ResearchEnabled: true, ResearchDirectJudgeEnabled: true}); err == nil {
+		t.Fatal("enabled research without a worker command should fail startup wiring")
+	}
+}
+
+func TestNewResearchRunnerBuildsBoundedCommandRunner(t *testing.T) {
+	runner, err := newResearchRunner(&config.Config{
+		ResearchEnabled:            true,
+		ResearchDirectJudgeEnabled: true,
+		ResearchCommand:            "candidate-assembly-worker",
+		ResearchCommandArgs:        []string{"--once"},
+		ResearchCancelGrace:        time.Second,
+		ResearchModelBaseURL:       "https://models.example/v1",
+		ResearchModelAPIKey:        "model-only-secret",
+		ResearchModel:              "candidate-judge",
+		ResearchModelTimeout:       2 * time.Second,
+		ResearchModelRunTimeout:    time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("newResearchRunner() returned error: %v", err)
+	}
+	if _, ok := runner.(*research.CommandRunner); !ok {
+		t.Fatalf("runner = %T, want *research.CommandRunner", runner)
+	}
+}
+
+func TestNewResearchRunnerUsesDisabledRunnerWhenAllStagesAreDisabled(t *testing.T) {
+	runner, err := newResearchRunner(&config.Config{
+		ResearchEnabled:            true,
+		ResearchDirectJudgeEnabled: false,
+		ResearchDeepAgentEnabled:   false,
+	})
+	if err != nil {
+		t.Fatalf("newResearchRunner() returned error: %v", err)
+	}
+	if _, ok := runner.(research.DisabledRunner); !ok {
+		t.Fatalf("runner = %T, want research.DisabledRunner", runner)
+	}
+}
+
+func TestResearchCommandRunnerConfigPassesStagesAndBudgets(t *testing.T) {
+	cfg := &config.Config{
+		ResearchCommand:            "candidate-assembly-worker",
+		ResearchCommandArgs:        []string{"--once"},
+		ResearchCancelGrace:        2 * time.Second,
+		ResearchModelBaseURL:       "https://models.example/v1",
+		ResearchModelAPIKey:        "model-only-secret",
+		ResearchModel:              "candidate-judge",
+		ResearchModelTimeout:       7 * time.Second,
+		ResearchModelRunTimeout:    2 * time.Minute,
+		ResearchDirectJudgeEnabled: false,
+		ResearchDeepAgentEnabled:   true,
+		ResearchMaxToolCalls:       7,
+		ResearchMaxModelCalls:      9,
+		ResearchRecursionLimit:     11,
+		ResearchMaxCandidatesIn:    24,
+		ResearchMaxRecommendations: 8,
+		ResearchWallClock:          45 * time.Second,
+		ResearchMaxRequestBytes:    4096,
+		ResearchMaxResponseBytes:   8192,
+		ResearchMaxTokens:          2048,
+	}
+	runnerConfig := researchCommandRunnerConfig(cfg)
+	if runnerConfig.Command != cfg.ResearchCommand || len(runnerConfig.Args) != 1 || runnerConfig.Args[0] != "--once" || runnerConfig.CancelGrace != 2*time.Second {
+		t.Fatalf("runner command config = %#v", runnerConfig)
+	}
+	if runnerConfig.Stages.DirectJudge || !runnerConfig.Stages.DeepAgent {
+		t.Fatalf("runner stages = %#v", runnerConfig.Stages)
+	}
+	if runnerConfig.Budgets != (research.WorkerBudgetConfig{MaxToolCalls: 7, MaxModelCalls: 9, RecursionLimit: 11, MaxCandidatesIn: 24, MaxRecommendations: 8, WallClockMs: 45000, MaxRequestBytes: 4096, MaxResponseBytes: 8192, MaxTokensPerCompletion: 2048}) {
+		t.Fatalf("runner budgets = %#v", runnerConfig.Budgets)
+	}
+	if runnerConfig.Environment["AGENT_SEARCH_MODEL"] != "candidate-judge" || runnerConfig.Environment["AGENT_SEARCH_TIMEOUT_S"] != "7" {
+		t.Fatalf("runner environment = %#v", runnerConfig.Environment)
+	}
+	if _, leaked := runnerConfig.Environment["JWT_SECRET"]; leaked {
+		t.Fatalf("runner environment leaked JWT_SECRET: %#v", runnerConfig.Environment)
 	}
 }
 
