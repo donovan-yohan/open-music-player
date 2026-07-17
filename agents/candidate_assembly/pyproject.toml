@@ -7,6 +7,9 @@ dependencies = [
     "pydantic>=2.7",
 ]
 
+[project.scripts]
+candidate-assembly-worker = "candidate_assembly.worker_runner:main"
+
 [project.optional-dependencies]
 # The agent stack is only needed for live model runs (deep_agent / direct_judge
 # arms). It is deliberately kept out of the default install so `uv sync` and the

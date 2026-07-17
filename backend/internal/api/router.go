@@ -43,6 +43,7 @@ type Router struct {
 	sourceSelectionHandlers *SourceSelectionHandlers
 	maintenanceHandlers     *MaintenanceHandlers
 	playEventHandlers       *PlayEventHandlers
+	researchHandlers        *ResearchHandlers
 	healthHandler           *health.Handler
 	metricsHandler          http.HandlerFunc
 	corsAllowedOrigins      []string
@@ -76,6 +77,7 @@ type RouterConfig struct {
 	SourceSelectionHandlers *SourceSelectionHandlers
 	MaintenanceHandlers     *MaintenanceHandlers
 	PlayEventHandlers       *PlayEventHandlers
+	ResearchHandlers        *ResearchHandlers
 	HealthHandler           *health.Handler
 	Metrics                 *metrics.Metrics
 	CORSAllowedOrigins      []string
@@ -134,6 +136,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		sourceSelectionHandlers: cfg.SourceSelectionHandlers,
 		maintenanceHandlers:     cfg.MaintenanceHandlers,
 		playEventHandlers:       cfg.PlayEventHandlers,
+		researchHandlers:        cfg.ResearchHandlers,
 		healthHandler:           cfg.HealthHandler,
 		metricsHandler:          metricsHandler,
 		corsAllowedOrigins:      corsAllowedOrigins,
@@ -214,6 +217,25 @@ func (r *Router) setupRoutes() {
 		r.mux.HandleFunc("POST /api/v1/source-selections", sourceSelectionUnavailable)
 		r.mux.HandleFunc("GET /api/v1/source-selections", sourceSelectionUnavailable)
 		r.mux.HandleFunc("GET /api/v1/source-selections/{id}", sourceSelectionUnavailable)
+	}
+	// Durable research is independently authenticated and persisted; it never
+	// shares the Redis queue/download worker path. Register disabled handlers so
+	// auth is evaluated before an availability response.
+	if r.researchHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/research-jobs", r.withAuth(r.researchHandlers.Create))
+		r.mux.HandleFunc("GET /api/v1/research-jobs/{id}", r.withAuth(r.researchHandlers.Get))
+		r.mux.HandleFunc("GET /api/v1/research-jobs/{id}/events", r.withAuth(r.researchHandlers.Events))
+		r.mux.HandleFunc("POST /api/v1/research-jobs/{id}/cancel", r.withAuth(r.researchHandlers.Cancel))
+		r.mux.HandleFunc("POST /api/v1/research-jobs/{id}/retry", r.withAuth(r.researchHandlers.Retry))
+		r.mux.HandleFunc("POST /api/v1/research-jobs/{id}/reviews", r.withAuth(r.researchHandlers.Review))
+	} else {
+		researchUnavailable := r.withAuth(unavailableHandler("Research jobs are unavailable"))
+		r.mux.HandleFunc("POST /api/v1/research-jobs", researchUnavailable)
+		r.mux.HandleFunc("GET /api/v1/research-jobs/{id}", researchUnavailable)
+		r.mux.HandleFunc("GET /api/v1/research-jobs/{id}/events", researchUnavailable)
+		r.mux.HandleFunc("POST /api/v1/research-jobs/{id}/cancel", researchUnavailable)
+		r.mux.HandleFunc("POST /api/v1/research-jobs/{id}/retry", researchUnavailable)
+		r.mux.HandleFunc("POST /api/v1/research-jobs/{id}/reviews", researchUnavailable)
 	}
 	r.mux.HandleFunc("GET /api/v1/artists/{mb_id}", r.withAuth(r.browseHandlers.GetArtist))
 	r.mux.HandleFunc("GET /api/v1/albums/{mb_id}", r.withAuth(r.browseHandlers.GetAlbum))

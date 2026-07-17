@@ -3,10 +3,12 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type Config struct {
@@ -84,6 +86,44 @@ type Config struct {
 	// POST /api/v1/playlists/{id}/mix creates a mix_plan from a playlist's
 	// ordered tracks. Backend seam only (no DJ/waveform UI or mixing logic).
 	EnablePlaylistMix bool
+
+	// Durable research jobs always create a deterministic baseline. This flag
+	// controls only optional model enhancement; a disabled runner records the
+	// model-disabled degradation while retaining that baseline.
+	ResearchEnabled       bool
+	ResearchWorkerEnabled bool
+	ResearchCommand       string
+	ResearchCommandArgs   []string
+	ResearchWorkerID      string
+	ResearchMaxAttempts   int
+
+	ResearchModelBaseURL    string
+	ResearchModelAPIKey     string
+	ResearchModel           string
+	ResearchModelTimeout    time.Duration
+	ResearchModelRunTimeout time.Duration
+
+	ResearchDirectJudgeEnabled bool
+	ResearchDeepAgentEnabled   bool
+	ResearchMaxToolCalls       int
+	ResearchMaxModelCalls      int
+	ResearchRecursionLimit     int
+	ResearchMaxCandidatesIn    int
+	ResearchMaxRecommendations int
+	ResearchWallClock          time.Duration
+	ResearchMaxRequestBytes    int
+	ResearchMaxResponseBytes   int
+	ResearchMaxTokens          int
+
+	ResearchDailyUnitsPerAttempt int
+	ResearchDailyLimit           int
+	ResearchMaxConcurrentPerUser int
+	ResearchPollInterval         time.Duration
+	ResearchLeaseDuration        time.Duration
+	ResearchRenewInterval        time.Duration
+	ResearchRunTimeout           time.Duration
+	ResearchCancelGrace          time.Duration
+	ResearchShutdownTimeout      time.Duration
 }
 
 func Load() *Config {
@@ -117,6 +157,11 @@ func Load() *Config {
 	}
 	analyzerBaseURL := strings.TrimSpace(os.Getenv("ANALYZER_BASE_URL"))
 	analyzerEnabled := parseBoolEnv("ANALYZER_ENABLED", analyzerBaseURL != "")
+	researchLeaseDuration := parseBoundedDurationMsEnv("RESEARCH_LEASE_DURATION_MS", 30*time.Second, time.Second, 5*time.Minute)
+	researchRenewInterval := parseBoundedDurationMsEnv("RESEARCH_RENEW_INTERVAL_MS", 10*time.Second, time.Second, researchLeaseDuration-time.Millisecond)
+	if researchRenewInterval >= researchLeaseDuration {
+		researchRenewInterval = researchLeaseDuration / 3
+	}
 
 	return &Config{
 		ServerAddr:         getEnvOrDefault("SERVER_ADDR", ":8080"),
@@ -181,6 +226,41 @@ func Load() *Config {
 
 		// Save-playlist-as-mix seam (default OFF)
 		EnablePlaylistMix: parseBoolEnv("ENABLE_PLAYLIST_MIX", false),
+
+		ResearchEnabled:       parseBoolEnv("RESEARCH_ENABLED", false),
+		ResearchWorkerEnabled: parseBoolEnv("RESEARCH_WORKER_ENABLED", true),
+		ResearchCommand:       strings.TrimSpace(os.Getenv("RESEARCH_COMMAND")),
+		ResearchCommandArgs:   parseResearchCommandArgs(),
+		ResearchWorkerID:      parseBoundedTextEnv("RESEARCH_WORKER_ID", "research-"+hostname(), 128),
+		ResearchMaxAttempts:   parseBoundedIntEnv("RESEARCH_MAX_ATTEMPTS", 3, 1, 10),
+
+		ResearchModelBaseURL:    strings.TrimSpace(os.Getenv("AGENT_SEARCH_BASE_URL")),
+		ResearchModelAPIKey:     strings.TrimSpace(os.Getenv("AGENT_SEARCH_API_KEY")),
+		ResearchModel:           strings.TrimSpace(os.Getenv("AGENT_SEARCH_MODEL")),
+		ResearchModelTimeout:    parseBoundedDurationSecondsEnv("AGENT_SEARCH_TIMEOUT_S", 90*time.Second, time.Second, 5*time.Minute),
+		ResearchModelRunTimeout: parseBoundedDurationSecondsEnv("AGENT_SEARCH_RUN_TIMEOUT_S", time.Hour, time.Second, 2*time.Hour),
+
+		ResearchDirectJudgeEnabled: parseBoolEnv("RESEARCH_DIRECT_JUDGE_ENABLED", true),
+		ResearchDeepAgentEnabled:   parseBoolEnv("RESEARCH_DEEP_AGENT_ENABLED", true),
+		ResearchMaxToolCalls:       parseBoundedIntEnv("RESEARCH_MAX_TOOL_CALLS", 8, 1, 32),
+		ResearchMaxModelCalls:      parseBoundedIntEnv("RESEARCH_MAX_MODEL_CALLS", 10, 1, 12),
+		ResearchRecursionLimit:     parseBoundedIntEnv("RESEARCH_RECURSION_LIMIT", 12, 2, 16),
+		ResearchMaxCandidatesIn:    parseBoundedIntEnv("RESEARCH_MAX_CANDIDATES_IN", 25, 1, 64),
+		ResearchMaxRecommendations: parseBoundedIntEnv("RESEARCH_MAX_RECOMMENDATIONS", 10, 1, 10),
+		ResearchWallClock:          parseBoundedDurationMsEnv("RESEARCH_WALL_CLOCK_MS", 180*time.Second, time.Second, 5*time.Minute),
+		ResearchMaxRequestBytes:    parseBoundedIntEnv("RESEARCH_MAX_REQUEST_BYTES", 48*1024, 1024, 64*1024),
+		ResearchMaxResponseBytes:   parseBoundedIntEnv("RESEARCH_MAX_RESPONSE_BYTES", 64*1024, 1024, 128*1024),
+		ResearchMaxTokens:          parseBoundedIntEnv("RESEARCH_MAX_TOKENS", 4096, 64, 8192),
+
+		ResearchDailyUnitsPerAttempt: parseBoundedIntEnv("RESEARCH_DAILY_UNITS_PER_ATTEMPT", 1, 1, 10),
+		ResearchDailyLimit:           parseBoundedIntEnv("RESEARCH_DAILY_LIMIT", 10, 1, 100),
+		ResearchMaxConcurrentPerUser: parseBoundedIntEnv("RESEARCH_MAX_CONCURRENT_PER_USER", 1, 1, 10),
+		ResearchPollInterval:         parseBoundedDurationMsEnv("RESEARCH_POLL_INTERVAL_MS", time.Second, 100*time.Millisecond, time.Minute),
+		ResearchLeaseDuration:        researchLeaseDuration,
+		ResearchRenewInterval:        researchRenewInterval,
+		ResearchRunTimeout:           parseBoundedDurationMsEnv("RESEARCH_RUN_TIMEOUT_MS", 2*time.Minute, time.Second, 5*time.Minute),
+		ResearchCancelGrace:          parseBoundedDurationMsEnv("RESEARCH_CANCEL_GRACE_MS", 2*time.Second, 100*time.Millisecond, 30*time.Second),
+		ResearchShutdownTimeout:      parseBoundedDurationMsEnv("RESEARCH_SHUTDOWN_TIMEOUT_MS", 30*time.Second, time.Second, 30*time.Second),
 	}
 }
 
@@ -196,6 +276,44 @@ func parseDurationMsEnv(key string, defaultValue time.Duration) time.Duration {
 		return defaultValue
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+func parseBoundedDurationMsEnv(key string, defaultValue, minimum, maximum time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	ms, err := strconv.Atoi(value)
+	if err != nil {
+		return defaultValue
+	}
+	duration := time.Duration(ms) * time.Millisecond
+	if duration < minimum {
+		return defaultValue
+	}
+	if duration > maximum {
+		return maximum
+	}
+	return duration
+}
+
+func parseBoundedDurationSecondsEnv(key string, defaultValue, minimum, maximum time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return defaultValue
+	}
+	seconds, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return defaultValue
+	}
+	duration := time.Duration(seconds * float64(time.Second))
+	if duration < minimum {
+		return defaultValue
+	}
+	if duration > maximum {
+		return maximum
+	}
+	return duration
 }
 
 func parseBoundedIntEnv(key string, defaultValue, minimum, maximum int) int {
@@ -264,6 +382,60 @@ func parseBoolEnv(key string, defaultValue bool) bool {
 		return defaultValue
 	}
 	return parsed
+}
+
+func parseResearchCommandArgs() []string {
+	value := strings.TrimSpace(os.Getenv("RESEARCH_COMMAND_ARGS"))
+	if value == "" {
+		return nil
+	}
+	var args []string
+	if err := json.Unmarshal([]byte(value), &args); err != nil || len(args) > 32 {
+		return nil
+	}
+	for _, arg := range args {
+		if strings.TrimSpace(arg) == "" || len(arg) > 4096 {
+			return nil
+		}
+	}
+	return args
+}
+
+func parseBoundedTextEnv(key, defaultValue string, maximum int) string {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" || !utf8.ValidString(value) || utf8.RuneCountInString(value) > maximum {
+		value = defaultValue
+	}
+	if utf8.RuneCountInString(value) <= maximum {
+		return value
+	}
+	return string([]rune(value)[:maximum])
+}
+
+func hostname() string {
+	name, err := os.Hostname()
+	if err != nil || strings.TrimSpace(name) == "" {
+		return "server"
+	}
+	return strings.TrimSpace(name)
+}
+
+// ResearchChildEnvironment is the exact subprocess environment used by the
+// durable runner. It intentionally omits the server JWT, database, Redis,
+// storage, agent-gateway, and other parent-process secrets.
+func (c *Config) ResearchChildEnvironment() map[string]string {
+	if c == nil {
+		return nil
+	}
+	environment := map[string]string{
+		"OMP_CANDIDATE_WORKER_LIVE":  "1",
+		"AGENT_SEARCH_BASE_URL":      c.ResearchModelBaseURL,
+		"AGENT_SEARCH_API_KEY":       c.ResearchModelAPIKey,
+		"AGENT_SEARCH_MODEL":         c.ResearchModel,
+		"AGENT_SEARCH_TIMEOUT_S":     strconv.FormatFloat(c.ResearchModelTimeout.Seconds(), 'f', -1, 64),
+		"AGENT_SEARCH_RUN_TIMEOUT_S": strconv.FormatFloat(c.ResearchModelRunTimeout.Seconds(), 'f', -1, 64),
+	}
+	return environment
 }
 
 func generateDefaultSecret() string {

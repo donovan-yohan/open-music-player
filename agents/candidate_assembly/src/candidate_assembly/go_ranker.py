@@ -95,6 +95,12 @@ def _resolve_binary() -> str:
         raise GoRankerError(f"backend directory not found at {backend}")
     out_dir = _build_cache_dir()
     binary = out_dir / "sourcequality-rank"
+    build_env = os.environ.copy()
+    # The scorer's JSON contract does not consume Go VCS build metadata. Disable
+    # stamping so fixture replay remains hermetic in detached/parallel worktrees
+    # where `go build` cannot query the enclosing repository status.
+    if "-buildvcs=false" not in build_env.get("GOFLAGS", ""):
+        build_env["GOFLAGS"] = (build_env.get("GOFLAGS", "") + " -buildvcs=false").strip()
     try:
         subprocess.run(
             [go, "build", "-o", str(binary), "./cmd/sourcequality-rank"],
@@ -102,6 +108,7 @@ def _resolve_binary() -> str:
             check=True,
             capture_output=True,
             text=True,
+            env=build_env,
         )
     except subprocess.CalledProcessError as exc:  # pragma: no cover - env failure
         raise GoRankerError(f"failed to build sourcequality-rank: {exc.stderr.strip()}") from exc

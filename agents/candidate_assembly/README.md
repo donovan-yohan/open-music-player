@@ -157,3 +157,34 @@ takes one bounded repair retry on a parse/validation failure before failing type
 `max_request_bytes=48KiB`, `max_response_bytes=64KiB`,
 `max_tokens_per_completion=4096`. All overridable via CLI flags; enforced in the
 tool layer, and every result records the amount spent.
+
+## Durable worker command
+
+`candidate-assembly-worker` (or `python -m candidate_assembly.worker_runner`)
+is the production-shaped JSONL subprocess boundary for the Go durable-job
+runner. It reads exactly one `omp.agent-search.worker.request.v1` object from
+stdin and writes only versioned JSONL records to stdout:
+
+1. A validated `omp.agent-search.worker.revision.v1` for `direct_judge`, when
+   enabled and valid.
+2. A validated revision for `deep_agent`, when enabled and valid.
+3. One `omp.agent-search.worker.terminal.v1` outcome record.
+
+The request contains `jobId`, `runId`, query, limit, explicit stage/budget
+settings, and bounded URL-free candidate/catalog/metadata projections. It
+rejects extra fields, duplicate candidate IDs, URLs, secrets, provider blobs,
+and user credentials. Candidate projections carry server-owned deterministic
+`sourceQuality`; the direct stage may only make a bounded score adjustment and
+the DeepAgent stage can inspect only the same immutable snapshot.
+
+Live inference is disabled unless the process has
+`OMP_CANDIDATE_WORKER_LIVE=1` plus the existing `AGENT_SEARCH_*` model
+configuration. Otherwise the command exits `0` after a typed `unavailable`
+terminal record. Go should pass the request as one stdin line, consume stdout
+line-by-line, treat any non-JSON stdout as a runner failure, and terminate the
+process with `SIGTERM` for cancellation. One request-level ledger debits direct
+and DeepAgent together: model/tool calls, wall time (from the start of stdin
+read), and aggregate tool request/response bytes never reset for stage two.
+Timing records distinguish process startup-to-request-acceptance (after strict
+stdin validation), direct first-revision latency, final latency, per-attempt
+model durations, and tool-call totals.

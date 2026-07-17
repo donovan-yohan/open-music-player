@@ -30,6 +30,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/playlistimport"
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/queue"
+	"github.com/openmusicplayer/backend/internal/research"
 	"github.com/openmusicplayer/backend/internal/search"
 	"github.com/openmusicplayer/backend/internal/storage"
 	"github.com/openmusicplayer/backend/internal/websocket"
@@ -122,6 +123,84 @@ func newAgentToolsHandler(cfg *config.Config, search *discovery.Service) *discov
 		FirecrawlAPIKey: cfg.FirecrawlAPIKey,
 		Search:          search,
 	})
+}
+
+type researchRuntime struct {
+	handlers *api.ResearchHandlers
+	worker   *research.Worker
+}
+
+// newResearchRuntime keeps durable research independent from Redis, download,
+// playback, and the private agent-tools gateway. The HTTP baseline uses the
+// existing discovery service; model enhancement remains a bounded child process.
+func newResearchRuntime(cfg *config.Config, database *db.DB, search *discovery.Service) (*researchRuntime, error) {
+	if cfg == nil || database == nil || search == nil {
+		return nil, fmt.Errorf("research runtime requires config, database, and discovery")
+	}
+	validator := research.NewPayloadValidator()
+	baseline, err := research.NewBaselineBuilder(research.BaselineBuilderConfig{
+		Search:        search,
+		Providers:     []string{"youtube", "soundcloud"},
+		MaxProviders:  2,
+		MaxCandidates: cfg.ResearchMaxCandidatesIn,
+	})
+	if err != nil {
+		return nil, err
+	}
+	repository := research.NewPostgresRepository(database, research.PostgresRepositoryConfig{
+		DailyUnitsPerAttempt:     int64(cfg.ResearchDailyUnitsPerAttempt),
+		DailyLimit:               int64(cfg.ResearchDailyLimit),
+		MaxConcurrentRunsPerUser: cfg.ResearchMaxConcurrentPerUser,
+	})
+	runner, err := newResearchRunner(cfg)
+	if err != nil {
+		return nil, err
+	}
+	service := research.NewService(research.ServiceConfig{Repository: repository, Validator: validator})
+	return &researchRuntime{
+		handlers: api.NewResearchHandlers(service, baseline, cfg.ResearchMaxAttempts),
+		worker: research.NewWorker(research.WorkerConfig{
+			Repository:    repository,
+			Runner:        runner,
+			Validator:     validator,
+			WorkerID:      cfg.ResearchWorkerID,
+			PollInterval:  cfg.ResearchPollInterval,
+			LeaseDuration: cfg.ResearchLeaseDuration,
+			RenewInterval: cfg.ResearchRenewInterval,
+			RunTimeout:    cfg.ResearchRunTimeout,
+		}),
+	}, nil
+}
+
+func newResearchRunner(cfg *config.Config) (research.Runner, error) {
+	if cfg == nil || !cfg.ResearchEnabled || (!cfg.ResearchDirectJudgeEnabled && !cfg.ResearchDeepAgentEnabled) {
+		return research.DisabledRunner{}, nil
+	}
+	return research.NewCommandRunner(researchCommandRunnerConfig(cfg))
+}
+
+func researchCommandRunnerConfig(cfg *config.Config) research.CommandRunnerConfig {
+	return research.CommandRunnerConfig{
+		Command:     cfg.ResearchCommand,
+		Args:        append([]string(nil), cfg.ResearchCommandArgs...),
+		Environment: cfg.ResearchChildEnvironment(),
+		Budgets: research.WorkerBudgetConfig{
+			MaxToolCalls:           cfg.ResearchMaxToolCalls,
+			MaxModelCalls:          cfg.ResearchMaxModelCalls,
+			RecursionLimit:         cfg.ResearchRecursionLimit,
+			MaxCandidatesIn:        cfg.ResearchMaxCandidatesIn,
+			MaxRecommendations:     cfg.ResearchMaxRecommendations,
+			WallClockMs:            int(cfg.ResearchWallClock.Milliseconds()),
+			MaxRequestBytes:        cfg.ResearchMaxRequestBytes,
+			MaxResponseBytes:       cfg.ResearchMaxResponseBytes,
+			MaxTokensPerCompletion: cfg.ResearchMaxTokens,
+		},
+		Stages: research.WorkerStageConfig{
+			DirectJudge: cfg.ResearchDirectJudgeEnabled,
+			DeepAgent:   cfg.ResearchDeepAgentEnabled,
+		},
+		CancelGrace: cfg.ResearchCancelGrace,
+	}
 }
 
 // reconcileAnalyzerVersion invalidates rows owned by another analyzer version,
@@ -312,6 +391,20 @@ func main() {
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
 	sourceQualityJudge := newSourceQualityJudge(cfg)
 	discoveryService := discovery.NewDefaultServiceWithCatalogAndSourceQualityJudge(mbClient, sourceQualityJudge)
+	researchRuntime, err := newResearchRuntime(cfg, database, discoveryService)
+	if err != nil {
+		log.Error(ctx, "Failed to initialize durable research", nil, err)
+		os.Exit(1)
+	}
+	if cfg.ResearchWorkerEnabled {
+		researchRuntime.worker.Start()
+		log.Info(ctx, "Started durable research worker", map[string]interface{}{
+			"research_enabled": cfg.ResearchEnabled,
+			"worker_id":        cfg.ResearchWorkerID,
+		})
+	} else {
+		log.Info(ctx, "Durable research worker disabled by configuration", nil)
+	}
 	agentToolsHandler := newAgentToolsHandler(cfg, discoveryService)
 	// AI assist is grounded against discovery/resolution; a nil client (unset or
 	// disabled config) degrades to the disabled envelope without breaking search.
@@ -559,6 +652,7 @@ func main() {
 		SourceSelectionHandlers: sourceSelectionHandlers,
 		MaintenanceHandlers:     maintenanceHandlers,
 		PlayEventHandlers:       playEventHandlers,
+		ResearchHandlers:        researchRuntime.handlers,
 		HealthHandler:           healthHandler,
 		Metrics:                 appMetrics,
 		CORSAllowedOrigins:      cfg.CORSAllowedOrigins,
@@ -602,6 +696,13 @@ func main() {
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			log.Error(ctx, "HTTP server shutdown error", nil, err)
 			_ = server.Close()
+		}
+		if researchRuntime.worker != nil {
+			researchShutdownCtx, researchShutdownCancel := context.WithTimeout(shutdownCtx, cfg.ResearchShutdownTimeout)
+			if err := researchRuntime.worker.Stop(researchShutdownCtx); err != nil {
+				log.Error(ctx, "Research worker shutdown error", nil, err)
+			}
+			researchShutdownCancel()
 		}
 		// Stop download workers (waits for current jobs to finish)
 		if downloadService != nil {

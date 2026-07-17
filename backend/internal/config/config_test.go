@@ -327,6 +327,73 @@ func TestLoadAnalyzerRespectsExplicitDisable(t *testing.T) {
 	}
 }
 
+func TestLoadResearchDisabledByDefaultWithBoundedLifecycleDefaults(t *testing.T) {
+	withUnsetResearchEnv(t)
+
+	cfg := Load()
+	if cfg.ResearchEnabled {
+		t.Fatal("ResearchEnabled = true by default")
+	}
+	if !cfg.ResearchWorkerEnabled {
+		t.Fatal("ResearchWorkerEnabled = false; disabled research jobs need the worker to record model-disabled degradation")
+	}
+	if cfg.ResearchCommand != "" || len(cfg.ResearchCommandArgs) != 0 {
+		t.Fatalf("research command = %q %#v, want unset", cfg.ResearchCommand, cfg.ResearchCommandArgs)
+	}
+	if cfg.ResearchMaxAttempts != 3 || cfg.ResearchDailyLimit != 10 || cfg.ResearchMaxConcurrentPerUser != 1 {
+		t.Fatalf("research policy defaults = attempts:%d daily:%d concurrency:%d", cfg.ResearchMaxAttempts, cfg.ResearchDailyLimit, cfg.ResearchMaxConcurrentPerUser)
+	}
+	if cfg.ResearchPollInterval != time.Second || cfg.ResearchLeaseDuration != 30*time.Second || cfg.ResearchRenewInterval != 10*time.Second || cfg.ResearchRunTimeout != 2*time.Minute || cfg.ResearchShutdownTimeout != 30*time.Second {
+		t.Fatalf("research lifecycle defaults = poll:%s lease:%s renew:%s run:%s shutdown:%s", cfg.ResearchPollInterval, cfg.ResearchLeaseDuration, cfg.ResearchRenewInterval, cfg.ResearchRunTimeout, cfg.ResearchShutdownTimeout)
+	}
+	if cfg.ResearchMaxToolCalls != 8 || cfg.ResearchMaxModelCalls != 10 || cfg.ResearchWallClock != 180*time.Second || cfg.ResearchMaxRequestBytes != 48*1024 || cfg.ResearchMaxResponseBytes != 64*1024 {
+		t.Fatalf("research budget defaults = tool:%d model:%d wall:%s request:%d response:%d", cfg.ResearchMaxToolCalls, cfg.ResearchMaxModelCalls, cfg.ResearchWallClock, cfg.ResearchMaxRequestBytes, cfg.ResearchMaxResponseBytes)
+	}
+}
+
+func TestLoadResearchUsesExactWorkerModelEnvironmentAndBoundsValues(t *testing.T) {
+	withUnsetResearchEnv(t)
+	t.Setenv("RESEARCH_ENABLED", "true")
+	t.Setenv("RESEARCH_COMMAND", "candidate-assembly-worker")
+	t.Setenv("RESEARCH_COMMAND_ARGS", `["--safe-mode","--once"]`)
+	t.Setenv("RESEARCH_WORKER_ID", "research-test")
+	t.Setenv("AGENT_SEARCH_BASE_URL", "https://models.example/v1")
+	t.Setenv("AGENT_SEARCH_API_KEY", "model-only-secret")
+	t.Setenv("AGENT_SEARCH_MODEL", "candidate-judge")
+	t.Setenv("AGENT_SEARCH_TIMEOUT_S", "7.5")
+	t.Setenv("AGENT_SEARCH_RUN_TIMEOUT_S", "120")
+	t.Setenv("RESEARCH_DIRECT_JUDGE_ENABLED", "false")
+	t.Setenv("RESEARCH_DEEP_AGENT_ENABLED", "true")
+	t.Setenv("RESEARCH_MAX_TOOL_CALLS", "99")
+	t.Setenv("RESEARCH_WALL_CLOCK_MS", "999999")
+	t.Setenv("RESEARCH_LEASE_DURATION_MS", "2000")
+	t.Setenv("RESEARCH_RENEW_INTERVAL_MS", "9999")
+	t.Setenv("RESEARCH_SHUTDOWN_TIMEOUT_MS", "99999")
+
+	cfg := Load()
+	if !cfg.ResearchEnabled || cfg.ResearchCommand != "candidate-assembly-worker" || len(cfg.ResearchCommandArgs) != 2 || cfg.ResearchCommandArgs[1] != "--once" {
+		t.Fatalf("research command config = %#v", cfg)
+	}
+	if cfg.ResearchModelTimeout != 7500*time.Millisecond || cfg.ResearchModelRunTimeout != 2*time.Minute {
+		t.Fatalf("research model timeouts = %s/%s", cfg.ResearchModelTimeout, cfg.ResearchModelRunTimeout)
+	}
+	if cfg.ResearchDirectJudgeEnabled || !cfg.ResearchDeepAgentEnabled || cfg.ResearchMaxToolCalls != 32 || cfg.ResearchWallClock != 5*time.Minute {
+		t.Fatalf("research stages/budgets = direct:%t deep:%t tool:%d wall:%s", cfg.ResearchDirectJudgeEnabled, cfg.ResearchDeepAgentEnabled, cfg.ResearchMaxToolCalls, cfg.ResearchWallClock)
+	}
+	if cfg.ResearchLeaseDuration != 2*time.Second || cfg.ResearchRenewInterval >= cfg.ResearchLeaseDuration || cfg.ResearchShutdownTimeout != 30*time.Second {
+		t.Fatalf("research lifecycle bounds = lease:%s renew:%s shutdown:%s", cfg.ResearchLeaseDuration, cfg.ResearchRenewInterval, cfg.ResearchShutdownTimeout)
+	}
+	environment := cfg.ResearchChildEnvironment()
+	if environment["AGENT_SEARCH_BASE_URL"] != "https://models.example/v1" || environment["AGENT_SEARCH_API_KEY"] != "model-only-secret" || environment["AGENT_SEARCH_MODEL"] != "candidate-judge" || environment["AGENT_SEARCH_TIMEOUT_S"] != "7.5" || environment["AGENT_SEARCH_RUN_TIMEOUT_S"] != "120" || environment["OMP_CANDIDATE_WORKER_LIVE"] != "1" {
+		t.Fatalf("research child environment = %#v", environment)
+	}
+	for _, forbidden := range []string{"JWT_SECRET", "DB_PASSWORD", "OMP_AGENT_SERVICE_TOKEN", "FIRECRAWL_API_KEY", "REDIS_URL"} {
+		if _, ok := environment[forbidden]; ok {
+			t.Fatalf("research child environment leaked %s", forbidden)
+		}
+	}
+}
+
 func withUnsetCORSAllowedOrigins(t *testing.T) {
 	t.Helper()
 	withUnsetEnv(t, "OMP_CORS_ALLOWED_ORIGINS")
@@ -343,6 +410,18 @@ func withUnsetSourceQualityLLMEnv(t *testing.T) {
 		"OLLAMA_BASE_URL",
 		"OLLAMA_MODEL",
 		"OLLAMA_API_KEY",
+	} {
+		withUnsetEnv(t, key)
+	}
+}
+
+func withUnsetResearchEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"RESEARCH_ENABLED", "RESEARCH_WORKER_ENABLED", "RESEARCH_COMMAND", "RESEARCH_COMMAND_ARGS", "RESEARCH_WORKER_ID", "RESEARCH_MAX_ATTEMPTS",
+		"AGENT_SEARCH_BASE_URL", "AGENT_SEARCH_API_KEY", "AGENT_SEARCH_MODEL", "AGENT_SEARCH_TIMEOUT_S", "AGENT_SEARCH_RUN_TIMEOUT_S",
+		"RESEARCH_DIRECT_JUDGE_ENABLED", "RESEARCH_DEEP_AGENT_ENABLED", "RESEARCH_MAX_TOOL_CALLS", "RESEARCH_MAX_MODEL_CALLS", "RESEARCH_RECURSION_LIMIT", "RESEARCH_MAX_CANDIDATES_IN", "RESEARCH_MAX_RECOMMENDATIONS", "RESEARCH_WALL_CLOCK_MS", "RESEARCH_MAX_REQUEST_BYTES", "RESEARCH_MAX_RESPONSE_BYTES", "RESEARCH_MAX_TOKENS",
+		"RESEARCH_DAILY_UNITS_PER_ATTEMPT", "RESEARCH_DAILY_LIMIT", "RESEARCH_MAX_CONCURRENT_PER_USER", "RESEARCH_POLL_INTERVAL_MS", "RESEARCH_LEASE_DURATION_MS", "RESEARCH_RENEW_INTERVAL_MS", "RESEARCH_RUN_TIMEOUT_MS", "RESEARCH_CANCEL_GRACE_MS", "RESEARCH_SHUTDOWN_TIMEOUT_MS",
 	} {
 		withUnsetEnv(t, key)
 	}
