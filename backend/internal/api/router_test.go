@@ -101,6 +101,28 @@ func TestDiscoveryAssistRouteIsRegisteredWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestPrivateAgentToolsRouteIsAbsentUntilWired(t *testing.T) {
+	router := NewRouterWithConfig(&RouterConfig{AuthHandlers: auth.NewHandlers(nil)})
+	request := httptest.NewRequest(http.MethodPost, "/internal/agent-tools/v1/capabilities", strings.NewReader(`{}`))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("unwired private gateway = %d, want 404", recorder.Code)
+	}
+
+	router = NewRouterWithConfig(&RouterConfig{
+		AuthHandlers: auth.NewHandlers(nil),
+		AgentToolsHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	})
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("wired private gateway = %d, want 204", recorder.Code)
+	}
+}
+
 func TestLocalFlutterAuthPreflightGetsCORSHeaders(t *testing.T) {
 	router := NewRouterWithConfig(&RouterConfig{})
 

@@ -9,6 +9,7 @@ optional ``live`` model stack at module load; the model arms import it lazily.
 from __future__ import annotations
 
 from .budgets import Budget, BudgetExceeded
+from .gateway_tools import GatewayConfig, GatewayToolBox, build_gateway_toolbox_from_env
 from .schemas import (
     ASSEMBLY_SCHEMA_VERSION,
     CORPUS_SCHEMA_VERSION,
@@ -23,6 +24,9 @@ from .schemas import (
 __all__ = [
     "Budget",
     "BudgetExceeded",
+    "GatewayConfig",
+    "GatewayToolBox",
+    "build_gateway_toolbox_from_env",
     "AssemblyResult",
     "CaseInput",
     "Corpus",

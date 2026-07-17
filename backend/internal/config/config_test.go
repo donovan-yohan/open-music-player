@@ -140,6 +140,29 @@ func TestLoadAIAssistDefaultsMalformedTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadAgentResearchToolsKeepsGatewayDisabledWithoutServiceToken(t *testing.T) {
+	withUnsetEnv(t, "OMP_AGENT_SERVICE_TOKEN")
+	t.Setenv("FIRECRAWL_API_KEY", "firecrawl-secret")
+
+	cfg := Load()
+	if cfg.AgentServiceToken != "" {
+		t.Fatal("AgentServiceToken should be empty when unset")
+	}
+	if cfg.FirecrawlAPIKey != "firecrawl-secret" {
+		t.Fatal("FirecrawlAPIKey was not loaded")
+	}
+}
+
+func TestLoadAgentResearchToolsLoadsIndependentSecrets(t *testing.T) {
+	t.Setenv("OMP_AGENT_SERVICE_TOKEN", "service-secret")
+	t.Setenv("FIRECRAWL_API_KEY", "firecrawl-secret")
+
+	cfg := Load()
+	if cfg.AgentServiceToken != "service-secret" || cfg.FirecrawlAPIKey != "firecrawl-secret" {
+		t.Fatalf("agent tool config not loaded")
+	}
+}
+
 func TestLoadMetadataLLMDisabledByDefault(t *testing.T) {
 	for _, key := range []string{"METADATA_LLM_ENABLED", "METADATA_LLM_BASE_URL", "METADATA_LLM_MODEL", "METADATA_LLM_TIMEOUT_MS", "OLLAMA_BASE_URL", "OLLAMA_MODEL"} {
 		withUnsetEnv(t, key)

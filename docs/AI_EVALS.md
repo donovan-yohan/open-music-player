@@ -138,6 +138,58 @@ candidates, recommendations, wall clock, request/response bytes, tokens) are
 enforced in the tool layer, not on the model's honor system; an overflow raises
 `BudgetExceeded`, which an arm converts into a typed-error result.
 
+### Future Go-owned tool gateway
+
+Issue #271 adds a Python `GatewayToolBox` adapter for a future asynchronous
+candidate agent. It is an explicit factory construction seam only:
+`build_gateway_toolbox_from_env(Budget.default())`. It is not wired to the
+synchronous discovery path, model eval arms, `scripts/eval agent-search`, or
+fixture replay. Replay therefore remains network-free and its fixture recordings
+remain byte-stable.
+
+The gateway, not Python, owns provider and web access. Python never calls
+Firecrawl or a provider directly. Its fixed read-only contract is the configured
+base URL plus `/internal/agent-tools/v1`:
+
+- `POST /capabilities` with `X-OMP-Agent-Service-Token`, receiving an opaque
+  capability and `expiresAt`.
+- `POST /search-sources`, `/search-catalog`, `/inspect-source-metadata`, and
+  `/extract-web` with `Authorization: Bearer <capability>`.
+
+The four tool requests mirror their safe arguments; `extract_web` accepts only
+an allowlisted opaque `evidenceRef`. No tool accepts a source URL or performs a
+queue, download, or write action. Candidate IDs and evidence refs are grounded
+locally before metadata/extraction calls. Every request and response is bounded
+by the existing tool byte budgets, schema-validated, and traced only as a safe
+digest, timing, and result count. Timeouts, non-2xx responses, malformed or
+oversize payloads, quota, expired capability, disabled config, and unknown IDs
+become typed safe errors without copying endpoint or credential data.
+
+The exact environment-only configuration is:
+
+```bash
+export AGENT_TOOL_GATEWAY_URL=https://gateway-host.example
+export AGENT_TOOL_GATEWAY_SERVICE_TOKEN=from-a-secret-store
+export AGENT_TOOL_GATEWAY_TIMEOUT_S=5
+# Local development only; omit for HTTPS.
+# export AGENT_TOOL_GATEWAY_ALLOW_INSECURE_HTTP=true
+```
+
+All three values are required to construct the adapter. The timeout must be
+finite and strictly positive; the URL must use HTTPS with no embedded
+credentials, query, or fragment. Plain HTTP is rejected by both the env factory
+and direct config construction unless explicitly enabled for local development.
+The env opt-in is strict: only the exact lowercase value
+`AGENT_TOOL_GATEWAY_ALLOW_INSECURE_HTTP=true` enables HTTP. Redirects are never
+followed. The service token and issued capability are redacted from `repr`,
+errors, traces, progress data, recordings, and eval artifacts. Strict wire
+schemas validate bounded safe metadata before it is projected out; model-facing
+result schemas have no URL fields or arbitrary text maps and reject URL-like or
+secret-shaped free text before it reaches a model. Wire and model evidence use
+the same 4 KiB UTF-8 limit. Bounded Go error envelopes preserve only allowlisted
+codes, including capability and Firecrawl failures; arbitrary messages, bodies,
+and unknown codes are not surfaced.
+
 ## Post-agent verifier and graders
 
 `validate.py` is the deterministic guard that runs on every arm's output: strict

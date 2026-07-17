@@ -62,6 +62,23 @@ domain concept moves or a new production harness becomes canonical.
   Linux host gateway. Set `SOURCE_QUALITY_LLM_BASE_URL` explicitly for a
   tailnet or other remote provider; never commit a remote endpoint or secret.
 
+### Private Agent Research Gateway
+
+- Handler and bounded capability state: `backend/internal/discovery/agent_tools.go`.
+- Provider/catalog reuse: `backend/internal/discovery/discovery.go` via
+  `SearchSources` (raw fanout, no ranking) and `SearchCatalog`.
+- Server/config wiring: `backend/cmd/server/main.go`,
+  `backend/internal/config/config.go`, `.env.example`, and Compose files.
+- Guardrail: `/internal/agent-tools/v1` is registered only when
+  `OMP_AGENT_SERVICE_TOKEN` is nonempty. The service token and
+  `FIRECRAWL_API_KEY` are never logged or returned. Tool callers receive
+  short-lived opaque capability, candidate, and evidence references only;
+  original provider URLs remain server-side.
+- Guardrail: `extract-web` resolves only capability-issued evidence references,
+  requires HTTPS and an exact YouTube/YouTube Music/youtu.be/SoundCloud host,
+  then calls Firecrawl with bounded, sanitized markdown. Missing Firecrawl
+  configuration returns `FIRECRAWL_DISABLED` without affecting discovery.
+
 ### AI Assist Eval Harness
 
 - Client boundary: `backend/internal/aiassist/aiassist.go`; keep the eval

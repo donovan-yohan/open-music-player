@@ -110,6 +110,20 @@ func newSourceQualityJudge(cfg *config.Config) discovery.SourceQualityJudge {
 	return judge
 }
 
+// newAgentToolsHandler wires the private research gateway independently from
+// ordinary discovery. A missing service token returns nil, so no gateway route
+// is registered and deterministic discovery remains untouched.
+func newAgentToolsHandler(cfg *config.Config, search *discovery.Service) *discovery.AgentToolsHandler {
+	if cfg == nil {
+		return nil
+	}
+	return discovery.NewAgentToolsHandler(discovery.AgentToolsConfig{
+		ServiceToken:    cfg.AgentServiceToken,
+		FirecrawlAPIKey: cfg.FirecrawlAPIKey,
+		Search:          search,
+	})
+}
+
 // reconcileAnalyzerVersion invalidates rows owned by another analyzer version,
 // then drains stale work in bounded batches. Analysis overrides are owned by
 // the repository and are never modified by this reconciliation.
@@ -298,6 +312,7 @@ func main() {
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
 	sourceQualityJudge := newSourceQualityJudge(cfg)
 	discoveryService := discovery.NewDefaultServiceWithCatalogAndSourceQualityJudge(mbClient, sourceQualityJudge)
+	agentToolsHandler := newAgentToolsHandler(cfg, discoveryService)
 	// AI assist is grounded against discovery/resolution; a nil client (unset or
 	// disabled config) degrades to the disabled envelope without breaking search.
 	assistClient := aiassist.NewClient(aiassist.Config{
@@ -317,6 +332,10 @@ func main() {
 	log.Info(ctx, "Initialized discovery assist", map[string]interface{}{
 		"ai_assist_enabled": assistClient != nil,
 		"ai_assist_model":   cfg.AIAssistModel,
+	})
+	log.Info(ctx, "Initialized private agent research tools", map[string]interface{}{
+		"agent_tools_enabled": agentToolsHandler != nil,
+		"firecrawl_enabled":   agentToolsHandler != nil && cfg.FirecrawlAPIKey != "",
 	})
 	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
 	analysisHandlers := api.NewAnalysisHandlers(analysisRepo, libraryRepo)
@@ -531,6 +550,7 @@ func main() {
 		PlaybackHandlers:        playbackHandlers,
 		QueueHandlers:           queueHandlers,
 		DiscoveryHandlers:       discoveryHandlers,
+		AgentToolsHandler:       agentToolsHandler,
 		PlaylistHandlers:        playlistHandlers,
 		PlaylistImportHandlers:  playlistImportHandlers,
 		PlaylistMixHandlers:     playlistMixHandlers,

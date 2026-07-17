@@ -47,6 +47,11 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
 
+      # Private async-agent research gateway. Unset by default; this does not
+      # change ordinary discovery or expose an unauthenticated route.
+      OMP_AGENT_SERVICE_TOKEN: ${OMP_AGENT_SERVICE_TOKEN:-}
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+
       # Auth
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
 

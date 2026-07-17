@@ -34,6 +34,16 @@ func TestNewSourceQualityJudgeEnabledConfigConstructsOllamaJudge(t *testing.T) {
 	}
 }
 
+func TestNewAgentToolsHandlerRequiresServiceToken(t *testing.T) {
+	search := discovery.NewService(discovery.ServiceConfig{})
+	if handler := newAgentToolsHandler(&config.Config{FirecrawlAPIKey: "configured"}, search); handler != nil {
+		t.Fatal("agent tools must be absent without service token")
+	}
+	if handler := newAgentToolsHandler(&config.Config{AgentServiceToken: "service-token"}, search); handler == nil {
+		t.Fatal("agent tools should be created with service token even without Firecrawl")
+	}
+}
+
 type startupInfoClient struct {
 	info analyzer.Info
 	err  error
