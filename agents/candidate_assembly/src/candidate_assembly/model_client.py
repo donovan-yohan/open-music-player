@@ -243,6 +243,7 @@ def complete_structured(
     coerce: Optional[Callable[[Any], tuple[Any, bool]]] = None,
     max_repair: int = 1,
     now: Callable[[], float] = time.monotonic,
+    attempt_callback: Optional[Callable[[ModelAttempt], None]] = None,
 ) -> StructuredResult:
     """Drive one primary completion plus up to ``max_repair`` bounded repairs.
 
@@ -252,6 +253,8 @@ def complete_structured(
     ONLY the corrected JSON object." Every attempt (primary + repairs) counts one
     model call. After the repair budget is exhausted, raises ``StructuredOutputError``
     carrying the total calls spent so the arm can charge them and fail typed.
+    ``attempt_callback`` receives each safe attempt record immediately after it
+    is classified, before any repair request begins.
     """
 
     convo = list(messages)
@@ -261,18 +264,23 @@ def complete_structured(
     attempts = max_repair + 1
     for attempt in range(attempts):
         started = now()
+
+        def record_attempt(status: str) -> None:
+            record = ModelAttempt(
+                attempt=attempt + 1,
+                duration_ms=int(round((now() - started) * 1000)),
+                repair=attempt > 0,
+                status=status,
+            )
+            attempt_records.append(record)
+            if attempt_callback is not None:
+                attempt_callback(record)
+
         try:
             content = chat(convo)
         except Exception as exc:
             calls_used += 1
-            attempt_records.append(
-                ModelAttempt(
-                    attempt=attempt + 1,
-                    duration_ms=int(round((now() - started) * 1000)),
-                    repair=attempt > 0,
-                    status="transport_error",
-                )
-            )
+            record_attempt("transport_error")
             raise StructuredOutputError(
                 "model completion transport failed",
                 calls_used=calls_used,
@@ -282,14 +290,7 @@ def complete_structured(
         try:
             value, notes = parse_structured_content(content, schema, coerce)
         except StructuredParseError as exc:
-            attempt_records.append(
-                ModelAttempt(
-                    attempt=attempt + 1,
-                    duration_ms=int(round((now() - started) * 1000)),
-                    repair=attempt > 0,
-                    status="parse_error",
-                )
-            )
+            record_attempt("parse_error")
             last_error = str(exc)
             if attempt >= attempts - 1:
                 break
@@ -304,14 +305,7 @@ def complete_structured(
                 },
             ]
             continue
-        attempt_records.append(
-            ModelAttempt(
-                attempt=attempt + 1,
-                duration_ms=int(round((now() - started) * 1000)),
-                repair=attempt > 0,
-                status="success",
-            )
-        )
+        record_attempt("success")
         return StructuredResult(
             value=value,
             calls_used=calls_used,

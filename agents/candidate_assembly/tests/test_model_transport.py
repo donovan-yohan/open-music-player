@@ -197,6 +197,43 @@ def test_complete_structured_records_attempt_durations_and_repair_status():
     ]
 
 
+def test_complete_structured_reports_primary_attempt_before_slow_repair():
+    clock = [0.0]
+    delivered = []
+
+    def now():
+        return clock[0]
+
+    def on_attempt(attempt):
+        delivered.append((attempt.status, attempt.repair, clock[0]))
+
+    class SlowRepairChat:
+        calls = 0
+
+        def __call__(self, _messages):
+            self.calls += 1
+            if self.calls == 1:
+                clock[0] = 0.125
+                return "invalid primary completion"
+            assert delivered == [("parse_error", False, 0.125)]
+            clock[0] = 5.125
+            return '{"name": "a", "value": 1}'
+
+    result = complete_structured(
+        SlowRepairChat(),
+        [{"role": "user", "content": "go"}],
+        _Item,
+        now=now,
+        attempt_callback=on_attempt,
+    )
+
+    assert delivered == [
+        ("parse_error", False, 0.125),
+        ("success", True, 5.125),
+    ]
+    assert [attempt.status for attempt in result.attempts] == ["parse_error", "success"]
+
+
 def test_complete_structured_records_safe_transport_error():
     def fail(_messages):
         raise RuntimeError("Bearer secret-do-not-serialize")

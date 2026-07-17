@@ -205,10 +205,11 @@ read into results or artifacts); `response_format` json_schema is ignored there.
 Native tool support is endpoint- and model-dependent, so the probe records its
 observed capability but does not automatically change transport. Every current
 model call therefore sends `response_format` json_object with the expected schema
-embedded in the prompt and temperature 0; a parse or validation failure gets one
-bounded repair retry — re-asked with the validation error and "return ONLY the
-corrected JSON object", charged against the model-call budget — before the
-typed-failure path.
+embedded in the prompt and temperature 0. A parse or validation failure gets up
+to one bounded repair retry, only when model-call capacity remains; with one call
+left, repair is disabled. The retry is re-asked with the validation error and
+"return ONLY the corrected JSON object", charged against the model-call budget,
+before the typed-failure path.
 A bare judgments array is wrapped into its `{judgments: [...]}` envelope before
 strict validation (recorded as a `coerced_envelope` provenance note). Endpoint
 settings are env-only (`AGENT_SEARCH_TIMEOUT_S`, `AGENT_SEARCH_RUN_TIMEOUT_S`);
@@ -235,7 +236,9 @@ candidate set. Future durable job/UI slices may add genuine validated enhancemen
 revisions rather than treating a model attempt as a partial result.
 For live model arms the runner executes and validates the deterministic baseline
 first; its bounded candidate IDs and evidence refs remain in `deterministicBaseline`
-and the first ordered event even if the model is slow or fails. It never records
+and the first ordered event even if the model is slow or fails.
+`deterministicBaseline` is a sibling JSONL case-record field to `telemetry`, not
+nested inside telemetry. The artifact never records
 completion text, prompts, URLs, reasoning, or keys. Progress events use
 `omp.agent-search.eval.progress.v2` and are restricted to safe baseline,
 lifecycle, tool, and validated-result metadata. API keys and bearer/`sk-` values

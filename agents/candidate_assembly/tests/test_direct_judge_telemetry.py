@@ -42,9 +42,11 @@ def test_direct_judge_one_call_budget_disables_repair_and_records_attempt(monkey
 
     def fake_complete(_chat, _messages, schema, **kwargs):
         repairs.append(kwargs["max_repair"])
+        attempt = ModelAttempt(1, 7, False, "success")
+        kwargs["attempt_callback"](attempt)
         return StructuredResult(
             value=schema(judgments=[]), calls_used=1,
-            attempts=[ModelAttempt(1, 7, False, "success")],
+            attempts=[attempt],
         )
 
     monkeypatch.setattr(direct_mod, "complete_structured", fake_complete)
@@ -61,11 +63,13 @@ def test_direct_judge_one_call_budget_disables_repair_and_records_attempt(monkey
 def test_direct_judge_structured_failure_preserves_attempts_and_safe_failure(monkeypatch):
     direct_mod = _prepare(monkeypatch)
 
-    def fake_complete(*_args, **_kwargs):
+    def fake_complete(*_args, **kwargs):
+        attempt = ModelAttempt(1, 9, False, "parse_error")
+        kwargs["attempt_callback"](attempt)
         raise StructuredOutputError(
             "raw completion text must not escape",
             calls_used=1,
-            attempts=[ModelAttempt(1, 9, False, "parse_error")],
+            attempts=[attempt],
         )
 
     monkeypatch.setattr(direct_mod, "complete_structured", fake_complete)
@@ -77,6 +81,62 @@ def test_direct_judge_structured_failure_preserves_attempts_and_safe_failure(mon
     assert len(result.trace) == 2
     assert [(attempt.duration_ms, attempt.status) for attempt in arm.model_attempts] == [(9, "parse_error")]
     assert "raw completion" not in str(arm.progress_events)
+
+
+def test_direct_judge_initial_catalog_dispatch_returns_typed_budget_error(monkeypatch):
+    direct_mod = _prepare(monkeypatch)
+    monkeypatch.setattr(
+        direct_mod,
+        "build_openai_client",
+        lambda _config: (_ for _ in ()).throw(AssertionError("model must not initialize")),
+    )
+    arm = DirectJudgeArm()
+    result = arm.assemble(
+        CaseInput(prompt="artist song"), make_world(), Budget(max_tool_calls=1)
+    )
+
+    assert result.error and result.error.code == "BUDGET_EXCEEDED"
+    assert result.error.message == "exceeded max tool calls (1)"
+    assert result.budgetSpent.toolCalls == 1
+    assert len(result.trace) == 1
+    assert [(event.phase, event.status) for event in arm.progress_events] == [
+        ("started", None),
+        ("tool_completed", None),
+        ("failed", "failed"),
+    ]
+
+
+def test_direct_judge_emits_primary_attempt_before_slow_repair(monkeypatch):
+    direct_mod = _prepare(monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr(direct_mod.time, "monotonic", lambda: clock[0])
+    arm = DirectJudgeArm()
+
+    def fake_complete(_chat, _messages, schema, **kwargs):
+        callback = kwargs["attempt_callback"]
+        primary = ModelAttempt(1, 125, False, "parse_error")
+        clock[0] = 0.125
+        callback(primary)
+        assert arm.progress_events[-1].elapsedMs == 125
+        repair = ModelAttempt(2, 4000, True, "success")
+        clock[0] = 4.125
+        callback(repair)
+        return StructuredResult(
+            value=schema(judgments=[]), calls_used=2,
+            attempts=[primary, repair],
+        )
+
+    monkeypatch.setattr(direct_mod, "complete_structured", fake_complete)
+    result = arm.assemble(
+        CaseInput(prompt="artist song"), make_world(), Budget(max_model_calls=2)
+    )
+
+    assert result.budgetSpent.modelCalls == 2
+    events = [event for event in arm.progress_events if event.phase == "model_call"]
+    assert [(event.elapsedMs, event.status, event.repair) for event in events] == [
+        (125, "parse_error", False),
+        (4125, "success", True),
+    ]
 
 
 def test_direct_judge_config_failure_emits_started_then_failed(monkeypatch):

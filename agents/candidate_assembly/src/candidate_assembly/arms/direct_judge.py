@@ -18,7 +18,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from .. import go_ranker
-from ..budgets import Budget
+from ..budgets import BUDGET_EXCEEDED_CODE, Budget, BudgetExceeded
 from ..fixture_tools import ToolBox
 from ..model_client import (
     ModelConfig,
@@ -103,13 +103,19 @@ class DirectJudgeArm:
             self._emit("lifecycle", "failed", status="failed")
             return self._error_result(toolbox, None, "MODEL_CONFIG_ERROR")
         preference = _platform_preference(case_input.prompt)
-        retrieved = self._dispatch_tool(
-            toolbox, "search_sources", case_input.prompt,
-            providers=preference or None, limit=budget.max_candidates_in,
-        )
-        catalog_tracks = self._dispatch_tool(
-            toolbox, "search_catalog", case_input.prompt, kind="track", limit=8
-        )
+        try:
+            retrieved = self._dispatch_tool(
+                toolbox, "search_sources", case_input.prompt,
+                providers=preference or None, limit=budget.max_candidates_in,
+            )
+            catalog_tracks = self._dispatch_tool(
+                toolbox, "search_catalog", case_input.prompt, kind="track", limit=8
+            )
+        except BudgetExceeded as exc:
+            self._emit("lifecycle", "failed", status="failed")
+            return self._error_result(
+                toolbox, config, BUDGET_EXCEEDED_CODE, message=exc.message
+            )
         canonical = canonical_track_duration(world)
         catalog_ref = catalog_tracks[0].id if catalog_tracks else None
 
@@ -168,13 +174,12 @@ class DirectJudgeArm:
                 _JudgeOutput,
                 coerce=coerce_judgments_envelope,
                 max_repair=1 if budget.max_model_calls >= 2 else 0,
+                attempt_callback=self._record_attempt,
             )
-        except StructuredOutputError as exc:
-            self._record_attempts(exc.attempts)
+        except StructuredOutputError:
             self.finalization_ms = int(round((time.monotonic() - final_started) * 1000))
             self._emit("lifecycle", "failed", status="failed")
             return self._error_result(toolbox, config, "STRUCTURED_OUTPUT_ERROR")
-        self._record_attempts(structured.attempts)
         self.finalization_ms = int(round((time.monotonic() - final_started) * 1000))
         output: _JudgeOutput = structured.value
         model_calls = structured.calls_used
@@ -267,7 +272,12 @@ class DirectJudgeArm:
                 self._emit("tool", "tool_completed", tool=trace.tool, result_count=trace.resultCount)
 
     def _error_result(
-        self, toolbox: ToolBox, config: Optional[ModelConfig], code: str
+        self,
+        toolbox: ToolBox,
+        config: Optional[ModelConfig],
+        code: str,
+        *,
+        message: str = "direct judge did not produce a structured result",
     ) -> AssemblyResult:
         return AssemblyResult(
             arm=self.name,
@@ -287,21 +297,20 @@ class DirectJudgeArm:
             ),
             error=AssemblyError(
                 code=code,
-                message="direct judge did not produce a structured result",
+                message=message,
             ),
         )
 
-    def _record_attempts(self, attempts: list[ModelAttempt]) -> None:
-        for attempt in attempts:
-            recorded = ModelAttempt(
-                attempt=len(self.model_attempts) + 1,
-                duration_ms=attempt.duration_ms,
-                repair=attempt.repair,
-                status=attempt.status,
-            )
-            self.model_attempts.append(recorded)
-            self._emit("lifecycle", "model_call", attempt=recorded.attempt,
-                       repair=recorded.repair, status=recorded.status)
+    def _record_attempt(self, attempt: ModelAttempt) -> None:
+        recorded = ModelAttempt(
+            attempt=len(self.model_attempts) + 1,
+            duration_ms=attempt.duration_ms,
+            repair=attempt.repair,
+            status=attempt.status,
+        )
+        self.model_attempts.append(recorded)
+        self._emit("lifecycle", "model_call", attempt=recorded.attempt,
+                   repair=recorded.repair, status=recorded.status)
 
     def _emit(
         self, kind: str, phase: str, *, attempt: Optional[int] = None,

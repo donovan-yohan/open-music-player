@@ -84,6 +84,19 @@ def test_finalize_merges_instruction_with_prior_user_observation():
     _assert_alternating(msgs)
 
 
+def test_finalize_preserves_two_action_observation_cycles_with_alternating_roles():
+    prior = _prior() + [
+        {"role": "assistant", "content": '{"action": "search_catalog", "args": {}}'},
+        {"role": "user", "content": '{"observation": [{"id": "track:1"}]}'},
+    ]
+    msgs = _finalize_messages(prior)
+
+    assert msgs[1:-1] == prior[1:-1]
+    assert prior[-1]["content"] in msgs[-1]["content"]
+    assert _FINALIZE_INSTRUCTION in msgs[-1]["content"]
+    _assert_alternating(msgs)
+
+
 def test_finalize_accepts_history_without_an_original_system_turn():
     prior = _prior()[1:-1]
     msgs = _finalize_messages(prior)
@@ -124,14 +137,16 @@ def test_action_and_finalize_respect_two_call_budget(monkeypatch):
 
     def fake_complete(_chat, _messages, schema, **kwargs):
         repair_budgets.append(kwargs["max_repair"])
+        attempt = ModelAttempt(1, 1, False, "success")
+        kwargs["attempt_callback"](attempt)
         if schema is AgentAction:
             return StructuredResult(
                 value=AgentAction(action="finalize"), calls_used=1,
-                attempts=[ModelAttempt(1, 1, False, "success")],
+                attempts=[attempt],
             )
         return StructuredResult(
             value=AgentFinalOutput(interpretedIntent={}), calls_used=1,
-            attempts=[ModelAttempt(1, 1, False, "success")],
+            attempts=[attempt],
         )
 
     monkeypatch.setattr(deep_mod, "complete_structured", fake_complete)
@@ -158,8 +173,10 @@ def test_deep_agent_config_failure_emits_safe_started_then_failed(monkeypatch):
 
 def _assert_alternating(messages: list[dict]) -> None:
     roles = [message["role"] for message in messages]
-    assert roles[0] == "system"
-    assert roles[1:] == ["user", "assistant", "user"][: len(roles) - 1]
+    start = 1 if roles and roles[0] == "system" else 0
+    assert roles[start] == "user"
+    for index, role in enumerate(roles[start:]):
+        assert role == ("user" if index % 2 == 0 else "assistant")
 
 
 def test_structured_failure_retains_spent_calls_partial_trace_and_safe_events(monkeypatch):
@@ -174,19 +191,23 @@ def test_structured_failure_retains_spent_calls_partial_trace_and_safe_events(mo
     monkeypatch.setattr(deep_mod, "make_json_object_chat", lambda *_args: lambda _messages: "")
     calls = 0
 
-    def fake_complete(_chat, _messages, schema, **_kwargs):
+    def fake_complete(_chat, _messages, schema, **kwargs):
         nonlocal calls
         calls += 1
         if schema is AgentAction:
+            attempt = ModelAttempt(1, 12, False, "success")
+            kwargs["attempt_callback"](attempt)
             return StructuredResult(
                 value=AgentAction(action="search_sources", args={"query": "Artist Song"}),
                 calls_used=1,
-                attempts=[ModelAttempt(1, 12, False, "success")],
+                attempts=[attempt],
             )
+        attempt = ModelAttempt(1, 8, False, "parse_error")
+        kwargs["attempt_callback"](attempt)
         raise StructuredOutputError(
             "schema validation failed: secret model text",
             calls_used=1,
-            attempts=[ModelAttempt(1, 8, False, "parse_error")],
+            attempts=[attempt],
         )
 
     monkeypatch.setattr(deep_mod, "complete_structured", fake_complete)
@@ -207,3 +228,53 @@ def test_structured_failure_retains_spent_calls_partial_trace_and_safe_events(mo
     )
     assert "secret" not in str(arm.progress_events)
     assert all(event.phase != "partial_revision" for event in arm.progress_events)
+
+
+def test_deep_agent_emits_primary_attempt_before_slow_repair(monkeypatch):
+    import candidate_assembly.arms.deep_agent as deep_mod
+
+    clock = [0.0]
+    monkeypatch.setattr(deep_mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        deep_mod.ModelConfig,
+        "from_env",
+        classmethod(lambda cls: ModelConfig("http://example.test", "key", "test-model")),
+    )
+    monkeypatch.setattr(deep_mod, "build_openai_client", lambda _config: object())
+    monkeypatch.setattr(deep_mod, "make_json_object_chat", lambda *_args: lambda _messages: "")
+    arm = DeepAgentArm()
+
+    def fake_complete(_chat, _messages, schema, **kwargs):
+        callback = kwargs["attempt_callback"]
+        if schema is AgentAction:
+            primary = ModelAttempt(1, 100, False, "parse_error")
+            clock[0] = 0.1
+            callback(primary)
+            assert arm.progress_events[-1].elapsedMs == 100
+            repair = ModelAttempt(2, 3000, True, "success")
+            clock[0] = 3.1
+            callback(repair)
+            return StructuredResult(
+                value=AgentAction(action="finalize"), calls_used=2,
+                attempts=[primary, repair],
+            )
+        final = ModelAttempt(1, 100, False, "success")
+        clock[0] = 3.2
+        callback(final)
+        return StructuredResult(
+            value=AgentFinalOutput(interpretedIntent={}), calls_used=1,
+            attempts=[final],
+        )
+
+    monkeypatch.setattr(deep_mod, "complete_structured", fake_complete)
+    result = arm.assemble(
+        CaseInput(prompt="play artist song"), make_world(), Budget(max_model_calls=3)
+    )
+
+    assert result.budgetSpent.modelCalls == 3
+    events = [event for event in arm.progress_events if event.phase == "model_call"]
+    assert [(event.elapsedMs, event.status, event.repair) for event in events] == [
+        (100, "parse_error", False),
+        (3100, "success", True),
+        (3200, "success", False),
+    ]

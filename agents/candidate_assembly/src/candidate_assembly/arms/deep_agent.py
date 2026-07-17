@@ -244,14 +244,13 @@ class DeepAgentArm:
         while model_calls < budget.max_model_calls - 1:
             action_capacity = budget.max_model_calls - model_calls - 1
             max_repair = _max_repair_for_capacity(action_capacity)
-            try:
-                step = complete_structured(
-                    chat, messages, AgentAction, max_repair=max_repair
-                )
-            except StructuredOutputError as exc:
-                self._record_attempts(exc.attempts)
-                raise
-            self._record_attempts(step.attempts)
+            step = complete_structured(
+                chat,
+                messages,
+                AgentAction,
+                max_repair=max_repair,
+                attempt_callback=self._record_attempt,
+            )
             model_calls += step.calls_used
             notes.extend(step.provenance_notes)
             action: AgentAction = step.value
@@ -267,13 +266,15 @@ class DeepAgentArm:
         max_repair = _max_repair_for_capacity(budget.max_model_calls - model_calls)
         try:
             final_step = complete_structured(
-                chat, final_messages, AgentFinalOutput, max_repair=max_repair
+                chat,
+                final_messages,
+                AgentFinalOutput,
+                max_repair=max_repair,
+                attempt_callback=self._record_attempt,
             )
-        except StructuredOutputError as exc:
-            self._record_attempts(exc.attempts)
+        except StructuredOutputError:
             self.finalization_ms = int(round((time.monotonic() - final_started) * 1000))
             raise
-        self._record_attempts(final_step.attempts)
         self.finalization_ms = int(round((time.monotonic() - final_started) * 1000))
         model_calls += final_step.calls_used
         notes.extend(final_step.provenance_notes)
@@ -437,22 +438,21 @@ class DeepAgentArm:
             ),
         )
 
-    def _record_attempts(self, attempts: list[ModelAttempt]) -> None:
-        for attempt in attempts:
-            recorded = ModelAttempt(
-                attempt=len(self.model_attempts) + 1,
-                duration_ms=attempt.duration_ms,
-                repair=attempt.repair,
-                status=attempt.status,
-            )
-            self.model_attempts.append(recorded)
-            self._emit(
-                "lifecycle",
-                "model_call",
-                attempt=recorded.attempt,
-                repair=recorded.repair,
-                status=recorded.status,
-            )
+    def _record_attempt(self, attempt: ModelAttempt) -> None:
+        recorded = ModelAttempt(
+            attempt=len(self.model_attempts) + 1,
+            duration_ms=attempt.duration_ms,
+            repair=attempt.repair,
+            status=attempt.status,
+        )
+        self.model_attempts.append(recorded)
+        self._emit(
+            "lifecycle",
+            "model_call",
+            attempt=recorded.attempt,
+            repair=recorded.repair,
+            status=recorded.status,
+        )
 
     def _emit(
         self,

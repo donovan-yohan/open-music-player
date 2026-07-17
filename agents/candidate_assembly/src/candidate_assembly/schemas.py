@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Versioned schema identifiers (mirrors the Go eval conventions).
@@ -247,7 +247,7 @@ class ProgressEvent(StrictModel):
 
     The contract intentionally has no free-form text, prompt, URL, token, or
     provider fields. Only lifecycle, tool, and validated-result metadata may be
-    emitted by the current deep-agent arm.
+    emitted by the current model arms.
     """
 
     schemaVersion: Literal["omp.agent-search.eval.progress.v2"] = (
@@ -279,6 +279,66 @@ class ProgressEvent(StrictModel):
         if not all(is_safe_progress_reference(value) for value in values):
             raise ValueError("unsafe candidate id")
         return values
+
+    @model_validator(mode="after")
+    def _valid_event_shape(self) -> "ProgressEvent":
+        allowed_phases = {
+            "baseline": {"baseline_validated", "failed"},
+            "lifecycle": {"started", "model_call", "finalizing", "failed"},
+            "tool": {"tool_completed"},
+            "validated_result": {"validated"},
+        }
+        if self.phase not in allowed_phases[self.kind]:
+            raise ValueError(f"phase {self.phase!r} is invalid for kind {self.kind!r}")
+
+        if self.phase != "model_call" and (
+            self.attempt is not None or self.repair is not None
+        ):
+            raise ValueError("attempt and repair are only valid for model_call events")
+        if self.phase != "tool_completed" and self.tool is not None:
+            raise ValueError("tool is only valid for tool_completed events")
+        if self.kind not in {"tool", "baseline", "validated_result"}:
+            if self.resultCount is not None:
+                raise ValueError("resultCount is invalid for this event kind")
+        if self.kind not in {"baseline", "validated_result"} and (
+            self.candidateIds or self.evidenceRefs
+        ):
+            raise ValueError(
+                "candidateIds and evidenceRefs are only valid for result events"
+            )
+
+        if self.kind == "lifecycle":
+            if self.phase == "started" and self.status is not None:
+                raise ValueError("started events forbid status")
+            if self.phase == "model_call":
+                if self.attempt is None or self.status is None:
+                    raise ValueError("model_call requires attempt and status")
+                if self.status not in {"success", "parse_error", "transport_error"}:
+                    raise ValueError("model_call has an invalid status")
+            if self.phase == "finalizing" and self.status != "success":
+                raise ValueError("finalizing requires success status")
+            if self.phase == "failed" and self.status != "failed":
+                raise ValueError("failed lifecycle events require failed status")
+            return self
+
+        if self.kind == "tool":
+            if self.tool is None or self.resultCount is None:
+                raise ValueError("tool_completed requires tool and resultCount")
+            if self.status is not None:
+                raise ValueError("tool_completed forbids status")
+            return self
+
+        if self.resultCount is None or self.status is None:
+            raise ValueError(f"{self.kind} requires status and resultCount")
+        if self.kind == "baseline":
+            expected_status = "passed" if self.phase == "baseline_validated" else "failed"
+            if self.status != expected_status:
+                raise ValueError(f"{self.phase} requires {expected_status} status")
+        elif self.status not in {"passed", "failed"}:
+            raise ValueError("validated_result requires passed or failed status")
+        if self.status == "failed" and (self.candidateIds or self.evidenceRefs):
+            raise ValueError("failed result events forbid candidate and evidence refs")
+        return self
 
 
 class Provenance(StrictModel):
