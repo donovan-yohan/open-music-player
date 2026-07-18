@@ -131,7 +131,7 @@ def test_case_artifact_serializes_typed_safe_ordered_progress_events(tmp_path):
     records = runner_mod.build_records([outcome], cfg)
     case = records[1]
     assert case["schemaVersion"] == RUN_SCHEMA_VERSION
-    assert RUN_SCHEMA_VERSION == "omp.agent-search.eval.run.v3"
+    assert RUN_SCHEMA_VERSION == "omp.agent-search.eval.run.v4"
     assert case["telemetry"]["modelAttempts"][0]["durationMs"] == 12
     assert [event["sequence"] for event in case["progressEvents"]] == [1, 2]
     assert {event["schemaVersion"] for event in case["progressEvents"]} == {
@@ -143,3 +143,25 @@ def test_case_artifact_serializes_typed_safe_ordered_progress_events(tmp_path):
     out = tmp_path / "telemetry.jsonl"
     runner_mod.write_artifact(str(out), records, api_key="abcdef123456")
     assert "abcdef123456" not in out.read_text()
+
+
+def test_write_artifact_redacts_urls_jwts_and_named_gateway_tokens(tmp_path):
+    out = tmp_path / "leaks.jsonl"
+    leaked = {
+        "url": "https://provider.example/watch?v=private",
+        "note": "Bearer capability-opaque-token",
+        "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature-token",
+        "serviceToken": "service-token-never-recorded",
+        "nested": {"firecrawlKey": "fc-private-key-123456"},
+    }
+    runner_mod.write_artifact(str(out), [leaked])
+    rendered = out.read_text()
+    for secret in (
+        "provider.example",
+        "capability-opaque-token",
+        "eyJhbGciOiJIUzI1NiJ9",
+        "service-token-never-recorded",
+        "fc-private-key-123456",
+    ):
+        assert secret not in rendered
+    assert "[REDACTED]" in rendered

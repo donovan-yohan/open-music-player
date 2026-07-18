@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -105,15 +107,22 @@ type Config struct {
 
 	ResearchDirectJudgeEnabled bool
 	ResearchDeepAgentEnabled   bool
-	ResearchMaxToolCalls       int
-	ResearchMaxModelCalls      int
-	ResearchRecursionLimit     int
-	ResearchMaxCandidatesIn    int
-	ResearchMaxRecommendations int
-	ResearchWallClock          time.Duration
-	ResearchMaxRequestBytes    int
-	ResearchMaxResponseBytes   int
-	ResearchMaxTokens          int
+	// Deep-agent rollout controls are intentionally independent from the
+	// direct judge. Server wiring must call ValidateResearchRollout before
+	// exposing or cohorting deep-agent revisions.
+	ResearchDeepAgentDarkLaunchEnabled bool
+	ResearchDeepAgentSurfaceRevisions  bool
+	ResearchDeepAgentCohortBPS         int
+	ResearchDeepAgentWebEnabled        bool
+	ResearchMaxToolCalls               int
+	ResearchMaxModelCalls              int
+	ResearchRecursionLimit             int
+	ResearchMaxCandidatesIn            int
+	ResearchMaxRecommendations         int
+	ResearchWallClock                  time.Duration
+	ResearchMaxRequestBytes            int
+	ResearchMaxResponseBytes           int
+	ResearchMaxTokens                  int
 
 	ResearchDailyUnitsPerAttempt int
 	ResearchDailyLimit           int
@@ -240,17 +249,21 @@ func Load() *Config {
 		ResearchModelTimeout:    parseBoundedDurationSecondsEnv("AGENT_SEARCH_TIMEOUT_S", 90*time.Second, time.Second, 5*time.Minute),
 		ResearchModelRunTimeout: parseBoundedDurationSecondsEnv("AGENT_SEARCH_RUN_TIMEOUT_S", time.Hour, time.Second, 2*time.Hour),
 
-		ResearchDirectJudgeEnabled: parseBoolEnv("RESEARCH_DIRECT_JUDGE_ENABLED", true),
-		ResearchDeepAgentEnabled:   parseBoolEnv("RESEARCH_DEEP_AGENT_ENABLED", true),
-		ResearchMaxToolCalls:       parseBoundedIntEnv("RESEARCH_MAX_TOOL_CALLS", 8, 1, 32),
-		ResearchMaxModelCalls:      parseBoundedIntEnv("RESEARCH_MAX_MODEL_CALLS", 10, 1, 12),
-		ResearchRecursionLimit:     parseBoundedIntEnv("RESEARCH_RECURSION_LIMIT", 12, 2, 16),
-		ResearchMaxCandidatesIn:    parseBoundedIntEnv("RESEARCH_MAX_CANDIDATES_IN", 25, 1, 64),
-		ResearchMaxRecommendations: parseBoundedIntEnv("RESEARCH_MAX_RECOMMENDATIONS", 10, 1, 10),
-		ResearchWallClock:          parseBoundedDurationMsEnv("RESEARCH_WALL_CLOCK_MS", 180*time.Second, time.Second, 5*time.Minute),
-		ResearchMaxRequestBytes:    parseBoundedIntEnv("RESEARCH_MAX_REQUEST_BYTES", 48*1024, 1024, 64*1024),
-		ResearchMaxResponseBytes:   parseBoundedIntEnv("RESEARCH_MAX_RESPONSE_BYTES", 64*1024, 1024, 128*1024),
-		ResearchMaxTokens:          parseBoundedIntEnv("RESEARCH_MAX_TOKENS", 4096, 64, 8192),
+		ResearchDirectJudgeEnabled:         parseBoolEnv("RESEARCH_DIRECT_JUDGE_ENABLED", true),
+		ResearchDeepAgentEnabled:           parseBoolEnv("RESEARCH_DEEP_AGENT_ENABLED", false),
+		ResearchDeepAgentDarkLaunchEnabled: parseBoolEnv("RESEARCH_DEEP_AGENT_DARK_LAUNCH_ENABLED", false),
+		ResearchDeepAgentSurfaceRevisions:  parseBoolEnv("RESEARCH_DEEP_AGENT_SURFACE_REVISIONS", false),
+		ResearchDeepAgentCohortBPS:         parseCohortBPSEnv("RESEARCH_DEEP_AGENT_COHORT_BPS"),
+		ResearchDeepAgentWebEnabled:        parseBoolEnv("RESEARCH_DEEP_AGENT_WEB_ENABLED", false),
+		ResearchMaxToolCalls:               parseBoundedIntEnv("RESEARCH_MAX_TOOL_CALLS", 8, 1, 32),
+		ResearchMaxModelCalls:              parseBoundedIntEnv("RESEARCH_MAX_MODEL_CALLS", 10, 1, 12),
+		ResearchRecursionLimit:             parseBoundedIntEnv("RESEARCH_RECURSION_LIMIT", 12, 2, 16),
+		ResearchMaxCandidatesIn:            parseBoundedIntEnv("RESEARCH_MAX_CANDIDATES_IN", 25, 1, 64),
+		ResearchMaxRecommendations:         parseBoundedIntEnv("RESEARCH_MAX_RECOMMENDATIONS", 10, 1, 10),
+		ResearchWallClock:                  parseBoundedDurationMsEnv("RESEARCH_WALL_CLOCK_MS", 180*time.Second, time.Second, 5*time.Minute),
+		ResearchMaxRequestBytes:            parseBoundedIntEnv("RESEARCH_MAX_REQUEST_BYTES", 48*1024, 1024, 64*1024),
+		ResearchMaxResponseBytes:           parseBoundedIntEnv("RESEARCH_MAX_RESPONSE_BYTES", 64*1024, 1024, 128*1024),
+		ResearchMaxTokens:                  parseBoundedIntEnv("RESEARCH_MAX_TOKENS", 4096, 64, 8192),
 
 		ResearchDailyUnitsPerAttempt: parseBoundedIntEnv("RESEARCH_DAILY_UNITS_PER_ATTEMPT", 1, 1, 10),
 		ResearchDailyLimit:           parseBoundedIntEnv("RESEARCH_DAILY_LIMIT", 10, 1, 100),
@@ -262,6 +275,35 @@ func Load() *Config {
 		ResearchCancelGrace:          parseBoundedDurationMsEnv("RESEARCH_CANCEL_GRACE_MS", 2*time.Second, 100*time.Millisecond, 30*time.Second),
 		ResearchShutdownTimeout:      parseBoundedDurationMsEnv("RESEARCH_SHUTDOWN_TIMEOUT_MS", 30*time.Second, time.Second, 30*time.Second),
 	}
+}
+
+// ValidateResearchRollout rejects unsafe deep-agent rollout combinations.
+// Load intentionally remains best-effort for the existing API process; callers
+// that opt into a rollout must validate before starting model work or surfacing
+// revisions. Direct-judge configuration is intentionally unaffected.
+func (c *Config) ValidateResearchRollout() error {
+	if c == nil {
+		return errors.New("research rollout config is required")
+	}
+	if c.ResearchDeepAgentCohortBPS < 0 || c.ResearchDeepAgentCohortBPS > 10000 {
+		return fmt.Errorf("RESEARCH_DEEP_AGENT_COHORT_BPS must be between 0 and 10000")
+	}
+	if c.ResearchDeepAgentEnabled && !c.ResearchDeepAgentDarkLaunchEnabled {
+		return errors.New("RESEARCH_DEEP_AGENT_ENABLED requires RESEARCH_DEEP_AGENT_DARK_LAUNCH_ENABLED")
+	}
+	if c.ResearchDeepAgentDarkLaunchEnabled && (!c.ResearchEnabled || !c.ResearchDeepAgentEnabled) {
+		return errors.New("RESEARCH_DEEP_AGENT_DARK_LAUNCH_ENABLED requires RESEARCH_ENABLED and RESEARCH_DEEP_AGENT_ENABLED")
+	}
+	if c.ResearchDeepAgentCohortBPS > 0 && (!c.ResearchEnabled || !c.ResearchDeepAgentEnabled || !c.ResearchDeepAgentDarkLaunchEnabled) {
+		return errors.New("RESEARCH_DEEP_AGENT_COHORT_BPS requires enabled deep-agent dark launch")
+	}
+	if c.ResearchDeepAgentSurfaceRevisions && (!c.ResearchEnabled || !c.ResearchDeepAgentEnabled || !c.ResearchDeepAgentDarkLaunchEnabled) {
+		return errors.New("RESEARCH_DEEP_AGENT_SURFACE_REVISIONS requires enabled deep-agent dark launch")
+	}
+	if c.ResearchDeepAgentWebEnabled {
+		return errors.New("RESEARCH_DEEP_AGENT_WEB_ENABLED is unsupported in the production worker topology; use the eval-only gateway")
+	}
+	return nil
 }
 
 // parseDurationMsEnv reads a millisecond integer env var into a Duration,
@@ -324,6 +366,20 @@ func parseBoundedIntEnv(key string, defaultValue, minimum, maximum int) int {
 	}
 	if parsed > maximum {
 		return maximum
+	}
+	return parsed
+}
+
+// parseCohortBPSEnv preserves invalid values so ValidateResearchRollout can
+// reject them instead of silently widening a production rollout.
+func parseCohortBPSEnv(key string) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return -1
 	}
 	return parsed
 }

@@ -11,6 +11,7 @@ domain concept moves or a new production harness becomes canonical.
 | Audio analyzer | `backend/cmd/audio-analyzer/`, `backend/Dockerfile` target `analyzer-runtime` | Beat/downbeat, BPM, key/Camelot, waveform, and spectral analysis | `scripts/lint analyzer`, `scripts/test analyzer`, `scripts/build analyzer` |
 | AI assist evals | `backend/internal/aiassist/eval/`, `backend/cmd/aiassist-eval/`, `docs/AI_EVALS.md`, `scripts/eval` | Versioned, deterministic intent-evaluation corpus; replay and opt-in OpenAI-compatible live artifacts | `go test ./internal/aiassist/eval ./cmd/aiassist-eval`, `scripts/eval ai-assist --mode replay` |
 | Agent search evals | `agents/candidate_assembly/`, `backend/cmd/sourcequality-rank/`, `docs/AI_EVALS.md`, `scripts/eval` | Bounded, evals-first candidate-assembly orchestrator prototype (issue #265); network-free replay gate + opt-in live model arms | `scripts/eval agent-search --mode replay`, `cd agents/candidate_assembly && uv run pytest`, `go -C backend test ./cmd/sourcequality-rank/...` |
+| Bounded async research rollout | `backend/cmd/server/`, `backend/internal/config/`, `backend/internal/research/`, `backend/internal/api/research.go`, `docs/adr/0003-bounded-async-research-rollout.md` | Default-off durable baseline plus persisted deterministic/direct/dark variant assignment and bounded child-worker projection | `GOFLAGS=-buildvcs=false go -C backend test ./internal/config ./internal/research ./internal/api ./cmd/server` |
 | Flutter client | `client/` | Mobile/web/desktop app, playback engine, queue timeline, settings/build metadata | `scripts/test client`, `scripts/lint client`, `scripts/build client` |
 | Browser extension | `extension/` | Share/import surface for YouTube/SoundCloud style sources | `scripts/test extension`, `scripts/lint extension`, `scripts/build extension` |
 | Local stack | `docker-compose*.yml`, `scripts/local-low-memory.sh` | Postgres, Redis, MinIO, backend/analyzer dogfood services, worker-free backend test dependencies | `scripts/dev`, `scripts/dev test-infra`, `scripts/smoke`, `scripts/smoke e2e` |
@@ -121,6 +122,22 @@ domain concept moves or a new production harness becomes canonical.
 - Guardrail: model-originated URLs, hallucinated candidate ids, ungrounded
   action claims, and unsafe provider hints are eval failures; a configured API
   key must never be recorded in artifacts.
+
+### Bounded Async Research Rollout
+
+- Server composition and startup validation: `backend/cmd/server/main.go`,
+  `backend/internal/config/config.go`.
+- Durable variants, worker request selection, and API/review projection:
+  `backend/internal/research/rollout.go`, `command_runner.go`,
+  `postgres_repository.go`, `backend/internal/api/research.go`.
+- Decision record: `docs/adr/0003-bounded-async-research-rollout.md`.
+- Guardrail: baseline revision 1 is deterministic and immediately available.
+  The deep agent is default-off, async-only, and selected by a persisted BPS
+  assignment. A worker must run only that assignment's single stage.
+- Guardrail: while deep revisions are not surfaced, API snapshots/events and
+  review/source selection resolve the baseline; durable safe telemetry remains
+  available for internal evaluation. Web/gateway credential forwarding is
+  eval-only, not a production worker path.
 
 ### Audio Analysis And DJ Waveforms
 

@@ -3,6 +3,7 @@ package research
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -75,10 +76,94 @@ func TestServiceCanonicalizesRequestHash(t *testing.T) {
 	}
 }
 
+func TestServiceAssignsStableVariantAndDefaultsToDeterministic(t *testing.T) {
+	assigned := []VariantAssignmentInput{}
+	service := NewService(ServiceConfig{Repository: newMemory(), Validator: validatorFunc{}, VariantAssigner: VariantAssignerFunc(func(input VariantAssignmentInput) (VariantAssignment, error) {
+		assigned = append(assigned, input)
+		return VariantAssignment{Variant: VariantBoundedAgentDarkLaunch, Cohort: "dark-17"}, nil
+	})})
+	snapshot, err := service.Create(context.Background(), input())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assigned) != 1 || assigned[0].RequestHash == "" || snapshot.Job.Assignment != (VariantAssignment{Variant: VariantBoundedAgentDarkLaunch, Cohort: "dark-17"}) {
+		t.Fatalf("assignment input=%#v snapshot=%#v", assigned, snapshot.Job.Assignment)
+	}
+	defaultSnapshot, err := NewService(ServiceConfig{Repository: newMemory(), Validator: validatorFunc{}}).Create(context.Background(), input())
+	if err != nil || defaultSnapshot.Job.Assignment != (VariantAssignment{Variant: VariantDeterministicOnly, Cohort: defaultVariantCohort}) {
+		t.Fatalf("default assignment=%#v err=%v", defaultSnapshot.Job.Assignment, err)
+	}
+}
+
+func TestRolloutVariantAssignerIsDefaultOffAndStableAtCohortBoundaries(t *testing.T) {
+	input := VariantAssignmentInput{RequestHash: "8e73b0f2d7cd7a7a955c25f70f6dc4cf2d1f6545a9f1fd0f4cd63bf7baf9c55f"}
+	off, err := NewRolloutVariantAssigner(RolloutConfig{ResearchEnabled: false, DirectJudgeEnabled: true, DeepAgentEnabled: true, DeepAgentDarkLaunch: true, DeepAgentCohortBPS: 10000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment, err := off.Assign(input)
+	if err != nil || assignment != deterministicAssignment() {
+		t.Fatalf("default-off assignment=%#v err=%v", assignment, err)
+	}
+
+	for _, cohort := range []int{0, 10000} {
+		assigner, err := NewRolloutVariantAssigner(RolloutConfig{ResearchEnabled: true, DirectJudgeEnabled: true, DeepAgentEnabled: true, DeepAgentDarkLaunch: true, DeepAgentCohortBPS: cohort})
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := assigner.Assign(input)
+		second, secondErr := assigner.Assign(input)
+		if err != nil || secondErr != nil || first != second {
+			t.Fatalf("cohort %d assignment unstable: %#v %#v %v %v", cohort, first, second, err, secondErr)
+		}
+		if cohort == 0 && first.Variant != VariantDirectStructuredJudge {
+			t.Fatalf("cohort 0 assignment=%#v, want direct", first)
+		}
+		if cohort == 10000 && (first.Variant != VariantBoundedAgentDarkLaunch || first.Cohort != "deep-bps-10000") {
+			t.Fatalf("cohort 10000 assignment=%#v", first)
+		}
+	}
+
+	assigner, err := NewRolloutVariantAssigner(RolloutConfig{ResearchEnabled: true, DirectJudgeEnabled: false, DeepAgentEnabled: true, DeepAgentDarkLaunch: true, DeepAgentCohortBPS: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pick a deterministic non-member to prove cohort BPS is an exclusive
+	// upper bound and does not promote a job without direct judge enabled.
+	var nonMember VariantAssignmentInput
+	for i := 0; i < 100000; i++ {
+		candidate := VariantAssignmentInput{RequestHash: fmt.Sprintf("safe-hash-%d", i)}
+		if rolloutCohortBPS(candidate.RequestHash) >= 1 {
+			nonMember = candidate
+			break
+		}
+	}
+	if nonMember.RequestHash == "" {
+		t.Fatal("did not find deterministic non-member")
+	}
+	assignment, err = assigner.Assign(nonMember)
+	if err != nil || assignment != deterministicAssignment() {
+		t.Fatalf("non-member assignment=%#v err=%v", assignment, err)
+	}
+}
+
+func TestVariantAssignmentRejectsInvalidVariantAndMetadata(t *testing.T) {
+	for _, assignment := range []VariantAssignment{
+		{Variant: "unknown", Cohort: "default"},
+		{Variant: VariantDirectStructuredJudge, Cohort: "https://secret.invalid"},
+		{Variant: VariantDirectStructuredJudge, Cohort: "Token"},
+		{Variant: VariantDirectStructuredJudge, Cohort: "api-key-test"},
+	} {
+		if _, err := NormalizeVariantAssignment(assignment); !errors.Is(err, ErrInvalidVariant) {
+			t.Fatalf("assignment %#v error=%v", assignment, err)
+		}
+	}
+}
+
 func TestCancelReturnsBaselinePreservingSnapshot(t *testing.T) {
 	r := newMemory()
 	_, _ = r.Create(context.Background(), input())
-	claim, err := r.Claim(context.Background(), "worker", time.Now().Add(time.Minute))
+	claim, err := r.Claim(context.Background(), "worker", WorkerCapabilities{DirectJudge: true}, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +301,7 @@ func shape(i RevisionInput) error {
 	return nil
 }
 func input() CreateInput {
-	return CreateInput{ID: "j", OwnerID: "o", Request: []byte(`{}`), RequestHash: "h", RetrySafe: true, MaxAttempts: 2, IdempotencyKey: "i", Baseline: RevisionInput{ID: "r1", Payload: []byte(`{"candidates":[]}`)}}
+	return CreateInput{ID: "j", OwnerID: "o", Request: []byte(`{}`), RequestHash: "h", RetrySafe: true, MaxAttempts: 2, IdempotencyKey: "i", Baseline: RevisionInput{ID: "r1", Payload: []byte(`{"candidates":[]}`)}, Assignment: VariantAssignment{Variant: VariantDirectStructuredJudge, Cohort: "test"}}
 }
 
 type manual struct{ c chan time.Time }
@@ -224,7 +309,7 @@ type manual struct{ c chan time.Time }
 func (m *manual) Chan() <-chan time.Time { return m.c }
 func (*manual) Stop()                    {}
 func worker(r Repository, run Runner, v Validator) *Worker {
-	return NewWorker(WorkerConfig{Repository: r, Runner: run, Validator: v, WorkerID: "w", Clock: func() time.Time { return time.Unix(1, 0) }, Jitter: func(time.Duration) time.Duration { return 0 }})
+	return NewWorker(WorkerConfig{Repository: r, Runner: run, Validator: v, WorkerID: "w", Capabilities: WorkerCapabilities{DirectJudge: true, DeepAgent: true}, Clock: func() time.Time { return time.Unix(1, 0) }, Jitter: func(time.Duration) time.Duration { return 0 }})
 }
 
 type memory struct {
@@ -243,7 +328,11 @@ func (m *memory) Create(_ context.Context, i CreateInput) (*Snapshot, error) {
 		return nil, err
 	}
 	now := time.Unix(1, 0)
-	m.s = Snapshot{Job: Job{ID: i.ID, OwnerID: i.OwnerID, Request: i.Request, RequestHash: i.RequestHash, IdempotencyKey: i.IdempotencyKey, Status: JobQueued, RetrySafe: i.RetrySafe, MaxAttempts: i.MaxAttempts, AvailableAt: now, LatestRevision: 1, LatestRevisionID: i.Baseline.ID}, Revisions: []Revision{{ID: i.Baseline.ID, JobID: i.ID, Number: 1, Kind: RevisionBaseline, Payload: i.Baseline.Payload, ValidatedAt: now}}}
+	assignment, err := NormalizeVariantAssignment(i.Assignment)
+	if err != nil {
+		return nil, err
+	}
+	m.s = Snapshot{Job: Job{ID: i.ID, OwnerID: i.OwnerID, Request: i.Request, RequestHash: i.RequestHash, IdempotencyKey: i.IdempotencyKey, Status: JobQueued, RetrySafe: i.RetrySafe, MaxAttempts: i.MaxAttempts, AvailableAt: now, LatestRevision: 1, LatestRevisionID: i.Baseline.ID, Assignment: assignment}, Revisions: []Revision{{ID: i.Baseline.ID, JobID: i.ID, Number: 1, Kind: RevisionBaseline, Payload: i.Baseline.Payload, ValidatedAt: now}}}
 	m.events = []Event{{Sequence: 1, Kind: EventCreated}, {Sequence: 2, Kind: EventRevisionAppended, Revision: 1, RevisionID: i.Baseline.ID}}
 	return m.copyLocked(), nil
 }
@@ -272,10 +361,10 @@ func (m *memory) Retry(context.Context, string, string) (*Snapshot, error) {
 func (*memory) Review(context.Context, string, string, ReviewInput) (*db.SourceSelectionDecision, error) {
 	return &db.SourceSelectionDecision{}, nil
 }
-func (m *memory) Claim(_ context.Context, w string, lease time.Time) (*Claim, error) {
+func (m *memory) Claim(_ context.Context, w string, capabilities WorkerCapabilities, lease time.Time) (*Claim, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.claimed || m.s.Job.Status != JobQueued {
+	if m.claimed || m.s.Job.Status != JobQueued || !capabilities.Supports(m.s.Job.Assignment) {
 		return nil, ErrNoJobAvailable
 	}
 	m.claimed = true

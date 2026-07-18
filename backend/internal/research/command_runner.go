@@ -58,7 +58,7 @@ func NewCommandRunner(config CommandRunnerConfig) (*CommandRunner, error) {
 		return nil, errors.New("research worker budgets invalid")
 	}
 	if !config.Stages.DirectJudge && !config.Stages.DeepAgent {
-		config.Stages = WorkerStageConfig{DirectJudge: true, DeepAgent: true}
+		return nil, errors.New("research worker requires an enabled stage")
 	}
 	if config.CancelGrace <= 0 {
 		config.CancelGrace = 2 * time.Second
@@ -79,11 +79,15 @@ func NewCommandRunner(config CommandRunnerConfig) (*CommandRunner, error) {
 }
 
 func (r *CommandRunner) Run(ctx context.Context, request RunRequest, sink EnhancementSink) error {
+	stages, err := stagesForAssignment(request.Snapshot.Job.Assignment, r.config.Stages)
+	if err != nil {
+		return err
+	}
 	baseline, err := baselineFromSnapshot(request.Snapshot)
 	if err != nil {
 		return Validation(errors.New("research baseline unavailable"))
 	}
-	wire, err := workerRequest(request, baseline, r.config.Budgets, r.config.Stages)
+	wire, err := workerRequest(request, baseline, r.config.Budgets, stages)
 	if err != nil {
 		return Validation(errors.New("research worker request invalid"))
 	}
@@ -146,7 +150,7 @@ func (r *CommandRunner) Run(ctx context.Context, request RunRequest, sink Enhanc
 	}()
 	defer close(cancelDone)
 
-	expected := configuredStages(r.config.Stages)
+	expected := configuredStages(stages)
 	seenTerminal, records, bytesRead := false, 0, 0
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 1024), r.config.MaxLineBytes)
@@ -162,7 +166,7 @@ func (r *CommandRunner) Run(ctx context.Context, request RunRequest, sink Enhanc
 			terminate()
 			return Validation(errors.New("research worker output invalid"))
 		}
-		if err := r.handleRecord(ctx, line, request, baseline, sink, &expected, &seenTerminal, started); err != nil {
+		if err := r.handleRecord(ctx, line, request, baseline, sink, stages, &expected, &seenTerminal, started); err != nil {
 			terminate()
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -187,6 +191,32 @@ func (r *CommandRunner) Run(ctx context.Context, request RunRequest, sink Enhanc
 	return nil
 }
 
+// stagesForAssignment makes the persisted job arm the execution authority.
+// Global flags express which arms this worker can service; they never expand a
+// deterministic or direct assignment into a deep-agent child invocation.
+func stagesForAssignment(assignment VariantAssignment, enabled WorkerStageConfig) (WorkerStageConfig, error) {
+	normalized, err := NormalizeVariantAssignment(assignment)
+	if err != nil {
+		return WorkerStageConfig{}, Validation(err)
+	}
+	switch normalized.Variant {
+	case VariantDeterministicOnly:
+		return WorkerStageConfig{}, TypedDegradation(PublicDegradation(DegradationModelDisabled))
+	case VariantDirectStructuredJudge:
+		if !enabled.DirectJudge {
+			return WorkerStageConfig{}, TypedDegradation(PublicDegradation(DegradationModelDisabled))
+		}
+		return WorkerStageConfig{DirectJudge: true}, nil
+	case VariantBoundedAgentDarkLaunch:
+		if !enabled.DeepAgent {
+			return WorkerStageConfig{}, TypedDegradation(PublicDegradation(DegradationModelDisabled))
+		}
+		return WorkerStageConfig{DeepAgent: true}, nil
+	default:
+		return WorkerStageConfig{}, Validation(ErrInvalidVariant)
+	}
+}
+
 func configuredStages(config WorkerStageConfig) []RevisionStage {
 	stages := make([]RevisionStage, 0, 2)
 	if config.DirectJudge {
@@ -198,7 +228,7 @@ func configuredStages(config WorkerStageConfig) []RevisionStage {
 	return stages
 }
 
-func (r *CommandRunner) handleRecord(ctx context.Context, raw []byte, request RunRequest, baseline RevisionPayload, sink EnhancementSink, expected *[]RevisionStage, seenTerminal *bool, started time.Time) error {
+func (r *CommandRunner) handleRecord(ctx context.Context, raw []byte, request RunRequest, baseline RevisionPayload, sink EnhancementSink, stages WorkerStageConfig, expected *[]RevisionStage, seenTerminal *bool, started time.Time) error {
 	if bytes.Contains(bytes.ToLower(raw), []byte("http://")) || bytes.Contains(bytes.ToLower(raw), []byte("https://")) || secretLikeText.Match(raw) {
 		return Safety(errors.New("research worker output unsafe"))
 	}
@@ -212,7 +242,7 @@ func (r *CommandRunner) handleRecord(ctx context.Context, raw []byte, request Ru
 		if err := decodeStrict(raw, &record); err != nil || record.SchemaVersion != workerRevisionSchema || len(*expected) == 0 || record.Stage != (*expected)[0] || !validWorkerRevision(record) {
 			return Validation(errors.New("research worker revision invalid"))
 		}
-		payload, err := workerRevisionPayload(record, baseline, r.config.Now().Sub(started).Milliseconds(), len(*expected) == 2 && record.Stage == StageDirectJudge)
+		payload, err := workerRevisionPayload(record, baseline, r.config.Now().Sub(started).Milliseconds(), record.Stage == StageDirectJudge)
 		if err != nil {
 			return Validation(errors.New("research worker revision invalid"))
 		}
@@ -227,7 +257,7 @@ func (r *CommandRunner) handleRecord(ctx context.Context, raw []byte, request Ru
 		return nil
 	case "terminal":
 		var terminal workerTerminalRecord
-		emitted := len(configuredStages(r.config.Stages)) - len(*expected)
+		emitted := len(configuredStages(stages)) - len(*expected)
 		if err := decodeStrict(raw, &terminal); err != nil || terminal.SchemaVersion != workerTerminalSchema || !validWorkerTerminal(terminal, request, emitted, *expected) {
 			return Validation(errors.New("research worker terminal invalid"))
 		}

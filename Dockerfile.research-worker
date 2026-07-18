@@ -1,0 +1,44 @@
+# Dedicated durable research-worker image. The Go process retains ownership of
+# leases, cancellation, recovery, and the child-process environment allowlist.
+FROM golang:1.25-alpine AS server-builder
+
+WORKDIR /src/backend
+
+RUN apk add --no-cache git ca-certificates
+
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+
+COPY backend/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /server ./cmd/server
+
+FROM python:3.11-slim-bookworm AS research-worker-runtime
+
+WORKDIR /opt/candidate-assembly
+
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home appuser
+
+# The lockfile fixes the Python worker dependency graph, including the opt-in
+# live DeepAgents dependencies. No service or user credentials are built in.
+COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /uvx /bin/
+COPY agents/candidate_assembly/pyproject.toml agents/candidate_assembly/uv.lock ./
+COPY agents/candidate_assembly/ ./
+RUN uv sync --frozen --extra live --no-dev \
+    && chown -R appuser:appuser /opt/candidate-assembly
+
+COPY --from=server-builder /server /app/server
+RUN chown appuser:appuser /app/server
+
+ENV PATH=/opt/candidate-assembly/.venv/bin:$PATH \
+    PYTHONUNBUFFERED=1
+
+USER appuser
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+ENTRYPOINT ["/app/server"]

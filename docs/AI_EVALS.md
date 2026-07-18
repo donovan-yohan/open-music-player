@@ -249,6 +249,24 @@ export AGENT_SEARCH_MODEL=your-model
 scripts/eval agent-search --mode live --arm deep_agent --update-recordings
 ```
 
+For a reviewed endpoint/model matrix, the nonsecret dimensions can be explicit
+CLI flags while the API key remains environment-only. Neither the base URL nor
+the API key is stored in the artifact. `--skip-probe` makes no startup probe
+requests and records that omission explicitly; use it for a request-counted
+pilot where only arm attempts should consume model calls.
+
+```bash
+export AGENT_SEARCH_API_KEY=from-a-secret-store
+scripts/eval agent-search --mode live \
+  --base-url https://models.example/v1/ --model reviewed-model \
+  --skip-probe --max-model-calls 1 --wall-clock-s 90 \
+  --arm direct_judge --case plain-artist-song-official-audio \
+  --output /tmp/agent-search-reviewed-model.jsonl
+```
+
+`--base-url`, `--model`, and `--skip-probe` are rejected outside live mode.
+There is intentionally no API-key CLI flag.
+
 The runner probes the endpoint once at live start and records redacted evidence
 in the artifact header. `response_format` json_object is honored by the probed
 endpoint (grammar-enforced JSON arrives in `message.content` while the model's
@@ -268,21 +286,64 @@ settings are env-only (`AGENT_SEARCH_TIMEOUT_S`, `AGENT_SEARCH_RUN_TIMEOUT_S`);
 keep credentials in your shell or a secret store, never in fixtures, docs, or
 artifacts.
 
+### Private gateway dark-launch mode
+
+`gateway` is an explicit mode for the private #271 capability gateway. It is
+not a replacement for replay and it does not grant Python provider, browser,
+shell, URL, or Firecrawl access. It runs exactly six reviewed, versioned cases:
+official audio, explicit request, explicit remix, SoundCloud-only, ambiguous
+catalog/title, and cross-provider duration mismatch. It records only counts,
+provider totals, duration-mismatch observation, safe typed outcomes, and per-tool
+timing; it never writes candidate text, IDs, evidence refs, provider URLs,
+capabilities, credentials, or response bodies.
+
+```bash
+export AGENT_TOOL_GATEWAY_URL=https://gateway-host.example
+export AGENT_TOOL_GATEWAY_SERVICE_TOKEN=from-a-secret-store
+export AGENT_TOOL_GATEWAY_TIMEOUT_S=5
+scripts/eval agent-search --mode gateway --run-state cold --output /tmp/agent-search-gateway-cold.jsonl
+scripts/eval agent-search --mode gateway --run-state warm --output /tmp/agent-search-gateway-warm.jsonl
+```
+
+Each reviewed case gets a fresh capability and a fresh bounded budget, so a slow
+provider cannot consume another case's allowance. A gateway failure is explicit
+typed degradation/fallback evidence for the deterministic baseline; the harness
+does not retry or silently recover. `--run-state cold|idle|warm` is supplied by
+the operator. Startup probing is separate from model-call duration and is never
+labeled as model latency.
+
+Firecrawl is a distinct experiment, disabled by default. It is enabled only by
+this command and is capped at one extraction, one credit, and one job; its
+response is discarded before artifact writing.
+
+```bash
+scripts/eval agent-search --mode gateway --case official-audio --firecrawl-experiment \
+  --output /tmp/agent-search-firecrawl.jsonl
+```
+
+Do not run that command without approved billing. Disabled, timeout, rate-limit,
+oversize, cancellation, and budget paths are covered by offline fake-gateway
+tests. Artifacts record Firecrawl request/credit/job totals, never output or a
+Firecrawl key.
+
 ## Flags, artifacts, and gates
 
-Flags: `--mode`, `--arm`, `--case`, `--min-pass-rate` (default `1.0` replay,
+Flags: `--mode`, `--arm`, `--case`, `--run-state`, `--base-url`, `--model`,
+`--skip-probe`, `--min-pass-rate` (default `1.0` replay,
 advisory live), `--output` (JSONL, `-` for stdout), `--run-id`,
-`--update-recordings`, `--record-dir`, `--limit`, and budget overrides
+`--update-recordings`, `--record-dir`, `--limit`, `--firecrawl-experiment`
+(gateway only), and budget overrides
 (`--max-tool-calls`, `--max-model-calls`, `--max-candidates-in`,
 `--max-recommendations`, `--wall-clock-s`, `--max-tokens`).
 
-The JSONL artifact is schema `omp.agent-search.eval.run.v3`: one `run` header,
+The fixture/model JSONL artifact is schema `omp.agent-search.eval.run.v4`: one `run` header,
 one record per case × arm (result, validation report, six grader results, status
 of `graded`/`skipped`/`drift`, latency, runner-owned telemetry, and safe ordered
 progress events), and one `summary` with per-arm totals and p50/p95 latency.
 Telemetry contains per-attempt duration/repair/status, probe duration where
 available, actual tool-dispatch/finalization/validation/total timing, a validated
-deterministic baseline, and final validated result timing. The optional first
+deterministic baseline, first validated/useful result timing, final timing, and
+terminal/degradation/fallback/recovery/budget outcomes. The optional first
 partial-revision metric remains unset: current model arms only expose a final
 candidate set. Future durable job/UI slices may add genuine validated enhancement
 revisions rather than treating a model attempt as a partial result.
@@ -290,8 +351,11 @@ For live model arms the runner executes and validates the deterministic baseline
 first; its bounded candidate IDs and evidence refs remain in `deterministicBaseline`
 and the first ordered event even if the model is slow or fails.
 `deterministicBaseline` is a sibling JSONL case-record field to `telemetry`, not
-nested inside telemetry. The artifact never records
-completion text, prompts, URLs, reasoning, or keys. Progress events use
+nested inside telemetry. The artifact never records completion text, prompts,
+URLs, reasoning, raw tokens, JWTs, bearer/capability/service tokens, API keys,
+or Firecrawl keys. Redaction is a recursive final-write boundary with
+deterministic leak tests. Process-local CPU/RSS observations are best effort
+only and never include host identity. Progress events use
 `omp.agent-search.eval.progress.v2` and are restricted to safe baseline,
 lifecycle, tool, and validated-result metadata. API keys and bearer/`sk-` values
 are redacted before any line is written. The command exits
@@ -308,10 +372,10 @@ scripts/eval agent-search --mode live --arm deep_agent --case plain-artist-song-
 ```
 
 The artifact distinguishes per-attempt model duration from actual synchronous
-tool-dispatch duration. It does not normalize cold versus warm endpoint startup,
-provider queueing, or model cache state; compare repeated runs on the same
-endpoint configuration and inspect every model attempt rather than treating a
-single total as a stable latency benchmark. Native-tool capability is probe
+tool-dispatch duration and records the operator-provided cold/idle/warm label.
+Compare repeated runs on the same endpoint configuration and inspect every model
+attempt rather than treating a single total as a stable latency benchmark.
+Native-tool capability is probe
 evidence only: `AGENT_SEARCH_TOOL_TRANSPORT=native` returns a typed unsupported
 transport result until an explicitly instrumented adoption decision is made.
 

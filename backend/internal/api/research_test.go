@@ -25,7 +25,8 @@ const researchTestJobID = "36ba7264-6717-4fe5-bccd-6a94edf24a10"
 func TestResearchCreateBuildsBaselineAndLeavesHashToService(t *testing.T) {
 	service := &fakeResearchService{snapshot: researchSnapshot(researchTestJobID)}
 	baseline := &fakeResearchBaseline{}
-	handlers := NewResearchHandlers(service, baseline, 3)
+	observer := &collectingResearchObserver{}
+	handlers := NewResearchHandlers(service, baseline, 3, observer)
 	userID := uuid.New()
 
 	req := newResearchAuthedRequest(userID, http.MethodPost, "/api/v1/research-jobs", []byte(`{"query":"Night drive","providers":["youtube","soundcloud"],"limit":5}`))
@@ -46,6 +47,9 @@ func TestResearchCreateBuildsBaselineAndLeavesHashToService(t *testing.T) {
 	if service.createInput.RequestHash != "" {
 		t.Fatalf("handler passed client request hash %q; the service must canonicalize it", service.createInput.RequestHash)
 	}
+	if len(observer.creates) != 1 || observer.creates[0].outcome != "created" || observer.creates[0].baselineLatency < 0 {
+		t.Fatalf("create observation = %#v", observer.creates)
+	}
 	if !bytes.Equal(service.createInput.Request, []byte(`{"query":"Night drive","providers":["youtube","soundcloud"],"limit":5}`)) {
 		t.Fatalf("request = %s", service.createInput.Request)
 	}
@@ -62,6 +66,57 @@ func TestResearchCreateBuildsBaselineAndLeavesHashToService(t *testing.T) {
 	}
 	if _, leaked := job["requestHash"]; leaked {
 		t.Fatalf("response leaked request hash: %#v", job)
+	}
+}
+
+func TestResearchObserverReceivesOnlyDerivedSnapshotLifecycleData(t *testing.T) {
+	createdAt := time.Date(2026, 7, 17, 1, 2, 3, 0, time.UTC)
+	validatedAt := createdAt.Add(80 * time.Second)
+	toolCalls := 3
+	snapshot := researchSnapshot(researchTestJobID)
+	snapshot.Job.Status = research.JobDegraded
+	snapshot.Job.CreatedAt = createdAt
+	snapshot.Job.LatestRevisionID = "revision-safe"
+	snapshot.Job.LatestRevision = 2
+	snapshot.Revisions = append(snapshot.Revisions, research.Revision{
+		ID: "revision-safe", JobID: researchTestJobID, Number: 2, Kind: research.RevisionEnhancement,
+		Payload: json.RawMessage(`{"stage":"deep_agent","query":"sensitive search text","candidates":[{"sourceUrl":"https://secret.example"}]}`), ValidatedAt: validatedAt,
+	})
+	snapshot.LatestDegradation = &research.Degradation{Code: research.DegradationTimeout}
+	snapshot.LatestTerminalTelemetry = &research.TerminalTelemetry{
+		ToolCalls:     toolCalls,
+		ModelAttempts: []research.TerminalModelAttempt{{Stage: research.StageDeepAgent, Status: "success", Repair: true, DurationMs: 90000}},
+	}
+	observer := &collectingResearchObserver{}
+	handlers := NewResearchHandlers(&fakeResearchService{snapshot: snapshot}, &fakeResearchBaseline{}, 3, observer)
+	req := newResearchAuthedRequest(uuid.New(), http.MethodGet, "/api/v1/research-jobs/"+researchTestJobID, nil)
+	req.SetPathValue("id", researchTestJobID)
+	recorder := httptest.NewRecorder()
+
+	handlers.Get(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if observer.status != "degraded" || observer.terminalStatus != "degraded" || observer.degradation != "timeout" || observer.revisionStage != "deep_agent" || observer.revisionKind != "enhancement" || observer.timeToLatest != 80*time.Second || !observer.hasTimeToLatest {
+		t.Fatalf("snapshot observation = %#v", observer)
+	}
+	if observer.toolCalls != toolCalls || len(observer.modelAttempts) != 1 || observer.modelAttempts[0] != (researchModelAttemptObservation{stage: "deep_agent", status: "success", repair: true, duration: 90 * time.Second}) {
+		t.Fatalf("terminal telemetry observation = %#v", observer)
+	}
+}
+
+func TestResearchSnapshotResponseHidesDarkTerminalTelemetryUntilSurfaced(t *testing.T) {
+	snapshot := researchSnapshot(researchTestJobID)
+	snapshot.Job.Assignment = research.VariantAssignment{Variant: research.VariantBoundedAgentDarkLaunch, Cohort: "dark-test"}
+	snapshot.LatestTerminalTelemetry = &research.TerminalTelemetry{ToolCalls: 1}
+
+	if response := researchSnapshotResponseFrom(snapshot); response.LatestTerminalTelemetry != nil {
+		t.Fatalf("dark telemetry leaked in hidden response: %#v", response)
+	}
+	snapshot.SurfaceDeepAgentRevisions = true
+	if response := researchSnapshotResponseFrom(snapshot); response.LatestTerminalTelemetry == nil {
+		t.Fatal("surfaced dark telemetry was omitted")
 	}
 }
 
@@ -293,6 +348,42 @@ func TestResearchRoutesRequireAuthBeforeDisabledAvailability(t *testing.T) {
 			t.Fatalf("%s %s = %d, want %d", endpoint.method, endpoint.path, recorder.Code, http.StatusUnauthorized)
 		}
 	}
+}
+
+type researchModelAttemptObservation struct {
+	stage    string
+	status   string
+	repair   bool
+	duration time.Duration
+}
+
+type researchCreateObservation struct {
+	outcome         string
+	baselineLatency time.Duration
+}
+
+type collectingResearchObserver struct {
+	creates                                                          []researchCreateObservation
+	status, terminalStatus, degradation, revisionStage, revisionKind string
+	timeToLatest                                                     time.Duration
+	hasTimeToLatest                                                  bool
+	toolCalls                                                        int
+	modelAttempts                                                    []researchModelAttemptObservation
+}
+
+func (o *collectingResearchObserver) ObserveResearchCreate(outcome string, baselineLatency time.Duration) {
+	o.creates = append(o.creates, researchCreateObservation{outcome: outcome, baselineLatency: baselineLatency})
+}
+func (o *collectingResearchObserver) ObserveResearchSnapshot(status, terminalStatus, degradation, revisionStage, revisionKind string, timeToLatest time.Duration, hasTimeToLatest bool) {
+	o.status, o.terminalStatus, o.degradation = status, terminalStatus, degradation
+	o.revisionStage, o.revisionKind = revisionStage, revisionKind
+	o.timeToLatest, o.hasTimeToLatest = timeToLatest, hasTimeToLatest
+}
+func (*collectingResearchObserver) ObserveResearchMutation(string, string) {}
+func (*collectingResearchObserver) ObserveResearchReview(string, string)   {}
+func (o *collectingResearchObserver) ObserveResearchToolCalls(calls int)   { o.toolCalls = calls }
+func (o *collectingResearchObserver) ObserveResearchModelAttempt(stage, status string, repair bool, duration time.Duration) {
+	o.modelAttempts = append(o.modelAttempts, researchModelAttemptObservation{stage: stage, status: status, repair: repair, duration: duration})
 }
 
 type fakeResearchBaseline struct {

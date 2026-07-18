@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import math
-import re
+import resource
 import sys
 import time
 from dataclasses import dataclass, field
@@ -41,11 +41,7 @@ from ..schemas import (
 from ..validate import ValidationReport, validate_result
 from . import corpus as corpus_mod
 from . import graders as graders_mod
-
-# Redact API keys / bearer tokens before any artifact line is written.
-_ARTIFACT_SECRET_PATTERN = re.compile(
-    r"(?i)(?:\bbearer\s+[^\s\"\\]+|\bsk-[a-z0-9_-]{8,}|\bapi[_-]?key\s*[:=]\s*[^\s\"\\]+)"
-)
+from .redaction import redact_value
 
 STATUS_GRADED = "graded"
 STATUS_SKIPPED = "skipped"
@@ -105,6 +101,7 @@ class RunConfig:
     update_recordings: bool = False
     default_limit: int = 5
     run_timeout_s: Optional[float] = None
+    run_state: str = "idle"
 
 
 def recording_path(arm: str, case_id: str, base: Optional[Path] = None) -> Path:
@@ -128,7 +125,7 @@ def _write_recording(arm: str, case_id: str, result: AssemblyResult, base: Optio
     payload = json.dumps(result.model_dump(exclude_none=True), indent=2, sort_keys=True)
     # Scrub secret-shaped strings before persisting, mirroring write_artifact, so a
     # live model completion can never bake a token into a committed recording.
-    payload = _ARTIFACT_SECRET_PATTERN.sub("[REDACTED]", payload)
+    payload = json.dumps(redact_value(json.loads(payload)), indent=2, sort_keys=True)
     path.write_text(payload + "\n")
 
 
@@ -241,10 +238,29 @@ def _outcome_from_result(
                 evidenceRefs=_safe_evidence_refs(result) if useful else [],
             )
         )
+        telemetry.timeToFirstValidatedResultMs = (
+            baseline_elapsed_ms + latency_ms + validation_ms
+        )
         if useful:
             telemetry.timeToFirstUsefulValidatedResultMs = (
                 baseline_elapsed_ms + latency_ms + validation_ms
             )
+    telemetry.timeToFinalMs = baseline_elapsed_ms + latency_ms + validation_ms
+    telemetry.timeToBaselineMs = baseline_elapsed_ms if deterministic_baseline else None
+    telemetry.fallback = "deterministic_baseline" if deterministic_baseline else "none"
+    if result.error is not None:
+        telemetry.terminalOutcome = "failed"
+        telemetry.degradation = (
+            "budget_exhausted"
+            if result.error.code == "BUDGET_EXCEEDED"
+            else "arm_error"
+        )
+        telemetry.budgetOutcome = (
+            "exhausted" if result.error.code == "BUDGET_EXCEEDED" else "within_budget"
+        )
+    elif validation is not None and not validation.passed:
+        telemetry.terminalOutcome = "failed"
+        telemetry.degradation = "validation_failed"
     passed = graders_mod.grades_passed(grades)
     return CaseArmOutcome(
         case_id=case.id,
@@ -551,7 +567,9 @@ def build_records(outcomes: list[CaseArmOutcome], cfg: RunConfig) -> list[dict]:
                 "model": cfg.model,
                 "promptRevision": cfg.prompt_revision,
                 "toolTransport": cfg.tool_transport,
+                "runState": cfg.run_state,
                 "probeEvidence": cfg.probe_evidence,
+                "localResource": local_resource_observation(),
             },
         }
     )
@@ -593,18 +611,25 @@ def build_records(outcomes: list[CaseArmOutcome], cfg: RunConfig) -> list[dict]:
     return records
 
 
+def local_resource_observation() -> dict:
+    """Best-effort process counters, deliberately excluding host identity."""
+
+    try:
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        return {
+            "available": True,
+            "userCpuMs": max(0, int(round(usage.ru_utime * 1000))),
+            "systemCpuMs": max(0, int(round(usage.ru_stime * 1000))),
+            "maxRssKiB": max(0, int(usage.ru_maxrss)),
+        }
+    except (AttributeError, OSError):  # pragma: no cover - platform-specific
+        return {"available": False}
+
+
 def write_artifact(path: str, records: list[dict], api_key: str = "") -> None:
     def encode(record: dict) -> str:
-        raw = json.dumps(record, ensure_ascii=False)
-        # Only literal-replace a key long enough to be a real secret. A short
-        # value (e.g. an empty or truncated key) would blanket-redact ordinary
-        # substrings across every artifact line; the regex pattern below still
-        # catches genuinely secret-shaped tokens regardless. Mirrors the Go
-        # harness redaction guard.
-        if api_key and len(api_key) >= 8:
-            raw = raw.replace(api_key, "[REDACTED]")
-        raw = _ARTIFACT_SECRET_PATTERN.sub("[REDACTED]", raw)
-        return raw
+        literals = (api_key,) if api_key else ()
+        return json.dumps(redact_value(record, literals), ensure_ascii=False)
 
     lines = [encode(record) for record in records]
     if path == "-":

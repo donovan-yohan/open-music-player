@@ -3,11 +3,70 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 )
+
+func TestResearchVariantMigrationDownUpPreservesPersistedAssignments(t *testing.T) {
+	database := newResearchSchemaTestDB(t)
+	tx, err := database.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+
+	readMigration := func(name string) string {
+		t.Helper()
+		raw, readErr := os.ReadFile("migrations/" + name)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		return string(raw)
+	}
+	userID := uuid.NewString()
+	if _, err := tx.Exec(`INSERT INTO users (id,email,username,password_hash) VALUES ($1,$2,$3,'test')`, userID, "variant-"+userID+"@example.test", "variant"+userID[:8]); err != nil {
+		t.Fatal(err)
+	}
+	assignments := []struct{ variant, cohort string }{{"direct_structured_judge", "direct-live"}, {"bounded_agent_dark_launch", "dark-live"}}
+	jobIDs := make([]string, len(assignments))
+	for index, assignment := range assignments {
+		jobIDs[index] = uuid.NewString()
+		if _, err := tx.Exec(`INSERT INTO research_jobs (id,user_id,idempotency_key,request_hash,request_snapshot,retry_safe,query,providers,result_limit,max_attempts,assigned_variant,variant_cohort) VALUES ($1,$2,$3,$4,$5::jsonb,TRUE,$6,$7::jsonb,10,3,$8,$9)`, jobIDs[index], userID, "variant-preserve-"+assignment.cohort, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", `{"query":"fixture query","providers":["youtube"],"limit":10}`, "fixture query", `["youtube"]`, assignment.variant, assignment.cohort); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tx.Exec(readMigration("000017_add_research_variant_assignments.down.sql")); err != nil {
+		t.Fatalf("migration down: %v", err)
+	}
+	var variantColumns int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='research_jobs' AND column_name IN ('assigned_variant','variant_cohort')`).Scan(&variantColumns); err != nil || variantColumns != 2 {
+		t.Fatalf("migration down columns=%d err=%v", variantColumns, err)
+	}
+	if _, err := tx.Exec(readMigration("000017_add_research_variant_assignments.up.sql")); err != nil {
+		t.Fatalf("migration up: %v", err)
+	}
+	for index, assignment := range assignments {
+		var variant, cohort string
+		if err := tx.QueryRow(`SELECT assigned_variant,variant_cohort FROM research_jobs WHERE id=$1`, jobIDs[index]).Scan(&variant, &cohort); err != nil || variant != assignment.variant || cohort != assignment.cohort {
+			t.Fatalf("round-trip assignment=%q/%q want=%q/%q err=%v", variant, cohort, assignment.variant, assignment.cohort, err)
+		}
+	}
+	if _, err := tx.Exec(`UPDATE research_jobs SET assigned_variant='invalid' WHERE id=$1`, jobIDs[0]); err == nil {
+		t.Fatal("invalid variant accepted")
+	}
+	if _, err := tx.Exec(`UPDATE research_jobs SET assigned_variant='bounded_agent_dark_launch' WHERE id=$1`, jobIDs[0]); err == nil {
+		t.Fatal("variant assignment mutation accepted")
+	}
+	if _, err := tx.Exec(`UPDATE research_jobs SET variant_cohort='https://secret.invalid' WHERE id=$1`, jobIDs[0]); err == nil {
+		t.Fatal("URL cohort accepted")
+	}
+	if _, err := tx.Exec(`UPDATE research_jobs SET variant_cohort='api-key-test' WHERE id=$1`, jobIDs[0]); err == nil {
+		t.Fatal("secret-like cohort accepted")
+	}
+}
 
 func newResearchSchemaTestDB(t *testing.T) *DB {
 	t.Helper()

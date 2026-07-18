@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "omp.agent-search.eval.gateway-corpus.v1",
+  "cases": [
+    {"id": "official-audio", "query": "Ninajirachi iPod Touch official audio", "providers": ["youtube"], "reviewedScenario": "official_audio", "requireCatalog": true},
+    {"id": "explicit-request", "query": "Charli xcx Von dutch explicit official audio", "providers": ["youtube"], "reviewedScenario": "explicit", "requireCatalog": true},
+    {"id": "explicit-remix", "query": "Skrillex remix official audio", "providers": ["youtube"], "reviewedScenario": "remix", "requireCatalog": true},
+    {"id": "soundcloud-only", "query": "SOPHIE Is It Cold in the Water", "providers": ["soundcloud"], "reviewedScenario": "soundcloud_only", "requireCatalog": true},
+    {"id": "ambiguous-catalog-title", "query": "Jamie xx Gosh", "providers": [], "reviewedScenario": "ambiguous_catalog_title", "requireCatalog": true},
+    {"id": "cross-provider-duration-mismatch", "query": "Tame Impala The Less I Know The Better", "providers": [], "reviewedScenario": "cross_provider_duration_mismatch", "requireCatalog": true}
+  ]
+}

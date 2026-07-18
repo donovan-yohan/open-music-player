@@ -55,6 +55,22 @@ func TestNewResearchRunnerUsesDisabledRunnerUntilResearchIsEnabled(t *testing.T)
 	}
 }
 
+func TestShouldStartResearchWorkerRequiresResearchEnabled(t *testing.T) {
+	if shouldStartResearchWorker(&config.Config{ResearchWorkerEnabled: true}) {
+		t.Fatal("worker starts while RESEARCH_ENABLED is false")
+	}
+	if !shouldStartResearchWorker(&config.Config{ResearchEnabled: true, ResearchWorkerEnabled: true}) {
+		t.Fatal("enabled research worker did not start")
+	}
+}
+
+func TestValidateResearchStartupRejectsUnsafeRolloutBeforeRuntimeWiring(t *testing.T) {
+	err := validateResearchStartup(&config.Config{ResearchEnabled: true, ResearchDeepAgentEnabled: true})
+	if err == nil {
+		t.Fatal("unsafe deep-agent rollout passed startup validation")
+	}
+}
+
 func TestNewResearchRunnerRequiresCommandWhenEnabled(t *testing.T) {
 	if _, err := newResearchRunner(&config.Config{ResearchEnabled: true, ResearchDirectJudgeEnabled: true}); err == nil {
 		t.Fatal("enabled research without a worker command should fail startup wiring")

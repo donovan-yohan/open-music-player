@@ -23,7 +23,7 @@ case "$TARGET" in
     for arg in "$@"; do
       case "$arg" in
         --mode=*) mode="${arg#--mode=}" ;;
-        live|replay) [ "$prev" = "--mode" ] && mode="$arg" ;;
+        live|replay|gateway) [ "$prev" = "--mode" ] && mode="$arg" ;;
       esac
       prev="$arg"
     done
@@ -33,7 +33,7 @@ case "$TARGET" in
     exec uv run python -m candidate_assembly.evalrunner.cli "$@"
     ;;
   *)
-    echo "usage: scripts/eval [ai-assist|agent-search] [--mode replay|live] [--case id[,id...]] [flags...]" >&2
+    echo "usage: scripts/eval [ai-assist|agent-search] [--mode replay|live|gateway] [--case id[,id...]] [flags...]" >&2
     exit 2
     ;;
 esac

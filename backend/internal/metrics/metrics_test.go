@@ -30,6 +30,12 @@ func TestMetrics_RecordRequest(t *testing.T) {
 	if !strings.Contains(body, "omp_http_request_duration_seconds") {
 		t.Error("expected omp_http_request_duration_seconds metric")
 	}
+	if !strings.Contains(body, `omp_http_request_duration_seconds_bucket{endpoint="/api/v1/health",method="GET",le="10"}`) {
+		t.Error("expected HTTP duration 10-second bucket")
+	}
+	if strings.Contains(body, `omp_http_request_duration_seconds_bucket{endpoint="/api/v1/health",method="GET",le="30"}`) {
+		t.Error("HTTP duration histogram must not include research latency buckets")
+	}
 }
 
 func TestMetrics_WSConnections(t *testing.T) {
@@ -160,6 +166,37 @@ func TestMetrics_CustomCounter(t *testing.T) {
 
 	if !strings.Contains(body, `omp_counter{name="cache_hits"} 2`) {
 		t.Errorf("expected cache_hits counter = 2, got:\n%s", body)
+	}
+}
+
+func TestMetrics_ResearchObservationsAreAllowlistedAndCoverLongWork(t *testing.T) {
+	m := New()
+	m.ObserveResearchCreate("https://query.example/private-token", 75*time.Second)
+	m.ObserveResearchSnapshot("user-123", "job-456", "https://degradation.example", "raw-prompt", "revision-999", 80*time.Second, true)
+	m.ObserveResearchMutation("cancel?job=secret", "credential-value")
+	m.ObserveResearchReview("https://candidate.example", "user-id")
+	m.ObserveResearchToolCalls(3)
+	m.ObserveResearchModelAttempt("model-name", "api-key", true, 90*time.Second)
+
+	w := httptest.NewRecorder()
+	m.Handler()(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := w.Body.String()
+
+	for _, expected := range []string{
+		`omp_research_job_creates_total{outcome="unknown"} 1`,
+		`omp_research_job_status_observations_total{status="unknown"} 1`,
+		`omp_research_mutations_total{operation="unknown",outcome="unknown"} 1`,
+		`omp_research_terminal_model_attempt_duration_seconds_bucket{stage="unknown",status="unknown",repair="true",le="120"} 1`,
+		`omp_research_baseline_duration_seconds_bucket{outcome="unknown",le="120"} 1`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("metrics missing %q:\n%s", expected, body)
+		}
+	}
+	for _, sensitive := range []string{"query.example", "private-token", "user-123", "job-456", "degradation.example", "raw-prompt", "revision-999", "candidate.example", "credential-value", "model-name", "api-key"} {
+		if strings.Contains(body, sensitive) {
+			t.Errorf("metrics leaked %q:\n%s", sensitive, body)
+		}
 	}
 }
 

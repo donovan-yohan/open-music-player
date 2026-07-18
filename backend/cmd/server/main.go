@@ -130,12 +130,26 @@ type researchRuntime struct {
 	worker   *research.Worker
 }
 
+func validateResearchStartup(cfg *config.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("research rollout config is required")
+	}
+	return cfg.ValidateResearchRollout()
+}
+
+func shouldStartResearchWorker(cfg *config.Config) bool {
+	return cfg != nil && cfg.ResearchEnabled && cfg.ResearchWorkerEnabled
+}
+
 // newResearchRuntime keeps durable research independent from Redis, download,
 // playback, and the private agent-tools gateway. The HTTP baseline uses the
 // existing discovery service; model enhancement remains a bounded child process.
-func newResearchRuntime(cfg *config.Config, database *db.DB, search *discovery.Service) (*researchRuntime, error) {
+func newResearchRuntime(cfg *config.Config, database *db.DB, search *discovery.Service, observer api.ResearchObserver) (*researchRuntime, error) {
 	if cfg == nil || database == nil || search == nil {
 		return nil, fmt.Errorf("research runtime requires config, database, and discovery")
+	}
+	if err := validateResearchStartup(cfg); err != nil {
+		return nil, err
 	}
 	validator := research.NewPayloadValidator()
 	baseline, err := research.NewBaselineBuilder(research.BaselineBuilderConfig{
@@ -148,22 +162,37 @@ func newResearchRuntime(cfg *config.Config, database *db.DB, search *discovery.S
 		return nil, err
 	}
 	repository := research.NewPostgresRepository(database, research.PostgresRepositoryConfig{
-		DailyUnitsPerAttempt:     int64(cfg.ResearchDailyUnitsPerAttempt),
-		DailyLimit:               int64(cfg.ResearchDailyLimit),
-		MaxConcurrentRunsPerUser: cfg.ResearchMaxConcurrentPerUser,
+		DailyUnitsPerAttempt:      int64(cfg.ResearchDailyUnitsPerAttempt),
+		DailyLimit:                int64(cfg.ResearchDailyLimit),
+		MaxConcurrentRunsPerUser:  cfg.ResearchMaxConcurrentPerUser,
+		SurfaceDeepAgentRevisions: cfg.ResearchDeepAgentSurfaceRevisions,
 	})
 	runner, err := newResearchRunner(cfg)
 	if err != nil {
 		return nil, err
 	}
-	service := research.NewService(research.ServiceConfig{Repository: repository, Validator: validator})
+	assigner, err := research.NewRolloutVariantAssigner(research.RolloutConfig{
+		ResearchEnabled:     cfg.ResearchEnabled,
+		DirectJudgeEnabled:  cfg.ResearchDirectJudgeEnabled,
+		DeepAgentEnabled:    cfg.ResearchDeepAgentEnabled,
+		DeepAgentDarkLaunch: cfg.ResearchDeepAgentDarkLaunchEnabled,
+		DeepAgentCohortBPS:  cfg.ResearchDeepAgentCohortBPS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	service := research.NewService(research.ServiceConfig{Repository: repository, Validator: validator, VariantAssigner: assigner})
 	return &researchRuntime{
-		handlers: api.NewResearchHandlers(service, baseline, cfg.ResearchMaxAttempts),
+		handlers: api.NewResearchHandlers(service, baseline, cfg.ResearchMaxAttempts, observer),
 		worker: research.NewWorker(research.WorkerConfig{
-			Repository:    repository,
-			Runner:        runner,
-			Validator:     validator,
-			WorkerID:      cfg.ResearchWorkerID,
+			Repository: repository,
+			Runner:     runner,
+			Validator:  validator,
+			WorkerID:   cfg.ResearchWorkerID,
+			Capabilities: research.WorkerCapabilities{
+				DirectJudge: cfg.ResearchDirectJudgeEnabled,
+				DeepAgent:   cfg.ResearchDeepAgentEnabled,
+			},
 			PollInterval:  cfg.ResearchPollInterval,
 			LeaseDuration: cfg.ResearchLeaseDuration,
 			RenewInterval: cfg.ResearchRenewInterval,
@@ -331,6 +360,14 @@ func main() {
 	})
 
 	cfg := config.Load()
+	if err := validateResearchStartup(cfg); err != nil {
+		log.Error(ctx, "Invalid research rollout configuration", nil, err)
+		os.Exit(1)
+	}
+
+	// Initialize metrics before the research handlers so their aggregate,
+	// allowlisted lifecycle observer is available from startup.
+	appMetrics := metrics.New()
 
 	// Initialize database
 	database, err := db.New(cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName)
@@ -391,19 +428,24 @@ func main() {
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
 	sourceQualityJudge := newSourceQualityJudge(cfg)
 	discoveryService := discovery.NewDefaultServiceWithCatalogAndSourceQualityJudge(mbClient, sourceQualityJudge)
-	researchRuntime, err := newResearchRuntime(cfg, database, discoveryService)
+	researchRuntime, err := newResearchRuntime(cfg, database, discoveryService, appMetrics)
 	if err != nil {
 		log.Error(ctx, "Failed to initialize durable research", nil, err)
 		os.Exit(1)
 	}
-	if cfg.ResearchWorkerEnabled {
+	// Start research worker only when both RESEARCH_ENABLED and RESEARCH_WORKER_ENABLED are true.
+	// This ensures the worker respects the production configuration boundary.
+	if shouldStartResearchWorker(cfg) {
 		researchRuntime.worker.Start()
 		log.Info(ctx, "Started durable research worker", map[string]interface{}{
 			"research_enabled": cfg.ResearchEnabled,
 			"worker_id":        cfg.ResearchWorkerID,
 		})
 	} else {
-		log.Info(ctx, "Durable research worker disabled by configuration", nil)
+		log.Info(ctx, "Durable research worker disabled by configuration", map[string]interface{}{
+			"research_enabled":        cfg.ResearchEnabled,
+			"research_worker_enabled": cfg.ResearchWorkerEnabled,
+		})
 	}
 	agentToolsHandler := newAgentToolsHandler(cfg, discoveryService)
 	// AI assist is grounded against discovery/resolution; a nil client (unset or
@@ -608,9 +650,6 @@ func main() {
 
 		queueHandlers = queue.NewHandlersWithSourceSelections(queueService, downloadService, analysisRepo, sourceSelectionRepo, database)
 	}
-
-	// Initialize metrics
-	appMetrics := metrics.New()
 
 	var redisClient *redis.Client
 	if redisCache != nil {

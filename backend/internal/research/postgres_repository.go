@@ -25,14 +25,18 @@ type PostgresRepositoryConfig struct {
 	DailyUnitsPerAttempt     int64
 	DailyLimit               int64
 	MaxConcurrentRunsPerUser int
+	// SurfaceDeepAgentRevisions controls only the user/API projection. Dark
+	// records and terminal telemetry remain durable for internal evaluation.
+	SurfaceDeepAgentRevisions bool
 }
 
 type PostgresRepository struct {
-	db                       *db.DB
-	now                      func() time.Time
-	dailyUnitsPerAttempt     int64
-	dailyLimit               int64
-	maxConcurrentRunsPerUser int
+	db                        *db.DB
+	now                       func() time.Time
+	dailyUnitsPerAttempt      int64
+	dailyLimit                int64
+	maxConcurrentRunsPerUser  int
+	surfaceDeepAgentRevisions bool
 }
 
 // NewPostgresRepository accepts an optional config so existing composition can
@@ -54,7 +58,11 @@ func NewPostgresRepository(database *db.DB, configs ...PostgresRepositoryConfig)
 	if cfg.MaxConcurrentRunsPerUser <= 0 {
 		cfg.MaxConcurrentRunsPerUser = 1
 	}
-	return &PostgresRepository{database, cfg.Clock, cfg.DailyUnitsPerAttempt, cfg.DailyLimit, cfg.MaxConcurrentRunsPerUser}
+	return &PostgresRepository{database, cfg.Clock, cfg.DailyUnitsPerAttempt, cfg.DailyLimit, cfg.MaxConcurrentRunsPerUser, cfg.SurfaceDeepAgentRevisions}
+}
+
+func (r *PostgresRepository) loadSnapshot(ctx context.Context, q sqlQueryer, jobID, ownerID string) (*Snapshot, error) {
+	return loadSnapshot(ctx, q, jobID, ownerID, r.surfaceDeepAgentRevisions)
 }
 
 type researchRequest struct {
@@ -88,6 +96,11 @@ func (r *PostgresRepository) Create(ctx context.Context, input CreateInput) (*Sn
 	if err := ValidateCreate(input); err != nil {
 		return nil, err
 	}
+	assignment, err := NormalizeVariantAssignment(input.Assignment)
+	if err != nil {
+		return nil, err
+	}
+	input.Assignment = assignment
 	if input.ID == "" {
 		input.ID = uuid.NewString()
 	}
@@ -117,7 +130,7 @@ func (r *PostgresRepository) Create(ctx context.Context, input CreateInput) (*Sn
 		if priorHash != input.RequestHash {
 			return nil, ErrIdempotencyConflict
 		}
-		snapshot, err := loadSnapshot(ctx, tx, priorID, input.OwnerID)
+		snapshot, err := r.loadSnapshot(ctx, tx, priorID, input.OwnerID)
 		return snapshot, err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -126,8 +139,9 @@ func (r *PostgresRepository) Create(ctx context.Context, input CreateInput) (*Sn
 
 	now := r.now().UTC()
 	emptyBaseline := len(baseline.Candidates) == 0
+	modelEnhancement := input.Assignment.Variant != VariantDeterministicOnly
 	budgetReserved := false
-	if !emptyBaseline {
+	if !emptyBaseline && modelEnhancement {
 		budgetReserved, err = r.reserveBudget(ctx, tx, input.OwnerID, now)
 		if err != nil {
 			return nil, err
@@ -140,6 +154,9 @@ func (r *PostgresRepository) Create(ctx context.Context, input CreateInput) (*Sn
 	if emptyBaseline {
 		d := PublicDegradation(DegradationNoCandidates)
 		status, code, message, failureClass = JobDegraded, string(d.Code), d.Message, string(FailureTerminal)
+	} else if !modelEnhancement {
+		d := PublicDegradation(DegradationModelDisabled)
+		status, code, message, failureClass = JobDegraded, string(d.Code), d.Message, string(FailureTerminal)
 	} else if !budgetReserved {
 		d := PublicDegradation(DegradationBudgetExhausted)
 		status, code, message, failureClass = JobDegraded, string(d.Code), d.Message, string(FailureTerminal)
@@ -147,11 +164,11 @@ func (r *PostgresRepository) Create(ctx context.Context, input CreateInput) (*Sn
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO research_jobs (
 			id, user_id, idempotency_key, request_hash, request_snapshot, retry_safe,
-		query, providers, result_limit, status, degradation_code, failure_class, failure_code, failure_message,
+			query, providers, result_limit, assigned_variant, variant_cohort, status, degradation_code, failure_class, failure_code, failure_message,
 			max_attempts, next_attempt_at, latest_revision_number, event_sequence, created_at, updated_at, finished_at
-		) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,0,0,$17,$17,$18)`,
+		) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,0,0,$19,$19,$20)`,
 		input.ID, input.OwnerID, input.IdempotencyKey, input.RequestHash, input.Request, input.RetrySafe,
-		request.Query, request.Providers, request.Limit, status, code, failureClass, code, message, input.MaxAttempts, now, now, nullableTime(status == JobDegraded, now)); err != nil {
+		request.Query, request.Providers, request.Limit, input.Assignment.Variant, input.Assignment.Cohort, status, code, failureClass, code, message, input.MaxAttempts, now, now, nullableTime(status == JobDegraded, now)); err != nil {
 		return nil, err
 	}
 	if err := r.appendEvent(ctx, tx, input.ID, EventCreated, eventPayload{}); err != nil {
@@ -174,7 +191,7 @@ func (r *PostgresRepository) Create(ctx context.Context, input CreateInput) (*Sn
 			return nil, err
 		}
 	}
-	snapshot, err := loadSnapshot(ctx, tx, input.ID, input.OwnerID)
+	snapshot, err := r.loadSnapshot(ctx, tx, input.ID, input.OwnerID)
 	if err != nil {
 		return nil, err
 	}
@@ -192,13 +209,15 @@ func nullableTime(ok bool, value time.Time) any {
 }
 
 func (r *PostgresRepository) Get(ctx context.Context, jobID, ownerID string) (*Snapshot, error) {
-	return loadSnapshot(ctx, r.db, jobID, ownerID)
+	return r.loadSnapshot(ctx, r.db, jobID, ownerID)
 }
 
 func (r *PostgresRepository) Events(ctx context.Context, jobID, ownerID string, afterSequence int64, limit int) ([]Event, error) {
-	if _, err := r.Get(ctx, jobID, ownerID); err != nil {
+	snapshot, err := r.Get(ctx, jobID, ownerID)
+	if err != nil {
 		return nil, err
 	}
+	hideDarkRevisions := snapshot.Job.Assignment.Variant == VariantBoundedAgentDarkLaunch && !r.surfaceDeepAgentRevisions
 	if afterSequence < 0 {
 		afterSequence = 0
 	}
@@ -225,6 +244,9 @@ func (r *PostgresRepository) Events(ctx context.Context, jobID, ownerID string, 
 		event.JobID = jobID
 		if err := decodeEventPayload(raw, &event); err != nil {
 			return nil, err
+		}
+		if hideDarkRevisions && ((event.Kind == EventRevisionAppended && event.Revision > 1) || event.Kind == EventRunnerTerminal) {
+			continue
 		}
 		events = append(events, event)
 	}
@@ -259,7 +281,7 @@ func (r *PostgresRepository) Cancel(ctx context.Context, jobID, ownerID string) 
 	if err != nil {
 		return nil, err
 	}
-	snapshot, err := loadSnapshot(ctx, tx, jobID, ownerID)
+	snapshot, err := r.loadSnapshot(ctx, tx, jobID, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +321,7 @@ func (r *PostgresRepository) Retry(ctx context.Context, jobID, ownerID string) (
 	if err = r.appendEvent(ctx, tx, jobID, EventRetried, eventPayload{}); err != nil {
 		return nil, err
 	}
-	snapshot, err := loadSnapshot(ctx, tx, jobID, ownerID)
+	snapshot, err := r.loadSnapshot(ctx, tx, jobID, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -309,8 +331,8 @@ func (r *PostgresRepository) Retry(ctx context.Context, jobID, ownerID string) (
 	return snapshot, nil
 }
 
-func (r *PostgresRepository) Claim(ctx context.Context, workerID string, leaseExpiresAt time.Time) (*Claim, error) {
-	if strings.TrimSpace(workerID) == "" {
+func (r *PostgresRepository) Claim(ctx context.Context, workerID string, capabilities WorkerCapabilities, leaseExpiresAt time.Time) (*Claim, error) {
+	if strings.TrimSpace(workerID) == "" || !capabilities.Any() {
 		return nil, ErrNoJobAvailable
 	}
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -324,6 +346,8 @@ func (r *PostgresRepository) Claim(ctx context.Context, workerID string, leaseEx
 			SELECT DISTINCT ON (user_id) id
 			FROM research_jobs
 			WHERE status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= $1)
+			  AND ((assigned_variant = 'direct_structured_judge' AND $2)
+			       OR (assigned_variant = 'bounded_agent_dark_launch' AND $3))
 			ORDER BY user_id, next_attempt_at NULLS FIRST, created_at, id
 		), candidates AS (
 			SELECT job.id, job.user_id, job.next_attempt_at, job.created_at
@@ -332,7 +356,7 @@ func (r *PostgresRepository) Claim(ctx context.Context, workerID string, leaseEx
 			LIMIT 32
 			FOR UPDATE OF job SKIP LOCKED
 		)
-		SELECT id, user_id FROM candidates`, now)
+		SELECT id, user_id FROM candidates`, now, capabilities.DirectJudge, capabilities.DeepAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +398,7 @@ func (r *PostgresRepository) Claim(ctx context.Context, workerID string, leaseEx
 		if err := r.appendEvent(ctx, tx, jobID, EventClaimed, eventPayload{RunID: runID}); err != nil {
 			return nil, err
 		}
-		snapshot, err := loadSnapshot(ctx, tx, jobID, ownerID)
+		snapshot, err := r.loadSnapshot(ctx, tx, jobID, ownerID)
 		if err != nil {
 			return nil, err
 		}
@@ -536,6 +560,13 @@ func (r *PostgresRepository) AppendEnhancement(ctx context.Context, claim Claim,
 	if err != nil {
 		return nil, err
 	}
+	job, _, err := loadJob(ctx, tx, claim.Run.JobID, owner, true)
+	if err != nil {
+		return nil, err
+	}
+	if !variantAllowsEnhancement(job.Assignment.Variant, RevisionStage(stage)) {
+		return nil, ErrInvalidVariant
+	}
 	var baseline json.RawMessage
 	if err := tx.QueryRowContext(ctx, `SELECT result_snapshot FROM research_revisions WHERE job_id=$1 AND user_id=$2 AND revision_number=1`, claim.Run.JobID, owner).Scan(&baseline); err != nil {
 		return nil, err
@@ -641,7 +672,7 @@ func (r *PostgresRepository) RetryClaim(ctx context.Context, claim Claim, retryA
 	if err = r.appendEvent(ctx, tx, claim.Run.JobID, EventRetried, eventPayload{RunID: claim.Run.ID}); err != nil {
 		return nil, err
 	}
-	snapshot, err := loadSnapshot(ctx, tx, claim.Run.JobID, owner)
+	snapshot, err := r.loadSnapshot(ctx, tx, claim.Run.JobID, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -715,7 +746,7 @@ func (r *PostgresRepository) completeClaim(ctx context.Context, claim Claim, sta
 	if err = r.appendEvent(ctx, tx, claim.Run.JobID, event, payload); err != nil {
 		return nil, err
 	}
-	snapshot, err := loadSnapshot(ctx, tx, claim.Run.JobID, owner)
+	snapshot, err := r.loadSnapshot(ctx, tx, claim.Run.JobID, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -786,10 +817,15 @@ func (r *PostgresRepository) Review(ctx context.Context, jobID, ownerID string, 
 	}
 
 	var revisionID string
+	revisionNumber := job.LatestRevision
+	if job.Assignment.Variant == VariantBoundedAgentDarkLaunch && !r.surfaceDeepAgentRevisions {
+		// Dark-launch output stays observable but cannot drive source decisions.
+		revisionNumber = 1
+	}
 	err = tx.QueryRowContext(ctx, `
 		SELECT id
 		FROM research_revisions
-		WHERE job_id = $1 AND user_id = $2 AND revision_number = $3`, jobID, ownerID, job.LatestRevision).Scan(&revisionID)
+		WHERE job_id = $1 AND user_id = $2 AND revision_number = $3`, jobID, ownerID, revisionNumber).Scan(&revisionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -814,7 +850,7 @@ func (r *PostgresRepository) Review(ctx context.Context, jobID, ownerID string, 
 	if err != nil {
 		return nil, err
 	}
-	if err = r.appendEvent(ctx, tx, jobID, EventReviewed, eventPayload{RevisionID: revisionID, Revision: job.LatestRevision}); err != nil {
+	if err = r.appendEvent(ctx, tx, jobID, EventReviewed, eventPayload{RevisionID: revisionID, Revision: revisionNumber}); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -977,7 +1013,7 @@ type sqlQueryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-func loadSnapshot(ctx context.Context, q sqlQueryer, jobID, ownerID string) (*Snapshot, error) {
+func loadSnapshot(ctx context.Context, q sqlQueryer, jobID, ownerID string, surfaceDeepAgentRevisions bool) (*Snapshot, error) {
 	job, degradation, err := loadJob(ctx, q, jobID, ownerID, false)
 	if err != nil {
 		return nil, err
@@ -987,20 +1023,28 @@ func loadSnapshot(ctx context.Context, q sqlQueryer, jobID, ownerID string) (*Sn
 		return nil, err
 	}
 	defer rows.Close()
-	snapshot := &Snapshot{Job: job, LatestDegradation: degradation, Revisions: []Revision{}}
+	snapshot := &Snapshot{Job: job, LatestDegradation: degradation, Revisions: []Revision{}, SurfaceDeepAgentRevisions: surfaceDeepAgentRevisions}
 	for rows.Next() {
 		var revision Revision
 		if err := rows.Scan(&revision.ID, &revision.Number, &revision.Kind, &revision.Payload, &revision.ValidatedAt); err != nil {
 			return nil, err
 		}
 		revision.JobID = jobID
+		if job.Assignment.Variant == VariantBoundedAgentDarkLaunch && !surfaceDeepAgentRevisions && revision.Kind == RevisionEnhancement {
+			continue
+		}
 		snapshot.Revisions = append(snapshot.Revisions, revision)
-		if revision.Number == job.LatestRevision {
+		if revision.Number == job.LatestRevision || (job.Assignment.Variant == VariantBoundedAgentDarkLaunch && !surfaceDeepAgentRevisions && revision.Number == 1) {
 			snapshot.Job.LatestRevisionID = revision.ID
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if job.Assignment.Variant == VariantBoundedAgentDarkLaunch && !surfaceDeepAgentRevisions {
+		// The persisted counter remains the durable internal truth. This API
+		// projection prevents hidden dark output from becoming the latest result.
+		snapshot.Job.LatestRevision = 1
 	}
 	var terminal json.RawMessage
 	err = q.QueryRowContext(ctx, `SELECT terminal_telemetry FROM research_runs WHERE job_id=$1 AND user_id=$2 AND terminal_telemetry IS NOT NULL ORDER BY attempt DESC LIMIT 1`, jobID, ownerID).Scan(&terminal)
@@ -1017,18 +1061,21 @@ func loadSnapshot(ctx context.Context, q sqlQueryer, jobID, ownerID string) (*Sn
 	return snapshot, nil
 }
 func loadJob(ctx context.Context, q sqlQueryer, jobID, ownerID string, lock bool) (Job, *Degradation, error) {
-	query := `SELECT id,user_id,request_snapshot,request_hash,idempotency_key,status,retry_safe,attempt_count,max_attempts,COALESCE(next_attempt_at,created_at),latest_revision_number,created_at,updated_at,cancel_requested,degradation_code,failure_message FROM research_jobs WHERE id=$1 AND user_id=$2`
+	query := `SELECT id,user_id,request_snapshot,request_hash,idempotency_key,status,retry_safe,attempt_count,max_attempts,COALESCE(next_attempt_at,created_at),latest_revision_number,assigned_variant,variant_cohort,created_at,updated_at,cancel_requested,degradation_code,failure_message FROM research_jobs WHERE id=$1 AND user_id=$2`
 	if lock {
 		query += " FOR UPDATE"
 	}
 	var job Job
 	var code, message sql.NullString
 	var cancel bool
-	err := q.QueryRowContext(ctx, query, jobID, ownerID).Scan(&job.ID, &job.OwnerID, &job.Request, &job.RequestHash, &job.IdempotencyKey, &job.Status, &job.RetrySafe, &job.Attempts, &job.MaxAttempts, &job.AvailableAt, &job.LatestRevision, &job.CreatedAt, &job.UpdatedAt, &cancel, &code, &message)
+	err := q.QueryRowContext(ctx, query, jobID, ownerID).Scan(&job.ID, &job.OwnerID, &job.Request, &job.RequestHash, &job.IdempotencyKey, &job.Status, &job.RetrySafe, &job.Attempts, &job.MaxAttempts, &job.AvailableAt, &job.LatestRevision, &job.Assignment.Variant, &job.Assignment.Cohort, &job.CreatedAt, &job.UpdatedAt, &cancel, &code, &message)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Job{}, nil, ErrNotFound
 	}
 	if err != nil {
+		return Job{}, nil, err
+	}
+	if job.Assignment, err = NormalizeVariantAssignment(job.Assignment); err != nil {
 		return Job{}, nil, err
 	}
 	_ = cancel

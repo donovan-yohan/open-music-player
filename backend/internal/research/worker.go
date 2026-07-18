@@ -26,6 +26,7 @@ type WorkerConfig struct {
 	Runner                                                                              Runner
 	Validator                                                                           Validator
 	WorkerID                                                                            string
+	Capabilities                                                                        WorkerCapabilities
 	Clock                                                                               func() time.Time
 	TickerFactory                                                                       func(time.Duration) Ticker
 	Jitter                                                                              func(time.Duration) time.Duration
@@ -36,6 +37,7 @@ type Worker struct {
 	runner                                     Runner
 	validator                                  Validator
 	workerID                                   string
+	capabilities                               WorkerCapabilities
 	now                                        func() time.Time
 	tickers                                    func(time.Duration) Ticker
 	jitter                                     func(time.Duration) time.Duration
@@ -78,7 +80,7 @@ func NewWorker(c WorkerConfig) *Worker {
 	if c.BackoffMaximum < c.BackoffBase {
 		c.BackoffMaximum = DefaultBackoffMaximum
 	}
-	return &Worker{c.Repository, c.Runner, c.Validator, c.WorkerID, c.Clock, c.TickerFactory, c.Jitter, c.PollInterval, c.LeaseDuration, c.RenewInterval, c.RunTimeout, c.BackoffBase, c.BackoffMaximum, sync.Mutex{}, false, nil, nil, sync.WaitGroup{}}
+	return &Worker{c.Repository, c.Runner, c.Validator, c.WorkerID, c.Capabilities, c.Clock, c.TickerFactory, c.Jitter, c.PollInterval, c.LeaseDuration, c.RenewInterval, c.RunTimeout, c.BackoffBase, c.BackoffMaximum, sync.Mutex{}, false, nil, nil, sync.WaitGroup{}}
 }
 func (w *Worker) Start() {
 	w.mu.Lock()
@@ -144,7 +146,7 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	if _, err := w.repository.RecoverExpiredLeases(ctx, w.now()); err != nil {
 		return false, err
 	}
-	claim, err := w.repository.Claim(ctx, w.workerID, w.now().Add(w.lease))
+	claim, err := w.repository.Claim(ctx, w.workerID, w.capabilities, w.now().Add(w.lease))
 	if errors.Is(err, ErrNoJobAvailable) {
 		return false, nil
 	}
