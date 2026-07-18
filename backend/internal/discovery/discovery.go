@@ -711,12 +711,12 @@ func (p *YTDLPProvider) candidatesFromOutput(output string, limit int) []Candida
 			continue
 		}
 		id := stringValue(raw, "id")
-		sourceURL := stringValue(raw, "url")
+		sourceURL := stringValue(raw, "webpage_url")
+		if sourceURL == "" {
+			sourceURL = stringValue(raw, "url")
+		}
 		if !strings.HasPrefix(sourceURL, "http") && p.urlPrefix != "" && id != "" {
 			sourceURL = p.urlPrefix + id
-		}
-		if sourceURL == "" {
-			sourceURL = stringValue(raw, "webpage_url")
 		}
 		title := stringValue(raw, "title")
 		metadata := ytdlpCandidateMetadata(raw, p.name, p.music)
