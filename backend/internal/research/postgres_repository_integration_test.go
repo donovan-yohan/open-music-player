@@ -20,6 +20,8 @@ import (
 
 const researchPostgresDSN = "postgres://omp:omp_dev_password@localhost:25131/openmusicplayer?sslmode=disable"
 
+var allWorkerCapabilities = WorkerCapabilities{DirectJudge: true, DeepAgent: true}
+
 func newPostgresResearchRepository(t *testing.T, cfg PostgresRepositoryConfig) (*PostgresRepository, *store.DB) {
 	t.Helper()
 	dsn := os.Getenv("OMP_POSTGRES_TEST_DSN")
@@ -58,7 +60,127 @@ func researchInput(owner string) CreateInput {
 	return CreateInput{
 		ID: uuid.NewString(), OwnerID: owner, IdempotencyKey: uuid.NewString(), RequestHash: strings.Repeat("a", 64),
 		Request: json.RawMessage(`{"query":"fixture song","providers":["youtube"],"limit":2}`), RetrySafe: true, MaxAttempts: 2,
-		Baseline: RevisionInput{ID: uuid.NewString(), Payload: researchBaselinePayload()},
+		Baseline:   RevisionInput{ID: uuid.NewString(), Payload: researchBaselinePayload()},
+		Assignment: VariantAssignment{Variant: VariantDirectStructuredJudge, Cohort: "integration"},
+	}
+}
+
+func TestPostgresVariantAssignmentPersistsAcrossRetryAndRecovery(t *testing.T) {
+	now := time.Now().UTC()
+	repo, database := newPostgresResearchRepository(t, PostgresRepositoryConfig{Clock: func() time.Time { return now }, DailyLimit: 4})
+	owner := researchUser(t, database)
+	input := researchInput(owner)
+	input.Assignment = VariantAssignment{Variant: VariantBoundedAgentDarkLaunch, Cohort: "dark-17"}
+	input.MaxAttempts = 3
+	created, err := repo.Create(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Job.Assignment != input.Assignment {
+		t.Fatalf("created assignment=%#v", created.Job.Assignment)
+	}
+	replayInput := input
+	replayInput.Assignment = VariantAssignment{Variant: VariantDeterministicOnly, Cohort: defaultVariantCohort}
+	replayed, err := repo.Create(context.Background(), replayInput)
+	if err != nil || replayed.Job.Assignment != input.Assignment {
+		t.Fatalf("idempotent assignment=%#v err=%v", replayed.Job.Assignment, err)
+	}
+	claim, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Degrade(context.Background(), *claim, PublicDegradation(DegradationTransient)); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := repo.Retry(context.Background(), created.Job.ID, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.Job.Assignment != input.Assignment {
+		t.Fatalf("retry assignment=%#v", retried.Job.Assignment)
+	}
+	claim, err = repo.Claim(context.Background(), "worker", allWorkerCapabilities, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`UPDATE research_runs SET lease_until=$2 WHERE id=$1`, claim.Run.ID, now.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if recoveredCount, err := repo.RecoverExpiredLeases(context.Background(), now); err != nil || recoveredCount != 1 {
+		t.Fatalf("recovery=%d err=%v", recoveredCount, err)
+	}
+	recovered, err := repo.Get(context.Background(), created.Job.ID, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Job.Assignment != input.Assignment || recovered.Job.Status != JobQueued {
+		t.Fatalf("recovered assignment=%#v status=%s", recovered.Job.Assignment, recovered.Job.Status)
+	}
+}
+
+func TestPostgresDarkVariantCanAppendButCannotDriveReview(t *testing.T) {
+	repo, database := newPostgresResearchRepository(t, PostgresRepositoryConfig{})
+	owner := researchUser(t, database)
+	input := researchInput(owner)
+	input.Assignment = VariantAssignment{Variant: VariantBoundedAgentDarkLaunch, Cohort: "dark-17"}
+	created, err := repo.Create(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dark := enhancement(*claim, uuid.NewString())
+	dark.Payload = json.RawMessage(strings.Replace(string(dark.Payload), `"stage":"direct_judge"`, `"stage":"deep_agent"`, 1))
+	if _, err := repo.AppendEnhancement(context.Background(), *claim, dark); err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := repo.Get(context.Background(), created.Job.ID, owner)
+	if err != nil || hidden.Job.LatestRevision != 1 || len(hidden.Revisions) != 1 || hidden.Job.LatestRevisionID != created.Revisions[0].ID {
+		t.Fatalf("hidden snapshot=%#v err=%v", hidden, err)
+	}
+	if _, err := repo.AppendEnhancement(context.Background(), *claim, enhancement(*claim, uuid.NewString())); !errors.Is(err, ErrInvalidVariant) {
+		t.Fatalf("wrong dark stage=%v", err)
+	}
+	if _, err := repo.Review(context.Background(), created.Job.ID, owner, ReviewInput{CandidateID: "youtube:fixture-a", Action: ReviewAccepted, IdempotencyKey: uuid.NewString()}); err != nil {
+		t.Fatal(err)
+	}
+	var revisionNumber int
+	if err := database.QueryRow(`SELECT revision.revision_number FROM research_reviews review JOIN research_revisions revision ON revision.id=review.revision_id WHERE review.job_id=$1`, created.Job.ID).Scan(&revisionNumber); err != nil || revisionNumber != 1 {
+		t.Fatalf("review revision=%d err=%v", revisionNumber, err)
+	}
+}
+
+func TestPostgresDarkVariantSurfacesOnlyWhenConfigured(t *testing.T) {
+	repo, database := newPostgresResearchRepository(t, PostgresRepositoryConfig{SurfaceDeepAgentRevisions: true})
+	owner := researchUser(t, database)
+	input := researchInput(owner)
+	input.Assignment = VariantAssignment{Variant: VariantBoundedAgentDarkLaunch, Cohort: "dark-10000"}
+	created, err := repo.Create(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dark := enhancement(*claim, uuid.NewString())
+	dark.Payload = json.RawMessage(strings.Replace(string(dark.Payload), `"stage":"direct_judge"`, `"stage":"deep_agent"`, 1))
+	appended, err := repo.AppendEnhancement(context.Background(), *claim, dark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := repo.Get(context.Background(), created.Job.ID, owner)
+	if err != nil || snapshot.Job.LatestRevision != appended.Number || snapshot.Job.LatestRevisionID != appended.ID || len(snapshot.Revisions) != 2 {
+		t.Fatalf("surfaced snapshot=%#v appended=%#v err=%v", snapshot, appended, err)
+	}
+	if _, err := repo.Review(context.Background(), created.Job.ID, owner, ReviewInput{CandidateID: "youtube:fixture-a", Action: ReviewAccepted, IdempotencyKey: uuid.NewString()}); err != nil {
+		t.Fatal(err)
+	}
+	var revisionNumber int
+	if err := database.QueryRow(`SELECT revision.revision_number FROM research_reviews review JOIN research_revisions revision ON revision.id=review.revision_id WHERE review.job_id=$1`, created.Job.ID).Scan(&revisionNumber); err != nil || revisionNumber != appended.Number {
+		t.Fatalf("surfaced review revision=%d err=%v", revisionNumber, err)
 	}
 }
 
@@ -229,12 +351,88 @@ func TestPostgresEmptyBaselineIsTerminalWithoutBudgetOrClaim(t *testing.T) {
 	if snapshot.Job.Status != JobDegraded || snapshot.Job.LatestRevision != 1 || len(snapshot.Revisions) != 1 || snapshot.LatestDegradation == nil || snapshot.LatestDegradation.Code != DegradationNoCandidates {
 		t.Fatalf("empty baseline snapshot %#v", snapshot)
 	}
-	if _, err := repo.Claim(context.Background(), "worker", time.Now().Add(time.Minute)); !errors.Is(err, ErrNoJobAvailable) {
+	if _, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute)); !errors.Is(err, ErrNoJobAvailable) {
 		t.Fatalf("empty baseline was claimable: %v", err)
 	}
 	var reserved int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM research_user_daily_budgets WHERE user_id=$1`, owner).Scan(&reserved); err != nil || reserved != 0 {
 		t.Fatalf("empty baseline reserved model budget count=%d err=%v", reserved, err)
+	}
+}
+
+func TestPostgresDeterministicOnlyTerminalizesWithoutBudgetOrWorker(t *testing.T) {
+	repo, database := newPostgresResearchRepository(t, PostgresRepositoryConfig{})
+	owner := researchUser(t, database)
+	input := researchInput(owner)
+	input.Assignment = VariantAssignment{Variant: VariantDeterministicOnly, Cohort: defaultVariantCohort}
+
+	snapshot, err := repo.Create(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Job.Status != JobDegraded || snapshot.LatestDegradation == nil || snapshot.LatestDegradation.Code != DegradationModelDisabled {
+		t.Fatalf("deterministic snapshot = %#v", snapshot)
+	}
+	if _, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute)); !errors.Is(err, ErrNoJobAvailable) {
+		t.Fatalf("deterministic job was claimable: %v", err)
+	}
+	var reserved int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM research_user_daily_budgets WHERE user_id=$1`, owner).Scan(&reserved); err != nil || reserved != 0 {
+		t.Fatalf("deterministic job reserved model budget count=%d err=%v", reserved, err)
+	}
+	events, err := repo.Events(context.Background(), snapshot.Job.ID, owner, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 || events[0].Kind != EventCreated || events[1].Kind != EventRevisionAppended || events[2].Kind != EventDegraded || events[2].Degradation == nil || events[2].Degradation.Code != DegradationModelDisabled {
+		t.Fatalf("deterministic events = %#v", events)
+	}
+}
+
+func TestPostgresClaimHonorsWorkerCapabilitiesAcrossRollbackRecovery(t *testing.T) {
+	repo, database := newPostgresResearchRepository(t, PostgresRepositoryConfig{})
+	directOwner := researchUser(t, database)
+	darkOwner := researchUser(t, database)
+	directInput := researchInput(directOwner)
+	directInput.Assignment = VariantAssignment{Variant: VariantDirectStructuredJudge, Cohort: "direct-test"}
+	darkInput := researchInput(darkOwner)
+	darkInput.Assignment = VariantAssignment{Variant: VariantBoundedAgentDarkLaunch, Cohort: "dark-test"}
+	if _, err := repo.Create(context.Background(), directInput); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Create(context.Background(), darkInput); err != nil {
+		t.Fatal(err)
+	}
+
+	directOnly := WorkerCapabilities{DirectJudge: true}
+	deepOnly := WorkerCapabilities{DeepAgent: true}
+	if _, err := repo.Claim(context.Background(), "disabled", WorkerCapabilities{}, time.Now().Add(time.Minute)); !errors.Is(err, ErrNoJobAvailable) {
+		t.Fatalf("disabled worker claimed a job: %v", err)
+	}
+	directClaim, err := repo.Claim(context.Background(), "direct", directOnly, time.Now().Add(time.Minute))
+	if err != nil || directClaim.Snapshot.Job.Assignment.Variant != VariantDirectStructuredJudge {
+		t.Fatalf("direct-only claim=%#v err=%v", directClaim, err)
+	}
+	darkClaim, err := repo.Claim(context.Background(), "deep", deepOnly, time.Now().Add(time.Minute))
+	if err != nil || darkClaim.Snapshot.Job.Assignment.Variant != VariantBoundedAgentDarkLaunch {
+		t.Fatalf("deep-only claim=%#v err=%v", darkClaim, err)
+	}
+
+	if _, err := database.Exec(`UPDATE research_runs SET lease_until=$2 WHERE id=$1`, directClaim.Run.ID, time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := repo.RecoverExpiredLeases(context.Background(), time.Now()); err != nil || recovered != 1 {
+		t.Fatalf("recover=%d err=%v", recovered, err)
+	}
+	if _, err := repo.Claim(context.Background(), "rollback-deep", deepOnly, time.Now().Add(time.Minute)); !errors.Is(err, ErrNoJobAvailable) {
+		t.Fatalf("rollback deep-only worker claimed persisted direct assignment: %v", err)
+	}
+	recovered, err := repo.Get(context.Background(), directInput.ID, directOwner)
+	if err != nil || recovered.Job.Status != JobQueued || recovered.Job.Assignment != directInput.Assignment {
+		t.Fatalf("recovered persisted direct job=%#v err=%v", recovered, err)
+	}
+	if claim, err := repo.Claim(context.Background(), "restart-direct", directOnly, time.Now().Add(time.Minute)); err != nil || claim.Snapshot.Job.ID != directInput.ID {
+		t.Fatalf("restart direct claim=%#v err=%v", claim, err)
 	}
 }
 
@@ -245,7 +443,7 @@ func TestPostgresTerminalTelemetryWritesOnceAndIsExposed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, err := repo.Claim(context.Background(), "worker", time.Now().Add(time.Minute))
+	claim, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +484,7 @@ func TestPostgresCancelledClaimAllowsTerminalTelemetryBeforeTerminalOutcome(t *t
 			if err != nil {
 				t.Fatal(err)
 			}
-			claim, err := repo.Claim(context.Background(), "worker", time.Now().Add(time.Minute))
+			claim, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -324,7 +522,7 @@ func TestPostgresCancellationWinsOverRunnerSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, err := repo.Claim(context.Background(), "worker", time.Now().Add(time.Minute))
+	claim, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,18 +584,18 @@ func TestPostgresConcurrentClaimsRespectUserSlotsAndProgressOtherUsers(t *testin
 			t.Fatal(err)
 		}
 	}
-	first, err := repo.Claim(context.Background(), "worker-1", time.Now().Add(time.Minute))
+	first, err := repo.Claim(context.Background(), "worker-1", allWorkerCapabilities, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := repo.Claim(context.Background(), "worker-2", time.Now().Add(time.Minute))
+	second, err := repo.Claim(context.Background(), "worker-2", allWorkerCapabilities, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Snapshot.Job.OwnerID == second.Snapshot.Job.OwnerID {
 		t.Fatalf("same owner exceeded slot cap: %s", first.Snapshot.Job.OwnerID)
 	}
-	if _, err := repo.Claim(context.Background(), "worker-3", time.Now().Add(time.Minute)); !errors.Is(err, ErrNoJobAvailable) {
+	if _, err := repo.Claim(context.Background(), "worker-3", allWorkerCapabilities, time.Now().Add(time.Minute)); !errors.Is(err, ErrNoJobAvailable) {
 		t.Fatalf("third claim = %v", err)
 	}
 }
@@ -410,7 +608,7 @@ func TestPostgresLeaseRecoveryAndCancelPreserveRevisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, err := repo.Claim(context.Background(), "worker", now.Add(time.Minute))
+	claim, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +643,7 @@ func TestPostgresRetryOnlyTransientAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, err := repo.Claim(context.Background(), "worker", time.Now().Add(time.Minute))
+	claim, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +657,7 @@ func TestPostgresRetryOnlyTransientAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, err = repo.Claim(context.Background(), "worker", time.Now().Add(time.Minute))
+	claim, err = repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +667,7 @@ func TestPostgresRetryOnlyTransientAndBounded(t *testing.T) {
 	if _, err := repo.Retry(context.Background(), created.Job.ID, owner); err != nil {
 		t.Fatal(err)
 	}
-	claim, err = repo.Claim(context.Background(), "worker", time.Now().Add(time.Minute))
+	claim, err = repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +711,7 @@ func TestPostgresDefaultGeneratedRevisionIDsAreUUIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create with default baseline id: %v", err)
 	}
-	claim, err := repo.Claim(context.Background(), "worker", time.Now().Add(time.Minute))
+	claim, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +829,7 @@ func TestPostgresRevisionsAreAppendOnlyAndOrdered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, err := repo.Claim(context.Background(), "worker", time.Now().Add(time.Minute))
+	claim, err := repo.Claim(context.Background(), "worker", allWorkerCapabilities, time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

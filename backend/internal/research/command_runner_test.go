@@ -32,8 +32,8 @@ func (s *collectingSink) Degrade(_ context.Context, value Degradation) error {
 
 func TestCommandRunnerProjectsURLFreeRequestAndAppendsProgressively(t *testing.T) {
 	baseline := baselineForTest(t)
-	snapshot := Snapshot{Revisions: []Revision{{Kind: RevisionBaseline, Payload: baseline.Payload}}}
-	runner, err := NewCommandRunner(CommandRunnerConfig{Command: os.Args[0], Args: []string{"-test.run=TestCommandRunnerHelperProcess"}, Environment: map[string]string{"PATH": os.Getenv("PATH"), "AGENT_SEARCH_TEST_MODE": "direct-deep", "DATABASE_URL": "must-not-pass", "JWT_SECRET": "must-not-pass"}, CancelGrace: time.Millisecond})
+	snapshot := Snapshot{Job: Job{Assignment: VariantAssignment{Variant: VariantDirectStructuredJudge, Cohort: "test"}}, Revisions: []Revision{{Kind: RevisionBaseline, Payload: baseline.Payload}}}
+	runner, err := NewCommandRunner(CommandRunnerConfig{Command: os.Args[0], Args: []string{"-test.run=TestCommandRunnerHelperProcess"}, Environment: map[string]string{"PATH": os.Getenv("PATH"), "AGENT_SEARCH_TEST_MODE": "direct-deep", "DATABASE_URL": "must-not-pass", "JWT_SECRET": "must-not-pass"}, Stages: WorkerStageConfig{DirectJudge: true, DeepAgent: true}, CancelGrace: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestCommandRunnerProjectsURLFreeRequestAndAppendsProgressively(t *testing.T
 	if err := runner.Run(context.Background(), RunRequest{Snapshot: snapshot, Run: Run{ID: "run-1", JobID: "job-1"}}, sink); err != nil {
 		t.Fatal(err)
 	}
-	if len(sink.appended) != 2 {
+	if len(sink.appended) != 1 {
 		t.Fatalf("appends = %#v", sink.appended)
 	}
 	for _, input := range sink.appended {
@@ -53,9 +53,9 @@ func TestCommandRunnerProjectsURLFreeRequestAndAppendsProgressively(t *testing.T
 
 func TestCommandRunnerRejectsUnsafeAndUnknownWorkerOutputWithoutLeakingIt(t *testing.T) {
 	baseline := baselineForTest(t)
-	snapshot := Snapshot{Revisions: []Revision{{Kind: RevisionBaseline, Payload: baseline.Payload}}}
+	snapshot := Snapshot{Job: Job{Assignment: VariantAssignment{Variant: VariantDirectStructuredJudge, Cohort: "test"}}, Revisions: []Revision{{Kind: RevisionBaseline, Payload: baseline.Payload}}}
 	for _, mode := range []string{"unsafe", "unknown", "oversize"} {
-		runner, err := NewCommandRunner(CommandRunnerConfig{Command: os.Args[0], Args: []string{"-test.run=TestCommandRunnerHelperProcess"}, Environment: map[string]string{"PATH": os.Getenv("PATH"), "AGENT_SEARCH_TEST_MODE": mode}, MaxLineBytes: 256, MaxOutputBytes: 512})
+		runner, err := NewCommandRunner(CommandRunnerConfig{Command: os.Args[0], Args: []string{"-test.run=TestCommandRunnerHelperProcess"}, Environment: map[string]string{"PATH": os.Getenv("PATH"), "AGENT_SEARCH_TEST_MODE": mode}, Stages: WorkerStageConfig{DirectJudge: true}, MaxLineBytes: 256, MaxOutputBytes: 512})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -74,6 +74,56 @@ func TestDisabledRunnerRecordsTypedModelDisabledOutcome(t *testing.T) {
 	}
 }
 
+func TestCommandRunnerRejectsZeroStageConfiguration(t *testing.T) {
+	if _, err := NewCommandRunner(CommandRunnerConfig{Command: "worker"}); err == nil {
+		t.Fatal("zero-stage runner configuration unexpectedly enabled worker stages")
+	}
+}
+
+func TestCommandRunnerSelectsOnlyPersistedAssignmentStage(t *testing.T) {
+	baseline := baselineForTest(t)
+	for _, test := range []struct {
+		name       string
+		assignment VariantAssignment
+		want       WorkerStageConfig
+		wantCode   DegradationCode
+	}{
+		{name: "direct never enables deep", assignment: VariantAssignment{Variant: VariantDirectStructuredJudge, Cohort: "test"}, want: WorkerStageConfig{DirectJudge: true}},
+		{name: "dark never enables direct", assignment: VariantAssignment{Variant: VariantBoundedAgentDarkLaunch, Cohort: "dark-0100"}, want: WorkerStageConfig{DeepAgent: true}},
+		{name: "deterministic never starts child", assignment: VariantAssignment{Variant: VariantDeterministicOnly, Cohort: defaultVariantCohort}, wantCode: DegradationModelDisabled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stages, err := stagesForAssignment(test.assignment, WorkerStageConfig{DirectJudge: true, DeepAgent: true})
+			if test.wantCode != "" {
+				if err == nil || degradationFor(err).Code != test.wantCode {
+					t.Fatalf("stages err = %v", err)
+				}
+				return
+			}
+			if err != nil || stages != test.want {
+				t.Fatalf("stages = %#v err=%v", stages, err)
+			}
+			wire, err := workerRequest(RunRequest{Run: Run{ID: "run", JobID: "job"}}, baselinePayloadForTest(t, baseline), defaultWorkerBudgets(), stages)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := wire["stages"].(map[string]bool)
+			if got["directJudge"] != test.want.DirectJudge || got["deepAgent"] != test.want.DeepAgent {
+				t.Fatalf("worker stages = %#v", got)
+			}
+		})
+	}
+}
+
+func baselinePayloadForTest(t *testing.T, input RevisionInput) RevisionPayload {
+	t.Helper()
+	payload, err := ParseRevisionPayload(input.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
 func TestCommandRunnerGoToPythonWorkerContract(t *testing.T) {
 	root, err := filepath.Abs("../../..")
 	if err != nil {
@@ -88,8 +138,8 @@ func TestCommandRunnerGoToPythonWorkerContract(t *testing.T) {
 		t.Fatalf("stat candidate assembly virtualenv: %v", err)
 	}
 	baseline := baselineForTest(t)
-	snapshot := Snapshot{Revisions: []Revision{{Kind: RevisionBaseline, Payload: baseline.Payload}}}
-	runner, err := NewCommandRunner(CommandRunnerConfig{Command: python, Args: []string{"-m", "candidate_assembly.worker_runner"}, Environment: map[string]string{"PATH": os.Getenv("PATH"), "PYTHONPATH": pythonPath}})
+	snapshot := Snapshot{Job: Job{Assignment: VariantAssignment{Variant: VariantDirectStructuredJudge, Cohort: "test"}}, Revisions: []Revision{{Kind: RevisionBaseline, Payload: baseline.Payload}}}
+	runner, err := NewCommandRunner(CommandRunnerConfig{Command: python, Args: []string{"-m", "candidate_assembly.worker_runner"}, Environment: map[string]string{"PATH": os.Getenv("PATH"), "PYTHONPATH": pythonPath}, Stages: WorkerStageConfig{DirectJudge: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,10 +176,18 @@ func TestCommandRunnerHelperProcess(t *testing.T) {
 	if mode == "unknown" {
 		candidate = "unknown"
 	}
-	for _, stage := range []string{"direct_judge", "deep_agent"} {
+	stages, _ := request["stages"].(map[string]any)
+	requested := make([]string, 0, 1)
+	if direct, _ := stages["directJudge"].(bool); direct {
+		requested = append(requested, "direct_judge")
+	}
+	if deep, _ := stages["deepAgent"].(bool); deep {
+		requested = append(requested, "deep_agent")
+	}
+	for _, stage := range requested {
 		_, _ = os.Stdout.WriteString(workerRevisionJSON(job, run, stage, candidate) + "\n")
 	}
-	_, _ = os.Stdout.WriteString(workerTerminalJSON(job, run, "completed", 2) + "\n")
+	_, _ = os.Stdout.WriteString(workerTerminalJSON(job, run, "completed", len(requested)) + "\n")
 	os.Exit(0)
 }
 

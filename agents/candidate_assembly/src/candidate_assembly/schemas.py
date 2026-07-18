@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 ASSEMBLY_SCHEMA_VERSION = "omp.agent-search.assembly.v1"
 CORPUS_SCHEMA_VERSION = "omp.agent-search.eval.corpus.v1"
-RUN_SCHEMA_VERSION = "omp.agent-search.eval.run.v3"
+RUN_SCHEMA_VERSION = "omp.agent-search.eval.run.v4"
 PROGRESS_EVENT_SCHEMA_VERSION = "omp.agent-search.eval.progress.v2"
 KNOWN_FAILURES_SCHEMA_VERSION = "omp.agent-search.eval.known-failures.v1"
 WORKER_REQUEST_SCHEMA_VERSION = "omp.agent-search.worker.request.v1"
@@ -234,7 +234,15 @@ class ArmTelemetry(StrictModel):
     validationMs: Optional[int] = Field(default=None, ge=0)
     totalArmWallMs: int = Field(default=0, ge=0)
     firstPartialRevisionMs: Optional[int] = Field(default=None, ge=0)
+    timeToBaselineMs: Optional[int] = Field(default=None, ge=0)
+    timeToFirstValidatedResultMs: Optional[int] = Field(default=None, ge=0)
     timeToFirstUsefulValidatedResultMs: Optional[int] = Field(default=None, ge=0)
+    timeToFinalMs: Optional[int] = Field(default=None, ge=0)
+    terminalOutcome: Literal["completed", "failed", "cancelled"] = "completed"
+    degradation: Literal["none", "arm_error", "validation_failed", "budget_exhausted"] = "none"
+    fallback: Literal["none", "deterministic_baseline"] = "none"
+    recovery: Literal["not_attempted"] = "not_attempted"
+    budgetOutcome: Literal["within_budget", "exhausted"] = "within_budget"
 
 
 _SAFE_REFERENCE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")

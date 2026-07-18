@@ -44,6 +44,63 @@ scripts/tailnet-staging.sh start-downloads
 scripts/tailnet-staging.sh smoke
 ```
 
+## Opt-in durable research worker
+
+The research worker is not part of normal staging startup. It is a single
+profiled Go durable-worker process that owns the existing Postgres lease,
+cancel, and recovery lifecycle, then starts the packaged Python child only for
+the bounded model step. Normal discovery and the direct judge remain separate.
+
+Set model credentials through the host secret store or deployment environment;
+do not put them in this repository or paste them into logs. Start a dark launch
+with no user-visible deep-agent revisions and no web extraction:
+
+```bash
+export RESEARCH_ENABLED=true
+export RESEARCH_DEEP_AGENT_ENABLED=true
+export RESEARCH_DEEP_AGENT_DARK_LAUNCH_ENABLED=true
+export RESEARCH_DEEP_AGENT_COHORT_BPS=100
+export RESEARCH_DEEP_AGENT_SURFACE_REVISIONS=false
+export RESEARCH_DEEP_AGENT_WEB_ENABLED=false
+docker compose -f docker-compose.local-low-memory.yml \
+  --profile research-worker up -d --build research-worker
+```
+
+This profile runs one worker service. Do not scale it during a rollout; the
+existing per-user slot and model/tool/time budgets remain the backpressure
+boundary. The worker container needs database access to claim durable jobs, but
+the Go child-environment allowlist sends the Python model process only its model
+configuration and process basics. Gateway credentials, Firecrawl, JWT, storage,
+Redis, database values, and user secrets are not forwarded to prompts or
+artifacts. `RESEARCH_DEEP_AGENT_WEB_ENABLED=true` is rejected in every
+production worker configuration. Firecrawl is gateway-eval-only and must never
+be enabled or passed to a production worker.
+
+Check and stop the worker without changing baseline jobs:
+
+```bash
+docker compose -f docker-compose.local-low-memory.yml \
+  --profile research-worker ps research-worker
+docker compose -f docker-compose.local-low-memory.yml \
+  --profile research-worker logs --tail=120 research-worker
+docker compose -f docker-compose.local-low-memory.yml \
+  --profile research-worker stop research-worker
+```
+
+Rollback is flags/cohort zero followed by a worker stop. It never deletes
+baseline jobs, revisions, or reservations:
+
+```bash
+export RESEARCH_ENABLED=false
+export RESEARCH_DEEP_AGENT_ENABLED=false
+export RESEARCH_DEEP_AGENT_DARK_LAUNCH_ENABLED=false
+export RESEARCH_DEEP_AGENT_SURFACE_REVISIONS=false
+export RESEARCH_DEEP_AGENT_COHORT_BPS=0
+export RESEARCH_DEEP_AGENT_WEB_ENABLED=false
+docker compose -f docker-compose.local-low-memory.yml \
+  --profile research-worker stop research-worker
+```
+
 Terminal 2 serves Flutter Web on all interfaces:
 
 ```bash

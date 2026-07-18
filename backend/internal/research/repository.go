@@ -24,7 +24,7 @@ type Repository interface {
 	Cancel(ctx context.Context, jobID, ownerID string) (*Snapshot, error)
 	Retry(ctx context.Context, jobID, ownerID string) (*Snapshot, error)
 	Review(ctx context.Context, jobID, ownerID string, input ReviewInput) (*db.SourceSelectionDecision, error)
-	Claim(ctx context.Context, workerID string, leaseExpiresAt time.Time) (*Claim, error)
+	Claim(ctx context.Context, workerID string, capabilities WorkerCapabilities, leaseExpiresAt time.Time) (*Claim, error)
 	RenewLease(ctx context.Context, claim Claim, leaseExpiresAt time.Time) (bool, error)
 	RecoverExpiredLeases(ctx context.Context, now time.Time) (int, error)
 	AppendEnhancement(ctx context.Context, claim Claim, input RevisionInput) (*Revision, error)
@@ -40,16 +40,40 @@ type Validator interface {
 }
 
 type ServiceConfig struct {
-	Repository Repository
-	Validator  Validator
+	Repository      Repository
+	Validator       Validator
+	VariantAssigner VariantAssigner
 }
 type Service struct {
-	repository Repository
-	validator  Validator
+	repository      Repository
+	validator       Validator
+	variantAssigner VariantAssigner
+}
+
+// VariantAssigner owns stable policy selection. The core passes only durable
+// identifiers, making this layer independent from process configuration.
+type VariantAssigner interface {
+	Assign(VariantAssignmentInput) (VariantAssignment, error)
+}
+
+type VariantAssignerFunc func(VariantAssignmentInput) (VariantAssignment, error)
+
+func (f VariantAssignerFunc) Assign(input VariantAssignmentInput) (VariantAssignment, error) {
+	return f(input)
+}
+
+type deterministicVariantAssigner struct{}
+
+func (deterministicVariantAssigner) Assign(VariantAssignmentInput) (VariantAssignment, error) {
+	return deterministicAssignment(), nil
 }
 
 func NewService(cfg ServiceConfig) *Service {
-	return &Service{repository: cfg.Repository, validator: cfg.Validator}
+	assigner := cfg.VariantAssigner
+	if assigner == nil {
+		assigner = deterministicVariantAssigner{}
+	}
+	return &Service{repository: cfg.Repository, validator: cfg.Validator, variantAssigner: assigner}
 }
 func (s *Service) Create(ctx context.Context, input CreateInput) (*Snapshot, error) {
 	canonical, hash, err := CanonicalRequestHash(input.Request)
@@ -64,6 +88,14 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (*Snapshot, err
 		return nil, errors.New("research validator is required")
 	}
 	if err := s.validator.ValidateBaseline(ctx, input.Baseline); err != nil {
+		return nil, err
+	}
+	assignment, err := s.variantAssigner.Assign(VariantAssignmentInput{OwnerID: input.OwnerID, RequestHash: input.RequestHash, IdempotencyKey: input.IdempotencyKey})
+	if err != nil {
+		return nil, err
+	}
+	input.Assignment, err = NormalizeVariantAssignment(assignment)
+	if err != nil {
 		return nil, err
 	}
 	return s.repository.Create(ctx, input)

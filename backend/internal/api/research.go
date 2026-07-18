@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -43,17 +44,47 @@ type researchBaselineBuilder interface {
 	Build(context.Context, string, []string, int) (research.RevisionInput, error)
 }
 
+// ResearchObserver receives aggregate, bounded research lifecycle observations.
+// Arguments intentionally exclude request content, IDs, provider names, URLs, and
+// credentials so implementations can export them as metrics safely.
+type ResearchObserver interface {
+	ObserveResearchCreate(outcome string, baselineLatency time.Duration)
+	ObserveResearchSnapshot(status, terminalStatus, degradation, revisionStage, revisionKind string, timeToLatest time.Duration, hasTimeToLatest bool)
+	ObserveResearchMutation(operation, outcome string)
+	ObserveResearchReview(action, outcome string)
+	ObserveResearchToolCalls(calls int)
+	ObserveResearchModelAttempt(stage, status string, repair bool, duration time.Duration)
+}
+
+type noopResearchObserver struct{}
+
+func (noopResearchObserver) ObserveResearchCreate(string, time.Duration) {}
+func (noopResearchObserver) ObserveResearchSnapshot(string, string, string, string, string, time.Duration, bool) {
+}
+func (noopResearchObserver) ObserveResearchMutation(string, string) {}
+func (noopResearchObserver) ObserveResearchReview(string, string)   {}
+func (noopResearchObserver) ObserveResearchToolCalls(int)           {}
+func (noopResearchObserver) ObserveResearchModelAttempt(string, string, bool, time.Duration) {
+}
+
 type ResearchHandlers struct {
 	service     researchJobService
 	baseline    researchBaselineBuilder
 	maxAttempts int
+	observer    ResearchObserver
 }
 
-func NewResearchHandlers(service researchJobService, baseline researchBaselineBuilder, maxAttempts int) *ResearchHandlers {
+// NewResearchHandlers accepts an optional aggregate observer so direct handler
+// tests and deployments that do not expose metrics retain the no-op behavior.
+func NewResearchHandlers(service researchJobService, baseline researchBaselineBuilder, maxAttempts int, observers ...ResearchObserver) *ResearchHandlers {
 	if maxAttempts < 1 || maxAttempts > 10 {
 		maxAttempts = 3
 	}
-	return &ResearchHandlers{service: service, baseline: baseline, maxAttempts: maxAttempts}
+	observer := ResearchObserver(noopResearchObserver{})
+	if len(observers) > 0 && observers[0] != nil {
+		observer = observers[0]
+	}
+	return &ResearchHandlers{service: service, baseline: baseline, maxAttempts: maxAttempts, observer: observer}
 }
 
 type createResearchJobRequest struct {
@@ -76,6 +107,7 @@ func (h *ResearchHandlers) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	idempotencyKey, err := researchIdempotencyKey(r)
 	if err != nil {
+		h.observer.ObserveResearchCreate("invalid_request", 0)
 		writeResearchError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", err.Error())
 		return
 	}
@@ -85,24 +117,31 @@ func (h *ResearchHandlers) Create(w http.ResponseWriter, r *http.Request) {
 	if err := decodeStrictJSON(r, &request); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
+			h.observer.ObserveResearchCreate("invalid_request", 0)
 			writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REQUEST", "research request is too large")
 			return
 		}
+		h.observer.ObserveResearchCreate("invalid_request", 0)
 		writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REQUEST", "research request must be a single JSON object with known fields")
 		return
 	}
 	if err := validateResearchCreateRequest(&request); err != nil {
+		h.observer.ObserveResearchCreate("invalid_request", 0)
 		writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REQUEST", err.Error())
 		return
 	}
 
+	baselineStarted := time.Now()
 	baseline, err := h.baseline.Build(r.Context(), request.Query, request.Providers, request.Limit)
+	baselineLatency := time.Since(baselineStarted)
 	if err != nil {
+		h.observer.ObserveResearchCreate("baseline_unavailable", baselineLatency)
 		writeResearchError(w, http.StatusServiceUnavailable, "RESEARCH_BASELINE_UNAVAILABLE", "research baseline is temporarily unavailable")
 		return
 	}
 	rawRequest, err := json.Marshal(request)
 	if err != nil {
+		h.observer.ObserveResearchCreate("unavailable", baselineLatency)
 		writeResearchError(w, http.StatusServiceUnavailable, "RESEARCH_UNAVAILABLE", "research is unavailable")
 		return
 	}
@@ -116,9 +155,12 @@ func (h *ResearchHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		Baseline:       baseline,
 	})
 	if err != nil {
+		h.observer.ObserveResearchCreate(researchObserverOutcome(err), baselineLatency)
 		writeResearchServiceError(w, err)
 		return
 	}
+	h.observer.ObserveResearchCreate("created", baselineLatency)
+	h.observeSnapshot(snapshot)
 	writeResearchJSON(w, http.StatusCreated, researchSnapshotResponseFrom(snapshot))
 }
 
@@ -140,6 +182,7 @@ func (h *ResearchHandlers) Get(w http.ResponseWriter, r *http.Request) {
 		writeResearchServiceError(w, err)
 		return
 	}
+	h.observeSnapshot(snapshot)
 	writeResearchJSON(w, http.StatusOK, researchSnapshotResponseFrom(snapshot))
 }
 
@@ -174,18 +217,18 @@ func (h *ResearchHandlers) Events(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ResearchHandlers) Cancel(w http.ResponseWriter, r *http.Request) {
-	h.mutate(w, r, func(ctx context.Context, jobID, ownerID string) (*research.Snapshot, error) {
+	h.mutate(w, r, "cancel", func(ctx context.Context, jobID, ownerID string) (*research.Snapshot, error) {
 		return h.service.Cancel(ctx, jobID, ownerID)
 	})
 }
 
 func (h *ResearchHandlers) Retry(w http.ResponseWriter, r *http.Request) {
-	h.mutate(w, r, func(ctx context.Context, jobID, ownerID string) (*research.Snapshot, error) {
+	h.mutate(w, r, "retry", func(ctx context.Context, jobID, ownerID string) (*research.Snapshot, error) {
 		return h.service.Retry(ctx, jobID, ownerID)
 	})
 }
 
-func (h *ResearchHandlers) mutate(w http.ResponseWriter, r *http.Request, operation func(context.Context, string, string) (*research.Snapshot, error)) {
+func (h *ResearchHandlers) mutate(w http.ResponseWriter, r *http.Request, operationName string, operation func(context.Context, string, string) (*research.Snapshot, error)) {
 	user, ok := researchAuthenticatedUser(w, r)
 	if !ok {
 		return
@@ -195,6 +238,7 @@ func (h *ResearchHandlers) mutate(w http.ResponseWriter, r *http.Request, operat
 		return
 	}
 	if !researchEmptyBody(w, r) {
+		h.observer.ObserveResearchMutation(operationName, "invalid_request")
 		return
 	}
 	jobID, ok := researchJobID(w, r)
@@ -203,9 +247,12 @@ func (h *ResearchHandlers) mutate(w http.ResponseWriter, r *http.Request, operat
 	}
 	snapshot, err := operation(r.Context(), jobID, user.UserID.String())
 	if err != nil {
+		h.observer.ObserveResearchMutation(operationName, researchObserverOutcome(err))
 		writeResearchServiceError(w, err)
 		return
 	}
+	h.observer.ObserveResearchMutation(operationName, "success")
+	h.observeSnapshot(snapshot)
 	writeResearchJSON(w, http.StatusOK, researchSnapshotResponseFrom(snapshot))
 }
 
@@ -232,16 +279,19 @@ func (h *ResearchHandlers) Review(w http.ResponseWriter, r *http.Request) {
 	}
 	idempotencyKey, err := researchIdempotencyKey(r)
 	if err != nil {
+		h.observer.ObserveResearchReview("unknown", "invalid_request")
 		writeResearchError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", err.Error())
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, researchMaxRequestBodyBytes)
 	var request researchReviewRequest
 	if err := decodeStrictJSON(r, &request); err != nil {
+		h.observer.ObserveResearchReview("unknown", "invalid_request")
 		writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REVIEW", "review request must be a single JSON object with known fields")
 		return
 	}
 	if err := validateResearchReviewRequest(&request); err != nil {
+		h.observer.ObserveResearchReview("unknown", "invalid_request")
 		writeResearchError(w, http.StatusBadRequest, "INVALID_RESEARCH_REVIEW", err.Error())
 		return
 	}
@@ -253,10 +303,73 @@ func (h *ResearchHandlers) Review(w http.ResponseWriter, r *http.Request) {
 		ReviewerID:     user.UserID.String(),
 	})
 	if err != nil {
+		h.observer.ObserveResearchReview(request.Action, researchObserverOutcome(err))
 		writeResearchServiceError(w, err)
 		return
 	}
+	h.observer.ObserveResearchReview(request.Action, "created")
 	writeSourceSelectionJSON(w, http.StatusCreated, sourceSelectionFromDB(decision))
+}
+
+func (h *ResearchHandlers) observeSnapshot(snapshot *research.Snapshot) {
+	if h == nil || h.observer == nil || snapshot == nil {
+		return
+	}
+	status := string(snapshot.Job.Status)
+	terminalStatus := ""
+	if snapshot.Job.Status.Terminal() {
+		terminalStatus = status
+	}
+	degradation := ""
+	if snapshot.LatestDegradation != nil {
+		degradation = string(snapshot.LatestDegradation.Code)
+	}
+
+	stage, kind := "unknown", "unknown"
+	var timeToLatest time.Duration
+	hasTimeToLatest := false
+	for _, revision := range snapshot.Revisions {
+		if revision.ID != snapshot.Job.LatestRevisionID || revision.ValidatedAt.IsZero() {
+			continue
+		}
+		kind = string(revision.Kind)
+		var payload struct {
+			Stage research.RevisionStage `json:"stage"`
+		}
+		if json.Unmarshal(revision.Payload, &payload) == nil {
+			stage = string(payload.Stage)
+		}
+		if !snapshot.Job.CreatedAt.IsZero() && !revision.ValidatedAt.Before(snapshot.Job.CreatedAt) {
+			timeToLatest = revision.ValidatedAt.Sub(snapshot.Job.CreatedAt)
+			hasTimeToLatest = true
+		}
+		break
+	}
+	h.observer.ObserveResearchSnapshot(status, terminalStatus, degradation, stage, kind, timeToLatest, hasTimeToLatest)
+
+	if snapshot.LatestTerminalTelemetry == nil {
+		return
+	}
+	telemetry := snapshot.LatestTerminalTelemetry
+	h.observer.ObserveResearchToolCalls(telemetry.ToolCalls)
+	for _, attempt := range telemetry.ModelAttempts {
+		h.observer.ObserveResearchModelAttempt(string(attempt.Stage), attempt.Status, attempt.Repair, time.Duration(attempt.DurationMs)*time.Millisecond)
+	}
+}
+
+func researchObserverOutcome(err error) string {
+	switch {
+	case errors.Is(err, research.ErrIdempotencyConflict), errors.Is(err, research.ErrInvalidTransition):
+		return "conflict"
+	case errors.Is(err, research.ErrNotFound), errors.Is(err, research.ErrForbidden):
+		return "not_found"
+	case errors.Is(err, research.ErrInvalidReview), errors.Is(err, research.ErrInvalidRevision), errors.Is(err, research.ErrInvalidDegradation):
+		return "invalid_request"
+	case errors.Is(err, research.ErrNoJobAvailable):
+		return "capacity_exhausted"
+	default:
+		return "unavailable"
+	}
 }
 
 func researchAuthenticatedUser(w http.ResponseWriter, r *http.Request) (*auth.UserContext, bool) {
@@ -416,6 +529,10 @@ func researchSnapshotResponseFrom(snapshot *research.Snapshot) researchSnapshotR
 		return researchSnapshotResponse{}
 	}
 	job := snapshot.Job
+	telemetry := snapshot.LatestTerminalTelemetry
+	if job.Assignment.Variant == research.VariantBoundedAgentDarkLaunch && !snapshot.SurfaceDeepAgentRevisions {
+		telemetry = nil
+	}
 	return researchSnapshotResponse{
 		Job: researchJobResponse{
 			ID: job.ID, Status: job.Status, RetrySafe: job.RetrySafe, Attempts: job.Attempts, MaxAttempts: job.MaxAttempts,
@@ -424,7 +541,7 @@ func researchSnapshotResponseFrom(snapshot *research.Snapshot) researchSnapshotR
 		},
 		Revisions:               append([]research.Revision(nil), snapshot.Revisions...),
 		LatestDegradation:       snapshot.LatestDegradation,
-		LatestTerminalTelemetry: snapshot.LatestTerminalTelemetry,
+		LatestTerminalTelemetry: telemetry,
 	}
 }
 

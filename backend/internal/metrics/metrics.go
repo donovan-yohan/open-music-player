@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,20 @@ type Metrics struct {
 	activeWSConnections int64
 	downloadQueueLength int64
 
+	// Research metrics use only fixed, allowlisted labels. They deliberately do
+	// not retain request content, IDs, providers, URLs, or credentials.
+	researchCreates       map[string]*uint64
+	researchBaseline      map[string]*Histogram
+	researchStatuses      map[string]*uint64
+	researchTerminals     map[string]*uint64
+	researchDegradations  map[string]*uint64
+	researchMutations     map[string]*uint64
+	researchReviews       map[string]*uint64
+	researchRevisions     map[string]*uint64
+	researchTimeToLatest  map[string]*Histogram
+	researchToolCalls     *Histogram
+	researchModelAttempts map[string]*Histogram
+
 	// Custom gauges and counters
 	gauges   map[string]float64
 	counters map[string]*uint64
@@ -32,10 +47,9 @@ type Metrics struct {
 
 // Histogram tracks value distributions
 type Histogram struct {
-	mu    sync.Mutex
-	count uint64
-	sum   float64
-	// Buckets: 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s
+	mu         sync.Mutex
+	count      uint64
+	sum        float64
 	buckets    []float64
 	bucketVals []uint64
 }
@@ -46,6 +60,13 @@ func NewHistogram() *Histogram {
 		buckets:    []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
 		bucketVals: make([]uint64, 11),
 	}
+}
+
+// newResearchHistogram creates a histogram with buckets suitable for bounded
+// research latency measurements.
+func newResearchHistogram() *Histogram {
+	buckets := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 90, 120}
+	return &Histogram{buckets: buckets, bucketVals: make([]uint64, len(buckets))}
 }
 
 // Observe records a value
@@ -64,12 +85,23 @@ func (h *Histogram) Observe(v float64) {
 // New creates a new Metrics instance
 func New() *Metrics {
 	return &Metrics{
-		requestCount:    make(map[string]*uint64),
-		requestDuration: make(map[string]*Histogram),
-		requestErrors:   make(map[string]*uint64),
-		gauges:          make(map[string]float64),
-		counters:        make(map[string]*uint64),
-		startTime:       time.Now(),
+		requestCount:          make(map[string]*uint64),
+		requestDuration:       make(map[string]*Histogram),
+		requestErrors:         make(map[string]*uint64),
+		researchCreates:       make(map[string]*uint64),
+		researchBaseline:      make(map[string]*Histogram),
+		researchStatuses:      make(map[string]*uint64),
+		researchTerminals:     make(map[string]*uint64),
+		researchDegradations:  make(map[string]*uint64),
+		researchMutations:     make(map[string]*uint64),
+		researchReviews:       make(map[string]*uint64),
+		researchRevisions:     make(map[string]*uint64),
+		researchTimeToLatest:  make(map[string]*Histogram),
+		researchToolCalls:     NewHistogram(),
+		researchModelAttempts: make(map[string]*Histogram),
+		gauges:                make(map[string]float64),
+		counters:              make(map[string]*uint64),
+		startTime:             time.Now(),
 	}
 }
 
@@ -138,6 +170,87 @@ func isNumeric(s string) bool {
 	return true
 }
 
+func researchOutcomeLabel(value string) string {
+	switch value {
+	case "created", "success", "invalid_request", "baseline_unavailable", "conflict", "not_found", "capacity_exhausted", "unavailable":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func researchStatusLabel(value string) string {
+	switch value {
+	case "queued", "running", "cancel_requested", "completed", "degraded", "cancelled": //nolint:misspell // Preserve the persisted status contract.
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func researchTerminalLabel(value string) string {
+	switch value {
+	case "completed", "degraded", "cancelled": //nolint:misspell // Preserve the persisted status contract.
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func researchDegradationLabel(value string) string {
+	switch value {
+	case "model_disabled", "model_unavailable", "budget_exhausted", "transient", "timeout", "runner_terminal", "validation_rejected", "safety_rejected", "enhancement_rejected", "lease_expired", "no_candidates":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func researchMutationLabel(value string) string {
+	switch value {
+	case "cancel", "retry":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func researchReviewActionLabel(value string) string {
+	switch value {
+	case "accepted", "overridden":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func researchStageLabel(value string) string {
+	switch value {
+	case "baseline", "direct_judge", "deep_agent":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func researchRevisionKindLabel(value string) string {
+	switch value {
+	case "baseline", "enhancement":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func researchModelStatusLabel(value string) string {
+	switch value {
+	case "success", "parse_error", "transport_error":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
 // SetWSConnections sets the active WebSocket connections count
 func (m *Metrics) SetWSConnections(count int64) {
 	atomic.StoreInt64(&m.activeWSConnections, count)
@@ -174,6 +287,79 @@ func (m *Metrics) IncCounter(name string) {
 	}
 	m.mu.Unlock()
 	atomic.AddUint64(m.counters[name], 1)
+}
+
+// ObserveResearchCreate records a bounded create outcome and baseline latency.
+func (m *Metrics) ObserveResearchCreate(outcome string, baselineLatency time.Duration) {
+	outcome = researchOutcomeLabel(outcome)
+	m.incrementResearchCounter(m.researchCreates, outcome)
+	if baselineLatency > 0 {
+		m.observeResearchHistogram(m.researchBaseline, outcome, baselineLatency.Seconds())
+	}
+}
+
+// ObserveResearchSnapshot records safe state derived from an immutable snapshot.
+func (m *Metrics) ObserveResearchSnapshot(status, terminalStatus, degradation, revisionStage, revisionKind string, timeToLatest time.Duration, hasTimeToLatest bool) {
+	m.incrementResearchCounter(m.researchStatuses, researchStatusLabel(status))
+	if terminalStatus != "" {
+		m.incrementResearchCounter(m.researchTerminals, researchTerminalLabel(terminalStatus))
+	}
+	if degradation != "" {
+		m.incrementResearchCounter(m.researchDegradations, researchDegradationLabel(degradation))
+	}
+	stage, kind := researchStageLabel(revisionStage), researchRevisionKindLabel(revisionKind)
+	m.incrementResearchCounter(m.researchRevisions, stage+":"+kind)
+	if hasTimeToLatest && timeToLatest >= 0 {
+		m.observeResearchHistogram(m.researchTimeToLatest, stage+":"+kind, timeToLatest.Seconds())
+	}
+}
+
+// ObserveResearchMutation records cancel and retry outcomes with fixed labels.
+func (m *Metrics) ObserveResearchMutation(operation, outcome string) {
+	m.incrementResearchCounter(m.researchMutations, researchMutationLabel(operation)+":"+researchOutcomeLabel(outcome))
+}
+
+// ObserveResearchReview records review actions and outcomes with fixed labels.
+func (m *Metrics) ObserveResearchReview(action, outcome string) {
+	m.incrementResearchCounter(m.researchReviews, researchReviewActionLabel(action)+":"+researchOutcomeLabel(outcome))
+}
+
+// ObserveResearchToolCalls records only the aggregate count supplied by safe terminal telemetry.
+func (m *Metrics) ObserveResearchToolCalls(calls int) {
+	if calls < 0 {
+		return
+	}
+	m.researchToolCalls.Observe(float64(calls))
+}
+
+// ObserveResearchModelAttempt records model-attempt duration without a model or worker identity.
+func (m *Metrics) ObserveResearchModelAttempt(stage, status string, repair bool, duration time.Duration) {
+	if duration < 0 {
+		return
+	}
+	key := researchStageLabel(stage) + ":" + researchModelStatusLabel(status) + ":" + strconv.FormatBool(repair)
+	m.observeResearchHistogram(m.researchModelAttempts, key, duration.Seconds())
+}
+
+func (m *Metrics) incrementResearchCounter(values map[string]*uint64, key string) {
+	m.mu.Lock()
+	if values[key] == nil {
+		var zero uint64
+		values[key] = &zero
+	}
+	counter := values[key]
+	m.mu.Unlock()
+	atomic.AddUint64(counter, 1)
+}
+
+func (m *Metrics) observeResearchHistogram(values map[string]*Histogram, key string, value float64) {
+	m.mu.Lock()
+	if values[key] == nil {
+		values[key] = newResearchHistogram()
+	}
+	histogram := values[key]
+	m.mu.Unlock()
+	histogram.Observe(value)
 }
 
 // Handler returns an HTTP handler for the metrics endpoint
@@ -265,6 +451,8 @@ func (m *Metrics) Handler() http.HandlerFunc {
 			sb.WriteString("\n")
 		}
 
+		writeResearchMetrics(&sb, m)
+
 		// Custom gauges
 		if len(m.gauges) > 0 {
 			sb.WriteString("# HELP omp_gauge Custom gauge metrics\n")
@@ -298,6 +486,85 @@ func (m *Metrics) Handler() http.HandlerFunc {
 
 		w.Write([]byte(sb.String()))
 	}
+}
+
+func writeResearchMetrics(sb *strings.Builder, m *Metrics) {
+	writeResearchCounter := func(name, help string, values map[string]*uint64, labels ...string) {
+		if len(values) == 0 {
+			return
+		}
+		sb.WriteString("# HELP " + name + " " + help + "\n# TYPE " + name + " counter\n")
+		keys := sortedMetricKeys(values)
+		for _, key := range keys {
+			writeMetricLabels(sb, name, labels, strings.Split(key, ":"))
+			sb.WriteString(fmt.Sprintf(" %d\n", atomic.LoadUint64(values[key])))
+		}
+		sb.WriteString("\n")
+	}
+	writeResearchHistogram := func(name, help string, values map[string]*Histogram, labels ...string) {
+		if len(values) == 0 {
+			return
+		}
+		sb.WriteString("# HELP " + name + " " + help + "\n# TYPE " + name + " histogram\n")
+		for _, key := range sortedMetricKeys(values) {
+			histogram := values[key]
+			histogram.mu.Lock()
+			for index, bucket := range histogram.buckets {
+				writeMetricLabels(sb, name+"_bucket", append(labels, "le"), append(strings.Split(key, ":"), strconv.FormatFloat(bucket, 'g', -1, 64)))
+				sb.WriteString(fmt.Sprintf(" %d\n", histogram.bucketVals[index]))
+			}
+			writeMetricLabels(sb, name+"_bucket", append(labels, "le"), append(strings.Split(key, ":"), "+Inf"))
+			sb.WriteString(fmt.Sprintf(" %d\n", histogram.count))
+			writeMetricLabels(sb, name+"_sum", labels, strings.Split(key, ":"))
+			sb.WriteString(fmt.Sprintf(" %f\n", histogram.sum))
+			writeMetricLabels(sb, name+"_count", labels, strings.Split(key, ":"))
+			sb.WriteString(fmt.Sprintf(" %d\n", histogram.count))
+			histogram.mu.Unlock()
+		}
+		sb.WriteString("\n")
+	}
+
+	writeResearchCounter("omp_research_job_creates_total", "Research job create outcomes", m.researchCreates, "outcome")
+	writeResearchHistogram("omp_research_baseline_duration_seconds", "Research baseline build latency", m.researchBaseline, "outcome")
+	writeResearchCounter("omp_research_job_status_observations_total", "Research job status observations", m.researchStatuses, "status")
+	writeResearchCounter("omp_research_terminal_observations_total", "Research terminal status observations", m.researchTerminals, "status")
+	writeResearchCounter("omp_research_degradations_total", "Research degradation observations", m.researchDegradations, "code")
+	writeResearchCounter("omp_research_mutations_total", "Research cancel and retry outcomes", m.researchMutations, "operation", "outcome")
+	writeResearchCounter("omp_research_reviews_total", "Research review outcomes", m.researchReviews, "action", "outcome")
+	writeResearchCounter("omp_research_latest_revision_observations_total", "Latest validated research revision observations", m.researchRevisions, "stage", "kind")
+	writeResearchHistogram("omp_research_time_to_latest_revision_seconds", "Time from job creation to latest validated revision", m.researchTimeToLatest, "stage", "kind")
+	if m.researchToolCalls != nil {
+		writeResearchHistogram("omp_research_terminal_tool_calls", "Tool calls reported by safe terminal telemetry", map[string]*Histogram{"": m.researchToolCalls})
+	}
+	writeResearchHistogram("omp_research_terminal_model_attempt_duration_seconds", "Model attempt duration reported by safe terminal telemetry", m.researchModelAttempts, "stage", "status", "repair")
+}
+
+func sortedMetricKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func writeMetricLabels(sb *strings.Builder, name string, labelNames, labelValues []string) {
+	sb.WriteString(name)
+	if len(labelNames) == 0 {
+		return
+	}
+	sb.WriteString("{")
+	for index, labelName := range labelNames {
+		if index > 0 {
+			sb.WriteString(",")
+		}
+		value := "unknown"
+		if index < len(labelValues) {
+			value = labelValues[index]
+		}
+		sb.WriteString(labelName + "=\"" + value + "\"")
+	}
+	sb.WriteString("}")
 }
 
 // MetricsMiddleware creates middleware that records request metrics

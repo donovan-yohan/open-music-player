@@ -45,6 +45,56 @@ const (
 	RevisionEnhancement RevisionKind = "enhancement"
 )
 
+// Variant is the immutable execution arm assigned when an asynchronous
+// research job is created. It deliberately does not affect synchronous
+// discovery.
+type Variant string
+
+const (
+	VariantDeterministicOnly      Variant = "deterministic_only"
+	VariantDirectStructuredJudge  Variant = "direct_structured_judge"
+	VariantBoundedAgentDarkLaunch Variant = "bounded_agent_dark_launch"
+)
+
+const defaultVariantCohort = "default"
+
+// VariantAssignment contains only a bounded cohort label. It intentionally
+// has no arbitrary metadata field, so credentials and URLs cannot be persisted
+// as rollout metadata.
+type VariantAssignment struct {
+	Variant Variant `json:"variant"`
+	Cohort  string  `json:"cohort"`
+}
+
+// WorkerCapabilities is the persisted-assignment allowlist for a worker
+// process. It prevents a rollback or a partially deployed fleet from claiming
+// a job that its configured child runner cannot execute.
+type WorkerCapabilities struct {
+	DirectJudge bool
+	DeepAgent   bool
+}
+
+func (c WorkerCapabilities) Supports(assignment VariantAssignment) bool {
+	switch assignment.Variant {
+	case VariantDirectStructuredJudge:
+		return c.DirectJudge
+	case VariantBoundedAgentDarkLaunch:
+		return c.DeepAgent
+	default:
+		return false
+	}
+}
+
+func (c WorkerCapabilities) Any() bool { return c.DirectJudge || c.DeepAgent }
+
+// VariantAssignmentInput is the stable, configuration-neutral input supplied
+// to rollout policy. It excludes the request body and baseline payload.
+type VariantAssignmentInput struct {
+	OwnerID        string `json:"ownerId"`
+	RequestHash    string `json:"requestHash"`
+	IdempotencyKey string `json:"idempotencyKey"`
+}
+
 type DegradationCode string
 
 const (
@@ -102,31 +152,33 @@ const (
 )
 
 type CreateInput struct {
-	ID             string          `json:"id,omitempty"`
-	OwnerID        string          `json:"-"`
-	Request        json.RawMessage `json:"request"`
-	RequestHash    string          `json:"requestHash"`
-	RetrySafe      bool            `json:"retrySafe"`
-	MaxAttempts    int             `json:"maxAttempts"`
-	IdempotencyKey string          `json:"idempotencyKey"`
-	Baseline       RevisionInput   `json:"baseline"`
+	ID             string            `json:"id,omitempty"`
+	OwnerID        string            `json:"-"`
+	Request        json.RawMessage   `json:"request"`
+	RequestHash    string            `json:"requestHash"`
+	RetrySafe      bool              `json:"retrySafe"`
+	MaxAttempts    int               `json:"maxAttempts"`
+	IdempotencyKey string            `json:"idempotencyKey"`
+	Baseline       RevisionInput     `json:"baseline"`
+	Assignment     VariantAssignment `json:"assignment"`
 }
 
 type Job struct {
-	ID               string          `json:"id"`
-	OwnerID          string          `json:"ownerId"`
-	Request          json.RawMessage `json:"request"`
-	RequestHash      string          `json:"requestHash"`
-	IdempotencyKey   string          `json:"idempotencyKey"`
-	Status           JobStatus       `json:"status"`
-	RetrySafe        bool            `json:"retrySafe"`
-	Attempts         int             `json:"attempts"`
-	MaxAttempts      int             `json:"maxAttempts"`
-	AvailableAt      time.Time       `json:"availableAt"`
-	LatestRevision   int             `json:"latestRevision"`
-	LatestRevisionID string          `json:"latestRevisionId"`
-	CreatedAt        time.Time       `json:"createdAt"`
-	UpdatedAt        time.Time       `json:"updatedAt"`
+	ID               string            `json:"id"`
+	OwnerID          string            `json:"ownerId"`
+	Request          json.RawMessage   `json:"request"`
+	RequestHash      string            `json:"requestHash"`
+	IdempotencyKey   string            `json:"idempotencyKey"`
+	Status           JobStatus         `json:"status"`
+	RetrySafe        bool              `json:"retrySafe"`
+	Attempts         int               `json:"attempts"`
+	MaxAttempts      int               `json:"maxAttempts"`
+	AvailableAt      time.Time         `json:"availableAt"`
+	LatestRevision   int               `json:"latestRevision"`
+	LatestRevisionID string            `json:"latestRevisionId"`
+	Assignment       VariantAssignment `json:"assignment"`
+	CreatedAt        time.Time         `json:"createdAt"`
+	UpdatedAt        time.Time         `json:"updatedAt"`
 }
 
 type Run struct {
@@ -160,6 +212,9 @@ type Snapshot struct {
 	Revisions               []Revision         `json:"revisions"`
 	LatestDegradation       *Degradation       `json:"latestDegradation,omitempty"`
 	LatestTerminalTelemetry *TerminalTelemetry `json:"latestTerminalTelemetry,omitempty"`
+	// SurfaceDeepAgentRevisions carries the repository projection policy to the
+	// HTTP adapter without discarding safe telemetry needed for internal metrics.
+	SurfaceDeepAgentRevisions bool `json:"-"`
 }
 
 // TerminalTelemetry is runner-owned, bounded lifecycle accounting. It contains

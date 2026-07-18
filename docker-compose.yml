@@ -52,6 +52,16 @@ services:
       OMP_AGENT_SERVICE_TOKEN: ${OMP_AGENT_SERVICE_TOKEN:-}
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
 
+      # Durable research remains off by default. API instances do not claim
+      # research jobs; the explicit research-worker profile owns that lifecycle.
+      RESEARCH_ENABLED: ${RESEARCH_ENABLED:-false}
+      RESEARCH_WORKER_ENABLED: "false"
+      RESEARCH_DEEP_AGENT_ENABLED: ${RESEARCH_DEEP_AGENT_ENABLED:-false}
+      RESEARCH_DEEP_AGENT_DARK_LAUNCH_ENABLED: ${RESEARCH_DEEP_AGENT_DARK_LAUNCH_ENABLED:-false}
+      RESEARCH_DEEP_AGENT_SURFACE_REVISIONS: ${RESEARCH_DEEP_AGENT_SURFACE_REVISIONS:-false}
+      RESEARCH_DEEP_AGENT_COHORT_BPS: ${RESEARCH_DEEP_AGENT_COHORT_BPS:-0}
+      RESEARCH_DEEP_AGENT_WEB_ENABLED: ${RESEARCH_DEEP_AGENT_WEB_ENABLED:-false}
+
       # Auth
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
 
@@ -108,6 +118,70 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    networks:
+      - omp-network
+
+  # Opt-in only. This is the existing Go durable worker process with the
+  # existing Python child command packaged beside it. The child inherits only
+  # the Go allowlisted model environment, never the database or service secrets.
+  research-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.research-worker
+    restart: unless-stopped
+    profiles:
+      - research-worker
+    environment:
+      SERVER_ADDR: ":8080"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-omp}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-omp_dev_password}
+      DB_NAME: ${POSTGRES_DB:-openmusicplayer}
+      # This dedicated process uses Postgres-backed research only. Do not start
+      # Redis/download workers alongside the single durable research worker.
+      REDIS_ENABLED: "false"
+      WORKER_COUNT: "0"
+      RESEARCH_ENABLED: ${RESEARCH_ENABLED:-false}
+      RESEARCH_WORKER_ENABLED: "true"
+      RESEARCH_COMMAND: candidate-assembly-worker
+      RESEARCH_WORKER_ID: research-compose
+      RESEARCH_MAX_ATTEMPTS: ${RESEARCH_MAX_ATTEMPTS:-3}
+      RESEARCH_DIRECT_JUDGE_ENABLED: ${RESEARCH_DIRECT_JUDGE_ENABLED:-true}
+      RESEARCH_DEEP_AGENT_ENABLED: ${RESEARCH_DEEP_AGENT_ENABLED:-false}
+      RESEARCH_DEEP_AGENT_DARK_LAUNCH_ENABLED: ${RESEARCH_DEEP_AGENT_DARK_LAUNCH_ENABLED:-false}
+      RESEARCH_DEEP_AGENT_SURFACE_REVISIONS: ${RESEARCH_DEEP_AGENT_SURFACE_REVISIONS:-false}
+      RESEARCH_DEEP_AGENT_COHORT_BPS: ${RESEARCH_DEEP_AGENT_COHORT_BPS:-0}
+      RESEARCH_DEEP_AGENT_WEB_ENABLED: ${RESEARCH_DEEP_AGENT_WEB_ENABLED:-false}
+      RESEARCH_MAX_TOOL_CALLS: ${RESEARCH_MAX_TOOL_CALLS:-8}
+      RESEARCH_MAX_MODEL_CALLS: ${RESEARCH_MAX_MODEL_CALLS:-10}
+      RESEARCH_RECURSION_LIMIT: ${RESEARCH_RECURSION_LIMIT:-12}
+      RESEARCH_MAX_CANDIDATES_IN: ${RESEARCH_MAX_CANDIDATES_IN:-25}
+      RESEARCH_MAX_RECOMMENDATIONS: ${RESEARCH_MAX_RECOMMENDATIONS:-10}
+      RESEARCH_WALL_CLOCK_MS: ${RESEARCH_WALL_CLOCK_MS:-180000}
+      RESEARCH_MAX_REQUEST_BYTES: ${RESEARCH_MAX_REQUEST_BYTES:-49152}
+      RESEARCH_MAX_RESPONSE_BYTES: ${RESEARCH_MAX_RESPONSE_BYTES:-65536}
+      RESEARCH_MAX_TOKENS: ${RESEARCH_MAX_TOKENS:-4096}
+      RESEARCH_POLL_INTERVAL_MS: ${RESEARCH_POLL_INTERVAL_MS:-1000}
+      RESEARCH_LEASE_DURATION_MS: ${RESEARCH_LEASE_DURATION_MS:-30000}
+      RESEARCH_RENEW_INTERVAL_MS: ${RESEARCH_RENEW_INTERVAL_MS:-10000}
+      RESEARCH_RUN_TIMEOUT_MS: ${RESEARCH_RUN_TIMEOUT_MS:-120000}
+      RESEARCH_CANCEL_GRACE_MS: ${RESEARCH_CANCEL_GRACE_MS:-2000}
+      RESEARCH_SHUTDOWN_TIMEOUT_MS: ${RESEARCH_SHUTDOWN_TIMEOUT_MS:-30000}
+      AGENT_SEARCH_BASE_URL: ${AGENT_SEARCH_BASE_URL:-}
+      AGENT_SEARCH_API_KEY: ${AGENT_SEARCH_API_KEY:-}
+      AGENT_SEARCH_MODEL: ${AGENT_SEARCH_MODEL:-}
+      AGENT_SEARCH_TIMEOUT_S: ${AGENT_SEARCH_TIMEOUT_S:-90}
+      AGENT_SEARCH_RUN_TIMEOUT_S: ${AGENT_SEARCH_RUN_TIMEOUT_S:-3600}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     networks:
       - omp-network
 

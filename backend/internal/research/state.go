@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
+	"strings"
 )
 
 var (
@@ -15,7 +17,40 @@ var (
 	ErrInvalidRevision    = errors.New("invalid research revision")
 	ErrInvalidDegradation = errors.New("invalid research degradation")
 	ErrInvalidReview      = errors.New("invalid research review")
+	ErrInvalidVariant     = errors.New("invalid research variant")
 )
+
+var (
+	cohortToken      = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	cohortSecretLike = regexp.MustCompile(`(?i)(token|secret|password|api[-_]?key|bearer|^sk-)`)
+)
+
+func NormalizeVariantAssignment(assignment VariantAssignment) (VariantAssignment, error) {
+	if assignment.Variant == "" && assignment.Cohort == "" {
+		return VariantAssignment{Variant: VariantDeterministicOnly, Cohort: defaultVariantCohort}, nil
+	}
+	if assignment.Cohort == "" {
+		assignment.Cohort = defaultVariantCohort
+	}
+	if assignment.Variant != VariantDeterministicOnly && assignment.Variant != VariantDirectStructuredJudge && assignment.Variant != VariantBoundedAgentDarkLaunch {
+		return VariantAssignment{}, fmt.Errorf("%w: %q", ErrInvalidVariant, assignment.Variant)
+	}
+	if assignment.Cohort != strings.ToLower(assignment.Cohort) || !cohortToken.MatchString(assignment.Cohort) || strings.Contains(assignment.Cohort, "://") || strings.HasPrefix(assignment.Cohort, "www.") || cohortSecretLike.MatchString(assignment.Cohort) {
+		return VariantAssignment{}, fmt.Errorf("%w: invalid cohort", ErrInvalidVariant)
+	}
+	return assignment, nil
+}
+
+func variantAllowsEnhancement(variant Variant, stage RevisionStage) bool {
+	switch variant {
+	case VariantDirectStructuredJudge:
+		return stage == StageDirectJudge
+	case VariantBoundedAgentDarkLaunch:
+		return stage == StageDeepAgent
+	default:
+		return false
+	}
+}
 
 func TransitionJob(from, to JobStatus) error {
 	if from != to && jobTransitions[from][to] {
@@ -44,7 +79,8 @@ func ValidateCreate(input CreateInput) error {
 	if input.OwnerID == "" || input.IdempotencyKey == "" || input.RequestHash == "" || input.Baseline.ID == "" || input.MaxAttempts < 1 {
 		return fmt.Errorf("%w: required create fields missing", ErrInvalidRevision)
 	}
-	return nil
+	_, err := NormalizeVariantAssignment(input.Assignment)
+	return err
 }
 
 func ValidateEnhancement(input RevisionInput) error {

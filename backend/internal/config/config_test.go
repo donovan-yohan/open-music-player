@@ -334,6 +334,12 @@ func TestLoadResearchDisabledByDefaultWithBoundedLifecycleDefaults(t *testing.T)
 	if cfg.ResearchEnabled {
 		t.Fatal("ResearchEnabled = true by default")
 	}
+	if cfg.ResearchDeepAgentEnabled || cfg.ResearchDeepAgentDarkLaunchEnabled || cfg.ResearchDeepAgentSurfaceRevisions || cfg.ResearchDeepAgentCohortBPS != 0 || cfg.ResearchDeepAgentWebEnabled {
+		t.Fatalf("unsafe deep-agent rollout defaults: %#v", cfg)
+	}
+	if err := cfg.ValidateResearchRollout(); err != nil {
+		t.Fatalf("default rollout validation = %v", err)
+	}
 	if !cfg.ResearchWorkerEnabled {
 		t.Fatal("ResearchWorkerEnabled = false; disabled research jobs need the worker to record model-disabled degradation")
 	}
@@ -364,6 +370,8 @@ func TestLoadResearchUsesExactWorkerModelEnvironmentAndBoundsValues(t *testing.T
 	t.Setenv("AGENT_SEARCH_RUN_TIMEOUT_S", "120")
 	t.Setenv("RESEARCH_DIRECT_JUDGE_ENABLED", "false")
 	t.Setenv("RESEARCH_DEEP_AGENT_ENABLED", "true")
+	t.Setenv("RESEARCH_DEEP_AGENT_DARK_LAUNCH_ENABLED", "true")
+	t.Setenv("RESEARCH_DEEP_AGENT_COHORT_BPS", "250")
 	t.Setenv("RESEARCH_MAX_TOOL_CALLS", "99")
 	t.Setenv("RESEARCH_WALL_CLOCK_MS", "999999")
 	t.Setenv("RESEARCH_LEASE_DURATION_MS", "2000")
@@ -377,7 +385,7 @@ func TestLoadResearchUsesExactWorkerModelEnvironmentAndBoundsValues(t *testing.T
 	if cfg.ResearchModelTimeout != 7500*time.Millisecond || cfg.ResearchModelRunTimeout != 2*time.Minute {
 		t.Fatalf("research model timeouts = %s/%s", cfg.ResearchModelTimeout, cfg.ResearchModelRunTimeout)
 	}
-	if cfg.ResearchDirectJudgeEnabled || !cfg.ResearchDeepAgentEnabled || cfg.ResearchMaxToolCalls != 32 || cfg.ResearchWallClock != 5*time.Minute {
+	if cfg.ResearchDirectJudgeEnabled || !cfg.ResearchDeepAgentEnabled || !cfg.ResearchDeepAgentDarkLaunchEnabled || cfg.ResearchDeepAgentCohortBPS != 250 || cfg.ResearchMaxToolCalls != 32 || cfg.ResearchWallClock != 5*time.Minute {
 		t.Fatalf("research stages/budgets = direct:%t deep:%t tool:%d wall:%s", cfg.ResearchDirectJudgeEnabled, cfg.ResearchDeepAgentEnabled, cfg.ResearchMaxToolCalls, cfg.ResearchWallClock)
 	}
 	if cfg.ResearchLeaseDuration != 2*time.Second || cfg.ResearchRenewInterval >= cfg.ResearchLeaseDuration || cfg.ResearchShutdownTimeout != 30*time.Second {
@@ -387,10 +395,58 @@ func TestLoadResearchUsesExactWorkerModelEnvironmentAndBoundsValues(t *testing.T
 	if environment["AGENT_SEARCH_BASE_URL"] != "https://models.example/v1" || environment["AGENT_SEARCH_API_KEY"] != "model-only-secret" || environment["AGENT_SEARCH_MODEL"] != "candidate-judge" || environment["AGENT_SEARCH_TIMEOUT_S"] != "7.5" || environment["AGENT_SEARCH_RUN_TIMEOUT_S"] != "120" || environment["OMP_CANDIDATE_WORKER_LIVE"] != "1" {
 		t.Fatalf("research child environment = %#v", environment)
 	}
-	for _, forbidden := range []string{"JWT_SECRET", "DB_PASSWORD", "OMP_AGENT_SERVICE_TOKEN", "FIRECRAWL_API_KEY", "REDIS_URL"} {
+	for _, forbidden := range []string{"JWT_SECRET", "DB_PASSWORD", "OMP_AGENT_SERVICE_TOKEN", "FIRECRAWL_API_KEY", "REDIS_URL", "RESEARCH_DEEP_AGENT_WEB_ENABLED"} {
 		if _, ok := environment[forbidden]; ok {
 			t.Fatalf("research child environment leaked %s", forbidden)
 		}
+	}
+}
+
+func TestValidateResearchRolloutRejectsUnsafeCombinations(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		cfg  Config
+	}{
+		{name: "cohort below range", cfg: Config{ResearchDeepAgentCohortBPS: -1}},
+		{name: "cohort above range", cfg: Config{ResearchDeepAgentCohortBPS: 10001}},
+		{name: "deep without dark launch", cfg: Config{ResearchEnabled: true, ResearchDeepAgentEnabled: true}},
+		{name: "dark launch without global enablement", cfg: Config{ResearchDeepAgentEnabled: true, ResearchDeepAgentDarkLaunchEnabled: true}},
+		{name: "cohort without enabled dark launch", cfg: Config{ResearchDeepAgentCohortBPS: 1}},
+		{name: "surface without agent", cfg: Config{ResearchDeepAgentSurfaceRevisions: true, ResearchDeepAgentDarkLaunchEnabled: true}},
+		{name: "surface without dark launch", cfg: Config{ResearchDeepAgentEnabled: true, ResearchDeepAgentSurfaceRevisions: true}},
+		{name: "web is eval-only", cfg: Config{ResearchEnabled: true, ResearchDeepAgentEnabled: true, ResearchDeepAgentDarkLaunchEnabled: true, ResearchDeepAgentWebEnabled: true, FirecrawlAPIKey: "configured"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.cfg.ValidateResearchRollout(); err == nil {
+				t.Fatal("ValidateResearchRollout() = nil, want error")
+			}
+		})
+	}
+}
+
+func TestValidateResearchRolloutAllowsExplicitDarkLaunch(t *testing.T) {
+	cfg := Config{
+		ResearchEnabled:                    true,
+		ResearchDeepAgentEnabled:           true,
+		ResearchDeepAgentDarkLaunchEnabled: true,
+		ResearchDeepAgentSurfaceRevisions:  true,
+		ResearchDeepAgentCohortBPS:         100,
+	}
+	if err := cfg.ValidateResearchRollout(); err != nil {
+		t.Fatalf("ValidateResearchRollout() = %v", err)
+	}
+}
+
+func TestLoadResearchRolloutPreservesInvalidCohortForValidation(t *testing.T) {
+	withUnsetResearchEnv(t)
+	t.Setenv("RESEARCH_DEEP_AGENT_COHORT_BPS", "not-a-number")
+
+	cfg := Load()
+	if cfg.ResearchDeepAgentCohortBPS != -1 {
+		t.Fatalf("ResearchDeepAgentCohortBPS = %d, want invalid sentinel", cfg.ResearchDeepAgentCohortBPS)
+	}
+	if err := cfg.ValidateResearchRollout(); err == nil {
+		t.Fatal("ValidateResearchRollout() = nil for malformed cohort")
 	}
 }
 
@@ -420,7 +476,7 @@ func withUnsetResearchEnv(t *testing.T) {
 	for _, key := range []string{
 		"RESEARCH_ENABLED", "RESEARCH_WORKER_ENABLED", "RESEARCH_COMMAND", "RESEARCH_COMMAND_ARGS", "RESEARCH_WORKER_ID", "RESEARCH_MAX_ATTEMPTS",
 		"AGENT_SEARCH_BASE_URL", "AGENT_SEARCH_API_KEY", "AGENT_SEARCH_MODEL", "AGENT_SEARCH_TIMEOUT_S", "AGENT_SEARCH_RUN_TIMEOUT_S",
-		"RESEARCH_DIRECT_JUDGE_ENABLED", "RESEARCH_DEEP_AGENT_ENABLED", "RESEARCH_MAX_TOOL_CALLS", "RESEARCH_MAX_MODEL_CALLS", "RESEARCH_RECURSION_LIMIT", "RESEARCH_MAX_CANDIDATES_IN", "RESEARCH_MAX_RECOMMENDATIONS", "RESEARCH_WALL_CLOCK_MS", "RESEARCH_MAX_REQUEST_BYTES", "RESEARCH_MAX_RESPONSE_BYTES", "RESEARCH_MAX_TOKENS",
+		"RESEARCH_DIRECT_JUDGE_ENABLED", "RESEARCH_DEEP_AGENT_ENABLED", "RESEARCH_DEEP_AGENT_DARK_LAUNCH_ENABLED", "RESEARCH_DEEP_AGENT_SURFACE_REVISIONS", "RESEARCH_DEEP_AGENT_COHORT_BPS", "RESEARCH_DEEP_AGENT_WEB_ENABLED", "RESEARCH_MAX_TOOL_CALLS", "RESEARCH_MAX_MODEL_CALLS", "RESEARCH_RECURSION_LIMIT", "RESEARCH_MAX_CANDIDATES_IN", "RESEARCH_MAX_RECOMMENDATIONS", "RESEARCH_WALL_CLOCK_MS", "RESEARCH_MAX_REQUEST_BYTES", "RESEARCH_MAX_RESPONSE_BYTES", "RESEARCH_MAX_TOKENS",
 		"RESEARCH_DAILY_UNITS_PER_ATTEMPT", "RESEARCH_DAILY_LIMIT", "RESEARCH_MAX_CONCURRENT_PER_USER", "RESEARCH_POLL_INTERVAL_MS", "RESEARCH_LEASE_DURATION_MS", "RESEARCH_RENEW_INTERVAL_MS", "RESEARCH_RUN_TIMEOUT_MS", "RESEARCH_CANCEL_GRACE_MS", "RESEARCH_SHUTDOWN_TIMEOUT_MS",
 	} {
 		withUnsetEnv(t, key)
