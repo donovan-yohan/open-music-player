@@ -17,8 +17,8 @@ The optional follow-up is a framework-neutral, bounded structured-action loop
 run only by the dedicated durable worker. The server assigns and persists one
 immutable variant at creation:
 
-- `deterministic_only`: no child process; the worker records
-  `model_disabled` after preserving the baseline.
+- `deterministic_only`: terminalize the job at creation with `model_disabled`;
+  reserve no enhancement budget and run no worker.
 - `direct_structured_judge`: the worker may request only the direct stage.
 - `bounded_agent_dark_launch`: the worker may request only the deep stage.
 
@@ -30,8 +30,8 @@ assignment into a deep execution.
 
 `RESEARCH_ENABLED=false`, all deep/dark/surface/web flags false, and cohort
 zero are the safe defaults. Startup validates the controls before any worker can
-start. Contradictory deep/dark/surface/cohort combinations fail fast. The
-every production worker configuration explicitly rejects
+start. Contradictory deep/dark/surface/cohort combinations fail fast.
+Every production worker configuration explicitly rejects
 `RESEARCH_DEEP_AGENT_WEB_ENABLED`; a gateway that needs Firecrawl or service
 credentials is eval-only until a topology can preserve the credential boundary.
 Only the model credential allowlist may enter the child environment. Raw model
