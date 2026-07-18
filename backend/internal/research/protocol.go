@@ -159,7 +159,7 @@ func ValidateRevisionPayload(p RevisionPayload, allowURLs bool) error {
 	return nil
 }
 func validateCandidateSnapshot(c CandidateSnapshot, allowURLs bool) error {
-	if !safeRequiredID(c.CandidateID) || !allowedProvider(c.Provider) || !safeOptionalID(c.SourceID) || !safeRequiredText(c.Title, 240) || !safeText(c.Artist, 180) || !safeText(c.Uploader, 180) || c.DurationMs < 0 || c.DurationMs > 86_400_000 || c.SourceQuality.Score < 0 || c.SourceQuality.Score > 100 || !safeRequiredText(c.SourceQuality.Classification, 64) || !safeRequiredText(c.SourceQuality.Recommendation, 32) || c.SourceQuality.Confidence < 0 || c.SourceQuality.Confidence > 1 {
+	if !safeRequiredID(c.CandidateID) || !allowedProvider(c.Provider) || !safeOptionalID(c.SourceID) || !safeRequiredText(c.Title, 240) || !safeText(c.Artist, 180) || !safeText(c.Uploader, 180) || c.DurationMs < 0 || c.DurationMs > 86_400_000 || c.SourceQuality.Score < 0 || c.SourceQuality.Score > 100 || !knownSourceQualityClassification(c.SourceQuality.Classification) || !knownSourceQualityRecommendation(c.SourceQuality.Recommendation) || c.SourceQuality.Confidence < 0 || c.SourceQuality.Confidence > 1 {
 		return errors.New("research candidate invalid")
 	}
 	if allowURLs {
@@ -219,6 +219,35 @@ func recommendationOrder(s string) int {
 		return 1
 	}
 	return 0
+}
+func knownSourceQualityClassification(s string) bool {
+	switch s {
+	case discovery.SourceQualityOfficialAudio,
+		discovery.SourceQualityTopicAudio,
+		discovery.SourceQualityArtistUpload,
+		discovery.SourceQualityMusicVideo,
+		discovery.SourceQualityVisualizer,
+		discovery.SourceQualityLive,
+		discovery.SourceQualityLyricVideo,
+		discovery.SourceQualityInterview,
+		discovery.SourceQualityCover,
+		discovery.SourceQualityRemix,
+		discovery.SourceQualityAlteredAudio,
+		discovery.SourceQualityDirectURL,
+		discovery.SourceQualityUnknown:
+		return true
+	}
+	return false
+}
+func knownSourceQualityRecommendation(s string) bool {
+	switch s {
+	case discovery.SourceQualityPreferred,
+		discovery.SourceQualityAcceptable,
+		discovery.SourceQualityReview,
+		discovery.SourceQualityAvoid:
+		return true
+	}
+	return false
 }
 func allowedProvider(s string) bool { return s == "youtube" || s == "soundcloud" }
 func safeRequiredID(s string) bool {

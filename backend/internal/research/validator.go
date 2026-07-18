@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-
-	"github.com/openmusicplayer/backend/internal/discovery"
 )
 
 // PayloadValidator is the repository boundary. It accepts only Go-owned
@@ -18,12 +16,6 @@ func (PayloadValidator) ValidateBaseline(_ context.Context, input RevisionInput)
 	payload, err := ParseRevisionPayload(input.Payload)
 	if err != nil || input.ID == "" || payload.Stage != StageBaseline {
 		return payloadError("baseline")
-	}
-	for _, candidate := range payload.Candidates {
-		quality := discovery.EvaluateSourceQuality(payload.Query, discovery.Candidate{CandidateID: candidate.CandidateID, Provider: candidate.Provider, SourceID: candidate.SourceID, SourceURL: candidate.SourceURL, Title: candidate.Title, Artist: candidate.Artist, Uploader: candidate.Uploader, DurationMs: candidate.DurationMs, Downloadable: candidate.Downloadable, Playable: candidate.Playable, Explicit: candidate.Explicit})
-		if candidate.SourceQuality.Score != quality.Score || candidate.SourceQuality.Classification != quality.Classification || candidate.SourceQuality.Recommendation != quality.Recommendation || candidate.SourceQuality.Confidence != quality.Confidence || !reflect.DeepEqual(candidate.SourceQuality.Warnings, quality.Warnings) {
-			return payloadError("baseline quality")
-		}
 	}
 	return nil
 }

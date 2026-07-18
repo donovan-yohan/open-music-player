@@ -202,6 +202,9 @@ func TestYouTubeMusicCandidatesNeverExceedRequestedLimit(t *testing.T) {
 	if got, want := items[1].SourceID, "two"; got != want {
 		t.Fatalf("last bounded source id = %q, want %q", got, want)
 	}
+	if got, want := items[0].SourceURL, "https://music.youtube.com/watch?v=one"; got != want {
+		t.Fatalf("source URL = %q, want raw URL fallback %q", got, want)
+	}
 }
 
 func TestFlatYouTubeMusicCandidateRetainsSongsSurfaceEvidence(t *testing.T) {
@@ -216,6 +219,17 @@ func TestFlatYouTubeMusicCandidateRetainsSongsSurfaceEvidence(t *testing.T) {
 	}
 	if candidate.Metadata["discoverySurface"] != "youtube_music_songs" {
 		t.Fatalf("flat candidate metadata = %#v, want YouTube Music songs surface", candidate.Metadata)
+	}
+}
+
+func TestSoundCloudCandidatePrefersCanonicalWebpageURL(t *testing.T) {
+	provider := NewYTDLPProvider("soundcloud", "scsearch", "")
+	items := provider.candidatesFromOutput(`{"id":"123456789","url":"https://api.soundcloud.com/tracks/123456789","webpage_url":"https://soundcloud.com/ninajirachi/ipod-touch","title":"iPod Touch"}`, 10)
+	if len(items) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(items))
+	}
+	if got, want := items[0].SourceURL, "https://soundcloud.com/ninajirachi/ipod-touch"; got != want {
+		t.Fatalf("source URL = %q, want canonical webpage URL %q", got, want)
 	}
 }
 

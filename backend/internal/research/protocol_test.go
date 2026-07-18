@@ -51,6 +51,66 @@ func TestBaselineBuilderSortsAndGroundsPayload(t *testing.T) {
 	}
 }
 
+func TestBaselineBuilderYouTubeMusicQualityPassesValidation(t *testing.T) {
+	search := &fixtureSearch{response: discovery.SourceSearchResponse{Results: []discovery.Candidate{{
+		CandidateID: "youtube:music", Provider: "youtube", SourceURL: "https://www.youtube.com/watch?v=music", Title: "iPod Touch", Artist: "Ninajirachi", Downloadable: true,
+		Metadata: map[string]interface{}{"discoverySurface": "youtube_music_songs"},
+	}}}}
+	builder, err := NewBaselineBuilder(BaselineBuilderConfig{Search: search, NewID: func() string { return "revision-music" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := builder.Build(context.Background(), "Ninajirachi iPod Touch", nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := ParseRevisionPayload(input.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quality := payload.Candidates[0].SourceQuality
+	if quality.Classification != discovery.SourceQualityOfficialAudio || quality.Recommendation != discovery.SourceQualityPreferred {
+		t.Fatalf("YouTube Music quality = %#v, want official/preferred", quality)
+	}
+	if strings.Contains(string(input.Payload), "discoverySurface") {
+		t.Fatalf("baseline persisted raw discovery metadata: %s", input.Payload)
+	}
+	if err := NewPayloadValidator().ValidateBaseline(context.Background(), input); err != nil {
+		t.Fatalf("ValidateBaseline() rejected builder-owned YouTube Music quality: %v", err)
+	}
+}
+
+func TestValidateBaselineRejectsUnknownSourceQualityEnums(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*RevisionPayload)
+	}{
+		{name: "classification", mutate: func(payload *RevisionPayload) {
+			payload.Candidates[0].SourceQuality.Classification = "invented_quality"
+		}},
+		{name: "recommendation", mutate: func(payload *RevisionPayload) {
+			payload.Candidates[0].SourceQuality.Recommendation = "invented_recommendation"
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			baseline := baselineForTest(t)
+			payload, err := ParseRevisionPayload(baseline.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.mutate(&payload)
+			raw := mustJSON(t, payload)
+			if _, err := ParseRevisionPayload(raw); err == nil {
+				t.Fatalf("ParseRevisionPayload() accepted unknown source-quality %s", test.name)
+			}
+			if err := NewPayloadValidator().ValidateBaseline(context.Background(), RevisionInput{ID: baseline.ID, Payload: raw}); err == nil {
+				t.Fatalf("ValidateBaseline() accepted unknown source-quality %s", test.name)
+			}
+		})
+	}
+}
+
 func TestWorkerProjectionAndEnhancementRejectLeaksAndInventedCandidates(t *testing.T) {
 	baseline := baselineForTest(t)
 	payload, err := ParseRevisionPayload(baseline.Payload)
