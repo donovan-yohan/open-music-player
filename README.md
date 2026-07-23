@@ -32,7 +32,7 @@ Open Music Player consists of three main components:
 **Components:**
 
 - **Backend (Go)**: REST API server handling authentication, track management, playlists, downloads, and signed audio URL issuance
-- **Client (Flutter)**: Cross-platform client for iOS, Android, macOS, Windows, Linux, and web
+- **Client (Flutter)**: Android and web client with a responsive desktop web shell. Native Windows, macOS, Linux, and iOS runners are not currently included.
 - **Extension (TypeScript)**: Browser extension for Chrome/Firefox to save tracks from YouTube and SoundCloud
 
 **Infrastructure:**
