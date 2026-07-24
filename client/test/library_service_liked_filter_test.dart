@@ -59,6 +59,12 @@ void main() {
       expect(fields, contains('duration_ms'));
       expect(fields, contains('is_liked'));
       expect(fields, contains('analysis_updated_at'));
+      expect(fields, contains('file_size_bytes'));
+      expect(fields, contains('codec'));
+      expect(fields, contains('bitrate_kbps'));
+      expect(fields, contains('sample_rate_hz'));
+      expect(fields, contains('channels'));
+      expect(fields, contains('content_type'));
     });
   });
 
@@ -88,6 +94,8 @@ void main() {
       );
 
       expect(api.capturedParams?['fields'], contains('is_liked'));
+      expect(api.capturedParams?['fields'], contains('bitrate_kbps'));
+      expect(api.capturedParams?['fields'], contains('sample_rate_hz'));
     });
 
     test('a search query adds a trimmed q=', () async {

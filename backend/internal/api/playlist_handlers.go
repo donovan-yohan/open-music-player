@@ -92,6 +92,12 @@ type TrackResponse struct {
 	Artist            string          `json:"artist,omitempty"`
 	Album             string          `json:"album,omitempty"`
 	DurationMs        int             `json:"durationMs,omitempty"`
+	FileSizeBytes     int64           `json:"fileSizeBytes,omitempty"`
+	Codec             string          `json:"codec,omitempty"`
+	BitrateKbps       int             `json:"bitrateKbps,omitempty"`
+	SampleRateHz      int             `json:"sampleRateHz,omitempty"`
+	Channels          int             `json:"channels,omitempty"`
+	ContentType       string          `json:"contentType,omitempty"`
 	MBRecordingID     *uuid.UUID      `json:"mbRecordingId,omitempty"`
 	MBReleaseID       *uuid.UUID      `json:"mbReleaseId,omitempty"`
 	MBArtistID        *uuid.UUID      `json:"mbArtistId,omitempty"`
@@ -618,6 +624,24 @@ func mapTrackResponses(in []db.Track) []TrackResponse {
 		}
 		if t.DurationMs.Valid {
 			track.DurationMs = int(t.DurationMs.Int32)
+		}
+		if t.FileSizeBytes.Valid {
+			track.FileSizeBytes = t.FileSizeBytes.Int64
+		}
+		if t.Codec.Valid {
+			track.Codec = t.Codec.String
+		}
+		if t.BitrateKbps.Valid {
+			track.BitrateKbps = int(t.BitrateKbps.Int32)
+		}
+		if t.SampleRateHz.Valid {
+			track.SampleRateHz = int(t.SampleRateHz.Int32)
+		}
+		if t.Channels.Valid {
+			track.Channels = int(t.Channels.Int32)
+		}
+		if t.ContentType.Valid {
+			track.ContentType = t.ContentType.String
 		}
 		if t.AnalysisStatus.Valid {
 			track.AnalysisStatus = t.AnalysisStatus.String

@@ -5,8 +5,8 @@ import '../api/api_client.dart';
 
 const int defaultSignedAudioTtlSeconds = 5 * 60;
 
-typedef PlaybackUrlRequester =
-    Future<Map<String, dynamic>> Function(Map<String, dynamic> body);
+typedef PlaybackUrlRequester = Future<Map<String, dynamic>> Function(
+    Map<String, dynamic> body);
 
 class SignedAudioDescriptor {
   final int trackId;
@@ -14,6 +14,10 @@ class SignedAudioDescriptor {
   final DateTime expiresAt;
   final String? contentType;
   final int? sizeBytes;
+  final String? codec;
+  final int? bitrateKbps;
+  final int? sampleRateHz;
+  final int? channels;
   final String? etag;
   final String? storageKeyVersion;
 
@@ -23,6 +27,10 @@ class SignedAudioDescriptor {
     required this.expiresAt,
     this.contentType,
     this.sizeBytes,
+    this.codec,
+    this.bitrateKbps,
+    this.sampleRateHz,
+    this.channels,
     this.etag,
     this.storageKeyVersion,
   });
@@ -48,6 +56,10 @@ class SignedAudioDescriptor {
       expiresAt: DateTime.parse(expiresAt).toUtc(),
       contentType: json['contentType'] as String?,
       sizeBytes: json['sizeBytes'] as int?,
+      codec: json['codec'] as String?,
+      bitrateKbps: json['bitrateKbps'] as int?,
+      sampleRateHz: json['sampleRateHz'] as int?,
+      channels: json['channels'] as int?,
       etag: json['etag'] as String?,
       storageKeyVersion: json['storageKeyVersion'] as String?,
     );
@@ -113,8 +125,8 @@ class SignedAudioUrlResponse {
   }
 
   Map<int, SignedAudioDescriptor> get byTrackId => {
-    for (final descriptor in urls) descriptor.trackId: descriptor,
-  };
+        for (final descriptor in urls) descriptor.trackId: descriptor,
+      };
 }
 
 class SignedAudioUrlException implements Exception {
@@ -160,14 +172,14 @@ class SignedAudioUrlService {
   const SignedAudioUrlService(
     ApiClient api, {
     this.defaultTtlSeconds = defaultSignedAudioTtlSeconds,
-  }) : _api = api,
-       _requester = null;
+  })  : _api = api,
+        _requester = null;
 
   const SignedAudioUrlService.withRequester(
     PlaybackUrlRequester requester, {
     this.defaultTtlSeconds = defaultSignedAudioTtlSeconds,
-  }) : _api = null,
-       _requester = requester;
+  })  : _api = null,
+        _requester = requester;
 
   Future<SignedAudioUrlResponse> requestDescriptors(
     Iterable<int> trackIds, {

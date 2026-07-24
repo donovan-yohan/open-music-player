@@ -100,6 +100,37 @@ void main() {
     );
   });
 
+  testWidgets('player renders immutable source quality from track metadata', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    const item = MediaItem(
+      id: '1',
+      title: 'Truthful Track',
+      artist: 'Artist',
+      extras: {
+        'codec': 'mp3',
+        'bitrateKbps': 137,
+        'sampleRateHz': 44100,
+        'sizeBytes': 3355443,
+      },
+    );
+
+    await tester.pumpWidget(
+      ListenableProvider<PlaybackState>.value(
+        value: _FakePlaybackState(currentItem: item),
+        child: const MaterialApp(home: PlayerScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('player_source_quality')), findsOneWidget);
+    expect(find.text('MP3 · 137 kbps · 44.1 kHz · 3.2 MB'), findsOneWidget);
+  });
+
   testWidgets('progress slider previews scrub and commits once', (
     tester,
   ) async {
@@ -305,8 +336,9 @@ void main() {
     },
   );
 
-  testWidgets('favorite is disabled honestly for unknown and local-only ids',
-      (tester) async {
+  testWidgets('favorite is disabled honestly for unknown and local-only ids', (
+    tester,
+  ) async {
     tester.view.physicalSize = const Size(1200, 2200);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -318,10 +350,7 @@ void main() {
       MediaItem(
         id: '1',
         title: 'Previous account',
-        extras: {
-          'isLiked': true,
-          'likedAccountId': 'user-a',
-        },
+        extras: {'isLiked': true, 'likedAccountId': 'user-a'},
       ),
       MediaItem(id: 'local-file', title: 'Local only'),
     ]) {
@@ -441,8 +470,9 @@ void main() {
           atLeast(4.5),
         );
 
-        final secondary =
-            tester.widget<Icon>(find.byIcon(Icons.favorite_border));
+        final secondary = tester.widget<Icon>(
+          find.byIcon(Icons.favorite_border),
+        );
         expect(_contrastRatio(secondary.color!, surface), atLeast(3));
 
         final slider = tester.widget<Slider>(find.byType(Slider));
@@ -490,24 +520,25 @@ class _FakePlaybackState extends Fake implements PlaybackState {
     List<MediaItem>? queue,
     PlaybackSnapshot? snapshot,
     MediaItem? currentItem,
-  })  : _playbackContext = playbackContext,
-        _queue = queue ?? const [testItem],
-        _currentItem = currentItem ?? testItem,
-        _snapshot = snapshot ??
-            const PlaybackSnapshot(
-              sessionId: 'session_test',
-              cues: [],
-              currentCueId: 'cue_1',
-              currentQueueIndex: 0,
-              currentMediaItem: testItem,
-              localPosition: Duration(seconds: 10),
-              localDuration: Duration(seconds: 60),
-              globalPosition: Duration(seconds: 10),
-              globalDuration: Duration(seconds: 60),
-              playing: false,
-              processingState: ProcessingState.ready,
-              activeVoiceCount: 1,
-            );
+  }) : _playbackContext = playbackContext,
+       _queue = queue ?? const [testItem],
+       _currentItem = currentItem ?? testItem,
+       _snapshot =
+           snapshot ??
+           const PlaybackSnapshot(
+             sessionId: 'session_test',
+             cues: [],
+             currentCueId: 'cue_1',
+             currentQueueIndex: 0,
+             currentMediaItem: testItem,
+             localPosition: Duration(seconds: 10),
+             localDuration: Duration(seconds: 60),
+             globalPosition: Duration(seconds: 10),
+             globalDuration: Duration(seconds: 60),
+             playing: false,
+             processingState: ProcessingState.ready,
+             activeVoiceCount: 1,
+           );
 
   static const testItem = MediaItem(
     id: '1',
@@ -621,9 +652,11 @@ Matcher atLeast(num value) => greaterThanOrEqualTo(value);
 double _contrastRatio(Color first, Color second) {
   final firstLuminance = first.computeLuminance();
   final secondLuminance = second.computeLuminance();
-  final lighter =
-      firstLuminance > secondLuminance ? firstLuminance : secondLuminance;
-  final darker =
-      firstLuminance > secondLuminance ? secondLuminance : firstLuminance;
+  final lighter = firstLuminance > secondLuminance
+      ? firstLuminance
+      : secondLuminance;
+  final darker = firstLuminance > secondLuminance
+      ? secondLuminance
+      : firstLuminance;
   return (lighter + 0.05) / (darker + 0.05);
 }

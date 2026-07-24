@@ -72,6 +72,10 @@ type PlaybackURLItem struct {
 	ExpiresAt         time.Time `json:"expiresAt"`
 	ContentType       string    `json:"contentType"`
 	SizeBytes         int64     `json:"sizeBytes"`
+	Codec             string    `json:"codec,omitempty"`
+	BitrateKbps       int       `json:"bitrateKbps,omitempty"`
+	SampleRateHz      int       `json:"sampleRateHz,omitempty"`
+	Channels          int       `json:"channels,omitempty"`
 	ETag              string    `json:"etag,omitempty"`
 	StorageKeyVersion string    `json:"storageKeyVersion,omitempty"`
 }
@@ -195,6 +199,21 @@ func (h *PlaybackHandlers) CreatePlaybackURLs(w http.ResponseWriter, r *http.Req
 		}
 		if track.Version.Valid {
 			item.StorageKeyVersion = track.Version.String
+		}
+		if track.Codec.Valid {
+			item.Codec = track.Codec.String
+		}
+		if track.BitrateKbps.Valid {
+			item.BitrateKbps = int(track.BitrateKbps.Int32)
+		}
+		if track.SampleRateHz.Valid {
+			item.SampleRateHz = int(track.SampleRateHz.Int32)
+		}
+		if track.Channels.Valid {
+			item.Channels = int(track.Channels.Int32)
+		}
+		if track.ContentType.Valid {
+			item.ContentType = track.ContentType.String
 		}
 		resp.URLs = append(resp.URLs, item)
 	}

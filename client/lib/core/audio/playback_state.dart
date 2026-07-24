@@ -457,6 +457,18 @@ class PlaybackState extends ChangeNotifier {
     if (descriptor.sizeBytes != null) {
       extras['sizeBytes'] = descriptor.sizeBytes;
     }
+    if (descriptor.codec != null) {
+      extras['codec'] = descriptor.codec;
+    }
+    if (descriptor.bitrateKbps != null) {
+      extras['bitrateKbps'] = descriptor.bitrateKbps;
+    }
+    if (descriptor.sampleRateHz != null) {
+      extras['sampleRateHz'] = descriptor.sampleRateHz;
+    }
+    if (descriptor.channels != null) {
+      extras['channels'] = descriptor.channels;
+    }
     if (descriptor.etag != null) {
       extras['etag'] = descriptor.etag;
     }

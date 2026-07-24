@@ -92,6 +92,12 @@ void main() {
               'id': 2,
               'title': 'Thunderstruck',
               'coverArtUrl': 'http://c/2.jpg',
+              'codec': 'mp3',
+              'bitrateKbps': 137,
+              'sampleRateHz': 44100,
+              'channels': 2,
+              'contentType': 'audio/mpeg',
+              'sizeBytes': 3355443,
             },
           },
           {
@@ -117,6 +123,12 @@ void main() {
       expect(entries.first.contextId, '7');
       expect(entries.first.track.toPlaybackJson()['artwork_url'],
           'http://c/2.jpg');
+      expect(entries.first.track.codec, 'mp3');
+      expect(entries.first.track.bitrateKbps, 137);
+      expect(entries.first.track.sampleRateHz, 44100);
+      expect(entries.first.track.channels, 2);
+      expect(entries.first.track.contentType, 'audio/mpeg');
+      expect(entries.first.track.fileSizeBytes, 3355443);
       expect(entries[1].track.id, 2);
     });
 

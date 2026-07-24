@@ -37,16 +37,6 @@ class SettingsNotifier extends StateNotifier<SettingsModel> {
     await _prefs.setString(_settingsKey, jsonString);
   }
 
-  void setStreamingQuality(AudioQuality quality) {
-    state = state.copyWith(streamingQuality: quality);
-    _saveSettings();
-  }
-
-  void setDownloadQuality(AudioQuality quality) {
-    state = state.copyWith(downloadQuality: quality);
-    _saveSettings();
-  }
-
   void setGaplessPlayback(bool enabled) {
     state = state.copyWith(gaplessPlayback: enabled);
     _saveSettings();

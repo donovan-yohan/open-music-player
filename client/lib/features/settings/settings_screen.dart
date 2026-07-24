@@ -47,9 +47,9 @@ class _SectionHeader extends StatelessWidget {
       child: Text(
         title,
         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-              color: Theme.of(context).colorScheme.primary,
-              fontWeight: FontWeight.bold,
-            ),
+          color: Theme.of(context).colorScheme.primary,
+          fontWeight: FontWeight.bold,
+        ),
       ),
     );
   }
@@ -86,8 +86,8 @@ class _AccountSection extends ConsumerWidget {
                   : 'Device biometric or screen lock is not available on this platform.',
             ),
             value: authState.biometricUnlockEnabled,
-            onChanged: authState.isLoading ||
-                    !authState.biometricUnlockAvailable
+            onChanged:
+                authState.isLoading || !authState.biometricUnlockAvailable
                 ? null
                 : (enabled) => _setBiometricUnlock(context, authState, enabled),
           ),
@@ -145,8 +145,8 @@ class _AccountSection extends ConsumerWidget {
         content: Text(
           success
               ? enabled
-                  ? 'Biometric unlock enabled for this installed app session.'
-                  : 'Biometric unlock disabled.'
+                    ? 'Biometric unlock enabled for this installed app session.'
+                    : 'Biometric unlock disabled.'
               : authState.error ?? 'Could not update biometric unlock.',
         ),
         backgroundColor: success ? null : Theme.of(context).colorScheme.error,
@@ -286,7 +286,7 @@ class _LogoutOptionsDialogState extends State<LogoutOptionsDialog> {
   }
 }
 
-/// Playback section with audio quality, gapless playback, and crossfade
+/// Playback section with gapless playback and crossfade.
 class _PlaybackSection extends ConsumerWidget {
   const _PlaybackSection();
 
@@ -299,18 +299,6 @@ class _PlaybackSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader('Playback'),
-        ListTile(
-          leading: const Icon(Icons.high_quality_outlined),
-          title: const Text('Streaming quality'),
-          subtitle: Text(settings.streamingQuality.displayName),
-          trailing: const Text('(Always 320k)', style: TextStyle(fontSize: 12)),
-          onTap: () => _showQualityPicker(
-            context,
-            'Streaming quality',
-            settings.streamingQuality,
-            settingsNotifier.setStreamingQuality,
-          ),
-        ),
         SwitchListTile(
           secondary: const Icon(Icons.playlist_play_outlined),
           title: const Text('Gapless playback'),
@@ -352,33 +340,6 @@ class _PlaybackSection extends ConsumerWidget {
       ],
     );
   }
-
-  void _showQualityPicker(
-    BuildContext context,
-    String title,
-    AudioQuality currentQuality,
-    void Function(AudioQuality) onSelect,
-  ) {
-    showDialog(
-      context: context,
-      builder: (context) => SimpleDialog(
-        title: Text(title),
-        children: AudioQuality.values.map((quality) {
-          return RadioListTile<AudioQuality>(
-            title: Text(quality.displayName),
-            value: quality,
-            groupValue: currentQuality,
-            onChanged: (value) {
-              if (value != null) {
-                onSelect(value);
-              }
-              Navigator.pop(context);
-            },
-          );
-        }).toList(),
-      ),
-    );
-  }
 }
 
 /// Storage section with cache management and downloads
@@ -399,9 +360,7 @@ class _SettingsStorageSectionState
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final manager = legacy_provider.Provider.of<PlaybackCacheManager?>(
-      context,
-    );
+    final manager = legacy_provider.Provider.of<PlaybackCacheManager?>(context);
     if (!identical(manager, _cacheManager)) {
       _cacheManager = manager;
       _cacheSize = manager?.currentSizeBytes();
@@ -410,8 +369,6 @@ class _SettingsStorageSectionState
 
   @override
   Widget build(BuildContext context) {
-    final settings = ref.watch(settingsProvider);
-    final settingsNotifier = ref.read(settingsProvider.notifier);
     final downloads = legacy_provider.Provider.of<DownloadState>(context);
 
     return Column(
@@ -427,8 +384,8 @@ class _SettingsStorageSectionState
               _cacheManager == null
                   ? 'Unavailable on this platform'
                   : snapshot.hasData
-                      ? _formatBytes(snapshot.data!)
-                      : 'Calculating...',
+                  ? _formatBytes(snapshot.data!)
+                  : 'Calculating...',
             ),
           ),
           trailing: TextButton(
@@ -447,17 +404,6 @@ class _SettingsStorageSectionState
           ),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => context.push('/downloads'),
-        ),
-        ListTile(
-          leading: const Icon(Icons.high_quality_outlined),
-          title: const Text('Download quality'),
-          subtitle: Text(settings.downloadQuality.displayName),
-          onTap: () => _showQualityPicker(
-            context,
-            'Download quality',
-            settings.downloadQuality,
-            settingsNotifier.setDownloadQuality,
-          ),
         ),
       ],
     );
@@ -508,33 +454,6 @@ class _SettingsStorageSectionState
       return '${(sizeInBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     }
     return '${(sizeInBytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
-
-  void _showQualityPicker(
-    BuildContext context,
-    String title,
-    AudioQuality currentQuality,
-    void Function(AudioQuality) onSelect,
-  ) {
-    showDialog(
-      context: context,
-      builder: (context) => SimpleDialog(
-        title: Text(title),
-        children: AudioQuality.values.map((quality) {
-          return RadioListTile<AudioQuality>(
-            title: Text(quality.displayName),
-            value: quality,
-            groupValue: currentQuality,
-            onChanged: (value) {
-              if (value != null) {
-                onSelect(value);
-              }
-              Navigator.pop(context);
-            },
-          );
-        }).toList(),
-      ),
-    );
   }
 }
 

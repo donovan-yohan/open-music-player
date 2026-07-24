@@ -24,14 +24,16 @@ TrackAnalysis _analyzed({
 
 Future<void> _pump(
   WidgetTester tester,
-  Future<TrackAnalysis> Function() loader,
-) async {
+  Future<TrackAnalysis> Function() loader, {
+  String? sourceQuality,
+}) async {
   await tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
         body: SongInfoSheet(
           title: 'Highway to Hell',
           artist: 'AC/DC',
+          sourceQuality: sourceQuality,
           analysisLoader: loader,
         ),
       ),
@@ -89,29 +91,96 @@ void main() {
       expect(find.text('72%'), findsOneWidget);
     });
 
-    testWidgets('shows unavailable state when the loader throws',
+    testWidgets('renders truthful source quality with unavailable analysis', (
+      tester,
+    ) async {
+      await _pump(
+        tester,
+        () async => throw StateError('analyzer disabled'),
+        sourceQuality: 'MP3 · 137 kbps · 44.1 kHz · 2 channels · 3.2 MB',
+      );
+
+      expect(
+        find.byKey(const ValueKey('song_info_source_quality')),
+        findsOneWidget,
+      );
+      expect(
+        find.text('MP3 · 137 kbps · 44.1 kHz · 2 channels · 3.2 MB'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('unavailable'), findsOneWidget);
+    });
+
+    testWidgets('omits the source row when metadata is absent', (tester) async {
+      await _pump(tester, () async => _analyzed());
+
+      expect(
+        find.byKey(const ValueKey('song_info_source_quality')),
+        findsNothing,
+      );
+      expect(find.text('Source'), findsNothing);
+    });
+
+    testWidgets('full quality sheet scrolls at narrow width and 3x text',
         (tester) async {
+      tester.view.physicalSize = const Size(320, 568);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(
+              size: Size(320, 568),
+              textScaler: TextScaler.linear(3),
+            ),
+            child: Scaffold(
+              body: SongInfoSheet(
+                title: 'Highway to Hell',
+                artist: 'AC/DC',
+                sourceQuality:
+                    'MP3 · 137 kbps · 44.1 kHz · 2 channels · 3.2 MB',
+                analysisLoader: () async => _analyzed(),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byType(SingleChildScrollView), findsOneWidget);
+      expect(
+        find.byKey(const ValueKey('song_info_source_quality')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.drag(
+          find.byType(SingleChildScrollView), const Offset(0, -300));
+      await tester.pump();
+      expect(find.text('-11.4 LUFS'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('shows unavailable state when the loader throws', (
+      tester,
+    ) async {
       await _pump(tester, () async => throw StateError('analyzer disabled'));
 
       expect(find.textContaining('unavailable'), findsOneWidget);
       expect(find.text('128 BPM'), findsNothing);
     });
 
-    testWidgets('shows unavailable state for an empty/failed analysis',
-        (tester) async {
-      await _pump(
-        tester,
-        () async => TrackAnalysis.fromJson(status: 'failed'),
-      );
+    testWidgets('shows unavailable state for an empty/failed analysis', (
+      tester,
+    ) async {
+      await _pump(tester, () async => TrackAnalysis.fromJson(status: 'failed'));
 
       expect(find.textContaining('failed'), findsOneWidget);
     });
 
     testWidgets('shows refresh state for stale analysis', (tester) async {
-      await _pump(
-        tester,
-        () async => TrackAnalysis.fromJson(status: 'stale'),
-      );
+      await _pump(tester, () async => TrackAnalysis.fromJson(status: 'stale'));
 
       expect(find.textContaining('refreshed'), findsOneWidget);
     });

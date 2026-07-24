@@ -4,21 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
+
+	"github.com/openmusicplayer/backend/internal/testutil"
 )
 
 func postgresTestDSN() string {
-	if dsn := os.Getenv("OMP_POSTGRES_TEST_DSN"); dsn != "" {
-		return dsn
-	}
-	if dsn := os.Getenv("QA_DATABASE_URL"); dsn != "" {
-		return dsn
-	}
-	return os.Getenv("DATABASE_URL")
+	return testutil.PostgresTestDSN()
 }
 
 func TestPostgresTestDSNAcceptsDatabaseURL(t *testing.T) {
@@ -28,6 +24,31 @@ func TestPostgresTestDSNAcceptsDatabaseURL(t *testing.T) {
 
 	if got := postgresTestDSN(); got != "postgres://ci.example/openmusicplayer" {
 		t.Fatalf("postgresTestDSN() = %q, want DATABASE_URL fallback", got)
+	}
+}
+
+func TestNormalMaintenanceCandidatesRetainAudioQualityFacts(t *testing.T) {
+	repo, ctx := newPostgresTestRepository(t)
+	track, _, err := repo.CreateTrackFromMetadata(
+		ctx, "Maintenance Artist", "Maintenance Quality", "", 1000,
+		WithStorage("tracks/maintenance-quality.mp3", 1234),
+		WithAudioQuality("mp3", 137, 44100, 2, "audio/mpeg"),
+	)
+	if err != nil {
+		t.Fatalf("create maintenance candidate: %v", err)
+	}
+	candidates, err := repo.GetMaintenanceCandidates(ctx, true, false, time.Minute, 10)
+	if err != nil {
+		t.Fatalf("GetMaintenanceCandidates: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].ID != track.ID {
+		t.Fatalf("maintenance candidates = %+v", candidates)
+	}
+	got := candidates[0]
+	if got.Codec.String != "mp3" || got.BitrateKbps.Int32 != 137 ||
+		got.SampleRateHz.Int32 != 44100 || got.Channels.Int32 != 2 ||
+		got.ContentType.String != "audio/mpeg" {
+		t.Fatalf("normal maintenance lost audio quality facts: %+v", got)
 	}
 }
 
