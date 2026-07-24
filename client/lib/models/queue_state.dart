@@ -1,18 +1,12 @@
 import 'track.dart';
 
-enum RepeatMode { off, one, all }
-
 class QueueState {
   final List<Track> tracks;
   final int currentIndex;
-  final RepeatMode repeatMode;
-  final bool shuffled;
 
   QueueState({
     required this.tracks,
     required this.currentIndex,
-    this.repeatMode = RepeatMode.off,
-    this.shuffled = false,
   });
 
   factory QueueState.empty() {
@@ -26,8 +20,6 @@ class QueueState {
     return QueueState(
       tracks: _parseTracks(json),
       currentIndex: json['currentPosition'] as int? ?? 0,
-      repeatMode: _parseRepeatMode(json['repeatMode'] as String?),
-      shuffled: json['shuffled'] as bool? ?? false,
     );
   }
 
@@ -40,17 +32,6 @@ class QueueState {
     }
 
     return [];
-  }
-
-  static RepeatMode _parseRepeatMode(String? mode) {
-    switch (mode) {
-      case 'one':
-        return RepeatMode.one;
-      case 'all':
-        return RepeatMode.all;
-      default:
-        return RepeatMode.off;
-    }
   }
 
   Track? get currentTrack {

@@ -2,10 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/audio/playback_context.dart';
+import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/features/library/local_browse_screens.dart';
 import 'package:open_music_player/shared/models/track.dart';
+import 'package:provider/provider.dart';
 
 /// A LibraryService whose local-browse methods return stubbed data, so the
 /// artist/album screens can be rendered without any HTTP.
@@ -81,6 +84,38 @@ void main() {
     expect(find.text('B'), findsOneWidget);
   });
 
+  testWidgets('Shuffle launch does not enable persistent playback shuffle',
+      (tester) async {
+    final fake = _FakeLibraryService(
+      result: [
+        _track(id: 1),
+        _track(id: 2),
+        _track(id: 3),
+      ],
+    );
+    final playback = _RecordingPlaybackState();
+    await tester.pumpWidget(
+      ListenableProvider<PlaybackState>.value(
+        value: playback,
+        child: _wrap(
+          LocalArtistScreen(artist: 'AC/DC', libraryService: fake),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('local_browse_shuffle')));
+    await tester.pump();
+
+    expect(playback.playQueueCalls, 1);
+    expect(
+      playback.playedQueue!.map((track) => track['id']).toSet(),
+      {1, 2, 3},
+    );
+    expect(playback.toggleShuffleCalls, 0);
+    expect(playback.shuffleEnabled, isFalse);
+  });
+
   testWidgets('renders an empty state when there are no tracks',
       (tester) async {
     final fake = _FakeLibraryService(result: const []);
@@ -122,4 +157,36 @@ class _RetryFake extends LibraryService {
     onCall();
     return Future.error(StateError('boom'));
   }
+}
+
+class _RecordingPlaybackState extends Fake implements PlaybackState {
+  int playQueueCalls = 0;
+  int toggleShuffleCalls = 0;
+  List<Map<String, dynamic>>? playedQueue;
+  bool _shuffleEnabled = false;
+
+  @override
+  bool get shuffleEnabled => _shuffleEnabled;
+
+  @override
+  Future<void> playQueue(
+    List<Map<String, dynamic>> tracks, {
+    int startIndex = 0,
+    PlaybackContext? context,
+  }) async {
+    playQueueCalls++;
+    playedQueue = tracks;
+  }
+
+  @override
+  Future<void> toggleShuffle() async {
+    toggleShuffleCalls++;
+    _shuffleEnabled = !_shuffleEnabled;
+  }
+
+  @override
+  void addListener(VoidCallback listener) {}
+
+  @override
+  void removeListener(VoidCallback listener) {}
 }

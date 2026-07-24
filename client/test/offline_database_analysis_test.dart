@@ -36,6 +36,72 @@ void main() {
     expect(database.whereArgs, containsAll(<Object>[44, 'analyzed']));
   });
 
+  test('new installs omit local playlists while upgrades preserve legacy data',
+      () async {
+    sqfliteFfiInit();
+    final directory = await Directory.systemTemp.createTemp('omp_playlist_db_');
+    final freshPath = '${directory.path}/fresh.db';
+    final legacyPath = '${directory.path}/legacy.db';
+    addTearDown(() async {
+      await databaseFactoryFfi.deleteDatabase(freshPath);
+      await databaseFactoryFfi.deleteDatabase(legacyPath);
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
+
+    final freshOffline = OfflineDatabase(
+      databaseFactory: databaseFactoryFfi,
+      databasePathProvider: () async => freshPath,
+    );
+    final fresh = await freshOffline.database;
+    final freshTables = await fresh.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type = 'table'",
+    );
+    final freshTableNames = freshTables.map((row) => row['name']);
+    expect(freshTableNames, isNot(contains('playlists')));
+    expect(freshTableNames, isNot(contains('playlist_tracks')));
+    await fresh.close();
+
+    final legacy = await databaseFactoryFfi.openDatabase(
+      legacyPath,
+      options: OpenDatabaseOptions(
+        version: 5,
+        onCreate: (db, _) async {
+          await db.execute('CREATE TABLE tracks (id INTEGER PRIMARY KEY)');
+          await db.execute('CREATE TABLE playlists (id INTEGER PRIMARY KEY)');
+          await db.execute(
+            'CREATE TABLE playlist_tracks ('
+            'playlist_id INTEGER NOT NULL, track_id INTEGER NOT NULL)',
+          );
+          await db.insert('playlists', {'id': 7});
+          await db.insert('playlist_tracks', {
+            'playlist_id': 7,
+            'track_id': 44,
+          });
+        },
+      ),
+    );
+    await legacy.close();
+
+    final upgradedOffline = OfflineDatabase(
+      databaseFactory: databaseFactoryFfi,
+      databasePathProvider: () async => legacyPath,
+    );
+    final upgraded = await upgradedOffline.database;
+    expect(
+      (await upgraded.rawQuery('SELECT COUNT(*) AS count FROM playlists'))
+          .single['count'],
+      1,
+    );
+    expect(
+      (await upgraded.rawQuery(
+        'SELECT COUNT(*) AS count FROM playlist_tracks',
+      ))
+          .single['count'],
+      1,
+    );
+    await upgraded.close();
+  });
+
   test('v3 database migrates and backfills compact downloaded metadata',
       () async {
     sqfliteFfiInit();

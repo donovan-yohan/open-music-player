@@ -2,7 +2,7 @@ import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/models/album.dart';
-import 'package:open_music_player/core/models/track.dart';
+import 'package:open_music_player/core/models/search_result.dart';
 import 'package:open_music_player/features/discovery/screens/album_detail_screen.dart';
 
 TrackDetail _track(String id, {String? title, int? duration}) => TrackDetail(
@@ -86,9 +86,10 @@ void main() {
       ]);
 
       final ordered = albumPlaybackQueue(album).map((t) => t['id']).toList();
-      final shuffled = albumPlaybackQueue(album, shuffle: true, random: Random(1))
-          .map((t) => t['id'])
-          .toList();
+      final shuffled =
+          albumPlaybackQueue(album, shuffle: true, random: Random(1))
+              .map((t) => t['id'])
+              .toList();
 
       expect(shuffled.length, ordered.length);
       expect(shuffled.toSet(), ordered.toSet());

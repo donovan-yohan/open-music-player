@@ -334,8 +334,6 @@ class QueueProvider extends ChangeNotifier {
               : queuedTrack,
       ],
       currentIndex: _queue.currentIndex,
-      repeatMode: _queue.repeatMode,
-      shuffled: _queue.shuffled,
     );
     _pruneAnalysisAuthorityState();
     _notifyListeners();
@@ -477,8 +475,6 @@ class QueueProvider extends ChangeNotifier {
       _queue = QueueState(
         tracks: newTracks,
         currentIndex: newCurrentIndex,
-        repeatMode: _queue.repeatMode,
-        shuffled: _queue.shuffled,
       );
       _pruneTimingState();
       _pruneAnalysisAuthorityState();
@@ -569,8 +565,6 @@ class QueueProvider extends ChangeNotifier {
       _queue = QueueState(
         tracks: newTracks,
         currentIndex: newCurrentIndex,
-        repeatMode: _queue.repeatMode,
-        shuffled: _queue.shuffled,
       );
       _notifyListeners();
 
@@ -1177,8 +1171,6 @@ class QueueProvider extends ChangeNotifier {
     return QueueState(
       tracks: tracks,
       currentIndex: queue.currentIndex,
-      repeatMode: queue.repeatMode,
-      shuffled: queue.shuffled,
     );
   }
 

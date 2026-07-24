@@ -2681,8 +2681,6 @@ class _FakeQueueApiClient extends ApiClient {
     _state = QueueState(
       tracks: _state.tracks,
       currentIndex: -1,
-      repeatMode: _state.repeatMode,
-      shuffled: _state.shuffled,
     );
   }
 
@@ -2954,8 +2952,6 @@ class _FakeQueueApiClient extends ApiClient {
     _state = QueueState(
       tracks: tracks,
       currentIndex: currentIndex,
-      repeatMode: _state.repeatMode,
-      shuffled: _state.shuffled,
     );
     return _state;
   }
@@ -2982,8 +2978,6 @@ class _FakeQueueApiClient extends ApiClient {
     _state = QueueState(
       tracks: tracks,
       currentIndex: _state.currentIndex,
-      repeatMode: _state.repeatMode,
-      shuffled: _state.shuffled,
     );
     return _state;
   }
@@ -3015,8 +3009,6 @@ class _FakeQueueApiClient extends ApiClient {
               : item,
       ],
       currentIndex: _state.currentIndex,
-      repeatMode: _state.repeatMode,
-      shuffled: _state.shuffled,
     );
     return analysis;
   }

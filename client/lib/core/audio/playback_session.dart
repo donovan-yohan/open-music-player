@@ -649,8 +649,6 @@ class MixSessionClip {
     required this.sourceEndMs,
     required this.timelineStartMs,
     this.gainDb = 0,
-    this.fadeInMs,
-    this.fadeOutMs,
     this.playbackRate = 1,
     this.pitchMode = pitchModePreserve,
     this.tempo = ClipTempoMetadata.empty,
@@ -714,8 +712,6 @@ class MixSessionClip {
       sourceEndMs: placement.sourceEndMs,
       timelineStartMs: placement.timelineStartMs,
       gainDb: (json['gainDb'] as num?)?.toDouble() ?? 0,
-      fadeInMs: (json['fadeInMs'] as num?)?.toInt(),
-      fadeOutMs: (json['fadeOutMs'] as num?)?.toInt(),
       playbackRate: (json['playbackRate'] as num?)?.toDouble() ?? 1,
       pitchMode: normalizePitchMode(
         (json['pitchMode'] as String?) ?? pitchModePreserve,
@@ -734,8 +730,6 @@ class MixSessionClip {
   final int sourceEndMs;
   final int timelineStartMs;
   final double gainDb;
-  final int? fadeInMs;
-  final int? fadeOutMs;
   final double playbackRate;
   final String pitchMode;
   final ClipTempoMetadata tempo;
@@ -774,8 +768,6 @@ class MixSessionClip {
       sourceEndMs: placement.sourceEndMs,
       timelineStartMs: placement.timelineStartMs,
       gainDb: gainDb,
-      fadeInMs: fadeInMs,
-      fadeOutMs: fadeOutMs,
       playbackRate: playbackRate,
       pitchMode: pitchMode,
       tempo: refreshedTempo.isEmpty ? tempo : refreshedTempo,
@@ -793,8 +785,6 @@ class MixSessionClip {
         sourceEndMs: placement.sourceEndMs,
         timelineStartMs: placement.timelineStartMs,
         gainDb: gainDb,
-        fadeInMs: fadeInMs,
-        fadeOutMs: fadeOutMs,
         playbackRate: playbackRate,
         pitchMode: pitchMode,
         tempo: tempo,
@@ -818,8 +808,6 @@ class MixSessionClip {
         sourceEndMs: sourceEndMs,
         timelineStartMs: timelineStartMs,
         gainDb: gainDb,
-        fadeInMs: fadeInMs,
-        fadeOutMs: fadeOutMs,
         playbackRate: playbackRate,
         pitchMode: normalizePitchMode(pitchMode),
         tempo: tempo,
@@ -836,8 +824,6 @@ class MixSessionClip {
         'sourceEndMs': sourceEndMs,
         'timelineStartMs': timelineStartMs,
         'gainDb': gainDb,
-        if (fadeInMs != null) 'fadeInMs': fadeInMs,
-        if (fadeOutMs != null) 'fadeOutMs': fadeOutMs,
         'playbackRate': playbackRate,
         'pitchMode': pitchMode,
         ...tempo.toJson(),

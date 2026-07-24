@@ -29,26 +29,6 @@ void main() {
     await clock.dispose();
   });
 
-  test('dominant track and active voice count update from pool', () async {
-    final clock = DefaultTimelineClock(
-        now: () => DateTime.utc(2026),
-        uiTickInterval: const Duration(hours: 1));
-    final engine = PlaybackEngine.withClock(
-        clock: clock, voiceFactory: () => _FakeVoice('v'));
-    final infos = <MixNowPlayingInfo>[];
-    final sub = engine.nowPlayingStream.listen(infos.add);
-    await engine.start();
-    await engine.loadMix(_model());
-    await engine.seek(6000);
-    await Future<void>.delayed(Duration.zero);
-
-    expect(infos.last.trackId, 'b');
-    expect(infos.last.activeVoiceCount, 1);
-    await sub.cancel();
-    await engine.dispose();
-    await clock.dispose();
-  });
-
   test('clip completion marks seek-past-end final clip as skipped', () async {
     final clock = DefaultTimelineClock(
         now: () => DateTime.utc(2026),

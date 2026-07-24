@@ -1,4 +1,4 @@
-export 'track.dart';
+export 'search_result.dart';
 export 'artist.dart';
 export 'album.dart';
 export 'search_response.dart';

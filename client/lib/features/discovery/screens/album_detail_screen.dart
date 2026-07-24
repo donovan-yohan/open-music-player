@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/audio/playback_context.dart';
 import '../../../core/audio/playback_state.dart';
+import '../../../core/audio/queue_ordering.dart';
 import '../../../core/models/models.dart';
 import '../../../core/services/services.dart';
 import '../../../shared/widgets/track_action_sheet.dart';
@@ -48,8 +49,7 @@ List<Map<String, dynamic>> albumPlaybackQueue(
       .where(isAlbumTrackPlayable)
       .map((track) => albumTrackToPlaybackJson(album, track))
       .toList();
-  if (shuffle) queue.shuffle(random);
-  return queue;
+  return playCollectionOrder(queue, shuffled: shuffle, random: random);
 }
 
 class AlbumDetailScreen extends StatefulWidget {

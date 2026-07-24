@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/audio/playback_state.dart';
+import '../../core/audio/queue_ordering.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/library_service.dart';
 import '../../shared/models/track.dart';
@@ -115,7 +116,7 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
 
   Future<void> _play({int startIndex = 0, bool shuffle = false}) async {
     if (_tracks.isEmpty) return;
-    final ordered = shuffle ? (_tracks.toList()..shuffle()) : _tracks;
+    final ordered = playCollectionOrder(_tracks, shuffled: shuffle);
     final playback = context.read<PlaybackState>();
     try {
       await playback.playQueue(
