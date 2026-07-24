@@ -399,6 +399,32 @@ void main() {
       playback.dispose();
     });
 
+    test('pause cancels play waiting for a signed URL refresh', () async {
+      SharedPreferences.setMockInitialValues({});
+      final signed = _DelayedSignedRequester();
+      final playback = _playbackState(signedAudioUrlService: signed.service);
+
+      final firstStart = playback.playQueue([_track(1, seconds: 60)]);
+      await signed.waitForRequestCount(1);
+      signed.completeRequest(
+        0,
+        expiresAt: DateTime.now().toUtc().add(const Duration(seconds: 30)),
+      );
+      await firstStart;
+      await playback.pause();
+
+      final pendingPlay = playback.play();
+      await signed.waitForRequestCount(2);
+      await playback.pause();
+
+      signed.completeRequest(1);
+      await pendingPlay;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.isPlaying, isFalse);
+      playback.dispose();
+    });
+
     test('signed URL refresh preserves active local position', () async {
       SharedPreferences.setMockInitialValues({});
       var descriptorCalls = 0;
@@ -623,7 +649,7 @@ class _DelayedSignedRequester {
         'Timed out waiting for $count signed-url requests; saw ${requests.length}');
   }
 
-  void completeRequest(int index) {
+  void completeRequest(int index, {DateTime? expiresAt}) {
     final request = requests[index];
     request.completer.complete({
       'urls': [
@@ -631,7 +657,8 @@ class _DelayedSignedRequester {
           {
             'trackId': id,
             'url': 'https://example.com/$id.mp3',
-            'expiresAt': DateTime.utc(2027, 1, 1).toIso8601String(),
+            'expiresAt':
+                (expiresAt ?? DateTime.utc(2027, 1, 1)).toIso8601String(),
           },
       ],
       'unavailable': <Map<String, dynamic>>[],
