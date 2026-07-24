@@ -14,7 +14,7 @@ TrackAnalysis _analysis() => TrackAnalysis.fromJson(
       },
     );
 
-Track _track() => Track(
+QueueTrack _track() => QueueTrack(
       id: 'responsive-row',
       title: 'A long queue title that must retain usable row width',
       artist: 'A long queue artist that must retain usable row width',
@@ -90,7 +90,7 @@ void main() {
   });
 }
 
-Widget _productionReorderHandle(Track track) {
+Widget _productionReorderHandle(QueueTrack track) {
   return Semantics(
     key: ValueKey('reorder_handle_${track.id}'),
     container: true,

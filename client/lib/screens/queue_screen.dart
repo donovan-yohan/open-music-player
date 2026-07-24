@@ -700,9 +700,9 @@ class _QueueScreenState extends State<QueueScreen> {
     return result;
   }
 
-  Track _playbackTrackFor(audio_service.MediaItem item, PlaybackCue cue) {
+  QueueTrack _playbackTrackFor(audio_service.MediaItem item, PlaybackCue cue) {
     final duration = item.duration ?? Duration.zero;
-    final track = Track(
+    final track = QueueTrack(
       id: cue.queueItemId,
       queueItemId: cue.queueItemId,
       playbackTrackId: item.id,
@@ -722,7 +722,7 @@ class _QueueScreenState extends State<QueueScreen> {
   void _syncPlaybackAnalyses({
     required PlaybackState playback,
     required List<audio_service.MediaItem> queue,
-    required Iterable<Track> tracks,
+    required Iterable<QueueTrack> tracks,
   }) {
     for (final track in tracks) {
       final analysis = track.analysis;
@@ -786,7 +786,7 @@ class _QueueScreenState extends State<QueueScreen> {
 
   bool _timelineModelNeedsAnalysisRefresh(
     TimelineModel model,
-    Track track,
+    QueueTrack track,
     ClipTempoMetadata nextTempo,
   ) {
     if (nextTempo.isEmpty || model.clips.isEmpty) return false;
@@ -799,7 +799,7 @@ class _QueueScreenState extends State<QueueScreen> {
     return false;
   }
 
-  bool _timelineClipMatchesTrack(MixClip clip, Track track) {
+  bool _timelineClipMatchesTrack(MixClip clip, QueueTrack track) {
     final clipQueueItemId = clip.queueItemId;
     if (track.queueItemId.isNotEmpty &&
         clipQueueItemId != null &&
@@ -867,7 +867,7 @@ class _QueueScreenState extends State<QueueScreen> {
 
   void _movePlaybackTimelineTrack(
     PlaybackState playback,
-    Track track,
+    QueueTrack track,
     int delta,
   ) {
     unawaited(
@@ -1150,8 +1150,8 @@ class _QueueScreenState extends State<QueueScreen> {
     required Object queueIdentity,
     required int currentIndex,
     required bool usesPlaybackQueue,
-    required List<Track> sources,
-    required Iterable<Track> initialSources,
+    required List<QueueTrack> sources,
+    required Iterable<QueueTrack> initialSources,
   }) {
     final contextChanged = !identical(_hydrationQueueIdentity, queueIdentity) ||
         _hydrationCurrentIndex != currentIndex ||
@@ -1183,7 +1183,7 @@ class _QueueScreenState extends State<QueueScreen> {
 
   void _updateVisibleAnalysisHydration(
     QueueProvider provider,
-    List<Track> tracks,
+    List<QueueTrack> tracks,
   ) {
     final next = {
       for (final track in tracks) _timelineHydrationTrackKey(track),
@@ -1196,7 +1196,7 @@ class _QueueScreenState extends State<QueueScreen> {
   bool _sameHydrationKeys(Set<String> first, Set<String> second) =>
       first.length == second.length && first.every(second.contains);
 
-  String _timelineHydrationTrackKey(Track track) =>
+  String _timelineHydrationTrackKey(QueueTrack track) =>
       '${track.queueItemId}|${track.id}|${track.playbackTrackId ?? ''}';
 
   void _clearAnalysisHydration(QueueProvider provider) {
@@ -1280,9 +1280,9 @@ class _QueueScreenState extends State<QueueScreen> {
 
   void _moveTimelineTrack(
     QueueProvider provider,
-    List<Track> upNext,
+    List<QueueTrack> upNext,
     int currentIndex,
-    Track track,
+    QueueTrack track,
     int delta,
   ) {
     final relativeIndex = upNext.indexWhere(
@@ -1308,7 +1308,7 @@ class _QueueScreenState extends State<QueueScreen> {
   Future<void> _playFromQueue(
     BuildContext context,
     QueueProvider provider,
-    Track selectedTrack,
+    QueueTrack selectedTrack,
   ) async {
     final playback = context.read<PlaybackState>();
     final playableTracks = provider.queue.tracks
@@ -1416,11 +1416,11 @@ class _QueueScreenState extends State<QueueScreen> {
     }
   }
 
-  bool _canEditAnalysis(Track track) {
+  bool _canEditAnalysis(QueueTrack track) {
     return _analysisTrackId(track) != null;
   }
 
-  String? _analysisTrackId(Track track) {
+  String? _analysisTrackId(QueueTrack track) {
     for (final candidate in [track.playbackTrackId, track.id]) {
       final parsed = int.tryParse(candidate ?? '');
       if (parsed != null && parsed > 0) return parsed.toString();
@@ -1431,7 +1431,7 @@ class _QueueScreenState extends State<QueueScreen> {
   Future<void> _showAnalysisCorrectionSheet(
     BuildContext context,
     QueueProvider provider,
-    Track track, {
+    QueueTrack track, {
     int? initialFirstDownbeatMs,
   }) async {
     if (!_canEditAnalysis(track)) {
@@ -1495,10 +1495,10 @@ class _PlaybackTimelineTracks {
   final int currentIndex;
   final int analysisRevision;
   final TimelineModel timelineModel;
-  final List<Track> tracks;
-  final Track? previous;
-  final Track current;
-  final List<Track> upcoming;
+  final List<QueueTrack> tracks;
+  final QueueTrack? previous;
+  final QueueTrack current;
+  final List<QueueTrack> upcoming;
 
   const _PlaybackTimelineTracks({
     required this.queue,

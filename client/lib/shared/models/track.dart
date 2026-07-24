@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import '../../models/playback_payload.dart';
 import '../../models/track_analysis.dart';
 
 /// MusicBrainz match suggestion for unverified tracks
@@ -147,30 +148,25 @@ class Track {
 
   /// Serializes this library track into the map shape `PlaybackState.playQueue`
   /// expects: numeric `id` for signed-URL issuance, `duration` in whole seconds.
-  Map<String, dynamic> toPlaybackJson() => {
-        'id': id,
-        'title': title,
-        'artist': artist,
-        'album': album,
-        'duration': durationMs != null ? durationMs! ~/ 1000 : 0,
-        'artwork_url': metadata?['cover_art_url'],
-        if (isLiked != null) 'isLiked': isLiked,
-        if (sourceUrl != null && sourceUrl!.trim().isNotEmpty)
-          'sourceUrl': sourceUrl!.trim(),
-        if (codec != null) 'codec': codec,
-        if (bitrateKbps != null) 'bitrateKbps': bitrateKbps,
-        if (sampleRateHz != null) 'sampleRateHz': sampleRateHz,
-        if (channels != null) 'channels': channels,
-        if (contentType != null) 'contentType': contentType,
-        if (fileSizeBytes != null) 'sizeBytes': fileSizeBytes,
-        if (analysis != null) 'analysisStatus': analysis!.status.name,
-        if (analysis?.summary != null)
-          'analysisSummary': analysis!.summary!.toJson(),
-        if (analysis?.overrides != null)
-          'analysisOverrides': analysis!.overrides!.toJson(),
-        if (analysis?.updatedAt != null)
-          'analysisUpdatedAt': analysis!.updatedAt!.toUtc().toIso8601String(),
-      };
+  Map<String, dynamic> toPlaybackJson() => buildPlaybackPayload(
+        id: id,
+        title: title,
+        artist: artist,
+        album: album,
+        duration: Duration(milliseconds: durationMs ?? 0),
+        artworkUrl: metadata?['cover_art_url'] is String
+            ? metadata!['cover_art_url'] as String
+            : null,
+        analysis: analysis,
+        isLiked: isLiked,
+        sourceUrl: sourceUrl,
+        codec: codec,
+        bitrateKbps: bitrateKbps,
+        sampleRateHz: sampleRateHz,
+        channels: channels,
+        contentType: contentType,
+        sizeBytes: fileSizeBytes,
+      );
 
   factory Track.fromJson(Map<String, dynamic> json) {
     // Parse MB suggestions from the mb_suggestions field
@@ -302,13 +298,10 @@ class Track {
       'content_type': contentType,
       'metadata_json': metadata,
       'mb_suggestions': mbSuggestions.map((s) => s.toJson()).toList(),
-      if (analysis != null) 'analysis_status': analysis!.status.name,
-      if (analysis?.summary != null)
-        'analysis_summary': analysis!.summary!.toJson(),
-      if (analysis?.overrides != null)
-        'analysis_overrides': analysis!.overrides!.toJson(),
-      if (analysis?.updatedAt != null)
-        'analysis_updated_at': analysis!.updatedAt!.toUtc().toIso8601String(),
+      ...trackAnalysisFields(
+        analysis,
+        fieldStyle: TrackAnalysisFieldStyle.snakeCase,
+      ),
       if (isLiked != null) 'is_liked': isLiked,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
@@ -332,18 +325,15 @@ class Track {
       'source_type': sourceType,
       'storage_key': storageKey,
       'file_size_bytes': fileSizeBytes,
-      if (analysis != null) 'analysis_status': analysis!.status.name,
-      if (analysis?.summary != null)
-        'analysis_summary': jsonEncode(
-          _compactAnalysisSummaryJson(analysis!.summary!),
-        ),
-      if (analysis?.overrides != null)
-        'analysis_overrides': jsonEncode(analysis!.overrides!.toJson()),
-      if (analysis?.updatedAt != null)
-        'analysis_updated_at': analysis!.updatedAt!.toUtc().toIso8601String(),
-      if (analysis?.updatedAt != null)
-        'analysis_updated_at_us':
-            analysis!.updatedAt!.toUtc().microsecondsSinceEpoch,
+      ...trackAnalysisFields(
+        analysis,
+        fieldStyle: TrackAnalysisFieldStyle.snakeCase,
+        summarySerializer: (summary) =>
+            jsonEncode(_compactAnalysisSummaryJson(summary)),
+        overridesSerializer: (overrides) =>
+            jsonEncode(overrides?.toJson() ?? const <String, dynamic>{}),
+        includeUpdatedAtMicros: true,
+      ),
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
     };
@@ -367,12 +357,7 @@ class Track {
       storageKey: map['storage_key'] as String?,
       fileSizeBytes: map['file_size_bytes'] as int?,
       metadata: null,
-      analysis: trackAnalysisFromTrackJson({
-        'analysis_status': map['analysis_status'],
-        'analysis_summary': _decodeJsonColumn(map['analysis_summary']),
-        'analysis_overrides': _decodeJsonColumn(map['analysis_overrides']),
-        'analysis_updated_at': map['analysis_updated_at'],
-      }),
+      analysis: trackAnalysisFromTrackJson(_analysisJsonFromDbMap(map)),
       createdAt: DateTime.parse(map['created_at'] as String),
       updatedAt: DateTime.parse(map['updated_at'] as String),
     );
@@ -503,6 +488,19 @@ Object? _decodeJsonColumn(Object? value) {
   } on FormatException {
     return null;
   }
+}
+
+Map<String, dynamic> _analysisJsonFromDbMap(Map<String, dynamic> map) {
+  final summary = _decodeJsonColumn(map['analysis_summary']);
+  final overrides = _decodeJsonColumn(map['analysis_overrides']);
+  return {
+    if (map['analysis_status'] != null)
+      'analysis_status': map['analysis_status'],
+    if (summary != null) 'analysis_summary': summary,
+    if (overrides != null) 'analysis_overrides': overrides,
+    if (map['analysis_updated_at'] != null)
+      'analysis_updated_at': map['analysis_updated_at'],
+  };
 }
 
 Map<String, dynamic> _compactAnalysisSummaryJson(TrackAnalysisSummary summary) {

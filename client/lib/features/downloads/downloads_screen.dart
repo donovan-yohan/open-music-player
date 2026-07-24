@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/download/download_state.dart';
+import '../../shared/formatters/byte_formatter.dart';
 import '../../shared/models/models.dart';
 
 class DownloadsScreen extends StatelessWidget {
@@ -191,7 +192,7 @@ class _DownloadListTile extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            _formatSize(download.fileSizeBytes),
+            formatBytes(download.fileSizeBytes),
             style: Theme.of(context).textTheme.bodySmall,
           ),
           IconButton(
@@ -201,12 +202,6 @@ class _DownloadListTile extends StatelessWidget {
         ],
       ),
     );
-  }
-
-  String _formatSize(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
   void _showDeleteDialog(BuildContext context) {

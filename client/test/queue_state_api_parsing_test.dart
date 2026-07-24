@@ -22,13 +22,13 @@ void main() {
           },
         ],
         'currentPosition': 0,
+        // Legacy server fields are deliberately ignored. PlaybackState's
+        // QueueTimelineController is the only repeat/shuffle authority.
         'repeatMode': 'all',
         'shuffled': true,
       });
 
       expect(state.currentIndex, 0);
-      expect(state.repeatMode, RepeatMode.all);
-      expect(state.shuffled, isTrue);
       expect(state.tracks, hasLength(1));
       expect(state.tracks.single.id, 'q_42');
       expect(state.tracks.single.playbackTrackId, '42');
@@ -118,8 +118,8 @@ void main() {
     expect(track.canPlay, isFalse);
   });
 
-  test('Track round-trips top-level source candidate fields', () {
-    final track = Track(
+  test('QueueTrack round-trips top-level source candidate fields', () {
+    final track = QueueTrack(
       id: 'queue-item-1',
       queueItemId: 'queue-item-1',
       sourceCandidateId: 'yt:lofi-study-1',
@@ -131,7 +131,7 @@ void main() {
       queueStatus: TrackQueueStatus.pending,
     );
 
-    final restored = Track.fromJson(track.toJson());
+    final restored = QueueTrack.fromJson(track.toJson());
 
     expect(restored.sourceCandidateId, 'yt:lofi-study-1');
     expect(restored.sourceUrl, 'https://youtube.example/watch?v=lofi-study-1');
@@ -414,8 +414,8 @@ void main() {
     expect(state.tracks[4].analysis!.status, TrackAnalysisStatus.unsupported);
   });
 
-  test('Track keeps status-only analysis metadata summary absent', () {
-    final track = Track.fromJson({
+  test('QueueTrack keeps status-only analysis metadata summary absent', () {
+    final track = QueueTrack.fromJson({
       'id': 'pending-analysis',
       'title': 'Pending Analysis',
       'analysisStatus': 'pending',

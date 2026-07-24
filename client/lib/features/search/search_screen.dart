@@ -12,7 +12,7 @@ import '../../core/discovery/discovery_models.dart';
 import '../../core/discovery/research_models.dart';
 import '../../core/discovery/research_service.dart';
 import '../../core/discovery/discovery_service.dart';
-import '../../core/models/models.dart' as local;
+import '../../core/models/models.dart';
 import '../../core/services/api_client.dart' as local_api;
 import '../../core/services/search_service.dart';
 import '../../models/track.dart';
@@ -377,9 +377,9 @@ class _SearchScreenState extends State<SearchScreen> {
         _localSearch.searchAlbums(text),
       ]);
       if (!mounted || requestId != _localRequestSerial) return;
-      final tracks = results[0] as local.SearchResponse<local.TrackResult>;
-      final artists = results[1] as local.SearchResponse<local.ArtistResult>;
-      final albums = results[2] as local.SearchResponse<local.AlbumResult>;
+      final tracks = results[0] as SearchResponse<TrackResult>;
+      final artists = results[1] as SearchResponse<ArtistResult>;
+      final albums = results[2] as SearchResponse<AlbumResult>;
       setState(() {
         _localResults = LocalSearchResults(
           tracks: tracks.results,
@@ -430,21 +430,21 @@ class _SearchScreenState extends State<SearchScreen> {
     _runLocalSearch(query: query);
   }
 
-  Future<void> _playLocalTrack(local.TrackResult track) async {
+  Future<void> _playLocalTrack(TrackResult track) async {
     final id = track.id;
     if (id == null) return;
     await context.read<PlaybackState>().playQueue([
-      _localTrackPlaybackJson(track),
+      track.toPlaybackJson(),
     ]);
   }
 
-  Future<void> _enqueueLocalTrack(local.TrackResult track) async {
+  Future<void> _enqueueLocalTrack(TrackResult track) async {
     final id = track.id;
     if (id == null) return;
     final playback = context.read<PlaybackState>();
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await playback.enqueue(_localTrackPlaybackJson(track));
+      await playback.enqueue(track.toPlaybackJson());
       if (!mounted) return;
       messenger.showSnackBar(
         SnackBar(content: Text('Added "${track.title}" to queue')),
@@ -456,24 +456,6 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
   }
-
-  Map<String, dynamic> _localTrackPlaybackJson(local.TrackResult track) => {
-        'id': track.id,
-        'title': track.title,
-        'artist': track.artist,
-        'album': track.album,
-        'duration': track.duration != null ? track.duration! ~/ 1000 : 0,
-        'artwork_url': track.coverUrl,
-        if (track.analysis != null)
-          'analysisStatus': track.analysis!.status.name,
-        if (track.analysis?.summary != null)
-          'analysisSummary': track.analysis!.summary!.toJson(),
-        if (track.analysis?.overrides != null)
-          'analysisOverrides': track.analysis!.overrides!.toJson(),
-        if (track.analysis?.updatedAt != null)
-          'analysisUpdatedAt':
-              track.analysis!.updatedAt!.toUtc().toIso8601String(),
-      };
 
   String _friendlyLocalError(Object error) {
     if (error is local_api.ApiException) return error.message;
@@ -1065,7 +1047,8 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Track? _queuedTrackFor(QueueProvider provider, DiscoveryCandidate candidate) {
+  QueueTrack? _queuedTrackFor(
+      QueueProvider provider, DiscoveryCandidate candidate) {
     final key = _candidateKey(candidate);
     for (final track in provider.queue.tracks) {
       if (track.sourceCandidateId != null && track.sourceCandidateId == key) {
@@ -1358,7 +1341,7 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildLocalTrackTile(local.TrackResult track) {
+  Widget _buildLocalTrackTile(TrackResult track) {
     final playable = track.id != null;
     final subtitle = [
       track.artist,
@@ -1407,7 +1390,7 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildLocalArtistTile(local.ArtistResult artist) {
+  Widget _buildLocalArtistTile(ArtistResult artist) {
     final count = artist.trackCount;
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -1426,7 +1409,7 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildLocalAlbumTile(local.AlbumResult album) {
+  Widget _buildLocalAlbumTile(AlbumResult album) {
     final subtitle = [
       album.artist,
       album.releaseYear,
@@ -2671,7 +2654,7 @@ class _SearchScreenState extends State<SearchScreen> {
   Widget _buildQueueAction(
     QueueProvider queueProvider,
     DiscoveryCandidate candidate,
-    Track? queuedTrack, {
+    QueueTrack? queuedTrack, {
     required bool pending,
     required bool mobile,
     required DiscoverySelectionSession? selection,
@@ -2739,7 +2722,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _buildResultStatusPill(
     DiscoveryCandidate candidate,
-    Track? queuedTrack,
+    QueueTrack? queuedTrack,
     bool pending,
   ) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -2833,7 +2816,7 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  IconData? _queuedOverlay(Track? track, bool pending) {
+  IconData? _queuedOverlay(QueueTrack? track, bool pending) {
     if (pending) return Icons.schedule;
     return switch (track?.queueStatus) {
       TrackQueueStatus.playable => Icons.check,

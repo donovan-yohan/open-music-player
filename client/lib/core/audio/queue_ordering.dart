@@ -1,4 +1,22 @@
+import 'dart:math';
+
 import 'package:audio_service/audio_service.dart';
+
+/// Returns the collection order to pass to `PlaybackState.playQueue`.
+///
+/// [shuffled] is a one-shot permutation of this launch only. It deliberately
+/// does not enable the controller's persistent shuffle mode, so later
+/// shuffle/loop controls remain owned by `QueueTimelineController`. Supplying
+/// [random] makes shuffled launches deterministic in tests.
+List<T> playCollectionOrder<T>(
+  Iterable<T> tracks, {
+  bool shuffled = false,
+  Random? random,
+}) {
+  final ordered = List<T>.of(tracks);
+  if (shuffled) ordered.shuffle(random);
+  return ordered;
+}
 
 /// Origin of a listening-queue item.
 ///

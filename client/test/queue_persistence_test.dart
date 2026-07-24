@@ -81,6 +81,63 @@ void main() {
       expect(restored.session?.defaultCrossfadeMs, 3000);
     });
 
+    test('legacy per-clip fade keys are tolerated and dropped on round-trip',
+        () {
+      const queue = [
+        MediaItem(
+          id: '1',
+          title: 'Track 1',
+          duration: Duration(seconds: 30),
+          extras: {'url': 'https://audio.test/1.mp3'},
+        ),
+        MediaItem(
+          id: '2',
+          title: 'Track 2',
+          duration: Duration(seconds: 30),
+          extras: {'url': 'https://audio.test/2.mp3'},
+        ),
+      ];
+      final session = MixSession.fromQueue(
+        sessionId: 'legacy_clip_fades',
+        queue: queue,
+        defaultCrossfadeMs: 3000,
+      );
+      final snapshotJson = QueueSnapshot(
+        tracks: [_track(1), _track(2)],
+        session: session,
+      ).toJson();
+      final sessionJson = Map<String, dynamic>.from(
+        snapshotJson['session']! as Map,
+      );
+      final clips = [
+        for (final clip in sessionJson['clips']! as List)
+          Map<String, dynamic>.from(clip as Map),
+      ];
+      for (final clip in clips) {
+        clip['fadeInMs'] = 1250;
+        clip['fadeOutMs'] = 1750;
+      }
+      sessionJson['clips'] = clips;
+      snapshotJson['session'] = sessionJson;
+
+      final restored = QueueSnapshot.fromJson(snapshotJson);
+      final restoredClipsJson =
+          (restored.toJson()['session'] as Map)['clips'] as List;
+      final timeline = CueTimeline.fromSession(
+        session: restored.session!,
+        queue: queue,
+        playOrder: const [0, 1],
+      ).toTimelineModel();
+
+      expect(restored.session?.clips.map((clip) => clip.trackId), ['1', '2']);
+      for (final clip in restoredClipsJson.cast<Map>()) {
+        expect(clip, isNot(contains('fadeInMs')));
+        expect(clip, isNot(contains('fadeOutMs')));
+      }
+      expect(timeline.clips[0].envelope.fadeOutMs, 3000);
+      expect(timeline.clips[1].envelope.fadeInMs, 3000);
+    });
+
     test('schema v1 session without crossfade field restores as off', () {
       final sessionJson = MixSession.fromQueue(
         sessionId: 'legacy_session',

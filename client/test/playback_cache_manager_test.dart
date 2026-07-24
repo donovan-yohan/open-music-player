@@ -100,6 +100,13 @@ void main() {
       );
     });
 
+    test('audioObjectIdentity preserves user info used by source identity', () {
+      expect(
+        audioObjectIdentity('https://user:pass@h.example/p/a.mp3?sig=1'),
+        'https://user:pass@h.example/p/a.mp3',
+      );
+    });
+
     test('audioObjectIdentity returns null for an unusable url', () {
       expect(audioObjectIdentity(''), isNull);
     });

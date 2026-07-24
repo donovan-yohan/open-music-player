@@ -19,7 +19,7 @@ import 'package:open_music_player/widgets/stacked_waveform_timeline.dart';
 import 'package:open_music_player/widgets/timeline_clip_widget.dart';
 import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
 
-Track _track(
+QueueTrack _track(
   String id,
   String title,
   int duration, {
@@ -27,7 +27,7 @@ Track _track(
   String? queueItemId,
   String? playbackTrackId,
 }) =>
-    Track(
+    QueueTrack(
       id: id,
       queueItemId: queueItemId,
       playbackTrackId: playbackTrackId,
@@ -38,7 +38,7 @@ Track _track(
       analysis: analysis,
     );
 
-Track _analyzedTrack(
+QueueTrack _analyzedTrack(
   String id,
   String title,
   int duration, {
@@ -97,21 +97,21 @@ MixClip _mixClip(
 
 Future<void> _pump(
   WidgetTester tester, {
-  required Track? previous,
-  required Track current,
-  required List<Track> upcoming,
+  required QueueTrack? previous,
+  required QueueTrack current,
+  required List<QueueTrack> upcoming,
   Size size = const Size(390, 844),
   double devicePixelRatio = 1,
   TextScaler textScaler = TextScaler.noScaling,
-  ValueChanged<Track>? onMoveEarlier,
-  ValueChanged<Track>? onMoveLater,
+  ValueChanged<QueueTrack>? onMoveEarlier,
+  ValueChanged<QueueTrack>? onMoveLater,
   TimelineAnalysisEditCallback? onEditAnalysis,
   TimelinePitchModeChangedCallback? onPitchModeChanged,
   BeatSnapMode transitionSnapMode = BeatSnapMode.downbeat,
   ValueChanged<BeatSnapMode>? onTransitionSnapModeChanged,
-  TimelineWaveformData Function(Track, int)? waveformFor,
-  TrimRange Function(Track)? trimRangeFor,
-  TimelineClip Function(Track, TimelineClip)? clipFor,
+  TimelineWaveformData Function(QueueTrack, int)? waveformFor,
+  TrimRange Function(QueueTrack)? trimRangeFor,
+  TimelineClip Function(QueueTrack, TimelineClip)? clipFor,
   TimelineModel? timelineModel,
   Set<String> pitchFallbackClipIds = const {},
   Map<String, ClipTempoRuntimeState> clipTempoStates = const {},
@@ -175,7 +175,7 @@ Future<void> _pump(
 }
 
 class _StableWaveformSource {
-  TimelineWaveformData waveformFor(Track track, int sampleCount) =>
+  TimelineWaveformData waveformFor(QueueTrack track, int sampleCount) =>
       richWaveformForTrack(track, sampleCount: sampleCount);
 }
 
@@ -1470,7 +1470,7 @@ void main() {
   testWidgets('selected timeline clip exposes analysis correction action', (
     tester,
   ) async {
-    Track? edited;
+    QueueTrack? edited;
     int? seededDownbeat;
     await _pump(
       tester,
@@ -1500,7 +1500,7 @@ void main() {
   testWidgets('analysis correction action has no seed for inactive clip', (
     tester,
   ) async {
-    Track? edited;
+    QueueTrack? edited;
     int? seededDownbeat;
     await _pump(
       tester,
@@ -1930,7 +1930,7 @@ void main() {
       (tester) async {
     final semantics = tester.ensureSemantics();
     final current = _track('t1', 'Midnight Drive', 240);
-    final calls = <({Track track, String pitchMode})>[];
+    final calls = <({QueueTrack track, String pitchMode})>[];
 
     await _pump(
       tester,
@@ -3045,7 +3045,7 @@ void main() {
       for (var index = 0; index < tracks.length; index++)
         tracks[index].queueItemId: 60000 + index * 1000,
     };
-    TrimRange trimFor(Track track) {
+    TrimRange trimFor(QueueTrack track) {
       final start = trimStarts[track.queueItemId]!;
       return TrimRange.clamped(
         trackDurationMs: track.durationMs,
@@ -3073,12 +3073,12 @@ void main() {
     );
     var clipBuilds = 0;
     var waveformBuilds = 0;
-    TimelineWaveformData waveformFor(Track track, int samples) {
+    TimelineWaveformData waveformFor(QueueTrack track, int samples) {
       waveformBuilds++;
       return source;
     }
 
-    TimelineClip clipFor(Track track, TimelineClip fallback) {
+    TimelineClip clipFor(QueueTrack track, TimelineClip fallback) {
       clipBuilds++;
       return fallback.withTimelineStartMs(0);
     }
@@ -3295,7 +3295,7 @@ void main() {
         updatedAt: DateTime.utc(2026, 1, 2),
       ),
     );
-    TimelineWaveformData waveformFor(Track track, int samples) {
+    TimelineWaveformData waveformFor(QueueTrack track, int samples) {
       calls++;
       return richWaveformForTrack(track, sampleCount: samples);
     }
@@ -3335,7 +3335,7 @@ void main() {
       131072,
       const WaveformFrame(peak: 0.8, rms: 0.5, low: 0.2, mid: 0.6, high: 0.9),
     );
-    TimelineWaveformData waveformFor(Track track, int samples) {
+    TimelineWaveformData waveformFor(QueueTrack track, int samples) {
       calls++;
       return TimelineWaveformData(durationMs: 600000, frames: denseFrames);
     }
@@ -3380,12 +3380,12 @@ void main() {
         ),
       ),
     );
-    TimelineWaveformData waveformFor(Track track, int samples) {
+    TimelineWaveformData waveformFor(QueueTrack track, int samples) {
       calls++;
       return source;
     }
 
-    TimelineClip clipFor(Track track, TimelineClip fallback) =>
+    TimelineClip clipFor(QueueTrack track, TimelineClip fallback) =>
         fallback.withSourceRange(
           sourceStartMs: sourceStartMs,
           sourceEndMs: sourceStartMs + 300000,
@@ -3476,12 +3476,12 @@ void main() {
         ),
       ),
     );
-    TimelineWaveformData waveformFor(Track track, int samples) {
+    TimelineWaveformData waveformFor(QueueTrack track, int samples) {
       calls++;
       return source;
     }
 
-    TimelineClip clipFor(Track track, TimelineClip fallback) =>
+    TimelineClip clipFor(QueueTrack track, TimelineClip fallback) =>
         fallback.withSourceRange(
           sourceStartMs: sourceStartMs,
           sourceEndMs: sourceStartMs + 300000,
@@ -3569,7 +3569,7 @@ void main() {
         ),
       ),
     );
-    TimelineWaveformData waveformFor(Track track, int samples) {
+    TimelineWaveformData waveformFor(QueueTrack track, int samples) {
       calls++;
       return source;
     }
@@ -3638,7 +3638,7 @@ void main() {
         ),
       ),
     );
-    TimelineWaveformData waveformFor(Track track, int samples) {
+    TimelineWaveformData waveformFor(QueueTrack track, int samples) {
       calls++;
       return source;
     }
@@ -3752,19 +3752,19 @@ void main() {
         ),
       ),
     );
-    TimelineWaveformData waveformFor(Track track, int samples) {
+    TimelineWaveformData waveformFor(QueueTrack track, int samples) {
       calls++;
       return source;
     }
 
-    Future<void> persistTrim(Track track, int startMs) async {
+    Future<void> persistTrim(QueueTrack track, int startMs) async {
       requestedStarts.add(startMs);
       final completion = Completer<void>();
       completions.add(completion);
       await completion.future;
     }
 
-    TimelineClip clipFor(Track candidate, TimelineClip fallback) =>
+    TimelineClip clipFor(QueueTrack candidate, TimelineClip fallback) =>
         candidate.queueItemId == track.queueItemId
             ? fallback.withSourceRange(
                 sourceStartMs: committedStartMs,
@@ -3772,7 +3772,7 @@ void main() {
               )
             : fallback;
 
-    Future<void> pumpTrack(Track current) => _pump(
+    Future<void> pumpTrack(QueueTrack current) => _pump(
           tester,
           previous: null,
           current: current,
@@ -4023,7 +4023,7 @@ void main() {
       rateAutomation: automation,
     );
     var waveformBuilds = 0;
-    TimelineWaveformData waveformFor(Track track, int sampleCount) {
+    TimelineWaveformData waveformFor(QueueTrack track, int sampleCount) {
       waveformBuilds++;
       return richWaveformForTrack(track, sampleCount: sampleCount);
     }
@@ -4259,7 +4259,7 @@ void main() {
     final committed = Completer<void>();
     int? requestedStartMs;
 
-    Future<void> commitPlacement(Track track, int valueMs) async {
+    Future<void> commitPlacement(QueueTrack track, int valueMs) async {
       requestedStartMs = valueMs;
       await committed.future;
     }
@@ -4328,7 +4328,7 @@ void main() {
     final current = _track('t1', 'Midnight Drive', 240);
     final incoming = _track('t2', 'Paper Planes', 240);
 
-    Future<void> commitPlacement(Track track, int startMs) async {
+    Future<void> commitPlacement(QueueTrack track, int startMs) async {
       calls.add(startMs);
       final completion = Completer<void>();
       completions.add(completion);
@@ -4461,7 +4461,7 @@ void main() {
     final current = _track('t1', 'Midnight Drive', 240);
     final incoming = _track('t2', 'Paper Planes', 240);
 
-    Future<void> commitPlacement(Track track, int startMs) async {
+    Future<void> commitPlacement(QueueTrack track, int startMs) async {
       calls.add(startMs);
       final completion = Completer<void>();
       completions.add(completion);
@@ -4550,7 +4550,7 @@ void main() {
     final firstCompletion = Completer<void>();
     final successorCalls = <int>[];
 
-    Future<void> commitPlacement(Track track, int startMs) async {
+    Future<void> commitPlacement(QueueTrack track, int startMs) async {
       calls.add(startMs);
       await firstCompletion.future;
     }
@@ -4616,12 +4616,12 @@ void main() {
     final current = _track('t1', 'Midnight Drive', 240);
     final incoming = _track('t2', 'Paper Planes', 240);
 
-    Future<void> oldCallback(Track track, int startMs) async {
+    Future<void> oldCallback(QueueTrack track, int startMs) async {
       oldCalls.add(startMs);
       await oldCompletion.future;
     }
 
-    void replacementCallback(Track track, int startMs) {
+    void replacementCallback(QueueTrack track, int startMs) {
       replacementCalls.add(startMs);
     }
 
@@ -4704,7 +4704,7 @@ void main() {
     final incoming = _track('t2', 'Paper Planes', 240);
     final later = _track('t3', 'Glass', 240);
 
-    Future<void> heldCallback(Track track, int startMs) async {
+    Future<void> heldCallback(QueueTrack track, int startMs) async {
       calls.add(startMs);
       final completion = Completer<void>();
       completions.add(completion);
@@ -4826,7 +4826,7 @@ void main() {
     final current = _track('t1', 'Midnight Drive', 240);
     final incoming = _track('t2', 'Paper Planes', 240);
 
-    Future<void> commitPlacement(Track track, int startMs) async {
+    Future<void> commitPlacement(QueueTrack track, int startMs) async {
       calls.add(startMs);
       final completion = Completer<void>();
       completions.add(completion);
@@ -4947,7 +4947,7 @@ void main() {
     final current = _track('t1', 'Midnight Drive', 240);
     final incoming = _track('t2', 'Paper Planes', 240);
 
-    Future<void> commitPlacement(Track track, int startMs) async {
+    Future<void> commitPlacement(QueueTrack track, int startMs) async {
       calls.add(startMs);
       await firstCompletion.future;
       authoritativeStartMs = startMs;

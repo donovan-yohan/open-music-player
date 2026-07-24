@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../../core/audio/playback_context.dart';
 import '../../../core/audio/playback_state.dart';
+import '../../../core/audio/queue_ordering.dart';
 import '../../../core/models/models.dart';
 import '../../../core/services/services.dart';
+import '../../../models/playback_payload.dart';
 import '../../../shared/widgets/track_action_sheet.dart';
 import 'artist_detail_screen.dart';
 
@@ -26,14 +28,15 @@ Map<String, dynamic> albumTrackToPlaybackJson(
   TrackDetail track,
 ) {
   final durationMs = track.duration ?? 0;
-  return {
-    'id': int.parse(track.id),
-    'title': track.title,
-    'artist': track.artist ?? album.artist,
-    'album': album.title,
-    'duration': durationMs ~/ 1000,
-    'artwork_url': album.coverArtUrl,
-  };
+  return buildPlaybackPayload(
+    id: int.parse(track.id),
+    title: track.title,
+    artist: track.artist ?? album.artist,
+    album: album.title,
+    duration: Duration(milliseconds: durationMs),
+    artworkUrl: album.coverArtUrl,
+    analysis: track.analysis,
+  );
 }
 
 /// Builds the ordered playback queue for the playable tracks of [album],
@@ -48,8 +51,7 @@ List<Map<String, dynamic>> albumPlaybackQueue(
       .where(isAlbumTrackPlayable)
       .map((track) => albumTrackToPlaybackJson(album, track))
       .toList();
-  if (shuffle) queue.shuffle(random);
-  return queue;
+  return playCollectionOrder(queue, shuffled: shuffle, random: random);
 }
 
 class AlbumDetailScreen extends StatefulWidget {

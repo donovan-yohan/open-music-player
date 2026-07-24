@@ -60,28 +60,6 @@ class Playlist {
     };
   }
 
-  Map<String, dynamic> toDbMap() {
-    return {
-      'id': id,
-      'user_id': userId,
-      'name': name,
-      'description': description,
-      'created_at': createdAt.toIso8601String(),
-      'updated_at': updatedAt.toIso8601String(),
-    };
-  }
-
-  factory Playlist.fromDbMap(Map<String, dynamic> map) {
-    return Playlist(
-      id: map['id'] as int,
-      userId: map['user_id'] as int,
-      name: map['name'] as String,
-      description: map['description'] as String?,
-      createdAt: DateTime.parse(map['created_at'] as String),
-      updatedAt: DateTime.parse(map['updated_at'] as String),
-    );
-  }
-
   int get trackCount => tracks?.length ?? _trackCount ?? 0;
 
   /// Returns total duration of all tracks formatted as "Xh Ym" or "Xm Ys"

@@ -1,4 +1,4 @@
-import 'track.dart';
+import 'search_result.dart';
 
 class AlbumResult {
   final String mbid;

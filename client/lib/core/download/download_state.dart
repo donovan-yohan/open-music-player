@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import '../storage/offline_database.dart';
 import 'download_service.dart';
+import '../../shared/formatters/byte_formatter.dart';
 import '../../shared/models/models.dart';
 
 export 'download_service.dart' show DownloadProgress;
@@ -23,16 +24,7 @@ class DownloadState extends ChangeNotifier {
   bool get isLoading => _isLoading;
   int get downloadCount => _downloads.length;
 
-  String get formattedTotalSize {
-    if (_totalSizeBytes < 1024) return '$_totalSizeBytes B';
-    if (_totalSizeBytes < 1024 * 1024) {
-      return '${(_totalSizeBytes / 1024).toStringAsFixed(1)} KB';
-    }
-    if (_totalSizeBytes < 1024 * 1024 * 1024) {
-      return '${(_totalSizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(_totalSizeBytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
-  }
+  String get formattedTotalSize => formatBytes(_totalSizeBytes);
 
   DownloadState({
     required DownloadService downloadService,

@@ -6,18 +6,6 @@ import 'timeline_model.dart';
 import 'voice.dart';
 import 'voice_pool.dart';
 
-class MixNowPlayingInfo {
-  final String? clipId;
-  final String? trackId;
-  final int activeVoiceCount;
-
-  const MixNowPlayingInfo({
-    required this.clipId,
-    required this.trackId,
-    required this.activeVoiceCount,
-  });
-}
-
 class ClipCompletionEvent {
   final String clipId;
   final String trackId;
@@ -92,13 +80,10 @@ class PlaybackEngine implements PlaybackEngineControls {
   final bool _ownsClock;
   final VoicePool _pool;
   final List<StreamSubscription> _subscriptions = [];
-  final _nowPlayingController = StreamController<MixNowPlayingInfo>.broadcast();
   final _clipCompletionController =
       StreamController<ClipCompletionEvent>.broadcast();
 
   TimelineModel _model = TimelineModel();
-  String? _lastDominantClipId;
-  int? _lastActiveVoiceCount;
   int _lastPositionMs = 0;
   bool _manualPositionJumpPending = false;
   final Set<String> _completedClipIds = {};
@@ -106,8 +91,6 @@ class PlaybackEngine implements PlaybackEngineControls {
   VoicePool get pool => _pool;
   TimelineClock get clock => _clock;
   TimelineModel get model => _model;
-  Stream<MixNowPlayingInfo> get nowPlayingStream =>
-      _nowPlayingController.stream;
   Stream<ClipCompletionEvent> get clipCompletionStream =>
       _clipCompletionController.stream;
 
@@ -129,8 +112,6 @@ class PlaybackEngine implements PlaybackEngineControls {
     bool preserveActivePlayback = false,
   }) async {
     _model = model;
-    _lastDominantClipId = null;
-    _lastActiveVoiceCount = null;
     if (preserveActivePlayback) {
       final clipIds = model.clips.map((clip) => clip.id).toSet();
       _completedClipIds.removeWhere((clipId) => !clipIds.contains(clipId));
@@ -143,15 +124,6 @@ class PlaybackEngine implements PlaybackEngineControls {
       model,
       preserveActivePlayback: preserveActivePlayback,
     );
-    _publishNowPlaying();
-  }
-
-  Future<void> loadSequentialQueue(
-    Iterable<String> trackIds, {
-    required int Function(String trackId) sourceDurationMsFor,
-  }) {
-    return loadMix(TimelineModel.sequential(trackIds,
-        sourceDurationMsFor: sourceDurationMsFor));
   }
 
   @override
@@ -196,15 +168,13 @@ class PlaybackEngine implements PlaybackEngineControls {
     _subscriptions.clear();
     await _pool.dispose();
     if (_ownsClock) await _clock.dispose();
-    await _nowPlayingController.close();
     await _clipCompletionController.close();
   }
 
   void _bind() {
     _subscriptions
       ..add(_clock.positionMsStream.listen(_onPosition))
-      ..add(_clock.completedStream.listen((_) => _emitNaturalCompletions()))
-      ..add(_pool.voiceStatusStream.listen((_) => _publishNowPlaying()));
+      ..add(_clock.completedStream.listen((_) => _emitNaturalCompletions()));
   }
 
   void _markManualPositionJump() {
@@ -235,7 +205,6 @@ class PlaybackEngine implements PlaybackEngineControls {
       _manualPositionJumpPending = false;
     }
     _lastPositionMs = positionMs;
-    _publishNowPlaying();
   }
 
   void _forgetCompletionsAfter(int positionMs) {
@@ -258,22 +227,6 @@ class PlaybackEngine implements PlaybackEngineControls {
       clipId: clip.id,
       trackId: clip.trackId,
       wasSkipped: wasSkipped,
-    ));
-  }
-
-  void _publishNowPlaying() {
-    final dominant = _model.dominantClipAt(_clock.positionMs);
-    final activeVoiceCount = _pool.activeVoiceCount;
-    if (dominant?.id == _lastDominantClipId &&
-        activeVoiceCount == _lastActiveVoiceCount) {
-      return;
-    }
-    _lastDominantClipId = dominant?.id;
-    _lastActiveVoiceCount = activeVoiceCount;
-    _nowPlayingController.add(MixNowPlayingInfo(
-      clipId: dominant?.id,
-      trackId: dominant?.trackId,
-      activeVoiceCount: activeVoiceCount,
     ));
   }
 }

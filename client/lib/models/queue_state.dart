@@ -1,18 +1,12 @@
 import 'track.dart';
 
-enum RepeatMode { off, one, all }
-
 class QueueState {
-  final List<Track> tracks;
+  final List<QueueTrack> tracks;
   final int currentIndex;
-  final RepeatMode repeatMode;
-  final bool shuffled;
 
   QueueState({
     required this.tracks,
     required this.currentIndex,
-    this.repeatMode = RepeatMode.off,
-    this.shuffled = false,
   });
 
   factory QueueState.empty() {
@@ -26,41 +20,28 @@ class QueueState {
     return QueueState(
       tracks: _parseTracks(json),
       currentIndex: json['currentPosition'] as int? ?? 0,
-      repeatMode: _parseRepeatMode(json['repeatMode'] as String?),
-      shuffled: json['shuffled'] as bool? ?? false,
     );
   }
 
-  static List<Track> _parseTracks(Map<String, dynamic> json) {
+  static List<QueueTrack> _parseTracks(Map<String, dynamic> json) {
     final items = json['items'];
     if (items is List) {
       return items
-          .map((item) => Track.fromJson(item as Map<String, dynamic>))
+          .map((item) => QueueTrack.fromJson(item as Map<String, dynamic>))
           .toList();
     }
 
     return [];
   }
 
-  static RepeatMode _parseRepeatMode(String? mode) {
-    switch (mode) {
-      case 'one':
-        return RepeatMode.one;
-      case 'all':
-        return RepeatMode.all;
-      default:
-        return RepeatMode.off;
-    }
-  }
-
-  Track? get currentTrack {
+  QueueTrack? get currentTrack {
     if (currentIndex >= 0 && currentIndex < tracks.length) {
       return tracks[currentIndex];
     }
     return null;
   }
 
-  List<Track> get upNext {
+  List<QueueTrack> get upNext {
     if (currentIndex < 0 || currentIndex >= tracks.length - 1) {
       return [];
     }

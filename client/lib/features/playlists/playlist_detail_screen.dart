@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
+import '../../core/audio/queue_ordering.dart';
 import '../../core/services/playlist_service.dart';
 import '../../core/api/api_client.dart';
 import '../../core/storage/secure_storage.dart';
@@ -276,9 +277,11 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
   /// Plays the whole playlist into the listening queue, optionally shuffled.
   Future<void> _playAll({bool shuffle = false}) async {
-    final tracks = List<Track>.from(_playlist?.tracks ?? const []);
+    final tracks = playCollectionOrder(
+      _playlist?.tracks ?? const <Track>[],
+      shuffled: shuffle,
+    );
     if (tracks.isEmpty) return;
-    if (shuffle) tracks.shuffle();
     final playback = context.read<PlaybackState>();
     await playback.playQueue(
       tracks.map((t) => t.toPlaybackJson()).toList(),

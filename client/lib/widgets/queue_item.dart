@@ -8,7 +8,7 @@ import '../shared/widgets/soundq_status_chip.dart';
 import 'queue_waveform_trim_control.dart';
 
 class QueueItem extends StatelessWidget {
-  final Track track;
+  final QueueTrack track;
   final bool isPlaying;
   final VoidCallback? onRemove;
   final VoidCallback? onTap;
@@ -470,7 +470,7 @@ class _AnalysisChip extends StatelessWidget {
 
 /// Action sheet for adding tracks to queue
 class QueueActionSheet extends StatelessWidget {
-  final Track track;
+  final QueueTrack track;
   final VoidCallback onPlayNext;
   final VoidCallback onAddToQueue;
 
@@ -483,7 +483,7 @@ class QueueActionSheet extends StatelessWidget {
 
   static void show(
     BuildContext context, {
-    required Track track,
+    required QueueTrack track,
     required VoidCallback onPlayNext,
     required VoidCallback onAddToQueue,
   }) {

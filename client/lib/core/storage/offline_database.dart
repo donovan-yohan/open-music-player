@@ -115,29 +115,6 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     ''');
 
     await db.execute('''
-      CREATE TABLE IF NOT EXISTS playlists (
-        id INTEGER PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        description TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )
-    ''');
-
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS playlist_tracks (
-        playlist_id INTEGER NOT NULL,
-        track_id INTEGER NOT NULL,
-        position INTEGER NOT NULL,
-        added_at TEXT NOT NULL,
-        PRIMARY KEY (playlist_id, track_id),
-        FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
-        FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
-      )
-    ''');
-
-    await db.execute('''
       CREATE TABLE IF NOT EXISTS downloaded_tracks (
         track_id INTEGER PRIMARY KEY,
         local_path TEXT NOT NULL,
@@ -636,22 +613,6 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
       'SELECT COALESCE(SUM(file_size_bytes), 0) AS total FROM playback_cache',
     );
     return (result.first['total'] as int?) ?? 0;
-  }
-
-  // Playlist operations
-  Future<void> insertPlaylist(Playlist playlist) async {
-    final db = await database;
-    await db.insert(
-      'playlists',
-      playlist.toDbMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-
-  Future<List<Playlist>> getAllPlaylists() async {
-    final db = await database;
-    final maps = await db.query('playlists', orderBy: 'name ASC');
-    return maps.map((m) => Playlist.fromDbMap(m)).toList();
   }
 
   // Library operations

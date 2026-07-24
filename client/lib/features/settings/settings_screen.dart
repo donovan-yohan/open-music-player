@@ -14,6 +14,7 @@ import '../../core/commands/app_command.dart';
 import '../../core/commands/command_shortcuts.dart';
 import '../../core/models/settings_model.dart';
 import '../../core/providers/settings_provider.dart';
+import '../../shared/formatters/byte_formatter.dart';
 import 'listening_history_screen.dart';
 
 class SettingsScreen extends ConsumerWidget {
@@ -379,7 +380,7 @@ class _SettingsStorageSectionState
               _cacheManager == null
                   ? 'Unavailable on this platform'
                   : snapshot.hasData
-                  ? _formatBytes(snapshot.data!)
+                  ? formatBytes(snapshot.data!)
                   : 'Calculating...',
             ),
           ),
@@ -438,17 +439,6 @@ class _SettingsStorageSectionState
         ],
       ),
     );
-  }
-
-  String _formatBytes(int sizeInBytes) {
-    if (sizeInBytes < 1024) return '$sizeInBytes B';
-    if (sizeInBytes < 1024 * 1024) {
-      return '${(sizeInBytes / 1024).toStringAsFixed(1)} KB';
-    }
-    if (sizeInBytes < 1024 * 1024 * 1024) {
-      return '${(sizeInBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(sizeInBytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 }
 

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/shared/models/track.dart';
 
 void main() {
@@ -76,4 +77,60 @@ void main() {
       DateTime.parse('2026-07-10T11:00:00.123456Z'),
     );
   });
+
+  test('JSON round-trip preserves absent versus explicitly empty overrides',
+      () {
+    final absent = _trackWithAnalysis(
+      TrackAnalysis.fromJson(status: 'analyzed'),
+    );
+    final cleared = _trackWithAnalysis(
+      TrackAnalysis.fromJson(
+        status: 'analyzed',
+        overrides: const <String, dynamic>{},
+      ),
+    );
+
+    final absentJson = absent.toJson();
+    final clearedJson = cleared.toJson();
+    final absentRestored = Track.fromJson(absentJson);
+    final clearedRestored = Track.fromJson(clearedJson);
+
+    expect(absentJson, isNot(contains('analysis_overrides')));
+    expect(absentRestored.analysis?.overridesPresent, isFalse);
+    expect(clearedJson['analysis_overrides'], isEmpty);
+    expect(clearedRestored.analysis?.overridesPresent, isTrue);
+    expect(clearedRestored.toJson()['analysis_overrides'], isEmpty);
+  });
+
+  test('DB round-trip preserves absent versus encoded empty overrides', () {
+    final absent = _trackWithAnalysis(
+      TrackAnalysis.fromJson(status: 'analyzed'),
+    );
+    final cleared = _trackWithAnalysis(
+      TrackAnalysis.fromJson(
+        status: 'analyzed',
+        overrides: const <String, dynamic>{},
+      ),
+    );
+
+    final absentDb = absent.toDbMap();
+    final clearedDb = cleared.toDbMap();
+    final absentRestored = Track.fromDbMap(absentDb);
+    final clearedRestored = Track.fromDbMap(clearedDb);
+
+    expect(absentDb, isNot(contains('analysis_overrides')));
+    expect(absentRestored.analysis?.overridesPresent, isFalse);
+    expect(clearedDb['analysis_overrides'], '{}');
+    expect(clearedRestored.analysis?.overridesPresent, isTrue);
+    expect(clearedRestored.toDbMap()['analysis_overrides'], '{}');
+  });
 }
+
+Track _trackWithAnalysis(TrackAnalysis analysis) => Track(
+      id: 77,
+      identityHash: 'analysis-77',
+      title: 'Presence',
+      analysis: analysis,
+      createdAt: DateTime.utc(2026, 7, 24),
+      updatedAt: DateTime.utc(2026, 7, 24),
+    );

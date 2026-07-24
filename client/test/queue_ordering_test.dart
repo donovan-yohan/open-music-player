@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/queue_ordering.dart';
@@ -9,6 +11,37 @@ MediaItem _item(String id, {String? origin}) => MediaItem(
     );
 
 void main() {
+  group('playCollectionOrder', () {
+    test('preserves collection order for a normal launch', () {
+      final source = [1, 2, 3];
+
+      final ordered = playCollectionOrder(source);
+
+      expect(ordered, [1, 2, 3]);
+      expect(ordered, isNot(same(source)));
+    });
+
+    test('uses the injected RNG for a one-shot shuffled launch', () {
+      final source = [for (var index = 0; index < 8; index++) index];
+
+      final first = playCollectionOrder(
+        source,
+        shuffled: true,
+        random: Random(7),
+      );
+      final second = playCollectionOrder(
+        source,
+        shuffled: true,
+        random: Random(7),
+      );
+
+      expect(first, second);
+      expect(first, isNot(source));
+      expect(first.toSet(), source.toSet());
+      expect(source, [0, 1, 2, 3, 4, 5, 6, 7]);
+    });
+  });
+
   group('itemOrigin / markOrigin', () {
     test('defaults to context when unmarked', () {
       expect(itemOrigin(_item('a')), queueOriginContext);

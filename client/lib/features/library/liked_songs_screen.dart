@@ -1,10 +1,9 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
+import '../../core/audio/queue_ordering.dart';
 import '../../core/services/services.dart' as services;
 import '../../core/services/liked_tracks_state.dart';
 import '../../shared/models/track.dart';
@@ -76,8 +75,7 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
 
   Future<void> _play({bool shuffle = false}) async {
     if (_tracks.isEmpty) return;
-    final ordered = List<Track>.from(_tracks);
-    if (shuffle) ordered.shuffle(Random());
+    final ordered = playCollectionOrder(_tracks, shuffled: shuffle);
     final playback = context.read<PlaybackState>();
     try {
       await playback.playQueue(

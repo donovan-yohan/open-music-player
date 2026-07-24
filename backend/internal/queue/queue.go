@@ -14,7 +14,9 @@ import (
 )
 
 const (
-	// Redis key prefix for user queues
+	// Redis key prefix for user queues. Rename the playback-flavored `playqueue`
+	// vocabulary toward import/readiness terms with the next schema-touching
+	// change.
 	keyQueuePrefix = "playqueue:"
 
 	// TTL for queue data (24 hours)
@@ -464,31 +466,6 @@ func (s *Service) RetryQueueItem(ctx context.Context, userID, queueItemID string
 // ClearQueue clears all items from the queue
 func (s *Service) ClearQueue(ctx context.Context, userID string) error {
 	return s.client.Del(ctx, s.queueKey(userID)).Err()
-}
-
-// SetCurrentPosition updates the current playback position
-func (s *Service) SetCurrentPosition(ctx context.Context, userID string, position int) (*QueueState, error) {
-	state, err := s.GetQueue(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(state.Items) == 0 {
-		return nil, ErrQueueEmpty
-	}
-
-	if position < 0 || position >= len(state.Items) {
-		return nil, ErrInvalidPosition
-	}
-
-	state.CurrentPosition = position
-	state.UpdatedAt = time.Now()
-
-	if err := s.saveQueue(ctx, userID, state); err != nil {
-		return nil, err
-	}
-
-	return state, nil
 }
 
 // saveQueue saves the queue state to Redis with TTL

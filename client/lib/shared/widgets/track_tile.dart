@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../../models/track_analysis.dart';
 import '../models/track.dart';
-import '../models/library_track.dart';
 import 'song_metadata_chips.dart';
 
 class TrackTile extends StatelessWidget {
@@ -39,33 +38,6 @@ class TrackTile extends StatelessWidget {
 
   factory TrackTile.fromTrack(
     Track track, {
-    VoidCallback? onTap,
-    VoidCallback? onMorePressed,
-    Widget? leading,
-    Widget? trailing,
-    bool showDragHandle = false,
-    bool isCurrent = false,
-    String? activeLabel,
-  }) {
-    return TrackTile(
-      title: track.title,
-      artist: track.artist,
-      album: track.album,
-      duration: track.formattedDuration,
-      coverArtUrl: track.coverArtUrl,
-      onTap: onTap,
-      onMorePressed: onMorePressed,
-      leading: leading,
-      trailing: trailing,
-      showDragHandle: showDragHandle,
-      isCurrent: isCurrent,
-      activeLabel: activeLabel,
-      analysis: track.analysis,
-    );
-  }
-
-  factory TrackTile.fromLibraryTrack(
-    LibraryTrack track, {
     VoidCallback? onTap,
     VoidCallback? onMorePressed,
     Widget? leading,

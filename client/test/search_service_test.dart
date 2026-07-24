@@ -128,6 +128,17 @@ void main() {
       expect(t.duration, 208000);
     });
 
+    test('TrackResult builds a numeric-id, whole-second playback payload', () {
+      final t = TrackResult.fromJson({
+        'id': 7,
+        'title': 'Local result',
+        'durationMs': 208999,
+      });
+
+      expect(t.toPlaybackJson()['id'], 7);
+      expect(t.toPlaybackJson()['duration'], 208);
+    });
+
     test('ArtistResult maps name/mbArtistId/trackCount', () {
       final a = ArtistResult.fromJson(
           {'name': 'AC/DC', 'mbArtistId': 'a-1', 'trackCount': 3});

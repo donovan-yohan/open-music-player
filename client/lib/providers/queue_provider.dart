@@ -79,8 +79,8 @@ class QueueProvider extends ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get error => _error;
 
-  Track? get currentTrack => _queue.currentTrack;
-  List<Track> get upNext => _queue.upNext;
+  QueueTrack? get currentTrack => _queue.currentTrack;
+  List<QueueTrack> get upNext => _queue.upNext;
   bool get isEmpty => _queue.isEmpty;
   int get analysisRevision => _analysisRevision;
 
@@ -106,7 +106,7 @@ class QueueProvider extends ChangeNotifier {
   Map<String, MixPlanClip> get mixPlanClips => Map.unmodifiable(_mixPlanClips);
 
   /// Trim range for a track, defaulting to the full track when untrimmed.
-  TrimRange trimRangeFor(Track track) {
+  TrimRange trimRangeFor(QueueTrack track) {
     final local = _firstTrimRange(track);
     if (local != null) return local;
 
@@ -124,7 +124,7 @@ class QueueProvider extends ChangeNotifier {
 
   /// Timeline placement for a track, using the durable mix-plan timing contract
   /// when one has been loaded and falling back to the caller's synthesized clip.
-  TimelineClip timelineClipFor(Track track, TimelineClip fallback) {
+  TimelineClip timelineClipFor(QueueTrack track, TimelineClip fallback) {
     final range = trimRangeFor(track);
     final mixClip = _mixPlanClipFor(track);
     final localStart = _firstTimelineStart(track);
@@ -141,7 +141,7 @@ class QueueProvider extends ChangeNotifier {
     );
   }
 
-  String pitchModeFor(Track track) =>
+  String pitchModeFor(QueueTrack track) =>
       _mixPlanClipFor(track)?.pitchMode ?? pitchModePreserve;
 
   /// Load durable #57 mix-plan clip timing into the queue editing surface.
@@ -157,18 +157,18 @@ class QueueProvider extends ChangeNotifier {
 
   /// Deterministic mock waveform peaks for a track until backend peak data is
   /// available.
-  List<double> waveformPeaksFor(Track track) {
+  List<double> waveformPeaksFor(QueueTrack track) {
     final entry = _waveformCacheEntry(track, 64);
     final peaks = entry.peaks;
     _trimTimelineWaveformCache();
     return peaks;
   }
 
-  TimelineWaveformData waveformFor(Track track, int targetSampleCount) =>
+  TimelineWaveformData waveformFor(QueueTrack track, int targetSampleCount) =>
       _waveformCacheEntry(track, targetSampleCount).waveform;
 
   _CachedTimelineWaveform _waveformCacheEntry(
-    Track track,
+    QueueTrack track,
     int targetSampleCount,
   ) {
     final bucket = _waveformSampleBucket(targetSampleCount);
@@ -191,7 +191,8 @@ class QueueProvider extends ChangeNotifier {
   /// Attach hydrated analysis by backend track ID. Collection responses carry
   /// tempo metadata but intentionally omit large waveform arrays, so the
   /// timeline hydrates those arrays lazily from the per-track endpoint.
-  Track trackWithAnalysis(Track track, {bool requestHydration = true}) {
+  QueueTrack trackWithAnalysis(QueueTrack track,
+      {bool requestHydration = true}) {
     final trackId = _analysisTrackId(track);
     if (trackId == null) {
       return track;
@@ -225,7 +226,7 @@ class QueueProvider extends ChangeNotifier {
   /// Collection payloads already carry compact BPM/key metadata. Waveform
   /// arrays are hydrated only while a timeline lane needs them, which keeps
   /// removed tracks and hidden history from continuing background work.
-  void setAnalysisHydrationInterest(Iterable<Track> tracks) {
+  void setAnalysisHydrationInterest(Iterable<QueueTrack> tracks) {
     final retainedTracks = tracks.toList(growable: false);
     final next = <String>{};
     for (final track in retainedTracks) {
@@ -263,11 +264,11 @@ class QueueProvider extends ChangeNotifier {
 
   void clearAnalysisHydrationInterest() {
     if (_analysisHydrationInterest.isEmpty) return;
-    setAnalysisHydrationInterest(const <Track>[]);
+    setAnalysisHydrationInterest(const <QueueTrack>[]);
   }
 
   Future<TrackAnalysis> updateAnalysisOverrides(
-    Track track,
+    QueueTrack track,
     TrackAnalysisOverrides overrides,
   ) {
     final trackId = _analysisTrackId(track);
@@ -334,8 +335,6 @@ class QueueProvider extends ChangeNotifier {
               : queuedTrack,
       ],
       currentIndex: _queue.currentIndex,
-      repeatMode: _queue.repeatMode,
-      shuffled: _queue.shuffled,
     );
     _pruneAnalysisAuthorityState();
     _notifyListeners();
@@ -459,7 +458,7 @@ class QueueProvider extends ChangeNotifier {
       );
       final previousMixPlanClips = Map<String, MixPlanClip>.from(_mixPlanClips);
 
-      final newTracks = List<Track>.from(_queue.tracks);
+      final newTracks = List<QueueTrack>.from(_queue.tracks);
       final removedTrack = newTracks.removeAt(currentPosition);
       _trimRanges = Map<String, TrimRange>.from(_trimRanges);
       _timelineStartOverrides = Map<String, int>.from(_timelineStartOverrides);
@@ -477,8 +476,6 @@ class QueueProvider extends ChangeNotifier {
       _queue = QueueState(
         tracks: newTracks,
         currentIndex: newCurrentIndex,
-        repeatMode: _queue.repeatMode,
-        shuffled: _queue.shuffled,
       );
       _pruneTimingState();
       _pruneAnalysisAuthorityState();
@@ -511,7 +508,7 @@ class QueueProvider extends ChangeNotifier {
     });
   }
 
-  Future<void> retryTrack(Track track) async {
+  Future<void> retryTrack(QueueTrack track) async {
     final queueItemId = track.queueItemId;
     await _runQueueMutation(() async {
       final operationGeneration = _beginQueueOperation();
@@ -551,7 +548,7 @@ class QueueProvider extends ChangeNotifier {
 
       final operationGeneration = _beginQueueOperation();
       final previousQueue = _queue;
-      final newTracks = List<Track>.from(_queue.tracks);
+      final newTracks = List<QueueTrack>.from(_queue.tracks);
       final movedTrack = newTracks.removeAt(currentOldIndex);
       newTracks.insert(currentNewIndex, movedTrack);
 
@@ -569,8 +566,6 @@ class QueueProvider extends ChangeNotifier {
       _queue = QueueState(
         tracks: newTracks,
         currentIndex: newCurrentIndex,
-        repeatMode: _queue.repeatMode,
-        shuffled: _queue.shuffled,
       );
       _notifyListeners();
 
@@ -641,15 +636,15 @@ class QueueProvider extends ChangeNotifier {
   }
 
   /// Move a track's entry point to [ms]. Clamped via [TrimRange].
-  Future<void> setStartOffsetMs(Track track, int ms) =>
+  Future<void> setStartOffsetMs(QueueTrack track, int ms) =>
       setTrimRange(track, trimRangeFor(track).withStart(ms));
 
   /// Move a track's exit point to [ms]. Clamped via [TrimRange].
-  Future<void> setEndOffsetMs(Track track, int ms) =>
+  Future<void> setEndOffsetMs(QueueTrack track, int ms) =>
       setTrimRange(track, trimRangeFor(track).withEnd(ms));
 
   /// Move a clip along the timeline without changing source trim.
-  void setTimelineStartMs(Track track, int ms) {
+  void setTimelineStartMs(QueueTrack track, int ms) {
     final start = ms < 0 ? 0 : ms;
     _timelineStartOverrides = Map<String, int>.from(_timelineStartOverrides);
     for (final key in _localTimingKeys(track)) {
@@ -664,7 +659,7 @@ class QueueProvider extends ChangeNotifier {
     unawaited(_enqueueQueueTimingMixPlanSave());
   }
 
-  void setPitchMode(Track track, String pitchMode) {
+  void setPitchMode(QueueTrack track, String pitchMode) {
     final normalized = normalizePitchMode(pitchMode);
     final existing = _mixPlanClipFor(track);
     if (existing != null && existing.pitchMode == normalized) return;
@@ -700,7 +695,7 @@ class QueueProvider extends ChangeNotifier {
     unawaited(_enqueueQueueTimingMixPlanSave());
   }
 
-  Future<void> setTrimRange(Track track, TrimRange range) async {
+  Future<void> setTrimRange(QueueTrack track, TrimRange range) async {
     _trimRanges = Map<String, TrimRange>.from(_trimRanges);
     for (final key in _localTimingKeys(track)) {
       _trimRanges[key] = range;
@@ -986,7 +981,7 @@ class QueueProvider extends ChangeNotifier {
     return 0;
   }
 
-  ClipTempoMetadata _tempoMetadataForTrack(Track track) {
+  ClipTempoMetadata _tempoMetadataForTrack(QueueTrack track) {
     final analysisTrackId = _analysisTrackId(track);
     final analysis = track.analysis ??
         (analysisTrackId == null
@@ -998,7 +993,7 @@ class QueueProvider extends ChangeNotifier {
     );
   }
 
-  String? _mixPlanTrackId(Track track) {
+  String? _mixPlanTrackId(QueueTrack track) {
     final candidates = [track.playbackTrackId, track.id];
     for (final candidate in candidates) {
       if (candidate == null) continue;
@@ -1056,7 +1051,7 @@ class QueueProvider extends ChangeNotifier {
     );
   }
 
-  Iterable<String> _localTimingKeys(Track track) sync* {
+  Iterable<String> _localTimingKeys(QueueTrack track) sync* {
     if (track.queueItemId.isNotEmpty) {
       yield track.queueItemId;
       return;
@@ -1064,7 +1059,7 @@ class QueueProvider extends ChangeNotifier {
     yield* _trackTimingKeys(track);
   }
 
-  Iterable<String> _trackTimingKeys(Track track) sync* {
+  Iterable<String> _trackTimingKeys(QueueTrack track) sync* {
     final seen = <String>{};
     if (track.queueItemId.isNotEmpty && seen.add(track.queueItemId)) {
       yield track.queueItemId;
@@ -1080,7 +1075,7 @@ class QueueProvider extends ChangeNotifier {
     }
   }
 
-  String _trackWaveformKey(Track track) {
+  String _trackWaveformKey(QueueTrack track) {
     final analysis = track.analysis;
     final waveform = analysis?.summary?.waveform;
     final peaks = waveform?.peaks ?? const <double>[];
@@ -1103,7 +1098,7 @@ class QueueProvider extends ChangeNotifier {
     return '${_trackWaveformSourceKey(track)}|$analysisKey';
   }
 
-  String _trackWaveformSourceKey(Track track) {
+  String _trackWaveformSourceKey(QueueTrack track) {
     final analysisTrackId = _analysisTrackId(track);
     if (analysisTrackId != null) return 'track:$analysisTrackId';
     final playbackTrackId = track.playbackTrackId;
@@ -1150,7 +1145,7 @@ class QueueProvider extends ChangeNotifier {
   }
 
   QueueState _queueWithAuthoritativeAnalysis(QueueState queue) {
-    final tracks = <Track>[];
+    final tracks = <QueueTrack>[];
     for (final track in queue.tracks) {
       final trackId = _analysisTrackId(track);
       if (trackId == null) {
@@ -1177,12 +1172,10 @@ class QueueProvider extends ChangeNotifier {
     return QueueState(
       tracks: tracks,
       currentIndex: queue.currentIndex,
-      repeatMode: queue.repeatMode,
-      shuffled: queue.shuffled,
     );
   }
 
-  void _rememberTrackAnalysis(Track track) {
+  void _rememberTrackAnalysis(QueueTrack track) {
     final analysis = track.analysis;
     final trackId = _analysisTrackId(track);
     if (analysis == null || trackId == null) return;
@@ -1788,8 +1781,8 @@ class QueueProvider extends ChangeNotifier {
     return merged;
   }
 
-  Track _enrichedTrack(
-    Track track,
+  QueueTrack _enrichedTrack(
+    QueueTrack track,
     String analysisKey,
     TrackAnalysis analysis,
   ) {
@@ -1865,7 +1858,7 @@ class QueueProvider extends ChangeNotifier {
       ? null
       : Object.hash(value.value, value.confidence, value.provenance);
 
-  int? _analysisTrackId(Track track) {
+  int? _analysisTrackId(QueueTrack track) {
     for (final candidate in [track.playbackTrackId, track.id]) {
       if (candidate == null) continue;
       final parsed = int.tryParse(candidate);
@@ -1886,7 +1879,7 @@ class QueueProvider extends ChangeNotifier {
     );
   }
 
-  int? _firstTimelineStart(Track track) {
+  int? _firstTimelineStart(QueueTrack track) {
     for (final key in _trackTimingKeys(track)) {
       final value = _timelineStartOverrides[key];
       if (value != null) return value;
@@ -1894,7 +1887,7 @@ class QueueProvider extends ChangeNotifier {
     return null;
   }
 
-  TrimRange? _firstTrimRange(Track track) {
+  TrimRange? _firstTrimRange(QueueTrack track) {
     for (final key in _trackTimingKeys(track)) {
       final value = _trimRanges[key];
       if (value != null) return value;
@@ -1902,7 +1895,7 @@ class QueueProvider extends ChangeNotifier {
     return null;
   }
 
-  MixPlanClip? _mixPlanClipFor(Track track) {
+  MixPlanClip? _mixPlanClipFor(QueueTrack track) {
     for (final key in _trackTimingKeys(track)) {
       final clip = _mixPlanClips[key];
       if (clip != null) return clip;
@@ -1946,9 +1939,9 @@ class _AnalysisRequest {
 }
 
 class _EnrichedTrackCacheEntry {
-  final Track source;
+  final QueueTrack source;
   final TrackAnalysis analysis;
-  final Track result;
+  final QueueTrack result;
 
   const _EnrichedTrackCacheEntry({
     required this.source,

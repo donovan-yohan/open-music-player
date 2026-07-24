@@ -1143,7 +1143,7 @@ MixClip _rampedClip({
       ),
     );
 
-Track _track() => Track(
+QueueTrack _track() => QueueTrack(
       id: 'dense-painter-track',
       title: 'Dense Painter Track',
       artist: 'Artist',

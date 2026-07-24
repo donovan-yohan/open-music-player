@@ -1,6 +1,11 @@
 
 # 4-Deck Mix Playback Engine — Final Design Doc (post-review)
 
+> Historical note (#292, 2026-07-24): `MixNowPlayingInfo`, `nowPlayingStream`, and
+> `loadSequentialQueue` described below were removed from `PlaybackEngine` as dead
+> alternate authorities; `PlaybackSnapshot` via `QueueTimelineController` is the
+> only now-playing surface. Read those sections as design history.
+
 ## 0. Grounding: what exists today (unchanged from draft, re-verified against source)
 
 - `AudioPlayerService` (`client/lib/core/audio/audio_player_service.dart`) wraps ONE `just_audio.AudioPlayer` + `ConcatenatingAudioSource`. **Fully replaced.**
