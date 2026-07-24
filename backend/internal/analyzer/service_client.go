@@ -42,11 +42,13 @@ type ServiceClient struct {
 // It is deliberately separate from analysis provenance so startup maintenance
 // can avoid invalidating rows when the analyzer is unavailable.
 type Info struct {
-	Status          string `json:"status"`
-	Analyzer        string `json:"analyzer"`
-	AnalyzerVersion string `json:"analyzer_version"`
-	TempoModel      string `json:"tempo_model"`
-	KeyModel        string `json:"key_model"`
+	Status             string `json:"status"`
+	Analyzer           string `json:"analyzer"`
+	AnalyzerVersion    string `json:"analyzer_version"`
+	TempoModel         string `json:"tempo_model"`
+	KeyModel           string `json:"key_model"`
+	SpectralProvenance string `json:"spectral_provenance"`
+	SpectralChannelSet string `json:"spectral_channel_set"`
 }
 
 // NewServiceClient returns nil when the optional analyzer is disabled. When it
@@ -150,6 +152,9 @@ func (c *ServiceClient) Info(ctx context.Context) (Info, error) {
 	}
 	if strings.TrimSpace(info.TempoModel) == "" || strings.TrimSpace(info.KeyModel) == "" {
 		return Info{}, errors.New("analyzer health response missing model identity")
+	}
+	if strings.TrimSpace(info.SpectralProvenance) == "" || strings.TrimSpace(info.SpectralChannelSet) == "" {
+		return Info{}, errors.New("analyzer health response missing spectral identity")
 	}
 	return info, nil
 }
