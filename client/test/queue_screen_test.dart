@@ -922,6 +922,111 @@ void main() {
   );
 
   testWidgets(
+    'playback timeline batches a hydration wave into one analysis refresh',
+    (tester) async {
+      final provider = _HydrationWaveQueueProvider(apiClient);
+      playbackState
+        ..fakeQueue = [
+          for (var index = 0; index < 3; index++)
+            _mediaItem(
+              (index + 1) * 101,
+              'Compact Track ${index + 1}',
+              seconds: 198 + index,
+              extras: {
+                'analysisRef': '${(index + 1) * 101}',
+                'analysisStatus': 'analyzed',
+                'analysisSummary': _tempoAnalysisSummary(
+                  124 + index.toDouble(),
+                ),
+              },
+            ),
+        ]
+        ..fakeCurrentIndex = 0;
+
+      await pumpQueueScreen(tester, queueProvider: provider);
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+      expect(playbackState.analysisRefreshWaves, isEmpty);
+
+      for (var index = 0; index < 3; index++) {
+        provider.hydrate(
+          '${(index + 1) * 101}',
+          _hydratedTempoAnalysis(134 + index.toDouble()),
+        );
+      }
+      await tester.pump();
+      await tester.pump();
+
+      expect(playbackState.analysisRefreshWaves, hasLength(1));
+      expect(
+        playbackState.analysisRefreshWaves.single.keys,
+        unorderedEquals(<String>['101', '202', '303']),
+      );
+      expect(playbackState.analysisRefreshes, hasLength(3));
+    },
+  );
+
+  testWidgets(
+    'equal bounded and hydrated tempo metadata does not refresh playback',
+    (tester) async {
+      final fullBeats = List<int>.generate(200, (index) => index * 500);
+      final fullDownbeats = List<int>.generate(100, (index) => index * 2000);
+      final compactSummary = _tempoAnalysisSummary(
+        124,
+        beatsMs: _boundedTempoPositions(fullBeats, 128),
+        downbeatsMs: _boundedTempoPositions(fullDownbeats, 64),
+      );
+      final provider = _HydrationWaveQueueProvider(apiClient);
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(
+            101,
+            'Bounded Track',
+            seconds: 198,
+            extras: {
+              'analysisRef': '101',
+              'analysisStatus': 'analyzed',
+              'analysisSummary': compactSummary,
+            },
+          ),
+        ]
+        ..fakeTimelineModel = TimelineModel(
+          clips: [
+            MixClip(
+              placement: TimelineClip.clamped(
+                id: 'session_clip_0',
+                trackId: '101',
+                sourceDurationMs: 198000,
+                sourceStartMs: 0,
+                sourceEndMs: 198000,
+                timelineStartMs: 0,
+              ),
+              tempo: ClipTempoMetadata.fromAnalysisSummary(compactSummary),
+            ),
+          ],
+        )
+        ..fakeCurrentIndex = 0;
+
+      await pumpQueueScreen(tester, queueProvider: provider);
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+      provider.hydrate(
+        '101',
+        _hydratedTempoAnalysis(
+          124,
+          beatsMs: fullBeats,
+          downbeatsMs: fullDownbeats,
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(playbackState.analysisRefreshWaves, isEmpty);
+      expect(playbackState.analysisRefreshes, isEmpty);
+    },
+  );
+
+  testWidgets(
     'playback timeline refreshes stale live clip tempo even when queue extras match',
     (tester) async {
       apiClient.useAnalysisFixture();
@@ -2032,6 +2137,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
       [];
   final List<int> removeFromQueueCalls = [];
   final List<({String trackId, TrackAnalysis analysis})> analysisRefreshes = [];
+  final List<Map<String, TrackAnalysis>> analysisRefreshWaves = [];
   int seekCalls = 0;
   int pauseCalls = 0;
   int _nextOccurrenceOrdinal = 1;
@@ -2501,24 +2607,42 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   Future<void> refreshTrackAnalysis(
     String trackId,
     TrackAnalysis analysis,
+  ) =>
+      refreshTrackAnalyses({trackId: analysis});
+
+  @override
+  Future<void> refreshTrackAnalyses(
+    Map<String, TrackAnalysis> analysesByTrackId,
   ) async {
-    analysisRefreshes.add((trackId: trackId, analysis: analysis));
-    fakeQueue = [
-      for (final item in fakeQueue)
-        item.id == trackId
-            ? item.copyWith(
-                extras: {
-                  ...?item.extras,
-                  'analysisRef': trackId,
-                  'analysisStatus': analysis.status.name,
-                  if (analysis.summary != null)
-                    'analysisSummary': analysis.summary!.toJson(),
-                  if (analysis.overrides != null)
-                    'analysisOverrides': analysis.overrides!.toJson(),
-                },
-              )
-            : item,
-    ];
+    analysisRefreshWaves.add(Map.unmodifiable(analysesByTrackId));
+    analysisRefreshes.addAll([
+      for (final entry in analysesByTrackId.entries)
+        (trackId: entry.key, analysis: entry.value),
+    ]);
+
+    audio_service.MediaItem refreshItem(audio_service.MediaItem item) {
+      for (final entry in analysesByTrackId.entries) {
+        if (item.id != entry.key &&
+            item.extras?['analysisRef']?.toString() != entry.key) {
+          continue;
+        }
+        final analysis = entry.value;
+        return item.copyWith(
+          extras: {
+            ...?item.extras,
+            'analysisRef': entry.key,
+            'analysisStatus': analysis.status.name,
+            if (analysis.summary != null)
+              'analysisSummary': analysis.summary!.toJson(),
+            if (analysis.overrides != null)
+              'analysisOverrides': analysis.overrides!.toJson(),
+          },
+        );
+      }
+      return item;
+    }
+
+    fakeQueue = [for (final item in fakeQueue) refreshItem(item)];
   }
 
   @override
@@ -2609,6 +2733,38 @@ class _CountingQueueProvider extends QueueProvider {
     waveformCalls++;
     return super.waveformFor(track, targetSampleCount);
   }
+}
+
+class _HydrationWaveQueueProvider extends QueueProvider {
+  _HydrationWaveQueueProvider(super.apiClient);
+
+  final Map<String, TrackAnalysis> _hydrated = {};
+  int _revision = 0;
+
+  @override
+  int get analysisRevision => _revision;
+
+  void hydrate(String trackId, TrackAnalysis analysis) {
+    _hydrated[trackId] = analysis;
+    _revision++;
+    notifyListeners();
+  }
+
+  @override
+  QueueTrack trackWithAnalysis(
+    QueueTrack track, {
+    bool requestHydration = true,
+  }) {
+    final trackId = track.playbackTrackId ?? track.id;
+    final analysis = _hydrated[trackId];
+    return analysis == null ? track : track.copyWith(analysis: analysis);
+  }
+
+  @override
+  void setAnalysisHydrationInterest(Iterable<QueueTrack> tracks) {}
+
+  @override
+  void clearAnalysisHydrationInterest() {}
 }
 
 class _TrackingQueueProvider extends _CountingQueueProvider {
@@ -2919,14 +3075,7 @@ class _FakeQueueApiClient extends ApiClient {
     return TrackAnalysis.fromJson(
       status: 'analyzed',
       summary: {
-        'bpm': {'value': bpm},
-        'beat_grid': {
-          'bpm': bpm,
-          'beats_ms': [0, 500, 1000],
-        },
-        'downbeats': {
-          'positions_ms': [0],
-        },
+        ..._tempoAnalysisSummary(bpm),
         'waveform': {
           'sample_count': 4,
           'peaks': [0.1, 0.5, 0.9, 0.2],
@@ -3056,4 +3205,50 @@ class _FakeQueueApiClient extends ApiClient {
         createdAt: DateTime(2026),
         updatedAt: DateTime(2026),
       );
+}
+
+Map<String, dynamic> _tempoAnalysisSummary(
+  double bpm, {
+  List<int> beatsMs = const [0, 500, 1000],
+  List<int> downbeatsMs = const [0],
+}) =>
+    {
+      'bpm': {'value': bpm},
+      'beat_grid': {
+        'bpm': bpm,
+        'beats_ms': beatsMs,
+      },
+      'downbeats': {
+        'positions_ms': downbeatsMs,
+      },
+    };
+
+TrackAnalysis _hydratedTempoAnalysis(
+  double bpm, {
+  List<int> beatsMs = const [0, 500, 1000],
+  List<int> downbeatsMs = const [0],
+}) =>
+    TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: {
+        ..._tempoAnalysisSummary(
+          bpm,
+          beatsMs: beatsMs,
+          downbeatsMs: downbeatsMs,
+        ),
+        'waveform': {
+          'sample_count': 4,
+          'peaks': [0.1, 0.5, 0.9, 0.2],
+          'rms': [0.08, 0.3, 0.6, 0.12],
+        },
+      },
+    );
+
+List<int> _boundedTempoPositions(List<int> positions, int limit) {
+  if (positions.length <= limit) return positions;
+  final headLength = limit ~/ 2;
+  return [
+    ...positions.take(headLength),
+    ...positions.skip(positions.length - (limit - headLength)),
+  ];
 }

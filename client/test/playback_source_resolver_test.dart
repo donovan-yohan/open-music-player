@@ -128,7 +128,8 @@ void main() {
       expect(items.single.extras?.containsKey('localPath'), isFalse);
     });
 
-    test('carries analysis summary into playback media extras', () async {
+    test('old fat analysis restores into compact playback media extras',
+        () async {
       final signed = SignedAudioUrlService.withRequester((body) async {
         return {
           'urls': [
@@ -147,8 +148,19 @@ void main() {
       final resolver = PlaybackSourceResolver(signedAudioUrlService: signed);
       final analysisSummary = {
         'bpm': {'value': 128, 'confidence': 0.96},
+        'beat_grid': {
+          'bpm': 128,
+          'offset_ms': 15,
+          'beats_ms': [for (var beat = 0; beat < 500; beat++) beat * 10],
+        },
         'downbeats': {
-          'positions_ms': [0, 1875],
+          'positions_ms': [
+            for (var downbeat = 0; downbeat < 500; downbeat++) downbeat * 40,
+          ],
+        },
+        'waveform': {
+          'peaks': List<double>.filled(4096, 0.5),
+          'rms': List<double>.filled(4096, 0.25),
         },
       };
 
@@ -160,7 +172,13 @@ void main() {
         ),
       );
 
-      expect(item.extras?['analysisSummary'], analysisSummary);
+      final compact = item.extras?['analysisSummary'] as Map;
+      expect(compact, isNot(contains('waveform')));
+      expect((compact['beat_grid'] as Map)['beats_ms'], hasLength(128));
+      expect((compact['beat_grid'] as Map)['beats_ms'].last, 4990);
+      expect((compact['downbeats'] as Map)['positions_ms'], hasLength(64));
+      expect((compact['downbeats'] as Map)['positions_ms'].last, 19960);
+      expect((compact['bpm'] as Map)['value'], 128);
       expect(
         item.extras?['analysisUpdatedAt'],
         '2026-07-10T11:00:00.123456Z',

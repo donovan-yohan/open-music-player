@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -309,6 +310,60 @@ void main() {
       expect(json.containsKey('isLiked'), isFalse);
       expect(json.containsKey('sourceUrl'), isFalse);
     });
+
+    test('50 hydrated tracks persist compact bounded tempo metadata', () {
+      final hydrated = [
+        for (var id = 1; id <= 50; id++)
+          mediaItemToPlaybackJson(
+            MediaItem(
+              id: '$id',
+              title: 'Track $id',
+              duration: const Duration(minutes: 4),
+              extras: {
+                'analysisSummary': {
+                  'bpm': {'value': 128, 'confidence': 0.99},
+                  'beat_grid': {
+                    'bpm': 128,
+                    'offset_ms': 42,
+                    'beats_ms': [for (var beat = 0; beat < 2000; beat++) beat],
+                  },
+                  'downbeats': {
+                    'positions_ms': [
+                      for (var beat = 0; beat < 500; beat++) beat * 4,
+                    ],
+                  },
+                  'waveform': {
+                    'peaks': List<double>.filled(65536, 0.5),
+                    'rms': List<double>.filled(65536, 0.25),
+                  },
+                },
+              },
+            ),
+          ),
+      ];
+
+      final encoded = QueueSnapshot(tracks: hydrated).encode();
+      final decoded = jsonDecode(encoded) as Map<String, dynamic>;
+      final tracks = (decoded['tracks'] as List).cast<Map>();
+
+      expect(encoded.length, lessThan(160 * 1024));
+      for (final track in tracks) {
+        final summary = track['analysisSummary'] as Map;
+        expect(summary, isNot(contains('waveform')));
+        expect(
+          (summary['beat_grid'] as Map)['beats_ms'],
+          hasLength(maxPersistedBeatPositions),
+        );
+        expect(
+          (summary['downbeats'] as Map)['positions_ms'],
+          hasLength(maxPersistedDownbeatPositions),
+        );
+        expect((summary['beat_grid'] as Map)['beats_ms'].first, 0);
+        expect((summary['beat_grid'] as Map)['beats_ms'].last, 1999);
+        expect((summary['downbeats'] as Map)['positions_ms'].first, 0);
+        expect((summary['downbeats'] as Map)['positions_ms'].last, 1996);
+      }
+    });
   });
 
   group('QueuePersistenceStore', () {
@@ -375,6 +430,7 @@ void main() {
       );
 
       accountId = 'user-b';
+      store.invalidateAccountId();
       final loaded = await store.load();
 
       expect(loaded.tracks.single.containsKey('isLiked'), isFalse);
@@ -436,6 +492,66 @@ void main() {
       expect(loaded.tracks.single.containsKey('isLiked'), isFalse);
       expect(loaded.tracks.single.containsKey('sourceUrl'), isFalse);
       expect(loaded.tracks.single.containsKey('likedAccountId'), isFalse);
+    });
+
+    test('account lookup is cached until auth change invalidates it', () async {
+      SharedPreferences.setMockInitialValues({});
+      var accountId = 'user-a';
+      var providerCalls = 0;
+      final store = QueuePersistenceStore(
+        prefs: SharedPreferences.getInstance(),
+        accountIdProvider: () async {
+          providerCalls++;
+          return accountId;
+        },
+      );
+      final snapshot = QueueSnapshot(tracks: [_track(1)]);
+
+      await store.save(snapshot);
+      await store.save(snapshot);
+      expect(providerCalls, 1);
+
+      accountId = 'user-b';
+      store.invalidateAccountId();
+      await store.save(snapshot);
+
+      expect(providerCalls, 2);
+      expect((await store.load()).accountId, 'user-b');
+      expect(providerCalls, 2);
+    });
+
+    test('saves stay ordered across an in-flight auth invalidation', () async {
+      SharedPreferences.setMockInitialValues({});
+      final lookups = <Completer<String?>>[];
+      final store = QueuePersistenceStore(
+        prefs: SharedPreferences.getInstance(),
+        accountIdProvider: () {
+          final lookup = Completer<String?>();
+          lookups.add(lookup);
+          return lookup.future;
+        },
+      );
+      final staleSnapshot = QueueSnapshot(tracks: [_track(1)]);
+      final currentSnapshot = QueueSnapshot(tracks: [_track(2)]);
+
+      final staleSave = store.save(staleSnapshot);
+      while (lookups.isEmpty) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      store.invalidateAccountId();
+      final currentSave = store.save(currentSnapshot);
+      lookups[0].complete('user-a');
+      while (lookups.length < 2) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      lookups[1].complete('user-b');
+      await staleSave;
+      await currentSave;
+
+      final loaded = await store.load();
+      expect(loaded.accountId, 'user-b');
+      expect(loaded.tracks.single['id'], 2);
+      expect(lookups, hasLength(2));
     });
   });
 

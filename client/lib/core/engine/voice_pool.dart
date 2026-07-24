@@ -168,6 +168,29 @@ class VoicePool {
     );
   }
 
+  /// Replaces timeline metadata without scheduling a voice synchronization.
+  ///
+  /// Callers must prove that clip placements and source identities are
+  /// unchanged. Active voice references are refreshed so later gain/tempo
+  /// updates consume the new immutable clips.
+  void replaceMixMetadata(TimelineModel model) {
+    _model = model;
+    final clipsById = {for (final clip in model.clips) clip.id: clip};
+    for (final clipId in _activeClips.keys.toList(growable: false)) {
+      final clip = clipsById[clipId];
+      if (clip != null) _activeClips[clipId] = clip;
+    }
+    if (_clock.durationMs != model.durationMs) {
+      _skipNextClockPositionSync = true;
+      _suppressClockSync = true;
+      try {
+        _clock.durationMs = model.durationMs;
+      } finally {
+        _suppressClockSync = false;
+      }
+    }
+  }
+
   Future<void> syncAt(int globalMs, {bool forceSeek = false}) {
     return _enqueueSyncAt(globalMs, forceSeek: forceSeek);
   }
@@ -328,7 +351,7 @@ class VoicePool {
     final loadedIdentity = _activeSourceIdentities[clip.id];
     if (currentClip == null || loadedIdentity == null) return true;
     if (currentClip.audioSourceRef != clip.audioSourceRef) return true;
-    if (currentClip == clip && !validateResolvedIdentity) return false;
+    if (!validateResolvedIdentity) return false;
 
     try {
       final currentIdentity =

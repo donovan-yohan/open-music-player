@@ -199,6 +199,12 @@ bool _sameOrder(List<int> a, List<int> b) {
 /// stable, re-resolvable fields are kept — never the signed `url`/`expiresAt`.
 Map<String, dynamic> mediaItemToPlaybackJson(MediaItem item) {
   final parsedId = int.tryParse(item.id);
+  final analysisSummary = compactAnalysisSummary(
+    item.extras?['analysisSummary'] ?? item.extras?['analysis_summary'],
+  );
+  final analysisOverrides = compactAnalysisOverrides(
+    item.extras?['analysisOverrides'] ?? item.extras?['analysis_overrides'],
+  );
   return {
     'id': parsedId ?? item.id,
     'title': item.title,
@@ -214,13 +220,108 @@ Map<String, dynamic> mediaItemToPlaybackJson(MediaItem item) {
       'sourceUrl': (item.extras?['sourceUrl'] as String).trim(),
     if (item.extras?['analysisStatus'] != null)
       'analysisStatus': item.extras?['analysisStatus'],
-    if (item.extras?['analysisSummary'] != null)
-      'analysisSummary': item.extras?['analysisSummary'],
-    if (item.extras?['analysisOverrides'] != null)
-      'analysisOverrides': item.extras?['analysisOverrides'],
+    if (analysisSummary != null) 'analysisSummary': analysisSummary,
+    if (analysisOverrides != null) 'analysisOverrides': analysisOverrides,
     if (item.extras?['analysisUpdatedAt'] != null)
       'analysisUpdatedAt': item.extras?['analysisUpdatedAt'],
   };
+}
+
+const int maxPersistedBeatPositions = 128;
+const int maxPersistedDownbeatPositions = 64;
+
+/// Keeps only the tempo facts needed by playback placement and automation.
+///
+/// Older snapshots and API payloads may contain detailed waveform/analysis
+/// arrays. They remain readable, but never enter MediaItem extras or a newly
+/// persisted queue snapshot.
+Map<String, dynamic>? compactAnalysisSummary(Object? value) =>
+    _compactTempoMetadata(value, preserveEmpty: false);
+
+/// Preserves an explicitly-present empty override object while bounding any
+/// override beat grids to the same compact playback contract.
+Map<String, dynamic>? compactAnalysisOverrides(Object? value) =>
+    _compactTempoMetadata(value, preserveEmpty: true);
+
+Map<String, dynamic>? _compactTempoMetadata(
+  Object? value, {
+  required bool preserveEmpty,
+}) {
+  if (value is! Map) return null;
+  final source = Map<String, dynamic>.from(value);
+  final compact = <String, dynamic>{};
+
+  final bpm = _compactAnalysisValue(source['bpm']);
+  if (bpm != null) compact['bpm'] = bpm;
+  for (final key in ['key', 'camelot']) {
+    final analysisValue = _compactAnalysisValue(source[key]);
+    if (analysisValue != null) compact[key] = analysisValue;
+  }
+
+  final beatGridValue = source['beat_grid'] ?? source['beatGrid'];
+  if (beatGridValue is Map) {
+    final beatGrid = Map<String, dynamic>.from(beatGridValue);
+    final compactBeatGrid = <String, dynamic>{};
+    for (final key in ['bpm', 'confidence', 'provenance']) {
+      if (beatGrid[key] != null) compactBeatGrid[key] = beatGrid[key];
+    }
+    final offset = beatGrid['offset_ms'] ?? beatGrid['offsetMs'];
+    if (offset != null) compactBeatGrid['offset_ms'] = offset;
+    final beats = beatGrid['beats_ms'] ?? beatGrid['beatsMs'];
+    final compactBeats = _boundedIntList(beats, maxPersistedBeatPositions);
+    if (compactBeats.isNotEmpty) compactBeatGrid['beats_ms'] = compactBeats;
+    if (compactBeatGrid.isNotEmpty) compact['beat_grid'] = compactBeatGrid;
+  }
+
+  final downbeatsValue = source['downbeats'];
+  final compactDownbeats = <String, dynamic>{};
+  Object? positions;
+  if (downbeatsValue is Map) {
+    final downbeats = Map<String, dynamic>.from(downbeatsValue);
+    positions = downbeats['positions_ms'] ?? downbeats['positionsMs'];
+    for (final key in ['confidence', 'provenance']) {
+      if (downbeats[key] != null) compactDownbeats[key] = downbeats[key];
+    }
+  } else {
+    positions = downbeatsValue;
+  }
+  final boundedDownbeats = _boundedIntList(
+    positions,
+    maxPersistedDownbeatPositions,
+  );
+  if (boundedDownbeats.isNotEmpty) {
+    compactDownbeats['positions_ms'] = boundedDownbeats;
+  }
+  if (compactDownbeats.isNotEmpty) compact['downbeats'] = compactDownbeats;
+
+  if (source['provenance'] != null) {
+    compact['provenance'] = source['provenance'];
+  }
+  if (compact.isEmpty && !preserveEmpty) return null;
+  return compact;
+}
+
+Object? _compactAnalysisValue(Object? value) {
+  if (value is! Map) return value;
+  final source = Map<String, dynamic>.from(value);
+  if (source['value'] == null) return null;
+  return {
+    'value': source['value'],
+    if (source['confidence'] != null) 'confidence': source['confidence'],
+    if (source['provenance'] != null) 'provenance': source['provenance'],
+  };
+}
+
+List<int> _boundedIntList(Object? value, int limit) {
+  if (value is! List) return const [];
+  final positions =
+      value.whereType<num>().map((entry) => entry.toInt()).toList();
+  if (positions.length <= limit) return List<int>.unmodifiable(positions);
+  final headLength = limit ~/ 2;
+  return List<int>.unmodifiable([
+    ...positions.take(headLength),
+    ...positions.skip(positions.length - (limit - headLength)),
+  ]);
 }
 
 /// Persists and restores the [QueueSnapshot] via [SharedPreferences].
@@ -232,6 +333,11 @@ class QueuePersistenceStore {
 
   final Future<SharedPreferences> _prefs;
   final Future<String?> Function()? _accountIdProvider;
+  bool _hasCachedAccountId = false;
+  String? _cachedAccountId;
+  Future<String?>? _accountIdLookup;
+  int _accountIdGeneration = 0;
+  Future<void> _saveChain = Future<void>.value();
 
   QueuePersistenceStore({
     Future<SharedPreferences>? prefs,
@@ -239,13 +345,19 @@ class QueuePersistenceStore {
   })  : _prefs = prefs ?? SharedPreferences.getInstance(),
         _accountIdProvider = accountIdProvider;
 
-  Future<void> save(QueueSnapshot snapshot) async {
+  Future<void> save(QueueSnapshot snapshot) {
+    final save = _saveChain.then((_) => _save(snapshot));
+    _saveChain = save.catchError((Object _, StackTrace __) {});
+    return save;
+  }
+
+  Future<void> _save(QueueSnapshot snapshot) async {
     final prefs = await _prefs;
     if (snapshot.isEmpty) {
       await prefs.remove(storageKey);
       return;
     }
-    final accountId = await _accountIdProvider?.call();
+    final accountId = await _accountId();
     final scopedSnapshot = snapshot.scopedTo(accountId);
     await prefs.setString(
       storageKey,
@@ -256,8 +368,39 @@ class QueuePersistenceStore {
   Future<QueueSnapshot> load() async {
     final prefs = await _prefs;
     final snapshot = QueueSnapshot.decode(prefs.getString(storageKey));
-    final accountId = await _accountIdProvider?.call();
+    final accountId = await _accountId();
     return snapshot.scopedTo(accountId);
+  }
+
+  /// Drops the session-scoped account cache after any authentication change.
+  ///
+  /// The generation guard prevents an in-flight lookup from repopulating the
+  /// cache with credentials from the previous session.
+  void invalidateAccountId() {
+    _accountIdGeneration++;
+    _hasCachedAccountId = false;
+    _cachedAccountId = null;
+    _accountIdLookup = null;
+  }
+
+  Future<String?> _accountId() {
+    if (_hasCachedAccountId) return Future.value(_cachedAccountId);
+    final pending = _accountIdLookup;
+    if (pending != null) return pending;
+    final lookup = _loadAccountId(_accountIdGeneration);
+    _accountIdLookup = lookup;
+    return lookup;
+  }
+
+  Future<String?> _loadAccountId(int generation) async {
+    final accountId = await _accountIdProvider?.call();
+    if (generation != _accountIdGeneration) {
+      return _accountId();
+    }
+    _cachedAccountId = accountId;
+    _hasCachedAccountId = true;
+    _accountIdLookup = null;
+    return accountId;
   }
 
   Future<void> clear() async {

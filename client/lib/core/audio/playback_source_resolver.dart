@@ -5,6 +5,7 @@ import 'package:audio_service/audio_service.dart';
 import '../cache/playback_cache_manager.dart';
 import 'audio_source_resolution_policy.dart';
 import 'local_audio_artifact_resolver.dart';
+import 'queue_persistence.dart';
 import 'signed_audio_url_service.dart';
 
 /// Builds the [MediaItem] queue for playback, preferring validated local
@@ -197,20 +198,20 @@ class PlaybackSourceResolver {
     final sampleRateHz = track['sampleRateHz'] ?? track['sample_rate_hz'];
     final contentType = track['contentType'] ?? track['content_type'];
     final sizeBytes = track['sizeBytes'] ?? track['file_size_bytes'];
+    final analysisSummary = compactAnalysisSummary(
+      track['analysisSummary'] ?? track['analysis_summary'],
+    );
+    final analysisOverrides = compactAnalysisOverrides(
+      track['analysisOverrides'] ?? track['analysis_overrides'],
+    );
     final playbackExtras = {
       ...extras,
       if (track['analysisStatus'] != null)
         'analysisStatus': track['analysisStatus'],
       if (track['analysis_status'] != null)
         'analysisStatus': track['analysis_status'],
-      if (track['analysisSummary'] != null)
-        'analysisSummary': track['analysisSummary'],
-      if (track['analysis_summary'] != null)
-        'analysisSummary': track['analysis_summary'],
-      if (track['analysisOverrides'] != null)
-        'analysisOverrides': track['analysisOverrides'],
-      if (track['analysis_overrides'] != null)
-        'analysisOverrides': track['analysis_overrides'],
+      if (analysisSummary != null) 'analysisSummary': analysisSummary,
+      if (analysisOverrides != null) 'analysisOverrides': analysisOverrides,
       if (track['analysisUpdatedAt'] != null)
         'analysisUpdatedAt': track['analysisUpdatedAt'],
       if (track['analysis_updated_at'] != null)

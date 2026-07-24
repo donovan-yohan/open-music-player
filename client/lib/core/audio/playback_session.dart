@@ -126,6 +126,60 @@ class MixSession {
   final Set<String> _explicitPlacementClipIds;
 
   bool get isEmpty => clips.isEmpty;
+  bool get hasPendingLegacyDefaultCrossfadeAdoption =>
+      _adoptLegacyDefaultCrossfade;
+
+  /// Records the configured default without moving legacy placements.
+  ///
+  /// Active restore callers use this to defer schema-v1 butt-joint adoption
+  /// until playback is idle.
+  MixSession deferLegacyDefaultCrossfadeMs(int value) {
+    if (!_adoptLegacyDefaultCrossfade) {
+      return withDefaultCrossfadeMs(value);
+    }
+    return MixSession(
+      sessionId: sessionId,
+      schemaVersion: schemaVersion,
+      clips: clips,
+      nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: math.max(0, value),
+      adoptLegacyDefaultCrossfade: true,
+      deferredDefaultTransitionClipIds: _deferredDefaultTransitionClipIds,
+      explicitPlacementClipIds: _explicitPlacementClipIds,
+    );
+  }
+
+  MixSession adoptDeferredLegacyDefaultCrossfade() {
+    if (!_adoptLegacyDefaultCrossfade) return this;
+    final reflowed = _reflowDefaultTransitions(
+      clips,
+      startIndex: 0,
+      snapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      preserveEditedPlacements: true,
+      wasAutoManagedPlacement: (index) =>
+          !_explicitPlacementClipIds.contains(clips[index].clipId) &&
+          (_deferredDefaultTransitionClipIds.contains(clips[index].clipId) ||
+              _isButtJointPlacement(clips, index) ||
+              _wasAutoManagedPlacement(
+                clips,
+                index,
+                snapMode: transitionSnapMode,
+                defaultCrossfadeMs: defaultCrossfadeMs,
+              )),
+    );
+    return MixSession(
+      sessionId: sessionId,
+      schemaVersion: schemaVersion,
+      clips: List.unmodifiable(reflowed),
+      nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      deferredDefaultTransitionClipIds: _deferredDefaultTransitionClipIds,
+      explicitPlacementClipIds: _explicitPlacementClipIds,
+    );
+  }
 
   MixSession normalizedForQueue(List<MediaItem> queue) {
     var cursorMs = 0;
