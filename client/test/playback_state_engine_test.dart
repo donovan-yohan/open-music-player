@@ -383,6 +383,10 @@ void main() {
                     .toUtc()
                     .add(const Duration(seconds: 30))
                     .toIso8601String(),
+                'codec': descriptorCalls == 1 ? 'unknown' : 'mp3',
+                'bitrateKbps': descriptorCalls == 1 ? 1 : 137,
+                'sampleRateHz': descriptorCalls == 1 ? 8000 : 44100,
+                'channels': descriptorCalls == 1 ? 1 : 2,
               },
             ],
             'unavailable': <Map<String, dynamic>>[],
@@ -401,6 +405,10 @@ void main() {
         playback.currentItem?.extras?['url'],
         'https://example.com/1-v2.mp3',
       );
+      expect(playback.currentItem?.extras?['codec'], 'mp3');
+      expect(playback.currentItem?.extras?['bitrateKbps'], 137);
+      expect(playback.currentItem?.extras?['sampleRateHz'], 44100);
+      expect(playback.currentItem?.extras?['channels'], 2);
       playback.dispose();
     });
 

@@ -13,6 +13,7 @@ import '../../core/services/analysis_service.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/liked_tracks_state.dart';
 import '../../models/track_analysis.dart';
+import '../../shared/formatters/source_quality_formatter.dart';
 import 'widgets/song_info_sheet.dart';
 
 enum _PlayerTimeMode { song, queue }
@@ -130,6 +131,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 context,
                                 _displayTitle(item, playback, activeTimeMode),
                                 _displaySubtitle(playback, activeTimeMode),
+                                _sourceQuality(item),
                               ),
                               if (playback
                                   .snapshot.pitchPreservationFallback) ...[
@@ -211,9 +213,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHigh,
       showDragHandle: false,
+      isScrollControlled: true,
       builder: (_) => SongInfoSheet(
         title: item.title,
         artist: item.artist,
+        sourceQuality: _sourceQuality(item),
         analysisLoader: () {
           if (trackId == null || trackId <= 0) {
             // No numeric track id (e.g. a placeholder item) — surface the
@@ -286,7 +290,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return '$kind · $countLabel';
   }
 
-  Widget _buildTrackInfo(BuildContext context, String title, String? artist) {
+  Widget _buildTrackInfo(
+    BuildContext context,
+    String title,
+    String? artist,
+    String? sourceQuality,
+  ) {
     final colors = Theme.of(context).colorScheme;
     return Column(
       children: [
@@ -311,7 +320,40 @@ class _PlayerScreenState extends State<PlayerScreen> {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
+        if (sourceQuality != null) ...[
+          const SizedBox(height: 6),
+          Text(
+            sourceQuality,
+            key: const ValueKey('player_source_quality'),
+            style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
       ],
+    );
+  }
+
+  String? _sourceQuality(MediaItem item) {
+    final extras = item.extras;
+    return formatSourceQuality(
+      codec: _optionalQualityString(extras?['codec']),
+      bitrateKbps: _optionalQualityInt(
+        extras?['bitrateKbps'] ?? extras?['bitrate_kbps'],
+      ),
+      sampleRateHz: _optionalQualityInt(
+        extras?['sampleRateHz'] ?? extras?['sample_rate_hz'],
+      ),
+      channelCount: _optionalQualityInt(
+        extras?['channels'] ?? extras?['channelCount'],
+      ),
+      contentType: _optionalQualityString(
+        extras?['contentType'] ?? extras?['content_type'],
+      ),
+      sizeBytes: _optionalQualityInt(
+        extras?['sizeBytes'] ?? extras?['file_size_bytes'] ?? extras?['size'],
+      ),
     );
   }
 
@@ -445,10 +487,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildSecondaryControls(
-    BuildContext context,
-    PlaybackState playback,
-  ) {
+  Widget _buildSecondaryControls(BuildContext context, PlaybackState playback) {
     final color = Theme.of(context).colorScheme.onSurfaceVariant;
     final item = playback.currentItem;
     final trackId = item == null ? null : int.tryParse(item.id);
@@ -480,14 +519,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
       });
     }
     final rawSourceUrl = item?.extras?['sourceUrl'];
-    final sourceUrl = likedState?.acceptsPlaybackAccount(
-                  payloadLikedAccountId,
-                ) ==
-                true &&
-            rawSourceUrl is String &&
-            rawSourceUrl.trim().isNotEmpty
-        ? rawSourceUrl.trim()
-        : null;
+    final sourceUrl =
+        likedState?.acceptsPlaybackAccount(payloadLikedAccountId) == true &&
+                rawSourceUrl is String &&
+                rawSourceUrl.trim().isNotEmpty
+            ? rawSourceUrl.trim()
+            : null;
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -700,3 +737,12 @@ class _ControlIconButton extends StatelessWidget {
     );
   }
 }
+
+int? _optionalQualityInt(Object? value) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  if (value is String) return int.tryParse(value);
+  return null;
+}
+
+String? _optionalQualityString(Object? value) => value is String ? value : null;

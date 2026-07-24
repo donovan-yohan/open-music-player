@@ -58,8 +58,9 @@ class PlaybackSourceResolver {
     final resolver = _localResolver;
     if (resolver != null) {
       final resolved = await Future.wait(
-        trackIds
-            .map((id) async => MapEntry(id, await resolver.localAudioPath(id))),
+        trackIds.map(
+          (id) async => MapEntry(id, await resolver.localAudioPath(id)),
+        ),
       );
       for (final entry in resolved) {
         final path = entry.value;
@@ -209,6 +210,18 @@ class PlaybackSourceResolver {
       if (likedAccountId != null) 'likedAccountId': likedAccountId,
       if (track['sourceUrl'] is String) 'sourceUrl': track['sourceUrl'],
       if (track['source_url'] is String) 'sourceUrl': track['source_url'],
+      if (track['codec'] is String) 'codec': track['codec'],
+      if (track['bitrateKbps'] != null) 'bitrateKbps': track['bitrateKbps'],
+      if (track['bitrate_kbps'] != null) 'bitrateKbps': track['bitrate_kbps'],
+      if (track['sampleRateHz'] != null) 'sampleRateHz': track['sampleRateHz'],
+      if (track['sample_rate_hz'] != null)
+        'sampleRateHz': track['sample_rate_hz'],
+      if (track['channels'] != null) 'channels': track['channels'],
+      if (track['contentType'] is String) 'contentType': track['contentType'],
+      if (track['content_type'] is String) 'contentType': track['content_type'],
+      if (track['sizeBytes'] != null) 'sizeBytes': track['sizeBytes'],
+      if (track['file_size_bytes'] != null)
+        'sizeBytes': track['file_size_bytes'],
       'analysisRef': trackId.toString(),
     };
     return MediaItem(
@@ -225,35 +238,40 @@ class PlaybackSourceResolver {
   }
 
   static MediaItem buildLocalMediaItem(
-      Map<String, dynamic> track, int trackId, String localPath,
-      {String? likedAccountId}) {
+    Map<String, dynamic> track,
+    int trackId,
+    String localPath, {
+    String? likedAccountId,
+  }) {
     // No `url`/`expiresAt`: a local artifact never expires and must not be
     // refreshed against a signed URL. `localPath` is the local-source marker.
-    return _mediaItem(
-      track,
-      trackId,
-      {'localPath': localPath},
-      likedAccountId,
-    );
+    return _mediaItem(track, trackId, {'localPath': localPath}, likedAccountId);
   }
 
   static MediaItem buildRemoteMediaItem(
-      Map<String, dynamic> track, SignedAudioDescriptor descriptor,
-      {String? likedAccountId}) {
+    Map<String, dynamic> track,
+    SignedAudioDescriptor descriptor, {
+    String? likedAccountId,
+  }) {
     return _mediaItem(
-      track,
-      descriptor.trackId,
-      {
-        'url': descriptor.url,
-        'expiresAt': descriptor.expiresAt.toIso8601String(),
-        if (descriptor.contentType != null)
-          'contentType': descriptor.contentType,
-        if (descriptor.sizeBytes != null) 'sizeBytes': descriptor.sizeBytes,
-        if (descriptor.etag != null) 'etag': descriptor.etag,
-        if (descriptor.storageKeyVersion != null)
-          'storageKeyVersion': descriptor.storageKeyVersion,
-      },
-      likedAccountId,
-    );
+        track,
+        descriptor.trackId,
+        {
+          'url': descriptor.url,
+          'expiresAt': descriptor.expiresAt.toIso8601String(),
+          if (descriptor.contentType != null)
+            'contentType': descriptor.contentType,
+          if (descriptor.sizeBytes != null) 'sizeBytes': descriptor.sizeBytes,
+          if (descriptor.codec != null) 'codec': descriptor.codec,
+          if (descriptor.bitrateKbps != null)
+            'bitrateKbps': descriptor.bitrateKbps,
+          if (descriptor.sampleRateHz != null)
+            'sampleRateHz': descriptor.sampleRateHz,
+          if (descriptor.channels != null) 'channels': descriptor.channels,
+          if (descriptor.etag != null) 'etag': descriptor.etag,
+          if (descriptor.storageKeyVersion != null)
+            'storageKeyVersion': descriptor.storageKeyVersion,
+        },
+        likedAccountId);
   }
 }

@@ -29,19 +29,27 @@ class SongInfoDisplay {
 /// camelot, and energy. Waveform / sections / cue candidates are intentionally
 /// omitted (this is read-only song info, not a DJ editor).
 ///
-/// A null [analysis] (or one thrown away by the caller because the endpoint 404'd
-/// or the analyzer is disabled) yields an empty [SongInfoDisplay.rows] with a
-/// clear message, so the UI never crashes on missing data.
-SongInfoDisplay buildSongInfoDisplay(TrackAnalysis? analysis) {
+/// A null [analysis] (or one thrown away by the caller because the endpoint
+/// 404'd or the analyzer is disabled) retains any immutable source-quality row
+/// and carries a clear unavailable message, so missing analysis never hides
+/// artifact facts or crashes the UI.
+SongInfoDisplay buildSongInfoDisplay(
+  TrackAnalysis? analysis, {
+  String? sourceQuality,
+}) {
+  final rows = <SongInfoRow>[
+    if (sourceQuality != null && sourceQuality.trim().isNotEmpty)
+      SongInfoRow(label: 'Source', value: sourceQuality.trim()),
+  ];
+
   if (analysis == null) {
-    return const SongInfoDisplay(
-      rows: [],
+    return SongInfoDisplay(
+      rows: rows,
       unavailableMessage: 'Analysis unavailable for this track.',
     );
   }
 
   final summary = analysis.summary;
-  final rows = <SongInfoRow>[];
 
   final bpm = summary?.bpm?.numericValue;
   if (bpm != null) {
@@ -57,26 +65,34 @@ SongInfoDisplay buildSongInfoDisplay(TrackAnalysis? analysis) {
 
   final energy = summary?.energy?.numericValue;
   if (energy != null) {
-    rows.add(SongInfoRow(
-      label: 'Energy',
-      value: '${(energy.clamp(0, 1) * 100).round()}%',
-    ));
+    rows.add(
+      SongInfoRow(
+        label: 'Energy',
+        value: '${(energy.clamp(0, 1) * 100).round()}%',
+      ),
+    );
   }
 
   final integratedLufs = summary?.loudness?.integratedLufs;
   if (integratedLufs != null) {
-    rows.add(SongInfoRow(
-      label: 'Loudness',
-      value: '${integratedLufs.toStringAsFixed(1)} LUFS',
-    ));
+    rows.add(
+      SongInfoRow(
+        label: 'Loudness',
+        value: '${integratedLufs.toStringAsFixed(1)} LUFS',
+      ),
+    );
   }
 
-  if (rows.isNotEmpty) {
+  final hasAnalysisRows = bpm != null ||
+      keyValue != null ||
+      energy != null ||
+      integratedLufs != null;
+  if (hasAnalysisRows) {
     return SongInfoDisplay(rows: rows);
   }
 
   return SongInfoDisplay(
-    rows: const [],
+    rows: rows,
     unavailableMessage: _messageForStatus(analysis.status),
   );
 }
@@ -115,10 +131,12 @@ class SongInfoSheet extends StatefulWidget {
     required this.title,
     required this.artist,
     required this.analysisLoader,
+    this.sourceQuality,
   });
 
   final String title;
   final String? artist;
+  final String? sourceQuality;
 
   /// Lazily loads the analysis. Implementations typically delegate to
   /// `AnalysisService.getTrackAnalysis`. May throw; the sheet catches it.
@@ -140,11 +158,14 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
   Future<SongInfoDisplay> _load() async {
     try {
       final analysis = await widget.analysisLoader();
-      return buildSongInfoDisplay(analysis);
+      return buildSongInfoDisplay(
+        analysis,
+        sourceQuality: widget.sourceQuality,
+      );
     } catch (_) {
       // 404 (no analysis), 503 (analyzer disabled), or any transport error all
       // resolve to the same read-only "unavailable" state — never crash.
-      return buildSongInfoDisplay(null);
+      return buildSongInfoDisplay(null, sourceQuality: widget.sourceQuality);
     }
   }
 
@@ -152,72 +173,80 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: colors.outlineVariant,
-                  borderRadius: BorderRadius.circular(2),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.9,
+        ),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: colors.outlineVariant,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              widget.title,
-              key: const ValueKey('song_info_sheet_title'),
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: colors.onSurface,
+              const SizedBox(height: 16),
+              Text(
+                widget.title,
+                key: const ValueKey('song_info_sheet_title'),
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: colors.onSurface,
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
               ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              widget.artist ?? 'Unknown Artist',
-              style: TextStyle(
-                fontSize: 14,
-                color: colors.onSurfaceVariant,
+              const SizedBox(height: 4),
+              Text(
+                widget.artist ?? 'Unknown Artist',
+                style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 20),
-            FutureBuilder<SongInfoDisplay>(
-              future: _future,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState != ConnectionState.done) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 24),
-                    child: Center(
-                      child: SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+              const SizedBox(height: 20),
+              FutureBuilder<SongInfoDisplay>(
+                future: _future,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 24),
+                      child: Center(
+                        child: SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
                       ),
-                    ),
+                    );
+                  }
+                  final display = snapshot.data ??
+                      buildSongInfoDisplay(
+                        null,
+                        sourceQuality: widget.sourceQuality,
+                      );
+                  if (!display.hasData) {
+                    return _buildUnavailable(display.unavailableMessage);
+                  }
+                  return Column(
+                    children: [
+                      for (final row in display.rows) _buildRow(context, row),
+                      if (display.unavailableMessage != null)
+                        _buildUnavailable(display.unavailableMessage),
+                    ],
                   );
-                }
-                final display = snapshot.data ?? buildSongInfoDisplay(null);
-                if (!display.hasData) {
-                  return _buildUnavailable(display.unavailableMessage);
-                }
-                return Column(
-                  children: [
-                    for (final row in display.rows) _buildRow(context, row),
-                  ],
-                );
-              },
-            ),
-          ],
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -225,25 +254,47 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
 
   Widget _buildRow(BuildContext context, SongInfoRow row) {
     final colors = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            row.label,
-            style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
-          ),
-          Text(
-            row.value,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: colors.onSurface,
-            ),
-          ),
-        ],
+    final label = Text(
+      row.label,
+      style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
+    );
+    final value = Text(
+      row.value,
+      key: row.label == 'Source'
+          ? const ValueKey('song_info_source_quality')
+          : null,
+      style: TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+        color: colors.onSurface,
       ),
+      textAlign: TextAlign.end,
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final scaledFontSize = MediaQuery.textScalerOf(context).scale(14);
+        final stackFacts = constraints.maxWidth < 360 || scaledFontSize >= 28;
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: stackFacts
+              ? Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    label,
+                    const SizedBox(height: 4),
+                    Align(alignment: Alignment.centerLeft, child: value),
+                  ],
+                )
+              : Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    label,
+                    const SizedBox(width: 16),
+                    Flexible(child: value),
+                  ],
+                ),
+        );
+      },
     );
   }
 

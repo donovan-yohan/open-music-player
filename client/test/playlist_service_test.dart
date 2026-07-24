@@ -107,6 +107,12 @@ void main() {
         {
           'id': 9,
           'title': 'Something Comforting',
+          'codec': 'mp3',
+          'bitrateKbps': 137,
+          'sampleRateHz': 44100,
+          'channels': 2,
+          'contentType': 'audio/mpeg',
+          'sizeBytes': 3355443,
           'analysisStatus': 'analyzed',
           'analysisSummary': {
             'bpm': {'value': 122.5},
@@ -124,6 +130,12 @@ void main() {
     expect(result.tracks!.single.analysis?.summary?.bpm?.numericValue, 122.5);
     expect(result.tracks!.single.analysis?.summary?.key?.textValue, 'F#m');
     expect(result.tracks!.single.analysis?.summary?.camelot?.textValue, '11A');
+    expect(result.tracks!.single.codec, 'mp3');
+    expect(result.tracks!.single.bitrateKbps, 137);
+    expect(result.tracks!.single.sampleRateHz, 44100);
+    expect(result.tracks!.single.channels, 2);
+    expect(result.tracks!.single.contentType, 'audio/mpeg');
+    expect(result.tracks!.single.fileSizeBytes, 3355443);
   });
 
   group('create/update send coverUrl + isPublic', () {

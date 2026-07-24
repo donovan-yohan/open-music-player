@@ -99,6 +99,11 @@ class Track {
   final String? sourceType;
   final String? storageKey;
   final int? fileSizeBytes;
+  final String? codec;
+  final int? bitrateKbps;
+  final int? sampleRateHz;
+  final int? channels;
+  final String? contentType;
   final Map<String, dynamic>? metadata;
   final List<MBSuggestion> mbSuggestions;
   final TrackAnalysis? analysis;
@@ -127,6 +132,11 @@ class Track {
     this.sourceType,
     this.storageKey,
     this.fileSizeBytes,
+    this.codec,
+    this.bitrateKbps,
+    this.sampleRateHz,
+    this.channels,
+    this.contentType,
     this.metadata,
     this.mbSuggestions = const [],
     this.analysis,
@@ -147,6 +157,12 @@ class Track {
         if (isLiked != null) 'isLiked': isLiked,
         if (sourceUrl != null && sourceUrl!.trim().isNotEmpty)
           'sourceUrl': sourceUrl!.trim(),
+        if (codec != null) 'codec': codec,
+        if (bitrateKbps != null) 'bitrateKbps': bitrateKbps,
+        if (sampleRateHz != null) 'sampleRateHz': sampleRateHz,
+        if (channels != null) 'channels': channels,
+        if (contentType != null) 'contentType': contentType,
+        if (fileSizeBytes != null) 'sizeBytes': fileSizeBytes,
         if (analysis != null) 'analysisStatus': analysis!.status.name,
         if (analysis?.summary != null)
           'analysisSummary': analysis!.summary!.toJson(),
@@ -190,8 +206,20 @@ class Track {
       storageKey:
           json['storageKey'] as String? ?? json['storage_key'] as String?,
       fileSizeBytes: _optionalInt(
-        json['fileSizeBytes'] ?? json['file_size_bytes'],
+        json['fileSizeBytes'] ??
+            json['file_size_bytes'] ??
+            json['sizeBytes'] ??
+            json['size'],
       ),
+      codec: _optionalString(json['codec']),
+      bitrateKbps: _optionalInt(
+        json['bitrateKbps'] ?? json['bitrate_kbps'] ?? json['bitRate'],
+      ),
+      sampleRateHz: _optionalInt(
+        json['sampleRateHz'] ?? json['sample_rate_hz'] ?? json['samplingRate'],
+      ),
+      channels: _optionalInt(json['channels'] ?? json['channelCount']),
+      contentType: _optionalString(json['contentType'] ?? json['content_type']),
       metadata: json['metadata_json'] as Map<String, dynamic>?,
       mbSuggestions: suggestions,
       analysis: trackAnalysisFromTrackJson(json),
@@ -221,7 +249,21 @@ class Track {
       sourceUrl: json['source_url'] as String?,
       sourceType: json['source_type'] as String?,
       storageKey: json['storage_key'] as String?,
-      fileSizeBytes: json['file_size_bytes'] as int?,
+      fileSizeBytes: _optionalInt(
+        json['file_size_bytes'] ??
+            json['fileSizeBytes'] ??
+            json['sizeBytes'] ??
+            json['size'],
+      ),
+      codec: _optionalString(json['codec']),
+      bitrateKbps: _optionalInt(
+        json['bitrate_kbps'] ?? json['bitrateKbps'] ?? json['bitRate'],
+      ),
+      sampleRateHz: _optionalInt(
+        json['sample_rate_hz'] ?? json['sampleRateHz'] ?? json['samplingRate'],
+      ),
+      channels: _optionalInt(json['channels'] ?? json['channelCount']),
+      contentType: _optionalString(json['content_type'] ?? json['contentType']),
       metadata: json['metadata_json'] as Map<String, dynamic>?,
       mbSuggestions: suggestionsJson
               ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
@@ -253,6 +295,11 @@ class Track {
       'source_type': sourceType,
       'storage_key': storageKey,
       'file_size_bytes': fileSizeBytes,
+      'codec': codec,
+      'bitrate_kbps': bitrateKbps,
+      'sample_rate_hz': sampleRateHz,
+      'channels': channels,
+      'content_type': contentType,
       'metadata_json': metadata,
       'mb_suggestions': mbSuggestions.map((s) => s.toJson()).toList(),
       if (analysis != null) 'analysis_status': analysis!.status.name,
@@ -381,6 +428,11 @@ class Track {
     String? sourceType,
     String? storageKey,
     int? fileSizeBytes,
+    String? codec,
+    int? bitrateKbps,
+    int? sampleRateHz,
+    int? channels,
+    String? contentType,
     Map<String, dynamic>? metadata,
     List<MBSuggestion>? mbSuggestions,
     TrackAnalysis? analysis,
@@ -404,6 +456,11 @@ class Track {
       sourceType: sourceType ?? this.sourceType,
       storageKey: storageKey ?? this.storageKey,
       fileSizeBytes: fileSizeBytes ?? this.fileSizeBytes,
+      codec: codec ?? this.codec,
+      bitrateKbps: bitrateKbps ?? this.bitrateKbps,
+      sampleRateHz: sampleRateHz ?? this.sampleRateHz,
+      channels: channels ?? this.channels,
+      contentType: contentType ?? this.contentType,
       metadata: metadata ?? this.metadata,
       mbSuggestions: mbSuggestions ?? this.mbSuggestions,
       analysis: analysis ?? this.analysis,
@@ -448,9 +505,7 @@ Object? _decodeJsonColumn(Object? value) {
   }
 }
 
-Map<String, dynamic> _compactAnalysisSummaryJson(
-  TrackAnalysisSummary summary,
-) {
+Map<String, dynamic> _compactAnalysisSummaryJson(TrackAnalysisSummary summary) {
   final json = summary.toJson();
   return {
     for (final key in const [

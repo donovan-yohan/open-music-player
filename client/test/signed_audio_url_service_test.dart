@@ -20,6 +20,10 @@ void main() {
                     .toIso8601String(),
                 'contentType': 'audio/mpeg',
                 'sizeBytes': 1234,
+                'codec': 'mp3',
+                'bitrateKbps': 137,
+                'sampleRateHz': 44100,
+                'channels': 2,
                 'etag': 'etag-42',
                 'storageKeyVersion': 'v7',
               },
@@ -37,6 +41,10 @@ void main() {
         expect(descriptor.url, 'https://objects.example/signed-track-42');
         expect(descriptor.contentType, 'audio/mpeg');
         expect(descriptor.sizeBytes, 1234);
+        expect(descriptor.codec, 'mp3');
+        expect(descriptor.bitrateKbps, 137);
+        expect(descriptor.sampleRateHz, 44100);
+        expect(descriptor.channels, 2);
         expect(descriptor.etag, 'etag-42');
         expect(descriptor.storageKeyVersion, 'v7');
       },
