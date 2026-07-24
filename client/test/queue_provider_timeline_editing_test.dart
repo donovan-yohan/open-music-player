@@ -431,6 +431,84 @@ void main() {
     expect(analysisRequests, 1);
   });
 
+  test('compact waveform descriptors do not suppress detail hydration',
+      () async {
+    final requestStarted = Completer<void>();
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        analysisRequests++;
+        requestStarted.complete();
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'waveform': {
+                'sample_count': 4096,
+                'channels': {
+                  'channel_set': 'bands3-v1',
+                  'sample_count': 4096,
+                  'values': {
+                    'low': {
+                      'sample_count': 4096,
+                      'artifact_ref': 'channels.full.low',
+                    },
+                  },
+                },
+                'resolutions': [
+                  {
+                    'name': 'full',
+                    'sample_count': 4096,
+                    'artifact_ref': 'waveforms.full',
+                  },
+                ],
+              },
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    final compact = _track(
+      playbackTrackId: '42',
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'waveform': {
+            'sample_count': 4096,
+            'channels': {
+              'channel_set': 'bands3-v1',
+              'sample_count': 4096,
+              'values': {
+                'low': {
+                  'sample_count': 4096,
+                  'artifact_ref': 'channels.full.low',
+                },
+              },
+            },
+            'resolutions': [
+              {
+                'name': 'full',
+                'sample_count': 4096,
+                'artifact_ref': 'waveforms.full',
+              },
+            ],
+          },
+        },
+      ),
+    );
+
+    provider.trackWithAnalysis(compact);
+    await requestStarted.future.timeout(const Duration(seconds: 1));
+
+    expect(analysisRequests, 1);
+    provider.dispose();
+  });
+
   test('pending analysis retries after the hydration cooldown', () async {
     final firstResponse = Completer<void>();
     final secondResponse = Completer<void>();
@@ -2031,6 +2109,85 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(maxActive, 3);
+    provider.dispose();
+  });
+
+  test('latest hydration interest reprioritizes queued requests', () async {
+    final releases = <int, Completer<void>>{};
+    final started = <int>[];
+    final firstWaveStarted = Completer<void>();
+    final fourthStarted = Completer<void>();
+    final fifthStarted = Completer<void>();
+    final sixthStarted = Completer<void>();
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        final match =
+            RegExp(r'/tracks/(\d+)/analysis$').firstMatch(request.url.path);
+        if (match == null) return http.Response('', 404);
+        final trackId = int.parse(match.group(1)!);
+        started.add(trackId);
+        if (started.length == 3 && !firstWaveStarted.isCompleted) {
+          firstWaveStarted.complete();
+        } else if (started.length == 4 && !fourthStarted.isCompleted) {
+          fourthStarted.complete();
+        } else if (started.length == 5 && !fifthStarted.isCompleted) {
+          fifthStarted.complete();
+        } else if (started.length == 6 && !sixthStarted.isCompleted) {
+          sixthStarted.complete();
+        }
+        final release = releases.putIfAbsent(trackId, Completer<void>.new);
+        await release.future;
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'waveform': {
+                'sample_count': 2,
+                'peaks': [0.2, 0.8],
+              },
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    final pendingTracks = [
+      for (var id = 1; id <= 6; id++)
+        _track(
+          id: '$id',
+          queueItemId: 'queue-$id',
+          playbackTrackId: '$id',
+          analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
+        ),
+    ];
+
+    provider.setAnalysisHydrationInterest(pendingTracks);
+    await firstWaveStarted.future.timeout(const Duration(seconds: 1));
+
+    provider.setAnalysisHydrationInterest([
+      ...pendingTracks.take(3),
+      pendingTracks[5],
+      pendingTracks[4],
+      pendingTracks[3],
+    ]);
+
+    releases[1]!.complete();
+    await fourthStarted.future.timeout(const Duration(seconds: 1));
+    expect(started[3], 6);
+
+    releases[2]!.complete();
+    await fifthStarted.future.timeout(const Duration(seconds: 1));
+    expect(started[4], 5);
+
+    releases[3]!.complete();
+    await sixthStarted.future.timeout(const Duration(seconds: 1));
+    expect(started[5], 4);
+
+    for (final id in started.skip(3)) {
+      releases[id]!.complete();
+    }
+    await Future<void>.delayed(Duration.zero);
     provider.dispose();
   });
 

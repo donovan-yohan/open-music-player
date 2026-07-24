@@ -178,7 +178,9 @@ class _QueueScreenState extends State<QueueScreen> {
   Object? _hydrationQueueIdentity;
   int? _hydrationCurrentIndex;
   bool? _hydrationUsesPlaybackQueue;
-  Set<String> _visibleHydrationTrackKeys = <String>{};
+  Map<String, QueueTrack> _hydrationSourcesByKey = <String, QueueTrack>{};
+  List<String> _pinnedHydrationTrackKeys = <String>[];
+  List<String> _visibleHydrationTrackKeys = <String>[];
 
   @override
   void initState() {
@@ -631,10 +633,9 @@ class _QueueScreenState extends State<QueueScreen> {
       currentIndex: currentIndex,
       usesPlaybackQueue: true,
       sources: hydrationSources,
-      initialSources: [
-        if (previousSource != null) previousSource,
+      pinnedSources: [
         currentSource,
-        ...upcomingSources.take(2),
+        ...upcomingSources.take(1),
       ],
     );
     final current = provider.trackWithAnalysis(
@@ -1154,7 +1155,10 @@ class _QueueScreenState extends State<QueueScreen> {
       currentIndex: currentIndex,
       usesPlaybackQueue: false,
       sources: hydrationSources,
-      initialSources: hydrationSources.take(4),
+      pinnedSources: [
+        sourceTracks[currentIndex],
+        ...sourceTracks.skip(currentIndex + 1).take(1),
+      ],
     );
     final tracks = hydrationSources
         .map(
@@ -1212,7 +1216,7 @@ class _QueueScreenState extends State<QueueScreen> {
     required int currentIndex,
     required bool usesPlaybackQueue,
     required List<QueueTrack> sources,
-    required Iterable<QueueTrack> initialSources,
+    required Iterable<QueueTrack> pinnedSources,
   }) {
     final contextChanged = !identical(_hydrationQueueIdentity, queueIdentity) ||
         _hydrationCurrentIndex != currentIndex ||
@@ -1221,41 +1225,56 @@ class _QueueScreenState extends State<QueueScreen> {
       _hydrationQueueIdentity = queueIdentity;
       _hydrationCurrentIndex = currentIndex;
       _hydrationUsesPlaybackQueue = usesPlaybackQueue;
-      _visibleHydrationTrackKeys = {
-        for (final track in initialSources) _timelineHydrationTrackKey(track),
-      };
+      _visibleHydrationTrackKeys = <String>[];
     }
 
-    var retained = [
-      for (final track in sources)
-        if (_visibleHydrationTrackKeys.contains(
-          _timelineHydrationTrackKey(track),
-        ))
-          track,
+    _hydrationSourcesByKey = {
+      for (final track in sources) _timelineHydrationTrackKey(track): track,
+    };
+    _pinnedHydrationTrackKeys = _uniqueHydrationKeys([
+      for (final track in pinnedSources) _timelineHydrationTrackKey(track),
+    ]);
+    provider.setAnalysisHydrationInterest(_prioritizedHydrationTracks());
+  }
+
+  List<QueueTrack> _prioritizedHydrationTracks() {
+    final keys = _uniqueHydrationKeys([
+      ..._pinnedHydrationTrackKeys,
+      ..._visibleHydrationTrackKeys,
+    ]);
+    return [
+      for (final key in keys)
+        if (_hydrationSourcesByKey[key] case final track?) track,
     ];
-    if (retained.isEmpty && sources.isNotEmpty) {
-      retained = initialSources.toList(growable: false);
-      _visibleHydrationTrackKeys = {
-        for (final track in retained) _timelineHydrationTrackKey(track),
-      };
+  }
+
+  List<String> _uniqueHydrationKeys(Iterable<String> keys) {
+    final seen = <String>{};
+    return [
+      for (final key in keys)
+        if (seen.add(key)) key,
+    ];
+  }
+
+  bool _sameHydrationKeys(List<String> first, List<String> second) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (first[index] != second[index]) return false;
     }
-    provider.setAnalysisHydrationInterest(retained);
+    return true;
   }
 
   void _updateVisibleAnalysisHydration(
     QueueProvider provider,
     List<QueueTrack> tracks,
   ) {
-    final next = {
+    final next = _uniqueHydrationKeys([
       for (final track in tracks) _timelineHydrationTrackKey(track),
-    };
+    ]);
     if (_sameHydrationKeys(next, _visibleHydrationTrackKeys)) return;
     _visibleHydrationTrackKeys = next;
-    provider.setAnalysisHydrationInterest(tracks);
+    provider.setAnalysisHydrationInterest(_prioritizedHydrationTracks());
   }
-
-  bool _sameHydrationKeys(Set<String> first, Set<String> second) =>
-      first.length == second.length && first.every(second.contains);
 
   String _timelineHydrationTrackKey(QueueTrack track) =>
       '${track.queueItemId}|${track.id}|${track.playbackTrackId ?? ''}';
@@ -1264,7 +1283,9 @@ class _QueueScreenState extends State<QueueScreen> {
     _hydrationQueueIdentity = null;
     _hydrationCurrentIndex = null;
     _hydrationUsesPlaybackQueue = null;
-    _visibleHydrationTrackKeys = <String>{};
+    _hydrationSourcesByKey = <String, QueueTrack>{};
+    _pinnedHydrationTrackKeys = <String>[];
+    _visibleHydrationTrackKeys = <String>[];
     _playbackTimelineTracksCache = null;
     provider.clearAnalysisHydrationInterest();
   }
@@ -1276,7 +1297,9 @@ class _QueueScreenState extends State<QueueScreen> {
     _hydrationQueueIdentity = null;
     _hydrationCurrentIndex = null;
     _hydrationUsesPlaybackQueue = null;
-    _visibleHydrationTrackKeys = <String>{};
+    _hydrationSourcesByKey = <String, QueueTrack>{};
+    _pinnedHydrationTrackKeys = <String>[];
+    _visibleHydrationTrackKeys = <String>[];
     _playbackTimelineTracksCache = null;
   }
 

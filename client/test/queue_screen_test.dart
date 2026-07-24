@@ -27,6 +27,62 @@ import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/screens/queue_screen.dart';
 import 'package:open_music_player/widgets/timeline_clip_widget.dart';
 
+List<int> _expectedTimelineHydrationTrackIds({
+  required double viewportHeight,
+  required double scrollOffset,
+  required int firstTrackNumber,
+  required int laneCount,
+  required int currentTrackNumber,
+}) {
+  final laneHeights = <double>[
+    114,
+    146,
+    114,
+    for (var index = 3; index < laneCount; index++) 84,
+  ];
+  final viewportEnd = scrollOffset + viewportHeight;
+  var laneTop = 0.0;
+  int? firstVisible;
+  int? lastVisible;
+  for (var index = 0; index < laneHeights.length; index++) {
+    final laneBottom = laneTop + laneHeights[index];
+    if (laneBottom > scrollOffset && laneTop < viewportEnd) {
+      firstVisible ??= index;
+      lastVisible = index;
+    }
+    laneTop = laneBottom;
+  }
+  final firstLookahead =
+      firstVisible == null || firstVisible == 0 ? 0 : firstVisible - 1;
+  final lastLookahead = lastVisible == null
+      ? firstLookahead
+      : (lastVisible + 1).clamp(0, laneCount - 1);
+  final seen = <int>{};
+  return [
+    for (final trackNumber in [
+      currentTrackNumber,
+      currentTrackNumber + 1,
+      for (var lane = firstLookahead; lane <= lastLookahead; lane++)
+        firstTrackNumber + lane,
+    ])
+      if (seen.add(trackNumber * 101)) trackNumber * 101,
+  ];
+}
+
+ScrollPosition _timelineLaneScrollPosition(
+  WidgetTester tester,
+  Finder laneScroll,
+) {
+  final verticalScrollable = find.descendant(
+    of: laneScroll,
+    matching: find.byWidgetPredicate(
+      (widget) =>
+          widget is Scrollable && widget.axisDirection == AxisDirection.down,
+    ),
+  );
+  return tester.state<ScrollableState>(verticalScrollable).position;
+}
+
 void main() {
   late _FakeQueueApiClient apiClient;
   late _FakePlaybackState playbackState;
@@ -594,6 +650,123 @@ void main() {
     expect(find.text('Start playback to use Timeline view'), findsOneWidget);
     expect(apiClient.analysisRequests, isEmpty);
   });
+
+  testWidgets(
+    '32-track queue fetches zero detail in list mode and only viewport interest '
+    'in timeline mode',
+    (tester) async {
+      apiClient.useCompactAnalysisFixture(currentIndex: 10, trackCount: 32);
+      final provider = _TrackingQueueProvider(apiClient);
+
+      await pumpQueueScreen(
+        tester,
+        queueProvider: provider,
+        showImportJobs: true,
+      );
+      await tester.pumpAndSettle();
+
+      expect(apiClient.analysisRequests, isEmpty);
+
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+
+      final laneScroll =
+          find.byKey(const PageStorageKey('timeline_lane_scroll'));
+      final initialPosition = _timelineLaneScrollPosition(tester, laneScroll);
+      final initialExpected = _expectedTimelineHydrationTrackIds(
+        viewportHeight: initialPosition.viewportDimension,
+        scrollOffset: initialPosition.pixels,
+        firstTrackNumber: 10,
+        laneCount: 23,
+        currentTrackNumber: 11,
+      );
+      expect(initialExpected, <int>[1111, 1212, 1010, 1313, 1414]);
+      expect(initialExpected.take(2), <int>[1111, 1212]);
+      expect(provider.lastInterestTrackIds, initialExpected);
+      expect(apiClient.analysisRequests, initialExpected);
+      expect(apiClient.analysisRequests, hasLength(initialExpected.length));
+      expect(initialExpected.length, lessThan(32));
+    },
+  );
+
+  testWidgets(
+    'scrolling held hydration cancels departed lanes but pins current and next',
+    (tester) async {
+      apiClient
+        ..useCompactAnalysisFixture(currentIndex: 10, trackCount: 32)
+        ..holdAnalysisRequests = true;
+      final provider = _TrackingQueueProvider(apiClient);
+      await pumpQueueScreen(
+        tester,
+        queueProvider: provider,
+        showImportJobs: true,
+      );
+      expect(apiClient.analysisRequests, isEmpty);
+
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+
+      final heldLaneScroll =
+          find.byKey(const PageStorageKey('timeline_lane_scroll'));
+      final heldInitialPosition =
+          _timelineLaneScrollPosition(tester, heldLaneScroll);
+      final heldInitialExpected = _expectedTimelineHydrationTrackIds(
+        viewportHeight: heldInitialPosition.viewportDimension,
+        scrollOffset: heldInitialPosition.pixels,
+        firstTrackNumber: 10,
+        laneCount: 23,
+        currentTrackNumber: 11,
+      );
+      expect(provider.lastInterestTrackIds, heldInitialExpected);
+      expect(
+        apiClient.analysisRequests,
+        heldInitialExpected.take(3),
+        reason: 'the cap admits current, next, then the first visible lane',
+      );
+
+      await tester.drag(
+        heldLaneScroll,
+        const Offset(0, -3000),
+      );
+      await tester.pumpAndSettle();
+
+      final scrolledInterest = provider.lastInterestTrackIds;
+      expect(
+        scrolledInterest,
+        <int>[1111, 1212, 2929, 3030, 3131, 3232],
+      );
+      expect(scrolledInterest, hasLength(6));
+      expect(scrolledInterest.take(2), <int>[1111, 1212]);
+      expect(
+        scrolledInterest.skip(2).every((trackId) => trackId > 1414),
+        isTrue,
+        reason: 'the held non-pinned initial lanes must have left the viewport',
+      );
+
+      final departedQueued = heldInitialExpected.skip(3).toSet();
+      expect(departedQueued, <int>{1313, 1414});
+      expect(scrolledInterest.where(departedQueued.contains), isEmpty);
+
+      apiClient.releaseHeldAnalysisRequests();
+      await tester.pumpAndSettle();
+
+      expect(apiClient.analysisRequests, containsAll(scrolledInterest));
+      expect(
+        apiClient.analysisRequests.where(departedQueued.contains),
+        isEmpty,
+        reason: 'queued lanes that scrolled away must be cancelled before fetch',
+      );
+      expect(provider.lastInterestTrackIds.take(2), <int>[1111, 1212]);
+      expect(
+        apiClient.analysisRequests.where((trackId) => trackId == 1111),
+        hasLength(1),
+      );
+      expect(
+        apiClient.analysisRequests.where((trackId) => trackId == 1212),
+        hasLength(1),
+      );
+    },
+  );
 
   testWidgets('server timeline hydrates visible lanes as the user scrolls', (
     tester,
@@ -2771,11 +2944,16 @@ class _TrackingQueueProvider extends _CountingQueueProvider {
   _TrackingQueueProvider(super.apiClient);
 
   final List<String> distinctInterestSignatures = [];
+  List<int> lastInterestTrackIds = const [];
   int clearCalls = 0;
 
   @override
   void setAnalysisHydrationInterest(Iterable<QueueTrack> tracks) {
     final retained = tracks.toList(growable: false);
+    lastInterestTrackIds = [
+      for (final track in retained)
+        if (int.tryParse(track.playbackTrackId ?? track.id) case final id?) id,
+    ];
     final signature = retained.map((track) => track.queueItemId).join('|');
     if (distinctInterestSignatures.isEmpty ||
         distinctInterestSignatures.last != signature) {
