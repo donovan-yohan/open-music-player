@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -45,6 +46,30 @@ void main() {
 
 class _PlaybackState extends Fake implements PlaybackState {
   final List<AudioPlaybackDefaults> appliedDefaults = [];
+
+  @override
+  bool get hasTrack => false;
+
+  @override
+  bool get isPlaying => false;
+
+  @override
+  List<MediaItem> get queue => const [];
+
+  @override
+  int? get currentIndex => null;
+
+  @override
+  Duration get duration => Duration.zero;
+
+  @override
+  Duration get position => Duration.zero;
+
+  @override
+  bool get canSkipNext => false;
+
+  @override
+  bool get canSkipPrevious => false;
 
   @override
   Future<void> applyAudioDefaults(AudioPlaybackDefaults defaults) async {

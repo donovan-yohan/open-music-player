@@ -8,6 +8,9 @@ import '../../core/storage/offline_database.dart';
 import '../../core/network/connectivity_service.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/api/api_client.dart';
+import '../../core/commands/app_command.dart';
+import '../../core/commands/command_registry.dart';
+import '../../core/commands/command_widgets.dart';
 import '../../core/services/services.dart' as services;
 import '../../core/services/liked_tracks_state.dart';
 import '../../core/services/playlist_service.dart';
@@ -959,6 +962,12 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
         return QueueSwipeAction(
           actionKey: ValueKey('library_queue_${track.id}'),
           onAddToQueue: () => _addToQueue(),
+          onSecondaryTapUp: (details) => showRegistryCommandMenu(
+            context: context,
+            registry: context.read<CommandRegistry>(),
+            commandContext: _commandContext(context),
+            position: details.globalPosition,
+          ),
           child: ListTile(
             key: ValueKey('library_track_row_${track.id}'),
             selected: isCurrent,
@@ -1121,93 +1130,67 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
   }
 
   void _showActions(BuildContext context) {
-    final playback = context.read<PlaybackState>();
-    final liked = context.read<LikedTracksState>().isLiked(track.id) ?? false;
-
     showModalBottomSheet(
       context: context,
-      builder: (sheetContext) => SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (track.needsVerification)
-                ListTile(
-                  key: ValueKey('library_review_match_${track.id}'),
-                  leading: const Icon(Icons.auto_fix_high),
-                  title: const Text('Review match'),
-                  onTap: () {
-                    Navigator.of(sheetContext).pop();
-                    _showMatchSuggestions(context);
-                  },
-                ),
-              ListTile(
-                leading: const Icon(Icons.queue_music),
-                title: const Text('Add to queue'),
-                onTap: () async {
-                  Navigator.of(sheetContext).pop();
-                  await _addToQueue();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.playlist_play),
-                title: const Text('Play next'),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  playTrackNext(playback.playNext, track);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.playlist_add),
-                title: const Text('Add to playlist'),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  _addToPlaylist();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.person),
-                title: const Text('Go to artist'),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  _goToArtist();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.album),
-                title: const Text('Go to album'),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  _goToAlbum();
-                },
-              ),
-              ListTile(
-                leading: Icon(liked ? Icons.favorite : Icons.favorite_border),
-                title: Text(liked ? 'Unlike' : 'Like'),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  _toggleLike();
-                },
-              ),
-              ListTile(
-                key: ValueKey('library_download_action_${track.id}'),
-                title: const Text('Download'),
-                trailing: DownloadButton(track: track),
-              ),
-              ListTile(
-                leading: const Icon(Icons.delete_outline),
-                title: const Text('Remove from library'),
-                onTap: () {
-                  Navigator.of(sheetContext).pop();
-                  _removeFromLibrary();
-                },
-              ),
-            ],
+      builder: (sheetContext) => RegistryCommandSheet(
+        registry: context.read<CommandRegistry>(),
+        commandContext: _commandContext(context),
+        leading: [
+          if (track.needsVerification)
+            ListTile(
+              key: ValueKey('library_review_match_${track.id}'),
+              leading: const Icon(Icons.auto_fix_high),
+              title: const Text('Review match'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _showMatchSuggestions(context);
+              },
+            ),
+        ],
+        trailing: [
+          ListTile(
+            leading: const Icon(Icons.person),
+            title: const Text('Go to artist'),
+            onTap: () {
+              Navigator.of(sheetContext).pop();
+              _goToArtist();
+            },
           ),
-        ),
+          ListTile(
+            leading: const Icon(Icons.album),
+            title: const Text('Go to album'),
+            onTap: () {
+              Navigator.of(sheetContext).pop();
+              _goToAlbum();
+            },
+          ),
+          ListTile(
+            key: ValueKey('library_download_action_${track.id}'),
+            title: const Text('Download'),
+            trailing: DownloadButton(track: track),
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete_outline),
+            title: const Text('Remove from library'),
+            onTap: () {
+              Navigator.of(sheetContext).pop();
+              _removeFromLibrary();
+            },
+          ),
+        ],
       ),
     );
   }
+
+  CommandContext _commandContext(BuildContext context) => CommandContext(
+        playbackState: context.read<PlaybackState>(),
+        likedTracksState: context.read<LikedTracksState>(),
+        track: track.toPlaybackJson(),
+        trackId: track.id,
+        addTrackToPlaylist: (_) => _addToPlaylist(),
+        addToQueue: _addToQueue,
+        toggleLiked: _toggleLike,
+      );
 
   Future<void> _addToPlaylist() async {
     final messenger = ScaffoldMessenger.of(context);

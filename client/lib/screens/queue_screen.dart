@@ -7,6 +7,10 @@ import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
 import '../core/audio/playback_context.dart';
 import '../core/audio/playback_session.dart';
+import '../core/audio/queue_persistence.dart';
+import '../core/commands/app_command.dart';
+import '../core/commands/command_registry.dart';
+import '../core/commands/command_widgets.dart';
 import '../app/theme.dart';
 import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
@@ -392,6 +396,18 @@ class _QueueScreenState extends State<QueueScreen> {
           enabled: !entry.isCurrent,
           label: item.title,
           onRemove: () => _removePlaybackQueueEntry(playback, entry),
+          onSecondaryTapUp: (details) => showRegistryCommandMenu(
+            context: context,
+            registry: context.read<CommandRegistry>(),
+            commandContext: CommandContext(
+              playbackState: playback,
+              track: mediaItemToPlaybackJson(item),
+              trackId: int.tryParse(item.id),
+              queueItemId:
+                  queueItemId.startsWith('unresolved_') ? null : queueItemId,
+            ),
+            position: details.globalPosition,
+          ),
           child: TrackTile(
             key: ValueKey('playback_queue_$queueItemId'),
             title: item.title,
@@ -1348,19 +1364,29 @@ class _QueueScreenState extends State<QueueScreen> {
     required String label,
     required Future<void> Function() onRemove,
     required bool enabled,
+    GestureTapUpCallback? onSecondaryTapUp,
   }) {
-    if (!enabled) return child;
-
-    return Dismissible(
+    final result = enabled
+        ? Dismissible(
+            key: onSecondaryTapUp == null
+                ? key
+                : ValueKey('dismissible_${key.toString()}'),
+            direction: DismissDirection.endToStart,
+            background: const SizedBox.shrink(),
+            secondaryBackground: _buildSwipeDeleteBackground(context, label),
+            confirmDismiss: (_) async {
+              await onRemove();
+              return false;
+            },
+            child: child,
+          )
+        : child;
+    if (onSecondaryTapUp == null) return result;
+    return GestureDetector(
       key: key,
-      direction: DismissDirection.endToStart,
-      background: const SizedBox.shrink(),
-      secondaryBackground: _buildSwipeDeleteBackground(context, label),
-      confirmDismiss: (_) async {
-        await onRemove();
-        return false;
-      },
-      child: child,
+      behavior: HitTestBehavior.opaque,
+      onSecondaryTapUp: onSecondaryTapUp,
+      child: result,
     );
   }
 
@@ -1422,9 +1448,9 @@ class _QueueScreenState extends State<QueueScreen> {
       final trackId = _analysisTrackId(track);
       if (trackId != null && context.mounted) {
         await context.read<PlaybackState>().refreshTrackAnalysis(
-              trackId,
-              analysis,
-            );
+          trackId,
+          analysis,
+        );
       }
     } catch (_) {
       if (!context.mounted) return;

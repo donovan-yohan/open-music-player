@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/api/api_client.dart';
 import '../../core/audio/playback_state.dart';
+import '../../core/commands/search_focus_controller.dart';
 import '../../core/discovery/discovery_models.dart';
 import '../../core/discovery/research_models.dart';
 import '../../core/discovery/research_service.dart';
@@ -26,11 +27,13 @@ class SearchScreen extends StatefulWidget {
   final SearchService? searchService;
   final ResearchJobService? researchService;
   final List<Duration> researchPollDelays;
+  final SearchFocusController? commandFocusController;
 
   const SearchScreen({
     super.key,
     this.searchService,
     this.researchService,
+    this.commandFocusController,
     this.researchPollDelays = const [
       Duration(seconds: 1),
       Duration(seconds: 2),
@@ -109,6 +112,7 @@ class _SearchScreenState extends State<SearchScreen> {
   void initState() {
     super.initState();
     _queryFocusNode.addListener(_onFocusChanged);
+    widget.commandFocusController?.register(_queryFocusNode);
     _loadRecentSearches();
   }
 
@@ -133,6 +137,7 @@ class _SearchScreenState extends State<SearchScreen> {
     _pollTimer?.cancel();
     _researchPollTimer?.cancel();
     _queryFocusNode.removeListener(_onFocusChanged);
+    widget.commandFocusController?.unregister(_queryFocusNode);
     _queryFocusNode.dispose();
     _queryController.dispose();
     super.dispose();

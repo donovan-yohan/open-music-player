@@ -71,6 +71,12 @@ class QueueTimelineController {
   MediaItem? get currentMediaItem => _currentMediaItemSubject.valueOrNull;
   bool get shuffleEnabled => _shuffleEnabled;
   LoopMode get loopMode => _loopMode;
+  bool get canSkipNext =>
+      _queue.isNotEmpty &&
+      (_loopMode != LoopMode.off || _nextQueueIndex() != null);
+  bool get canSkipPrevious =>
+      _queue.isNotEmpty &&
+      (_loopMode != LoopMode.off || _previousQueueIndex() != null);
   BeatSnapMode get transitionSnapMode => _session.transitionSnapMode;
   int get defaultCrossfadeMs => _session.defaultCrossfadeMs;
   Duration get position => _positionSubject.value;
@@ -224,6 +230,14 @@ class QueueTimelineController {
 
   Future<void> removeFromQueue(int index) async {
     await _enqueueCommand(() => _removeFromQueue(index));
+  }
+
+  Future<void> removeFromQueueByQueueItemId(String queueItemId) async {
+    await _enqueueCommand(() async {
+      final index = _queueIndexForQueueItemId(queueItemId);
+      if (index == null) return;
+      await _removeFromQueue(index);
+    });
   }
 
   Future<void> _removeFromQueue(int index) async {

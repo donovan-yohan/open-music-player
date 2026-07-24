@@ -69,6 +69,8 @@ class PlaybackState extends ChangeNotifier {
   int? get currentIndex => _queueController.currentIndex;
   bool get shuffleEnabled => _shuffleEnabled;
   LoopMode get loopMode => _loopMode;
+  bool get canSkipNext => _queueController.canSkipNext;
+  bool get canSkipPrevious => _queueController.canSkipPrevious;
   bool get hasTrack => currentItem != null;
   String? get playbackError => _playbackError;
   bool get isResolvingSignedUrl => _isResolvingSignedUrl;
@@ -677,6 +679,8 @@ class PlaybackState extends ChangeNotifier {
   Future<void> skipToIndex(int index) => _queueController.skipToIndex(index);
   Future<void> removeFromQueue(int index) =>
       _queueController.removeFromQueue(index);
+  Future<void> removeFromQueueByQueueItemId(String queueItemId) =>
+      _queueController.removeFromQueueByQueueItemId(queueItemId);
   Future<void> toggleShuffle() => _queueController.toggleShuffle();
   Future<void> cycleLoopMode() => _queueController.cycleLoopMode();
 
