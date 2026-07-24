@@ -4,22 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
+
+	"github.com/openmusicplayer/backend/internal/testutil"
 )
 
 func postgresTestDSN() string {
-	if dsn := os.Getenv("OMP_POSTGRES_TEST_DSN"); dsn != "" {
-		return dsn
-	}
-	if dsn := os.Getenv("QA_DATABASE_URL"); dsn != "" {
-		return dsn
-	}
-	return os.Getenv("DATABASE_URL")
+	return testutil.PostgresTestDSN()
 }
 
 func TestPostgresTestDSNAcceptsDatabaseURL(t *testing.T) {

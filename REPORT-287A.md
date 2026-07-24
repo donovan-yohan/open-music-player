@@ -1,8 +1,8 @@
 # TASK-287A Report — Truthful Audio Quality
 
-Date: 2026-07-24 UTC  
-Branch: `feat/287-truthful-quality`  
-Base: `origin/main` at `9b874ac03905797760d85847be03fbc2c9d365ea`  
+Date: 2026-07-24 UTC
+Branch: `feat/287-truthful-quality`
+Base: `origin/main` at `9b874ac03905797760d85847be03fbc2c9d365ea`
 Tested implementation head: `06610dd717ff7539711af0813ecce32c8ea17f88`
 
 ## Outcome
@@ -291,12 +291,78 @@ concrete regression. No second broad review was opened.
   resolves the existing row, preserving the pre-existing orphan-object
   behavior. Generic orphan cleanup is outside this slice.
 - If a legacy row's referenced object is missing or corrupt, duplicate ingest
-  fails closed rather than assigning facts from different fresh bytes.
-  Replacement policy is intentionally undefined here.
-- `ffprobe` currently shares one bounded stdout/stderr buffer. A diagnostic on
-  stderr with exit 0 could theoretically make otherwise valid JSON fail
-  closed; this was not observed for the MP3/WAV production paths.
+  attaches the existing row while leaving quality facts absent for a later
+  maintenance attempt. Replacement policy is intentionally undefined here.
+- Fresh ingest remains fail-closed on local-artifact probe failure. Existing
+  stored-object repair failures are bounded and degrade gracefully.
 - The offline SQLite Track round-trip does not persist the new quality
   metadata, so the line can disappear after an offline-app restart. The
   downloaded original artifact remains unchanged and playable; online and
   signed-descriptor paths restore the facts.
+
+## Fix pass (cross-model review)
+
+Policy applied consistently: probing a fresh artifact during ingest remains
+fail-closed. Probing an existing row's stored object is bounded and always
+degrades gracefully so a broken legacy object cannot block a user action.
+
+| Finding | Action |
+| --- | --- |
+| 1. Duplicate ingest hard-failed when an existing object's quality repair failed. | `Processor.Process` now warns and continues with the existing row. `TestDuplicateLegacyTrackWithMissingObjectStillAttachesToLibrary` proves the job succeeds, library membership is created, and quality facts remain absent. |
+| 2. Contract tests ignored the CI `DATABASE_URL`. | Added shared `testutil.PostgresTestDSN` with `OMP_POSTGRES_TEST_DSN` → `QA_DATABASE_URL` → `DATABASE_URL` precedence and reused it from database, processor, and quality-contract integration setup. Only the real-MinIO contract retains a MinIO-specific environment gate. |
+| 3. Stored-object probes and repair iterations had no dedicated timeout. | Added 45-second contexts around every `probeAudioFile` call and every `RepairAudioQuality` iteration. Maintenance continues to report timeout/cancellation as that row's nonfatal error. |
+| 4. `ffprobe` stdout and stderr shared a buffer. | Gave stdout and stderr independent bounded buffers; only stdout is decoded as JSON and stderr is used only when reporting command failure. The exit-0 stderr-noise regression passes. |
+| 5. Failed maintenance repairs emitted an empty `audioQuality` object. | `audioQuality` is assigned only after a successful repair. The corrupt-object contract now asserts the field is omitted. |
+| 6. Playback extras declared duplicate camel/snake quality keys. | Each fact is coalesced once with explicit camel-case precedence over its snake-case alias; a conflicting-alias regression covers all four fields. |
+| 7. Report header contained trailing Markdown spaces. | Removed the trailing spaces; the prospective full branch diff passes the whitespace check. |
+
+Accepted without code change:
+
+- Plain-auth maintenance remains accepted for the self-hosted,
+  single-trust-domain deployment. An operator-role requirement remains a
+  future product decision.
+- Android dogfood remains waived for this metadata-only slice because no
+  transport, codec, engine, or gesture behavior changed.
+- Repo-wide Dart formatting churn remains out of scope for a later standalone
+  cosmetic commit.
+- Offline SQLite round-trip of the five quality columns remains an optional
+  follow-up.
+
+Fix-pass verification run by the implementation worker:
+
+- `scripts/lint backend`
+  - Exit 0; no diagnostics.
+- `OMP_POSTGRES_TEST_DSN='postgres://omp:omp_dev_password@127.0.0.1:25224/openmusicplayer?sslmode=disable' OMP_MINIO_TEST_ENDPOINT='http://127.0.0.1:27224' go test -p 1 ./internal/processor ./internal/api ./internal/db -count=1`
+  - Exit 0; 306 tests passed across 3 packages.
+- `env -u OMP_POSTGRES_TEST_DSN -u QA_DATABASE_URL DATABASE_URL='postgres://omp:omp_dev_password@127.0.0.1:25224/openmusicplayer?sslmode=disable' go test ./internal/api -run '^TestIngestAndBackfillExposeStoredObjectFFprobeFactsThroughLibraryAPI$' -count=1 -v`
+  - Exit 0; 1 test passed, proving the contract runs through the CI
+    `DATABASE_URL` fallback.
+- `cd client && flutter test test/playback_source_quality_test.dart`
+  - Exit 0; 3 tests passed.
+- `git diff --check origin/main`
+  - Exit 0 for all tracked changes in the prospective branch tree; the new
+    helper file was also `gofmt`-clean. The orchestrator will rerun the required
+    `git diff --check origin/main...HEAD` after the conventional fix commit.
+
+Final orchestrator verification:
+
+- `scripts/lint backend`
+  - Exit 0; no diagnostics.
+- `OMP_POSTGRES_TEST_DSN='postgres://omp:omp_dev_password@127.0.0.1:25224/openmusicplayer?sslmode=disable' OMP_MINIO_TEST_ENDPOINT='http://127.0.0.1:27224' scripts/test backend`
+  - Exit 0; all backend packages passed.
+  - Affected uncached package timings: `internal/api` 1.372s, `internal/db`
+    16.968s, and `internal/processor` 2.391s.
+- `cd client && flutter analyze`
+  - Raw exit 1 from exactly 9 known pre-existing info-level findings: 4 in
+    `playlist_detail_screen.dart` and 5 in `match_suggestions_sheet.dart`.
+  - No diagnostics were reported in changed files.
+- `cd client && flutter test`
+  - Exit 0; 982 tests passed.
+- `scripts/agentic-harness`
+  - Exit 0; `AGENTIC HARNESS OK`.
+- `SERVER_PORT=18224 POSTGRES_PORT=25224 REDIS_PORT=26224 MINIO_PORT=27224 MINIO_CONSOLE_PORT=28224 scripts/local-low-memory.sh stop`
+  - Exit 0; the isolated Postgres, Redis, and MinIO containers and network were
+    removed.
+
+- `git diff --check origin/main...HEAD`
+  - Exit 0 after the fix commit.

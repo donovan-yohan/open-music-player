@@ -23,6 +23,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/playlistimport"
 	"github.com/openmusicplayer/backend/internal/storage"
+	"github.com/openmusicplayer/backend/internal/testutil"
 )
 
 type fakeObjectStorage struct {
@@ -1029,6 +1030,66 @@ func TestDuplicateLegacyTrackBackfillsFromExistingReferencedObject(t *testing.T)
 	}
 }
 
+func TestDuplicateLegacyTrackWithMissingObjectStillAttachesToLibrary(t *testing.T) {
+	database, ctx := newProcessorPostgresTestDB(t)
+	userID := uuid.New()
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO users (id, email, username, password_hash)
+		VALUES ($1, $2, 'duplicate-missing', 'x')
+	`, userID, "duplicate-missing-"+userID.String()+"@example.test"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	trackRepo := db.NewTrackRepository(database)
+	existing, created, err := trackRepo.CreateTrackFromMetadata(
+		ctx, "", "Duplicate Missing Artifact", "", 0,
+		db.WithStorage("tracks/fixture/missing.wav", 1234),
+		db.WithMetadata(json.RawMessage(`{}`)),
+		db.WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""),
+	)
+	if err != nil || !created {
+		t.Fatalf("seed legacy track: created=%v err=%v", created, err)
+	}
+	objectStore := &fakeObjectStorage{objects: map[string][]byte{}}
+	p := New(&ProcessorConfig{
+		TrackRepo:   trackRepo,
+		LibraryRepo: db.NewLibraryRepository(database),
+		Storage:     objectStore,
+	})
+	job := &download.DownloadJob{
+		ID:         "new-artifact-for-missing-duplicate",
+		UserID:     userID.String(),
+		URL:        "fixture://duplicate-missing",
+		SourceType: "fixture",
+		Title:      "Duplicate Missing Artifact",
+	}
+
+	if err := p.Process(ctx, job, func(int) {}); err != nil {
+		t.Fatalf("process duplicate with missing stored object: %v", err)
+	}
+	if job.TrackID == nil || *job.TrackID != existing.ID {
+		t.Fatalf("duplicate associated track = %v, want existing %d", job.TrackID, existing.ID)
+	}
+	var membershipCount int
+	if err := database.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM user_library WHERE user_id = $1 AND track_id = $2
+	`, userID, existing.ID).Scan(&membershipCount); err != nil {
+		t.Fatalf("count library membership: %v", err)
+	}
+	if membershipCount != 1 {
+		t.Fatalf("library membership count = %d, want 1", membershipCount)
+	}
+	reloaded, err := trackRepo.GetByID(ctx, existing.ID)
+	if err != nil {
+		t.Fatalf("reload legacy track: %v", err)
+	}
+	if reloaded.Codec.Valid || reloaded.BitrateKbps.Valid ||
+		reloaded.SampleRateHz.Valid || reloaded.Channels.Valid ||
+		reloaded.ContentType.Valid {
+		t.Fatalf("missing stored object acquired fabricated facts: %+v", reloaded)
+	}
+}
+
 func TestAttachPlaylistImportTrackBackfillsSourceEntryIdempotently(t *testing.T) {
 	database, ctx := newProcessorPostgresTestDB(t)
 	userID := uuid.New()
@@ -1212,12 +1273,9 @@ func TestAttachPlaylistImportTrackBackfillsSourceEntryIdempotently(t *testing.T)
 
 func newProcessorPostgresTestDB(t *testing.T) (*db.DB, context.Context) {
 	t.Helper()
-	dsn := os.Getenv("OMP_POSTGRES_TEST_DSN")
+	dsn := testutil.PostgresTestDSN()
 	if dsn == "" {
-		dsn = os.Getenv("QA_DATABASE_URL")
-	}
-	if dsn == "" {
-		t.Skip("set OMP_POSTGRES_TEST_DSN or QA_DATABASE_URL to run Postgres processor integration tests")
+		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres processor integration tests")
 	}
 	rawDB, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -1518,6 +1576,28 @@ func TestDownloadAndStoreUsesProbeContentTypeDespiteMisleadingExtension(t *testi
 	}
 	if metadata.AudioQuality.ContentType != "audio/wav" || objectStore.contentType != "audio/wav" {
 		t.Fatalf("probe/upload content types = %q/%q, want audio/wav", metadata.AudioQuality.ContentType, objectStore.contentType)
+	}
+}
+
+func TestProbeAudioFileUsesStdoutOnlyForJSON(t *testing.T) {
+	ffprobe := filepath.Join(t.TempDir(), "ffprobe")
+	script := `#!/bin/sh
+echo "diagnostic noise" >&2
+printf '%s\n' '{"streams":[{"codec_name":"mp3","bit_rate":"137000","sample_rate":"44100","channels":2}],"format":{"bit_rate":"137000","format_name":"mp3"}}'
+`
+	if err := os.WriteFile(ffprobe, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake ffprobe: %v", err)
+	}
+	t.Setenv("PATH", filepath.Dir(ffprobe)+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	quality, err := probeAudioFile(context.Background(), "ignored.mp3", "audio/mpeg")
+	if err != nil {
+		t.Fatalf("probe with exit-0 stderr noise: %v", err)
+	}
+	if quality.Codec != "mp3" || quality.BitrateKbps != 137 ||
+		quality.SampleRateHz != 44100 || quality.Channels != 2 ||
+		quality.ContentType != "audio/mpeg" {
+		t.Fatalf("quality = %+v", quality)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/processor"
 	"github.com/openmusicplayer/backend/internal/storage"
+	"github.com/openmusicplayer/backend/internal/testutil"
 )
 
 type qualityContractStorage struct {
@@ -104,9 +105,9 @@ func ffprobeContractObject(t *testing.T, data []byte) (codec string, bitrateKbps
 
 func newAudioQualityContractDB(t *testing.T) *db.DB {
 	t.Helper()
-	dsn := os.Getenv("OMP_POSTGRES_TEST_DSN")
+	dsn := testutil.PostgresTestDSN()
 	if dsn == "" {
-		t.Skip("set OMP_POSTGRES_TEST_DSN to run audio quality API contract integration test")
+		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run audio quality API contract integration test")
 	}
 	raw, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -277,6 +278,9 @@ func TestIngestAndBackfillExposeStoredObjectFFprobeFactsThroughLibraryAPI(t *tes
 	failed := qualityMaintenanceRequest(t, maintenance, userID, 1)
 	if failed.Summary.Selected != 1 || failed.Summary.Errors != 1 || failed.Tracks[0].TrackID != corrupt.ID {
 		t.Fatalf("nonfatal corrupt-object result = %+v", failed)
+	}
+	if failed.Tracks[0].AudioQuality != nil {
+		t.Fatalf("failed repair emitted empty audioQuality result: %+v", failed.Tracks[0].AudioQuality)
 	}
 
 	valid, _, err := trackRepo.CreateTrackFromMetadata(ctx, "Artist", "Later Valid Artifact", "", 1000,

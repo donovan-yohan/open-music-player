@@ -187,6 +187,10 @@ class PlaybackSourceResolver {
     Map<String, dynamic> extras,
     String? likedAccountId,
   ) {
+    final bitrateKbps = track['bitrateKbps'] ?? track['bitrate_kbps'];
+    final sampleRateHz = track['sampleRateHz'] ?? track['sample_rate_hz'];
+    final contentType = track['contentType'] ?? track['content_type'];
+    final sizeBytes = track['sizeBytes'] ?? track['file_size_bytes'];
     final playbackExtras = {
       ...extras,
       if (track['analysisStatus'] != null)
@@ -211,17 +215,11 @@ class PlaybackSourceResolver {
       if (track['sourceUrl'] is String) 'sourceUrl': track['sourceUrl'],
       if (track['source_url'] is String) 'sourceUrl': track['source_url'],
       if (track['codec'] is String) 'codec': track['codec'],
-      if (track['bitrateKbps'] != null) 'bitrateKbps': track['bitrateKbps'],
-      if (track['bitrate_kbps'] != null) 'bitrateKbps': track['bitrate_kbps'],
-      if (track['sampleRateHz'] != null) 'sampleRateHz': track['sampleRateHz'],
-      if (track['sample_rate_hz'] != null)
-        'sampleRateHz': track['sample_rate_hz'],
+      if (bitrateKbps != null) 'bitrateKbps': bitrateKbps,
+      if (sampleRateHz != null) 'sampleRateHz': sampleRateHz,
       if (track['channels'] != null) 'channels': track['channels'],
-      if (track['contentType'] is String) 'contentType': track['contentType'],
-      if (track['content_type'] is String) 'contentType': track['content_type'],
-      if (track['sizeBytes'] != null) 'sizeBytes': track['sizeBytes'],
-      if (track['file_size_bytes'] != null)
-        'sizeBytes': track['file_size_bytes'],
+      if (contentType is String) 'contentType': contentType,
+      if (sizeBytes != null) 'sizeBytes': sizeBytes,
       'analysisRef': trackId.toString(),
     };
     return MediaItem(

@@ -51,6 +51,8 @@ const (
 	analysisShutdownRecoveryWorkers = 4
 	analysisShutdownRecoveryReserve = time.Second
 	analysisShutdownRecoveryTimeout = 2 * time.Second
+	audioQualityProbeTimeout        = 45 * time.Second
+	audioQualityRepairTimeout       = 45 * time.Second
 )
 
 type analysisTask struct {
@@ -172,11 +174,12 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 		// A duplicate download resolves to the existing track and therefore must
 		// probe that track's referenced object, not the newly downloaded bytes.
 		if _, err := p.RepairAudioQuality(ctx, track); err != nil {
-			return fmt.Errorf("existing track audio quality backfill failed: %w", err)
-		}
-		track, err = p.trackRepo.GetByID(ctx, track.ID)
-		if err != nil {
-			return fmt.Errorf("reload existing track after audio quality backfill: %w", err)
+			log.Printf("Warning: existing track %d audio quality backfill failed: %v", track.ID, err)
+		} else {
+			track, err = p.trackRepo.GetByID(ctx, track.ID)
+			if err != nil {
+				return fmt.Errorf("reload existing track after audio quality backfill: %w", err)
+			}
 		}
 	}
 	job.TrackID = &track.ID
@@ -314,22 +317,28 @@ type ffprobeOutput struct {
 }
 
 func probeAudioFile(ctx context.Context, path, fallbackContentType string) (AudioQuality, error) {
-	cmd := exec.CommandContext(ctx, "ffprobe",
+	probeCtx, cancel := context.WithTimeout(ctx, audioQualityProbeTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(probeCtx, "ffprobe",
 		"-v", "error",
 		"-select_streams", "a:0",
 		"-show_entries", "stream=codec_name,bit_rate,sample_rate,channels:format=bit_rate,format_name",
 		"-of", "json",
 		path,
 	)
-	var output limitedOutput
-	output.limit = maxYTDLPLogBytes
-	cmd.Stdout = &output
-	cmd.Stderr = &output
+	stdout := limitedOutput{limit: maxYTDLPLogBytes}
+	stderr := limitedOutput{limit: maxYTDLPLogBytes}
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return AudioQuality{}, fmt.Errorf("ffprobe failed: %w: %s", err, strings.TrimSpace(output.String()))
+		if probeCtx.Err() != nil {
+			return AudioQuality{}, fmt.Errorf("ffprobe timed out or canceled: %w", probeCtx.Err())
+		}
+		return AudioQuality{}, fmt.Errorf("ffprobe failed: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	var probed ffprobeOutput
-	if err := json.Unmarshal([]byte(output.String()), &probed); err != nil {
+	if err := json.Unmarshal([]byte(stdout.String()), &probed); err != nil {
 		return AudioQuality{}, fmt.Errorf("decode ffprobe output: %w", err)
 	}
 	if len(probed.Streams) == 0 {
@@ -731,6 +740,9 @@ type AudioQualityRepairResult struct {
 // RepairAudioQuality backfills immutable artifact facts without changing the artifact.
 // A complete track is skipped, making repeated bounded maintenance passes idempotent.
 func (p *Processor) RepairAudioQuality(ctx context.Context, track *db.Track) (AudioQualityRepairResult, error) {
+	repairCtx, cancel := context.WithTimeout(ctx, audioQualityRepairTimeout)
+	defer cancel()
+
 	if track == nil {
 		return AudioQualityRepairResult{}, errors.New("track is required")
 	}
@@ -744,11 +756,11 @@ func (p *Processor) RepairAudioQuality(ctx context.Context, track *db.Track) (Au
 	if !track.StorageKey.Valid || storageKey == "" {
 		return AudioQualityRepairResult{}, errors.New("track has no stored audio object")
 	}
-	if err := p.trackRepo.MarkAudioQualityProbeAttempt(ctx, track.ID); err != nil {
+	if err := p.trackRepo.MarkAudioQualityProbeAttempt(repairCtx, track.ID); err != nil {
 		return AudioQualityRepairResult{}, fmt.Errorf("record audio quality probe attempt: %w", err)
 	}
 
-	reader, info, err := p.storage.GetObject(ctx, storageKey)
+	reader, info, err := p.storage.GetObject(repairCtx, storageKey)
 	if err != nil {
 		return AudioQualityRepairResult{}, fmt.Errorf("get stored audio object: %w", err)
 	}
@@ -780,12 +792,12 @@ func (p *Processor) RepairAudioQuality(ctx context.Context, track *db.Track) (Au
 	if info != nil {
 		contentType = info.ContentType
 	}
-	quality, err := probeAudioFile(ctx, tmpPath, contentType)
+	quality, err := probeAudioFile(repairCtx, tmpPath, contentType)
 	if err != nil {
 		return AudioQualityRepairResult{}, err
 	}
 	if err := p.trackRepo.UpdateAudioQuality(
-		ctx,
+		repairCtx,
 		track.ID,
 		quality.Codec,
 		quality.BitrateKbps,

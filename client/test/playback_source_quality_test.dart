@@ -57,4 +57,28 @@ void main() {
     expect(item.extras?['contentType'], 'audio/mpeg');
     expect(item.extras?['sizeBytes'], 3355443);
   });
+
+  test('camel-case quality facts take precedence over snake-case aliases', () {
+    final item = PlaybackSourceResolver.buildLocalMediaItem(
+      {
+        'id': 19,
+        'title': 'Mixed projection',
+        'bitrateKbps': 137,
+        'bitrate_kbps': 128,
+        'sampleRateHz': 44100,
+        'sample_rate_hz': 48000,
+        'contentType': 'audio/mpeg',
+        'content_type': 'audio/wav',
+        'sizeBytes': 3355443,
+        'file_size_bytes': 999,
+      },
+      19,
+      '/downloads/19.mp3',
+    );
+
+    expect(item.extras?['bitrateKbps'], 137);
+    expect(item.extras?['sampleRateHz'], 44100);
+    expect(item.extras?['contentType'], 'audio/mpeg');
+    expect(item.extras?['sizeBytes'], 3355443);
+  });
 }

@@ -169,15 +169,17 @@ func (h *MaintenanceHandlers) RepairTracks(w http.ResponseWriter, r *http.Reques
 		}
 		if includeAudioQuality {
 			audioQuality, err := h.processor.RepairAudioQuality(r.Context(), &track)
-			item.AudioQuality = &audioQuality
 			if err != nil {
 				log.Printf("Warning: audio quality backfill failed for track %d: %v", track.ID, err)
 				item.Errors = append(item.Errors, err.Error())
 				resp.Summary.Errors++
-			} else if audioQuality.Status == "processed" {
-				resp.Summary.AudioQualityDone++
 			} else {
-				resp.Summary.AudioQualitySkipped++
+				item.AudioQuality = &audioQuality
+				if audioQuality.Status == "processed" {
+					resp.Summary.AudioQualityDone++
+				} else {
+					resp.Summary.AudioQualitySkipped++
+				}
 			}
 		}
 		resp.Tracks = append(resp.Tracks, item)
