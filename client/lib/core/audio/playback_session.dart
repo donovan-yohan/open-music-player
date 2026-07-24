@@ -428,9 +428,10 @@ class MixSession {
       adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
       deferredDefaultTransitionClipIds: markExplicit
           ? {
-              for (var clipIndex = 0; clipIndex < index; clipIndex++)
-                if (_deferredDefaultTransitionClipIds
-                    .contains(clips[clipIndex].clipId))
+              for (var clipIndex = 0; clipIndex < clips.length; clipIndex++)
+                if (clipIndex != index &&
+                    _deferredDefaultTransitionClipIds
+                        .contains(clips[clipIndex].clipId))
                   clips[clipIndex].clipId,
             }
           : _deferredDefaultTransitionClipIds,
@@ -1219,8 +1220,9 @@ bool _wasAutoManagedPlacement(
   final clip = clips[index];
   final previous = index == 0 ? null : clips[index - 1];
   final fallbackStartMs = previous?.timelineEndMs ?? 0;
-  if (clip.timelineStartMs == fallbackStartMs) {
-    return previous == null || defaultCrossfadeMs == 0;
+  if (clip.timelineStartMs == fallbackStartMs &&
+      (previous == null || defaultCrossfadeMs == 0)) {
+    return true;
   }
   return clip.timelineStartMs ==
       _defaultTimelineStartAfter(

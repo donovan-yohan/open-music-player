@@ -183,6 +183,10 @@ remaining P0/P1 issues. Broad review was not reopened.
   crossfade, but tempo'd pairs follow the existing tempo-transition fallback
   and remain butt-jointed. This asymmetry is documented and intentionally
   unchanged in this fix pass.
+- After a session restore, a user placement that is millisecond-equal to the
+  old- or new-default derivation is treated as auto-managed and may reflow
+  because runtime-only markers are correctly excluded from snapshots; the risk
+  requires coincidence plus restore and self-heals on rebuild.
 - Very short selected clips may receive less than the requested duration due to
   the half-shorter-clip safety cap.
 
@@ -228,3 +232,11 @@ report-only evidence amendment is non-semantic.
 
 After recording this result, the same command is rerun on the amended final
 head and its result is reported in the handoff.
+
+## Fix pass 2
+
+| Item | Resolution |
+| --- | --- |
+| Free-mode tempo fallback classification | Butt-joint fallback placements are compared with their legitimate derivation before being treated as explicit; the `0, 10000, 17000` to `0, 10000, 15000` regression is covered. |
+| Downstream deferred provenance | A manual placement clears only the edited clip's deferred marker, preserving untouched downstream markers and their later reflow eligibility. |
+| Restore coincidence residual | Residual risks now record the runtime-marker restore limitation, its coincidence-plus-restore scale, and rebuild self-healing. |

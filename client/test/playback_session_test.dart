@@ -272,6 +272,35 @@ void main() {
       expect(model.clips[1].envelope.fadeInMs, 8000);
     });
 
+    test('free-mode tempo fallback remains auto-managed', () {
+      final analyzed = _analysisSummary(
+        bpm: 120,
+        downbeatsMs: [0, 4000, 8000],
+      );
+      final session = MixSession.fromQueue(
+        sessionId: 'session_free_tempo_fallback',
+        queue: [
+          _item('a', seconds: 10, analysisSummary: analyzed),
+          _item('b', seconds: 10, analysisSummary: analyzed),
+          _item('c', seconds: 10),
+        ],
+        transitionSnapMode: BeatSnapMode.free,
+        defaultCrossfadeMs: 3000,
+      );
+
+      expect(
+        session.clips.map((clip) => clip.timelineStartMs),
+        [0, 10000, 17000],
+      );
+
+      final updated = session.withDefaultCrossfadeMs(5000);
+
+      expect(
+        updated.clips.map((clip) => clip.timelineStartMs),
+        [0, 10000, 15000],
+      );
+    });
+
     test('zero configured crossfade keeps untempoed clips butt-jointed', () {
       final session = MixSession.fromQueue(
         sessionId: 'session_no_crossfade',
@@ -394,6 +423,32 @@ void main() {
         9000,
         17000,
       ]);
+    });
+
+    test('manual placement preserves downstream deferred provenance', () {
+      final queue = [
+        _item('a', seconds: 10),
+        _item('b', seconds: 10),
+        _item('c', seconds: 10),
+      ];
+      final deferred = MixSession.fromQueue(
+        sessionId: 'session_preserves_downstream_deferred',
+        queue: queue,
+      ).withDeferredDefaultTransitionAt(2);
+      final manuallyEdited = deferred.withPlacementAt(
+        1,
+        deferred.clips[1].placement.withTimelineStartMs(9000),
+      );
+
+      final changed = manuallyEdited.withDefaultCrossfadeMs(
+        3000,
+        startIndex: 2,
+      );
+
+      expect(
+        changed.clips.map((clip) => clip.timelineStartMs),
+        [0, 9000, 16000],
+      );
     });
 
     test('runtime refinement keeps automatic placement classification', () {
