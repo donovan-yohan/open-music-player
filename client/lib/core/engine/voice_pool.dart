@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import '../audio/signed_audio_url_service.dart';
+import '../cache/playback_cache_manager.dart';
 import 'engine_audio_source_resolver.dart';
 import 'tempo_automation.dart';
 import 'timeline_clock.dart';
@@ -933,24 +933,15 @@ class _LoadedSourceIdentity {
     return _LoadedSourceIdentity(
       audioSourceRef: clip.audioSourceRef,
       isLocal: source.isLocal,
-      uriIdentity: _stableUriIdentity(source.uri, descriptor),
+      uriIdentity: descriptor == null
+          ? source.uri.toString()
+          : audioObjectIdentity(source.uri.toString()) ?? source.uri.toString(),
       descriptorTrackId: descriptor?.trackId,
       descriptorEtag: descriptor?.etag,
       descriptorStorageKeyVersion: descriptor?.storageKeyVersion,
       descriptorSizeBytes: descriptor?.sizeBytes,
       descriptorContentType: descriptor?.contentType,
     );
-  }
-
-  static String _stableUriIdentity(Uri uri, SignedAudioDescriptor? descriptor) {
-    if (descriptor == null) return uri.toString();
-    return Uri(
-      scheme: uri.scheme,
-      userInfo: uri.userInfo,
-      host: uri.host,
-      port: uri.hasPort ? uri.port : null,
-      path: uri.path,
-    ).toString();
   }
 
   @override

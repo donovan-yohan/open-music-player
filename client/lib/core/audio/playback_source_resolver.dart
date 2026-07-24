@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart';
 
 import '../cache/playback_cache_manager.dart';
+import 'audio_source_resolution_policy.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'signed_audio_url_service.dart';
 
@@ -105,28 +106,33 @@ class PlaybackSourceResolver {
     for (var i = 0; i < tracks.length; i++) {
       final track = tracks[i];
       final id = trackIds[i];
-      final localPath = localPaths[id] ?? cachePaths[id];
-      if (localPath != null) {
-        items.add(
-          buildLocalMediaItem(
-            track,
-            id,
-            localPath,
-            likedAccountId: likedAccountId,
-          ),
-        );
-      } else {
-        final descriptor = descriptors[id];
-        if (descriptor == null) {
+      final resolution =
+          await resolveAudioSourceByPolicy<SignedAudioDescriptor>(
+        downloadPath: () => localPaths[id],
+        remoteSource: () {
+          final descriptor = descriptors[id];
+          if (descriptor != null) return descriptor;
           throw SignedAudioUrlException(
             code: 'AUDIO_UNAVAILABLE',
             message: 'No playback descriptor found for track $id.',
           );
-        }
+        },
+        cachePath: (_) => cachePaths[id],
+      );
+      if (resolution.isLocal) {
+        items.add(
+          buildLocalMediaItem(
+            track,
+            id,
+            resolution.localPath!,
+            likedAccountId: likedAccountId,
+          ),
+        );
+      } else {
         items.add(
           buildRemoteMediaItem(
             track,
-            descriptor,
+            resolution.remoteSource!,
             likedAccountId: likedAccountId,
           ),
         );

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../audio/audio_source_resolution_policy.dart';
 import '../audio/local_audio_artifact_resolver.dart';
 import '../audio/signed_audio_url_service.dart';
 import '../cache/playback_cache_manager.dart';
@@ -92,18 +93,15 @@ class DefaultEngineAudioSourceResolver implements EngineAudioSourceResolver {
   @override
   Future<ResolvedAudioSource> resolve(MixClip clip) async {
     final trackId = _readTrackId(clip.audioSourceRef);
-
-    final localPath = await _localResolver?.localAudioPath(trackId);
-    if (localPath != null) {
-      return ResolvedAudioSource.local(Uri.file(localPath));
+    final resolution = await resolveAudioSourceByPolicy<SignedAudioDescriptor>(
+      downloadPath: () => _localResolver?.localAudioPath(trackId),
+      remoteSource: () => _descriptorFor(trackId),
+      cachePath: (descriptor) => _cacheManager?.get(trackId, descriptor),
+    );
+    if (resolution.isLocal) {
+      return ResolvedAudioSource.local(Uri.file(resolution.localPath!));
     }
-
-    final descriptor = await _descriptorFor(trackId);
-    final cachePath = await _cacheManager?.get(trackId, descriptor);
-    if (cachePath != null) {
-      return ResolvedAudioSource.local(Uri.file(cachePath));
-    }
-
+    final descriptor = resolution.remoteSource!;
     return ResolvedAudioSource.remote(Uri.parse(descriptor.url), descriptor);
   }
 
