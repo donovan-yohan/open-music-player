@@ -454,10 +454,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final trackId = item == null ? null : int.tryParse(item.id);
     final likedState = context.watch<LikedTracksState?>();
     final payloadLiked = item?.extras?['isLiked'];
-    final payloadLikedValue = payloadLiked is bool ? payloadLiked : null;
+    final payloadLikedAccountId = item?.extras?['likedAccountId'] as String?;
+    final payloadLikedValue = payloadLiked is bool &&
+            likedState?.acceptsPlaybackAccount(payloadLikedAccountId) == true
+        ? payloadLiked
+        : null;
     final liked = trackId == null
         ? null
         : likedState?.isLiked(trackId) ?? payloadLikedValue;
+    final isToggling =
+        trackId != null && likedState?.isToggling(trackId) == true;
     if (trackId != null &&
         likedState != null &&
         likedState.isLiked(trackId) == null &&
@@ -466,11 +472,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _pendingLikedSeedItem = item.id;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        likedState.seedValue(trackId, payloadLikedValue);
+        likedState.seedPlaybackValue(
+          trackId,
+          payloadLikedValue,
+          sourceAccountId: payloadLikedAccountId,
+        );
       });
     }
     final rawSourceUrl = item?.extras?['sourceUrl'];
-    final sourceUrl = rawSourceUrl is String && rawSourceUrl.trim().isNotEmpty
+    final sourceUrl = likedState?.acceptsPlaybackAccount(
+                  payloadLikedAccountId,
+                ) ==
+                true &&
+            rawSourceUrl is String &&
+            rawSourceUrl.trim().isNotEmpty
         ? rawSourceUrl.trim()
         : null;
 
@@ -486,16 +501,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ),
           tooltip: trackId == null
               ? 'Liked status unavailable for local-only track'
-              : liked == true
-                  ? 'Unlike'
-                  : 'Like',
-          onPressed: trackId == null || liked == null || likedState == null
+              : liked == null
+                  ? 'Liked status not loaded yet'
+                  : liked
+                      ? 'Unlike'
+                      : 'Like',
+          onPressed: trackId == null ||
+                  liked == null ||
+                  likedState == null ||
+                  isToggling
               ? null
               : () async {
                   try {
                     if (likedState.isLiked(trackId) == null &&
                         payloadLikedValue != null) {
-                      likedState.seedValue(trackId, payloadLikedValue);
+                      likedState.seedPlaybackValue(
+                        trackId,
+                        payloadLikedValue,
+                        sourceAccountId: payloadLikedAccountId,
+                      );
                     }
                     await likedState.toggle(trackId);
                   } catch (_) {
@@ -511,10 +535,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
         IconButton(
           key: const ValueKey('player_share_action'),
           icon: Icon(Icons.share, color: color),
-          tooltip: sourceUrl == null ? 'No public source link' : 'Share',
+          tooltip: sourceUrl == null ? 'Source link unavailable' : 'Share',
           onPressed: sourceUrl == null || item == null
               ? null
-              : () => _shareTrack(context, item, sourceUrl),
+              : () async {
+                  try {
+                    await _shareTrack(context, item, sourceUrl);
+                  } catch (_) {
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Could not open the share sheet'),
+                      ),
+                    );
+                  }
+                },
         ),
       ],
     );
@@ -529,6 +564,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return SharePlus.instance.share(
       ShareParams(
         text: '${item.title} — $sourceUrl',
+        mailToFallbackEnabled: false,
         sharePositionOrigin: renderBox == null
             ? null
             : renderBox.localToGlobal(Offset.zero) & renderBox.size,

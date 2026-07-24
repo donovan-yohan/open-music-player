@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -242,6 +244,8 @@ void main() {
         ),
       );
       final library = _RecordingLibraryService();
+      final write = Completer<void>();
+      library.likeResult = write.future;
       final liked = LikedTracksState(library)..seedValue(1, false);
 
       await tester.pumpWidget(
@@ -264,7 +268,7 @@ void main() {
             .onPressed,
         isNull,
       );
-      expect(find.byTooltip('No public source link'), findsOneWidget);
+      expect(find.byTooltip('Source link unavailable'), findsOneWidget);
       expect(
         tester
             .widget<IconButton>(
@@ -279,8 +283,79 @@ void main() {
 
       expect(liked.isLiked(1), isTrue);
       expect(library.likedIds, [1]);
+      expect(
+        tester
+            .widget<IconButton>(
+              find.byKey(const ValueKey('player_favorite_action')),
+            )
+            .onPressed,
+        isNull,
+      );
+
+      write.complete();
+      await tester.pump();
+      expect(
+        tester
+            .widget<IconButton>(
+              find.byKey(const ValueKey('player_favorite_action')),
+            )
+            .onPressed,
+        isNotNull,
+      );
     },
   );
+
+  testWidgets('favorite is disabled honestly for unknown and local-only ids',
+      (tester) async {
+    tester.view.physicalSize = const Size(1200, 2200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final library = _RecordingLibraryService();
+    final liked = LikedTracksState(library, accountId: 'user-b');
+
+    for (final item in const [
+      MediaItem(
+        id: '1',
+        title: 'Previous account',
+        extras: {
+          'isLiked': true,
+          'likedAccountId': 'user-a',
+        },
+      ),
+      MediaItem(id: 'local-file', title: 'Local only'),
+    ]) {
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ListenableProvider<PlaybackState>.value(
+              value: _FakePlaybackState(currentItem: item),
+            ),
+            ChangeNotifierProvider<LikedTracksState>.value(value: liked),
+          ],
+          child: MaterialApp(
+            key: ValueKey(item.id),
+            home: const PlayerScreen(),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final favorite = tester.widget<IconButton>(
+        find.byKey(const ValueKey('player_favorite_action')),
+      );
+      expect(favorite.onPressed, isNull);
+      expect(
+        find.byTooltip(
+          item.id == '1'
+              ? 'Liked status not loaded yet'
+              : 'Liked status unavailable for local-only track',
+        ),
+        findsOneWidget,
+      );
+    }
+    expect(liked.isLiked(1), isNull);
+  });
 
   testWidgets(
     'player surfaces resolve semantic contrast and preserve scrub and sheet wiring',
@@ -532,10 +607,12 @@ class _RecordingLibraryService extends LibraryService {
   _RecordingLibraryService() : super(ApiClient());
 
   final likedIds = <int>[];
+  Future<void> likeResult = Future.value();
 
   @override
-  Future<void> like(int trackId) async {
+  Future<void> like(int trackId) {
     likedIds.add(trackId);
+    return likeResult;
   }
 }
 

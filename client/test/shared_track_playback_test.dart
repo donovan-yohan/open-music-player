@@ -6,7 +6,7 @@ Track _track({
   String title = 'X',
   int? durationMs,
   Map<String, dynamic>? metadata,
-  bool isLiked = false,
+  bool? isLiked,
   String? sourceUrl,
 }) =>
     Track(
@@ -56,6 +56,12 @@ void main() {
 
     expect(j['isLiked'], isTrue);
     expect(j['sourceUrl'], 'https://example.com/source');
+  });
+
+  test('toPlaybackJson omits liked when backend annotation was absent', () {
+    final j = _track().toPlaybackJson();
+
+    expect(j.containsKey('isLiked'), isFalse);
   });
 
   test('mapping a list preserves order and every id (Play semantics)', () {

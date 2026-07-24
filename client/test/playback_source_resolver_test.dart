@@ -16,6 +16,8 @@ Map<String, dynamic> trackMap(
   Map<String, dynamic>? analysisSummary,
   Map<String, dynamic>? analysisOverrides,
   String? analysisUpdatedAt,
+  bool? isLiked,
+  String? sourceUrl,
 }) =>
     {
       'id': id,
@@ -26,6 +28,8 @@ Map<String, dynamic> trackMap(
       if (analysisSummary != null) 'analysisSummary': analysisSummary,
       if (analysisOverrides != null) 'analysisOverrides': analysisOverrides,
       if (analysisUpdatedAt != null) 'analysisUpdatedAt': analysisUpdatedAt,
+      if (isLiked != null) 'isLiked': isLiked,
+      if (sourceUrl != null) 'sourceUrl': sourceUrl,
     };
 
 void main() {
@@ -205,6 +209,40 @@ void main() {
 
       expect(item.extras?['analysisSummary'], analysisSummary);
       expect(item.extras?['analysisOverrides'], analysisOverrides);
+    });
+
+    test('scopes live liked and source extras to the resolving account',
+        () async {
+      final signed = SignedAudioUrlService.withRequester((body) async {
+        return {
+          'urls': [
+            {
+              'trackId': 1,
+              'url': 'https://objects.example/track-1',
+              'expiresAt': DateTime.now()
+                  .toUtc()
+                  .add(const Duration(minutes: 10))
+                  .toIso8601String(),
+            },
+          ],
+        };
+      });
+      final resolver = PlaybackSourceResolver(
+        signedAudioUrlService: signed,
+        accountIdProvider: () async => 'user-a',
+      );
+
+      final item = await resolver.resolveTrack(
+        trackMap(
+          1,
+          isLiked: true,
+          sourceUrl: 'https://source.example/1',
+        ),
+      );
+
+      expect(item.extras?['isLiked'], isTrue);
+      expect(item.extras?['sourceUrl'], 'https://source.example/1');
+      expect(item.extras?['likedAccountId'], 'user-a');
     });
   });
 }

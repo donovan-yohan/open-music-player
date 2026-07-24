@@ -247,3 +247,165 @@ Production stale-authority scan:
 - No quality, gapless, crossfade, delete-account, backend, queue-controller, or
   engine work was included.
 - `TASK-286.md` remains untracked and unmodified as the supplied work packet.
+
+## Fix pass 2 (cross-model review)
+
+The twelve review findings were handled as one coherent fix batch under the
+rule that only backend-annotation-traceable values may seed
+`LikedTracksState`. No finding was refuted.
+
+| Finding | Action |
+| --- | --- |
+| 1 | Made `Track.isLiked` nullable, preserved absent `is_liked` as unknown in both payload factories, and made `toPlaybackJson`/`toJson` omit liked metadata when unknown. |
+| 2 | Added conditional `isLiked` and trimmed `sourceUrl` passthroughs to `mediaItemToPlaybackJson`, with present/absent round-trip assertions. |
+| 3 | Removed notifier seeding from both initial and paginated local/offline Library loads; an offline-style unknown row is tested not to overwrite a known true value. |
+| 4 | Made the share handler await `share_plus`, disabled the web mailto fallback, and surfaces async failures through `Could not open the share sheet`. |
+| 5 | Added request-start seed-version tokens and per-track local-write versions. Library and Liked Songs capture the version before each fetch, so a response begun before a now-settled toggle cannot revert it. |
+| 6 | Tagged durable queue snapshots and live resolved `MediaItem` annotations with the JWT `user_id`. A different or unknown account strips durable liked/source metadata, while the player rejects still-live extras from another account. |
+| 7 | Added an explicit disabled player branch and tooltip: `Liked status not loaded yet`. Local-only ids retain their separate honest unavailable reason. |
+| 8 | Exposed `isToggling`, disabled Player and Liked Songs hearts during writes, and notified again when the write settles so both controls re-enable. |
+| 9 | Reworded the disabled share tooltip to `Source link unavailable`. |
+| 10 | Added regression assertions for a seed during an unresolved toggle, a second toggle being a no-op, and a non-numeric player item id producing a null favorite handler. |
+| 11 | Added a `Provider<PlaybackCacheManager?>.value(null)` storage widget test asserting `Unavailable on this platform` and a disabled Clear button. |
+| 12 | Added the backend-annotation-only seeding rule, nullable unknown state, offline/model-default prohibition, and stale-response guard to ADR 0004. |
+
+### Verification
+
+Focused regression command:
+
+```text
+cd client && flutter test \
+  test/liked_tracks_state_test.dart \
+  test/shared_track_playback_test.dart \
+  test/queue_persistence_test.dart \
+  test/player_screen_test.dart \
+  test/liked_songs_screen_state_test.dart \
+  test/settings_storage_section_test.dart
+```
+
+- Exit code: `0`
+- Result: `46` tests passed, `0` failed.
+
+Focused changed-hunk re-review command:
+
+```text
+cd client && flutter test \
+  test/library_track_actions_test.dart \
+  test/liked_tracks_state_test.dart \
+  test/player_screen_test.dart \
+  test/liked_songs_screen_state_test.dart
+```
+
+- Exit code: `0`
+- Result: `19` tests passed, `0` failed.
+
+Required analyzer command:
+
+```text
+cd client && flutter analyze
+```
+
+- Exit code: `1`
+- Exact result: `9 issues found. (ran in 1.7s)`
+- All nine are the known pre-existing info-level diagnostics listed earlier in
+  this report. There were no warnings, errors, or diagnostics in changed files.
+
+The first full-suite attempt was run before the explicit adversarial-review
+boundary and is retained here honestly:
+
+- Exit code: `1`
+- Result: `961` passed, `1` failed.
+- Failure:
+  `client/test/library_track_actions_test.dart` still expected a missing
+  `is_liked` annotation to default to false. The test was corrected to assert
+  null, matching the fix-pass rule.
+
+The subsequent adversarial diff review found two additional valid changed-hunk
+issues: toggle completion removed the in-flight marker without notifying
+listeners, and a still-live previous-account `sourceUrl` was not gated with its
+liked annotation. Both were fixed in the same batch. The focused changed-hunk
+re-review above then passed before the final full gate.
+
+Required final full-suite command:
+
+```text
+cd client && flutter test
+```
+
+- Exit code: `0`
+- Exact final line: `00:31 +963: All tests passed!`
+- Total: `963` passed, `0` failed.
+
+Delivery harness:
+
+```text
+scripts/agentic-harness
+```
+
+- Exit code: `0`
+- Result: `AGENTIC HARNESS OK`
+
+No backend, `client/lib/core/engine/`, or
+`queue_timeline_controller.dart` file was changed. The supplied
+`TASK-286.md` and `FIXPASS-286.md` packets remain untracked and unmodified.
+The conventional fix-pass commit is intentionally left to the primary agent
+after final integration review.
+
+### Focused re-review follow-up
+
+A focused review of the fix-pass hunks found three additional gaps. They were
+patched without widening the task:
+
+| Gap | Follow-up action |
+| --- | --- |
+| Account-switch response race | `LikedTracksState.clear()` now always advances an account/request epoch, even when state is empty, and rejects every response captured before that floor. The async account-id callback in `main.dart` also carries a generation and cannot apply after a later logout or auth transition. |
+| Persistence relabel race | `mediaItemToPlaybackJson` preserves `likedAccountId`, and `QueuePersistenceStore.save` scopes each track before stamping the current snapshot account. Old-account liked/source metadata is stripped instead of being relabeled as the new user. |
+| Downloaded-only harness gap | Both remote and local Library paths now pass through the same test-visible `seedLikedTracksFromLibraryLoad` decision. The local/downloaded source is asserted not to overwrite an already seeded true value. |
+
+Focused follow-up command:
+
+```text
+cd client && flutter test \
+  test/liked_tracks_state_test.dart \
+  test/queue_persistence_test.dart \
+  test/library_track_actions_test.dart \
+  test/playback_source_resolver_test.dart
+```
+
+- Exit code: `0`
+- Exact result: `39` tests passed, `0` failed.
+
+Follow-up analyzer command:
+
+```text
+cd client && flutter analyze
+```
+
+- Exit code: `1`
+- Exact result: `9 issues found. (ran in 1.1s)`
+- All nine remain the known pre-existing info-level diagnostics; there are no
+  diagnostics in changed files.
+
+The earlier `963/963` full-suite result predates these focused-review changes
+and remains historical evidence only. The primary agent then ran the required
+final exact-head gates:
+
+```text
+cd client && flutter analyze
+```
+
+- Exit code: `1`
+- Exact result: `9 issues found. (ran in 1.1s)`
+- All nine are the same known pre-existing info-level diagnostics, with no
+  diagnostic in a changed file.
+
+```text
+cd client && flutter test
+```
+
+- Exit code: `0`
+- Exact final line: `00:34 +966: All tests passed!`
+- Total: `966` passed, `0` failed.
+
+The `966/966` result is the final exact-head full-suite evidence for this fix
+pass.

@@ -169,6 +169,7 @@ class PlaybackState extends ChangeNotifier {
     LocalAudioArtifactResolver? localResolver,
     PlaybackCacheManager? cacheManager,
     QueuePersistenceStore? persistence,
+    Future<String?> Function()? accountIdProvider,
   })  : _queueController = QueueTimelineController(engine),
         _signedAudioUrlService = signedAudioUrlService,
         _persistence = persistence,
@@ -177,6 +178,7 @@ class PlaybackState extends ChangeNotifier {
           signedAudioUrlService: signedAudioUrlService,
           localResolver: localResolver,
           cacheManager: cacheManager,
+          accountIdProvider: accountIdProvider,
         ) {
     _init();
   }

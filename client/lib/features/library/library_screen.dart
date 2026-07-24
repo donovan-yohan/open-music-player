@@ -27,6 +27,27 @@ class LibraryScreen extends StatefulWidget {
   State<LibraryScreen> createState() => _LibraryScreenState();
 }
 
+enum LibraryTrackLoadSource { remote, local }
+
+/// Applies liked annotations only for backend collection responses.
+///
+/// The local database intentionally has no liked-state authority. Keeping this
+/// decision in the same helper used by both load paths makes that boundary
+/// directly testable.
+@visibleForTesting
+void seedLikedTracksFromLibraryLoad({
+  required LikedTracksState likedState,
+  required Iterable<Track> tracks,
+  required LibraryTrackLoadSource source,
+  int? responseToSeedVersion,
+}) {
+  if (source != LibraryTrackLoadSource.remote) return;
+  likedState.seed(
+    tracks,
+    responseToSeedVersion: responseToSeedVersion,
+  );
+}
+
 class _LibraryScreenState extends State<LibraryScreen> {
   static const _pageSize = 20;
 
@@ -105,9 +126,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
     try {
       if (!_downloadedOnly && context.read<ConnectivityService>().isOnline) {
         try {
+          final likedState = context.read<LikedTracksState>();
+          final seedVersion = likedState.seedVersion;
           final remote = await _loadRemoteTracks(offset: 0);
           if (!mounted) return;
-          context.read<LikedTracksState>().seed(remote.tracks);
+          seedLikedTracksFromLibraryLoad(
+            likedState: likedState,
+            tracks: remote.tracks,
+            source: LibraryTrackLoadSource.remote,
+            responseToSeedVersion: seedVersion,
+          );
           setState(() {
             _tracks = remote.tracks;
             _totalCount = remote.total;
@@ -124,7 +152,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
       final local = await _loadLocalTracks(offset: 0, includeCounts: true);
       if (!mounted) return;
-      context.read<LikedTracksState>().seed(local.tracks);
+      seedLikedTracksFromLibraryLoad(
+        likedState: context.read<LikedTracksState>(),
+        tracks: local.tracks,
+        source: LibraryTrackLoadSource.local,
+      );
       setState(() {
         _tracks = local.tracks;
         _totalCount = local.total;
@@ -146,9 +178,16 @@ class _LibraryScreenState extends State<LibraryScreen> {
     setState(() => _isLoadingMore = true);
     try {
       if (!_downloadedOnly && context.read<ConnectivityService>().isOnline) {
+        final likedState = context.read<LikedTracksState>();
+        final seedVersion = likedState.seedVersion;
         final remote = await _loadRemoteTracks(offset: _tracks.length);
         if (!mounted) return;
-        context.read<LikedTracksState>().seed(remote.tracks);
+        seedLikedTracksFromLibraryLoad(
+          likedState: likedState,
+          tracks: remote.tracks,
+          source: LibraryTrackLoadSource.remote,
+          responseToSeedVersion: seedVersion,
+        );
         setState(() {
           _tracks.addAll(remote.tracks);
           _hasMore = _tracks.length < remote.total;
@@ -162,7 +201,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
         includeCounts: false,
       );
       if (!mounted) return;
-      context.read<LikedTracksState>().seed(local.tracks);
+      seedLikedTracksFromLibraryLoad(
+        likedState: context.read<LikedTracksState>(),
+        tracks: local.tracks,
+        source: LibraryTrackLoadSource.local,
+      );
       setState(() {
         _tracks.addAll(local.tracks);
         _hasMore = _tracks.length < local.total;

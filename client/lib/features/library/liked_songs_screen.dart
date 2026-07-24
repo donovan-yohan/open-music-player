@@ -47,9 +47,14 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
       _hasError = false;
     });
     try {
+      final likedState = context.read<LikedTracksState>();
+      final seedVersion = likedState.seedVersion;
       final page = await _libraryService.getLikedSongs();
       if (!mounted) return;
-      context.read<LikedTracksState>().seed(page.tracks);
+      likedState.seed(
+        page.tracks,
+        responseToSeedVersion: seedVersion,
+      );
       setState(() {
         _tracks = page.tracks;
         _total = page.total;
@@ -117,8 +122,9 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
           if (index == 0) return _buildHeader(context);
           final track = _tracks[index - 1];
           final currentTrackId = context.watch<PlaybackState>().currentItem?.id;
-          final liked =
-              context.watch<LikedTracksState>().isLiked(track.id) ?? false;
+          final likedState = context.watch<LikedTracksState>();
+          final liked = likedState.isLiked(track.id) ?? false;
+          final isToggling = likedState.isToggling(track.id);
           return QueueSwipeAction(
             actionKey: ValueKey('liked_queue_${track.id}_${index - 1}'),
             onAddToQueue: () => _enqueueTrack(track),
@@ -132,7 +138,7 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
                   liked ? Icons.favorite : Icons.favorite_border,
                 ),
                 tooltip: liked ? 'Unlike' : 'Like',
-                onPressed: () => _toggleLike(track.id),
+                onPressed: isToggling ? null : () => _toggleLike(track.id),
               ),
             ),
           );

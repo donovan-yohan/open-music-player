@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -14,6 +16,8 @@ void main() {
     'Liked Songs heart follows shared toggles without removing the fetched row',
     (tester) async {
       final service = _LibraryService();
+      final write = Completer<void>();
+      service.unlikeResult = write.future;
       final liked = LikedTracksState(service);
 
       await tester.pumpWidget(
@@ -40,6 +44,25 @@ void main() {
       expect(find.byIcon(Icons.favorite_border), findsOneWidget);
       expect(find.text('Same row'), findsOneWidget);
       expect(service.unlikedIds, [123]);
+      expect(
+        tester
+            .widget<IconButton>(
+              find.byKey(const ValueKey('liked_song_heart_123')),
+            )
+            .onPressed,
+        isNull,
+      );
+
+      write.complete();
+      await tester.pump();
+      expect(
+        tester
+            .widget<IconButton>(
+              find.byKey(const ValueKey('liked_song_heart_123')),
+            )
+            .onPressed,
+        isNotNull,
+      );
     },
   );
 }
@@ -48,6 +71,7 @@ class _LibraryService extends LibraryService {
   _LibraryService() : super(ApiClient());
 
   final unlikedIds = <int>[];
+  Future<void> unlikeResult = Future.value();
   final track = Track(
     id: 123,
     identityHash: 'track-123',
@@ -67,8 +91,9 @@ class _LibraryService extends LibraryService {
       (tracks: [track], total: 1);
 
   @override
-  Future<void> unlike(int trackId) async {
+  Future<void> unlike(int trackId) {
     unlikedIds.add(trackId);
+    return unlikeResult;
   }
 }
 

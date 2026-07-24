@@ -24,6 +24,10 @@ Those controls made the shipped surface promise behavior it did not have.
 - `LikedTracksState` is the single client authority. Collection and playback
   payloads seed it; every interactive heart reads and toggles it. Logout clears
   its account-scoped values.
+- Seeding is limited to values traceable to a backend `is_liked` annotation.
+  Unknown remains nullable end to end; model defaults and offline database rows
+  never become liked authority, and stale responses cannot overwrite a newer
+  local write.
 - Liked state never becomes playback, queue, `MixSession`, or
   `PlaybackState` truth. Liked Songs remains a filtered library collection,
   never a materialized playlist.

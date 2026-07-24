@@ -59,6 +59,27 @@ void main() {
     expect(find.text('0 B'), findsOneWidget);
   });
 
+  testWidgets('storage is honestly unavailable without a cache manager',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+
+    await tester.pumpWidget(
+      _testApp(preferences: preferences, cache: null),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Unavailable on this platform'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextButton>(
+            find.byKey(const ValueKey('settings_clear_cache')),
+          )
+          .onPressed,
+      isNull,
+    );
+  });
+
   testWidgets('Downloads tile navigates to the real route', (tester) async {
     SharedPreferences.setMockInitialValues({});
     final preferences = await SharedPreferences.getInstance();
@@ -80,7 +101,7 @@ void main() {
 
 Widget _testApp({
   required SharedPreferences preferences,
-  required PlaybackCacheManager cache,
+  required PlaybackCacheManager? cache,
 }) {
   final router = GoRouter(
     routes: [

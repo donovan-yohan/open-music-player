@@ -27,6 +27,7 @@ class PlaybackSourceResolver {
   final SignedAudioUrlService _signedAudioUrlService;
   final LocalAudioArtifactResolver? _localResolver;
   final PlaybackCacheManager? _cacheManager;
+  final Future<String?> Function()? _accountIdProvider;
 
   /// Upper bound on how many remote misses a single resolve speculatively warms
   /// into the cache, so a large queue does not trigger a download per track.
@@ -37,16 +38,19 @@ class PlaybackSourceResolver {
     required SignedAudioUrlService signedAudioUrlService,
     LocalAudioArtifactResolver? localResolver,
     PlaybackCacheManager? cacheManager,
+    Future<String?> Function()? accountIdProvider,
     this.cachePrefetchLimit = 3,
   })  : _signedAudioUrlService = signedAudioUrlService,
         _localResolver = localResolver,
-        _cacheManager = cacheManager;
+        _cacheManager = cacheManager,
+        _accountIdProvider = accountIdProvider;
 
   /// Resolves [tracks] (in order) into playable media items. Signed descriptors
   /// are requested only for tracks lacking a valid local artifact.
   Future<List<MediaItem>> resolveQueue(
     List<Map<String, dynamic>> tracks,
   ) async {
+    final likedAccountId = await _accountIdProvider?.call();
     final trackIds = tracks.map(readTrackId).toList();
 
     // Local-first: resolve on-device artifacts before any network call.
@@ -102,7 +106,14 @@ class PlaybackSourceResolver {
       final id = trackIds[i];
       final localPath = localPaths[id] ?? cachePaths[id];
       if (localPath != null) {
-        items.add(buildLocalMediaItem(track, id, localPath));
+        items.add(
+          buildLocalMediaItem(
+            track,
+            id,
+            localPath,
+            likedAccountId: likedAccountId,
+          ),
+        );
       } else {
         final descriptor = descriptors[id];
         if (descriptor == null) {
@@ -111,7 +122,13 @@ class PlaybackSourceResolver {
             message: 'No playback descriptor found for track $id.',
           );
         }
-        items.add(buildRemoteMediaItem(track, descriptor));
+        items.add(
+          buildRemoteMediaItem(
+            track,
+            descriptor,
+            likedAccountId: likedAccountId,
+          ),
+        );
       }
     }
 
@@ -167,6 +184,7 @@ class PlaybackSourceResolver {
     Map<String, dynamic> track,
     int trackId,
     Map<String, dynamic> extras,
+    String? likedAccountId,
   ) {
     final playbackExtras = {
       ...extras,
@@ -188,6 +206,7 @@ class PlaybackSourceResolver {
         'analysisUpdatedAt': track['analysis_updated_at'],
       if (track['isLiked'] is bool) 'isLiked': track['isLiked'],
       if (track['is_liked'] is bool) 'isLiked': track['is_liked'],
+      if (likedAccountId != null) 'likedAccountId': likedAccountId,
       if (track['sourceUrl'] is String) 'sourceUrl': track['sourceUrl'],
       if (track['source_url'] is String) 'sourceUrl': track['source_url'],
       'analysisRef': trackId.toString(),
@@ -206,27 +225,35 @@ class PlaybackSourceResolver {
   }
 
   static MediaItem buildLocalMediaItem(
-    Map<String, dynamic> track,
-    int trackId,
-    String localPath,
-  ) {
+      Map<String, dynamic> track, int trackId, String localPath,
+      {String? likedAccountId}) {
     // No `url`/`expiresAt`: a local artifact never expires and must not be
     // refreshed against a signed URL. `localPath` is the local-source marker.
-    return _mediaItem(track, trackId, {'localPath': localPath});
+    return _mediaItem(
+      track,
+      trackId,
+      {'localPath': localPath},
+      likedAccountId,
+    );
   }
 
   static MediaItem buildRemoteMediaItem(
-    Map<String, dynamic> track,
-    SignedAudioDescriptor descriptor,
-  ) {
-    return _mediaItem(track, descriptor.trackId, {
-      'url': descriptor.url,
-      'expiresAt': descriptor.expiresAt.toIso8601String(),
-      if (descriptor.contentType != null) 'contentType': descriptor.contentType,
-      if (descriptor.sizeBytes != null) 'sizeBytes': descriptor.sizeBytes,
-      if (descriptor.etag != null) 'etag': descriptor.etag,
-      if (descriptor.storageKeyVersion != null)
-        'storageKeyVersion': descriptor.storageKeyVersion,
-    });
+      Map<String, dynamic> track, SignedAudioDescriptor descriptor,
+      {String? likedAccountId}) {
+    return _mediaItem(
+      track,
+      descriptor.trackId,
+      {
+        'url': descriptor.url,
+        'expiresAt': descriptor.expiresAt.toIso8601String(),
+        if (descriptor.contentType != null)
+          'contentType': descriptor.contentType,
+        if (descriptor.sizeBytes != null) 'sizeBytes': descriptor.sizeBytes,
+        if (descriptor.etag != null) 'etag': descriptor.etag,
+        if (descriptor.storageKeyVersion != null)
+          'storageKeyVersion': descriptor.storageKeyVersion,
+      },
+      likedAccountId,
+    );
   }
 }

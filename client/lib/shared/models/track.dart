@@ -103,9 +103,11 @@ class Track {
   final List<MBSuggestion> mbSuggestions;
   final TrackAnalysis? analysis;
 
-  /// Whether the current user has liked (favorited) this track. Sourced from
-  /// the `is_liked` flag on the GET /library response.
-  final bool isLiked;
+  /// Whether the current user has liked (favorited) this track.
+  ///
+  /// Null means the source payload did not carry a backend `is_liked`
+  /// annotation. Model construction must not turn that unknown into false.
+  final bool? isLiked;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -128,7 +130,7 @@ class Track {
     this.metadata,
     this.mbSuggestions = const [],
     this.analysis,
-    this.isLiked = false,
+    this.isLiked,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -142,7 +144,7 @@ class Track {
         'album': album,
         'duration': durationMs != null ? durationMs! ~/ 1000 : 0,
         'artwork_url': metadata?['cover_art_url'],
-        'isLiked': isLiked,
+        if (isLiked != null) 'isLiked': isLiked,
         if (sourceUrl != null && sourceUrl!.trim().isNotEmpty)
           'sourceUrl': sourceUrl!.trim(),
         if (analysis != null) 'analysisStatus': analysis!.status.name,
@@ -193,7 +195,7 @@ class Track {
       metadata: json['metadata_json'] as Map<String, dynamic>?,
       mbSuggestions: suggestions,
       analysis: trackAnalysisFromTrackJson(json),
-      isLiked: json['isLiked'] as bool? ?? json['is_liked'] as bool? ?? false,
+      isLiked: json['isLiked'] as bool? ?? json['is_liked'] as bool?,
       createdAt: _dateTimeValue(json['createdAt'] ?? json['created_at']),
       updatedAt: _dateTimeValue(json['updatedAt'] ?? json['updated_at']),
     );
@@ -226,7 +228,7 @@ class Track {
               .toList() ??
           [],
       analysis: trackAnalysisFromTrackJson(json),
-      isLiked: json['is_liked'] as bool? ?? false,
+      isLiked: json['is_liked'] as bool?,
       createdAt:
           DateTime.tryParse(json['created_at'] as String? ?? '') ?? addedAt,
       updatedAt:
@@ -260,7 +262,7 @@ class Track {
         'analysis_overrides': analysis!.overrides!.toJson(),
       if (analysis?.updatedAt != null)
         'analysis_updated_at': analysis!.updatedAt!.toUtc().toIso8601String(),
-      'is_liked': isLiked,
+      if (isLiked != null) 'is_liked': isLiked,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
     };

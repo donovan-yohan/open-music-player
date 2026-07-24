@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
@@ -188,6 +189,9 @@ void main() {
             'bpm': {'value': 130},
           },
           'analysisUpdatedAt': '2026-07-10T11:00:00.123456Z',
+          'isLiked': true,
+          'likedAccountId': 'user-a',
+          'sourceUrl': ' https://source/42 ',
         },
       );
 
@@ -209,8 +213,20 @@ void main() {
         json['analysisUpdatedAt'],
         '2026-07-10T11:00:00.123456Z',
       );
+      expect(json['isLiked'], isTrue);
+      expect(json['likedAccountId'], 'user-a');
+      expect(json['sourceUrl'], 'https://source/42');
       expect(json.containsKey('url'), isFalse);
       expect(json.containsKey('expiresAt'), isFalse);
+    });
+
+    test('omits optional liked and source metadata when extras lack them', () {
+      const item = MediaItem(id: '42', title: 'Unknown annotations');
+
+      final json = mediaItemToPlaybackJson(item);
+
+      expect(json.containsKey('isLiked'), isFalse);
+      expect(json.containsKey('sourceUrl'), isFalse);
     });
   });
 
@@ -255,5 +271,100 @@ void main() {
       );
       expect((await store.load()).isEmpty, isTrue);
     });
+
+    test('different account strips liked and source metadata on restore',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      var accountId = 'user-a';
+      final store = QueuePersistenceStore(
+        prefs: SharedPreferences.getInstance(),
+        accountIdProvider: () async => accountId,
+      );
+      await store.save(
+        QueueSnapshot(
+          tracks: [
+            {
+              ..._track(1),
+              'isLiked': true,
+              'likedAccountId': 'user-a',
+              'sourceUrl': 'https://source/1',
+            },
+          ],
+        ),
+      );
+
+      accountId = 'user-b';
+      final loaded = await store.load();
+
+      expect(loaded.tracks.single.containsKey('isLiked'), isFalse);
+      expect(loaded.tracks.single.containsKey('sourceUrl'), isFalse);
+      expect(loaded.tracks.single['title'], 'Track 1');
+    });
+
+    test('same account preserves liked and source metadata on restore',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final store = QueuePersistenceStore(
+        prefs: SharedPreferences.getInstance(),
+        accountIdProvider: () async => 'user-a',
+      );
+      await store.save(
+        QueueSnapshot(
+          tracks: [
+            {
+              ..._track(1),
+              'isLiked': false,
+              'likedAccountId': 'user-a',
+              'sourceUrl': 'https://source/1',
+            },
+          ],
+        ),
+      );
+
+      final loaded = await store.load();
+
+      expect(loaded.tracks.single['isLiked'], isFalse);
+      expect(loaded.tracks.single['sourceUrl'], 'https://source/1');
+    });
+
+    test('save cannot relabel old live metadata as the current account',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final store = QueuePersistenceStore(
+        prefs: SharedPreferences.getInstance(),
+        accountIdProvider: () async => 'user-b',
+      );
+      const oldAccountItem = MediaItem(
+        id: '1',
+        title: 'Old account item',
+        extras: {
+          'isLiked': true,
+          'sourceUrl': 'https://source/1',
+          'likedAccountId': 'user-a',
+        },
+      );
+
+      await store.save(
+        QueueSnapshot(
+          tracks: [mediaItemToPlaybackJson(oldAccountItem)],
+        ),
+      );
+      final loaded = await store.load();
+
+      expect(loaded.accountId, 'user-b');
+      expect(loaded.tracks.single.containsKey('isLiked'), isFalse);
+      expect(loaded.tracks.single.containsKey('sourceUrl'), isFalse);
+      expect(loaded.tracks.single.containsKey('likedAccountId'), isFalse);
+    });
+  });
+
+  test('access-token account id parser reads the backend user_id claim', () {
+    final header = base64Url.encode(utf8.encode('{}')).replaceAll('=', '');
+    final payload = base64Url
+        .encode(utf8.encode(jsonEncode({'user_id': 'user-123'})))
+        .replaceAll('=', '');
+
+    expect(accountIdFromAccessToken('$header.$payload.signature'), 'user-123');
+    expect(accountIdFromAccessToken('invalid'), isNull);
   });
 }
