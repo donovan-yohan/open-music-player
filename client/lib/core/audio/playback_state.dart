@@ -10,6 +10,7 @@ import '../engine/timeline_model.dart';
 import '../../models/timeline_clip.dart';
 import '../../models/track_analysis.dart';
 import '../../models/trim_range.dart';
+import 'audio_focus_playback.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'playback_media_item_source.dart';
 import 'playback_session.dart';
@@ -26,7 +27,7 @@ class AudioPlaybackDefaults {
   final int defaultCrossfadeMs;
 }
 
-class PlaybackState extends ChangeNotifier {
+class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   final QueueTimelineController _queueController;
   final SignedAudioUrlService _signedAudioUrlService;
   final PlaybackSourceResolver _sourceResolver;
@@ -59,8 +60,12 @@ class PlaybackState extends ChangeNotifier {
   /// playing, A must stop immediately; and if the user then pauses/stops before
   /// B finishes resolving, that stale pending request must not auto-start B.
   int _playRequestGeneration = 0;
+  int _transportCommandGeneration = 0;
 
+  @override
   bool get isPlaying => _queueController.snapshot.playing;
+  @override
+  int get transportCommandGeneration => _transportCommandGeneration;
   Duration get position => _queueController.snapshot.localPosition;
   Duration get bufferedPosition => _queueController.bufferedPosition;
   Duration get duration => _queueController.snapshot.localDuration;
@@ -279,6 +284,7 @@ class PlaybackState extends ChangeNotifier {
     required PlaybackContext? context,
   }) async {
     final generation = ++_playRequestGeneration;
+    _transportCommandGeneration++;
     _playbackContext = context;
     _playbackError = null;
 
@@ -413,13 +419,17 @@ class PlaybackState extends ChangeNotifier {
     }
   }
 
+  @override
   Future<void> play() async {
+    final commandGeneration = ++_transportCommandGeneration;
     await _refreshCurrentSignedUrlIfNeeded();
+    if (commandGeneration != _transportCommandGeneration) return;
     try {
       await _queueController.play();
     } catch (error) {
       if (!_isRecoverableObjectUrlFailure(error)) rethrow;
       await _refreshCurrentSignedUrl(force: true);
+      if (commandGeneration != _transportCommandGeneration) return;
       await _queueController.play();
     }
   }
@@ -576,12 +586,15 @@ class PlaybackState extends ChangeNotifier {
     return item.copyWith(extras: extras);
   }
 
+  @override
   Future<void> pause() async {
+    _transportCommandGeneration++;
     _cancelPendingPlayRequests();
     await _queueController.pause();
   }
 
   Future<void> stop() async {
+    _transportCommandGeneration++;
     _cancelPendingPlayRequests();
     await _queueController.stop();
   }
@@ -592,8 +605,15 @@ class PlaybackState extends ChangeNotifier {
       _queueController.updateLocalScrub(position);
   Future<void> endLocalScrub(Duration position) =>
       _queueController.endLocalScrub(position);
-  Future<void> skipToNext() => _queueController.skipToNext();
-  Future<void> skipToPrevious() => _queueController.skipToPrevious();
+  Future<void> skipToNext() async {
+    _transportCommandGeneration++;
+    await _queueController.skipToNext();
+  }
+
+  Future<void> skipToPrevious() async {
+    _transportCommandGeneration++;
+    await _queueController.skipToPrevious();
+  }
 
   /// Previous-button behavior: restart the current track when more than 3s in,
   /// otherwise skip to the previous track (see [previousAction]).
@@ -677,7 +697,11 @@ class PlaybackState extends ChangeNotifier {
     unawaited(store.save(snapshot));
   }
 
-  Future<void> skipToIndex(int index) => _queueController.skipToIndex(index);
+  Future<void> skipToIndex(int index) async {
+    _transportCommandGeneration++;
+    await _queueController.skipToIndex(index);
+  }
+
   Future<void> removeFromQueue(int index) =>
       _queueController.removeFromQueue(index);
   Future<void> removeFromQueueByQueueItemId(String queueItemId) =>
