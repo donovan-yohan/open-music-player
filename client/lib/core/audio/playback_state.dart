@@ -71,6 +71,7 @@ class PlaybackState extends ChangeNotifier {
   LoopMode get loopMode => _loopMode;
   bool get canSkipNext => _queueController.canSkipNext;
   bool get canSkipPrevious => _queueController.canSkipPrevious;
+  bool get hasPreviousInPlayOrder => _queueController.hasPreviousInPlayOrder;
   bool get hasTrack => currentItem != null;
   String? get playbackError => _playbackError;
   bool get isResolvingSignedUrl => _isResolvingSignedUrl;

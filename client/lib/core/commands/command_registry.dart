@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../audio/playback_state.dart';
 import 'app_command.dart';
+import 'command_shortcuts.dart';
 
 const _enabled = ConstantCommandAvailability(CommandAvailability.enabled());
 
@@ -49,7 +50,7 @@ class CommandRegistry {
   }
 
   List<AppCommand> _buildCommands() {
-    final primaryModifier = platform == TargetPlatform.macOS ? 'Cmd' : 'Ctrl';
+    final primaryModifier = primaryModifierLabel(platform);
     return [
       AppCommand(
         id: CommandId.playPauseToggle,
@@ -252,7 +253,9 @@ class CommandRegistry {
         availability: _enabled,
         visible: (context) => context.track != null,
         contextAvailability: _needsTrack,
-        execute: (context) => context.playbackState.playTrack(context.track!),
+        execute: (context) =>
+            context.playNow?.call() ??
+            context.playbackState.playTrack(context.track!),
       ),
       AppCommand(
         id: CommandId.playNext,
@@ -283,12 +286,17 @@ class CommandRegistry {
         icon: Icons.remove_circle_outline,
         availability: _hasTrack('The queue is empty'),
         visible: (context) => context.queueItemId != null,
-        contextAvailability: (context) =>
-            context.queueItemId?.isNotEmpty == true
-                ? const CommandAvailability.enabled()
-                : const CommandAvailability.disabled(
-                    'Queue item identity is unavailable',
-                  ),
+        contextAvailability: (context) {
+          if (context.queueItemId?.isNotEmpty != true) {
+            return const CommandAvailability.disabled(
+              'Queue item identity is unavailable',
+            );
+          }
+          if (_targetsCurrentQueueItem(context)) {
+            return const CommandAvailability.disabled('Currently playing');
+          }
+          return const CommandAvailability.enabled();
+        },
         execute: (context) => context.playbackState
             .removeFromQueueByQueueItemId(context.queueItemId!),
       ),
@@ -395,13 +403,31 @@ class CommandRegistry {
     if (_playbackState.currentIndex == null || _playbackState.queue.isEmpty) {
       return const CommandAvailability.disabled('Nothing is queued');
     }
-    if (_playbackState.position > const Duration(seconds: 3) ||
-        _playbackState.canSkipPrevious) {
+    if (_playbackState.position > const Duration(seconds: 3)) {
+      return const CommandAvailability.enabled();
+    }
+    // canSkipPrevious includes loop modes, but the controller's Previous
+    // action does not wrap. This loop-independent capability reflects the
+    // actual shuffled or sequential play order.
+    if (_playbackState.hasPreviousInPlayOrder) {
       return const CommandAvailability.enabled();
     }
     return const CommandAvailability.disabled(
       'Already at the start of the queue',
     );
+  }
+
+  bool _targetsCurrentQueueItem(CommandContext context) {
+    final queueItemId = context.queueItemId;
+    final snapshot = context.playbackState.snapshot;
+    final currentCueId = snapshot.currentCueId;
+    if (queueItemId == null || currentCueId == null) return false;
+    for (final cue in snapshot.cues) {
+      if (cue.cueId == currentCueId) {
+        return cue.queueItemId == queueItemId;
+      }
+    }
+    return false;
   }
 }
 

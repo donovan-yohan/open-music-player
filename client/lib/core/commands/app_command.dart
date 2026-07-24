@@ -35,7 +35,7 @@ enum CommandId {
   toggleLiked,
 }
 
-enum CommandCategory { transport, navigation, item, queue, global }
+enum CommandCategory { transport, navigation, item, global }
 
 @immutable
 class CommandAvailability {
@@ -136,6 +136,7 @@ class CommandContext {
     this.trackId,
     this.queueItemId,
     this.addTrackToPlaylist,
+    this.playNow,
     this.addToQueue,
     this.toggleLiked,
   });
@@ -147,6 +148,7 @@ class CommandContext {
   final int? trackId;
   final String? queueItemId;
   final AddTrackToPlaylist? addTrackToPlaylist;
+  final SurfaceCommandDelegate? playNow;
   final SurfaceCommandDelegate? addToQueue;
   final SurfaceCommandDelegate? toggleLiked;
 }

@@ -77,6 +77,7 @@ class QueueTimelineController {
   bool get canSkipPrevious =>
       _queue.isNotEmpty &&
       (_loopMode != LoopMode.off || _previousQueueIndex() != null);
+  bool get hasPreviousInPlayOrder => _previousQueueIndex() != null;
   BeatSnapMode get transitionSnapMode => _session.transitionSnapMode;
   int get defaultCrossfadeMs => _session.defaultCrossfadeMs;
   Duration get position => _positionSubject.value;

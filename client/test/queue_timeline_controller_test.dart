@@ -215,7 +215,8 @@ void main() {
       },
     );
 
-    test('shuffle skip capability follows play order, not queue index', () async {
+    test('shuffle skip capability follows play order, not queue index',
+        () async {
       final harness = _Harness();
       await harness.controller.setQueue([
         _item('1'),
@@ -232,6 +233,31 @@ void main() {
 
       await harness.dispose();
     });
+
+    test(
+      'previous capability is loop-independent and follows shuffled play order',
+      () async {
+        final harness = _Harness();
+        await harness.controller.setQueue([_item('only')]);
+        await harness.controller.setLoopMode(LoopMode.all);
+
+        expect(harness.controller.canSkipPrevious, isTrue);
+        expect(harness.controller.hasPreviousInPlayOrder, isFalse);
+
+        await harness.controller.setQueue([
+          _item('0'),
+          _item('1'),
+          _item('2'),
+        ], initialIndex: 1);
+        await harness.controller.setShuffleMode(true);
+        await harness.controller.skipToIndex(0);
+
+        expect(harness.controller.currentIndex, 0);
+        expect(harness.controller.hasPreviousInPlayOrder, isTrue);
+
+        await harness.dispose();
+      },
+    );
 
     test(
       'insert, remove, skipToIndex, and loop mode update playback model',

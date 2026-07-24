@@ -6,8 +6,10 @@ import 'package:just_audio/just_audio.dart';
 
 import 'package:open_music_player/core/commands/app_command.dart';
 import 'package:open_music_player/core/commands/command_registry.dart';
+import 'package:open_music_player/core/commands/command_shortcuts.dart';
 import 'package:open_music_player/core/commands/command_widgets.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
@@ -89,21 +91,26 @@ void main() {
       ..fakeLoopMode = LoopMode.all
       ..emit();
     expect(registry[CommandId.next].availability.value.enabled, isTrue);
-    expect(registry[CommandId.previous].availability.value.enabled, isTrue);
+    expect(registry[CommandId.previous].availability.value.enabled, isFalse);
     expect(registry[CommandId.seekForward].availability.value.enabled, isTrue);
 
     playback
       ..fakeLoopMode = LoopMode.off
       ..fakeCurrentIndex = 0
       ..fakeCanSkipNext = true
-      ..fakeCanSkipPrevious = false
+      ..fakeHasPreviousInPlayOrder = false
       ..emit();
     expect(registry[CommandId.next].availability.value.enabled, isTrue);
     expect(registry[CommandId.previous].availability.value.enabled, isFalse);
+
+    playback
+      ..fakeHasPreviousInPlayOrder = true
+      ..emit();
+    expect(registry[CommandId.previous].availability.value.enabled, isTrue);
   });
 
   testWidgets(
-    'CommandIntent dispatches enabled commands and focused text fields win',
+    'Space is transport except while typing and disabled transport consumes it',
     (tester) async {
       final playback = _PlaybackState()
         ..fakeQueue = const [
@@ -121,8 +128,15 @@ void main() {
       );
       addTearDown(registry.dispose);
       addTearDown(playback.disposeFake);
-      final focusNode = FocusNode();
-      addTearDown(focusNode.dispose);
+      final listFocusNode = FocusNode();
+      final buttonFocusNode = FocusNode();
+      final textFocusNode = FocusNode();
+      final textController = TextEditingController();
+      addTearDown(listFocusNode.dispose);
+      addTearDown(buttonFocusNode.dispose);
+      addTearDown(textFocusNode.dispose);
+      addTearDown(textController.dispose);
+      var buttonCalls = 0;
 
       CommandContext contextFor(CommandId _) =>
           CommandContext(playbackState: playback);
@@ -135,10 +149,19 @@ void main() {
             child: Scaffold(
               body: Column(
                 children: [
-                  const Text('Command target'),
+                  ListTile(
+                    focusNode: listFocusNode,
+                    title: const Text('Command target'),
+                  ),
+                  ElevatedButton(
+                    focusNode: buttonFocusNode,
+                    onPressed: () => buttonCalls++,
+                    child: const Text('Focused action'),
+                  ),
                   TextField(
                     key: const ValueKey('command_text_field'),
-                    focusNode: focusNode,
+                    focusNode: textFocusNode,
+                    controller: textController,
                   ),
                 ],
               ),
@@ -147,31 +170,104 @@ void main() {
         ),
       );
 
+      listFocusNode.requestFocus();
+      await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.space);
       await tester.pump();
       expect(playback.toggleCalls, 1);
 
-      focusNode.requestFocus();
-      await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.space);
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-      await tester.pump();
-      expect(playback.toggleCalls, 1);
-      expect(playback.seekCalls, isEmpty);
-
-      focusNode.unfocus();
       playback
         ..fakeQueue = const []
         ..fakeCurrentIndex = null
         ..emit();
+      buttonFocusNode.requestFocus();
       await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.space);
       await tester.pump();
       expect(playback.toggleCalls, 1);
+      expect(buttonCalls, 0);
+
+      textFocusNode.requestFocus();
+      await tester.pump();
+      final textFieldContext = tester.element(
+        find.byKey(const ValueKey('command_text_field')),
+      );
+      const playPauseIntent = CommandIntent(
+        CommandId.playPauseToggle,
+      );
+      final action = Actions.find<CommandIntent>(
+        textFieldContext,
+        intent: playPauseIntent,
+      );
+      expect(action.isEnabled(playPauseIntent), isFalse);
+      expect(Actions.handler(textFieldContext, playPauseIntent), isNull);
+
+      await tester.enterText(
+        find.byKey(const ValueKey('command_text_field')),
+        ' ',
+      );
+      expect(textController.text, ' ');
+      expect(playback.toggleCalls, 1);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(textFocusNode.hasFocus, isFalse);
     },
   );
+
+  test('Apple platforms share Meta bindings and Cmd hints', () {
+    final playback = _PlaybackState();
+    final appleRegistry = CommandRegistry(
+      playbackState: playback,
+      platform: TargetPlatform.iOS,
+    );
+    final otherRegistry = CommandRegistry(
+      playbackState: playback,
+      platform: TargetPlatform.android,
+    );
+    addTearDown(appleRegistry.dispose);
+    addTearDown(otherRegistry.dispose);
+    addTearDown(playback.disposeFake);
+
+    final apple = commandShortcutMap(TargetPlatform.iOS);
+    final other = commandShortcutMap(TargetPlatform.android);
+    final appleFocusSearch = apple.keys
+        .whereType<SingleActivator>()
+        .singleWhere(
+            (activator) => activator.trigger == LogicalKeyboardKey.keyK);
+    final otherFocusSearch = other.keys
+        .whereType<SingleActivator>()
+        .singleWhere(
+            (activator) => activator.trigger == LogicalKeyboardKey.keyK);
+    expect(appleFocusSearch.meta, isTrue);
+    expect(appleFocusSearch.control, isFalse);
+    expect(
+      (apple[appleFocusSearch]! as CommandIntent).id,
+      CommandId.focusSearch,
+    );
+    expect(otherFocusSearch.control, isTrue);
+    expect(otherFocusSearch.meta, isFalse);
+    expect(
+      (other[otherFocusSearch]! as CommandIntent).id,
+      CommandId.focusSearch,
+    );
+    expect(
+      appleRegistry[CommandId.focusSearch].shortcutHint,
+      'Cmd+K or /',
+    );
+    expect(
+      otherRegistry[CommandId.focusSearch].shortcutHint,
+      'Ctrl+K or /',
+    );
+    expect(
+      (apple[const CharacterActivator('/')]! as CommandIntent).id,
+      CommandId.focusSearch,
+    );
+    expect(
+      (apple[const CharacterActivator('?')]! as CommandIntent).id,
+      CommandId.showShortcutHelp,
+    );
+  });
 
   test('item commands preserve queue identity and liked authority', () async {
     final playback = _PlaybackState()
@@ -235,12 +331,16 @@ class _PlaybackState extends Fake implements PlaybackState {
   bool fakePlaying = false;
   bool? fakeCanSkipNext;
   bool? fakeCanSkipPrevious;
+  bool fakeHasPreviousInPlayOrder = false;
   int toggleCalls = 0;
   final List<Duration> seekCalls = [];
   final List<Map<String, dynamic>> playNextTracks = [];
   final List<Map<String, dynamic>> enqueuedTracks = [];
   final List<String> removedQueueItemIds = [];
   final List<int> positionalRemoveCalls = [];
+
+  @override
+  PlaybackSnapshot get snapshot => PlaybackSnapshot.empty();
 
   @override
   List<MediaItem> get queue => fakeQueue;
@@ -272,6 +372,9 @@ class _PlaybackState extends Fake implements PlaybackState {
       fakeCanSkipPrevious ??
       (fakeLoopMode != LoopMode.off ||
           (fakeCurrentIndex != null && fakeCurrentIndex! > 0));
+
+  @override
+  bool get hasPreviousInPlayOrder => fakeHasPreviousInPlayOrder;
 
   @override
   bool get isPlaying => fakePlaying;

@@ -390,22 +390,27 @@ class _QueueScreenState extends State<QueueScreen> {
         final entry = entries[index];
         final item = entry.item;
         final queueItemId = _queueItemIdForPlaybackEntry(cues, entry);
+        final registry = context.read<CommandRegistry>();
+        final commandContext = CommandContext(
+          playbackState: playback,
+          track: mediaItemToPlaybackJson(item),
+          trackId: int.tryParse(item.id),
+          queueItemId:
+              queueItemId.startsWith('unresolved_') ? null : queueItemId,
+          playNow: () => _skipToPlaybackIndex(playback, entry),
+        );
         return _buildSwipeToRemoveQueueItem(
           context: context,
           key: ValueKey('remove_playback_queue_$queueItemId'),
-          enabled: !entry.isCurrent,
+          enabled: registry[CommandId.removeFromQueue]
+              .availabilityFor(commandContext)
+              .enabled,
           label: item.title,
           onRemove: () => _removePlaybackQueueEntry(playback, entry),
           onSecondaryTapUp: (details) => showRegistryCommandMenu(
             context: context,
-            registry: context.read<CommandRegistry>(),
-            commandContext: CommandContext(
-              playbackState: playback,
-              track: mediaItemToPlaybackJson(item),
-              trackId: int.tryParse(item.id),
-              queueItemId:
-                  queueItemId.startsWith('unresolved_') ? null : queueItemId,
-            ),
+            registry: registry,
+            commandContext: commandContext,
             position: details.globalPosition,
           ),
           child: TrackTile(
@@ -1448,9 +1453,9 @@ class _QueueScreenState extends State<QueueScreen> {
       final trackId = _analysisTrackId(track);
       if (trackId != null && context.mounted) {
         await context.read<PlaybackState>().refreshTrackAnalysis(
-          trackId,
-          analysis,
-        );
+              trackId,
+              analysis,
+            );
       }
     } catch (_) {
       if (!context.mounted) return;

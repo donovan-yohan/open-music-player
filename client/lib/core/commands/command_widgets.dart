@@ -12,14 +12,21 @@ class RegistryCommandAction extends Action<CommandIntent> {
 
   @override
   bool isEnabled(CommandIntent intent) {
-    if (_textInputHasFocus() && _isTextEditingTransport(intent.id)) {
-      return false;
+    if (_textInputHasFocus()) {
+      return intent.id == CommandId.back;
     }
+    // Space is reserved for transport even while the command is unavailable,
+    // so a focused control cannot activate when the queue is empty.
+    if (intent.id == CommandId.playPauseToggle) return true;
     return registry[intent.id].availabilityFor(contextFor(intent.id)).enabled;
   }
 
   @override
   Object? invoke(CommandIntent intent) {
+    if (intent.id == CommandId.back && _textInputHasFocus()) {
+      FocusManager.instance.primaryFocus?.unfocus();
+      return null;
+    }
     registry[intent.id].execute(contextFor(intent.id));
     return null;
   }
@@ -31,18 +38,6 @@ bool _textInputHasFocus() {
   return context.widget is EditableText ||
       context.findAncestorWidgetOfExactType<EditableText>() != null;
 }
-
-bool _isTextEditingTransport(CommandId id) => switch (id) {
-      CommandId.playPauseToggle ||
-      CommandId.next ||
-      CommandId.previous ||
-      CommandId.seekForward ||
-      CommandId.seekBackward ||
-      CommandId.focusSearch ||
-      CommandId.showShortcutHelp =>
-        true,
-      _ => false,
-    };
 
 class CommandHost extends StatelessWidget {
   const CommandHost({
@@ -109,6 +104,8 @@ Future<void> showRegistryCommandMenu({
 }) async {
   final commands = registry.visibleByCategory(category, commandContext);
   final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+  // Menu availability is a snapshot while the popup is open. execute()
+  // re-checks the registry guard before dispatching a selection.
   final selected = await showMenu<CommandId>(
     context: context,
     position: RelativeRect.fromRect(
@@ -236,6 +233,11 @@ Future<void> showShortcutHelpDialog(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
+              const Text(
+                'Space controls Play / Pause everywhere except while typing. '
+                'The / and ? shortcuts follow the characters produced by your '
+                'keyboard layout.',
+              ),
               for (final category in categories) ...[
                 Padding(
                   padding: const EdgeInsets.only(top: 12, bottom: 4),
@@ -275,6 +277,5 @@ String _categoryLabel(CommandCategory category) => switch (category) {
       CommandCategory.transport => 'Playback',
       CommandCategory.navigation => 'Navigation',
       CommandCategory.item => 'Items',
-      CommandCategory.queue => 'Queue',
       CommandCategory.global => 'General',
     };

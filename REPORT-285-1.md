@@ -65,7 +65,7 @@ playlist rail, transition, or OS-global media-key work is included.
 
 ## Shortcut map
 
-`Primary` is Cmd on macOS and Ctrl elsewhere.
+`Primary` is Cmd on macOS/iOS and Ctrl elsewhere.
 
 | Shortcut | Command |
 | --- | --- |
@@ -101,7 +101,7 @@ New and extended regression coverage:
 - duplicate queue occurrence removal by stable identity;
 - existing app audio-default flow after registry construction.
 
-Commands and results:
+Initial slice-head verification commands and results:
 
 | Command | Exact result |
 | --- | --- |
@@ -109,7 +109,7 @@ Commands and results:
 | `cd client && flutter test` | `+1010: All tests passed!` (1,004 baseline plus 6 new tests). |
 | Focused re-review tests | App audio-default flow `+1`; registry/library/queue-screen/queue-timeline `+93`; all passed. |
 | `scripts/agentic-harness` | `AGENTIC HARNESS OK` |
-| `git diff --check origin/main...HEAD` | Clean at final code head; repeated after this report commit. |
+| `git diff --check origin/main...HEAD` | Clean at the initial slice code head; repeated after the report commit. |
 
 ## Adversarial review
 
@@ -153,8 +153,39 @@ regression in the fix hunks.
   behavior remains a device-level residual risk.
 - OS-global media keys remain explicitly out of scope.
 
+## Fix pass (cross-model review)
+
+The fix-then-approve findings were handled as one bounded batch under the
+accepted policies that Space is a global transport key outside text input and
+that queue-row affordance rules live in the registry.
+
+| Finding | Action |
+| --- | --- |
+| 1. Queue-row Play now replaced the queue | Added a `CommandContext.playNow` surface delegate. Playback queue rows delegate to `_skipToPlaybackIndex`; the registry keeps `playTrack` only as the non-queue fallback. A widget regression asserts one skip, zero `playTrack` calls, and unchanged queue length. |
+| 2. Space handling diverged by availability/focus | The registry action consumes Space while Play / Pause is unavailable, yields all shortcuts to focused text input, and retains loaded-track transport dispatch. Tests cover list-tile focus, an unloaded focused button, and typing Space in a `TextField`. The ADR and help overlay state the convention. |
+| 3. iOS hardware keyboards used Ctrl | One `_isApple` helper now drives shortcut activators and the exported primary-modifier label used by registry hints. Tests cover Apple and non-Apple bindings/hints. |
+| 4. Current-row remove diverged between menu and swipe | `removeFromQueue` availability returns `disabled('Currently playing')` for the current `queueItemId`. The swipe affordance reads that same registry availability; a widget parity test covers both surfaces. |
+| 5. Escape discarded focused input routes | The command action unfocuses a focused text field and does not dispatch Back until no text field has focus. |
+| 6. Repeated `?` stacked help dialogs | App-level help dispatch now has an in-flight dialog guard reset in `finally`. |
+| 7. `/` and `?` assumed a US logical key | Both shortcuts use `CharacterActivator`; help copy notes that physical key position follows the active layout. |
+| 8. Queue command category was unused | Removed the unused `CommandCategory.queue`; item commands remain enumerated from the single item category used by both menu surfaces. |
+| 9. Previous was enabled by loop-all at the first entry | `QueueTimelineController` now exposes the loop-independent derived capability `hasPreviousInPlayOrder`, `PlaybackState` forwards it, and registry availability uses it below the restart threshold. This stays correct when natural queue index 0 has a predecessor in shuffled play order; controller behavior is unchanged. |
+| 10. Popup availability was a stale snapshot | Added the requested guard comment: popup state is a display snapshot, while `AppCommand.execute()` re-checks current availability before dispatch. |
+
+Final exact-head verification results:
+
+| Command | Exact result |
+| --- | --- |
+| `cd client && flutter analyze` | 9 known info diagnostics only; no new diagnostics. |
+| `cd client && flutter test test/command_registry_test.dart test/queue_timeline_controller_test.dart` | `+39: All tests passed!` |
+| `cd client && flutter test test/queue_screen_test.dart` | `+57: All tests passed!` |
+| `cd client && flutter test test/app_audio_defaults_flow_test.dart` | `+1: All tests passed!` |
+| `cd client && flutter test` | `+1014: All tests passed!` (0 failures). |
+| `git diff --check origin/main...HEAD` | Exit 0 at final fix head. |
+
 ## Commits
 
 - `aeff30a feat(client): add command registry foundation`
 - `docs: add TASK-285 command registry report` (the commit containing this
   report)
+- `fix(client): close command registry findings` (this commit)

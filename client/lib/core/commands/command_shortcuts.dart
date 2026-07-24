@@ -9,11 +9,17 @@ class CommandIntent extends Intent {
   final CommandId id;
 }
 
+bool _isApple(TargetPlatform platform) =>
+    platform == TargetPlatform.macOS || platform == TargetPlatform.iOS;
+
+String primaryModifierLabel(TargetPlatform platform) =>
+    _isApple(platform) ? 'Cmd' : 'Ctrl';
+
 Map<ShortcutActivator, Intent> commandShortcutMap(TargetPlatform platform) {
   SingleActivator primary(LogicalKeyboardKey key, {bool shift = false}) =>
-      platform == TargetPlatform.macOS
-      ? SingleActivator(key, meta: true, shift: shift)
-      : SingleActivator(key, control: true, shift: shift);
+      _isApple(platform)
+          ? SingleActivator(key, meta: true, shift: shift)
+          : SingleActivator(key, control: true, shift: shift);
 
   return <ShortcutActivator, Intent>{
     const SingleActivator(LogicalKeyboardKey.space): const CommandIntent(
@@ -32,10 +38,10 @@ Map<ShortcutActivator, Intent> commandShortcutMap(TargetPlatform platform) {
     primary(LogicalKeyboardKey.keyK): const CommandIntent(
       CommandId.focusSearch,
     ),
-    const SingleActivator(LogicalKeyboardKey.slash): const CommandIntent(
+    const CharacterActivator('/'): const CommandIntent(
       CommandId.focusSearch,
     ),
-    const SingleActivator(LogicalKeyboardKey.slash, shift: true):
+    const CharacterActivator('?'):
         const CommandIntent(CommandId.showShortcutHelp),
     const SingleActivator(LogicalKeyboardKey.escape): const CommandIntent(
       CommandId.back,

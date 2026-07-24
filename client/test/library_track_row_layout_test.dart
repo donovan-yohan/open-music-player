@@ -210,6 +210,9 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   bool get canSkipPrevious => false;
 
   @override
+  bool get hasPreviousInPlayOrder => false;
+
+  @override
   void addListener(VoidCallback listener) {}
 
   @override

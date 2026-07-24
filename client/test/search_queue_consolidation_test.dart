@@ -13,6 +13,7 @@ import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/auth/auth_state.dart';
+import 'package:open_music_player/core/commands/command_registry.dart';
 import 'package:open_music_player/core/discovery/discovery_models.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
@@ -116,16 +117,19 @@ void main() {
       final queueClient = _QueueMutationClient()..postedSourceDecisions = 1;
       final queueProvider = QueueProvider(queueClient);
       final playbackState = _RouterPlaybackState();
+      final commandRegistry = CommandRegistry(playbackState: playbackState);
       final router = createRouter(authState);
       addTearDown(router.dispose);
       addTearDown(queueProvider.dispose);
       addTearDown(playbackState.disposeFake);
+      addTearDown(commandRegistry.dispose);
 
       await tester.pumpWidget(
         _productionRouterHost(
           authState: authState,
           queueProvider: queueProvider,
           playbackState: playbackState,
+          commandRegistry: commandRegistry,
           router: router,
         ),
       );
@@ -163,16 +167,19 @@ void main() {
     final authState = _RouterAuthState(authenticated: false);
     final queueProvider = QueueProvider(_QueueMutationClient());
     final playbackState = _RouterPlaybackState();
+    final commandRegistry = CommandRegistry(playbackState: playbackState);
     final router = createRouter(authState);
     addTearDown(router.dispose);
     addTearDown(queueProvider.dispose);
     addTearDown(playbackState.disposeFake);
+    addTearDown(commandRegistry.dispose);
 
     await tester.pumpWidget(
       _productionRouterHost(
         authState: authState,
         queueProvider: queueProvider,
         playbackState: playbackState,
+        commandRegistry: commandRegistry,
         router: router,
       ),
     );
@@ -191,6 +198,7 @@ Widget _productionRouterHost({
   required AuthState authState,
   required QueueProvider queueProvider,
   required PlaybackState playbackState,
+  required CommandRegistry commandRegistry,
   required GoRouter router,
 }) {
   return MultiProvider(
@@ -198,6 +206,7 @@ Widget _productionRouterHost({
       ListenableProvider<AuthState>.value(value: authState),
       ChangeNotifierProvider<QueueProvider>.value(value: queueProvider),
       ListenableProvider<PlaybackState>.value(value: playbackState),
+      Provider<CommandRegistry>.value(value: commandRegistry),
     ],
     child: MaterialApp.router(routerConfig: router),
   );
@@ -259,6 +268,12 @@ class _RouterPlaybackState extends Fake implements PlaybackState {
 
   @override
   bool get isPlaying => false;
+
+  @override
+  bool get canSkipNext => false;
+
+  @override
+  bool get hasPreviousInPlayOrder => false;
 
   @override
   PlaybackContext? get playbackContext => null;

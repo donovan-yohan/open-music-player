@@ -69,6 +69,7 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
   StreamSubscription<String>? _sharedTextSubscription;
   String? _pendingSharedText;
   late final CommandRegistry _commandRegistry;
+  bool _shortcutHelpOpen = false;
 
   @override
   void initState() {
@@ -127,10 +128,9 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
         debugShowCheckedModeBanner: false,
         builder: (context, child) {
           final navigation = _AppCommandNavigation(
-            context: context,
             router: widget.router,
             searchFocusController: widget.searchFocusController,
-            registry: _commandRegistry,
+            showShortcutHelp: () => _showShortcutHelp(context),
           );
           return CommandHost(
             registry: _commandRegistry,
@@ -151,6 +151,19 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
         AudioPlaybackDefaults(defaultCrossfadeMs: seconds * 1000),
       ),
     );
+  }
+
+  Future<void> _showShortcutHelp(BuildContext fallbackContext) async {
+    if (_shortcutHelpOpen) return;
+    _shortcutHelpOpen = true;
+    try {
+      final navigatorContext =
+          widget.router.routerDelegate.navigatorKey.currentContext ??
+              fallbackContext;
+      await showShortcutHelpDialog(navigatorContext, _commandRegistry);
+    } finally {
+      _shortcutHelpOpen = false;
+    }
   }
 
   void _startShareIntentListener() {
@@ -208,16 +221,14 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
 
 class _AppCommandNavigation implements CommandNavigation {
   const _AppCommandNavigation({
-    required this.context,
     required this.router,
     required this.searchFocusController,
-    required this.registry,
-  });
+    required Future<void> Function() showShortcutHelp,
+  }) : _showShortcutHelp = showShortcutHelp;
 
-  final BuildContext context;
   final GoRouter router;
   final SearchFocusController searchFocusController;
-  final CommandRegistry registry;
+  final Future<void> Function() _showShortcutHelp;
 
   @override
   bool get canBack => router.canPop();
@@ -239,11 +250,7 @@ class _AppCommandNavigation implements CommandNavigation {
   }
 
   @override
-  Future<void> showShortcutHelp() {
-    final navigatorContext =
-        router.routerDelegate.navigatorKey.currentContext ?? context;
-    return showShortcutHelpDialog(navigatorContext, registry);
-  }
+  Future<void> showShortcutHelp() => _showShortcutHelp();
 }
 
 bool shouldLockForBiometricLifecycleState(AppLifecycleState state) {
