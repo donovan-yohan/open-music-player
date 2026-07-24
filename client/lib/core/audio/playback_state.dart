@@ -210,8 +210,13 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         final wasPlaying = _isPlaying;
         _isPlaying = state.playing;
         // Persist the resting position whenever playback pauses so a resume
-        // picks up where the listener left off.
-        if (wasPlaying && !_isPlaying) _persistQueue();
+        // picks up where the listener left off. Pause is rare and
+        // user-initiated, so flush immediately instead of waiting out the
+        // debounce — a process kill right after pausing must not lose it.
+        if (wasPlaying && !_isPlaying) {
+          _persistQueue();
+          _flushPersistence();
+        }
         notifyListeners();
       }),
       _queueController.positionStream.listen((pos) {
