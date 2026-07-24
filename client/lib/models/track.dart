@@ -1,3 +1,4 @@
+import 'playback_payload.dart';
 import 'track_analysis.dart';
 
 enum TrackQueueStatus { pending, downloading, failed, playable }
@@ -187,33 +188,19 @@ class QueueTrack {
       'status': queueStatus.name,
       'canPlay': canPlay,
       'canRetry': canRetry,
-      if (analysis != null) 'analysisStatus': analysis!.status.name,
-      if (analysis?.summary != null)
-        'analysisSummary': analysis!.summary!.toJson(),
-      if (analysis?.overrides != null)
-        'analysisOverrides': analysis!.overrides!.toJson(),
-      if (analysis?.updatedAt != null)
-        'analysisUpdatedAt': analysis!.updatedAt!.toUtc().toIso8601String(),
+      ...analysisPlaybackFields(analysis),
     };
   }
 
-  Map<String, dynamic> toPlaybackJson() {
-    return {
-      'id': playbackTrackId ?? id,
-      'title': title,
-      'artist': artist,
-      'album': album,
-      'duration': duration,
-      'artwork_url': coverUrl,
-      if (analysis != null) 'analysisStatus': analysis!.status.name,
-      if (analysis?.summary != null)
-        'analysisSummary': analysis!.summary!.toJson(),
-      if (analysis?.overrides != null)
-        'analysisOverrides': analysis!.overrides!.toJson(),
-      if (analysis?.updatedAt != null)
-        'analysisUpdatedAt': analysis!.updatedAt!.toUtc().toIso8601String(),
-    };
-  }
+  Map<String, dynamic> toPlaybackJson() => buildPlaybackPayload(
+        id: playbackTrackId ?? id,
+        title: title,
+        artist: artist,
+        album: album,
+        duration: Duration(seconds: duration),
+        artworkUrl: coverUrl,
+        analysis: analysis,
+      );
 
   QueueTrack copyWith({
     String? id,

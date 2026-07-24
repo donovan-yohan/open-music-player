@@ -108,6 +108,58 @@ TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
   return analysis;
 }
 
+/// Serializes analysis metadata into the camelCase playback payload contract.
+///
+/// An explicitly-present empty override object remains present. That
+/// distinction lets downstream consumers preserve "known empty" instead of
+/// collapsing it into "not provided".
+Map<String, dynamic> analysisPlaybackFields(TrackAnalysis? analysis) {
+  return trackAnalysisFields(analysis);
+}
+
+enum TrackAnalysisFieldStyle { camelCase, snakeCase }
+
+typedef TrackAnalysisSummarySerializer = Object Function(
+  TrackAnalysisSummary summary,
+);
+typedef TrackAnalysisOverridesSerializer = Object Function(
+  TrackAnalysisOverrides? overrides,
+);
+
+/// Canonical analysis-field mapping for track serializers.
+///
+/// Field naming and storage encoding vary by target, but presence semantics do
+/// not: explicit empty overrides are always emitted, while absent overrides
+/// remain omitted.
+Map<String, dynamic> trackAnalysisFields(
+  TrackAnalysis? analysis, {
+  TrackAnalysisFieldStyle fieldStyle = TrackAnalysisFieldStyle.camelCase,
+  TrackAnalysisSummarySerializer? summarySerializer,
+  TrackAnalysisOverridesSerializer? overridesSerializer,
+  bool includeUpdatedAtMicros = false,
+}) {
+  if (analysis == null) return const {};
+  final snakeCase = fieldStyle == TrackAnalysisFieldStyle.snakeCase;
+  final statusKey = snakeCase ? 'analysis_status' : 'analysisStatus';
+  final summaryKey = snakeCase ? 'analysis_summary' : 'analysisSummary';
+  final overridesKey = snakeCase ? 'analysis_overrides' : 'analysisOverrides';
+  final updatedAtKey = snakeCase ? 'analysis_updated_at' : 'analysisUpdatedAt';
+  final updatedAt = analysis.updatedAt?.toUtc();
+  return {
+    statusKey: analysis.status.name,
+    if (analysis.summary != null)
+      summaryKey: summarySerializer?.call(analysis.summary!) ??
+          analysis.summary!.toJson(),
+    if (analysis.overridesPresent)
+      overridesKey: overridesSerializer?.call(analysis.overrides) ??
+          analysis.overrides?.toJson() ??
+          const {},
+    if (updatedAt != null) updatedAtKey: updatedAt.toIso8601String(),
+    if (includeUpdatedAtMicros && updatedAt != null)
+      'analysis_updated_at_us': updatedAt.microsecondsSinceEpoch,
+  };
+}
+
 DateTime? _readDateTime(Object? value) {
   if (value is DateTime) return value.toUtc();
   if (value is! String || value.trim().isEmpty) return null;

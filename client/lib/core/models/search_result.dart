@@ -1,3 +1,4 @@
+import '../../models/playback_payload.dart';
 import '../../models/track_analysis.dart';
 
 class TrackResult {
@@ -61,6 +62,19 @@ class TrackResult {
     final seconds = totalSeconds % 60;
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
   }
+
+  /// Converts a local search result into the playback queue contract.
+  ///
+  /// Callers must only invoke this for results carrying a numeric local [id].
+  Map<String, dynamic> toPlaybackJson() => buildPlaybackPayload(
+        id: id!,
+        title: title,
+        artist: artist,
+        album: album,
+        duration: Duration(milliseconds: duration ?? 0),
+        artworkUrl: coverUrl,
+        analysis: analysis,
+      );
 }
 
 class TrackDetail {
@@ -74,6 +88,7 @@ class TrackDetail {
   final int? position;
   final bool? inLibrary;
   final bool? downloadable;
+  final TrackAnalysis? analysis;
 
   const TrackDetail({
     required this.id,
@@ -86,6 +101,7 @@ class TrackDetail {
     this.position,
     this.inLibrary,
     this.downloadable,
+    this.analysis,
   });
 
   factory TrackDetail.fromJson(Map<String, dynamic> json) {
@@ -100,6 +116,7 @@ class TrackDetail {
       position: json['position'] as int?,
       inLibrary: json['inLibrary'] as bool?,
       downloadable: json['downloadable'] as bool?,
+      analysis: trackAnalysisFromTrackJson(json),
     );
   }
 

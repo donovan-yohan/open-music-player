@@ -211,6 +211,36 @@ void main() {
       expect(item.extras?['analysisOverrides'], analysisOverrides);
     });
 
+    test('forwards quality extras with camelCase precedence', () async {
+      final resolver = PlaybackSourceResolver(
+        signedAudioUrlService: SignedAudioUrlService.withRequester(
+          (_) async => throw StateError('local playback must not sign a URL'),
+        ),
+        localResolver: _FakeLocalResolver({1: '/downloads/1.flac'}),
+      );
+
+      final item = await resolver.resolveTrack({
+        ...trackMap(1),
+        'codec': 'flac',
+        'bitrateKbps': 921,
+        'bitrate_kbps': 128,
+        'sampleRateHz': 96000,
+        'sample_rate_hz': 44100,
+        'channels': 2,
+        'contentType': 'audio/flac',
+        'content_type': 'audio/mpeg',
+        'sizeBytes': 123456789,
+        'file_size_bytes': 4096,
+      });
+
+      expect(item.extras?['codec'], 'flac');
+      expect(item.extras?['bitrateKbps'], 921);
+      expect(item.extras?['sampleRateHz'], 96000);
+      expect(item.extras?['channels'], 2);
+      expect(item.extras?['contentType'], 'audio/flac');
+      expect(item.extras?['sizeBytes'], 123456789);
+    });
+
     test('scopes live liked and source extras to the resolving account',
         () async {
       final signed = SignedAudioUrlService.withRequester((body) async {

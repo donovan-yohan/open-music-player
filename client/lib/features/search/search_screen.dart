@@ -434,7 +434,7 @@ class _SearchScreenState extends State<SearchScreen> {
     final id = track.id;
     if (id == null) return;
     await context.read<PlaybackState>().playQueue([
-      _localTrackPlaybackJson(track),
+      track.toPlaybackJson(),
     ]);
   }
 
@@ -444,7 +444,7 @@ class _SearchScreenState extends State<SearchScreen> {
     final playback = context.read<PlaybackState>();
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await playback.enqueue(_localTrackPlaybackJson(track));
+      await playback.enqueue(track.toPlaybackJson());
       if (!mounted) return;
       messenger.showSnackBar(
         SnackBar(content: Text('Added "${track.title}" to queue')),
@@ -456,24 +456,6 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
   }
-
-  Map<String, dynamic> _localTrackPlaybackJson(TrackResult track) => {
-        'id': track.id,
-        'title': track.title,
-        'artist': track.artist,
-        'album': track.album,
-        'duration': track.duration != null ? track.duration! ~/ 1000 : 0,
-        'artwork_url': track.coverUrl,
-        if (track.analysis != null)
-          'analysisStatus': track.analysis!.status.name,
-        if (track.analysis?.summary != null)
-          'analysisSummary': track.analysis!.summary!.toJson(),
-        if (track.analysis?.overrides != null)
-          'analysisOverrides': track.analysis!.overrides!.toJson(),
-        if (track.analysis?.updatedAt != null)
-          'analysisUpdatedAt':
-              track.analysis!.updatedAt!.toUtc().toIso8601String(),
-      };
 
   String _friendlyLocalError(Object error) {
     if (error is local_api.ApiException) return error.message;

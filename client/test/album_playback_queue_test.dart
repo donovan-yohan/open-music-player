@@ -4,11 +4,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/models/album.dart';
 import 'package:open_music_player/core/models/search_result.dart';
 import 'package:open_music_player/features/discovery/screens/album_detail_screen.dart';
+import 'package:open_music_player/models/track_analysis.dart';
 
-TrackDetail _track(String id, {String? title, int? duration}) => TrackDetail(
+TrackDetail _track(
+  String id, {
+  String? title,
+  int? duration,
+  TrackAnalysis? analysis,
+}) =>
+    TrackDetail(
       id: id,
       title: title ?? 'Track $id',
       duration: duration,
+      analysis: analysis,
     );
 
 AlbumDetail _album(List<TrackDetail> tracks) => AlbumDetail(
@@ -56,6 +64,30 @@ void main() {
     test('tolerates a null duration', () {
       final json = albumTrackToPlaybackJson(_album(const []), _track('7'));
       expect(json['duration'], 0);
+    });
+
+    test('forwards analysis including explicit empty overrides', () {
+      final track = TrackDetail.fromJson({
+        'id': '7',
+        'title': 'Analyzed album track',
+        'analysisStatus': 'analyzed',
+        'analysisSummary': {
+          'bpm': {'value': 128},
+        },
+        'analysisOverrides': <String, dynamic>{},
+        'analysisUpdatedAt': '2026-07-24T12:34:56Z',
+      });
+
+      final json = albumTrackToPlaybackJson(
+        _album(const []),
+        track,
+      );
+
+      expect(track.analysis, isNotNull);
+      expect(json['analysisStatus'], 'analyzed');
+      expect(json['analysisSummary']['bpm']['value'], 128);
+      expect(json, containsPair('analysisOverrides', const {}));
+      expect(json['analysisUpdatedAt'], '2026-07-24T12:34:56.000Z');
     });
   });
 
