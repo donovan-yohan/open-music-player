@@ -72,6 +72,109 @@ void main() {
     },
   );
 
+  test(
+    'replacement completed during interruption is not restarted on gain',
+    () async {
+      final playback = _FakePlayback()..playing = true;
+      final session = _FakeSession();
+      final coordinator = AudioFocusCoordinator(
+        playback: playback,
+        sessionProvider: () async => session,
+        platformSupported: true,
+      );
+      await coordinator.start();
+
+      session.emit(const AudioFocusEvent(AudioFocusEventKind.loss));
+      await Future<void>.delayed(Duration.zero);
+      playback
+        ..replacePlayback()
+        ..completePlayback();
+      session.emit(const AudioFocusEvent(AudioFocusEventKind.gain));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.calls, ['pause']);
+      expect(playback.playing, isFalse);
+      await coordinator.dispose();
+    },
+  );
+
+  test('repeated transient loss preserves current resume intent', () async {
+    final playback = _FakePlayback()..playing = true;
+    final session = _FakeSession();
+    final coordinator = AudioFocusCoordinator(
+      playback: playback,
+      sessionProvider: () async => session,
+      platformSupported: true,
+    );
+    await coordinator.start();
+
+    session.emit(const AudioFocusEvent(AudioFocusEventKind.loss));
+    await Future<void>.delayed(Duration.zero);
+    session.emit(const AudioFocusEvent(AudioFocusEventKind.loss));
+    await Future<void>.delayed(Duration.zero);
+    session.emit(const AudioFocusEvent(AudioFocusEventKind.gain));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(playback.calls, ['pause', 'pause', 'play']);
+    await coordinator.dispose();
+  });
+
+  test('repeated loss does not revive intent superseded by manual pause',
+      () async {
+    final playback = _FakePlayback()..playing = true;
+    final session = _FakeSession();
+    final coordinator = AudioFocusCoordinator(
+      playback: playback,
+      sessionProvider: () async => session,
+      platformSupported: true,
+    );
+    await coordinator.start();
+
+    session.emit(const AudioFocusEvent(AudioFocusEventKind.loss));
+    await Future<void>.delayed(Duration.zero);
+    await playback.pause();
+    session.emit(const AudioFocusEvent(AudioFocusEventKind.loss));
+    await Future<void>.delayed(Duration.zero);
+    session.emit(const AudioFocusEvent(AudioFocusEventKind.gain));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(playback.calls, ['pause', 'pause', 'pause']);
+    await coordinator.dispose();
+  });
+
+  test('stale playing snapshot cannot revive superseded resume intent',
+      () async {
+    final pauseGate = Completer<void>();
+    final playback = _FakePlayback()
+      ..playing = true
+      ..pauseGate = pauseGate;
+    final session = _FakeSession();
+    final coordinator = AudioFocusCoordinator(
+      playback: playback,
+      sessionProvider: () async => session,
+      platformSupported: true,
+    );
+    await coordinator.start();
+
+    session.emit(const AudioFocusEvent(AudioFocusEventKind.loss));
+    await Future<void>.delayed(Duration.zero);
+    final manualPause = playback.pause();
+    expect(playback.playing, isTrue);
+
+    session.emit(const AudioFocusEvent(AudioFocusEventKind.loss));
+    await Future<void>.delayed(Duration.zero);
+    session.emit(const AudioFocusEvent(AudioFocusEventKind.gain));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(playback.calls, ['pause', 'pause', 'pause']);
+    expect(playback.calls, isNot(contains('play')));
+
+    pauseGate.complete();
+    await manualPause;
+    await Future<void>.delayed(Duration.zero);
+    await coordinator.dispose();
+  });
+
   test('iOS unknown begin resumes when interruption ends with pause', () async {
     final playback = _FakePlayback()..playing = true;
     final session = _FakeSession();
@@ -291,12 +394,69 @@ void main() {
     await expectLater(coordinator.start(), completes);
     await coordinator.dispose();
   });
+
+  test('platform startup failure is non-fatal and leaves coordinator inert',
+      () async {
+    var providerCalls = 0;
+    final playback = _FakePlayback()..playing = true;
+    final coordinator = AudioFocusCoordinator(
+      playback: playback,
+      sessionProvider: () async {
+        providerCalls++;
+        throw PlatformException(code: 'session-config-failed');
+      },
+      platformSupported: true,
+    );
+
+    await expectLater(coordinator.start(), completes);
+
+    expect(providerCalls, 1);
+    expect(playback.calls, isEmpty);
+    await coordinator.dispose();
+  });
+
+  test('session configure failure cleans up and permits a clean retry',
+      () async {
+    final failingSession = _FakeSession()
+      ..configureError = PlatformException(code: 'configure-failed');
+    final retrySession = _FakeSession();
+    final sessions = [failingSession, retrySession];
+    var providerCalls = 0;
+    final playback = _FakePlayback()..playing = true;
+    final coordinator = AudioFocusCoordinator(
+      playback: playback,
+      sessionProvider: () async => sessions[providerCalls++],
+      platformSupported: true,
+    );
+
+    await expectLater(coordinator.start(), completes);
+    expect(providerCalls, 1);
+    expect(failingSession.hasListeners, isFalse);
+    failingSession
+      ..emit(const AudioFocusEvent(AudioFocusEventKind.loss))
+      ..noisy();
+    await Future<void>.delayed(Duration.zero);
+    expect(playback.calls, isEmpty);
+
+    await expectLater(coordinator.start(), completes);
+    expect(providerCalls, 2);
+    expect(retrySession.configureCount, 1);
+    expect(retrySession.hasListeners, isTrue);
+    retrySession.emit(const AudioFocusEvent(AudioFocusEventKind.loss));
+    await Future<void>.delayed(Duration.zero);
+    expect(playback.calls, ['pause']);
+    await coordinator.dispose();
+    expect(retrySession.hasListeners, isFalse);
+  });
 }
 
 class _FakeSession implements FocusAudioSession {
   final _focus = StreamController<AudioFocusEvent>.broadcast();
   final _noisy = StreamController<void>.broadcast();
   int configureCount = 0;
+  Object? configureError;
+
+  bool get hasListeners => _focus.hasListener || _noisy.hasListener;
 
   @override
   Stream<AudioFocusEvent> get interruptionEvents => _focus.stream;
@@ -306,6 +466,7 @@ class _FakeSession implements FocusAudioSession {
   @override
   Future<void> configureForMusic() async {
     configureCount++;
+    if (configureError case final error?) throw error;
   }
 
   void emit(AudioFocusEvent event) => _focus.add(event);
@@ -316,6 +477,7 @@ class _FakePlayback implements AudioFocusPlayback {
   bool playing = false;
   Object? pauseError;
   Object? playError;
+  Completer<void>? pauseGate;
   final List<String> calls = [];
 
   @override
@@ -323,11 +485,22 @@ class _FakePlayback implements AudioFocusPlayback {
   @override
   int transportCommandGeneration = 0;
 
+  void replacePlayback() {
+    transportCommandGeneration++;
+    playing = true;
+  }
+
+  void completePlayback() {
+    playing = false;
+  }
+
   @override
   Future<void> pause() async {
     transportCommandGeneration++;
     calls.add('pause');
     if (pauseError case final error?) throw error;
+    final gate = pauseGate;
+    if (gate != null) await gate.future;
     playing = false;
   }
 

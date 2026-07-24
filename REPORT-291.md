@@ -9,10 +9,10 @@
 - State: implementation and automated verification are complete. Physical
   Pixel headphone-unplug/focus-loss evidence remains explicitly outstanding;
   this report makes no device-verification claim.
-- The report-only commit is not yet known because it will be created after this
-  file is finalized.
-- `TASK-291.md` and `ISSUE-291.md` are input artifacts. They remain
-  intentionally untracked and are excluded from the implementation commit.
+- The fix-pass changes and this appendix are packaged together in one
+  conventional fix commit.
+- `TASK-291.md`, `FIXPASS-291.md`, and `ISSUE-291.md` are input artifacts. They
+  remain intentionally untracked and are excluded from implementation commits.
 
 ## What changed
 
@@ -26,8 +26,8 @@ The coordinator:
 
 - configures and listens to `audio_session` on Android and iOS;
 - no-ops on web and desktop and degrades cleanly when the plugin is missing;
-- preserves transient resume intent only while no later user transport command
-  has superseded it;
+- preserves transient resume intent only while no later resume-invalidating
+  command has superseded it;
 - observes synchronous and asynchronous pause/play failures without allowing
   them to escape the event stream; and
 - pauses immediately for becoming-noisy events without arming auto-resume.
@@ -59,7 +59,7 @@ Regression coverage:
 | --- | --- |
 | Pause or duck interruption begins | Pause through `PlaybackState`. If playback was active, retain resume intent at the resulting transport-command generation. |
 | Unknown interruption begins | Pause through `PlaybackState` and tentatively retain resume intent when playback was active; iOS may report an unknown begin and a concrete pause/duck end, so final resume eligibility is decided by the end event. |
-| Pause or duck interruption ends | Resume through `PlaybackState` only if playback was active before the loss and no later transport command changed the generation. |
+| Pause or duck interruption ends | Resume through `PlaybackState` only if playback was active before the loss and no later resume-invalidating command changed the generation. |
 | Unknown interruption ends / permanent loss | Clear pending resume intent and remain paused. |
 | Becoming noisy | Pause immediately through `PlaybackState`, even if the facade already reports paused, and do not arm auto-resume. |
 | User manually pauses during an interruption | The manual pause advances the transport-command generation, so focus gain cannot auto-resume. |
@@ -138,3 +138,43 @@ remaining P0 or P1 issues.
   application-side state transitions and ownership invariant.
 - The direct analyzer command retains the known baseline of nine info-level
   diagnostics, with no warnings or errors.
+
+## Fix pass (cross-model review)
+
+All accepted review findings were handled as one implementation batch.
+
+| Finding | Action |
+| --- | --- |
+| 1. Replacement and skip commands could leave stale focus-resume intent | `_beginPlaybackReplacement`, `skipToNext`, `skipToPrevious`, and `skipToIndex` now advance the transport-command generation. Regressions cover every production entry point and prove that a replacement which completes during an interruption is not restarted on gain. |
+| 2. Auxiliary session startup could abort app boot | `AudioFocusCoordinator.start()` now catches any `Object`, logs the failure, calls `stop()`, and completes without propagating. Regressions cover a provider `PlatformException` and a configuration `PlatformException` after session assignment; the latter proves listeners remain inert, state is cleared, and a later start retries cleanly. |
+| 3 and 7. The sole-owner contract was narrow and formatting-sensitive | The contract now tokenizes every Dart file under `client/lib` while ignoring strings and nested comments, extracts balanced `AudioPlayer(...)` constructions, and requires every construction to contain the real token sequence `handleInterruptions: false`. Self-tests prove comment/string decoys fail and reordered arguments pass. |
+| 4. Repeated loss cleared valid resume intent | A repeated resumable loss now carries forward only resume intent whose generation is still current, re-arming it at the new pause generation. A stale non-null token cannot be re-armed from a lagging `isPlaying` snapshot. Tests cover first loss, valid repeated loss, immediate manual-pause invalidation, and queued manual-pause invalidation. |
+| 5. Android duck policy was implicit | The music session configuration now sets `androidWillPauseWhenDucked: true`; duck interruptions continue to use pause/resume behavior, with no separate ducking implementation. |
+| 6. Loss during pending play was undocumented | The `isPlaying` capture now documents the deliberate conservative window: a loss while signed-URL refresh is pending does not invent resume intent. |
+| 8. Semantics wording needed to match the generation fix | The semantics below explicitly include replacement/skip invalidation and race-safe repeated-loss re-arming. Resume now depends on no later resume-invalidating command, matching the actual generation contract without claiming every transport-like operation increments it. |
+
+### Updated focus semantics
+
+| Event or sequence | Final behavior |
+| --- | --- |
+| Pause or duck interruption begins | Pause through `PlaybackState`. If playback was active, retain resume intent at the resulting transport-command generation. Android session configuration declares `androidWillPauseWhenDucked: true`. |
+| Repeated pause/duck loss before gain | Pause again and re-arm existing resume intent at the new generation only when that intent was still current before the repeated loss. If a queued manual pause already made the token stale while `isPlaying` still lags true, remain disarmed. |
+| User replacement or skip during an interruption | `playTrack`, `playQueue`, a queue-starting `playNext`, `skipToNext`, `skipToPrevious`, and `skipToIndex` advance the generation, invalidating the earlier focus-resume intent. If the replacement completes before gain, gain remains inert and does not restart it. |
+| Loss while play is awaiting signed-URL refresh | Pause, but do not arm speculative resume intent because playback was not yet active. |
+| Pause or duck interruption ends | Resume through `PlaybackState` only when resume intent is armed and no later resume-invalidating command changed its generation. |
+| Unknown interruption ends / permanent loss | Clear pending resume intent and remain paused. |
+| Becoming noisy | Pause immediately through `PlaybackState` and do not arm auto-resume. |
+| User manually pauses during an interruption | Manual pause advances the generation; repeated loss does not revive the stale intent and gain cannot auto-resume. |
+
+### Fix-pass verification
+
+| Command | Exact result |
+| --- | --- |
+| `cd client && flutter test test/audio_focus_coordinator_test.dart test/audio_focus_ownership_contract_test.dart test/playback_state_engine_test.dart` | Passed: 40 tests after the focused correction pass. |
+| `cd client && flutter analyze` | Exit 1 solely from exactly 9 known pre-existing info diagnostics; 0 warnings and 0 errors. |
+| `cd client && flutter test` | Passed: 1,052 tests on the corrected fix-pass tree. |
+| `scripts/agentic-harness` | Passed: `AGENTIC HARNESS OK`. |
+| `git diff --check origin/main...HEAD` | Passed on the committed fix-pass tree (exit 0). |
+
+The fix pass makes no new physical-device verification claim. Real
+headphone-unplug and focus-loss behavior remains owed on the Pixel.

@@ -284,6 +284,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     required PlaybackContext? context,
   }) async {
     final generation = ++_playRequestGeneration;
+    _transportCommandGeneration++;
     _playbackContext = context;
     _playbackError = null;
 
@@ -604,8 +605,15 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       _queueController.updateLocalScrub(position);
   Future<void> endLocalScrub(Duration position) =>
       _queueController.endLocalScrub(position);
-  Future<void> skipToNext() => _queueController.skipToNext();
-  Future<void> skipToPrevious() => _queueController.skipToPrevious();
+  Future<void> skipToNext() async {
+    _transportCommandGeneration++;
+    await _queueController.skipToNext();
+  }
+
+  Future<void> skipToPrevious() async {
+    _transportCommandGeneration++;
+    await _queueController.skipToPrevious();
+  }
 
   /// Previous-button behavior: restart the current track when more than 3s in,
   /// otherwise skip to the previous track (see [previousAction]).
@@ -689,7 +697,11 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     unawaited(store.save(snapshot));
   }
 
-  Future<void> skipToIndex(int index) => _queueController.skipToIndex(index);
+  Future<void> skipToIndex(int index) async {
+    _transportCommandGeneration++;
+    await _queueController.skipToIndex(index);
+  }
+
   Future<void> removeFromQueue(int index) =>
       _queueController.removeFromQueue(index);
   Future<void> removeFromQueueByQueueItemId(String queueItemId) =>

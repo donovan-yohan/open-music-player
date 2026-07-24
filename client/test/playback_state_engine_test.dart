@@ -291,6 +291,35 @@ void main() {
       playback.dispose();
     });
 
+    test('replacements and skips advance focus transport generation', () async {
+      final playback = _playbackState();
+
+      expect(playback.transportCommandGeneration, 0);
+
+      await playback.playQueue([
+        _track(1, seconds: 30),
+        _track(2, seconds: 45),
+      ]);
+      expect(playback.transportCommandGeneration, 1);
+
+      await playback.skipToNext();
+      expect(playback.transportCommandGeneration, 2);
+
+      await playback.skipToPrevious();
+      expect(playback.transportCommandGeneration, 3);
+
+      await playback.skipToIndex(1);
+      expect(playback.transportCommandGeneration, 4);
+
+      await playback.playTrack(_track(3, seconds: 20));
+      expect(playback.transportCommandGeneration, 5);
+
+      await playback.removeFromQueue(0);
+      await playback.playNext(_track(4, seconds: 15));
+      expect(playback.transportCommandGeneration, 6);
+      playback.dispose();
+    });
+
     test('audio defaults facade reaches the current mix session', () async {
       SharedPreferences.setMockInitialValues({});
       final playback = _playbackState();

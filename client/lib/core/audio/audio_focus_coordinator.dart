@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 
 import 'audio_focus_playback.dart';
 
@@ -48,8 +47,11 @@ class DefaultFocusAudioSession implements FocusAudioSession {
   Stream<void> get becomingNoisyEvents => _session.becomingNoisyEventStream;
 
   @override
-  Future<void> configureForMusic() =>
-      _session.configure(const AudioSessionConfiguration.music());
+  Future<void> configureForMusic() => _session.configure(
+        const AudioSessionConfiguration.music().copyWith(
+          androidWillPauseWhenDucked: true,
+        ),
+      );
 }
 
 bool audioFocusSupportedPlatform({
@@ -93,7 +95,8 @@ class AudioFocusCoordinator {
             (_) => _pauseForLoss(resumeOnGain: false),
           ),
         );
-    } on MissingPluginException {
+    } catch (error) {
+      debugPrint('Audio focus startup failed: $error');
       await stop();
     }
   }
@@ -133,6 +136,15 @@ class AudioFocusCoordinator {
 
   void _pauseForLoss({required bool resumeOnGain}) {
     final wasPlaying = _playback.isPlaying;
+    // A loss while play() is still waiting on a signed-URL refresh observes
+    // isPlaying == false. Deliberately do not arm a speculative resume in that
+    // pending-play window: a later gain must not invent playback intent.
+    final priorResumeIntent = _resumeAfterCommandGeneration;
+    final carriesCurrentResumeIntent = priorResumeIntent != null &&
+        priorResumeIntent == _playback.transportCommandGeneration;
+    // Once a non-null token is stale, isPlaying may still lag behind a queued
+    // manual pause. Never let that stale snapshot resurrect invalidated intent.
+    final mayArmFromActivePlayback = priorResumeIntent == null && wasPlaying;
     _resumeAfterCommandGeneration = null;
     late final Future<void> pause;
     try {
@@ -142,7 +154,8 @@ class AudioFocusCoordinator {
       return;
     }
     final pauseCommandGeneration = _playback.transportCommandGeneration;
-    if (resumeOnGain && wasPlaying) {
+    if (resumeOnGain &&
+        (mayArmFromActivePlayback || carriesCurrentResumeIntent)) {
       _resumeAfterCommandGeneration = pauseCommandGeneration;
     }
     unawaited(_observePause(pause, pauseCommandGeneration));
