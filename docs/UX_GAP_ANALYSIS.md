@@ -35,7 +35,7 @@ Everything else is secondary to fixing this. See roadmap chunks **C4 → C5** (p
 
 | Sev | Lane | Gap | Current state (evidence) |
 |-----|------|-----|--------------------------|
-| critical | FE | Local library search is unreachable from the UI | Routed screen `features/search/search_screen.dart` calls `DiscoveryService` → `GET /discovery/search` (external youtube/soundcloud/MB only). The working local FTS endpoints are wired only to an **orphaned, non-routed** screen `features/search/screens/search_screen.dart`. |
+| resolved | FE | ~~Local library search is unreachable from the UI~~ | Resolved: the routed `features/search/search_screen.dart` wires local search via `SearchService` (C3); the orphaned non-routed screen this row referenced was deleted in #292. |
 | critical | FE | SearchService route mismatch (404s) | `search_service.dart` calls `/search/tracks` and `/search/albums`; router serves `/search/recordings` and `/search/releases`. Every call 404s. (Router is canonical; client is the side to fix.) |
 | critical | FE | SearchService response-shape mismatch | `SearchResponse.fromJson` reads `json['results']`; backend `PaginatedResponse` emits `data`. Parsing throws even after the path is fixed. |
 | high | BE | Unsanitized input → `to_tsquery` 500s | `track_repository.go` joins raw tokens with ` & `, appends `:*`, passes to `to_tsquery('english',$1)`. Inputs like `AC/DC`, trailing `&`, `:`, `!`, `(` produce invalid-tsquery 500s. **Same bug in `library_repository.go`** (caught in review — no chunk originally owned it). |

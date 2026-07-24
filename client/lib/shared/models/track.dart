@@ -154,7 +154,9 @@ class Track {
         artist: artist,
         album: album,
         duration: Duration(milliseconds: durationMs ?? 0),
-        artworkUrl: metadata?['cover_art_url'] as String?,
+        artworkUrl: metadata?['cover_art_url'] is String
+            ? metadata!['cover_art_url'] as String
+            : null,
         analysis: analysis,
         isLiked: isLiked,
         sourceUrl: sourceUrl,
