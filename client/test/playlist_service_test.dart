@@ -163,6 +163,19 @@ void main() {
   });
 
   group('addTracks / batchRemove', () {
+    test('addTracks sends the exact integer picker payload', () async {
+      final adapter = _CapturingAdapter({
+        'added': [123],
+        'skipped': <int>[],
+      });
+
+      await _service(adapter).addTracks(3, [123]);
+
+      expect(adapter.capturedBody, {
+        'trackIds': [123],
+      });
+    });
+
     test('addTracks POSTs trackIds and parses added/skipped report', () async {
       final adapter = _CapturingAdapter({
         'added': [10],

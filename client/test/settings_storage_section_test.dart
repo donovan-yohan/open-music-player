@@ -10,6 +10,29 @@ import 'package:provider/provider.dart' as provider;
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  testWidgets('logout cache option is honestly disabled without a manager',
+      (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LogoutOptionsDialog(
+          cacheManager: null,
+          onConfirm: () async {},
+        ),
+      ),
+    );
+
+    final option = tester.widget<CheckboxListTile>(
+      find.byType(CheckboxListTile),
+    );
+    expect(option.onChanged, isNull);
+    expect(
+      find.text(
+        'Temporary playback audio is unavailable on this platform.',
+      ),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('storage reads and clears the real playback cache manager',
       (tester) async {
     SharedPreferences.setMockInitialValues({});
