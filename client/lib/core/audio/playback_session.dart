@@ -20,23 +20,28 @@ class MixSession {
     this.schemaVersion = mixSessionSchemaVersion,
     this.nextClipOrdinal = 0,
     this.transitionSnapMode = BeatSnapMode.downbeat,
+    this.defaultCrossfadeMs = 0,
   });
 
   factory MixSession.empty({
     String sessionId = 'session_0',
     BeatSnapMode transitionSnapMode = BeatSnapMode.downbeat,
+    int defaultCrossfadeMs = 0,
   }) =>
       MixSession(
         sessionId: sessionId,
         clips: const [],
         transitionSnapMode: transitionSnapMode,
+        defaultCrossfadeMs: math.max(0, defaultCrossfadeMs),
       );
 
   factory MixSession.fromQueue({
     required String sessionId,
     required List<MediaItem> queue,
     BeatSnapMode transitionSnapMode = BeatSnapMode.downbeat,
+    int defaultCrossfadeMs = 0,
   }) {
+    final normalizedDefaultCrossfadeMs = math.max(0, defaultCrossfadeMs);
     final clips = <MixSessionClip>[];
     for (var i = 0; i < queue.length; i++) {
       final previous = clips.isEmpty ? null : clips.last;
@@ -55,6 +60,7 @@ class MixSession {
               clip,
               fallbackStartMs,
               transitionSnapMode,
+              normalizedDefaultCrossfadeMs,
             ),
           ),
         ),
@@ -65,6 +71,7 @@ class MixSession {
       clips: List.unmodifiable(clips),
       nextClipOrdinal: clips.length,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: normalizedDefaultCrossfadeMs,
     );
   }
 
@@ -93,6 +100,10 @@ class MixSession {
         _nextOrdinalAfter(clips),
       ),
       transitionSnapMode: parseBeatSnapMode(json['transitionSnapMode']),
+      defaultCrossfadeMs: math.max(
+        0,
+        (json['defaultCrossfadeMs'] as num?)?.toInt() ?? 0,
+      ),
     );
   }
 
@@ -101,6 +112,7 @@ class MixSession {
   final List<MixSessionClip> clips;
   final int nextClipOrdinal;
   final BeatSnapMode transitionSnapMode;
+  final int defaultCrossfadeMs;
 
   bool get isEmpty => clips.isEmpty;
 
@@ -135,6 +147,7 @@ class MixSession {
             normalized,
             startIndex: firstNewIndex,
             snapMode: transitionSnapMode,
+            defaultCrossfadeMs: defaultCrossfadeMs,
           )
         : firstTempoChangedIndex == null
             ? normalized
@@ -142,11 +155,13 @@ class MixSession {
                 normalized,
                 startIndex: firstTempoChangedIndex,
                 snapMode: transitionSnapMode,
+                defaultCrossfadeMs: defaultCrossfadeMs,
                 preserveEditedPlacements: true,
                 wasAutoManagedPlacement: (index) => _wasAutoManagedPlacement(
                   clips,
                   index,
                   snapMode: transitionSnapMode,
+                  defaultCrossfadeMs: defaultCrossfadeMs,
                 ),
               );
     return MixSession(
@@ -155,6 +170,7 @@ class MixSession {
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: math.max(nextOrdinal, _nextOrdinalAfter(reflowed)),
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
   }
 
@@ -164,6 +180,7 @@ class MixSession {
       clips,
       startIndex: startIndex,
       snapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
       preserveEditedPlacements: true,
     );
     if (_sameClipPlacements(clips, reflowed)) return this;
@@ -173,6 +190,7 @@ class MixSession {
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
   }
 
@@ -199,6 +217,7 @@ class MixSession {
       nextClips,
       startIndex: insertIndex,
       snapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
     return MixSession(
       sessionId: sessionId,
@@ -206,6 +225,7 @@ class MixSession {
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal + 1,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
   }
 
@@ -219,6 +239,7 @@ class MixSession {
       nextClips,
       startIndex: index,
       snapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
     return MixSession(
       sessionId: sessionId,
@@ -226,6 +247,7 @@ class MixSession {
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
   }
 
@@ -242,6 +264,7 @@ class MixSession {
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
   }
 
@@ -265,6 +288,7 @@ class MixSession {
             clip,
             fallbackStartMs,
             transitionSnapMode,
+            defaultCrossfadeMs,
           ),
         ),
       );
@@ -284,6 +308,7 @@ class MixSession {
             clip,
             fallbackStartMs,
             transitionSnapMode,
+            defaultCrossfadeMs,
           ),
         ),
       );
@@ -298,6 +323,7 @@ class MixSession {
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
   }
 
@@ -311,6 +337,7 @@ class MixSession {
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
   }
 
@@ -325,6 +352,7 @@ class MixSession {
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
   }
 
@@ -341,12 +369,14 @@ class MixSession {
             clips,
             startIndex: 0,
             snapMode: mode,
+            defaultCrossfadeMs: defaultCrossfadeMs,
             preserveEditedPlacements: true,
             wasAutoManagedPlacement: (index) => autoManagedModes.any(
               (candidate) => _wasAutoManagedPlacement(
                 clips,
                 index,
                 snapMode: candidate,
+                defaultCrossfadeMs: defaultCrossfadeMs,
               ),
             ),
           );
@@ -356,6 +386,39 @@ class MixSession {
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: mode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+    );
+  }
+
+  /// Applies the app's default overlap to auto-managed future transitions.
+  ///
+  /// Placements are classified against the old default before they are
+  /// re-derived with [value]. That preserves explicit timeline edits. Callers
+  /// can start after the active clip so a live settings change never moves the
+  /// transition that is currently sounding.
+  MixSession withDefaultCrossfadeMs(int value, {int startIndex = 0}) {
+    final normalized = math.max(0, value);
+    if (normalized == defaultCrossfadeMs) return this;
+    final reflowed = _reflowDefaultTransitions(
+      clips,
+      startIndex: startIndex,
+      snapMode: transitionSnapMode,
+      defaultCrossfadeMs: normalized,
+      preserveEditedPlacements: true,
+      wasAutoManagedPlacement: (index) => _wasAutoManagedPlacement(
+        clips,
+        index,
+        snapMode: transitionSnapMode,
+        defaultCrossfadeMs: defaultCrossfadeMs,
+      ),
+    );
+    return MixSession(
+      sessionId: sessionId,
+      schemaVersion: schemaVersion,
+      clips: List.unmodifiable(reflowed),
+      nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: normalized,
     );
   }
 
@@ -369,6 +432,7 @@ class MixSession {
         'sessionId': sessionId,
         'nextClipOrdinal': nextClipOrdinal,
         'transitionSnapMode': transitionSnapMode.name,
+        'defaultCrossfadeMs': defaultCrossfadeMs,
         'clips': [for (final clip in clips) clip.toJson()],
       };
 }
@@ -899,6 +963,7 @@ List<MixSessionClip> _reflowDefaultTransitions(
   List<MixSessionClip> clips, {
   required int startIndex,
   required BeatSnapMode snapMode,
+  required int defaultCrossfadeMs,
   bool preserveEditedPlacements = false,
   bool Function(int index)? wasAutoManagedPlacement,
 }) {
@@ -917,6 +982,7 @@ List<MixSessionClip> _reflowDefaultTransitions(
                   clips,
                   index,
                   snapMode: snapMode,
+                  defaultCrossfadeMs: defaultCrossfadeMs,
                 )))) {
       reflowingContiguousDefaults = false;
       continue;
@@ -931,6 +997,7 @@ List<MixSessionClip> _reflowDefaultTransitions(
           clip,
           fallbackStartMs,
           snapMode,
+          defaultCrossfadeMs,
         ),
       ),
     );
@@ -943,6 +1010,7 @@ bool _wasAutoManagedPlacement(
   List<MixSessionClip> clips,
   int index, {
   required BeatSnapMode snapMode,
+  required int defaultCrossfadeMs,
 }) {
   if (index < 0 || index >= clips.length) return true;
   final clip = clips[index];
@@ -950,7 +1018,13 @@ bool _wasAutoManagedPlacement(
   final fallbackStartMs = previous?.timelineEndMs ?? 0;
   if (clip.timelineStartMs == fallbackStartMs) return true;
   return clip.timelineStartMs ==
-      _defaultTimelineStartAfter(previous, clip, fallbackStartMs, snapMode);
+      _defaultTimelineStartAfter(
+        previous,
+        clip,
+        fallbackStartMs,
+        snapMode,
+        defaultCrossfadeMs,
+      );
 }
 
 bool _sameClipPlacements(
@@ -969,8 +1043,31 @@ int _defaultTimelineStartAfter(
   MixSessionClip incoming,
   int fallbackStartMs,
   BeatSnapMode snapMode,
+  int defaultCrossfadeMs,
 ) {
   if (previous == null) return math.max(0, fallbackStartMs);
+  final tempoOverlapMs = defaultTransitionOverlapMsForTempo(
+    outgoingSelectedDurationMs: previous.selectedDurationMs,
+    outgoingTempo: previous.tempo,
+    incomingSelectedDurationMs: incoming.selectedDurationMs,
+    incomingTempo: incoming.tempo,
+  );
+  // Precedence lives here: a nonzero tempo overlap owns the transition,
+  // including the existing snap/fallback decision. The configured crossfade
+  // only fills the untempo'd zero-overlap case, and 0 remains a butt joint.
+  if (tempoOverlapMs == 0) {
+    final safeOverlapMs = math.min(
+      math.max(0, defaultCrossfadeMs),
+      math.min(
+        math.max(0, previous.selectedDurationMs) ~/ 2,
+        math.max(0, incoming.selectedDurationMs) ~/ 2,
+      ),
+    );
+    return math.max(
+      previous.timelineStartMs,
+      fallbackStartMs - safeOverlapMs,
+    );
+  }
   return defaultDownbeatLockedTransitionStartMs(
     outgoingTimelineStartMs: previous.timelineStartMs,
     outgoingTimelineEndMs: previous.timelineEndMs,

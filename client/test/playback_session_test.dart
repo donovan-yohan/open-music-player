@@ -1,6 +1,9 @@
+import 'dart:math' as math;
+
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
+import 'package:open_music_player/core/engine/gain_envelope.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
@@ -205,6 +208,101 @@ void main() {
         lowConfidence.clips.map((clip) => clip.timelineStartMs),
         [0, 20000],
       );
+    });
+
+    test('untempoed clips use configured overlap and equal-power envelopes',
+        () {
+      final queue = [_item('a', seconds: 10), _item('b', seconds: 10)];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_crossfade',
+        queue: queue,
+        defaultCrossfadeMs: 3000,
+      );
+      final model = CueTimeline.fromSession(
+        session: session,
+        queue: queue,
+        playOrder: const [0, 1],
+      ).toTimelineModel();
+
+      expect(session.clips.map((clip) => clip.timelineStartMs), [0, 7000]);
+      expect(model.clips[0].timelineEndMs, 10000);
+      expect(model.clips[1].timelineStartMs, 7000);
+      expect(model.clips[1].timelineEndMs, 17000);
+      expect(model.clips[0].envelope.fadeOutMs, 3000);
+      expect(model.clips[1].envelope.fadeInMs, 3000);
+      expect(model.clips[0].envelope.curve, FadeCurve.equalPower);
+      expect(model.clips[1].envelope.curve, FadeCurve.equalPower);
+      expect(model.clips[0].gainAt(8500), closeTo(math.sqrt1_2, 0.0001));
+      expect(model.clips[1].gainAt(8500), closeTo(math.sqrt1_2, 0.0001));
+    });
+
+    test('tempo overlap takes precedence over configured crossfade', () {
+      final queue = [
+        _item(
+          'a',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          ),
+        ),
+        _item(
+          'b',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000],
+          ),
+        ),
+      ];
+
+      final session = MixSession.fromQueue(
+        sessionId: 'session_tempo_precedence',
+        queue: queue,
+        defaultCrossfadeMs: 3000,
+      );
+
+      expect(session.clips[1].timelineStartMs, 12000);
+      final model = CueTimeline.fromSession(
+        session: session,
+        queue: queue,
+        playOrder: const [0, 1],
+      ).toTimelineModel();
+      expect(model.clips[0].envelope.fadeOutMs, 8000);
+      expect(model.clips[1].envelope.fadeInMs, 8000);
+    });
+
+    test('zero configured crossfade keeps untempoed clips butt-jointed', () {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_no_crossfade',
+        queue: [_item('a', seconds: 10), _item('b', seconds: 10)],
+        defaultCrossfadeMs: 0,
+      );
+
+      expect(session.clips.map((clip) => clip.timelineStartMs), [0, 10000]);
+    });
+
+    test('explicit placement wins over configured crossfade', () {
+      final queue = [_item('a', seconds: 10), _item('b', seconds: 10)];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_explicit_precedence',
+        queue: queue,
+      )
+          .withPlacementAt(
+            1,
+            TimelineClip.clamped(
+              id: 'ignored',
+              trackId: 'b',
+              sourceDurationMs: 10000,
+              sourceStartMs: 0,
+              sourceEndMs: 10000,
+              timelineStartMs: 9500,
+            ),
+          )
+          .withDefaultCrossfadeMs(3000);
+
+      final normalized = session.normalizedForQueue(queue);
+      expect(normalized.clips[1].timelineStartMs, 9500);
     });
 
     test('insert and remove keep analyzed default overlaps safe', () {

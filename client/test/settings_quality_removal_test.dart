@@ -49,7 +49,7 @@ void main() {
       expect(find.text('Download quality'), findsNothing);
       expect(find.textContaining('Always 320'), findsNothing);
       expect(find.byType(RadioListTile), findsNothing);
-      expect(find.text('Gapless playback'), findsOneWidget);
+      expect(find.text('Gapless playback'), findsNothing);
       expect(find.text('Crossfade'), findsOneWidget);
     },
   );

@@ -37,11 +37,6 @@ class SettingsNotifier extends StateNotifier<SettingsModel> {
     await _prefs.setString(_settingsKey, jsonString);
   }
 
-  void setGaplessPlayback(bool enabled) {
-    state = state.copyWith(gaplessPlayback: enabled);
-    _saveSettings();
-  }
-
   void setCrossfadeDuration(int seconds) {
     state = state.copyWith(crossfadeDuration: seconds.clamp(0, 12));
     _saveSettings();

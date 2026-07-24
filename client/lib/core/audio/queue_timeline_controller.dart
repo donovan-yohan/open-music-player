@@ -55,6 +55,7 @@ class QueueTimelineController {
   CueTimeline _cueTimeline = CueTimeline.empty;
   int _sessionGeneration = 0;
   String _sessionId = 'session_0';
+  int? _configuredDefaultCrossfadeMs;
   int? _currentIndex;
   bool _shuffleEnabled = false;
   LoopMode _loopMode = LoopMode.off;
@@ -71,6 +72,7 @@ class QueueTimelineController {
   bool get shuffleEnabled => _shuffleEnabled;
   LoopMode get loopMode => _loopMode;
   BeatSnapMode get transitionSnapMode => _session.transitionSnapMode;
+  int get defaultCrossfadeMs => _session.defaultCrossfadeMs;
   Duration get position => _positionSubject.value;
   Duration get livePosition =>
       Duration(milliseconds: _localForGlobal(_engine.positionMs));
@@ -132,6 +134,9 @@ class QueueTimelineController {
     _sessionId = session?.sessionId ?? 'session_$_sessionGeneration';
     final transitionSnapMode =
         session?.transitionSnapMode ?? _session.transitionSnapMode;
+    final defaultCrossfadeMs = _configuredDefaultCrossfadeMs ??
+        session?.defaultCrossfadeMs ??
+        _session.defaultCrossfadeMs;
     _session = session == null
         ? (preserveTimelineEdits
             ? _session.normalizedForQueue(_queue)
@@ -139,8 +144,11 @@ class QueueTimelineController {
                 sessionId: _sessionId,
                 queue: _queue,
                 transitionSnapMode: transitionSnapMode,
+                defaultCrossfadeMs: defaultCrossfadeMs,
               ))
-        : session.normalizedForQueue(_queue);
+        : session
+            .normalizedForQueue(_queue)
+            .withDefaultCrossfadeMs(defaultCrossfadeMs);
     if (reflowDefaultTransitionsFromIndex != null) {
       _session = _session.reflowDefaultTransitionsFrom(
         reflowDefaultTransitionsFromIndex,
@@ -151,6 +159,7 @@ class QueueTimelineController {
       _session = MixSession.empty(
         sessionId: _sessionId,
         transitionSnapMode: transitionSnapMode,
+        defaultCrossfadeMs: defaultCrossfadeMs,
       );
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
@@ -455,6 +464,60 @@ class QueueTimelineController {
 
   Future<void> setTransitionSnapMode(BeatSnapMode mode) async {
     await _enqueueCommand(() => _setTransitionSnapMode(mode));
+  }
+
+  Future<void> setDefaultCrossfadeMs(int value) async {
+    final normalized = math.max(0, value);
+    _configuredDefaultCrossfadeMs = normalized;
+    await _enqueueCommand(() => _setDefaultCrossfadeMs(normalized));
+  }
+
+  Future<void> _setDefaultCrossfadeMs(int value) async {
+    if (_session.defaultCrossfadeMs == value) return;
+    // Queue indices only describe timeline order for canonical playback.
+    // Shuffled placement reflow is deferred until the next queue/order rebuild.
+    // On a canonical timeline, protect every active clip: during the first half
+    // of an overlap the outgoing clip can still be "current" while the incoming
+    // clip is already sounding.
+    final firstFutureIndex = _hasCanonicalPlayOrder
+        ? _firstIndexAfterActiveAndCurrentClips()
+        : _session.clips.length;
+    final nextSession = _session.withDefaultCrossfadeMs(
+      value,
+      startIndex: firstFutureIndex,
+    );
+    if (!_canApplySession(nextSession)) return;
+
+    _session = nextSession.normalizedForQueue(_queue);
+    if (_queue.isNotEmpty) {
+      await _loadModel(
+        seekToCurrent: false,
+        preserveActivePlayback: true,
+      );
+    }
+    _publishQueueState();
+  }
+
+  bool get _hasCanonicalPlayOrder {
+    if (_playOrder.length != _queue.length) return false;
+    for (var index = 0; index < _playOrder.length; index++) {
+      if (_playOrder[index] != index) return false;
+    }
+    return true;
+  }
+
+  int _firstIndexAfterActiveAndCurrentClips() {
+    var protectedThrough = _currentIndex ?? -1;
+    for (final active in _engine.model.activeClipsAt(_engine.positionMs)) {
+      final queueItemId = active.queueItemId;
+      final queueIndex = queueItemId == null
+          ? _session.clips.indexWhere((clip) => clip.clipId == active.id)
+          : _queueIndexForQueueItemId(queueItemId);
+      if (queueIndex != null && queueIndex > protectedThrough) {
+        protectedThrough = queueIndex;
+      }
+    }
+    return protectedThrough + 1;
   }
 
   Future<void> _setTransitionSnapMode(BeatSnapMode mode) async {

@@ -276,6 +276,24 @@ void main() {
       playback.dispose();
     });
 
+    test('audio defaults facade reaches the current mix session', () async {
+      SharedPreferences.setMockInitialValues({});
+      final playback = _playbackState();
+
+      await playback.playQueue([
+        _track(1, seconds: 10),
+        _track(2, seconds: 10),
+      ]);
+      await playback.applyAudioDefaults(
+        const AudioPlaybackDefaults(defaultCrossfadeMs: 3000),
+      );
+
+      expect(playback.defaultCrossfadeMs, 3000);
+      expect(playback.timelineModel.clips[1].timelineStartMs, 7000);
+      expect(playback.timelineModel.clips[0].envelope.fadeOutMs, 3000);
+      playback.dispose();
+    });
+
     test('direct replacement silences old audio while next URL resolves',
         () async {
       SharedPreferences.setMockInitialValues({});
