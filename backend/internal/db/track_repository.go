@@ -37,6 +37,11 @@ type Track struct {
 	SourceType         sql.NullString
 	StorageKey         sql.NullString
 	FileSizeBytes      sql.NullInt64
+	Codec              sql.NullString
+	BitrateKbps        sql.NullInt32
+	SampleRateHz       sql.NullInt32
+	Channels           sql.NullInt32
+	ContentType        sql.NullString
 	MetadataJSON       json.RawMessage
 	MetadataStatus     sql.NullString
 	MetadataConfidence sql.NullFloat64
@@ -94,8 +99,9 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 			SELECT id, identity_hash, title, artist, album, duration_ms, version,
 				   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
 				   source_url, source_type, storage_key, file_size_bytes,
+				   codec, bitrate_kbps, sample_rate_hz, channels, content_type,
 				   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
-			   cover_art_url, metadata_user_edited, created_at, updated_at,
+				   cover_art_url, metadata_user_edited, created_at, updated_at,
 				   ts_rank(to_tsvector('english', COALESCE(title, '') || ' ' || COALESCE(artist, '') || ' ' || COALESCE(album, '')), to_tsquery('english', $1)) as rank,
 				   COUNT(*) OVER() as total_count
 			FROM tracks
@@ -104,6 +110,7 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 		SELECT sr.id, sr.identity_hash, sr.title, sr.artist, sr.album, sr.duration_ms, sr.version,
 			   sr.mb_recording_id, sr.mb_release_id, sr.mb_artist_id, sr.mb_verified,
 			   sr.source_url, sr.source_type, sr.storage_key, sr.file_size_bytes,
+			   sr.codec, sr.bitrate_kbps, sr.sample_rate_hz, sr.channels, sr.content_type,
 			   sr.metadata_json, sr.metadata_status, sr.metadata_confidence, sr.metadata_provenance,
 			   sr.cover_art_url, sr.metadata_user_edited, sr.created_at, sr.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
@@ -131,6 +138,7 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
+			&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
 			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
 			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt, &total,
@@ -171,6 +179,7 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 			SELECT id, identity_hash, title, artist, album, duration_ms, version,
 				   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
 				   source_url, source_type, storage_key, file_size_bytes,
+				   codec, bitrate_kbps, sample_rate_hz, channels, content_type,
 				   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
 				   cover_art_url, metadata_user_edited, created_at, updated_at,
 				   GREATEST(
@@ -189,6 +198,7 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 		SELECT sr.id, sr.identity_hash, sr.title, sr.artist, sr.album, sr.duration_ms, sr.version,
 			   sr.mb_recording_id, sr.mb_release_id, sr.mb_artist_id, sr.mb_verified,
 			   sr.source_url, sr.source_type, sr.storage_key, sr.file_size_bytes,
+			   sr.codec, sr.bitrate_kbps, sr.sample_rate_hz, sr.channels, sr.content_type,
 			   sr.metadata_json, sr.metadata_status, sr.metadata_confidence, sr.metadata_provenance,
 			   sr.cover_art_url, sr.metadata_user_edited, sr.created_at, sr.updated_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
@@ -216,6 +226,7 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
+			&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
 			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
 			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt, &total,
@@ -464,6 +475,7 @@ func (r *TrackRepository) GetByID(ctx context.Context, id int64) (*Track, error)
 		SELECT id, identity_hash, title, artist, album, duration_ms, version,
 			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
 			   source_url, source_type, storage_key, file_size_bytes,
+			   codec, bitrate_kbps, sample_rate_hz, channels, content_type,
 			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
 			   cover_art_url, metadata_user_edited, created_at, updated_at
 		FROM tracks
@@ -475,6 +487,7 @@ func (r *TrackRepository) GetByID(ctx context.Context, id int64) (*Track, error)
 		&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 		&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 		&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
+		&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
 		&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
 		&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 	)
@@ -669,6 +682,7 @@ func (r *TrackRepository) GetByIdentityHash(ctx context.Context, identityHash st
 		SELECT id, identity_hash, title, artist, album, duration_ms, version,
 			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
 			   source_url, source_type, storage_key, file_size_bytes,
+			   codec, bitrate_kbps, sample_rate_hz, channels, content_type,
 			   metadata_json, metadata_status, metadata_confidence, metadata_provenance,
 			   cover_art_url, metadata_user_edited, created_at, updated_at
 		FROM tracks
@@ -680,6 +694,7 @@ func (r *TrackRepository) GetByIdentityHash(ctx context.Context, identityHash st
 		&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 		&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 		&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
+		&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
 		&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
 		&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 	)
@@ -701,8 +716,9 @@ func (r *TrackRepository) Create(ctx context.Context, track *Track) error {
 			identity_hash, title, artist, album, duration_ms, version,
 			mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
 			source_url, source_type, storage_key, file_size_bytes, metadata_json,
+			codec, bitrate_kbps, sample_rate_hz, channels, content_type,
 			metadata_status, metadata_confidence, metadata_provenance, cover_art_url, metadata_user_edited
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, COALESCE($16, 'provider'), $17, $18, $19, $20)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, COALESCE($21, 'provider'), $22, $23, $24, $25)
 		RETURNING id, created_at, updated_at
 	`
 
@@ -710,6 +726,7 @@ func (r *TrackRepository) Create(ctx context.Context, track *Track) error {
 		track.IdentityHash, track.Title, track.Artist, track.Album, track.DurationMs, track.Version,
 		track.MBRecordingID, track.MBReleaseID, track.MBArtistID, track.MBVerified,
 		track.SourceURL, track.SourceType, track.StorageKey, track.FileSizeBytes, nullableRawJSON(track.MetadataJSON),
+		track.Codec, track.BitrateKbps, track.SampleRateHz, track.Channels, track.ContentType,
 		track.MetadataStatus, track.MetadataConfidence, nullableRawJSON(track.MetadataProvenance), track.CoverArtURL, track.MetadataUserEdited,
 	).Scan(&track.ID, &track.CreatedAt, &track.UpdatedAt)
 
@@ -817,6 +834,53 @@ func WithStorage(storageKey string, fileSizeBytes int64) TrackOption {
 	}
 }
 
+// WithAudioQuality stores immutable facts probed from the single stored artifact.
+func WithAudioQuality(codec string, bitrateKbps, sampleRateHz, channels int, contentType string) TrackOption {
+	return func(t *Track) {
+		t.Codec = sql.NullString{String: codec, Valid: codec != ""}
+		t.BitrateKbps = sql.NullInt32{Int32: int32(bitrateKbps), Valid: bitrateKbps > 0}
+		t.SampleRateHz = sql.NullInt32{Int32: int32(sampleRateHz), Valid: sampleRateHz > 0}
+		t.Channels = sql.NullInt32{Int32: int32(channels), Valid: channels > 0}
+		t.ContentType = sql.NullString{String: contentType, Valid: contentType != ""}
+	}
+}
+
+// UpdateAudioQuality persists facts probed from the stored artifact.
+func (r *TrackRepository) UpdateAudioQuality(ctx context.Context, trackID int64, codec string, bitrateKbps, sampleRateHz, channels int, contentType string) error {
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE tracks
+		SET codec = NULLIF($2, ''),
+			bitrate_kbps = NULLIF($3, 0),
+			sample_rate_hz = NULLIF($4, 0),
+			channels = NULLIF($5, 0),
+			content_type = NULLIF($6, ''),
+			updated_at = NOW()
+		WHERE id = $1
+	`, trackID, codec, bitrateKbps, sampleRateHz, channels, contentType)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrTrackNotFound
+	}
+	return nil
+}
+
+// MarkAudioQualityProbeAttempt moves a failed artifact to the end of the
+// maintenance queue so one corrupt object cannot starve later rows.
+func (r *TrackRepository) MarkAudioQualityProbeAttempt(ctx context.Context, trackID int64) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE tracks
+		SET audio_quality_probe_attempted_at = NOW()
+		WHERE id = $1
+	`, trackID)
+	return err
+}
+
 // WithMetadata sets additional metadata JSON on the track.
 func WithMetadata(metadata json.RawMessage) TrackOption {
 	return func(t *Track) {
@@ -907,6 +971,7 @@ func (r *TrackRepository) GetMaintenanceCandidates(ctx context.Context, includeM
 		SELECT t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
 			   t.mb_recording_id, t.mb_release_id, t.mb_artist_id, t.mb_verified,
 			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
+			   t.codec, t.bitrate_kbps, t.sample_rate_hz, t.channels, t.content_type,
 			   COALESCE(t.metadata_json, '{}'::jsonb), t.metadata_status, t.metadata_confidence,
 			   COALESCE(t.metadata_provenance, '{}'::jsonb),
 			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at
@@ -950,12 +1015,67 @@ func (r *TrackRepository) GetMaintenanceCandidates(ctx context.Context, includeM
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
+			&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
 			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
 			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		tracks = append(tracks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tracks, nil
+}
+
+// GetAudioQualityMaintenanceCandidates returns a bounded, stable batch of
+// stored artifacts whose ffprobe facts have not been fully persisted.
+func (r *TrackRepository) GetAudioQualityMaintenanceCandidates(ctx context.Context, limit int) ([]Track, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, identity_hash, title, artist, album, duration_ms, version,
+			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
+			   source_url, source_type, storage_key, file_size_bytes,
+			   codec, bitrate_kbps, sample_rate_hz, channels, content_type,
+			   COALESCE(metadata_json, '{}'::jsonb), metadata_status, metadata_confidence,
+			   COALESCE(metadata_provenance, '{}'::jsonb),
+			   cover_art_url, metadata_user_edited, created_at, updated_at
+		FROM tracks
+		WHERE storage_key IS NOT NULL
+		  AND btrim(storage_key) <> ''
+		  AND (
+			  NULLIF(btrim(codec), '') IS NULL OR COALESCE(bitrate_kbps, 0) <= 0
+			  OR COALESCE(sample_rate_hz, 0) <= 0 OR COALESCE(channels, 0) <= 0
+			  OR NULLIF(btrim(content_type), '') IS NULL
+		  )
+		ORDER BY audio_quality_probe_attempted_at ASC NULLS FIRST, id ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tracks := make([]Track, 0, limit)
+	for rows.Next() {
+		var track Track
+		if err := rows.Scan(
+			&track.ID, &track.IdentityHash, &track.Title, &track.Artist, &track.Album, &track.DurationMs, &track.Version,
+			&track.MBRecordingID, &track.MBReleaseID, &track.MBArtistID, &track.MBVerified,
+			&track.SourceURL, &track.SourceType, &track.StorageKey, &track.FileSizeBytes,
+			&track.Codec, &track.BitrateKbps, &track.SampleRateHz, &track.Channels, &track.ContentType,
+			&track.MetadataJSON, &track.MetadataStatus, &track.MetadataConfidence, &track.MetadataProvenance,
+			&track.CoverArtURL, &track.MetadataUserEdited, &track.CreatedAt, &track.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		tracks = append(tracks, track)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

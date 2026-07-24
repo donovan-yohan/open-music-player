@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -14,11 +16,13 @@ import (
 type maintenanceTrackStore interface {
 	GetByID(ctx context.Context, id int64) (*db.Track, error)
 	GetMaintenanceCandidates(ctx context.Context, includeMetadata, includeAnalysis bool, staleAfter time.Duration, limit int) ([]db.Track, error)
+	GetAudioQualityMaintenanceCandidates(ctx context.Context, limit int) ([]db.Track, error)
 }
 
 type maintenanceProcessor interface {
 	RepairMetadata(ctx context.Context, track *db.Track, opts processor.MetadataRepairOptions) (processor.MetadataRepairResult, error)
 	RequestAnalysisRepair(ctx context.Context, track *db.Track, opts processor.AnalysisRepairOptions) (processor.AnalysisRepairResult, error)
+	RepairAudioQuality(ctx context.Context, track *db.Track) (processor.AudioQualityRepairResult, error)
 }
 
 type MaintenanceHandlers struct {
@@ -34,6 +38,7 @@ type maintenanceRepairRequest struct {
 	TrackIDs          []int64 `json:"trackIds"`
 	Metadata          *bool   `json:"metadata,omitempty"`
 	Analysis          *bool   `json:"analysis,omitempty"`
+	AudioQuality      *bool   `json:"audioQuality,omitempty"`
 	ForceMetadata     bool    `json:"forceMetadata"`
 	ForceAnalysis     bool    `json:"forceAnalysis"`
 	StaleAfterMinutes int     `json:"staleAfterMinutes"`
@@ -47,25 +52,29 @@ type maintenanceRepairResponse struct {
 }
 
 type maintenanceTrackRepairResult struct {
-	TrackID  int64                           `json:"trackId"`
-	Title    string                          `json:"title"`
-	Metadata *processor.MetadataRepairResult `json:"metadata,omitempty"`
-	Analysis *processor.AnalysisRepairResult `json:"analysis,omitempty"`
-	Errors   []string                        `json:"errors,omitempty"`
+	TrackID      int64                               `json:"trackId"`
+	Title        string                              `json:"title"`
+	Metadata     *processor.MetadataRepairResult     `json:"metadata,omitempty"`
+	Analysis     *processor.AnalysisRepairResult     `json:"analysis,omitempty"`
+	AudioQuality *processor.AudioQualityRepairResult `json:"audioQuality,omitempty"`
+	Errors       []string                            `json:"errors,omitempty"`
 }
 
 type maintenanceRepairSummary struct {
-	Selected        int `json:"selected"`
-	MetadataDone    int `json:"metadataDone"`
-	MetadataSkipped int `json:"metadataSkipped"`
-	AnalysisQueued  int `json:"analysisQueued"`
-	AnalysisSkipped int `json:"analysisSkipped"`
-	Errors          int `json:"errors"`
+	Selected            int `json:"selected"`
+	MetadataDone        int `json:"metadataDone"`
+	MetadataSkipped     int `json:"metadataSkipped"`
+	AnalysisQueued      int `json:"analysisQueued"`
+	AnalysisSkipped     int `json:"analysisSkipped"`
+	AudioQualityDone    int `json:"audioQualityDone"`
+	AudioQualitySkipped int `json:"audioQualitySkipped"`
+	Errors              int `json:"errors"`
 }
 
 type maintenanceRepairCriteria struct {
 	Metadata          bool    `json:"metadata"`
 	Analysis          bool    `json:"analysis"`
+	AudioQuality      bool    `json:"audioQuality"`
 	ForceMetadata     bool    `json:"forceMetadata"`
 	ForceAnalysis     bool    `json:"forceAnalysis"`
 	StaleAfterMinutes int     `json:"staleAfterMinutes"`
@@ -85,8 +94,9 @@ func (h *MaintenanceHandlers) RepairTracks(w http.ResponseWriter, r *http.Reques
 	}
 	includeMetadata := boolDefault(req.Metadata, true)
 	includeAnalysis := boolDefault(req.Analysis, true)
-	if !includeMetadata && !includeAnalysis {
-		writeMaintenanceError(w, http.StatusBadRequest, "VALIDATION_ERROR", "metadata or analysis repair must be enabled")
+	includeAudioQuality := boolDefault(req.AudioQuality, false)
+	if !includeMetadata && !includeAnalysis && !includeAudioQuality {
+		writeMaintenanceError(w, http.StatusBadRequest, "VALIDATION_ERROR", "metadata, analysis, or audio quality repair must be enabled")
 		return
 	}
 	limit := req.Limit
@@ -102,7 +112,7 @@ func (h *MaintenanceHandlers) RepairTracks(w http.ResponseWriter, r *http.Reques
 	}
 	staleAfter := time.Duration(staleMinutes) * time.Minute
 
-	tracks, err := h.selectRepairTracks(r.Context(), req.TrackIDs, includeMetadata, includeAnalysis, staleAfter, limit)
+	tracks, err := h.selectRepairTracks(r.Context(), req.TrackIDs, includeMetadata, includeAnalysis, includeAudioQuality, staleAfter, limit)
 	if err != nil {
 		if errors.Is(err, errInvalidMaintenanceRequest) {
 			writeMaintenanceError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
@@ -121,6 +131,7 @@ func (h *MaintenanceHandlers) RepairTracks(w http.ResponseWriter, r *http.Reques
 		Criteria: maintenanceRepairCriteria{
 			Metadata:          includeMetadata,
 			Analysis:          includeAnalysis,
+			AudioQuality:      includeAudioQuality,
 			ForceMetadata:     req.ForceMetadata,
 			ForceAnalysis:     req.ForceAnalysis,
 			StaleAfterMinutes: staleMinutes,
@@ -156,6 +167,19 @@ func (h *MaintenanceHandlers) RepairTracks(w http.ResponseWriter, r *http.Reques
 				resp.Summary.AnalysisSkipped++
 			}
 		}
+		if includeAudioQuality {
+			audioQuality, err := h.processor.RepairAudioQuality(r.Context(), &track)
+			item.AudioQuality = &audioQuality
+			if err != nil {
+				log.Printf("Warning: audio quality backfill failed for track %d: %v", track.ID, err)
+				item.Errors = append(item.Errors, err.Error())
+				resp.Summary.Errors++
+			} else if audioQuality.Status == "processed" {
+				resp.Summary.AudioQualityDone++
+			} else {
+				resp.Summary.AudioQualitySkipped++
+			}
+		}
 		resp.Tracks = append(resp.Tracks, item)
 	}
 	writeMaintenanceJSON(w, http.StatusOK, resp)
@@ -163,9 +187,48 @@ func (h *MaintenanceHandlers) RepairTracks(w http.ResponseWriter, r *http.Reques
 
 var errInvalidMaintenanceRequest = errors.New("invalid maintenance repair request")
 
-func (h *MaintenanceHandlers) selectRepairTracks(ctx context.Context, ids []int64, includeMetadata, includeAnalysis bool, staleAfter time.Duration, limit int) ([]db.Track, error) {
+func (h *MaintenanceHandlers) selectRepairTracks(ctx context.Context, ids []int64, includeMetadata, includeAnalysis, includeAudioQuality bool, staleAfter time.Duration, limit int) ([]db.Track, error) {
 	if len(ids) == 0 {
-		return h.tracks.GetMaintenanceCandidates(ctx, includeMetadata, includeAnalysis, staleAfter, limit)
+		if includeAudioQuality && (includeMetadata || includeAnalysis) && limit < 2 {
+			return nil, fmt.Errorf("%w: combined maintenance requires limit of at least 2", errInvalidMaintenanceRequest)
+		}
+		tracks := make([]db.Track, 0, limit)
+		seen := make(map[int64]struct{}, limit)
+		qualityLimit := limit
+		if includeAudioQuality && (includeMetadata || includeAnalysis) && limit > 1 {
+			// Reserve bounded capacity for both candidate classes so a long
+			// quality backlog cannot starve metadata/analysis maintenance.
+			qualityLimit = (limit + 1) / 2
+		}
+		if includeAudioQuality {
+			qualityTracks, err := h.tracks.GetAudioQualityMaintenanceCandidates(ctx, qualityLimit)
+			if err != nil {
+				return nil, err
+			}
+			for _, track := range qualityTracks {
+				tracks = append(tracks, track)
+				seen[track.ID] = struct{}{}
+			}
+		}
+		if len(tracks) < limit && (includeMetadata || includeAnalysis) {
+			// Fetch up to the overall cap because candidates can overlap the
+			// reserved quality slice; dedupe below must still reach later rows.
+			otherLimit := limit
+			otherTracks, err := h.tracks.GetMaintenanceCandidates(ctx, includeMetadata, includeAnalysis, staleAfter, otherLimit)
+			if err != nil {
+				return nil, err
+			}
+			for _, track := range otherTracks {
+				if _, ok := seen[track.ID]; ok {
+					continue
+				}
+				tracks = append(tracks, track)
+				if len(tracks) == limit {
+					break
+				}
+			}
+		}
+		return tracks, nil
 	}
 	seen := make(map[int64]struct{}, len(ids))
 	tracks := make([]db.Track, 0, len(ids))

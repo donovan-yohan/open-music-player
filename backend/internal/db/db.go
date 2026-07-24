@@ -95,6 +95,12 @@ func (db *DB) Migrate() error {
 		source_type VARCHAR(50),
 		storage_key VARCHAR(500),
 		file_size_bytes BIGINT,
+		codec TEXT,
+		bitrate_kbps INTEGER,
+		sample_rate_hz INTEGER,
+		channels INTEGER,
+		content_type TEXT,
+		audio_quality_probe_attempted_at TIMESTAMP WITH TIME ZONE,
 		metadata_json JSONB,
 		metadata_status VARCHAR(50) NOT NULL DEFAULT 'provider',
 		metadata_confidence DOUBLE PRECISION,
@@ -408,6 +414,12 @@ func (db *DB) Migrate() error {
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS source_type VARCHAR(50);
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS storage_key VARCHAR(500);
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS codec TEXT;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS bitrate_kbps INTEGER;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS sample_rate_hz INTEGER;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS channels INTEGER;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS content_type TEXT;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS audio_quality_probe_attempted_at TIMESTAMP WITH TIME ZONE;
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_json JSONB;
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_status VARCHAR(50) NOT NULL DEFAULT 'provider';
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_confidence DOUBLE PRECISION;

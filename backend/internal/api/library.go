@@ -95,7 +95,7 @@ func (s *FieldSelector) Include(field string) bool {
 // genre (exact match; "Unknown" matches tracks with no genre),
 // artist (exact match, local artist listing), album (exact match, local album listing),
 // fields (comma-separated field selection).
-// Available fields: id, title, artist, album, duration_ms, mb_verified, genre, added_at, cover_art_url, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, is_liked, analysis_status, analysis_summary, analysis_updated_at
+// Available fields: id, title, artist, album, duration_ms, mb_verified, genre, added_at, cover_art_url, source_url, file_size_bytes, codec, bitrate_kbps, sample_rate_hz, channels, content_type, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, is_liked, analysis_status, analysis_summary, analysis_updated_at
 //
 // Note: liked/is_liked here are scoped to the caller's library — this endpoint
 // lists the library, optionally filtered to liked tracks. A standalone "Liked
@@ -209,6 +209,27 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 			} else if t.MBReleaseID != nil {
 				track["cover_art_url"] = "https://coverartarchive.org/release/" + t.MBReleaseID.String() + "/front-250"
 			}
+		}
+		if fields.Include("source_url") && t.SourceURL.Valid {
+			track["source_url"] = t.SourceURL.String
+		}
+		if fields.Include("file_size_bytes") && t.FileSizeBytes.Valid {
+			track["file_size_bytes"] = t.FileSizeBytes.Int64
+		}
+		if fields.Include("codec") && t.Codec.Valid {
+			track["codec"] = t.Codec.String
+		}
+		if fields.Include("bitrate_kbps") && t.BitrateKbps.Valid {
+			track["bitrate_kbps"] = int(t.BitrateKbps.Int32)
+		}
+		if fields.Include("sample_rate_hz") && t.SampleRateHz.Valid {
+			track["sample_rate_hz"] = int(t.SampleRateHz.Int32)
+		}
+		if fields.Include("channels") && t.Channels.Valid {
+			track["channels"] = int(t.Channels.Int32)
+		}
+		if fields.Include("content_type") && t.ContentType.Valid {
+			track["content_type"] = t.ContentType.String
 		}
 		if fields.Include("metadata_status") && t.MetadataStatus.Valid {
 			track["metadata_status"] = t.MetadataStatus.String

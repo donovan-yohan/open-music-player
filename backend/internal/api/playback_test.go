@@ -171,6 +171,11 @@ func TestPlaybackURLIssuanceReturnsSignedObjectMetadataAndContractNames(t *testi
 		StorageKey:    sql.NullString{String: "audio/track-42.mp3", Valid: true},
 		FileSizeBytes: sql.NullInt64{Int64: 999, Valid: true},
 		Version:       sql.NullString{String: "v7", Valid: true},
+		Codec:         sql.NullString{String: "mp3", Valid: true},
+		BitrateKbps:   sql.NullInt32{Int32: 137, Valid: true},
+		SampleRateHz:  sql.NullInt32{Int32: 44100, Valid: true},
+		Channels:      sql.NullInt32{Int32: 2, Valid: true},
+		ContentType:   sql.NullString{String: "audio/mpeg", Valid: true},
 	}, true, fakeStorage)
 	fixedNow := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
 	handler.now = func() time.Time { return fixedNow }
@@ -205,6 +210,9 @@ func TestPlaybackURLIssuanceReturnsSignedObjectMetadataAndContractNames(t *testi
 	item := got.URLs[0]
 	if item.TrackID != 42 || item.URL == "" || item.ContentType != "audio/mpeg" || item.SizeBytes != 123456 || item.ETag != "abc123" || item.StorageKeyVersion != "v7" {
 		t.Fatalf("unexpected playback item: %+v", item)
+	}
+	if item.Codec != "mp3" || item.BitrateKbps != 137 || item.SampleRateHz != 44100 || item.Channels != 2 {
+		t.Fatalf("playback item quality facts = %+v", item)
 	}
 	if !item.ExpiresAt.Equal(fixedNow.Add(10 * time.Minute)) {
 		t.Fatalf("expiresAt = %s, want %s", item.ExpiresAt, fixedNow.Add(10*time.Minute))

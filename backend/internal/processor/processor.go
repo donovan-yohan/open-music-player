@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,12 +25,14 @@ import (
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/playlistimport"
+	"github.com/openmusicplayer/backend/internal/storage"
 )
 
 // ObjectStorage is the small MinIO surface the processor needs. storage.Client
 // satisfies this interface; tests can use a fake without a real MinIO server.
 type ObjectStorage interface {
 	PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
+	GetObject(ctx context.Context, key string) (io.ReadCloser, *storage.ObjectInfo, error)
 }
 
 // AnalysisStore is the audio-analysis persistence surface used by Processor.
@@ -165,6 +168,17 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 	if err != nil {
 		return fmt.Errorf("track creation failed: %w", err)
 	}
+	if !isNew && !hasCompleteAudioQuality(track) {
+		// A duplicate download resolves to the existing track and therefore must
+		// probe that track's referenced object, not the newly downloaded bytes.
+		if _, err := p.RepairAudioQuality(ctx, track); err != nil {
+			return fmt.Errorf("existing track audio quality backfill failed: %w", err)
+		}
+		track, err = p.trackRepo.GetByID(ctx, track.ID)
+		if err != nil {
+			return fmt.Errorf("reload existing track after audio quality backfill: %w", err)
+		}
+	}
 	job.TrackID = &track.ID
 	p.recordTrackSource(ctx, job, track.ID)
 	progress(65)
@@ -204,6 +218,7 @@ type TrackMetadata struct {
 	SourceType      string
 	StorageKey      string
 	FileSizeBytes   int64
+	AudioQuality    AudioQuality
 	PreselectedMBID string
 	Raw             map[string]interface{}
 	Cleanup         deterministicCleanup
@@ -262,13 +277,109 @@ func (p *Processor) downloadAndStore(ctx context.Context, job *download.Download
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
+	quality, err := probeAudioFile(ctx, tmpPath, contentType)
+	if err != nil {
+		return nil, fmt.Errorf("probe downloaded audio: %w", err)
+	}
 	key := storageKey(job, tmpPath)
-	if err := p.storage.PutObject(ctx, key, file, info.Size(), contentType); err != nil {
+	if err := p.storage.PutObject(ctx, key, file, info.Size(), quality.ContentType); err != nil {
 		return nil, fmt.Errorf("upload audio to object storage: %w", err)
 	}
 	metadata.StorageKey = key
 	metadata.FileSizeBytes = info.Size()
+	metadata.AudioQuality = quality
 	return metadata, nil
+}
+
+// AudioQuality contains immutable facts reported by ffprobe for one stored artifact.
+type AudioQuality struct {
+	Codec        string `json:"codec"`
+	BitrateKbps  int    `json:"bitrateKbps"`
+	SampleRateHz int    `json:"sampleRateHz"`
+	Channels     int    `json:"channels"`
+	ContentType  string `json:"contentType"`
+}
+
+type ffprobeOutput struct {
+	Streams []struct {
+		CodecName  string `json:"codec_name"`
+		BitRate    string `json:"bit_rate"`
+		SampleRate string `json:"sample_rate"`
+		Channels   int    `json:"channels"`
+	} `json:"streams"`
+	Format struct {
+		BitRate    string `json:"bit_rate"`
+		FormatName string `json:"format_name"`
+	} `json:"format"`
+}
+
+func probeAudioFile(ctx context.Context, path, fallbackContentType string) (AudioQuality, error) {
+	cmd := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-select_streams", "a:0",
+		"-show_entries", "stream=codec_name,bit_rate,sample_rate,channels:format=bit_rate,format_name",
+		"-of", "json",
+		path,
+	)
+	var output limitedOutput
+	output.limit = maxYTDLPLogBytes
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Run(); err != nil {
+		return AudioQuality{}, fmt.Errorf("ffprobe failed: %w: %s", err, strings.TrimSpace(output.String()))
+	}
+	var probed ffprobeOutput
+	if err := json.Unmarshal([]byte(output.String()), &probed); err != nil {
+		return AudioQuality{}, fmt.Errorf("decode ffprobe output: %w", err)
+	}
+	if len(probed.Streams) == 0 {
+		return AudioQuality{}, errors.New("ffprobe found no audio stream")
+	}
+	stream := probed.Streams[0]
+	sampleRate, _ := strconv.Atoi(stream.SampleRate)
+	bitRate, _ := strconv.ParseInt(stream.BitRate, 10, 64)
+	if bitRate <= 0 {
+		bitRate, _ = strconv.ParseInt(probed.Format.BitRate, 10, 64)
+	}
+	quality := AudioQuality{
+		Codec:        stream.CodecName,
+		BitrateKbps:  int((bitRate + 500) / 1000),
+		SampleRateHz: sampleRate,
+		Channels:     stream.Channels,
+		ContentType:  audioContentType(stream.CodecName, probed.Format.FormatName, fallbackContentType),
+	}
+	if quality.Codec == "" || quality.BitrateKbps <= 0 || quality.SampleRateHz <= 0 || quality.Channels <= 0 {
+		return AudioQuality{}, fmt.Errorf("ffprobe returned incomplete audio stream facts")
+	}
+	return quality, nil
+}
+
+func audioContentType(codec, formatName, fallback string) string {
+	switch strings.ToLower(codec) {
+	case "mp3":
+		return "audio/mpeg"
+	case "aac":
+		format := strings.ToLower(formatName)
+		if strings.Contains(format, "mp4") || strings.Contains(format, "mov") {
+			return "audio/mp4"
+		}
+		return "audio/aac"
+	case "flac":
+		return "audio/flac"
+	case "opus":
+		return "audio/opus"
+	case "vorbis":
+		return "audio/ogg"
+	case "pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le", "pcm_f64le":
+		return "audio/wav"
+	}
+	if strings.Contains(strings.ToLower(formatName), "wav") {
+		return "audio/wav"
+	}
+	if fallback != "" && fallback != "application/octet-stream" {
+		return fallback
+	}
+	return "application/octet-stream"
 }
 
 func (p *Processor) obtainAudioFile(ctx context.Context, job *download.DownloadJob, metadata *TrackMetadata) (string, string, error) {
@@ -586,6 +697,13 @@ func (p *Processor) createTrack(ctx context.Context, job *download.DownloadJob, 
 	opts := []db.TrackOption{
 		db.WithSource(metadata.SourceURL, metadata.SourceType),
 		db.WithStorage(metadata.StorageKey, metadata.FileSizeBytes),
+		db.WithAudioQuality(
+			metadata.AudioQuality.Codec,
+			metadata.AudioQuality.BitrateKbps,
+			metadata.AudioQuality.SampleRateHz,
+			metadata.AudioQuality.Channels,
+			metadata.AudioQuality.ContentType,
+		),
 		db.WithMetadata(provenance),
 		db.WithMetadataEnrichment(status, confidence, provenance, ""),
 	}
@@ -602,6 +720,90 @@ func (p *Processor) createTrack(ctx context.Context, job *download.DownloadJob, 
 		return nil, false, err
 	}
 	return track, isNew, nil
+}
+
+// AudioQualityRepairResult reports one idempotent stored-artifact probe.
+type AudioQualityRepairResult struct {
+	Status  string       `json:"status"`
+	Quality AudioQuality `json:"quality,omitempty"`
+}
+
+// RepairAudioQuality backfills immutable artifact facts without changing the artifact.
+// A complete track is skipped, making repeated bounded maintenance passes idempotent.
+func (p *Processor) RepairAudioQuality(ctx context.Context, track *db.Track) (AudioQualityRepairResult, error) {
+	if track == nil {
+		return AudioQualityRepairResult{}, errors.New("track is required")
+	}
+	if hasCompleteAudioQuality(track) {
+		return AudioQualityRepairResult{Status: "skipped"}, nil
+	}
+	if p.storage == nil {
+		return AudioQualityRepairResult{}, errors.New("object storage is not configured")
+	}
+	storageKey := strings.TrimSpace(track.StorageKey.String)
+	if !track.StorageKey.Valid || storageKey == "" {
+		return AudioQualityRepairResult{}, errors.New("track has no stored audio object")
+	}
+	if err := p.trackRepo.MarkAudioQualityProbeAttempt(ctx, track.ID); err != nil {
+		return AudioQualityRepairResult{}, fmt.Errorf("record audio quality probe attempt: %w", err)
+	}
+
+	reader, info, err := p.storage.GetObject(ctx, storageKey)
+	if err != nil {
+		return AudioQualityRepairResult{}, fmt.Errorf("get stored audio object: %w", err)
+	}
+	defer reader.Close()
+	if info != nil && info.Size > maxYTDLPOutputBytes {
+		return AudioQualityRepairResult{}, fmt.Errorf("stored audio object too large: %d bytes", info.Size)
+	}
+
+	ext := filepath.Ext(storageKey)
+	tmp, err := os.CreateTemp("", "omp-quality-backfill-*"+ext)
+	if err != nil {
+		return AudioQualityRepairResult{}, err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	written, copyErr := io.Copy(tmp, io.LimitReader(reader, maxYTDLPOutputBytes+1))
+	closeErr := tmp.Close()
+	if copyErr != nil {
+		return AudioQualityRepairResult{}, fmt.Errorf("copy stored audio object: %w", copyErr)
+	}
+	if closeErr != nil {
+		return AudioQualityRepairResult{}, fmt.Errorf("close stored audio object: %w", closeErr)
+	}
+	if written > maxYTDLPOutputBytes {
+		return AudioQualityRepairResult{}, fmt.Errorf("stored audio object exceeds %d bytes", maxYTDLPOutputBytes)
+	}
+
+	contentType := ""
+	if info != nil {
+		contentType = info.ContentType
+	}
+	quality, err := probeAudioFile(ctx, tmpPath, contentType)
+	if err != nil {
+		return AudioQualityRepairResult{}, err
+	}
+	if err := p.trackRepo.UpdateAudioQuality(
+		ctx,
+		track.ID,
+		quality.Codec,
+		quality.BitrateKbps,
+		quality.SampleRateHz,
+		quality.Channels,
+		quality.ContentType,
+	); err != nil {
+		return AudioQualityRepairResult{}, err
+	}
+	return AudioQualityRepairResult{Status: "processed", Quality: quality}, nil
+}
+
+func hasCompleteAudioQuality(track *db.Track) bool {
+	return track.Codec.Valid && strings.TrimSpace(track.Codec.String) != "" &&
+		track.BitrateKbps.Valid && track.BitrateKbps.Int32 > 0 &&
+		track.SampleRateHz.Valid && track.SampleRateHz.Int32 > 0 &&
+		track.Channels.Valid && track.Channels.Int32 > 0 &&
+		track.ContentType.Valid && strings.TrimSpace(track.ContentType.String) != ""
 }
 
 // runMatching runs MusicBrainz matching and stores suggestions

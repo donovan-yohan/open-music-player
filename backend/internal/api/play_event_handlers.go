@@ -58,6 +58,12 @@ type PlayEventTrackResponse struct {
 	Artist            string          `json:"artist,omitempty"`
 	Album             string          `json:"album,omitempty"`
 	DurationMs        int             `json:"durationMs,omitempty"`
+	FileSizeBytes     int64           `json:"fileSizeBytes,omitempty"`
+	Codec             string          `json:"codec,omitempty"`
+	BitrateKbps       int             `json:"bitrateKbps,omitempty"`
+	SampleRateHz      int             `json:"sampleRateHz,omitempty"`
+	Channels          int             `json:"channels,omitempty"`
+	ContentType       string          `json:"contentType,omitempty"`
 	CoverArtURL       string          `json:"coverArtUrl,omitempty"`
 	MBRecordingID     *uuid.UUID      `json:"mbRecordingId,omitempty"`
 	AnalysisStatus    string          `json:"analysisStatus,omitempty"`
@@ -259,6 +265,24 @@ func trackToPlayEventResponse(t db.Track) PlayEventTrackResponse {
 	}
 	if t.DurationMs.Valid {
 		resp.DurationMs = int(t.DurationMs.Int32)
+	}
+	if t.FileSizeBytes.Valid {
+		resp.FileSizeBytes = t.FileSizeBytes.Int64
+	}
+	if t.Codec.Valid {
+		resp.Codec = t.Codec.String
+	}
+	if t.BitrateKbps.Valid {
+		resp.BitrateKbps = int(t.BitrateKbps.Int32)
+	}
+	if t.SampleRateHz.Valid {
+		resp.SampleRateHz = int(t.SampleRateHz.Int32)
+	}
+	if t.Channels.Valid {
+		resp.Channels = int(t.Channels.Int32)
+	}
+	if t.ContentType.Valid {
+		resp.ContentType = t.ContentType.String
 	}
 	if t.CoverArtURL.Valid {
 		resp.CoverArtURL = t.CoverArtURL.String

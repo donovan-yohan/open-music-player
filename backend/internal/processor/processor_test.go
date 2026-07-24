@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -21,12 +22,15 @@ import (
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/playlistimport"
+	"github.com/openmusicplayer/backend/internal/storage"
 )
 
 type fakeObjectStorage struct {
 	key         string
 	contentType string
 	data        []byte
+	objects     map[string][]byte
+	getKeys     []string
 }
 
 func (s *fakeObjectStorage) PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
@@ -34,6 +38,38 @@ func (s *fakeObjectStorage) PutObject(ctx context.Context, key string, reader io
 	s.contentType = contentType
 	s.data, _ = io.ReadAll(reader)
 	return nil
+}
+
+func (s *fakeObjectStorage) GetObject(ctx context.Context, key string) (io.ReadCloser, *storage.ObjectInfo, error) {
+	s.getKeys = append(s.getKeys, key)
+	if data, ok := s.objects[key]; ok {
+		return io.NopCloser(bytes.NewReader(data)), &storage.ObjectInfo{Size: int64(len(data)), ContentType: "audio/wav"}, nil
+	}
+	if key != s.key {
+		return nil, nil, errors.New("object not found")
+	}
+	return io.NopCloser(bytes.NewReader(s.data)), &storage.ObjectInfo{
+		Size:        int64(len(s.data)),
+		ContentType: s.contentType,
+	}, nil
+}
+
+func testWAVBytes(t *testing.T, sampleRate, channels int) []byte {
+	t.Helper()
+	const seconds = 1
+	dataSize := sampleRate * channels * 2 * seconds
+	var out bytes.Buffer
+	for _, value := range []any{
+		[]byte("RIFF"), uint32(36 + dataSize), []byte("WAVEfmt "), uint32(16),
+		uint16(1), uint16(channels), uint32(sampleRate), uint32(sampleRate * channels * 2),
+		uint16(channels * 2), uint16(16), []byte("data"), uint32(dataSize),
+	} {
+		if err := binary.Write(&out, binary.LittleEndian, value); err != nil {
+			t.Fatalf("write WAV fixture: %v", err)
+		}
+	}
+	out.Write(make([]byte, dataSize))
+	return out.Bytes()
 }
 
 type fakeAnalysisStore struct {
@@ -954,6 +990,45 @@ func TestRunAnalysisAppliesGenreHintAgainstPostgres(t *testing.T) {
 	}
 }
 
+func TestDuplicateLegacyTrackBackfillsFromExistingReferencedObject(t *testing.T) {
+	database, ctx := newProcessorPostgresTestDB(t)
+	trackRepo := db.NewTrackRepository(database)
+	existingBytes := testWAVBytes(t, 16000, 2)
+	existing, created, err := trackRepo.CreateTrackFromMetadata(
+		ctx, "", "Duplicate Legacy", "", 0,
+		db.WithStorage("tracks/fixture/existing.wav", int64(len(existingBytes))),
+		db.WithMetadata(json.RawMessage(`{}`)),
+		db.WithMetadataEnrichment("provider", nil, json.RawMessage(`{}`), ""),
+	)
+	if err != nil || !created {
+		t.Fatalf("seed legacy track: created=%v err=%v", created, err)
+	}
+	objectStore := &fakeObjectStorage{objects: map[string][]byte{
+		"tracks/fixture/existing.wav": existingBytes,
+	}}
+	p := New(&ProcessorConfig{TrackRepo: trackRepo, Storage: objectStore})
+	job := &download.DownloadJob{
+		ID:         "new-differing-artifact",
+		URL:        "fixture://duplicate-legacy",
+		SourceType: "fixture",
+		Title:      "Duplicate Legacy",
+	}
+	if err := p.Process(ctx, job, func(int) {}); err != nil {
+		t.Fatalf("process duplicate: %v", err)
+	}
+	reloaded, err := trackRepo.GetByID(ctx, existing.ID)
+	if err != nil {
+		t.Fatalf("reload legacy track: %v", err)
+	}
+	if reloaded.SampleRateHz.Int32 != 16000 || reloaded.Channels.Int32 != 2 || reloaded.BitrateKbps.Int32 != 512 {
+		t.Fatalf("legacy track facts = sample=%v channels=%v bitrate=%v; want existing 16kHz stereo 512kbps",
+			reloaded.SampleRateHz, reloaded.Channels, reloaded.BitrateKbps)
+	}
+	if len(objectStore.getKeys) != 1 || objectStore.getKeys[0] != "tracks/fixture/existing.wav" {
+		t.Fatalf("duplicate backfill probed keys = %v, want existing referenced object", objectStore.getKeys)
+	}
+}
+
 func TestAttachPlaylistImportTrackBackfillsSourceEntryIdempotently(t *testing.T) {
 	database, ctx := newProcessorPostgresTestDB(t)
 	userID := uuid.New()
@@ -1384,8 +1459,74 @@ func TestDownloadAndStoreFixtureCreatesPlayableWAVObject(t *testing.T) {
 	if storage.contentType != "audio/wav" {
 		t.Fatalf("expected audio/wav, got %s", storage.contentType)
 	}
+	if metadata.AudioQuality.Codec != "pcm_s16le" ||
+		metadata.AudioQuality.BitrateKbps != 128 ||
+		metadata.AudioQuality.SampleRateHz != 8000 ||
+		metadata.AudioQuality.Channels != 1 ||
+		metadata.AudioQuality.ContentType != "audio/wav" {
+		t.Fatalf("unexpected ffprobe facts: %+v", metadata.AudioQuality)
+	}
 	if !bytes.HasPrefix(storage.data, []byte("RIFF")) || !bytes.Contains(storage.data[:16], []byte("WAVE")) {
 		t.Fatalf("uploaded object is not a RIFF/WAVE fixture")
+	}
+}
+
+func TestHasCompleteAudioQualityRejectsEmptyAndNonPositiveFacts(t *testing.T) {
+	complete := &db.Track{
+		Codec:        sql.NullString{String: "mp3", Valid: true},
+		BitrateKbps:  sql.NullInt32{Int32: 137, Valid: true},
+		SampleRateHz: sql.NullInt32{Int32: 44100, Valid: true},
+		Channels:     sql.NullInt32{Int32: 2, Valid: true},
+		ContentType:  sql.NullString{String: "audio/mpeg", Valid: true},
+	}
+	if !hasCompleteAudioQuality(complete) {
+		t.Fatal("complete artifact facts were rejected")
+	}
+	incomplete := *complete
+	incomplete.BitrateKbps.Int32 = 0
+	if hasCompleteAudioQuality(&incomplete) {
+		t.Fatal("zero bitrate was treated as complete")
+	}
+	incomplete = *complete
+	incomplete.Codec.String = " "
+	if hasCompleteAudioQuality(&incomplete) {
+		t.Fatal("blank codec was treated as complete")
+	}
+}
+
+func TestDownloadAndStoreUsesProbeContentTypeDespiteMisleadingExtension(t *testing.T) {
+	wavPath, _, err := writeFixtureWAV("misleading-extension")
+	if err != nil {
+		t.Fatalf("write fixture wav: %v", err)
+	}
+	defer os.Remove(wavPath)
+	misleadingPath := strings.TrimSuffix(wavPath, ".wav") + ".mp3"
+	if err := os.Rename(wavPath, misleadingPath); err != nil {
+		t.Fatalf("rename fixture: %v", err)
+	}
+	defer os.Remove(misleadingPath)
+
+	objectStore := &fakeObjectStorage{}
+	p := &Processor{storage: objectStore}
+	metadata, err := p.downloadAndStore(context.Background(), &download.DownloadJob{
+		ID:         "misleading-extension",
+		URL:        "file://" + misleadingPath,
+		SourceType: "file",
+	})
+	if err != nil {
+		t.Fatalf("downloadAndStore: %v", err)
+	}
+	if metadata.AudioQuality.ContentType != "audio/wav" || objectStore.contentType != "audio/wav" {
+		t.Fatalf("probe/upload content types = %q/%q, want audio/wav", metadata.AudioQuality.ContentType, objectStore.contentType)
+	}
+}
+
+func TestAudioContentTypeUsesAACContainer(t *testing.T) {
+	if got := audioContentType("aac", "mov,mp4,m4a,3gp,3g2,mj2", "audio/aac"); got != "audio/mp4" {
+		t.Fatalf("AAC in MP4 content type = %q, want audio/mp4", got)
+	}
+	if got := audioContentType("aac", "adts,aac", "application/octet-stream"); got != "audio/aac" {
+		t.Fatalf("raw AAC content type = %q, want audio/aac", got)
 	}
 }
 

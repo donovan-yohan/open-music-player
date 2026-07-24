@@ -106,6 +106,7 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 			   t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
 			   t.mb_recording_id, t.mb_release_id, t.mb_artist_id, t.mb_verified,
 			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
+			   t.codec, t.bitrate_kbps, t.sample_rate_hz, t.channels, t.content_type,
 			   t.metadata_json,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
@@ -140,6 +141,7 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 			&trackID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
+			&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
 			&t.MetadataJSON, &t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt,
 			&t.CreatedAt, &t.UpdatedAt,
 		)
