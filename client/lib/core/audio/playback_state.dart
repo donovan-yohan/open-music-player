@@ -44,6 +44,8 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   bool _persistenceDirty = false;
   bool _receivedInitialQueueEmission = false;
   bool _receivedInitialIndexEmission = false;
+  final Duration _persistenceDebounce;
+  Timer? _persistenceTimer;
 
   List<StreamSubscription> _subscriptions = [];
 
@@ -187,10 +189,12 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     PlaybackCacheManager? cacheManager,
     QueuePersistenceStore? persistence,
     Future<String?> Function()? accountIdProvider,
+    Duration persistenceDebounce = const Duration(milliseconds: 500),
   })  : _queueController = QueueTimelineController(engine),
         _signedAudioUrlService = signedAudioUrlService,
         _persistence = persistence,
         _persistenceReady = persistence == null,
+        _persistenceDebounce = persistenceDebounce,
         _sourceResolver = PlaybackSourceResolver(
           signedAudioUrlService: signedAudioUrlService,
           localResolver: localResolver,
@@ -206,8 +210,13 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         final wasPlaying = _isPlaying;
         _isPlaying = state.playing;
         // Persist the resting position whenever playback pauses so a resume
-        // picks up where the listener left off.
-        if (wasPlaying && !_isPlaying) _persistQueue();
+        // picks up where the listener left off. Pause is rare and
+        // user-initiated, so flush immediately instead of waiting out the
+        // debounce — a process kill right after pausing must not lose it.
+        if (wasPlaying && !_isPlaying) {
+          _persistQueue();
+          _flushPersistence();
+        }
         notifyListeners();
       }),
       _queueController.positionStream.listen((pos) {
@@ -502,8 +511,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     refreshedQueue[index] = item.copyWith(extras: extras);
     await _queueController.setQueue(
       refreshedQueue,
-      initialIndex: index,
-      initialPosition: _queueController.livePosition,
+      preserveCurrentTransport: true,
       preserveTimelineEdits: true,
     );
   }
@@ -511,18 +519,39 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   Future<void> refreshTrackAnalysis(
     String trackId,
     TrackAnalysis analysis,
+  ) =>
+      refreshTrackAnalyses({trackId: analysis});
+
+  Future<void> refreshTrackAnalyses(
+    Map<String, TrackAnalysis> analysesByTrackId,
   ) async {
-    final normalizedTrackId = trackId.trim();
-    if (normalizedTrackId.isEmpty || queue.isEmpty) return;
+    if (analysesByTrackId.isEmpty || queue.isEmpty) return;
+    final normalizedAnalyses = <String, TrackAnalysis>{};
+    for (final entry in analysesByTrackId.entries) {
+      final trackId = entry.key.trim();
+      if (trackId.isNotEmpty) normalizedAnalyses[trackId] = entry.value;
+    }
+    if (normalizedAnalyses.isEmpty) return;
 
     var changed = false;
     int? firstChangedIndex;
     final refreshedQueue = <MediaItem>[];
     for (var index = 0; index < queue.length; index++) {
       final item = queue[index];
-      if (_mediaItemMatchesAnalysisTrack(item, normalizedTrackId)) {
+      MapEntry<String, TrackAnalysis>? matchingAnalysis;
+      for (final entry in normalizedAnalyses.entries) {
+        if (_mediaItemMatchesAnalysisTrack(item, entry.key)) {
+          matchingAnalysis = entry;
+          break;
+        }
+      }
+      if (matchingAnalysis != null) {
         refreshedQueue.add(
-          _mediaItemWithAnalysis(item, normalizedTrackId, analysis),
+          _mediaItemWithAnalysis(
+            item,
+            matchingAnalysis.key,
+            matchingAnalysis.value,
+          ),
         );
         changed = true;
         firstChangedIndex ??= index;
@@ -532,12 +561,9 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     }
     if (!changed) return;
 
-    final index =
-        currentIndex?.clamp(0, refreshedQueue.length - 1).toInt() ?? 0;
     await _queueController.setQueue(
       refreshedQueue,
-      initialIndex: index,
-      initialPosition: _queueController.livePosition,
+      preserveCurrentTransport: true,
       preserveTimelineEdits: true,
       reflowDefaultTransitionsFromIndex: firstChangedIndex,
     );
@@ -565,14 +591,20 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       extras.remove('analysisSummary');
       extras.remove('analysis_summary');
     } else {
-      extras['analysisSummary'] = summary.toJson();
+      final compactSummary = compactAnalysisSummary(summary.toJson());
+      if (compactSummary == null) {
+        extras.remove('analysisSummary');
+      } else {
+        extras['analysisSummary'] = compactSummary;
+      }
       extras.remove('analysis_summary');
     }
     if (overrides == null) {
       extras.remove('analysisOverrides');
       extras.remove('analysis_overrides');
     } else {
-      extras['analysisOverrides'] = overrides.toJson();
+      extras['analysisOverrides'] =
+          compactAnalysisOverrides(overrides.toJson());
       extras.remove('analysis_overrides');
     }
     if (analysis.updatedAt == null) {
@@ -685,6 +717,15 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       return;
     }
 
+    _persistenceTimer?.cancel();
+    _persistenceTimer = Timer(_persistenceDebounce, _flushPersistence);
+  }
+
+  void _flushPersistence() {
+    _persistenceTimer?.cancel();
+    _persistenceTimer = null;
+    final store = _persistence;
+    if (store == null || !_persistenceReady) return;
     final currentQueue = queue;
     final snapshot = currentQueue.isEmpty
         ? const QueueSnapshot()
@@ -719,6 +760,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
   @override
   void dispose() {
+    if (_persistenceTimer != null) _flushPersistence();
     for (final sub in _subscriptions) {
       sub.cancel();
     }

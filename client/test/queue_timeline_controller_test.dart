@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/queue_timeline_controller.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
@@ -865,6 +866,258 @@ void main() {
       await harness.dispose();
     });
 
+    test(
+        'hydrated metadata with identical placements does not resync the engine',
+        () async {
+      final voices = <_RecordingVoice>[];
+      final harness = _Harness(
+        voiceFactory: () {
+          final voice = _RecordingVoice('v${voices.length}');
+          voices.add(voice);
+          return voice;
+        },
+      );
+      await harness.controller.setQueue([
+        _item('1', seconds: 20),
+        _item('2', seconds: 20),
+        _item('3', seconds: 20),
+      ]);
+      await harness.controller.setTimelineStartMs(
+        1,
+        23000,
+        snapToDownbeat: false,
+      );
+      await harness.controller.setTimelineStartMs(
+        2,
+        46000,
+        snapToDownbeat: false,
+      );
+      await harness.controller.play();
+      final voice = voices.first;
+      final generation = harness.engine.pool.generation;
+      final pauseCalls = voice.pauseCalls;
+      final muteCalls = voice.muteCalls;
+      final seekCalls = voice.seekCalls;
+
+      await harness.controller.setQueue(
+        [
+          _item(
+            '1',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000],
+            ),
+          ),
+          _item(
+            '2',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000],
+            ),
+          ),
+          _item(
+            '3',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000],
+            ),
+          ),
+        ],
+        preserveCurrentTransport: true,
+        preserveTimelineEdits: true,
+        reflowDefaultTransitionsFromIndex: 0,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(harness.engine.pool.generation, generation);
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        [0, 23000, 46000],
+      );
+      expect(harness.engine.model.clips.map((clip) => clip.tempo.nativeBpm), [
+        120,
+        120,
+        120,
+      ]);
+      expect(voice.pauseCalls, pauseCalls);
+      expect(voice.muteCalls, muteCalls);
+      expect(voice.seekCalls, seekCalls);
+      expect(voice.isPlaying, isTrue);
+
+      await harness.dispose();
+    });
+
+    test('metadata replacement preserves an advancing clock', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([_item('1', seconds: 20)]);
+      await harness.controller.play();
+      harness.now = harness.now.add(const Duration(seconds: 3));
+      final generation = harness.engine.pool.generation;
+
+      expect(harness.engine.positionMs, 3000);
+
+      await harness.controller.setQueue(
+        [
+          _item(
+            '1',
+            seconds: 20,
+            analysisSummary: _bpmOnlyAnalysis(bpm: 120),
+          ),
+        ],
+        preserveCurrentTransport: true,
+        preserveTimelineEdits: true,
+      );
+
+      expect(harness.engine.positionMs, 3000);
+      expect(harness.engine.pool.generation, generation);
+
+      await harness.dispose();
+    });
+
+    test('same-timeline index change remains a transport command', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item('1', seconds: 20),
+        _item('2', seconds: 20),
+      ]);
+      await harness.controller.play();
+      final generation = harness.engine.pool.generation;
+
+      await harness.controller.setQueue(
+        harness.controller.queue,
+        initialIndex: 1,
+        preserveTimelineEdits: true,
+      );
+
+      expect(harness.controller.currentIndex, 1);
+      expect(harness.engine.positionMs, 20000);
+      expect(harness.engine.pool.generation, greaterThan(generation));
+
+      await harness.dispose();
+    });
+
+    test(
+        'placement-changing hydration resyncs once without seeking an unmoved active clip',
+        () async {
+      final voices = <_RecordingVoice>[];
+      final harness = _Harness(
+        voiceFactory: () {
+          final voice = _RecordingVoice('v${voices.length}');
+          voices.add(voice);
+          return voice;
+        },
+      );
+      await harness.controller.setQueue([
+        _item(
+          '1',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          ),
+        ),
+        _item('2', seconds: 20),
+      ]);
+      await harness.controller.play();
+      final voice = voices.first;
+      final generation = harness.engine.pool.generation;
+      final pauseCalls = voice.pauseCalls;
+      final muteCalls = voice.muteCalls;
+      final seekCalls = voice.seekCalls;
+
+      await harness.controller.setQueue(
+        [
+          _item(
+            '1',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000],
+            ),
+          ),
+          _item(
+            '2',
+            seconds: 20,
+            analysisSummary: _analysisSummary(
+              bpm: 120,
+              downbeatsMs: [0, 4000, 8000, 12000, 16000],
+            ),
+          ),
+        ],
+        preserveCurrentTransport: true,
+        preserveTimelineEdits: true,
+        reflowDefaultTransitionsFromIndex: 1,
+      );
+
+      expect(harness.engine.pool.generation, generation + 1);
+      expect(harness.controller.session.clips[1].timelineStartMs, 12000);
+      expect(voice.pauseCalls, pauseCalls);
+      expect(voice.muteCalls, muteCalls);
+      expect(voice.seekCalls, seekCalls);
+      expect(voice.isPlaying, isTrue);
+
+      await harness.dispose();
+    });
+
+    test('active legacy restore defers adoption until playback is idle',
+        () async {
+      final voices = <_RecordingVoice>[];
+      final harness = _Harness(
+        voiceFactory: () {
+          final voice = _RecordingVoice('v${voices.length}');
+          voices.add(voice);
+          return voice;
+        },
+      );
+      final first = _item('1', seconds: 10);
+      final second = _item('2', seconds: 10);
+      await harness.controller.setQueue([first]);
+      await harness.controller.play();
+      await harness.controller.setDefaultCrossfadeMs(3000);
+
+      final inserted = harness.controller.session.insertAt(1, second);
+      final legacyJson = inserted
+          .withPlacementAt(
+            1,
+            inserted.clips[1].placement.withTimelineStartMs(10000),
+            markExplicit: false,
+          )
+          .toJson()
+        ..remove('defaultCrossfadeMs');
+      final legacySession = MixSession.fromJson(legacyJson);
+      final activeVoice = voices.first;
+      final pauseCalls = activeVoice.pauseCalls;
+      final muteCalls = activeVoice.muteCalls;
+      final seekCalls = activeVoice.seekCalls;
+
+      await harness.controller.setQueue(
+        [first, second],
+        session: legacySession,
+      );
+
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        [0, 10000],
+      );
+      expect(activeVoice.pauseCalls, pauseCalls);
+      expect(activeVoice.muteCalls, muteCalls);
+      expect(activeVoice.seekCalls, seekCalls);
+      expect(activeVoice.isPlaying, isTrue);
+
+      await harness.controller.pause();
+
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        [0, 7000],
+      );
+      expect(harness.engine.isPlaying, isFalse);
+
+      await harness.dispose();
+    });
+
     test('tempo-adjusted clip windows drive snapshot and current index',
         () async {
       final harness = _Harness();
@@ -1377,6 +1630,32 @@ class _Harness {
   Future<void> dispose() async {
     await controller.dispose();
     await clock.dispose();
+  }
+}
+
+class _RecordingVoice extends FakeVoice {
+  _RecordingVoice(super.debugId);
+
+  int pauseCalls = 0;
+  int muteCalls = 0;
+  int seekCalls = 0;
+
+  @override
+  Future<void> pause() async {
+    pauseCalls += 1;
+    await super.pause();
+  }
+
+  @override
+  Future<void> seekLocal(int localPositionMs) async {
+    seekCalls += 1;
+    await super.seekLocal(localPositionMs);
+  }
+
+  @override
+  Future<void> setVolume(double linearGain) async {
+    if (linearGain == 0) muteCalls += 1;
+    await super.setVolume(linearGain);
   }
 }
 

@@ -74,15 +74,16 @@ void main() async {
 
   // Resolution prefers a validated explicit download (offline / after restart),
   // then a matching cache artifact, then a freshly signed remote URL.
+  final queuePersistence = QueuePersistenceStore(
+    prefs: Future.value(sharedPreferences),
+    accountIdProvider: currentAccountId,
+  );
   final playbackState = PlaybackState(
     playbackEngine,
     signedAudioUrlService: signedAudioUrlService,
     localResolver: downloadService,
     cacheManager: playbackCacheManager,
-    persistence: QueuePersistenceStore(
-      prefs: Future.value(sharedPreferences),
-      accountIdProvider: currentAccountId,
-    ),
+    persistence: queuePersistence,
     accountIdProvider: currentAccountId,
   );
   // Surface the app playback session as one OS media session/notification. The
@@ -114,7 +115,12 @@ void main() async {
     ApiPlayEventSink(apiClient),
   )..start();
   var accountSyncGeneration = 0;
+  var persistenceAuthStatus = authState.status;
   authState.addListener(() {
+    if (authState.status != persistenceAuthStatus) {
+      persistenceAuthStatus = authState.status;
+      queuePersistence.invalidateAccountId();
+    }
     final syncGeneration = ++accountSyncGeneration;
     if (!authState.isAuthenticated) {
       playRecorder.reset();

@@ -272,6 +272,50 @@ void main() {
       playback.dispose();
     });
 
+    test('rapid queue emissions debounce to one persistence save', () async {
+      final store = _ControllableQueuePersistenceStore();
+      final playback = _playbackState(
+        persistence: store,
+        persistenceDebounce: const Duration(milliseconds: 20),
+      );
+
+      final restore = playback.restore();
+      await store.waitForLoad();
+      store.completeLoad(const QueueSnapshot());
+      await restore;
+
+      await playback.playQueue([
+        _track(1, seconds: 30),
+        _track(2, seconds: 30),
+        _track(3, seconds: 30),
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(store.savedSnapshots, hasLength(1));
+      expect(store.savedSnapshots.single.tracks, hasLength(3));
+      playback.dispose();
+    });
+
+    test('dispose flushes one pending trailing persistence save', () async {
+      final store = _ControllableQueuePersistenceStore();
+      final playback = _playbackState(
+        persistence: store,
+        persistenceDebounce: const Duration(hours: 1),
+      );
+
+      final restore = playback.restore();
+      await store.waitForLoad();
+      store.completeLoad(const QueueSnapshot());
+      await restore;
+      await playback.playQueue([_track(9, seconds: 30)]);
+
+      expect(store.savedSnapshots, isEmpty);
+      playback.dispose();
+
+      expect(store.savedSnapshots, hasLength(1));
+      expect(store.savedSnapshots.single.tracks.single['id'], 9);
+    });
+
     test('playQueue start index exposes local position and current media item',
         () async {
       final playback = _playbackState();
@@ -549,6 +593,42 @@ void main() {
       playback.dispose();
     });
 
+    test('analysis refresh never puts waveform arrays in media extras',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final playback = _playbackState();
+      await playback.playQueue([_track(1, seconds: 20)]);
+
+      await playback.refreshTrackAnalysis(
+        '1',
+        TrackAnalysis.fromJson(
+          status: 'analyzed',
+          summary: {
+            'bpm': {'value': 120},
+            'beat_grid': {
+              'bpm': 120,
+              'beats_ms': [for (var beat = 0; beat < 500; beat++) beat * 500],
+            },
+            'downbeats': {
+              'positions_ms': [
+                for (var beat = 0; beat < 200; beat++) beat * 2000,
+              ],
+            },
+            'waveform': {
+              'peaks': List<double>.filled(4096, 0.5),
+              'rms': List<double>.filled(4096, 0.25),
+            },
+          },
+        ),
+      );
+
+      final compact = playback.queue.single.extras?['analysisSummary'] as Map;
+      expect(compact, isNot(contains('waveform')));
+      expect((compact['beat_grid'] as Map)['beats_ms'], hasLength(128));
+      expect((compact['downbeats'] as Map)['positions_ms'], hasLength(64));
+      playback.dispose();
+    });
+
     test('analysis refresh backfills beat-aware overlap for default queue',
         () async {
       SharedPreferences.setMockInitialValues({});
@@ -622,23 +702,73 @@ void main() {
       expect(playback.timelineModel.clips[1].timelineStartMs, 23000);
       playback.dispose();
     });
+
+    test('queued hydration preserves advanced transport without engine reload',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      var now = DateTime.utc(2026);
+      final clock = DefaultTimelineClock(
+        now: () => now,
+        uiTickInterval: const Duration(hours: 1),
+      );
+      final engine = PlaybackEngine.withClock(
+        clock: clock,
+        voiceFactory: () => FakeVoice('v'),
+      );
+      final playback = _playbackState(engine: engine);
+
+      await playback.playQueue([
+        _track(1, seconds: 20),
+        _track(2, seconds: 20),
+      ]);
+      await playback.setQueueTimelineStartMs(
+        1,
+        23000,
+        snapToDownbeat: false,
+      );
+      now = now.add(const Duration(seconds: 5));
+      expect(playback.timelinePositionMs, 5000);
+      final generation = engine.pool.generation;
+
+      final skip = playback.skipToIndex(1);
+      final hydration = playback.refreshTrackAnalyses({
+        '1': _analysis(
+          bpm: 120,
+          downbeatsMs: [0, 4000, 8000, 12000, 16000],
+        ),
+        '2': _analysis(
+          bpm: 120,
+          downbeatsMs: [0, 4000, 8000, 12000, 16000],
+        ),
+      });
+      await Future.wait([skip, hydration]);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      expect(playback.currentIndex, 1);
+      expect(playback.timelinePositionMs, 23000);
+      expect(engine.pool.generation, generation + 1);
+
+      playback.dispose();
+    });
   });
 }
 
 PlaybackState _playbackState({
+  PlaybackEngine? engine,
   SignedAudioUrlService? signedAudioUrlService,
   QueuePersistenceStore? persistence,
+  Duration persistenceDebounce = Duration.zero,
 }) {
-  final clock = DefaultTimelineClock(
-    now: () => DateTime.utc(2026),
-    uiTickInterval: const Duration(hours: 1),
-  );
-  final engine = PlaybackEngine.withClock(
-    clock: clock,
-    voiceFactory: () => FakeVoice('v'),
-  );
+  final playbackEngine = engine ??
+      PlaybackEngine.withClock(
+        clock: DefaultTimelineClock(
+          now: () => DateTime.utc(2026),
+          uiTickInterval: const Duration(hours: 1),
+        ),
+        voiceFactory: () => FakeVoice('v'),
+      );
   return PlaybackState(
-    engine,
+    playbackEngine,
     signedAudioUrlService: signedAudioUrlService ??
         SignedAudioUrlService.withRequester((body) async {
           final ids = (body['trackIds'] as List).cast<int>();
@@ -655,6 +785,7 @@ PlaybackState _playbackState({
           };
         }),
     persistence: persistence ?? QueuePersistenceStore(),
+    persistenceDebounce: persistenceDebounce,
   );
 }
 

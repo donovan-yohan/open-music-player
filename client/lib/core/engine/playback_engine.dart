@@ -126,6 +126,11 @@ class PlaybackEngine implements PlaybackEngineControls {
     );
   }
 
+  void replaceMixMetadata(TimelineModel model) {
+    _model = model;
+    _pool.replaceMixMetadata(model);
+  }
+
   @override
   Future<void> play() async {
     _pool.beginCoordinatedResume();

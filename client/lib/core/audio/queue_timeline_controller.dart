@@ -62,6 +62,7 @@ class QueueTimelineController {
   ProcessingState _processingState = ProcessingState.idle;
   bool _started = false;
   bool _suppressPositionSync = false;
+  bool _deferredLegacyDefaultCrossfadeAdoption = false;
   Future<void> _commandChain = Future<void>.value();
 
   PlaybackEngine get engine => _engine;
@@ -106,10 +107,16 @@ class QueueTimelineController {
     await _engine.start();
   }
 
+  /// Replaces the queue.
+  ///
+  /// When [preserveCurrentTransport] is true, the current index and live local
+  /// position are captured inside this controller's serialized command. The
+  /// caller-supplied [initialIndex] and [initialPosition] are ignored.
   Future<void> setQueue(
     List<MediaItem> items, {
     int initialIndex = 0,
     Duration initialPosition = Duration.zero,
+    bool preserveCurrentTransport = false,
     bool preserveTimelineEdits = false,
     int? reflowDefaultTransitionsFromIndex,
     MixSession? session,
@@ -119,6 +126,7 @@ class QueueTimelineController {
         items,
         initialIndex: initialIndex,
         initialPosition: initialPosition,
+        preserveCurrentTransport: preserveCurrentTransport,
         preserveTimelineEdits: preserveTimelineEdits,
         reflowDefaultTransitionsFromIndex: reflowDefaultTransitionsFromIndex,
         session: session,
@@ -130,11 +138,17 @@ class QueueTimelineController {
     List<MediaItem> items, {
     int initialIndex = 0,
     Duration initialPosition = Duration.zero,
+    bool preserveCurrentTransport = false,
     bool preserveTimelineEdits = false,
     int? reflowDefaultTransitionsFromIndex,
     MixSession? session,
   }) async {
     await start();
+    final previousTimeline = _cueTimeline;
+    final previousModel = _engine.model;
+    final wasPlaying = _engine.isPlaying;
+    final previousCurrentIndex = _currentIndex;
+    final previousLocalPositionMs = livePosition.inMilliseconds;
     _sessionGeneration += 1;
     _queue = List.unmodifiable(items);
     _playOrder = [for (var i = 0; i < _queue.length; i++) i];
@@ -144,18 +158,31 @@ class QueueTimelineController {
     final defaultCrossfadeMs = _configuredDefaultCrossfadeMs ??
         session?.defaultCrossfadeMs ??
         _session.defaultCrossfadeMs;
-    _session = session == null
-        ? (preserveTimelineEdits
-            ? _session.normalizedForQueue(_queue)
-            : MixSession.fromQueue(
-                sessionId: _sessionId,
-                queue: _queue,
-                transitionSnapMode: transitionSnapMode,
-                defaultCrossfadeMs: defaultCrossfadeMs,
-              ))
-        : session
-            .normalizedForQueue(_queue)
-            .withDefaultCrossfadeMs(defaultCrossfadeMs);
+    if (session == null) {
+      _session = preserveTimelineEdits
+          ? _session.normalizedForQueue(_queue)
+          : MixSession.fromQueue(
+              sessionId: _sessionId,
+              queue: _queue,
+              transitionSnapMode: transitionSnapMode,
+              defaultCrossfadeMs: defaultCrossfadeMs,
+            );
+      if (!preserveTimelineEdits) {
+        _deferredLegacyDefaultCrossfadeAdoption = false;
+      }
+    } else {
+      final normalizedSession = session.normalizedForQueue(_queue);
+      if (wasPlaying &&
+          normalizedSession.hasPendingLegacyDefaultCrossfadeAdoption) {
+        _session = normalizedSession.deferLegacyDefaultCrossfadeMs(
+          defaultCrossfadeMs,
+        );
+        _deferredLegacyDefaultCrossfadeAdoption = true;
+      } else {
+        _session = normalizedSession.withDefaultCrossfadeMs(defaultCrossfadeMs);
+        _deferredLegacyDefaultCrossfadeAdoption = false;
+      }
+    }
     if (reflowDefaultTransitionsFromIndex != null) {
       _session = _session.reflowDefaultTransitionsFrom(
         reflowDefaultTransitionsFromIndex,
@@ -170,6 +197,7 @@ class QueueTimelineController {
       );
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
+      _deferredLegacyDefaultCrossfadeAdoption = false;
       await _engine.pause();
       await _engine.loadMix(TimelineModel());
       await _engine.seek(0);
@@ -180,13 +208,43 @@ class QueueTimelineController {
         reflowDefaultTransitionsFromIndex != null) {
       _session = _refineSessionRuntimeBeatAlignments(_session);
     }
-    _currentIndex = initialIndex.clamp(0, _queue.length - 1).toInt();
+    final requestedInitialIndex = preserveCurrentTransport
+        ? (previousCurrentIndex ?? 0).clamp(0, _queue.length - 1).toInt()
+        : initialIndex.clamp(0, _queue.length - 1).toInt();
+    final requestedLocalPositionMs = preserveCurrentTransport
+        ? previousLocalPositionMs
+        : initialPosition.inMilliseconds;
+    _currentIndex = requestedInitialIndex;
     _processingState = ProcessingState.ready;
-    await _loadModel(
-      seekToCurrent: true,
-      localPositionMs: initialPosition.inMilliseconds,
+    final nextTimeline = CueTimeline.fromSession(
+      session: _session,
+      queue: _queue,
+      playOrder: _playOrder,
     );
-    _currentIndex = initialIndex.clamp(0, _queue.length - 1).toInt();
+    final nextModel = nextTimeline.toTimelineModel();
+    final transportUnchanged = previousCurrentIndex == requestedInitialIndex &&
+        previousLocalPositionMs == requestedLocalPositionMs;
+    final metadataOnly = transportUnchanged &&
+        _sameTimelinePlacementsAndSources(
+          previousTimeline,
+          nextTimeline,
+        );
+    final preserveActivePlayback = !metadataOnly &&
+        transportUnchanged &&
+        wasPlaying &&
+        _soundingClipPlacementsUnchanged(previousModel, nextModel);
+    _cueTimeline = nextTimeline;
+    if (metadataOnly) {
+      _engine.replaceMixMetadata(nextModel);
+      _publishPosition(_engine.positionMs);
+    } else {
+      await _loadModel(
+        seekToCurrent: !preserveActivePlayback,
+        localPositionMs: requestedLocalPositionMs,
+        preserveActivePlayback: preserveActivePlayback,
+      );
+    }
+    _currentIndex = requestedInitialIndex;
     _publishQueueState();
   }
 
@@ -596,6 +654,7 @@ class QueueTimelineController {
 
   Future<void> _pause() async {
     await _engine.pause();
+    await _adoptDeferredLegacyDefaultCrossfade();
   }
 
   Future<void> stop() async {
@@ -604,8 +663,24 @@ class QueueTimelineController {
 
   Future<void> _stop() async {
     await _engine.pause();
+    await _adoptDeferredLegacyDefaultCrossfade();
     _processingState = ProcessingState.idle;
     _publishPlayerState();
+  }
+
+  Future<void> _adoptDeferredLegacyDefaultCrossfade() async {
+    if (!_deferredLegacyDefaultCrossfadeAdoption) return;
+    _deferredLegacyDefaultCrossfadeAdoption = false;
+    _session = _session
+        .adoptDeferredLegacyDefaultCrossfade()
+        .normalizedForQueue(_queue);
+    if (_queue.isNotEmpty) {
+      await _loadModel(
+        seekToCurrent: false,
+        preserveActivePlayback: true,
+      );
+    }
+    _publishQueueState();
   }
 
   Future<void> seek(Duration position) async {
@@ -802,6 +877,48 @@ class QueueTimelineController {
       _suppressPositionSync = false;
     }
     _publishPosition(_engine.positionMs);
+  }
+
+  bool _sameTimelinePlacementsAndSources(
+    CueTimeline previous,
+    CueTimeline next,
+  ) {
+    if (previous.cues.length != next.cues.length) return false;
+    for (var index = 0; index < previous.cues.length; index++) {
+      final before = previous.cues[index];
+      final after = next.cues[index];
+      if (before.placement != after.placement ||
+          before.queueItemId != after.queueItemId ||
+          before.audioUri != after.audioUri ||
+          before.playbackRate != after.playbackRate ||
+          before.pitchMode != after.pitchMode) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _soundingClipPlacementsUnchanged(
+    TimelineModel previous,
+    TimelineModel next,
+  ) {
+    final active = previous.activeClipsAt(_engine.positionMs);
+    if (active.isEmpty) return false;
+    for (final sounding in active) {
+      MixClip? replacement;
+      for (final candidate in next.clips) {
+        if (candidate.id == sounding.id ||
+            (sounding.queueItemId != null &&
+                candidate.queueItemId == sounding.queueItemId)) {
+          replacement = candidate;
+          break;
+        }
+      }
+      if (replacement == null || replacement.placement != sounding.placement) {
+        return false;
+      }
+    }
+    return true;
   }
 
   bool _canPreserveActivePlaybackForFutureInsert(

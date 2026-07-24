@@ -160,8 +160,19 @@ class QueueScreen extends StatefulWidget {
 }
 
 class _QueueScreenState extends State<QueueScreen> {
+  static const int _maxPlaybackBeatPositions = 128;
+  static const int _maxPlaybackDownbeatPositions = 64;
+
   _QueueViewMode _viewMode = _QueueViewMode.list;
   final Set<String> _analysisRefreshesInFlight = <String>{};
+  final Map<
+      String,
+      ({
+        String queueItemId,
+        String trackId,
+        TrackAnalysis analysis,
+      })> _pendingAnalysisRefreshes = {};
+  bool _analysisRefreshScheduled = false;
   _PlaybackTimelineTracks? _playbackTimelineTracksCache;
   QueueProvider? _hydrationProvider;
   Object? _hydrationQueueIdentity;
@@ -747,27 +758,45 @@ class _QueueScreenState extends State<QueueScreen> {
 
       final refreshKey = '${track.queueItemId}:$trackId:${nextTempo.hashCode}';
       if (!_analysisRefreshesInFlight.add(refreshKey)) continue;
+      _pendingAnalysisRefreshes[refreshKey] = (
+        queueItemId: track.queueItemId,
+        trackId: trackId,
+        analysis: analysis,
+      );
+    }
 
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) {
-          _analysisRefreshesInFlight.remove(refreshKey);
-          return;
-        }
+    if (_pendingAnalysisRefreshes.isEmpty || _analysisRefreshScheduled) {
+      return;
+    }
+    _analysisRefreshScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _analysisRefreshScheduled = false;
+      final pending = Map.of(_pendingAnalysisRefreshes);
+      _pendingAnalysisRefreshes.clear();
+      if (!mounted) {
+        _analysisRefreshesInFlight.removeAll(pending.keys);
+        return;
+      }
+
+      final refreshes = <String, TrackAnalysis>{};
+      for (final entry in pending.values) {
         final latestQueueIndex = _playbackQueueIndexForQueueItemId(
           playback,
-          track.queueItemId,
+          entry.queueItemId,
         );
-        if (latestQueueIndex == null) {
-          _analysisRefreshesInFlight.remove(refreshKey);
-          return;
-        }
-        unawaited(
-          playback.refreshTrackAnalysis(trackId, analysis).whenComplete(
-                () => _analysisRefreshesInFlight.remove(refreshKey),
-              ),
-        );
-      });
-    }
+        if (latestQueueIndex == null) continue;
+        refreshes[entry.trackId] = entry.analysis;
+      }
+      if (refreshes.isEmpty) {
+        _analysisRefreshesInFlight.removeAll(pending.keys);
+        return;
+      }
+      unawaited(
+        playback.refreshTrackAnalyses(refreshes).whenComplete(
+              () => _analysisRefreshesInFlight.removeAll(pending.keys),
+            ),
+      );
+    });
   }
 
   bool _mediaItemNeedsAnalysisRefresh(
@@ -781,7 +810,7 @@ class _QueueScreenState extends State<QueueScreen> {
       extras['analysisSummary'] ?? extras['analysis_summary'],
       overrides: extras['analysisOverrides'] ?? extras['analysis_overrides'],
     );
-    return currentTempo != nextTempo;
+    return _compactPlaybackTempo(currentTempo) != nextTempo;
   }
 
   bool _timelineModelNeedsAnalysisRefresh(
@@ -793,7 +822,7 @@ class _QueueScreenState extends State<QueueScreen> {
 
     for (final clip in model.clips) {
       if (_timelineClipMatchesTrack(clip, track)) {
-        return clip.tempo != nextTempo;
+        return _compactPlaybackTempo(clip.tempo) != nextTempo;
       }
     }
     return false;
@@ -822,10 +851,42 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   ClipTempoMetadata _tempoForAnalysis(TrackAnalysis analysis) =>
-      ClipTempoMetadata.fromAnalysisSummary(
-        analysis.summary?.toJson(),
-        overrides: analysis.overrides?.toJson(),
+      _compactPlaybackTempo(
+        ClipTempoMetadata.fromAnalysisSummary(
+          analysis.summary?.toJson(),
+          overrides: analysis.overrides?.toJson(),
+        ),
       );
+
+  ClipTempoMetadata _compactPlaybackTempo(ClipTempoMetadata tempo) =>
+      ClipTempoMetadata(
+        nativeBpm: tempo.nativeBpm,
+        bpmConfidence: tempo.bpmConfidence,
+        beatGridOffsetMs: tempo.beatGridOffsetMs,
+        beatsMs: _boundedTempoPositions(
+          tempo.beatsMs,
+          _maxPlaybackBeatPositions,
+        ),
+        downbeatsMs: _boundedTempoPositions(
+          tempo.downbeatsMs,
+          _maxPlaybackDownbeatPositions,
+        ),
+        downbeatConfidence: tempo.downbeatConfidence,
+        bpmProvenance: tempo.bpmProvenance,
+        beatGridProvenance: tempo.beatGridProvenance,
+        downbeatProvenance: tempo.downbeatProvenance,
+        musicalKey: tempo.musicalKey,
+        camelot: tempo.camelot,
+      );
+
+  List<int> _boundedTempoPositions(List<int> positions, int limit) {
+    if (positions.length <= limit) return positions;
+    final headLength = limit ~/ 2;
+    return [
+      ...positions.take(headLength),
+      ...positions.skip(positions.length - (limit - headLength)),
+    ];
+  }
 
   int? _playbackQueueIndexForQueueItemId(
     PlaybackState playback,

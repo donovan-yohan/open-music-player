@@ -166,6 +166,24 @@ void main() {
     expect(pool.model.clips.map((clip) => clip.id), ['a', 'b']);
   });
 
+  test('preserved metadata update skips unchanged source resolution', () async {
+    await pool.loadMix(TimelineModel(clips: [_clip('a', 0)]));
+    await _play(clock, pool);
+    final resolveCalls = resolver.resolvedClipIds.length;
+
+    await pool.loadMix(
+      TimelineModel(
+        clips: [
+          _clip('a', 0, nativeBpm: 120),
+        ],
+      ),
+      preserveActivePlayback: true,
+    );
+
+    expect(resolver.resolvedClipIds, hasLength(resolveCalls));
+    expect(pool.activeClips['a']?.tempo.nativeBpm, 120);
+  });
+
   test('unchanged tempo tuning is not resent on steady sync ticks', () async {
     await pool.loadMix(
       TimelineModel(
@@ -802,9 +820,11 @@ class FakeResolver implements EngineAudioSourceResolver {
   final sourceByClipId = <String, Uri>{};
   final descriptorByClipId = <String, SignedAudioDescriptor>{};
   final warmed = <String>[];
+  final resolvedClipIds = <String>[];
 
   @override
   Future<ResolvedAudioSource> resolve(MixClip clip) async {
+    resolvedClipIds.add(clip.id);
     final delay = delayByClip[clip.id];
     if (delay != null) await Future<void>.delayed(delay);
     if (permanentFailClipIds.contains(clip.id)) {
