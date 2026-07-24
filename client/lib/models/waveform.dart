@@ -201,7 +201,7 @@ class TimelineWaveformData {
 }
 
 TimelineWaveformData richWaveformForTrack(
-  Track track, {
+  QueueTrack track, {
   int sampleCount = 128,
 }) {
   final summary = track.analysis?.summary;
@@ -261,13 +261,13 @@ TimelineWaveformData richWaveformForTrack(
 
 /// The timeline may decimate these frames for display, but must never invent
 /// higher-detail analyzed frames by interpolation.
-int? waveformAvailableSampleCountForTrack(Track track) {
+int? waveformAvailableSampleCountForTrack(QueueTrack track) {
   final available = track.analysis?.summary?.waveform?.peaks.length ?? 0;
   return available > 0 ? available : null;
 }
 
 int? waveformCoveredSampleCountForTrack(
-  Track track, {
+  QueueTrack track, {
   required int sourceStartMs,
   required int sourceEndMs,
 }) {
@@ -576,7 +576,7 @@ double _smoothStep(double t) {
   return x * x * (3 - 2 * x);
 }
 
-List<int> _analysisBeats(Track track) {
+List<int> _analysisBeats(QueueTrack track) {
   final summary = track.analysis?.summary;
   final explicit = summary?.beatGrid?.beatsMs ?? const <int>[];
   if (explicit.isNotEmpty) return explicit;
@@ -592,7 +592,7 @@ List<int> _analysisBeats(Track track) {
   return beats;
 }
 
-double _fallbackBpm(Track track) {
+double _fallbackBpm(QueueTrack track) {
   final seed = _seedFromId(_waveformCacheKey(track));
   return 92 + (seed % 54);
 }
@@ -790,7 +790,7 @@ double _markerEnergy(int sourceMs, List<int> markersMs, int radiusMs) {
   return best;
 }
 
-String _waveformCacheKey(Track track) {
+String _waveformCacheKey(QueueTrack track) {
   return [
     track.queueItemId,
     track.playbackTrackId ?? track.id,

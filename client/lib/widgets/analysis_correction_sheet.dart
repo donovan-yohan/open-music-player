@@ -7,7 +7,7 @@ import '../models/track_analysis.dart';
 
 Future<TrackAnalysisOverrides?> showAnalysisCorrectionSheet({
   required BuildContext context,
-  required Track track,
+  required QueueTrack track,
   int? initialFirstDownbeatMs,
 }) {
   return showModalBottomSheet<TrackAnalysisOverrides>(
@@ -82,7 +82,7 @@ TrackAnalysisOverrides analysisOverridesFromCorrectionFields({
 }
 
 class AnalysisCorrectionSheet extends StatefulWidget {
-  final Track track;
+  final QueueTrack track;
   final int? initialFirstDownbeatMs;
 
   const AnalysisCorrectionSheet({

@@ -1,4 +1,4 @@
-import '../../shared/models/track.dart' as lib;
+import '../../shared/models/track.dart';
 import 'api_client.dart';
 
 class LibraryService {
@@ -33,13 +33,13 @@ class LibraryService {
 
   /// Loads every library track whose `artist` exactly matches [artist], via the
   /// `GET /library?artist=` filter. Parses the `{tracks, total, ...}` envelope
-  /// into shared [lib.Track]s. [limit] is generous so an artist's full local
+  /// into shared [Track]s. [limit] is generous so an artist's full local
   /// catalogue arrives in one page.
-  Future<List<lib.Track>> getLibraryByArtist(
+  Future<List<Track>> getLibraryByArtist(
     String artist, {
     int limit = 500,
   }) async {
-    return _apiClient.get<List<lib.Track>>(
+    return _apiClient.get<List<Track>>(
       '/library',
       queryParams: {
         'artist': artist,
@@ -52,11 +52,11 @@ class LibraryService {
   /// Loads every library track whose `album` exactly matches [album], via the
   /// `GET /library?album=` filter. See [getLibraryByArtist] for the parsing
   /// contract.
-  Future<List<lib.Track>> getLibraryByAlbum(
+  Future<List<Track>> getLibraryByAlbum(
     String album, {
     int limit = 500,
   }) async {
-    return _apiClient.get<List<lib.Track>>(
+    return _apiClient.get<List<Track>>(
       '/library',
       queryParams: {
         'album': album,
@@ -71,7 +71,7 @@ class LibraryService {
   /// `fields` projection the Library screen relies on. Returns the parsed
   /// tracks alongside the envelope's `total` so callers can drive infinite
   /// scroll.
-  Future<({List<lib.Track> tracks, int total})> getLibraryPage({
+  Future<({List<Track> tracks, int total})> getLibraryPage({
     int limit = 20,
     int offset = 0,
     String? sort,
@@ -94,7 +94,7 @@ class LibraryService {
       if (genre != null && genre.isNotEmpty) 'genre': genre,
       if (trimmedQuery != null && trimmedQuery.isNotEmpty) 'q': trimmedQuery,
     };
-    return _apiClient.get<({List<lib.Track> tracks, int total})>(
+    return _apiClient.get<({List<Track> tracks, int total})>(
       '/library',
       queryParams: params,
       parser: (json) {
@@ -109,7 +109,7 @@ class LibraryService {
   /// ordered newest-liked-first by default. Thin convenience over
   /// [getLibraryPage] so the Liked Songs screen doesn't have to remember the
   /// `liked` flag or the projection it needs to render + play rows.
-  Future<({List<lib.Track> tracks, int total})> getLikedSongs({
+  Future<({List<Track> tracks, int total})> getLikedSongs({
     int limit = 200,
     int offset = 0,
     String? sort,
@@ -147,11 +147,11 @@ class LibraryService {
   }
 
   /// Parses the `{tracks: [...], total, limit, offset}` library envelope into
-  /// shared [lib.Track]s, tolerating a missing/empty `tracks` list.
-  List<lib.Track> _parseLibraryTracks(Map<String, dynamic> json) {
+  /// shared [Track]s, tolerating a missing/empty `tracks` list.
+  List<Track> _parseLibraryTracks(Map<String, dynamic> json) {
     final tracks = json['tracks'] as List<dynamic>? ?? const <dynamic>[];
     return tracks
-        .map((t) => lib.Track.fromLibraryJson(t as Map<String, dynamic>))
+        .map((t) => Track.fromLibraryJson(t as Map<String, dynamic>))
         .toList();
   }
 

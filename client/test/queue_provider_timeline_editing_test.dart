@@ -16,14 +16,14 @@ import 'package:open_music_player/providers/queue_provider.dart';
 
 import 'support/mock_dio_client.dart';
 
-Track _track({
+QueueTrack _track({
   String id = '7',
   String queueItemId = 'queue-7',
   String? playbackTrackId = '7',
   int duration = 240,
   TrackAnalysis? analysis,
 }) =>
-    Track(
+    QueueTrack(
       id: id,
       queueItemId: queueItemId,
       playbackTrackId: playbackTrackId,
@@ -79,7 +79,7 @@ class _FailedQueueMutation {
   });
 }
 
-TimelineClip _fallback(Track track) => TimelineClip.clamped(
+TimelineClip _fallback(QueueTrack track) => TimelineClip.clamped(
       id: 'clip_${track.queueItemId}',
       trackId: track.id,
       sourceDurationMs: track.durationMs,
@@ -229,7 +229,7 @@ void main() {
         ),
       ),
     );
-    Track sourceTrack(int index) => _track(
+    QueueTrack sourceTrack(int index) => _track(
           id: 'source-$index',
           queueItemId: 'queue-$index',
           playbackTrackId: '${100 + index}',
@@ -918,7 +918,7 @@ void main() {
     final reversionRevision =
         savedRevision.add(const Duration(microseconds: 1));
 
-    Track analyzedTrack(double bpm, DateTime revision) => _track(
+    QueueTrack analyzedTrack(double bpm, DateTime revision) => _track(
           id: '42',
           playbackTrackId: '42',
           analysis: TrackAnalysis.fromJson(
@@ -1241,7 +1241,7 @@ void main() {
       queueItemId: 'queue-added',
       playbackTrackId: '42',
     );
-    var serverTracks = <Track>[];
+    var serverTracks = <QueueTrack>[];
     final provider = QueueProvider(
       mockQueueApiClient((request) async {
         if (request.method == 'POST' &&
@@ -1357,7 +1357,7 @@ void main() {
           final fromPosition = serverTracks.indexWhere(
             (track) => track.queueItemId == queueItemId,
           );
-          final reordered = List<Track>.from(serverTracks);
+          final reordered = List<QueueTrack>.from(serverTracks);
           final moved = reordered.removeAt(fromPosition);
           reordered.insert(toPosition, moved);
           serverTracks = reordered;
@@ -1410,7 +1410,7 @@ void main() {
     );
     final revision = DateTime.utc(2026, 7, 10, 12);
 
-    Track analyzedTrack(int id, double bpm, DateTime updatedAt) => _track(
+    QueueTrack analyzedTrack(int id, double bpm, DateTime updatedAt) => _track(
           id: '$id',
           queueItemId: 'queue-$id',
           playbackTrackId: '$id',
@@ -1460,7 +1460,7 @@ void main() {
 
   test('large active queues retain bounded authority marker arrays', () async {
     final revision = DateTime.utc(2026, 7, 10, 12);
-    final tracks = List<Track>.generate(
+    final tracks = List<QueueTrack>.generate(
       129,
       (index) {
         final id = index + 1;
@@ -1865,7 +1865,7 @@ void main() {
   }
 
   test('analysis invalidation does not evict prefix-matching track ids', () {
-    Track analyzedTrack(int id, double bpm) => _track(
+    QueueTrack analyzedTrack(int id, double bpm) => _track(
           id: '$id',
           playbackTrackId: '$id',
           analysis: TrackAnalysis.fromJson(

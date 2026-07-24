@@ -2605,7 +2605,7 @@ class _CountingQueueProvider extends QueueProvider {
   int waveformCalls = 0;
 
   @override
-  TimelineWaveformData waveformFor(Track track, int targetSampleCount) {
+  TimelineWaveformData waveformFor(QueueTrack track, int targetSampleCount) {
     waveformCalls++;
     return super.waveformFor(track, targetSampleCount);
   }
@@ -2618,7 +2618,7 @@ class _TrackingQueueProvider extends _CountingQueueProvider {
   int clearCalls = 0;
 
   @override
-  void setAnalysisHydrationInterest(Iterable<Track> tracks) {
+  void setAnalysisHydrationInterest(Iterable<QueueTrack> tracks) {
     final retained = tracks.toList(growable: false);
     final signature = retained.map((track) => track.queueItemId).join('|');
     if (distinctInterestSignatures.isEmpty ||
@@ -2638,21 +2638,21 @@ class _TrackingQueueProvider extends _CountingQueueProvider {
 class _FakeQueueApiClient extends ApiClient {
   QueueState _state = QueueState(
     tracks: [
-      Track(
+      QueueTrack(
         id: 't1',
         title: 'Current Song',
         artist: 'Queue Artist',
         duration: 185,
         addedAt: DateTime(2026),
       ),
-      Track(
+      QueueTrack(
         id: 't2',
         title: 'Paper Planes',
         artist: 'Queue Artist',
         duration: 215,
         addedAt: DateTime(2026),
       ),
-      Track(
+      QueueTrack(
         id: 't3',
         title: 'Glass',
         artist: 'Queue Artist',
@@ -2691,7 +2691,7 @@ class _FakeQueueApiClient extends ApiClient {
   void useStatusFixture() {
     _state = QueueState(
       tracks: [
-        Track(
+        QueueTrack(
           id: 't1',
           playbackTrackId: '101',
           title: 'Ready Now',
@@ -2700,7 +2700,7 @@ class _FakeQueueApiClient extends ApiClient {
           addedAt: DateTime(2026),
           queueStatus: TrackQueueStatus.playable,
         ),
-        Track(
+        QueueTrack(
           id: 't2',
           title: 'Waiting',
           artist: 'Queue Artist',
@@ -2708,7 +2708,7 @@ class _FakeQueueApiClient extends ApiClient {
           addedAt: DateTime(2026),
           queueStatus: TrackQueueStatus.pending,
         ),
-        Track(
+        QueueTrack(
           id: 't3',
           title: 'Broken',
           artist: 'Queue Artist',
@@ -2716,7 +2716,7 @@ class _FakeQueueApiClient extends ApiClient {
           addedAt: DateTime(2026),
           queueStatus: TrackQueueStatus.failed,
         ),
-        Track(
+        QueueTrack(
           id: 't4',
           title: 'Fetching',
           artist: 'Queue Artist',
@@ -2724,7 +2724,7 @@ class _FakeQueueApiClient extends ApiClient {
           addedAt: DateTime(2026),
           queueStatus: TrackQueueStatus.downloading,
         ),
-        Track(
+        QueueTrack(
           id: 't5',
           playbackTrackId: '505',
           title: 'Playable Later',
@@ -2741,7 +2741,7 @@ class _FakeQueueApiClient extends ApiClient {
   void useMixTimingFixture() {
     _state = QueueState(
       tracks: [
-        Track(
+        QueueTrack(
           id: 't1',
           playbackTrackId: '101',
           title: 'Current Song',
@@ -2749,7 +2749,7 @@ class _FakeQueueApiClient extends ApiClient {
           duration: 185,
           addedAt: DateTime(2026),
         ),
-        Track(
+        QueueTrack(
           id: 't2',
           playbackTrackId: '202',
           title: 'Paper Planes',
@@ -2757,7 +2757,7 @@ class _FakeQueueApiClient extends ApiClient {
           duration: 215,
           addedAt: DateTime(2026),
         ),
-        Track(
+        QueueTrack(
           id: 't3',
           playbackTrackId: '303',
           title: 'Glass',
@@ -2790,7 +2790,7 @@ class _FakeQueueApiClient extends ApiClient {
     });
     _state = QueueState(
       tracks: [
-        Track(
+        QueueTrack(
           id: 't1',
           playbackTrackId: '101',
           title: 'Analyzed Track',
@@ -2803,7 +2803,7 @@ class _FakeQueueApiClient extends ApiClient {
             summary: summary,
           ),
         ),
-        Track(
+        QueueTrack(
           id: 't2',
           title: 'Pending Analysis',
           artist: 'Queue Artist',
@@ -2811,7 +2811,7 @@ class _FakeQueueApiClient extends ApiClient {
           addedAt: DateTime(2026),
           analysis: const TrackAnalysis(status: TrackAnalysisStatus.pending),
         ),
-        Track(
+        QueueTrack(
           id: 't3',
           title: 'Analyzing Track',
           artist: 'Queue Artist',
@@ -2819,7 +2819,7 @@ class _FakeQueueApiClient extends ApiClient {
           addedAt: DateTime(2026),
           analysis: const TrackAnalysis(status: TrackAnalysisStatus.analyzing),
         ),
-        Track(
+        QueueTrack(
           id: 't4',
           title: 'Failed Analysis',
           artist: 'Queue Artist',
@@ -2827,7 +2827,7 @@ class _FakeQueueApiClient extends ApiClient {
           addedAt: DateTime(2026),
           analysis: const TrackAnalysis(status: TrackAnalysisStatus.failed),
         ),
-        Track(
+        QueueTrack(
           id: 't5',
           title: 'Unsupported Analysis',
           artist: 'Queue Artist',
@@ -2861,7 +2861,7 @@ class _FakeQueueApiClient extends ApiClient {
     _state = QueueState(
       tracks: [
         for (var index = 0; index < trackCount; index++)
-          Track(
+          QueueTrack(
             id: 't${index + 1}',
             playbackTrackId: '${(index + 1) * 101}',
             title: 'Compact Track ${index + 1}',
@@ -2942,7 +2942,7 @@ class _FakeQueueApiClient extends ApiClient {
       (track) => track.queueItemId == queueItemId,
     );
     removedPositions.add(position);
-    final tracks = List<Track>.from(_state.tracks)..removeAt(position);
+    final tracks = List<QueueTrack>.from(_state.tracks)..removeAt(position);
     var currentIndex = _state.currentIndex;
     if (position < currentIndex) {
       currentIndex--;
@@ -2972,7 +2972,7 @@ class _FakeQueueApiClient extends ApiClient {
     );
     final toIndex = toPosition;
     reorders.add((fromIndex, toIndex));
-    final tracks = List<Track>.from(_state.tracks);
+    final tracks = List<QueueTrack>.from(_state.tracks);
     final track = tracks.removeAt(fromIndex);
     tracks.insert(toIndex, track);
     _state = QueueState(

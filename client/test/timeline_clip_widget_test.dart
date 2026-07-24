@@ -434,7 +434,7 @@ void main() {
   });
 }
 
-Track _track() => Track(
+QueueTrack _track() => QueueTrack(
       id: 't1',
       title: 'Dense clip',
       artist: 'Artist',

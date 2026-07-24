@@ -19,7 +19,7 @@ enum LaneRole { previous, current, upcoming, collapsed }
 /// end and clips this widget accordingly. That keeps future songs readable like
 /// queue rows while letting ended songs disappear off the left edge.
 class TimelineLaneHeader extends StatelessWidget {
-  final Track track;
+  final QueueTrack track;
   final String? laneId;
   final LaneRole role;
   final String statusLabel;
@@ -242,7 +242,7 @@ class TimelineClipWidget extends StatelessWidget {
   static const double _maxBoundaryPhysicalWidth = 4096;
   static const double _maxBoundaryPhysicalHeight = 512;
 
-  final Track track;
+  final QueueTrack track;
   final String? laneId;
   final List<double> peaks;
   final TimelineWaveformData? waveform;

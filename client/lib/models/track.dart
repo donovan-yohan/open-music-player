@@ -2,7 +2,7 @@ import 'track_analysis.dart';
 
 enum TrackQueueStatus { pending, downloading, failed, playable }
 
-class Track {
+class QueueTrack {
   /// Stable UI identifier for this row. Queue API responses use queue item IDs;
   /// library/search responses usually use playable track IDs.
   final String id;
@@ -26,7 +26,7 @@ class Track {
   final bool canRetry;
   final TrackAnalysis? analysis;
 
-  Track({
+  QueueTrack({
     required this.id,
     String? queueItemId,
     this.playbackTrackId,
@@ -46,7 +46,7 @@ class Track {
         canPlay = canPlay ?? queueStatus == TrackQueueStatus.playable,
         canRetry = canRetry ?? queueStatus == TrackQueueStatus.failed;
 
-  factory Track.fromJson(Map<String, dynamic> json) {
+  factory QueueTrack.fromJson(Map<String, dynamic> json) {
     final sourceCandidate = _readMap(json['sourceCandidate']);
     final queueItemId = json['queueItemId']?.toString();
     final playbackTrackId =
@@ -67,7 +67,7 @@ class Track {
     final canPlayOverride = json['canPlay'] as bool?;
     final analysis = trackAnalysisFromTrackJson(json);
 
-    return Track(
+    return QueueTrack(
       id: id,
       queueItemId: queueItemId ?? id,
       playbackTrackId: playbackTrackId,
@@ -215,7 +215,7 @@ class Track {
     };
   }
 
-  Track copyWith({
+  QueueTrack copyWith({
     String? id,
     String? queueItemId,
     String? playbackTrackId,
@@ -232,7 +232,7 @@ class Track {
     bool? canRetry,
     TrackAnalysis? analysis,
   }) {
-    return Track(
+    return QueueTrack(
       id: id ?? this.id,
       queueItemId: queueItemId ?? this.queueItemId,
       playbackTrackId: playbackTrackId ?? this.playbackTrackId,

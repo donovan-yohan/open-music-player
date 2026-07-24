@@ -1,7 +1,7 @@
 import 'track.dart';
 
 class QueueState {
-  final List<Track> tracks;
+  final List<QueueTrack> tracks;
   final int currentIndex;
 
   QueueState({
@@ -23,25 +23,25 @@ class QueueState {
     );
   }
 
-  static List<Track> _parseTracks(Map<String, dynamic> json) {
+  static List<QueueTrack> _parseTracks(Map<String, dynamic> json) {
     final items = json['items'];
     if (items is List) {
       return items
-          .map((item) => Track.fromJson(item as Map<String, dynamic>))
+          .map((item) => QueueTrack.fromJson(item as Map<String, dynamic>))
           .toList();
     }
 
     return [];
   }
 
-  Track? get currentTrack {
+  QueueTrack? get currentTrack {
     if (currentIndex >= 0 && currentIndex < tracks.length) {
       return tracks[currentIndex];
     }
     return null;
   }
 
-  List<Track> get upNext {
+  List<QueueTrack> get upNext {
     if (currentIndex < 0 || currentIndex >= tracks.length - 1) {
       return [];
     }
