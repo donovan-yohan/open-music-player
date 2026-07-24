@@ -22,20 +22,27 @@ import (
 )
 
 const (
-	defaultAddr         = ":18190"
-	defaultSampleRate   = 22050
-	defaultWaveformHz   = 80
-	defaultMIRHelper    = "/app/audio_mir.py"
-	defaultBeatModel    = "/app/models/beat_this-final0.ckpt"
-	analyzerName        = "omp-mir-analyzer"
-	analyzerVersion     = "2026-07-11-3"
-	tempoModelVersion   = "beat-this-final0-v1.1.0-audio2frames-postprocessor-dynamic-meter-posterior-v3"
-	keyModelVersion     = "librosa-0.11.0-cqt-krumhansl-v1"
-	maxRequestBytes     = 1 << 20
-	maxMIRResponseBytes = 2 << 20
-	maxDecodedPCMBytes  = 96 << 20
-	maxWaveformSamples  = 32768
-	minWaveformSamples  = 64
+	defaultAddr          = ":18190"
+	defaultSampleRate    = 22050
+	defaultWaveformHz    = 80
+	defaultMIRHelper     = "/app/audio_mir.py"
+	defaultBeatModel     = "/app/models/beat_this-final0.ckpt"
+	analyzerName         = "omp-mir-analyzer"
+	analyzerVersion      = "2026-07-24-1"
+	tempoModelVersion    = "beat-this-final0-v1.1.0-audio2frames-postprocessor-dynamic-meter-posterior-v3"
+	keyModelVersion      = "librosa-0.11.0-cqt-krumhansl-v1"
+	spectralModelVersion = "librosa-mel-bands-v2"
+	spectralChannelSet   = "bands3-v1"
+	defaultLowCrossover  = 200.0
+	defaultHighCrossover = 2000.0
+	defaultLowWeight     = 1.0
+	defaultMidWeight     = 1.6
+	defaultHighWeight    = 2.8
+	maxRequestBytes      = 1 << 20
+	maxMIRResponseBytes  = 2 << 20
+	maxDecodedPCMBytes   = 96 << 20
+	maxWaveformSamples   = 32768
+	minWaveformSamples   = 64
 )
 
 type analyzeRequest struct {
@@ -58,8 +65,17 @@ type analyzerServer struct {
 	waveformHz int
 	mirHelper  string
 	beatModel  string
+	spectral   spectralConfig
 	mirSlots   chan struct{}
-	analyzeMIR func(context.Context, string, string, string) (mirAnalysis, error)
+	analyzeMIR func(context.Context, string, string, string, int, int, spectralConfig) (mirAnalysis, error)
+}
+
+type spectralConfig struct {
+	LowCrossoverHz  float64
+	HighCrossoverHz float64
+	LowWeight       float64
+	MidWeight       float64
+	HighWeight      float64
 }
 
 type analyzerObjectStore interface {
@@ -69,10 +85,16 @@ type analyzerObjectStore interface {
 type waveformAnalysis struct {
 	durationMs   int
 	peaks        []float64
+	minima       []float64
+	maxima       []float64
 	rms          []float64
 	low          []float64
 	mid          []float64
 	high         []float64
+	spectralNorm float64
+	spectralProv string
+	channelSet   string
+	spectral     spectralConfig
 	transients   []int
 	beats        []int
 	downbeats    []int
@@ -95,14 +117,18 @@ type waveformAnalysis struct {
 }
 
 type mirAnalysis struct {
-	BPM                *float64 `json:"bpm"`
-	TempoConfidence    float64  `json:"tempo_confidence"`
-	BeatsMS            []int    `json:"beats_ms"`
-	DownbeatsMS        []int    `json:"downbeats_ms"`
-	DownbeatConfidence float64  `json:"downbeat_confidence"`
-	KeyIndex           *int     `json:"key_index"`
-	Mode               string   `json:"mode"`
-	KeyConfidence      float64  `json:"key_confidence"`
+	BPM                   *float64             `json:"bpm"`
+	TempoConfidence       float64              `json:"tempo_confidence"`
+	BeatsMS               []int                `json:"beats_ms"`
+	DownbeatsMS           []int                `json:"downbeats_ms"`
+	DownbeatConfidence    float64              `json:"downbeat_confidence"`
+	KeyIndex              *int                 `json:"key_index"`
+	Mode                  string               `json:"mode"`
+	KeyConfidence         float64              `json:"key_confidence"`
+	SpectralBands         map[string][]float64 `json:"spectral_bands"`
+	SpectralNormalization float64              `json:"spectral_normalization"`
+	SpectralProvenance    string               `json:"spectral_provenance"`
+	SpectralChannelSet    string               `json:"spectral_channel_set"`
 }
 
 type timeRange struct {
@@ -129,6 +155,16 @@ func main() {
 	}
 
 	concurrency := clampInt(envInt("ANALYZER_CONCURRENCY", 1), 1, 4)
+	spectral := spectralConfig{
+		LowCrossoverHz:  envFloat("ANALYZER_SPECTRAL_LOW_HZ", defaultLowCrossover),
+		HighCrossoverHz: envFloat("ANALYZER_SPECTRAL_HIGH_HZ", defaultHighCrossover),
+		LowWeight:       envFloat("ANALYZER_SPECTRAL_LOW_WEIGHT", defaultLowWeight),
+		MidWeight:       envFloat("ANALYZER_SPECTRAL_MID_WEIGHT", defaultMidWeight),
+		HighWeight:      envFloat("ANALYZER_SPECTRAL_HIGH_WEIGHT", defaultHighWeight),
+	}
+	if err := spectral.validate(envInt("ANALYZER_SAMPLE_RATE", defaultSampleRate)); err != nil {
+		log.Fatalf("spectral config invalid: %v", err)
+	}
 	server := &analyzerServer{
 		storage:    store,
 		authToken:  strings.TrimSpace(os.Getenv("ANALYZER_AUTH_TOKEN")),
@@ -136,6 +172,7 @@ func main() {
 		waveformHz: envInt("ANALYZER_WAVEFORM_HZ", defaultWaveformHz),
 		mirHelper:  env("ANALYZER_MIR_HELPER", defaultMIRHelper),
 		beatModel:  env("ANALYZER_BEAT_MODEL", defaultBeatModel),
+		spectral:   spectral,
 		mirSlots:   make(chan struct{}, concurrency),
 		analyzeMIR: runMIRAnalysis,
 	}
@@ -148,11 +185,13 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":           "healthy",
-			"analyzer":         analyzerName,
-			"analyzer_version": analyzerVersion,
-			"tempo_model":      tempoModelVersion,
-			"key_model":        keyModelVersion,
+			"status":               "healthy",
+			"analyzer":             analyzerName,
+			"analyzer_version":     analyzerVersion,
+			"tempo_model":          tempoModelVersion,
+			"key_model":            keyModelVersion,
+			"spectral_provenance":  spectralModelVersion,
+			"spectral_channel_set": spectralChannelSet,
 		})
 	})
 	mux.HandleFunc("/analyze", server.handleAnalyze)
@@ -218,11 +257,20 @@ func (s *analyzerServer) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	analysis := analyzeSamples(samples, s.sampleRate, req.DurationMs, s.waveformHz)
+	analysis.spectral = s.spectral
 	analyzeMIR := s.analyzeMIR
 	if analyzeMIR == nil {
 		analyzeMIR = runMIRAnalysis
 	}
-	mir, err := analyzeMIR(ctx, s.mirHelper, s.beatModel, tmpPath)
+	mir, err := analyzeMIR(
+		ctx,
+		s.mirHelper,
+		s.beatModel,
+		tmpPath,
+		analysis.sampleCount,
+		len(samples),
+		s.spectral,
+	)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -267,7 +315,7 @@ func (s *analyzerServer) downloadObject(ctx context.Context, key string) (string
 	return path, cleanup, nil
 }
 
-func runMIRAnalysis(ctx context.Context, helperPath, modelPath, audioPath string) (mirAnalysis, error) {
+func runMIRAnalysis(ctx context.Context, helperPath, modelPath, audioPath string, waveformFrames, pcmSamples int, spectral spectralConfig) (mirAnalysis, error) {
 	if strings.TrimSpace(helperPath) == "" {
 		return mirAnalysis{}, fmt.Errorf("MIR helper path is required")
 	}
@@ -280,6 +328,20 @@ func runMIRAnalysis(ctx context.Context, helperPath, modelPath, audioPath string
 		helperPath,
 		"--model",
 		modelPath,
+		"--waveform-frames",
+		strconv.Itoa(waveformFrames),
+		"--pcm-samples",
+		strconv.Itoa(pcmSamples),
+		"--low-crossover-hz",
+		strconv.FormatFloat(spectral.LowCrossoverHz, 'f', -1, 64),
+		"--high-crossover-hz",
+		strconv.FormatFloat(spectral.HighCrossoverHz, 'f', -1, 64),
+		"--low-weight",
+		strconv.FormatFloat(spectral.LowWeight, 'f', -1, 64),
+		"--mid-weight",
+		strconv.FormatFloat(spectral.MidWeight, 'f', -1, 64),
+		"--high-weight",
+		strconv.FormatFloat(spectral.HighWeight, 'f', -1, 64),
 		audioPath,
 	)
 	var stderr bytes.Buffer
@@ -300,6 +362,35 @@ func runMIRAnalysis(ctx context.Context, helperPath, modelPath, audioPath string
 		return mirAnalysis{}, fmt.Errorf("parse MIR response: %w", err)
 	}
 	return result, nil
+}
+
+func (c spectralConfig) validate(sampleRate int) error {
+	if !isFiniteInRange(c.LowCrossoverHz, 1, float64(sampleRate)/2) ||
+		!isFiniteInRange(c.HighCrossoverHz, 1, float64(sampleRate)/2) ||
+		c.LowCrossoverHz >= c.HighCrossoverHz ||
+		c.HighCrossoverHz >= float64(sampleRate)/2 {
+		return fmt.Errorf("crossovers must be ordered inside Nyquist")
+	}
+	for name, value := range map[string]float64{
+		"low":  c.LowWeight,
+		"mid":  c.MidWeight,
+		"high": c.HighWeight,
+	} {
+		if !isFiniteInRange(value, 0.000001, 1000) {
+			return fmt.Errorf("%s weight must be finite and positive", name)
+		}
+	}
+	return nil
+}
+
+func defaultSpectralConfig() spectralConfig {
+	return spectralConfig{
+		LowCrossoverHz:  defaultLowCrossover,
+		HighCrossoverHz: defaultHighCrossover,
+		LowWeight:       defaultLowWeight,
+		MidWeight:       defaultMidWeight,
+		HighWeight:      defaultHighWeight,
+	}
 }
 
 func validateMIRRuntime(ctx context.Context, helperPath, modelPath string) error {
@@ -331,11 +422,13 @@ func validateMIRRuntime(ctx context.Context, helperPath, modelPath string) error
 		return fmt.Errorf("MIR helper check failed: %s", detail)
 	}
 	var status struct {
-		Status          string `json:"status"`
-		Analyzer        string `json:"analyzer"`
-		AnalyzerVersion string `json:"analyzer_version"`
-		TempoModel      string `json:"tempo_model"`
-		KeyModel        string `json:"key_model"`
+		Status             string `json:"status"`
+		Analyzer           string `json:"analyzer"`
+		AnalyzerVersion    string `json:"analyzer_version"`
+		TempoModel         string `json:"tempo_model"`
+		KeyModel           string `json:"key_model"`
+		SpectralProvenance string `json:"spectral_provenance"`
+		SpectralChannelSet string `json:"spectral_channel_set"`
 	}
 	if err := json.Unmarshal(output, &status); err != nil {
 		return fmt.Errorf("parse MIR helper check: %w", err)
@@ -348,6 +441,15 @@ func validateMIRRuntime(ctx context.Context, helperPath, modelPath string) error
 	}
 	if status.TempoModel != tempoModelVersion || status.KeyModel != keyModelVersion {
 		return fmt.Errorf("MIR helper model identity tempo=%q key=%q does not match tempo=%q key=%q", status.TempoModel, status.KeyModel, tempoModelVersion, keyModelVersion)
+	}
+	if status.SpectralProvenance != spectralModelVersion || status.SpectralChannelSet != spectralChannelSet {
+		return fmt.Errorf(
+			"MIR helper spectral identity provenance=%q channel_set=%q does not match provenance=%q channel_set=%q",
+			status.SpectralProvenance,
+			status.SpectralChannelSet,
+			spectralModelVersion,
+			spectralChannelSet,
+		)
 	}
 	return nil
 }
@@ -431,60 +533,52 @@ func analyzeSamples(samples []float64, sampleRate int, declaredDurationMs int, w
 	a := waveformAnalysis{
 		durationMs:  max(1, durationMs),
 		peaks:       make([]float64, target),
+		minima:      make([]float64, target),
+		maxima:      make([]float64, target),
 		rms:         make([]float64, target),
 		low:         make([]float64, target),
 		mid:         make([]float64, target),
 		high:        make([]float64, target),
+		spectral:    defaultSpectralConfig(),
 		declaredMs:  declaredDurationMs,
 		decodedMs:   decodedDurationMs,
 		sampleRate:  sampleRate,
 		sampleCount: target,
 	}
 
-	var lowState, prev float64
-	var maxPeak, maxRMS, maxLow, maxMid, maxHigh float64
+	var maxPeak, maxRMS float64
 	for i := 0; i < target; i++ {
 		start := i * len(samples) / target
 		end := (i + 1) * len(samples) / target
 		if end <= start {
 			end = min(len(samples), start+1)
 		}
-		var peak, sum, lowSum, midSum, highSum float64
+		var peak, sum float64
+		minimum, maximum := math.Inf(1), math.Inf(-1)
 		for _, sample := range samples[start:end] {
 			abs := math.Abs(sample)
 			peak = math.Max(peak, abs)
+			minimum = math.Min(minimum, sample)
+			maximum = math.Max(maximum, sample)
 			sum += sample * sample
-			lowState = lowState*0.992 + sample*0.008
-			highComponent := sample - prev
-			midComponent := sample - lowState - highComponent*0.35
-			lowSum += lowState * lowState
-			midSum += midComponent * midComponent
-			highSum += highComponent * highComponent
-			prev = sample
 		}
 		n := float64(max(1, end-start))
 		a.peaks[i] = peak
+		a.minima[i] = minimum
+		a.maxima[i] = maximum
 		a.rms[i] = math.Sqrt(sum / n)
-		a.low[i] = math.Sqrt(lowSum / n)
-		a.mid[i] = math.Sqrt(midSum / n)
-		a.high[i] = math.Sqrt(highSum / n)
 		maxPeak = math.Max(maxPeak, a.peaks[i])
 		maxRMS = math.Max(maxRMS, a.rms[i])
-		maxLow = math.Max(maxLow, a.low[i])
-		maxMid = math.Max(maxMid, a.mid[i])
-		maxHigh = math.Max(maxHigh, a.high[i])
 	}
 
 	normalize(a.peaks, maxPeak)
+	normalizeSigned(a.minima, maxPeak)
+	normalizeSigned(a.maxima, maxPeak)
 	normalize(a.rms, maxRMS)
-	normalize(a.low, maxLow)
-	normalize(a.mid, maxMid)
-	normalize(a.high, maxHigh)
 	roundAll(a.peaks)
+	roundAll(a.minima)
+	roundAll(a.maxima)
 	roundAll(a.rms)
-	roundAll(a.low)
-	roundAll(a.mid)
-	roundAll(a.high)
 
 	a.truePeakDb = db(maxPeak)
 	a.loudnessDb = db(mean(a.rms))
@@ -495,6 +589,33 @@ func analyzeSamples(samples []float64, sampleRate int, declaredDurationMs int, w
 }
 
 func (a *waveformAnalysis) applyMIR(mir mirAnalysis) error {
+	if mir.SpectralChannelSet != spectralChannelSet {
+		return fmt.Errorf("MIR spectral channel set %q does not match %q", mir.SpectralChannelSet, spectralChannelSet)
+	}
+	if mir.SpectralProvenance != spectralModelVersion {
+		return fmt.Errorf("MIR spectral provenance %q does not match %q", mir.SpectralProvenance, spectralModelVersion)
+	}
+	if !isFiniteInRange(mir.SpectralNormalization, 0.00000001, math.MaxFloat64) {
+		return fmt.Errorf("MIR spectral normalization must be finite and positive")
+	}
+	for _, name := range []string{"low", "mid", "high"} {
+		values := mir.SpectralBands[name]
+		if len(values) != a.sampleCount {
+			return fmt.Errorf("MIR spectral channel %q has %d frames, want %d", name, len(values), a.sampleCount)
+		}
+		for _, value := range values {
+			if !isFiniteInRange(value, 0, 1) {
+				return fmt.Errorf("MIR spectral channel %q contains invalid value", name)
+			}
+		}
+	}
+	a.low = append(a.low[:0], mir.SpectralBands["low"]...)
+	a.mid = append(a.mid[:0], mir.SpectralBands["mid"]...)
+	a.high = append(a.high[:0], mir.SpectralBands["high"]...)
+	a.spectralNorm = mir.SpectralNormalization
+	a.spectralProv = mir.SpectralProvenance
+	a.channelSet = mir.SpectralChannelSet
+
 	a.beats = normalizeMarkers(mir.BeatsMS, a.durationMs)
 	a.downbeats = normalizeMarkers(mir.DownbeatsMS, a.durationMs)
 	if mir.BPM != nil {
@@ -554,6 +675,8 @@ func isFiniteInRange(value, minValue, maxValue float64) bool {
 
 func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 	overviewPeaks := downsample(a.peaks, 512)
+	overviewMinima := downsampleMin(a.minima, 512)
+	overviewMaxima := downsampleSignedMax(a.maxima, 512)
 	overviewRMS := downsample(a.rms, 512)
 	overviewLow := downsample(a.low, 512)
 	overviewMid := downsample(a.mid, 512)
@@ -562,6 +685,31 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 	trimEndMs := max(trimStartMs, a.durationMs-a.trailingMs)
 	introEndMs := defaultCueBoundaryMs(a, true)
 	outroStartMs := defaultCueBoundaryMs(a, false)
+	channelValues := map[string]any{
+		"low":  spectralChannelDescriptor(a, "channels.detail.low", a.spectral.LowWeight),
+		"mid":  spectralChannelDescriptor(a, "channels.detail.mid", a.spectral.MidWeight),
+		"high": spectralChannelDescriptor(a, "channels.detail.high", a.spectral.HighWeight),
+	}
+	channelsSummary := map[string]any{
+		"channel_set":  a.channelSet,
+		"audio_ref":    nil,
+		"sample_count": a.sampleCount,
+		"normalization": map[string]any{
+			"kind":   "shared_peak",
+			"scalar": round(a.spectralNorm, 8),
+		},
+		"weights": map[string]any{
+			"low":  a.spectral.LowWeight,
+			"mid":  a.spectral.MidWeight,
+			"high": a.spectral.HighWeight,
+		},
+		"crossovers_hz": map[string]any{
+			"low_mid":  a.spectral.LowCrossoverHz,
+			"mid_high": a.spectral.HighCrossoverHz,
+		},
+		"provenance": a.spectralProv,
+		"values":     channelValues,
+	}
 
 	summary := map[string]any{
 		"energy": map[string]any{
@@ -581,8 +729,6 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 		},
 		"waveform": map[string]any{
 			"sample_count": a.sampleCount,
-			"peaks":        a.peaks,
-			"rms":          a.rms,
 			"resolutions": []map[string]any{
 				{
 					"name":              "overview",
@@ -598,12 +744,13 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 				},
 			},
 			"spectral_bands": map[string]any{
-				"low":  map[string]any{"sample_count": a.sampleCount, "values": a.low},
-				"mid":  map[string]any{"sample_count": a.sampleCount, "values": a.mid},
-				"high": map[string]any{"sample_count": a.sampleCount, "values": a.high},
+				"low":  map[string]any{"sample_count": a.sampleCount, "artifact_ref": "spectral_bands.detail.low"},
+				"mid":  map[string]any{"sample_count": a.sampleCount, "artifact_ref": "spectral_bands.detail.mid"},
+				"high": map[string]any{"sample_count": a.sampleCount, "artifact_ref": "spectral_bands.detail.high"},
 			},
+			"channels":   channelsSummary,
 			"confidence": 0.74,
-			"provenance": "ffmpeg_pcm",
+			"provenance": spectralModelVersion,
 		},
 		"transients": map[string]any{
 			"count":              len(a.transients),
@@ -720,14 +867,37 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 			"overview": map[string]any{
 				"sample_rate_hz": max(1, len(overviewPeaks)*1000/max(1, a.durationMs)),
 				"peaks":          overviewPeaks,
+				"minima":         overviewMinima,
+				"maxima":         overviewMaxima,
 				"rms":            overviewRMS,
 			},
 			"detail": map[string]any{
 				"sample_rate_hz": max(1, a.sampleCount*1000/max(1, a.durationMs)),
 				"peaks":          a.peaks,
+				"minima":         a.minima,
+				"maxima":         a.maxima,
 				"rms":            a.rms,
 			},
 		},
+		"channels": map[string]any{
+			"channel_set":   a.channelSet,
+			"audio_ref":     nil,
+			"normalization": channelsSummary["normalization"],
+			"weights":       channelsSummary["weights"],
+			"crossovers_hz": channelsSummary["crossovers_hz"],
+			"provenance":    a.spectralProv,
+			"overview": map[string]any{
+				"low":  overviewLow,
+				"mid":  overviewMid,
+				"high": overviewHigh,
+			},
+			"detail": map[string]any{
+				"low":  a.low,
+				"mid":  a.mid,
+				"high": a.high,
+			},
+		},
+		// One-release dual write for clients that still read spectral_bands.
 		"spectral_bands": map[string]any{
 			"overview": map[string]any{
 				"low":  overviewLow,
@@ -754,7 +924,8 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 		"analyzer":         analyzerName,
 		"analyzer_version": analyzerVersion,
 		"model_versions": map[string]any{
-			"waveform": "pcm-rms-v1",
+			"waveform": "spectral-v2",
+			"spectral": spectralModelVersion,
 			"tempo":    tempoModelVersion,
 			"downbeat": tempoModelVersion,
 			"key":      keyModelVersion,
@@ -766,6 +937,19 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 		"summary":        summary,
 		"artifacts":      artifacts,
 		"provenance":     provenance,
+	}
+}
+
+func spectralChannelDescriptor(a waveformAnalysis, artifactRef string, weight float64) map[string]any {
+	return map[string]any{
+		"sample_count": a.sampleCount,
+		"artifact_ref": artifactRef,
+		"normalization": map[string]any{
+			"kind":   "shared_peak",
+			"scalar": round(a.spectralNorm, 8),
+		},
+		"weight":     weight,
+		"provenance": a.spectralProv,
 	}
 }
 
@@ -829,6 +1013,46 @@ func downsample(values []float64, maxSamples int) []float64 {
 			peak = math.Max(peak, value)
 		}
 		out[i] = round(peak, 4)
+	}
+	return out
+}
+
+func downsampleMin(values []float64, maxSamples int) []float64 {
+	if len(values) <= maxSamples || maxSamples <= 0 {
+		return append([]float64(nil), values...)
+	}
+	out := make([]float64, maxSamples)
+	for i := range out {
+		start := i * len(values) / maxSamples
+		end := (i + 1) * len(values) / maxSamples
+		if end <= start {
+			end = min(len(values), start+1)
+		}
+		minimum := math.Inf(1)
+		for _, value := range values[start:end] {
+			minimum = math.Min(minimum, value)
+		}
+		out[i] = round(minimum, 4)
+	}
+	return out
+}
+
+func downsampleSignedMax(values []float64, maxSamples int) []float64 {
+	if len(values) <= maxSamples || maxSamples <= 0 {
+		return append([]float64(nil), values...)
+	}
+	out := make([]float64, maxSamples)
+	for i := range out {
+		start := i * len(values) / maxSamples
+		end := (i + 1) * len(values) / maxSamples
+		if end <= start {
+			end = min(len(values), start+1)
+		}
+		maximum := math.Inf(-1)
+		for _, value := range values[start:end] {
+			maximum = math.Max(maximum, value)
+		}
+		out[i] = round(maximum, 4)
 	}
 	return out
 }
@@ -926,6 +1150,15 @@ func normalize(values []float64, maxValue float64) {
 	}
 }
 
+func normalizeSigned(values []float64, maxValue float64) {
+	if maxValue <= 0 {
+		return
+	}
+	for i := range values {
+		values[i] = clamp(values[i]/maxValue, -1, 1)
+	}
+}
+
 func roundAll(values []float64) {
 	for i, value := range values {
 		values[i] = round(value, 4)
@@ -1010,6 +1243,18 @@ func envInt(key string, fallback int) int {
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func envFloat(key string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed <= 0 {
 		return fallback
 	}
 	return parsed

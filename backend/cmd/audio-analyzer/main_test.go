@@ -30,23 +30,26 @@ func (s fakeAnalyzerStore) GetObject(context.Context, string) (io.ReadCloser, *s
 
 func TestAnalyzeHTTPReturnsWaveformAndMIRJSON(t *testing.T) {
 	bpm := 120.0
+	pcmSamples := 0
 	server := &analyzerServer{
 		storage:    fakeAnalyzerStore{audio: testWAV(8000, 2)},
 		sampleRate: 8000,
 		waveformHz: 80,
+		spectral:   defaultSpectralConfig(),
 		mirSlots:   make(chan struct{}, 1),
-		analyzeMIR: func(context.Context, string, string, string) (mirAnalysis, error) {
+		analyzeMIR: func(_ context.Context, _, _, _ string, frameCount, decodedSamples int, _ spectralConfig) (mirAnalysis, error) {
+			pcmSamples = decodedSamples
 			keyIndex := 9
-			return mirAnalysis{
-				BPM:                &bpm,
-				TempoConfidence:    0.9,
-				BeatsMS:            []int{0, 500, 1000, 1500},
-				DownbeatsMS:        []int{0},
-				DownbeatConfidence: 0.7,
-				KeyIndex:           &keyIndex,
-				Mode:               "minor",
-				KeyConfidence:      0.8,
-			}, nil
+			result := testSpectralMIR(frameCount)
+			result.BPM = &bpm
+			result.TempoConfidence = 0.9
+			result.BeatsMS = []int{0, 500, 1000, 1500}
+			result.DownbeatsMS = []int{0}
+			result.DownbeatConfidence = 0.7
+			result.KeyIndex = &keyIndex
+			result.Mode = "minor"
+			result.KeyConfidence = 0.8
+			return result, nil
 		},
 	}
 	body := bytes.NewBufferString(`{"schema_version":1,"track_id":42,"storage_key":"tracks/test.wav","duration_ms":2000}`)
@@ -57,6 +60,9 @@ func TestAnalyzeHTTPReturnsWaveformAndMIRJSON(t *testing.T) {
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if pcmSamples != 16_000 {
+		t.Fatalf("MIR PCM samples = %d, want exact decoded count 16000", pcmSamples)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
@@ -88,10 +94,11 @@ func TestAnalyzeHTTPKeepsBasicAnalysisForTinyAudio(t *testing.T) {
 				storage:    fakeAnalyzerStore{audio: testWAVSamples(sampleRate, testCase.sampleCount)},
 				sampleRate: sampleRate,
 				waveformHz: 80,
+				spectral:   defaultSpectralConfig(),
 				mirSlots:   make(chan struct{}, 1),
-				analyzeMIR: func(context.Context, string, string, string) (mirAnalysis, error) {
+				analyzeMIR: func(_ context.Context, _, _, _ string, frameCount, _ int, _ spectralConfig) (mirAnalysis, error) {
 					mirCalls++
-					return mirAnalysis{}, nil
+					return testSpectralMIR(frameCount), nil
 				},
 			}
 			bodyJSON, err := json.Marshal(map[string]any{
@@ -138,8 +145,9 @@ func TestAnalyzeHTTPReturnsRetryableStatusForMIRFailure(t *testing.T) {
 		storage:    fakeAnalyzerStore{audio: testWAV(8000, 2)},
 		sampleRate: 8000,
 		waveformHz: 80,
+		spectral:   defaultSpectralConfig(),
 		mirSlots:   make(chan struct{}, 1),
-		analyzeMIR: func(context.Context, string, string, string) (mirAnalysis, error) {
+		analyzeMIR: func(context.Context, string, string, string, int, int, spectralConfig) (mirAnalysis, error) {
 			return mirAnalysis{}, errors.New("model process exited")
 		},
 	}
@@ -172,11 +180,13 @@ func TestValidateMIRRuntimeAcceptsReadyHelper(t *testing.T) {
 	helperPath := filepath.Join(tempDir, "helper.py")
 	modelPath := filepath.Join(tempDir, "model.ckpt")
 	ready := fmt.Sprintf(
-		`{"status":"ready","analyzer":%q,"analyzer_version":%q,"tempo_model":%q,"key_model":%q}`,
+		`{"status":"ready","analyzer":%q,"analyzer_version":%q,"tempo_model":%q,"key_model":%q,"spectral_provenance":%q,"spectral_channel_set":%q}`,
 		analyzerName,
 		analyzerVersion,
 		tempoModelVersion,
 		keyModelVersion,
+		spectralModelVersion,
+		spectralChannelSet,
 	)
 	if err := os.WriteFile(helperPath, []byte("print("+fmt.Sprintf("%q", ready)+")\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -208,10 +218,12 @@ func TestValidateMIRRuntimeRejectsMismatchedModelIdentity(t *testing.T) {
 	helperPath := filepath.Join(tempDir, "helper.py")
 	modelPath := filepath.Join(tempDir, "model.ckpt")
 	output := fmt.Sprintf(
-		`{"status":"ready","analyzer":%q,"analyzer_version":%q,"tempo_model":"wrong-tempo","key_model":%q}`,
+		`{"status":"ready","analyzer":%q,"analyzer_version":%q,"tempo_model":"wrong-tempo","key_model":%q,"spectral_provenance":%q,"spectral_channel_set":%q}`,
 		analyzerName,
 		analyzerVersion,
 		keyModelVersion,
+		spectralModelVersion,
+		spectralChannelSet,
 	)
 	if err := os.WriteFile(helperPath, []byte("print("+fmt.Sprintf("%q", output)+")\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -226,21 +238,58 @@ func TestValidateMIRRuntimeRejectsMismatchedModelIdentity(t *testing.T) {
 	}
 }
 
+func TestValidateMIRRuntimeRejectsMismatchedSpectralIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		provenance string
+		channelSet string
+	}{
+		{name: "provenance", provenance: "wrong-provenance", channelSet: spectralChannelSet},
+		{name: "channel_set", provenance: spectralModelVersion, channelSet: "wrong-channel-set"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			helperPath := filepath.Join(tempDir, "helper.py")
+			modelPath := filepath.Join(tempDir, "model.ckpt")
+			output := fmt.Sprintf(
+				`{"status":"ready","analyzer":%q,"analyzer_version":%q,"tempo_model":%q,"key_model":%q,"spectral_provenance":%q,"spectral_channel_set":%q}`,
+				analyzerName,
+				analyzerVersion,
+				tempoModelVersion,
+				keyModelVersion,
+				test.provenance,
+				test.channelSet,
+			)
+			if err := os.WriteFile(helperPath, []byte("print("+fmt.Sprintf("%q", output)+")\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(modelPath, []byte("model"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			err := validateMIRRuntime(context.Background(), helperPath, modelPath)
+			if err == nil || !strings.Contains(err.Error(), "spectral identity") {
+				t.Fatalf("validateMIRRuntime() error = %v, want spectral identity mismatch", err)
+			}
+		})
+	}
+}
+
 func TestApplyMIRUsesTrackedBeatGridAndCamelotKey(t *testing.T) {
 	const sampleRate = 8000
 	samples := sineSamples(sampleRate, 440, 2)
 	analysis := analyzeSamples(samples, sampleRate, 2000, 80)
 	keyIndex := 9
-	err := analysis.applyMIR(mirAnalysis{
-		BPM:                float64Ptr(128.04),
-		TempoConfidence:    0.91,
-		BeatsMS:            []int{0, 469, 938, 1406, 1875, 1875, 2400},
-		DownbeatsMS:        []int{0, 1875},
-		DownbeatConfidence: 0.88,
-		KeyIndex:           &keyIndex,
-		Mode:               "minor",
-		KeyConfidence:      0.73,
-	})
+	mir := testSpectralMIR(analysis.sampleCount)
+	mir.BPM = float64Ptr(128.04)
+	mir.TempoConfidence = 0.91
+	mir.BeatsMS = []int{0, 469, 938, 1406, 1875, 1875, 2400}
+	mir.DownbeatsMS = []int{0, 1875}
+	mir.DownbeatConfidence = 0.88
+	mir.KeyIndex = &keyIndex
+	mir.Mode = "minor"
+	mir.KeyConfidence = 0.73
+	err := analysis.applyMIR(mir)
 	if err != nil {
 		t.Fatalf("applyMIR() error = %v", err)
 	}
@@ -282,12 +331,12 @@ func TestAnalyzeSamplesUsesDecodedDurationAsTimingAuthority(t *testing.T) {
 func TestApplyMIRKeepsReliableTempoWithoutDownbeats(t *testing.T) {
 	analysis := waveformAnalysis{durationMs: 2000}
 	keyIndex := 0
-	err := analysis.applyMIR(mirAnalysis{
-		BPM:      float64Ptr(120),
-		BeatsMS:  []int{0, 500, 1000, 1500},
-		KeyIndex: &keyIndex,
-		Mode:     "major",
-	})
+	mir := testSpectralMIR(0)
+	mir.BPM = float64Ptr(120)
+	mir.BeatsMS = []int{0, 500, 1000, 1500}
+	mir.KeyIndex = &keyIndex
+	mir.Mode = "major"
+	err := analysis.applyMIR(mir)
 	if err != nil {
 		t.Fatalf("applyMIR() error = %v", err)
 	}
@@ -301,16 +350,16 @@ func TestBuildResponseIncludesDJContractArtifacts(t *testing.T) {
 	samples := sineSamples(sampleRate, 440, 2)
 	analysis := analyzeSamples(samples, sampleRate, 2000, 80)
 	keyIndex := 9
-	if err := analysis.applyMIR(mirAnalysis{
-		BPM:                float64Ptr(128),
-		TempoConfidence:    0.91,
-		BeatsMS:            []int{0, 469, 938, 1406, 1875},
-		DownbeatsMS:        []int{0, 1875},
-		DownbeatConfidence: 0.88,
-		KeyIndex:           &keyIndex,
-		Mode:               "minor",
-		KeyConfidence:      0.73,
-	}); err != nil {
+	mir := testSpectralMIR(analysis.sampleCount)
+	mir.BPM = float64Ptr(128)
+	mir.TempoConfidence = 0.91
+	mir.BeatsMS = []int{0, 469, 938, 1406, 1875}
+	mir.DownbeatsMS = []int{0, 1875}
+	mir.DownbeatConfidence = 0.88
+	mir.KeyIndex = &keyIndex
+	mir.Mode = "minor"
+	mir.KeyConfidence = 0.73
+	if err := analysis.applyMIR(mir); err != nil {
 		t.Fatalf("applyMIR() error = %v", err)
 	}
 
@@ -363,6 +412,64 @@ func TestBuildResponseIncludesDJContractArtifacts(t *testing.T) {
 	if _, ok := waveform["detail"]; !ok {
 		t.Fatalf("waveforms missing detail: %#v", waveform)
 	}
+	summaryWaveform := summary["waveform"].(map[string]any)
+	if _, ok := summaryWaveform["peaks"]; ok {
+		t.Fatal("summary double-ships detail peaks")
+	}
+	if _, ok := summaryWaveform["rms"]; ok {
+		t.Fatal("summary double-ships detail RMS")
+	}
+	legacy := summaryWaveform["spectral_bands"].(map[string]any)
+	if _, ok := legacy["low"].(map[string]any)["values"]; ok {
+		t.Fatal("summary double-ships legacy spectral detail")
+	}
+	channels := summaryWaveform["channels"].(map[string]any)
+	if channels["channel_set"] != spectralChannelSet || channels["audio_ref"] != nil {
+		t.Fatalf("channels identity/audio_ref = %#v", channels)
+	}
+	values := channels["values"].(map[string]any)
+	var sharedScalar any
+	for _, name := range []string{"low", "mid", "high"} {
+		descriptor := values[name].(map[string]any)
+		if _, ok := descriptor["values"]; ok {
+			t.Fatalf("%s descriptor contains detail array: %#v", name, descriptor)
+		}
+		normalization := descriptor["normalization"].(map[string]any)
+		if normalization["kind"] != "shared_peak" {
+			t.Fatalf("%s normalization = %#v", name, normalization)
+		}
+		if sharedScalar == nil {
+			sharedScalar = normalization["scalar"]
+		} else if normalization["scalar"] != sharedScalar {
+			t.Fatalf("%s scalar = %#v, want shared %#v", name, normalization["scalar"], sharedScalar)
+		}
+		if descriptor["provenance"] != spectralModelVersion {
+			t.Fatalf("%s provenance = %#v", name, descriptor["provenance"])
+		}
+	}
+	channelArtifacts := artifacts["channels"].(map[string]any)
+	if channelArtifacts["channel_set"] != spectralChannelSet {
+		t.Fatalf("artifact channel set = %#v", channelArtifacts["channel_set"])
+	}
+	for _, tier := range []string{"overview", "detail"} {
+		tierValues := channelArtifacts[tier].(map[string]any)
+		for _, name := range []string{"low", "mid", "high"} {
+			if len(tierValues[name].([]float64)) == 0 {
+				t.Fatalf("artifact channels.%s.%s is empty", tier, name)
+			}
+		}
+	}
+	for _, tier := range []string{"overview", "detail"} {
+		tierValues := waveform[tier].(map[string]any)
+		minima := tierValues["minima"].([]float64)
+		maxima := tierValues["maxima"].([]float64)
+		if len(minima) == 0 || len(maxima) != len(minima) {
+			t.Fatalf("%s signed extrema lengths = %d/%d", tier, len(minima), len(maxima))
+		}
+		if minima[0] >= 0 || maxima[0] <= 0 {
+			t.Fatalf("%s extrema lost sign: min=%v max=%v", tier, minima[0], maxima[0])
+		}
+	}
 
 	provenance := response["provenance"].(map[string]any)
 	models := provenance["model_versions"].(map[string]any)
@@ -372,12 +479,39 @@ func TestBuildResponseIncludesDJContractArtifacts(t *testing.T) {
 	if models["tempo"] != tempoModelVersion {
 		t.Fatalf("tempo model version = %#v", models["tempo"])
 	}
+	if models["waveform"] != "spectral-v2" || models["spectral"] != spectralModelVersion {
+		t.Fatalf("spectral provenance versions = %#v", models)
+	}
+}
+
+func TestApplyMIRRejectsSpectralGridMismatch(t *testing.T) {
+	analysis := analyzeSamples(sineSamples(8000, 440, 1), 8000, 1000, 80)
+	mir := testSpectralMIR(analysis.sampleCount)
+	mir.SpectralBands["high"] = mir.SpectralBands["high"][:analysis.sampleCount-1]
+
+	err := analysis.applyMIR(mir)
+
+	if err == nil || !strings.Contains(err.Error(), "high") || !strings.Contains(err.Error(), "want 80") {
+		t.Fatalf("applyMIR() error = %v, want exact shared-grid rejection", err)
+	}
+}
+
+func TestSignedOverviewReducersPreserveOneSidedExtrema(t *testing.T) {
+	minima := downsampleMin([]float64{0.2, 0.4, 0.1, 0.3}, 2)
+	maxima := downsampleSignedMax([]float64{-0.4, -0.2, -0.3, -0.1}, 2)
+
+	if !sameFloats(minima, []float64{0.2, 0.1}) {
+		t.Fatalf("positive minima = %v, want true minima", minima)
+	}
+	if !sameFloats(maxima, []float64{-0.2, -0.1}) {
+		t.Fatalf("negative maxima = %v, want true maxima", maxima)
+	}
 }
 
 func TestBuildResponseKeepsWaveformWhenMIRMetadataIsUnavailable(t *testing.T) {
 	const sampleRate = 8000
 	analysis := analyzeSamples(sineSamples(sampleRate, 440, 2), sampleRate, 2000, 80)
-	if err := analysis.applyMIR(mirAnalysis{}); err != nil {
+	if err := analysis.applyMIR(testSpectralMIR(analysis.sampleCount)); err != nil {
 		t.Fatalf("applyMIR() error = %v", err)
 	}
 
@@ -431,4 +565,33 @@ func testWAVSamples(sampleRate, sampleCount int) []byte {
 
 func float64Ptr(value float64) *float64 {
 	return &value
+}
+
+func testSpectralMIR(frameCount int) mirAnalysis {
+	channel := make([]float64, frameCount)
+	for index := range channel {
+		channel[index] = float64(index+1) / float64(max(1, frameCount))
+	}
+	return mirAnalysis{
+		SpectralBands: map[string][]float64{
+			"low":  append([]float64(nil), channel...),
+			"mid":  append([]float64(nil), channel...),
+			"high": append([]float64(nil), channel...),
+		},
+		SpectralNormalization: 2.8,
+		SpectralProvenance:    spectralModelVersion,
+		SpectralChannelSet:    spectralChannelSet,
+	}
+}
+
+func sameFloats(got, want []float64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
 }

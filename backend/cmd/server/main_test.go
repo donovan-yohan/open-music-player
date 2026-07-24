@@ -169,7 +169,7 @@ type startupVersionStore struct {
 
 func (s *startupVersionStore) MarkStaleByAnalyzerVersion(_ context.Context, analyzerName, analyzerVersion string) (int64, error) {
 	s.calls++
-	if analyzerName != "omp-mir-analyzer" || analyzerVersion != "2026-07-11-3" {
+	if analyzerName != "omp-mir-analyzer" || analyzerVersion != "2026-07-24-1" {
 		return 0, errors.New("unexpected analyzer identity")
 	}
 	if len(s.markResults) > 0 {
@@ -253,7 +253,7 @@ func (p *startupRepairProcessor) RequestAnalysisRepair(_ context.Context, track 
 	if !opts.OnlyStale {
 		return processor.AnalysisRepairResult{}, errors.New("startup repairs must only claim stale analysis")
 	}
-	if opts.ExpectedAnalyzer != "omp-mir-analyzer" || opts.ExpectedAnalyzerVersion != "2026-07-11-3" {
+	if opts.ExpectedAnalyzer != "omp-mir-analyzer" || opts.ExpectedAnalyzerVersion != "2026-07-24-1" {
 		return processor.AnalysisRepairResult{}, errors.New("startup repair missing expected analyzer identity")
 	}
 	if p.analyzer != opts.ExpectedAnalyzer || p.analyzerVersion != opts.ExpectedAnalyzerVersion {
@@ -281,7 +281,7 @@ func TestReconcileAnalyzerVersionMarksAndQueuesBoundedRepairs(t *testing.T) {
 
 	report, err := reconcileAnalyzerVersion(
 		context.Background(),
-		startupInfoClient{info: analyzer.Info{Analyzer: "omp-mir-analyzer", AnalyzerVersion: "2026-07-11-3"}},
+		startupInfoClient{info: analyzer.Info{Analyzer: "omp-mir-analyzer", AnalyzerVersion: "2026-07-24-1"}},
 		versions,
 		tracks,
 		repairs,
@@ -310,7 +310,7 @@ func TestReconcileAnalyzerVersionDrainsMoreThanFiftyInBoundedBatches(t *testing.
 
 	report, err := reconcileAnalyzerVersion(
 		context.Background(),
-		startupInfoClient{info: analyzer.Info{Analyzer: "omp-mir-analyzer", AnalyzerVersion: "2026-07-11-3"}},
+		startupInfoClient{info: analyzer.Info{Analyzer: "omp-mir-analyzer", AnalyzerVersion: "2026-07-24-1"}},
 		&startupVersionStore{},
 		tracks,
 		repairs,
@@ -340,7 +340,7 @@ func TestReconcileAnalyzerVersionBoundsConcurrentRepairClaims(t *testing.T) {
 	go func() {
 		_, err := reconcileAnalyzerVersion(
 			context.Background(),
-			startupInfoClient{info: analyzer.Info{Analyzer: "omp-mir-analyzer", AnalyzerVersion: "2026-07-11-3"}},
+			startupInfoClient{info: analyzer.Info{Analyzer: "omp-mir-analyzer", AnalyzerVersion: "2026-07-24-1"}},
 			&startupVersionStore{},
 			&startupTrackStore{candidates: candidates},
 			repairs,
@@ -389,7 +389,7 @@ func TestReconcileAnalyzerVersionIsIdempotentAfterFirstRepairBatch(t *testing.T)
 	versions := &startupVersionStore{}
 	tracks := &startupTrackStore{candidates: []db.Track{{ID: 43}}}
 	repairs := &startupRepairProcessor{}
-	client := startupInfoClient{info: analyzer.Info{Analyzer: "omp-mir-analyzer", AnalyzerVersion: "2026-07-11-3"}}
+	client := startupInfoClient{info: analyzer.Info{Analyzer: "omp-mir-analyzer", AnalyzerVersion: "2026-07-24-1"}}
 
 	if _, err := reconcileAnalyzerVersion(context.Background(), client, versions, tracks, repairs); err != nil {
 		t.Fatalf("first reconciliation returned error: %v", err)
@@ -410,7 +410,7 @@ func TestReconcileAnalyzerVersionSettlesRowsCreatedDuringInitialMark(t *testing.
 
 	report, err := reconcileAnalyzerVersion(
 		context.Background(),
-		startupInfoClient{info: analyzer.Info{Analyzer: "omp-mir-analyzer", AnalyzerVersion: "2026-07-11-3"}},
+		startupInfoClient{info: analyzer.Info{Analyzer: "omp-mir-analyzer", AnalyzerVersion: "2026-07-24-1"}},
 		versions,
 		tracks,
 		repairs,

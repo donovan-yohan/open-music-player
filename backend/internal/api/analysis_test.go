@@ -27,6 +27,37 @@ func TestNewAnalysisResponsePreservesUpdatedAtPrecision(t *testing.T) {
 	}
 }
 
+func TestNewAnalysisResponseKeepsDetailArraysInArtifactsOnly(t *testing.T) {
+	response := newAnalysisResponse(&db.TrackAnalysis{
+		TrackID: 42,
+		Status:  db.AnalysisStatusAnalyzed,
+		SummaryJSON: json.RawMessage(`{
+			"waveform":{
+				"sample_count":3,
+				"channels":{
+					"channel_set":"bands3-v1",
+					"values":{"low":{"artifact_ref":"channels.detail.low"}}
+				}
+			}
+		}`),
+		ArtifactsJSON: json.RawMessage(`{
+			"waveforms":{"detail":{"minima":[-0.8,-0.2,-0.5],"maxima":[0.7,0.3,0.6]}},
+			"channels":{"detail":{"low":[0.2,0.5,0.3]}}
+		}`),
+		RequestedAt: time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC),
+		UpdatedAt:   time.Date(2026, 7, 24, 10, 1, 0, 0, time.UTC),
+	})
+
+	if strings.Contains(string(response.Summary), `"minima"`) ||
+		strings.Contains(string(response.Summary), `"[0.2,0.5,0.3]"`) {
+		t.Fatalf("summary contains detail arrays: %s", response.Summary)
+	}
+	if !strings.Contains(string(response.Artifacts), `"minima"`) ||
+		!strings.Contains(string(response.Artifacts), `"low":[0.2,0.5,0.3]`) {
+		t.Fatalf("detail artifacts missing arrays: %s", response.Artifacts)
+	}
+}
+
 func TestDecodeAnalysisOverridesRequestAcceptsCompactBody(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPatch,
