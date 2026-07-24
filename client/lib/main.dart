@@ -24,6 +24,9 @@ import 'core/storage/offline_database.dart';
 import 'core/network/connectivity_service.dart';
 import 'core/download/download_service.dart';
 import 'core/download/download_state.dart';
+import 'core/services/api_client.dart' as services_api;
+import 'core/services/library_service.dart';
+import 'core/services/liked_tracks_state.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -35,6 +38,13 @@ void main() async {
   final authService = AuthService(api: apiClient, storage: storage);
   final authState = AuthState(authService: authService);
   await authState.checkAuthStatus();
+  Future<String?> currentAccountId() async =>
+      accountIdFromAccessToken(await storage.getAccessToken());
+  final initialAccountId = await currentAccountId();
+  final likedTracksState = LikedTracksState(
+    LibraryService(services_api.ApiClient(storage: storage)),
+    accountId: initialAccountId,
+  );
 
   final signedAudioUrlService = SignedAudioUrlService(apiClient);
   final playbackEngine = PlaybackEngine();
@@ -68,7 +78,11 @@ void main() async {
     signedAudioUrlService: signedAudioUrlService,
     localResolver: downloadService,
     cacheManager: playbackCacheManager,
-    persistence: QueuePersistenceStore(prefs: Future.value(sharedPreferences)),
+    persistence: QueuePersistenceStore(
+      prefs: Future.value(sharedPreferences),
+      accountIdProvider: currentAccountId,
+    ),
+    accountIdProvider: currentAccountId,
   );
   // Surface the app playback session as one OS media session/notification. The
   // handler consumes PlaybackState's canonical session snapshot so lock-screen
@@ -96,9 +110,22 @@ void main() async {
     playbackState,
     ApiPlayEventSink(apiClient),
   )..start();
+  var accountSyncGeneration = 0;
   authState.addListener(() {
+    final syncGeneration = ++accountSyncGeneration;
     if (!authState.isAuthenticated) {
       playRecorder.reset();
+      likedTracksState.setAccountId(null);
+    } else {
+      unawaited(
+        currentAccountId().then((accountId) {
+          if (syncGeneration != accountSyncGeneration ||
+              !authState.isAuthenticated) {
+            return;
+          }
+          likedTracksState.setAccountId(accountId);
+        }),
+      );
     }
   });
 
@@ -114,6 +141,10 @@ void main() async {
           provider.ChangeNotifierProvider.value(value: connectivityService),
           provider.Provider.value(value: downloadService),
           provider.ChangeNotifierProvider.value(value: downloadState),
+          provider.ChangeNotifierProvider.value(value: likedTracksState),
+          provider.Provider<PlaybackCacheManager?>.value(
+            value: playbackCacheManager,
+          ),
         ],
         child: OpenMusicPlayerApp(
           apiClient: apiClient,

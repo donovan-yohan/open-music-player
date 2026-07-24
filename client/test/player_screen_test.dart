@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,6 +11,8 @@ import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/services/library_service.dart';
+import 'package:open_music_player/core/services/liked_tracks_state.dart';
 import 'package:open_music_player/features/player/player_screen.dart';
 import 'package:provider/provider.dart';
 
@@ -226,6 +230,134 @@ void main() {
   });
 
   testWidgets(
+    'secondary controls have no enabled no-op actions and favorite is wired',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 2200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final playback = _FakePlaybackState(
+        currentItem: const MediaItem(
+          id: '1',
+          title: 'Honest Track',
+          extras: {'isLiked': false},
+        ),
+      );
+      final library = _RecordingLibraryService();
+      final write = Completer<void>();
+      library.likeResult = write.future;
+      final liked = LikedTracksState(library)..seedValue(1, false);
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ListenableProvider<PlaybackState>.value(value: playback),
+            ChangeNotifierProvider<LikedTracksState>.value(value: liked),
+          ],
+          child: const MaterialApp(home: PlayerScreen()),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.byIcon(Icons.devices), findsNothing);
+      expect(
+        tester
+            .widget<IconButton>(
+              find.byKey(const ValueKey('player_share_action')),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(find.byTooltip('Source link unavailable'), findsOneWidget);
+      expect(
+        tester
+            .widget<IconButton>(
+              find.byKey(const ValueKey('player_favorite_action')),
+            )
+            .onPressed,
+        isNotNull,
+      );
+
+      await tester.tap(find.byKey(const ValueKey('player_favorite_action')));
+      await tester.pump();
+
+      expect(liked.isLiked(1), isTrue);
+      expect(library.likedIds, [1]);
+      expect(
+        tester
+            .widget<IconButton>(
+              find.byKey(const ValueKey('player_favorite_action')),
+            )
+            .onPressed,
+        isNull,
+      );
+
+      write.complete();
+      await tester.pump();
+      expect(
+        tester
+            .widget<IconButton>(
+              find.byKey(const ValueKey('player_favorite_action')),
+            )
+            .onPressed,
+        isNotNull,
+      );
+    },
+  );
+
+  testWidgets('favorite is disabled honestly for unknown and local-only ids',
+      (tester) async {
+    tester.view.physicalSize = const Size(1200, 2200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final library = _RecordingLibraryService();
+    final liked = LikedTracksState(library, accountId: 'user-b');
+
+    for (final item in const [
+      MediaItem(
+        id: '1',
+        title: 'Previous account',
+        extras: {
+          'isLiked': true,
+          'likedAccountId': 'user-a',
+        },
+      ),
+      MediaItem(id: 'local-file', title: 'Local only'),
+    ]) {
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ListenableProvider<PlaybackState>.value(
+              value: _FakePlaybackState(currentItem: item),
+            ),
+            ChangeNotifierProvider<LikedTracksState>.value(value: liked),
+          ],
+          child: MaterialApp(
+            key: ValueKey(item.id),
+            home: const PlayerScreen(),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final favorite = tester.widget<IconButton>(
+        find.byKey(const ValueKey('player_favorite_action')),
+      );
+      expect(favorite.onPressed, isNull);
+      expect(
+        find.byTooltip(
+          item.id == '1'
+              ? 'Liked status not loaded yet'
+              : 'Liked status unavailable for local-only track',
+        ),
+        findsOneWidget,
+      );
+    }
+    expect(liked.isLiked(1), isNull);
+  });
+
+  testWidgets(
     'player surfaces resolve semantic contrast and preserve scrub and sheet wiring',
     (tester) async {
       tester.view.physicalSize = const Size(1200, 2200);
@@ -309,7 +441,8 @@ void main() {
           atLeast(4.5),
         );
 
-        final secondary = tester.widget<Icon>(find.byIcon(Icons.devices));
+        final secondary =
+            tester.widget<Icon>(find.byIcon(Icons.favorite_border));
         expect(_contrastRatio(secondary.color!, surface), atLeast(3));
 
         final slider = tester.widget<Slider>(find.byType(Slider));
@@ -468,6 +601,19 @@ class _FakePlaybackState extends Fake implements PlaybackState {
 
   @override
   Future<void> cycleLoopMode() async {}
+}
+
+class _RecordingLibraryService extends LibraryService {
+  _RecordingLibraryService() : super(ApiClient());
+
+  final likedIds = <int>[];
+  Future<void> likeResult = Future.value();
+
+  @override
+  Future<void> like(int trackId) {
+    likedIds.add(trackId);
+    return likeResult;
+  }
 }
 
 Matcher atLeast(num value) => greaterThanOrEqualTo(value);

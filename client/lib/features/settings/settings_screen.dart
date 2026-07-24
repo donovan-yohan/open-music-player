@@ -8,8 +8,9 @@ import 'package:provider/provider.dart' as legacy_provider;
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/auth/auth_state.dart' as session_auth;
+import '../../core/cache/playback_cache_manager.dart';
+import '../../core/download/download_state.dart';
 import '../../core/models/settings_model.dart';
-import '../../core/providers/cache_provider.dart';
 import '../../core/providers/settings_provider.dart';
 import 'listening_history_screen.dart';
 
@@ -24,7 +25,7 @@ class SettingsScreen extends ConsumerWidget {
         children: const [
           _AccountSection(),
           _PlaybackSection(),
-          _StorageSection(),
+          SettingsStorageSection(),
           _AppearanceSection(),
           _AboutSection(),
         ],
@@ -46,9 +47,9 @@ class _SectionHeader extends StatelessWidget {
       child: Text(
         title,
         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-          color: Theme.of(context).colorScheme.primary,
-          fontWeight: FontWeight.bold,
-        ),
+              color: Theme.of(context).colorScheme.primary,
+              fontWeight: FontWeight.bold,
+            ),
       ),
     );
   }
@@ -85,8 +86,8 @@ class _AccountSection extends ConsumerWidget {
                   : 'Device biometric or screen lock is not available on this platform.',
             ),
             value: authState.biometricUnlockEnabled,
-            onChanged:
-                authState.isLoading || !authState.biometricUnlockAvailable
+            onChanged: authState.isLoading ||
+                    !authState.biometricUnlockAvailable
                 ? null
                 : (enabled) => _setBiometricUnlock(context, authState, enabled),
           ),
@@ -96,7 +97,7 @@ class _AccountSection extends ConsumerWidget {
             subtitle: const Text(
               'Clears tokens and biometric unlock enrollment',
             ),
-            onTap: () => _showLogoutDialog(context, ref),
+            onTap: () => _showLogoutDialog(context),
           ),
           ListTile(
             leading: const Icon(Icons.history),
@@ -144,8 +145,8 @@ class _AccountSection extends ConsumerWidget {
         content: Text(
           success
               ? enabled
-                    ? 'Biometric unlock enabled for this installed app session.'
-                    : 'Biometric unlock disabled.'
+                  ? 'Biometric unlock enabled for this installed app session.'
+                  : 'Biometric unlock disabled.'
               : authState.error ?? 'Could not update biometric unlock.',
         ),
         backgroundColor: success ? null : Theme.of(context).colorScheme.error,
@@ -153,7 +154,7 @@ class _AccountSection extends ConsumerWidget {
     );
   }
 
-  void _showLogoutDialog(BuildContext context, WidgetRef ref) {
+  void _showLogoutDialog(BuildContext context) {
     final parentContext = context;
     showDialog(
       context: parentContext,
@@ -168,7 +169,7 @@ class _AccountSection extends ConsumerWidget {
           TextButton(
             onPressed: () {
               Navigator.pop(dialogContext);
-              _showLogoutOptionsDialog(parentContext, ref);
+              _showLogoutOptionsDialog(parentContext);
             },
             child: const Text('Log out'),
           ),
@@ -177,57 +178,30 @@ class _AccountSection extends ConsumerWidget {
     );
   }
 
-  void _showLogoutOptionsDialog(BuildContext context, WidgetRef ref) {
+  void _showLogoutOptionsDialog(BuildContext context) {
     final parentContext = context;
-    bool clearCache = false;
+    final cacheManager = legacy_provider.Provider.of<PlaybackCacheManager?>(
+      parentContext,
+      listen: false,
+    );
 
     showDialog(
       context: parentContext,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (dialogContext, setState) => AlertDialog(
-          title: const Text('Logout options'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              CheckboxListTile(
-                title: const Text('Clear cached data'),
-                subtitle: const Text(
-                  'Remove downloaded music and cached content',
-                ),
-                value: clearCache,
-                onChanged: (value) =>
-                    setState(() => clearCache = value ?? false),
-                contentPadding: EdgeInsets.zero,
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                Navigator.pop(dialogContext);
-                if (clearCache) {
-                  await ref.read(cacheProvider.notifier).clearCache();
-                }
-                if (parentContext.mounted) {
-                  await legacy_provider.Provider.of<session_auth.AuthState>(
-                    parentContext,
-                    listen: false,
-                  ).logout();
-                }
-                if (parentContext.mounted) {
-                  ScaffoldMessenger.of(parentContext).showSnackBar(
-                    const SnackBar(content: Text('Logged out successfully')),
-                  );
-                }
-              },
-              child: const Text('Confirm'),
-            ),
-          ],
-        ),
+      builder: (dialogContext) => LogoutOptionsDialog(
+        cacheManager: cacheManager,
+        onConfirm: () async {
+          if (parentContext.mounted) {
+            await legacy_provider.Provider.of<session_auth.AuthState>(
+              parentContext,
+              listen: false,
+            ).logout();
+          }
+          if (parentContext.mounted) {
+            ScaffoldMessenger.of(parentContext).showSnackBar(
+              const SnackBar(content: Text('Logged out successfully')),
+            );
+          }
+        },
       ),
     );
   }
@@ -247,6 +221,67 @@ class _AccountSection extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+@visibleForTesting
+class LogoutOptionsDialog extends StatefulWidget {
+  const LogoutOptionsDialog({
+    super.key,
+    required this.cacheManager,
+    required this.onConfirm,
+  });
+
+  final PlaybackCacheManager? cacheManager;
+  final Future<void> Function() onConfirm;
+
+  @override
+  State<LogoutOptionsDialog> createState() => _LogoutOptionsDialogState();
+}
+
+class _LogoutOptionsDialogState extends State<LogoutOptionsDialog> {
+  bool _clearCache = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final cacheAvailable = widget.cacheManager != null;
+    return AlertDialog(
+      title: const Text('Logout options'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CheckboxListTile(
+            title: const Text('Clear temporary playback audio'),
+            subtitle: Text(
+              cacheAvailable
+                  ? 'Downloads and album artwork stay on this device.'
+                  : 'Temporary playback audio is unavailable on this platform.',
+            ),
+            value: _clearCache,
+            onChanged: cacheAvailable
+                ? (value) => setState(() => _clearCache = value ?? false)
+                : null,
+            contentPadding: EdgeInsets.zero,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () async {
+            Navigator.pop(context);
+            if (_clearCache) {
+              await widget.cacheManager!.clear();
+            }
+            await widget.onConfirm();
+          },
+          child: const Text('Confirm'),
+        ),
+      ],
     );
   }
 }
@@ -347,15 +382,37 @@ class _PlaybackSection extends ConsumerWidget {
 }
 
 /// Storage section with cache management and downloads
-class _StorageSection extends ConsumerWidget {
-  const _StorageSection();
+@visibleForTesting
+class SettingsStorageSection extends ConsumerStatefulWidget {
+  const SettingsStorageSection({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<SettingsStorageSection> createState() =>
+      _SettingsStorageSectionState();
+}
+
+class _SettingsStorageSectionState
+    extends ConsumerState<SettingsStorageSection> {
+  PlaybackCacheManager? _cacheManager;
+  Future<int>? _cacheSize;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final manager = legacy_provider.Provider.of<PlaybackCacheManager?>(
+      context,
+    );
+    if (!identical(manager, _cacheManager)) {
+      _cacheManager = manager;
+      _cacheSize = manager?.currentSizeBytes();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final settingsNotifier = ref.read(settingsProvider.notifier);
-    final cacheInfo = ref.watch(cacheProvider);
-    final cacheNotifier = ref.read(cacheProvider.notifier);
+    final downloads = legacy_provider.Provider.of<DownloadState>(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -364,30 +421,32 @@ class _StorageSection extends ConsumerWidget {
         ListTile(
           leading: const Icon(Icons.folder_outlined),
           title: const Text('Cache size'),
-          subtitle: Text(
-            cacheInfo.isCalculating
-                ? 'Calculating...'
-                : cacheInfo.formattedSize,
+          subtitle: FutureBuilder<int>(
+            future: _cacheSize,
+            builder: (context, snapshot) => Text(
+              _cacheManager == null
+                  ? 'Unavailable on this platform'
+                  : snapshot.hasData
+                      ? _formatBytes(snapshot.data!)
+                      : 'Calculating...',
+            ),
           ),
           trailing: TextButton(
-            onPressed: cacheInfo.isCalculating
+            key: const ValueKey('settings_clear_cache'),
+            onPressed: _cacheManager == null
                 ? null
-                : () => _showClearCacheDialog(context, cacheNotifier),
+                : () => _showClearCacheDialog(context, _cacheManager!),
             child: const Text('Clear'),
           ),
         ),
         ListTile(
           leading: const Icon(Icons.download_outlined),
           title: const Text('Downloads'),
-          subtitle: const Text('Manage downloaded music'),
+          subtitle: Text(
+            'Manage downloaded music • ${downloads.formattedTotalSize}',
+          ),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Downloads screen not yet implemented'),
-              ),
-            );
-          },
+          onTap: () => context.push('/downloads'),
         ),
         ListTile(
           leading: const Icon(Icons.high_quality_outlined),
@@ -404,25 +463,33 @@ class _StorageSection extends ConsumerWidget {
     );
   }
 
-  void _showClearCacheDialog(BuildContext context, CacheNotifier notifier) {
+  void _showClearCacheDialog(
+    BuildContext context,
+    PlaybackCacheManager manager,
+  ) {
+    final parentContext = context;
     showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
+      context: parentContext,
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Clear cache'),
         content: const Text(
-          'This will remove all cached data including album artwork and temporary files. Downloaded music will not be affected.',
+          'This removes temporary playback audio. Downloaded music and album artwork are not affected.',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () {
-              Navigator.pop(context);
-              notifier.clearCache();
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await manager.clear();
+              if (!mounted || !parentContext.mounted) return;
+              setState(() {
+                _cacheSize = manager.currentSizeBytes();
+              });
               ScaffoldMessenger.of(
-                context,
+                parentContext,
               ).showSnackBar(const SnackBar(content: Text('Cache cleared')));
             },
             child: const Text('Clear'),
@@ -430,6 +497,17 @@ class _StorageSection extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  String _formatBytes(int sizeInBytes) {
+    if (sizeInBytes < 1024) return '$sizeInBytes B';
+    if (sizeInBytes < 1024 * 1024) {
+      return '${(sizeInBytes / 1024).toStringAsFixed(1)} KB';
+    }
+    if (sizeInBytes < 1024 * 1024 * 1024) {
+      return '${(sizeInBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(sizeInBytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
   void _showQualityPicker(

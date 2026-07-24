@@ -1,4 +1,3 @@
-import '../models/models.dart';
 import '../../shared/models/track.dart' as lib;
 import 'api_client.dart';
 
@@ -6,6 +5,25 @@ class LibraryService {
   final ApiClient _apiClient;
 
   LibraryService(this._apiClient);
+
+  /// Projection used by the paged Library screen.
+  static const libraryListFields = [
+    'id',
+    'title',
+    'artist',
+    'album',
+    'duration_ms',
+    'mb_verified',
+    'added_at',
+    'cover_art_url',
+    'mb_recording_id',
+    'mb_suggestions',
+    'source_url',
+    'is_liked',
+    'analysis_status',
+    'analysis_summary',
+    'analysis_updated_at',
+  ];
 
   /// Loads every library track whose `artist` exactly matches [artist], via the
   /// `GET /library?artist=` filter. Parses the `{tracks, total, ...}` envelope
@@ -107,6 +125,7 @@ class LibraryService {
         'added_at',
         'cover_art_url',
         'mb_recording_id',
+        'source_url',
         'is_liked',
         'analysis_status',
         'analysis_summary',
@@ -143,28 +162,6 @@ class LibraryService {
   /// Removes the like (favorite) from a library track.
   Future<void> unlike(int trackId) async {
     await _apiClient.delete('/library/tracks/$trackId/like');
-  }
-
-  Future<List<Playlist>> getPlaylists({int limit = 20, int offset = 0}) async {
-    final response = await _apiClient.get<Map<String, dynamic>>(
-      '/playlists',
-      queryParams: {
-        'limit': limit.toString(),
-        'offset': offset.toString(),
-      },
-    );
-    return (response['playlists'] as List<dynamic>)
-        .map((e) => Playlist.fromJson(e as Map<String, dynamic>))
-        .toList();
-  }
-
-  Future<void> addTrackToPlaylist(String playlistId, String trackId) async {
-    await _apiClient.post(
-      '/playlists/$playlistId/tracks',
-      body: {
-        'trackIds': [trackId]
-      },
-    );
   }
 
   /// Confirms a MusicBrainz match suggestion for a track

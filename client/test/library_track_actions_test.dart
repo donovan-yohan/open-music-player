@@ -1,8 +1,12 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/services/api_client.dart';
+import 'package:open_music_player/core/services/library_service.dart';
+import 'package:open_music_player/core/services/liked_tracks_state.dart';
+import 'package:open_music_player/features/library/library_screen.dart';
 import 'package:open_music_player/features/library/library_track_actions.dart';
 import 'package:open_music_player/shared/models/track.dart';
 
-Track _track({bool isLiked = false}) => Track(
+Track _track({bool? isLiked = false}) => Track(
       id: 7,
       identityHash: 'hash-7',
       title: 'Title',
@@ -16,7 +20,7 @@ Track _track({bool isLiked = false}) => Track(
 
 void main() {
   group('is_liked parsing', () {
-    test('Track.fromLibraryJson reads is_liked', () {
+    test('Track.fromLibraryJson reads is_liked and preserves absence', () {
       final liked = Track.fromLibraryJson({
         'id': 1,
         'title': 'X',
@@ -24,7 +28,7 @@ void main() {
       });
       final notLiked = Track.fromLibraryJson({'id': 2, 'title': 'Y'});
       expect(liked.isLiked, isTrue);
-      expect(notLiked.isLiked, isFalse);
+      expect(notLiked.isLiked, isNull);
     });
   });
 
@@ -39,54 +43,16 @@ void main() {
     });
   });
 
-  group('runOptimisticLikeToggle', () {
-    test('flips optimistically and keeps the new state on success', () async {
-      final applied = <bool>[];
-      var likeCalled = false;
+  test('downloaded-only local load cannot overwrite seeded liked true', () {
+    final likedState = LikedTracksState(LibraryService(ApiClient()))
+      ..seedValue(7, true);
 
-      final result = await runOptimisticLikeToggle(
-        current: false,
-        like: () async => likeCalled = true,
-        unlike: () async => fail('unlike should not run'),
-        applyOptimistic: applied.add,
-      );
+    seedLikedTracksFromLibraryLoad(
+      likedState: likedState,
+      tracks: [_track(isLiked: null)],
+      source: LibraryTrackLoadSource.local,
+    );
 
-      expect(likeCalled, isTrue);
-      expect(applied, [true]);
-      expect(result, isTrue);
-    });
-
-    test('unlikes when already liked', () async {
-      final applied = <bool>[];
-      var unlikeCalled = false;
-
-      final result = await runOptimisticLikeToggle(
-        current: true,
-        like: () async => fail('like should not run'),
-        unlike: () async => unlikeCalled = true,
-        applyOptimistic: applied.add,
-      );
-
-      expect(unlikeCalled, isTrue);
-      expect(applied, [false]);
-      expect(result, isFalse);
-    });
-
-    test('reverts to the original state and rethrows on failure', () async {
-      final applied = <bool>[];
-
-      await expectLater(
-        runOptimisticLikeToggle(
-          current: false,
-          like: () async => throw Exception('network down'),
-          unlike: () async {},
-          applyOptimistic: applied.add,
-        ),
-        throwsA(isA<Exception>()),
-      );
-
-      // Flipped to true optimistically, then reverted back to false.
-      expect(applied, [true, false]);
-    });
+    expect(likedState.isLiked(7), isTrue);
   });
 }

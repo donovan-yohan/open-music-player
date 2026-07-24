@@ -43,12 +43,14 @@ class QueueSnapshot {
   final int currentIndex;
   final int positionMs;
   final MixSession? session;
+  final String? accountId;
 
   const QueueSnapshot({
     this.tracks = const [],
     this.currentIndex = 0,
     this.positionMs = 0,
     this.session,
+    this.accountId,
   });
 
   bool get isEmpty => tracks.isEmpty;
@@ -58,6 +60,7 @@ class QueueSnapshot {
         'currentIndex': currentIndex,
         'positionMs': positionMs,
         if (session != null) 'session': session!.toJson(),
+        if (accountId != null) 'accountId': accountId,
       };
 
   factory QueueSnapshot.fromJson(Map<String, dynamic> json) {
@@ -89,8 +92,37 @@ class QueueSnapshot {
       currentIndex: currentIndex,
       positionMs: positionMs,
       session: session,
+      accountId: json['accountId'] as String?,
     );
   }
+
+  QueueSnapshot scopedTo(String? currentAccountId) {
+    final snapshotOwnedByCurrent = accountId != null &&
+        currentAccountId != null &&
+        accountId == currentAccountId;
+    return QueueSnapshot(
+      tracks: [
+        for (final track in tracks)
+          _scopePlaybackTrack(
+            track,
+            currentAccountId: currentAccountId,
+            snapshotOwnedByCurrent: snapshotOwnedByCurrent,
+          ),
+      ],
+      currentIndex: currentIndex,
+      positionMs: positionMs,
+      session: session,
+      accountId: currentAccountId,
+    );
+  }
+
+  QueueSnapshot withAccountId(String? value) => QueueSnapshot(
+        tracks: tracks,
+        currentIndex: currentIndex,
+        positionMs: positionMs,
+        session: session,
+        accountId: value,
+      );
 
   /// JSON string form for storage.
   String encode() => jsonEncode(toJson());
@@ -174,6 +206,12 @@ Map<String, dynamic> mediaItemToPlaybackJson(MediaItem item) {
     if (item.album != null) 'album': item.album,
     'duration': item.duration?.inSeconds ?? 0,
     if (item.artUri != null) 'artwork_url': item.artUri.toString(),
+    if (item.extras?['isLiked'] is bool) 'isLiked': item.extras?['isLiked'],
+    if (item.extras?['likedAccountId'] is String)
+      'likedAccountId': item.extras?['likedAccountId'],
+    if (item.extras?['sourceUrl'] is String &&
+        (item.extras?['sourceUrl'] as String).trim().isNotEmpty)
+      'sourceUrl': (item.extras?['sourceUrl'] as String).trim(),
     if (item.extras?['analysisStatus'] != null)
       'analysisStatus': item.extras?['analysisStatus'],
     if (item.extras?['analysisSummary'] != null)
@@ -193,9 +231,13 @@ class QueuePersistenceStore {
   static const String storageKey = 'playback.queue.snapshot.v1';
 
   final Future<SharedPreferences> _prefs;
+  final Future<String?> Function()? _accountIdProvider;
 
-  QueuePersistenceStore({Future<SharedPreferences>? prefs})
-      : _prefs = prefs ?? SharedPreferences.getInstance();
+  QueuePersistenceStore({
+    Future<SharedPreferences>? prefs,
+    Future<String?> Function()? accountIdProvider,
+  })  : _prefs = prefs ?? SharedPreferences.getInstance(),
+        _accountIdProvider = accountIdProvider;
 
   Future<void> save(QueueSnapshot snapshot) async {
     final prefs = await _prefs;
@@ -203,16 +245,62 @@ class QueuePersistenceStore {
       await prefs.remove(storageKey);
       return;
     }
-    await prefs.setString(storageKey, snapshot.encode());
+    final accountId = await _accountIdProvider?.call();
+    final scopedSnapshot = snapshot.scopedTo(accountId);
+    await prefs.setString(
+      storageKey,
+      scopedSnapshot.withAccountId(accountId).encode(),
+    );
   }
 
   Future<QueueSnapshot> load() async {
     final prefs = await _prefs;
-    return QueueSnapshot.decode(prefs.getString(storageKey));
+    final snapshot = QueueSnapshot.decode(prefs.getString(storageKey));
+    final accountId = await _accountIdProvider?.call();
+    return snapshot.scopedTo(accountId);
   }
 
   Future<void> clear() async {
     final prefs = await _prefs;
     await prefs.remove(storageKey);
+  }
+}
+
+Map<String, dynamic> _scopePlaybackTrack(
+  Map<String, dynamic> track, {
+  required String? currentAccountId,
+  required bool snapshotOwnedByCurrent,
+}) {
+  final scoped = Map<String, dynamic>.from(track);
+  final metadataAccountId = scoped['likedAccountId'];
+  final metadataOwnedByCurrent = currentAccountId != null &&
+      (metadataAccountId == currentAccountId ||
+          (metadataAccountId == null && snapshotOwnedByCurrent));
+  if (!metadataOwnedByCurrent) {
+    scoped
+      ..remove('isLiked')
+      ..remove('is_liked')
+      ..remove('sourceUrl')
+      ..remove('source_url')
+      ..remove('likedAccountId');
+  }
+  return scoped;
+}
+
+/// Reads the stable backend user id from an OMP access token for local
+/// account-scoping only. Authentication still belongs to the backend.
+String? accountIdFromAccessToken(String? token) {
+  if (token == null) return null;
+  final parts = token.split('.');
+  if (parts.length != 3) return null;
+  try {
+    final payload = jsonDecode(
+      utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))),
+    );
+    if (payload is! Map) return null;
+    final accountId = payload['user_id'];
+    return accountId is String && accountId.isNotEmpty ? accountId : null;
+  } catch (_) {
+    return null;
   }
 }

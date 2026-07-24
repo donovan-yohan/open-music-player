@@ -80,6 +80,16 @@ void main() {
       expect(api.capturedParams?['liked'], 'true');
     });
 
+    test('Library screen projection requests is_liked', () async {
+      final api = _CapturingApiClient(_envelope([]));
+
+      await LibraryService(api).getLibraryPage(
+        fields: LibraryService.libraryListFields,
+      );
+
+      expect(api.capturedParams?['fields'], contains('is_liked'));
+    });
+
     test('a search query adds a trimmed q=', () async {
       final api = _CapturingApiClient(_envelope([]));
 

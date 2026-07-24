@@ -51,6 +51,26 @@ domain concept moves or a new production harness becomes canonical.
 - Guardrail: authenticated client calls should use the unified API client path
   unless a feature explicitly crosses into offline/local storage.
 
+### Liked State And Collections
+
+- Persistence authority: backend `track_favorites`; library projections expose
+  the per-user value as `is_liked`.
+- Client authority: `client/lib/core/services/liked_tracks_state.dart`.
+  Library and Liked Songs fetches plus playback payload metadata seed
+  `LikedTracksState`; hearts on player and collection rows read and toggle it.
+- Playlist membership authority:
+  `client/lib/core/services/playlist_service.dart` via
+  `PlaylistService.addTracks(int, List<int>)`.
+- Architecture decision:
+  `docs/adr/0004-liked-state-and-surface-honesty.md`.
+- Guardrail: never copy interactive liked state into widget fields,
+  `PlaybackState`, queue/timeline controllers, or `MixSession`.
+- Guardrail: Liked Songs is a filtered Library view backed by favorites, never
+  a materialized playlist. Unliked rows stay in the current fetched view until
+  refresh so a toggle does not remove content mid-scroll.
+- Guardrail: visible controls must act, be honestly disabled with a reason, or
+  be absent; enabled no-op handlers are not acceptable shipped behavior.
+
 ### Source-Quality Discovery Judge
 
 - Configuration and server wiring: `backend/internal/config/config.go`,

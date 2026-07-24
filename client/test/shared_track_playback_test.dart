@@ -6,6 +6,8 @@ Track _track({
   String title = 'X',
   int? durationMs,
   Map<String, dynamic>? metadata,
+  bool? isLiked,
+  String? sourceUrl,
 }) =>
     Track(
       id: id,
@@ -15,12 +17,15 @@ Track _track({
       album: 'Album',
       durationMs: durationMs,
       metadata: metadata,
+      isLiked: isLiked,
+      sourceUrl: sourceUrl,
       createdAt: DateTime(2020),
       updatedAt: DateTime(2020),
     );
 
 void main() {
-  test('toPlaybackJson maps id/title/artist/album, ms->whole seconds, cover', () {
+  test('toPlaybackJson maps id/title/artist/album, ms->whole seconds, cover',
+      () {
     final j = _track(
       id: 42,
       title: 'Song',
@@ -40,6 +45,23 @@ void main() {
     final j = _track().toPlaybackJson();
     expect(j['duration'], 0);
     expect(j['artwork_url'], isNull);
+  });
+
+  test('toPlaybackJson preserves liked state and trims the public source URL',
+      () {
+    final j = _track(
+      isLiked: true,
+      sourceUrl: '  https://example.com/source  ',
+    ).toPlaybackJson();
+
+    expect(j['isLiked'], isTrue);
+    expect(j['sourceUrl'], 'https://example.com/source');
+  });
+
+  test('toPlaybackJson omits liked when backend annotation was absent', () {
+    final j = _track().toPlaybackJson();
+
+    expect(j.containsKey('isLiked'), isFalse);
   });
 
   test('mapping a list preserves order and every id (Play semantics)', () {

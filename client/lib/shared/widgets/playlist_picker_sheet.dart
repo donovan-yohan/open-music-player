@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../../core/models/models.dart';
+import '../models/playlist.dart';
 
 /// Bottom-sheet list picker for choosing which playlist to add a track to.
 ///

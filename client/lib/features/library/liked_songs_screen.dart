@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/services/services.dart' as services;
+import '../../core/services/liked_tracks_state.dart';
 import '../../shared/models/track.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/track_tile.dart';
@@ -46,8 +47,14 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
       _hasError = false;
     });
     try {
+      final likedState = context.read<LikedTracksState>();
+      final seedVersion = likedState.seedVersion;
       final page = await _libraryService.getLikedSongs();
       if (!mounted) return;
+      likedState.seed(
+        page.tracks,
+        responseToSeedVersion: seedVersion,
+      );
       setState(() {
         _tracks = page.tracks;
         _total = page.total;
@@ -115,6 +122,9 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
           if (index == 0) return _buildHeader(context);
           final track = _tracks[index - 1];
           final currentTrackId = context.watch<PlaybackState>().currentItem?.id;
+          final likedState = context.watch<LikedTracksState>();
+          final liked = likedState.isLiked(track.id) ?? false;
+          final isToggling = likedState.isToggling(track.id);
           return QueueSwipeAction(
             actionKey: ValueKey('liked_queue_${track.id}_${index - 1}'),
             onAddToQueue: () => _enqueueTrack(track),
@@ -122,11 +132,32 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
               track,
               isCurrent: currentTrackId == track.id.toString(),
               onTap: () => _playFrom(index - 1),
+              trailing: IconButton(
+                key: ValueKey('liked_song_heart_${track.id}'),
+                icon: Icon(
+                  liked ? Icons.favorite : Icons.favorite_border,
+                ),
+                tooltip: liked ? 'Unlike' : 'Like',
+                onPressed: isToggling ? null : () => _toggleLike(track.id),
+              ),
             ),
           );
         },
       ),
     );
+  }
+
+  Future<void> _toggleLike(int trackId) async {
+    try {
+      await context.read<LikedTracksState>().toggle(trackId);
+      // Deliberately retain this fetched collection's membership until the
+      // next refresh so unliking does not remove a row mid-scroll.
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not update liked status')),
+      );
+    }
   }
 
   Future<void> _enqueueTrack(Track track) async {
