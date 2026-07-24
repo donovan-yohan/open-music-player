@@ -1,9 +1,13 @@
 import 'package:audio_service/audio_service.dart' show MediaItem;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/commands/app_command.dart';
+import 'package:open_music_player/core/commands/command_registry.dart';
 import 'package:open_music_player/core/api/api_client.dart' as dio_api;
 import 'package:open_music_player/core/download/download_state.dart';
 import 'package:open_music_player/core/services/services.dart' as services;
@@ -58,6 +62,8 @@ void main() {
       final liked = LikedTracksState(services.LibraryService(api))
         ..seedTrack(track);
       final playlists = _PlaylistService();
+      final registry = CommandRegistry(playbackState: playback);
+      addTearDown(registry.dispose);
 
       await tester.pumpWidget(
         MultiProvider(
@@ -65,6 +71,7 @@ void main() {
             ListenableProvider<PlaybackState>.value(value: playback),
             ListenableProvider<DownloadState>.value(value: downloads),
             ChangeNotifierProvider<LikedTracksState>.value(value: liked),
+            Provider<CommandRegistry>.value(value: registry),
           ],
           child: MaterialApp(
             home: Scaffold(
@@ -100,27 +107,65 @@ void main() {
       expect(find.byTooltip('More actions'), findsOneWidget);
       expect(tester.takeException(), isNull);
 
-      // A toggle from another surface updates this row through the shared
-      // notifier rather than a widget-owned copy.
-      liked.seedValue(42, false);
-      await tester.pump();
-      await tester.tap(find.byTooltip('More actions'));
+      await tester.tapAt(
+        tester.getCenter(row),
+        buttons: kSecondaryMouseButton,
+      );
       await tester.pumpAndSettle();
-      expect(find.text('Like'), findsOneWidget);
-      Navigator.of(tester.element(find.byType(BottomSheet))).pop();
+
+      const expectedLabels = {
+        CommandId.playNow: 'Play now',
+        CommandId.playNext: 'Play next',
+        CommandId.addToQueue: 'Add to queue',
+        CommandId.addToPlaylist: 'Add to playlist',
+        CommandId.toggleLiked: 'Unlike',
+      };
+      final menuState = <CommandId, ({String label, bool enabled})>{};
+      for (final entry in expectedLabels.entries) {
+        final id = entry.key;
+        final menuItem = find.byKey(ValueKey('command_menu_${id.name}'));
+        expect(menuItem, findsOneWidget);
+        expect(find.descendant(of: menuItem, matching: find.text(entry.value)),
+            findsOneWidget);
+        menuState[id] = (
+          label: entry.value,
+          enabled: tester.widget<PopupMenuItem<CommandId>>(menuItem).enabled,
+        );
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pumpAndSettle();
-      liked.seedValue(42, true);
-      await tester.pump();
 
       await tester.tap(find.byTooltip('More actions'));
       await tester.pumpAndSettle();
-
+      final sheetState = <CommandId, ({String label, bool enabled})>{};
+      for (final entry in expectedLabels.entries) {
+        final id = entry.key;
+        final sheetItem = find.byKey(ValueKey('command_sheet_${id.name}'));
+        expect(sheetItem, findsOneWidget);
+        expect(find.descendant(of: sheetItem, matching: find.text(entry.value)),
+            findsOneWidget);
+        sheetState[id] = (
+          label: entry.value,
+          enabled: tester.widget<ListTile>(sheetItem).enabled,
+        );
+      }
+      expect(sheetState, menuState);
       expect(find.text('Review match'), findsOneWidget);
       expect(find.text('Unlike'), findsOneWidget);
       expect(find.text('Download'), findsOneWidget);
       expect(find.text('Add to queue'), findsOneWidget);
       expect(find.byTooltip('Download'), findsOneWidget);
       expect(tester.takeException(), isNull);
+
+      // The open sheet follows the shared liked authority rather than keeping
+      // a stale snapshot of its label or enabled state.
+      liked.seedValue(42, false);
+      await tester.pump();
+      expect(find.text('Like'), findsOneWidget);
+      expect(find.text('Unlike'), findsNothing);
+      liked.seedValue(42, true);
+      await tester.pump();
+      expect(find.text('Unlike'), findsOneWidget);
 
       await tester.tap(find.text('Add to playlist'));
       await tester.pumpAndSettle();
@@ -139,6 +184,33 @@ class _FakePlaybackState extends Fake implements PlaybackState {
         id: '42',
         title: 'A useful title that must retain readable width',
       );
+
+  @override
+  List<MediaItem> get queue => [currentItem!];
+
+  @override
+  int? get currentIndex => 0;
+
+  @override
+  bool get hasTrack => true;
+
+  @override
+  bool get isPlaying => false;
+
+  @override
+  Duration get duration => const Duration(minutes: 3);
+
+  @override
+  Duration get position => Duration.zero;
+
+  @override
+  bool get canSkipNext => false;
+
+  @override
+  bool get canSkipPrevious => false;
+
+  @override
+  bool get hasPreviousInPlayOrder => false;
 
   @override
   void addListener(VoidCallback listener) {}

@@ -11,6 +11,8 @@ import 'package:open_music_player/app/theme.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/commands/app_command.dart';
+import 'package:open_music_player/core/commands/command_registry.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/mix_plan.dart';
@@ -28,11 +30,15 @@ import 'package:open_music_player/widgets/timeline_clip_widget.dart';
 void main() {
   late _FakeQueueApiClient apiClient;
   late _FakePlaybackState playbackState;
+  late CommandRegistry commandRegistry;
 
   setUp(() {
     apiClient = _FakeQueueApiClient();
     playbackState = _FakePlaybackState();
+    commandRegistry = CommandRegistry(playbackState: playbackState);
   });
+
+  tearDown(() => commandRegistry.dispose());
 
   Future<void> pumpQueueScreen(
     WidgetTester tester, {
@@ -47,6 +53,7 @@ void main() {
             create: (_) => queueProvider ?? QueueProvider(apiClient),
           ),
           ListenableProvider<PlaybackState>.value(value: playbackState),
+          Provider<CommandRegistry>.value(value: commandRegistry),
         ],
         child: MaterialApp(
           theme: AppTheme.lightTheme,
@@ -199,7 +206,8 @@ void main() {
     expect(playbackState.skipToIndexCalls, [2]);
   });
 
-  testWidgets('keeps playback and import queues separate when both have items', (
+  testWidgets('keeps playback and import queues separate when both have items',
+      (
     tester,
   ) async {
     playbackState
@@ -392,6 +400,102 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(playbackState.removeFromQueueCalls, [2]);
+  });
+
+  testWidgets('secondary click on playback queue row opens registry menu', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Now Playing', seconds: 120),
+        _mediaItem(2, 'Next Song', seconds: 150),
+      ]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+    await tester.tapAt(
+      tester.getCenter(
+        find.byKey(const ValueKey('remove_playback_queue_2')),
+      ),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
+
+    for (final id in const [
+      CommandId.playNow,
+      CommandId.playNext,
+      CommandId.addToQueue,
+      CommandId.removeFromQueue,
+    ]) {
+      final item = find.byKey(ValueKey('command_menu_${id.name}'));
+      expect(item, findsOneWidget);
+      expect(tester.widget<PopupMenuItem<CommandId>>(item).enabled, isTrue);
+    }
+  });
+
+  testWidgets('queue-row Play now skips in place without replacing the queue', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Now Playing', seconds: 120),
+        _mediaItem(2, 'Next Song', seconds: 150),
+      ]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+    await tester.tapAt(
+      tester.getCenter(
+        find.byKey(const ValueKey('remove_playback_queue_2')),
+      ),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(const ValueKey('command_menu_playNow')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(playbackState.skipToIndexCalls, [1]);
+    expect(playbackState.playTrackCalls, isEmpty);
+    expect(playbackState.fakeQueue, hasLength(2));
+  });
+
+  testWidgets('current row remove is disabled for menu and swipe alike', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Now Playing', seconds: 120),
+        _mediaItem(2, 'Next Song', seconds: 150),
+      ]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+    final currentRow = find.byKey(
+      const ValueKey('remove_playback_queue_1'),
+    );
+    await tester.tapAt(
+      tester.getCenter(currentRow),
+      buttons: kSecondaryMouseButton,
+    );
+    await tester.pumpAndSettle();
+
+    final remove = find.byKey(
+      const ValueKey('command_menu_removeFromQueue'),
+    );
+    expect(remove, findsOneWidget);
+    expect(
+      tester.widget<PopupMenuItem<CommandId>>(remove).enabled,
+      isFalse,
+    );
+    expect(find.byTooltip('Currently playing'), findsOneWidget);
+    await tester.tapAt(const Offset(1, 1));
+    await tester.pumpAndSettle();
+
+    await tester.drag(currentRow, const Offset(-500, 0));
+    await tester.pumpAndSettle();
+    expect(playbackState.removeFromQueueCalls, isEmpty);
   });
 
   testWidgets('defaults to 390px list view with a one tap Timeline switch', (
@@ -1914,6 +2018,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   final _notifier = _PlaybackStateNotifier();
   final List<({List<Map<String, dynamic>> tracks, int startIndex})>
       playQueueCalls = [];
+  final List<Map<String, dynamic>> playTrackCalls = [];
   final _timelinePositions = StreamController<int>.broadcast();
   final List<String> scrubEvents = [];
   final List<int> skipToIndexCalls = [];
@@ -2072,6 +2177,26 @@ class _FakePlaybackState extends Fake implements PlaybackState {
 
   @override
   bool get isPlaying => fakeIsPlaying;
+
+  @override
+  bool get hasTrack => currentItem != null;
+
+  @override
+  Duration get duration => currentItem?.duration ?? Duration.zero;
+
+  @override
+  LoopMode get loopMode => LoopMode.off;
+
+  @override
+  bool get canSkipNext =>
+      fakeCurrentIndex != null && fakeCurrentIndex! < fakeQueue.length - 1;
+
+  @override
+  bool get canSkipPrevious => fakeCurrentIndex != null && fakeCurrentIndex! > 0;
+
+  @override
+  bool get hasPreviousInPlayOrder =>
+      fakeCurrentIndex != null && fakeCurrentIndex! > 0;
 
   @override
   int? get currentIndex => fakeCurrentIndex;
@@ -2422,6 +2547,18 @@ class _FakePlaybackState extends Fake implements PlaybackState {
     PlaybackContext? context,
   }) async {
     playQueueCalls.add((tracks: tracks, startIndex: startIndex));
+  }
+
+  @override
+  Future<void> playTrack(Map<String, dynamic> track) async {
+    playTrackCalls.add(track);
+    fakeQueue = [
+      _mediaItem(
+        int.tryParse(track['id']?.toString() ?? '') ?? -1,
+        track['title']?.toString() ?? 'Unknown',
+      ),
+    ];
+    fakeCurrentIndex = 0;
   }
 }
 

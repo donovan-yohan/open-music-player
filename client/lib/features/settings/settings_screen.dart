@@ -10,6 +10,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/auth/auth_state.dart' as session_auth;
 import '../../core/cache/playback_cache_manager.dart';
 import '../../core/download/download_state.dart';
+import '../../core/commands/app_command.dart';
+import '../../core/commands/command_shortcuts.dart';
 import '../../core/models/settings_model.dart';
 import '../../core/providers/settings_provider.dart';
 import 'listening_history_screen.dart';
@@ -584,6 +586,15 @@ class _AboutSection extends StatelessWidget {
           leading: Icon(Icons.cloud_outlined),
           title: Text('API endpoint'),
           subtitle: Text(_apiBaseUrl),
+        ),
+        ListTile(
+          leading: const Icon(Icons.keyboard_outlined),
+          title: const Text('Keyboard shortcuts'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Actions.invoke(
+            context,
+            const CommandIntent(CommandId.showShortcutHelp),
+          ),
         ),
         ListTile(
           leading: const Icon(Icons.code_outlined),

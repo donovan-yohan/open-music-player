@@ -44,6 +44,28 @@ domain concept moves or a new production harness becomes canonical.
   use `beatAlignmentCorrectionMs` against the rate-adjusted `TimelineModel`;
   explicit freeform placements bypass that refinement.
 
+### Command Layer
+
+- Vocabulary and dispatch:
+  `client/lib/core/commands/`, mounted from `client/lib/app/app.dart` above the
+  routed navigator with Flutter `Shortcuts` and `Actions`.
+- Runtime bus: commands sit above `PlaybackState`; `MixAudioHandler` remains an
+  OS-media client of `PlaybackState`, not a second command bus.
+- UI surfaces: registry-enumerated library overflow/right-click actions,
+  playback-queue row right-click actions, and the shortcut-help dialog.
+- Tests: `client/test/command_registry_test.dart`,
+  `client/test/library_track_row_layout_test.dart`, and the stable occurrence
+  coverage in `client/test/queue_timeline_controller_test.dart`.
+- Guardrail: command availability is derived from existing playback snapshots
+  and authorities. Never persist a second enabled/disabled state.
+- Guardrail: queue mutations cross the command boundary by `queueItemId` only,
+  never by a captured list index.
+- Guardrail: menus, sheets, tooltips, and shortcut help enumerate
+  `CommandRegistry`; do not create a second per-surface action list for registry
+  commands.
+- Guardrail: `client/lib/core/commands/` receives app dependencies through
+  `CommandContext`; it must not import Riverpod or read providers directly.
+
 ### Library, Downloads, And Queue API
 
 - Backend handlers: `backend/internal/api/`, `backend/internal/queue/`,

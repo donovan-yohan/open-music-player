@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/auth/auth_state.dart';
+import '../core/commands/search_focus_controller.dart';
 import '../features/auth/screens/biometric_unlock_screen.dart';
 import '../features/auth/screens/login_screen.dart';
 import '../features/auth/screens/register_screen.dart';
@@ -25,7 +26,10 @@ import 'theme.dart';
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
 final _shellNavigatorKey = GlobalKey<NavigatorState>();
 
-GoRouter createRouter(AuthState authState) {
+GoRouter createRouter(
+  AuthState authState, {
+  SearchFocusController? searchFocusController,
+}) {
   return GoRouter(
     navigatorKey: _rootNavigatorKey,
     initialLocation: _initialRoute,
@@ -86,8 +90,11 @@ GoRouter createRouter(AuthState authState) {
           ),
           GoRoute(
             path: '/search',
-            pageBuilder: (context, state) =>
-                const NoTransitionPage(child: SearchScreen()),
+            pageBuilder: (context, state) => NoTransitionPage(
+              child: SearchScreen(
+                commandFocusController: searchFocusController,
+              ),
+            ),
           ),
           GoRoute(
             path: '/library',

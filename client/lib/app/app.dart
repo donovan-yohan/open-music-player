@@ -8,6 +8,10 @@ import 'package:provider/provider.dart';
 import '../core/api/api_client.dart';
 import '../core/audio/playback_state.dart';
 import '../core/auth/auth_state.dart';
+import '../core/commands/app_command.dart';
+import '../core/commands/command_registry.dart';
+import '../core/commands/command_widgets.dart';
+import '../core/commands/search_focus_controller.dart';
 import '../core/models/settings_model.dart';
 import '../core/providers/settings_provider.dart';
 import '../core/share/shared_intent_receiver.dart';
@@ -22,15 +26,39 @@ class OpenMusicPlayerApp extends ConsumerStatefulWidget {
   final PlaybackState playbackState;
   final GoRouter router;
   final SharedIntentReceiver sharedIntentReceiver;
+  final SearchFocusController searchFocusController;
 
-  OpenMusicPlayerApp({
+  factory OpenMusicPlayerApp({
+    Key? key,
+    required ApiClient apiClient,
+    required AuthState authState,
+    required PlaybackState playbackState,
+    SharedIntentReceiver? sharedIntentReceiver,
+  }) {
+    final searchFocusController = SearchFocusController();
+    return OpenMusicPlayerApp._(
+      key: key,
+      apiClient: apiClient,
+      authState: authState,
+      playbackState: playbackState,
+      router: createRouter(
+        authState,
+        searchFocusController: searchFocusController,
+      ),
+      sharedIntentReceiver: sharedIntentReceiver ?? SharedIntentReceiver(),
+      searchFocusController: searchFocusController,
+    );
+  }
+
+  const OpenMusicPlayerApp._({
     super.key,
     required this.apiClient,
     required this.authState,
     required this.playbackState,
-    SharedIntentReceiver? sharedIntentReceiver,
-  })  : router = createRouter(authState),
-        sharedIntentReceiver = sharedIntentReceiver ?? SharedIntentReceiver();
+    required this.router,
+    required this.sharedIntentReceiver,
+    required this.searchFocusController,
+  });
 
   @override
   ConsumerState<OpenMusicPlayerApp> createState() => _OpenMusicPlayerAppState();
@@ -40,12 +68,15 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
     with WidgetsBindingObserver {
   StreamSubscription<String>? _sharedTextSubscription;
   String? _pendingSharedText;
+  late final CommandRegistry _commandRegistry;
+  bool _shortcutHelpOpen = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     widget.authState.addListener(_handleAuthStateChanged);
+    _commandRegistry = CommandRegistry(playbackState: widget.playbackState);
     _startShareIntentListener();
     _applyCrossfadeDuration(
       ref.read(settingsProvider).crossfadeDuration,
@@ -57,6 +88,7 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
     WidgetsBinding.instance.removeObserver(this);
     widget.authState.removeListener(_handleAuthStateChanged);
     _sharedTextSubscription?.cancel();
+    _commandRegistry.dispose();
     super.dispose();
   }
 
@@ -80,6 +112,7 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
         Provider<ApiClient>.value(value: widget.apiClient),
         ChangeNotifierProvider.value(value: widget.authState),
         ChangeNotifierProvider.value(value: widget.playbackState),
+        Provider<CommandRegistry>.value(value: _commandRegistry),
         ChangeNotifierProxyProvider<ApiClient, QueueProvider>(
           create: (context) => QueueProvider(context.read<ApiClient>()),
           update: (_, apiClient, previous) =>
@@ -93,6 +126,21 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
         themeMode: _getThemeMode(settings.themeMode),
         routerConfig: widget.router,
         debugShowCheckedModeBanner: false,
+        builder: (context, child) {
+          final navigation = _AppCommandNavigation(
+            router: widget.router,
+            searchFocusController: widget.searchFocusController,
+            showShortcutHelp: () => _showShortcutHelp(context),
+          );
+          return CommandHost(
+            registry: _commandRegistry,
+            contextFor: (_) => CommandContext(
+              playbackState: widget.playbackState,
+              navigation: navigation,
+            ),
+            child: child ?? const SizedBox.shrink(),
+          );
+        },
       ),
     );
   }
@@ -103,6 +151,19 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
         AudioPlaybackDefaults(defaultCrossfadeMs: seconds * 1000),
       ),
     );
+  }
+
+  Future<void> _showShortcutHelp(BuildContext fallbackContext) async {
+    if (_shortcutHelpOpen) return;
+    _shortcutHelpOpen = true;
+    try {
+      final navigatorContext =
+          widget.router.routerDelegate.navigatorKey.currentContext ??
+              fallbackContext;
+      await showShortcutHelpDialog(navigatorContext, _commandRegistry);
+    } finally {
+      _shortcutHelpOpen = false;
+    }
   }
 
   void _startShareIntentListener() {
@@ -156,6 +217,40 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
         return ThemeMode.dark;
     }
   }
+}
+
+class _AppCommandNavigation implements CommandNavigation {
+  const _AppCommandNavigation({
+    required this.router,
+    required this.searchFocusController,
+    required Future<void> Function() showShortcutHelp,
+  }) : _showShortcutHelp = showShortcutHelp;
+
+  final GoRouter router;
+  final SearchFocusController searchFocusController;
+  final Future<void> Function() _showShortcutHelp;
+
+  @override
+  bool get canBack => router.canPop();
+
+  @override
+  void go(String location) => router.go(location);
+
+  @override
+  void back() {
+    if (router.canPop()) router.pop();
+  }
+
+  @override
+  void focusSearch() {
+    router.go('/search');
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => searchFocusController.requestFocus(),
+    );
+  }
+
+  @override
+  Future<void> showShortcutHelp() => _showShortcutHelp();
 }
 
 bool shouldLockForBiometricLifecycleState(AppLifecycleState state) {

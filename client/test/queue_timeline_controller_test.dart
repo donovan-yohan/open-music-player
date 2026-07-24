@@ -199,6 +199,8 @@ void main() {
         expect(harness.controller.shuffleEnabled, isTrue);
         expect(harness.controller.currentIndex, 1);
         expect(harness.controller.currentMediaItem?.id, '2');
+        expect(harness.controller.canSkipNext, isTrue);
+        expect(harness.controller.canSkipPrevious, isFalse);
         expect(
           harness.engine.model.clips.first.queueItemId,
           'session_1_item_1',
@@ -208,6 +210,50 @@ void main() {
           'session_1_item_2',
           'session_1_item_0',
         ]);
+
+        await harness.dispose();
+      },
+    );
+
+    test('shuffle skip capability follows play order, not queue index',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item('1'),
+        _item('2'),
+        _item('3'),
+      ], initialIndex: 2);
+
+      expect(harness.controller.canSkipNext, isFalse);
+      await harness.controller.setShuffleMode(true);
+
+      expect(harness.controller.currentIndex, 2);
+      expect(harness.controller.canSkipNext, isTrue);
+      expect(harness.controller.canSkipPrevious, isFalse);
+
+      await harness.dispose();
+    });
+
+    test(
+      'previous capability is loop-independent and follows shuffled play order',
+      () async {
+        final harness = _Harness();
+        await harness.controller.setQueue([_item('only')]);
+        await harness.controller.setLoopMode(LoopMode.all);
+
+        expect(harness.controller.canSkipPrevious, isTrue);
+        expect(harness.controller.hasPreviousInPlayOrder, isFalse);
+
+        await harness.controller.setQueue([
+          _item('0'),
+          _item('1'),
+          _item('2'),
+        ], initialIndex: 1);
+        await harness.controller.setShuffleMode(true);
+        await harness.controller.skipToIndex(0);
+
+        expect(harness.controller.currentIndex, 0);
+        expect(harness.controller.hasPreviousInPlayOrder, isTrue);
 
         await harness.dispose();
       },
@@ -1006,6 +1052,18 @@ void main() {
             )
             .timelineStartMs,
         isNot(1234),
+      );
+
+      await harness.controller.removeFromQueueByQueueItemId(
+        queueItemIdByTitle['Second occurrence']!,
+      );
+
+      expect(harness.controller.queue.map((item) => item.title), [
+        'First occurrence',
+      ]);
+      expect(
+        harness.controller.snapshot.cues.single.queueItemId,
+        queueItemIdByTitle['First occurrence'],
       );
 
       await harness.dispose();

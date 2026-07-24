@@ -10,6 +10,9 @@ const defaultNotificationStateThrottle = Duration(milliseconds: 750);
 
 class MixAudioHandler extends audio_service.BaseAudioHandler
     with audio_service.SeekHandler {
+  // OS media controls remain a thin PlaybackState client. The app command
+  // registry above PlaybackState is the canonical command vocabulary; this
+  // handler is intentionally not a second command bus.
   MixAudioHandler({
     required app_audio.PlaybackState playbackState,
     Duration statePushThrottle = defaultNotificationStateThrottle,
