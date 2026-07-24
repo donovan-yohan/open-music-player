@@ -247,6 +247,8 @@ class QueueTimelineController {
       _session = MixSession.empty(
         sessionId: _sessionId,
         transitionSnapMode: _session.transitionSnapMode,
+        defaultCrossfadeMs:
+            _configuredDefaultCrossfadeMs ?? _session.defaultCrossfadeMs,
       );
       _cueTimeline = CueTimeline.empty;
       _processingState = ProcessingState.idle;
@@ -473,19 +475,42 @@ class QueueTimelineController {
   }
 
   Future<void> _setDefaultCrossfadeMs(int value) async {
-    if (_session.defaultCrossfadeMs == value) return;
+    if (_session.defaultCrossfadeMs == value) {
+      final nextSession = _session.withDefaultCrossfadeMs(value);
+      if (identical(nextSession, _session)) return;
+      _session = nextSession;
+      _publishQueueState();
+      return;
+    }
     // Queue indices only describe timeline order for canonical playback.
     // Shuffled placement reflow is deferred until the next queue/order rebuild.
     // On a canonical timeline, protect every active clip: during the first half
     // of an overlap the outgoing clip can still be "current" while the incoming
     // clip is already sounding.
-    final firstFutureIndex = _hasCanonicalPlayOrder
+    var firstFutureIndex = _hasCanonicalPlayOrder
         ? _firstIndexAfterActiveAndCurrentClips()
         : _session.clips.length;
-    final nextSession = _session.withDefaultCrossfadeMs(
+    final sourceSession =
+        _session.withoutDeferredDefaultTransitionsBefore(firstFutureIndex);
+    var nextSession = sourceSession.withDefaultCrossfadeMs(
       value,
       startIndex: firstFutureIndex,
     );
+    final positionMs = _engine.positionMs;
+    if (firstFutureIndex < _session.clips.length &&
+        nextSession.clips[firstFutureIndex].timelineStartMs !=
+            _session.clips[firstFutureIndex].timelineStartMs &&
+        nextSession.clips[firstFutureIndex].timelineStartMs <= positionMs) {
+      // Increasing overlap must not introduce a not-yet-active voice behind
+      // the live playhead. Defer this transition and reflow the later prefix.
+      final deferredSession =
+          sourceSession.withDeferredDefaultTransitionAt(firstFutureIndex);
+      firstFutureIndex += 1;
+      nextSession = deferredSession.withDefaultCrossfadeMs(
+        value,
+        startIndex: firstFutureIndex,
+      );
+    }
     if (!_canApplySession(nextSession)) return;
 
     _session = nextSession.normalizedForQueue(_queue);
@@ -1012,7 +1037,11 @@ class QueueTimelineController {
     var placement = initialPlacement;
 
     for (var attempt = 0; attempt < 8; attempt++) {
-      final candidateSession = sourceSession.withPlacementAt(index, placement);
+      final candidateSession = sourceSession.withPlacementAt(
+        index,
+        placement,
+        markExplicit: false,
+      );
       final candidateModel = CueTimeline.fromSession(
         session: candidateSession,
         queue: _queue,
@@ -1105,7 +1134,11 @@ class QueueTimelineController {
       if (updates.isEmpty) return refined;
       var candidate = refined;
       for (final (index, placement) in updates) {
-        candidate = candidate.withPlacementAt(index, placement);
+        candidate = candidate.withPlacementAt(
+          index,
+          placement,
+          markExplicit: false,
+        );
       }
       if (_canApplySession(candidate)) {
         refined = candidate;
@@ -1115,7 +1148,11 @@ class QueueTimelineController {
       // Retain independent valid corrections if a combined update conflicts.
       var fallback = refined;
       for (final (index, placement) in updates) {
-        final next = fallback.withPlacementAt(index, placement);
+        final next = fallback.withPlacementAt(
+          index,
+          placement,
+          markExplicit: false,
+        );
         if (_canApplySession(next)) fallback = next;
       }
       if (identical(fallback, refined)) return refined;

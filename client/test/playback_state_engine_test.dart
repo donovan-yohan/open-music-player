@@ -18,6 +18,21 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('PlaybackState engine cutover', () {
+    test('empty queue keeps the configured crossfade facade value', () async {
+      SharedPreferences.setMockInitialValues({});
+      final playback = _playbackState();
+      await playback.applyAudioDefaults(
+        const AudioPlaybackDefaults(defaultCrossfadeMs: 3000),
+      );
+      await playback.playQueue([_track(1, seconds: 10)]);
+
+      await playback.removeFromQueue(0);
+
+      expect(playback.hasTrack, isFalse);
+      expect(playback.defaultCrossfadeMs, 3000);
+      playback.dispose();
+    });
+
     test('restore rebuilds queue paused at saved index and position', () async {
       SharedPreferences.setMockInitialValues({
         QueuePersistenceStore.storageKey: QueueSnapshot(

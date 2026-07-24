@@ -36,12 +36,19 @@ channel.
 
 ## Live-update choice
 
-Canonical queue order re-derives only auto-managed future placements. The
-controller classifies placements against the old default so explicit edits are
-preserved, protects the current clip and every clip active at the engine's
-current global position, reloads with active playback preserved, and does not
-seek. This prevents a setting change from moving a transition that is already
-sounding.
+Canonical queue order re-derives the contiguous auto-managed prefix after the
+protected index. Reflow stops at the first explicit placement, so that edit and
+all later clips remain fixed until a later rebuild. The controller classifies
+placements against both the stored and requested defaults so placements left
+stale by a deferred update can self-heal without broadly treating arbitrary
+placements as automatic. It protects the current clip and every clip active at
+the engine's current global position, reloads with active playback preserved,
+and does not seek.
+
+If a setting increase would move the first not-yet-active transition to or
+behind the current engine position, that transition is deferred while the
+later contiguous auto-managed prefix is reflowed. This prevents a new voice
+from appearing mid-envelope behind the playhead.
 
 When playback order is shuffled, queue indices are not timeline-order
 positions. In that case the session's `defaultCrossfadeMs` updates immediately
@@ -172,6 +179,52 @@ remaining P0/P1 issues. Broad review was not reopened.
 - Shuffled sessions intentionally wait for the next queue/order rebuild before
   existing placements adopt a new crossfade duration; the stored session
   default changes immediately.
+- In free transition snap mode, untempo'd pairs still use the configured
+  crossfade, but tempo'd pairs follow the existing tempo-transition fallback
+  and remain butt-jointed. This asymmetry is documented and intentionally
+  unchanged in this fix pass.
 - Very short selected clips may receive less than the requested duration due to
   the half-shorter-clip safety cap.
 
+## Fix pass (cross-model review)
+
+| Finding | Action |
+| --- | --- |
+| Empty remove reset `defaultCrossfadeMs` | The empty-session rebuild now preserves the configured/session default. Controller and `PlaybackState` facade tests cover remove-last-item, the reported setting, and configured overlap after adding two tracks. |
+| Live increase could introduce a clip behind the playhead | The first newly elapsed transition is deferred; later auto-managed transitions still reflow. Clip-scoped provenance preserves that classification across repeated live changes and is cleared by successful/past reflow, manual edits, and structural rebuilds. A deterministic 8.5-second test proves `0 -> 3000 -> 5000` keeps the first transition at 10 seconds while later placement reflows from 17 to 15 seconds. |
+| Exact butt joints were always classified as automatic | Butt joints are automatic only under a zero default. A schema-v1 snapshot missing the crossfade field carries a one-shot legacy-adoption marker that is consumed even by an equal `0 -> 0` application. Explicit placement provenance then ensures a later crossfade change preserves a newly edited butt joint. Runtime beat-refinement replacements opt out of that marker, and structural changes preserve unaffected clip IDs while invalidating the reflowed suffix. |
+| Free-mode tempo asymmetry was undocumented | The placement precedence comment and residual risks now state that free mode crossfades untempo'd pairs while tempo'd pairs retain the existing butt-joint fallback. |
+| Deferred placements could become stale | Classification accepts a derivation under either the stored or requested default. Tempo normalization, direct default reflow, and snap-mode reconciliation also treat deferred clip IDs as automatic unless explicitly edited, and clear only IDs they actually reflow. This lets mixed stale/current prefixes self-heal while arbitrary edits remain a boundary. |
+| Report whitespace contradicted its diff-check claim | The trailing blank line was removed. Final-head verification remains ordered after the fix/report commit. |
+| Reflow scope was overstated | Code and report wording now describe the contiguous auto-managed prefix after the protected index and the stop at the first explicit placement. |
+
+### Fix-pass focused evidence
+
+- `cd client && flutter test test/queue_timeline_controller_test.dart test/playback_session_test.dart test/playback_state_engine_test.dart`
+  - 80 passed; 0 failed; exit 0.
+- `dart format client/lib/core/audio/playback_session.dart client/lib/core/audio/queue_timeline_controller.dart client/test/playback_session_test.dart client/test/queue_timeline_controller_test.dart client/test/playback_state_engine_test.dart`
+  - 5 files checked; 0 changed.
+- `git diff --check`
+  - Clean; exit 0.
+
+### Final-head verification and commit
+
+The non-whitespace gates below ran on the prospective commit tree. This
+report-only evidence amendment is non-semantic.
+
+- Conventional fix subject:
+  `fix(client): preserve crossfade transition intent`
+- Exact commit SHA: reported in the handoff after commit.
+- `cd client && flutter analyze`
+  - 9 known pre-existing info-level findings.
+  - 0 warnings and 0 errors.
+  - Exit 1 because Flutter reports infos as issues.
+- `cd client && flutter test`
+  - 1002 passed; 0 failed; exit 0.
+- `scripts/agentic-harness`
+  - `AGENTIC HARNESS OK`; exit 0.
+- `git diff --check origin/main...HEAD`
+  - Clean; exit 0 on the report-bearing fix commit.
+
+After recording this result, the same command is rerun on the amended final
+head and its result is reported in the handoff.
