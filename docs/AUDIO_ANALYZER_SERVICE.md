@@ -221,6 +221,9 @@ host). Each row's persisted lifecycle state is the resume checkpoint: a server
 restart selects remaining `stale` rows plus abandoned `pending`/`analyzing`
 rows, and the idempotent claim prevents duplicate live work.
 
+Each re-analysis reruns the full pipeline, including Beat This inference; the
+stateless analyzer does not reuse prior beat results.
+
 Watch the structured `Analyzer version reconciliation completed` log fields
 (`marked_stale`, `batches`, `queued`, `skipped`, `failures`). If the analyzer is
 temporarily unavailable, reconciliation retries every 30 seconds without

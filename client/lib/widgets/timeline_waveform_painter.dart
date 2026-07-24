@@ -331,7 +331,7 @@ Color waveformChannelColor(String name) {
 /// Serato-style additive channel hue. Amplitude changes column geometry, not
 /// color brightness, so quiet and loud frames keep comparable spectral color.
 @visibleForTesting
-Color seratoWaveformColorForChannels(Map<String, double> channels) {
+Color? seratoWaveformColorForChannels(Map<String, double> channels) {
   var red = 0.0;
   var green = 0.0;
   var blue = 0.0;
@@ -344,7 +344,7 @@ Color seratoWaveformColorForChannels(Map<String, double> channels) {
     blue += energy * color.b;
   }
   final maxComponent = math.max(red, math.max(green, blue));
-  if (maxComponent <= 0) return const Color(0xFFFFFFFF);
+  if (maxComponent <= 0) return null;
   const value = 0.94;
   return Color.fromARGB(
     255,
@@ -775,6 +775,8 @@ class TimelineWaveformPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant TimelineWaveformPainter old) =>
+      (old.color != color &&
+          (_usesLaneColor(waveform) || _usesLaneColor(old.waveform))) ||
       old.peaks != peaks ||
       old.waveform != waveform ||
       old.mixClip != mixClip ||
@@ -783,8 +785,6 @@ class TimelineWaveformPainter extends CustomPainter {
       old.viewportPixelsPerMs != viewportPixelsPerMs ||
       old.visibleStartFraction != visibleStartFraction ||
       old.visibleEndFraction != visibleEndFraction ||
-      ((_usesLaneColor(waveform) || _usesLaneColor(old.waveform)) &&
-          old.color != color) ||
       old.dimColor != dimColor ||
       old.handleColor != handleColor ||
       old.snapMarkerColor != snapMarkerColor ||

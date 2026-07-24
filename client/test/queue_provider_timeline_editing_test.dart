@@ -709,6 +709,59 @@ void main() {
     provider.dispose();
   });
 
+  test('analyzed detail-less responses stop at the cap until interest returns',
+      () async {
+    var analysisRequests = 0;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        analysisRequests++;
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'waveform': {
+                'sample_count': 2,
+                'resolutions': [
+                  {
+                    'name': 'detail',
+                    'sample_count': 2,
+                    'artifact_ref': 'waveforms.detail',
+                  },
+                ],
+              },
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+      analysisRetryCooldown: const Duration(milliseconds: 1),
+    );
+    final compact = _track(
+      playbackTrackId: '42',
+      analysis: const TrackAnalysis(status: TrackAnalysisStatus.analyzed),
+    );
+
+    provider.trackWithAnalysis(compact);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    provider.trackWithAnalysis(compact);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(analysisRequests, 4);
+
+    provider.clearAnalysisHydrationInterest();
+    provider.trackWithAnalysis(compact);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(
+      analysisRequests,
+      8,
+      reason: 'a new visibility interval establishes a fresh bounded budget',
+    );
+    provider.dispose();
+  });
+
   test('clearing timeline interest cancels a pending analysis retry', () async {
     final firstResponse = Completer<void>();
     var analysisRequests = 0;

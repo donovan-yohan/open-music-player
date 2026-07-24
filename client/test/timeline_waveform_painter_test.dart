@@ -98,19 +98,26 @@ void main() {
         const {'low': 1, 'mid': 0.5},
       );
       expect(quiet, loud, reason: 'amplitude controls height, not brightness');
-      expect(_red(loud), greaterThan(_green(loud)));
+      expect(_red(loud!), greaterThan(_green(loud)));
       expect(_green(loud), greaterThan(_blue(loud)));
+      expect(
+        seratoWaveformColorForChannels(
+          const {'low': 0, 'mid': 0, 'high': 0},
+        ),
+        isNull,
+        reason: 'silent spectral frames use the lane color fallback',
+      );
     });
 
-    test('transient spike raster golden keeps one hard signed column',
+    test('asymmetric signed-extrema golden keeps one hard lower transient',
         () async {
       const size = Size(80, 40);
       final frames = [
         for (var index = 0; index < transientSpikePeaks.length; index++)
           WaveformFrame(
-            peak: transientSpikePeaks[index],
-            minPeak: index == 2 ? -0.92 : -transientSpikePeaks[index],
-            maxPeak: transientSpikePeaks[index],
+            peak: index == 2 ? 0.35 : transientSpikePeaks[index],
+            minPeak: index == 2 ? -0.98 : -transientSpikePeaks[index],
+            maxPeak: index == 2 ? 0.35 : transientSpikePeaks[index],
             rms: 0,
             low: 0,
             mid: 0,
@@ -130,9 +137,14 @@ void main() {
       );
 
       expect(
-        _pixelAt(pixels, size.width.toInt(), 25, 2).a,
+        _pixelAt(pixels, size.width.toInt(), 25, 4).a,
+        0,
+        reason: 'the smaller signed maximum must not mirror the deep minimum',
+      );
+      expect(
+        _pixelAt(pixels, size.width.toInt(), 25, 15).a,
         greaterThan(0),
-        reason: 'the isolated source-bin spike must reach the upper edge',
+        reason: 'the independent signed maximum still drives the upper extent',
       );
       expect(
         _pixelAt(pixels, size.width.toInt(), 15, 2).a,
@@ -147,7 +159,7 @@ void main() {
       expect(
         _pixelAt(pixels, size.width.toInt(), 25, 37).a,
         greaterThan(0),
-        reason: 'signed minima must independently drive the lower extent',
+        reason: 'the deeper signed minimum independently drives lower extent',
       );
     });
 

@@ -128,8 +128,9 @@ Delivered:
   `_eqSectionProfiles`, `_eqProfileAt`, the LCG/profile flutter, and fabricated
   beat generation from production `client/lib`.
 - Missing analysis produces no peaks, bands, or markers. The painter shows a
-  flat accent lane with the `pending` honesty label while retaining trim and
-  snap edit overlays.
+  flat accent lane while the existing song-info status text remains visible,
+  and retains trim and snap edit overlays. `resolutionLabel` remains model
+  metadata; the lane UI does not render it.
 - Moved deterministic transient shapes to test-only fixture data.
 - Replaced the synthetic-degradation context-map guardrail with “degrade
   honestly, never fabricate,” plus the signed-bin/no-smoothing invariant.
@@ -178,6 +179,11 @@ The 32-track regression independently derives the viewport oracle:
    authenticated maintenance repair endpoint with
    `{"metadata":false,"analysis":true,"staleAfterMinutes":30,"limit":25}`.
 
+Every row reruns the full pipeline, including Beat This inference; the
+stateless analyzer cannot reuse the prior beat result. A possible follow-up is
+beat-result reuse keyed by tempo-model identity, but this slice does not build
+that cache.
+
 Full operator details are in `docs/AUDIO_ANALYZER_SERVICE.md`.
 
 ## Commits
@@ -220,7 +226,8 @@ One broad review ran before final gates. It found three P1 issues and no P0s:
 The batched fix pass added exact boundary reduction and 80/32,768-frame
 regressions, spectral health validation on both sides, and an independent
 viewport/cancellation oracle. Focused re-review of only those hunks was clean
-with no remaining P0/P1.
+for those three original findings; the later cross-model fix-pass re-review is
+recorded in the appendix below.
 
 Implementation-worker review also fixed:
 
@@ -235,7 +242,7 @@ Implementation-worker review also fixed:
 - Flutter analyzer still reports the repository's nine known info-level
   findings; no new warning/error was introduced.
 - `scripts/test analyzer` intentionally skips dependency-heavy cases in its
-  lightweight image; `scripts/build analyzer` ran all 48 tests with pinned
+  lightweight image; `scripts/build analyzer` ran all 53 tests with pinned
   librosa/Beat This dependencies and the real MIR smoke.
 - The analyzer and backend were not redeployed and no Pixel visual check was
   run. Per task direction, the orchestrator performs post-merge analyzer
@@ -243,3 +250,73 @@ Implementation-worker review also fixed:
 - Serato color tuning remains deliberately configurable. The shipped defaults
   need post-merge listening/visual review on reference material before any
   future provenance-bumped tuning change.
+
+## Fix pass (cross-model review)
+
+All eleven findings were accepted and fixed in one batch; none was refuted.
+
+1. PCM-boundary reduction is total for any nonempty set of valid mel centers.
+   Missing output bins copy the nearest covered measurement after max
+   reduction; only a grid with zero valid centers raises a coverage error.
+   `extract_spectral_bands` now has an end-to-end 27-case sweep over PCM deltas
+   `0, ±64, ±1105, ±1152, ±2257`, three decoded durations, and the 32,768-frame
+   cap.
+2. A dependency-gated in-process test uses deliberately unequal-amplitude
+   100 Hz and 8 kHz tones, asserts low/high dominance over both peer bands, and
+   requires exactly one channel to own the global normalized peak while a peer
+   remains materially below it. A targeted per-band-normalization mutation is
+   rejected by that invariant. The analyzer image encodes the same unequal
+   tones as lossy MP3, passes `--waveform-frames 320` and an independently
+   derived `--pcm-samples`, proves the requested/decoded mismatch, and asserts
+   the same dominance and cross-band peak invariant.
+3. Rolling re-analysis documentation and this report now state that every row
+   pays for the full pipeline, including Beat This inference. Beat-result reuse
+   keyed by tempo-model identity is documented only as a follow-up idea.
+4. `shouldRepaint` tests color inequality before scanning frame channels, so an
+   unchanged color avoids the O(frames) `_usesLaneColor` work.
+5. The signed-extrema raster golden now uses `minPeak=-0.98`,
+   `maxPeak=0.35`, and `peak=0.35`; it proves the lower extent is deeper while
+   the upper extent stays short, so mirrored `-peak` rendering fails.
+6. The mock-removal claim now matches shipped UI truth: unanalyzed content is a
+   flat accent lane plus existing song-info status text.
+7. Spectral masks now use the 128 true row centers from
+   `mel_frequencies(n_mels=130)[1:-1]`.
+8. Both the melspectrogram and its frequency centers use `fmin=20.0`.
+9. Analyzed-but-detail-less responses now consume a four-attempt retry budget.
+   Pending analysis can keep polling, while scroll-away/re-established interest
+   resets the bounded budget.
+10. All-zero spectral channel energy returns `null`, selecting the lane color
+    fallback instead of pure white.
+11. The viewport oracle now walks rendered `TimelineClipWidget` ancestors,
+    measures each lane `RenderBox`, intersects those bounds with the rendered
+    scroll viewport, and maps that visible interval onto the independent fake
+    API fixture order for the one potentially unbuilt lane of lookahead. This
+    covers `laneHeightExtra` without importing production height constants;
+    the test-only production exports were removed.
+
+Focused fix-pass verification:
+
+| Command | Exact result |
+| --- | --- |
+| `scripts/lint analyzer` | exit 0 |
+| `scripts/test analyzer` | exit 0; 53 tests, 7 dependency-gated skips |
+| `scripts/build analyzer` | exit 0; 53/53 real-runtime tests; analyzer image manifest `sha256:2340c832262e69c01ea64eed93dee2138f9e61eb541d807da6a42e8d52b1405f` |
+| analyzer-image lossy MP3 smoke | pass; independently derived PCM `89856`, decoded samples `88200`, low median `0.9826`, high median `0.1093`, peaks `{low: 1.0, mid: 0.020743, high: 0.114761}`; exactly one channel owns the shared peak and low/high each exceeded both peer bands by more than 3x |
+| `flutter test test/timeline_waveform_painter_test.dart test/queue_provider_timeline_editing_test.dart test/queue_screen_test.dart` | exit 0; 146 tests passed |
+| `flutter test test/queue_screen_test.dart` after viewport-oracle re-review | exit 0; 61 tests passed |
+| `flutter analyze lib/widgets/stacked_waveform_timeline.dart test/queue_screen_test.dart` | exit 0; no issues found |
+| `flutter analyze` on the six changed client implementation/test files | exit 0; no issues found |
+| `python3 -m py_compile backend/cmd/audio-analyzer/audio_mir.py backend/cmd/audio-analyzer/audio_mir_test.py` | exit 0 |
+
+Broad closure:
+
+| Gate | Exact result on `e9bd5a9` |
+| --- | --- |
+| Analyzer | `scripts/lint analyzer`, `scripts/test analyzer`, and `scripts/build analyzer` exited 0; the pinned runtime suite passed 53/53. The real-librosa lossy MP3 smoke reported PCM `89856`, decoded `88200`, low `0.9826`, high `0.1093`, and peaks `{low: 1.0, mid: 0.020743, high: 0.114761}`. Image manifest: `sha256:2340c832262e69c01ea64eed93dee2138f9e61eb541d807da6a42e8d52b1405f`. |
+| Backend | `scripts/lint backend` exited 0 and all backend packages passed against isolated PostgreSQL at port `25091` using `postgres://omp:omp_dev_password@127.0.0.1:25091/openmusicplayer?sslmode=disable`. The worktree-scoped containers and network were removed; scoped Compose status was empty. |
+| Client | Full `flutter analyze` produced exactly 9 known infos, 0 warnings, and 0 errors; its exit 1 is the established info-only baseline. Full `flutter test` passed 1,078 tests with 0 failures. |
+| Delivery | `scripts/agentic-harness` printed `AGENTIC HARNESS OK`; `git diff --check origin/main...HEAD` exited 0 with no output. |
+
+Commit `e9bd5a9` is the tested code/runtime tree. The forthcoming report
+amendment is evidence-only, so exact-head policy reuses these artifacts without
+rebuilding or retesting the unchanged production tree.

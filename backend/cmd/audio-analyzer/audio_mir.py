@@ -41,6 +41,7 @@ LOW_BAND_WEIGHT = 1.0
 MID_BAND_WEIGHT = 1.6
 HIGH_BAND_WEIGHT = 2.8
 SPECTRAL_MEL_BANDS = 128
+SPECTRAL_FMIN_HZ = 20.0
 MIN_GRID_BEATS = 4
 MIN_GRID_INTERVAL_SECONDS = 0.18
 MAX_GRID_CELL_STEP = 8
@@ -532,14 +533,19 @@ def aggregate_band_energy_at_pcm_boundaries(
     frame_centers = np.asarray(frame_centers, dtype=np.int64).reshape(-1)
     if frame_count <= 0:
         return np.asarray([], dtype=np.float64)
-    if pcm_sample_count < frame_count:
-        raise ValueError("PCM sample count must cover every requested frame")
     if values.size != frame_centers.size:
         raise ValueError("spectral values and frame centers must have equal length")
 
     valid = (frame_centers >= 0) & (frame_centers < pcm_sample_count)
-    values = values[valid]
+    values = np.nan_to_num(
+        values[valid],
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
     frame_centers = frame_centers[valid]
+    if frame_centers.size == 0:
+        raise ValueError("mel frame grid has no valid PCM centers")
     boundaries = (
         np.arange(frame_count + 1, dtype=np.int64)
         * np.int64(pcm_sample_count)
@@ -552,8 +558,16 @@ def aggregate_band_energy_at_pcm_boundaries(
     ) - 1
     output = np.full(frame_count, -np.inf, dtype=np.float64)
     np.maximum.at(output, bin_indices, values)
-    if not np.all(np.isfinite(output)):
-        raise ValueError("mel frame grid did not cover every PCM frame")
+    covered = np.flatnonzero(np.isfinite(output))
+    if covered.size == 0:
+        raise ValueError("mel frame grid has no valid PCM centers")
+    if covered.size != frame_count:
+        missing = np.flatnonzero(~np.isfinite(output))
+        insertion = np.searchsorted(covered, missing)
+        left = covered[np.maximum(insertion - 1, 0)]
+        right = covered[np.minimum(insertion, covered.size - 1)]
+        nearest = np.where(missing - left <= right - missing, left, right)
+        output[missing] = output[nearest]
     return output
 
 
@@ -605,8 +619,6 @@ def extract_spectral_bands(
             if pcm_sample_count is None
             else int(pcm_sample_count)
         )
-        if pcm_sample_count < frame_count:
-            raise ValueError("PCM sample count must cover every requested frame")
         hop_length = max(1, int(samples.size) // frame_count)
         mel_power = librosa.feature.melspectrogram(
             y=samples,
@@ -614,7 +626,7 @@ def extract_spectral_bands(
             n_fft=2048,
             hop_length=hop_length,
             n_mels=SPECTRAL_MEL_BANDS,
-            fmin=0.0,
+            fmin=SPECTRAL_FMIN_HZ,
             fmax=float(sample_rate / 2),
             power=2.0,
             center=True,
@@ -627,10 +639,10 @@ def extract_spectral_bands(
             neginf=0.0,
         )
         frequencies = librosa.mel_frequencies(
-            n_mels=SPECTRAL_MEL_BANDS,
-            fmin=0.0,
+            n_mels=SPECTRAL_MEL_BANDS + 2,
+            fmin=SPECTRAL_FMIN_HZ,
             fmax=float(sample_rate / 2),
-        )
+        )[1:-1]
         masks = {
             "low": frequencies < low_crossover_hz,
             "mid": (frequencies >= low_crossover_hz)

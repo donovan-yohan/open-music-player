@@ -27,60 +27,92 @@ import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/screens/queue_screen.dart';
 import 'package:open_music_player/widgets/timeline_clip_widget.dart';
 
-List<int> _expectedTimelineHydrationTrackIds({
-  required double viewportHeight,
-  required double scrollOffset,
-  required int firstTrackNumber,
-  required int laneCount,
-  required int currentTrackNumber,
+List<int> _expectedTimelineHydrationTrackIds(
+  WidgetTester tester,
+  Finder laneScroll, {
+  required List<int> laneTrackIds,
 }) {
-  final laneHeights = <double>[
-    114,
-    146,
-    114,
-    for (var index = 3; index < laneCount; index++) 84,
-  ];
-  final viewportEnd = scrollOffset + viewportHeight;
-  var laneTop = 0.0;
-  int? firstVisible;
-  int? lastVisible;
-  for (var index = 0; index < laneHeights.length; index++) {
-    final laneBottom = laneTop + laneHeights[index];
-    if (laneBottom > scrollOffset && laneTop < viewportEnd) {
-      firstVisible ??= index;
-      lastVisible = index;
+  if (laneTrackIds.length < 3) {
+    throw ArgumentError.value(
+      laneTrackIds,
+      'laneTrackIds',
+      'must contain previous, current, and up-next lanes',
+    );
+  }
+  final viewport = tester.getRect(laneScroll);
+  final lanes = <({TimelineClipWidget widget, Rect bounds})>[];
+  for (final clipElement in find
+      .descendant(
+        of: laneScroll,
+        matching: find.byType(TimelineClipWidget),
+      )
+      .evaluate()) {
+    Element? laneElement;
+    clipElement.visitAncestorElements((ancestor) {
+      final widget = ancestor.widget;
+      if (widget is SizedBox &&
+          widget.width == double.infinity &&
+          widget.height != null) {
+        laneElement = ancestor;
+        return false;
+      }
+      return true;
+    });
+    if (laneElement == null) {
+      throw StateError('TimelineClipWidget has no rendered lane SizedBox');
     }
-    laneTop = laneBottom;
+    final laneBox = laneElement!.renderObject! as RenderBox;
+    lanes.add((
+      widget: clipElement.widget as TimelineClipWidget,
+      bounds: laneBox.localToGlobal(Offset.zero) & laneBox.size,
+    ));
+  }
+  lanes.sort((left, right) => left.bounds.top.compareTo(right.bounds.top));
+
+  int analysisTrackId(TimelineClipWidget lane) =>
+      int.parse(lane.track.playbackTrackId ?? lane.track.id);
+  final visibleLaneIndices = [
+    for (var index = 0; index < lanes.length; index++)
+      if (lanes[index].bounds.bottom > viewport.top &&
+          lanes[index].bounds.top < viewport.bottom)
+        index,
+  ];
+  if (visibleLaneIndices.isEmpty) {
+    throw StateError('No rendered timeline lanes overlap the viewport');
+  }
+  final visibleTrackIndices = [
+    for (final laneIndex in visibleLaneIndices)
+      laneTrackIds.indexOf(analysisTrackId(lanes[laneIndex].widget)),
+  ];
+  if (visibleTrackIndices.any((index) => index < 0)) {
+    throw StateError(
+        'Rendered timeline lane is absent from fixture lane order');
   }
   final firstLookahead =
-      firstVisible == null || firstVisible == 0 ? 0 : firstVisible - 1;
-  final lastLookahead = lastVisible == null
-      ? firstLookahead
-      : (lastVisible + 1).clamp(0, laneCount - 1);
+      visibleTrackIndices.first == 0 ? 0 : visibleTrackIndices.first - 1;
+  final lastLookahead =
+      (visibleTrackIndices.last + 1).clamp(0, laneTrackIds.length - 1).toInt();
+  final current = lanes.where(
+    (lane) => lane.widget.role == LaneRole.current,
+  );
+  final upNext = lanes.where(
+    (lane) => lane.widget.role == LaneRole.upcoming,
+  );
+  final currentTrackId = current.isEmpty
+      ? laneTrackIds[1]
+      : analysisTrackId(current.single.widget);
+  final upNextTrackId =
+      upNext.isEmpty ? laneTrackIds[2] : analysisTrackId(upNext.first.widget);
   final seen = <int>{};
   return [
-    for (final trackNumber in [
-      currentTrackNumber,
-      currentTrackNumber + 1,
-      for (var lane = firstLookahead; lane <= lastLookahead; lane++)
-        firstTrackNumber + lane,
+    for (final trackId in [
+      currentTrackId,
+      upNextTrackId,
+      for (var index = firstLookahead; index <= lastLookahead; index++)
+        laneTrackIds[index],
     ])
-      if (seen.add(trackNumber * 101)) trackNumber * 101,
+      if (seen.add(trackId)) trackId,
   ];
-}
-
-ScrollPosition _timelineLaneScrollPosition(
-  WidgetTester tester,
-  Finder laneScroll,
-) {
-  final verticalScrollable = find.descendant(
-    of: laneScroll,
-    matching: find.byWidgetPredicate(
-      (widget) =>
-          widget is Scrollable && widget.axisDirection == AxisDirection.down,
-    ),
-  );
-  return tester.state<ScrollableState>(verticalScrollable).position;
 }
 
 void main() {
@@ -672,13 +704,10 @@ void main() {
 
       final laneScroll =
           find.byKey(const PageStorageKey('timeline_lane_scroll'));
-      final initialPosition = _timelineLaneScrollPosition(tester, laneScroll);
       final initialExpected = _expectedTimelineHydrationTrackIds(
-        viewportHeight: initialPosition.viewportDimension,
-        scrollOffset: initialPosition.pixels,
-        firstTrackNumber: 10,
-        laneCount: 23,
-        currentTrackNumber: 11,
+        tester,
+        laneScroll,
+        laneTrackIds: apiClient.renderedTimelineAnalysisTrackIds,
       );
       expect(initialExpected, <int>[1111, 1212, 1010, 1313, 1414]);
       expect(initialExpected.take(2), <int>[1111, 1212]);
@@ -708,14 +737,10 @@ void main() {
 
       final heldLaneScroll =
           find.byKey(const PageStorageKey('timeline_lane_scroll'));
-      final heldInitialPosition =
-          _timelineLaneScrollPosition(tester, heldLaneScroll);
       final heldInitialExpected = _expectedTimelineHydrationTrackIds(
-        viewportHeight: heldInitialPosition.viewportDimension,
-        scrollOffset: heldInitialPosition.pixels,
-        firstTrackNumber: 10,
-        laneCount: 23,
-        currentTrackNumber: 11,
+        tester,
+        heldLaneScroll,
+        laneTrackIds: apiClient.renderedTimelineAnalysisTrackIds,
       );
       expect(provider.lastInterestTrackIds, heldInitialExpected);
       expect(
@@ -726,16 +751,18 @@ void main() {
 
       await tester.drag(
         heldLaneScroll,
-        const Offset(0, -3000),
+        const Offset(0, -1200),
       );
       await tester.pumpAndSettle();
 
       final scrolledInterest = provider.lastInterestTrackIds;
-      expect(
-        scrolledInterest,
-        <int>[1111, 1212, 2929, 3030, 3131, 3232],
+      final scrolledExpected = _expectedTimelineHydrationTrackIds(
+        tester,
+        heldLaneScroll,
+        laneTrackIds: apiClient.renderedTimelineAnalysisTrackIds,
       );
-      expect(scrolledInterest, hasLength(6));
+      expect(scrolledInterest, scrolledExpected);
+      expect(scrolledInterest.length, lessThan(32));
       expect(scrolledInterest.take(2), <int>[1111, 1212]);
       expect(
         scrolledInterest.skip(2).every((trackId) => trackId > 1414),
@@ -754,7 +781,8 @@ void main() {
       expect(
         apiClient.analysisRequests.where(departedQueued.contains),
         isEmpty,
-        reason: 'queued lanes that scrolled away must be cancelled before fetch',
+        reason:
+            'queued lanes that scrolled away must be cancelled before fetch',
       );
       expect(provider.lastInterestTrackIds.take(2), <int>[1111, 1212]);
       expect(
@@ -3010,6 +3038,19 @@ class _FakeQueueApiClient extends ApiClient {
   bool hydrateAnalysisFixture = false;
   bool holdAnalysisRequests = false;
   Completer<QueueState>? _loadCompleter;
+
+  List<int> get renderedTimelineAnalysisTrackIds {
+    final firstLaneIndex =
+        _state.currentIndex > 0 ? _state.currentIndex - 1 : _state.currentIndex;
+    if (firstLaneIndex < 0) {
+      return const [];
+    }
+    return [
+      for (final track in _state.tracks.skip(firstLaneIndex))
+        if (int.tryParse(track.playbackTrackId ?? track.id) case final trackId?)
+          trackId,
+    ];
+  }
 
   void moveBeforePlaybackStarts() {
     _state = QueueState(

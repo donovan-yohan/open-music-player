@@ -64,6 +64,7 @@ class QueueProvider extends ChangeNotifier {
   final Map<String, Timer> _analysisRetryTimers = {};
   final Map<String, int> _analysisRequestAttempts = {};
   final Map<String, int> _analysisTransportFailures = {};
+  final Map<String, int> _analysisAnalyzedDetailLessResponses = {};
   final Set<String> _analysisPermanentFailures = {};
   final Map<String, _EnrichedTrackCacheEntry> _enrichedTrackCache = {};
   int _analysisRevision = 0;
@@ -1211,6 +1212,7 @@ class QueueProvider extends ChangeNotifier {
     final signature = _analysisCompactSignature(analysis);
     final cached = _analysisByTrackId[key];
     if (_hasWaveformDetail(analysis)) {
+      _analysisAnalyzedDetailLessResponses.remove(key);
       if (!identical(cached, analysis)) {
         _advanceAnalysisGeneration(key);
         _analysisByTrackId[key] = analysis;
@@ -1437,7 +1439,9 @@ class QueueProvider extends ChangeNotifier {
 
   bool _analysisNeedsHydration(String key) {
     if (_analysisPermanentFailures.contains(key) ||
-        (_analysisTransportFailures[key] ?? 0) >= _maxAnalysisRequestAttempts) {
+        (_analysisTransportFailures[key] ?? 0) >= _maxAnalysisRequestAttempts ||
+        (_analysisAnalyzedDetailLessResponses[key] ?? 0) >=
+            _maxAnalysisRequestAttempts) {
       return false;
     }
     final cached = _analysisByTrackId[key];
@@ -1502,6 +1506,13 @@ class QueueProvider extends ChangeNotifier {
         _analysisPermanentFailures.remove(key);
         _analysisTransportFailures.remove(key);
         final accepted = _analysisByTrackId[key] ?? analysis;
+        if (accepted.status == TrackAnalysisStatus.analyzed &&
+            !_hasWaveformDetail(accepted)) {
+          _analysisAnalyzedDetailLessResponses[key] =
+              (_analysisAnalyzedDetailLessResponses[key] ?? 0) + 1;
+        } else {
+          _analysisAnalyzedDetailLessResponses.remove(key);
+        }
         if (_hasWaveformDetail(accepted) &&
             accepted.status == TrackAnalysisStatus.analyzed) {
           _analysisLastRequestedAt.remove(key);
@@ -1604,6 +1615,7 @@ class QueueProvider extends ChangeNotifier {
         ..._analysisLastRequestedAt.keys,
         ..._analysisRequestAttempts.keys,
         ..._analysisTransportFailures.keys,
+        ..._analysisAnalyzedDetailLessResponses.keys,
         ..._analysisPermanentFailures,
         ..._analysisRequestsQueued,
         ..._analysisRequestsInFlight,
@@ -1687,6 +1699,7 @@ class QueueProvider extends ChangeNotifier {
     _analysisLastRequestedAt.remove(key);
     _analysisRequestAttempts.remove(key);
     _analysisTransportFailures.remove(key);
+    _analysisAnalyzedDetailLessResponses.remove(key);
     _analysisPermanentFailures.remove(key);
     _analysisRequestsQueued.remove(key);
     _analysisRequestQueue.removeWhere(
@@ -1717,6 +1730,7 @@ class QueueProvider extends ChangeNotifier {
     _advanceAnalysisGeneration(key);
     _analysisRequestsQueued.remove(key);
     _resetAnalysisRequestState(key);
+    _analysisAnalyzedDetailLessResponses.remove(key);
     _analysisByTrackId.remove(key);
     _appliedCompactAnalysisSignatures.remove(key);
     _lastIncomingAnalysisByTrackId.remove(key);

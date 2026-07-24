@@ -14,6 +14,7 @@ import audio_mir
 
 
 BEAT_THIS_RUNTIME_AVAILABLE = importlib.util.find_spec("beat_this") is not None
+LIBROSA_RUNTIME_AVAILABLE = importlib.util.find_spec("librosa") is not None
 BEAT_THIS_MODEL_PATH = Path(
     os.environ.get("ANALYZER_BEAT_MODEL", "/app/models/beat_this-final0.ckpt")
 )
@@ -89,11 +90,12 @@ class AudioMIRTest(unittest.TestCase):
         sample_count = audio_mir.BEAT_THIS_SAMPLE_RATE
         frame_count = 80
         hop_length = sample_count // frame_count
-        frequencies = np.linspace(
-            0,
+        mel_frequencies = np.linspace(
+            audio_mir.SPECTRAL_FMIN_HZ,
             audio_mir.BEAT_THIS_SAMPLE_RATE / 2,
-            audio_mir.SPECTRAL_MEL_BANDS,
+            audio_mir.SPECTRAL_MEL_BANDS + 2,
         )
+        frequencies = mel_frequencies[1:-1]
         mel_frame_count = 1 + sample_count // hop_length
         mel_power = np.ones(
             (audio_mir.SPECTRAL_MEL_BANDS, mel_frame_count),
@@ -105,7 +107,7 @@ class AudioMIRTest(unittest.TestCase):
         librosa.feature = types.SimpleNamespace(
             melspectrogram=mock.Mock(return_value=mel_power),
         )
-        librosa.mel_frequencies = mock.Mock(return_value=frequencies)
+        librosa.mel_frequencies = mock.Mock(return_value=mel_frequencies)
 
         with mock.patch.dict(sys.modules, {"librosa": librosa}):
             result = audio_mir.extract_spectral_bands(
@@ -132,6 +134,144 @@ class AudioMIRTest(unittest.TestCase):
             librosa.feature.melspectrogram.call_args.kwargs["hop_length"],
             hop_length,
         )
+        self.assertEqual(
+            librosa.feature.melspectrogram.call_args.kwargs["fmin"],
+            audio_mir.SPECTRAL_FMIN_HZ,
+        )
+        self.assertEqual(
+            librosa.mel_frequencies.call_args.kwargs["n_mels"],
+            audio_mir.SPECTRAL_MEL_BANDS + 2,
+        )
+        self.assertEqual(
+            librosa.mel_frequencies.call_args.kwargs["fmin"],
+            audio_mir.SPECTRAL_FMIN_HZ,
+        )
+
+    def test_spectral_extraction_tolerates_decoder_pcm_deltas_end_to_end(self):
+        deltas = (0, 64, -64, 1105, -1105, 1152, -1152, 2257, -2257)
+        durations = (
+            (22_007, 80),
+            (88_137, 320),
+            (9_050_000, 32_768),
+        )
+        frequencies = np.asarray(
+            [50, 100, 250, 1000, 1500, 3000, 6000, 10000],
+            dtype=np.float64,
+        )
+        mel_frequencies = np.concatenate(
+            (
+                [audio_mir.SPECTRAL_FMIN_HZ],
+                frequencies,
+                [audio_mir.BEAT_THIS_SAMPLE_RATE / 2],
+            )
+        )
+
+        def melspectrogram(*, y, hop_length, **_):
+            mel_frame_count = 1 + y.size // hop_length
+            return np.ones((frequencies.size, mel_frame_count), dtype=np.float32)
+
+        librosa = types.ModuleType("librosa")
+        librosa.feature = types.SimpleNamespace(
+            melspectrogram=mock.Mock(side_effect=melspectrogram),
+        )
+        librosa.mel_frequencies = mock.Mock(return_value=mel_frequencies)
+
+        with (
+            mock.patch.dict(sys.modules, {"librosa": librosa}),
+            mock.patch.object(
+                audio_mir,
+                "SPECTRAL_MEL_BANDS",
+                frequencies.size,
+            ),
+        ):
+            for decoded_samples, frame_count in durations:
+                signal = np.ones(decoded_samples, dtype=np.float32)
+                for delta in deltas:
+                    with self.subTest(
+                        decoded_samples=decoded_samples,
+                        frame_count=frame_count,
+                        pcm_delta=delta,
+                    ):
+                        result = audio_mir.extract_spectral_bands(
+                            signal,
+                            audio_mir.BEAT_THIS_SAMPLE_RATE,
+                            frame_count,
+                            pcm_sample_count=decoded_samples + delta,
+                        )
+                        for values in result["spectral_bands"].values():
+                            self.assertEqual(len(values), frame_count)
+                            self.assertTrue(np.all(np.isfinite(values)))
+
+    @unittest.skipUnless(
+        LIBROSA_RUNTIME_AVAILABLE,
+        "requires the pinned librosa runtime",
+    )
+    def test_real_librosa_tones_preserve_band_dominance_and_shared_scalar(self):
+        sample_rate = audio_mir.BEAT_THIS_SAMPLE_RATE
+        segment_samples = sample_rate * 2
+        time = np.arange(segment_samples, dtype=np.float64) / sample_rate
+        signal = np.concatenate(
+            (
+                0.6 * np.sin(2 * np.pi * 100 * time),
+                0.2 * np.sin(2 * np.pi * 8000 * time),
+            )
+        ).astype(np.float32)
+
+        result = audio_mir.extract_spectral_bands(
+            signal,
+            sample_rate,
+            320,
+        )
+        bands = {
+            name: np.asarray(values, dtype=np.float64)
+            for name, values in result["spectral_bands"].items()
+        }
+        low_segment = slice(20, 140)
+        high_segment = slice(180, 300)
+
+        self.assertGreater(
+            np.median(bands["low"][low_segment]),
+            3 * np.median(bands["mid"][low_segment]),
+        )
+        self.assertGreater(
+            np.median(bands["low"][low_segment]),
+            3 * np.median(bands["high"][low_segment]),
+        )
+        self.assertGreater(
+            np.median(bands["high"][high_segment]),
+            3 * np.median(bands["low"][high_segment]),
+        )
+        self.assertGreater(
+            np.median(bands["high"][high_segment]),
+            3 * np.median(bands["mid"][high_segment]),
+        )
+        channel_peaks = {
+            name: float(np.max(values)) for name, values in bands.items()
+        }
+        self.assertEqual(
+            sum(peak >= 0.99 for peak in channel_peaks.values()),
+            1,
+            msg=f"only one channel may own the shared global peak: {channel_peaks}",
+        )
+        self.assertLess(
+            min(channel_peaks.values()),
+            0.8,
+            msg=f"peer channels must remain below the shared peak: {channel_peaks}",
+        )
+
+        per_band_mutation = {
+            name: values / np.max(values) for name, values in bands.items()
+        }
+        mutated_peaks = {
+            name: float(np.max(values))
+            for name, values in per_band_mutation.items()
+        }
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                sum(peak >= 0.99 for peak in mutated_peaks.values()),
+                1,
+                msg="the invariant must reject per-band normalization",
+            )
 
     def test_spectral_frames_follow_exact_80hz_pcm_boundaries(self):
         sample_count = audio_mir.BEAT_THIS_SAMPLE_RATE
@@ -190,6 +330,41 @@ class AudioMIRTest(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(output)))
         self.assertEqual(output[boundary_index - 1], 0.75)
         self.assertEqual(output[boundary_index], 0.25)
+
+    def test_spectral_frames_fill_uncovered_bins_from_nearest_measurement(self):
+        output = audio_mir.aggregate_band_energy_at_pcm_boundaries(
+            np.asarray([0.2, 0.8]),
+            np.asarray([5, 95]),
+            pcm_sample_count=100,
+            frame_count=10,
+        )
+
+        np.testing.assert_allclose(
+            output,
+            [0.2, 0.2, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8, 0.8],
+        )
+
+    def test_spectral_frames_reject_only_when_no_centers_are_valid(self):
+        with self.assertRaisesRegex(ValueError, "no valid PCM centers"):
+            audio_mir.aggregate_band_energy_at_pcm_boundaries(
+                np.asarray([0.2, 0.8]),
+                np.asarray([-1, 100]),
+                pcm_sample_count=100,
+                frame_count=10,
+            )
+
+    def test_spectral_frames_are_total_when_pcm_is_shorter_than_frame_grid(self):
+        output = audio_mir.aggregate_band_energy_at_pcm_boundaries(
+            np.asarray([0.2, 0.8]),
+            np.asarray([0, 4]),
+            pcm_sample_count=5,
+            frame_count=10,
+        )
+
+        self.assertEqual(output.size, 10)
+        self.assertTrue(np.all(np.isfinite(output)))
+        self.assertEqual(output[0], 0.2)
+        self.assertEqual(output[-1], 0.8)
 
     def test_spectral_extraction_rejects_unordered_crossovers(self):
         with self.assertRaisesRegex(ValueError, "ordered inside Nyquist"):
