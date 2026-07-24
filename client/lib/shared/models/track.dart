@@ -142,6 +142,9 @@ class Track {
         'album': album,
         'duration': durationMs != null ? durationMs! ~/ 1000 : 0,
         'artwork_url': metadata?['cover_art_url'],
+        'isLiked': isLiked,
+        if (sourceUrl != null && sourceUrl!.trim().isNotEmpty)
+          'sourceUrl': sourceUrl!.trim(),
         if (analysis != null) 'analysisStatus': analysis!.status.name,
         if (analysis?.summary != null)
           'analysisSummary': analysis!.summary!.toJson(),

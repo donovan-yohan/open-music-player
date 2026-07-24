@@ -5,11 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 import '../../app/theme.dart';
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/services/analysis_service.dart';
 import '../../core/services/api_client.dart';
+import '../../core/services/liked_tracks_state.dart';
 import '../../models/track_analysis.dart';
 import 'widgets/song_info_sheet.dart';
 
@@ -24,6 +26,7 @@ class PlayerScreen extends StatefulWidget {
 
 class _PlayerScreenState extends State<PlayerScreen> {
   _PlayerTimeMode _timeMode = _PlayerTimeMode.song;
+  String? _pendingLikedSeedItem;
 
   @override
   Widget build(BuildContext context) {
@@ -143,7 +146,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                               const SizedBox(height: 24),
                               _buildControls(playback),
                               const SizedBox(height: 16),
-                              _buildSecondaryControls(context),
+                              _buildSecondaryControls(context, playback),
                               const SizedBox(height: 12),
                             ],
                           ),
@@ -442,24 +445,94 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
-  Widget _buildSecondaryControls(BuildContext context) {
+  Widget _buildSecondaryControls(
+    BuildContext context,
+    PlaybackState playback,
+  ) {
     final color = Theme.of(context).colorScheme.onSurfaceVariant;
+    final item = playback.currentItem;
+    final trackId = item == null ? null : int.tryParse(item.id);
+    final likedState = context.watch<LikedTracksState?>();
+    final payloadLiked = item?.extras?['isLiked'];
+    final payloadLikedValue = payloadLiked is bool ? payloadLiked : null;
+    final liked = trackId == null
+        ? null
+        : likedState?.isLiked(trackId) ?? payloadLikedValue;
+    if (trackId != null &&
+        likedState != null &&
+        likedState.isLiked(trackId) == null &&
+        payloadLikedValue != null &&
+        _pendingLikedSeedItem != item!.id) {
+      _pendingLikedSeedItem = item.id;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        likedState.seedValue(trackId, payloadLikedValue);
+      });
+    }
+    final rawSourceUrl = item?.extras?['sourceUrl'];
+    final sourceUrl = rawSourceUrl is String && rawSourceUrl.trim().isNotEmpty
+        ? rawSourceUrl.trim()
+        : null;
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         IconButton(
-          icon: Icon(Icons.devices, color: color),
-          onPressed: () {},
+          key: const ValueKey('player_favorite_action'),
+          icon: Icon(
+            liked == true ? Icons.favorite : Icons.favorite_border,
+            color:
+                liked == true ? Theme.of(context).colorScheme.primary : color,
+          ),
+          tooltip: trackId == null
+              ? 'Liked status unavailable for local-only track'
+              : liked == true
+                  ? 'Unlike'
+                  : 'Like',
+          onPressed: trackId == null || liked == null || likedState == null
+              ? null
+              : () async {
+                  try {
+                    if (likedState.isLiked(trackId) == null &&
+                        payloadLikedValue != null) {
+                      likedState.seedValue(trackId, payloadLikedValue);
+                    }
+                    await likedState.toggle(trackId);
+                  } catch (_) {
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Could not update liked status'),
+                      ),
+                    );
+                  }
+                },
         ),
         IconButton(
-          icon: Icon(Icons.favorite_border, color: color),
-          onPressed: () {},
-        ),
-        IconButton(
+          key: const ValueKey('player_share_action'),
           icon: Icon(Icons.share, color: color),
-          onPressed: () {},
+          tooltip: sourceUrl == null ? 'No public source link' : 'Share',
+          onPressed: sourceUrl == null || item == null
+              ? null
+              : () => _shareTrack(context, item, sourceUrl),
         ),
       ],
+    );
+  }
+
+  Future<ShareResult> _shareTrack(
+    BuildContext context,
+    MediaItem item,
+    String sourceUrl,
+  ) {
+    final renderBox = context.findRenderObject() as RenderBox?;
+    return SharePlus.instance.share(
+      ShareParams(
+        text: '${item.title} — $sourceUrl',
+        sharePositionOrigin: renderBox == null
+            ? null
+            : renderBox.localToGlobal(Offset.zero) & renderBox.size,
+      ),
     );
   }
 

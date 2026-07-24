@@ -24,6 +24,9 @@ import 'core/storage/offline_database.dart';
 import 'core/network/connectivity_service.dart';
 import 'core/download/download_service.dart';
 import 'core/download/download_state.dart';
+import 'core/services/api_client.dart' as services_api;
+import 'core/services/library_service.dart';
+import 'core/services/liked_tracks_state.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -35,6 +38,9 @@ void main() async {
   final authService = AuthService(api: apiClient, storage: storage);
   final authState = AuthState(authService: authService);
   await authState.checkAuthStatus();
+  final likedTracksState = LikedTracksState(
+    LibraryService(services_api.ApiClient(storage: storage)),
+  );
 
   final signedAudioUrlService = SignedAudioUrlService(apiClient);
   final playbackEngine = PlaybackEngine();
@@ -99,6 +105,7 @@ void main() async {
   authState.addListener(() {
     if (!authState.isAuthenticated) {
       playRecorder.reset();
+      likedTracksState.clear();
     }
   });
 
@@ -114,6 +121,10 @@ void main() async {
           provider.ChangeNotifierProvider.value(value: connectivityService),
           provider.Provider.value(value: downloadService),
           provider.ChangeNotifierProvider.value(value: downloadState),
+          provider.ChangeNotifierProvider.value(value: likedTracksState),
+          provider.Provider<PlaybackCacheManager?>.value(
+            value: playbackCacheManager,
+          ),
         ],
         child: OpenMusicPlayerApp(
           apiClient: apiClient,

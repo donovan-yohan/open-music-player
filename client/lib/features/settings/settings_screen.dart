@@ -8,8 +8,9 @@ import 'package:provider/provider.dart' as legacy_provider;
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/auth/auth_state.dart' as session_auth;
+import '../../core/cache/playback_cache_manager.dart';
+import '../../core/download/download_state.dart';
 import '../../core/models/settings_model.dart';
-import '../../core/providers/cache_provider.dart';
 import '../../core/providers/settings_provider.dart';
 import 'listening_history_screen.dart';
 
@@ -24,7 +25,7 @@ class SettingsScreen extends ConsumerWidget {
         children: const [
           _AccountSection(),
           _PlaybackSection(),
-          _StorageSection(),
+          SettingsStorageSection(),
           _AppearanceSection(),
           _AboutSection(),
         ],
@@ -192,7 +193,7 @@ class _AccountSection extends ConsumerWidget {
               CheckboxListTile(
                 title: const Text('Clear cached data'),
                 subtitle: const Text(
-                  'Remove downloaded music and cached content',
+                  'Remove temporary playback cache. Downloads stay on this device.',
                 ),
                 value: clearCache,
                 onChanged: (value) =>
@@ -210,7 +211,10 @@ class _AccountSection extends ConsumerWidget {
               onPressed: () async {
                 Navigator.pop(dialogContext);
                 if (clearCache) {
-                  await ref.read(cacheProvider.notifier).clearCache();
+                  await legacy_provider.Provider.of<PlaybackCacheManager?>(
+                    parentContext,
+                    listen: false,
+                  )?.clear();
                 }
                 if (parentContext.mounted) {
                   await legacy_provider.Provider.of<session_auth.AuthState>(
@@ -347,15 +351,37 @@ class _PlaybackSection extends ConsumerWidget {
 }
 
 /// Storage section with cache management and downloads
-class _StorageSection extends ConsumerWidget {
-  const _StorageSection();
+@visibleForTesting
+class SettingsStorageSection extends ConsumerStatefulWidget {
+  const SettingsStorageSection({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<SettingsStorageSection> createState() =>
+      _SettingsStorageSectionState();
+}
+
+class _SettingsStorageSectionState
+    extends ConsumerState<SettingsStorageSection> {
+  PlaybackCacheManager? _cacheManager;
+  Future<int>? _cacheSize;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final manager = legacy_provider.Provider.of<PlaybackCacheManager?>(
+      context,
+    );
+    if (!identical(manager, _cacheManager)) {
+      _cacheManager = manager;
+      _cacheSize = manager?.currentSizeBytes();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final settingsNotifier = ref.read(settingsProvider.notifier);
-    final cacheInfo = ref.watch(cacheProvider);
-    final cacheNotifier = ref.read(cacheProvider.notifier);
+    final downloads = legacy_provider.Provider.of<DownloadState>(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -364,30 +390,32 @@ class _StorageSection extends ConsumerWidget {
         ListTile(
           leading: const Icon(Icons.folder_outlined),
           title: const Text('Cache size'),
-          subtitle: Text(
-            cacheInfo.isCalculating
-                ? 'Calculating...'
-                : cacheInfo.formattedSize,
+          subtitle: FutureBuilder<int>(
+            future: _cacheSize,
+            builder: (context, snapshot) => Text(
+              _cacheManager == null
+                  ? 'Unavailable on this platform'
+                  : snapshot.hasData
+                      ? _formatBytes(snapshot.data!)
+                      : 'Calculating...',
+            ),
           ),
           trailing: TextButton(
-            onPressed: cacheInfo.isCalculating
+            key: const ValueKey('settings_clear_cache'),
+            onPressed: _cacheManager == null
                 ? null
-                : () => _showClearCacheDialog(context, cacheNotifier),
+                : () => _showClearCacheDialog(context, _cacheManager!),
             child: const Text('Clear'),
           ),
         ),
         ListTile(
           leading: const Icon(Icons.download_outlined),
           title: const Text('Downloads'),
-          subtitle: const Text('Manage downloaded music'),
+          subtitle: Text(
+            'Manage downloaded music • ${downloads.formattedTotalSize}',
+          ),
           trailing: const Icon(Icons.chevron_right),
-          onTap: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Downloads screen not yet implemented'),
-              ),
-            );
-          },
+          onTap: () => context.push('/downloads'),
         ),
         ListTile(
           leading: const Icon(Icons.high_quality_outlined),
@@ -404,25 +432,33 @@ class _StorageSection extends ConsumerWidget {
     );
   }
 
-  void _showClearCacheDialog(BuildContext context, CacheNotifier notifier) {
+  void _showClearCacheDialog(
+    BuildContext context,
+    PlaybackCacheManager manager,
+  ) {
+    final parentContext = context;
     showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
+      context: parentContext,
+      builder: (dialogContext) => AlertDialog(
         title: const Text('Clear cache'),
         content: const Text(
           'This will remove all cached data including album artwork and temporary files. Downloaded music will not be affected.',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () {
-              Navigator.pop(context);
-              notifier.clearCache();
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await manager.clear();
+              if (!mounted || !parentContext.mounted) return;
+              setState(() {
+                _cacheSize = manager.currentSizeBytes();
+              });
               ScaffoldMessenger.of(
-                context,
+                parentContext,
               ).showSnackBar(const SnackBar(content: Text('Cache cleared')));
             },
             child: const Text('Clear'),
@@ -430,6 +466,17 @@ class _StorageSection extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  String _formatBytes(int sizeInBytes) {
+    if (sizeInBytes < 1024) return '$sizeInBytes B';
+    if (sizeInBytes < 1024 * 1024) {
+      return '${(sizeInBytes / 1024).toStringAsFixed(1)} KB';
+    }
+    if (sizeInBytes < 1024 * 1024 * 1024) {
+      return '${(sizeInBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(sizeInBytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
   void _showQualityPicker(

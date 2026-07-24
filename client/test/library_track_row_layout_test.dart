@@ -4,11 +4,15 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/api/api_client.dart' as dio_api;
 import 'package:open_music_player/core/download/download_state.dart';
 import 'package:open_music_player/core/services/services.dart' as services;
+import 'package:open_music_player/core/services/liked_tracks_state.dart';
+import 'package:open_music_player/core/services/playlist_service.dart';
 import 'package:open_music_player/features/library/library_screen.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/shared/models/track.dart';
+import 'package:open_music_player/shared/models/playlist.dart';
 
 Track _controlRichTrack() => Track(
       id: 42,
@@ -51,12 +55,16 @@ void main() {
       final playback = _FakePlaybackState();
       final downloads = _FakeDownloadState();
       final api = services.ApiClient();
+      final liked = LikedTracksState(services.LibraryService(api))
+        ..seedTrack(track);
+      final playlists = _PlaylistService();
 
       await tester.pumpWidget(
         MultiProvider(
           providers: [
             ListenableProvider<PlaybackState>.value(value: playback),
             ListenableProvider<DownloadState>.value(value: downloads),
+            ChangeNotifierProvider<LikedTracksState>.value(value: liked),
           ],
           child: MaterialApp(
             home: Scaffold(
@@ -64,6 +72,7 @@ void main() {
                 track: track,
                 libraryService: services.LibraryService(api),
                 detailApiClient: api,
+                playlistService: playlists,
               ),
             ),
           ),
@@ -91,6 +100,18 @@ void main() {
       expect(find.byTooltip('More actions'), findsOneWidget);
       expect(tester.takeException(), isNull);
 
+      // A toggle from another surface updates this row through the shared
+      // notifier rather than a widget-owned copy.
+      liked.seedValue(42, false);
+      await tester.pump();
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pumpAndSettle();
+      expect(find.text('Like'), findsOneWidget);
+      Navigator.of(tester.element(find.byType(BottomSheet))).pop();
+      await tester.pumpAndSettle();
+      liked.seedValue(42, true);
+      await tester.pump();
+
       await tester.tap(find.byTooltip('More actions'));
       await tester.pumpAndSettle();
 
@@ -100,6 +121,14 @@ void main() {
       expect(find.text('Add to queue'), findsOneWidget);
       expect(find.byTooltip('Download'), findsOneWidget);
       expect(tester.takeException(), isNull);
+
+      await tester.tap(find.text('Add to playlist'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Road trip'));
+      await tester.pumpAndSettle();
+
+      expect(playlists.addedPlaylistId, 7);
+      expect(playlists.addedTrackIds, [42]);
     },
   );
 }
@@ -130,4 +159,44 @@ class _FakeDownloadState extends Fake implements DownloadState {
 
   @override
   void removeListener(VoidCallback listener) {}
+}
+
+class _PlaylistService extends PlaylistService {
+  _PlaylistService() : super(api: dio_api.ApiClient());
+
+  int? addedPlaylistId;
+  List<int>? addedTrackIds;
+
+  @override
+  Future<PlaylistsResponse> getPlaylists({
+    int limit = 50,
+    int offset = 0,
+    String? q,
+    String? sort,
+    String? order,
+  }) async {
+    return PlaylistsResponse(
+      playlists: [
+        Playlist(
+          id: 7,
+          name: 'Road trip',
+          createdAt: DateTime.utc(2026),
+          updatedAt: DateTime.utc(2026),
+        ),
+      ],
+      total: 1,
+      offset: 0,
+      limit: 50,
+    );
+  }
+
+  @override
+  Future<AddTracksResult> addTracks(
+    int playlistId,
+    List<int> trackIds,
+  ) async {
+    addedPlaylistId = playlistId;
+    addedTrackIds = trackIds;
+    return AddTracksResult(added: trackIds, skipped: const []);
+  }
 }

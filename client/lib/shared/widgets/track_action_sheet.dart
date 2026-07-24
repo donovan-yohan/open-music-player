@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
-import '../../core/models/models.dart';
 import '../../core/services/services.dart';
-import 'playlist_picker_sheet.dart';
 
 class TrackActionSheet extends StatefulWidget {
   final String trackTitle;
@@ -61,34 +59,6 @@ class _TrackActionSheetState extends State<TrackActionSheet> {
     }
   }
 
-  void _showPlaylistPicker() async {
-    Navigator.of(context).pop();
-    final playlists = await _libraryService.getPlaylists();
-    if (!mounted) return;
-
-    final selected = await showModalBottomSheet<Playlist>(
-      context: context,
-      builder: (context) => PlaylistPickerSheet(playlists: playlists),
-    );
-
-    if (selected != null && mounted) {
-      try {
-        await _libraryService.addTrackToPlaylist(selected.id, widget.trackMbid);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Added to ${selected.name}')),
-          );
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Failed to add to playlist')),
-          );
-        }
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return SafeArea(
@@ -128,11 +98,6 @@ class _TrackActionSheetState extends State<TrackActionSheet> {
               leading: const Icon(Icons.library_add),
               title: const Text('Add to library'),
               onTap: _addToLibrary,
-            ),
-            ListTile(
-              leading: const Icon(Icons.playlist_add),
-              title: const Text('Add to playlist'),
-              onTap: _showPlaylistPicker,
             ),
             if (widget.onViewArtist != null)
               ListTile(

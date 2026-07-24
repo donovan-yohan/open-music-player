@@ -8,8 +8,9 @@ import '../../core/storage/offline_database.dart';
 import '../../core/network/connectivity_service.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/api/api_client.dart';
-import '../../core/models/models.dart' as core_models;
 import '../../core/services/services.dart' as services;
+import '../../core/services/liked_tracks_state.dart';
+import '../../core/services/playlist_service.dart';
 import '../../shared/models/models.dart';
 import '../../shared/widgets/widgets.dart';
 import '../discovery/screens/album_detail_screen.dart';
@@ -105,6 +106,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
       if (!_downloadedOnly && context.read<ConnectivityService>().isOnline) {
         try {
           final remote = await _loadRemoteTracks(offset: 0);
+          if (!mounted) return;
+          context.read<LikedTracksState>().seed(remote.tracks);
           setState(() {
             _tracks = remote.tracks;
             _totalCount = remote.total;
@@ -120,6 +123,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
       }
 
       final local = await _loadLocalTracks(offset: 0, includeCounts: true);
+      if (!mounted) return;
+      context.read<LikedTracksState>().seed(local.tracks);
       setState(() {
         _tracks = local.tracks;
         _totalCount = local.total;
@@ -142,6 +147,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
     try {
       if (!_downloadedOnly && context.read<ConnectivityService>().isOnline) {
         final remote = await _loadRemoteTracks(offset: _tracks.length);
+        if (!mounted) return;
+        context.read<LikedTracksState>().seed(remote.tracks);
         setState(() {
           _tracks.addAll(remote.tracks);
           _hasMore = _tracks.length < remote.total;
@@ -154,6 +161,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
         offset: _tracks.length,
         includeCounts: false,
       );
+      if (!mounted) return;
+      context.read<LikedTracksState>().seed(local.tracks);
       setState(() {
         _tracks.addAll(local.tracks);
         _hasMore = _tracks.length < local.total;
@@ -219,21 +228,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       liked: _filter.liked,
       genre: _filter.genre,
       query: _filter.query,
-      fields: const [
-        'id',
-        'title',
-        'artist',
-        'album',
-        'duration_ms',
-        'mb_verified',
-        'added_at',
-        'cover_art_url',
-        'mb_recording_id',
-        'mb_suggestions',
-        'analysis_status',
-        'analysis_summary',
-        'analysis_updated_at',
-      ],
+      fields: services.LibraryService.libraryListFields,
     );
     unawaited(_cacheRemoteTrackAnalysis(offlineDatabase, page.tracks));
 
@@ -812,6 +807,7 @@ class LibraryTrackListTile extends StatefulWidget {
   final Track track;
   final services.LibraryService libraryService;
   final services.ApiClient detailApiClient;
+  final PlaylistService? playlistService;
   final VoidCallback? onTrackUpdated;
 
   const LibraryTrackListTile({
@@ -819,6 +815,7 @@ class LibraryTrackListTile extends StatefulWidget {
     required this.track,
     required this.libraryService,
     required this.detailApiClient,
+    this.playlistService,
     this.onTrackUpdated,
   });
 
@@ -829,7 +826,6 @@ class LibraryTrackListTile extends StatefulWidget {
 class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
   static const _compactActionBreakpoint = 520.0;
 
-  late bool _liked = widget.track.isLiked;
   bool _likeInFlight = false;
 
   Track get track => widget.track;
@@ -885,23 +881,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
   Future<void> _playTrack(BuildContext context) async {
     final playback = context.read<PlaybackState>();
     try {
-      await playback.playTrack({
-        'id': track.id,
-        'title': track.title,
-        'artist': track.displayArtist,
-        'album': track.displayAlbum,
-        'duration': track.durationMs != null ? track.durationMs! ~/ 1000 : 0,
-        'artwork_url': track.coverArtUrl,
-        if (track.analysis != null)
-          'analysisStatus': track.analysis!.status.name,
-        if (track.analysis?.summary != null)
-          'analysisSummary': track.analysis!.summary!.toJson(),
-        if (track.analysis?.overrides != null)
-          'analysisOverrides': track.analysis!.overrides!.toJson(),
-        if (track.analysis?.updatedAt != null)
-          'analysisUpdatedAt':
-              track.analysis!.updatedAt!.toUtc().toIso8601String(),
-      });
+      await playback.playTrack(track.toPlaybackJson());
     } catch (_) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -917,6 +897,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final currentTrackId = context.watch<PlaybackState>().currentItem?.id;
+    final liked = context.watch<LikedTracksState>().isLiked(track.id) ?? false;
     final isCurrent = currentTrackId == track.id.toString();
     final summary = track.analysis?.summary;
     final hasMetadata = summary?.bpm?.numericValue != null ||
@@ -1037,10 +1018,10 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
                   IconButton(
                     visualDensity: VisualDensity.compact,
                     icon: Icon(
-                      _liked ? Icons.favorite : Icons.favorite_border,
-                      color: _liked ? theme.colorScheme.primary : null,
+                      liked ? Icons.favorite : Icons.favorite_border,
+                      color: liked ? theme.colorScheme.primary : null,
                     ),
-                    tooltip: _liked ? 'Unlike' : 'Like',
+                    tooltip: liked ? 'Unlike' : 'Like',
                     onPressed: _likeInFlight ? null : _toggleLike,
                   ),
                   DownloadButton(track: track),
@@ -1086,14 +1067,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _likeInFlight = true);
     try {
-      await runOptimisticLikeToggle(
-        current: _liked,
-        like: () => _libraryService.like(track.id),
-        unlike: () => _libraryService.unlike(track.id),
-        applyOptimistic: (liked) {
-          if (mounted) setState(() => _liked = liked);
-        },
-      );
+      await context.read<LikedTracksState>().toggle(track.id);
     } catch (_) {
       messenger.showSnackBar(
         const SnackBar(content: Text('Could not update liked status')),
@@ -1105,6 +1079,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
 
   void _showActions(BuildContext context) {
     final playback = context.read<PlaybackState>();
+    final liked = context.read<LikedTracksState>().isLiked(track.id) ?? false;
 
     showModalBottomSheet(
       context: context,
@@ -1164,8 +1139,8 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
                 },
               ),
               ListTile(
-                leading: Icon(_liked ? Icons.favorite : Icons.favorite_border),
-                title: Text(_liked ? 'Unlike' : 'Like'),
+                leading: Icon(liked ? Icons.favorite : Icons.favorite_border),
+                title: Text(liked ? 'Unlike' : 'Like'),
                 onTap: () {
                   Navigator.of(sheetContext).pop();
                   _toggleLike();
@@ -1193,9 +1168,11 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
 
   Future<void> _addToPlaylist() async {
     final messenger = ScaffoldMessenger.of(context);
-    List<core_models.Playlist> playlists;
+    final playlistService = widget.playlistService ??
+        PlaylistService(api: context.read<ApiClient>());
+    List<Playlist> playlists;
     try {
-      playlists = await _libraryService.getPlaylists();
+      playlists = (await playlistService.getPlaylists()).playlists;
     } catch (_) {
       messenger.showSnackBar(
         const SnackBar(content: Text('Failed to load playlists')),
@@ -1204,19 +1181,16 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     }
     if (!mounted) return;
 
-    final selected = await showModalBottomSheet<core_models.Playlist>(
+    final selected = await showModalBottomSheet<Playlist>(
       context: context,
       builder: (context) => PlaylistPickerSheet(playlists: playlists),
     );
     if (selected == null) return;
 
     try {
-      await _libraryService.addTrackToPlaylist(
-        selected.id,
-        track.id.toString(),
-      );
+      final result = await playlistService.addTracks(selected.id, [track.id]);
       messenger.showSnackBar(
-        SnackBar(content: Text('Added to ${selected.name}')),
+        SnackBar(content: Text(result.feedbackMessage(selected.name))),
       );
     } catch (_) {
       messenger.showSnackBar(
@@ -1337,24 +1311,35 @@ class _UnverifiedTrackSheet extends StatelessWidget {
           Row(
             children: [
               Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    // TODO: Navigate to metadata editor
-                  },
-                  icon: const Icon(Icons.edit),
-                  label: const Text('Fix metadata'),
+                child: Tooltip(
+                  message: 'Metadata editing is not available yet',
+                  child: Semantics(
+                    label: 'Fix metadata unavailable: no metadata editor yet',
+                    button: true,
+                    enabled: false,
+                    child: OutlinedButton.icon(
+                      onPressed: null,
+                      icon: const Icon(Icons.edit),
+                      label: const Text('Fix metadata'),
+                    ),
+                  ),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: FilledButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    // TODO: Navigate to MusicBrainz search
-                  },
-                  icon: const Icon(Icons.search),
-                  label: const Text('Find match'),
+                child: Tooltip(
+                  message: 'Manual metadata matching is not available yet',
+                  child: Semantics(
+                    label:
+                        'Find match unavailable: no metadata editor contract yet',
+                    button: true,
+                    enabled: false,
+                    child: FilledButton.icon(
+                      onPressed: null,
+                      icon: const Icon(Icons.search),
+                      label: const Text('Find match'),
+                    ),
+                  ),
                 ),
               ),
             ],

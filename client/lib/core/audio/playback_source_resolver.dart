@@ -186,6 +186,10 @@ class PlaybackSourceResolver {
         'analysisUpdatedAt': track['analysisUpdatedAt'],
       if (track['analysis_updated_at'] != null)
         'analysisUpdatedAt': track['analysis_updated_at'],
+      if (track['isLiked'] is bool) 'isLiked': track['isLiked'],
+      if (track['is_liked'] is bool) 'isLiked': track['is_liked'],
+      if (track['sourceUrl'] is String) 'sourceUrl': track['sourceUrl'],
+      if (track['source_url'] is String) 'sourceUrl': track['source_url'],
       'analysisRef': trackId.toString(),
     };
     return MediaItem(

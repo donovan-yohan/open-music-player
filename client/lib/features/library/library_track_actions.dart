@@ -14,30 +14,3 @@ Future<void> addTrackToQueue(TrackQueueAction enqueue, Track track) {
 Future<void> playTrackNext(TrackQueueAction playNext, Track track) {
   return playNext(track.toPlaybackJson());
 }
-
-/// Runs an optimistic like/unlike toggle: flips [current] immediately through
-/// [applyOptimistic] (so the UI updates before the network resolves), performs
-/// the matching network call, and reverts back to [current] if it throws.
-///
-/// Returns the settled liked state on success; rethrows the original error
-/// after reverting so callers can surface a failure message.
-Future<bool> runOptimisticLikeToggle({
-  required bool current,
-  required Future<void> Function() like,
-  required Future<void> Function() unlike,
-  required void Function(bool liked) applyOptimistic,
-}) async {
-  final target = !current;
-  applyOptimistic(target);
-  try {
-    if (target) {
-      await like();
-    } else {
-      await unlike();
-    }
-    return target;
-  } catch (_) {
-    applyOptimistic(current);
-    rethrow;
-  }
-}
