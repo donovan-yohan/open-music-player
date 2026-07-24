@@ -1,6 +1,9 @@
+import 'dart:math' as math;
+
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
+import 'package:open_music_player/core/engine/gain_envelope.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
@@ -204,6 +207,376 @@ void main() {
       expect(
         lowConfidence.clips.map((clip) => clip.timelineStartMs),
         [0, 20000],
+      );
+    });
+
+    test('untempoed clips use configured overlap and equal-power envelopes',
+        () {
+      final queue = [_item('a', seconds: 10), _item('b', seconds: 10)];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_crossfade',
+        queue: queue,
+        defaultCrossfadeMs: 3000,
+      );
+      final model = CueTimeline.fromSession(
+        session: session,
+        queue: queue,
+        playOrder: const [0, 1],
+      ).toTimelineModel();
+
+      expect(session.clips.map((clip) => clip.timelineStartMs), [0, 7000]);
+      expect(model.clips[0].timelineEndMs, 10000);
+      expect(model.clips[1].timelineStartMs, 7000);
+      expect(model.clips[1].timelineEndMs, 17000);
+      expect(model.clips[0].envelope.fadeOutMs, 3000);
+      expect(model.clips[1].envelope.fadeInMs, 3000);
+      expect(model.clips[0].envelope.curve, FadeCurve.equalPower);
+      expect(model.clips[1].envelope.curve, FadeCurve.equalPower);
+      expect(model.clips[0].gainAt(8500), closeTo(math.sqrt1_2, 0.0001));
+      expect(model.clips[1].gainAt(8500), closeTo(math.sqrt1_2, 0.0001));
+    });
+
+    test('tempo overlap takes precedence over configured crossfade', () {
+      final queue = [
+        _item(
+          'a',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          ),
+        ),
+        _item(
+          'b',
+          seconds: 20,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000, 12000],
+          ),
+        ),
+      ];
+
+      final session = MixSession.fromQueue(
+        sessionId: 'session_tempo_precedence',
+        queue: queue,
+        defaultCrossfadeMs: 3000,
+      );
+
+      expect(session.clips[1].timelineStartMs, 12000);
+      final model = CueTimeline.fromSession(
+        session: session,
+        queue: queue,
+        playOrder: const [0, 1],
+      ).toTimelineModel();
+      expect(model.clips[0].envelope.fadeOutMs, 8000);
+      expect(model.clips[1].envelope.fadeInMs, 8000);
+    });
+
+    test('free-mode tempo fallback remains auto-managed', () {
+      final analyzed = _analysisSummary(
+        bpm: 120,
+        downbeatsMs: [0, 4000, 8000],
+      );
+      final session = MixSession.fromQueue(
+        sessionId: 'session_free_tempo_fallback',
+        queue: [
+          _item('a', seconds: 10, analysisSummary: analyzed),
+          _item('b', seconds: 10, analysisSummary: analyzed),
+          _item('c', seconds: 10),
+        ],
+        transitionSnapMode: BeatSnapMode.free,
+        defaultCrossfadeMs: 3000,
+      );
+
+      expect(
+        session.clips.map((clip) => clip.timelineStartMs),
+        [0, 10000, 17000],
+      );
+
+      final updated = session.withDefaultCrossfadeMs(5000);
+
+      expect(
+        updated.clips.map((clip) => clip.timelineStartMs),
+        [0, 10000, 15000],
+      );
+    });
+
+    test('zero configured crossfade keeps untempoed clips butt-jointed', () {
+      final session = MixSession.fromQueue(
+        sessionId: 'session_no_crossfade',
+        queue: [_item('a', seconds: 10), _item('b', seconds: 10)],
+        defaultCrossfadeMs: 0,
+      );
+
+      expect(session.clips.map((clip) => clip.timelineStartMs), [0, 10000]);
+    });
+
+    test('explicit placement wins over configured crossfade', () {
+      final queue = [_item('a', seconds: 10), _item('b', seconds: 10)];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_explicit_precedence',
+        queue: queue,
+      )
+          .withPlacementAt(
+            1,
+            TimelineClip.clamped(
+              id: 'ignored',
+              trackId: 'b',
+              sourceDurationMs: 10000,
+              sourceStartMs: 0,
+              sourceEndMs: 10000,
+              timelineStartMs: 9500,
+            ),
+          )
+          .withDefaultCrossfadeMs(3000);
+
+      final normalized = session.normalizedForQueue(queue);
+      expect(normalized.clips[1].timelineStartMs, 9500);
+    });
+
+    test('explicit butt joint survives a crossfade setting change', () {
+      final queue = [_item('a', seconds: 10), _item('b', seconds: 10)];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_explicit_butt_joint',
+        queue: queue,
+        defaultCrossfadeMs: 3000,
+      ).withPlacementAt(
+        1,
+        TimelineClip.clamped(
+          id: 'ignored',
+          trackId: 'b',
+          sourceDurationMs: 10000,
+          sourceStartMs: 0,
+          sourceEndMs: 10000,
+          timelineStartMs: 10000,
+        ),
+      );
+
+      final updated = session.withDefaultCrossfadeMs(5000);
+
+      expect(updated.defaultCrossfadeMs, 5000);
+      expect(updated.clips[1].timelineStartMs, 10000);
+    });
+
+    test('legacy v1 butt joints explicitly adopt the configured crossfade', () {
+      final json = MixSession.fromQueue(
+        sessionId: 'session_legacy_crossfade',
+        queue: [_item('a', seconds: 10), _item('b', seconds: 10)],
+      ).toJson()
+        ..remove('defaultCrossfadeMs');
+
+      final restored = MixSession.fromJson(json);
+      final adopted = restored.withDefaultCrossfadeMs(3000);
+
+      expect(restored.schemaVersion, 1);
+      expect(adopted.defaultCrossfadeMs, 3000);
+      expect(adopted.clips.map((clip) => clip.timelineStartMs), [0, 7000]);
+
+      final explicitlyButtJointed = adopted.withPlacementAt(
+        1,
+        adopted.clips[1].placement.withTimelineStartMs(10000),
+      );
+      final changedAgain = explicitlyButtJointed.withDefaultCrossfadeMs(5000);
+      expect(changedAgain.clips[1].timelineStartMs, 10000);
+    });
+
+    test('legacy adoption is consumed by an equal zero-default apply', () {
+      final json = MixSession.fromQueue(
+        sessionId: 'session_legacy_zero_apply',
+        queue: [_item('a', seconds: 10), _item('b', seconds: 10)],
+      ).toJson()
+        ..remove('defaultCrossfadeMs');
+      final restored = MixSession.fromJson(json);
+
+      final appliedAtZero = restored.withDefaultCrossfadeMs(0);
+      final explicitlyButtJointed = appliedAtZero.withPlacementAt(
+        1,
+        appliedAtZero.clips[1].placement.withTimelineStartMs(10000),
+      );
+      final changed = explicitlyButtJointed.withDefaultCrossfadeMs(3000);
+
+      expect(changed.defaultCrossfadeMs, 3000);
+      expect(changed.clips[1].timelineStartMs, 10000);
+    });
+
+    test('manual placement clears deferred-transition provenance', () {
+      final queue = [
+        _item('a', seconds: 10),
+        _item('b', seconds: 10),
+        _item('c', seconds: 10),
+      ];
+      final deferred = MixSession.fromQueue(
+        sessionId: 'session_manual_clears_deferred',
+        queue: queue,
+      )
+          .withDeferredDefaultTransitionAt(1)
+          .withDefaultCrossfadeMs(3000, startIndex: 2);
+      final manuallyEdited = deferred.withPlacementAt(
+        1,
+        deferred.clips[1].placement.withTimelineStartMs(9000),
+      );
+
+      final changed = manuallyEdited.withDefaultCrossfadeMs(5000);
+
+      expect(changed.clips.map((clip) => clip.timelineStartMs), [
+        0,
+        9000,
+        17000,
+      ]);
+    });
+
+    test('manual placement preserves downstream deferred provenance', () {
+      final queue = [
+        _item('a', seconds: 10),
+        _item('b', seconds: 10),
+        _item('c', seconds: 10),
+      ];
+      final deferred = MixSession.fromQueue(
+        sessionId: 'session_preserves_downstream_deferred',
+        queue: queue,
+      ).withDeferredDefaultTransitionAt(2);
+      final manuallyEdited = deferred.withPlacementAt(
+        1,
+        deferred.clips[1].placement.withTimelineStartMs(9000),
+      );
+
+      final changed = manuallyEdited.withDefaultCrossfadeMs(
+        3000,
+        startIndex: 2,
+      );
+
+      expect(
+        changed.clips.map((clip) => clip.timelineStartMs),
+        [0, 9000, 16000],
+      );
+    });
+
+    test('runtime refinement keeps automatic placement classification', () {
+      final queue = [_item('a', seconds: 10), _item('b', seconds: 10)];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_runtime_refinement',
+        queue: queue,
+      );
+      final internallyRefined = session.withPlacementAt(
+        1,
+        session.clips[1].placement,
+        markExplicit: false,
+      );
+
+      final changed = internallyRefined.withDefaultCrossfadeMs(3000);
+
+      expect(changed.clips[1].timelineStartMs, 7000);
+    });
+
+    test('unaffected explicit provenance survives an append', () {
+      final queue = [
+        _item('a', seconds: 10),
+        _item('b', seconds: 10),
+        _item('c', seconds: 10),
+      ];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_explicit_append',
+        queue: queue,
+      ).withPlacementAt(
+        1,
+        TimelineClip.clamped(
+          id: 'ignored',
+          trackId: 'b',
+          sourceDurationMs: 10000,
+          sourceStartMs: 0,
+          sourceEndMs: 10000,
+          timelineStartMs: 10000,
+        ),
+      );
+      final appended = session.insertAt(3, _item('d', seconds: 10));
+
+      final changed = appended.withDefaultCrossfadeMs(3000);
+
+      expect(
+        changed.clips.map((clip) => clip.timelineStartMs),
+        [0, 10000, 20000, 30000],
+      );
+    });
+
+    test('reconciliation paths recognize deferred automatic placements', () {
+      final queue = [
+        _item('a', seconds: 10),
+        _item('b', seconds: 10),
+        _item('c', seconds: 10),
+      ];
+      MixSession deferredSession() => MixSession.fromQueue(
+            sessionId: 'session_deferred_reconciliation',
+            queue: queue,
+          )
+              .withDeferredDefaultTransitionAt(1)
+              .withDefaultCrossfadeMs(3000, startIndex: 2);
+
+      final normalized = deferredSession().normalizedForQueue([
+        _item(
+          'a',
+          seconds: 10,
+          analysisSummary: _analysisSummary(
+            bpm: 120,
+            downbeatsMs: [0, 4000, 8000],
+          ),
+        ),
+        queue[1],
+        queue[2],
+      ]);
+      final directlyReflowed =
+          deferredSession().reflowDefaultTransitionsFrom(1);
+      final snapReconciled =
+          deferredSession().withTransitionSnapMode(BeatSnapMode.beat16);
+
+      for (final reconciled in [
+        normalized,
+        directlyReflowed,
+        snapReconciled,
+      ]) {
+        expect(
+          reconciled.clips.map((clip) => clip.timelineStartMs),
+          [0, 7000, 14000],
+        );
+        expect(
+          reconciled
+              .withDefaultCrossfadeMs(5000)
+              .clips
+              .map((clip) => clip.timelineStartMs),
+          [0, 5000, 10000],
+        );
+      }
+    });
+
+    test('deferred placements match the old or requested default', () {
+      final queue = [
+        _item('a', seconds: 10),
+        _item('b', seconds: 10),
+        _item('c', seconds: 10),
+      ];
+      final initial = MixSession.fromQueue(
+        sessionId: 'session_deferred_crossfade',
+        queue: queue,
+        defaultCrossfadeMs: 3000,
+      );
+      final partiallyReflowed = initial.withDefaultCrossfadeMs(
+        5000,
+        startIndex: 2,
+      );
+
+      expect(
+        partiallyReflowed.clips.map((clip) => clip.timelineStartMs),
+        [0, 7000, 12000],
+      );
+
+      final healed = partiallyReflowed.withDefaultCrossfadeMs(
+        3000,
+        startIndex: 1,
+      );
+
+      expect(healed.defaultCrossfadeMs, 3000);
+      expect(
+        healed.clips.map((clip) => clip.timelineStartMs),
+        [0, 7000, 14000],
       );
     });
 

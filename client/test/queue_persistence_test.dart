@@ -37,6 +37,7 @@ void main() {
     test('canonical mix session timing survives encode -> decode', () {
       final session = MixSession.fromQueue(
         sessionId: 'session_1',
+        defaultCrossfadeMs: 3000,
         queue: [
           const MediaItem(
             id: '1',
@@ -77,6 +78,29 @@ void main() {
       expect(restored.session?.clips[1].sourceStartMs, 5000);
       expect(restored.session?.clips[1].sourceEndMs, 40000);
       expect(restored.session?.clips[1].timelineStartMs, 25000);
+      expect(restored.session?.defaultCrossfadeMs, 3000);
+    });
+
+    test('schema v1 session without crossfade field restores as off', () {
+      final sessionJson = MixSession.fromQueue(
+        sessionId: 'legacy_session',
+        queue: const [
+          MediaItem(
+            id: '1',
+            title: 'Track 1',
+            duration: Duration(seconds: 30),
+          ),
+        ],
+      ).toJson()
+        ..remove('defaultCrossfadeMs');
+
+      final restored = QueueSnapshot.fromJson({
+        'tracks': [_track(1)],
+        'session': sessionJson,
+      });
+
+      expect(restored.session?.schemaVersion, 1);
+      expect(restored.session?.defaultCrossfadeMs, 0);
     });
 
     test('an empty snapshot round-trips to an empty (no-op) snapshot', () {

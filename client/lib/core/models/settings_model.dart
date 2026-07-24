@@ -28,26 +28,22 @@ enum KeyNotation {
 
 /// Application settings model
 class SettingsModel {
-  final bool gaplessPlayback;
   final int crossfadeDuration;
   final AppThemeMode themeMode;
   final KeyNotation keyNotation;
 
   const SettingsModel({
-    this.gaplessPlayback = true,
     this.crossfadeDuration = 0,
     this.themeMode = AppThemeMode.system,
     this.keyNotation = KeyNotation.camelot,
   });
 
   SettingsModel copyWith({
-    bool? gaplessPlayback,
     int? crossfadeDuration,
     AppThemeMode? themeMode,
     KeyNotation? keyNotation,
   }) {
     return SettingsModel(
-      gaplessPlayback: gaplessPlayback ?? this.gaplessPlayback,
       crossfadeDuration: crossfadeDuration ?? this.crossfadeDuration,
       themeMode: themeMode ?? this.themeMode,
       keyNotation: keyNotation ?? this.keyNotation,
@@ -56,7 +52,6 @@ class SettingsModel {
 
   Map<String, dynamic> toJson() {
     return {
-      'gaplessPlayback': gaplessPlayback,
       'crossfadeDuration': crossfadeDuration,
       'themeMode': themeMode.index,
       'keyNotation': keyNotation.name,
@@ -65,7 +60,6 @@ class SettingsModel {
 
   factory SettingsModel.fromJson(Map<String, dynamic> json) {
     return SettingsModel(
-      gaplessPlayback: json['gaplessPlayback'] ?? true,
       crossfadeDuration: json['crossfadeDuration'] ?? 0,
       themeMode: AppThemeMode.values[json['themeMode'] ?? 0],
       keyNotation: _keyNotationFromJson(json['keyNotation']),

@@ -20,6 +20,12 @@ import 'queue_ordering.dart';
 import 'queue_persistence.dart';
 import 'signed_audio_url_service.dart';
 
+class AudioPlaybackDefaults {
+  const AudioPlaybackDefaults({this.defaultCrossfadeMs = 0});
+
+  final int defaultCrossfadeMs;
+}
+
 class PlaybackState extends ChangeNotifier {
   final QueueTimelineController _queueController;
   final SignedAudioUrlService _signedAudioUrlService;
@@ -92,6 +98,7 @@ class PlaybackState extends ChangeNotifier {
   int get timelinePositionMs => _queueController.engine.positionMs;
   TimelineModel get timelineModel => _queueController.engine.model;
   BeatSnapMode get transitionSnapMode => _queueController.transitionSnapMode;
+  int get defaultCrossfadeMs => _queueController.defaultCrossfadeMs;
   TimelineClip? timelineClipForQueueIndex(int index) =>
       _queueController.timelineClipForIndex(index);
   TrimRange trimRangeForQueueIndex(int index) {
@@ -149,6 +156,8 @@ class PlaybackState extends ChangeNotifier {
       _queueController.setPitchModeByQueueItemId(queueItemId, pitchMode);
   Future<void> setTransitionSnapMode(BeatSnapMode mode) =>
       _queueController.setTransitionSnapMode(mode);
+  Future<void> applyAudioDefaults(AudioPlaybackDefaults defaults) =>
+      _queueController.setDefaultCrossfadeMs(defaults.defaultCrossfadeMs);
   Future<void> reorderPlaybackQueue(int oldIndex, int newIndex) =>
       _queueController.reorderQueue(oldIndex, newIndex);
   Future<void> movePlaybackQueueItemByQueueItemId(

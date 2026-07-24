@@ -18,6 +18,21 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('PlaybackState engine cutover', () {
+    test('empty queue keeps the configured crossfade facade value', () async {
+      SharedPreferences.setMockInitialValues({});
+      final playback = _playbackState();
+      await playback.applyAudioDefaults(
+        const AudioPlaybackDefaults(defaultCrossfadeMs: 3000),
+      );
+      await playback.playQueue([_track(1, seconds: 10)]);
+
+      await playback.removeFromQueue(0);
+
+      expect(playback.hasTrack, isFalse);
+      expect(playback.defaultCrossfadeMs, 3000);
+      playback.dispose();
+    });
+
     test('restore rebuilds queue paused at saved index and position', () async {
       SharedPreferences.setMockInitialValues({
         QueuePersistenceStore.storageKey: QueueSnapshot(
@@ -273,6 +288,24 @@ void main() {
       expect(playback.position, const Duration(seconds: 7));
       expect(playback.duration, const Duration(seconds: 45));
       expect(playback.isPlaying, isTrue);
+      playback.dispose();
+    });
+
+    test('audio defaults facade reaches the current mix session', () async {
+      SharedPreferences.setMockInitialValues({});
+      final playback = _playbackState();
+
+      await playback.playQueue([
+        _track(1, seconds: 10),
+        _track(2, seconds: 10),
+      ]);
+      await playback.applyAudioDefaults(
+        const AudioPlaybackDefaults(defaultCrossfadeMs: 3000),
+      );
+
+      expect(playback.defaultCrossfadeMs, 3000);
+      expect(playback.timelineModel.clips[1].timelineStartMs, 7000);
+      expect(playback.timelineModel.clips[0].envelope.fadeOutMs, 3000);
       playback.dispose();
     });
 

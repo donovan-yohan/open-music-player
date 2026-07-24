@@ -20,23 +20,33 @@ class MixSession {
     this.schemaVersion = mixSessionSchemaVersion,
     this.nextClipOrdinal = 0,
     this.transitionSnapMode = BeatSnapMode.downbeat,
-  });
+    this.defaultCrossfadeMs = 0,
+    bool adoptLegacyDefaultCrossfade = false,
+    Set<String> deferredDefaultTransitionClipIds = const {},
+    Set<String> explicitPlacementClipIds = const {},
+  })  : _adoptLegacyDefaultCrossfade = adoptLegacyDefaultCrossfade,
+        _deferredDefaultTransitionClipIds = deferredDefaultTransitionClipIds,
+        _explicitPlacementClipIds = explicitPlacementClipIds;
 
   factory MixSession.empty({
     String sessionId = 'session_0',
     BeatSnapMode transitionSnapMode = BeatSnapMode.downbeat,
+    int defaultCrossfadeMs = 0,
   }) =>
       MixSession(
         sessionId: sessionId,
         clips: const [],
         transitionSnapMode: transitionSnapMode,
+        defaultCrossfadeMs: math.max(0, defaultCrossfadeMs),
       );
 
   factory MixSession.fromQueue({
     required String sessionId,
     required List<MediaItem> queue,
     BeatSnapMode transitionSnapMode = BeatSnapMode.downbeat,
+    int defaultCrossfadeMs = 0,
   }) {
+    final normalizedDefaultCrossfadeMs = math.max(0, defaultCrossfadeMs);
     final clips = <MixSessionClip>[];
     for (var i = 0; i < queue.length; i++) {
       final previous = clips.isEmpty ? null : clips.last;
@@ -55,6 +65,7 @@ class MixSession {
               clip,
               fallbackStartMs,
               transitionSnapMode,
+              normalizedDefaultCrossfadeMs,
             ),
           ),
         ),
@@ -65,11 +76,14 @@ class MixSession {
       clips: List.unmodifiable(clips),
       nextClipOrdinal: clips.length,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: normalizedDefaultCrossfadeMs,
     );
   }
 
   factory MixSession.fromJson(Map<String, dynamic> json) {
     final rawSessionId = (json['sessionId'] as String?)?.trim();
+    final schemaVersion =
+        (json['schemaVersion'] as num?)?.toInt() ?? mixSessionSchemaVersion;
     final rawClips = json['clips'];
     final clips = <MixSessionClip>[];
     if (rawClips is List) {
@@ -85,14 +99,19 @@ class MixSession {
 
     return MixSession(
       sessionId: rawSessionId?.isNotEmpty == true ? rawSessionId! : 'session_0',
-      schemaVersion:
-          (json['schemaVersion'] as num?)?.toInt() ?? mixSessionSchemaVersion,
+      schemaVersion: schemaVersion,
       clips: List.unmodifiable(clips),
       nextClipOrdinal: math.max(
         (json['nextClipOrdinal'] as num?)?.toInt() ?? clips.length,
         _nextOrdinalAfter(clips),
       ),
       transitionSnapMode: parseBeatSnapMode(json['transitionSnapMode']),
+      defaultCrossfadeMs: math.max(
+        0,
+        (json['defaultCrossfadeMs'] as num?)?.toInt() ?? 0,
+      ),
+      adoptLegacyDefaultCrossfade:
+          schemaVersion == 1 && !json.containsKey('defaultCrossfadeMs'),
     );
   }
 
@@ -101,6 +120,10 @@ class MixSession {
   final List<MixSessionClip> clips;
   final int nextClipOrdinal;
   final BeatSnapMode transitionSnapMode;
+  final int defaultCrossfadeMs;
+  final bool _adoptLegacyDefaultCrossfade;
+  final Set<String> _deferredDefaultTransitionClipIds;
+  final Set<String> _explicitPlacementClipIds;
 
   bool get isEmpty => clips.isEmpty;
 
@@ -130,11 +153,14 @@ class MixSession {
       cursorMs = clip.timelineEndMs;
     }
 
+    final reflowedIndices = <int>{};
     final reflowed = firstNewIndex != null
         ? _reflowDefaultTransitions(
             normalized,
             startIndex: firstNewIndex,
             snapMode: transitionSnapMode,
+            defaultCrossfadeMs: defaultCrossfadeMs,
+            onReflowed: reflowedIndices.add,
           )
         : firstTempoChangedIndex == null
             ? normalized
@@ -142,12 +168,19 @@ class MixSession {
                 normalized,
                 startIndex: firstTempoChangedIndex,
                 snapMode: transitionSnapMode,
+                defaultCrossfadeMs: defaultCrossfadeMs,
                 preserveEditedPlacements: true,
-                wasAutoManagedPlacement: (index) => _wasAutoManagedPlacement(
-                  clips,
-                  index,
-                  snapMode: transitionSnapMode,
-                ),
+                wasAutoManagedPlacement: (index) =>
+                    !_explicitPlacementClipIds.contains(clips[index].clipId) &&
+                    (_deferredDefaultTransitionClipIds
+                            .contains(clips[index].clipId) ||
+                        _wasAutoManagedPlacement(
+                          clips,
+                          index,
+                          snapMode: transitionSnapMode,
+                          defaultCrossfadeMs: defaultCrossfadeMs,
+                        )),
+                onReflowed: reflowedIndices.add,
               );
     return MixSession(
       sessionId: sessionId,
@@ -155,24 +188,64 @@ class MixSession {
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: math.max(nextOrdinal, _nextOrdinalAfter(reflowed)),
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds: {
+        for (var index = 0; index < normalized.length; index++)
+          if ((firstNewIndex == null || index < firstNewIndex) &&
+              !reflowedIndices.contains(index) &&
+              _deferredDefaultTransitionClipIds
+                  .contains(normalized[index].clipId))
+            normalized[index].clipId,
+      },
+      explicitPlacementClipIds: {
+        for (final clip in normalized)
+          if (_explicitPlacementClipIds.contains(clip.clipId)) clip.clipId,
+      },
     );
   }
 
   MixSession reflowDefaultTransitionsFrom(int startIndex) {
     if (clips.isEmpty) return this;
+    final reflowedIndices = <int>{};
     final reflowed = _reflowDefaultTransitions(
       clips,
       startIndex: startIndex,
       snapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
       preserveEditedPlacements: true,
+      wasAutoManagedPlacement: (index) =>
+          !_explicitPlacementClipIds.contains(clips[index].clipId) &&
+          (_deferredDefaultTransitionClipIds.contains(clips[index].clipId) ||
+              _wasAutoManagedPlacement(
+                clips,
+                index,
+                snapMode: transitionSnapMode,
+                defaultCrossfadeMs: defaultCrossfadeMs,
+              )),
+      onReflowed: reflowedIndices.add,
     );
-    if (_sameClipPlacements(clips, reflowed)) return this;
+    final retainedDeferredClipIds = {
+      for (var index = 0; index < clips.length; index++)
+        if (!reflowedIndices.contains(index) &&
+            _deferredDefaultTransitionClipIds.contains(clips[index].clipId))
+          clips[index].clipId,
+    };
+    if (_sameClipPlacements(clips, reflowed) &&
+        retainedDeferredClipIds.length ==
+            _deferredDefaultTransitionClipIds.length) {
+      return this;
+    }
     return MixSession(
       sessionId: sessionId,
       schemaVersion: schemaVersion,
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds: retainedDeferredClipIds,
+      explicitPlacementClipIds: _explicitPlacementClipIds,
     );
   }
 
@@ -199,6 +272,7 @@ class MixSession {
       nextClips,
       startIndex: insertIndex,
       snapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
     return MixSession(
       sessionId: sessionId,
@@ -206,6 +280,19 @@ class MixSession {
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal + 1,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds: {
+        for (var clipIndex = 0; clipIndex < insertIndex; clipIndex++)
+          if (_deferredDefaultTransitionClipIds
+              .contains(clips[clipIndex].clipId))
+            clips[clipIndex].clipId,
+      },
+      explicitPlacementClipIds: {
+        for (var clipIndex = 0; clipIndex < insertIndex; clipIndex++)
+          if (_explicitPlacementClipIds.contains(clips[clipIndex].clipId))
+            clips[clipIndex].clipId,
+      },
     );
   }
 
@@ -219,6 +306,7 @@ class MixSession {
       nextClips,
       startIndex: index,
       snapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
     );
     return MixSession(
       sessionId: sessionId,
@@ -226,6 +314,19 @@ class MixSession {
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds: {
+        for (var clipIndex = 0; clipIndex < index; clipIndex++)
+          if (_deferredDefaultTransitionClipIds
+              .contains(clips[clipIndex].clipId))
+            clips[clipIndex].clipId,
+      },
+      explicitPlacementClipIds: {
+        for (var clipIndex = 0; clipIndex < index; clipIndex++)
+          if (_explicitPlacementClipIds.contains(clips[clipIndex].clipId))
+            clips[clipIndex].clipId,
+      },
     );
   }
 
@@ -242,6 +343,10 @@ class MixSession {
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds: _deferredDefaultTransitionClipIds,
+      explicitPlacementClipIds: _explicitPlacementClipIds,
     );
   }
 
@@ -265,6 +370,7 @@ class MixSession {
             clip,
             fallbackStartMs,
             transitionSnapMode,
+            defaultCrossfadeMs,
           ),
         ),
       );
@@ -284,6 +390,7 @@ class MixSession {
             clip,
             fallbackStartMs,
             transitionSnapMode,
+            defaultCrossfadeMs,
           ),
         ),
       );
@@ -298,10 +405,16 @@ class MixSession {
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
     );
   }
 
-  MixSession withPlacementAt(int index, TimelineClip placement) {
+  MixSession withPlacementAt(
+    int index,
+    TimelineClip placement, {
+    bool markExplicit = true,
+  }) {
     if (index < 0 || index >= clips.length) return this;
     final nextClips = List<MixSessionClip>.from(clips)
       ..[index] = clips[index].withPlacement(placement);
@@ -311,6 +424,23 @@ class MixSession {
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds: markExplicit
+          ? {
+              for (var clipIndex = 0; clipIndex < clips.length; clipIndex++)
+                if (clipIndex != index &&
+                    _deferredDefaultTransitionClipIds
+                        .contains(clips[clipIndex].clipId))
+                  clips[clipIndex].clipId,
+            }
+          : _deferredDefaultTransitionClipIds,
+      explicitPlacementClipIds: markExplicit
+          ? {
+              ..._explicitPlacementClipIds,
+              clips[index].clipId,
+            }
+          : _explicitPlacementClipIds,
     );
   }
 
@@ -325,6 +455,10 @@ class MixSession {
       clips: List.unmodifiable(nextClips),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds: _deferredDefaultTransitionClipIds,
+      explicitPlacementClipIds: _explicitPlacementClipIds,
     );
   }
 
@@ -335,20 +469,28 @@ class MixSession {
             (candidate) => candidate != BeatSnapMode.free,
           )
         : <BeatSnapMode>[transitionSnapMode];
+    final reflowedIndices = <int>{};
     final reflowed = mode == BeatSnapMode.free
         ? clips
         : _reflowDefaultTransitions(
             clips,
             startIndex: 0,
             snapMode: mode,
+            defaultCrossfadeMs: defaultCrossfadeMs,
             preserveEditedPlacements: true,
-            wasAutoManagedPlacement: (index) => autoManagedModes.any(
-              (candidate) => _wasAutoManagedPlacement(
-                clips,
-                index,
-                snapMode: candidate,
-              ),
-            ),
+            wasAutoManagedPlacement: (index) =>
+                !_explicitPlacementClipIds.contains(clips[index].clipId) &&
+                (_deferredDefaultTransitionClipIds
+                        .contains(clips[index].clipId) ||
+                    autoManagedModes.any(
+                      (candidate) => _wasAutoManagedPlacement(
+                        clips,
+                        index,
+                        snapMode: candidate,
+                        defaultCrossfadeMs: defaultCrossfadeMs,
+                      ),
+                    )),
+            onReflowed: reflowedIndices.add,
           );
     return MixSession(
       sessionId: sessionId,
@@ -356,6 +498,129 @@ class MixSession {
       clips: List.unmodifiable(reflowed),
       nextClipOrdinal: nextClipOrdinal,
       transitionSnapMode: mode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds: {
+        for (var index = 0; index < clips.length; index++)
+          if (!reflowedIndices.contains(index) &&
+              _deferredDefaultTransitionClipIds.contains(clips[index].clipId))
+            clips[index].clipId,
+      },
+      explicitPlacementClipIds: _explicitPlacementClipIds,
+    );
+  }
+
+  /// Applies the app's default overlap to the contiguous auto-managed prefix
+  /// after [startIndex].
+  ///
+  /// Placements are classified against both the stored and requested defaults
+  /// before they are re-derived with [value]. This lets a deferred placement
+  /// self-heal when it matches either derivation. Clip-scoped provenance keeps
+  /// a playhead-deferred placement eligible across repeated updates until it is
+  /// reflowed, edited, structurally rebuilt, or passed. Explicit timeline edits
+  /// remain boundaries. A schema-v1 snapshot without a stored crossfade field
+  /// explicitly adopts butt-jointed legacy placements once, including a no-op
+  /// zero-default application. Callers can start after the active clip so a
+  /// live settings change never moves the transition that is currently
+  /// sounding.
+  MixSession withDefaultCrossfadeMs(int value, {int startIndex = 0}) {
+    final normalized = math.max(0, value);
+    if (normalized == defaultCrossfadeMs) {
+      if (!_adoptLegacyDefaultCrossfade) return this;
+      return MixSession(
+        sessionId: sessionId,
+        schemaVersion: schemaVersion,
+        clips: clips,
+        nextClipOrdinal: nextClipOrdinal,
+        transitionSnapMode: transitionSnapMode,
+        defaultCrossfadeMs: defaultCrossfadeMs,
+        deferredDefaultTransitionClipIds: _deferredDefaultTransitionClipIds,
+        explicitPlacementClipIds: _explicitPlacementClipIds,
+      );
+    }
+    final autoManagedDefaults = <int>{
+      defaultCrossfadeMs,
+      normalized,
+    };
+    final reflowedIndices = <int>{};
+    final reflowed = _reflowDefaultTransitions(
+      clips,
+      startIndex: startIndex,
+      snapMode: transitionSnapMode,
+      defaultCrossfadeMs: normalized,
+      preserveEditedPlacements: true,
+      wasAutoManagedPlacement: (index) =>
+          !_explicitPlacementClipIds.contains(clips[index].clipId) &&
+          (_deferredDefaultTransitionClipIds.contains(clips[index].clipId) ||
+              (_adoptLegacyDefaultCrossfade &&
+                  _isButtJointPlacement(clips, index)) ||
+              autoManagedDefaults.any(
+                (candidate) => _wasAutoManagedPlacement(
+                  clips,
+                  index,
+                  snapMode: transitionSnapMode,
+                  defaultCrossfadeMs: candidate,
+                ),
+              )),
+      onReflowed: reflowedIndices.add,
+    );
+    return MixSession(
+      sessionId: sessionId,
+      schemaVersion: schemaVersion,
+      clips: List.unmodifiable(reflowed),
+      nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: normalized,
+      deferredDefaultTransitionClipIds: {
+        for (var index = 0; index < clips.length; index++)
+          if (!reflowedIndices.contains(index) &&
+              _deferredDefaultTransitionClipIds.contains(clips[index].clipId))
+            clips[index].clipId,
+      },
+      explicitPlacementClipIds: _explicitPlacementClipIds,
+    );
+  }
+
+  MixSession withDeferredDefaultTransitionAt(int index) {
+    if (index <= 0 || index >= clips.length) return this;
+    final clipId = clips[index].clipId;
+    if (_deferredDefaultTransitionClipIds.contains(clipId)) return this;
+    return MixSession(
+      sessionId: sessionId,
+      schemaVersion: schemaVersion,
+      clips: clips,
+      nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds: {
+        ..._deferredDefaultTransitionClipIds,
+        clipId,
+      },
+      explicitPlacementClipIds: _explicitPlacementClipIds,
+    );
+  }
+
+  MixSession withoutDeferredDefaultTransitionsBefore(int index) {
+    if (_deferredDefaultTransitionClipIds.isEmpty || index <= 0) return this;
+    final retained = {
+      for (var clipIndex = index; clipIndex < clips.length; clipIndex++)
+        if (_deferredDefaultTransitionClipIds.contains(clips[clipIndex].clipId))
+          clips[clipIndex].clipId,
+    };
+    if (retained.length == _deferredDefaultTransitionClipIds.length) {
+      return this;
+    }
+    return MixSession(
+      sessionId: sessionId,
+      schemaVersion: schemaVersion,
+      clips: clips,
+      nextClipOrdinal: nextClipOrdinal,
+      transitionSnapMode: transitionSnapMode,
+      defaultCrossfadeMs: defaultCrossfadeMs,
+      adoptLegacyDefaultCrossfade: _adoptLegacyDefaultCrossfade,
+      deferredDefaultTransitionClipIds: retained,
+      explicitPlacementClipIds: _explicitPlacementClipIds,
     );
   }
 
@@ -369,6 +634,7 @@ class MixSession {
         'sessionId': sessionId,
         'nextClipOrdinal': nextClipOrdinal,
         'transitionSnapMode': transitionSnapMode.name,
+        'defaultCrossfadeMs': defaultCrossfadeMs,
         'clips': [for (final clip in clips) clip.toJson()],
       };
 }
@@ -899,8 +1165,10 @@ List<MixSessionClip> _reflowDefaultTransitions(
   List<MixSessionClip> clips, {
   required int startIndex,
   required BeatSnapMode snapMode,
+  required int defaultCrossfadeMs,
   bool preserveEditedPlacements = false,
   bool Function(int index)? wasAutoManagedPlacement,
+  void Function(int index)? onReflowed,
 }) {
   if (clips.isEmpty) return clips;
   final next = List<MixSessionClip>.from(clips);
@@ -917,6 +1185,7 @@ List<MixSessionClip> _reflowDefaultTransitions(
                   clips,
                   index,
                   snapMode: snapMode,
+                  defaultCrossfadeMs: defaultCrossfadeMs,
                 )))) {
       reflowingContiguousDefaults = false;
       continue;
@@ -924,6 +1193,7 @@ List<MixSessionClip> _reflowDefaultTransitions(
 
     final previous = index == 0 ? null : next[index - 1];
     final fallbackStartMs = previous?.timelineEndMs ?? 0;
+    onReflowed?.call(index);
     next[index] = clip.withPlacement(
       clip.placement.withTimelineStartMs(
         _defaultTimelineStartAfter(
@@ -931,6 +1201,7 @@ List<MixSessionClip> _reflowDefaultTransitions(
           clip,
           fallbackStartMs,
           snapMode,
+          defaultCrossfadeMs,
         ),
       ),
     );
@@ -943,14 +1214,29 @@ bool _wasAutoManagedPlacement(
   List<MixSessionClip> clips,
   int index, {
   required BeatSnapMode snapMode,
+  required int defaultCrossfadeMs,
 }) {
   if (index < 0 || index >= clips.length) return true;
   final clip = clips[index];
   final previous = index == 0 ? null : clips[index - 1];
   final fallbackStartMs = previous?.timelineEndMs ?? 0;
-  if (clip.timelineStartMs == fallbackStartMs) return true;
+  if (clip.timelineStartMs == fallbackStartMs &&
+      (previous == null || defaultCrossfadeMs == 0)) {
+    return true;
+  }
   return clip.timelineStartMs ==
-      _defaultTimelineStartAfter(previous, clip, fallbackStartMs, snapMode);
+      _defaultTimelineStartAfter(
+        previous,
+        clip,
+        fallbackStartMs,
+        snapMode,
+        defaultCrossfadeMs,
+      );
+}
+
+bool _isButtJointPlacement(List<MixSessionClip> clips, int index) {
+  if (index <= 0 || index >= clips.length) return false;
+  return clips[index].timelineStartMs == clips[index - 1].timelineEndMs;
 }
 
 bool _sameClipPlacements(
@@ -969,8 +1255,33 @@ int _defaultTimelineStartAfter(
   MixSessionClip incoming,
   int fallbackStartMs,
   BeatSnapMode snapMode,
+  int defaultCrossfadeMs,
 ) {
   if (previous == null) return math.max(0, fallbackStartMs);
+  final tempoOverlapMs = defaultTransitionOverlapMsForTempo(
+    outgoingSelectedDurationMs: previous.selectedDurationMs,
+    outgoingTempo: previous.tempo,
+    incomingSelectedDurationMs: incoming.selectedDurationMs,
+    incomingTempo: incoming.tempo,
+  );
+  // Precedence lives here: a nonzero tempo overlap owns the transition,
+  // including the existing snap/fallback decision. In free snap mode that
+  // tempo path resolves to a butt joint, while untempo'd pairs still use the
+  // configured crossfade. The setting only fills the untempo'd zero-overlap
+  // case, and 0 remains a butt joint.
+  if (tempoOverlapMs == 0) {
+    final safeOverlapMs = math.min(
+      math.max(0, defaultCrossfadeMs),
+      math.min(
+        math.max(0, previous.selectedDurationMs) ~/ 2,
+        math.max(0, incoming.selectedDurationMs) ~/ 2,
+      ),
+    );
+    return math.max(
+      previous.timelineStartMs,
+      fallbackStartMs - safeOverlapMs,
+    );
+  }
   return defaultDownbeatLockedTransitionStartMs(
     outgoingTimelineStartMs: previous.timelineStartMs,
     outgoingTimelineEndMs: previous.timelineEndMs,

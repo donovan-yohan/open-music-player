@@ -75,6 +75,115 @@ void main() {
       await harness.dispose();
     });
 
+    test('live crossfade update protects every sounding overlap clip',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setDefaultCrossfadeMs(3000);
+      await harness.controller.setQueue([
+        _item('1', seconds: 10),
+        _item('2', seconds: 10),
+        _item('3', seconds: 10),
+      ]);
+      await harness.controller.play();
+      await harness.controller.seek(const Duration(seconds: 8));
+
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        [0, 7000, 14000],
+      );
+      expect(harness.controller.currentIndex, 0);
+      expect(harness.engine.model.activeClipsAt(8000), hasLength(2));
+
+      await harness.controller.setDefaultCrossfadeMs(5000);
+
+      expect(harness.controller.currentIndex, 0);
+      expect(harness.engine.positionMs, 8000);
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        [0, 7000, 12000],
+      );
+      expect(harness.engine.model.activeClipsAt(8000), hasLength(2));
+      expect(harness.engine.model.clips[0].envelope.fadeOutMs, 3000);
+      expect(harness.engine.model.clips[1].envelope.fadeInMs, 3000);
+      expect(harness.engine.model.clips[1].envelope.fadeOutMs, 5000);
+      expect(harness.engine.model.clips[2].envelope.fadeInMs, 5000);
+
+      await harness.dispose();
+    });
+
+    test('live crossfade increase defers a newly elapsed transition', () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item('1', seconds: 10),
+        _item('2', seconds: 10),
+        _item('3', seconds: 10),
+      ]);
+      await harness.controller.play();
+      await harness.controller.seek(
+        const Duration(milliseconds: 8500),
+      );
+
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        [0, 10000, 20000],
+      );
+      expect(harness.engine.model.activeClipsAt(8500), hasLength(1));
+
+      await harness.controller.setDefaultCrossfadeMs(3000);
+
+      expect(harness.engine.positionMs, 8500);
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        [0, 10000, 17000],
+      );
+      expect(harness.engine.model.activeClipsAt(8500), hasLength(1));
+      expect(harness.engine.model.clips[0].envelope.fadeOutMs, 0);
+      expect(harness.engine.model.clips[1].envelope.fadeInMs, 0);
+      expect(harness.engine.model.clips[1].envelope.fadeOutMs, 3000);
+      expect(harness.engine.model.clips[2].envelope.fadeInMs, 3000);
+
+      await harness.controller.setDefaultCrossfadeMs(5000);
+
+      expect(harness.engine.positionMs, 8500);
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        [0, 10000, 15000],
+      );
+      expect(harness.engine.model.activeClipsAt(8500), hasLength(1));
+      expect(harness.engine.model.clips[0].envelope.fadeOutMs, 0);
+      expect(harness.engine.model.clips[1].envelope.fadeInMs, 0);
+      expect(harness.engine.model.clips[1].envelope.fadeOutMs, 5000);
+      expect(harness.engine.model.clips[2].envelope.fadeInMs, 5000);
+
+      await harness.dispose();
+    });
+
+    test('shuffled live update defers placement reflow', () async {
+      final harness = _Harness();
+      await harness.controller.setDefaultCrossfadeMs(3000);
+      await harness.controller.setQueue([
+        _item('1', seconds: 10),
+        _item('2', seconds: 10),
+        _item('3', seconds: 10),
+      ]);
+      await harness.controller.setShuffleMode(true);
+      final placementsBefore = [
+        for (final clip in harness.controller.session.clips)
+          clip.timelineStartMs,
+      ];
+
+      await harness.controller.setDefaultCrossfadeMs(5000);
+
+      expect(harness.controller.shuffleEnabled, isTrue);
+      expect(harness.controller.session.defaultCrossfadeMs, 5000);
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        placementsBefore,
+      );
+
+      await harness.dispose();
+    });
+
     test(
       'shuffle keeps current item in place and reorders upcoming clips',
       () async {
@@ -416,6 +525,28 @@ void main() {
       expect(harness.controller.transitionSnapMode, BeatSnapMode.beat16);
       await harness.controller.addToQueue(_item('2'));
       expect(harness.controller.transitionSnapMode, BeatSnapMode.beat16);
+
+      await harness.dispose();
+    });
+
+    test('removing the last item preserves the configured crossfade', () async {
+      final harness = _Harness();
+      await harness.controller.setDefaultCrossfadeMs(3000);
+      await harness.controller.setQueue([_item('1', seconds: 10)]);
+
+      await harness.controller.removeFromQueue(0);
+
+      expect(harness.controller.queue, isEmpty);
+      expect(harness.controller.defaultCrossfadeMs, 3000);
+
+      await harness.controller.addToQueue(_item('2', seconds: 10));
+      await harness.controller.addToQueue(_item('3', seconds: 10));
+
+      expect(harness.controller.defaultCrossfadeMs, 3000);
+      expect(
+        harness.controller.session.clips.map((clip) => clip.timelineStartMs),
+        [0, 7000],
+      );
 
       await harness.dispose();
     });

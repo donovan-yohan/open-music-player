@@ -47,6 +47,9 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
     WidgetsBinding.instance.addObserver(this);
     widget.authState.addListener(_handleAuthStateChanged);
     _startShareIntentListener();
+    _applyCrossfadeDuration(
+      ref.read(settingsProvider).crossfadeDuration,
+    );
   }
 
   @override
@@ -66,6 +69,10 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<int>(
+      settingsProvider.select((settings) => settings.crossfadeDuration),
+      (_, seconds) => _applyCrossfadeDuration(seconds),
+    );
     final settings = ref.watch(settingsProvider);
 
     return MultiProvider(
@@ -86,6 +93,14 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
         themeMode: _getThemeMode(settings.themeMode),
         routerConfig: widget.router,
         debugShowCheckedModeBanner: false,
+      ),
+    );
+  }
+
+  void _applyCrossfadeDuration(int seconds) {
+    unawaited(
+      widget.playbackState.applyAudioDefaults(
+        AudioPlaybackDefaults(defaultCrossfadeMs: seconds * 1000),
       ),
     );
   }

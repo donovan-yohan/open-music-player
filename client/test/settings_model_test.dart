@@ -19,7 +19,7 @@ void main() {
     expect(model.toJson()['keyNotation'], 'musical');
   });
 
-  test('legacy quality keys are tolerated and removed on the next save', () {
+  test('legacy quality and gapless keys are tolerated then removed', () {
     final model = SettingsModel.fromJson(const {
       'streamingQuality': 0,
       'downloadQuality': 1,
@@ -27,13 +27,14 @@ void main() {
       'crossfadeDuration': 4,
     });
 
-    expect(model.gaplessPlayback, isFalse);
     expect(model.crossfadeDuration, 4);
+    expect(model.toJson(), isNot(contains('gaplessPlayback')));
     expect(model.toJson(), isNot(contains('streamingQuality')));
     expect(model.toJson(), isNot(contains('downloadQuality')));
   });
 
-  test('settings notifier loads persisted JSON containing legacy quality keys',
+  test(
+      'settings notifier loads JSON containing legacy quality and gapless keys',
       () async {
     SharedPreferences.setMockInitialValues({
       'app_settings': jsonEncode({
@@ -47,7 +48,6 @@ void main() {
 
     final notifier = SettingsNotifier(preferences);
 
-    expect(notifier.state.gaplessPlayback, isFalse);
     expect(notifier.state.crossfadeDuration, 6);
   });
 

@@ -286,7 +286,7 @@ class _LogoutOptionsDialogState extends State<LogoutOptionsDialog> {
   }
 }
 
-/// Playback section with gapless playback and crossfade.
+/// Playback section with the default crossfade for untempo'd transitions.
 class _PlaybackSection extends ConsumerWidget {
   const _PlaybackSection();
 
@@ -299,20 +299,13 @@ class _PlaybackSection extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader('Playback'),
-        SwitchListTile(
-          secondary: const Icon(Icons.playlist_play_outlined),
-          title: const Text('Gapless playback'),
-          subtitle: const Text('Remove silence between tracks'),
-          value: settings.gaplessPlayback,
-          onChanged: settingsNotifier.setGaplessPlayback,
-        ),
         ListTile(
           leading: const Icon(Icons.swap_horiz_outlined),
           title: const Text('Crossfade'),
           subtitle: Text(
             settings.crossfadeDuration == 0
-                ? 'Off'
-                : '${settings.crossfadeDuration} seconds',
+                ? 'Off · tracks play gaplessly'
+                : '${settings.crossfadeDuration} seconds for untempo’d tracks',
           ),
         ),
         Padding(
