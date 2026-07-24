@@ -54,6 +54,7 @@ class JustAudioVoice implements Voice {
   JustAudioVoice({required this.debugId, AudioPlayer? player})
       : _player = player ??
             AudioPlayer(
+              handleInterruptions: false,
               audioLoadConfiguration: const AudioLoadConfiguration(
                 androidLoadControl: AndroidLoadControl(
                   minBufferDuration: Duration(seconds: 20),

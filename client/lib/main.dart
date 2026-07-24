@@ -9,6 +9,7 @@ import 'package:audio_service/audio_service.dart' as audio_service;
 
 import 'app/app.dart';
 import 'core/api/api_client.dart';
+import 'core/audio/audio_focus_coordinator.dart';
 import 'core/audio/mix_audio_handler.dart';
 import 'core/audio/playback_state.dart';
 import 'core/audio/play_recorder_service.dart';
@@ -98,6 +99,8 @@ void main() async {
       ),
     );
   }
+  final audioFocusCoordinator = AudioFocusCoordinator(playback: playbackState);
+  await audioFocusCoordinator.start();
   // Rebuild the last listening queue (paused, at the saved position) so a
   // restart resumes where the user left off. Best-effort: failures are
   // swallowed inside restore() and never block startup.
