@@ -79,6 +79,20 @@ void main() {
                 'values': [0.9, 0.7, 0.3, 0.2],
               },
             },
+            'channels': {
+              'channel_set': 'bands3-v1',
+              'audio_ref': null,
+              'sample_count': 4,
+              'normalization': {'kind': 'shared_peak', 'scalar': 0.9},
+              'weights': {'low': 1.0, 'mid': 1.6, 'high': 2.8},
+              'provenance': 'librosa-mel-bands-v2',
+              'values': {
+                'low': {
+                  'sample_count': 4,
+                  'artifact_ref': 'channels.detail.low',
+                },
+              },
+            },
           },
           'transients': {
             'count': 2,
@@ -88,6 +102,19 @@ void main() {
             'ranges': [
               {'start_ms': 0, 'end_ms': 320},
             ],
+          },
+        },
+        'artifacts': {
+          'waveforms': {
+            'detail': {
+              'minima': [-0.1, -0.4, -0.8, -0.2],
+              'maxima': [0.1, 0.5, 0.9, 0.2],
+            },
+          },
+          'channels': {
+            'detail': {
+              'low': [0.95, 0.75, 0.35, 0.25],
+            },
           },
         },
       });
@@ -116,6 +143,11 @@ void main() {
       expect(
         analysis.summary?.waveform?.spectralBands['low']?.values,
         [0.9, 0.7, 0.3, 0.2],
+      );
+      expect(analysis.summary?.waveform?.minPeaks, [-0.1, -0.4, -0.8, -0.2]);
+      expect(
+        analysis.summary?.waveform?.channels?.values['low']?.values,
+        [0.95, 0.75, 0.35, 0.25],
       );
       expect(analysis.summary?.transients?.strongestMs, [10120, 20180]);
       expect(analysis.summary?.silence?.ranges.single.startMs, 0);

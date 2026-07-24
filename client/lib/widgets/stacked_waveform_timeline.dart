@@ -77,7 +77,7 @@ String _mixClipLaneId(MixClip clip) {
 ///
 /// The dominant object is a stack of overlapping waveform lanes sharing a single
 /// global playhead — not list rows or cards. Previous / current / upcoming clips
-/// are placed on one timeline with synthetic transition windows so overlap is
+/// are placed on one timeline with fallback transition windows so overlap is
 /// visible. Lane identity stays inside each row so the timeline can converge
 /// with the queue list instead of relying on separate edge controls.
 ///

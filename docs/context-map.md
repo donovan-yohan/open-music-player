@@ -195,8 +195,13 @@ domain concept moves or a new production harness becomes canonical.
 - Client models/rendering: `client/lib/models/track_analysis.dart`,
   `client/lib/models/waveform.dart`,
   `client/lib/widgets/timeline_waveform_painter.dart`.
-- Guardrail: waveform UI should degrade to dense synthetic data when analysis is
-  missing, but should prefer backend spectral-band summaries when available.
+- Guardrail: waveform UI degrades honestly and never fabricates peaks, spectral
+  channels, or beat markers. Missing detail renders as a flat accent lane with
+  a pending marker; analyzed detail reads versioned named channels first and
+  uses legacy `spectral_bands` only during the compatibility release.
+- Guardrail: timeline columns use the zoom-appropriate artifact tier's signed
+  minimum and maximum bins directly. Decimation may min/max reduce source bins,
+  but rendering must not interpolate or smooth between columns.
 - Guardrail: generated BPM/key metadata must come from the MIR helper. Do not
   reintroduce transient-bucket tempo or zero-crossing pitch-class proxies as a
   silent fallback; analyzer failures must remain visible and retryable.

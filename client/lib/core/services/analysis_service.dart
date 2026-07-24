@@ -25,6 +25,7 @@ class AnalysisService {
       parser: (json) => TrackAnalysis.fromJson(
         status: json['status'],
         summary: json['summary'],
+        artifacts: json['artifacts'],
         overrides: json['overrides'],
         overridesPresent: json.containsKey('overrides'),
         updatedAt: json['updated_at'] ?? json['updatedAt'],
@@ -42,6 +43,7 @@ class AnalysisService {
       parser: (json) => TrackAnalysis.fromJson(
         status: json['status'],
         summary: json['summary'],
+        artifacts: json['artifacts'],
         overrides: json['overrides'],
         overridesPresent: json.containsKey('overrides'),
         updatedAt: json['updated_at'] ?? json['updatedAt'],

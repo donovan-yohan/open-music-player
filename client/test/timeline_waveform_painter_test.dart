@@ -11,6 +11,8 @@ import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/waveform.dart';
 import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
 
+import 'support/waveform_fixtures.dart';
+
 TimelineWaveformPainter _painter(
   List<double> peaks, {
   int snapMarkerCount = 0,
@@ -23,6 +25,8 @@ TimelineWaveformPainter _painter(
   double visibleEndFraction = 1,
   TimelineWaveformPaintCache? paintCache,
   Color color = const Color(0xFF2E7D32),
+  double trimStartFraction = 0,
+  double trimEndFraction = 1,
 }) =>
     TimelineWaveformPainter(
       peaks: peaks,
@@ -37,6 +41,8 @@ TimelineWaveformPainter _painter(
       color: color,
       dimColor: const Color(0xFF90A4AE),
       handleColor: const Color(0xFFFFFFFF),
+      trimStartFraction: trimStartFraction,
+      trimEndFraction: trimEndFraction,
       snapMarkerCount: snapMarkerCount,
     );
 
@@ -80,6 +86,94 @@ double _blue(Color color) => color.b;
 
 void main() {
   group('TimelineWaveformPainter narrow slots', () {
+    test('channel registry and additive ratio preserve spectral hue', () {
+      expect(waveformChannelColor('low'), const Color(0xFFFF0000));
+      expect(waveformChannelColor('mid'), const Color(0xFF00FF00));
+      expect(waveformChannelColor('high'), const Color(0xFF0000FF));
+
+      final quiet = seratoWaveformColorForChannels(
+        const {'low': 0.1, 'mid': 0.05},
+      );
+      final loud = seratoWaveformColorForChannels(
+        const {'low': 1, 'mid': 0.5},
+      );
+      expect(quiet, loud, reason: 'amplitude controls height, not brightness');
+      expect(_red(loud), greaterThan(_green(loud)));
+      expect(_green(loud), greaterThan(_blue(loud)));
+    });
+
+    test('transient spike raster golden keeps one hard signed column',
+        () async {
+      const size = Size(80, 40);
+      final frames = [
+        for (var index = 0; index < transientSpikePeaks.length; index++)
+          WaveformFrame(
+            peak: transientSpikePeaks[index],
+            minPeak: index == 2 ? -0.92 : -transientSpikePeaks[index],
+            maxPeak: transientSpikePeaks[index],
+            rms: 0,
+            low: 0,
+            mid: 0,
+            high: 0,
+            channels: const {'low': 1},
+          ),
+      ];
+      final waveform = TimelineWaveformData(
+        frames: frames,
+        durationMs: 8000,
+        analyzed: true,
+        resolutionLabel: 'detail',
+      );
+      final pixels = await _rasterizePainter(
+        _painter(waveform.peaks, waveform: waveform),
+        size,
+      );
+
+      expect(
+        _pixelAt(pixels, size.width.toInt(), 25, 2).a,
+        greaterThan(0),
+        reason: 'the isolated source-bin spike must reach the upper edge',
+      );
+      expect(
+        _pixelAt(pixels, size.width.toInt(), 15, 2).a,
+        0,
+        reason: 'the quiet left neighbor must not be interpolated upward',
+      );
+      expect(
+        _pixelAt(pixels, size.width.toInt(), 35, 2).a,
+        0,
+        reason: 'the quiet right neighbor must not be smoothed upward',
+      );
+      expect(
+        _pixelAt(pixels, size.width.toInt(), 25, 37).a,
+        greaterThan(0),
+        reason: 'signed minima must independently drive the lower extent',
+      );
+    });
+
+    test('pending flat lane retains snap and trim edit overlays', () async {
+      const size = Size(100, 40);
+      final pixels = await _rasterizePainter(
+        _painter(
+          const [],
+          waveform: const TimelineWaveformData(
+            durationMs: 1000,
+            frames: [],
+            resolutionLabel: 'pending',
+          ),
+          snapMarkerCount: 1,
+          trimStartFraction: 0.2,
+          trimEndFraction: 0.8,
+        ),
+        size,
+      );
+
+      expect(_pixelAt(pixels, 100, 50, 20).a, greaterThan(0));
+      expect(_pixelAt(pixels, 100, 50, 2).a, greaterThan(0));
+      expect(_pixelAt(pixels, 100, 20, 10).a, greaterThan(0));
+      expect(_pixelAt(pixels, 100, 80, 10).a, greaterThan(0));
+    });
+
     test('does not throw when peaks outnumber horizontal pixels', () {
       final painter = _painter(List<double>.filled(100, 0.5));
       // 100 peaks / 10px => slot 0.1 (< 1.0) inverts the bar-width clamp.
