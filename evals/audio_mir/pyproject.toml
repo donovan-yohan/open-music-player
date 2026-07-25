@@ -1,0 +1,31 @@
+[project]
+name = "omp-audio-mir-eval"
+version = "0.1.0"
+description = "Versioned evaluation harness for Open Music Player MIR outputs."
+requires-python = ">=3.11"
+dependencies = [
+    "mir-eval==0.8.2",
+    "numpy>=2.0,<3",
+]
+
+[project.scripts]
+omp-audio-mir-eval = "audio_mir_eval.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/audio_mir_eval"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

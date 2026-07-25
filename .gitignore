@@ -51,6 +51,10 @@ build/
 outputs/
 deploy/.env
 
+# Local MIR evaluation corpora and generated artifacts
+/eval-data/
+/evals/audio_mir/artifacts/
+
 # Python agents package (uv-managed)
 agents/candidate_assembly/.venv/
 .venv/

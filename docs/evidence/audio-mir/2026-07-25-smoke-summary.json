@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-07-25",
+  "purpose": "plumbing smoke; not a model-quality conclusion",
+  "environment": {
+    "os": "Linux 6.17.4-1-pve x86_64",
+    "cpu": "AMD Ryzen 7 5700X 8-Core Processor",
+    "logical_cpus": 16,
+    "torch": "2.8.0+cpu",
+    "torchaudio": "2.8.0+cpu"
+  },
+  "analyzer": {
+    "repository_head": "960db87063ba98651a03110069bc691fa8177464",
+    "name": "omp-mir-analyzer",
+    "version": "2026-07-24-1",
+    "tempo_model": "beat-this-final0-v1.1.0-audio2frames-postprocessor-dynamic-meter-posterior-v3",
+    "key_model": "librosa-0.11.0-cqt-krumhansl-v1",
+    "checkpoint_sha256": "8c328b45f59d8dd3dff219253ff6a8d6482be57d0133a29140e2febbf8eb8331"
+  },
+  "datasets": {
+    "tempo": {
+      "name": "giantsteps-tempo-v2",
+      "repository_head": "d51ab2422e76abacfaa86616a57054bc222ec9fd",
+      "manifest_sha256": "104e0e44012a289be43623c23f40483c127578721f6f5569515348dc366710a7",
+      "predictions_sha256": "c228d61a74c0e267667fb921bb14fcbf0038f1686a3d556f136c2dcb23836c27",
+      "tracks": 5,
+      "selection": "five checksum-verified locally downloaded previews",
+      "license_note": "dataset repository does not declare a license; audio and annotations were not redistributed"
+    },
+    "key": {
+      "name": "giantsteps-key",
+      "repository_head": "6bcd492c825ac9b8597bc650a5f6fd18b6c43d2b",
+      "manifest_sha256": "6abc46db814ab577f2b81e40954dc934fa1d74f366b38a962ac31a1a46673a92",
+      "predictions_sha256": "ca7275344e8522bf971a24b0b4ec22409719a6ed500f874a05c6b5a303063214",
+      "tracks": 5,
+      "selection": "five checksum-verified locally downloaded previews",
+      "license_note": "dataset repository does not declare a license; audio and annotations were not redistributed"
+    },
+    "guitarset": {
+      "name": "guitarset-1.1.0",
+      "record": "https://doi.org/10.5281/zenodo.3371780",
+      "manifest_sha256": "e0f944695a9f3ee036b73517bc9e094c53085d2f2b2134615222dbcb1f5a3366",
+      "predictions_sha256": "661ef902a7d095f1fe3e5f8269de3e4f538b5ce12fa1216260e7e674c28287a3",
+      "tracks": 5,
+      "selection": "first five checksum-verified mono microphone recordings in archive order",
+      "license_note": "CC-BY-4.0; audio and annotations were not redistributed"
+    }
+  },
+  "results": {
+    "tempo": {
+      "coverage": 1.0,
+      "acc1": 1.0,
+      "acc2": 1.0,
+      "octave_classes": {
+        "exact": 5
+      },
+      "mean_absolute_log2_error": 0.007214,
+      "runtime_seconds": {
+        "p50": 16.435492,
+        "p95": 18.258897
+      },
+      "infra_errors": 0
+    },
+    "key": {
+      "coverage": 0.8,
+      "exact": 0.4,
+      "mirex_weighted_score": 0.44,
+      "relationships": {
+        "exact": 2,
+        "missing": 1,
+        "other": 1,
+        "parallel": 1
+      },
+      "runtime_seconds": {
+        "p50": 14.595525,
+        "p95": 15.769976
+      },
+      "infra_errors": 0
+    },
+    "guitarset": {
+      "tempo": {
+        "coverage": 1.0,
+        "acc1": 1.0,
+        "acc2": 1.0
+      },
+      "beats": {
+        "f_measure_70ms": 0.923773,
+        "cemgil": 0.847223,
+        "cmlc": 0.575085,
+        "cmlt": 0.779252
+      },
+      "downbeats": {
+        "f_measure_70ms": 0.732,
+        "cemgil": 0.682908,
+        "cmlc": 0.559978,
+        "cmlt": 0.589144
+      },
+      "key": {
+        "coverage": 1.0,
+        "exact": 0.6,
+        "mirex_weighted_score": 0.6
+      },
+      "runtime_seconds": {
+        "p50": 3.944442,
+        "p95": 4.647104
+      },
+      "infra_errors": 0
+    }
+  },
+  "limitations": [
+    "five tracks per corpus/task is sufficient only to verify the data, analyzer, and scoring path",
+    "tempo and key used different GiantSteps subsets",
+    "GuitarSet is legally clean and annotation-rich but solo acoustic guitar is outside SoundQ's main distribution",
+    "the GuitarSet selection includes companion and solo recordings of the same pieces and is not independent",
+    "the smoke did not evaluate variable meter, tempo changes, confidence calibration, or stems",
+    "selection was not stratified and has no confidence interval",
+    "GiantSteps repository licensing must be reviewed before any shared or automated corpus use"
+  ]
+}
