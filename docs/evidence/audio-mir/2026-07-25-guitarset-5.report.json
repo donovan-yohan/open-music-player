@@ -5,7 +5,7 @@
     "infra_errors": 0,
     "predictions": 5
   },
-  "generated_at": "2026-07-25T18:44:54.551954+00:00",
+  "generated_at": "2026-07-25T19:08:39.392539+00:00",
   "groups": {
     "ground_truth": {
       "beats": {
@@ -53,8 +53,8 @@
         "weighted_score": 0.6
       },
       "runtime_seconds": {
-        "p50": 3.972009,
-        "p95": 4.396864
+        "p50": 3.93164,
+        "p95": 4.278138
       },
       "tempo": {
         "absolute_log2_error": 0.007221,
@@ -74,7 +74,7 @@
     }
   },
   "manifest_sha256": "bb42b694f8993b8fccd8ff82c81b1f22b45aa943df3979c9c5997b2e98b644ac",
-  "predictions_sha256": "6bfadfc6809692c403fea43c133f4dac16b0f863b2d09a70feb8b2a207400862",
+  "predictions_sha256": "2aa9a3c3c6673bc1cbca0aba7867b2b98879626396c7c5303fb15ac9a13ca2f3",
   "run": {
     "analyzer": {
       "analyzer": "omp-mir-analyzer",
@@ -85,16 +85,18 @@
       "status": "ready",
       "tempo_model": "beat-this-final0-v1.1.0-audio2frames-postprocessor-dynamic-meter-posterior-v3"
     },
+    "analyzer_script_sha256": "31bd725c0ac91ac177fe660a5e0026e456e326ff817fca0085467c9c8410f600",
     "complete": true,
-    "created_at": "2026-07-25T18:13:11.836042+00:00",
+    "created_at": "2026-07-25T19:08:18.626260+00:00",
     "manifest_sha256": "bb42b694f8993b8fccd8ff82c81b1f22b45aa943df3979c9c5997b2e98b644ac",
+    "model_sha256": "8c328b45f59d8dd3dff219253ff6a8d6482be57d0133a29140e2febbf8eb8331",
     "prediction_count": 5,
-    "repo_head": "4dc3fcfa841a1d51241c3cb7c3b31285444911d2",
+    "repo_head": "35eca3fc1d69c6c1b61afdb7143cfa3824061696",
     "schema_version": 2,
-    "updated_at": "2026-07-25T18:13:32.024518+00:00"
+    "updated_at": "2026-07-25T19:08:38.790386+00:00"
   },
   "schema_version": 2,
-  "scorer_repo_head": "31eb3e13f052fafae7233702fef04b52303e9081",
+  "scorer_repo_head": "35eca3fc1d69c6c1b61afdb7143cfa3824061696",
   "tracks": [
     {
       "confidence": {
@@ -163,7 +165,7 @@
         "license": "CC-BY-4.0",
         "source": "https://doi.org/10.5281/zenodo.3371780"
       },
-      "runtime_seconds": 3.972009,
+      "runtime_seconds": 4.102766,
       "status": "scored"
     },
     {
@@ -233,7 +235,7 @@
         "license": "CC-BY-4.0",
         "source": "https://doi.org/10.5281/zenodo.3371780"
       },
-      "runtime_seconds": 3.844925,
+      "runtime_seconds": 3.93164,
       "status": "scored"
     },
     {
@@ -303,7 +305,7 @@
         "license": "CC-BY-4.0",
         "source": "https://doi.org/10.5281/zenodo.3371780"
       },
-      "runtime_seconds": 3.72399,
+      "runtime_seconds": 3.80958,
       "status": "scored"
     },
     {
@@ -373,7 +375,7 @@
         "license": "CC-BY-4.0",
         "source": "https://doi.org/10.5281/zenodo.3371780"
       },
-      "runtime_seconds": 4.139944,
+      "runtime_seconds": 3.871131,
       "status": "scored"
     },
     {
@@ -443,7 +445,7 @@
         "license": "CC-BY-4.0",
         "source": "https://doi.org/10.5281/zenodo.3371780"
       },
-      "runtime_seconds": 4.461094,
+      "runtime_seconds": 4.321981,
       "status": "scored"
     }
   ]

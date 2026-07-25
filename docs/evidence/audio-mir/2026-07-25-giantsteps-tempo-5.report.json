@@ -5,14 +5,14 @@
     "infra_errors": 0,
     "predictions": 5
   },
-  "generated_at": "2026-07-25T18:44:53.325631+00:00",
+  "generated_at": "2026-07-25T19:07:16.926597+00:00",
   "groups": {
     "ground_truth": {
       "completed": 5,
       "infra_errors": 0,
       "runtime_seconds": {
-        "p50": 10.884239,
-        "p95": 11.287673
+        "p50": 11.873326,
+        "p95": 12.795322
       },
       "tempo": {
         "absolute_log2_error": 0.007214,
@@ -32,7 +32,7 @@
     }
   },
   "manifest_sha256": "f007665d20c2958b71d5331dd6bb59113be65d64dce4c822b19d1994256fca00",
-  "predictions_sha256": "0654e75af2aa0236868b0850ec92d1786fbb24a8adee264753e4287fc8c2d437",
+  "predictions_sha256": "7fd669afa2d1f9fca8b5b2524d45399317f3bc1a8a191bd4bdbbaf9180e88de6",
   "run": {
     "analyzer": {
       "analyzer": "omp-mir-analyzer",
@@ -43,16 +43,18 @@
       "status": "ready",
       "tempo_model": "beat-this-final0-v1.1.0-audio2frames-postprocessor-dynamic-meter-posterior-v3"
     },
+    "analyzer_script_sha256": "31bd725c0ac91ac177fe660a5e0026e456e326ff817fca0085467c9c8410f600",
     "complete": true,
-    "created_at": "2026-07-25T18:11:19.965865+00:00",
+    "created_at": "2026-07-25T19:06:16.849181+00:00",
     "manifest_sha256": "f007665d20c2958b71d5331dd6bb59113be65d64dce4c822b19d1994256fca00",
+    "model_sha256": "8c328b45f59d8dd3dff219253ff6a8d6482be57d0133a29140e2febbf8eb8331",
     "prediction_count": 5,
-    "repo_head": "4dc3fcfa841a1d51241c3cb7c3b31285444911d2",
+    "repo_head": "35eca3fc1d69c6c1b61afdb7143cfa3824061696",
     "schema_version": 2,
-    "updated_at": "2026-07-25T18:12:14.829823+00:00"
+    "updated_at": "2026-07-25T19:07:16.295973+00:00"
   },
   "schema_version": 2,
-  "scorer_repo_head": "31eb3e13f052fafae7233702fef04b52303e9081",
+  "scorer_repo_head": "35eca3fc1d69c6c1b61afdb7143cfa3824061696",
   "tracks": [
     {
       "confidence": {
@@ -81,7 +83,7 @@
         "source": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
         "source_revision": "d51ab2422e76abacfaa86616a57054bc222ec9fd"
       },
-      "runtime_seconds": 10.785885,
+      "runtime_seconds": 12.969006,
       "status": "scored"
     },
     {
@@ -111,7 +113,7 @@
         "source": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
         "source_revision": "d51ab2422e76abacfaa86616a57054bc222ec9fd"
       },
-      "runtime_seconds": 10.899178,
+      "runtime_seconds": 12.100588,
       "status": "scored"
     },
     {
@@ -141,7 +143,7 @@
         "source": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
         "source_revision": "d51ab2422e76abacfaa86616a57054bc222ec9fd"
       },
-      "runtime_seconds": 10.884239,
+      "runtime_seconds": 11.873326,
       "status": "scored"
     },
     {
@@ -171,7 +173,7 @@
         "source": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
         "source_revision": "d51ab2422e76abacfaa86616a57054bc222ec9fd"
       },
-      "runtime_seconds": 11.384797,
+      "runtime_seconds": 11.140533,
       "status": "scored"
     },
     {
@@ -201,7 +203,7 @@
         "source": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
         "source_revision": "d51ab2422e76abacfaa86616a57054bc222ec9fd"
       },
-      "runtime_seconds": 10.859942,
+      "runtime_seconds": 11.202048,
       "status": "scored"
     }
   ]

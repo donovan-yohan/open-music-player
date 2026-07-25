@@ -93,11 +93,11 @@ The analyzer runner uses argument arrays, not a shell template, and accepts file
 
 ## Measured smoke runs
 
-The analyzer artifacts were produced at repository head `4dc3fcfa841a1d51241c3cb7c3b31285444911d2` and rescored after harness hardening at `31eb3e13f052fafae7233702fef04b52303e9081`; no analyzer code changed between them. The run used the pinned Beat This checkpoint and CPU analyzer runtime on five files per corpus/task. These are generated scorer reports—not hand-transcribed summaries—and include per-track metrics, dataset/archive provenance, analyzer metadata, manifest/prediction hashes, denominators, abstentions, and infrastructure-error counts:
+The analyzer artifacts and reports were produced at repository head `35eca3fc1d69c6c1b61afdb7143cfa3824061696` with the pinned Beat This checkpoint and CPU analyzer runtime on five files per corpus/task. These are generated scorer reports—not hand-transcribed summaries—and include per-track metrics, dataset/archive provenance, analyzer metadata, manifest/prediction hashes, denominators, abstentions, and infrastructure-error counts:
 
-- [GiantSteps tempo report](evidence/audio-mir/2026-07-25-giantsteps-tempo-5.report.json): 5/5 Acc1 and Acc2, all exact-tempo class, p50 10.88 seconds per two-minute preview.
-- [GiantSteps key report](evidence/audio-mir/2026-07-25-giantsteps-key-5.report.json): 2/5 exact, MIREX weighted score 0.44, coverage 4/5; one parallel-mode miss, one unrelated miss, and one abstention; p50 10.60 seconds.
-- [GuitarSet report](evidence/audio-mir/2026-07-25-guitarset-5.report.json): 5/5 tempo Acc1; beat F-measure 0.903 and CMLc 0.593; downbeat F-measure 0.676 and CMLc 0.508; key exact/MIREX 0.60; p50 3.97 seconds per roughly 30-second clip.
+- [GiantSteps tempo report](evidence/audio-mir/2026-07-25-giantsteps-tempo-5.report.json): 5/5 Acc1 and Acc2, all exact-tempo class, p50 11.87 seconds per two-minute preview.
+- [GiantSteps key report](evidence/audio-mir/2026-07-25-giantsteps-key-5.report.json): 2/5 exact, MIREX weighted score 0.44, coverage 4/5; one parallel-mode miss, one unrelated miss, and one abstention; p50 11.48 seconds.
+- [GuitarSet report](evidence/audio-mir/2026-07-25-guitarset-5.report.json): 5/5 tempo Acc1; beat F-measure 0.903 and CMLc 0.593; downbeat F-measure 0.676 and CMLc 0.508; key exact/MIREX 0.60; p50 3.93 seconds per roughly 30-second clip.
 
 This is plumbing evidence, not an accuracy claim. Tempo is not obviously broken on the ten tempo-labeled tracks. After standard five-second trimming, global BPM can still be right while the event grid is incomplete or unstable; downbeat alignment/continuity is the clearest measured beat-side weakness. Key is weak enough to justify a larger S-KEY comparison before tuning fixed profiles.
 
