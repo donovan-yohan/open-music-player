@@ -64,6 +64,7 @@ class QueueProvider extends ChangeNotifier {
   final Map<String, Timer> _analysisRetryTimers = {};
   final Map<String, int> _analysisRequestAttempts = {};
   final Map<String, int> _analysisTransportFailures = {};
+  final Map<String, int> _analysisAnalyzedDetailLessResponses = {};
   final Set<String> _analysisPermanentFailures = {};
   final Map<String, _EnrichedTrackCacheEntry> _enrichedTrackCache = {};
   int _analysisRevision = 0;
@@ -226,6 +227,10 @@ class QueueProvider extends ChangeNotifier {
   /// Collection payloads already carry compact BPM/key metadata. Waveform
   /// arrays are hydrated only while a timeline lane needs them, which keeps
   /// removed tracks and hidden history from continuing background work.
+  ///
+  /// Callers provide tracks in priority order. Requests that have not started
+  /// are reordered to match the latest viewport while the existing in-flight
+  /// cap, retry cooldown, and generation checks remain authoritative.
   void setAnalysisHydrationInterest(Iterable<QueueTrack> tracks) {
     final retainedTracks = tracks.toList(growable: false);
     final next = <String>{};
@@ -246,6 +251,7 @@ class QueueProvider extends ChangeNotifier {
     _analysisHydrationInterest
       ..clear()
       ..addAll(next);
+    _reprioritizeQueuedAnalysisRequests(next);
 
     for (final track in retainedTracks) {
       final trackId = _analysisTrackId(track);
@@ -260,6 +266,20 @@ class QueueProvider extends ChangeNotifier {
       _fetchAnalysisIfNeeded(trackId);
     }
     _pruneAnalysisAuthorityState();
+  }
+
+  void _reprioritizeQueuedAnalysisRequests(Iterable<String> priorityKeys) {
+    if (_analysisRequestQueue.length < 2) return;
+    final queuedByKey = <String, _AnalysisRequest>{
+      for (final request in _analysisRequestQueue)
+        request.trackId.toString(): request,
+    };
+    _analysisRequestQueue
+      ..clear()
+      ..addAll([
+        for (final key in priorityKeys)
+          if (queuedByKey[key] case final request?) request,
+      ]);
   }
 
   void clearAnalysisHydrationInterest() {
@@ -1192,6 +1212,7 @@ class QueueProvider extends ChangeNotifier {
     final signature = _analysisCompactSignature(analysis);
     final cached = _analysisByTrackId[key];
     if (_hasWaveformDetail(analysis)) {
+      _analysisAnalyzedDetailLessResponses.remove(key);
       if (!identical(cached, analysis)) {
         _advanceAnalysisGeneration(key);
         _analysisByTrackId[key] = analysis;
@@ -1361,12 +1382,28 @@ class QueueProvider extends ChangeNotifier {
 
   bool _hasWaveformDetail(TrackAnalysis analysis) {
     final waveform = analysis.summary?.waveform;
-    return waveform != null &&
-        ((waveform.sampleCount ?? 0) > 0 ||
-            waveform.peaks.isNotEmpty ||
-            waveform.spectralBands.isNotEmpty ||
-            waveform.resolutions.isNotEmpty);
+    if (waveform == null) return false;
+    if (waveform.peaks.isNotEmpty ||
+        waveform.minPeaks.isNotEmpty ||
+        waveform.maxPeaks.isNotEmpty ||
+        waveform.rms.isNotEmpty ||
+        _hasChannelSamples(waveform.channels?.values) ||
+        _hasChannelSamples(waveform.spectralBands)) {
+      return true;
+    }
+    return waveform.resolutions.any(
+      (resolution) =>
+          resolution.peaks.isNotEmpty ||
+          resolution.minPeaks.isNotEmpty ||
+          resolution.maxPeaks.isNotEmpty ||
+          resolution.rms.isNotEmpty ||
+          _hasChannelSamples(resolution.channels) ||
+          _hasChannelSamples(resolution.spectralBands),
+    );
   }
+
+  bool _hasChannelSamples(Map<String, SpectralBandSummary>? channels) =>
+      channels?.values.any((channel) => channel.values.isNotEmpty) ?? false;
 
   void _fetchAnalysisIfNeeded(int trackId) {
     final key = trackId.toString();
@@ -1402,7 +1439,9 @@ class QueueProvider extends ChangeNotifier {
 
   bool _analysisNeedsHydration(String key) {
     if (_analysisPermanentFailures.contains(key) ||
-        (_analysisTransportFailures[key] ?? 0) >= _maxAnalysisRequestAttempts) {
+        (_analysisTransportFailures[key] ?? 0) >= _maxAnalysisRequestAttempts ||
+        (_analysisAnalyzedDetailLessResponses[key] ?? 0) >=
+            _maxAnalysisRequestAttempts) {
       return false;
     }
     final cached = _analysisByTrackId[key];
@@ -1467,6 +1506,13 @@ class QueueProvider extends ChangeNotifier {
         _analysisPermanentFailures.remove(key);
         _analysisTransportFailures.remove(key);
         final accepted = _analysisByTrackId[key] ?? analysis;
+        if (accepted.status == TrackAnalysisStatus.analyzed &&
+            !_hasWaveformDetail(accepted)) {
+          _analysisAnalyzedDetailLessResponses[key] =
+              (_analysisAnalyzedDetailLessResponses[key] ?? 0) + 1;
+        } else {
+          _analysisAnalyzedDetailLessResponses.remove(key);
+        }
         if (_hasWaveformDetail(accepted) &&
             accepted.status == TrackAnalysisStatus.analyzed) {
           _analysisLastRequestedAt.remove(key);
@@ -1569,6 +1615,7 @@ class QueueProvider extends ChangeNotifier {
         ..._analysisLastRequestedAt.keys,
         ..._analysisRequestAttempts.keys,
         ..._analysisTransportFailures.keys,
+        ..._analysisAnalyzedDetailLessResponses.keys,
         ..._analysisPermanentFailures,
         ..._analysisRequestsQueued,
         ..._analysisRequestsInFlight,
@@ -1652,6 +1699,7 @@ class QueueProvider extends ChangeNotifier {
     _analysisLastRequestedAt.remove(key);
     _analysisRequestAttempts.remove(key);
     _analysisTransportFailures.remove(key);
+    _analysisAnalyzedDetailLessResponses.remove(key);
     _analysisPermanentFailures.remove(key);
     _analysisRequestsQueued.remove(key);
     _analysisRequestQueue.removeWhere(
@@ -1682,6 +1730,7 @@ class QueueProvider extends ChangeNotifier {
     _advanceAnalysisGeneration(key);
     _analysisRequestsQueued.remove(key);
     _resetAnalysisRequestState(key);
+    _analysisAnalyzedDetailLessResponses.remove(key);
     _analysisByTrackId.remove(key);
     _appliedCompactAnalysisSignatures.remove(key);
     _lastIncomingAnalysisByTrackId.remove(key);

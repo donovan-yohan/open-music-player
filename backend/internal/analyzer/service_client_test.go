@@ -87,6 +87,35 @@ func TestServiceClientPostsAnalyzerContractAndParsesResponse(t *testing.T) {
 	if _, ok := summary["bpm"]; !ok {
 		t.Fatalf("summary missing bpm: %s", result.SummaryJSON)
 	}
+	waveform := summary["waveform"].(map[string]interface{})
+	if _, ok := waveform["peaks"]; ok {
+		t.Fatal("analyzer fixture summary double-ships detail peaks")
+	}
+	channels := waveform["channels"].(map[string]interface{})
+	if channels["channel_set"] != "bands3-v1" || channels["audio_ref"] != nil {
+		t.Fatalf("channels contract = %#v", channels)
+	}
+	values := channels["values"].(map[string]interface{})
+	var sharedScalar interface{}
+	for _, name := range []string{"low", "mid", "high"} {
+		descriptor := values[name].(map[string]interface{})
+		normalization := descriptor["normalization"].(map[string]interface{})
+		if sharedScalar == nil {
+			sharedScalar = normalization["scalar"]
+		} else if normalization["scalar"] != sharedScalar {
+			t.Fatalf("%s normalization scalar = %#v, want %#v", name, normalization["scalar"], sharedScalar)
+		}
+	}
+	var artifacts map[string]interface{}
+	if err := json.Unmarshal(result.ArtifactsJSON, &artifacts); err != nil {
+		t.Fatalf("artifacts json invalid: %v", err)
+	}
+	if _, ok := artifacts["channels"]; !ok {
+		t.Fatalf("artifacts missing channels: %s", result.ArtifactsJSON)
+	}
+	if _, ok := artifacts["spectral_bands"]; !ok {
+		t.Fatalf("artifacts missing legacy spectral_bands dual write: %s", result.ArtifactsJSON)
+	}
 	var provenance map[string]interface{}
 	if err := json.Unmarshal(result.ProvenanceJSON, &provenance); err != nil {
 		t.Fatalf("provenance json invalid: %v", err)
@@ -277,7 +306,7 @@ func TestServiceClientInfoReturnsVersionedAnalyzerIdentity(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
 			t.Fatalf("Authorization = %q", got)
 		}
-		_, _ = w.Write([]byte(`{"status":"healthy","analyzer":"omp-mir-analyzer","analyzer_version":"2026-07-11-3","tempo_model":"beat-this-v3","key_model":"librosa-v1"}`))
+		_, _ = w.Write([]byte(`{"status":"healthy","analyzer":"omp-mir-analyzer","analyzer_version":"2026-07-11-3","tempo_model":"beat-this-v3","key_model":"librosa-v1","spectral_provenance":"librosa-mel-bands-v2","spectral_channel_set":"bands3-v1"}`))
 	}))
 	defer server.Close()
 
@@ -295,6 +324,9 @@ func TestServiceClientInfoReturnsVersionedAnalyzerIdentity(t *testing.T) {
 	}
 	if info.Analyzer != "omp-mir-analyzer" || info.AnalyzerVersion != "2026-07-11-3" {
 		t.Fatalf("Info = %#v, want analyzer identity", info)
+	}
+	if info.SpectralProvenance != "librosa-mel-bands-v2" || info.SpectralChannelSet != "bands3-v1" {
+		t.Fatalf("Info = %#v, want spectral identity", info)
 	}
 }
 
@@ -330,7 +362,7 @@ func TestServiceClientInfoRejectsUnhealthyStatus(t *testing.T) {
 
 func TestServiceClientInfoRejectsBlankModelIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"healthy","analyzer":"omp-mir-analyzer","analyzer_version":"2026-07-11-3","tempo_model":"","key_model":"key-v1"}`))
+		_, _ = w.Write([]byte(`{"status":"healthy","analyzer":"omp-mir-analyzer","analyzer_version":"2026-07-11-3","tempo_model":"","key_model":"key-v1","spectral_provenance":"librosa-mel-bands-v2","spectral_channel_set":"bands3-v1"}`))
 	}))
 	defer server.Close()
 
@@ -340,5 +372,27 @@ func TestServiceClientInfoRejectsBlankModelIdentity(t *testing.T) {
 	}
 	if _, err := client.Info(context.Background()); err == nil || !strings.Contains(err.Error(), "model identity") {
 		t.Fatalf("Info error = %v, want missing model identity error", err)
+	}
+}
+
+func TestServiceClientInfoRejectsBlankSpectralIdentity(t *testing.T) {
+	for _, response := range []string{
+		`{"status":"healthy","analyzer":"omp-mir-analyzer","analyzer_version":"2026-07-11-3","tempo_model":"tempo-v3","key_model":"key-v1","spectral_channel_set":"bands3-v1"}`,
+		`{"status":"healthy","analyzer":"omp-mir-analyzer","analyzer_version":"2026-07-11-3","tempo_model":"tempo-v3","key_model":"key-v1","spectral_provenance":"librosa-mel-bands-v2","spectral_channel_set":""}`,
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(response))
+		}))
+
+		client, err := NewServiceClient(ServiceConfig{Enabled: true, BaseURL: server.URL})
+		if err != nil {
+			server.Close()
+			t.Fatalf("NewServiceClient returned error: %v", err)
+		}
+		_, infoErr := client.Info(context.Background())
+		server.Close()
+		if infoErr == nil || !strings.Contains(infoErr.Error(), "spectral identity") {
+			t.Fatalf("Info error = %v, want missing spectral identity error", infoErr)
+		}
 	}
 }

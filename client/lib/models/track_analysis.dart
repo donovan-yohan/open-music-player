@@ -26,13 +26,15 @@ class TrackAnalysis {
   factory TrackAnalysis.fromJson({
     Object? status,
     Object? summary,
+    Object? artifacts,
     Object? overrides,
     bool? overridesPresent,
     Object? updatedAt,
   }) {
     final parsedStatus = parseTrackAnalysisStatus(status);
-    final baseSummary =
-        summary == null ? null : TrackAnalysisSummary.fromJson(summary);
+    final baseSummary = summary == null
+        ? null
+        : TrackAnalysisSummary.fromJson(summary, artifacts: artifacts);
     final parsedOverrides = TrackAnalysisOverrides.fromJson(overrides);
     final effectiveSummary = parsedOverrides == null
         ? baseSummary
@@ -433,7 +435,7 @@ class TrackAnalysisSummary {
     this.cueCandidates = const [],
   });
 
-  factory TrackAnalysisSummary.fromJson(Object? json) {
+  factory TrackAnalysisSummary.fromJson(Object? json, {Object? artifacts}) {
     final map = _readMap(json);
     if (map == null || map.isEmpty) return const TrackAnalysisSummary();
     return TrackAnalysisSummary(
@@ -445,7 +447,10 @@ class TrackAnalysisSummary {
       energy: AnalysisValue.fromJson(map['energy']),
       loudness: LoudnessSummary.fromJson(map['loudness']),
       truePeak: TruePeakSummary.fromJson(map['true_peak'] ?? map['truePeak']),
-      waveform: WaveformSummary.fromJson(map['waveform']),
+      waveform: WaveformSummary.fromJson(
+        map['waveform'],
+        artifacts: artifacts,
+      ),
       transients: TransientsSummary.fromJson(map['transients']),
       silence: SilenceSummary.fromJson(map['silence']),
       intro: AnalysisRange.fromJson(map['intro']),
@@ -753,36 +758,91 @@ class TruePeakSummary {
 
 class WaveformSummary {
   final List<double> peaks;
+  final List<double> minPeaks;
+  final List<double> maxPeaks;
   final List<double> rms;
   final int? sampleCount;
   final List<WaveformResolutionSummary> resolutions;
+  final WaveformChannelsSummary? channels;
   final Map<String, SpectralBandSummary> spectralBands;
   final double? confidence;
   final String? provenance;
 
   const WaveformSummary({
     this.peaks = const [],
+    this.minPeaks = const [],
+    this.maxPeaks = const [],
     this.rms = const [],
     this.sampleCount,
     this.resolutions = const [],
+    this.channels,
     this.spectralBands = const {},
     this.confidence,
     this.provenance,
   });
 
-  static WaveformSummary? fromJson(Object? json) {
+  static WaveformSummary? fromJson(Object? json, {Object? artifacts}) {
     final map = _readMap(json);
     if (map == null) return null;
+    final artifactMap = _readMap(artifacts);
+    final waveformArtifacts = _readMap(artifactMap?['waveforms']);
+    final channelArtifacts = _readMap(artifactMap?['channels']);
+    final spectralArtifacts = _readMap(artifactMap?['spectral_bands']);
+    final preferredWaveform = _preferredArtifactTier(waveformArtifacts);
+    final preferredChannels = _preferredArtifactTier(channelArtifacts);
+    final preferredSpectral = _preferredArtifactTier(spectralArtifacts);
+    final resolutions = _readList(map['resolutions'])
+        .map(
+          (resolution) => WaveformResolutionSummary.fromJson(
+            resolution,
+            waveformArtifact: _namedArtifactTier(
+              waveformArtifacts,
+              _readString(_readMap(resolution)?['name']),
+            ),
+            channelArtifact: _namedArtifactTier(
+              channelArtifacts,
+              _readString(_readMap(resolution)?['name']),
+            ),
+            spectralArtifact: _namedArtifactTier(
+              spectralArtifacts,
+              _readString(_readMap(resolution)?['name']),
+            ),
+          ),
+        )
+        .whereType<WaveformResolutionSummary>()
+        .toList(growable: false);
     return WaveformSummary(
-      peaks: _readDoubleList(map['peaks']),
-      rms: _readDoubleList(map['rms']),
+      peaks: _readDoubleList(
+        map['peaks'] ?? preferredWaveform?['peaks'],
+      ),
+      minPeaks: _readDoubleList(
+        map['min_peaks'] ??
+            map['minPeaks'] ??
+            map['minima'] ??
+            preferredWaveform?['min_peaks'] ??
+            preferredWaveform?['minPeaks'] ??
+            preferredWaveform?['minima'],
+      ),
+      maxPeaks: _readDoubleList(
+        map['max_peaks'] ??
+            map['maxPeaks'] ??
+            map['maxima'] ??
+            preferredWaveform?['max_peaks'] ??
+            preferredWaveform?['maxPeaks'] ??
+            preferredWaveform?['maxima'],
+      ),
+      rms: _readDoubleList(map['rms'] ?? preferredWaveform?['rms']),
       sampleCount: _readInt(map['sample_count'] ?? map['sampleCount']),
-      resolutions: _readList(map['resolutions'])
-          .map(WaveformResolutionSummary.fromJson)
-          .whereType<WaveformResolutionSummary>()
-          .toList(growable: false),
-      spectralBands: _readSpectralBands(
-        map['spectral_bands'] ?? map['spectralBands'],
+      resolutions: resolutions,
+      channels: WaveformChannelsSummary.fromJson(
+        map['channels'],
+        artifactValues: preferredChannels,
+      ),
+      spectralBands: _mergeSpectralBands(
+        _readSpectralBands(
+          map['spectral_bands'] ?? map['spectralBands'],
+        ),
+        _readSpectralBands(preferredSpectral),
       ),
       confidence: _readDouble(map['confidence']),
       provenance: _readString(map['provenance']),
@@ -792,10 +852,13 @@ class WaveformSummary {
   Map<String, dynamic> toJson() {
     return {
       if (peaks.isNotEmpty) 'peaks': peaks,
+      if (minPeaks.isNotEmpty) 'min_peaks': minPeaks,
+      if (maxPeaks.isNotEmpty) 'max_peaks': maxPeaks,
       if (rms.isNotEmpty) 'rms': rms,
       if (sampleCount != null) 'sample_count': sampleCount,
       if (resolutions.isNotEmpty)
         'resolutions': resolutions.map((layer) => layer.toJson()).toList(),
+      if (channels != null) 'channels': channels!.toJson(),
       if (spectralBands.isNotEmpty)
         'spectral_bands': spectralBands.map(
           (key, value) => MapEntry(key, value.toJson()),
@@ -893,17 +956,35 @@ class WaveformResolutionSummary {
   final int? samplesPerPixel;
   final int? sampleCount;
   final String? artifactRef;
+  final List<double> peaks;
+  final List<double> minPeaks;
+  final List<double> maxPeaks;
+  final List<double> rms;
+  final Map<String, SpectralBandSummary> channels;
+  final Map<String, SpectralBandSummary> spectralBands;
 
   const WaveformResolutionSummary({
     this.name,
     this.samplesPerPixel,
     this.sampleCount,
     this.artifactRef,
+    this.peaks = const [],
+    this.minPeaks = const [],
+    this.maxPeaks = const [],
+    this.rms = const [],
+    this.channels = const {},
+    this.spectralBands = const {},
   });
 
-  static WaveformResolutionSummary? fromJson(Object? json) {
+  static WaveformResolutionSummary? fromJson(
+    Object? json, {
+    Object? waveformArtifact,
+    Object? channelArtifact,
+    Object? spectralArtifact,
+  }) {
     final map = _readMap(json);
     if (map == null) return null;
+    final waveform = _readMap(waveformArtifact);
     return WaveformResolutionSummary(
       name: _readString(map['name']),
       samplesPerPixel: _readInt(
@@ -911,6 +992,34 @@ class WaveformResolutionSummary {
       ),
       sampleCount: _readInt(map['sample_count'] ?? map['sampleCount']),
       artifactRef: _readString(map['artifact_ref'] ?? map['artifactRef']),
+      peaks: _readDoubleList(map['peaks'] ?? waveform?['peaks']),
+      minPeaks: _readDoubleList(
+        map['min_peaks'] ??
+            map['minPeaks'] ??
+            map['minima'] ??
+            waveform?['min_peaks'] ??
+            waveform?['minPeaks'] ??
+            waveform?['minima'],
+      ),
+      maxPeaks: _readDoubleList(
+        map['max_peaks'] ??
+            map['maxPeaks'] ??
+            map['maxima'] ??
+            waveform?['max_peaks'] ??
+            waveform?['maxPeaks'] ??
+            waveform?['maxima'],
+      ),
+      rms: _readDoubleList(map['rms'] ?? waveform?['rms']),
+      channels: _mergeSpectralBands(
+        _readChannelValues(map['channels']),
+        _readChannelValues(channelArtifact),
+      ),
+      spectralBands: _mergeSpectralBands(
+        _readSpectralBands(
+          map['spectral_bands'] ?? map['spectralBands'],
+        ),
+        _readSpectralBands(spectralArtifact),
+      ),
     );
   }
 
@@ -920,6 +1029,86 @@ class WaveformResolutionSummary {
       if (samplesPerPixel != null) 'samples_per_pixel': samplesPerPixel,
       if (sampleCount != null) 'sample_count': sampleCount,
       if (artifactRef != null) 'artifact_ref': artifactRef,
+      if (peaks.isNotEmpty) 'peaks': peaks,
+      if (minPeaks.isNotEmpty) 'min_peaks': minPeaks,
+      if (maxPeaks.isNotEmpty) 'max_peaks': maxPeaks,
+      if (rms.isNotEmpty) 'rms': rms,
+      if (channels.isNotEmpty)
+        'channels': channels.map(
+          (key, value) => MapEntry(key, value.toJson()),
+        ),
+      if (spectralBands.isNotEmpty)
+        'spectral_bands': spectralBands.map(
+          (key, value) => MapEntry(key, value.toJson()),
+        ),
+    };
+  }
+}
+
+class WaveformChannelsSummary {
+  final String? channelSet;
+  final Object? audioRef;
+  final int? sampleCount;
+  final Map<String, dynamic> normalization;
+  final Map<String, double> weights;
+  final Map<String, double> crossoversHz;
+  final String? provenance;
+  final Map<String, SpectralBandSummary> values;
+
+  const WaveformChannelsSummary({
+    this.channelSet,
+    this.audioRef,
+    this.sampleCount,
+    this.normalization = const {},
+    this.weights = const {},
+    this.crossoversHz = const {},
+    this.provenance,
+    this.values = const {},
+  });
+
+  static WaveformChannelsSummary? fromJson(
+    Object? json, {
+    Object? artifactValues,
+  }) {
+    final map = _readMap(json);
+    if (map == null) return null;
+    final descriptorValues = _readChannelValues(map['values']);
+    final resolvedValues = _mergeSpectralBands(
+      descriptorValues,
+      _readChannelValues(artifactValues),
+    );
+    return WaveformChannelsSummary(
+      channelSet: _readString(map['channel_set'] ?? map['channelSet']),
+      audioRef:
+          map.containsKey('audio_ref') ? map['audio_ref'] : map['audioRef'],
+      sampleCount: _readInt(map['sample_count'] ?? map['sampleCount']),
+      normalization: Map<String, dynamic>.unmodifiable(
+        _readMap(map['normalization']) ?? const {},
+      ),
+      weights: Map<String, double>.unmodifiable(
+        _readDoubleMap(map['weights']),
+      ),
+      crossoversHz: Map<String, double>.unmodifiable(
+        _readDoubleMap(map['crossovers_hz'] ?? map['crossoversHz']),
+      ),
+      provenance: _readString(map['provenance']),
+      values: Map<String, SpectralBandSummary>.unmodifiable(resolvedValues),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      if (channelSet != null) 'channel_set': channelSet,
+      'audio_ref': audioRef,
+      if (sampleCount != null) 'sample_count': sampleCount,
+      if (normalization.isNotEmpty) 'normalization': normalization,
+      if (weights.isNotEmpty) 'weights': weights,
+      if (crossoversHz.isNotEmpty) 'crossovers_hz': crossoversHz,
+      if (provenance != null) 'provenance': provenance,
+      if (values.isNotEmpty)
+        'values': values.map(
+          (key, value) => MapEntry(key, value.toJson()),
+        ),
     };
   }
 }
@@ -927,20 +1116,37 @@ class WaveformResolutionSummary {
 class SpectralBandSummary {
   final int? sampleCount;
   final String? artifactRef;
+  final Map<String, dynamic> normalization;
+  final double? weight;
+  final String? provenance;
   final List<double> values;
 
   const SpectralBandSummary({
     this.sampleCount,
     this.artifactRef,
+    this.normalization = const {},
+    this.weight,
+    this.provenance,
     this.values = const [],
   });
 
   static SpectralBandSummary? fromJson(Object? json) {
+    if (json is List) {
+      return SpectralBandSummary(
+        sampleCount: json.length,
+        values: _readDoubleList(json),
+      );
+    }
     final map = _readMap(json);
     if (map == null) return null;
     return SpectralBandSummary(
       sampleCount: _readInt(map['sample_count'] ?? map['sampleCount']),
       artifactRef: _readString(map['artifact_ref'] ?? map['artifactRef']),
+      normalization: Map<String, dynamic>.unmodifiable(
+        _readMap(map['normalization']) ?? const {},
+      ),
+      weight: _readDouble(map['weight']),
+      provenance: _readString(map['provenance']),
       values: _readDoubleList(map['values'] ?? map['samples'] ?? map['data']),
     );
   }
@@ -949,6 +1155,9 @@ class SpectralBandSummary {
     return {
       if (sampleCount != null) 'sample_count': sampleCount,
       if (artifactRef != null) 'artifact_ref': artifactRef,
+      if (normalization.isNotEmpty) 'normalization': normalization,
+      if (weight != null) 'weight': weight,
+      if (provenance != null) 'provenance': provenance,
       if (values.isNotEmpty) 'values': values,
     };
   }
@@ -1083,6 +1292,65 @@ Map<String, SpectralBandSummary> _readSpectralBands(Object? value) {
     }
   }
   return bands;
+}
+
+Map<String, SpectralBandSummary> _readChannelValues(Object? value) {
+  final map = _readMap(value);
+  if (map == null) return const {};
+  final nestedValues = _readMap(map['values']);
+  return _readSpectralBands(nestedValues ?? map);
+}
+
+Map<String, SpectralBandSummary> _mergeSpectralBands(
+  Map<String, SpectralBandSummary> descriptors,
+  Map<String, SpectralBandSummary> artifacts,
+) {
+  if (artifacts.isEmpty) return descriptors;
+  final merged = <String, SpectralBandSummary>{...descriptors};
+  for (final entry in artifacts.entries) {
+    final descriptor = descriptors[entry.key];
+    final artifact = entry.value;
+    merged[entry.key] = SpectralBandSummary(
+      sampleCount: artifact.sampleCount ??
+          descriptor?.sampleCount ??
+          artifact.values.length,
+      artifactRef: descriptor?.artifactRef ?? artifact.artifactRef,
+      normalization: descriptor?.normalization ?? artifact.normalization,
+      weight: descriptor?.weight ?? artifact.weight,
+      provenance: descriptor?.provenance ?? artifact.provenance,
+      values: artifact.values.isNotEmpty
+          ? artifact.values
+          : descriptor?.values ?? const [],
+    );
+  }
+  return merged;
+}
+
+Map<String, dynamic>? _namedArtifactTier(
+  Map<String, dynamic>? artifacts,
+  String? name,
+) {
+  if (artifacts == null || name == null) return null;
+  return _readMap(artifacts[name]);
+}
+
+Map<String, double> _readDoubleMap(Object? value) {
+  final map = _readMap(value);
+  if (map == null) return const {};
+  return {
+    for (final entry in map.entries)
+      if (_readDouble(entry.value) case final parsed?) entry.key: parsed,
+  };
+}
+
+Map<String, dynamic>? _preferredArtifactTier(
+  Map<String, dynamic>? artifacts,
+) {
+  if (artifacts == null) return null;
+  return _readMap(artifacts['detail']) ??
+      _readMap(artifacts['overview']) ??
+      _readMap(artifacts['values']) ??
+      artifacts;
 }
 
 String? _readString(Object? value) {

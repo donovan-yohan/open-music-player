@@ -23,18 +23,14 @@ class _TimelineMarkerCandidate {
 }
 
 class _TimelineFramePaintGeometry {
-  final double peak;
-  final double rms;
-  final Color coreColor;
-  final Color haloColor;
-  final Color rmsColor;
+  final double minPeak;
+  final double maxPeak;
+  final Color? coreColor;
 
   const _TimelineFramePaintGeometry({
-    required this.peak,
-    required this.rms,
+    required this.minPeak,
+    required this.maxPeak,
     required this.coreColor,
-    required this.haloColor,
-    required this.rmsColor,
   });
 }
 
@@ -216,36 +212,14 @@ class TimelineWaveformPaintCache {
     final frame =
         richFrames != null && richFrames.isNotEmpty ? richFrames[index] : null;
     final peak = frame?.peak ?? _framePeaks![index];
-    final rms = frame?.rms ?? peak * 0.68;
-    final low = frame?.low ?? 0.48;
-    final mid = frame?.mid ?? 0.52;
-    final high = frame?.high ?? 0.24;
+    final minPeak = frame?.resolvedMinPeak ?? -peak;
+    final maxPeak = frame?.resolvedMaxPeak ?? peak;
+    final channels = frame?.resolvedChannels ?? const <String, double>{};
     final geometry = _TimelineFramePaintGeometry(
-      peak: peak,
-      rms: rms,
-      coreColor: _eqColorForValues(
-        peak: peak,
-        rms: rms,
-        low: low,
-        mid: mid,
-        high: high,
-      ),
-      haloColor: _eqColorForValues(
-        peak: peak,
-        rms: rms,
-        low: low,
-        mid: mid,
-        high: high,
-        brighten: 0.04,
-      ),
-      rmsColor: _eqColorForValues(
-        peak: peak,
-        rms: rms,
-        low: low,
-        mid: mid,
-        high: high,
-        brighten: 0.08,
-      ),
+      minPeak: minPeak,
+      maxPeak: maxPeak,
+      coreColor:
+          channels.isEmpty ? null : seratoWaveformColorForChannels(channels),
     );
     _frameGeometryMissCount++;
     while (_frames.length >= _maxCachedFrameGeometry ||
@@ -330,38 +304,53 @@ class TimelineWaveformPaintCache {
   }
 }
 
-Color _eqColorForValues({
-  required double peak,
-  required double rms,
-  required double low,
-  required double mid,
-  required double high,
-  double brighten = 0.0,
-}) {
-  final normalizedLow = low.clamp(0.0, 1.0).toDouble();
-  final normalizedMid = mid.clamp(0.0, 1.0).toDouble();
-  final normalizedHigh = high.clamp(0.0, 1.0).toDouble();
-  final loudness = (peak * 0.68 + rms * 0.32).clamp(0.0, 1.0).toDouble();
-  final maxEnergy = math.max(
-    0.08,
-    math.max(normalizedLow, math.max(normalizedMid, normalizedHigh)),
-  );
-  final gain = 0.42 + loudness * 0.66;
-  final whiteLift =
-      math.min(normalizedLow, math.min(normalizedMid, normalizedHigh)) * 0.10 +
-          brighten;
-  final red = (math.pow(normalizedLow / maxEnergy, 0.62) * gain + whiteLift)
-      .clamp(0.0, 1.0);
-  final green = (math.pow(normalizedMid / maxEnergy, 0.62) * gain + whiteLift)
-      .clamp(0.0, 1.0);
-  final blue = (math.pow(normalizedHigh / maxEnergy, 0.62) * gain + whiteLift)
-      .clamp(0.0, 1.0);
+const Map<String, Color> _waveformChannelColors = {
+  'low': Color(0xFFFF0000),
+  'bass': Color(0xFFFF0000),
+  'sub': Color(0xFFFF0000),
+  'sub_bass': Color(0xFFFF0000),
+  'mid': Color(0xFF00FF00),
+  'mids': Color(0xFF00FF00),
+  'vocal': Color(0xFF00FF00),
+  'high': Color(0xFF0000FF),
+  'treble': Color(0xFF0000FF),
+};
 
+@visibleForTesting
+Color waveformChannelColor(String name) {
+  final normalized = name.trim().toLowerCase().replaceAll('-', '_');
+  final registered = _waveformChannelColors[normalized];
+  if (registered != null) return registered;
+  var hash = 2166136261;
+  for (final codeUnit in normalized.codeUnits) {
+    hash = ((hash ^ codeUnit) * 16777619) & 0x7fffffff;
+  }
+  return HSVColor.fromAHSV(1, (hash % 360).toDouble(), 1, 1).toColor();
+}
+
+/// Serato-style additive channel hue. Amplitude changes column geometry, not
+/// color brightness, so quiet and loud frames keep comparable spectral color.
+@visibleForTesting
+Color? seratoWaveformColorForChannels(Map<String, double> channels) {
+  var red = 0.0;
+  var green = 0.0;
+  var blue = 0.0;
+  for (final entry in channels.entries) {
+    final energy = entry.value.clamp(0.0, 1.0).toDouble();
+    if (energy <= 0) continue;
+    final color = waveformChannelColor(entry.key);
+    red += energy * color.r;
+    green += energy * color.g;
+    blue += energy * color.b;
+  }
+  final maxComponent = math.max(red, math.max(green, blue));
+  if (maxComponent <= 0) return null;
+  const value = 0.94;
   return Color.fromARGB(
     255,
-    (red * 255).round(),
-    (green * 255).round(),
-    (blue * 255).round(),
+    ((red / maxComponent) * value * 255).round().clamp(0, 255),
+    ((green / maxComponent) * value * 255).round().clamp(0, 255),
+    ((blue / maxComponent) * value * 255).round().clamp(0, 255),
   );
 }
 
@@ -676,6 +665,18 @@ class TimelineWaveformPainter extends CustomPainter {
       waveform: richWaveform,
     );
     if (frameCount == 0) {
+      final pendingPaint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.butt
+        ..strokeWidth = 1.5
+        ..color = color.withValues(alpha: 0.72);
+      final midY = size.height / 2;
+      canvas.drawLine(
+        Offset(size.width * startFraction, midY),
+        Offset(size.width * endFraction, midY),
+        pendingPaint,
+      );
+      _paintEditOverlays(canvas, size);
       paintCache._notifySizeChanged(cacheByteSizeBeforePaint);
       return;
     }
@@ -746,7 +747,6 @@ class TimelineWaveformPainter extends CustomPainter {
       final frac = (i + 0.5) / frameCount;
       final inTrim = frac >= trimStartFraction && frac <= trimEndFraction;
       final alpha = inTrim ? 1.0 : 0.46;
-      final peak = frame.peak;
       final localSourceMs = safeSourceDurationMs <= 0
           ? 0
           : (((i + 0.5) * safeSourceDurationMs) / frameCount).round();
@@ -755,19 +755,55 @@ class TimelineWaveformPainter extends CustomPainter {
         safeSourceDurationMs,
         size.width,
       );
-      final peakHeight = (peak.clamp(0.0, 1.0).toDouble()) * (size.height - 2);
-      if (peakHeight <= 0) continue;
-      final frameColor = hasRichFrames ? frame.coreColor : color;
+      final upperHeight =
+          frame.maxPeak.clamp(0.0, 1.0).toDouble() * (size.height / 2 - 1);
+      final lowerHeight =
+          (-frame.minPeak).clamp(0.0, 1.0).toDouble() * (size.height / 2 - 1);
+      if (upperHeight <= 0 && lowerHeight <= 0) continue;
+      final frameColor = hasRichFrames ? frame.coreColor ?? color : color;
       corePaint.color = _withAlpha(inTrim ? frameColor : dimColor, alpha);
       canvas.drawLine(
-        Offset(cx, midY - peakHeight / 2),
-        Offset(cx, midY + peakHeight / 2),
+        Offset(cx, midY - upperHeight),
+        Offset(cx, midY + lowerHeight),
         corePaint,
       );
     }
 
-    // Prototype snap notches remain separate from analyzed beat/downbeat ticks:
-    // they show the active edit mode, while beat ticks show musical structure.
+    _paintEditOverlays(canvas, size);
+    paintCache._notifySizeChanged(cacheByteSizeBeforePaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant TimelineWaveformPainter old) =>
+      (old.color != color &&
+          (_usesLaneColor(waveform) || _usesLaneColor(old.waveform))) ||
+      old.peaks != peaks ||
+      old.waveform != waveform ||
+      old.mixClip != mixClip ||
+      old.mappingRevision != mappingRevision ||
+      old.laneIdentity != laneIdentity ||
+      old.viewportPixelsPerMs != viewportPixelsPerMs ||
+      old.visibleStartFraction != visibleStartFraction ||
+      old.visibleEndFraction != visibleEndFraction ||
+      old.dimColor != dimColor ||
+      old.handleColor != handleColor ||
+      old.snapMarkerColor != snapMarkerColor ||
+      old.trimStartFraction != trimStartFraction ||
+      old.trimEndFraction != trimEndFraction ||
+      old.snapMarkerCount != snapMarkerCount;
+
+  bool _usesLaneColor(TimelineWaveformData? data) =>
+      data == null ||
+      data.frames.isEmpty ||
+      data.frames.any((frame) => frame.resolvedChannels.isEmpty);
+
+  double _sliceStrokeWidth(double slot) {
+    if (!slot.isFinite || slot <= 0) return 0.5;
+    return (slot * 1.16).clamp(0.6, 5.0).toDouble();
+  }
+
+  void _paintEditOverlays(Canvas canvas, Size size) {
+    // Edit-mode snap notches remain separate from analyzed beat/downbeat ticks.
     if (snapMarkerCount > 0) {
       final marker = Paint()
         ..color = snapMarkerColor ?? handleColor.withValues(alpha: 0.48)
@@ -787,33 +823,9 @@ class TimelineWaveformPainter extends CustomPainter {
       ..color = handleColor
       ..strokeWidth = 2;
     for (final frac in [trimStartFraction, trimEndFraction]) {
-      final x = (frac.clamp(0.0, 1.0)) * size.width;
+      final x = frac.clamp(0.0, 1.0) * size.width;
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), handle);
     }
-    paintCache._notifySizeChanged(cacheByteSizeBeforePaint);
-  }
-
-  @override
-  bool shouldRepaint(covariant TimelineWaveformPainter old) =>
-      old.peaks != peaks ||
-      old.waveform != waveform ||
-      old.mixClip != mixClip ||
-      old.mappingRevision != mappingRevision ||
-      old.laneIdentity != laneIdentity ||
-      old.viewportPixelsPerMs != viewportPixelsPerMs ||
-      old.visibleStartFraction != visibleStartFraction ||
-      old.visibleEndFraction != visibleEndFraction ||
-      ((waveform?.frames.isEmpty ?? true) && old.color != color) ||
-      old.dimColor != dimColor ||
-      old.handleColor != handleColor ||
-      old.snapMarkerColor != snapMarkerColor ||
-      old.trimStartFraction != trimStartFraction ||
-      old.trimEndFraction != trimEndFraction ||
-      old.snapMarkerCount != snapMarkerCount;
-
-  double _sliceStrokeWidth(double slot) {
-    if (!slot.isFinite || slot <= 0) return 0.5;
-    return (slot * 1.16).clamp(0.6, 5.0).toDouble();
   }
 
   void _paintSilenceRanges(

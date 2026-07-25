@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract beat/downbeat and tonal metadata for the Go analyzer service."""
+"""Extract beat/downbeat, tonal, and spectral metadata for the Go analyzer."""
 
 from __future__ import annotations
 
@@ -27,9 +27,21 @@ BEAT_THIS_SAMPLE_RATE = 22050
 BEAT_THIS_N_FFT = 1024
 MIN_BEAT_THIS_SAMPLES = BEAT_THIS_N_FFT // 2 + 1
 ANALYZER_NAME = "omp-mir-analyzer"
-ANALYZER_VERSION = "2026-07-11-3"
+ANALYZER_VERSION = "2026-07-24-1"
 BEAT_GRID_ALGORITHM = "dynamic-meter-posterior-v3"
 TEMPO_MODEL_VERSION = "beat-this-final0-v1.1.0-audio2frames-postprocessor-dynamic-meter-posterior-v3"
+SPECTRAL_PROVENANCE = "librosa-mel-bands-v2"
+SPECTRAL_CHANNEL_SET = "bands3-v1"
+# These are explicit tuning knobs, not hidden filter behavior. Mixxx-style
+# 600/4000 Hz crossovers are a documented alternative for a more mid-focused
+# display; OMP starts at 200/2000 Hz for bass/body/presence separation.
+LOW_CROSSOVER_HZ = 200.0
+HIGH_CROSSOVER_HZ = 2000.0
+LOW_BAND_WEIGHT = 1.0
+MID_BAND_WEIGHT = 1.6
+HIGH_BAND_WEIGHT = 2.8
+SPECTRAL_MEL_BANDS = 128
+SPECTRAL_FMIN_HZ = 20.0
 MIN_GRID_BEATS = 4
 MIN_GRID_INTERVAL_SECONDS = 0.18
 MAX_GRID_CELL_STEP = 8
@@ -452,6 +464,15 @@ def regularize_downbeats(
     return regular_downbeats, round(confidence, 3)
 
 
+def _empty_spectral_result() -> dict[str, object]:
+    return {
+        "spectral_bands": {"low": [], "mid": [], "high": []},
+        "spectral_normalization": 1.0,
+        "spectral_provenance": SPECTRAL_PROVENANCE,
+        "spectral_channel_set": SPECTRAL_CHANNEL_SET,
+    }
+
+
 def empty_mir_result() -> dict[str, object]:
     """Return the established helper schema without optional DJ metadata."""
     return {
@@ -463,6 +484,208 @@ def empty_mir_result() -> dict[str, object]:
         "key_index": None,
         "mode": None,
         "key_confidence": 0.0,
+    } | _empty_spectral_result()
+
+
+def normalize_spectral_bands(
+    low: np.ndarray,
+    mid: np.ndarray,
+    high: np.ndarray,
+    *,
+    low_weight: float = LOW_BAND_WEIGHT,
+    mid_weight: float = MID_BAND_WEIGHT,
+    high_weight: float = HIGH_BAND_WEIGHT,
+) -> tuple[dict[str, np.ndarray], float]:
+    """Apply fixed perceptual weights, then one scalar across all channels."""
+    weights = {
+        "low": float(low_weight),
+        "mid": float(mid_weight),
+        "high": float(high_weight),
+    }
+    if any(not math.isfinite(value) or value <= 0 for value in weights.values()):
+        raise ValueError("spectral band weights must be finite and positive")
+    weighted = {
+        "low": np.maximum(np.asarray(low, dtype=np.float64), 0) * weights["low"],
+        "mid": np.maximum(np.asarray(mid, dtype=np.float64), 0) * weights["mid"],
+        "high": np.maximum(np.asarray(high, dtype=np.float64), 0) * weights["high"],
+    }
+    shared_scalar = max(
+        (float(np.max(values)) if values.size else 0.0)
+        for values in weighted.values()
+    )
+    if not math.isfinite(shared_scalar) or shared_scalar <= 1e-12:
+        shared_scalar = 1.0
+    normalized = {
+        name: np.clip(values / shared_scalar, 0.0, 1.0)
+        for name, values in weighted.items()
+    }
+    return normalized, shared_scalar
+
+
+def aggregate_band_energy_at_pcm_boundaries(
+    values: np.ndarray,
+    frame_centers: np.ndarray,
+    pcm_sample_count: int,
+    frame_count: int,
+) -> np.ndarray:
+    """Max-reduce STFT centers into Go's exact integer PCM frame intervals."""
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    frame_centers = np.asarray(frame_centers, dtype=np.int64).reshape(-1)
+    if frame_count <= 0:
+        return np.asarray([], dtype=np.float64)
+    if values.size != frame_centers.size:
+        raise ValueError("spectral values and frame centers must have equal length")
+
+    valid = (frame_centers >= 0) & (frame_centers < pcm_sample_count)
+    values = np.nan_to_num(
+        values[valid],
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    frame_centers = frame_centers[valid]
+    if frame_centers.size == 0:
+        raise ValueError("mel frame grid has no valid PCM centers")
+    boundaries = (
+        np.arange(frame_count + 1, dtype=np.int64)
+        * np.int64(pcm_sample_count)
+        // np.int64(frame_count)
+    )
+    bin_indices = np.searchsorted(
+        boundaries,
+        frame_centers,
+        side="right",
+    ) - 1
+    output = np.full(frame_count, -np.inf, dtype=np.float64)
+    np.maximum.at(output, bin_indices, values)
+    covered = np.flatnonzero(np.isfinite(output))
+    if covered.size == 0:
+        raise ValueError("mel frame grid has no valid PCM centers")
+    if covered.size != frame_count:
+        missing = np.flatnonzero(~np.isfinite(output))
+        insertion = np.searchsorted(covered, missing)
+        left = covered[np.maximum(insertion - 1, 0)]
+        right = covered[np.minimum(insertion, covered.size - 1)]
+        nearest = np.where(missing - left <= right - missing, left, right)
+        output[missing] = output[nearest]
+    return output
+
+
+def extract_spectral_bands(
+    signal: np.ndarray,
+    sample_rate: int,
+    frame_count: int,
+    *,
+    pcm_sample_count: int | None = None,
+    low_crossover_hz: float = LOW_CROSSOVER_HZ,
+    high_crossover_hz: float = HIGH_CROSSOVER_HZ,
+    low_weight: float = LOW_BAND_WEIGHT,
+    mid_weight: float = MID_BAND_WEIGHT,
+    high_weight: float = HIGH_BAND_WEIGHT,
+) -> dict[str, object]:
+    """Aggregate mel energy onto the exact frame grid requested by Go."""
+    if frame_count <= 0:
+        return _empty_spectral_result()
+    if (
+        not math.isfinite(low_crossover_hz)
+        or not math.isfinite(high_crossover_hz)
+        or low_crossover_hz <= 0
+        or high_crossover_hz <= low_crossover_hz
+        or high_crossover_hz >= sample_rate / 2
+    ):
+        raise ValueError("spectral crossovers must be ordered inside Nyquist")
+
+    import librosa
+
+    samples = np.nan_to_num(
+        np.asarray(signal, dtype=np.float32).reshape(-1),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    if samples.size == 0:
+        raw = np.zeros(frame_count, dtype=np.float64)
+        normalized, scalar = normalize_spectral_bands(
+            raw,
+            raw,
+            raw,
+            low_weight=low_weight,
+            mid_weight=mid_weight,
+            high_weight=high_weight,
+        )
+    else:
+        pcm_sample_count = (
+            int(samples.size)
+            if pcm_sample_count is None
+            else int(pcm_sample_count)
+        )
+        hop_length = max(1, int(samples.size) // frame_count)
+        mel_power = librosa.feature.melspectrogram(
+            y=samples,
+            sr=sample_rate,
+            n_fft=2048,
+            hop_length=hop_length,
+            n_mels=SPECTRAL_MEL_BANDS,
+            fmin=SPECTRAL_FMIN_HZ,
+            fmax=float(sample_rate / 2),
+            power=2.0,
+            center=True,
+            pad_mode="constant",
+        )
+        mel_power = np.nan_to_num(
+            np.asarray(mel_power, dtype=np.float64),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        frequencies = librosa.mel_frequencies(
+            n_mels=SPECTRAL_MEL_BANDS + 2,
+            fmin=SPECTRAL_FMIN_HZ,
+            fmax=float(sample_rate / 2),
+        )[1:-1]
+        masks = {
+            "low": frequencies < low_crossover_hz,
+            "mid": (frequencies >= low_crossover_hz)
+            & (frequencies < high_crossover_hz),
+            "high": frequencies >= high_crossover_hz,
+        }
+        signal_centers = (
+            np.arange(mel_power.shape[1], dtype=np.int64)
+            * np.int64(hop_length)
+        )
+        pcm_centers = (
+            signal_centers
+            * np.int64(pcm_sample_count)
+            // np.int64(samples.size)
+        )
+        energies: dict[str, np.ndarray] = {}
+        for name, mask in masks.items():
+            if not np.any(mask):
+                raise ValueError(f"spectral crossover leaves {name} channel empty")
+            band_rms = np.sqrt(np.mean(np.maximum(mel_power[mask], 0.0), axis=0))
+            energies[name] = aggregate_band_energy_at_pcm_boundaries(
+                band_rms,
+                pcm_centers,
+                pcm_sample_count,
+                frame_count,
+            )
+        normalized, scalar = normalize_spectral_bands(
+            energies["low"],
+            energies["mid"],
+            energies["high"],
+            low_weight=low_weight,
+            mid_weight=mid_weight,
+            high_weight=high_weight,
+        )
+
+    return {
+        "spectral_bands": {
+            name: np.round(values, 6).tolist()
+            for name, values in normalized.items()
+        },
+        "spectral_normalization": round(float(scalar), 8),
+        "spectral_provenance": SPECTRAL_PROVENANCE,
+        "spectral_channel_set": SPECTRAL_CHANNEL_SET,
     }
 
 
@@ -489,7 +712,18 @@ def load_beat_this_signal(audio_path: Path) -> np.ndarray:
     return np.asanyarray(signal)
 
 
-def analyze(audio_path: Path, model_path: Path) -> dict[str, object]:
+def analyze(
+    audio_path: Path,
+    model_path: Path,
+    *,
+    waveform_frames: int = 0,
+    pcm_samples: int = 0,
+    low_crossover_hz: float = LOW_CROSSOVER_HZ,
+    high_crossover_hz: float = HIGH_CROSSOVER_HZ,
+    low_weight: float = LOW_BAND_WEIGHT,
+    mid_weight: float = MID_BAND_WEIGHT,
+    high_weight: float = HIGH_BAND_WEIGHT,
+) -> dict[str, object]:
     if not audio_path.is_file():
         raise ValueError(f"audio file does not exist: {audio_path}")
     if not model_path.is_file():
@@ -497,7 +731,17 @@ def analyze(audio_path: Path, model_path: Path) -> dict[str, object]:
 
     signal = load_beat_this_signal(audio_path)
     if signal.size < MIN_BEAT_THIS_SAMPLES:
-        return empty_mir_result()
+        return empty_mir_result() | extract_spectral_bands(
+            signal,
+            BEAT_THIS_SAMPLE_RATE,
+            waveform_frames,
+            pcm_sample_count=pcm_samples or signal.size,
+            low_crossover_hz=low_crossover_hz,
+            high_crossover_hz=high_crossover_hz,
+            low_weight=low_weight,
+            mid_weight=mid_weight,
+            high_weight=high_weight,
+        )
 
     from beat_this.inference import Audio2Frames
     from beat_this.model.postprocessor import Postprocessor
@@ -542,21 +786,29 @@ def analyze(audio_path: Path, model_path: Path) -> dict[str, object]:
 
     import librosa
 
-    audio, sample_rate = librosa.load(
-        audio_path, sr=BEAT_THIS_SAMPLE_RATE, mono=True
-    )
-    if audio.size < sample_rate:
+    if signal.size < BEAT_THIS_SAMPLE_RATE:
         key_index, mode, key_confidence = None, None, 0.0
     else:
-        harmonic = librosa.effects.harmonic(audio)
+        harmonic = librosa.effects.harmonic(signal)
         chroma = librosa.feature.chroma_cqt(
             y=harmonic,
-            sr=sample_rate,
+            sr=BEAT_THIS_SAMPLE_RATE,
             hop_length=4096,
             bins_per_octave=36,
         )
         key_index, mode, key_confidence = estimate_key(chroma)
 
+    spectral = extract_spectral_bands(
+        signal,
+        BEAT_THIS_SAMPLE_RATE,
+        waveform_frames,
+        pcm_sample_count=pcm_samples or signal.size,
+        low_crossover_hz=low_crossover_hz,
+        high_crossover_hz=high_crossover_hz,
+        low_weight=low_weight,
+        mid_weight=mid_weight,
+        high_weight=high_weight,
+    )
     return {
         "bpm": bpm,
         "tempo_confidence": grid_confidence,
@@ -566,7 +818,7 @@ def analyze(audio_path: Path, model_path: Path) -> dict[str, object]:
         "key_index": key_index,
         "mode": mode,
         "key_confidence": key_confidence,
-    }
+    } | spectral
 
 
 def check_runtime(model_path: Path) -> dict[str, str]:
@@ -585,6 +837,8 @@ def check_runtime(model_path: Path) -> dict[str, str]:
         "status": "ready",
         "tempo_model": TEMPO_MODEL_VERSION,
         "key_model": f"librosa-{librosa.__version__}-cqt-krumhansl-v1",
+        "spectral_provenance": SPECTRAL_PROVENANCE,
+        "spectral_channel_set": SPECTRAL_CHANNEL_SET,
     }
 
 
@@ -593,13 +847,30 @@ def main() -> None:
     parser.add_argument("audio", nargs="?", type=Path)
     parser.add_argument("--model", required=True, type=Path)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--waveform-frames", type=int, default=0)
+    parser.add_argument("--pcm-samples", type=int, default=0)
+    parser.add_argument("--low-crossover-hz", type=float, default=LOW_CROSSOVER_HZ)
+    parser.add_argument("--high-crossover-hz", type=float, default=HIGH_CROSSOVER_HZ)
+    parser.add_argument("--low-weight", type=float, default=LOW_BAND_WEIGHT)
+    parser.add_argument("--mid-weight", type=float, default=MID_BAND_WEIGHT)
+    parser.add_argument("--high-weight", type=float, default=HIGH_BAND_WEIGHT)
     args = parser.parse_args()
     if args.check:
         result = check_runtime(args.model)
     else:
         if args.audio is None:
             parser.error("audio is required unless --check is used")
-        result = analyze(args.audio, args.model)
+        result = analyze(
+            args.audio,
+            args.model,
+            waveform_frames=args.waveform_frames,
+            pcm_samples=args.pcm_samples,
+            low_crossover_hz=args.low_crossover_hz,
+            high_crossover_hz=args.high_crossover_hz,
+            low_weight=args.low_weight,
+            mid_weight=args.mid_weight,
+            high_weight=args.high_weight,
+        )
     print(json.dumps(result, separators=(",", ":")))
 
 

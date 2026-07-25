@@ -65,6 +65,19 @@ RUN ffmpeg -hide_banner -loglevel error -f lavfi \
         /tmp/mir-smoke.wav > /tmp/mir-smoke.json \
     && python -c 'import json; r=json.load(open("/tmp/mir-smoke.json")); assert 118 <= r["bpm"] <= 122 and len(r["beats_ms"]) >= 20, r' \
     && rm -f /tmp/mir-smoke.wav /tmp/mir-smoke.json
+RUN ffmpeg -hide_banner -loglevel error -f lavfi \
+        -i "aevalsrc=if(lt(t\\,2)\\,0.6*sin(2*PI*100*t)\\,0.2*sin(2*PI*8000*t)):s=22050:d=4" \
+        -ac 1 -codec:a libmp3lame -q:a 4 /tmp/spectral-smoke.mp3 \
+    && PCM_SAMPLES="$(ffprobe -v error -show_entries format=duration \
+        -of default=noprint_wrappers=1:nokey=1 /tmp/spectral-smoke.mp3 \
+        | awk '{printf "%.0f", $1 * 22050}')" \
+    && python /app/audio_mir.py \
+        --model /app/models/beat_this-final0.ckpt \
+        --waveform-frames 320 \
+        --pcm-samples "$PCM_SAMPLES" \
+        /tmp/spectral-smoke.mp3 > /tmp/spectral-smoke.json \
+    && python -c 'import json,statistics,sys; sys.path.insert(0,"/app"); import audio_mir; pcm=int(sys.argv[1]); decoded=audio_mir.load_beat_this_signal(audio_mir.Path("/tmp/spectral-smoke.mp3")).size; r=json.load(open("/tmp/spectral-smoke.json")); b=r["spectral_bands"]; low=statistics.median(b["low"][20:140]); mid_early=statistics.median(b["mid"][20:140]); high_early=statistics.median(b["high"][20:140]); high=statistics.median(b["high"][180:300]); low_late=statistics.median(b["low"][180:300]); mid_late=statistics.median(b["mid"][180:300]); peaks={name:max(values) for name,values in b.items()}; assert pcm != decoded,(pcm,decoded); assert low > 3*max(mid_early,high_early),(low,mid_early,high_early); assert high > 3*max(low_late,mid_late),(high,low_late,mid_late); assert sum(peak >= 0.99 for peak in peaks.values()) == 1,peaks; assert min(peaks.values()) < 0.8,peaks; print(f"spectral smoke ok pcm={pcm} decoded={decoded} low={low:.4f} high={high:.4f} peaks={peaks}")' "$PCM_SAMPLES" \
+    && rm -f /tmp/spectral-smoke.mp3 /tmp/spectral-smoke.json
 
 COPY --from=builder /audio-analyzer /app/audio-analyzer
 

@@ -19,6 +19,8 @@ import 'package:open_music_player/widgets/stacked_waveform_timeline.dart';
 import 'package:open_music_player/widgets/timeline_clip_widget.dart';
 import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
 
+import 'support/waveform_fixtures.dart';
+
 QueueTrack _track(
   String id,
   String title,
@@ -141,7 +143,7 @@ Future<void> _pump(
           previousTrack: previous,
           currentTrack: current,
           upcomingTracks: upcoming,
-          peaksFor: (t) => mockWaveformPeaks(t.id),
+          peaksFor: (t) => waveformPeaksFixture(t.id),
           waveformFor: waveformFor,
           trimRangeFor:
               trimRangeFor ?? (track) => TrimRange.full(track.durationMs),
@@ -660,9 +662,9 @@ void main() {
     });
   });
 
-  group('mock waveform fixtures', () {
+  group('explicit waveform fixtures', () {
     test('include near-silence and isolated transient spikes', () {
-      final peaks = mockWaveformPeaks('t1');
+      final peaks = waveformPeaksFixture('t1');
 
       final lo = peaks.reduce(math.min);
       final hi = peaks.reduce(math.max);
@@ -694,18 +696,21 @@ void main() {
     });
 
     test('are deterministic per track id', () {
-      expect(mockWaveformPeaks('t1'), mockWaveformPeaks('t1'));
-      expect(mockWaveformPeaks('t1'), isNot(mockWaveformPeaks('t2')));
+      expect(waveformPeaksFixture('t1'), waveformPeaksFixture('t1'));
+      expect(
+        waveformPeaksFixture('t1'),
+        isNot(waveformPeaksFixture('t2')),
+      );
     });
 
     test('tiny bar counts do not throw and stay normalised', () {
       for (final n in [0, 1, 2]) {
         expect(
-          () => mockWaveformPeaks('tiny-$n', barCount: n),
+          () => waveformPeaksFixture('tiny-$n', barCount: n),
           returnsNormally,
           reason: 'barCount=$n must not invert clamp bounds',
         );
-        final peaks = mockWaveformPeaks('tiny-$n', barCount: n);
+        final peaks = waveformPeaksFixture('tiny-$n', barCount: n);
         expect(peaks.length, n, reason: 'barCount=$n');
         for (final p in peaks) {
           expect(p, inInclusiveRange(0.06, 1.0), reason: 'barCount=$n');
@@ -967,7 +972,7 @@ void main() {
   });
 
   testWidgets(
-    'generates dense fallback waveform data when provider is omitted',
+    'keeps an honest pending lane when analysis is unavailable',
     (tester) async {
       await _pump(
         tester,
@@ -983,22 +988,12 @@ void main() {
       final after = _waveformPainter(tester, 't1').waveform;
 
       expect(before, isNotNull);
-      expect(before!.frames.length, greaterThanOrEqualTo(512));
+      expect(before!.frames, isEmpty);
+      expect(before.resolutionLabel, 'pending');
       expect(after, isNotNull);
-      expect(after!.frames.length, greaterThan(before.frames.length));
-      expect(after.frames.length, greaterThan(4096));
-      expect(
-        after.frames.map((frame) => frame.low).toSet().length,
-        greaterThan(8),
-      );
-      expect(
-        after.frames.map((frame) => frame.mid).toSet().length,
-        greaterThan(8),
-      );
-      expect(
-        after.frames.map((frame) => frame.high).toSet().length,
-        greaterThan(8),
-      );
+      expect(after!.frames, isEmpty);
+      expect(after.resolutionLabel, 'pending');
+      expect(after.beatsMs, isEmpty);
     },
   );
 

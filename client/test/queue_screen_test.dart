@@ -27,6 +27,94 @@ import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/screens/queue_screen.dart';
 import 'package:open_music_player/widgets/timeline_clip_widget.dart';
 
+List<int> _expectedTimelineHydrationTrackIds(
+  WidgetTester tester,
+  Finder laneScroll, {
+  required List<int> laneTrackIds,
+}) {
+  if (laneTrackIds.length < 3) {
+    throw ArgumentError.value(
+      laneTrackIds,
+      'laneTrackIds',
+      'must contain previous, current, and up-next lanes',
+    );
+  }
+  final viewport = tester.getRect(laneScroll);
+  final lanes = <({TimelineClipWidget widget, Rect bounds})>[];
+  for (final clipElement in find
+      .descendant(
+        of: laneScroll,
+        matching: find.byType(TimelineClipWidget),
+      )
+      .evaluate()) {
+    Element? laneElement;
+    clipElement.visitAncestorElements((ancestor) {
+      final widget = ancestor.widget;
+      if (widget is SizedBox &&
+          widget.width == double.infinity &&
+          widget.height != null) {
+        laneElement = ancestor;
+        return false;
+      }
+      return true;
+    });
+    if (laneElement == null) {
+      throw StateError('TimelineClipWidget has no rendered lane SizedBox');
+    }
+    final laneBox = laneElement!.renderObject! as RenderBox;
+    lanes.add((
+      widget: clipElement.widget as TimelineClipWidget,
+      bounds: laneBox.localToGlobal(Offset.zero) & laneBox.size,
+    ));
+  }
+  lanes.sort((left, right) => left.bounds.top.compareTo(right.bounds.top));
+
+  int analysisTrackId(TimelineClipWidget lane) =>
+      int.parse(lane.track.playbackTrackId ?? lane.track.id);
+  final visibleLaneIndices = [
+    for (var index = 0; index < lanes.length; index++)
+      if (lanes[index].bounds.bottom > viewport.top &&
+          lanes[index].bounds.top < viewport.bottom)
+        index,
+  ];
+  if (visibleLaneIndices.isEmpty) {
+    throw StateError('No rendered timeline lanes overlap the viewport');
+  }
+  final visibleTrackIndices = [
+    for (final laneIndex in visibleLaneIndices)
+      laneTrackIds.indexOf(analysisTrackId(lanes[laneIndex].widget)),
+  ];
+  if (visibleTrackIndices.any((index) => index < 0)) {
+    throw StateError(
+        'Rendered timeline lane is absent from fixture lane order');
+  }
+  final firstLookahead =
+      visibleTrackIndices.first == 0 ? 0 : visibleTrackIndices.first - 1;
+  final lastLookahead =
+      (visibleTrackIndices.last + 1).clamp(0, laneTrackIds.length - 1).toInt();
+  final current = lanes.where(
+    (lane) => lane.widget.role == LaneRole.current,
+  );
+  final upNext = lanes.where(
+    (lane) => lane.widget.role == LaneRole.upcoming,
+  );
+  final currentTrackId = current.isEmpty
+      ? laneTrackIds[1]
+      : analysisTrackId(current.single.widget);
+  final upNextTrackId =
+      upNext.isEmpty ? laneTrackIds[2] : analysisTrackId(upNext.first.widget);
+  final seen = <int>{};
+  return [
+    for (final trackId in [
+      currentTrackId,
+      upNextTrackId,
+      for (var index = firstLookahead; index <= lastLookahead; index++)
+        laneTrackIds[index],
+    ])
+      if (seen.add(trackId)) trackId,
+  ];
+}
+
 void main() {
   late _FakeQueueApiClient apiClient;
   late _FakePlaybackState playbackState;
@@ -594,6 +682,119 @@ void main() {
     expect(find.text('Start playback to use Timeline view'), findsOneWidget);
     expect(apiClient.analysisRequests, isEmpty);
   });
+
+  testWidgets(
+    '32-track queue fetches zero detail in list mode and only viewport interest '
+    'in timeline mode',
+    (tester) async {
+      apiClient.useCompactAnalysisFixture(currentIndex: 10, trackCount: 32);
+      final provider = _TrackingQueueProvider(apiClient);
+
+      await pumpQueueScreen(
+        tester,
+        queueProvider: provider,
+        showImportJobs: true,
+      );
+      await tester.pumpAndSettle();
+
+      expect(apiClient.analysisRequests, isEmpty);
+
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+
+      final laneScroll =
+          find.byKey(const PageStorageKey('timeline_lane_scroll'));
+      final initialExpected = _expectedTimelineHydrationTrackIds(
+        tester,
+        laneScroll,
+        laneTrackIds: apiClient.renderedTimelineAnalysisTrackIds,
+      );
+      expect(initialExpected, <int>[1111, 1212, 1010, 1313, 1414]);
+      expect(initialExpected.take(2), <int>[1111, 1212]);
+      expect(provider.lastInterestTrackIds, initialExpected);
+      expect(apiClient.analysisRequests, initialExpected);
+      expect(apiClient.analysisRequests, hasLength(initialExpected.length));
+      expect(initialExpected.length, lessThan(32));
+    },
+  );
+
+  testWidgets(
+    'scrolling held hydration cancels departed lanes but pins current and next',
+    (tester) async {
+      apiClient
+        ..useCompactAnalysisFixture(currentIndex: 10, trackCount: 32)
+        ..holdAnalysisRequests = true;
+      final provider = _TrackingQueueProvider(apiClient);
+      await pumpQueueScreen(
+        tester,
+        queueProvider: provider,
+        showImportJobs: true,
+      );
+      expect(apiClient.analysisRequests, isEmpty);
+
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+
+      final heldLaneScroll =
+          find.byKey(const PageStorageKey('timeline_lane_scroll'));
+      final heldInitialExpected = _expectedTimelineHydrationTrackIds(
+        tester,
+        heldLaneScroll,
+        laneTrackIds: apiClient.renderedTimelineAnalysisTrackIds,
+      );
+      expect(provider.lastInterestTrackIds, heldInitialExpected);
+      expect(
+        apiClient.analysisRequests,
+        heldInitialExpected.take(3),
+        reason: 'the cap admits current, next, then the first visible lane',
+      );
+
+      await tester.drag(
+        heldLaneScroll,
+        const Offset(0, -1200),
+      );
+      await tester.pumpAndSettle();
+
+      final scrolledInterest = provider.lastInterestTrackIds;
+      final scrolledExpected = _expectedTimelineHydrationTrackIds(
+        tester,
+        heldLaneScroll,
+        laneTrackIds: apiClient.renderedTimelineAnalysisTrackIds,
+      );
+      expect(scrolledInterest, scrolledExpected);
+      expect(scrolledInterest.length, lessThan(32));
+      expect(scrolledInterest.take(2), <int>[1111, 1212]);
+      expect(
+        scrolledInterest.skip(2).every((trackId) => trackId > 1414),
+        isTrue,
+        reason: 'the held non-pinned initial lanes must have left the viewport',
+      );
+
+      final departedQueued = heldInitialExpected.skip(3).toSet();
+      expect(departedQueued, <int>{1313, 1414});
+      expect(scrolledInterest.where(departedQueued.contains), isEmpty);
+
+      apiClient.releaseHeldAnalysisRequests();
+      await tester.pumpAndSettle();
+
+      expect(apiClient.analysisRequests, containsAll(scrolledInterest));
+      expect(
+        apiClient.analysisRequests.where(departedQueued.contains),
+        isEmpty,
+        reason:
+            'queued lanes that scrolled away must be cancelled before fetch',
+      );
+      expect(provider.lastInterestTrackIds.take(2), <int>[1111, 1212]);
+      expect(
+        apiClient.analysisRequests.where((trackId) => trackId == 1111),
+        hasLength(1),
+      );
+      expect(
+        apiClient.analysisRequests.where((trackId) => trackId == 1212),
+        hasLength(1),
+      );
+    },
+  );
 
   testWidgets('server timeline hydrates visible lanes as the user scrolls', (
     tester,
@@ -2771,11 +2972,16 @@ class _TrackingQueueProvider extends _CountingQueueProvider {
   _TrackingQueueProvider(super.apiClient);
 
   final List<String> distinctInterestSignatures = [];
+  List<int> lastInterestTrackIds = const [];
   int clearCalls = 0;
 
   @override
   void setAnalysisHydrationInterest(Iterable<QueueTrack> tracks) {
     final retained = tracks.toList(growable: false);
+    lastInterestTrackIds = [
+      for (final track in retained)
+        if (int.tryParse(track.playbackTrackId ?? track.id) case final id?) id,
+    ];
     final signature = retained.map((track) => track.queueItemId).join('|');
     if (distinctInterestSignatures.isEmpty ||
         distinctInterestSignatures.last != signature) {
@@ -2832,6 +3038,19 @@ class _FakeQueueApiClient extends ApiClient {
   bool hydrateAnalysisFixture = false;
   bool holdAnalysisRequests = false;
   Completer<QueueState>? _loadCompleter;
+
+  List<int> get renderedTimelineAnalysisTrackIds {
+    final firstLaneIndex =
+        _state.currentIndex > 0 ? _state.currentIndex - 1 : _state.currentIndex;
+    if (firstLaneIndex < 0) {
+      return const [];
+    }
+    return [
+      for (final track in _state.tracks.skip(firstLaneIndex))
+        if (int.tryParse(track.playbackTrackId ?? track.id) case final trackId?)
+          trackId,
+    ];
+  }
 
   void moveBeforePlaybackStarts() {
     _state = QueueState(

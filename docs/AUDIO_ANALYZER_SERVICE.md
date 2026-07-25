@@ -24,6 +24,17 @@ The analyzer container also accepts:
 | `ANALYZER_CONCURRENCY` | `1` | Backend dispatch and service MIR concurrency, clamped to 1-4. Keep at 1 on low-memory hosts. |
 | `ANALYZER_SAMPLE_RATE` | `22050` | PCM sample rate used by the waveform pipeline. |
 | `ANALYZER_WAVEFORM_HZ` | `80` | Maximum detail waveform frames per second, bounded by the service cap. |
+| `ANALYZER_SPECTRAL_LOW_HZ` | `200` | Tunable low/mid crossover in Hz. |
+| `ANALYZER_SPECTRAL_HIGH_HZ` | `2000` | Tunable mid/high crossover in Hz. |
+| `ANALYZER_SPECTRAL_LOW_WEIGHT` | `1.0` | Perceptual low-channel weight applied before shared normalization. |
+| `ANALYZER_SPECTRAL_MID_WEIGHT` | `1.6` | Perceptual mid-channel weight applied before shared normalization. |
+| `ANALYZER_SPECTRAL_HIGH_WEIGHT` | `2.8` | Perceptual high-channel weight applied before shared normalization. |
+
+Crossovers and weights are explicit tuning knobs. The shipped
+`200 Hz / 2 kHz` and `1.0 / 1.6 / 2.8` defaults favor bass, body, and presence;
+`600 Hz / 4 kHz` is the documented Mixxx-style crossover alternative. Change
+these only as one analyzer deployment and bump the analyzer provenance when
+the defaults change so stored artifacts are rolled forward.
 
 ## Service contract
 
@@ -79,9 +90,41 @@ Response (`200`):
         { "name": "detail", "samples_per_pixel": 256, "sample_count": 12, "artifact_ref": "waveforms.detail" }
       ],
       "spectral_bands": {
-        "low": { "sample_count": 6, "artifact_ref": "spectral_bands.overview.low" },
-        "mid": { "sample_count": 6, "artifact_ref": "spectral_bands.overview.mid" },
-        "high": { "sample_count": 6, "artifact_ref": "spectral_bands.overview.high" }
+        "low": { "sample_count": 12, "artifact_ref": "spectral_bands.detail.low" },
+        "mid": { "sample_count": 12, "artifact_ref": "spectral_bands.detail.mid" },
+        "high": { "sample_count": 12, "artifact_ref": "spectral_bands.detail.high" }
+      },
+      "channels": {
+        "channel_set": "bands3-v1",
+        "audio_ref": null,
+        "sample_count": 12,
+        "normalization": { "kind": "shared_peak", "scalar": 2.8 },
+        "weights": { "low": 1.0, "mid": 1.6, "high": 2.8 },
+        "crossovers_hz": { "low_mid": 200, "mid_high": 2000 },
+        "provenance": "librosa-mel-bands-v2",
+        "values": {
+          "low": {
+            "sample_count": 12,
+            "artifact_ref": "channels.detail.low",
+            "normalization": { "kind": "shared_peak", "scalar": 2.8 },
+            "weight": 1.0,
+            "provenance": "librosa-mel-bands-v2"
+          },
+          "mid": {
+            "sample_count": 12,
+            "artifact_ref": "channels.detail.mid",
+            "normalization": { "kind": "shared_peak", "scalar": 2.8 },
+            "weight": 1.6,
+            "provenance": "librosa-mel-bands-v2"
+          },
+          "high": {
+            "sample_count": 12,
+            "artifact_ref": "channels.detail.high",
+            "normalization": { "kind": "shared_peak", "scalar": 2.8 },
+            "weight": 2.8,
+            "provenance": "librosa-mel-bands-v2"
+          }
+        }
       },
       "confidence": 0.99,
       "provenance": "waveform"
@@ -101,8 +144,24 @@ Response (`200`):
       "fingerprint": "sha256-or-decoder-fingerprint"
     },
     "waveforms": {
-      "overview": { "sample_rate_hz": 2, "peaks": [0.0, 0.21, 0.65], "rms": [0.0, 0.14, 0.41] },
-      "detail": { "sample_rate_hz": 4, "peaks": [0.0, 0.12, 0.21], "rms": [0.0, 0.08, 0.14] }
+      "overview": { "sample_rate_hz": 2, "peaks": [0.0, 0.21, 0.65], "minima": [0.0, -0.18, -0.58], "maxima": [0.0, 0.21, 0.65], "rms": [0.0, 0.14, 0.41] },
+      "detail": { "sample_rate_hz": 4, "peaks": [0.0, 0.12, 0.21], "minima": [0.0, -0.10, -0.18], "maxima": [0.0, 0.12, 0.21], "rms": [0.0, 0.08, 0.14] }
+    },
+    "channels": {
+      "channel_set": "bands3-v1",
+      "audio_ref": null,
+      "normalization": { "kind": "shared_peak", "scalar": 2.8 },
+      "provenance": "librosa-mel-bands-v2",
+      "overview": {
+        "low": [0.0, 0.17, 0.55],
+        "mid": [0.0, 0.20, 0.61],
+        "high": [0.0, 0.09, 0.23]
+      },
+      "detail": {
+        "low": [0.0, 0.08, 0.17],
+        "mid": [0.0, 0.11, 0.20],
+        "high": [0.0, 0.04, 0.09]
+      }
     },
     "spectral_bands": {
       "overview": {
@@ -123,13 +182,14 @@ Response (`200`):
   },
   "provenance": {
     "analyzer": "omp-mir-analyzer",
-    "analyzer_version": "2026-07-10-3",
+    "analyzer_version": "2026-07-24-1",
     "model_versions": {
       "tempo": "beat-this-final0-v1.1.0",
       "downbeat": "beat-this-final0-v1.1.0",
       "key": "librosa-cqt-krumhansl-v1",
       "loudness": "loudness-v1",
-      "waveform": "waveform-v1"
+      "waveform": "spectral-v2",
+      "spectral": "librosa-mel-bands-v2"
     }
   }
 }
@@ -146,7 +206,36 @@ Analysis rows use these lifecycle states:
 - `stale`: stored artifacts were invalidated by a newer analyzer/model/source identity and should be repaired asynchronously.
 - `unsupported`: the source could not be analyzed.
 
-When an analyzer version or model version changes, backend maintenance can mark matching `analyzed` rows as `stale`; playback remains usable because stale analysis is metadata only, and the repair path re-queues those rows as `pending` without blocking import/share completion.
+When an analyzer version or model version changes, backend maintenance marks
+older `analyzed` rows as `stale`; playback remains usable because stale
+analysis is metadata only, and the repair path re-queues those rows as
+`pending` without blocking import/share completion.
+
+### Rolling re-analysis
+
+Deploy the analyzer and backend with the same new analyzer identity. The
+backend reads `/health`, marks older rows stale, and drains them in stable
+batches of 50. Claim work is bounded to four workers, while actual MIR work
+continues to honor `ANALYZER_CONCURRENCY` (keep it at `1` on the low-memory
+host). Each row's persisted lifecycle state is the resume checkpoint: a server
+restart selects remaining `stale` rows plus abandoned `pending`/`analyzing`
+rows, and the idempotent claim prevents duplicate live work.
+
+Each re-analysis reruns the full pipeline, including Beat This inference; the
+stateless analyzer does not reuse prior beat results.
+
+Watch the structured `Analyzer version reconciliation completed` log fields
+(`marked_stale`, `batches`, `queued`, `skipped`, `failures`). If the analyzer is
+temporarily unavailable, reconciliation retries every 30 seconds without
+mutating analysis rows. To resume failed/stale rows later in a smaller operator
+batch, use the authenticated maintenance endpoint:
+
+```bash
+curl -fsS -X POST "$OMP_API_BASE_URL/maintenance/repair" \
+  -H "Authorization: Bearer $OMP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata":false,"analysis":true,"staleAfterMinutes":30,"limit":25}'
+```
 
 ## Manual correction overrides
 
@@ -243,6 +332,15 @@ on harmonically ambiguous recordings.
 Decoded PCM duration is the timing authority for waveform bins, beats, and
 downbeats. Provider/catalog duration is retained separately for duration-sanity
 diagnostics, preventing marker drift when source metadata is slightly wrong.
+
+Spectral channels use librosa mel energy aggregated onto the exact Go-requested
+waveform frame count (80 Hz until the existing frame cap applies). Fixed
+perceptual weights are applied first, then all three named channels are divided
+by one shared peak scalar. This preserves real low/mid/high ratios instead of
+making every band independently look full scale. `channels` is the canonical
+`bands3-v1` contract; `spectral_bands` is dual-written for one release. Channel
+and waveform arrays live only in the per-track `artifacts` object, while
+`summary.waveform` carries bounded descriptors and artifact references.
 
 The analyzer image pins PyTorch CPU, Beat This, librosa, and the model checksum,
 then runs real model inference against a generated 120 BPM audio fixture.
