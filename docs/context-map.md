@@ -289,7 +289,7 @@ domain concept moves or a new production harness becomes canonical.
 | Source-quality rank CLI test | `go -C backend test ./cmd/sourcequality-rank/...` | Validates the additive scorer CLI the deterministic eval arm shells out to. |
 | Analyzer post-processing | `scripts/test analyzer` | Builds the lightweight synthetic MIR unit-test target. |
 | Audio MIR harness checks | `scripts/lint audio-mir`, `scripts/test audio-mir` | Ruff plus unit/contract tests for manifests, resumable analyzer artifacts, and scoring semantics; runs in CI. |
-| Audio MIR benchmark | `scripts/eval audio-mir --help` | Prepares local GiantSteps/GuitarSet manifests, invokes the pinned analyzer, and writes versioned tempo/beat/downbeat/key reports without committing audio. |
+| Audio MIR benchmark commands | `scripts/eval audio-mir --help` | Lists the local prepare/run/score subcommands; follow `docs/AUDIO_MIR_EVALS.md` for the artifact-producing workflow. |
 | Full analyzer image | `scripts/build analyzer` | Builds pinned CPU PyTorch, Beat This, librosa, and checksum-verified model layers. |
 | Delivery scaffold check | `scripts/agentic-harness` | Validates required agent docs, root scripts, CI wiring, JSON/Python/Bash syntax, and secret-like values. |
 | Adversarial delivery check | `scripts/agentic-harness` | Fails scaffold drift, missing doctrine-vs-harness policy text, and direct-to-main script/workflow bypass patterns. |

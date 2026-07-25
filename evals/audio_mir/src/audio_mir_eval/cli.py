@@ -20,6 +20,16 @@ from .runner import run_analyzer
 from .score import build_report
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="audio-mir", description="OMP tempo, beat/downbeat, and key evaluation"
@@ -39,7 +49,7 @@ def _parser() -> argparse.ArgumentParser:
     prepare_giantsteps.add_argument("--dataset-root", type=Path, required=True)
     prepare_giantsteps.add_argument("--task", choices=["tempo", "key"], required=True)
     prepare_giantsteps.add_argument("--output", type=Path, required=True)
-    prepare_giantsteps.add_argument("--limit", type=int)
+    prepare_giantsteps.add_argument("--limit", type=_positive_int)
 
     prepare_guitarset = subparsers.add_parser(
         "prepare-guitarset",
@@ -48,7 +58,7 @@ def _parser() -> argparse.ArgumentParser:
     prepare_guitarset.add_argument("--annotation-zip", type=Path, required=True)
     prepare_guitarset.add_argument("--audio-dir", type=Path, required=True)
     prepare_guitarset.add_argument("--output", type=Path, required=True)
-    prepare_guitarset.add_argument("--limit", type=int)
+    prepare_guitarset.add_argument("--limit", type=_positive_int)
 
     run = subparsers.add_parser(
         "run", help="invoke the exact OMP analyzer for each manifest item"
@@ -81,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     args.repo_root = args.repo_root.resolve()
     try:
         head = repo_head(args.repo_root)
+        if args.command in {"run", "score"} and head == "unknown":
+            raise EvalInputError("--repo-root must be an exact Git checkout root")
         if args.command == "prepare-giantsteps":
             count, missing = prepare_giantsteps_manifest(
                 args.dataset_root,

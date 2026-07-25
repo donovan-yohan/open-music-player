@@ -5,11 +5,35 @@ import json
 import sys
 from pathlib import Path
 
-from audio_mir_eval.cli import main
+import pytest
+
+from audio_mir_eval.cli import _parser, main
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_prepare_limit_must_be_positive(value: str):
+    with pytest.raises(SystemExit):
+        _parser().parse_args(
+            [
+                "prepare-giantsteps",
+                "--dataset-root",
+                "/tmp/dataset",
+                "--task",
+                "tempo",
+                "--output",
+                "/tmp/manifest.jsonl",
+                "--limit",
+                value,
+            ]
+        )
 
 
 def test_run_then_score_with_exact_analyzer_subprocess(tmp_path: Path):
@@ -60,7 +84,7 @@ else:
 
     run_args = [
         "--repo-root",
-        str(tmp_path),
+        str(_repo_root()),
         "run",
         "--manifest",
         str(manifest),
@@ -74,12 +98,13 @@ else:
         str(predictions),
     ]
     run_exit = main(run_args)
+    # Deleting the audio proves resume reuses the completed prediction.
     audio.unlink()
     resume_exit = main([*run_args, "--resume"])
     score_exit = main(
         [
             "--repo-root",
-            str(tmp_path),
+            str(_repo_root()),
             "score",
             "--manifest",
             str(manifest),
@@ -161,7 +186,7 @@ def test_score_fails_on_partial_prediction_set(tmp_path: Path, capsys):
         main(
             [
                 "--repo-root",
-                str(tmp_path),
+                str(_repo_root()),
                 "score",
                 "--manifest",
                 str(manifest),
@@ -176,7 +201,7 @@ def test_score_fails_on_partial_prediction_set(tmp_path: Path, capsys):
     assert "prediction set mismatch" in capsys.readouterr().err
 
 
-def test_score_rejects_prediction_manifest_hash_mismatch(tmp_path: Path):
+def test_score_rejects_prediction_manifest_hash_mismatch(tmp_path: Path, capsys):
     original = tmp_path / "original.jsonl"
     changed = tmp_path / "changed.jsonl"
     predictions = tmp_path / "predictions.jsonl"
@@ -210,7 +235,7 @@ def test_score_rejects_prediction_manifest_hash_mismatch(tmp_path: Path):
         main(
             [
                 "--repo-root",
-                str(tmp_path),
+                str(_repo_root()),
                 "score",
                 "--manifest",
                 str(changed),
@@ -222,3 +247,28 @@ def test_score_rejects_prediction_manifest_hash_mismatch(tmp_path: Path):
         )
         == 1
     )
+    assert "different manifest" in capsys.readouterr().err
+
+
+def test_run_rejects_unknown_repository_head(tmp_path: Path, capsys):
+    assert (
+        main(
+            [
+                "--repo-root",
+                str(tmp_path),
+                "run",
+                "--manifest",
+                str(tmp_path / "manifest.jsonl"),
+                "--analyzer-python",
+                str(tmp_path / "python"),
+                "--analyzer-script",
+                str(tmp_path / "analyzer.py"),
+                "--model",
+                str(tmp_path / "model.ckpt"),
+                "--output",
+                str(tmp_path / "predictions.jsonl"),
+            ]
+        )
+        == 1
+    )
+    assert "exact Git checkout root" in capsys.readouterr().err

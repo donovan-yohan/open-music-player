@@ -37,7 +37,7 @@ case "$TARGET" in
     # Audio and dataset files remain outside git; this package only validates,
     # runs, and scores explicit local manifests.
     cd "$ROOT"
-    exec uv run --project "$ROOT/evals/audio_mir" \
+    exec uv run --frozen --project "$ROOT/evals/audio_mir" \
       python -m audio_mir_eval.cli --repo-root "$ROOT" "$@"
     ;;
   *)

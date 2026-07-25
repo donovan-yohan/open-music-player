@@ -12,6 +12,7 @@ from audio_mir_eval.io import (
     load_predictions,
     repo_head,
     write_json,
+    write_manifest,
 )
 
 
@@ -45,6 +46,25 @@ def test_manifest_rejects_duplicate_track_ids(tmp_path: Path):
 
     with pytest.raises(EvalInputError, match="duplicate id"):
         load_manifest(path)
+
+
+def test_write_manifest_preserves_existing_file_when_validation_fails(tmp_path: Path):
+    path = tmp_path / "manifest.jsonl"
+    existing = {
+        "id": "existing",
+        "label_kind": "ground_truth",
+        "provenance": {"dataset": "fixture"},
+        "reference": {"bpm": 120},
+    }
+    _write_jsonl(path, [existing])
+    original = path.read_bytes()
+    invalid = existing | {"id": "duplicate"}
+
+    with pytest.raises(EvalInputError, match="duplicate id"):
+        write_manifest(path, [invalid, invalid])
+
+    assert path.read_bytes() == original
+    assert not list(tmp_path.glob("*.manifest"))
 
 
 def test_manifest_requires_reference_provenance_class(tmp_path: Path):
@@ -138,11 +158,13 @@ def test_manifest_rejects_unlabelled_key_and_out_of_range_events(tmp_path: Path)
         load_manifest(bpm_path)
 
 
-def test_repo_head_rejects_an_enclosing_repository():
+def test_repo_head_rejects_an_enclosing_repository(monkeypatch):
     root = Path(__file__).resolve().parents[3]
 
     assert repo_head(root) != "unknown"
     assert repo_head(root / "backend") == "unknown"
+    monkeypatch.setattr("audio_mir_eval.io.shutil.which", lambda _command: None)
+    assert repo_head(root) == "unknown"
 
 
 def test_atomic_write_respects_restrictive_umask(tmp_path: Path):

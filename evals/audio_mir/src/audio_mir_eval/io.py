@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterable
@@ -212,6 +213,14 @@ def load_partial_predictions(
     return _load_predictions(path, require_complete=False)
 
 
+def _fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_name: str | None = None
@@ -227,11 +236,7 @@ def _atomic_write(path: Path, content: str) -> None:
         os.umask(old_umask)
         os.chmod(temp_name, 0o666 & ~old_umask)
         os.replace(temp_name, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        _fsync_directory(path.parent)
     except Exception:
         if temp_name is not None:
             Path(temp_name).unlink(missing_ok=True)
@@ -247,12 +252,19 @@ def write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> None:
 
 
 def write_manifest(path: Path, records: list[dict[str, Any]]) -> None:
-    write_jsonl(path, records)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".manifest", dir=path.parent
+    )
+    os.close(descriptor)
+    temp_path = Path(temp_name)
     try:
-        load_manifest(path)
-    except Exception:
-        path.unlink(missing_ok=True)
-        raise
+        write_jsonl(temp_path, records)
+        load_manifest(temp_path)
+        os.replace(temp_path, path)
+        _fsync_directory(path.parent)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -269,9 +281,12 @@ def sha256_file(path: Path) -> str:
 
 def repo_head(repo_root: Path) -> str:
     repo_root = repo_root.resolve()
+    git = shutil.which("git")
+    if git is None:
+        return "unknown"
     try:
         top_level = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            [git, "rev-parse", "--show-toplevel"],
             cwd=repo_root,
             check=True,
             capture_output=True,
@@ -281,7 +296,7 @@ def repo_head(repo_root: Path) -> str:
         if not top_level or Path(top_level).resolve() != repo_root:
             return "unknown"
         completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            [git, "rev-parse", "HEAD"],
             cwd=repo_root,
             check=True,
             capture_output=True,
