@@ -10,6 +10,8 @@ from typing import Any
 import mir_eval
 import numpy as np
 
+from .io import MIR_EVAL_MAX_EVENT_SECONDS
+
 _PITCHES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 _KEY_RELATION = {
     1.0: "exact",
@@ -102,21 +104,29 @@ def _tempo_metrics(reference: float, estimate: Any) -> dict[str, Any]:
     }
 
 
-def _event_estimates(estimate_ms: Any) -> list[float]:
+def _event_estimates(estimate_ms: Any) -> tuple[list[float], int]:
     if not isinstance(estimate_ms, list):
-        return []
+        return [], 0
     estimate = []
+    dropped = 0
     for value in estimate_ms:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
+            dropped += 1
             continue
         seconds = float(value) / 1000.0
-        if math.isfinite(seconds) and seconds >= 0:
-            estimate.append(seconds)
-    return sorted(set(estimate))
+        if (
+            not math.isfinite(seconds)
+            or seconds < 0
+            or seconds > MIR_EVAL_MAX_EVENT_SECONDS
+        ):
+            dropped += 1
+            continue
+        estimate.append(seconds)
+    return sorted(set(estimate)), dropped
 
 
 def _event_metrics(reference: list[float], estimate_ms: Any) -> dict[str, Any]:
-    estimate = _event_estimates(estimate_ms)
+    estimate, dropped_estimates = _event_estimates(estimate_ms)
     reference_array = np.asarray(reference, dtype=float)
     estimate_array = np.asarray(estimate, dtype=float)
     evaluated_reference = mir_eval.beat.trim_beats(
@@ -130,6 +140,7 @@ def _event_metrics(reference: list[float], estimate_ms: Any) -> dict[str, Any]:
         "estimated_events": int(estimate_array.size),
         "evaluated_reference_events": int(evaluated_reference.size),
         "evaluated_estimated_events": int(evaluated_estimate.size),
+        "dropped_estimated_events": dropped_estimates,
         "trim_seconds": _BEAT_TRIM_SECONDS,
     }
     if evaluated_reference.size == 0:

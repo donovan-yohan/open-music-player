@@ -26,8 +26,10 @@ else:
         'downbeats_ms': [5000],
         'downbeat_confidence': 0.8,
         'key_index': 0,
+        'key': 'C major',
         'mode': 'major',
         'key_confidence': 0.7,
+        'spectral_bands': {'low': [1.0]},
     }))
 """,
         encoding="utf-8",
@@ -92,6 +94,15 @@ else:
     assert resume_exit == 0
     assert score_exit == 0
     result = json.loads(report.read_text(encoding="utf-8"))
+    prediction_rows = [
+        json.loads(line)
+        for line in predictions.read_text(encoding="utf-8").splitlines()
+    ]
+    prediction = next(
+        row for row in prediction_rows if row.get("record_type") == "prediction"
+    )
+    assert prediction["key"] == "C major"
+    assert "spectral_bands" not in prediction
     assert result["counts"] == {
         "expected": 1,
         "predictions": 1,
@@ -104,7 +115,7 @@ else:
     assert result["groups"]["ground_truth"]["key"]["weighted_score"] == 1.0
 
 
-def test_score_fails_on_partial_prediction_set(tmp_path: Path):
+def test_score_fails_on_partial_prediction_set(tmp_path: Path, capsys):
     manifest = tmp_path / "manifest.jsonl"
     _write_jsonl(
         manifest,
@@ -118,7 +129,21 @@ def test_score_fails_on_partial_prediction_set(tmp_path: Path):
         ],
     )
     predictions = tmp_path / "predictions.jsonl"
-    _write_jsonl(predictions, [{"id": "wrong", "bpm": 120}])
+    _write_jsonl(
+        predictions,
+        [
+            {
+                "record_type": "run",
+                "schema_version": 2,
+                "complete": True,
+                "prediction_count": 1,
+                "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                "repo_head": "abc",
+                "analyzer": {"analyzer": "fake"},
+            },
+            {"record_type": "prediction", "id": "wrong", "bpm": 120},
+        ],
+    )
 
     assert (
         main(
@@ -136,6 +161,7 @@ def test_score_fails_on_partial_prediction_set(tmp_path: Path):
         )
         == 1
     )
+    assert "prediction set mismatch" in capsys.readouterr().err
 
 
 def test_score_rejects_prediction_manifest_hash_mismatch(tmp_path: Path):

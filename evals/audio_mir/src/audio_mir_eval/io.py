@@ -21,6 +21,7 @@ class EvalInputError(ValueError):
 _ALLOWED_LABEL_KINDS = {"ground_truth", "external_reference", "synthetic"}
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MIR_EVAL_MAX_EVENT_SECONDS = 30000.0
 
 
 def _finite_number(value: Any, field: str) -> float:
@@ -40,6 +41,10 @@ def _event_list(value: Any, field: str) -> list[float]:
         raise EvalInputError(f"{field} cannot be empty")
     if any(item < 0 for item in events):
         raise EvalInputError(f"{field} cannot contain negative positions")
+    if any(item > MIR_EVAL_MAX_EVENT_SECONDS for item in events):
+        raise EvalInputError(
+            f"{field} cannot exceed {MIR_EVAL_MAX_EVENT_SECONDS:g} seconds"
+        )
     if events != sorted(set(events)):
         raise EvalInputError(f"{field} must be strictly increasing and unique")
     return events
@@ -68,6 +73,8 @@ def _validated_key(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise EvalInputError(f"{field} must be a string")
     key = value.strip()
+    if key.lower() == "x":
+        raise EvalInputError(f"{field} has no annotated key")
     try:
         mir_eval.key.validate(key, key)
     except ValueError as exc:
@@ -209,8 +216,15 @@ def _atomic_write(path: Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temp_name, 0o644)
+        old_umask = os.umask(0)
+        os.umask(old_umask)
+        os.chmod(temp_name, 0o666 & ~old_umask)
         os.replace(temp_name, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except Exception:
         if temp_name is not None:
             Path(temp_name).unlink(missing_ok=True)
@@ -247,7 +261,18 @@ def sha256_file(path: Path) -> str:
 
 
 def repo_head(repo_root: Path) -> str:
+    repo_root = repo_root.resolve()
     try:
+        top_level = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        if not top_level or Path(top_level).resolve() != repo_root:
+            return "unknown"
         completed = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=repo_root,

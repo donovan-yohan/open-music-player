@@ -19,9 +19,11 @@ Open Music Player is a self-hosted music library management system with three ma
 scripts/dev                         # Start the low-memory backend stack
 scripts/dev isolated                # Same stack on worktree-derived high ports
 scripts/dev test-infra              # Postgres/Redis/MinIO only, no backend worker
-scripts/test                        # Backend + client + extension tests
-scripts/test backend|client|extension
-scripts/lint                        # Backend + client + extension static checks
+scripts/test                        # All component tests (includes analyzer image build)
+scripts/test backend|analyzer|audio-mir|client|extension
+scripts/lint                        # Backend + analyzer + audio MIR + client + extension checks
+scripts/lint audio-mir              # Ruff checks for the MIR benchmark package
+scripts/eval audio-mir --help       # Local-only tempo/beat/downbeat/key benchmark harness
 scripts/lint delivery               # Agentic delivery docs/scripts/CI scaffold
 scripts/agentic-harness             # Direct deterministic scaffold/secret/syntax check
 scripts/build                       # Backend + client + extension build checks

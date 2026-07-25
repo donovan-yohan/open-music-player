@@ -21,6 +21,7 @@ _ANALYZER_RESULT_FIELDS = {
     "downbeats_ms",
     "downbeat_confidence",
     "key_index",
+    "key",
     "mode",
     "key_confidence",
 }

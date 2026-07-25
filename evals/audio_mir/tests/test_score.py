@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from audio_mir_eval.score import build_report, score_track
+import re
+from pathlib import Path
+
+from audio_mir_eval.score import _PITCHES, build_report, score_track
 
 
 def _manifest(track_id: str, label_kind: str, reference: dict):
@@ -41,6 +44,17 @@ def test_tempo_reports_acc1_and_standard_mirex_acc2_separately():
     assert third["tempo_class"] == "one_third"
 
 
+def test_pitch_index_contract_matches_go_analyzer():
+    repo_root = Path(__file__).resolve().parents[3]
+    source = (repo_root / "backend/cmd/audio-analyzer/main.go").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"var keyNames = \[\]string\{([^}]*)\}", source)
+
+    assert match is not None
+    assert tuple(re.findall(r'"([^"]+)"', match.group(1))) == _PITCHES
+
+
 def test_key_uses_mirex_relationship_weighting():
     result = score_track(
         _manifest("relative", "ground_truth", {"key": "C major"}),
@@ -69,6 +83,7 @@ def test_event_metrics_apply_standard_five_second_trim():
     reference = [index * 0.5 for index in range(21)]
     estimate_ms = [250, 750, 1250, 1750, 2250, 2750, 3250, 3750, 4250, 4750]
     estimate_ms.extend(int(value * 1000) for value in reference if value >= 5.0)
+    estimate_ms.append(40_000_000)
     result = score_track(
         _manifest("beats", "ground_truth", {"beats_seconds": reference}),
         {"id": "beats", "beats_ms": estimate_ms},
@@ -77,6 +92,7 @@ def test_event_metrics_apply_standard_five_second_trim():
     beats = result["metrics"]["beats"]
     assert beats["trim_seconds"] == 5.0
     assert beats["evaluated_reference_events"] == 11
+    assert beats["dropped_estimated_events"] == 1
     assert beats["f_measure_70ms"] == 1.0
     assert beats["cemgil"] == 1.0
     assert beats["cmlc"] == 1.0

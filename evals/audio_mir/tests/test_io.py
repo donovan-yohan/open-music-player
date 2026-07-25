@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
-from audio_mir_eval.io import EvalInputError, load_manifest, load_predictions
+from audio_mir_eval.io import (
+    EvalInputError,
+    load_manifest,
+    load_predictions,
+    repo_head,
+    write_json,
+)
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -102,3 +109,41 @@ def test_prediction_artifact_rejects_incomplete_run(tmp_path: Path):
 
     with pytest.raises(EvalInputError, match="incomplete"):
         load_predictions(path)
+
+
+def test_manifest_rejects_unlabelled_key_and_out_of_range_events(tmp_path: Path):
+    base = {
+        "id": "track",
+        "label_kind": "ground_truth",
+        "provenance": {"dataset": "fixture"},
+    }
+    key_path = tmp_path / "key.jsonl"
+    _write_jsonl(key_path, [base | {"reference": {"key": "X"}}])
+    with pytest.raises(EvalInputError, match="no annotated key"):
+        load_manifest(key_path)
+
+    events_path = tmp_path / "events.jsonl"
+    _write_jsonl(
+        events_path,
+        [base | {"reference": {"beats_seconds": [5.0, 30001.0]}}],
+    )
+    with pytest.raises(EvalInputError, match="cannot exceed 30000 seconds"):
+        load_manifest(events_path)
+
+
+def test_repo_head_rejects_an_enclosing_repository():
+    root = Path(__file__).resolve().parents[3]
+
+    assert repo_head(root) != "unknown"
+    assert repo_head(root / "backend") == "unknown"
+
+
+def test_atomic_write_respects_restrictive_umask(tmp_path: Path):
+    old_umask = os.umask(0o077)
+    try:
+        output = tmp_path / "report.json"
+        write_json(output, {"ok": True})
+    finally:
+        os.umask(old_umask)
+
+    assert output.stat().st_mode & 0o777 == 0o600
