@@ -67,6 +67,22 @@ def test_key_uses_mirex_relationship_weighting():
     assert key["exact"] == 0.0
 
 
+def test_key_credits_perfect_fifths_in_both_directions():
+    results = [
+        score_track(
+            _manifest(f"fifth-{key_index}", "ground_truth", {"key": "C major"}),
+            {"id": f"fifth-{key_index}", "key_index": key_index, "mode": "major"},
+        )["metrics"]["key"]
+        for key_index in (5, 7)
+    ]
+
+    assert [result["weighted_score"] for result in results] == [0.5, 0.5]
+    assert [result["relationship"] for result in results] == [
+        "perfect_fifth",
+        "perfect_fifth",
+    ]
+
+
 def test_missing_key_counts_as_an_exact_failure():
     result = score_track(
         _manifest("missing", "ground_truth", {"key": "C major"}),

@@ -199,7 +199,14 @@ def _key_metrics(reference: str, prediction: dict[str, Any]) -> dict[str, Any]:
             "relationship": "missing",
             "exact": 0.0,
         }
-    score = float(mir_eval.key.weighted_score(reference, estimate))
+    # mir_eval 0.8.2 only credits an estimated fifth above the reference.
+    # MIREX has credited fifths in both directions since 2017. Exact, relative,
+    # and parallel relationships are symmetric, so the maximum of both argument
+    # orders adds only the missing descending-fifth credit.
+    score = max(
+        float(mir_eval.key.weighted_score(reference, estimate)),
+        float(mir_eval.key.weighted_score(estimate, reference)),
+    )
     return {
         "available": True,
         "reference_key": reference,
