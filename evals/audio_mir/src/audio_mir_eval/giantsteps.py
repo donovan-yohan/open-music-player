@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .io import EvalInputError, write_jsonl
+from .io import EvalInputError, sha256_file, write_manifest
 
 _SOURCE = {
     "tempo": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
@@ -56,7 +56,9 @@ def prepare_manifest(
                     f"invalid tempo annotation: {annotation_path}"
                 ) from exc
             if bpm <= 0:
-                continue
+                raise EvalInputError(
+                    f"non-positive tempo annotation: {annotation_path}"
+                )
             reference = {"bpm": bpm}
             dataset = (
                 "giantsteps-tempo-v2"
@@ -72,6 +74,7 @@ def prepare_manifest(
             {
                 "id": f"{dataset}:{annotation_path.name[: -len(extension)]}",
                 "audio_path": os.path.relpath(audio_path, output_path.parent),
+                "audio_sha256": sha256_file(audio_path),
                 "label_kind": "ground_truth",
                 "provenance": {
                     "dataset": dataset,
@@ -86,5 +89,5 @@ def prepare_manifest(
             break
     if not records:
         raise EvalInputError("no matching GiantSteps audio and annotations were found")
-    write_jsonl(output_path, records)
+    write_manifest(output_path, records)
     return len(records), missing_audio

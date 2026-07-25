@@ -35,6 +35,14 @@ run_analyzer() {
   )
 }
 
+run_audio_mir() {
+  (
+    cd "$ROOT/evals/audio_mir"
+    uv run --frozen ruff check src tests
+    uv run --frozen ruff format --check src tests
+  )
+}
+
 run_client() {
   (
     cd "$ROOT/client"
@@ -63,6 +71,9 @@ case "$TARGET" in
   analyzer)
     run_analyzer
     ;;
+  audio-mir)
+    run_audio_mir
+    ;;
   client)
     run_client
     ;;
@@ -73,11 +84,12 @@ case "$TARGET" in
     run_delivery
     run_backend
     run_analyzer
+    run_audio_mir
     run_client
     run_extension
     ;;
   *)
-    echo "usage: scripts/lint [delivery|harness|backend|analyzer|client|extension|all]" >&2
+    echo "usage: scripts/lint [delivery|harness|backend|analyzer|audio-mir|client|extension|all]" >&2
     exit 2
     ;;
 esac

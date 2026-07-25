@@ -12,16 +12,33 @@ def _manifest(track_id: str, label_kind: str, reference: dict):
     }
 
 
-def test_tempo_reports_exact_and_octave_tolerant_accuracy_separately():
-    result = score_track(
-        _manifest("half", "ground_truth", {"bpm": 120.0}),
-        {"id": "half", "bpm": 60.0},
+def _report(manifest: list[dict], predictions: dict[str, dict]) -> dict:
+    return build_report(
+        manifest,
+        predictions,
+        run={"record_type": "run", "repo_head": "run-head"},
+        scorer_repo_head="score-head",
+        manifest_sha256="manifest",
+        predictions_sha256="predictions",
+        generated_at="2026-07-25T00:00:00+00:00",
     )
 
-    tempo = result["metrics"]["tempo"]
-    assert tempo["acc1"] == 0.0
-    assert tempo["acc2"] == 1.0
-    assert tempo["octave_class"] == "half"
+
+def test_tempo_reports_acc1_and_standard_mirex_acc2_separately():
+    half = score_track(
+        _manifest("half", "ground_truth", {"bpm": 120.0}),
+        {"id": "half", "bpm": 60.0},
+    )["metrics"]["tempo"]
+    third = score_track(
+        _manifest("third", "ground_truth", {"bpm": 120.0}),
+        {"id": "third", "bpm": 40.0},
+    )["metrics"]["tempo"]
+
+    assert half["acc1"] == 0.0
+    assert half["acc2"] == 1.0
+    assert half["tempo_class"] == "half"
+    assert third["acc2"] == 1.0
+    assert third["tempo_class"] == "one_third"
 
 
 def test_key_uses_mirex_relationship_weighting():
@@ -48,14 +65,18 @@ def test_missing_key_counts_as_an_exact_failure():
     assert key["exact"] == 0.0
 
 
-def test_event_metrics_include_alignment_and_continuity_scores():
-    reference = [0.0, 0.5, 1.0, 1.5, 2.0]
+def test_event_metrics_apply_standard_five_second_trim():
+    reference = [index * 0.5 for index in range(21)]
+    estimate_ms = [250, 750, 1250, 1750, 2250, 2750, 3250, 3750, 4250, 4750]
+    estimate_ms.extend(int(value * 1000) for value in reference if value >= 5.0)
     result = score_track(
         _manifest("beats", "ground_truth", {"beats_seconds": reference}),
-        {"id": "beats", "beats_ms": [0, 500, 1000, 1500, 2000]},
+        {"id": "beats", "beats_ms": estimate_ms},
     )
 
     beats = result["metrics"]["beats"]
+    assert beats["trim_seconds"] == 5.0
+    assert beats["evaluated_reference_events"] == 11
     assert beats["f_measure_70ms"] == 1.0
     assert beats["cemgil"] == 1.0
     assert beats["cmlc"] == 1.0
@@ -72,16 +93,29 @@ def test_report_never_blends_external_references_with_ground_truth():
         "external": {"id": "external", "bpm": 60.0},
     }
 
-    report = build_report(
-        manifest,
-        predictions,
-        run={},
-        repo_head="abc",
-        manifest_sha256="manifest",
-        predictions_sha256="predictions",
-        generated_at="2026-07-25T00:00:00+00:00",
-    )
+    report = _report(manifest, predictions)
 
     assert set(report["groups"]) == {"external_reference", "ground_truth"}
     assert report["groups"]["ground_truth"]["tempo"]["acc1"] == 1.0
     assert report["groups"]["external_reference"]["tempo"]["acc1"] == 0.0
+    assert "record_type" not in report["run"]
+
+
+def test_infra_errors_are_not_averaged_into_model_accuracy():
+    manifest = [
+        _manifest("ok", "ground_truth", {"bpm": 120.0}),
+        _manifest("infra", "ground_truth", {"bpm": 120.0}),
+    ]
+    predictions = {
+        "ok": {"id": "ok", "bpm": 120.0},
+        "infra": {"id": "infra", "error": {"type": "TimeoutExpired"}},
+    }
+
+    report = _report(manifest, predictions)
+    tempo = report["groups"]["ground_truth"]["tempo"]
+
+    assert tempo["references"] == 2
+    assert tempo["evaluated"] == 1
+    assert tempo["infra_errors"] == 1
+    assert tempo["coverage"] == 1.0
+    assert tempo["acc1"] == 1.0

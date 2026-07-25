@@ -18,6 +18,21 @@ _KEY_RELATION = {
     0.2: "parallel",
     0.0: "other",
 }
+_TEMPO_FACTORS = {
+    "one_third": 1.0 / 3.0,
+    "half": 0.5,
+    "exact": 1.0,
+    "double": 2.0,
+    "triple": 3.0,
+}
+_EVENT_METRIC_NAMES = ("f_measure_70ms", "cemgil", "cmlc", "cmlt", "amlc", "amlt")
+_TASK_METRIC_NAMES = {
+    "tempo": ("acc1", "acc2", "absolute_log2_error"),
+    "beats": _EVENT_METRIC_NAMES,
+    "downbeats": _EVENT_METRIC_NAMES,
+    "key": ("exact", "weighted_score"),
+}
+_BEAT_TRIM_SECONDS = 5.0
 
 
 def _mean(values: Iterable[float]) -> float | None:
@@ -55,85 +70,99 @@ def _prediction_key(prediction: dict[str, Any]) -> str | None:
 
 
 def _tempo_metrics(reference: float, estimate: Any) -> dict[str, Any]:
-    if isinstance(estimate, bool) or not isinstance(estimate, (int, float)):
+    if (
+        isinstance(estimate, bool)
+        or not isinstance(estimate, (int, float))
+        or not math.isfinite(float(estimate))
+        or float(estimate) <= 0
+    ):
         return {
             "available": False,
             "acc1": 0.0,
             "acc2": 0.0,
-            "octave_class": "missing",
+            "tempo_class": "missing",
             "absolute_log2_error": None,
         }
+
     estimate = float(estimate)
-    if not math.isfinite(estimate) or estimate <= 0:
-        return {
-            "available": False,
-            "acc1": 0.0,
-            "acc2": 0.0,
-            "octave_class": "missing",
-            "absolute_log2_error": None,
-        }
-    ratios = {"exact": 1.0, "half": 0.5, "double": 2.0}
     relative_errors = {
         name: abs(estimate - reference * factor) / (reference * factor)
-        for name, factor in ratios.items()
+        for name, factor in _TEMPO_FACTORS.items()
     }
-    closest = min(relative_errors, key=lambda name: relative_errors[name])
-    acc1 = float(relative_errors["exact"] <= 0.04)
-    acc2 = float(min(relative_errors.values()) <= 0.04)
-    octave_class = closest if relative_errors[closest] <= 0.04 else "other"
+    closest = min(relative_errors, key=relative_errors.__getitem__)
     return {
         "available": True,
         "reference_bpm": reference,
         "estimated_bpm": estimate,
         "ratio": round(estimate / reference, 6),
-        "acc1": acc1,
-        "acc2": acc2,
-        "octave_class": octave_class,
+        "acc1": float(relative_errors["exact"] <= 0.04),
+        "acc2": float(min(relative_errors.values()) <= 0.04),
+        "tempo_class": closest if relative_errors[closest] <= 0.04 else "other",
         "absolute_log2_error": round(abs(math.log2(estimate / reference)), 6),
     }
 
 
-def _event_metrics(reference: list[float], estimate_ms: Any) -> dict[str, Any]:
+def _event_estimates(estimate_ms: Any) -> list[float]:
     if not isinstance(estimate_ms, list):
-        estimate: list[float] = []
-    else:
-        estimate = []
-        for value in estimate_ms:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                continue
-            seconds = float(value) / 1000.0
-            if math.isfinite(seconds) and seconds >= 0:
-                estimate.append(seconds)
-        estimate = sorted(set(estimate))
+        return []
+    estimate = []
+    for value in estimate_ms:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        seconds = float(value) / 1000.0
+        if math.isfinite(seconds) and seconds >= 0:
+            estimate.append(seconds)
+    return sorted(set(estimate))
+
+
+def _event_metrics(reference: list[float], estimate_ms: Any) -> dict[str, Any]:
+    estimate = _event_estimates(estimate_ms)
     reference_array = np.asarray(reference, dtype=float)
     estimate_array = np.asarray(estimate, dtype=float)
-    if estimate_array.size == 0:
-        return {
-            "available": False,
-            "reference_events": int(reference_array.size),
-            "estimated_events": 0,
-            "f_measure_70ms": 0.0,
-            "cemgil": 0.0,
-            "cmlc": 0.0,
-            "cmlt": 0.0,
-            "amlc": 0.0,
-            "amlt": 0.0,
-        }
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        f_measure = float(mir_eval.beat.f_measure(reference_array, estimate_array))
-        cemgil = float(mir_eval.beat.cemgil(reference_array, estimate_array)[0])
-        try:
-            cmlc, cmlt, amlc, amlt = (
-                float(value)
-                for value in mir_eval.beat.continuity(reference_array, estimate_array)
-            )
-        except (ValueError, ZeroDivisionError):
-            cmlc = cmlt = amlc = amlt = 0.0
-    return {
-        "available": True,
+    evaluated_reference = mir_eval.beat.trim_beats(
+        reference_array, min_beat_time=_BEAT_TRIM_SECONDS
+    )
+    evaluated_estimate = mir_eval.beat.trim_beats(
+        estimate_array, min_beat_time=_BEAT_TRIM_SECONDS
+    )
+    common = {
         "reference_events": int(reference_array.size),
         "estimated_events": int(estimate_array.size),
+        "evaluated_reference_events": int(evaluated_reference.size),
+        "evaluated_estimated_events": int(evaluated_estimate.size),
+        "trim_seconds": _BEAT_TRIM_SECONDS,
+    }
+    if evaluated_reference.size == 0:
+        return {
+            "available": False,
+            "evaluable": False,
+            **common,
+            **dict.fromkeys(_EVENT_METRIC_NAMES),
+        }
+    if evaluated_estimate.size == 0:
+        return {
+            "available": False,
+            "evaluable": True,
+            **common,
+            **dict.fromkeys(_EVENT_METRIC_NAMES, 0.0),
+        }
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        f_measure = float(
+            mir_eval.beat.f_measure(evaluated_reference, evaluated_estimate)
+        )
+        cemgil = float(mir_eval.beat.cemgil(evaluated_reference, evaluated_estimate)[0])
+        cmlc, cmlt, amlc, amlt = (
+            float(value)
+            for value in mir_eval.beat.continuity(
+                evaluated_reference, evaluated_estimate
+            )
+        )
+    result = {
+        "available": True,
+        "evaluable": True,
+        **common,
         "f_measure_70ms": round(f_measure, 6),
         "cemgil": round(cemgil, 6),
         "cmlc": round(cmlc, 6),
@@ -141,6 +170,10 @@ def _event_metrics(reference: list[float], estimate_ms: Any) -> dict[str, Any]:
         "amlc": round(amlc, 6),
         "amlt": round(amlt, 6),
     }
+    warning_messages = sorted({str(item.message) for item in caught})
+    if warning_messages:
+        result["warnings"] = warning_messages
+    return result
 
 
 def _key_metrics(reference: str, prediction: dict[str, Any]) -> dict[str, Any]:
@@ -155,13 +188,12 @@ def _key_metrics(reference: str, prediction: dict[str, Any]) -> dict[str, Any]:
             "exact": 0.0,
         }
     score = float(mir_eval.key.weighted_score(reference, estimate))
-    relationship = _KEY_RELATION.get(round(score, 1), "other")
     return {
         "available": True,
         "reference_key": reference,
         "estimated_key": estimate,
         "weighted_score": round(score, 6),
-        "relationship": relationship,
+        "relationship": _KEY_RELATION.get(round(score, 1), "other"),
         "exact": float(score == 1.0),
     }
 
@@ -172,9 +204,11 @@ def score_track(manifest: dict[str, Any], prediction: dict[str, Any]) -> dict[st
         "label_kind": manifest["label_kind"],
         "provenance": manifest["provenance"],
         "status": "infra_error" if prediction.get("error") else "scored",
-        "error": prediction.get("error"),
         "metrics": {},
     }
+    if prediction.get("error"):
+        result["error"] = prediction["error"]
+
     reference = manifest["reference"]
     metrics = result["metrics"]
     if "bpm" in reference:
@@ -189,69 +223,74 @@ def score_track(manifest: dict[str, Any], prediction: dict[str, Any]) -> dict[st
         metrics["downbeats"] = _event_metrics(
             reference["downbeats_seconds"], prediction.get("downbeats_ms")
         )
+
     runtime = prediction.get("runtime_seconds")
     if isinstance(runtime, (int, float)) and not isinstance(runtime, bool):
         runtime = float(runtime)
         if math.isfinite(runtime) and runtime >= 0:
             result["runtime_seconds"] = runtime
     result["confidence"] = {
-        name: prediction.get(field)
+        name: prediction[field]
         for name, field in (
             ("tempo", "tempo_confidence"),
             ("key", "key_confidence"),
             ("downbeat", "downbeat_confidence"),
         )
         if isinstance(prediction.get(field), (int, float))
-        and not isinstance(prediction.get(field), bool)
+        and not isinstance(prediction[field], bool)
+        and math.isfinite(float(prediction[field]))
     }
     return result
 
 
+def _histogram(metrics: list[dict[str, Any]], field: str) -> dict[str, int]:
+    counts = defaultdict(int)
+    for metric in metrics:
+        counts[str(metric[field])] += 1
+    return dict(sorted(counts.items()))
+
+
 def _summarize_tracks(tracks: list[dict[str, Any]]) -> dict[str, Any]:
+    completed = [track for track in tracks if track["status"] == "scored"]
     summary: dict[str, Any] = {
         "tracks": len(tracks),
-        "infra_errors": sum(track["status"] == "infra_error" for track in tracks),
+        "completed": len(completed),
+        "infra_errors": len(tracks) - len(completed),
     }
     runtimes = [
-        track["runtime_seconds"] for track in tracks if "runtime_seconds" in track
+        track["runtime_seconds"] for track in completed if "runtime_seconds" in track
     ]
     summary["runtime_seconds"] = {
         "p50": _percentile(runtimes, 0.50),
         "p95": _percentile(runtimes, 0.95),
     }
-    for task in ("tempo", "beats", "downbeats", "key"):
-        task_metrics = [
-            track["metrics"][task] for track in tracks if task in track["metrics"]
-        ]
-        if not task_metrics:
+
+    for task, metric_names in _TASK_METRIC_NAMES.items():
+        task_tracks = [track for track in tracks if task in track["metrics"]]
+        if not task_tracks:
             continue
+        eligible = [track for track in task_tracks if track["status"] == "scored"]
+        metrics = [track["metrics"][task] for track in eligible]
+        evaluable = [metric for metric in metrics if metric.get("evaluable", True)]
+        available = [metric for metric in evaluable if metric.get("available", False)]
         task_summary: dict[str, Any] = {
-            "references": len(task_metrics),
-            "coverage": _mean(
-                float(metric.get("available", False)) for metric in task_metrics
-            ),
+            "references": len(task_tracks),
+            "evaluated": len(evaluable),
+            "infra_errors": len(task_tracks) - len(eligible),
+            "unevaluable_references": len(metrics) - len(evaluable),
+            "abstentions": len(evaluable) - len(available),
+            "coverage": round(len(available) / len(evaluable), 6)
+            if evaluable
+            else None,
         }
-        metric_names = {
-            "tempo": ("acc1", "acc2", "absolute_log2_error"),
-            "beats": ("f_measure_70ms", "cemgil", "cmlc", "cmlt", "amlc", "amlt"),
-            "downbeats": ("f_measure_70ms", "cemgil", "cmlc", "cmlt", "amlc", "amlt"),
-            "key": ("exact", "weighted_score"),
-        }[task]
         for name in metric_names:
-            value = _mean(
-                metric[name] for metric in task_metrics if metric.get(name) is not None
+            task_summary[name] = _mean(
+                metric[name] for metric in evaluable if metric.get(name) is not None
             )
-            task_summary[name] = value
         if task == "tempo":
-            counts = defaultdict(int)
-            for metric in task_metrics:
-                counts[metric["octave_class"]] += 1
-            task_summary["octave_classes"] = dict(sorted(counts.items()))
-        if task == "key":
-            counts = defaultdict(int)
-            for metric in task_metrics:
-                counts[metric["relationship"]] += 1
-            task_summary["relationships"] = dict(sorted(counts.items()))
+            task_summary["tempo_classes"] = _histogram(evaluable, "tempo_class")
+        elif task == "key":
+            task_summary["relationships"] = _histogram(evaluable, "relationship")
         summary[task] = task_summary
     return summary
 
@@ -261,7 +300,7 @@ def build_report(
     predictions: dict[str, dict[str, Any]],
     *,
     run: dict[str, Any],
-    repo_head: str,
+    scorer_repo_head: str,
     manifest_sha256: str,
     predictions_sha256: str,
     generated_at: str,
@@ -270,17 +309,19 @@ def build_report(
     by_kind: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for track in tracks:
         by_kind[track["label_kind"]].append(track)
+    completed = sum(track["status"] == "scored" for track in tracks)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": generated_at,
-        "repo_head": repo_head,
+        "scorer_repo_head": scorer_repo_head,
         "manifest_sha256": manifest_sha256,
         "predictions_sha256": predictions_sha256,
-        "run": run,
+        "run": {key: value for key, value in run.items() if key != "record_type"},
         "counts": {
             "expected": len(manifest),
-            "scored": len(tracks),
-            "infra_errors": sum(track["status"] == "infra_error" for track in tracks),
+            "predictions": len(tracks),
+            "completed": completed,
+            "infra_errors": len(tracks) - completed,
         },
         "groups": {
             label_kind: _summarize_tracks(kind_tracks)

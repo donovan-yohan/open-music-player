@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from .io import EvalInputError, write_jsonl
+from .io import EvalInputError, sha256_file, write_manifest
 
 _SOURCE = "https://doi.org/10.5281/zenodo.3371780"
 _AUDIO_SUFFIXES = {".wav", ".flac", ".mp3", ".ogg", ".m4a"}
@@ -69,22 +69,33 @@ def _reference(document: dict[str, Any]) -> dict[str, Any]:
         value = row.get("value")
         if not isinstance(time, (int, float)) or isinstance(time, bool) or time < 0:
             raise EvalInputError("GuitarSet beat_position time is invalid")
-        if not isinstance(value, dict) or not isinstance(value.get("position"), int):
+        position = value.get("position") if isinstance(value, dict) else None
+        if not isinstance(position, int) or isinstance(position, bool):
             raise EvalInputError("GuitarSet beat_position value is invalid")
         beats.append(float(time))
-        if value["position"] == 1:
+        if position == 1:
             downbeats.append(float(time))
+    beats = sorted(set(beats))
+    downbeats = sorted(set(downbeats))
+
     tempo_rows = _data(_annotation(document, "tempo"), "tempo")
+    if len(tempo_rows) != 1:
+        raise EvalInputError("GuitarSet global tempo must contain exactly one row")
     bpm = tempo_rows[0].get("value")
     if not isinstance(bpm, (int, float)) or isinstance(bpm, bool) or bpm <= 0:
         raise EvalInputError("GuitarSet tempo value is invalid")
+
     key_rows = _data(_annotation(document, "key_mode"), "key_mode")
-    return {
+    if len(key_rows) != 1:
+        raise EvalInputError("GuitarSet global key must contain exactly one row")
+    reference = {
         "bpm": float(bpm),
         "beats_seconds": beats,
-        "downbeats_seconds": downbeats,
         "key": _key_label(key_rows[0].get("value")),
     }
+    if downbeats:
+        reference["downbeats_seconds"] = downbeats
+    return reference
 
 
 def prepare_manifest(
@@ -127,6 +138,7 @@ def prepare_manifest(
                 {
                     "id": f"guitarset-1.1.0:{stem}",
                     "audio_path": os.path.relpath(audio_path, output_path.parent),
+                    "audio_sha256": sha256_file(audio_path),
                     "label_kind": "ground_truth",
                     "provenance": {
                         "dataset": "guitarset-1.1.0",
@@ -141,5 +153,5 @@ def prepare_manifest(
                 break
     if not records:
         raise EvalInputError("no matching GuitarSet audio and annotations were found")
-    write_jsonl(output_path, records)
+    write_manifest(output_path, records)
     return len(records), missing_audio

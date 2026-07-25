@@ -14,6 +14,7 @@ omp-audio-mir-eval = "audio_mir_eval.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8.2",
+    "ruff==0.16.0",
 ]
 
 [tool.uv]

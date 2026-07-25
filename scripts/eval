@@ -36,8 +36,9 @@ case "$TARGET" in
     shift
     # Audio and dataset files remain outside git; this package only validates,
     # runs, and scores explicit local manifests.
-    cd "$ROOT/evals/audio_mir"
-    exec uv run python -m audio_mir_eval.cli --repo-root "$ROOT" "$@"
+    cd "$ROOT"
+    exec uv run --project "$ROOT/evals/audio_mir" \
+      python -m audio_mir_eval.cli --repo-root "$ROOT" "$@"
     ;;
   *)
     echo "usage: scripts/eval [ai-assist|agent-search|audio-mir] [flags...]" >&2

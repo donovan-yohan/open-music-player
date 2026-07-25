@@ -4,7 +4,10 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from audio_mir_eval.guitarset import prepare_manifest
+from audio_mir_eval.io import EvalInputError
 
 
 def _jams() -> dict:
@@ -48,3 +51,31 @@ def test_prepare_guitarset_extracts_all_supported_reference_tasks(tmp_path: Path
         "key": "C# minor",
     }
     assert row["provenance"]["license"] == "CC-BY-4.0"
+    assert (
+        row["audio_sha256"]
+        == "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d"
+    )
+
+
+def test_prepare_guitarset_rejects_multirow_global_tempo(tmp_path: Path):
+    document = _jams()
+    tempo = next(
+        annotation
+        for annotation in document["annotations"]
+        if annotation["namespace"] == "tempo"
+    )
+    tempo["data"].append({"time": 1.0, "value": 121.0})
+    annotation_zip = tmp_path / "annotation.zip"
+    with zipfile.ZipFile(annotation_zip, "w") as archive:
+        archive.writestr("track.jams", json.dumps(document))
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    (audio_dir / "track_mic.wav").write_bytes(b"fixture")
+
+    with pytest.raises(EvalInputError, match="exactly one row"):
+        prepare_manifest(
+            annotation_zip,
+            audio_dir,
+            output_path=tmp_path / "manifest.jsonl",
+            limit=None,
+        )

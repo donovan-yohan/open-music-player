@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -58,6 +59,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--model", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--timeout-seconds", type=float, default=120.0)
+    run.add_argument(
+        "--resume",
+        action="store_true",
+        help="resume a compatible partial artifact and retry prior infra errors",
+    )
 
     score = subparsers.add_parser("score", help="score a complete prediction artifact")
     score.add_argument("--manifest", type=Path, required=True)
@@ -66,8 +72,13 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _repo_path(path: Path, repo_root: Path) -> Path:
+    return path if path.is_absolute() else repo_root / path
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    args.repo_root = args.repo_root.resolve()
     try:
         head = repo_head(args.repo_root)
         if args.command == "prepare-giantsteps":
@@ -100,12 +111,13 @@ def main(argv: list[str] | None = None) -> int:
             count, errors = run_analyzer(
                 manifest,
                 manifest_path=args.manifest,
-                analyzer_python=args.analyzer_python,
-                analyzer_script=args.analyzer_script,
-                model_path=args.model,
+                analyzer_python=_repo_path(args.analyzer_python, args.repo_root),
+                analyzer_script=_repo_path(args.analyzer_script, args.repo_root),
+                model_path=_repo_path(args.model, args.repo_root),
                 output_path=args.output,
                 repo_head=head,
                 timeout_seconds=args.timeout_seconds,
+                resume=args.resume,
             )
             print(
                 f"audio-mir eval: run tracks={count} infra_errors={errors} artifact={args.output}"
@@ -113,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if errors else 0
 
         run, predictions = load_predictions(args.predictions)
+        manifest_sha256 = sha256_file(args.manifest)
+        if run["manifest_sha256"] != manifest_sha256:
+            raise EvalInputError(
+                "prediction artifact was produced from a different manifest"
+            )
         expected_ids = {item["id"] for item in manifest}
         prediction_ids = set(predictions)
         missing = sorted(expected_ids - prediction_ids)
@@ -125,8 +142,8 @@ def main(argv: list[str] | None = None) -> int:
             manifest,
             predictions,
             run=run,
-            repo_head=head,
-            manifest_sha256=sha256_file(args.manifest),
+            scorer_repo_head=head,
+            manifest_sha256=manifest_sha256,
             predictions_sha256=sha256_file(args.predictions),
             generated_at=datetime.now(UTC).isoformat(),
         )
@@ -134,11 +151,11 @@ def main(argv: list[str] | None = None) -> int:
         errors = report["counts"]["infra_errors"]
         groups = ",".join(sorted(report["groups"]))
         print(
-            f"audio-mir eval: scored={report['counts']['scored']} infra_errors={errors} "
-            f"label_groups={groups} report={args.output}"
+            f"audio-mir eval: completed={report['counts']['completed']} "
+            f"infra_errors={errors} label_groups={groups} report={args.output}"
         )
         return 1 if errors else 0
-    except (EvalInputError, OSError, ValueError) as exc:
+    except (EvalInputError, OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"audio-mir eval: FAIL: {exc}", file=sys.stderr)
         return 1
 

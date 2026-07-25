@@ -7,7 +7,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .io import EvalInputError, sha256_file, write_jsonl
+from .io import (
+    EvalInputError,
+    load_partial_predictions,
+    sha256_file,
+    write_jsonl,
+)
+
+_ANALYZER_RESULT_FIELDS = {
+    "bpm",
+    "tempo_confidence",
+    "beats_ms",
+    "downbeats_ms",
+    "downbeat_confidence",
+    "key_index",
+    "mode",
+    "key_confidence",
+}
 
 
 def _parse_analyzer_json(stdout: str, context: str) -> dict[str, Any]:
@@ -31,10 +47,27 @@ def _invoke(command: list[str], timeout_seconds: float) -> tuple[dict[str, Any],
     )
     runtime = time.monotonic() - started
     if completed.returncode != 0:
-        raise EvalInputError(
-            f"analyzer exited {completed.returncode}; stderr was captured but is not embedded"
-        )
+        stderr = completed.stderr.strip()
+        detail = f": {stderr[-500:]}" if stderr else ""
+        raise EvalInputError(f"analyzer exited {completed.returncode}{detail}")
     return _parse_analyzer_json(completed.stdout, "analyzer"), runtime
+
+
+def _persist(
+    output_path: Path,
+    run_record: dict[str, Any],
+    predictions: dict[str, dict[str, Any]],
+    manifest_ids: list[str],
+    *,
+    complete: bool,
+) -> None:
+    run_record["updated_at"] = datetime.now(UTC).isoformat()
+    run_record["prediction_count"] = len(predictions)
+    run_record["complete"] = complete
+    ordered = [
+        predictions[track_id] for track_id in manifest_ids if track_id in predictions
+    ]
+    write_jsonl(output_path, [run_record, *ordered])
 
 
 def run_analyzer(
@@ -47,6 +80,7 @@ def run_analyzer(
     output_path: Path,
     repo_head: str,
     timeout_seconds: float,
+    resume: bool = False,
 ) -> tuple[int, int]:
     for path, label in (
         (analyzer_python, "analyzer Python"),
@@ -68,18 +102,45 @@ def run_analyzer(
         ],
         timeout_seconds,
     )
+    manifest_sha256 = sha256_file(manifest_path)
+    manifest_ids = [item["id"] for item in manifest]
     run_record: dict[str, Any] = {
         "record_type": "run",
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": datetime.now(UTC).isoformat(),
         "repo_head": repo_head,
-        "manifest_sha256": sha256_file(manifest_path),
+        "manifest_sha256": manifest_sha256,
         "analyzer": metadata,
     }
-    predictions: list[dict[str, Any]] = []
-    errors = 0
+    predictions: dict[str, dict[str, Any]] = {}
+
+    if resume and output_path.exists():
+        existing_run, existing_predictions = load_partial_predictions(output_path)
+        if existing_run["manifest_sha256"] != manifest_sha256:
+            raise EvalInputError("cannot resume: manifest_sha256 changed")
+        if existing_run["repo_head"] != repo_head:
+            raise EvalInputError("cannot resume: repo_head changed")
+        if existing_run["analyzer"] != metadata:
+            raise EvalInputError("cannot resume: analyzer metadata changed")
+        unexpected = set(existing_predictions) - set(manifest_ids)
+        if unexpected:
+            raise EvalInputError(
+                f"cannot resume: artifact contains unexpected ids: {sorted(unexpected)[:3]}"
+            )
+        run_record["created_at"] = existing_run.get(
+            "created_at", run_record["created_at"]
+        )
+        predictions = {
+            track_id: prediction
+            for track_id, prediction in existing_predictions.items()
+            if not prediction.get("error")
+        }
+
+    _persist(output_path, run_record, predictions, manifest_ids, complete=False)
     for item in manifest:
         track_id = item["id"]
+        if track_id in predictions:
+            continue
         raw_audio_path = item.get("audio_path")
         prediction: dict[str, Any] = {"record_type": "prediction", "id": track_id}
         try:
@@ -104,15 +165,23 @@ def run_analyzer(
                 ],
                 timeout_seconds,
             )
-            prediction.update(result)
+            prediction.update(
+                {
+                    key: value
+                    for key, value in result.items()
+                    if key in _ANALYZER_RESULT_FIELDS
+                }
+            )
             prediction["audio_sha256"] = audio_sha256
             prediction["runtime_seconds"] = round(runtime, 6)
         except (EvalInputError, OSError, subprocess.SubprocessError) as exc:
-            errors += 1
             prediction["error"] = {
                 "type": type(exc).__name__,
                 "message": str(exc)[:500],
             }
-        predictions.append(prediction)
-    write_jsonl(output_path, [run_record, *predictions])
+        predictions[track_id] = prediction
+        _persist(output_path, run_record, predictions, manifest_ids, complete=False)
+
+    _persist(output_path, run_record, predictions, manifest_ids, complete=True)
+    errors = sum(bool(prediction.get("error")) for prediction in predictions.values())
     return len(predictions), errors
