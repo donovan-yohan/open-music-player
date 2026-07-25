@@ -32,10 +32,10 @@ def _jams() -> dict:
 def test_prepare_guitarset_extracts_all_supported_reference_tasks(tmp_path: Path):
     annotation_zip = tmp_path / "annotation.zip"
     with zipfile.ZipFile(annotation_zip, "w") as archive:
-        archive.writestr("track.jams", json.dumps(_jams()))
+        archive.writestr("track-C#.jams", json.dumps(_jams()))
     audio_dir = tmp_path / "audio"
     audio_dir.mkdir()
-    (audio_dir / "track_mic.wav").write_bytes(b"fixture")
+    (audio_dir / "track-C#_mic.wav").write_bytes(b"fixture")
     output = tmp_path / "manifest.jsonl"
 
     count, missing = prepare_manifest(
@@ -44,6 +44,7 @@ def test_prepare_guitarset_extracts_all_supported_reference_tasks(tmp_path: Path
 
     row = json.loads(output.read_text(encoding="utf-8"))
     assert (count, missing) == (1, 0)
+    assert row["id"] == "guitarset-1.1.0:track-C-sharp"
     assert row["reference"] == {
         "bpm": 120.0,
         "beats_seconds": [0.0, 0.5, 1.0, 1.5, 2.0],

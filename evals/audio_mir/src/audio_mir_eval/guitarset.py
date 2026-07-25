@@ -98,6 +98,12 @@ def _reference(document: dict[str, Any]) -> dict[str, Any]:
     return reference
 
 
+def _manifest_id(stem: str) -> str:
+    # GuitarSet uses sharps in filenames (for example C#). Keep manifest IDs
+    # URL/path-safe without discarding the human-readable dataset stem.
+    return f"guitarset-1.1.0:{stem.replace('#', '-sharp')}"
+
+
 def prepare_manifest(
     annotation_zip: Path,
     audio_dir: Path,
@@ -137,7 +143,7 @@ def prepare_manifest(
                 raise EvalInputError(f"invalid GuitarSet annotation object: {name}")
             records.append(
                 {
-                    "id": f"guitarset-1.1.0:{stem}",
+                    "id": _manifest_id(stem),
                     "audio_path": os.path.relpath(audio_path, output_path.parent),
                     "audio_sha256": sha256_file(audio_path),
                     "label_kind": "ground_truth",
