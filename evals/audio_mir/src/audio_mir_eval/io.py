@@ -27,7 +27,10 @@ MIR_EVAL_MAX_EVENT_SECONDS = 30000.0
 def _finite_number(value: Any, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise EvalInputError(f"{field} must be a number")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise EvalInputError(f"{field} must be finite") from exc
     if not math.isfinite(number):
         raise EvalInputError(f"{field} must be finite")
     return number
@@ -184,6 +187,10 @@ def _load_predictions(
     manifest_sha = run.get("manifest_sha256")
     if not isinstance(manifest_sha, str) or not _SHA256_RE.fullmatch(manifest_sha):
         raise EvalInputError("prediction artifact has an invalid manifest_sha256")
+    for field in ("model_sha256", "analyzer_script_sha256"):
+        digest = run.get(field)
+        if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+            raise EvalInputError(f"prediction artifact has an invalid {field}")
     if not isinstance(run.get("repo_head"), str) or not run["repo_head"]:
         raise EvalInputError("prediction artifact is missing repo_head")
     if not isinstance(run.get("analyzer"), dict):

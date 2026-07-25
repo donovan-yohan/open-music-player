@@ -56,9 +56,6 @@ def _percentile(values: Iterable[float], percentile: float) -> float | None:
 
 
 def _prediction_key(prediction: dict[str, Any]) -> str | None:
-    direct = prediction.get("key")
-    if isinstance(direct, str) and direct.strip():
-        return direct.strip()
     key_index = prediction.get("key_index")
     mode = prediction.get("mode")
     if (
@@ -113,7 +110,11 @@ def _event_estimates(estimate_ms: Any) -> tuple[list[float], int]:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             dropped += 1
             continue
-        seconds = float(value) / 1000.0
+        try:
+            seconds = float(value) / 1000.0
+        except OverflowError:
+            dropped += 1
+            continue
         if (
             not math.isfinite(seconds)
             or seconds < 0

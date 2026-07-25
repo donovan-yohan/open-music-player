@@ -21,7 +21,6 @@ _ANALYZER_RESULT_FIELDS = {
     "downbeats_ms",
     "downbeat_confidence",
     "key_index",
-    "key",
     "mode",
     "key_confidence",
 }
@@ -111,18 +110,23 @@ def run_analyzer(
         "created_at": datetime.now(UTC).isoformat(),
         "repo_head": repo_head,
         "manifest_sha256": manifest_sha256,
+        "model_sha256": sha256_file(model_path),
+        "analyzer_script_sha256": sha256_file(analyzer_script),
         "analyzer": metadata,
     }
     predictions: dict[str, dict[str, Any]] = {}
 
     if resume and output_path.exists():
         existing_run, existing_predictions = load_partial_predictions(output_path)
-        if existing_run["manifest_sha256"] != manifest_sha256:
-            raise EvalInputError("cannot resume: manifest_sha256 changed")
-        if existing_run["repo_head"] != repo_head:
-            raise EvalInputError("cannot resume: repo_head changed")
-        if existing_run["analyzer"] != metadata:
-            raise EvalInputError("cannot resume: analyzer metadata changed")
+        for field, label in (
+            ("manifest_sha256", "manifest_sha256"),
+            ("repo_head", "repo_head"),
+            ("model_sha256", "model checkpoint"),
+            ("analyzer_script_sha256", "analyzer script"),
+            ("analyzer", "analyzer metadata"),
+        ):
+            if existing_run.get(field) != run_record[field]:
+                raise EvalInputError(f"cannot resume: {label} changed")
         unexpected = set(existing_predictions) - set(manifest_ids)
         if unexpected:
             raise EvalInputError(

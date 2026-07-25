@@ -84,6 +84,7 @@ def test_event_metrics_apply_standard_five_second_trim():
     estimate_ms = [250, 750, 1250, 1750, 2250, 2750, 3250, 3750, 4250, 4750]
     estimate_ms.extend(int(value * 1000) for value in reference if value >= 5.0)
     estimate_ms.append(40_000_000)
+    estimate_ms.append(10**400)
     result = score_track(
         _manifest("beats", "ground_truth", {"beats_seconds": reference}),
         {"id": "beats", "beats_ms": estimate_ms},
@@ -92,7 +93,7 @@ def test_event_metrics_apply_standard_five_second_trim():
     beats = result["metrics"]["beats"]
     assert beats["trim_seconds"] == 5.0
     assert beats["evaluated_reference_events"] == 11
-    assert beats["dropped_estimated_events"] == 1
+    assert beats["dropped_estimated_events"] == 2
     assert beats["f_measure_70ms"] == 1.0
     assert beats["cemgil"] == 1.0
     assert beats["cmlc"] == 1.0

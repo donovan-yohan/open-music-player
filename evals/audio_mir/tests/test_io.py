@@ -26,6 +26,8 @@ def _run_record(*, complete: bool = True) -> dict:
         "complete": complete,
         "prediction_count": 1,
         "manifest_sha256": "a" * 64,
+        "model_sha256": "b" * 64,
+        "analyzer_script_sha256": "c" * 64,
         "repo_head": "abc",
         "analyzer": {"version": "v1"},
     }
@@ -129,6 +131,11 @@ def test_manifest_rejects_unlabelled_key_and_out_of_range_events(tmp_path: Path)
     )
     with pytest.raises(EvalInputError, match="cannot exceed 30000 seconds"):
         load_manifest(events_path)
+
+    bpm_path = tmp_path / "bpm.jsonl"
+    _write_jsonl(bpm_path, [base | {"reference": {"bpm": 10**400}}])
+    with pytest.raises(EvalInputError, match="must be finite"):
+        load_manifest(bpm_path)
 
 
 def test_repo_head_rejects_an_enclosing_repository():

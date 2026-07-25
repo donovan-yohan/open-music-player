@@ -101,7 +101,7 @@ else:
     prediction = next(
         row for row in prediction_rows if row.get("record_type") == "prediction"
     )
-    assert prediction["key"] == "C major"
+    assert "key" not in prediction
     assert "spectral_bands" not in prediction
     assert result["counts"] == {
         "expected": 1,
@@ -110,9 +110,19 @@ else:
         "infra_errors": 0,
     }
     assert result["run"]["manifest_sha256"] == result["manifest_sha256"]
+    assert (
+        result["run"]["model_sha256"] == hashlib.sha256(model.read_bytes()).hexdigest()
+    )
+    assert (
+        result["run"]["analyzer_script_sha256"]
+        == hashlib.sha256(analyzer.read_bytes()).hexdigest()
+    )
     assert result["run"]["complete"] is True
     assert result["groups"]["ground_truth"]["tempo"]["acc1"] == 1.0
     assert result["groups"]["ground_truth"]["key"]["weighted_score"] == 1.0
+
+    model.write_bytes(b"changed checkpoint")
+    assert main([*run_args, "--resume"]) == 1
 
 
 def test_score_fails_on_partial_prediction_set(tmp_path: Path, capsys):
@@ -138,6 +148,8 @@ def test_score_fails_on_partial_prediction_set(tmp_path: Path, capsys):
                 "complete": True,
                 "prediction_count": 1,
                 "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                "model_sha256": "b" * 64,
+                "analyzer_script_sha256": "c" * 64,
                 "repo_head": "abc",
                 "analyzer": {"analyzer": "fake"},
             },
@@ -185,6 +197,8 @@ def test_score_rejects_prediction_manifest_hash_mismatch(tmp_path: Path):
                 "complete": True,
                 "prediction_count": 1,
                 "manifest_sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
+                "model_sha256": "b" * 64,
+                "analyzer_script_sha256": "c" * 64,
                 "repo_head": "abc",
                 "analyzer": {"analyzer": "fake"},
             },

@@ -89,7 +89,7 @@ scripts/eval audio-mir score \
   --output /tmp/omp-mir-report.json
 ```
 
-The analyzer runner uses argument arrays, not a shell template, and accepts filesystem paths rather than URLs. Dataset manifests are trusted local inputs: adapters fingerprint each audio asset, pin dataset/archive provenance, and the scorer refuses incomplete artifacts or a manifest-hash mismatch. Timeouts and analyzer failures remain visible as infrastructure errors and make the command fail without depressing model-accuracy means.
+The analyzer runner uses argument arrays, not a shell template, and accepts filesystem paths rather than URLs. Dataset manifests are trusted local inputs: adapters fingerprint each audio asset, pin dataset/archive provenance, and run artifacts pin both the analyzer script and model checkpoint by SHA-256. The scorer refuses incomplete artifacts or a manifest-hash mismatch. Timeouts and analyzer failures remain visible as infrastructure errors and make the command fail without depressing model-accuracy means.
 
 ## Measured smoke runs
 
