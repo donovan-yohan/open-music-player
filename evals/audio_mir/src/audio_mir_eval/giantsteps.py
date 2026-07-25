@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .io import EvalInputError, sha256_file, write_manifest
+from .io import EvalInputError, repo_head, sha256_file, write_manifest
 
 _SOURCE = {
     "tempo": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
@@ -27,6 +27,7 @@ def prepare_manifest(
     limit: int | None,
 ) -> tuple[int, int]:
     dataset_root = dataset_root.resolve()
+    source_revision = repo_head(dataset_root)
     if task not in {"tempo", "key"}:
         raise EvalInputError("GiantSteps task must be tempo or key")
     if limit is not None and limit <= 0:
@@ -79,6 +80,7 @@ def prepare_manifest(
                 "provenance": {
                     "dataset": dataset,
                     "source": _SOURCE[task],
+                    "source_revision": source_revision,
                     "annotation_file": str(annotation_path.relative_to(dataset_root)),
                     "license": "unspecified by the dataset repository; do not redistribute",
                 },

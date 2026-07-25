@@ -28,6 +28,7 @@ def test_prepare_tempo_prefers_v2_and_only_includes_present_audio(tmp_path: Path
     assert row["reference"] == {"bpm": 128.0}
     assert row["label_kind"] == "ground_truth"
     assert row["provenance"]["license"].startswith("unspecified")
+    assert row["provenance"]["source_revision"] == "unknown"
 
 
 def test_prepare_key_keeps_mirex_key_label(tmp_path: Path):

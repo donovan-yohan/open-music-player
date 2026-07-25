@@ -111,6 +111,7 @@ def prepare_manifest(
         raise EvalInputError(
             f"GuitarSet annotation archive does not exist: {annotation_zip}"
         )
+    annotation_archive_sha256 = sha256_file(annotation_zip)
     if not audio_dir.is_dir():
         raise EvalInputError(f"GuitarSet audio directory does not exist: {audio_dir}")
     audio_by_stem = _audio_index(audio_dir)
@@ -144,6 +145,7 @@ def prepare_manifest(
                         "dataset": "guitarset-1.1.0",
                         "source": _SOURCE,
                         "annotation_file": name,
+                        "annotation_archive_sha256": annotation_archive_sha256,
                         "license": "CC-BY-4.0",
                     },
                     "reference": _reference(document),

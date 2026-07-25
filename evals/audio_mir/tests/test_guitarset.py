@@ -51,6 +51,7 @@ def test_prepare_guitarset_extracts_all_supported_reference_tasks(tmp_path: Path
         "key": "C# minor",
     }
     assert row["provenance"]["license"] == "CC-BY-4.0"
+    assert len(row["provenance"]["annotation_archive_sha256"]) == 64
     assert (
         row["audio_sha256"]
         == "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d"
