@@ -1,5 +1,8 @@
 # Open decisions
 
+Stem separation, edit-event persistence, and the pre-render/native playback
+ladder are designed in `docs/stem-architecture.md` and decided in
+`docs/adr/0006-stem-edit-events-and-playback-ladder.md`.
 
 1. **Backend overlap-cap enforcement** — `mix_plan_handlers.go` still does not reject >4-deep overlaps server-side; only the client engine does defensively on load (`fromMixPlan`/`fromQueuePlan`). *Recommend*: add a server-side sweep-line depth check (mirroring `TimelineModel.overlapDepthAt`) before "share a mix" is exposed to other users, since a shared/adversarial plan is otherwise untrusted input this client only partially protects itself from (dropped clips, not a rejected save). Not blocking for Phases 0-3; should land before Phase 5's cross-user sharing surface ships broadly.
 
@@ -18,6 +21,14 @@
 8. **Decoder-exhaustion drop-lowest-gain fallback UX** — dropping the quietest active voice on a `VoiceEventKind.error` (hardware decoder-session limit) is a reasonable default but has no user-facing signal today (silent degrade). *Recommend*: ship silent for MVP (matches decision #3's philosophy), add a debug-log/telemetry hook so real-world frequency can be measured before deciding whether it needs a UI treatment.
 
 9. **Equal-power vs. linear curve as a persisted "recommendation" vs. a hard client convention** — since curve shape is not persisted (client-rendering convention only), a future non-Flutter client (web, a hypothetical native client) rendering the same mix_plan with a different default curve would sound subtly different from this client despite reading identical data. *Recommend*: document the equal-power convention in the mix_plan API's shared documentation (not just this client's code) so any future renderer matches; not a schema change, a docs/consistency task.
+
+10. **Stem EQ/effects placement** — the stem architecture fixes gain-only
+events for v1 but does not decide whether later EQ/effects are inserted on each
+stem before `StemGroupVoice` sums the group, on the deck after that sum, or on
+the final mix bus. That choice changes event schema, automation timing,
+headroom, render/live parity, and CPU cost. *Recommend*: keep effects out of v1
+and decide the signal-chain position only with a concrete first effect,
+subtractive-render equivalent, and native CPU/device budget.
 
 
 # Residual risks
