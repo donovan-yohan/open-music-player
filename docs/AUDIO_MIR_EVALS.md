@@ -93,7 +93,7 @@ The analyzer runner uses argument arrays, not a shell template, and accepts file
 
 ## Measured smoke runs
 
-A real local run at repository head `4dc3fcfa841a1d51241c3cb7c3b31285444911d2` used the pinned Beat This checkpoint and CPU analyzer runtime on five files per corpus/task. These are generated scorer reports—not hand-transcribed summaries—and include per-track metrics, dataset/archive provenance, analyzer metadata, manifest/prediction hashes, denominators, abstentions, and infrastructure-error counts:
+The analyzer artifacts were produced at repository head `4dc3fcfa841a1d51241c3cb7c3b31285444911d2` and rescored after harness hardening at `31eb3e13f052fafae7233702fef04b52303e9081`; no analyzer code changed between them. The run used the pinned Beat This checkpoint and CPU analyzer runtime on five files per corpus/task. These are generated scorer reports—not hand-transcribed summaries—and include per-track metrics, dataset/archive provenance, analyzer metadata, manifest/prediction hashes, denominators, abstentions, and infrastructure-error counts:
 
 - [GiantSteps tempo report](evidence/audio-mir/2026-07-25-giantsteps-tempo-5.report.json): 5/5 Acc1 and Acc2, all exact-tempo class, p50 10.88 seconds per two-minute preview.
 - [GiantSteps key report](evidence/audio-mir/2026-07-25-giantsteps-key-5.report.json): 2/5 exact, MIREX weighted score 0.44, coverage 4/5; one parallel-mode miss, one unrelated miss, and one abstention; p50 10.60 seconds.

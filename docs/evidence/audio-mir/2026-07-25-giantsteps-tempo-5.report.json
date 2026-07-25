@@ -5,7 +5,7 @@
     "infra_errors": 0,
     "predictions": 5
   },
-  "generated_at": "2026-07-25T18:13:39.142017+00:00",
+  "generated_at": "2026-07-25T18:44:53.325631+00:00",
   "groups": {
     "ground_truth": {
       "completed": 5,
@@ -52,7 +52,7 @@
     "updated_at": "2026-07-25T18:12:14.829823+00:00"
   },
   "schema_version": 2,
-  "scorer_repo_head": "4dc3fcfa841a1d51241c3cb7c3b31285444911d2",
+  "scorer_repo_head": "31eb3e13f052fafae7233702fef04b52303e9081",
   "tracks": [
     {
       "confidence": {
