@@ -284,6 +284,7 @@ def repo_head(repo_root: Path) -> str:
     git = shutil.which("git")
     if git is None:
         return "unknown"
+    git = str(Path(git).resolve())
     try:
         top_level = subprocess.run(
             [git, "rev-parse", "--show-toplevel"],
