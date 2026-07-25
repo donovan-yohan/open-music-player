@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from pathlib import Path
 
 import pytest
@@ -165,11 +164,19 @@ def test_repo_head_rejects_an_enclosing_repository(monkeypatch):
     assert repo_head(root) != "unknown"
     assert repo_head(root / "backend") == "unknown"
 
-    real_git = shutil.which("git")
-    assert real_git is not None
-    relative_git = os.path.relpath(real_git, Path.cwd())
-    monkeypatch.setattr("audio_mir_eval.io.shutil.which", lambda _command: relative_git)
-    assert repo_head(root) != "unknown"
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs):
+        calls.append(command)
+        stdout = str(root) if "--show-toplevel" in command else "a" * 40
+        return type("Completed", (), {"stdout": stdout})()
+
+    monkeypatch.setattr(
+        "audio_mir_eval.io.shutil.which", lambda _command: "relative/git"
+    )
+    monkeypatch.setattr("audio_mir_eval.io.subprocess.run", fake_run)
+    assert repo_head(root) == "a" * 40
+    assert all(Path(command[0]).is_absolute() for command in calls)
 
     monkeypatch.setattr("audio_mir_eval.io.shutil.which", lambda _command: None)
     assert repo_head(root) == "unknown"
