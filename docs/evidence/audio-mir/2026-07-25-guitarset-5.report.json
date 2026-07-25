@@ -1,0 +1,440 @@
+{
+  "counts": {
+    "completed": 5,
+    "expected": 5,
+    "infra_errors": 0,
+    "predictions": 5
+  },
+  "generated_at": "2026-07-25T18:13:40.368280+00:00",
+  "groups": {
+    "ground_truth": {
+      "beats": {
+        "abstentions": 0,
+        "amlc": 0.592745,
+        "amlt": 0.724329,
+        "cemgil": 0.829901,
+        "cmlc": 0.592745,
+        "cmlt": 0.724329,
+        "coverage": 1.0,
+        "evaluated": 5,
+        "f_measure_70ms": 0.903029,
+        "infra_errors": 0,
+        "references": 5,
+        "unevaluable_references": 0
+      },
+      "completed": 5,
+      "downbeats": {
+        "abstentions": 0,
+        "amlc": 0.55549,
+        "amlt": 0.572157,
+        "cemgil": 0.63094,
+        "cmlc": 0.508431,
+        "cmlt": 0.525098,
+        "coverage": 1.0,
+        "evaluated": 5,
+        "f_measure_70ms": 0.676397,
+        "infra_errors": 0,
+        "references": 5,
+        "unevaluable_references": 0
+      },
+      "infra_errors": 0,
+      "key": {
+        "abstentions": 0,
+        "coverage": 1.0,
+        "evaluated": 5,
+        "exact": 0.6,
+        "infra_errors": 0,
+        "references": 5,
+        "relationships": {
+          "exact": 3,
+          "other": 2
+        },
+        "unevaluable_references": 0,
+        "weighted_score": 0.6
+      },
+      "runtime_seconds": {
+        "p50": 3.972009,
+        "p95": 4.396864
+      },
+      "tempo": {
+        "absolute_log2_error": 0.007221,
+        "abstentions": 0,
+        "acc1": 1.0,
+        "acc2": 1.0,
+        "coverage": 1.0,
+        "evaluated": 5,
+        "infra_errors": 0,
+        "references": 5,
+        "tempo_classes": {
+          "exact": 5
+        },
+        "unevaluable_references": 0
+      },
+      "tracks": 5
+    }
+  },
+  "manifest_sha256": "bb42b694f8993b8fccd8ff82c81b1f22b45aa943df3979c9c5997b2e98b644ac",
+  "predictions_sha256": "6bfadfc6809692c403fea43c133f4dac16b0f863b2d09a70feb8b2a207400862",
+  "run": {
+    "analyzer": {
+      "analyzer": "omp-mir-analyzer",
+      "analyzer_version": "2026-07-24-1",
+      "key_model": "librosa-0.11.0-cqt-krumhansl-v1",
+      "spectral_channel_set": "bands3-v1",
+      "spectral_provenance": "librosa-mel-bands-v2",
+      "status": "ready",
+      "tempo_model": "beat-this-final0-v1.1.0-audio2frames-postprocessor-dynamic-meter-posterior-v3"
+    },
+    "complete": true,
+    "created_at": "2026-07-25T18:13:11.836042+00:00",
+    "manifest_sha256": "bb42b694f8993b8fccd8ff82c81b1f22b45aa943df3979c9c5997b2e98b644ac",
+    "prediction_count": 5,
+    "repo_head": "4dc3fcfa841a1d51241c3cb7c3b31285444911d2",
+    "schema_version": 2,
+    "updated_at": "2026-07-25T18:13:32.024518+00:00"
+  },
+  "schema_version": 2,
+  "scorer_repo_head": "4dc3fcfa841a1d51241c3cb7c3b31285444911d2",
+  "tracks": [
+    {
+      "confidence": {
+        "downbeat": 0.549,
+        "key": 0.788,
+        "tempo": 0.211
+      },
+      "id": "guitarset-1.1.0:00_BN1-129-Eb_comp",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "beats": {
+          "amlc": 0.486486,
+          "amlt": 0.648649,
+          "available": true,
+          "cemgil": 0.832295,
+          "cmlc": 0.486486,
+          "cmlt": 0.648649,
+          "estimated_events": 40,
+          "evaluable": true,
+          "evaluated_estimated_events": 30,
+          "evaluated_reference_events": 37,
+          "f_measure_70ms": 0.895522,
+          "reference_events": 48,
+          "trim_seconds": 5.0
+        },
+        "downbeats": {
+          "amlc": 0.9,
+          "amlt": 0.9,
+          "available": true,
+          "cemgil": 0.889346,
+          "cmlc": 0.9,
+          "cmlt": 0.9,
+          "estimated_events": 13,
+          "evaluable": true,
+          "evaluated_estimated_events": 10,
+          "evaluated_reference_events": 9,
+          "f_measure_70ms": 0.947368,
+          "reference_events": 12,
+          "trim_seconds": 5.0
+        },
+        "key": {
+          "available": true,
+          "estimated_key": "D# major",
+          "exact": 1.0,
+          "reference_key": "Eb major",
+          "relationship": "exact",
+          "weighted_score": 1.0
+        },
+        "tempo": {
+          "absolute_log2_error": 0.005581,
+          "acc1": 1.0,
+          "acc2": 1.0,
+          "available": true,
+          "estimated_bpm": 129.5,
+          "ratio": 1.003876,
+          "reference_bpm": 129.0,
+          "tempo_class": "exact"
+        }
+      },
+      "provenance": {
+        "annotation_archive_sha256": "8daa02e6417ccca1685feb44b135e95928ad7037e5032ecb326b5791856fda99",
+        "annotation_file": "00_BN1-129-Eb_comp.jams",
+        "dataset": "guitarset-1.1.0",
+        "license": "CC-BY-4.0",
+        "source": "https://doi.org/10.5281/zenodo.3371780"
+      },
+      "runtime_seconds": 3.972009,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.549,
+        "key": 0.791,
+        "tempo": 0.095
+      },
+      "id": "guitarset-1.1.0:00_BN1-129-Eb_solo",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "beats": {
+          "amlc": 0.162162,
+          "amlt": 0.486486,
+          "available": true,
+          "cemgil": 0.670684,
+          "cmlc": 0.162162,
+          "cmlt": 0.486486,
+          "estimated_events": 37,
+          "evaluable": true,
+          "evaluated_estimated_events": 27,
+          "evaluated_reference_events": 37,
+          "f_measure_70ms": 0.78125,
+          "reference_events": 48,
+          "trim_seconds": 5.0
+        },
+        "downbeats": {
+          "amlc": 0.294118,
+          "amlt": 0.294118,
+          "available": true,
+          "cemgil": 0.344578,
+          "cmlc": 0.058824,
+          "cmlt": 0.058824,
+          "estimated_events": 23,
+          "evaluable": true,
+          "evaluated_estimated_events": 17,
+          "evaluated_reference_events": 9,
+          "f_measure_70ms": 0.384615,
+          "reference_events": 12,
+          "trim_seconds": 5.0
+        },
+        "key": {
+          "available": true,
+          "estimated_key": "G minor",
+          "exact": 0.0,
+          "reference_key": "Eb major",
+          "relationship": "other",
+          "weighted_score": 0.0
+        },
+        "tempo": {
+          "absolute_log2_error": 0.015065,
+          "acc1": 1.0,
+          "acc2": 1.0,
+          "available": true,
+          "estimated_bpm": 127.66,
+          "ratio": 0.989612,
+          "reference_bpm": 129.0,
+          "tempo_class": "exact"
+        }
+      },
+      "provenance": {
+        "annotation_archive_sha256": "8daa02e6417ccca1685feb44b135e95928ad7037e5032ecb326b5791856fda99",
+        "annotation_file": "00_BN1-129-Eb_solo.jams",
+        "dataset": "guitarset-1.1.0",
+        "license": "CC-BY-4.0",
+        "source": "https://doi.org/10.5281/zenodo.3371780"
+      },
+      "runtime_seconds": 3.844925,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.507,
+        "key": 0.667,
+        "tempo": 0.407
+      },
+      "id": "guitarset-1.1.0:00_BN1-147-Gb_comp",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "beats": {
+          "amlc": 0.972222,
+          "amlt": 0.972222,
+          "available": true,
+          "cemgil": 0.931041,
+          "cmlc": 0.972222,
+          "cmlt": 0.972222,
+          "estimated_events": 49,
+          "evaluable": true,
+          "evaluated_estimated_events": 36,
+          "evaluated_reference_events": 35,
+          "f_measure_70ms": 0.985915,
+          "reference_events": 48,
+          "trim_seconds": 5.0
+        },
+        "downbeats": {
+          "amlc": 0.333333,
+          "amlt": 0.416667,
+          "available": true,
+          "cemgil": 0.748056,
+          "cmlc": 0.333333,
+          "cmlt": 0.416667,
+          "estimated_events": 16,
+          "evaluable": true,
+          "evaluated_estimated_events": 12,
+          "evaluated_reference_events": 8,
+          "f_measure_70ms": 0.8,
+          "reference_events": 12,
+          "trim_seconds": 5.0
+        },
+        "key": {
+          "available": true,
+          "estimated_key": "F# major",
+          "exact": 1.0,
+          "reference_key": "Gb major",
+          "relationship": "exact",
+          "weighted_score": 1.0
+        },
+        "tempo": {
+          "absolute_log2_error": 0.001569,
+          "acc1": 1.0,
+          "acc2": 1.0,
+          "available": true,
+          "estimated_bpm": 147.16,
+          "ratio": 1.001088,
+          "reference_bpm": 147.0,
+          "tempo_class": "exact"
+        }
+      },
+      "provenance": {
+        "annotation_archive_sha256": "8daa02e6417ccca1685feb44b135e95928ad7037e5032ecb326b5791856fda99",
+        "annotation_file": "00_BN1-147-Gb_comp.jams",
+        "dataset": "guitarset-1.1.0",
+        "license": "CC-BY-4.0",
+        "source": "https://doi.org/10.5281/zenodo.3371780"
+      },
+      "runtime_seconds": 3.72399,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.549,
+        "key": 0.482,
+        "tempo": 0.114
+      },
+      "id": "guitarset-1.1.0:00_BN1-147-Gb_solo",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "beats": {
+          "amlc": 0.342857,
+          "amlt": 0.514286,
+          "available": true,
+          "cemgil": 0.806302,
+          "cmlc": 0.342857,
+          "cmlt": 0.514286,
+          "estimated_events": 39,
+          "evaluable": true,
+          "evaluated_estimated_events": 26,
+          "evaluated_reference_events": 35,
+          "f_measure_70ms": 0.852459,
+          "reference_events": 48,
+          "trim_seconds": 5.0
+        },
+        "downbeats": {
+          "amlc": 0.25,
+          "amlt": 0.25,
+          "available": true,
+          "cemgil": 0.246189,
+          "cmlc": 0.25,
+          "cmlt": 0.25,
+          "estimated_events": 12,
+          "evaluable": true,
+          "evaluated_estimated_events": 8,
+          "evaluated_reference_events": 8,
+          "f_measure_70ms": 0.25,
+          "reference_events": 12,
+          "trim_seconds": 5.0
+        },
+        "key": {
+          "available": true,
+          "estimated_key": "F# major",
+          "exact": 1.0,
+          "reference_key": "Gb major",
+          "relationship": "exact",
+          "weighted_score": 1.0
+        },
+        "tempo": {
+          "absolute_log2_error": 0.006492,
+          "acc1": 1.0,
+          "acc2": 1.0,
+          "available": true,
+          "estimated_bpm": 146.34,
+          "ratio": 0.99551,
+          "reference_bpm": 147.0,
+          "tempo_class": "exact"
+        }
+      },
+      "provenance": {
+        "annotation_archive_sha256": "8daa02e6417ccca1685feb44b135e95928ad7037e5032ecb326b5791856fda99",
+        "annotation_file": "00_BN1-147-Gb_solo.jams",
+        "dataset": "guitarset-1.1.0",
+        "license": "CC-BY-4.0",
+        "source": "https://doi.org/10.5281/zenodo.3371780"
+      },
+      "runtime_seconds": 4.139944,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.95,
+        "key": 0.291,
+        "tempo": 0.512
+      },
+      "id": "guitarset-1.1.0:00_BN2-131-B_comp",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "beats": {
+          "amlc": 1.0,
+          "amlt": 1.0,
+          "available": true,
+          "cemgil": 0.909181,
+          "cmlc": 1.0,
+          "cmlt": 1.0,
+          "estimated_events": 64,
+          "evaluable": true,
+          "evaluated_estimated_events": 53,
+          "evaluated_reference_events": 53,
+          "f_measure_70ms": 1.0,
+          "reference_events": 64,
+          "trim_seconds": 5.0
+        },
+        "downbeats": {
+          "amlc": 1.0,
+          "amlt": 1.0,
+          "available": true,
+          "cemgil": 0.926529,
+          "cmlc": 1.0,
+          "cmlt": 1.0,
+          "estimated_events": 16,
+          "evaluable": true,
+          "evaluated_estimated_events": 13,
+          "evaluated_reference_events": 13,
+          "f_measure_70ms": 1.0,
+          "reference_events": 16,
+          "trim_seconds": 5.0
+        },
+        "key": {
+          "available": true,
+          "estimated_key": "G major",
+          "exact": 0.0,
+          "reference_key": "B minor",
+          "relationship": "other",
+          "weighted_score": 0.0
+        },
+        "tempo": {
+          "absolute_log2_error": 0.007398,
+          "acc1": 1.0,
+          "acc2": 1.0,
+          "available": true,
+          "estimated_bpm": 130.33,
+          "ratio": 0.994885,
+          "reference_bpm": 131.0,
+          "tempo_class": "exact"
+        }
+      },
+      "provenance": {
+        "annotation_archive_sha256": "8daa02e6417ccca1685feb44b135e95928ad7037e5032ecb326b5791856fda99",
+        "annotation_file": "00_BN2-131-B_comp.jams",
+        "dataset": "guitarset-1.1.0",
+        "license": "CC-BY-4.0",
+        "source": "https://doi.org/10.5281/zenodo.3371780"
+      },
+      "runtime_seconds": 4.461094,
+      "status": "scored"
+    }
+  ]
+}

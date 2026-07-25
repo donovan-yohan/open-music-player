@@ -27,11 +27,11 @@ The existing Python suite mostly verifies synthetic invariants and two productio
 
 | Task | Primary metrics | Diagnostic splits |
 | --- | --- | --- |
-| Tempo | Acc1 within 4%; Acc2 allowing half/double tempo; absolute log2 error | exact, half, double, other |
-| Beats | F-measure at 70 ms; Cemgil; CMLc/CMLt; AMLc/AMLt | missing events, phase/localization, continuity, metrical-level errors |
+| Tempo | MIREX Acc1 within 4%; Acc2 also allowing 1/3×, 1/2×, 2×, or 3× tempo; absolute log2 error | exact, third, half, double, triple, other |
+| Beats | F-measure at 70 ms; Cemgil; CMLc/CMLt; AMLc/AMLt after the standard first-five-second trim | missing events, phase/localization, continuity, metrical-level errors |
 | Downbeats | same event and continuity metrics as beats | beat-grid failure vs bar-phase/meter failure |
 | Key | exact accuracy; MIREX weighted score | exact, perfect fifth, relative, parallel, other |
-| Runtime | per-track wall time, p50, p95 | analyzer errors are counted, never dropped |
+| Runtime | per-track wall time, p50, p95 | analyzer errors are counted separately and never averaged into model quality |
 
 Camelot is a deterministic projection of tonic and mode; test that mapping as a unit contract, but measure audio inference against the underlying musical key.
 
@@ -74,8 +74,11 @@ scripts/eval audio-mir run \
   --analyzer-python /private/evals/omp-mir-runtime/bin/python \
   --analyzer-script backend/cmd/audio-analyzer/audio_mir.py \
   --model /private/evals/models/beat_this-final0.ckpt \
+  --timeout-seconds 180 \
   --output /tmp/omp-mir-predictions.jsonl
 ```
+
+The runner atomically checkpoints after every track. If it is interrupted, repeat the same command with `--resume`; compatible successful rows are retained and prior infrastructure errors are retried.
 
 Score the complete artifact:
 
@@ -86,23 +89,23 @@ scripts/eval audio-mir score \
   --output /tmp/omp-mir-report.json
 ```
 
-The analyzer runner uses argument arrays, not a shell template. It accepts local files only, fingerprints each audio asset, records exact analyzer metadata, counts timeouts/errors, and exits nonzero for incomplete runs.
+The analyzer runner uses argument arrays, not a shell template, and accepts filesystem paths rather than URLs. Dataset manifests are trusted local inputs: adapters fingerprint each audio asset, pin dataset/archive provenance, and the scorer refuses incomplete artifacts or a manifest-hash mismatch. Timeouts and analyzer failures remain visible as infrastructure errors and make the command fail without depressing model-accuracy means.
 
 ## Measured smoke runs
 
-A real local run at repository head `960db87063ba98651a03110069bc691fa8177464` used the exact pinned CPU runtime with checksum-verified GiantSteps previews and GuitarSet 1.1.0 archives. The aggregate, source revisions, artifact hashes, environment, and limitations are recorded in [`docs/evidence/audio-mir/2026-07-25-smoke-summary.json`](evidence/audio-mir/2026-07-25-smoke-summary.json).
+A real local run at repository head `4dc3fcfa841a1d51241c3cb7c3b31285444911d2` used the pinned Beat This checkpoint and CPU analyzer runtime on five files per corpus/task. These are generated scorer reports—not hand-transcribed summaries—and include per-track metrics, dataset/archive provenance, analyzer metadata, manifest/prediction hashes, denominators, abstentions, and infrastructure-error counts:
 
-- GiantSteps tempo: 5/5 within 4%, 5/5 with octave tolerance, no half/double errors; p50 16.44 seconds per two-minute preview.
-- GiantSteps key: 2/5 exact, MIREX weighted score 0.44, coverage 4/5; errors were one parallel-major/minor miss, one unrelated/semitone miss, and one abstention; p50 14.60 seconds.
-- GuitarSet: 5/5 tempo Acc1; beat F-measure 0.924 but CMLc only 0.575; downbeat F-measure 0.732 and CMLc 0.560; key exact/MIREX 0.60; p50 3.94 seconds per roughly 30-second clip.
+- [GiantSteps tempo report](evidence/audio-mir/2026-07-25-giantsteps-tempo-5.report.json): 5/5 Acc1 and Acc2, all exact-tempo class, p50 10.88 seconds per two-minute preview.
+- [GiantSteps key report](evidence/audio-mir/2026-07-25-giantsteps-key-5.report.json): 2/5 exact, MIREX weighted score 0.44, coverage 4/5; one parallel-mode miss, one unrelated miss, and one abstention; p50 10.60 seconds.
+- [GuitarSet report](evidence/audio-mir/2026-07-25-guitarset-5.report.json): 5/5 tempo Acc1; beat F-measure 0.903 and CMLc 0.593; downbeat F-measure 0.676 and CMLc 0.508; key exact/MIREX 0.60; p50 3.97 seconds per roughly 30-second clip.
 
-This is plumbing evidence, not an accuracy claim. Tempo is not obviously broken on these ten tracks. The GuitarSet continuity gap says global BPM can be right while the event grid is incomplete or unstable, especially on solo recordings. Downbeat alignment is the clearest measured beat-side weakness. Key is weak enough to justify a larger S-KEY comparison before tuning fixed profiles.
+This is plumbing evidence, not an accuracy claim. Tempo is not obviously broken on the ten tempo-labeled tracks. After standard five-second trimming, global BPM can still be right while the event grid is incomplete or unstable; downbeat alignment/continuity is the clearest measured beat-side weakness. Key is weak enough to justify a larger S-KEY comparison before tuning fixed profiles.
 
 ## Experiment order
 
 1. Freeze a baseline report from the current analyzer.
 2. For tempo/beats/downbeats, compare three arms on identical audio and annotations: upstream Beat This minimal output, current OMP regularization, and Beat This DBN. A DBN may improve stable 3/4 or 4/4 continuity while breaking variable tempo, meter changes, or tempos outside 55–215 BPM; do not select it from one aggregate score. The five-track tempo smoke is already clean, so no tempo algorithm change is justified yet.
-3. For key, compare current CQT/Krumhansl against Deezer S-KEY first. S-KEY code and bundled checkpoint are MIT-licensed, CPU-capable, and specifically target 24-class major/minor estimation. Essentia KeyExtractor is a useful research control with tuning correction and richer profile choices, but Essentia is AGPLv3; do not ship it inside SoundQ without deliberate license compliance or a commercial license. Keep model size, p95 CPU time, and calibrated abstention in the decision.
+3. For key, compare current CQT/Krumhansl against Deezer S-KEY first. S-KEY code and bundled checkpoint are MIT-licensed, CPU-capable, and specifically target 24-class major/minor estimation. Essentia KeyExtractor is a useful research control with tuning correction and richer profile choices, but Essentia is AGPLv3; do not ship it inside SoundQ without deliberate license compliance or a commercial license. Keep model size, p95 end-to-end wall time on the CPU host, and calibrated abstention in the decision.
 4. Calibrate confidence separately for each task. In the five-track key smoke, a wrong prediction at 0.563 outranked a correct prediction at 0.517; in the tempo smoke, a correct estimate scored only 0.185. Those five points prove the current scalar is not itself a correctness probability. Fit thresholds only on a held-out, stratified corpus and report coverage versus error/false-auto-lock rate.
 5. Improve the fixed-profile key arm only as a cheap baseline: compare time-window consensus instead of one full-track mean, robust frame aggregation, explicit tuning correction, pitch-class whitening/thresholding, and beat-synchronous chroma. Do not pile these heuristics into production unless paired ablations beat both the current arm and S-KEY.
 6. Only tune tempo/downbeat thresholds or postprocessing after per-track event failure classes are visible. Do not train on scraped catalog estimates.

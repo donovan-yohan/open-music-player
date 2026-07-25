@@ -1,0 +1,208 @@
+{
+  "counts": {
+    "completed": 5,
+    "expected": 5,
+    "infra_errors": 0,
+    "predictions": 5
+  },
+  "generated_at": "2026-07-25T18:13:39.142017+00:00",
+  "groups": {
+    "ground_truth": {
+      "completed": 5,
+      "infra_errors": 0,
+      "runtime_seconds": {
+        "p50": 10.884239,
+        "p95": 11.287673
+      },
+      "tempo": {
+        "absolute_log2_error": 0.007214,
+        "abstentions": 0,
+        "acc1": 1.0,
+        "acc2": 1.0,
+        "coverage": 1.0,
+        "evaluated": 5,
+        "infra_errors": 0,
+        "references": 5,
+        "tempo_classes": {
+          "exact": 5
+        },
+        "unevaluable_references": 0
+      },
+      "tracks": 5
+    }
+  },
+  "manifest_sha256": "f007665d20c2958b71d5331dd6bb59113be65d64dce4c822b19d1994256fca00",
+  "predictions_sha256": "0654e75af2aa0236868b0850ec92d1786fbb24a8adee264753e4287fc8c2d437",
+  "run": {
+    "analyzer": {
+      "analyzer": "omp-mir-analyzer",
+      "analyzer_version": "2026-07-24-1",
+      "key_model": "librosa-0.11.0-cqt-krumhansl-v1",
+      "spectral_channel_set": "bands3-v1",
+      "spectral_provenance": "librosa-mel-bands-v2",
+      "status": "ready",
+      "tempo_model": "beat-this-final0-v1.1.0-audio2frames-postprocessor-dynamic-meter-posterior-v3"
+    },
+    "complete": true,
+    "created_at": "2026-07-25T18:11:19.965865+00:00",
+    "manifest_sha256": "f007665d20c2958b71d5331dd6bb59113be65d64dce4c822b19d1994256fca00",
+    "prediction_count": 5,
+    "repo_head": "4dc3fcfa841a1d51241c3cb7c3b31285444911d2",
+    "schema_version": 2,
+    "updated_at": "2026-07-25T18:12:14.829823+00:00"
+  },
+  "schema_version": 2,
+  "scorer_repo_head": "4dc3fcfa841a1d51241c3cb7c3b31285444911d2",
+  "tracks": [
+    {
+      "confidence": {
+        "downbeat": 0.938,
+        "key": 0.741,
+        "tempo": 0.571
+      },
+      "id": "giantsteps-tempo-v2:710469.LOFI",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "tempo": {
+          "absolute_log2_error": 0.000555,
+          "acc1": 1.0,
+          "acc2": 1.0,
+          "available": true,
+          "estimated_bpm": 155.94,
+          "ratio": 0.999615,
+          "reference_bpm": 156.0,
+          "tempo_class": "exact"
+        }
+      },
+      "provenance": {
+        "annotation_file": "annotations_v2/tempo/710469.LOFI.bpm",
+        "dataset": "giantsteps-tempo-v2",
+        "license": "unspecified by the dataset repository; do not redistribute",
+        "source": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
+        "source_revision": "d51ab2422e76abacfaa86616a57054bc222ec9fd"
+      },
+      "runtime_seconds": 10.785885,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.549,
+        "key": 0.467,
+        "tempo": 0.422
+      },
+      "id": "giantsteps-tempo-v2:907836.LOFI",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "tempo": {
+          "absolute_log2_error": 0.008432,
+          "acc1": 1.0,
+          "acc2": 1.0,
+          "available": true,
+          "estimated_bpm": 175.02,
+          "ratio": 1.005862,
+          "reference_bpm": 174.0,
+          "tempo_class": "exact"
+        }
+      },
+      "provenance": {
+        "annotation_file": "annotations_v2/tempo/907836.LOFI.bpm",
+        "dataset": "giantsteps-tempo-v2",
+        "license": "unspecified by the dataset repository; do not redistribute",
+        "source": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
+        "source_revision": "d51ab2422e76abacfaa86616a57054bc222ec9fd"
+      },
+      "runtime_seconds": 10.899178,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.549,
+        "key": 0.749,
+        "tempo": 0.444
+      },
+      "id": "giantsteps-tempo-v2:907837.LOFI",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "tempo": {
+          "absolute_log2_error": 0.016008,
+          "acc1": 1.0,
+          "acc2": 1.0,
+          "available": true,
+          "estimated_bpm": 172.08,
+          "ratio": 0.988966,
+          "reference_bpm": 174.0,
+          "tempo_class": "exact"
+        }
+      },
+      "provenance": {
+        "annotation_file": "annotations_v2/tempo/907837.LOFI.bpm",
+        "dataset": "giantsteps-tempo-v2",
+        "license": "unspecified by the dataset repository; do not redistribute",
+        "source": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
+        "source_revision": "d51ab2422e76abacfaa86616a57054bc222ec9fd"
+      },
+      "runtime_seconds": 10.884239,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.95,
+        "key": 0.633,
+        "tempo": 0.641
+      },
+      "id": "giantsteps-tempo-v2:94350.LOFI",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "tempo": {
+          "absolute_log2_error": 0.010732,
+          "acc1": 1.0,
+          "acc2": 1.0,
+          "available": true,
+          "estimated_bpm": 151.12,
+          "ratio": 1.007467,
+          "reference_bpm": 150.0,
+          "tempo_class": "exact"
+        }
+      },
+      "provenance": {
+        "annotation_file": "annotations_v2/tempo/94350.LOFI.bpm",
+        "dataset": "giantsteps-tempo-v2",
+        "license": "unspecified by the dataset repository; do not redistribute",
+        "source": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
+        "source_revision": "d51ab2422e76abacfaa86616a57054bc222ec9fd"
+      },
+      "runtime_seconds": 11.384797,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.533,
+        "key": 0.694,
+        "tempo": 0.185
+      },
+      "id": "giantsteps-tempo-v2:956606.LOFI",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "tempo": {
+          "absolute_log2_error": 0.000341,
+          "acc1": 1.0,
+          "acc2": 1.0,
+          "available": true,
+          "estimated_bpm": 126.97,
+          "ratio": 0.999764,
+          "reference_bpm": 127.0,
+          "tempo_class": "exact"
+        }
+      },
+      "provenance": {
+        "annotation_file": "annotations_v2/tempo/956606.LOFI.bpm",
+        "dataset": "giantsteps-tempo-v2",
+        "license": "unspecified by the dataset repository; do not redistribute",
+        "source": "https://github.com/GiantSteps/giantsteps-tempo-dataset",
+        "source_revision": "d51ab2422e76abacfaa86616a57054bc222ec9fd"
+      },
+      "runtime_seconds": 10.859942,
+      "status": "scored"
+    }
+  ]
+}
