@@ -11,7 +11,7 @@ physical mobile dogfood path continue to work together.
 - Auth/session/API contracts -> `backend/internal/auth/`, `backend/internal/api/`, `client/lib/core/api/`, `client/lib/core/auth/`, `extension/src/`.
 - Library, playlists, queue, downloads -> `backend/internal/db/`, `backend/internal/queue/`, `backend/internal/download/`, `backend/internal/processor/`, `client/lib/providers/`, `client/lib/screens/`.
 - Audio playback truth -> `client/lib/core/audio/`, `client/lib/core/engine/`, `client/lib/models/timeline_*`, `client/lib/widgets/*timeline*`.
-- Analysis/waveforms/DJ metadata -> `backend/internal/analyzer/`, `backend/cmd/audio-analyzer/`, `backend/internal/db/audio_analysis_repository.go`, `client/lib/models/track_analysis.dart`, `client/lib/models/waveform.dart`.
+- Analysis/waveforms/DJ metadata -> `backend/internal/analyzer/`, `backend/cmd/audio-analyzer/`, `backend/internal/db/audio_analysis_repository.go`, `client/lib/models/track_analysis.dart`, `client/lib/models/waveform.dart`, `evals/audio_mir/`, `docs/AUDIO_MIR_EVALS.md`.
 - Local/tailnet dogfood -> `scripts/local-low-memory.sh`, `scripts/local-e2e-smoke.py`, `scripts/tailnet-staging.sh`, `docs/LOW_MEMORY_LOCAL_DEV.md`, `docs/TAILNET_STAGING.md`.
 - Android/audio dogfood -> `scripts/dogfood-android`, `docs/ANDROID_PR_ARTIFACTS.md`.
 - Agentic delivery gates -> `docs/agentic-delivery.md`,
@@ -51,9 +51,10 @@ See `docs/context-map.md` for the fuller map and harness table.
 - Worker-free backend test dependencies: `scripts/dev test-infra` or
   `scripts/dev test-infra-isolated`
 - Full local tests: `scripts/test`
-- Component tests: `scripts/test backend|analyzer|client|extension`
+- Component tests: `scripts/test backend|analyzer|audio-mir|client|extension`
 - Static checks: `scripts/lint`; use `scripts/lint analyzer` for Python and
-  Compose analyzer wiring
+  Compose analyzer wiring, or `scripts/lint audio-mir` for the MIR eval package
+- Audio MIR benchmark: `scripts/eval audio-mir --help`; datasets and audio stay local
 - Delivery scaffolding checks: `scripts/agentic-harness` or
   `scripts/lint delivery`
 - Exact-head dev-cycle plan/run: `scripts/agentic-cycle --base origin/main` or

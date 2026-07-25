@@ -248,7 +248,9 @@ jobs:
         with:
           version: "0.11.16"
           enable-cache: true
-          cache-dependency-glob: agents/candidate_assembly/uv.lock
+          cache-dependency-glob: |
+            agents/candidate_assembly/uv.lock
+            evals/audio_mir/uv.lock
 
       - name: Sync candidate-assembly package
         working-directory: agents/candidate_assembly
@@ -261,6 +263,11 @@ jobs:
       - name: Run candidate-assembly unit tests
         working-directory: agents/candidate_assembly
         run: uv run pytest -q
+
+      - name: Lint and test audio MIR eval harness
+        run: |
+          scripts/lint audio-mir
+          scripts/test audio-mir
 
       - name: Run agent-search replay eval
         run: scripts/eval agent-search --mode replay --output "$RUNNER_TEMP/agent-search-replay.jsonl"

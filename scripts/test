@@ -33,6 +33,13 @@ run_analyzer() {
     "$ROOT/backend"
 }
 
+run_audio_mir() {
+  (
+    cd "$ROOT/evals/audio_mir"
+    uv run --frozen pytest -q
+  )
+}
+
 run_client() {
   (
     cd "$ROOT/client"
@@ -69,6 +76,9 @@ case "$TARGET" in
   analyzer)
     run_analyzer
     ;;
+  audio-mir)
+    run_audio_mir
+    ;;
   client)
     run_client
     ;;
@@ -79,11 +89,12 @@ case "$TARGET" in
     run_delivery
     run_backend
     run_analyzer
+    run_audio_mir
     run_client
     run_extension
     ;;
   *)
-    echo "usage: scripts/test [delivery|harness|backend|analyzer|client|extension|all]" >&2
+    echo "usage: scripts/test [delivery|harness|backend|analyzer|audio-mir|client|extension|all]" >&2
     exit 2
     ;;
 esac

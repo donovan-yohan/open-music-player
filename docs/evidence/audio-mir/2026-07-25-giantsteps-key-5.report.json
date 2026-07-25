@@ -1,0 +1,202 @@
+{
+  "counts": {
+    "completed": 5,
+    "expected": 5,
+    "infra_errors": 0,
+    "predictions": 5
+  },
+  "generated_at": "2026-07-25T19:08:16.732817+00:00",
+  "groups": {
+    "ground_truth": {
+      "completed": 5,
+      "infra_errors": 0,
+      "key": {
+        "abstentions": 1,
+        "coverage": 0.8,
+        "evaluated": 5,
+        "exact": 0.4,
+        "infra_errors": 0,
+        "references": 5,
+        "relationships": {
+          "exact": 2,
+          "missing": 1,
+          "other": 1,
+          "parallel": 1
+        },
+        "unevaluable_references": 0,
+        "weighted_score": 0.44
+      },
+      "runtime_seconds": {
+        "p50": 11.475253,
+        "p95": 11.559642
+      },
+      "tracks": 5
+    }
+  },
+  "manifest_sha256": "4cb623d0300cf23935748b50d27af7eb13e4e422b4919ecde6a93ea3e1403129",
+  "predictions_sha256": "eee92e81e10c7fdfea9d2a59e93604ab46ee8b6b4b3b95daedf5dc14dd817748",
+  "run": {
+    "analyzer": {
+      "analyzer": "omp-mir-analyzer",
+      "analyzer_version": "2026-07-24-1",
+      "key_model": "librosa-0.11.0-cqt-krumhansl-v1",
+      "spectral_channel_set": "bands3-v1",
+      "spectral_provenance": "librosa-mel-bands-v2",
+      "status": "ready",
+      "tempo_model": "beat-this-final0-v1.1.0-audio2frames-postprocessor-dynamic-meter-posterior-v3"
+    },
+    "analyzer_script_sha256": "31bd725c0ac91ac177fe660a5e0026e456e326ff817fca0085467c9c8410f600",
+    "complete": true,
+    "created_at": "2026-07-25T19:07:18.753499+00:00",
+    "manifest_sha256": "4cb623d0300cf23935748b50d27af7eb13e4e422b4919ecde6a93ea3e1403129",
+    "model_sha256": "8c328b45f59d8dd3dff219253ff6a8d6482be57d0133a29140e2febbf8eb8331",
+    "prediction_count": 5,
+    "repo_head": "35eca3fc1d69c6c1b61afdb7143cfa3824061696",
+    "schema_version": 2,
+    "updated_at": "2026-07-25T19:08:16.091682+00:00"
+  },
+  "schema_version": 2,
+  "scorer_repo_head": "35eca3fc1d69c6c1b61afdb7143cfa3824061696",
+  "tracks": [
+    {
+      "confidence": {
+        "downbeat": 0.919,
+        "key": 0.449,
+        "tempo": 0.698
+      },
+      "id": "giantsteps-key:1004923.LOFI",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "key": {
+          "available": true,
+          "estimated_key": "C major",
+          "exact": 0.0,
+          "reference_key": "C minor",
+          "relationship": "parallel",
+          "weighted_score": 0.2
+        }
+      },
+      "provenance": {
+        "annotation_file": "annotations/key/1004923.LOFI.key",
+        "dataset": "giantsteps-key",
+        "license": "unspecified by the dataset repository; do not redistribute",
+        "source": "https://github.com/GiantSteps/giantsteps-key-dataset",
+        "source_revision": "6bcd492c825ac9b8597bc650a5f6fd18b6c43d2b"
+      },
+      "runtime_seconds": 11.475253,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.549,
+        "key": 0.0,
+        "tempo": 0.549
+      },
+      "id": "giantsteps-key:1007941.LOFI",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "key": {
+          "available": false,
+          "estimated_key": null,
+          "exact": 0.0,
+          "reference_key": "F minor",
+          "relationship": "missing",
+          "weighted_score": 0.0
+        }
+      },
+      "provenance": {
+        "annotation_file": "annotations/key/1007941.LOFI.key",
+        "dataset": "giantsteps-key",
+        "license": "unspecified by the dataset repository; do not redistribute",
+        "source": "https://github.com/GiantSteps/giantsteps-key-dataset",
+        "source_revision": "6bcd492c825ac9b8597bc650a5f6fd18b6c43d2b"
+      },
+      "runtime_seconds": 11.561288,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.549,
+        "key": 0.78,
+        "tempo": 0.371
+      },
+      "id": "giantsteps-key:10089.LOFI",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "key": {
+          "available": true,
+          "estimated_key": "D major",
+          "exact": 1.0,
+          "reference_key": "D major",
+          "relationship": "exact",
+          "weighted_score": 1.0
+        }
+      },
+      "provenance": {
+        "annotation_file": "annotations/key/10089.LOFI.key",
+        "dataset": "giantsteps-key",
+        "license": "unspecified by the dataset repository; do not redistribute",
+        "source": "https://github.com/GiantSteps/giantsteps-key-dataset",
+        "source_revision": "6bcd492c825ac9b8597bc650a5f6fd18b6c43d2b"
+      },
+      "runtime_seconds": 11.357771,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.549,
+        "key": 0.563,
+        "tempo": 0.733
+      },
+      "id": "giantsteps-key:1009960.LOFI",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "key": {
+          "available": true,
+          "estimated_key": "E minor",
+          "exact": 0.0,
+          "reference_key": "Eb minor",
+          "relationship": "other",
+          "weighted_score": 0.0
+        }
+      },
+      "provenance": {
+        "annotation_file": "annotations/key/1009960.LOFI.key",
+        "dataset": "giantsteps-key",
+        "license": "unspecified by the dataset repository; do not redistribute",
+        "source": "https://github.com/GiantSteps/giantsteps-key-dataset",
+        "source_revision": "6bcd492c825ac9b8597bc650a5f6fd18b6c43d2b"
+      },
+      "runtime_seconds": 11.268748,
+      "status": "scored"
+    },
+    {
+      "confidence": {
+        "downbeat": 0.95,
+        "key": 0.517,
+        "tempo": 0.668
+      },
+      "id": "giantsteps-key:101069.LOFI",
+      "label_kind": "ground_truth",
+      "metrics": {
+        "key": {
+          "available": true,
+          "estimated_key": "E minor",
+          "exact": 1.0,
+          "reference_key": "E minor",
+          "relationship": "exact",
+          "weighted_score": 1.0
+        }
+      },
+      "provenance": {
+        "annotation_file": "annotations/key/101069.LOFI.key",
+        "dataset": "giantsteps-key",
+        "license": "unspecified by the dataset repository; do not redistribute",
+        "source": "https://github.com/GiantSteps/giantsteps-key-dataset",
+        "source_revision": "6bcd492c825ac9b8597bc650a5f6fd18b6c43d2b"
+      },
+      "runtime_seconds": 11.553058,
+      "status": "scored"
+    }
+  ]
+}
