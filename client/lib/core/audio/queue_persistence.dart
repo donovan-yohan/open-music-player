@@ -231,6 +231,10 @@ Map<String, dynamic> mediaItemToPlaybackJson(MediaItem item) {
     if (analysisOverrides != null) 'analysisOverrides': analysisOverrides,
     if (item.extras?['analysisUpdatedAt'] != null)
       'analysisUpdatedAt': item.extras?['analysisUpdatedAt'],
+    if (item.extras?['analysisOverrideRevision'] != null)
+      'analysisOverrideRevision': item.extras?['analysisOverrideRevision'],
+    if (item.extras?['analysisOverrideUpdatedAt'] != null)
+      'analysisOverrideUpdatedAt': item.extras?['analysisOverrideUpdatedAt'],
   };
 }
 
@@ -312,11 +316,42 @@ Map<String, dynamic>? _compactTempoMetadata(
   }
   if (compactDownbeats.isNotEmpty) compact['downbeats'] = compactDownbeats;
 
+  final manualTiming = _compactManualTimingOverride(
+    source['manual_timing_override'] ?? source['manualTimingOverride'],
+  );
+  if (manualTiming != null) compact['manual_timing_override'] = manualTiming;
+
   if (source['provenance'] != null) {
     compact['provenance'] = source['provenance'];
   }
   if (compact.isEmpty && !preserveEmpty) return null;
   return compact;
+}
+
+/// The normalized manual timing record is already compact: it identifies a
+/// spacing/anchor/meter/phase correction without carrying a second generated
+/// marker array. Keep only its schema fields when a queue snapshot or media
+/// item crosses a persistence boundary.
+Map<String, dynamic>? _compactManualTimingOverride(Object? value) {
+  if (value is! Map) return null;
+  final source = Map<String, dynamic>.from(value);
+  final compact = <String, dynamic>{};
+  const fields = <String, String>{
+    'bpm': 'bpm',
+    'beat_anchor_ms': 'beatAnchorMs',
+    'beats_per_bar': 'beatsPerBar',
+    'downbeat_phase_index': 'downbeatPhaseIndex',
+    'phrase_length_bars': 'phraseLengthBars',
+    'confidence': 'confidence',
+    'provenance': 'provenance',
+    'revision': 'revision',
+    'updated_at': 'updatedAt',
+  };
+  for (final entry in fields.entries) {
+    final field = source[entry.key] ?? source[entry.value];
+    if (field != null) compact[entry.key] = field;
+  }
+  return compact.isEmpty ? null : compact;
 }
 
 Object? _compactAnalysisValue(Object? value) {

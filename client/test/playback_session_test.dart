@@ -10,6 +10,51 @@ import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
   group('CueTimeline', () {
+    test('session round-trip retains canonical manual timing metadata', () {
+      final session = MixSession.fromQueue(
+        sessionId: 'manual_timing',
+        queue: [
+          const MediaItem(
+            id: '1',
+            title: 'Manual timing',
+            duration: Duration(seconds: 12),
+            extras: {
+              'analysisStatus': 'analyzed',
+              'analysisSummary': {
+                'beat_grid': {
+                  'bpm': 120,
+                  'offset_ms': 100,
+                  'beats_ms': [100, 600, 1100, 1600, 2100],
+                },
+              },
+              'analysisOverrides': {
+                'manual_timing_override': {
+                  'bpm': 120,
+                  'beat_anchor_ms': 100,
+                  'beats_per_bar': 4,
+                  'downbeat_phase_index': 2,
+                  'phrase_length_bars': 8,
+                  'revision': 5,
+                },
+              },
+              'analysisOverrideRevision': 5,
+            },
+          ),
+        ],
+      );
+
+      final restored = MixSession.fromJson(session.toJson());
+      final tempo = restored.clips.single.tempo;
+
+      expect(tempo.beatsMs, [100, 600, 1100, 1600, 2100]);
+      expect(tempo.downbeatsMs, [1100]);
+      expect(tempo.beatAnchorMs, 100);
+      expect(tempo.beatsPerBar, 4);
+      expect(tempo.downbeatPhaseIndex, 2);
+      expect(tempo.phraseLengthBars, 8);
+      expect(tempo.overrideRevision, 5);
+    });
+
     test('builds a contiguous queue timeline from media items', () {
       final timeline = CueTimeline.contiguousQueue(
         sessionId: 'session_1',

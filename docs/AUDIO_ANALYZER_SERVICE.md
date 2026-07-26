@@ -252,6 +252,7 @@ PATCH /api/v1/tracks/{track_id}/analysis/overrides
 Content-Type: application/json
 
 {
+  "expected_revision": 0,
   "overrides": {
     "bpm": { "value": 124.0, "confidence": 1.0 },
     "beat_grid": { "bpm": 124.0, "beats_ms": [120, 604, 1088] },
@@ -262,12 +263,53 @@ Content-Type: application/json
 }
 ```
 
+New timing corrections use the additive canonical object below. It keeps tempo,
+beat-grid anchor, meter, downbeat phase, and phrase length as independent
+facts. Analyzer and retained legacy beat arrays remain stored unchanged as the
+fallback span for effective timing projection.
+
+```json
+{
+  "expected_revision": 3,
+  "overrides": {
+    "manual_timing_override": {
+      "bpm": 124.0,
+      "beat_anchor_ms": 120,
+      "beats_per_bar": 4,
+      "downbeat_phase_index": 0,
+      "phrase_length_bars": 8
+    }
+  }
+}
+```
+
+The server stamps `confidence: 1.0`, `provenance: "manual_override"`, a
+monotonic `revision`, and `updated_at`. Clients should send `expected_revision`
+for normal edits; omitting it is treated as `0` to migrate legacy rows. A stale
+revision receives `409 ANALYSIS_OVERRIDE_CONFLICT` rather than silently
+overwriting another editor. Sending an empty `overrides` object clears manual
+facts while advancing the revision, so current generated analysis is visible
+again. Legacy `bpm`, `beat_grid`, and `downbeats` override payloads remain
+readable. Canonical writes preserve them as fallback data but take precedence;
+reset is the operation that clears all manual facts. Analyzer reruns replace
+generated summaries/artifacts without changing the manual document or revision.
+An override write preserves an existing `pending` or `analyzing` lifecycle
+state; the analyzer's normal `StoreResult` path can then transition the row to
+`analyzed` while retaining that manual state.
+
+For compact queue/list payloads, a manual BPM or anchor deterministically
+regenerates effective beat markers over the existing stored beat span. The
+stored analyzer/legacy timestamps are not mutated. A phase-only edit keeps the
+effective beat timestamps unchanged; when both meter and phase are known,
+downbeats are selected from that effective list modulo the meter. No downbeats
+are manufactured when meter is unknown, and phrase length is metadata rather
+than a downbeat interval.
+
 The response is the normal analysis envelope plus `overrides`. The queue list
 and selected timeline clip expose the current editor sheet. It lets users edit
-BPM, first downbeat offset, phrase length, key, and Camelot; the client expands
-BPM/offset/phrase edits into beat-grid and downbeat arrays before saving them,
-then refreshes queue/timeline analysis caches so markers and labels consume the
-corrected summary immediately.
+BPM, grid anchor, meter, phase, phrase length, key, and Camelot as facts. After
+a successful CAS update, the client refreshes queue/timeline analysis caches so
+markers and labels consume the corrected effective summary immediately.
 
 ## Tempo automation and pitch mode
 

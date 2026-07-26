@@ -412,6 +412,9 @@ class ApiClient {
         overrides: data['overrides'],
         overridesPresent: data.containsKey('overrides'),
         updatedAt: data['updated_at'] ?? data['updatedAt'],
+        overrideRevision: data['override_revision'] ?? data['overrideRevision'],
+        overrideUpdatedAt:
+            data['override_updated_at'] ?? data['overrideUpdatedAt'],
       );
     } on DioException catch (e) {
       throw ApiException('Failed to get track analysis', _statusCodeOf(e));
@@ -420,8 +423,9 @@ class ApiClient {
 
   Future<TrackAnalysis> updateTrackAnalysisOverrides(
     int trackId,
-    TrackAnalysisOverrides overrides,
-  ) async {
+    TrackAnalysisOverrides overrides, {
+    int expectedRevision = 0,
+  }) async {
     if (trackId <= 0) {
       throw ApiException('Track ID must be positive', 400);
     }
@@ -429,7 +433,10 @@ class ApiClient {
     try {
       final response = await _dio.patch(
         '/tracks/$trackId/analysis/overrides',
-        data: {'overrides': overrides.toJson()},
+        data: {
+          'overrides': overrides.toJson(includeServerMetadata: false),
+          'expected_revision': expectedRevision,
+        },
       );
       final data = _asMap(response.data);
       return TrackAnalysis.fromJson(
@@ -439,6 +446,9 @@ class ApiClient {
         overrides: data['overrides'],
         overridesPresent: data.containsKey('overrides'),
         updatedAt: data['updated_at'] ?? data['updatedAt'],
+        overrideRevision: data['override_revision'] ?? data['overrideRevision'],
+        overrideUpdatedAt:
+            data['override_updated_at'] ?? data['overrideUpdatedAt'],
       );
     } on DioException catch (e) {
       throw ApiException(

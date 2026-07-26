@@ -1211,7 +1211,7 @@ void main() {
       '128',
     );
     await tester.enterText(
-      find.byKey(const ValueKey('analysis_correction_first_downbeat')),
+      find.byKey(const ValueKey('analysis_correction_anchor')),
       '120',
     );
     await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
@@ -1219,9 +1219,11 @@ void main() {
 
     expect(apiClient.analysisOverrideUpdates, hasLength(1));
     expect(apiClient.analysisOverrideUpdates.single.trackId, 101);
-    expect(apiClient.analysisOverrideUpdates.single.overrides.bpm, 128);
+    expect(apiClient.analysisOverrideUpdates.single.overrides.manualTiming?.bpm,
+        128);
     expect(
-      apiClient.analysisOverrideUpdates.single.overrides.downbeatsMs?.first,
+      apiClient
+          .analysisOverrideUpdates.single.overrides.manualTiming?.beatAnchorMs,
       120,
     );
     expect(find.text('128 BPM'), findsOneWidget);
@@ -1360,6 +1362,70 @@ void main() {
   );
 
   testWidgets(
+    'revision-only manual timing metadata refreshes playback',
+    (tester) async {
+      final summary = _tempoAnalysisSummary(124);
+      final provider = _HydrationWaveQueueProvider(apiClient);
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(
+            101,
+            'Manual Timing Track',
+            seconds: 198,
+            extras: {
+              'analysisRef': '101',
+              'analysisStatus': 'analyzed',
+              'analysisSummary': summary,
+              'analysisOverrides': {
+                'manual_timing_override': {
+                  'bpm': 124,
+                  'beat_anchor_ms': 0,
+                  'beats_per_bar': 4,
+                  'downbeat_phase_index': 0,
+                  'phrase_length_bars': 8,
+                  'revision': 1,
+                },
+              },
+              'analysisOverrideRevision': 1,
+            },
+          ),
+        ]
+        ..fakeCurrentIndex = 0;
+
+      await pumpQueueScreen(tester, queueProvider: provider);
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+      expect(playbackState.analysisRefreshes, isEmpty);
+
+      provider.hydrate(
+        '101',
+        TrackAnalysis.fromJson(
+          status: 'analyzed',
+          summary: summary,
+          overrides: const {
+            'manual_timing_override': {
+              'bpm': 124,
+              'beat_anchor_ms': 0,
+              'beats_per_bar': 4,
+              'downbeat_phase_index': 0,
+              'phrase_length_bars': 8,
+              'revision': 2,
+            },
+          },
+          overrideRevision: 2,
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(playbackState.analysisRefreshWaves, hasLength(1));
+      final refreshed = playbackState.analysisRefreshes.single.analysis;
+      expect(refreshed.overrideRevision, 2);
+      expect(refreshed.overrides?.manualTiming?.phraseLengthBars, 8);
+    },
+  );
+
+  testWidgets(
     'playback timeline refreshes stale live clip tempo even when queue extras match',
     (tester) async {
       apiClient.useAnalysisFixture();
@@ -1464,7 +1530,7 @@ void main() {
   });
 
   testWidgets(
-    'timeline analysis correction seeds first downbeat from playhead',
+    'timeline analysis correction does not use playhead as an implicit anchor',
     (tester) async {
       tester.view.physicalSize = const Size(390, 2000);
       tester.view.devicePixelRatio = 1;
@@ -1493,21 +1559,17 @@ void main() {
       expect(
         tester
             .widget<TextField>(
-              find.byKey(const ValueKey('analysis_correction_first_downbeat')),
+              find.byKey(const ValueKey('analysis_correction_anchor')),
             )
             .controller
             ?.text,
-        '32000',
+        '',
       );
 
-      await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
+      await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
 
-      expect(apiClient.analysisOverrideUpdates, hasLength(1));
-      expect(
-        apiClient.analysisOverrideUpdates.single.overrides.downbeatsMs?.first,
-        32000,
-      );
+      expect(apiClient.analysisOverrideUpdates, isEmpty);
     },
   );
 
@@ -1542,7 +1604,7 @@ void main() {
         '141.18',
       );
       await tester.enterText(
-        find.byKey(const ValueKey('analysis_correction_first_downbeat')),
+        find.byKey(const ValueKey('analysis_correction_anchor')),
         '87',
       );
       await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
@@ -1550,21 +1612,25 @@ void main() {
 
       expect(apiClient.analysisOverrideUpdates, hasLength(1));
       expect(apiClient.analysisOverrideUpdates.single.trackId, 101);
-      expect(apiClient.analysisOverrideUpdates.single.overrides.bpm, 141.18);
       expect(
-        apiClient.analysisOverrideUpdates.single.overrides.downbeatsMs?.first,
+        apiClient.analysisOverrideUpdates.single.overrides.manualTiming?.bpm,
+        141.18,
+      );
+      expect(
+        apiClient.analysisOverrideUpdates.single.overrides.manualTiming
+            ?.beatAnchorMs,
         87,
       );
       expect(playbackState.analysisRefreshes, isNotEmpty);
 
       final refreshed = playbackState.analysisRefreshes.last.analysis.summary;
       expect(refreshed?.bpm?.numericValue, 141.18);
-      expect(refreshed?.downbeats?.positionsMs.first, 87);
+      expect(refreshed?.beatGrid?.offsetMs, 87);
 
       final refreshedSummary = playbackState
           .fakeQueue.single.extras?['analysisSummary'] as Map<String, dynamic>;
       expect(refreshedSummary['bpm']['value'], 141.18);
-      expect(refreshedSummary['downbeats']['positions_ms'].first, 87);
+      expect(refreshedSummary['beat_grid']['offset_ms'], 87);
     },
   );
 
@@ -3190,8 +3256,12 @@ class _FakeQueueApiClient extends ApiClient {
   final List<int> removedPositions = [];
   final List<(int, int)> reorders = [];
   final List<String> retriedQueueItemIds = [];
-  final List<({int trackId, TrackAnalysisOverrides overrides})>
-      analysisOverrideUpdates = [];
+  final List<
+      ({
+        int trackId,
+        TrackAnalysisOverrides overrides,
+        int expectedRevision
+      })> analysisOverrideUpdates = [];
   final List<int> analysisRequests = [];
   final List<({int trackId, Completer<TrackAnalysis> completer})>
       _heldAnalysisRequests = [];
@@ -3516,9 +3586,14 @@ class _FakeQueueApiClient extends ApiClient {
   @override
   Future<TrackAnalysis> updateTrackAnalysisOverrides(
     int trackId,
-    TrackAnalysisOverrides overrides,
-  ) async {
-    analysisOverrideUpdates.add((trackId: trackId, overrides: overrides));
+    TrackAnalysisOverrides overrides, {
+    int expectedRevision = 0,
+  }) async {
+    analysisOverrideUpdates.add((
+      trackId: trackId,
+      overrides: overrides,
+      expectedRevision: expectedRevision,
+    ));
     final track = _state.tracks.firstWhere(
       (track) => track.playbackTrackId == trackId.toString(),
     );

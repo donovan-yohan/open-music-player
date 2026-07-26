@@ -1,15 +1,22 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	_ "github.com/lib/pq"
+
+	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
+	"github.com/openmusicplayer/backend/internal/testutil"
 )
 
 func TestNewAnalysisResponsePreservesUpdatedAtPrecision(t *testing.T) {
@@ -88,6 +95,131 @@ func TestDecodeAnalysisOverridesRequestRejectsOversizedBody(t *testing.T) {
 
 	if _, err := decodeAnalysisOverridesRequest(w, req); err == nil {
 		t.Fatal("expected oversized overrides body to fail")
+	}
+}
+
+func TestUpdateTrackAnalysisOverridesRevisionContractAgainstPostgres(t *testing.T) {
+	database := newAnalysisHandlerTestDB(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	if _, err := database.Exec(
+		`INSERT INTO users (id, email, username, password_hash) VALUES ($1, $2, $3, $4)`,
+		userID, "analysis-override@example.test", "analysis-override", "x",
+	); err != nil {
+		t.Fatalf("seed analysis user: %v", err)
+	}
+
+	trackRepo := db.NewTrackRepository(database)
+	libraryRepo := db.NewLibraryRepository(database)
+	analysisRepo := db.NewAnalysisRepository(database)
+	track, _, err := trackRepo.CreateTrackFromMetadata(
+		ctx,
+		"Fixture Artist",
+		"Analysis Override Contract",
+		"",
+		120000,
+		db.WithStorage("tracks/fixture/analysis-override-contract.wav", 1024),
+		db.WithMetadata(json.RawMessage(`{}`)),
+	)
+	if err != nil {
+		t.Fatalf("seed analysis track: %v", err)
+	}
+	if _, err := libraryRepo.AddTrackToLibrary(ctx, userID, track.ID); err != nil {
+		t.Fatalf("add analysis track to library: %v", err)
+	}
+	if err := analysisRepo.StoreResult(ctx, track.ID, db.AnalysisResult{
+		SummaryJSON: json.RawMessage(`{"bpm":{"value":119},"beat_grid":{"beats_ms":[0,504,1008]}}`),
+	}); err != nil {
+		t.Fatalf("seed generated analysis: %v", err)
+	}
+
+	handler := NewAnalysisHandlers(analysisRepo, libraryRepo)
+	update := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(
+			http.MethodPatch,
+			"/api/v1/tracks/"+strconv.FormatInt(track.ID, 10)+"/analysis/overrides",
+			strings.NewReader(body),
+		)
+		req.SetPathValue("track_id", strconv.FormatInt(track.ID, 10))
+		req = req.WithContext(context.WithValue(
+			req.Context(),
+			auth.UserContextKey,
+			&auth.UserContext{UserID: userID, Email: "analysis-override@example.test"},
+		))
+		recorder := httptest.NewRecorder()
+		handler.UpdateTrackAnalysisOverrides(recorder, req)
+		return recorder
+	}
+
+	success := update(`{
+		"overrides":{"manual_timing_override":{"bpm":120,"beat_anchor_ms":0}},
+		"expected_revision":0
+	}`)
+	if success.Code != http.StatusOK {
+		t.Fatalf("initial update status = %d, body = %s", success.Code, success.Body.String())
+	}
+	var response AnalysisResponse
+	if err := json.NewDecoder(success.Body).Decode(&response); err != nil {
+		t.Fatalf("decode initial update response: %v", err)
+	}
+	if response.OverrideRevision != 1 {
+		t.Fatalf("initial update override_revision = %d, want 1", response.OverrideRevision)
+	}
+
+	stale := update(`{
+		"overrides":{"manual_timing_override":{"bpm":122}},
+		"expected_revision":0
+	}`)
+	assertAnalysisOverrideError(t, stale, http.StatusConflict, "ANALYSIS_OVERRIDE_CONFLICT")
+
+	negative := update(`{"overrides":{},"expected_revision":-1}`)
+	assertAnalysisOverrideError(t, negative, http.StatusBadRequest, "INVALID_REQUEST")
+
+	stored, err := analysisRepo.GetByTrackID(ctx, track.ID)
+	if err != nil {
+		t.Fatalf("read analysis after rejected updates: %v", err)
+	}
+	if stored.ManualOverrideRevision != 1 {
+		t.Fatalf("rejected updates changed override revision to %d", stored.ManualOverrideRevision)
+	}
+}
+
+func newAnalysisHandlerTestDB(t *testing.T) *db.DB {
+	t.Helper()
+	dsn := testutil.PostgresTestDSN()
+	if dsn == "" {
+		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run analysis handler integration tests")
+	}
+	raw, err := sql.Open("postgres", dsn)
+	if err != nil {
+		t.Fatalf("open analysis handler Postgres: %v", err)
+	}
+	t.Cleanup(func() { _ = raw.Close() })
+	database := &db.DB{DB: raw}
+	if err := database.Ping(); err != nil {
+		t.Fatalf("ping analysis handler Postgres: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("migrate analysis handler Postgres: %v", err)
+	}
+	if _, err := database.Exec(`TRUNCATE TABLE users, tracks RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatalf("truncate analysis handler tables: %v", err)
+	}
+	return database
+}
+
+func assertAnalysisOverrideError(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus int, wantCode string) {
+	t.Helper()
+	if recorder.Code != wantStatus {
+		t.Fatalf("update status = %d, want %d; body = %s", recorder.Code, wantStatus, recorder.Body.String())
+	}
+	var response LibraryErrorResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode update error response: %v", err)
+	}
+	if response.Code != wantCode {
+		t.Fatalf("update error code = %q, want %q", response.Code, wantCode)
 	}
 }
 
@@ -204,6 +336,112 @@ func TestNormalizeAnalysisOverridesKeepsOffsetOnlyGridUntrusted(t *testing.T) {
 	}
 	if _, ok := grid["provenance"]; ok {
 		t.Fatal("offset-only override retained grid-wide provenance")
+	}
+}
+
+func TestNormalizeAnalysisOverridesCanonicalManualTimingIsIndependent(t *testing.T) {
+	normalized, err := normalizeAnalysisOverrides(json.RawMessage(`{
+		"bpm":{"value":121},
+		"beat_grid":{"bpm":121,"beats_ms":[0,496,992]},
+		"downbeats":{"positions_ms":[0]},
+		"manual_timing_override":{
+			"bpm":120,"beat_anchor_ms":12,"beats_per_bar":4,
+			"downbeat_phase_index":1,"phrase_length_bars":8,
+			"revision":99,"updated_at":"client-forged"
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("normalize canonical timing: %v", err)
+	}
+	var overrides map[string]any
+	if err := json.Unmarshal(normalized, &overrides); err != nil {
+		t.Fatal(err)
+	}
+	if overrides["bpm"].(map[string]any)["value"] != float64(121) {
+		t.Fatalf("legacy BPM fallback changed: %#v", overrides["bpm"])
+	}
+	if got := overrides["beat_grid"].(map[string]any)["beats_ms"].([]any); len(got) != 3 || got[1] != float64(496) {
+		t.Fatalf("legacy beat-grid fallback changed: %#v", got)
+	}
+	if got := overrides["downbeats"].(map[string]any)["positions_ms"].([]any); len(got) != 1 || got[0] != float64(0) {
+		t.Fatalf("legacy downbeat fallback changed: %#v", got)
+	}
+	timing := overrides["manual_timing_override"].(map[string]any)
+	if timing["confidence"] != float64(1) || timing["provenance"] != manualAnalysisOverrideProvenance {
+		t.Fatalf("manual timing trust = %#v", timing)
+	}
+	if _, present := timing["revision"]; present {
+		t.Fatal("client-supplied revision survived normalization")
+	}
+	if _, present := timing["updated_at"]; present {
+		t.Fatal("client-supplied updated_at survived normalization")
+	}
+}
+
+func TestNormalizeAnalysisOverridesCanonicalManualTimingRejectsAmbiguousPhase(t *testing.T) {
+	for name, input := range map[string]string{
+		"nonpositive bpm":       `{"manual_timing_override":{"bpm":0}}`,
+		"BPM below floor":       `{"manual_timing_override":{"bpm":29.9}}`,
+		"BPM above ceiling":     `{"manual_timing_override":{"bpm":300.1}}`,
+		"negative anchor":       `{"manual_timing_override":{"beat_anchor_ms":-1}}`,
+		"phase without meter":   `{"manual_timing_override":{"downbeat_phase_index":0}}`,
+		"phase outside meter":   `{"manual_timing_override":{"beats_per_bar":4,"downbeat_phase_index":4}}`,
+		"meter above ceiling":   `{"manual_timing_override":{"beats_per_bar":33}}`,
+		"phrase is not spacing": `{"manual_timing_override":{"phrase_length_bars":0}}`,
+		"phrase above ceiling":  `{"manual_timing_override":{"phrase_length_bars":129}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := normalizeAnalysisOverrides(json.RawMessage(input)); err == nil {
+				t.Fatal("expected invalid manual timing override")
+			}
+		})
+	}
+}
+
+func TestNormalizeAnalysisOverridesCanonicalWriteDoesNotRewriteLegacyFallback(t *testing.T) {
+	normalized, err := normalizeAnalysisOverrides(json.RawMessage(`{
+		"bpm":{"nativeBpm":"legacy-unknown"},
+		"beat_grid":{"offsetMs":12,"beatsMs":[0,"legacy-gap",1000]},
+		"downbeats":{"positionsMs":[0,2000]},
+		"manual_timing_override":{"bpm":120,"beat_anchor_ms":12}
+	}`))
+	if err != nil {
+		t.Fatalf("canonical write rejected retained legacy fallback: %v", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(normalized, &document); err != nil {
+		t.Fatal(err)
+	}
+	legacyBPM := document["bpm"].(map[string]any)
+	if legacyBPM["nativeBpm"] != "legacy-unknown" {
+		t.Fatalf("legacy BPM was rewritten: %#v", legacyBPM)
+	}
+	legacyGrid := document["beat_grid"].(map[string]any)
+	if _, canonicalized := legacyGrid["beats_ms"]; canonicalized {
+		t.Fatalf("legacy beat grid was canonicalized: %#v", legacyGrid)
+	}
+	if got := legacyGrid["beatsMs"].([]any)[1]; got != "legacy-gap" {
+		t.Fatalf("legacy beat intent changed: %#v", legacyGrid)
+	}
+}
+
+func TestNormalizeAnalysisOverridesAcceptsResetMetadataEnvelope(t *testing.T) {
+	normalized, err := normalizeAnalysisOverrides(json.RawMessage(`{
+		"manual_timing_override":{"revision":4,"updated_at":"2026-07-26T00:00:00Z","confidence":1,"provenance":"manual_override"}
+	}`))
+	if err != nil {
+		t.Fatalf("normalize reset metadata: %v", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(normalized, &document); err != nil {
+		t.Fatal(err)
+	}
+	timing := document["manual_timing_override"].(map[string]any)
+	if _, present := timing["revision"]; present {
+		t.Fatal("client revision survived reset normalization")
+	}
+	if timing["confidence"] != float64(1) || timing["provenance"] != manualAnalysisOverrideProvenance {
+		t.Fatalf("reset manual trust = %#v", timing)
 	}
 }
 

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 enum TrackAnalysisStatus {
   pending,
   analyzing,
@@ -15,12 +17,22 @@ class TrackAnalysis {
   final bool overridesPresent;
   final DateTime? updatedAt;
 
+  /// Monotonic server revision for the user-authored override document.
+  ///
+  /// This is deliberately separate from [updatedAt], which also advances when
+  /// generated analyzer output changes. PATCH callers use this value for
+  /// optimistic concurrency rather than treating a timestamp as a lock.
+  final int? overrideRevision;
+  final DateTime? overrideUpdatedAt;
+
   const TrackAnalysis({
     required this.status,
     this.summary,
     this.overrides,
     bool? overridesPresent,
     this.updatedAt,
+    this.overrideRevision,
+    this.overrideUpdatedAt,
   }) : overridesPresent = overridesPresent ?? overrides != null;
 
   factory TrackAnalysis.fromJson({
@@ -30,12 +42,15 @@ class TrackAnalysis {
     Object? overrides,
     bool? overridesPresent,
     Object? updatedAt,
+    Object? overrideRevision,
+    Object? overrideUpdatedAt,
   }) {
     final parsedStatus = parseTrackAnalysisStatus(status);
     final baseSummary = summary == null
         ? null
         : TrackAnalysisSummary.fromJson(summary, artifacts: artifacts);
     final parsedOverrides = TrackAnalysisOverrides.fromJson(overrides);
+    final manualTiming = parsedOverrides?.manualTiming;
     final effectiveSummary = parsedOverrides == null
         ? baseSummary
         : parsedOverrides.applyTo(baseSummary ?? const TrackAnalysisSummary());
@@ -45,6 +60,9 @@ class TrackAnalysis {
       overrides: parsedOverrides,
       overridesPresent: overridesPresent ?? overrides != null,
       updatedAt: _readDateTime(updatedAt),
+      overrideRevision: _readInt(overrideRevision) ?? manualTiming?.revision,
+      overrideUpdatedAt:
+          _readDateTime(overrideUpdatedAt) ?? manualTiming?.updatedAt,
     );
   }
 
@@ -63,6 +81,9 @@ class TrackAnalysis {
       if (summary != null) 'summary': summary!.toJson(),
       if (overridesPresent) 'overrides': overrides?.toJson() ?? const {},
       if (updatedAt != null) 'updated_at': updatedAt!.toUtc().toIso8601String(),
+      if (overrideRevision != null) 'override_revision': overrideRevision,
+      if (overrideUpdatedAt != null)
+        'override_updated_at': overrideUpdatedAt!.toUtc().toIso8601String(),
     };
   }
 }
@@ -76,6 +97,10 @@ TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
   final rawStatus = json['analysisStatus'] ?? json['analysis_status'];
   final rawSummary = json['analysisSummary'] ?? json['analysis_summary'];
   final rawUpdatedAt = json['analysisUpdatedAt'] ?? json['analysis_updated_at'];
+  final rawOverrideRevision =
+      json['analysisOverrideRevision'] ?? json['analysis_override_revision'];
+  final rawOverrideUpdatedAt =
+      json['analysisOverrideUpdatedAt'] ?? json['analysis_override_updated_at'];
   final summaryMap = _readMap(rawSummary);
   final hasCamelCaseOverrides = json.containsKey('analysisOverrides');
   final hasSnakeCaseOverrides = json.containsKey('analysis_overrides');
@@ -90,7 +115,9 @@ TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
   if (rawStatus == null &&
       rawSummary == null &&
       !overridesPresent &&
-      rawUpdatedAt == null) {
+      rawUpdatedAt == null &&
+      rawOverrideRevision == null &&
+      rawOverrideUpdatedAt == null) {
     return null;
   }
 
@@ -100,11 +127,15 @@ TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
     overrides: rawOverrides,
     overridesPresent: overridesPresent,
     updatedAt: rawUpdatedAt,
+    overrideRevision: rawOverrideRevision,
+    overrideUpdatedAt: rawOverrideUpdatedAt,
   );
   if (analysis.status == TrackAnalysisStatus.unknown &&
       !analysis.hasDisplayableSummary &&
       !analysis.overridesPresent &&
-      analysis.updatedAt == null) {
+      analysis.updatedAt == null &&
+      analysis.overrideRevision == null &&
+      analysis.overrideUpdatedAt == null) {
     return null;
   }
   return analysis;
@@ -122,11 +153,9 @@ Map<String, dynamic> analysisPlaybackFields(TrackAnalysis? analysis) {
 enum TrackAnalysisFieldStyle { camelCase, snakeCase }
 
 typedef TrackAnalysisSummarySerializer = Object Function(
-  TrackAnalysisSummary summary,
-);
+    TrackAnalysisSummary summary);
 typedef TrackAnalysisOverridesSerializer = Object Function(
-  TrackAnalysisOverrides? overrides,
-);
+    TrackAnalysisOverrides? overrides);
 
 /// Canonical analysis-field mapping for track serializers.
 ///
@@ -146,6 +175,10 @@ Map<String, dynamic> trackAnalysisFields(
   final summaryKey = snakeCase ? 'analysis_summary' : 'analysisSummary';
   final overridesKey = snakeCase ? 'analysis_overrides' : 'analysisOverrides';
   final updatedAtKey = snakeCase ? 'analysis_updated_at' : 'analysisUpdatedAt';
+  final overrideRevisionKey =
+      snakeCase ? 'analysis_override_revision' : 'analysisOverrideRevision';
+  final overrideUpdatedAtKey =
+      snakeCase ? 'analysis_override_updated_at' : 'analysisOverrideUpdatedAt';
   final updatedAt = analysis.updatedAt?.toUtc();
   return {
     statusKey: analysis.status.name,
@@ -159,6 +192,11 @@ Map<String, dynamic> trackAnalysisFields(
     if (updatedAt != null) updatedAtKey: updatedAt.toIso8601String(),
     if (includeUpdatedAtMicros && updatedAt != null)
       'analysis_updated_at_us': updatedAt.microsecondsSinceEpoch,
+    if (analysis.overrideRevision != null)
+      overrideRevisionKey: analysis.overrideRevision,
+    if (analysis.overrideUpdatedAt != null)
+      overrideUpdatedAtKey:
+          analysis.overrideUpdatedAt!.toUtc().toIso8601String(),
   };
 }
 
@@ -204,12 +242,222 @@ TrackAnalysisStatus parseTrackAnalysisStatus(Object? value) {
   }
 }
 
+/// Canonical, normalized manual timing facts.
+///
+/// A manual correction is not a second beat-grid store. The backend owns the
+/// effective timing projection used by playback; this document records only
+/// the facts a DJ changed and remains available to the editor and for legacy
+/// payload migration.
+class ManualTimingOverride {
+  final double? bpm;
+  final int? beatAnchorMs;
+  final int? beatsPerBar;
+  final int? downbeatPhaseIndex;
+  final int? phraseLengthBars;
+  final double? confidence;
+  final String? provenance;
+  final int? revision;
+  final DateTime? updatedAt;
+
+  const ManualTimingOverride({
+    this.bpm,
+    this.beatAnchorMs,
+    this.beatsPerBar,
+    this.downbeatPhaseIndex,
+    this.phraseLengthBars,
+    this.confidence,
+    this.provenance,
+    this.revision,
+    this.updatedAt,
+  });
+
+  static ManualTimingOverride? fromJson(Object? json) {
+    final map = _readMap(json);
+    if (map == null || map.isEmpty) return null;
+    final value = ManualTimingOverride(
+      bpm: _readDouble(map['bpm']),
+      beatAnchorMs: _readInt(map['beat_anchor_ms'] ?? map['beatAnchorMs']),
+      beatsPerBar: _readInt(map['beats_per_bar'] ?? map['beatsPerBar']),
+      downbeatPhaseIndex: _readInt(
+        map['downbeat_phase_index'] ?? map['downbeatPhaseIndex'],
+      ),
+      phraseLengthBars: _readInt(
+        map['phrase_length_bars'] ?? map['phraseLengthBars'],
+      ),
+      confidence: _readDouble(map['confidence']),
+      provenance: _readString(map['provenance']),
+      revision: _readInt(map['revision']),
+      updatedAt: _readDateTime(map['updated_at'] ?? map['updatedAt']),
+    );
+    return value.isEmpty ? null : value;
+  }
+
+  bool get isEmpty =>
+      bpm == null &&
+      beatAnchorMs == null &&
+      beatsPerBar == null &&
+      downbeatPhaseIndex == null &&
+      phraseLengthBars == null &&
+      revision == null &&
+      updatedAt == null;
+
+  int? get normalizedDownbeatPhaseIndex {
+    final meter = beatsPerBar;
+    final phase = downbeatPhaseIndex;
+    if (meter == null || meter <= 0 || phase == null) return null;
+    return ((phase % meter) + meter) % meter;
+  }
+
+  ManualTimingOverride copyWith({
+    double? bpm,
+    int? beatAnchorMs,
+    int? beatsPerBar,
+    int? downbeatPhaseIndex,
+    int? phraseLengthBars,
+    double? confidence,
+    String? provenance,
+    int? revision,
+    DateTime? updatedAt,
+  }) =>
+      ManualTimingOverride(
+        bpm: bpm ?? this.bpm,
+        beatAnchorMs: beatAnchorMs ?? this.beatAnchorMs,
+        beatsPerBar: beatsPerBar ?? this.beatsPerBar,
+        downbeatPhaseIndex: downbeatPhaseIndex ?? this.downbeatPhaseIndex,
+        phraseLengthBars: phraseLengthBars ?? this.phraseLengthBars,
+        confidence: confidence ?? this.confidence,
+        provenance: provenance ?? this.provenance,
+        revision: revision ?? this.revision,
+        updatedAt: updatedAt ?? this.updatedAt,
+      );
+
+  Map<String, dynamic> toJson({bool includeServerMetadata = true}) => {
+        if (bpm != null) 'bpm': bpm,
+        if (beatAnchorMs != null) 'beat_anchor_ms': beatAnchorMs,
+        if (beatsPerBar != null) 'beats_per_bar': beatsPerBar,
+        if (normalizedDownbeatPhaseIndex != null)
+          'downbeat_phase_index': normalizedDownbeatPhaseIndex,
+        if (phraseLengthBars != null) 'phrase_length_bars': phraseLengthBars,
+        if (!isEmpty) 'confidence': confidence ?? 1.0,
+        if (!isEmpty) 'provenance': provenance ?? 'manual_override',
+        if (includeServerMetadata && revision != null) 'revision': revision,
+        if (includeServerMetadata && updatedAt != null)
+          'updated_at': updatedAt!.toUtc().toIso8601String(),
+      };
+
+  static const int _maxProjectedBeatPositions = 8192;
+
+  /// Applies only the normalized fallback projection used for old payload
+  /// paths. The server remains the timing authority for current responses.
+  TrackAnalysisSummary applyTo(TrackAnalysisSummary base) {
+    final source = provenance ?? 'manual_override';
+    final baseGrid = base.beatGrid;
+    final baseBeats = baseGrid?.beatsMs ?? const <int>[];
+    final effectiveBpm =
+        bpm ?? base.bpm?.numericValue?.toDouble() ?? baseGrid?.bpm;
+    final effectiveAnchor = beatAnchorMs ??
+        baseGrid?.offsetMs ??
+        (baseBeats.isEmpty ? null : baseBeats.first);
+    final rewritesGrid = (bpm != null || beatAnchorMs != null) &&
+        effectiveBpm != null &&
+        effectiveBpm > 0 &&
+        effectiveAnchor != null;
+    final projectedBeats = rewritesGrid && baseBeats.isNotEmpty
+        ? _regenerateBeatGrid(
+            bpm: effectiveBpm,
+            anchorMs: effectiveAnchor,
+            baseBeats: baseBeats,
+          )
+        : baseBeats;
+    final effectiveGrid = (baseGrid != null ||
+            rewritesGrid ||
+            bpm != null ||
+            beatAnchorMs != null)
+        ? BeatGridSummary(
+            bpm: effectiveBpm,
+            offsetMs: effectiveAnchor,
+            beatsMs: projectedBeats,
+            confidence: confidence ??
+                (bpm == null && !rewritesGrid ? baseGrid?.confidence : 1.0),
+            provenance: (bpm != null || beatAnchorMs != null)
+                ? source
+                : baseGrid?.provenance,
+          )
+        : null;
+    final hasAnyPhaseFact = beatsPerBar != null || downbeatPhaseIndex != null;
+    final phase = normalizedDownbeatPhaseIndex;
+    final effectiveDownbeats = phase == null
+        ? ((rewritesGrid || hasAnyPhaseFact) ? null : base.downbeats)
+        : DownbeatSummary(
+            positionsMs: List<int>.unmodifiable([
+              for (var index = phase;
+                  index < projectedBeats.length;
+                  index += beatsPerBar!)
+                projectedBeats[index],
+            ]),
+            confidence: confidence ?? 1.0,
+            provenance: source,
+          );
+    return TrackAnalysisSummary(
+      bpm: bpm == null
+          ? base.bpm
+          : AnalysisValue(
+              value: bpm!,
+              confidence: confidence ?? 1.0,
+              provenance: source,
+            ),
+      beatGrid: effectiveGrid,
+      downbeats: effectiveDownbeats,
+      key: base.key,
+      camelot: base.camelot,
+      energy: base.energy,
+      loudness: base.loudness,
+      truePeak: base.truePeak,
+      waveform: base.waveform,
+      transients: base.transients,
+      silence: base.silence,
+      intro: base.intro,
+      outro: base.outro,
+      sections: base.sections,
+      cueCandidates: base.cueCandidates,
+    );
+  }
+
+  static List<int> _regenerateBeatGrid({
+    required double bpm,
+    required int anchorMs,
+    required List<int> baseBeats,
+  }) {
+    if (bpm < 30 || bpm > 300 || anchorMs < 0 || baseBeats.isEmpty) {
+      return baseBeats;
+    }
+    final maxBeat = baseBeats.fold<int>(-1, math.max);
+    if (maxBeat < 0) return const [];
+    final intervalMs = 60000 / bpm;
+    final startIndex = (-anchorMs / intervalMs).ceil();
+    final generated = <int>[];
+    var previous = -1;
+    for (var index = startIndex;
+        generated.length < _maxProjectedBeatPositions;
+        index++) {
+      final beat = (anchorMs + index * intervalMs).round();
+      if (beat > maxBeat) break;
+      if (beat < 0 || beat == previous) continue;
+      generated.add(beat);
+      previous = beat;
+    }
+    return List<int>.unmodifiable(generated);
+  }
+}
+
 /// User-authored corrections for analyzer metadata.
 ///
 /// The analyzer summary stays useful for waveform/loudness/artifacts, while
 /// these fields override the musical timing facts used by queue snapping,
 /// BPM-sync automation, and user-facing analysis labels.
 class TrackAnalysisOverrides {
+  /// Normalized timing authority for newly written overrides.
+  final ManualTimingOverride? manualTiming;
   final double? bpm;
   final double? bpmConfidence;
   final int? beatGridOffsetMs;
@@ -223,6 +471,7 @@ class TrackAnalysisOverrides {
   final String? downbeatProvenance;
 
   const TrackAnalysisOverrides({
+    this.manualTiming,
     this.bpm,
     this.bpmConfidence,
     this.beatGridOffsetMs,
@@ -240,6 +489,9 @@ class TrackAnalysisOverrides {
     final map = _readMap(json);
     if (map == null || map.isEmpty) return null;
 
+    final manualTiming = ManualTimingOverride.fromJson(
+      map['manual_timing_override'] ?? map['manualTimingOverride'],
+    );
     final bpmValue = AnalysisValue.fromJson(map['bpm']);
     final bpmMap = _readMap(map['bpm']);
     final beatGrid = _readMap(map['beat_grid'] ?? map['beatGrid']);
@@ -260,6 +512,7 @@ class TrackAnalysisOverrides {
     final camelotValue = AnalysisValue.fromJson(map['camelot']);
 
     final overrides = TrackAnalysisOverrides(
+      manualTiming: manualTiming,
       bpm: bpmValue?.numericValue?.toDouble() ??
           _readDouble(map['nativeBpm']) ??
           _readDouble(beatGrid?['bpm']),
@@ -291,6 +544,7 @@ class TrackAnalysisOverrides {
   }
 
   bool get isEmpty =>
+      manualTiming == null &&
       bpm == null &&
       bpmConfidence == null &&
       beatGridOffsetMs == null &&
@@ -300,12 +554,21 @@ class TrackAnalysisOverrides {
       camelot == null;
 
   TrackAnalysisSummary applyTo(TrackAnalysisSummary base) {
+    final legacy = _applyLegacyTo(base);
+    final canonicalTiming = manualTiming;
+    return canonicalTiming == null ? legacy : canonicalTiming.applyTo(legacy);
+  }
+
+  TrackAnalysisSummary _applyLegacyTo(TrackAnalysisSummary base) {
     final source = provenance ?? 'manual_override';
     final bpmSource = bpmProvenance ?? source;
     final beatGridSource = beatGridProvenance ?? source;
     final downbeatSource = downbeatProvenance ?? source;
     final effectiveBpmConfidence = bpm == null ? null : 1.0;
-    final hasTrustedBeatGridOverride = bpm != null || beatsMs != null;
+    // A legacy BPM-only correction changes tempo automation but never blesses
+    // or rewrites analyzer beat markers. Only an explicit legacy marker list
+    // can make the grid manual; normalized overrides use [manualTiming].
+    final hasTrustedBeatGridOverride = beatsMs != null;
     final effectiveBeatGridConfidence = hasTrustedBeatGridOverride ? 1.0 : null;
     return TrackAnalysisSummary(
       bpm: bpm == null
@@ -361,15 +624,22 @@ class TrackAnalysisOverrides {
     );
   }
 
-  Map<String, dynamic> toJson() {
+  Map<String, dynamic> toJson({bool includeServerMetadata = true}) {
+    final canonicalTiming = manualTiming;
     final source = provenance ?? 'manual_override';
     final bpmSource = bpmProvenance ?? source;
     final beatGridSource = beatGridProvenance ?? source;
     final downbeatSource = downbeatProvenance ?? source;
     final effectiveBpmConfidence = bpm == null ? null : 1.0;
-    final hasTrustedBeatGridOverride = bpm != null || beatsMs != null;
+    // A legacy BPM override changes only BPM. It does not establish a manual
+    // beat grid unless the legacy payload explicitly carried beat markers.
+    final hasTrustedBeatGridOverride = beatsMs != null;
     final effectiveBeatGridConfidence = hasTrustedBeatGridOverride ? 1.0 : null;
     return {
+      if (canonicalTiming != null)
+        'manual_timing_override': canonicalTiming.toJson(
+          includeServerMetadata: includeServerMetadata,
+        ),
       if (bpm != null)
         'bpm': {
           'value': bpm,
@@ -377,9 +647,9 @@ class TrackAnalysisOverrides {
             'confidence': effectiveBpmConfidence,
           'provenance': bpmSource,
         },
-      if (bpm != null || beatGridOffsetMs != null || beatsMs != null)
+      if (beatGridOffsetMs != null || beatsMs != null)
         'beat_grid': {
-          if (bpm != null) 'bpm': bpm,
+          if (bpm != null && hasTrustedBeatGridOverride) 'bpm': bpm,
           if (beatGridOffsetMs != null) 'offset_ms': beatGridOffsetMs,
           if (effectiveBeatGridConfidence != null)
             'confidence': effectiveBeatGridConfidence,
@@ -447,10 +717,7 @@ class TrackAnalysisSummary {
       energy: AnalysisValue.fromJson(map['energy']),
       loudness: LoudnessSummary.fromJson(map['loudness']),
       truePeak: TruePeakSummary.fromJson(map['true_peak'] ?? map['truePeak']),
-      waveform: WaveformSummary.fromJson(
-        map['waveform'],
-        artifacts: artifacts,
-      ),
+      waveform: WaveformSummary.fromJson(map['waveform'], artifacts: artifacts),
       transients: TransientsSummary.fromJson(map['transients']),
       silence: SilenceSummary.fromJson(map['silence']),
       intro: AnalysisRange.fromJson(map['intro']),
@@ -812,9 +1079,7 @@ class WaveformSummary {
         .whereType<WaveformResolutionSummary>()
         .toList(growable: false);
     return WaveformSummary(
-      peaks: _readDoubleList(
-        map['peaks'] ?? preferredWaveform?['peaks'],
-      ),
+      peaks: _readDoubleList(map['peaks'] ?? preferredWaveform?['peaks']),
       minPeaks: _readDoubleList(
         map['min_peaks'] ??
             map['minPeaks'] ??
@@ -839,9 +1104,7 @@ class WaveformSummary {
         artifactValues: preferredChannels,
       ),
       spectralBands: _mergeSpectralBands(
-        _readSpectralBands(
-          map['spectral_bands'] ?? map['spectralBands'],
-        ),
+        _readSpectralBands(map['spectral_bands'] ?? map['spectralBands']),
         _readSpectralBands(preferredSpectral),
       ),
       confidence: _readDouble(map['confidence']),
@@ -1015,9 +1278,7 @@ class WaveformResolutionSummary {
         _readChannelValues(channelArtifact),
       ),
       spectralBands: _mergeSpectralBands(
-        _readSpectralBands(
-          map['spectral_bands'] ?? map['spectralBands'],
-        ),
+        _readSpectralBands(map['spectral_bands'] ?? map['spectralBands']),
         _readSpectralBands(spectralArtifact),
       ),
     );
@@ -1034,9 +1295,7 @@ class WaveformResolutionSummary {
       if (maxPeaks.isNotEmpty) 'max_peaks': maxPeaks,
       if (rms.isNotEmpty) 'rms': rms,
       if (channels.isNotEmpty)
-        'channels': channels.map(
-          (key, value) => MapEntry(key, value.toJson()),
-        ),
+        'channels': channels.map((key, value) => MapEntry(key, value.toJson())),
       if (spectralBands.isNotEmpty)
         'spectral_bands': spectralBands.map(
           (key, value) => MapEntry(key, value.toJson()),
@@ -1085,9 +1344,7 @@ class WaveformChannelsSummary {
       normalization: Map<String, dynamic>.unmodifiable(
         _readMap(map['normalization']) ?? const {},
       ),
-      weights: Map<String, double>.unmodifiable(
-        _readDoubleMap(map['weights']),
-      ),
+      weights: Map<String, double>.unmodifiable(_readDoubleMap(map['weights'])),
       crossoversHz: Map<String, double>.unmodifiable(
         _readDoubleMap(map['crossovers_hz'] ?? map['crossoversHz']),
       ),
@@ -1106,9 +1363,7 @@ class WaveformChannelsSummary {
       if (crossoversHz.isNotEmpty) 'crossovers_hz': crossoversHz,
       if (provenance != null) 'provenance': provenance,
       if (values.isNotEmpty)
-        'values': values.map(
-          (key, value) => MapEntry(key, value.toJson()),
-        ),
+        'values': values.map((key, value) => MapEntry(key, value.toJson())),
     };
   }
 }
@@ -1343,9 +1598,7 @@ Map<String, double> _readDoubleMap(Object? value) {
   };
 }
 
-Map<String, dynamic>? _preferredArtifactTier(
-  Map<String, dynamic>? artifacts,
-) {
+Map<String, dynamic>? _preferredArtifactTier(Map<String, dynamic>? artifacts) {
   if (artifacts == null) return null;
   return _readMap(artifacts['detail']) ??
       _readMap(artifacts['overview']) ??

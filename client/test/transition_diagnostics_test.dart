@@ -380,14 +380,23 @@ void main() {
 
   test('manual correction metadata clears missing BPM and downbeat warnings',
       () {
-    final overrides = analysisOverridesFromCorrectionFields(
-      durationMs: 16000,
+    final overrides = manualTimingOverridesFromFields(
       bpm: 141.18,
-      firstDownbeatMs: 87,
-      phraseBeats: 4,
+      beatAnchorMs: 87,
+      beatsPerBar: 4,
+      downbeatPhaseIndex: 0,
     );
     final correctedTempo = ClipTempoMetadata.fromAnalysisSummary(
-      null,
+      {
+        'beat_grid': {
+          'bpm': 141.18,
+          'offset_ms': 87,
+          'beats_ms': List<int>.generate(
+            38,
+            (index) => 87 + index * 425,
+          ),
+        },
+      },
       overrides: overrides.toJson(),
     );
 

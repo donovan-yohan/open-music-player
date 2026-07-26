@@ -593,6 +593,109 @@ void main() {
       playback.dispose();
     });
 
+    test(
+        'analysis refresh replaces override revision metadata across queue persistence',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final playback = _playbackState();
+      final oldOverrideUpdatedAt = DateTime.utc(2026, 7, 26, 10);
+      final newOverrideUpdatedAt =
+          DateTime.utc(2026, 7, 26, 11, 0, 0, 123, 456);
+      final summary = {
+        'bpm': {'value': 120, 'confidence': 1.0},
+        'beat_grid': {
+          'bpm': 120,
+          'offset_ms': 100,
+          'beats_ms': [100, 600, 1100, 1600, 2100],
+          'confidence': 1.0,
+        },
+        'downbeats': {
+          'positions_ms': [100, 2100],
+          'confidence': 1.0,
+        },
+      };
+
+      await playback.playQueue([
+        {
+          ..._track(1, seconds: 20),
+          'analysisStatus': 'analyzed',
+          'analysisSummary': summary,
+          'analysisOverrides': {
+            'manual_timing_override': {
+              'bpm': 120,
+              'beat_anchor_ms': 100,
+              'beats_per_bar': 4,
+              'downbeat_phase_index': 0,
+              'phrase_length_bars': 8,
+              'revision': 1,
+              'updated_at': oldOverrideUpdatedAt.toIso8601String(),
+            },
+          },
+          'analysisOverrideRevision': 1,
+          'analysisOverrideUpdatedAt': oldOverrideUpdatedAt.toIso8601String(),
+        },
+      ]);
+
+      await playback.refreshTrackAnalysis(
+        '1',
+        TrackAnalysis.fromJson(
+          status: 'analyzed',
+          summary: summary,
+          overrides: {
+            'manual_timing_override': {
+              'bpm': 120,
+              'beat_anchor_ms': 100,
+              'beats_per_bar': 4,
+              'downbeat_phase_index': 0,
+              'phrase_length_bars': 16,
+              'revision': 2,
+              'updated_at': newOverrideUpdatedAt.toIso8601String(),
+            },
+          },
+          updatedAt: newOverrideUpdatedAt,
+          overrideRevision: 2,
+          overrideUpdatedAt: newOverrideUpdatedAt,
+        ),
+      );
+
+      final refreshed = playback.queue.single;
+      expect(refreshed.extras?['analysisOverrideRevision'], 2);
+      expect(
+        refreshed.extras?['analysisOverrideUpdatedAt'],
+        newOverrideUpdatedAt.toIso8601String(),
+      );
+      expect(
+        refreshed.extras,
+        isNot(contains('analysis_override_revision')),
+      );
+      expect(
+        refreshed.extras,
+        isNot(contains('analysis_override_updated_at')),
+      );
+
+      final persisted = mediaItemToPlaybackJson(refreshed);
+      expect(persisted['analysisOverrideRevision'], 2);
+      expect(
+        persisted['analysisOverrideUpdatedAt'],
+        newOverrideUpdatedAt.toIso8601String(),
+      );
+      expect(
+        (persisted['analysisOverrides']
+            as Map<String, dynamic>)['manual_timing_override']['revision'],
+        2,
+      );
+
+      final restoredSession = MixSession.fromJson(
+        MixSession.fromQueue(
+          sessionId: 'override_revision_refresh',
+          queue: [refreshed],
+        ).toJson(),
+      );
+      expect(restoredSession.clips.single.tempo.overrideRevision, 2);
+      expect(restoredSession.clips.single.tempo.phraseLengthBars, 16);
+      playback.dispose();
+    });
+
     test('analysis refresh never puts waveform arrays in media extras',
         () async {
       SharedPreferences.setMockInitialValues({});

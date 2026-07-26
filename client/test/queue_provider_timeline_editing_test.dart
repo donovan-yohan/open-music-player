@@ -866,6 +866,87 @@ void main() {
     expect(refreshed.analysis?.summary?.waveform?.peaks, isNotEmpty);
   });
 
+  for (final overrideCase in <(String, ManualTimingOverride)>[
+    (
+      'BPM-only',
+      const ManualTimingOverride(
+        bpm: 128,
+        confidence: 1,
+        provenance: 'manual_override',
+        revision: 1,
+      ),
+    ),
+    (
+      'anchor-only',
+      const ManualTimingOverride(
+        beatAnchorMs: 250,
+        confidence: 1,
+        provenance: 'manual_override',
+        revision: 1,
+      ),
+    ),
+  ]) {
+    test(
+        'canonical ${overrideCase.$1} compact merge drops stale detailed downbeats',
+        () {
+      final provider = QueueProvider(
+        mockQueueApiClient((_) async => http.Response('', 404)),
+      );
+      final updatedAt = DateTime.utc(2026, 7, 10, 12);
+      final overrides = TrackAnalysisOverrides(
+        manualTiming: overrideCase.$2,
+      );
+      final detailed = _track(
+        playbackTrackId: '42',
+        analysis: TrackAnalysis(
+          status: TrackAnalysisStatus.analyzed,
+          summary: const TrackAnalysisSummary(
+            bpm: AnalysisValue(value: 128),
+            beatGrid: BeatGridSummary(
+              bpm: 128,
+              offsetMs: 250,
+              beatsMs: [250, 719, 1188],
+            ),
+            downbeats: DownbeatSummary(positionsMs: [250, 2125]),
+            waveform: WaveformSummary(
+              sampleCount: 2,
+              peaks: [0.2, 0.8],
+            ),
+          ),
+          overrides: overrides,
+          overridesPresent: true,
+          updatedAt: updatedAt,
+          overrideRevision: 1,
+        ),
+      );
+      provider.trackWithAnalysis(detailed);
+
+      final compact = _track(
+        playbackTrackId: '42',
+        analysis: TrackAnalysis(
+          status: TrackAnalysisStatus.analyzed,
+          summary: const TrackAnalysisSummary(
+            bpm: AnalysisValue(value: 128),
+            beatGrid: BeatGridSummary(
+              bpm: 128,
+              offsetMs: 250,
+              beatsMs: [250, 719, 1188],
+            ),
+          ),
+          overrides: overrides,
+          overridesPresent: true,
+          updatedAt: updatedAt,
+          overrideRevision: 1,
+        ),
+      );
+      final refreshed = provider.trackWithAnalysis(compact);
+
+      expect(refreshed.analysis?.summary?.downbeats, isNull);
+      expect(refreshed.analysis?.summary?.waveform?.peaks, [0.2, 0.8]);
+      provider.dispose();
+    });
+  }
+
   test('hydration cache compaction preserves distinct timing provenance',
       () async {
     final hydrated = Completer<void>();
@@ -1048,6 +1129,182 @@ void main() {
     provider.dispose();
   });
 
+  test('override revisions order cache refresh before generated analysis time',
+      () {
+    final provider = QueueProvider(ApiClient());
+    final initialTime = DateTime.utc(2026, 7, 10, 12);
+
+    QueueTrack analyzedTrack({
+      required int? overrideRevision,
+      required DateTime updatedAt,
+      required double bpm,
+      List<int>? downbeatsMs,
+      bool detailed = false,
+    }) =>
+        _track(
+          playbackTrackId: '42',
+          analysis: TrackAnalysis.fromJson(
+            status: 'analyzed',
+            summary: {
+              'bpm': {'value': bpm},
+              if (downbeatsMs != null)
+                'downbeats': {'positions_ms': downbeatsMs},
+              if (detailed)
+                'waveform': {
+                  'sample_count': 2,
+                  'peaks': [0.2, 0.8],
+                },
+            },
+            updatedAt: updatedAt,
+            overrideRevision: overrideRevision,
+          ),
+        );
+
+    final detailed = analyzedTrack(
+      overrideRevision: 5,
+      updatedAt: initialTime,
+      bpm: 120,
+      downbeatsMs: const [0, 2000],
+      detailed: true,
+    );
+    provider.trackWithAnalysis(detailed, requestHydration: false);
+
+    final lowerRevision = analyzedTrack(
+      overrideRevision: 4,
+      updatedAt: initialTime.add(const Duration(minutes: 3)),
+      bpm: 118,
+    );
+    final afterLower =
+        provider.trackWithAnalysis(lowerRevision, requestHydration: false);
+    expect(afterLower.analysis?.overrideRevision, 5);
+    expect(afterLower.analysis?.summary?.bpm?.numericValue, 120);
+    expect(afterLower.analysis?.summary?.downbeats?.positionsMs, [0, 2000]);
+
+    final equalNewer = analyzedTrack(
+      overrideRevision: 5,
+      updatedAt: initialTime.add(const Duration(minutes: 1)),
+      bpm: 122,
+    );
+    final afterEqual =
+        provider.trackWithAnalysis(equalNewer, requestHydration: false);
+    expect(afterEqual.analysis?.overrideRevision, 5);
+    expect(afterEqual.analysis?.summary?.bpm?.numericValue, 122);
+    expect(afterEqual.analysis?.summary?.downbeats, isNull);
+    expect(afterEqual.analysis?.summary?.waveform, isNull);
+
+    final higherOlder = analyzedTrack(
+      overrideRevision: 6,
+      updatedAt: initialTime.subtract(const Duration(minutes: 1)),
+      bpm: 124,
+      downbeatsMs: const [250],
+    );
+    final afterHigher =
+        provider.trackWithAnalysis(higherOlder, requestHydration: false);
+    expect(afterHigher.analysis?.overrideRevision, 6);
+    expect(afterHigher.analysis?.summary?.bpm?.numericValue, 124);
+    expect(afterHigher.analysis?.summary?.downbeats?.positionsMs, [250]);
+
+    final missingRevision = analyzedTrack(
+      overrideRevision: null,
+      updatedAt: initialTime.add(const Duration(minutes: 5)),
+      bpm: 90,
+    );
+    final afterMissing =
+        provider.trackWithAnalysis(missingRevision, requestHydration: false);
+    expect(afterMissing.analysis?.overrideRevision, 6);
+    expect(afterMissing.analysis?.summary?.bpm?.numericValue, 124);
+    provider.dispose();
+
+    final legacyProvider = QueueProvider(ApiClient());
+    final legacy = analyzedTrack(
+      overrideRevision: null,
+      updatedAt: initialTime,
+      bpm: 110,
+      downbeatsMs: const [0],
+      detailed: true,
+    );
+    legacyProvider.trackWithAnalysis(legacy, requestHydration: false);
+    final firstKnownRevision = analyzedTrack(
+      overrideRevision: 1,
+      updatedAt: initialTime.subtract(const Duration(minutes: 1)),
+      bpm: 112,
+      downbeatsMs: const [250],
+    );
+    final afterKnown = legacyProvider.trackWithAnalysis(
+      firstKnownRevision,
+      requestHydration: false,
+    );
+    expect(afterKnown.analysis?.overrideRevision, 1);
+    expect(afterKnown.analysis?.summary?.bpm?.numericValue, 112);
+    expect(afterKnown.analysis?.summary?.downbeats?.positionsMs, [250]);
+    legacyProvider.dispose();
+  });
+
+  test('uncached override save uses the edited track revision', () async {
+    int? expectedRevision;
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (request.method != 'PATCH' ||
+            !request.url.path.endsWith('/tracks/42/analysis/overrides')) {
+          return http.Response('', 404);
+        }
+        expectedRevision = (jsonDecode(request.body)
+            as Map<String, dynamic>)['expected_revision'] as int?;
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'summary': {
+              'bpm': {'value': 128},
+            },
+            'overrides': {
+              'manual_timing_override': {
+                'bpm': 128,
+                'confidence': 1.0,
+                'provenance': 'manual_override',
+                'revision': 8,
+              },
+            },
+            'override_revision': 8,
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    final track = _track(
+      playbackTrackId: '42',
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'bpm': {'value': 120},
+        },
+        overrides: {
+          'manual_timing_override': {
+            'bpm': 120,
+            'confidence': 1.0,
+            'provenance': 'manual_override',
+            'revision': 7,
+          },
+        },
+        overridesPresent: true,
+      ),
+    );
+
+    await provider.updateAnalysisOverrides(
+      track,
+      const TrackAnalysisOverrides(
+        manualTiming: ManualTimingOverride(
+          bpm: 128,
+          confidence: 1.0,
+          provenance: 'manual_override',
+        ),
+      ),
+    );
+
+    expect(expectedRevision, 7);
+    provider.dispose();
+  });
+
   test('saved override rejects payloads older than its server revision',
       () async {
     final staleRevision = DateTime.utc(2026, 7, 10, 12);
@@ -1055,7 +1312,12 @@ void main() {
     final reversionRevision =
         savedRevision.add(const Duration(microseconds: 1));
 
-    QueueTrack analyzedTrack(double bpm, DateTime revision) => _track(
+    QueueTrack analyzedTrack(
+      double bpm,
+      DateTime revision, {
+      int overrideRevision = 4,
+    }) =>
+        _track(
           id: '42',
           playbackTrackId: '42',
           analysis: TrackAnalysis.fromJson(
@@ -1072,6 +1334,7 @@ void main() {
             },
             overridesPresent: true,
             updatedAt: revision,
+            overrideRevision: overrideRevision,
           ),
         );
 
@@ -1080,11 +1343,18 @@ void main() {
       analyzedTrack(126, staleRevision),
       analyzedTrack(128, staleRevision),
     ];
-    final legitimateReversion = analyzedTrack(126, reversionRevision);
+    final legitimateReversion = analyzedTrack(
+      126,
+      reversionRevision,
+      overrideRevision: 5,
+    );
+    int? expectedRevision;
     final provider = QueueProvider(
       mockQueueApiClient((request) async {
         if (request.method == 'PATCH' &&
             request.url.path.endsWith('/tracks/42/analysis/overrides')) {
+          expectedRevision = (jsonDecode(request.body)
+              as Map<String, dynamic>)['expected_revision'] as int?;
           return http.Response(
             jsonEncode({
               'status': 'analyzed',
@@ -1097,6 +1367,7 @@ void main() {
               },
               'overrides': <String, dynamic>{},
               'updated_at': savedRevision.toIso8601String(),
+              'override_revision': 5,
             }),
             200,
             headers: {'content-type': 'application/json'},
@@ -1132,6 +1403,7 @@ void main() {
       const TrackAnalysisOverrides(),
     );
     expect(cleared.summary?.bpm?.numericValue, 120);
+    expect(expectedRevision, 4);
 
     for (final stale in staleGenerations) {
       final replayed =

@@ -226,6 +226,14 @@ class PlaybackSourceResolver {
         'analysisUpdatedAt': track['analysisUpdatedAt'],
       if (track['analysis_updated_at'] != null)
         'analysisUpdatedAt': track['analysis_updated_at'],
+      if (track['analysisOverrideRevision'] != null)
+        'analysisOverrideRevision': track['analysisOverrideRevision'],
+      if (track['analysis_override_revision'] != null)
+        'analysisOverrideRevision': track['analysis_override_revision'],
+      if (track['analysisOverrideUpdatedAt'] != null)
+        'analysisOverrideUpdatedAt': track['analysisOverrideUpdatedAt'],
+      if (track['analysis_override_updated_at'] != null)
+        'analysisOverrideUpdatedAt': track['analysis_override_updated_at'],
       if (track['isLiked'] is bool) 'isLiked': track['isLiked'],
       if (track['is_liked'] is bool) 'isLiked': track['is_liked'],
       if (likedAccountId != null) 'likedAccountId': likedAccountId,

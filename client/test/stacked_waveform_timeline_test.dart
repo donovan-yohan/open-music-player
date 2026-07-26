@@ -588,8 +588,7 @@ void main() {
       );
     });
 
-    test('downbeat mode falls back to every fourth beat when downbeats miss',
-        () {
+    test('downbeat mode stays free when meter/downbeats are unknown', () {
       const tempo = ClipTempoMetadata(
         nativeBpm: 120,
         beatsMs: [120, 620, 1120, 1620, 2120, 2620, 3120, 3620],
@@ -602,7 +601,7 @@ void main() {
           clip: clip,
           tempo: tempo,
         ),
-        2120,
+        1980,
       );
     });
 
@@ -1462,11 +1461,11 @@ void main() {
     expect(find.byKey(const ValueKey('timeline_trim_start_t1')), findsNothing);
   });
 
-  testWidgets('selected timeline clip exposes analysis correction action', (
-    tester,
-  ) async {
+  testWidgets(
+      'analysis correction receives active clip source position, not timeline position',
+      (tester) async {
     QueueTrack? edited;
-    int? seededDownbeat;
+    int? capturedSourcePositionMs;
     await _pump(
       tester,
       previous: null,
@@ -1474,9 +1473,12 @@ void main() {
       upcoming: [_track('t2', 'Paper Planes', 188)],
       playheadPositionMs: 16000,
       positionMsStream: const Stream<int>.empty(),
-      onEditAnalysis: (track, {initialFirstDownbeatMs}) {
+      timelineModel: TimelineModel(
+        clips: [_mixClip('t1', 5000, 214000)],
+      ),
+      onEditAnalysis: (track, {currentSourcePositionMs}) {
         edited = track;
-        seededDownbeat = initialFirstDownbeatMs;
+        capturedSourcePositionMs = currentSourcePositionMs;
       },
     );
 
@@ -1489,14 +1491,14 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(edited?.id, 't1');
-    expect(seededDownbeat, 16000);
+    expect(capturedSourcePositionMs, 11000);
   });
 
   testWidgets('analysis correction action has no seed for inactive clip', (
     tester,
   ) async {
     QueueTrack? edited;
-    int? seededDownbeat;
+    int? capturedSourcePositionMs;
     await _pump(
       tester,
       previous: null,
@@ -1504,9 +1506,9 @@ void main() {
       upcoming: [_track('t2', 'Paper Planes', 188)],
       playheadPositionMs: 16000,
       positionMsStream: const Stream<int>.empty(),
-      onEditAnalysis: (track, {initialFirstDownbeatMs}) {
+      onEditAnalysis: (track, {currentSourcePositionMs}) {
         edited = track;
-        seededDownbeat = initialFirstDownbeatMs;
+        capturedSourcePositionMs = currentSourcePositionMs;
       },
     );
 
@@ -1519,7 +1521,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(edited?.id, 't2');
-    expect(seededDownbeat, isNull);
+    expect(capturedSourcePositionMs, isNull);
   });
 
   testWidgets('overlap bands and selected clips expose tempo diagnostics', (
@@ -1562,7 +1564,7 @@ void main() {
       current: current,
       upcoming: [incoming],
       timelineModel: timeline,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     expect(find.textContaining('Beat locked'), findsOneWidget);
@@ -1626,7 +1628,7 @@ void main() {
       current: current,
       upcoming: [incoming],
       timelineModel: timeline,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -1680,7 +1682,7 @@ void main() {
       current: current,
       upcoming: [incoming],
       timelineModel: timeline,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -1730,7 +1732,7 @@ void main() {
       current: current,
       upcoming: [incoming],
       timelineModel: timeline,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -1770,7 +1772,7 @@ void main() {
       upcoming: const [],
       timelineModel: timeline,
       pitchFallbackClipIds: const {'clip_t1'},
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -1831,7 +1833,7 @@ void main() {
         waveformBuilds++;
         return richWaveformForTrack(track, sampleCount: targetSampleCount);
       },
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -1905,7 +1907,7 @@ void main() {
       current: current,
       upcoming: [upcoming],
       timelineModel: timeline,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
@@ -2714,7 +2716,7 @@ void main() {
       upcoming: const [],
       onTimelineStartChanged: (_, startMs) => starts.add(startMs),
       onPitchModeChanged: (_, __) {},
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     final body = find.byKey(const ValueKey('timeline_clip_semantics_t1'));
@@ -2790,7 +2792,7 @@ void main() {
         size: size,
         textScaler: const TextScaler.linear(3),
         onPitchModeChanged: (_, __) {},
-        onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+        onEditAnalysis: (_, {currentSourcePositionMs}) {},
       );
       await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
       await tester.pumpAndSettle();
@@ -2849,7 +2851,7 @@ void main() {
           onScrubUpdate: (ms) => scrubEvents.add('update:$ms'),
           onScrubEnd: (ms) async => scrubEvents.add('end:$ms'),
           onPitchModeChanged: (_, mode) => pitchModes.add(mode),
-          onEditAnalysis: (_, {initialFirstDownbeatMs}) => analysisEdits++,
+          onEditAnalysis: (_, {currentSourcePositionMs}) => analysisEdits++,
         );
         await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
         await tester.pumpAndSettle();
@@ -2959,7 +2961,7 @@ void main() {
         textScaler: const TextScaler.linear(3),
         onTimelineStartChanged: (_, startMs) => starts.add(startMs),
         onPitchModeChanged: (_, __) {},
-        onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+        onEditAnalysis: (_, {currentSourcePositionMs}) {},
       );
       await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
       await tester.pumpAndSettle();
@@ -3855,7 +3857,7 @@ void main() {
       current: _track('t1', 'Outgoing', 20),
       upcoming: [_track('t2', 'Incoming', 20)],
       transitionSnapMode: BeatSnapMode.free,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
       timelineModel: TimelineModel(
         clips: [
           _mixClip('t1', 0, 20000, tempo: lowConfidenceTempo),
@@ -3952,7 +3954,7 @@ void main() {
         if (track.id == 't2') starts.add(startMs);
       },
       onPitchModeChanged: (_, __) {},
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     expect(
@@ -4083,7 +4085,7 @@ void main() {
       upcoming: [_track('t2', 'Paper Planes', 240)],
       onTimelineStartChanged: (_, startMs) => starts.add(startMs),
       onPitchModeChanged: (_, __) {},
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(
@@ -4187,7 +4189,7 @@ void main() {
         if (track.id == 't2') starts.add(ms);
       },
       onPitchModeChanged: (_, __) {},
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
       onMoveEarlier: (_) {},
       onMoveLater: (_) {},
       transitionSnapMode: BeatSnapMode.free,

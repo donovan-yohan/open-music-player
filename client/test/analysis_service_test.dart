@@ -3,13 +3,15 @@ import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/services/analysis_service.dart';
 import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/models/track_analysis.dart';
+import 'package:open_music_player/widgets/analysis_correction_sheet.dart';
 
 /// Captures the endpoint a service asked for and returns a canned parsed body,
 /// so we can assert routing + parsing without a real HTTP call.
 class _CapturingApiClient extends ApiClient {
-  _CapturingApiClient(this.body) : super();
+  _CapturingApiClient(this.body, {this.conflict = false}) : super();
 
   final Map<String, dynamic> body;
+  final bool conflict;
   String? capturedEndpoint;
   Map<String, dynamic>? capturedBody;
 
@@ -34,124 +36,142 @@ class _CapturingApiClient extends ApiClient {
   }) async {
     capturedEndpoint = endpoint;
     capturedBody = body;
+    if (conflict) {
+      throw ApiException(
+        code: 'OVERRIDE_REVISION_CONFLICT',
+        message: 'Override changed on another client',
+        statusCode: 409,
+      );
+    }
     return parser!(this.body);
   }
 }
 
 void main() {
   group('AnalysisService', () {
-    test('getTrackAnalysis -> GET /tracks/{id}/analysis and parses summary',
-        () async {
-      final api = _CapturingApiClient({
-        'track_id': 42,
-        'status': 'analyzed',
-        'updated_at': '2026-07-10T11:00:00.123456Z',
-        'summary': {
-          'bpm': {'value': 128},
-          'beat_grid': {
-            'bpm': 128,
-            'beats_ms': [0, 469, 938],
-          },
-          'downbeats': {
-            'positions_ms': [0],
-          },
-          'key': {'value': 'A minor'},
-          'camelot': {'value': '8A'},
-          'energy': {'value': 0.72},
-          'loudness': {'integrated_lufs': -11.4},
-          'true_peak': {'dbtp': -1.1},
-          'waveform': {
-            'peaks': [0.0, 0.5, 0.9, 0.2],
-            'rms': [0.0, 0.3, 0.6, 0.1],
-            'sample_count': 4,
-            'resolutions': [
-              {
-                'name': 'overview',
-                'samples_per_pixel': 1024,
-                'sample_count': 4,
-                'artifact_ref': 'waveforms.overview',
-              },
-            ],
-            'spectral_bands': {
-              'low': {
-                'sample_count': 4,
-                'artifact_ref': 'spectral_bands.overview.low',
-                'values': [0.9, 0.7, 0.3, 0.2],
-              },
+    test(
+      'getTrackAnalysis -> GET /tracks/{id}/analysis and parses summary',
+      () async {
+        final api = _CapturingApiClient({
+          'track_id': 42,
+          'status': 'analyzed',
+          'updated_at': '2026-07-10T11:00:00.123456Z',
+          'summary': {
+            'bpm': {'value': 128},
+            'beat_grid': {
+              'bpm': 128,
+              'beats_ms': [0, 469, 938],
             },
-            'channels': {
-              'channel_set': 'bands3-v1',
-              'audio_ref': null,
+            'downbeats': {
+              'positions_ms': [0],
+            },
+            'key': {'value': 'A minor'},
+            'camelot': {'value': '8A'},
+            'energy': {'value': 0.72},
+            'loudness': {'integrated_lufs': -11.4},
+            'true_peak': {'dbtp': -1.1},
+            'waveform': {
+              'peaks': [0.0, 0.5, 0.9, 0.2],
+              'rms': [0.0, 0.3, 0.6, 0.1],
               'sample_count': 4,
-              'normalization': {'kind': 'shared_peak', 'scalar': 0.9},
-              'weights': {'low': 1.0, 'mid': 1.6, 'high': 2.8},
-              'provenance': 'librosa-mel-bands-v2',
-              'values': {
+              'resolutions': [
+                {
+                  'name': 'overview',
+                  'samples_per_pixel': 1024,
+                  'sample_count': 4,
+                  'artifact_ref': 'waveforms.overview',
+                },
+              ],
+              'spectral_bands': {
                 'low': {
                   'sample_count': 4,
-                  'artifact_ref': 'channels.detail.low',
+                  'artifact_ref': 'spectral_bands.overview.low',
+                  'values': [0.9, 0.7, 0.3, 0.2],
+                },
+              },
+              'channels': {
+                'channel_set': 'bands3-v1',
+                'audio_ref': null,
+                'sample_count': 4,
+                'normalization': {'kind': 'shared_peak', 'scalar': 0.9},
+                'weights': {'low': 1.0, 'mid': 1.6, 'high': 2.8},
+                'provenance': 'librosa-mel-bands-v2',
+                'values': {
+                  'low': {
+                    'sample_count': 4,
+                    'artifact_ref': 'channels.detail.low',
+                  },
                 },
               },
             },
-          },
-          'transients': {
-            'count': 2,
-            'strongest_ms': [10120, 20180],
-          },
-          'silence': {
-            'ranges': [
-              {'start_ms': 0, 'end_ms': 320},
-            ],
-          },
-        },
-        'artifacts': {
-          'waveforms': {
-            'detail': {
-              'minima': [-0.1, -0.4, -0.8, -0.2],
-              'maxima': [0.1, 0.5, 0.9, 0.2],
+            'transients': {
+              'count': 2,
+              'strongest_ms': [10120, 20180],
+            },
+            'silence': {
+              'ranges': [
+                {'start_ms': 0, 'end_ms': 320},
+              ],
             },
           },
-          'channels': {
-            'detail': {
-              'low': [0.95, 0.75, 0.35, 0.25],
+          'artifacts': {
+            'waveforms': {
+              'detail': {
+                'minima': [-0.1, -0.4, -0.8, -0.2],
+                'maxima': [0.1, 0.5, 0.9, 0.2],
+              },
+            },
+            'channels': {
+              'detail': {
+                'low': [0.95, 0.75, 0.35, 0.25],
+              },
             },
           },
-        },
-      });
+        });
 
-      final analysis = await AnalysisService(api).getTrackAnalysis(42);
+        final analysis = await AnalysisService(api).getTrackAnalysis(42);
 
-      expect(api.capturedEndpoint, '/tracks/42/analysis');
-      expect(analysis.status, TrackAnalysisStatus.analyzed);
-      expect(
-        analysis.updatedAt,
-        DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 456),
-      );
-      expect(analysis.summary?.bpm?.numericValue, 128);
-      expect(analysis.summary?.key?.textValue, 'A minor');
-      expect(analysis.summary?.camelot?.textValue, '8A');
-      expect(analysis.summary?.energy?.numericValue, 0.72);
-      expect(analysis.summary?.beatGrid?.beatsMs, [0, 469, 938]);
-      expect(analysis.summary?.downbeats?.positionsMs, [0]);
-      expect(analysis.summary?.loudness?.integratedLufs, -11.4);
-      expect(analysis.summary?.truePeak?.dbtp, -1.1);
-      expect(analysis.summary?.waveform?.peaks, [0.0, 0.5, 0.9, 0.2]);
-      expect(analysis.summary?.waveform?.rms, [0.0, 0.3, 0.6, 0.1]);
-      expect(analysis.summary?.waveform?.resolutions.single.artifactRef,
-          'waveforms.overview');
-      expect(analysis.summary?.waveform?.spectralBands['low']?.sampleCount, 4);
-      expect(
-        analysis.summary?.waveform?.spectralBands['low']?.values,
-        [0.9, 0.7, 0.3, 0.2],
-      );
-      expect(analysis.summary?.waveform?.minPeaks, [-0.1, -0.4, -0.8, -0.2]);
-      expect(
-        analysis.summary?.waveform?.channels?.values['low']?.values,
-        [0.95, 0.75, 0.35, 0.25],
-      );
-      expect(analysis.summary?.transients?.strongestMs, [10120, 20180]);
-      expect(analysis.summary?.silence?.ranges.single.startMs, 0);
-    });
+        expect(api.capturedEndpoint, '/tracks/42/analysis');
+        expect(analysis.status, TrackAnalysisStatus.analyzed);
+        expect(
+          analysis.updatedAt,
+          DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 456),
+        );
+        expect(analysis.summary?.bpm?.numericValue, 128);
+        expect(analysis.summary?.key?.textValue, 'A minor');
+        expect(analysis.summary?.camelot?.textValue, '8A');
+        expect(analysis.summary?.energy?.numericValue, 0.72);
+        expect(analysis.summary?.beatGrid?.beatsMs, [0, 469, 938]);
+        expect(analysis.summary?.downbeats?.positionsMs, [0]);
+        expect(analysis.summary?.loudness?.integratedLufs, -11.4);
+        expect(analysis.summary?.truePeak?.dbtp, -1.1);
+        expect(analysis.summary?.waveform?.peaks, [0.0, 0.5, 0.9, 0.2]);
+        expect(analysis.summary?.waveform?.rms, [0.0, 0.3, 0.6, 0.1]);
+        expect(
+          analysis.summary?.waveform?.resolutions.single.artifactRef,
+          'waveforms.overview',
+        );
+        expect(
+          analysis.summary?.waveform?.spectralBands['low']?.sampleCount,
+          4,
+        );
+        expect(analysis.summary?.waveform?.spectralBands['low']?.values, [
+          0.9,
+          0.7,
+          0.3,
+          0.2,
+        ]);
+        expect(analysis.summary?.waveform?.minPeaks, [-0.1, -0.4, -0.8, -0.2]);
+        expect(analysis.summary?.waveform?.channels?.values['low']?.values, [
+          0.95,
+          0.75,
+          0.35,
+          0.25,
+        ]);
+        expect(analysis.summary?.transients?.strongestMs, [10120, 20180]);
+        expect(analysis.summary?.silence?.ranges.single.startMs, 0);
+      },
+    );
 
     test('updateTrackAnalysisOverrides -> PATCH override contract', () async {
       final api = _CapturingApiClient({
@@ -185,16 +205,17 @@ void main() {
       );
 
       expect(api.capturedEndpoint, '/tracks/42/analysis/overrides');
+      expect(api.capturedBody?['expected_revision'], 0);
       expect(api.capturedBody?['overrides']['bpm']['value'], 124);
       expect(api.capturedBody?['overrides']['bpm']['confidence'], 1.0);
       expect(
         api.capturedBody?['overrides']['bpm']['provenance'],
         'manual_override',
       );
-      expect(
-        api.capturedBody?['overrides']['downbeats']['positions_ms'],
-        [120, 2056],
-      );
+      expect(api.capturedBody?['overrides']['downbeats']['positions_ms'], [
+        120,
+        2056,
+      ]);
       expect(api.capturedBody?['overrides']['downbeats']['confidence'], 1.0);
       expect(
         api.capturedBody?['overrides']['downbeats']['provenance'],
@@ -205,54 +226,110 @@ void main() {
       expect(analysis.summary?.bpm?.provenance, 'manual_override');
       expect(analysis.summary?.downbeats?.positionsMs, [120, 2056]);
       expect(analysis.summary?.downbeats?.confidence, 1.0);
-      expect(
-        analysis.summary?.downbeats?.provenance,
-        'manual_override',
-      );
+      expect(analysis.summary?.downbeats?.provenance, 'manual_override');
       expect(analysis.overrides?.provenance, 'manual_override');
-      expect(
-        analysis.updatedAt,
-        DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 457),
-      );
+      expect(analysis.updatedAt, DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 457));
     });
 
-    test('manual BPM overrides default to trusted confidence when omitted',
-        () async {
+    test(
+      'legacy BPM-only overrides stay scoped to BPM provenance',
+      () async {
+        final api = _CapturingApiClient({
+          'track_id': 42,
+          'status': 'analyzed',
+          'summary': {
+            'bpm': {'value': 118, 'confidence': 0.2},
+            'beat_grid': {'bpm': 118, 'confidence': 0.2},
+          },
+          'overrides': {
+            'bpm': {'value': 124},
+          },
+        });
+
+        final analysis =
+            await AnalysisService(api).updateTrackAnalysisOverrides(
+          42,
+          const TrackAnalysisOverrides(bpm: 124),
+        );
+
+        expect(api.capturedBody?['overrides']['bpm']['confidence'], 1.0);
+        expect(api.capturedBody?['overrides'], isNot(contains('beat_grid')));
+        expect(analysis.summary?.bpm?.numericValue, 124);
+        expect(analysis.summary?.bpm?.confidence, 1.0);
+        expect(analysis.summary?.bpm?.provenance, 'manual_override');
+        expect(analysis.summary?.beatGrid?.confidence, 0.2);
+        expect(analysis.summary?.beatGrid?.provenance, isNull);
+      },
+    );
+
+    test('PATCH sends expected revision and parses its successor', () async {
       final api = _CapturingApiClient({
-        'track_id': 42,
         'status': 'analyzed',
+        'override_revision': 8,
+        'override_updated_at': '2026-07-26T10:11:12Z',
         'summary': {
-          'bpm': {'value': 118, 'confidence': 0.2},
-          'beat_grid': {'bpm': 118, 'confidence': 0.2},
+          'beat_grid': {
+            'beats_ms': [87, 587, 1087, 1587]
+          },
         },
         'overrides': {
-          'bpm': {'value': 124},
+          'manual_timing_override': {
+            'bpm': 120,
+            'beat_anchor_ms': 87,
+            'beats_per_bar': 4,
+            'downbeat_phase_index': 2,
+            'revision': 8,
+            'updated_at': '2026-07-26T10:11:12Z',
+          },
         },
       });
 
       final analysis = await AnalysisService(api).updateTrackAnalysisOverrides(
         42,
-        const TrackAnalysisOverrides(bpm: 124),
+        manualTimingOverridesFromFields(
+          bpm: 120,
+          beatAnchorMs: 87,
+          beatsPerBar: 4,
+          downbeatPhaseIndex: 2,
+        ),
+        expectedRevision: 7,
       );
 
-      expect(api.capturedBody?['overrides']['bpm']['confidence'], 1.0);
-      expect(api.capturedBody?['overrides']['beat_grid']['confidence'], 1.0);
-      expect(analysis.summary?.bpm?.numericValue, 124);
-      expect(analysis.summary?.bpm?.confidence, 1.0);
-      expect(analysis.summary?.bpm?.provenance, 'manual_override');
-      expect(analysis.summary?.beatGrid?.confidence, 1.0);
-      expect(analysis.summary?.beatGrid?.provenance, 'manual_override');
+      expect(api.capturedBody?['expected_revision'], 7);
+      final timing = api.capturedBody?['overrides']['manual_timing_override'];
+      expect(timing['beat_anchor_ms'], 87);
+      expect(timing.containsKey('revision'), isFalse);
+      expect(analysis.overrideRevision, 8);
+      expect(
+        analysis.overrideUpdatedAt,
+        DateTime.utc(2026, 7, 26, 10, 11, 12),
+      );
+      expect(analysis.overrides?.manualTiming?.downbeatPhaseIndex, 2);
+    });
+
+    test('PATCH surfaces an optimistic-concurrency conflict', () async {
+      final api = _CapturingApiClient(const {}, conflict: true);
+
+      await expectLater(
+        () => AnalysisService(api).updateTrackAnalysisOverrides(
+          42,
+          manualTimingOverridesFromFields(bpm: 120, beatAnchorMs: 87),
+          expectedRevision: 7,
+        ),
+        throwsA(
+          isA<ApiException>()
+              .having((error) => error.statusCode, 'statusCode', 409)
+              .having(
+                  (error) => error.code, 'code', 'OVERRIDE_REVISION_CONFLICT'),
+        ),
+      );
     });
 
     test('nested timing provenance stays scoped to its corrected field', () {
       final analysis = TrackAnalysis.fromJson(
         status: 'analyzed',
         summary: {
-          'bpm': {
-            'value': 118,
-            'confidence': 0.2,
-            'provenance': 'analyzer',
-          },
+          'bpm': {'value': 118, 'confidence': 0.2, 'provenance': 'analyzer'},
           'beat_grid': {
             'bpm': 118,
             'beats_ms': [0, 508],
@@ -332,10 +409,7 @@ void main() {
     });
 
     test('tolerates a pending analysis with no summary', () async {
-      final api = _CapturingApiClient({
-        'track_id': 7,
-        'status': 'pending',
-      });
+      final api = _CapturingApiClient({'track_id': 7, 'status': 'pending'});
 
       final analysis = await AnalysisService(api).getTrackAnalysis(7);
 
@@ -343,17 +417,16 @@ void main() {
       expect(analysis.summary, isNull);
     });
 
-    test('parses stale analysis status for invalidated analyzer artifacts',
-        () async {
-      final api = _CapturingApiClient({
-        'track_id': 9,
-        'status': 'stale',
-      });
+    test(
+      'parses stale analysis status for invalidated analyzer artifacts',
+      () async {
+        final api = _CapturingApiClient({'track_id': 9, 'status': 'stale'});
 
-      final analysis = await AnalysisService(api).getTrackAnalysis(9);
+        final analysis = await AnalysisService(api).getTrackAnalysis(9);
 
-      expect(analysis.status, TrackAnalysisStatus.stale);
-      expect(analysis.isNonSuccess, isTrue);
-    });
+        expect(analysis.status, TrackAnalysisStatus.stale);
+        expect(analysis.isNonSuccess, isTrue);
+      },
+    );
   });
 }

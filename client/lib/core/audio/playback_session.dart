@@ -4,6 +4,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 
 import '../../models/timeline_clip.dart';
+import '../../models/track_analysis.dart';
 import '../engine/gain_envelope.dart';
 import '../engine/tempo_automation.dart';
 import '../engine/timeline_model.dart';
@@ -892,9 +893,18 @@ ClipTempoMetadata _tempoForMediaItem(MediaItem item) {
       extras['analysisSummary'] ?? extras['analysis_summary'];
   final analysisOverrides =
       extras['analysisOverrides'] ?? extras['analysis_overrides'];
-  return ClipTempoMetadata.fromAnalysisSummary(
-    analysisSummary,
-    overrides: analysisOverrides,
+  return ClipTempoMetadata.fromTrackAnalysis(
+    TrackAnalysis.fromJson(
+      status: extras['analysisStatus'] ?? extras['analysis_status'],
+      summary: analysisSummary,
+      overrides: analysisOverrides,
+      overridesPresent: analysisOverrides != null,
+      updatedAt: extras['analysisUpdatedAt'] ?? extras['analysis_updated_at'],
+      overrideRevision: extras['analysisOverrideRevision'] ??
+          extras['analysis_override_revision'],
+      overrideUpdatedAt: extras['analysisOverrideUpdatedAt'] ??
+          extras['analysis_override_updated_at'],
+    ),
   );
 }
 
@@ -906,6 +916,7 @@ String? _analysisRefForMediaItem(MediaItem item) {
 String? _analysisVersionForMediaItem(MediaItem item) {
   final extras = item.extras ?? const <String, dynamic>{};
   return (extras['analysisVersion'] ??
+          extras['analysisOverrideRevision'] ??
           extras['analysisUpdatedAt'] ??
           extras['analysis_updated_at'])
       ?.toString();

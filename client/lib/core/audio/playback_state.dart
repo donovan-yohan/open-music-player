@@ -615,6 +615,21 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
           analysis.updatedAt!.toUtc().toIso8601String();
       extras.remove('analysis_updated_at');
     }
+    if (analysis.overrideRevision == null) {
+      extras.remove('analysisOverrideRevision');
+      extras.remove('analysis_override_revision');
+    } else {
+      extras['analysisOverrideRevision'] = analysis.overrideRevision;
+      extras.remove('analysis_override_revision');
+    }
+    if (analysis.overrideUpdatedAt == null) {
+      extras.remove('analysisOverrideUpdatedAt');
+      extras.remove('analysis_override_updated_at');
+    } else {
+      extras['analysisOverrideUpdatedAt'] =
+          analysis.overrideUpdatedAt!.toUtc().toIso8601String();
+      extras.remove('analysis_override_updated_at');
+    }
     return item.copyWith(extras: extras);
   }
 

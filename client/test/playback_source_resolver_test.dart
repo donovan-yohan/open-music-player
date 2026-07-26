@@ -215,9 +215,13 @@ void main() {
         },
       };
       final analysisOverrides = {
-        'bpm': {'value': 124, 'confidence': 1.0},
-        'downbeats': {
-          'positions_ms': [120, 2056],
+        'manual_timing_override': {
+          'bpm': 124,
+          'beat_anchor_ms': 120,
+          'beats_per_bar': 4,
+          'downbeat_phase_index': 1,
+          'phrase_length_bars': 8,
+          'revision': 3,
         },
       };
 

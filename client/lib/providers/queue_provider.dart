@@ -310,6 +310,7 @@ class QueueProvider extends ChangeNotifier {
         trackId: trackId,
         key: key,
         overrides: overrides,
+        analysisBeingEdited: track.analysis,
       );
     }();
     late final Future<void> tail;
@@ -330,10 +331,17 @@ class QueueProvider extends ChangeNotifier {
     required int trackId,
     required String key,
     required TrackAnalysisOverrides overrides,
+    required TrackAnalysis? analysisBeingEdited,
   }) async {
+    final prior = _authoritativeAnalysisLocks[key] ??
+        _analysisByTrackId[key] ??
+        _analysisRevisionSnapshots[key] ??
+        _lastIncomingAnalysisByTrackId[key] ??
+        analysisBeingEdited;
     final analysis = await _apiClient.updateTrackAnalysisOverrides(
       trackId,
       overrides,
+      expectedRevision: prior == null ? 0 : _analysisOverrideRevision(prior),
     );
     if (_disposed) return analysis;
     _rememberAnalysisRevision(key, analysis);
@@ -1250,6 +1258,19 @@ class QueueProvider extends ChangeNotifier {
   }
 
   bool _acceptIncomingAnalysis(String key, TrackAnalysis analysis) {
+    final cached = _authoritativeAnalysisLocks[key] ??
+        _analysisByTrackId[key] ??
+        _analysisRevisionSnapshots[key];
+    final incomingOverrideRevision = _analysisOverrideRevision(analysis);
+    final cachedOverrideRevision =
+        cached == null ? null : _analysisOverrideRevision(cached);
+    if (cachedOverrideRevision != null &&
+        incomingOverrideRevision != cachedOverrideRevision) {
+      if (incomingOverrideRevision < cachedOverrideRevision) return false;
+      _authoritativeAnalysisLocks.remove(key);
+      return true;
+    }
+
     if (_analysisPredatesFloor(key, analysis)) return false;
 
     final authoritative = _authoritativeAnalysisLocks[key];
@@ -1273,6 +1294,15 @@ class QueueProvider extends ChangeNotifier {
   }
 
   bool _analysisPredatesFloor(String key, TrackAnalysis analysis) {
+    final snapshot = _analysisRevisionSnapshots[key];
+    final incomingOverrideRevision = _analysisOverrideRevision(analysis);
+    final snapshotOverrideRevision =
+        snapshot == null ? null : _analysisOverrideRevision(snapshot);
+    if (snapshotOverrideRevision != null &&
+        incomingOverrideRevision != snapshotOverrideRevision) {
+      return incomingOverrideRevision < snapshotOverrideRevision;
+    }
+
     final floor = _analysisRevisionFloors[key];
     if (floor == null) return false;
     final revision = analysis.updatedAt;
@@ -1282,8 +1312,12 @@ class QueueProvider extends ChangeNotifier {
   void _rememberAnalysisRevision(String key, TrackAnalysis analysis) {
     final revision = analysis.updatedAt;
     if (revision == null) return;
+    final snapshot = _analysisRevisionSnapshots[key];
+    if (snapshot != null && !_analysisRevisionSupersedes(analysis, snapshot)) {
+      return;
+    }
     final floor = _analysisRevisionFloors[key];
-    if (floor != null && revision.isBefore(floor)) return;
+    if (snapshot == null && floor != null && revision.isBefore(floor)) return;
     _analysisRevisionFloors[key] = revision;
     _analysisRevisionSnapshots[key] = _compactRevisionSnapshot(analysis);
     _touchAnalysisAuthority(key);
@@ -1327,6 +1361,7 @@ class QueueProvider extends ChangeNotifier {
     final overrides = sourceOverrides == null
         ? null
         : TrackAnalysisOverrides(
+            manualTiming: sourceOverrides.manualTiming,
             bpm: sourceOverrides.bpm,
             bpmConfidence: sourceOverrides.bpmConfidence,
             beatGridOffsetMs: sourceOverrides.beatGridOffsetMs,
@@ -1355,6 +1390,8 @@ class QueueProvider extends ChangeNotifier {
       overrides: overrides,
       overridesPresent: analysis.overridesPresent,
       updatedAt: analysis.updatedAt,
+      overrideRevision: analysis.overrideRevision,
+      overrideUpdatedAt: analysis.overrideUpdatedAt,
     );
   }
 
@@ -1374,11 +1411,21 @@ class QueueProvider extends ChangeNotifier {
     TrackAnalysis incoming,
     TrackAnalysis cached,
   ) {
+    final incomingOverrideRevision = _analysisOverrideRevision(incoming);
+    final cachedOverrideRevision = _analysisOverrideRevision(cached);
+    if (incomingOverrideRevision != cachedOverrideRevision) {
+      return incomingOverrideRevision > cachedOverrideRevision;
+    }
     final incomingRevision = incoming.updatedAt;
     if (incomingRevision == null) return false;
     final cachedRevision = cached.updatedAt;
     return cachedRevision == null || incomingRevision.isAfter(cachedRevision);
   }
+
+  int _analysisOverrideRevision(TrackAnalysis analysis) =>
+      analysis.overrideRevision ??
+      analysis.overrides?.manualTiming?.revision ??
+      0;
 
   bool _hasWaveformDetail(TrackAnalysis analysis) {
     final waveform = analysis.summary?.waveform;
@@ -1763,6 +1810,9 @@ class QueueProvider extends ChangeNotifier {
       overrides: overrides,
       overridesPresent: incoming.overridesPresent || detailed.overridesPresent,
       updatedAt: incoming.updatedAt ?? detailed.updatedAt,
+      overrideRevision: incoming.overrideRevision ?? detailed.overrideRevision,
+      overrideUpdatedAt:
+          incoming.overrideUpdatedAt ?? detailed.overrideUpdatedAt,
     );
   }
 
@@ -1772,6 +1822,29 @@ class QueueProvider extends ChangeNotifier {
     );
     final overrides = analysis.overrides;
     if (overrides == null) return summary;
+
+    final manualTiming = overrides.manualTiming;
+    if (manualTiming != null) {
+      if (manualTiming.bpm != null) summary.remove('bpm');
+      final beatGrid = _mutableNestedMap(summary, 'beat_grid');
+      if (beatGrid != null) {
+        if (manualTiming.bpm != null || manualTiming.beatAnchorMs != null) {
+          beatGrid
+            ..remove('bpm')
+            ..remove('offset_ms')
+            ..remove('beats_ms')
+            ..remove('confidence')
+            ..remove('provenance');
+        }
+        if (beatGrid.isEmpty) summary.remove('beat_grid');
+      }
+      if (manualTiming.bpm != null ||
+          manualTiming.beatAnchorMs != null ||
+          manualTiming.beatsPerBar != null ||
+          manualTiming.downbeatPhaseIndex != null) {
+        summary.remove('downbeats');
+      }
+    }
 
     if (overrides.bpm != null) summary.remove('bpm');
     final beatGrid = _mutableNestedMap(summary, 'beat_grid');
@@ -1858,6 +1931,8 @@ class QueueProvider extends ChangeNotifier {
     return Object.hash(
       analysis.status,
       analysis.overridesPresent,
+      analysis.overrideRevision,
+      analysis.overrideUpdatedAt,
       _analysisValueSignature(summary?.bpm),
       beatGrid == null
           ? null
@@ -1886,6 +1961,15 @@ class QueueProvider extends ChangeNotifier {
       overrides == null
           ? null
           : Object.hash(
+              overrides.manualTiming?.bpm,
+              overrides.manualTiming?.beatAnchorMs,
+              overrides.manualTiming?.beatsPerBar,
+              overrides.manualTiming?.downbeatPhaseIndex,
+              overrides.manualTiming?.phraseLengthBars,
+              overrides.manualTiming?.confidence,
+              overrides.manualTiming?.provenance,
+              overrides.manualTiming?.revision,
+              overrides.manualTiming?.updatedAt,
               overrides.bpm,
               overrides.bpmConfidence,
               overrides.beatGridOffsetMs,

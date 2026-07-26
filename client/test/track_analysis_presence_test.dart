@@ -54,9 +54,7 @@ void main() {
       });
       final nestedClear = trackAnalysisFromTrackJson({
         'analysis_status': 'analyzed',
-        'analysis_summary': {
-          'overrides': <String, dynamic>{},
-        },
+        'analysis_summary': {'overrides': <String, dynamic>{}},
       });
 
       expect(absent?.overridesPresent, isFalse);
@@ -99,10 +97,106 @@ void main() {
       expect(analysis.overridesPresent, isTrue);
       expect(analysis.overrides, isNull);
       expect(analysis.toJson()['overrides'], isEmpty);
-      expect(
-        analysis.updatedAt,
-        DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 456),
+      expect(analysis.updatedAt, DateTime.utc(2026, 7, 10, 11, 0, 0, 123, 456));
+    });
+
+    test('canonical timing overlays legacy facts without discarding them', () {
+      final analysis = TrackAnalysis.fromJson(
+        status: 'analyzed',
+        overrideRevision: 9,
+        overrideUpdatedAt: '2026-07-26T10:11:12Z',
+        summary: {
+          'bpm': {'value': 118, 'provenance': 'analyzer'},
+          'beat_grid': {
+            'bpm': 118,
+            'offset_ms': 100,
+            'beats_ms': [100, 600, 1100, 1600, 2100, 2600],
+          },
+          'downbeats': {
+            'positions_ms': [100, 2100]
+          },
+        },
+        overrides: {
+          'bpm': {'value': 99},
+          'beat_grid': {
+            'bpm': 99,
+            'beats_ms': [100, 706, 1312, 1918, 2524],
+          },
+          'downbeats': {
+            'positions_ms': [100, 2524]
+          },
+          'manual_timing_override': {
+            'bpm': 120,
+            'beat_anchor_ms': 100,
+            'beats_per_bar': 4,
+            'downbeat_phase_index': 1,
+            'phrase_length_bars': 8,
+            'revision': 9,
+            'updated_at': '2026-07-26T10:11:12Z',
+          },
+          'key': {'value': 'A minor'},
+          'camelot': {'value': '8A'},
+        },
       );
+
+      expect(analysis.overrideRevision, 9);
+      expect(
+        analysis.overrideUpdatedAt,
+        DateTime.utc(2026, 7, 26, 10, 11, 12),
+      );
+      expect(analysis.overrides?.bpm, 99); // Legacy data remains readable.
+      expect(analysis.summary?.bpm?.numericValue, 120);
+      expect(analysis.summary?.beatGrid?.beatsMs, [100, 600, 1100, 1600, 2100]);
+      expect(analysis.summary?.downbeats?.positionsMs, [600]);
+      expect(analysis.summary?.key?.textValue, 'A minor');
+      expect(analysis.summary?.camelot?.textValue, '8A');
+      expect(
+        analysis.overrides?.toJson()['manual_timing_override']['bpm'],
+        120,
+      );
+      expect(analysis.overrides?.toJson()['bpm']['value'], 99);
+      expect(analysis.overrides?.toJson()['beat_grid']['beats_ms'], [
+        100,
+        706,
+        1312,
+        1918,
+        2524,
+      ]);
+      expect(analysis.overrides?.toJson()['downbeats']['positions_ms'], [
+        100,
+        2524,
+      ]);
+    });
+
+    test('canonical anchor regeneration spans the previous beat extent', () {
+      const base = TrackAnalysisSummary(
+        beatGrid: BeatGridSummary(
+          bpm: 120,
+          beatsMs: [100, 600, 1100, 1600],
+        ),
+      );
+      const timing = ManualTimingOverride(bpm: 120, beatAnchorMs: 1100);
+
+      final projected = timing.applyTo(base);
+
+      expect(projected.beatGrid?.beatsMs, [100, 600, 1100, 1600]);
+      expect(projected.beatGrid?.offsetMs, 1100);
+    });
+
+    test('metadata-only manual timing retains its reset revision', () {
+      final analysis = TrackAnalysis.fromJson(
+        status: 'analyzed',
+        overrides: {
+          'manual_timing_override': {
+            'revision': 10,
+            'updated_at': '2026-07-26T10:11:12Z',
+          },
+        },
+      );
+
+      expect(analysis.overrideRevision, 10);
+      expect(analysis.overrides?.manualTiming?.revision, 10);
+      expect(analysis.summary, isNotNull);
     });
   });
 }

@@ -27,6 +27,7 @@ const analysisCompactOverridesExpression = `jsonb_strip_nulls(jsonb_build_object
 	'bpm', ta.overrides_json->'bpm',
 	'beat_grid', ta.overrides_json->'beat_grid',
 	'downbeats', ta.overrides_json->'downbeats',
+	'manual_timing_override', ta.overrides_json->'manual_timing_override',
 	'key', ta.overrides_json->'key',
 	'camelot', ta.overrides_json->'camelot',
 	'energy', ta.overrides_json->'energy'
@@ -41,33 +42,42 @@ const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NUL
 		'energy', ta.summary_json->'energy'
 	)) END`
 
+const analysisReturningColumns = `track_id, schema_version, status, summary_json, overrides_json, artifacts_json, provenance_json,
+	manual_override_revision, manual_override_updated_at,
+	error, requested_at, started_at, completed_at, created_at, updated_at`
+
 var (
 	ErrTrackAnalysisNotFound    = errors.New("track analysis not found")
 	ErrAnalysisResultSuperseded = errors.New("analysis result superseded by newer analyzer request")
+	ErrAnalysisOverrideConflict = errors.New("analysis override revision conflict")
 )
 
 type TrackAnalysis struct {
-	TrackID        int64
-	SchemaVersion  int
-	Status         string
-	SummaryJSON    json.RawMessage
-	OverridesJSON  json.RawMessage
-	ArtifactsJSON  json.RawMessage
-	ProvenanceJSON json.RawMessage
-	Error          sql.NullString
-	RequestedAt    time.Time
-	StartedAt      sql.NullTime
-	CompletedAt    sql.NullTime
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	TrackID                 int64
+	SchemaVersion           int
+	Status                  string
+	SummaryJSON             json.RawMessage
+	OverridesJSON           json.RawMessage
+	ManualOverrideRevision  int64
+	ManualOverrideUpdatedAt sql.NullTime
+	ArtifactsJSON           json.RawMessage
+	ProvenanceJSON          json.RawMessage
+	Error                   sql.NullString
+	RequestedAt             time.Time
+	StartedAt               sql.NullTime
+	CompletedAt             sql.NullTime
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 type AnalysisCompact struct {
-	TrackID       int64
-	Status        string
-	SummaryJSON   json.RawMessage
-	OverridesJSON json.RawMessage
-	UpdatedAt     time.Time
+	TrackID                 int64
+	Status                  string
+	SummaryJSON             json.RawMessage
+	OverridesJSON           json.RawMessage
+	ManualOverrideRevision  int64
+	ManualOverrideUpdatedAt sql.NullTime
+	UpdatedAt               time.Time
 }
 
 type AnalysisResult struct {
@@ -352,30 +362,131 @@ func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, res
 	return nil
 }
 
-func (r *AnalysisRepository) SetOverrides(ctx context.Context, trackID int64, overrides json.RawMessage) (*TrackAnalysis, error) {
-	query := `
-		INSERT INTO track_analysis (
-			track_id, status, overrides_json, provenance_json, requested_at, updated_at
-		) VALUES (
-			$1, $2, COALESCE($3::jsonb, '{}'::jsonb),
-			jsonb_build_object('manual_overrides', jsonb_build_object(
-				'updated_at', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-			)),
-			NOW(), NOW()
-		)
-		ON CONFLICT (track_id) DO UPDATE
-		SET overrides_json = EXCLUDED.overrides_json,
-			status = $2,
-			provenance_json = COALESCE(track_analysis.provenance_json, '{}'::jsonb) ||
-				jsonb_build_object('manual_overrides', jsonb_build_object(
-					'updated_at', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-				)),
-			updated_at = NOW()
-	`
-	if _, err := r.db.ExecContext(ctx, query, trackID, AnalysisStatusAnalyzed, nullableRawJSON(overrides)); err != nil {
+func (r *AnalysisRepository) SetOverrides(ctx context.Context, trackID int64, overrides json.RawMessage, expectedRevision int64) (*TrackAnalysis, error) {
+	if expectedRevision < 0 {
+		return nil, ErrAnalysisOverrideConflict
+	}
+	overrideUpdatedAt := time.Now().UTC()
+	preserveLegacyTiming := hasOverrideFacts(overrides)
+	stampedOverrides, err := stampManualTimingOverrideMetadata(overrides, expectedRevision+1, overrideUpdatedAt)
+	if err != nil {
 		return nil, err
 	}
-	return r.GetByTrackID(ctx, trackID)
+	updateQuery := `
+		UPDATE track_analysis
+		SET overrides_json = CASE WHEN $5 THEN
+				jsonb_strip_nulls(jsonb_build_object(
+					'bpm', overrides_json->'bpm',
+					'beat_grid', overrides_json->'beat_grid',
+					'downbeats', overrides_json->'downbeats'
+				)) || COALESCE($3::jsonb, '{}'::jsonb)
+			ELSE COALESCE($3::jsonb, '{}'::jsonb)
+			END,
+			manual_override_revision = manual_override_revision + 1,
+			manual_override_updated_at = $4,
+			provenance_json = COALESCE(provenance_json, '{}'::jsonb) ||
+				jsonb_build_object('manual_overrides', jsonb_build_object(
+					'updated_at', to_char($4 AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+				)),
+			updated_at = $4
+		WHERE track_id = $1 AND manual_override_revision = $2
+		RETURNING ` + analysisReturningColumns
+	var analysis TrackAnalysis
+	err = scanTrackAnalysis(r.db.QueryRowContext(
+		ctx, updateQuery, trackID, expectedRevision, nullableRawJSON(stampedOverrides), overrideUpdatedAt, preserveLegacyTiming,
+	), &analysis)
+	if err == nil {
+		return &analysis, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if expectedRevision != 0 {
+		return nil, ErrAnalysisOverrideConflict
+	}
+
+	insertQuery := `
+		INSERT INTO track_analysis (
+			track_id, status, overrides_json, manual_override_revision, manual_override_updated_at,
+			provenance_json, requested_at, updated_at
+		) VALUES (
+			$1, $2, COALESCE($3::jsonb, '{}'::jsonb), 1, $4,
+			jsonb_build_object('manual_overrides', jsonb_build_object(
+				'updated_at', to_char($4 AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+			)),
+			NOW(), $4
+		)
+		ON CONFLICT (track_id) DO NOTHING
+		RETURNING ` + analysisReturningColumns
+	err = scanTrackAnalysis(r.db.QueryRowContext(
+		ctx, insertQuery, trackID, AnalysisStatusAnalyzed, nullableRawJSON(stampedOverrides), overrideUpdatedAt,
+	), &analysis)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrAnalysisOverrideConflict
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &analysis, nil
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTrackAnalysis(row rowScanner, analysis *TrackAnalysis) error {
+	return row.Scan(
+		&analysis.TrackID,
+		&analysis.SchemaVersion,
+		&analysis.Status,
+		&analysis.SummaryJSON,
+		&analysis.OverridesJSON,
+		&analysis.ArtifactsJSON,
+		&analysis.ProvenanceJSON,
+		&analysis.ManualOverrideRevision,
+		&analysis.ManualOverrideUpdatedAt,
+		&analysis.Error,
+		&analysis.RequestedAt,
+		&analysis.StartedAt,
+		&analysis.CompletedAt,
+		&analysis.CreatedAt,
+		&analysis.UpdatedAt,
+	)
+}
+
+func hasOverrideFacts(overrides json.RawMessage) bool {
+	var document map[string]json.RawMessage
+	if json.Unmarshal(overrides, &document) != nil {
+		return false
+	}
+	return len(document) > 0
+}
+
+// stampManualTimingOverrideMetadata adds server-owned concurrency metadata to
+// the canonical manual timing document without creating a second timing store.
+func stampManualTimingOverrideMetadata(overrides json.RawMessage, revision int64, updatedAt time.Time) (json.RawMessage, error) {
+	var document map[string]any
+	if len(overrides) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+	if err := json.Unmarshal(overrides, &document); err != nil {
+		return nil, err
+	}
+	rawTiming, present := document["manual_timing_override"]
+	timing := map[string]any{}
+	if present {
+		var ok bool
+		timing, ok = rawTiming.(map[string]any)
+		if !ok {
+			return nil, errors.New("manual_timing_override must be a JSON object")
+		}
+	}
+	timing["revision"] = revision
+	timing["updated_at"] = updatedAt.Format(time.RFC3339Nano)
+	timing["confidence"] = 1.0
+	timing["provenance"] = "manual_override"
+	document["manual_timing_override"] = timing
+	return json.Marshal(document)
 }
 
 func (r *AnalysisRepository) MarkFailed(ctx context.Context, trackID int64, errText string, provenance json.RawMessage) error {
@@ -499,7 +610,8 @@ func (r *AnalysisRepository) MarkStaleByAnalyzerVersion(ctx context.Context, ana
 func (r *AnalysisRepository) GetByTrackID(ctx context.Context, trackID int64) (*TrackAnalysis, error) {
 	query := `
 		SELECT track_id, schema_version, status, summary_json, overrides_json, artifacts_json, provenance_json,
-			   error, requested_at, started_at, completed_at, created_at, updated_at
+		       manual_override_revision, manual_override_updated_at,
+		       error, requested_at, started_at, completed_at, created_at, updated_at
 		FROM track_analysis
 		WHERE track_id = $1
 	`
@@ -512,6 +624,8 @@ func (r *AnalysisRepository) GetByTrackID(ctx context.Context, trackID int64) (*
 		&analysis.OverridesJSON,
 		&analysis.ArtifactsJSON,
 		&analysis.ProvenanceJSON,
+		&analysis.ManualOverrideRevision,
+		&analysis.ManualOverrideUpdatedAt,
 		&analysis.Error,
 		&analysis.RequestedAt,
 		&analysis.StartedAt,
@@ -536,7 +650,7 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 	query := `
 		SELECT track_id, status, ` + analysisCompactSummaryExpression + ` AS summary_json,
 		       ` + analysisCompactOverridesExpression + ` AS overrides_json,
-		       updated_at
+		       updated_at, manual_override_revision, manual_override_updated_at
 		FROM track_analysis
 		AS ta
 		WHERE track_id = ANY($1)
@@ -554,6 +668,8 @@ func (r *AnalysisRepository) GetCompactByTrackIDs(ctx context.Context, trackIDs 
 			&compact.SummaryJSON,
 			&compact.OverridesJSON,
 			&compact.UpdatedAt,
+			&compact.ManualOverrideRevision,
+			&compact.ManualOverrideUpdatedAt,
 		); err != nil {
 			return nil, err
 		}

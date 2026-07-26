@@ -269,10 +269,19 @@ void main() {
             'bpm': {'value': 128},
           },
           'analysisOverrides': {
-            'bpm': {'value': 130},
+            'manual_timing_override': {
+              'bpm': 130,
+              'beat_anchor_ms': 120,
+              'beats_per_bar': 4,
+              'downbeat_phase_index': 3,
+              'phrase_length_bars': 8,
+              'revision': 9,
+            },
           },
           'analysisUpdatedAt': '2026-07-10T11:00:00.123456Z',
           'artworkKind': 'provider_thumbnail',
+          'analysisOverrideRevision': 9,
+          'analysisOverrideUpdatedAt': '2026-07-10T11:00:00.123456Z',
           'isLiked': true,
           'likedAccountId': 'user-a',
           'sourceUrl': ' https://source/42 ',
@@ -287,15 +296,33 @@ void main() {
       expect(json['duration'], 312);
       expect(json['artwork_url'], 'https://art/42.jpg');
       expect(json['artwork_kind'], 'provider_thumbnail');
+      expect(json['artwork_kind'], 'provider_thumbnail');
       expect(json['analysisStatus'], 'analyzed');
       expect(json['analysisSummary'], {
         'bpm': {'value': 128},
       });
       expect(json['analysisOverrides'], {
-        'bpm': {'value': 130},
+        'manual_timing_override': {
+          'bpm': 130,
+          'beat_anchor_ms': 120,
+          'beats_per_bar': 4,
+          'downbeat_phase_index': 3,
+          'phrase_length_bars': 8,
+          'revision': 9,
+        },
       });
       expect(
         json['analysisUpdatedAt'],
+        '2026-07-10T11:00:00.123456Z',
+      );
+      expect(json['analysisOverrideRevision'], 9);
+      expect(
+        json['analysisOverrideUpdatedAt'],
+        '2026-07-10T11:00:00.123456Z',
+      );
+      expect(json['analysisOverrideRevision'], 9);
+      expect(
+        json['analysisOverrideUpdatedAt'],
         '2026-07-10T11:00:00.123456Z',
       );
       expect(json['isLiked'], isTrue);
