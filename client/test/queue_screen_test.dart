@@ -8,7 +8,9 @@ import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 
 import 'package:open_music_player/app/theme.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
+import 'package:open_music_player/core/audio/queue_persistence.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/commands/app_command.dart';
@@ -23,9 +25,10 @@ import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/models/waveform.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
-import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/screens/queue_screen.dart';
 import 'package:open_music_player/widgets/timeline_clip_widget.dart';
+
+import 'support/analysis_envelope_fixture.dart';
 
 List<int> _expectedTimelineHydrationTrackIds(
   WidgetTester tester,
@@ -669,6 +672,88 @@ void main() {
     );
     expect(currentHeader.track.analysis?.summary?.waveform?.peaks, isNotEmpty);
   });
+
+  testWidgets(
+    'default playback timeline retains rich hydration across rebuilt snapshots',
+    (tester) async {
+      apiClient.hydrateAnalysisFixture = true;
+      Map<String, dynamic> compactExtras(int trackId, double bpm) => {
+            'queueItemId': 'queue-$trackId',
+            'analysisRef': '$trackId',
+            'analysisStatus': 'analyzed',
+            'analysisSummary': productionCompactAnalysisSummary(bpm: bpm),
+            'analysisUpdatedAt': '2026-07-10T11:00:00.123456Z',
+          };
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(
+            101,
+            'Compact Current',
+            seconds: 198,
+            extras: compactExtras(101, 124),
+          ),
+          _mediaItem(
+            202,
+            'Compact Next',
+            seconds: 199,
+            extras: compactExtras(202, 128),
+          ),
+        ]
+        ..fakeCurrentIndex = 0;
+      final provider = _TrackingQueueProvider(apiClient);
+
+      await pumpQueueScreen(tester, queueProvider: provider);
+      await tester.pump(const Duration(seconds: 30));
+      expect(apiClient.analysisRequests, isEmpty);
+
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+
+      expect(apiClient.analysisRequests.toSet(), <int>{101, 202});
+      expect(apiClient.analysisRequests, hasLength(2));
+      final currentHeader = tester
+          .widgetList<TimelineLaneHeader>(find.byType(TimelineLaneHeader))
+          .singleWhere((header) => header.role == LaneRole.current);
+      final rich = richWaveformForTrack(currentHeader.track, sampleCount: 4);
+      expect(rich.frames, hasLength(4));
+      expect(
+        rich.frames.map((frame) => frame.resolvedMaxPeak).toSet().length,
+        greaterThan(1),
+      );
+      expect(rich.frames.first.resolvedChannels['low'], 0.9);
+      final clearCallsAfterHydration = provider.clearCalls;
+
+      for (var index = 0; index < 6; index++) {
+        playbackState.emitReconstructedQueueSnapshot();
+        await tester.pumpAndSettle();
+      }
+      await tester.pump(const Duration(seconds: 30));
+
+      expect(apiClient.analysisRequests, hasLength(2));
+      expect(provider.clearCalls, clearCallsAfterHydration);
+      for (final item in playbackState.fakeQueue) {
+        final compact = Map<String, dynamic>.from(
+          item.extras?['analysisSummary'] as Map,
+        );
+        expect(compact.containsKey('waveform'), isFalse);
+      }
+
+      await playbackState.removeFromQueue(0);
+      await tester.pumpAndSettle();
+
+      expect(provider.lastInterestTrackIds, <int>[202]);
+      expect(apiClient.analysisRequests, hasLength(2));
+      expect(provider.clearCalls, clearCallsAfterHydration);
+
+      await tester.tap(find.text('List'));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(seconds: 30));
+
+      expect(apiClient.analysisRequests, hasLength(2));
+      expect(provider.lastInterestTrackIds, isEmpty);
+      expect(provider.clearCalls, greaterThan(clearCallsAfterHydration));
+    },
+  );
 
   testWidgets('server timeline does not hydrate before playback starts', (
     tester,
@@ -2479,6 +2564,18 @@ class _FakePlaybackState extends Fake implements PlaybackState {
     _notifier.emit();
   }
 
+  void emitReconstructedQueueSnapshot() {
+    fakeQueue = [
+      for (final item in fakeQueue)
+        item.copyWith(
+          extras: item.extras == null
+              ? null
+              : Map<String, dynamic>.from(item.extras!),
+        ),
+    ];
+    _notifier.emit();
+  }
+
   @override
   List<audio_service.MediaItem> get queue => fakeQueue;
 
@@ -2828,17 +2925,34 @@ class _FakePlaybackState extends Fake implements PlaybackState {
           continue;
         }
         final analysis = entry.value;
-        return item.copyWith(
-          extras: {
-            ...?item.extras,
-            'analysisRef': entry.key,
-            'analysisStatus': analysis.status.name,
-            if (analysis.summary != null)
-              'analysisSummary': analysis.summary!.toJson(),
-            if (analysis.overrides != null)
-              'analysisOverrides': analysis.overrides!.toJson(),
-          },
+        final extras = Map<String, dynamic>.from(item.extras ?? const {});
+        extras['analysisRef'] = entry.key;
+        extras['analysisStatus'] = analysis.status.name;
+        final compactSummary = compactAnalysisSummary(
+          analysis.summary?.toJson(),
         );
+        if (compactSummary == null) {
+          extras.remove('analysisSummary');
+        } else {
+          extras['analysisSummary'] = compactSummary;
+        }
+        extras.remove('analysis_summary');
+        if (!analysis.overridesPresent) {
+          extras.remove('analysisOverrides');
+        } else {
+          extras['analysisOverrides'] = compactAnalysisOverrides(
+            analysis.overrides?.toJson() ?? const <String, dynamic>{},
+          );
+        }
+        extras.remove('analysis_overrides');
+        if (analysis.updatedAt == null) {
+          extras.remove('analysisUpdatedAt');
+        } else {
+          extras['analysisUpdatedAt'] =
+              analysis.updatedAt!.toUtc().toIso8601String();
+        }
+        extras.remove('analysis_updated_at');
+        return item.copyWith(extras: extras);
       }
       return item;
     }
@@ -2993,6 +3107,7 @@ class _TrackingQueueProvider extends _CountingQueueProvider {
   @override
   void clearAnalysisHydrationInterest() {
     clearCalls++;
+    lastInterestTrackIds = const [];
     super.clearAnalysisHydrationInterest();
   }
 }
@@ -3291,16 +3406,12 @@ class _FakeQueueApiClient extends ApiClient {
 
   TrackAnalysis _hydratedAnalysis(int trackId) {
     final bpm = trackId == 101 ? 124.0 : 128.0;
+    final envelope = productionBands3AnalysisEnvelope(bpm: bpm);
     return TrackAnalysis.fromJson(
-      status: 'analyzed',
-      summary: {
-        ..._tempoAnalysisSummary(bpm),
-        'waveform': {
-          'sample_count': 4,
-          'peaks': [0.1, 0.5, 0.9, 0.2],
-          'rms': [0.08, 0.3, 0.6, 0.12],
-        },
-      },
+      status: envelope['status'],
+      summary: envelope['summary'],
+      artifacts: envelope['artifacts'],
+      updatedAt: envelope['updated_at'],
     );
   }
 

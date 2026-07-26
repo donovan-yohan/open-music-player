@@ -14,6 +14,7 @@ import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 
+import 'support/analysis_envelope_fixture.dart';
 import 'support/mock_dio_client.dart';
 
 QueueTrack _track({
@@ -87,6 +88,12 @@ TimelineClip _fallback(QueueTrack track) => TimelineClip.clamped(
       sourceEndMs: track.durationMs,
       timelineStartMs: 0,
     );
+
+Future<void> _flushMicrotasks() async {
+  for (var index = 0; index < 8; index++) {
+    await Future<void>.value();
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -262,34 +269,7 @@ void main() {
             request.url.path.endsWith('/tracks/42/analysis')) {
           analysisRequests++;
           return http.Response(
-            jsonEncode({
-              'status': 'analyzed',
-              'summary': {
-                'beat_grid': {
-                  'bpm': 120,
-                  'beats_ms': [0, 500, 1000],
-                },
-                'waveform': {
-                  'sample_count': 4,
-                  'peaks': [0.1, 0.5, 0.9, 0.2],
-                  'rms': [0.08, 0.3, 0.6, 0.12],
-                  'spectral_bands': {
-                    'low': {
-                      'sample_count': 4,
-                      'values': [0.9, 0.8, 0.4, 0.2],
-                    },
-                    'mid': {
-                      'sample_count': 4,
-                      'values': [0.2, 0.5, 0.9, 0.7],
-                    },
-                    'high': {
-                      'sample_count': 4,
-                      'values': [0.1, 0.2, 0.6, 0.9],
-                    },
-                  },
-                },
-              },
-            }),
+            jsonEncode(productionBands3AnalysisEnvelope()),
             200,
             headers: {'content-type': 'application/json'},
           );
@@ -301,24 +281,34 @@ void main() {
       if (!notified.isCompleted) notified.complete();
     });
 
-    final playbackTrack = _track(
-      id: 'playback_queue_0',
-      queueItemId: '0',
-      playbackTrackId: '42',
-      analysis: _tempoAnalysis(),
-    );
+    QueueTrack compactTrack() => _track(
+          id: 'playback_queue_0',
+          queueItemId: '0',
+          playbackTrackId: '42',
+          analysis: TrackAnalysis.fromJson(
+            status: 'analyzed',
+            summary: productionCompactAnalysisSummary(),
+            updatedAt: '2026-07-10T11:00:00.123456Z',
+          ),
+        );
 
-    final compact = provider.trackWithAnalysis(playbackTrack);
+    final compact = provider.trackWithAnalysis(compactTrack());
     expect(compact.analysis?.summary?.bpm?.numericValue, 120);
     expect(compact.analysis?.summary?.waveform, isNull);
     await notified.future.timeout(const Duration(seconds: 1));
 
-    final enriched = provider.trackWithAnalysis(playbackTrack);
+    final enriched = provider.trackWithAnalysis(compactTrack());
     expect(analysisRequests, 1);
     expect(enriched.analysis?.status, TrackAnalysisStatus.analyzed);
     expect(provider.waveformFor(enriched, 512).analyzed, isTrue);
     expect(provider.waveformFor(enriched, 512).frames.first.low,
         greaterThan(provider.waveformFor(enriched, 512).frames.first.high));
+    for (var index = 0; index < 3; index++) {
+      final rebuilt = provider.trackWithAnalysis(compactTrack());
+      expect(rebuilt.analysis?.summary?.waveform?.minPeaks, isNotEmpty);
+    }
+    expect(analysisRequests, 1);
+    provider.dispose();
   });
 
   test('analyzed compact update replaces cached pending analysis', () async {
@@ -711,6 +701,8 @@ void main() {
 
   test('analyzed detail-less responses stop at the cap until interest returns',
       () async {
+    final firstCapReached = Completer<void>();
+    final secondCapReached = Completer<void>();
     var analysisRequests = 0;
     final provider = QueueProvider(
       mockQueueApiClient((request) async {
@@ -740,20 +732,34 @@ void main() {
       }),
       analysisRetryCooldown: const Duration(milliseconds: 1),
     );
+    provider.addListener(() {
+      if (analysisRequests == 4 && !firstCapReached.isCompleted) {
+        firstCapReached.complete();
+      }
+      if (analysisRequests == 8 && !secondCapReached.isCompleted) {
+        secondCapReached.complete();
+      }
+    });
     final compact = _track(
       playbackTrackId: '42',
       analysis: const TrackAnalysis(status: TrackAnalysisStatus.analyzed),
     );
 
     provider.trackWithAnalysis(compact);
-    await Future<void>.delayed(const Duration(milliseconds: 100));
-    provider.trackWithAnalysis(compact);
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await firstCapReached.future.timeout(const Duration(seconds: 1));
+    for (var index = 0; index < 3; index++) {
+      provider.trackWithAnalysis(compact);
+    }
+    await _flushMicrotasks();
     expect(analysisRequests, 4);
 
     provider.clearAnalysisHydrationInterest();
     provider.trackWithAnalysis(compact);
-    await Future<void>.delayed(const Duration(milliseconds: 100));
+    await secondCapReached.future.timeout(const Duration(seconds: 1));
+    for (var index = 0; index < 3; index++) {
+      provider.trackWithAnalysis(compact);
+    }
+    await _flushMicrotasks();
     expect(
       analysisRequests,
       8,

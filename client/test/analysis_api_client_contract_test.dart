@@ -1,7 +1,9 @@
 import 'dart:convert';
 
+import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:open_music_player/core/audio/queue_persistence.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/models/waveform.dart';
@@ -57,6 +59,61 @@ void main() {
     );
     expect(analysis.summary?.bpm?.numericValue, 124);
     _expectRichWaveformArtifacts(analysis);
+  });
+
+  test('rich analysis stays detail-free through playback persistence', () {
+    final envelope = productionBands3AnalysisEnvelope();
+    final analysis = TrackAnalysis.fromJson(
+      status: envelope['status'],
+      summary: envelope['summary'],
+      artifacts: envelope['artifacts'],
+      updatedAt: envelope['updated_at'],
+    );
+    expect(analysis.summary?.waveform?.maxPeaks, isNotEmpty);
+
+    final serialized = mediaItemToPlaybackJson(
+      audio_service.MediaItem(
+        id: '42',
+        title: 'Fixture',
+        duration: const Duration(seconds: 4),
+        extras: {
+          'analysisStatus': analysis.status.name,
+          'analysisSummary': analysis.summary!.toJson(),
+          'analysisUpdatedAt': analysis.updatedAt!.toIso8601String(),
+        },
+      ),
+    );
+    final compact =
+        Map<String, dynamic>.from(serialized['analysisSummary'] as Map);
+
+    expect((compact['bpm'] as Map)['value'], 120);
+    expect((compact['beat_grid'] as Map)['beats_ms'], [0, 500, 1000]);
+    expect((compact['downbeats'] as Map)['positions_ms'], [0]);
+    expect((compact['key'] as Map)['value'], 'A minor');
+    expect((compact['camelot'] as Map)['value'], '8A');
+    for (final detailKey in [
+      'waveform',
+      'loudness',
+      'true_peak',
+      'transients',
+      'silence',
+      'energy',
+    ]) {
+      expect(compact.containsKey(detailKey), isFalse, reason: detailKey);
+    }
+    expect(serialized.containsKey('artifacts'), isFalse);
+    final encodedCompact = jsonEncode(compact);
+    for (final detailToken in [
+      'artifact_ref',
+      'peaks',
+      'minima',
+      'maxima',
+      'rms',
+      'channels',
+      'spectral_bands',
+    ]) {
+      expect(encodedCompact, isNot(contains(detailToken)), reason: detailToken);
+    }
   });
 }
 

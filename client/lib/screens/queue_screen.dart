@@ -212,8 +212,8 @@ class _QueueScreenState extends State<QueueScreen> {
                 _clearAnalysisHydration(provider);
               }
               if (!widget.showImportJobs) {
-                _clearAnalysisHydration(provider);
                 if (playbackView.queue.isEmpty) {
+                  _clearAnalysisHydration(provider);
                   return const SoundQSurfaceState(
                     type: SoundQSurfaceStateType.empty,
                     title: 'Your playback queue is empty',
@@ -493,6 +493,7 @@ class _QueueScreenState extends State<QueueScreen> {
       currentIndex: currentIndex,
     );
     if (timelineTracks == null) {
+      _clearAnalysisHydration(provider);
       return const SoundQSurfaceState(
         type: SoundQSurfaceStateType.loading,
         title: 'Loading playback queue',
