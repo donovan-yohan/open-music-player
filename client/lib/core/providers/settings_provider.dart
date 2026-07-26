@@ -51,6 +51,27 @@ class SettingsNotifier extends StateNotifier<SettingsModel> {
     state = state.copyWith(keyNotation: notation);
     _saveSettings();
   }
+
+  void setClickAuditionVolume(double volume) {
+    state = state.copyWith(clickAuditionVolume: volume);
+    _saveSettings();
+  }
+
+  void setClickAuditionDownbeatAccentEnabled(bool enabled) {
+    state = state.copyWith(clickAuditionDownbeatAccentEnabled: enabled);
+    _saveSettings();
+  }
+
+  void setClickAuditionOutputOffsetMs(
+    ClickAuditionOutputRoute route,
+    int offsetMs,
+  ) {
+    state = state.copyWith(
+      clickAuditionOutputOffsets:
+          state.clickAuditionOutputOffsets.withOffset(route, offsetMs),
+    );
+    _saveSettings();
+  }
 }
 
 /// Provider for settings state

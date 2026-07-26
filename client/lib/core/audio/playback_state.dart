@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 import '../cache/playback_cache_manager.dart';
+import '../engine/click_audition_projection.dart';
+import '../engine/click_auditioner.dart';
 import '../engine/playback_engine.dart';
 import '../engine/tempo_automation.dart';
 import '../engine/timeline_model.dart';
@@ -107,6 +109,8 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       _queueController.engine.positionMsStream;
   int get timelinePositionMs => _queueController.engine.positionMs;
   TimelineModel get timelineModel => _queueController.engine.model;
+  ClickAuditionLease openClickAudition(ClickAuditionRequest request) =>
+      _queueController.engine.openClickAudition(request);
   BeatSnapMode get transitionSnapMode => _queueController.transitionSnapMode;
   int get defaultCrossfadeMs => _queueController.defaultCrossfadeMs;
   TimelineClip? timelineClipForQueueIndex(int index) =>

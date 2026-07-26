@@ -6,6 +6,8 @@ import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/audio/queue_persistence.dart';
 import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
+import 'package:open_music_player/core/engine/click_audition_projection.dart';
+import 'package:open_music_player/core/engine/click_auditioner.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
@@ -18,6 +20,37 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('PlaybackState engine cutover', () {
+    test('click audition facade returns the engine-owned lease', () async {
+      SharedPreferences.setMockInitialValues({});
+      final engine = PlaybackEngine.withClock(
+        clock: DefaultTimelineClock(
+          now: () => DateTime.utc(2026),
+          uiTickInterval: const Duration(hours: 1),
+        ),
+        voiceFactory: () => FakeVoice('v'),
+      );
+      final playback = _playbackState(engine: engine);
+
+      final lease = playback.openClickAudition(
+        ClickAuditionRequest(
+          queueItemId: 'queue-occurrence-7',
+          sourceBeatsMs: const [100, 600],
+          sourceDownbeatsMs: const [100],
+          beatClicksEnabled: false,
+          downbeatAccentsEnabled: false,
+        ),
+      );
+      await lease.settled;
+
+      expect(lease.isCurrent, isTrue);
+      expect(engine.clickAuditionState.status, ClickAuditionStatus.disabled);
+      expect(engine.clickAuditionState.queueItemId, 'queue-occurrence-7');
+
+      await lease.dispose();
+      expect(lease.isCurrent, isFalse);
+      playback.dispose();
+    });
+
     test('empty queue keeps the configured crossfade facade value', () async {
       SharedPreferences.setMockInitialValues({});
       final playback = _playbackState();
