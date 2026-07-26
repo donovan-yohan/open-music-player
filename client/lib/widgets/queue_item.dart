@@ -5,6 +5,7 @@ import '../models/track.dart';
 import '../models/trim_range.dart';
 import '../shared/widgets/song_metadata_chips.dart';
 import '../shared/widgets/soundq_status_chip.dart';
+import '../shared/widgets/track_artwork.dart';
 import 'queue_waveform_trim_control.dart';
 
 class QueueItem extends StatelessWidget {
@@ -105,21 +106,20 @@ class QueueItem extends StatelessWidget {
                       ],
 
                       // Album art thumbnail
-                      ClipRRect(
+                      TrackArtwork(
+                        key: ValueKey(
+                          'queue_item_artwork_${track.queueItemId}',
+                        ),
+                        url: track.artworkUrl,
+                        kind: track.artworkKind,
+                        cacheKey:
+                            'queue:${track.queueItemId}:'
+                            '${track.artworkKind.wireValue}:'
+                            '${track.artworkUrl ?? "none"}',
+                        width: 48,
+                        height: 48,
                         borderRadius: BorderRadius.circular(
                           isMobilePoster ? 0 : 4,
-                        ),
-                        child: SizedBox(
-                          width: 48,
-                          height: 48,
-                          child: track.coverUrl != null
-                              ? Image.network(
-                                  track.coverUrl!,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) =>
-                                      _buildPlaceholder(context),
-                                )
-                              : _buildPlaceholder(context),
                         ),
                       ),
                       const SizedBox(width: 12),
@@ -416,13 +416,6 @@ class QueueItem extends StatelessWidget {
     );
   }
 
-  Widget _buildPlaceholder(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Container(
-      color: colors.surfaceContainerHighest,
-      child: Icon(Icons.music_note, color: colors.onSurfaceVariant, size: 24),
-    );
-  }
 }
 
 class _AnalysisChip extends StatelessWidget {
@@ -507,18 +500,15 @@ class QueueActionSheet extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             child: Row(
               children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: SizedBox(
-                    width: 48,
-                    height: 48,
-                    child: track.coverUrl != null
-                        ? Image.network(track.coverUrl!, fit: BoxFit.cover)
-                        : Container(
-                            color: Colors.grey[300],
-                            child: const Icon(Icons.music_note),
-                          ),
-                  ),
+                TrackArtwork(
+                  url: track.artworkUrl,
+                  kind: track.artworkKind,
+                  cacheKey:
+                      'queue-sheet:${track.queueItemId}:'
+                      '${track.artworkKind.wireValue}:'
+                      '${track.artworkUrl ?? "none"}',
+                  width: 48,
+                  height: 48,
                 ),
                 const SizedBox(width: 12),
                 Expanded(

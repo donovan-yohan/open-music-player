@@ -9,7 +9,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   static Database? _database;
   static Future<Database>? _openingDatabase;
   static const String _dbName = 'open_music_player.db';
-  static const int _dbVersion = 6;
+  static const int _dbVersion = 7;
 
   final Future<Database> Function()? _databaseProvider;
   final DatabaseFactory? _databaseFactory;
@@ -104,6 +104,9 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
         source_type TEXT,
         storage_key TEXT,
         file_size_bytes INTEGER,
+        artwork_url TEXT,
+        artwork_kind TEXT NOT NULL DEFAULT 'none',
+        artwork_descriptor_present INTEGER NOT NULL DEFAULT 0,
         analysis_status TEXT,
         analysis_summary TEXT,
         analysis_overrides TEXT,
@@ -200,6 +203,19 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
         'ALTER TABLE tracks ADD COLUMN analysis_updated_at_us INTEGER',
       );
     }
+
+    // v7: keep the backend-resolved artwork URL and truthful provenance kind
+    // together across offline Library/download reads.
+    if (oldVersion < 7) {
+      await db.execute('ALTER TABLE tracks ADD COLUMN artwork_url TEXT');
+      await db.execute(
+        "ALTER TABLE tracks ADD COLUMN artwork_kind TEXT NOT NULL DEFAULT 'none'",
+      );
+      await db.execute(
+        'ALTER TABLE tracks ADD COLUMN '
+        'artwork_descriptor_present INTEGER NOT NULL DEFAULT 0',
+      );
+    }
   }
 
   Future<void> _createPlaybackCacheTable(Database db) async {
@@ -226,7 +242,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   Future<void> insertTrack(Track track) async {
     final db = await database;
     await db.transaction((txn) async {
-      final values = await _trackValuesPreservingNewerAnalysis(txn, track);
+      final values = await _trackValuesPreservingCacheAuthority(txn, track);
       await txn.insert(
         'tracks',
         values,
@@ -239,7 +255,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     final db = await database;
     await db.transaction((txn) async {
       for (final track in tracks) {
-        final values = await _trackValuesPreservingNewerAnalysis(txn, track);
+        final values = await _trackValuesPreservingCacheAuthority(txn, track);
         await txn.insert(
           'tracks',
           values,
@@ -249,7 +265,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
     });
   }
 
-  Future<Map<String, Object?>> _trackValuesPreservingNewerAnalysis(
+  Future<Map<String, Object?>> _trackValuesPreservingCacheAuthority(
     DatabaseExecutor executor,
     Track track,
   ) async {
@@ -262,6 +278,9 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
         'analysis_overrides',
         'analysis_updated_at',
         'analysis_updated_at_us',
+        'artwork_url',
+        'artwork_kind',
+        'artwork_descriptor_present',
       ],
       where: 'id = ?',
       whereArgs: [track.id],
@@ -284,20 +303,52 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
             (storedRevisionUs != null &&
                 (incomingRevisionUs == null ||
                     incomingRevisionUs < storedRevisionUs));
-    if (!preserveStoredAnalysis) {
-      return values;
+    if (preserveStoredAnalysis) {
+      for (final column in const [
+        'analysis_status',
+        'analysis_summary',
+        'analysis_overrides',
+        'analysis_updated_at',
+        'analysis_updated_at_us',
+      ]) {
+        values[column] = stored[column];
+      }
     }
-
-    for (final column in const [
-      'analysis_status',
-      'analysis_summary',
-      'analysis_overrides',
-      'analysis_updated_at',
-      'analysis_updated_at_us',
-    ]) {
-      values[column] = stored[column];
+    if (!track.artworkDescriptorPresent) {
+      for (final column in const [
+        'artwork_url',
+        'artwork_kind',
+        'artwork_descriptor_present',
+      ]) {
+        values[column] = stored[column];
+      }
     }
     return values;
+  }
+
+  /// Refreshes artwork only for rows already cached offline. Payloads without
+  /// the additive descriptor are legacy and cannot erase stored artwork;
+  /// authoritative `none` remains able to clear it.
+  Future<void> updateTrackArtworks(Iterable<Track> tracks) async {
+    final db = await database;
+    final batch = db.batch();
+    var hasUpdates = false;
+    for (final track in tracks) {
+      if (!track.artworkDescriptorPresent) continue;
+      hasUpdates = true;
+      batch.update(
+        'tracks',
+        {
+          'artwork_url': track.artworkUrl,
+          'artwork_kind': track.artworkKind.wireValue,
+          'artwork_descriptor_present': 1,
+        },
+        where: 'id = ?',
+        whereArgs: [track.id],
+      );
+    }
+    if (!hasUpdates) return;
+    await batch.commit(noResult: true);
   }
 
   Future<Track?> getTrack(int id) async {

@@ -84,6 +84,19 @@ class MBSuggestion {
   }
 }
 
+enum TrackArtworkKind {
+  coverArt('cover_art'),
+  releaseCover('release_cover'),
+  providerThumbnail('provider_thumbnail'),
+  none('none');
+
+  const TrackArtworkKind(this.wireValue);
+
+  final String wireValue;
+}
+
+typedef TrackArtworkDescriptor = ({String? url, TrackArtworkKind kind});
+
 class Track {
   final int id;
   final String identityHash;
@@ -108,6 +121,8 @@ class Track {
   final Map<String, dynamic>? metadata;
   final List<MBSuggestion> mbSuggestions;
   final TrackAnalysis? analysis;
+  final TrackArtworkDescriptor _artwork;
+  final bool artworkDescriptorPresent;
 
   /// Whether the current user has liked (favorited) this track.
   ///
@@ -141,10 +156,23 @@ class Track {
     this.metadata,
     this.mbSuggestions = const [],
     this.analysis,
+    String? artworkUrl,
+    TrackArtworkKind? artworkKind,
+    bool? artworkDescriptorPresent,
     this.isLiked,
     required this.createdAt,
     required this.updatedAt,
-  });
+  })  : _artwork = resolveTrackArtworkDescriptor(
+          artworkUrl: artworkUrl,
+          artworkKind: artworkKind,
+          metadata: metadata,
+          mbReleaseId: mbReleaseId,
+        ),
+        artworkDescriptorPresent =
+            artworkDescriptorPresent ?? artworkKind != null;
+
+  String? get artworkUrl => _artwork.url;
+  TrackArtworkKind get artworkKind => _artwork.kind;
 
   /// Serializes this library track into the map shape `PlaybackState.playQueue`
   /// expects: numeric `id` for signed-URL issuance, `duration` in whole seconds.
@@ -154,9 +182,8 @@ class Track {
         artist: artist,
         album: album,
         duration: Duration(milliseconds: durationMs ?? 0),
-        artworkUrl: metadata?['cover_art_url'] is String
-            ? metadata!['cover_art_url'] as String
-            : null,
+        artworkUrl: artworkUrl,
+        artworkKind: artworkKind.wireValue,
         analysis: analysis,
         isLiked: isLiked,
         sourceUrl: sourceUrl,
@@ -177,6 +204,13 @@ class Track {
         [];
 
     final id = _intValue(json['id']);
+    final metadata = _optionalMap(json['metadata_json'] ?? json['metadata']);
+    final mbReleaseId =
+        _optionalString(json['mbReleaseId'] ?? json['mb_release_id']);
+    final artworkKind = trackArtworkKindFromPayload(
+      json,
+      keys: const ['artworkKind', 'artwork_kind'],
+    );
 
     return Track(
       id: id,
@@ -190,8 +224,7 @@ class Track {
       version: json['version'] as String?,
       mbRecordingId: json['mbRecordingId'] as String? ??
           json['mb_recording_id'] as String?,
-      mbReleaseId:
-          json['mbReleaseId'] as String? ?? json['mb_release_id'] as String?,
+      mbReleaseId: mbReleaseId,
       mbArtistId:
           json['mbArtistId'] as String? ?? json['mb_artist_id'] as String?,
       mbVerified:
@@ -216,9 +249,16 @@ class Track {
       ),
       channels: _optionalInt(json['channels'] ?? json['channelCount']),
       contentType: _optionalString(json['contentType'] ?? json['content_type']),
-      metadata: json['metadata_json'] as Map<String, dynamic>?,
+      metadata: metadata,
       mbSuggestions: suggestions,
       analysis: trackAnalysisFromTrackJson(json),
+      artworkUrl: _optionalString(
+        json['artworkUrl'] ??
+            json['artwork_url'] ??
+            json['coverArtUrl'] ??
+            json['cover_art_url'],
+      ),
+      artworkKind: artworkKind,
       isLiked: json['isLiked'] as bool? ?? json['is_liked'] as bool?,
       createdAt: _dateTimeValue(json['createdAt'] ?? json['created_at']),
       updatedAt: _dateTimeValue(json['updatedAt'] ?? json['updated_at']),
@@ -229,6 +269,11 @@ class Track {
     final addedAt =
         DateTime.tryParse(json['added_at'] as String? ?? '') ?? DateTime.now();
     final suggestionsJson = json['mb_suggestions'] as List<dynamic>?;
+    final metadata = _optionalMap(json['metadata_json'] ?? json['metadata']);
+    final artworkKind = trackArtworkKindFromPayload(
+      json,
+      keys: const ['artwork_kind', 'artworkKind'],
+    );
 
     return Track(
       id: json['id'] as int,
@@ -260,12 +305,19 @@ class Track {
       ),
       channels: _optionalInt(json['channels'] ?? json['channelCount']),
       contentType: _optionalString(json['content_type'] ?? json['contentType']),
-      metadata: json['metadata_json'] as Map<String, dynamic>?,
+      metadata: metadata,
       mbSuggestions: suggestionsJson
               ?.map((e) => MBSuggestion.fromJson(e as Map<String, dynamic>))
               .toList() ??
           [],
       analysis: trackAnalysisFromTrackJson(json),
+      artworkUrl: _optionalString(
+        json['artwork_url'] ??
+            json['artworkUrl'] ??
+            json['cover_art_url'] ??
+            json['coverArtUrl'],
+      ),
+      artworkKind: artworkKind,
       isLiked: json['is_liked'] as bool?,
       createdAt:
           DateTime.tryParse(json['created_at'] as String? ?? '') ?? addedAt,
@@ -297,6 +349,11 @@ class Track {
       'channels': channels,
       'content_type': contentType,
       'metadata_json': metadata,
+      if (artworkDescriptorPresent && artworkUrl != null)
+        'artwork_url': artworkUrl,
+      if (artworkDescriptorPresent) 'artwork_kind': artworkKind.wireValue,
+      if (!artworkDescriptorPresent && coverArtUrl != null)
+        'cover_art_url': coverArtUrl,
       'mb_suggestions': mbSuggestions.map((s) => s.toJson()).toList(),
       ...trackAnalysisFields(
         analysis,
@@ -325,6 +382,9 @@ class Track {
       'source_type': sourceType,
       'storage_key': storageKey,
       'file_size_bytes': fileSizeBytes,
+      'artwork_url': artworkUrl,
+      'artwork_kind': artworkKind.wireValue,
+      'artwork_descriptor_present': artworkDescriptorPresent ? 1 : 0,
       ...trackAnalysisFields(
         analysis,
         fieldStyle: TrackAnalysisFieldStyle.snakeCase,
@@ -340,6 +400,10 @@ class Track {
   }
 
   factory Track.fromDbMap(Map<String, dynamic> map) {
+    final artworkDescriptorPresent =
+        (map['artwork_descriptor_present'] as num?)?.toInt() == 1;
+    final artworkUrl = _optionalString(map['artwork_url']);
+    final storedArtworkKind = _parsedArtworkKind(map['artwork_kind']);
     return Track(
       id: map['id'] as int,
       identityHash: map['identity_hash'] as String,
@@ -357,6 +421,11 @@ class Track {
       storageKey: map['storage_key'] as String?,
       fileSizeBytes: map['file_size_bytes'] as int?,
       metadata: null,
+      artworkUrl: artworkUrl,
+      artworkKind: artworkDescriptorPresent || artworkUrl != null
+          ? storedArtworkKind
+          : null,
+      artworkDescriptorPresent: artworkDescriptorPresent,
       analysis: trackAnalysisFromTrackJson(_analysisJsonFromDbMap(map)),
       createdAt: DateTime.parse(map['created_at'] as String),
       updatedAt: DateTime.parse(map['updated_at'] as String),
@@ -366,21 +435,18 @@ class Track {
   String get displayArtist => artist ?? 'Unknown Artist';
   String get displayAlbum => album ?? 'Unknown Album';
 
-  /// Returns the cover art URL from Cover Art Archive if MusicBrainz release ID is available
-  String? get coverArtUrl {
-    if (mbReleaseId != null && mbReleaseId!.isNotEmpty) {
-      return 'https://coverartarchive.org/release/$mbReleaseId/front-250';
-    }
-    return null;
-  }
+  /// The one resolved remote visual used by Home, Library, playback and cache.
+  String? get displayArtworkUrl => artworkUrl;
 
-  /// Returns the thumbnail cover art URL (smaller size for lists)
-  String? get coverArtThumbnailUrl {
-    if (mbReleaseId != null && mbReleaseId!.isNotEmpty) {
-      return 'https://coverartarchive.org/release/$mbReleaseId/front-250';
-    }
-    return null;
-  }
+  /// Legacy album-art accessor. Provider thumbnails remain available through
+  /// [displayArtworkUrl] but are not represented as verified cover art.
+  String? get coverArtUrl => artworkKind == TrackArtworkKind.coverArt ||
+          artworkKind == TrackArtworkKind.releaseCover
+      ? artworkUrl
+      : null;
+
+  /// Legacy list accessor with the same provenance-safe semantics.
+  String? get coverArtThumbnailUrl => coverArtUrl;
 
   String get formattedDuration {
     if (durationMs == null) return '--:--';
@@ -421,6 +487,9 @@ class Track {
     Map<String, dynamic>? metadata,
     List<MBSuggestion>? mbSuggestions,
     TrackAnalysis? analysis,
+    String? artworkUrl,
+    TrackArtworkKind? artworkKind,
+    bool? artworkDescriptorPresent,
     bool? isLiked,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -449,6 +518,10 @@ class Track {
       metadata: metadata ?? this.metadata,
       mbSuggestions: mbSuggestions ?? this.mbSuggestions,
       analysis: analysis ?? this.analysis,
+      artworkUrl: artworkUrl ?? this.artworkUrl,
+      artworkKind: artworkKind ?? this.artworkKind,
+      artworkDescriptorPresent: artworkDescriptorPresent ??
+          (artworkKind != null ? true : this.artworkDescriptorPresent),
       isLiked: isLiked ?? this.isLiked,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
@@ -460,6 +533,103 @@ String? _optionalString(dynamic value) {
   if (value is! String) return null;
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
+}
+
+Map<String, dynamic>? _optionalMap(dynamic value) {
+  if (value is! Map) return null;
+  return Map<String, dynamic>.from(value);
+}
+
+TrackArtworkKind? parseTrackArtworkKind(dynamic value) {
+  final normalized = _optionalString(value)?.toLowerCase();
+  for (final kind in TrackArtworkKind.values) {
+    if (kind.wireValue == normalized) return kind;
+  }
+  return null;
+}
+
+TrackArtworkKind? _parsedArtworkKind(dynamic value) {
+  if (value == null) return null;
+  return parseTrackArtworkKind(value) ?? TrackArtworkKind.none;
+}
+
+TrackArtworkKind? trackArtworkKindFromPayload(
+  Map<String, dynamic>? json, {
+  Iterable<String> keys = const ['artworkKind', 'artwork_kind'],
+}) {
+  if (json == null) return null;
+  for (final key in keys) {
+    if (json.containsKey(key)) {
+      return parseTrackArtworkKind(json[key]) ?? TrackArtworkKind.none;
+    }
+  }
+  return null;
+}
+
+TrackArtworkDescriptor resolveTrackArtworkDescriptor({
+  required String? artworkUrl,
+  required TrackArtworkKind? artworkKind,
+  required Map<String, dynamic>? metadata,
+  required String? mbReleaseId,
+}) {
+  final explicitURL = safeTrackArtworkUrl(artworkUrl);
+  if (artworkKind != null) {
+    if (artworkKind == TrackArtworkKind.none) {
+      return (url: null, kind: TrackArtworkKind.none);
+    }
+    if (explicitURL != null) {
+      return (url: explicitURL, kind: artworkKind);
+    }
+    return _releaseArtwork(mbReleaseId);
+  }
+
+  final legacyURL =
+      explicitURL ?? safeTrackArtworkUrl(metadata?['cover_art_url']);
+  if (legacyURL != null) {
+    return (
+      url: legacyURL,
+      kind: _looksLikeReleaseCover(legacyURL, mbReleaseId)
+          ? TrackArtworkKind.releaseCover
+          : TrackArtworkKind.coverArt,
+    );
+  }
+  return _releaseArtwork(mbReleaseId);
+}
+
+({String? url, TrackArtworkKind kind}) _releaseArtwork(String? mbReleaseId) {
+  final url = _releaseArtworkUrl(mbReleaseId);
+  return (
+    url: url,
+    kind: url == null ? TrackArtworkKind.none : TrackArtworkKind.releaseCover,
+  );
+}
+
+String? safeTrackArtworkUrl(dynamic value) {
+  final candidate = _optionalString(value);
+  if (candidate == null) return null;
+  final uri = Uri.tryParse(candidate);
+  if (uri == null ||
+      !uri.hasAuthority ||
+      uri.host.isEmpty ||
+      (uri.scheme != 'http' && uri.scheme != 'https') ||
+      uri.userInfo.isNotEmpty) {
+    return null;
+  }
+  return candidate;
+}
+
+String? _releaseArtworkUrl(String? mbReleaseId) {
+  final releaseID = _optionalString(mbReleaseId);
+  if (releaseID == null) return null;
+  return 'https://coverartarchive.org/release/$releaseID/front-250';
+}
+
+bool _looksLikeReleaseCover(String candidate, String? mbReleaseId) {
+  final releaseURL = _releaseArtworkUrl(mbReleaseId);
+  if (releaseURL != null && candidate == releaseURL) return true;
+  final uri = Uri.tryParse(candidate);
+  return uri?.host.toLowerCase() == 'coverartarchive.org' &&
+      uri!.path.startsWith('/release/');
 }
 
 int _intValue(dynamic value, {int fallback = 0}) =>

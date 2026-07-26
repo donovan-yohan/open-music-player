@@ -18,6 +18,7 @@ import '../models/track.dart';
 import '../models/track_analysis.dart';
 import '../models/trim_range.dart';
 import '../providers/queue_provider.dart';
+import '../shared/models/track.dart' show trackArtworkKindFromPayload;
 import '../shared/widgets/track_tile.dart';
 import '../widgets/queue_item.dart';
 import '../shared/widgets/soundq_status_chip.dart';
@@ -67,6 +68,31 @@ List<ListeningQueueEntry> listeningQueueEntries({
         isCurrent: normalizedCurrent != null && i == normalizedCurrent,
       ),
   ];
+}
+
+@visibleForTesting
+QueueTrack playbackTrackForMediaItem(
+  audio_service.MediaItem item, {
+  required String queueItemId,
+}) {
+  final duration = item.duration ?? Duration.zero;
+  final extras = item.extras;
+  final artworkKind = trackArtworkKindFromPayload(extras);
+  return QueueTrack(
+    id: queueItemId,
+    queueItemId: queueItemId,
+    playbackTrackId: item.id,
+    title: item.title,
+    artist: item.artist,
+    album: item.album,
+    duration: duration.inSeconds,
+    artworkUrl: item.artUri?.toString(),
+    artworkKind: artworkKind,
+    addedAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+    analysis: trackAnalysisFromTrackJson(
+      Map<String, dynamic>.from(item.extras ?? const {}),
+    ),
+  );
 }
 
 @visibleForTesting
@@ -403,6 +429,10 @@ class _QueueScreenState extends State<QueueScreen> {
         final entry = entries[index];
         final item = entry.item;
         final queueItemId = _queueItemIdForPlaybackEntry(cues, entry);
+        final track = playbackTrackForMediaItem(
+          item,
+          queueItemId: queueItemId,
+        );
         final registry = context.read<CommandRegistry>();
         final commandContext = CommandContext(
           playbackState: playback,
@@ -432,10 +462,9 @@ class _QueueScreenState extends State<QueueScreen> {
             artist: item.artist,
             album: item.album,
             duration: _formatQueueRuntime(item.duration?.inMilliseconds ?? 0),
-            coverArtUrl: item.artUri?.toString(),
-            analysis: trackAnalysisFromTrackJson(
-              Map<String, dynamic>.from(item.extras ?? const {}),
-            ),
+            coverArtUrl: track.artworkUrl,
+            artworkKind: track.artworkKind,
+            analysis: track.analysis,
             leading: _buildReorderHandle(
               queueItemId: queueItemId,
               title: item.title,
@@ -714,22 +743,10 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   QueueTrack _playbackTrackFor(audio_service.MediaItem item, PlaybackCue cue) {
-    final duration = item.duration ?? Duration.zero;
-    final track = QueueTrack(
-      id: cue.queueItemId,
+    return playbackTrackForMediaItem(
+      item,
       queueItemId: cue.queueItemId,
-      playbackTrackId: item.id,
-      title: item.title,
-      artist: item.artist,
-      album: item.album,
-      duration: duration.inSeconds,
-      coverUrl: item.artUri?.toString(),
-      addedAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
-      analysis: trackAnalysisFromTrackJson(
-        Map<String, dynamic>.from(item.extras ?? const {}),
-      ),
     );
-    return track;
   }
 
   void _syncPlaybackAnalyses({

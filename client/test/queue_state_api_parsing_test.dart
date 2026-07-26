@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/track_analysis.dart';
+import 'package:open_music_player/shared/models/track.dart'
+    show TrackArtworkKind;
 
 void main() {
   test(
@@ -35,6 +37,10 @@ void main() {
       expect(state.tracks.single.title, 'Seed Track');
       expect(state.tracks.single.duration, 185);
       expect(state.tracks.single.coverUrl, 'https://example.test/cover.png');
+      expect(
+        state.tracks.single.artworkKind,
+        TrackArtworkKind.coverArt,
+      );
     },
   );
 
@@ -113,7 +119,13 @@ void main() {
     expect(track.title, 'Plastic Love');
     expect(track.artist, 'mariya channel');
     expect(track.duration, 253);
-    expect(track.coverUrl, 'https://img.example/cover.jpg');
+    expect(track.coverUrl, isNull);
+    expect(track.artworkUrl, 'https://img.example/cover.jpg');
+    expect(track.artworkKind, TrackArtworkKind.providerThumbnail);
+    expect(
+      track.toPlaybackJson()['artwork_kind'],
+      'provider_thumbnail',
+    );
     expect(track.queueStatus, TrackQueueStatus.downloading);
     expect(track.canPlay, isFalse);
   });
@@ -137,6 +149,29 @@ void main() {
     expect(restored.sourceUrl, 'https://youtube.example/watch?v=lofi-study-1');
     expect(restored.queueStatus, TrackQueueStatus.pending);
     expect(restored.canPlay, isFalse);
+  });
+
+  test('QueueTrack round-trips explicit artwork and rejects unknown kinds', () {
+    final provider = QueueTrack.fromJson({
+      'id': 'provider',
+      'title': 'Provider',
+      'duration': 100,
+      'artworkUrl': 'https://provider.example/provider.jpg',
+      'artworkKind': 'provider_thumbnail',
+    });
+    final unknown = QueueTrack.fromJson({
+      'id': 'unknown',
+      'title': 'Unknown',
+      'duration': 100,
+      'artworkUrl': 'https://provider.example/unknown.jpg',
+      'artworkKind': 'provider',
+    });
+    final restored = QueueTrack.fromJson(provider.toJson());
+
+    expect(restored.artworkUrl, provider.artworkUrl);
+    expect(restored.artworkKind, TrackArtworkKind.providerThumbnail);
+    expect(unknown.artworkUrl, isNull);
+    expect(unknown.artworkKind, TrackArtworkKind.none);
   });
 
   test('QueueState parses real backend playbackState contract fields', () {

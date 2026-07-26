@@ -65,6 +65,8 @@ type PlayEventTrackResponse struct {
 	Channels          int             `json:"channels,omitempty"`
 	ContentType       string          `json:"contentType,omitempty"`
 	CoverArtURL       string          `json:"coverArtUrl,omitempty"`
+	ArtworkURL        string          `json:"artworkUrl,omitempty"`
+	ArtworkKind       db.ArtworkKind  `json:"artworkKind"`
 	MBRecordingID     *uuid.UUID      `json:"mbRecordingId,omitempty"`
 	AnalysisStatus    string          `json:"analysisStatus,omitempty"`
 	AnalysisSummary   json.RawMessage `json:"analysisSummary,omitempty"`
@@ -284,11 +286,10 @@ func trackToPlayEventResponse(t db.Track) PlayEventTrackResponse {
 	if t.ContentType.Valid {
 		resp.ContentType = t.ContentType.String
 	}
-	if t.CoverArtURL.Valid {
-		resp.CoverArtURL = t.CoverArtURL.String
-	} else if t.MBReleaseID != nil {
-		resp.CoverArtURL = "https://coverartarchive.org/release/" + t.MBReleaseID.String() + "/front-250"
-	}
+	artwork := db.ResolveTrackArtwork(t)
+	resp.ArtworkURL = artwork.URL
+	resp.ArtworkKind = artwork.Kind
+	resp.CoverArtURL = artwork.LegacyCoverArtURL()
 	if t.AnalysisStatus.Valid {
 		resp.AnalysisStatus = t.AnalysisStatus.String
 	}

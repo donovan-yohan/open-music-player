@@ -26,6 +26,9 @@ import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/models/waveform.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:open_music_player/screens/queue_screen.dart';
+import 'package:open_music_player/shared/models/track.dart'
+    show TrackArtworkKind;
+import 'package:open_music_player/shared/widgets/track_tile.dart';
 import 'package:open_music_player/widgets/timeline_clip_widget.dart';
 
 import 'support/analysis_envelope_fixture.dart';
@@ -321,6 +324,50 @@ void main() {
     expect(find.text('Current Song'), findsOneWidget);
     expect(find.text('Live playback only'), findsNothing);
     expect(find.text('Playback Queue'), findsNothing);
+  });
+
+  testWidgets('playback queue list preserves provider artwork provenance', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        audio_service.MediaItem(
+          id: '42',
+          title: 'Provider artwork',
+          artUri: Uri.parse('https://provider.example/42.jpg'),
+          extras: const {'artworkKind': 'provider_thumbnail'},
+        ),
+      ]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+
+    final row = find.byKey(const ValueKey('playback_queue_42'));
+    final tile = tester.widget<TrackTile>(row);
+    expect(tile.coverArtUrl, 'https://provider.example/42.jpg');
+    expect(tile.artworkKind, TrackArtworkKind.providerThumbnail);
+  });
+
+  testWidgets('playback queue list suppresses explicit-none artwork', (
+    tester,
+  ) async {
+    playbackState
+      ..fakeQueue = [
+        audio_service.MediaItem(
+          id: '43',
+          title: 'Cleared artwork',
+          artUri: Uri.parse('https://provider.example/stale.jpg'),
+          extras: const {'artworkKind': 'none'},
+        ),
+      ]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+
+    final row = find.byKey(const ValueKey('playback_queue_43'));
+    final tile = tester.widget<TrackTile>(row);
+    expect(tile.coverArtUrl, isNull);
+    expect(tile.artworkKind, TrackArtworkKind.none);
   });
 
   testWidgets(

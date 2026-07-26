@@ -2,6 +2,7 @@ export 'download_button.dart';
 export 'queue_swipe_action.dart';
 export 'song_metadata_chips.dart';
 export 'track_tile.dart';
+export 'track_artwork.dart';
 export 'playlist_card.dart';
 export 'playlist_picker_sheet.dart';
 export 'verification_badge.dart';

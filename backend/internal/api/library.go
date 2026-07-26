@@ -36,6 +36,8 @@ type LibraryTrackResponse struct {
 	MBVerified         bool                   `json:"mb_verified"`
 	AddedAt            string                 `json:"added_at"`
 	CoverArtURL        string                 `json:"cover_art_url,omitempty"`
+	ArtworkURL         string                 `json:"artwork_url,omitempty"`
+	ArtworkKind        db.ArtworkKind         `json:"artwork_kind"`
 	MetadataStatus     string                 `json:"metadata_status,omitempty"`
 	MetadataConfidence *float64               `json:"metadata_confidence,omitempty"`
 	MetadataProvenance json.RawMessage        `json:"metadata_provenance,omitempty"`
@@ -95,7 +97,7 @@ func (s *FieldSelector) Include(field string) bool {
 // genre (exact match; "Unknown" matches tracks with no genre),
 // artist (exact match, local artist listing), album (exact match, local album listing),
 // fields (comma-separated field selection).
-// Available fields: id, title, artist, album, duration_ms, mb_verified, genre, added_at, cover_art_url, source_url, file_size_bytes, codec, bitrate_kbps, sample_rate_hz, channels, content_type, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, is_liked, analysis_status, analysis_summary, analysis_updated_at
+// Available fields: id, title, artist, album, duration_ms, mb_verified, genre, added_at, cover_art_url, artwork_url, artwork_kind, source_url, file_size_bytes, codec, bitrate_kbps, sample_rate_hz, channels, content_type, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, is_liked, analysis_status, analysis_summary, analysis_updated_at
 //
 // Note: liked/is_liked here are scoped to the caller's library — this endpoint
 // lists the library, optionally filtered to liked tracks. A standalone "Liked
@@ -203,13 +205,7 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 		if fields.Include("added_at") {
 			track["added_at"] = t.AddedAt.Format("2006-01-02T15:04:05Z")
 		}
-		if fields.Include("cover_art_url") {
-			if t.CoverArtURL.Valid {
-				track["cover_art_url"] = t.CoverArtURL.String
-			} else if t.MBReleaseID != nil {
-				track["cover_art_url"] = "https://coverartarchive.org/release/" + t.MBReleaseID.String() + "/front-250"
-			}
-		}
+		projectLibraryArtwork(track, t, fields)
 		if fields.Include("source_url") && t.SourceURL.Valid {
 			track["source_url"] = t.SourceURL.String
 		}
@@ -279,6 +275,21 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeLibraryJSON(w, http.StatusOK, response)
+}
+
+func projectLibraryArtwork(track map[string]interface{}, libraryTrack db.LibraryTrack, fields *FieldSelector) {
+	artwork := db.ResolveTrackArtwork(libraryTrack.Track)
+	if fields.Include("cover_art_url") {
+		if legacyCover := artwork.LegacyCoverArtURL(); legacyCover != "" {
+			track["cover_art_url"] = legacyCover
+		}
+	}
+	if fields.Include("artwork_url") || fields.Include("artwork_kind") {
+		if artwork.URL != "" {
+			track["artwork_url"] = artwork.URL
+		}
+		track["artwork_kind"] = artwork.Kind
+	}
 }
 
 // AddTrackToLibrary handles POST /api/v1/library/tracks/{track_id}
