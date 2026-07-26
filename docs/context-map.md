@@ -189,6 +189,9 @@ domain concept moves or a new production harness becomes canonical.
 
 - Analyzer service: `backend/cmd/audio-analyzer/`,
   `backend/internal/analyzer/`.
+- Stem separation, canonical edit events, pre-render/native playback ladder,
+  and platform/license boundaries: `docs/stem-architecture.md`; decision record:
+  `docs/adr/0006-stem-edit-events-and-playback-ladder.md`.
 - Beat/downbeat and key engine: `backend/cmd/audio-analyzer/audio_mir.py`;
   Beat This supplies tracked markers and librosa CQT supplies tonal chroma.
 - Stored summaries: `backend/internal/db/audio_analysis_repository.go`,
