@@ -408,6 +408,7 @@ class ApiClient {
       return TrackAnalysis.fromJson(
         status: data['status'],
         summary: data['summary'],
+        artifacts: data['artifacts'],
         overrides: data['overrides'],
         overridesPresent: data.containsKey('overrides'),
         updatedAt: data['updated_at'] ?? data['updatedAt'],
@@ -434,6 +435,7 @@ class ApiClient {
       return TrackAnalysis.fromJson(
         status: data['status'],
         summary: data['summary'],
+        artifacts: data['artifacts'],
         overrides: data['overrides'],
         overridesPresent: data.containsKey('overrides'),
         updatedAt: data['updated_at'] ?? data['updatedAt'],
