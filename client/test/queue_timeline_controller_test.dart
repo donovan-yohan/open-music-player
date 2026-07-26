@@ -1525,25 +1525,67 @@ void main() {
     });
 
     test('local scrub previews position and commits once on end', () async {
-      final harness = _Harness();
+      final voices = <_RecordingVoice>[];
+      final harness = _Harness(
+        voiceFactory: () {
+          final voice = _RecordingVoice('v${voices.length}');
+          voices.add(voice);
+          return voice;
+        },
+      );
       await harness.controller.setQueue([_item('1')]);
+      await harness.controller.play();
       final commits = <int>[];
       final sub = harness.clock.scrubCommittedStream.listen(commits.add);
+      int totalSeekCalls() =>
+          voices.fold(0, (total, voice) => total + voice.seekCalls);
+      final initialSeekCalls = totalSeekCalls();
 
       harness.controller.beginLocalScrub();
       harness.controller.updateLocalScrub(const Duration(seconds: 2));
+      harness.controller.updateLocalScrub(
+        const Duration(milliseconds: 2500),
+      );
       await Future<void>.delayed(Duration.zero);
 
       expect(harness.clock.isScrubbing, isTrue);
-      expect(harness.controller.position, const Duration(seconds: 2));
+      expect(
+        harness.controller.position,
+        const Duration(milliseconds: 2500),
+      );
       expect(commits, isEmpty);
+      expect(
+        totalSeekCalls(),
+        initialSeekCalls,
+        reason: 'interim scrub feedback must not hard-seek native playback',
+      );
+      harness.advance(const Duration(seconds: 1));
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        harness.controller.position,
+        const Duration(milliseconds: 2500),
+        reason: 'the canonical clock stays held during the active scrub',
+      );
 
       await harness.controller.endLocalScrub(const Duration(seconds: 3));
       await Future<void>.delayed(Duration.zero);
+      await _waitUntil(() => !harness.clock.isBufferingHeld);
 
       expect(harness.clock.isScrubbing, isFalse);
       expect(harness.controller.position, const Duration(seconds: 3));
       expect(commits, [3000]);
+      expect(
+        totalSeekCalls(),
+        initialSeekCalls + 1,
+        reason: 'scrub end commits exactly one native seek',
+      );
+      harness.advance(const Duration(seconds: 1));
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        harness.controller.position,
+        const Duration(seconds: 4),
+        reason: 'releasing scrub ownership must resume canonical clock ticks',
+      );
 
       await sub.cancel();
       await harness.dispose();

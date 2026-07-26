@@ -3,7 +3,8 @@ import 'dart:collection';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollCacheExtent;
+import 'package:flutter/rendering.dart' show RenderBox, ScrollCacheExtent;
+import 'package:flutter/scheduler.dart' show Ticker;
 import '../app/theme.dart';
 import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
@@ -40,6 +41,35 @@ const int _timelineWaveformSliceBaseBytes = 256 + 128;
 const int _timelineWaveformActiveMarkerReserveBytes = 64 * 1024;
 const int _timelineWaveformMinSamples = 8;
 const int _timelineWaveformMaxSamples = 65536;
+
+@visibleForTesting
+const double timelineScrubEdgeScrollZonePx = 56;
+
+@visibleForTesting
+const double timelineScrubMaxEdgeScrollPxPerSecond = 240;
+
+@visibleForTesting
+double timelineScrubEdgeVelocityPxPerSecond({
+  required double pointerPaneX,
+  required double paneWidth,
+}) {
+  if (!pointerPaneX.isFinite || !paneWidth.isFinite || paneWidth <= 0) {
+    return 0;
+  }
+  final zone = math.min(timelineScrubEdgeScrollZonePx, paneWidth / 2);
+  if (zone <= 0) return 0;
+  final paneX = pointerPaneX.clamp(0.0, paneWidth).toDouble();
+  if (paneX < zone) {
+    return -timelineScrubMaxEdgeScrollPxPerSecond *
+        ((zone - paneX) / zone);
+  }
+  final rightZoneStart = paneWidth - zone;
+  if (paneX > rightZoneStart) {
+    return timelineScrubMaxEdgeScrollPxPerSecond *
+        ((paneX - rightZoneStart) / zone);
+  }
+  return 0;
+}
 
 @visibleForTesting
 int timelineWaveformActiveSampleCap(int activeLaneCount) {
@@ -519,7 +549,8 @@ class _TimelineEditTransaction {
   });
 }
 
-class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
+class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
+    with SingleTickerProviderStateMixin {
   static const double _minZoom = 0.5;
   static const double _maxZoom = TimelineViewport.maxPixelsPerSecond;
   static const double _waveformPhysicalPixelsPerSample = 1.25;
@@ -531,12 +562,13 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   static const double _waveformPaintWindowPx = 96;
   static const double _laneScrollCacheExtentPx = 160;
   static const double _selectionControlsWidth = 96;
-  static const double _scrubEdgeScrollZonePx = 56;
-  static const double _scrubMaxEdgeScrollPx = 32;
+  static const Duration _maxScrubEdgeTickInterval =
+      Duration(milliseconds: 250);
 
   late SnapMarkerMode _snapMode;
   double _zoom = 1.0;
   int? _manualOffsetMs;
+  double? _preciseManualOffsetMs;
   String? _selectedTrackId;
   String? _activeClipDragTrackId;
   TimelineClip? _activeClipDragStartClip;
@@ -565,6 +597,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   bool _isScrubbing = false;
   bool _preserveViewportForScrub = false;
   int? _lastScrubMs;
+  final GlobalKey _scrubCoordinateSpaceKey = GlobalKey();
+  TimelineViewport? _renderedViewport;
+  double _renderedPaneWidth = 0;
+  double? _scrubPointerLocalX;
+  late final Ticker _scrubEdgeTicker;
+  Duration? _lastScrubEdgeTickElapsed;
   late final ValueNotifier<int> _livePlayheadMs;
   StreamSubscription<int>? _positionSubscription;
   int _fallbackPlayheadMs = 0;
@@ -583,6 +621,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     super.initState();
     _snapMode = _snapMarkerModeFor(widget.transitionSnapMode);
     _livePlayheadMs = ValueNotifier<int>(widget.playheadPositionMs);
+    _scrubEdgeTicker = createTicker(_onScrubEdgeTick);
     _bindPositionStream();
     _laneScrollController.addListener(_scheduleDebouncedVisibleLaneReport);
   }
@@ -590,6 +629,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
   @override
   void dispose() {
     _invalidateTimelineEditOwnership();
+    _commitActiveScrubOnDispose();
+    _scrubEdgeTicker.dispose();
     _positionSubscription?.cancel();
     _visibleLaneDebounce?.cancel();
     _livePlayheadMs.dispose();
@@ -597,6 +638,23 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       ..removeListener(_scheduleDebouncedVisibleLaneReport)
       ..dispose();
     super.dispose();
+  }
+
+  void _commitActiveScrubOnDispose() {
+    if (!_isScrubbing) {
+      _stopScrubEdgeTicker();
+      return;
+    }
+    _stopScrubEdgeTicker();
+    final ms = _lastScrubMs ?? widget.playheadPositionMs;
+    _isScrubbing = false;
+    _scrubPointerLocalX = null;
+    _lastScrubMs = null;
+
+    // TimelineClock has no cancel operation. Commit the last preview exactly
+    // once so disposal cannot strand the canonical clock in scrub mode.
+    final end = widget.onScrubEnd;
+    if (end != null) unawaited(end(ms));
   }
 
   @override
@@ -687,6 +745,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       pixelsPerSecond: pps,
       offsetMs: viewportOffsetMs,
     );
+    _renderedViewport = viewport;
+    _renderedPaneWidth = paneWidth;
 
     // --- Build lane models in stack order (history → future, top to bottom). ---
     final textScale = MediaQuery.textScalerOf(context).scale(1);
@@ -754,6 +814,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
         _scaleLastLocalFocalX = null;
       },
       child: Stack(
+        key: _scrubCoordinateSpaceKey,
         children: [
           ...overlapBands,
           Column(
@@ -905,22 +966,10 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
                 width: 28,
                 child: GestureDetector(
                   behavior: HitTestBehavior.translucent,
-                  onHorizontalDragStart: (details) => _beginScrubAt(
-                    viewport,
-                    paneWidth,
-                    StackedWaveformTimeline.railWidth +
-                        playheadPaneX -
-                        14 +
-                        details.localPosition.dx,
-                  ),
-                  onHorizontalDragUpdate: (details) => _updateScrubAt(
-                    viewport,
-                    paneWidth,
-                    StackedWaveformTimeline.railWidth +
-                        playheadPaneX -
-                        14 +
-                        details.localPosition.dx,
-                  ),
+                  onHorizontalDragStart: (details) =>
+                      _beginScrubFromGlobal(details.globalPosition),
+                  onHorizontalDragUpdate: (details) =>
+                      _updateScrubFromGlobal(details.globalPosition),
                   onHorizontalDragEnd: (_) => _endScrub(),
                   onHorizontalDragCancel: _endScrub,
                 ),
@@ -3030,9 +3079,12 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
       _isScrubbing = true;
       _preserveViewportForScrub = true;
       _manualOffsetMs ??= viewport.offsetMs;
+      _preciseManualOffsetMs = _manualOffsetMs!.toDouble();
+      _scrubPointerLocalX = localX;
       _lastScrubMs = ms;
     });
     widget.onScrubStart?.call();
+    _syncScrubEdgeTicker();
   }
 
   void _updateScrubAt(
@@ -3043,20 +3095,23 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     if (!_isScrubbing) {
       _beginScrubAt(viewport, paneWidth, localX);
     }
-    final effectiveViewport = _autoPanViewportNearScrubEdge(
-      viewport,
-      paneWidth,
-      localX,
-    );
+    _scrubPointerLocalX = localX;
+    final effectiveViewport = _manualOffsetMs == null
+        ? viewport
+        : viewport.panToOffsetMs(_manualOffsetMs!);
     final ms = _timelineMsForPointer(effectiveViewport, paneWidth, localX);
     _lastScrubMs = ms;
     widget.onScrubUpdate?.call(ms);
+    _syncScrubEdgeTicker();
   }
 
   void _endScrub() {
+    if (!_isScrubbing) return;
+    _stopScrubEdgeTicker();
     final ms = _lastScrubMs ?? widget.playheadPositionMs;
     setState(() {
       _isScrubbing = false;
+      _scrubPointerLocalX = null;
       _lastScrubMs = null;
     });
     final end = widget.onScrubEnd;
@@ -3067,39 +3122,119 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     }
   }
 
-  TimelineViewport _autoPanViewportNearScrubEdge(
-    TimelineViewport viewport,
-    double paneWidth,
-    double localX,
-  ) {
+  void _beginScrubFromGlobal(Offset globalPosition) {
+    final localX = _scrubLocalXForGlobal(globalPosition);
+    final viewport = _renderedViewport;
+    if (localX == null || viewport == null) return;
+    _beginScrubAt(viewport, _renderedPaneWidth, localX);
+  }
+
+  void _updateScrubFromGlobal(Offset globalPosition) {
+    final localX = _scrubLocalXForGlobal(globalPosition);
+    final viewport = _renderedViewport;
+    if (localX == null || viewport == null) return;
+    _updateScrubAt(viewport, _renderedPaneWidth, localX);
+  }
+
+  double? _scrubLocalXForGlobal(Offset globalPosition) {
+    final renderObject =
+        _scrubCoordinateSpaceKey.currentContext?.findRenderObject();
+    if (renderObject is! RenderBox || !renderObject.hasSize) return null;
+    return renderObject.globalToLocal(globalPosition).dx;
+  }
+
+  void _syncScrubEdgeTicker() {
+    final viewport = _renderedViewport;
+    final pointerLocalX = _scrubPointerLocalX;
+    if (!_isScrubbing || viewport == null || pointerLocalX == null) {
+      _stopScrubEdgeTicker();
+      return;
+    }
+    final velocity = timelineScrubEdgeVelocityPxPerSecond(
+      pointerPaneX: pointerLocalX - StackedWaveformTimeline.railWidth,
+      paneWidth: _renderedPaneWidth,
+    );
+    final atLeftBound = velocity < 0 && viewport.offsetMs <= 0;
+    final atRightBound =
+        velocity > 0 && viewport.offsetMs >= viewport.maxOffsetMs;
+    if (velocity == 0 || atLeftBound || atRightBound) {
+      _stopScrubEdgeTicker();
+      return;
+    }
+    if (!_scrubEdgeTicker.isActive) {
+      _lastScrubEdgeTickElapsed = Duration.zero;
+      _scrubEdgeTicker.start();
+    }
+  }
+
+  void _onScrubEdgeTick(Duration elapsed) {
+    final viewport = _renderedViewport;
+    final pointerLocalX = _scrubPointerLocalX;
+    final previousElapsed = _lastScrubEdgeTickElapsed;
+    if (!_isScrubbing ||
+        viewport == null ||
+        pointerLocalX == null ||
+        previousElapsed == null) {
+      _stopScrubEdgeTicker();
+      return;
+    }
+    _lastScrubEdgeTickElapsed = elapsed;
+    var tickInterval = elapsed - previousElapsed;
+    if (tickInterval > _maxScrubEdgeTickInterval) {
+      tickInterval = _maxScrubEdgeTickInterval;
+    }
+    if (tickInterval <= Duration.zero) return;
+
+    final velocity = timelineScrubEdgeVelocityPxPerSecond(
+      pointerPaneX: pointerLocalX - StackedWaveformTimeline.railWidth,
+      paneWidth: _renderedPaneWidth,
+    );
+    if (velocity == 0) {
+      _stopScrubEdgeTicker();
+      return;
+    }
+
     final baseViewport = _manualOffsetMs == null
         ? viewport
         : viewport.panToOffsetMs(_manualOffsetMs!);
-    final paneX = (localX - StackedWaveformTimeline.railWidth)
-        .clamp(0.0, paneWidth)
-        .toDouble();
-    final leftDistance = paneX;
-    final rightDistance = paneWidth - paneX;
-    var panPx = 0.0;
-
-    if (leftDistance < _scrubEdgeScrollZonePx) {
-      final intensity =
-          ((_scrubEdgeScrollZonePx - leftDistance) / _scrubEdgeScrollZonePx)
-              .clamp(0.0, 1.0);
-      panPx = -_scrubMaxEdgeScrollPx * intensity;
-    } else if (rightDistance < _scrubEdgeScrollZonePx) {
-      final intensity =
-          ((_scrubEdgeScrollZonePx - rightDistance) / _scrubEdgeScrollZonePx)
-              .clamp(0.0, 1.0);
-      panPx = _scrubMaxEdgeScrollPx * intensity;
+    final deltaMs = velocity *
+        (tickInterval.inMicroseconds / Duration.microsecondsPerSecond) /
+        baseViewport.pixelsPerSecond *
+        1000;
+    final currentOffset =
+        _preciseManualOffsetMs ?? baseViewport.offsetMs.toDouble();
+    final nextPreciseOffset =
+        (currentOffset + deltaMs).clamp(0.0, baseViewport.maxOffsetMs.toDouble());
+    _preciseManualOffsetMs = nextPreciseOffset;
+    final nextOffsetMs = nextPreciseOffset.round();
+    if (nextOffsetMs == baseViewport.offsetMs) {
+      if (nextPreciseOffset == 0 ||
+          nextPreciseOffset == baseViewport.maxOffsetMs) {
+        _stopScrubEdgeTicker();
+      }
+      return;
     }
 
-    if (panPx == 0) return baseViewport;
-    final next = baseViewport.panByPixels(panPx);
-    if (next.offsetMs != baseViewport.offsetMs) {
-      setState(() => _manualOffsetMs = next.offsetMs);
+    setState(() => _manualOffsetMs = nextOffsetMs);
+    final nextViewport = baseViewport.panToOffsetMs(nextOffsetMs);
+    final ms = _timelineMsForPointer(
+      nextViewport,
+      _renderedPaneWidth,
+      pointerLocalX,
+    );
+    _lastScrubMs = ms;
+    widget.onScrubUpdate?.call(ms);
+
+    if (nextOffsetMs <= 0 || nextOffsetMs >= nextViewport.maxOffsetMs) {
+      _stopScrubEdgeTicker();
     }
-    return next;
+  }
+
+  void _stopScrubEdgeTicker() {
+    if (_scrubEdgeTicker.isActive) {
+      _scrubEdgeTicker.stop();
+    }
+    _lastScrubEdgeTickElapsed = null;
   }
 
   void _releaseScrubViewportLockAfterFrame() {
