@@ -230,3 +230,283 @@ func TestProjectCompactAnalysisCapsTimingArrays(t *testing.T) {
 		t.Fatalf("downbeat positions = %d, want cap %d", got, maxCompactDownbeatPositions)
 	}
 }
+
+func TestProjectCompactAnalysisSelectsPhaseWithoutMutatingBeats(t *testing.T) {
+	beats := []int64{100, 600, 1100, 1600, 2100, 2600, 3100, 3600}
+	summary := json.RawMessage(`{"beat_grid":{"bpm":120,"beats_ms":[100,600,1100,1600,2100,2600,3100,3600]},"downbeats":{"positions_ms":[100,2100]}}`)
+	overrides := json.RawMessage(`{"manual_timing_override":{"beats_per_bar":4,"downbeat_phase_index":1,"phrase_length_bars":8,"revision":7,"updated_at":"2026-07-26T00:00:00Z"}}`)
+
+	merged, compactOverrides := projectCompactAnalysis(summary, overrides)
+	var document map[string]any
+	if err := json.Unmarshal(merged, &document); err != nil {
+		t.Fatal(err)
+	}
+	grid := document["beat_grid"].(map[string]any)
+	gotBeats := grid["beats_ms"].([]any)
+	if len(gotBeats) != len(beats) {
+		t.Fatalf("beat count = %d, want %d", len(gotBeats), len(beats))
+	}
+	for index, beat := range beats {
+		if gotBeats[index] != float64(beat) {
+			t.Fatalf("beat[%d] = %#v, want %d", index, gotBeats[index], beat)
+		}
+	}
+	downbeats := document["downbeats"].(map[string]any)["positions_ms"].([]any)
+	if len(downbeats) != 2 || downbeats[0] != float64(600) || downbeats[1] != float64(2600) {
+		t.Fatalf("phase-selected downbeats = %#v", downbeats)
+	}
+	var overrideDocument map[string]any
+	if err := json.Unmarshal(compactOverrides, &overrideDocument); err != nil {
+		t.Fatal(err)
+	}
+	timing := overrideDocument["manual_timing_v2"].(map[string]any)
+	if timing["revision"] != float64(7) || timing["phrase_length_bars"] != float64(8) {
+		t.Fatalf("compact timing metadata = %#v", timing)
+	}
+	if timing["schema_version"] != float64(2) {
+		t.Fatalf("compact timing schema = %#v, want 2", timing["schema_version"])
+	}
+}
+
+func TestProjectCompactAnalysisRegeneratesBPMAndInteriorAnchorBeforePhase(t *testing.T) {
+	merged, _ := projectCompactAnalysis(
+		json.RawMessage(`{"bpm":{"value":100},"beat_grid":{"bpm":100,"offset_ms":0,"beats_ms":[0,600,1200,1800,2400]}}`),
+		json.RawMessage(`{
+			"beat_grid":{"beats_ms":[0,600,1200,1800,2400]},
+			"manual_timing_override":{"bpm":120,"beat_anchor_ms":750,"beats_per_bar":4,"downbeat_phase_index":1}
+		}`),
+	)
+	var document map[string]any
+	if err := json.Unmarshal(merged, &document); err != nil {
+		t.Fatal(err)
+	}
+	grid := document["beat_grid"].(map[string]any)
+	if got := grid["offset_ms"]; got != float64(750) {
+		t.Fatalf("effective anchor = %#v, want 750", got)
+	}
+	wantBeats := []float64{250, 750, 1250, 1750, 2250}
+	gotBeats := grid["beats_ms"].([]any)
+	if len(gotBeats) != len(wantBeats) {
+		t.Fatalf("regenerated beats = %#v, want %#v", gotBeats, wantBeats)
+	}
+	for index, want := range wantBeats {
+		if gotBeats[index] != want {
+			t.Fatalf("regenerated beat[%d] = %#v, want %v", index, gotBeats[index], want)
+		}
+	}
+	downbeats := document["downbeats"].(map[string]any)["positions_ms"].([]any)
+	if len(downbeats) != 1 || downbeats[0] != float64(750) {
+		t.Fatalf("phase did not select regenerated grid: %#v", downbeats)
+	}
+}
+
+func TestProjectCompactAnalysisUsesBaseFactsForSingleGridCorrection(t *testing.T) {
+	for name, fixture := range map[string]struct {
+		override string
+		want     []float64
+	}{
+		"anchor only uses base BPM": {
+			override: `{"manual_timing_override":{"beat_anchor_ms":750}}`,
+			want:     []float64{250, 750, 1250, 1750},
+		},
+		"BPM only uses base anchor": {
+			override: `{"manual_timing_override":{"bpm":60}}`,
+			want:     []float64{250, 1250},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			merged, _ := projectCompactAnalysis(
+				json.RawMessage(`{"bpm":{"value":120},"beat_grid":{"bpm":120,"offset_ms":250,"beats_ms":[250,750,1250,1750]}}`),
+				json.RawMessage(fixture.override),
+			)
+			var document map[string]any
+			if err := json.Unmarshal(merged, &document); err != nil {
+				t.Fatal(err)
+			}
+			got := document["beat_grid"].(map[string]any)["beats_ms"].([]any)
+			if len(got) != len(fixture.want) {
+				t.Fatalf("beats = %#v, want %#v", got, fixture.want)
+			}
+			for index, want := range fixture.want {
+				if got[index] != want {
+					t.Fatalf("beat[%d] = %#v, want %v", index, got[index], want)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectCompactAnalysisDoesNotInventDownbeatsWithoutMeter(t *testing.T) {
+	merged, _ := projectCompactAnalysis(
+		json.RawMessage(`{"beat_grid":{"beats_ms":[100,600,1100,1600]}}`),
+		json.RawMessage(`{"manual_timing_override":{"phrase_length_bars":8,"revision":2}}`),
+	)
+	var document map[string]any
+	if err := json.Unmarshal(merged, &document); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := document["downbeats"]; present {
+		t.Fatalf("phrase length fabricated downbeats: %#v", document["downbeats"])
+	}
+}
+
+func TestProjectCompactAnalysisInvalidatesDownbeatsByIndependentTimingFact(t *testing.T) {
+	base := json.RawMessage(`{
+		"bpm":{"value":120},
+		"beat_grid":{"bpm":120,"offset_ms":0,"beats_ms":[0,500,1000,1500,2000]},
+		"downbeats":{"positions_ms":[0,2000]}
+	}`)
+	for name, fixture := range map[string]struct {
+		override      string
+		wantDownbeats []float64
+	}{
+		"BPM only clears": {
+			override: `{"manual_timing_override":{"bpm":121}}`,
+		},
+		"anchor only clears": {
+			override: `{"manual_timing_override":{"beat_anchor_ms":250}}`,
+		},
+		"meter only clears": {
+			override: `{"manual_timing_override":{"beats_per_bar":4}}`,
+		},
+		"meter and phase select": {
+			override:      `{"manual_timing_override":{"beats_per_bar":4,"downbeat_phase_index":1}}`,
+			wantDownbeats: []float64{500},
+		},
+		"phrase only preserves": {
+			override:      `{"manual_timing_override":{"phrase_length_bars":8}}`,
+			wantDownbeats: []float64{0, 2000},
+		},
+		"metadata only preserves": {
+			override:      `{"manual_timing_override":{"revision":3,"updated_at":"2026-07-26T00:00:00Z"}}`,
+			wantDownbeats: []float64{0, 2000},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			merged, _ := projectCompactAnalysis(base, json.RawMessage(fixture.override))
+			var document map[string]any
+			if err := json.Unmarshal(merged, &document); err != nil {
+				t.Fatal(err)
+			}
+			rawDownbeats, present := document["downbeats"]
+			if len(fixture.wantDownbeats) == 0 {
+				if present {
+					t.Fatalf("stale downbeats survived: %#v", rawDownbeats)
+				}
+				return
+			}
+			if !present {
+				t.Fatalf("downbeats missing, want %#v", fixture.wantDownbeats)
+			}
+			got := rawDownbeats.(map[string]any)["positions_ms"].([]any)
+			if len(got) != len(fixture.wantDownbeats) {
+				t.Fatalf("downbeats = %#v, want %#v", got, fixture.wantDownbeats)
+			}
+			for index, want := range fixture.wantDownbeats {
+				if got[index] != want {
+					t.Fatalf("downbeat[%d] = %#v, want %v", index, got[index], want)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectCompactAnalysisPreservesManualTimingRevisionOnReset(t *testing.T) {
+	merged, overrides := projectCompactAnalysis(
+		json.RawMessage(`{"beat_grid":{"beats_ms":[0,500]}}`),
+		json.RawMessage(`{"manual_timing_override":{"revision":4,"updated_at":"2026-07-26T00:00:00Z","confidence":1,"provenance":"manual_override"}}`),
+	)
+	var effective map[string]any
+	if err := json.Unmarshal(merged, &effective); err != nil {
+		t.Fatalf("decode effective projection: %v", err)
+	}
+	if _, present := effective["manual_timing_v2"]; present {
+		t.Fatalf("effective projection leaked manual document: %#v", effective)
+	}
+
+	var document map[string]any
+	if err := json.Unmarshal(overrides, &document); err != nil {
+		t.Fatalf("decode overrides: %v", err)
+	}
+	timing, ok := document["manual_timing_v2"].(map[string]any)
+	if !ok || timing["revision"] != float64(4) {
+		t.Fatalf("reset metadata = %#v", document["manual_timing_v2"])
+	}
+}
+
+func TestProjectCompactAnalysisV2WinsAndGeneratedUnknownFactsStayUnknown(t *testing.T) {
+	beats := `[100,600,1100,1600,2100]`
+	merged, overrides := projectCompactAnalysis(
+		json.RawMessage(`{
+			"beat_grid":{"bpm":120,"beats_ms":`+beats+`},
+			"meter":{"beats_per_bar":null,"confidence":null,"provenance":"tempo-model"},
+			"downbeat_phase":{"index":null,"confidence":null,"provenance":"tempo-model"},
+			"downbeats":{"positions_ms":[100,2100],"confidence":0.9,"provenance":"tempo-model"}
+		}`),
+		json.RawMessage(`{
+			"manual_timing_override":{"beats_per_bar":3,"downbeat_phase_index":2},
+			"manual_timing_v2":{"schema_version":2,"beats_per_bar":4,"downbeat_phase_index":1}
+		}`),
+	)
+	var effective map[string]any
+	if err := json.Unmarshal(merged, &effective); err != nil {
+		t.Fatal(err)
+	}
+	gotBeats, err := json.Marshal(effective["beat_grid"].(map[string]any)["beats_ms"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotBeats) != beats {
+		t.Fatalf("phase-only edit mutated beats: %s, want %s", gotBeats, beats)
+	}
+	if got := effective["meter"].(map[string]any)["beats_per_bar"]; got != float64(4) {
+		t.Fatalf("effective meter = %#v, want v2 value 4", got)
+	}
+	if got := effective["downbeat_phase"].(map[string]any)["index"]; got != float64(1) {
+		t.Fatalf("effective phase = %#v, want v2 value 1", got)
+	}
+	gotDownbeats := effective["downbeats"].(map[string]any)["positions_ms"].([]any)
+	if len(gotDownbeats) != 1 || gotDownbeats[0] != float64(600) {
+		t.Fatalf("v2 downbeats = %#v, want [600]", gotDownbeats)
+	}
+	var projectedOverrides map[string]any
+	if err := json.Unmarshal(overrides, &projectedOverrides); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := projectedOverrides["manual_timing_override"]; present {
+		t.Fatal("provisional manual_timing_override was dual-emitted")
+	}
+	if projectedOverrides["manual_timing_v2"].(map[string]any)["schema_version"] != float64(2) {
+		t.Fatalf("canonical v2 missing: %#v", projectedOverrides)
+	}
+}
+
+func TestProjectEffectiveTimingDoesNotInferLegacyMeterOrPhrase(t *testing.T) {
+	effective, projectedOverrides := ProjectEffectiveTiming(
+		json.RawMessage(`{
+			"beat_grid":{"beats_ms":[0,500,1000,1500,2000]},
+			"downbeats":{"positions_ms":[0,2000],"confidence":0.9}
+		}`),
+		json.RawMessage(`{"downbeats":{"positions_ms":[0,2000]}}`),
+	)
+	var timing map[string]any
+	if err := json.Unmarshal(effective, &timing); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := timing["meter"]; present {
+		t.Fatalf("legacy spacing inferred meter: %#v", timing["meter"])
+	}
+	if _, present := timing["downbeat_phase"]; present {
+		t.Fatalf("legacy spacing inferred phase: %#v", timing["downbeat_phase"])
+	}
+	if _, present := timing["phrase_length_bars"]; present {
+		t.Fatalf("legacy spacing inferred phrase: %#v", timing["phrase_length_bars"])
+	}
+	var overrides map[string]any
+	if err := json.Unmarshal(projectedOverrides, &overrides); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := overrides["manual_timing_v2"]; present {
+		t.Fatal("legacy array row was silently normalized to v2")
+	}
+}

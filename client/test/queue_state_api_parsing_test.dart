@@ -364,6 +364,10 @@ void main() {
           'playbackState': 'playable',
           'analysisStatus': 'analyzed',
           'analysisSummary': {
+            '_omp_summary_contract': {
+              'version': 1,
+              'projection': 'generated',
+            },
             'bpm': {'value': 118.0, 'confidence': 0.42},
             'beat_grid': {
               'bpm': 118.0,
@@ -415,12 +419,19 @@ void main() {
     expect(analysis.summary!.camelot!.textValue, '8A');
 
     final playbackJson = track.toPlaybackJson();
-    expect(playbackJson['analysisSummary']['bpm']['value'], 124);
+    expect(playbackJson['analysisSummary']['bpm']['value'], 118);
     expect(
       playbackJson['analysisSummary']['downbeats']['positions_ms'],
-      [120, 2056],
+      [0],
     );
+    expect(playbackJson['analysisSummary']['_omp_summary_contract'], {
+      'version': 1,
+      'projection': 'generated',
+    });
     expect(playbackJson['analysisOverrides'], isA<Map<String, dynamic>>());
+    final playbackAnalysis = trackAnalysisFromTrackJson(playbackJson)!;
+    expect(playbackAnalysis.summary!.bpm!.numericValue, 124);
+    expect(playbackAnalysis.summary!.downbeats!.positionsMs, [120, 2056]);
   });
 
   test('QueueState parses non-success queue analysis states', () {

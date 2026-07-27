@@ -608,12 +608,12 @@ class _QueueScreenState extends State<QueueScreen> {
           () => playback.setTransitionSnapMode(mode),
         );
       },
-      onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
+      onEditAnalysis: (track, {currentSourcePositionMs}) =>
           _showAnalysisCorrectionSheet(
         context,
         provider,
         track,
-        initialFirstDownbeatMs: initialFirstDownbeatMs,
+        currentSourcePositionMs: currentSourcePositionMs,
       ),
       onVisibleTracksChanged: (tracks) =>
           _updateVisibleAnalysisHydration(provider, tracks),
@@ -825,10 +825,12 @@ class _QueueScreenState extends State<QueueScreen> {
     if (nextTempo.isEmpty) return false;
 
     final extras = item.extras ?? const <String, dynamic>{};
-    final currentTempo = ClipTempoMetadata.fromAnalysisSummary(
-      extras['analysisSummary'] ?? extras['analysis_summary'],
-      overrides: extras['analysisOverrides'] ?? extras['analysis_overrides'],
+    final currentAnalysis = trackAnalysisFromTrackJson(
+      Map<String, dynamic>.from(extras),
     );
+    final currentTempo = currentAnalysis == null
+        ? ClipTempoMetadata.empty
+        : ClipTempoMetadata.fromTrackAnalysis(currentAnalysis);
     return _compactPlaybackTempo(currentTempo) != nextTempo;
   }
 
@@ -871,10 +873,7 @@ class _QueueScreenState extends State<QueueScreen> {
 
   ClipTempoMetadata _tempoForAnalysis(TrackAnalysis analysis) =>
       _compactPlaybackTempo(
-        ClipTempoMetadata.fromAnalysisSummary(
-          analysis.summary?.toJson(),
-          overrides: analysis.overrides?.toJson(),
-        ),
+        ClipTempoMetadata.fromTrackAnalysis(analysis),
       );
 
   ClipTempoMetadata _compactPlaybackTempo(ClipTempoMetadata tempo) =>
@@ -882,6 +881,15 @@ class _QueueScreenState extends State<QueueScreen> {
         nativeBpm: tempo.nativeBpm,
         bpmConfidence: tempo.bpmConfidence,
         beatGridOffsetMs: tempo.beatGridOffsetMs,
+        beatAnchorMs: tempo.beatAnchorMs,
+        beatsPerBar: tempo.beatsPerBar,
+        downbeatPhaseIndex: tempo.downbeatPhaseIndex,
+        meterConfidence: tempo.meterConfidence,
+        meterProvenance: tempo.meterProvenance,
+        downbeatPhaseConfidence: tempo.downbeatPhaseConfidence,
+        downbeatPhaseProvenance: tempo.downbeatPhaseProvenance,
+        phraseLengthBars: tempo.phraseLengthBars,
+        overrideRevision: tempo.overrideRevision,
         beatsMs: _boundedTempoPositions(
           tempo.beatsMs,
           _maxPlaybackBeatPositions,
@@ -1216,12 +1224,12 @@ class _QueueScreenState extends State<QueueScreen> {
       onMoveLater: (track) =>
           _moveTimelineTrack(provider, upNext, currentIndex, track, 1),
       onPitchModeChanged: provider.setPitchMode,
-      onEditAnalysis: (track, {initialFirstDownbeatMs}) =>
+      onEditAnalysis: (track, {currentSourcePositionMs}) =>
           _showAnalysisCorrectionSheet(
         context,
         provider,
         track,
-        initialFirstDownbeatMs: initialFirstDownbeatMs,
+        currentSourcePositionMs: currentSourcePositionMs,
       ),
       onVisibleTracksChanged: (tracks) =>
           _updateVisibleAnalysisHydration(provider, tracks),
@@ -1534,7 +1542,7 @@ class _QueueScreenState extends State<QueueScreen> {
     BuildContext context,
     QueueProvider provider,
     QueueTrack track, {
-    int? initialFirstDownbeatMs,
+    int? currentSourcePositionMs,
   }) async {
     if (!_canEditAnalysis(track)) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1546,7 +1554,7 @@ class _QueueScreenState extends State<QueueScreen> {
     final corrected = await showAnalysisCorrectionSheet(
       context: context,
       track: provider.trackWithAnalysis(track, requestHydration: false),
-      initialFirstDownbeatMs: initialFirstDownbeatMs,
+      currentSourcePositionMs: currentSourcePositionMs,
     );
     if (corrected == null || !context.mounted) return;
 

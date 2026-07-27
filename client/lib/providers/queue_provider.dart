@@ -310,6 +310,7 @@ class QueueProvider extends ChangeNotifier {
         trackId: trackId,
         key: key,
         overrides: overrides,
+        analysisBeingEdited: track.analysis,
       );
     }();
     late final Future<void> tail;
@@ -330,10 +331,17 @@ class QueueProvider extends ChangeNotifier {
     required int trackId,
     required String key,
     required TrackAnalysisOverrides overrides,
+    required TrackAnalysis? analysisBeingEdited,
   }) async {
+    final prior = _authoritativeAnalysisLocks[key] ??
+        _analysisByTrackId[key] ??
+        _analysisRevisionSnapshots[key] ??
+        _lastIncomingAnalysisByTrackId[key] ??
+        analysisBeingEdited;
     final analysis = await _apiClient.updateTrackAnalysisOverrides(
       trackId,
       overrides,
+      expectedRevision: prior == null ? 0 : _analysisOverrideRevision(prior),
     );
     if (_disposed) return analysis;
     _rememberAnalysisRevision(key, analysis);
@@ -1007,10 +1015,9 @@ class QueueProvider extends ChangeNotifier {
         (analysisTrackId == null
             ? null
             : _analysisByTrackId[analysisTrackId.toString()]);
-    return ClipTempoMetadata.fromAnalysisSummary(
-      analysis?.summary?.toJson(),
-      overrides: analysis?.overrides?.toJson(),
-    );
+    return analysis == null
+        ? ClipTempoMetadata.empty
+        : ClipTempoMetadata.fromTrackAnalysis(analysis);
   }
 
   String? _mixPlanTrackId(QueueTrack track) {
@@ -1250,6 +1257,19 @@ class QueueProvider extends ChangeNotifier {
   }
 
   bool _acceptIncomingAnalysis(String key, TrackAnalysis analysis) {
+    final cached = _authoritativeAnalysisLocks[key] ??
+        _analysisByTrackId[key] ??
+        _analysisRevisionSnapshots[key];
+    final incomingOverrideRevision = _analysisOverrideRevision(analysis);
+    final cachedOverrideRevision =
+        cached == null ? null : _analysisOverrideRevision(cached);
+    if (cachedOverrideRevision != null &&
+        incomingOverrideRevision != cachedOverrideRevision) {
+      if (incomingOverrideRevision < cachedOverrideRevision) return false;
+      _authoritativeAnalysisLocks.remove(key);
+      return true;
+    }
+
     if (_analysisPredatesFloor(key, analysis)) return false;
 
     final authoritative = _authoritativeAnalysisLocks[key];
@@ -1273,6 +1293,15 @@ class QueueProvider extends ChangeNotifier {
   }
 
   bool _analysisPredatesFloor(String key, TrackAnalysis analysis) {
+    final snapshot = _analysisRevisionSnapshots[key];
+    final incomingOverrideRevision = _analysisOverrideRevision(analysis);
+    final snapshotOverrideRevision =
+        snapshot == null ? null : _analysisOverrideRevision(snapshot);
+    if (snapshotOverrideRevision != null &&
+        incomingOverrideRevision != snapshotOverrideRevision) {
+      return incomingOverrideRevision < snapshotOverrideRevision;
+    }
+
     final floor = _analysisRevisionFloors[key];
     if (floor == null) return false;
     final revision = analysis.updatedAt;
@@ -1282,8 +1311,12 @@ class QueueProvider extends ChangeNotifier {
   void _rememberAnalysisRevision(String key, TrackAnalysis analysis) {
     final revision = analysis.updatedAt;
     if (revision == null) return;
+    final snapshot = _analysisRevisionSnapshots[key];
+    if (snapshot != null && !_analysisRevisionSupersedes(analysis, snapshot)) {
+      return;
+    }
     final floor = _analysisRevisionFloors[key];
-    if (floor != null && revision.isBefore(floor)) return;
+    if (snapshot == null && floor != null && revision.isBefore(floor)) return;
     _analysisRevisionFloors[key] = revision;
     _analysisRevisionSnapshots[key] = _compactRevisionSnapshot(analysis);
     _touchAnalysisAuthority(key);
@@ -1292,41 +1325,11 @@ class QueueProvider extends ChangeNotifier {
   TrackAnalysis _compactRevisionSnapshot(TrackAnalysis analysis) {
     final sourceSummary = analysis.summary;
     final sourceOverrides = analysis.overrides;
-    final beatGrid = sourceSummary?.beatGrid;
-    final downbeats = sourceSummary?.downbeats;
-    final summary = sourceSummary == null
-        ? null
-        : TrackAnalysisSummary(
-            bpm: sourceSummary.bpm,
-            beatGrid: beatGrid == null
-                ? null
-                : BeatGridSummary(
-                    bpm: beatGrid.bpm,
-                    offsetMs: beatGrid.offsetMs,
-                    beatsMs: _boundedMarkerPositions(
-                      beatGrid.beatsMs,
-                      _maxRetainedBeatPositions,
-                    ),
-                    confidence: beatGrid.confidence,
-                    provenance: beatGrid.provenance,
-                  ),
-            downbeats: downbeats == null
-                ? null
-                : DownbeatSummary(
-                    positionsMs: _boundedMarkerPositions(
-                      downbeats.positionsMs,
-                      _maxRetainedDownbeatPositions,
-                    ),
-                    confidence: downbeats.confidence,
-                    provenance: downbeats.provenance,
-                  ),
-            key: sourceSummary.key,
-            camelot: sourceSummary.camelot,
-            energy: sourceSummary.energy,
-          );
+    final summary = _compactAnalysisSummary(sourceSummary);
     final overrides = sourceOverrides == null
         ? null
         : TrackAnalysisOverrides(
+            manualTiming: sourceOverrides.manualTiming,
             bpm: sourceOverrides.bpm,
             bpmConfidence: sourceOverrides.bpmConfidence,
             beatGridOffsetMs: sourceOverrides.beatGridOffsetMs,
@@ -1351,10 +1354,51 @@ class QueueProvider extends ChangeNotifier {
           );
     return TrackAnalysis(
       status: analysis.status,
+      generatedSummary: _compactAnalysisSummary(analysis.generatedSummary),
       summary: summary,
       overrides: overrides,
       overridesPresent: analysis.overridesPresent,
       updatedAt: analysis.updatedAt,
+      overrideRevision: analysis.overrideRevision,
+      overrideUpdatedAt: analysis.overrideUpdatedAt,
+    );
+  }
+
+  TrackAnalysisSummary? _compactAnalysisSummary(
+    TrackAnalysisSummary? source,
+  ) {
+    if (source == null) return null;
+    final beatGrid = source.beatGrid;
+    final downbeats = source.downbeats;
+    return TrackAnalysisSummary(
+      bpm: source.bpm,
+      beatGrid: beatGrid == null
+          ? null
+          : BeatGridSummary(
+              bpm: beatGrid.bpm,
+              offsetMs: beatGrid.offsetMs,
+              beatsMs: _boundedMarkerPositions(
+                beatGrid.beatsMs,
+                _maxRetainedBeatPositions,
+              ),
+              confidence: beatGrid.confidence,
+              provenance: beatGrid.provenance,
+            ),
+      meter: source.meter,
+      downbeatPhase: source.downbeatPhase,
+      downbeats: downbeats == null
+          ? null
+          : DownbeatSummary(
+              positionsMs: _boundedMarkerPositions(
+                downbeats.positionsMs,
+                _maxRetainedDownbeatPositions,
+              ),
+              confidence: downbeats.confidence,
+              provenance: downbeats.provenance,
+            ),
+      key: source.key,
+      camelot: source.camelot,
+      energy: source.energy,
     );
   }
 
@@ -1374,11 +1418,21 @@ class QueueProvider extends ChangeNotifier {
     TrackAnalysis incoming,
     TrackAnalysis cached,
   ) {
+    final incomingOverrideRevision = _analysisOverrideRevision(incoming);
+    final cachedOverrideRevision = _analysisOverrideRevision(cached);
+    if (incomingOverrideRevision != cachedOverrideRevision) {
+      return incomingOverrideRevision > cachedOverrideRevision;
+    }
     final incomingRevision = incoming.updatedAt;
     if (incomingRevision == null) return false;
     final cachedRevision = cached.updatedAt;
     return cachedRevision == null || incomingRevision.isAfter(cachedRevision);
   }
+
+  int _analysisOverrideRevision(TrackAnalysis analysis) =>
+      analysis.overrideRevision ??
+      analysis.overrides?.manualTiming?.revision ??
+      0;
 
   bool _hasWaveformDetail(TrackAnalysis analysis) {
     final waveform = analysis.summary?.waveform;
@@ -1747,31 +1801,76 @@ class QueueProvider extends ChangeNotifier {
     TrackAnalysis detailed,
     TrackAnalysis incoming,
   ) {
-    final baseSummary = incoming.overridesPresent
+    final generatedSummary = _deepMergeAnalysisMaps(
+      detailed.generatedSummary?.toJson() ?? const <String, dynamic>{},
+      incoming.generatedSummary?.toJson() ?? const <String, dynamic>{},
+    );
+    final effectiveBase = incoming.overridesPresent
         ? _summaryWithoutAppliedOverrides(detailed)
         : detailed.summary?.toJson() ?? const <String, dynamic>{};
-    final summary = _deepMergeAnalysisMaps(
-      baseSummary,
+    final effectiveSummary = _deepMergeAnalysisMaps(
+      effectiveBase,
       incoming.summary?.toJson() ?? const <String, dynamic>{},
     );
+    final hasGeneratedSummary = generatedSummary.isNotEmpty;
     final overrides = incoming.overridesPresent
         ? incoming.overrides?.toJson() ?? const <String, dynamic>{}
         : detailed.overrides?.toJson();
     return TrackAnalysis.fromJson(
       status: incoming.status.name,
-      summary: summary.isEmpty ? null : summary,
+      summary: hasGeneratedSummary
+          ? generatedSummary
+          : (effectiveSummary.isEmpty ? null : effectiveSummary),
       overrides: overrides,
       overridesPresent: incoming.overridesPresent || detailed.overridesPresent,
       updatedAt: incoming.updatedAt ?? detailed.updatedAt,
+      overrideRevision: incoming.overrideRevision ?? detailed.overrideRevision,
+      overrideUpdatedAt:
+          incoming.overrideUpdatedAt ?? detailed.overrideUpdatedAt,
+      summaryProjection: hasGeneratedSummary
+          ? TrackAnalysisSummaryProjection.generated
+          : TrackAnalysisSummaryProjection.effective,
     );
   }
 
+  /// Removes only facts invalidated by the incoming override from an
+  /// already-effective summary. This map is never promoted to generated
+  /// provenance; it exists solely to retain non-compact detail safely.
   Map<String, dynamic> _summaryWithoutAppliedOverrides(TrackAnalysis analysis) {
     final summary = Map<String, dynamic>.from(
       analysis.summary?.toJson() ?? const <String, dynamic>{},
     );
     final overrides = analysis.overrides;
     if (overrides == null) return summary;
+
+    final manualTiming = overrides.manualTiming;
+    if (manualTiming != null) {
+      if (manualTiming.bpm != null) summary.remove('bpm');
+      final beatGrid = _mutableNestedMap(summary, 'beat_grid');
+      if (beatGrid != null) {
+        if (manualTiming.bpm != null || manualTiming.beatAnchorMs != null) {
+          beatGrid
+            ..remove('bpm')
+            ..remove('offset_ms')
+            ..remove('beats_ms')
+            ..remove('confidence')
+            ..remove('provenance');
+        }
+        if (beatGrid.isEmpty) summary.remove('beat_grid');
+      }
+      if (manualTiming.bpm != null ||
+          manualTiming.beatAnchorMs != null ||
+          manualTiming.beatsPerBar != null ||
+          manualTiming.downbeatPhaseIndex != null) {
+        summary.remove('downbeats');
+      }
+      if (manualTiming.beatsPerBar != null) {
+        summary.remove('meter');
+        summary.remove('downbeat_phase');
+      } else if (manualTiming.downbeatPhaseIndex != null) {
+        summary.remove('downbeat_phase');
+      }
+    }
 
     if (overrides.bpm != null) summary.remove('bpm');
     final beatGrid = _mutableNestedMap(summary, 'beat_grid');
@@ -1853,12 +1952,15 @@ class QueueProvider extends ChangeNotifier {
 
   int _analysisCompactSignature(TrackAnalysis analysis) {
     final summary = analysis.summary;
-    final beatGrid = summary?.beatGrid;
-    final downbeats = summary?.downbeats;
+    final timing = analysis.effectiveTiming;
+    final beatGrid = timing.beatGrid;
+    final downbeats = timing.downbeats;
     return Object.hash(
       analysis.status,
       analysis.overridesPresent,
-      _analysisValueSignature(summary?.bpm),
+      analysis.overrideRevision,
+      analysis.overrideUpdatedAt,
+      _analysisValueSignature(timing.bpm),
       beatGrid == null
           ? null
           : Object.hash(
@@ -1875,6 +1977,20 @@ class QueueProvider extends ChangeNotifier {
               downbeats.provenance,
               Object.hashAll(downbeats.positionsMs),
             ),
+      timing.meter == null
+          ? null
+          : Object.hash(
+              timing.meter?.beatsPerBar,
+              timing.meter?.confidence,
+              timing.meter?.provenance,
+            ),
+      timing.downbeatPhase == null
+          ? null
+          : Object.hash(
+              timing.downbeatPhase?.index,
+              timing.downbeatPhase?.confidence,
+              timing.downbeatPhase?.provenance,
+            ),
       _analysisValueSignature(summary?.key),
       _analysisValueSignature(summary?.camelot),
       _analysisValueSignature(summary?.energy),
@@ -1886,6 +2002,15 @@ class QueueProvider extends ChangeNotifier {
       overrides == null
           ? null
           : Object.hash(
+              overrides.manualTiming?.bpm,
+              overrides.manualTiming?.beatAnchorMs,
+              overrides.manualTiming?.beatsPerBar,
+              overrides.manualTiming?.downbeatPhaseIndex,
+              overrides.manualTiming?.phraseLengthBars,
+              overrides.manualTiming?.confidence,
+              overrides.manualTiming?.provenance,
+              overrides.manualTiming?.revision,
+              overrides.manualTiming?.updatedAt,
               overrides.bpm,
               overrides.bpmConfidence,
               overrides.beatGridOffsetMs,

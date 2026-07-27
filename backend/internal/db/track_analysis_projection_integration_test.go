@@ -36,7 +36,7 @@ func TestTrackAnalysisProjectsIntoSongListingsAgainstPostgres(t *testing.T) {
 		"waveform":{"sample_count":999999,"peaks":[0.1,0.9]},
 		"loudness":{"integrated_lufs":-4.2},
 		"cue_candidates":[{"kind":"mix_in","start_ms":100}]
-	}`)); err != nil {
+	}`), 0); err != nil {
 		t.Fatalf("set analysis overrides: %v", err)
 	}
 	compactByID, err := analysisRepo.GetCompactByTrackIDs(ctx, []int64{trackID})

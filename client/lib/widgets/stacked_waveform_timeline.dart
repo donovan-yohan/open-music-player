@@ -18,7 +18,7 @@ import 'timeline_waveform_painter.dart';
 
 typedef TimelineAnalysisEditCallback = void Function(
   QueueTrack track, {
-  int? initialFirstDownbeatMs,
+  int? currentSourcePositionMs,
 });
 typedef TimelinePitchModeChangedCallback = FutureOr<void> Function(
   QueueTrack track,
@@ -296,9 +296,6 @@ _SnapGrid _snapGridFor(SnapMarkerMode mode, ClipTempoMetadata tempo) {
   }
 
   var markers = beatMarkersForSnapMode(tempo, mode.beatSnapMode);
-  if (mode == SnapMarkerMode.downbeat && markers.isEmpty) {
-    markers = beatMarkersForSnapMode(tempo, BeatSnapMode.beat4);
-  }
   if (markers.isEmpty) return const _SnapGrid(intervalMs: 1);
 
   return _SnapGrid(
@@ -1225,10 +1222,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     if (analysis == null) return ClipTempoMetadata.empty;
     final cached = _tempoMetadataCache[analysis];
     if (cached != null) return cached;
-    final tempo = ClipTempoMetadata.fromAnalysisSummary(
-      analysis.summary?.toJson(),
-      overrides: analysis.overrides?.toJson(),
-    );
+    final tempo = ClipTempoMetadata.fromTrackAnalysis(analysis);
     if (_tempoMetadataCache.length >= _maxCachedTempoMetadata) {
       _tempoMetadataCache.remove(_tempoMetadataCache.keys.first);
     }
@@ -2659,7 +2653,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
           case _TimelineTrackAction.correctAnalysis:
             widget.onEditAnalysis?.call(
               track,
-              initialFirstDownbeatMs: _analysisAnchorForLane(
+              currentSourcePositionMs: _currentSourcePositionForLane(
                 lane,
                 _resolvedPlayheadMs(_livePlayheadMs.value),
               ),
@@ -2697,7 +2691,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     );
   }
 
-  int? _analysisAnchorForLane(_LaneModel lane, int playheadMs) {
+  int? _currentSourcePositionForLane(_LaneModel lane, int playheadMs) {
     if (!lane.mixClip.isActiveAt(playheadMs)) return null;
     return lane.mixClip
         .sourcePositionAt(playheadMs)

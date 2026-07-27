@@ -372,6 +372,10 @@ void main() {
     final analysis = trackAnalysisFromTrackJson({
       'analysis_status': 'analyzed',
       'analysis_summary': {
+        '_omp_summary_contract': {
+          'version': 1,
+          'projection': 'generated',
+        },
         'bpm': {'value': 120},
         'key': {'value': 'Am'},
         'camelot': {'value': '8A'},

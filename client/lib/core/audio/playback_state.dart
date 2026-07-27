@@ -584,37 +584,31 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   ) {
     final extras = Map<String, dynamic>.from(item.extras ?? const {});
     extras['analysisRef'] = trackId;
-    extras['analysisStatus'] = analysis.status.name;
-    final summary = analysis.summary;
-    final overrides = analysis.overrides;
-    if (summary == null) {
-      extras.remove('analysisSummary');
-      extras.remove('analysis_summary');
-    } else {
-      final compactSummary = compactAnalysisSummary(summary.toJson());
-      if (compactSummary == null) {
-        extras.remove('analysisSummary');
-      } else {
-        extras['analysisSummary'] = compactSummary;
-      }
-      extras.remove('analysis_summary');
+    for (final key in const [
+      'analysisStatus',
+      'analysis_status',
+      'analysisSummary',
+      'analysis_summary',
+      'analysisOverrides',
+      'analysis_overrides',
+      'analysisUpdatedAt',
+      'analysis_updated_at',
+      'analysisOverrideRevision',
+      'analysis_override_revision',
+      'analysisOverrideUpdatedAt',
+      'analysis_override_updated_at',
+    ]) {
+      extras.remove(key);
     }
-    if (overrides == null) {
-      extras.remove('analysisOverrides');
-      extras.remove('analysis_overrides');
-    } else {
-      extras['analysisOverrides'] =
-          compactAnalysisOverrides(overrides.toJson());
-      extras.remove('analysis_overrides');
-    }
-    if (analysis.updatedAt == null) {
-      extras.remove('analysisUpdatedAt');
-      extras.remove('analysis_updated_at');
-    } else {
-      extras['analysisUpdatedAt'] =
-          analysis.updatedAt!.toUtc().toIso8601String();
-      extras.remove('analysis_updated_at');
-    }
+    extras.addAll(
+      trackAnalysisFields(
+        analysis,
+        summarySerializer: (summary) =>
+            compactAnalysisSummary(summary.toJson()),
+        overridesSerializer: (overrides) =>
+            compactAnalysisOverrides(overrides?.toJson()) ?? const {},
+      ),
+    );
     return item.copyWith(extras: extras);
   }
 

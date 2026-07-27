@@ -452,6 +452,8 @@ func (db *DB) Migrate() error {
 		status VARCHAR(32) NOT NULL DEFAULT 'pending',
 		summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
 		overrides_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+		manual_override_revision BIGINT NOT NULL DEFAULT 0,
+		manual_override_updated_at TIMESTAMP WITH TIME ZONE,
 		artifacts_json JSONB NOT NULL DEFAULT '{}'::jsonb,
 		provenance_json JSONB NOT NULL DEFAULT '{}'::jsonb,
 		error TEXT,
@@ -461,11 +463,14 @@ func (db *DB) Migrate() error {
 		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 		CONSTRAINT chk_track_analysis_schema_version CHECK (schema_version >= 1),
+		CONSTRAINT chk_track_analysis_manual_override_revision CHECK (manual_override_revision >= 0),
 		CONSTRAINT chk_track_analysis_status CHECK (status IN ('pending', 'analyzing', 'analyzed', 'failed', 'stale', 'unsupported'))
 	);
 	CREATE INDEX IF NOT EXISTS idx_track_analysis_status ON track_analysis(status);
 	CREATE INDEX IF NOT EXISTS idx_track_analysis_updated_at ON track_analysis(updated_at DESC);
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS overrides_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS manual_override_revision BIGINT NOT NULL DEFAULT 0;
+	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS manual_override_updated_at TIMESTAMP WITH TIME ZONE;
 
 	CREATE TABLE IF NOT EXISTS play_events (
 		id BIGSERIAL PRIMARY KEY,
@@ -760,6 +765,9 @@ func (db *DB) Migrate() error {
 	if err := db.refreshTrackAnalysisStatusConstraint(); err != nil {
 		return err
 	}
+	if err := db.refreshTrackAnalysisOverrideRevisionConstraint(); err != nil {
+		return err
+	}
 	if err := db.refreshResearchSchemaConstraints(); err != nil {
 		return err
 	}
@@ -945,6 +953,18 @@ func (db *DB) refreshTrackAnalysisStatusConstraint() error {
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to refresh track_analysis status constraint: %w", err)
+	}
+	return nil
+}
+
+func (db *DB) refreshTrackAnalysisOverrideRevisionConstraint() error {
+	_, err := db.Exec(`
+		ALTER TABLE track_analysis DROP CONSTRAINT IF EXISTS chk_track_analysis_manual_override_revision;
+		ALTER TABLE track_analysis ADD CONSTRAINT chk_track_analysis_manual_override_revision
+			CHECK (manual_override_revision >= 0);
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to refresh track_analysis manual override revision constraint: %w", err)
 	}
 	return nil
 }

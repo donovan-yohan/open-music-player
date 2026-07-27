@@ -25,28 +25,40 @@ class AnalysisService {
       parser: (json) => TrackAnalysis.fromJson(
         status: json['status'],
         summary: json['summary'],
+        effectiveTiming: json['effective_timing'] ?? json['effectiveTiming'],
         artifacts: json['artifacts'],
         overrides: json['overrides'],
         overridesPresent: json.containsKey('overrides'),
         updatedAt: json['updated_at'] ?? json['updatedAt'],
+        overrideRevision: json['override_revision'] ?? json['overrideRevision'],
+        overrideUpdatedAt:
+            json['override_updated_at'] ?? json['overrideUpdatedAt'],
       ),
     );
   }
 
   Future<TrackAnalysis> updateTrackAnalysisOverrides(
     int trackId,
-    TrackAnalysisOverrides overrides,
-  ) {
+    TrackAnalysisOverrides overrides, {
+    int expectedRevision = 0,
+  }) {
     return _apiClient.patch<TrackAnalysis>(
       '/tracks/$trackId/analysis/overrides',
-      body: {'overrides': overrides.toJson()},
+      body: {
+        'overrides': overrides.toJson(includeServerMetadata: false),
+        'expected_revision': expectedRevision,
+      },
       parser: (json) => TrackAnalysis.fromJson(
         status: json['status'],
         summary: json['summary'],
+        effectiveTiming: json['effective_timing'] ?? json['effectiveTiming'],
         artifacts: json['artifacts'],
         overrides: json['overrides'],
         overridesPresent: json.containsKey('overrides'),
         updatedAt: json['updated_at'] ?? json['updatedAt'],
+        overrideRevision: json['override_revision'] ?? json['overrideRevision'],
+        overrideUpdatedAt:
+            json['override_updated_at'] ?? json['overrideUpdatedAt'],
       ),
     );
   }

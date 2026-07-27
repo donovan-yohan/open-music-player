@@ -10,6 +10,51 @@ import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
   group('CueTimeline', () {
+    test('session round-trip retains canonical manual timing metadata', () {
+      final session = MixSession.fromQueue(
+        sessionId: 'manual_timing',
+        queue: [
+          const MediaItem(
+            id: '1',
+            title: 'Manual timing',
+            duration: Duration(seconds: 12),
+            extras: {
+              'analysisStatus': 'analyzed',
+              'analysisSummary': {
+                'beat_grid': {
+                  'bpm': 120,
+                  'offset_ms': 100,
+                  'beats_ms': [100, 600, 1100, 1600, 2100],
+                },
+              },
+              'analysisOverrides': {
+                'manual_timing_override': {
+                  'bpm': 120,
+                  'beat_anchor_ms': 100,
+                  'beats_per_bar': 4,
+                  'downbeat_phase_index': 2,
+                  'phrase_length_bars': 8,
+                  'revision': 5,
+                },
+              },
+              'analysisOverrideRevision': 5,
+            },
+          ),
+        ],
+      );
+
+      final restored = MixSession.fromJson(session.toJson());
+      final tempo = restored.clips.single.tempo;
+
+      expect(tempo.beatsMs, [100, 600, 1100, 1600, 2100]);
+      expect(tempo.downbeatsMs, [1100]);
+      expect(tempo.beatAnchorMs, 100);
+      expect(tempo.beatsPerBar, 4);
+      expect(tempo.downbeatPhaseIndex, 2);
+      expect(tempo.phraseLengthBars, 8);
+      expect(tempo.overrideRevision, 5);
+    });
+
     test('builds a contiguous queue timeline from media items', () {
       final timeline = CueTimeline.contiguousQueue(
         sessionId: 'session_1',
@@ -828,6 +873,10 @@ void main() {
             'playbackState': 'playable',
             'analysisStatus': 'analyzed',
             'analysisSummary': {
+              '_omp_summary_contract': {
+                'version': 1,
+                'projection': 'generated',
+              },
               'bpm': {'value': 120, 'confidence': 0.9},
               'downbeats': [0, 2000],
             },
@@ -867,6 +916,10 @@ void main() {
             'playbackState': 'playable',
             'analysisStatus': 'analyzed',
             'analysisSummary': {
+              '_omp_summary_contract': {
+                'version': 1,
+                'projection': 'generated',
+              },
               'bpm': {'value': 120, 'confidence': 0.9},
               'downbeats': [0, 2000],
             },
@@ -1188,14 +1241,30 @@ Map<String, dynamic> _analysisSummary({
   required double bpm,
   double bpmConfidence = 0.95,
   required List<int> downbeatsMs,
-}) =>
-    {
-      'bpm': {'value': bpm, 'confidence': bpmConfidence},
-      'beat_grid': {
-        'bpm': bpm,
-        'confidence': bpmConfidence,
+}) {
+  final hasExplicitTimingAuthority = bpmConfidence >= 0.8;
+  return {
+    'bpm': {'value': bpm, 'confidence': bpmConfidence},
+    'beat_grid': {
+      'bpm': bpm,
+      'confidence': bpmConfidence,
+    },
+    'downbeats': {
+      'positions_ms': downbeatsMs,
+      if (hasExplicitTimingAuthority) 'confidence': 1.0,
+      if (hasExplicitTimingAuthority) 'provenance': 'manual_override',
+    },
+    if (hasExplicitTimingAuthority)
+      'meter': {
+        'beats_per_bar': 4,
+        'confidence': 1.0,
+        'provenance': 'manual_override',
       },
-      'downbeats': {
-        'positions_ms': downbeatsMs,
+    if (hasExplicitTimingAuthority)
+      'downbeat_phase': {
+        'index': 0,
+        'confidence': 1.0,
+        'provenance': 'manual_override',
       },
-    };
+  };
+}

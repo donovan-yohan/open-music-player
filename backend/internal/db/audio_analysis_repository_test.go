@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -70,7 +72,7 @@ func TestAnalysisRepositoryMarksStaleByAnalyzerVersionAgainstPostgres(t *testing
 		t.Fatalf("store result: %v", err)
 	}
 	manualOverrides := json.RawMessage(`{"bpm":{"value":128,"source":"manual"}}`)
-	if _, err := analysisRepo.SetOverrides(ctx, track.ID, manualOverrides); err != nil {
+	if _, err := analysisRepo.SetOverrides(ctx, track.ID, manualOverrides, 0); err != nil {
 		t.Fatalf("set manual overrides: %v", err)
 	}
 
@@ -179,6 +181,309 @@ func TestAnalysisRepositoryMarksStaleByAnalyzerVersionAgainstPostgres(t *testing
 	}
 	if skipped.Queued || skipped.Status != AnalysisStatusAnalyzed || skipped.Reason != "not_stale" {
 		t.Fatalf("stale-only repair = %+v, want analyzed row skipped", skipped)
+	}
+}
+
+func TestAnalysisRepositoryManualTimingRevisionConflictsAndResetSurvivesRerunAgainstPostgres(t *testing.T) {
+	database, ctx := newPostgresAnalysisTestDB(t)
+	trackRepo := NewTrackRepository(database)
+	analysisRepo := NewAnalysisRepository(database)
+	track, _, err := trackRepo.CreateTrackFromMetadata(
+		ctx, "Fixture Artist", "Manual Timing", "", 120000,
+		WithStorage("tracks/fixture/manual-timing.wav", 1024), WithMetadata(json.RawMessage(`{}`)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := analysisRepo.StoreResult(ctx, track.ID, AnalysisResult{
+		SummaryJSON: json.RawMessage(`{"bpm":{"value":120},"beat_grid":{"beats_ms":[0,500,1000,1500]}}`),
+	}); err != nil {
+		t.Fatalf("store generated analysis: %v", err)
+	}
+
+	first, err := analysisRepo.SetOverrides(ctx, track.ID, json.RawMessage(`{
+		"manual_timing_override":{"bpm":120,"beat_anchor_ms":0,"beats_per_bar":4,"downbeat_phase_index":1}
+	}`), 0)
+	if err != nil {
+		t.Fatalf("set manual timing: %v", err)
+	}
+	if first.ManualOverrideRevision != 1 || !first.ManualOverrideUpdatedAt.Valid {
+		t.Fatalf("first manual revision = %d updated=%#v", first.ManualOverrideRevision, first.ManualOverrideUpdatedAt)
+	}
+	var firstOverrides map[string]any
+	if err := json.Unmarshal(first.OverridesJSON, &firstOverrides); err != nil {
+		t.Fatal(err)
+	}
+	firstTiming := firstOverrides["manual_timing_v2"].(map[string]any)
+	if got := firstTiming["revision"]; got != float64(1) {
+		t.Fatalf("stored manual timing revision = %#v", got)
+	}
+	if got := firstTiming["schema_version"]; got != float64(2) {
+		t.Fatalf("stored manual timing schema = %#v, want 2", got)
+	}
+	if _, err := analysisRepo.SetOverrides(ctx, track.ID, json.RawMessage(`{"manual_timing_override":{"bpm":122}}`), 0); !errors.Is(err, ErrAnalysisOverrideConflict) {
+		t.Fatalf("stale write error = %v, want revision conflict", err)
+	}
+
+	reset, err := analysisRepo.SetOverrides(ctx, track.ID, json.RawMessage(`{}`), 1)
+	if err != nil {
+		t.Fatalf("reset overrides: %v", err)
+	}
+	if reset.ManualOverrideRevision != 2 {
+		t.Fatalf("reset revision = %d, want 2", reset.ManualOverrideRevision)
+	}
+	if _, err := analysisRepo.SetOverrides(ctx, track.ID, json.RawMessage(`{"manual_timing_override":{"bpm":122}}`), 1); !errors.Is(err, ErrAnalysisOverrideConflict) {
+		t.Fatalf("stale revision 1 write error = %v, want revision conflict", err)
+	}
+	afterConflict, err := analysisRepo.GetByTrackID(ctx, track.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterConflict.ManualOverrideRevision != 2 || strings.Contains(string(afterConflict.OverridesJSON), `122`) {
+		t.Fatalf("stale write mutated revision/payload: revision=%d overrides=%s", afterConflict.ManualOverrideRevision, afterConflict.OverridesJSON)
+	}
+	if err := analysisRepo.MarkAnalyzing(ctx, track.ID, nil); err != nil {
+		t.Fatalf("mark analysis rerun: %v", err)
+	}
+	if err := analysisRepo.StoreResult(ctx, track.ID, AnalysisResult{
+		SummaryJSON: json.RawMessage(`{"bpm":{"value":126},"beat_grid":{"beats_ms":[0,476,952,1428]}}`),
+	}); err != nil {
+		t.Fatalf("store rerun: %v", err)
+	}
+	afterRerun, err := analysisRepo.GetByTrackID(ctx, track.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRerun.ManualOverrideRevision != 2 {
+		t.Fatalf("rerun changed override revision to %d", afterRerun.ManualOverrideRevision)
+	}
+	var overrides map[string]any
+	if err := json.Unmarshal(afterRerun.OverridesJSON, &overrides); err != nil {
+		t.Fatal(err)
+	}
+	timing := overrides["manual_timing_v2"].(map[string]any)
+	if len(timing) < 4 || timing["revision"] != float64(2) {
+		t.Fatalf("reset metadata was not retained: %#v", timing)
+	}
+	if _, present := timing["bpm"]; present {
+		t.Fatalf("reset retained manual BPM: %#v", timing)
+	}
+	if !strings.Contains(string(afterRerun.SummaryJSON), `126`) {
+		t.Fatalf("rerun did not restore current generated analysis: %s", afterRerun.SummaryJSON)
+	}
+}
+
+func TestStampManualTimingOverrideMetadataRetainsResetRevision(t *testing.T) {
+	updatedAt := time.Date(2026, 7, 26, 12, 0, 0, 123456789, time.UTC)
+	stamped, err := stampManualTimingOverrideMetadata(json.RawMessage(`{}`), 4, updatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(stamped, &document); err != nil {
+		t.Fatal(err)
+	}
+	timing := document["manual_timing_v2"].(map[string]any)
+	if timing["revision"] != float64(4) || timing["updated_at"] != updatedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("stamped timing = %#v", timing)
+	}
+	if timing["schema_version"] != float64(2) {
+		t.Fatalf("stamped timing schema = %#v, want 2", timing["schema_version"])
+	}
+}
+
+func TestAnalysisRepositoryConcurrentManualTimingCASAllowsOneWinnerAgainstPostgres(t *testing.T) {
+	database, ctx := newPostgresAnalysisTestDB(t)
+	trackRepo := NewTrackRepository(database)
+	analysisRepo := NewAnalysisRepository(database)
+	track, _, err := trackRepo.CreateTrackFromMetadata(
+		ctx, "Fixture Artist", "Concurrent Manual Timing", "", 120000,
+		WithStorage("tracks/fixture/concurrent-manual-timing.wav", 1024), WithMetadata(json.RawMessage(`{}`)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := analysisRepo.StoreResult(ctx, track.ID, AnalysisResult{SummaryJSON: json.RawMessage(`{"bpm":{"value":120}}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var callers sync.WaitGroup
+	for _, bpm := range []int{121, 122} {
+		callers.Add(1)
+		go func(bpm int) {
+			defer callers.Done()
+			<-start
+			_, err := analysisRepo.SetOverrides(
+				ctx, track.ID,
+				json.RawMessage(fmt.Sprintf(`{"manual_timing_override":{"bpm":%d}}`, bpm)),
+				0,
+			)
+			results <- err
+		}(bpm)
+	}
+	close(start)
+	callers.Wait()
+	close(results)
+
+	successes := 0
+	conflicts := 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrAnalysisOverrideConflict):
+			conflicts++
+		default:
+			t.Fatalf("concurrent CAS error = %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("concurrent CAS successes=%d conflicts=%d, want 1/1", successes, conflicts)
+	}
+	current, err := analysisRepo.GetByTrackID(ctx, track.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.ManualOverrideRevision != 1 {
+		t.Fatalf("winning revision = %d, want 1", current.ManualOverrideRevision)
+	}
+}
+
+func TestAnalysisRepositoryOverrideDuringAnalyzingPreservesLifecycleAgainstPostgres(t *testing.T) {
+	database, ctx := newPostgresAnalysisTestDB(t)
+	trackRepo := NewTrackRepository(database)
+	analysisRepo := NewAnalysisRepository(database)
+	track, _, err := trackRepo.CreateTrackFromMetadata(
+		ctx, "Fixture Artist", "Analyzing Manual Timing", "", 120000,
+		WithStorage("tracks/fixture/analyzing-manual-timing.wav", 1024), WithMetadata(json.RawMessage(`{}`)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provenance := json.RawMessage(`{"expected_analyzer":"fixture","expected_analyzer_version":"fixture-v1"}`)
+	if err := analysisRepo.RequestAnalysis(ctx, track.ID, provenance); err != nil {
+		t.Fatal(err)
+	}
+	if err := analysisRepo.MarkAnalyzing(ctx, track.ID, provenance); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := analysisRepo.SetOverrides(
+		ctx, track.ID,
+		json.RawMessage(`{"manual_timing_override":{"bpm":120,"beat_anchor_ms":0}}`),
+		0,
+	)
+	if err != nil {
+		t.Fatalf("set override while analyzing: %v", err)
+	}
+	if updated.Status != AnalysisStatusAnalyzing {
+		t.Fatalf("override changed lifecycle status to %q", updated.Status)
+	}
+	if err := analysisRepo.StoreResult(ctx, track.ID, AnalysisResult{
+		SummaryJSON:    json.RawMessage(`{"bpm":{"value":119},"beat_grid":{"beats_ms":[0,504,1008]}}`),
+		ProvenanceJSON: json.RawMessage(`{"analyzer":"fixture","analyzer_version":"fixture-v1"}`),
+		Analyzer:       "fixture", AnalyzerVersion: "fixture-v1",
+	}); err != nil {
+		t.Fatalf("store result after interleaved override: %v", err)
+	}
+	landed, err := analysisRepo.GetByTrackID(ctx, track.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landed.Status != AnalysisStatusAnalyzed || landed.ManualOverrideRevision != 1 {
+		t.Fatalf("landed analysis status=%q revision=%d", landed.Status, landed.ManualOverrideRevision)
+	}
+	var landedOverrides map[string]any
+	if err := json.Unmarshal(landed.OverridesJSON, &landedOverrides); err != nil {
+		t.Fatal(err)
+	}
+	manualTiming, ok := landedOverrides["manual_timing_v2"].(map[string]any)
+	if !ok || manualTiming["bpm"] != float64(120) {
+		t.Fatalf("analyzer result lost manual override: %#v", landedOverrides["manual_timing_v2"])
+	}
+}
+
+func TestAnalysisRepositoryCanonicalWritePreservesLegacyTimingUntilResetAgainstPostgres(t *testing.T) {
+	database, ctx := newPostgresAnalysisTestDB(t)
+	trackRepo := NewTrackRepository(database)
+	analysisRepo := NewAnalysisRepository(database)
+	track, _, err := trackRepo.CreateTrackFromMetadata(
+		ctx, "Fixture Artist", "Legacy Timing Migration", "", 120000,
+		WithStorage("tracks/fixture/legacy-timing-migration.wav", 1024), WithMetadata(json.RawMessage(`{}`)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLegacyTiming := func(label string, raw json.RawMessage, wantBPM float64) map[string]any {
+		t.Helper()
+		var document map[string]any
+		if err := json.Unmarshal(raw, &document); err != nil {
+			t.Fatalf("decode %s overrides: %v", label, err)
+		}
+		bpm, ok := document["bpm"].(map[string]any)
+		if !ok || bpm["nativeBpm"] != wantBPM {
+			t.Fatalf("%s legacy BPM = %#v, want %v", label, document["bpm"], wantBPM)
+		}
+		grid, ok := document["beat_grid"].(map[string]any)
+		beats, beatsOK := grid["beatsMs"].([]any)
+		if !ok || !beatsOK || len(beats) != 3 || beats[0] != float64(17) || beats[1] != float64(513) || beats[2] != float64(1009) {
+			t.Fatalf("%s legacy beat grid = %#v", label, document["beat_grid"])
+		}
+		downbeats, ok := document["downbeats"].(map[string]any)
+		positions, positionsOK := downbeats["positionsMs"].([]any)
+		if !ok || !positionsOK || len(positions) != 1 || positions[0] != float64(17) {
+			t.Fatalf("%s legacy downbeats = %#v", label, document["downbeats"])
+		}
+		return document
+	}
+	legacy := json.RawMessage(`{
+		"bpm":{"nativeBpm":121},
+		"beat_grid":{"offsetMs":17,"beatsMs":[17,513,1009]},
+		"downbeats":{"positionsMs":[17]}
+	}`)
+	first, err := analysisRepo.SetOverrides(ctx, track.ID, legacy, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := analysisRepo.SetOverrides(
+		ctx, track.ID,
+		json.RawMessage(`{"manual_timing_override":{"bpm":120,"beat_anchor_ms":17}}`),
+		first.ManualOverrideRevision,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLegacyTiming("canonical write", canonical.OverridesJSON, 121)
+	keyOnly, err := analysisRepo.SetOverrides(
+		ctx, track.ID, json.RawMessage(`{"key":{"value":"A minor"}}`), canonical.ManualOverrideRevision,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyOnlyDocument := assertLegacyTiming("key-only write", keyOnly.OverridesJSON, 121)
+	if key := keyOnlyDocument["key"].(map[string]any)["value"]; key != "A minor" {
+		t.Fatalf("key-only write key = %#v", key)
+	}
+	legacyUpdate, err := analysisRepo.SetOverrides(
+		ctx, track.ID, json.RawMessage(`{"bpm":{"nativeBpm":122}}`), keyOnly.ManualOverrideRevision,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLegacyTiming("explicit legacy update", legacyUpdate.OverridesJSON, 122)
+	reset, err := analysisRepo.SetOverrides(ctx, track.ID, json.RawMessage(`{}`), legacyUpdate.ManualOverrideRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cleared map[string]any
+	if err := json.Unmarshal(reset.OverridesJSON, &cleared); err != nil {
+		t.Fatal(err)
+	}
+	for _, legacyKey := range []string{"bpm", "beat_grid", "downbeats"} {
+		if _, present := cleared[legacyKey]; present {
+			t.Fatalf("reset retained legacy %s: %s", legacyKey, reset.OverridesJSON)
+		}
 	}
 }
 
