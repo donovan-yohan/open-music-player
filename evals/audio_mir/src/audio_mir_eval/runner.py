@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import resource
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +13,7 @@ from .io import (
     EvalInputError,
     load_partial_predictions,
     sha256_file,
+    validate_experiment_context,
     write_jsonl,
 )
 
@@ -24,6 +27,21 @@ _ANALYZER_RESULT_FIELDS = {
     "mode",
     "key_confidence",
 }
+
+
+def _child_peak_rss_kib() -> int | None:
+    """Return the runner child-process high-water mark on supported platforms."""
+    try:
+        peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    except (AttributeError, OSError):
+        return None
+    if peak <= 0:
+        return None
+    # Linux reports KiB while macOS reports bytes. Normalize macOS artifacts so
+    # local comparison remains meaningful on either supported developer host.
+    if sys.platform == "darwin":
+        peak /= 1024
+    return int(peak)
 
 
 def _parse_analyzer_json(stdout: str, context: str) -> dict[str, Any]:
@@ -64,6 +82,12 @@ def _persist(
     run_record["updated_at"] = datetime.now(UTC).isoformat()
     run_record["prediction_count"] = len(predictions)
     run_record["complete"] = complete
+    peak_rss_kib = _child_peak_rss_kib()
+    if peak_rss_kib is not None:
+        run_record["resource_usage"] = {
+            "peak_rss_kib": peak_rss_kib,
+            "scope": "runner_process_children_lifetime",
+        }
     ordered = [
         predictions[track_id] for track_id in manifest_ids if track_id in predictions
     ]
@@ -79,8 +103,10 @@ def run_analyzer(
     model_path: Path,
     output_path: Path,
     repo_head: str,
+    repo_worktree_clean: bool,
     timeout_seconds: float,
     resume: bool = False,
+    experiment: dict[str, str] | None = None,
 ) -> tuple[int, int]:
     for path, label in (
         (analyzer_python, "analyzer Python"),
@@ -91,6 +117,7 @@ def run_analyzer(
             raise EvalInputError(f"{label} does not exist: {path}")
     if timeout_seconds <= 0:
         raise EvalInputError("timeout must be positive")
+    experiment = validate_experiment_context(experiment)
 
     metadata, _ = _invoke(
         [
@@ -109,11 +136,14 @@ def run_analyzer(
         "schema_version": 2,
         "created_at": datetime.now(UTC).isoformat(),
         "repo_head": repo_head,
+        "repo_worktree_clean": repo_worktree_clean,
         "manifest_sha256": manifest_sha256,
         "model_sha256": sha256_file(model_path),
         "analyzer_script_sha256": sha256_file(analyzer_script),
         "analyzer": metadata,
     }
+    if experiment is not None:
+        run_record["experiment"] = experiment
     predictions: dict[str, dict[str, Any]] = {}
 
     if resume and output_path.exists():
@@ -121,11 +151,13 @@ def run_analyzer(
         for field, label in (
             ("manifest_sha256", "manifest_sha256"),
             ("repo_head", "repo_head"),
+            ("repo_worktree_clean", "repository worktree state"),
             ("model_sha256", "model checkpoint"),
             ("analyzer_script_sha256", "analyzer script"),
             ("analyzer", "analyzer metadata"),
+            ("experiment", "experiment context"),
         ):
-            if existing_run.get(field) != run_record[field]:
+            if existing_run.get(field) != run_record.get(field):
                 raise EvalInputError(f"cannot resume: {label} changed")
         unexpected = set(existing_predictions) - set(manifest_ids)
         if unexpected:
@@ -149,6 +181,12 @@ def run_analyzer(
         raw_audio_path = item.get("audio_path")
         prediction: dict[str, Any] = {"record_type": "prediction", "id": track_id}
         try:
+            expected_sha256 = item.get("audio_sha256")
+            if isinstance(expected_sha256, str):
+                # Preserve the manifest identity even when an unavailable file
+                # prevents observation. Zero-error promotion gates keep this
+                # declared identity from being mistaken for a successful run.
+                prediction["audio_sha256"] = expected_sha256
             if not isinstance(raw_audio_path, str) or not raw_audio_path:
                 raise EvalInputError("manifest record has no audio_path")
             audio_path = Path(raw_audio_path)
@@ -157,7 +195,6 @@ def run_analyzer(
             if not audio_path.is_file():
                 raise EvalInputError(f"audio file does not exist: {audio_path}")
             audio_sha256 = sha256_file(audio_path)
-            expected_sha256 = item.get("audio_sha256")
             if expected_sha256 is not None and expected_sha256 != audio_sha256:
                 raise EvalInputError("audio_sha256 mismatch")
             result, runtime = _invoke(
