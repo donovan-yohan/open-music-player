@@ -222,6 +222,26 @@ class QueueProvider extends ChangeNotifier {
     return result;
   }
 
+  /// Fetches the correction editor's immutable base from the authoritative
+  /// per-track endpoint, bypassing collection/cache freshness heuristics.
+  Future<TrackAnalysis> refreshAnalysisAuthoritatively(QueueTrack track) async {
+    final trackId = _analysisTrackId(track);
+    if (trackId == null) {
+      throw ApiException('Track does not have a backend analysis id', 400);
+    }
+    final key = trackId.toString();
+    final analysis = await _apiClient.getTrackAnalysis(trackId);
+    if (_disposed) return analysis;
+    _ingestIncomingAnalysis(key, analysis);
+    final accepted = _analysisByTrackId[key] ??
+        _authoritativeAnalysisLocks[key] ??
+        _analysisRevisionSnapshots[key] ??
+        analysis;
+    _touchAnalysisAuthority(key);
+    notifyListeners();
+    return accepted;
+  }
+
   /// Retains detailed analysis only for tracks rendered by the timeline.
   ///
   /// Collection payloads already carry compact BPM/key metadata. Waveform
@@ -289,8 +309,9 @@ class QueueProvider extends ChangeNotifier {
 
   Future<TrackAnalysis> updateAnalysisOverrides(
     QueueTrack track,
-    TrackAnalysisOverrides overrides,
-  ) {
+    TrackAnalysisOverrides overrides, {
+    int? expectedRevision,
+  }) {
     final trackId = _analysisTrackId(track);
     if (trackId == null) {
       throw ApiException('Track does not have a backend analysis id', 400);
@@ -311,6 +332,7 @@ class QueueProvider extends ChangeNotifier {
         key: key,
         overrides: overrides,
         analysisBeingEdited: track.analysis,
+        expectedRevision: expectedRevision,
       );
     }();
     late final Future<void> tail;
@@ -332,16 +354,20 @@ class QueueProvider extends ChangeNotifier {
     required String key,
     required TrackAnalysisOverrides overrides,
     required TrackAnalysis? analysisBeingEdited,
+    required int? expectedRevision,
   }) async {
-    final prior = _authoritativeAnalysisLocks[key] ??
-        _analysisByTrackId[key] ??
-        _analysisRevisionSnapshots[key] ??
-        _lastIncomingAnalysisByTrackId[key] ??
-        analysisBeingEdited;
+    final prior = expectedRevision == null
+        ? _authoritativeAnalysisLocks[key] ??
+            _analysisByTrackId[key] ??
+            _analysisRevisionSnapshots[key] ??
+            _lastIncomingAnalysisByTrackId[key] ??
+            analysisBeingEdited
+        : null;
     final analysis = await _apiClient.updateTrackAnalysisOverrides(
       trackId,
       overrides,
-      expectedRevision: prior == null ? 0 : _analysisOverrideRevision(prior),
+      expectedRevision: expectedRevision ??
+          (prior == null ? 0 : _analysisOverrideRevision(prior)),
     );
     if (_disposed) return analysis;
     _rememberAnalysisRevision(key, analysis);

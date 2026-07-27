@@ -362,9 +362,13 @@ void main() {
     playbackState.emitCurrentIndex(4);
     await tester.pumpAndSettle();
 
-    expect(tester.widget<TrackTile>(find.byKey(
-      const ValueKey('playback_queue_5'),
-    )).isCurrent, isTrue);
+    expect(
+        tester
+            .widget<TrackTile>(find.byKey(
+              const ValueKey('playback_queue_5'),
+            ))
+            .isCurrent,
+        isTrue);
     expect(scrollable.controller!.offset, greaterThan(0));
     final currentRow = find.byKey(const ValueKey('playback_queue_5'));
     expect(
@@ -618,9 +622,11 @@ void main() {
 
     expect(scrollable.controller!.offset, lessThan(100));
     expect(
-      tester.widget<TrackTile>(
-        find.byKey(const ValueKey('playback_queue_5')),
-      ).isCurrent,
+      tester
+          .widget<TrackTile>(
+            find.byKey(const ValueKey('playback_queue_5')),
+          )
+          .isCurrent,
       isTrue,
     );
   });
@@ -1564,6 +1570,106 @@ void main() {
     expect(playbackState.clickAuditionOpens, hasLength(1));
     expect(playbackState.clickAuditionOpens.single.queueItemId, 't1');
   });
+
+  testWidgets(
+    'desktop analysis save closes when playback refresh fails after PATCH',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      apiClient.useAnalysisFixture(authoritative: true);
+
+      await pumpQueueScreen(tester, showImportJobs: true);
+      await tester.tap(find.byKey(const ValueKey('analysis_edit_t1')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('analysis_correction_desktop_dialog')),
+        findsOneWidget,
+      );
+      await tester.enterText(
+        find.byKey(const ValueKey('analysis_correction_bpm')),
+        '128',
+      );
+      playbackState.failAnalysisRefreshesAfterRecording = true;
+      await tester.tap(
+        find.byKey(const ValueKey('analysis_correction_save')),
+      );
+      await settleAnalysisWorkflow(tester);
+
+      expect(apiClient.analysisOverrideUpdates, hasLength(1));
+      expect(apiClient.analysisOverrideUpdates.single.trackId, 101);
+      expect(playbackState.analysisRefreshes, hasLength(1));
+      expect(playbackState.analysisRefreshes.single.trackId, '101');
+      expect(
+        find.byKey(const ValueKey('analysis_correction_desktop_dialog')),
+        findsNothing,
+      );
+      expect(
+        find.textContaining('Could not save analysis'),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets(
+    'desktop editor reload applies a persisted v2-only timing override',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final persisted = TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'bpm': {'value': 124, 'provenance': 'generated'},
+          'beat_grid': {
+            'bpm': 124,
+            'offset_ms': 100,
+            'beats_ms': [100, 584, 1068, 1552],
+            'provenance': 'generated',
+          },
+          'downbeats': {
+            'positions_ms': [100],
+            'provenance': 'generated',
+          },
+        },
+        overrides: {
+          'manual_timing_v2': {
+            'schema_version': 2,
+            'bpm': 106,
+            'beat_anchor_ms': 100,
+            'beats_per_bar': 4,
+            'downbeat_phase_index': 0,
+          },
+        },
+      );
+      expect(persisted.overrides?.bpm, isNull);
+      expect(persisted.overrides?.beatGridOffsetMs, isNull);
+      expect(persisted.overrides?.beatsMs, isNull);
+      expect(persisted.overrides?.downbeatsMs, isNull);
+      apiClient
+        ..useAnalysisFixture(authoritative: true)
+        ..authoritativeAnalysisFixture = persisted;
+
+      await pumpQueueScreen(tester, showImportJobs: true);
+      await tester.tap(find.byKey(const ValueKey('analysis_edit_t1')));
+      await tester.pumpAndSettle();
+
+      expect(apiClient.analysisRequests, [101]);
+      expect(
+        tester
+            .widget<TextField>(
+              find.byKey(const ValueKey('analysis_correction_bpm')),
+            )
+            .controller
+            ?.text,
+        '106',
+        reason: 'the freshly loaded editor must project v2 timing over BPM 124',
+      );
+    },
+  );
 
   testWidgets(
     'analysis audition uses explicit calibration profile instead of route hint',
@@ -3135,6 +3241,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   int? fakeCurrentIndex;
   PlaybackContext? fakeContext;
   bool fakeIsPlaying = false;
+  bool failAnalysisRefreshesAfterRecording = false;
   int fakeTimelinePositionMs = 0;
   TimelineModel fakeTimelineModel = TimelineModel();
   BeatSnapMode fakeTransitionSnapMode = BeatSnapMode.downbeat;
@@ -3346,6 +3453,9 @@ class _FakePlaybackState extends Fake implements PlaybackState {
 
   @override
   int get timelinePositionMs => fakeTimelinePositionMs;
+
+  @override
+  int? sourcePositionMsForQueueItemId(String queueItemId) => null;
 
   @override
   TimelineModel get timelineModel => fakeTimelineModel;
@@ -3644,6 +3754,9 @@ class _FakePlaybackState extends Fake implements PlaybackState {
       for (final entry in analysesByTrackId.entries)
         (trackId: entry.key, analysis: entry.value),
     ]);
+    if (failAnalysisRefreshesAfterRecording) {
+      throw StateError('test playback analysis refresh failure');
+    }
 
     audio_service.MediaItem refreshItem(audio_service.MediaItem item) {
       for (final entry in analysesByTrackId.entries) {
@@ -3882,6 +3995,7 @@ class _FakeQueueApiClient extends ApiClient {
   bool failLoads = false;
   bool deferLoad = false;
   bool hydrateAnalysisFixture = false;
+  TrackAnalysis? authoritativeAnalysisFixture;
   bool holdAnalysisRequests = false;
   bool failAnalysisOverrideUpdates = false;
   bool Function()? analysisAuditionDisposedProbe;
@@ -3994,7 +4108,8 @@ class _FakeQueueApiClient extends ApiClient {
     );
   }
 
-  void useAnalysisFixture() {
+  void useAnalysisFixture({bool authoritative = false}) {
+    hydrateAnalysisFixture = authoritative;
     final summary = TrackAnalysisSummary.fromJson({
       'bpm': {'value': 124.0},
       'key': {'value': 'A minor'},
@@ -4126,7 +4241,7 @@ class _FakeQueueApiClient extends ApiClient {
       _heldAnalysisRequests.add((trackId: trackId, completer: completer));
       return completer.future;
     }
-    return _hydratedAnalysis(trackId);
+    return authoritativeAnalysisFixture ?? _hydratedAnalysis(trackId);
   }
 
   void releaseHeldAnalysisRequests() {

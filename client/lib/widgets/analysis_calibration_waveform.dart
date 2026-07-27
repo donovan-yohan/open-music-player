@@ -1,101 +1,358 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
+import '../models/timeline_viewport.dart';
 import '../models/track.dart';
 import '../models/waveform.dart';
+import 'timeline_waveform_painter.dart';
 
-/// Lightweight source-time calibration preview. The editor owns only the
-/// marker projection; waveform samples remain provider-owned analysis data.
-class AnalysisCalibrationWaveform extends StatelessWidget {
+/// Builds a view-only waveform from the provider-owned analysis while replacing
+/// only its marker lists with the correction draft's single effective preview.
+@visibleForTesting
+TimelineWaveformData calibrationWaveformDataForTrack({
+  required QueueTrack track,
+  required List<int> beatsMs,
+  required List<int> downbeatsMs,
+  int sampleCount = 1024,
+}) {
+  final source = richWaveformForTrack(track, sampleCount: sampleCount);
+  return TimelineWaveformData(
+    frames: source.frames,
+    durationMs: source.durationMs,
+    beatsMs: List<int>.unmodifiable(beatsMs),
+    downbeatsMs: List<int>.unmodifiable(downbeatsMs),
+    transientsMs: source.transientsMs,
+    silenceRanges: source.silenceRanges,
+    analyzed: source.analyzed,
+    resolutionLabel: source.resolutionLabel,
+    sourceStartMs: source.sourceStartMs,
+    coveredSourceFrameCount: source.coveredSourceFrameCount,
+  );
+}
+
+/// Pointer-friendly, zoomable source-time view for desktop calibration.
+///
+/// The playhead is an observation supplied by the canonical playback timeline;
+/// this widget owns only viewport pan/zoom state.
+class AnalysisCalibrationWaveform extends StatefulWidget {
   const AnalysisCalibrationWaveform({
     super.key,
     required this.track,
     required this.beatsMs,
     required this.downbeatsMs,
+    this.playheadMs,
   });
 
   final QueueTrack track;
   final List<int> beatsMs;
   final List<int> downbeatsMs;
+  final int? playheadMs;
+
+  @override
+  State<AnalysisCalibrationWaveform> createState() =>
+      _AnalysisCalibrationWaveformState();
+}
+
+class _AnalysisCalibrationWaveformState
+    extends State<AnalysisCalibrationWaveform> {
+  static const double _initialPixelsPerSecond = 32;
+  static const double _maximumPixelsPerSecond = 256;
+
+  double _pixelsPerSecond = _initialPixelsPerSecond;
+  int _offsetMs = 0;
+  bool _followPlayhead = true;
+  _CalibrationWaveformCache? _waveformCache;
+
+  _CalibrationWaveformCache _cachedWaveform(int sampleCount) {
+    final cached = _waveformCache;
+    if (cached != null &&
+        cached.matches(
+          track: widget.track,
+          beatsMs: widget.beatsMs,
+          downbeatsMs: widget.downbeatsMs,
+          sampleCount: sampleCount,
+        )) {
+      return cached;
+    }
+
+    final waveform = calibrationWaveformDataForTrack(
+      track: widget.track,
+      beatsMs: widget.beatsMs,
+      downbeatsMs: widget.downbeatsMs,
+      sampleCount: sampleCount,
+    );
+    return _waveformCache = _CalibrationWaveformCache(
+      track: widget.track,
+      beatsMs: widget.beatsMs,
+      downbeatsMs: widget.downbeatsMs,
+      sampleCount: sampleCount,
+      waveform: waveform,
+      peaks: waveform.peaks,
+    );
+  }
+
+  void _zoom(double multiplier, double width) {
+    final viewport = _viewport(width);
+    final next = viewport.zoomAround(
+      newPixelsPerSecond: (_pixelsPerSecond * multiplier).clamp(
+        TimelineViewport.minPixelsPerSecond,
+        _maximumPixelsPerSecond,
+      ),
+      focalXPx: width / 2,
+    );
+    setState(() {
+      _pixelsPerSecond = next.pixelsPerSecond;
+      _offsetMs = next.offsetMs;
+      _followPlayhead = false;
+    });
+  }
+
+  TimelineViewport _viewport(double width) {
+    final base = TimelineViewport.clamped(
+      durationMs: math.max(1, widget.track.durationMs),
+      widthPx: width,
+      pixelsPerSecond: _pixelsPerSecond,
+      offsetMs: _offsetMs,
+    );
+    final playhead = widget.playheadMs;
+    if (!_followPlayhead || playhead == null) return base;
+    return base.panToOffsetMs(playhead - base.visibleDurationMs ~/ 2);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final data = richWaveformForTrack(track, sampleCount: 512);
-    return Semantics(
-      label: 'Calibration waveform preview',
-      child: SizedBox(
-        height: 116,
-        width: double.infinity,
-        child: CustomPaint(
-          key: const ValueKey('analysis_calibration_waveform'),
-          painter: _CalibrationWaveformPainter(
-            frames: data.frames,
-            durationMs: data.durationMs,
-            beatsMs: beatsMs,
-            downbeatsMs: downbeatsMs,
-            waveformColor: Theme.of(context).colorScheme.primary,
-            accentColor: Theme.of(context).colorScheme.tertiary,
-          ),
-        ),
-      ),
+    final colors = Theme.of(context).colorScheme;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = math.max(1.0, constraints.maxWidth);
+        final viewport = _viewport(width);
+        final contentWidth = math.max(
+          width,
+          widget.track.durationMs / 1000 * viewport.pixelsPerSecond,
+        );
+        final sampleCount = contentWidth.ceil().clamp(256, 4096).toInt();
+        final cachedWaveform = _cachedWaveform(sampleCount);
+        final waveform = cachedWaveform.waveform;
+        final playhead = widget.playheadMs;
+        final playheadX = playhead == null ? null : viewport.msToX(playhead);
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(
+                  'Waveform preview',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const Spacer(),
+                IconButton(
+                  key: const ValueKey('analysis_workspace_zoom_out'),
+                  tooltip: 'Zoom out',
+                  onPressed: viewport.pixelsPerSecond <=
+                          TimelineViewport.minPixelsPerSecond
+                      ? null
+                      : () => _zoom(0.5, width),
+                  icon: const Icon(Icons.zoom_out),
+                ),
+                IconButton(
+                  key: const ValueKey('analysis_workspace_zoom_in'),
+                  tooltip: 'Zoom in',
+                  onPressed: viewport.pixelsPerSecond >= _maximumPixelsPerSecond
+                      ? null
+                      : () => _zoom(2, width),
+                  icon: const Icon(Icons.zoom_in),
+                ),
+                IconButton(
+                  key: const ValueKey('analysis_workspace_follow_playhead'),
+                  tooltip: 'Follow playhead',
+                  onPressed: playhead == null
+                      ? null
+                      : () => setState(() => _followPlayhead = true),
+                  icon: Icon(
+                    _followPlayhead
+                        ? Icons.gps_fixed
+                        : Icons.gps_not_fixed_outlined,
+                  ),
+                ),
+              ],
+            ),
+            Semantics(
+              label:
+                  'Waveform with ${widget.beatsMs.length} short beat markers, '
+                  '${widget.downbeatsMs.length} full-height downbeat markers'
+                  '${playhead == null ? '' : ', and the live playhead'}',
+              child: Container(
+                key: const ValueKey('analysis_workspace_waveform'),
+                height: 220,
+                decoration: BoxDecoration(
+                  color: colors.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: colors.outlineVariant),
+                ),
+                clipBehavior: Clip.hardEdge,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onHorizontalDragUpdate: (details) {
+                    final next = viewport.panByPixels(-details.delta.dx);
+                    setState(() {
+                      _offsetMs = next.offsetMs;
+                      _followPlayhead = false;
+                    });
+                  },
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Positioned(
+                        left: -(viewport.offsetMs / 1000) *
+                            viewport.pixelsPerSecond,
+                        top: 0,
+                        bottom: 0,
+                        width: contentWidth,
+                        child: CustomPaint(
+                          painter: TimelineWaveformPainter(
+                            peaks: cachedWaveform.peaks,
+                            waveform: waveform,
+                            laneIdentity: widget.track.queueItemId,
+                            viewportPixelsPerMs:
+                                viewport.pixelsPerSecond / 1000,
+                            viewportOriginMs: 0,
+                            color: colors.primary,
+                            dimColor: colors.onSurfaceVariant,
+                            handleColor: colors.secondary,
+                          ),
+                        ),
+                      ),
+                      if (playheadX != null &&
+                          playheadX >= 0 &&
+                          playheadX <= width)
+                        Positioned(
+                          key: const ValueKey(
+                            'analysis_workspace_live_playhead',
+                          ),
+                          left: playheadX - 1,
+                          top: 0,
+                          bottom: 0,
+                          width: 2,
+                          child: ColoredBox(color: colors.error),
+                        ),
+                      if (!waveform.analyzed)
+                        const Center(
+                          child: Text(
+                            'Waveform detail loading — timing markers remain '
+                            'available',
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Wrap(
+              spacing: 20,
+              runSpacing: 8,
+              children: [
+                _MarkerLegend(height: 12, width: 1, label: 'Beat — short tick'),
+                _MarkerLegend(
+                  height: 22,
+                  width: 3,
+                  label: 'Downbeat — full-height accent',
+                ),
+              ],
+            ),
+          ],
+        );
+      },
     );
   }
 }
 
-class _CalibrationWaveformPainter extends CustomPainter {
-  const _CalibrationWaveformPainter({
-    required this.frames,
-    required this.durationMs,
-    required this.beatsMs,
-    required this.downbeatsMs,
-    required this.waveformColor,
-    required this.accentColor,
-  });
-
-  final List<WaveformFrame> frames;
+class _CalibrationWaveformCache {
+  final String trackIdentity;
   final int durationMs;
+  final Object? waveformSource;
+  final Object? transientsSource;
+  final Object? silenceSource;
   final List<int> beatsMs;
   final List<int> downbeatsMs;
-  final Color waveformColor;
-  final Color accentColor;
+  final int sampleCount;
+  final TimelineWaveformData waveform;
+  final List<double> peaks;
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    final midpoint = size.height / 2;
-    final waveform = Paint()
-      ..color = waveformColor.withValues(alpha: 0.42)
-      ..strokeWidth = 1;
-    if (frames.isNotEmpty) {
-      for (var index = 0; index < frames.length; index++) {
-        final x =
-            size.width * index / (frames.length - 1).clamp(1, frames.length);
-        final amplitude = frames[index].peak.abs().clamp(0.0, 1.0) * midpoint;
-        canvas.drawLine(
-          Offset(x, midpoint - amplitude),
-          Offset(x, midpoint + amplitude),
-          waveform,
-        );
-      }
-    }
-    final markers = Paint()..strokeWidth = 1;
-    void draw(Iterable<int> positions, Color color, double opacity) {
-      markers.color = color.withValues(alpha: opacity);
-      for (final ms in positions) {
-        if (durationMs <= 0 || ms < 0 || ms > durationMs) continue;
-        final x = size.width * ms / durationMs;
-        canvas.drawLine(Offset(x, 0), Offset(x, size.height), markers);
-      }
-    }
+  _CalibrationWaveformCache({
+    required QueueTrack track,
+    required List<int> beatsMs,
+    required List<int> downbeatsMs,
+    required this.sampleCount,
+    required this.waveform,
+    required this.peaks,
+  })  : trackIdentity = track.queueItemId,
+        durationMs = track.durationMs,
+        waveformSource = track.analysis?.summary?.waveform,
+        transientsSource = track.analysis?.summary?.transients,
+        silenceSource = track.analysis?.summary?.silence,
+        beatsMs = List<int>.unmodifiable(beatsMs),
+        downbeatsMs = List<int>.unmodifiable(downbeatsMs);
 
-    draw(beatsMs, waveformColor, 0.55);
-    draw(downbeatsMs, accentColor, 0.95);
+  bool matches({
+    required QueueTrack track,
+    required List<int> beatsMs,
+    required List<int> downbeatsMs,
+    required int sampleCount,
+  }) {
+    final summary = track.analysis?.summary;
+    return track.queueItemId == trackIdentity &&
+        track.durationMs == durationMs &&
+        identical(summary?.waveform, waveformSource) &&
+        identical(summary?.transients, transientsSource) &&
+        identical(summary?.silence, silenceSource) &&
+        sampleCount == this.sampleCount &&
+        _sameInts(beatsMs, this.beatsMs) &&
+        _sameInts(downbeatsMs, this.downbeatsMs);
   }
 
+  static bool _sameInts(List<int> left, List<int> right) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
+  }
+}
+
+class _MarkerLegend extends StatelessWidget {
+  const _MarkerLegend({
+    required this.height,
+    required this.width,
+    required this.label,
+  });
+
+  final double height;
+  final double width;
+  final String label;
+
   @override
-  bool shouldRepaint(covariant _CalibrationWaveformPainter old) =>
-      old.frames != frames ||
-      old.durationMs != durationMs ||
-      old.beatsMs != beatsMs ||
-      old.downbeatsMs != downbeatsMs ||
-      old.waveformColor != waveformColor ||
-      old.accentColor != accentColor;
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 12,
+          height: 24,
+          child: Center(
+            child: Container(
+              width: width,
+              height: height,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(label),
+      ],
+    );
+  }
 }

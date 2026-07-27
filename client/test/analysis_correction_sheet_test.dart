@@ -187,7 +187,9 @@ void main() {
         'beat_grid': {'beats_ms': beats},
         'meter': {'beats_per_bar': 4},
         'downbeat_phase': {'index': 0},
-        'downbeats': {'positions_ms': [100, 2100]},
+        'downbeats': {
+          'positions_ms': [100, 2100]
+        },
       },
     );
     final preview = analysisTimingAuditionProjection(
@@ -216,14 +218,16 @@ void main() {
           },
           'meter': {'beats_per_bar': 4},
           'downbeat_phase': {'index': 1},
-          'downbeats': {'positions_ms': [600, 2600]},
+          'downbeats': {
+            'positions_ms': [600, 2600]
+          },
         },
       ),
     );
 
     final preview = analysisTimingAuditionProjectionForTrack(track);
-    expect(preview.sourceBeatsMs,
-        [100, 600, 1100, 1600, 2100, 2600, 3100, 3600]);
+    expect(
+        preview.sourceBeatsMs, [100, 600, 1100, 1600, 2100, 2600, 3100, 3600]);
     expect(preview.beatsPerBar, 4);
     expect(preview.downbeatPhaseIndex, 1);
     expect(preview.sourceDownbeatsMs, [600, 2600]);
@@ -239,14 +243,18 @@ void main() {
           'beats_ms': [100, 600, 1100, 1600],
         },
         'downbeat_phase': {'index': 0},
-        'downbeats': {'positions_ms': [100]},
+        'downbeats': {
+          'positions_ms': [100]
+        },
       },
       {
         'beat_grid': {
           'beats_ms': [100, 600, 1100, 1600],
         },
         'meter': {'beats_per_bar': 4},
-        'downbeats': {'positions_ms': [100]},
+        'downbeats': {
+          'positions_ms': [100]
+        },
       },
     ];
 
@@ -511,6 +519,77 @@ void main() {
     expect(saved?.manualTiming?.beatAnchorMs, isNull);
     expect(saved?.manualTiming?.beatsPerBar, 4);
     expect(saved?.manualTiming?.downbeatPhaseIndex, 2);
+  });
+
+  testWidgets(
+      'phase-only save seeds generated meter without copying generated grid',
+      (tester) async {
+    TrackAnalysisOverrides? saved;
+    final track = QueueTrack(
+      id: '1',
+      title: 'Generated meter fixture',
+      duration: 120,
+      addedAt: DateTime.utc(2026, 7, 26),
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'bpm': {'value': 128},
+          'beat_grid': {
+            'offset_ms': 100,
+            'beats_ms': [100, 569, 1038, 1507],
+          },
+          'meter': {'beats_per_bar': 4},
+          'downbeat_phase': {'index': 0},
+          'downbeats': {
+            'positions_ms': [100],
+          },
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => FilledButton(
+            onPressed: () async {
+              saved = await showAnalysisCorrectionSheet(
+                context: context,
+                track: track,
+              );
+            },
+            child: const Text('Edit'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<TextField>(
+            find.byKey(const ValueKey('analysis_correction_meter')),
+          )
+          .controller
+          ?.text,
+      '4',
+    );
+    tester
+        .widget<IconButton>(
+          find.byKey(const ValueKey('analysis_correction_phase_right')),
+        )
+        .onPressed!();
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
+    await tester.pumpAndSettle();
+
+    expect(saved?.manualTiming?.bpm, isNull);
+    expect(saved?.manualTiming?.beatAnchorMs, isNull);
+    expect(saved?.manualTiming?.beatsPerBar, 4);
+    expect(saved?.manualTiming?.downbeatPhaseIndex, 1);
+    final request = saved!.toJson(includeServerMetadata: false);
+    expect(request, isNot(contains('bpm')));
+    expect(request, isNot(contains('beat_grid')));
+    expect(request, isNot(contains('downbeats')));
   });
 
   testWidgets(
