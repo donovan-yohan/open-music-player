@@ -103,6 +103,7 @@ ProjectedClickTrack? projectClickAudition({
   final target = uniqueMixClipForQueueItemId(model, request.queueItemId);
   if (target == null) return null;
   final targetClip = target;
+
   final downbeats = HashSet<int>.from(request.sourceDownbeatsMs);
   final byOutputPosition = <int, ProjectedClickMarker>{};
 

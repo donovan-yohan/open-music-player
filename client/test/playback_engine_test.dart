@@ -9,6 +9,7 @@ import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/core/engine/voice.dart';
+import 'package:open_music_player/core/engine/voice_pool.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
@@ -303,6 +304,96 @@ void main() {
     await engine.dispose();
     await clock.dispose();
   });
+
+  test('loadMix failure releases click replacement and preserves the error',
+      () async {
+    final clock = DefaultTimelineClock(
+      now: () => DateTime.utc(2026),
+      uiTickInterval: const Duration(hours: 1),
+    );
+    final pool = _ThrowingVoicePool(clock: clock);
+    final clickOutputs = <_FakeClickOutput>[];
+    final engine = PlaybackEngine(
+      clock: clock,
+      voicePool: pool,
+      clickAudioOutputFactory: () {
+        final output = _FakeClickOutput();
+        clickOutputs.add(output);
+        return output;
+      },
+    );
+    await engine.start();
+    await engine.loadMix(_clickModel());
+    final lease = engine.openClickAudition(
+      ClickAuditionRequest(
+        queueItemId: 'queue-a',
+        sourceBeatsMs: const [0, 500, 1000, 1500],
+        sourceDownbeatsMs: const [0],
+      ),
+    );
+    await lease.settled;
+
+    final failure = StateError('canonical load failed');
+    pool.loadMixError = failure;
+    await expectLater(
+      engine.loadMix(_clickModel(nativeBpm: 128)),
+      throwsA(same(failure)),
+    );
+    await _settleClickAudition();
+
+    expect(engine.clickAuditionState.status, ClickAuditionStatus.ready);
+    expect(clickOutputs, hasLength(2));
+    expect(clickOutputs.last.loadedTrack?.queueItemId, 'queue-a');
+
+    await lease.dispose();
+    await engine.dispose();
+    await clock.dispose();
+  });
+
+  test('metadata failure releases click replacement and preserves the error',
+      () async {
+    final clock = DefaultTimelineClock(
+      now: () => DateTime.utc(2026),
+      uiTickInterval: const Duration(hours: 1),
+    );
+    final pool = _ThrowingVoicePool(clock: clock);
+    final clickOutputs = <_FakeClickOutput>[];
+    final engine = PlaybackEngine(
+      clock: clock,
+      voicePool: pool,
+      clickAudioOutputFactory: () {
+        final output = _FakeClickOutput();
+        clickOutputs.add(output);
+        return output;
+      },
+    );
+    await engine.start();
+    await engine.loadMix(_clickModel());
+    final lease = engine.openClickAudition(
+      ClickAuditionRequest(
+        queueItemId: 'queue-a',
+        sourceBeatsMs: const [0, 500, 1000, 1500],
+        sourceDownbeatsMs: const [0],
+      ),
+    );
+    await lease.settled;
+
+    final failure = StateError('metadata replacement failed');
+    pool.replaceMixMetadataError = failure;
+    expect(
+      () => engine.replaceMixMetadata(_clickModel(nativeBpm: 128)),
+      throwsA(same(failure)),
+    );
+    await _settleClickAudition();
+
+    expect(engine.clickAuditionState.status, ClickAuditionStatus.ready);
+    expect(clickOutputs, hasLength(2));
+    expect(clickOutputs.last.loadedTrack?.queueItemId, 'queue-a');
+
+    await lease.dispose();
+    await engine.dispose();
+    await clock.dispose();
+  });
 }
 
 Future<void> _settleClickAudition() async {
@@ -410,6 +501,34 @@ class _FakeVoice implements Voice {
   Future<void> resync(int expectedLocalPositionMs) async {}
   @override
   Future<void> dispose() => _events.close();
+}
+
+class _ThrowingVoicePool extends VoicePool {
+  _ThrowingVoicePool({required super.clock})
+      : super(voiceFactory: () => _FakeVoice('throwing-pool'));
+
+  Object? loadMixError;
+  Object? replaceMixMetadataError;
+
+  @override
+  Future<void> loadMix(
+    TimelineModel model, {
+    bool preserveActivePlayback = false,
+  }) {
+    final error = loadMixError;
+    if (error != null) throw error;
+    return super.loadMix(
+      model,
+      preserveActivePlayback: preserveActivePlayback,
+    );
+  }
+
+  @override
+  void replaceMixMetadata(TimelineModel model) {
+    final error = replaceMixMetadataError;
+    if (error != null) throw error;
+    super.replaceMixMetadata(model);
+  }
 }
 
 class _FakeClickOutput implements ClickAudioOutput {

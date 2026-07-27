@@ -740,7 +740,7 @@ class QueueTimelineController {
     await _enqueueCommand(() => _skipToIndex(index));
   }
 
-  Future<bool> playQueueItemByQueueItemId(String queueItemId) async {
+  Future<bool> selectQueueItemByQueueItemId(String queueItemId) async {
     var activated = false;
     await _enqueueCommand(() async {
       final index = _queueIndexForQueueItemId(queueItemId);
@@ -748,7 +748,6 @@ class QueueTimelineController {
       final active = _currentIndex == index &&
           _session.clipAt(index)?.queueItemId == queueItemId;
       if (!active) await _skipToIndex(index);
-      await _play();
       activated = true;
     });
     return activated;

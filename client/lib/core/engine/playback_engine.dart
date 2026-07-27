@@ -140,24 +140,30 @@ class PlaybackEngine implements PlaybackEngineControls {
       _completedClipIds.clear();
     }
     final clickReplacement = _clickAuditioner.beginModelReplacement(model);
-    await _pool.loadMix(
-      model,
-      preserveActivePlayback: preserveActivePlayback,
-    );
-    // Canonical voice readiness defines loadMix completion. Click audition is
-    // reconciled only afterwards and never holds up model replacement.
-    unawaited(
-      _clickAuditioner.completeModelReplacement(clickReplacement),
-    );
+    try {
+      await _pool.loadMix(
+        model,
+        preserveActivePlayback: preserveActivePlayback,
+      );
+    } finally {
+      // Canonical voice readiness defines loadMix completion. Click audition
+      // is reconciled only afterwards and never holds up model replacement.
+      unawaited(
+        _clickAuditioner.completeModelReplacement(clickReplacement),
+      );
+    }
   }
 
   void replaceMixMetadata(TimelineModel model) {
     _model = model;
     final clickReplacement = _clickAuditioner.beginModelReplacement(model);
-    _pool.replaceMixMetadata(model);
-    unawaited(
-      _clickAuditioner.completeModelReplacement(clickReplacement),
-    );
+    try {
+      _pool.replaceMixMetadata(model);
+    } finally {
+      unawaited(
+        _clickAuditioner.completeModelReplacement(clickReplacement),
+      );
+    }
   }
 
   ClickAuditionLease openClickAudition(ClickAuditionRequest request) =>

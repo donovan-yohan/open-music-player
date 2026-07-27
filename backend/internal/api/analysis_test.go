@@ -202,6 +202,209 @@ func TestUpdateTrackAnalysisOverridesRevisionContractAgainstPostgres(t *testing.
 	}
 }
 
+func TestUpdateTrackAnalysisTimingMutationPreservesMetadataAgainstPostgres(t *testing.T) {
+	database := newAnalysisHandlerTestDB(t)
+	ctx := context.Background()
+	userID := uuid.New()
+	if _, err := database.Exec(
+		`INSERT INTO users (id, email, username, password_hash) VALUES ($1, $2, $3, $4)`,
+		userID, "timing-mutation@example.test", "timing-mutation", "x",
+	); err != nil {
+		t.Fatal(err)
+	}
+	trackRepo := db.NewTrackRepository(database)
+	libraryRepo := db.NewLibraryRepository(database)
+	analysisRepo := db.NewAnalysisRepository(database)
+	track, _, err := trackRepo.CreateTrackFromMetadata(
+		ctx, "Fixture Artist", "Timing Mutation API", "", 120000,
+		db.WithStorage("tracks/fixture/timing-mutation-api.wav", 1024),
+		db.WithMetadata(json.RawMessage(`{}`)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := libraryRepo.AddTrackToLibrary(ctx, userID, track.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := analysisRepo.StoreResult(ctx, track.ID, db.AnalysisResult{
+		SummaryJSON: json.RawMessage(`{"bpm":{"value":120}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const existing = `{
+		"manual_timing_v2":{"schema_version":2,"bpm":120},
+		"manual_timing_override":{"bpm":119},
+		"bpm":{"value":118},
+		"beat_grid":{"beats_ms":[0,500]},
+		"downbeats":{"positions_ms":[0]},
+		"key":{"value":"D minor"},
+		"camelot":{"value":"7A"},
+		"energy":{"value":0.61},
+		"vendor_fact":{"keep":true}
+	}`
+	if _, err := database.ExecContext(
+		ctx,
+		`UPDATE track_analysis
+		 SET overrides_json = $2::jsonb, manual_override_revision = 7
+		 WHERE track_id = $1`,
+		track.ID, existing,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewAnalysisHandlers(analysisRepo, libraryRepo)
+	update := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(
+			http.MethodPatch,
+			"/api/v1/tracks/"+strconv.FormatInt(track.ID, 10)+"/analysis/overrides",
+			strings.NewReader(body),
+		)
+		req.SetPathValue("track_id", strconv.FormatInt(track.ID, 10))
+		req = req.WithContext(context.WithValue(
+			req.Context(),
+			auth.UserContextKey,
+			&auth.UserContext{UserID: userID, Email: "timing-mutation@example.test"},
+		))
+		recorder := httptest.NewRecorder()
+		handler.UpdateTrackAnalysisOverrides(recorder, req)
+		return recorder
+	}
+
+	replaced := update(`{
+		"overrides":{
+			"manual_timing_v2":{"schema_version":2,"bpm":126,"beat_anchor_ms":25},
+			"manualTimingV2":{"schemaVersion":2,"bpm":240},
+			"manualTimingOverride":{"bpm":239},
+			"nativeBpm":238,
+			"bpmConfidence":0.01,
+			"beatGridMs":[0,251],
+			"beatsMs":[0,252],
+			"beatGridOffsetMs":99,
+			"offsetMs":98,
+			"downbeatsMs":[0],
+			"incoming_fact":{"keep":"replace"}
+		},
+		"expected_revision":7,
+		"timing_mutation":"replace"
+	}`)
+	if replaced.Code != http.StatusOK {
+		t.Fatalf("replace status = %d, body = %s", replaced.Code, replaced.Body.String())
+	}
+	var replaceResponse AnalysisResponse
+	if err := json.NewDecoder(replaced.Body).Decode(&replaceResponse); err != nil {
+		t.Fatal(err)
+	}
+	if replaceResponse.OverrideRevision != 8 {
+		t.Fatalf("replace revision = %d, want 8", replaceResponse.OverrideRevision)
+	}
+	replaceDocument := map[string]any{}
+	if err := json.Unmarshal(replaceResponse.Overrides, &replaceDocument); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := replaceDocument["manual_timing_v2"]; !present {
+		t.Fatalf("replace response omitted canonical timing: %#v", replaceDocument)
+	}
+	assertAnalysisResponsePreservedMetadata(t, replaceDocument)
+
+	storedAfterReplace, err := analysisRepo.GetByTrackID(ctx, track.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedReplaceDocument := decodeStoredAnalysisOverrides(t, storedAfterReplace.OverridesJSON)
+	assertStoredAnalysisTimingRepresentationsAbsent(t, storedReplaceDocument, "manual_timing_v2")
+	if got := storedReplaceDocument["incoming_fact"].(map[string]any)["keep"]; got != "replace" {
+		t.Fatalf("replace incoming fact = %#v, want replace", got)
+	}
+
+	stale := update(`{
+		"overrides":{},
+		"expected_revision":7,
+		"timing_mutation":"clear"
+	}`)
+	assertAnalysisOverrideError(t, stale, http.StatusConflict, "ANALYSIS_OVERRIDE_CONFLICT")
+
+	cleared := update(`{
+		"overrides":{
+			"manualTimingV2":{"schemaVersion":2,"bpm":230},
+			"manualTimingOverride":{"bpm":229},
+			"nativeBpm":228,
+			"beatGridMs":[0,260],
+			"downbeatsMs":[0],
+			"incoming_fact":{"keep":"clear"}
+		},
+		"expected_revision":8,
+		"timing_mutation":"clear"
+	}`)
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, body = %s", cleared.Code, cleared.Body.String())
+	}
+	var clearResponse AnalysisResponse
+	if err := json.NewDecoder(cleared.Body).Decode(&clearResponse); err != nil {
+		t.Fatal(err)
+	}
+	if clearResponse.OverrideRevision != 9 {
+		t.Fatalf("clear revision = %d, want 9", clearResponse.OverrideRevision)
+	}
+	clearDocument := map[string]any{}
+	if err := json.Unmarshal(clearResponse.Overrides, &clearDocument); err != nil {
+		t.Fatal(err)
+	}
+	assertAnalysisResponsePreservedMetadata(t, clearDocument)
+
+	storedAfterClear, err := analysisRepo.GetByTrackID(ctx, track.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedClearDocument := decodeStoredAnalysisOverrides(t, storedAfterClear.OverridesJSON)
+	assertStoredAnalysisTimingRepresentationsAbsent(t, storedClearDocument, "")
+	if got := storedClearDocument["incoming_fact"].(map[string]any)["keep"]; got != "clear" {
+		t.Fatalf("clear incoming fact = %#v, want clear", got)
+	}
+}
+
+func decodeStoredAnalysisOverrides(t *testing.T, raw json.RawMessage) map[string]any {
+	t.Helper()
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	return document
+}
+
+func assertStoredAnalysisTimingRepresentationsAbsent(
+	t *testing.T,
+	document map[string]any,
+	except string,
+) {
+	t.Helper()
+	for _, key := range []string{
+		"manual_timing_v2", "manualTimingV2",
+		"manual_timing_override", "manualTimingOverride",
+		"bpm", "native_bpm", "nativeBpm", "bpm_confidence", "bpmConfidence",
+		"beat_grid", "beatGrid", "beat_grid_ms", "beatGridMs", "beats_ms", "beatsMs",
+		"beat_grid_offset_ms", "beatGridOffsetMs", "offset_ms", "offsetMs",
+		"downbeats", "downbeats_ms", "downbeatsMs",
+	} {
+		if key == except {
+			continue
+		}
+		if _, present := document[key]; present {
+			t.Fatalf("stored timing representation %q survived: %#v", key, document[key])
+		}
+	}
+	assertAnalysisResponsePreservedMetadata(t, document)
+}
+
+func assertAnalysisResponsePreservedMetadata(t *testing.T, document map[string]any) {
+	t.Helper()
+	for _, key := range []string{"key", "camelot", "energy", "vendor_fact"} {
+		if _, present := document[key]; !present {
+			t.Fatalf("timing mutation removed %q: %#v", key, document)
+		}
+	}
+}
+
 func newAnalysisHandlerTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	dsn := testutil.PostgresTestDSN()

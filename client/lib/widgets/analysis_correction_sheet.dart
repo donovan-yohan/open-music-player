@@ -535,8 +535,9 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
     _calibrationRoute = _routeObservation.activeRouteConfirmed
         ? _routeObservation.route
         : ClickAuditionOutputRoute.unknown;
-    _outputOffsetMs =
-        audition?.outputOffsetForRoute?.call(_calibrationRoute) ?? 0;
+    _outputOffsetMs = _safeOutputOffset(
+      audition?.outputOffsetForRoute?.call(_calibrationRoute) ?? 0,
+    );
     _outputOffsetDraftMs = _outputOffsetMs;
     _lastValidAuditionProjection = analysisTimingAuditionProjectionForTrack(
       widget.track,
@@ -834,7 +835,9 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
   }
 
   void _selectCalibrationRoute(ClickAuditionOutputRoute route) {
-    final offset = widget.clickAudition?.outputOffsetForRoute?.call(route) ?? 0;
+    final offset = _safeOutputOffset(
+      widget.clickAudition?.outputOffsetForRoute?.call(route) ?? 0,
+    );
     setState(() {
       _calibrationRoute = route;
       _outputOffsetMs = offset;
