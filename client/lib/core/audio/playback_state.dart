@@ -749,7 +749,11 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
   Future<bool> playQueueItemByQueueItemId(String queueItemId) async {
     _transportCommandGeneration++;
-    return _queueController.playQueueItemByQueueItemId(queueItemId);
+    final selected =
+        await _queueController.selectQueueItemByQueueItemId(queueItemId);
+    if (!selected) return false;
+    await play();
+    return true;
   }
 
   Future<void> removeFromQueue(int index) =>

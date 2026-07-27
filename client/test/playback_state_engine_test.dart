@@ -368,6 +368,120 @@ void main() {
       playback.dispose();
     });
 
+    test(
+        'queue-item playback selects exact current, noncurrent, duplicate, and missing occurrences',
+        () async {
+      final playback = _playbackState();
+      await playback.playQueue([
+        _track(1, seconds: 30),
+        _track(2, seconds: 45),
+        _track(1, seconds: 30),
+      ]);
+      final cues = playback.snapshot.cues;
+      expect(cues, hasLength(3));
+      expect(cues.map((cue) => cue.queueIndex), [0, 1, 2]);
+      expect(cues.map((cue) => cue.mediaItem.id), ['1', '2', '1']);
+      expect(cues.map((cue) => cue.queueItemId).toSet(), hasLength(3));
+      expect(
+        playback.sourcePositionMsForQueueItemId(cues[0].queueItemId),
+        0,
+      );
+      expect(
+        playback.sourcePositionMsForQueueItemId(cues[2].queueItemId),
+        isNull,
+      );
+
+      await playback.pause();
+      expect(
+        await playback.playQueueItemByQueueItemId('missing-occurrence'),
+        isFalse,
+      );
+      expect(playback.currentIndex, 0);
+      expect(playback.isPlaying, isFalse);
+
+      expect(
+        await playback.playQueueItemByQueueItemId(cues[0].queueItemId),
+        isTrue,
+      );
+      expect(playback.currentIndex, 0);
+      expect(playback.isPlaying, isTrue);
+
+      await playback.pause();
+      expect(
+        await playback.playQueueItemByQueueItemId(cues[1].queueItemId),
+        isTrue,
+      );
+      expect(playback.currentIndex, 1);
+      expect(playback.currentItem?.id, '2');
+      expect(playback.currentItem?.extras?['url'], 'https://example.com/2.mp3');
+
+      await playback.pause();
+      expect(
+        await playback.playQueueItemByQueueItemId(cues[2].queueItemId),
+        isTrue,
+      );
+      expect(playback.currentIndex, 2);
+      expect(playback.currentItem?.id, '1');
+      expect(playback.snapshot.cues[2].queueItemId, cues[2].queueItemId);
+      expect(playback.snapshot.cues[0].queueItemId, cues[0].queueItemId);
+      expect(
+        playback.sourcePositionMsForQueueItemId(cues[2].queueItemId),
+        0,
+      );
+      expect(
+        playback.sourcePositionMsForQueueItemId(cues[0].queueItemId),
+        isNull,
+      );
+      playback.dispose();
+    });
+
+    test('paused current queue occurrence refreshes an expired signed URL',
+        () async {
+      var descriptorCalls = 0;
+      final playback = _playbackState(
+        signedAudioUrlService:
+            SignedAudioUrlService.withRequester((body) async {
+          descriptorCalls++;
+          final id = (body['trackIds'] as List).cast<int>().single;
+          return {
+            'urls': [
+              {
+                'trackId': id,
+                'url': 'https://example.com/$id-v$descriptorCalls.mp3',
+                'expiresAt': (descriptorCalls == 1
+                        ? DateTime.now()
+                            .toUtc()
+                            .subtract(const Duration(minutes: 1))
+                        : DateTime.now().toUtc().add(const Duration(hours: 1)))
+                    .toIso8601String(),
+              },
+            ],
+            'unavailable': <Map<String, dynamic>>[],
+          };
+        }),
+      );
+      await playback.playQueue([_track(1, seconds: 60)]);
+      await playback.seek(const Duration(seconds: 11));
+      await playback.pause();
+      final queueItemId = playback.snapshot.cues.single.queueItemId;
+
+      expect(
+        await playback.playQueueItemByQueueItemId(queueItemId),
+        isTrue,
+      );
+
+      expect(descriptorCalls, 2);
+      expect(playback.isPlaying, isTrue);
+      expect(playback.currentIndex, 0);
+      expect(playback.position, const Duration(seconds: 11));
+      expect(
+        playback.currentItem?.extras?['url'],
+        'https://example.com/1-v2.mp3',
+      );
+      expect(playback.snapshot.cues.single.queueItemId, queueItemId);
+      playback.dispose();
+    });
+
     test('replacements and skips advance focus transport generation', () async {
       final playback = _playbackState();
 

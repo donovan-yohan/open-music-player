@@ -61,6 +61,55 @@ void main() {
     _expectRichWaveformArtifacts(analysis);
   });
 
+  test('analysis override API omits preserve and sends replace and clear',
+      () async {
+    final requests = <http.Request>[];
+    final client = mockQueueApiClient((request) async {
+      requests.add(request);
+      return http.Response(
+        jsonEncode({
+          'status': 'analyzed',
+          'overrides': <String, dynamic>{},
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+
+    await client.updateTrackAnalysisOverrides(
+      42,
+      const TrackAnalysisOverrides(musicalKey: 'A minor'),
+    );
+    await client.updateTrackAnalysisOverrides(
+      42,
+      const TrackAnalysisOverrides(
+        manualTiming: ManualTimingOverride(bpm: 126),
+        timingMutation: AnalysisTimingMutation.replace,
+      ),
+      expectedRevision: 1,
+    );
+    await client.updateTrackAnalysisOverrides(
+      42,
+      const TrackAnalysisOverrides(
+        timingMutation: AnalysisTimingMutation.clear,
+      ),
+      expectedRevision: 2,
+    );
+
+    final bodies = [
+      for (final request in requests)
+        jsonDecode(request.body) as Map<String, dynamic>,
+    ];
+    expect(bodies, hasLength(3));
+    expect(bodies[0], isNot(contains('timing_mutation')));
+    expect(bodies[1]['timing_mutation'], 'replace');
+    expect(bodies[1]['expected_revision'], 1);
+    expect(bodies[1]['overrides']['manual_timing_v2']['bpm'], 126);
+    expect(bodies[2]['timing_mutation'], 'clear');
+    expect(bodies[2]['expected_revision'], 2);
+    expect(bodies[2]['overrides'], isEmpty);
+  });
+
   test('rich analysis stays detail-free through playback persistence', () {
     final envelope = productionBands3AnalysisEnvelope();
     final analysis = TrackAnalysis.fromJson(

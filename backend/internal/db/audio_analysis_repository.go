@@ -408,14 +408,18 @@ func (r *AnalysisRepository) setOverrides(ctx context.Context, trackID int64, ov
 	if err != nil {
 		return nil, err
 	}
-	preserveMetadata := mutation == AnalysisTimingClear
+	replaceTiming := mutation != ""
 	updateQuery := `
 		UPDATE track_analysis
 		SET overrides_json = CASE WHEN $6 THEN
-				jsonb_strip_nulls(jsonb_build_object(
-					'key', overrides_json->'key',
-					'camelot', overrides_json->'camelot'
-				)) || COALESCE($3::jsonb, '{}'::jsonb)
+				(COALESCE(overrides_json, '{}'::jsonb) - ARRAY[
+					'manual_timing_v2', 'manualTimingV2',
+					'manual_timing_override', 'manualTimingOverride',
+					'bpm', 'nativeBpm', 'bpmConfidence',
+					'beat_grid', 'beatGrid', 'beatGridMs', 'beatsMs',
+					'beatGridOffsetMs', 'offsetMs',
+					'downbeats', 'downbeatsMs'
+				]::text[]) || COALESCE($3::jsonb, '{}'::jsonb)
 			WHEN $5 THEN
 				jsonb_strip_nulls(jsonb_build_object(
 					'bpm', overrides_json->'bpm',
@@ -435,7 +439,7 @@ func (r *AnalysisRepository) setOverrides(ctx context.Context, trackID int64, ov
 		RETURNING ` + analysisReturningColumns
 	var analysis TrackAnalysis
 	err = scanTrackAnalysis(r.db.QueryRowContext(
-		ctx, updateQuery, trackID, expectedRevision, nullableRawJSON(stampedOverrides), overrideUpdatedAt, preserveLegacyTiming, preserveMetadata,
+		ctx, updateQuery, trackID, expectedRevision, nullableRawJSON(stampedOverrides), overrideUpdatedAt, preserveLegacyTiming, replaceTiming,
 	), &analysis)
 	if err == nil {
 		return &analysis, nil
