@@ -222,6 +222,19 @@ Future<void> _pump(
   }
 }
 
+Future<void> _pumpFrames(
+  WidgetTester tester,
+  Duration duration, {
+  Duration frame = const Duration(milliseconds: 25),
+}) async {
+  var remaining = duration;
+  while (remaining > Duration.zero) {
+    final step = remaining < frame ? remaining : frame;
+    await tester.pump(step);
+    remaining -= step;
+  }
+}
+
 class _StableWaveformSource {
   TimelineWaveformData waveformFor(QueueTrack track, int sampleCount) =>
       richWaveformForTrack(track, sampleCount: sampleCount);
@@ -281,6 +294,52 @@ TimelineWaveformPainter _waveformPainter(WidgetTester tester, String trackId) {
 }
 
 void main() {
+  test('scrub edge velocity is bounded, symmetric, and has a center dead zone',
+      () {
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: 0,
+        paneWidth: 300,
+      ),
+      -timelineScrubMaxEdgeScrollPxPerSecond,
+    );
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: 300,
+        paneWidth: 300,
+      ),
+      timelineScrubMaxEdgeScrollPxPerSecond,
+    );
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: 28,
+        paneWidth: 300,
+      ),
+      closeTo(-timelineScrubMaxEdgeScrollPxPerSecond / 2, 0.001),
+    );
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: 272,
+        paneWidth: 300,
+      ),
+      closeTo(timelineScrubMaxEdgeScrollPxPerSecond / 2, 0.001),
+    );
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: 150,
+        paneWidth: 300,
+      ),
+      0,
+    );
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: double.nan,
+        paneWidth: 300,
+      ),
+      0,
+    );
+  });
+
   testWidgets('lane header keeps default-scale BPM text untruncated', (
     tester,
   ) async {
@@ -1141,6 +1200,68 @@ void main() {
     expect(after.left, greaterThan(before.left));
     expect(waveformBuilds, waveformBuildsBeforePosition);
   });
+
+  for (final direction in [-1.0, 1.0]) {
+    testWidgets(
+      'live playhead feedback keeps ${direction < 0 ? 'left' : 'right'} drag under the pointer',
+      (tester) async {
+        final positions = StreamController<int>.broadcast(sync: true);
+        addTearDown(positions.close);
+        final updates = <int>[];
+        final current = _track('t1', 'Midnight Drive', 390);
+
+        await _pump(
+          tester,
+          previous: null,
+          current: current,
+          upcoming: const [],
+          timelineModel: TimelineModel(
+            clips: [_mixClip('t1', 0, 390000)],
+          ),
+          playheadPositionMs: 180000,
+          positionMsStream: positions.stream,
+          onScrubStart: () {},
+          onScrubUpdate: (ms) {
+            updates.add(ms);
+            positions.add(ms);
+          },
+          onScrubEnd: (_) async {},
+        );
+
+        final handle =
+            find.byKey(const ValueKey('timeline_playhead_drag_handle'));
+        final startX = tester.getCenter(handle).dx;
+        final gesture = await tester.startGesture(tester.getCenter(handle));
+        await gesture.moveBy(Offset(24 * direction, 0));
+        await tester.pump();
+        updates.clear();
+        var expectedX = startX + 24 * direction;
+
+        for (var i = 0; i < 4; i++) {
+          await gesture.moveBy(Offset(8 * direction, 0));
+          await tester.pump();
+          expectedX += 8 * direction;
+          final handleX = tester.getRect(handle).center.dx;
+          final lineX = tester
+              .getRect(find.byKey(const ValueKey('timeline_playhead')))
+              .topLeft
+              .dx;
+          expect(handleX, closeTo(expectedX, 0.1));
+          expect(lineX, closeTo(expectedX, 0.1));
+        }
+
+        expect(updates, hasLength(4));
+        for (var i = 1; i < updates.length; i++) {
+          expect(
+            updates[i] - updates[i - 1],
+            (8000 * direction).round(),
+          );
+        }
+        await gesture.up();
+        await tester.pumpAndSettle();
+      },
+    );
+  }
 
   testWidgets('browse drag scrubs through the engine lifecycle', (
     tester,
@@ -2435,13 +2556,96 @@ void main() {
     expect(events.first, 'begin');
   });
 
-  testWidgets('scrub drag only pans when held near a horizontal edge', (
+  testWidgets('edge scrub scroll is elapsed-time based and stops on release', (
     tester,
   ) async {
     final current = _track('t1', 'Midnight Drive', 240);
     final next = _track('t2', 'Paper Planes', 240);
     final later = _track('t3', 'Glass', 240);
+    final updates = <int>[];
 
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next, later],
+      onScrubStart: () {},
+      onScrubUpdate: updates.add,
+      onScrubEnd: (_) async {},
+    );
+
+    final ruler = tester.getRect(
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+    );
+    final edgeGesture = await tester.startGesture(
+      Offset(ruler.right - 30, ruler.center.dy),
+    );
+    await edgeGesture.moveBy(const Offset(24, 0));
+    await tester.pump();
+    final beforeJitter = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+
+    for (var i = 0; i < 20; i++) {
+      await edgeGesture.moveBy(Offset(i.isEven ? -0.5 : 0.5, 0));
+    }
+    await tester.pump();
+    final afterJitter = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    expect(
+      afterJitter.left,
+      closeTo(beforeJitter.left, 0.1),
+      reason: 'pointer event count must not drive viewport distance',
+    );
+
+    const hold = Duration(milliseconds: 250);
+    await _pumpFrames(tester, hold);
+    final afterHold = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    final paneWidth = ruler.width - StackedWaveformTimeline.railWidth;
+    final pointerPaneX = paneWidth - 6;
+    final expectedDistance = timelineScrubEdgeVelocityPxPerSecond(
+          pointerPaneX: pointerPaneX,
+          paneWidth: paneWidth,
+        ) *
+        hold.inMilliseconds /
+        1000;
+
+    expect(
+      beforeJitter.left - afterHold.left,
+      closeTo(expectedDistance, 1),
+    );
+    expect(
+      beforeJitter.left - afterHold.left,
+      lessThanOrEqualTo(
+        timelineScrubMaxEdgeScrollPxPerSecond *
+            hold.inMilliseconds /
+            1000,
+      ),
+    );
+
+    await edgeGesture.up();
+    await tester.pump();
+    final afterRelease = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    final updateCountAfterRelease = updates.length;
+    await _pumpFrames(tester, hold);
+    expect(
+      tester.getRect(find.byKey(const ValueKey('timeline_clip_t2'))).left,
+      closeTo(afterRelease.left, 0.1),
+    );
+    expect(updates, hasLength(updateCountAfterRelease));
+  });
+
+  testWidgets('center scrub hold does not pan and leaving an edge stops pan', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    final later = _track('t3', 'Glass', 240);
     await _pump(
       tester,
       previous: null,
@@ -2455,41 +2659,188 @@ void main() {
     final ruler = tester.getRect(
       find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
     );
-    final beforeCenter = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t2')),
+    final clip = find.byKey(const ValueKey('timeline_clip_t2'));
+    final centerGesture = await tester.startGesture(
+      Offset(ruler.center.dx - 24, ruler.center.dy),
     );
-    final centerGesture = await tester.startGesture(ruler.center);
-    await centerGesture.moveBy(const Offset(80, 0));
+    await centerGesture.moveBy(const Offset(24, 0));
     await tester.pump();
-    final afterCenter = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t2')),
-    );
-    expect(afterCenter.left, closeTo(beforeCenter.left, 1));
+    final beforeCenterHold = tester.getRect(clip);
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    expect(tester.getRect(clip).left, closeTo(beforeCenterHold.left, 0.1));
     await centerGesture.up();
-    await tester.pumpAndSettle();
+    await tester.pump();
 
-    final beforeEdge = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t2')),
-    );
     final edgeGesture = await tester.startGesture(
-      Offset(ruler.right - 4, ruler.center.dy),
+      Offset(ruler.right - 30, ruler.center.dy),
     );
-    await edgeGesture.moveBy(const Offset(24, 0));
     await edgeGesture.moveBy(const Offset(24, 0));
     await tester.pump();
-    final afterEdge = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t2')),
-    );
-
-    expect(
-      afterEdge.left,
-      lessThan(beforeEdge.left),
-      reason: 'edge scrub should reveal later timeline content',
-    );
-
+    await edgeGesture.moveTo(ruler.center);
+    await tester.pump();
+    final afterLeavingEdge = tester.getRect(clip);
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    expect(tester.getRect(clip).left, closeTo(afterLeavingEdge.left, 0.1));
     await edgeGesture.up();
-    await tester.pumpAndSettle();
   });
+
+  testWidgets('left and right edge holds scroll at symmetric rates', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    final later = _track('t3', 'Glass', 240);
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next, later],
+      onScrubStart: () {},
+      onScrubUpdate: (_) {},
+      onScrubEnd: (_) async {},
+    );
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+      const Offset(-100, 0),
+    );
+    await tester.pumpAndSettle();
+    final ruler = tester.getRect(
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+    );
+    final clip = find.byKey(const ValueKey('timeline_clip_t2'));
+
+    final rightGesture = await tester.startGesture(
+      Offset(ruler.right - 30, ruler.center.dy),
+    );
+    await rightGesture.moveBy(const Offset(24, 0));
+    await tester.pump();
+    final beforeRight = tester.getRect(clip).left;
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    final rightDistance = beforeRight - tester.getRect(clip).left;
+    await rightGesture.up();
+    await tester.pump();
+
+    final leftGesture = await tester.startGesture(
+      Offset(
+        ruler.left + StackedWaveformTimeline.railWidth + 30,
+        ruler.center.dy,
+      ),
+    );
+    await leftGesture.moveBy(const Offset(-24, 0));
+    await tester.pump();
+    final beforeLeft = tester.getRect(clip).left;
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    final leftDistance = tester.getRect(clip).left - beforeLeft;
+    await leftGesture.up();
+
+    expect(leftDistance, greaterThan(0));
+    expect(rightDistance, greaterThan(0));
+    expect(leftDistance, closeTo(rightDistance, 1));
+  });
+
+  testWidgets('edge scrub stops on cancel and widget disposal', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    final later = _track('t3', 'Glass', 240);
+    final updates = <int>[];
+    final ends = <int>[];
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next, later],
+      onScrubStart: () {},
+      onScrubUpdate: updates.add,
+      onScrubEnd: (ms) async => ends.add(ms),
+    );
+
+    final ruler = tester.getRect(
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+    );
+    final gesture = await tester.startGesture(
+      Offset(ruler.right - 30, ruler.center.dy),
+    );
+    await gesture.moveBy(const Offset(24, 0));
+    await tester.pump();
+    await _pumpFrames(tester, const Duration(milliseconds: 100));
+    await gesture.cancel();
+    await tester.pump();
+    expect(ends, hasLength(1));
+    final afterCancel = updates.length;
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    expect(updates, hasLength(afterCancel));
+    expect(ends, hasLength(1));
+    ends.clear();
+
+    final disposalGesture = await tester.startGesture(
+      Offset(ruler.right - 30, ruler.center.dy),
+    );
+    await disposalGesture.moveBy(const Offset(24, 0));
+    await tester.pump();
+    final lastPreviewMs = updates.last;
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(ends, [lastPreviewMs]);
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    expect(ends, [lastPreviewMs]);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final atRightBound in [false, true]) {
+    testWidgets(
+      '${atRightBound ? 'right' : 'left'} timeline bound stops edge scroll',
+      (tester) async {
+        final current = _track('t1', 'Midnight Drive', 240);
+        final next = _track('t2', 'Paper Planes', 240);
+        final later = _track('t3', 'Glass', 240);
+        final updates = <int>[];
+        await _pump(
+          tester,
+          previous: null,
+          current: current,
+          upcoming: [next, later],
+          onScrubStart: () {},
+          onScrubUpdate: updates.add,
+          onScrubEnd: (_) async {},
+        );
+        if (atRightBound) {
+          await tester.drag(
+            find.byKey(const ValueKey('timeline_pan_surface')),
+            const Offset(-2000, 0),
+          );
+          await tester.pumpAndSettle();
+        }
+
+        final ruler = tester.getRect(
+          find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+        );
+        final start = atRightBound
+            ? Offset(ruler.right - 30, ruler.center.dy)
+            : Offset(
+                ruler.left + StackedWaveformTimeline.railWidth + 30,
+                ruler.center.dy,
+              );
+        final gesture = await tester.startGesture(start);
+        await gesture.moveBy(Offset(atRightBound ? 24 : -24, 0));
+        await tester.pump();
+        final clipBefore = tester.getRect(
+          find.byKey(const ValueKey('timeline_clip_t2')),
+        );
+        final updatesBefore = updates.length;
+        await _pumpFrames(tester, const Duration(milliseconds: 250));
+        expect(
+          tester
+              .getRect(find.byKey(const ValueKey('timeline_clip_t2')))
+              .left,
+          closeTo(clipBefore.left, 0.1),
+        );
+        expect(updates, hasLength(updatesBefore));
+        await gesture.up();
+      },
+    );
+  }
 
   testWidgets('no-op edge pan does not create a manual offset lock', (
     tester,
