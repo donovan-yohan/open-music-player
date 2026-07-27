@@ -7,6 +7,7 @@ import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter_riverpod/flutter_riverpod.dart'
     show ProviderContainer, ProviderScope;
 import 'package:provider/provider.dart';
+import '../core/api/api_client.dart';
 import '../core/audio/audition_output_route_monitor.dart';
 import '../core/audio/playback_state.dart';
 import '../core/audio/playback_context.dart';
@@ -484,74 +485,74 @@ class _QueueScreenState extends State<QueueScreen> {
           unawaited(_reorderPlaybackQueue(playback, oldIndex, newIndex));
         },
         itemBuilder: (context, index) {
-        final entry = entries[index];
-        final item = entry.item;
-        final queueItemId = _queueItemIdForPlaybackEntry(cues, entry);
-        final stableQueueItemId = queueItemId.trim();
-        final track = playbackTrackForMediaItem(
-          item,
-          queueItemId: queueItemId,
-        );
-        final registry = context.read<CommandRegistry>();
-        final commandContext = CommandContext(
-          playbackState: playback,
-          track: mediaItemToPlaybackJson(item),
-          trackId: int.tryParse(item.id),
-          queueItemId:
-              queueItemId.startsWith('unresolved_') ? null : queueItemId,
-          playNow: () => _skipToPlaybackIndex(
-            playback,
-            entry,
-            queueItemId: stableQueueItemId,
-          ),
-        );
-        final row = _buildSwipeToRemoveQueueItem(
-          context: context,
-          key: ValueKey('remove_playback_queue_$queueItemId'),
-          enabled: registry[CommandId.removeFromQueue]
-              .availabilityFor(commandContext)
-              .enabled,
-          label: item.title,
-          onRemove: () => _removePlaybackQueueEntry(playback, entry),
-          onSecondaryTapUp: (details) => showRegistryCommandMenu(
-            context: context,
-            registry: registry,
-            commandContext: commandContext,
-            position: details.globalPosition,
-          ),
-          child: TrackTile(
-            key: ValueKey('playback_queue_$queueItemId'),
-            title: item.title,
-            artist: item.artist,
-            album: item.album,
-            duration: _formatQueueRuntime(item.duration?.inMilliseconds ?? 0),
-            coverArtUrl: track.artworkUrl,
-            artworkKind: track.artworkKind,
-            analysis: track.analysis,
-            leading: _buildReorderHandle(
-              queueItemId: queueItemId,
-              title: item.title,
-              index: index,
+          final entry = entries[index];
+          final item = entry.item;
+          final queueItemId = _queueItemIdForPlaybackEntry(cues, entry);
+          final stableQueueItemId = queueItemId.trim();
+          final track = playbackTrackForMediaItem(
+            item,
+            queueItemId: queueItemId,
+          );
+          final registry = context.read<CommandRegistry>();
+          final commandContext = CommandContext(
+            playbackState: playback,
+            track: mediaItemToPlaybackJson(item),
+            trackId: int.tryParse(item.id),
+            queueItemId:
+                queueItemId.startsWith('unresolved_') ? null : queueItemId,
+            playNow: () => _skipToPlaybackIndex(
+              playback,
+              entry,
+              queueItemId: stableQueueItemId,
             ),
-            isCurrent: entry.isCurrent,
-            onTap: entry.isCurrent
-                ? null
-                : () => _skipToPlaybackIndex(
-                    playback,
-                    entry,
-                    queueItemId: stableQueueItemId,
-                  ),
-          ),
-        );
-        if (!_isStablePlaybackQueueItemId(stableQueueItemId)) return row;
-        return KeyedSubtree(
-          key: _playbackQueueOccurrenceKeys.putIfAbsent(
-            stableQueueItemId,
-            () => GlobalKey(debugLabel: 'playback_queue_$stableQueueItemId'),
-          ),
-          child: row,
-        );
-      },
+          );
+          final row = _buildSwipeToRemoveQueueItem(
+            context: context,
+            key: ValueKey('remove_playback_queue_$queueItemId'),
+            enabled: registry[CommandId.removeFromQueue]
+                .availabilityFor(commandContext)
+                .enabled,
+            label: item.title,
+            onRemove: () => _removePlaybackQueueEntry(playback, entry),
+            onSecondaryTapUp: (details) => showRegistryCommandMenu(
+              context: context,
+              registry: registry,
+              commandContext: commandContext,
+              position: details.globalPosition,
+            ),
+            child: TrackTile(
+              key: ValueKey('playback_queue_$queueItemId'),
+              title: item.title,
+              artist: item.artist,
+              album: item.album,
+              duration: _formatQueueRuntime(item.duration?.inMilliseconds ?? 0),
+              coverArtUrl: track.artworkUrl,
+              artworkKind: track.artworkKind,
+              analysis: track.analysis,
+              leading: _buildReorderHandle(
+                queueItemId: queueItemId,
+                title: item.title,
+                index: index,
+              ),
+              isCurrent: entry.isCurrent,
+              onTap: entry.isCurrent
+                  ? null
+                  : () => _skipToPlaybackIndex(
+                        playback,
+                        entry,
+                        queueItemId: stableQueueItemId,
+                      ),
+            ),
+          );
+          if (!_isStablePlaybackQueueItemId(stableQueueItemId)) return row;
+          return KeyedSubtree(
+            key: _playbackQueueOccurrenceKeys.putIfAbsent(
+              stableQueueItemId,
+              () => GlobalKey(debugLabel: 'playback_queue_$stableQueueItemId'),
+            ),
+            child: row,
+          );
+        },
       ),
     );
   }
@@ -933,8 +934,7 @@ class _QueueScreenState extends State<QueueScreen> {
     PlaybackState playback,
     ListeningQueueEntry entry, {
     required String queueItemId,
-  }
-  ) async {
+  }) async {
     if (_isStablePlaybackQueueItemId(queueItemId)) {
       _suppressedPlaybackQueueFollowId = queueItemId;
     }
@@ -1792,8 +1792,35 @@ class _QueueScreenState extends State<QueueScreen> {
     }
 
     final playback = context.read<PlaybackState>();
-    final editorTrack =
-        provider.trackWithAnalysis(track, requestHydration: false);
+    final desktopWorkspace = usesDesktopAnalysisCorrectionWorkspace(context);
+    late final QueueTrack editorTrack;
+    try {
+      if (desktopWorkspace) {
+        final analysis = await provider.refreshAnalysisAuthoritatively(track);
+        editorTrack = track.copyWith(analysis: analysis);
+      } else {
+        editorTrack = provider.trackWithAnalysis(
+          track,
+          requestHydration: false,
+        );
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Could not load the latest analysis for "${track.title}".',
+            ),
+          ),
+        );
+      }
+      return;
+    }
+    if (!context.mounted) return;
+    var editorRevision = editorTrack.analysis?.overrideRevision ??
+        editorTrack.analysis?.overrides?.manualTiming?.revision ??
+        0;
+    final authoritativeEditorTrack = ValueNotifier<QueueTrack>(editorTrack);
     final settingsContainer = _settingsContainer(context);
     final initialSettings =
         settingsContainer?.read(settingsProvider) ?? const SettingsModel();
@@ -1811,6 +1838,7 @@ class _QueueScreenState extends State<QueueScreen> {
     }
     if (!mounted) {
       await _disposeRouteMonitor(routeMonitor);
+      authoritativeEditorTrack.dispose();
       return;
     }
 
@@ -1853,10 +1881,72 @@ class _QueueScreenState extends State<QueueScreen> {
 
     TrackAnalysisOverrides? corrected;
     try {
-      corrected = await showAnalysisCorrectionSheet(
+      corrected = await showAnalysisCorrectionEditor(
         context: this.context,
         track: editorTrack,
         currentSourcePositionMs: currentSourcePositionMs,
+        liveSourcePositionMs: desktopWorkspace
+            ? () => playback.sourcePositionMsForQueueItemId(track.queueItemId)
+            : null,
+        playbackListenable: desktopWorkspace ? playback : null,
+        analysisListenable: desktopWorkspace ? authoritativeEditorTrack : null,
+        trackResolver:
+            desktopWorkspace ? () => authoritativeEditorTrack.value : null,
+        onPlayPause: desktopWorkspace
+            ? () async {
+                final selectedIsCurrent =
+                    playback.sourcePositionMsForQueueItemId(
+                          track.queueItemId,
+                        ) !=
+                        null;
+                if (selectedIsCurrent && playback.isPlaying) {
+                  await playback.pause();
+                  return;
+                }
+                await playback.playQueueItemByQueueItemId(track.queueItemId);
+              }
+            : null,
+        isPlaying: desktopWorkspace
+            ? () =>
+                playback.isPlaying &&
+                playback.sourcePositionMsForQueueItemId(track.queueItemId) !=
+                    null
+            : null,
+        onSave: desktopWorkspace
+            ? (overrides) async {
+                try {
+                  final analysis = await provider.updateAnalysisOverrides(
+                    editorTrack,
+                    overrides,
+                    expectedRevision: editorRevision,
+                  );
+                  final trackId = _analysisTrackId(track);
+                  if (trackId != null) {
+                    await playback.refreshTrackAnalysis(trackId, analysis);
+                  }
+                  return null;
+                } catch (error) {
+                  if (error is ApiException && error.statusCode == 409) {
+                    try {
+                      final latest =
+                          await provider.refreshAnalysisAuthoritatively(track);
+                      editorRevision = latest.overrideRevision ??
+                          latest.overrides?.manualTiming?.revision ??
+                          editorRevision;
+                      authoritativeEditorTrack.value =
+                          track.copyWith(analysis: latest);
+                    } catch (_) {
+                      // Keep the original conflict visible; never auto-retry.
+                    }
+                    return 'This analysis changed elsewhere. Your draft is '
+                        'still here. Review the conflict, then choose Save '
+                        'again to apply it to revision $editorRevision.';
+                  }
+                  return 'Could not save analysis for "${track.title}". '
+                      'Your draft is still here.';
+                }
+              }
+            : null,
         clickAudition: AnalysisClickAuditionConfiguration(
           initialDownbeatAccentsEnabled:
               initialSettings.clickAuditionDownbeatAccentEnabled,
@@ -1901,8 +1991,10 @@ class _QueueScreenState extends State<QueueScreen> {
       await _disposeClickAuditionLease(lease);
       await routeSubscription?.cancel();
       routeListenable.dispose();
+      authoritativeEditorTrack.dispose();
       await _disposeRouteMonitor(routeMonitor);
     }
+    if (desktopWorkspace) return;
     if (corrected == null || !mounted) return;
 
     try {

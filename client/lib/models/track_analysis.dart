@@ -767,6 +767,24 @@ class TrackAnalysisOverrides {
       musicalKey == null &&
       camelot == null;
 
+  bool get hasTimingFacts =>
+      (manualTiming != null &&
+          (manualTiming!.bpm != null ||
+              manualTiming!.beatAnchorMs != null ||
+              manualTiming!.beatsPerBar != null ||
+              manualTiming!.downbeatPhaseIndex != null ||
+              manualTiming!.phraseLengthBars != null)) ||
+      bpm != null ||
+      beatGridOffsetMs != null ||
+      beatsMs != null ||
+      downbeatsMs != null;
+
+  bool get hasLegacyTimingFacts =>
+      bpm != null ||
+      beatGridOffsetMs != null ||
+      beatsMs != null ||
+      downbeatsMs != null;
+
   TrackAnalysisSummary applyTo(TrackAnalysisSummary base) {
     final canonicalTiming = manualTiming;
     final legacy = _applyLegacyTo(base);
