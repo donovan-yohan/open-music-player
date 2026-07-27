@@ -292,6 +292,188 @@ func TestStampManualTimingOverrideMetadataRetainsResetRevision(t *testing.T) {
 	}
 }
 
+func TestApplyAnalysisTimingMutationSeparatesReplaceAndClear(t *testing.T) {
+	input := json.RawMessage(`{
+		"manual_timing_v2":{"schema_version":2,"bpm":120},
+		"manual_timing_override":{"bpm":119},
+		"bpm":{"value":120},"beat_grid":{"beats_ms":[0]},"downbeats":{"positions_ms":[0]},
+		"key":{"value":"A minor"},"camelot":{"value":"8A"}
+	}`)
+	replaced, err := applyAnalysisTimingMutation(input, AnalysisTimingReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := applyAnalysisTimingMutation(input, AnalysisTimingClear)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []json.RawMessage{replaced, cleared} {
+		if strings.Contains(string(raw), `"beat_grid"`) || strings.Contains(string(raw), `"downbeats"`) || strings.Contains(string(raw), `"bpm":{"value"`) {
+			t.Fatalf("legacy timing survived mutation: %s", raw)
+		}
+	}
+	if !strings.Contains(string(replaced), `"manual_timing_v2"`) {
+		t.Fatalf("replace removed canonical timing: %s", replaced)
+	}
+	if strings.Contains(string(cleared), `"manual_timing_v2"`) || strings.Contains(string(cleared), `"manual_timing_override"`) {
+		t.Fatalf("clear retained timing envelope: %s", cleared)
+	}
+	if !strings.Contains(string(cleared), `"key"`) || !strings.Contains(string(cleared), `"camelot"`) {
+		t.Fatalf("clear removed metadata: %s", cleared)
+	}
+}
+
+func TestAnalysisRepositoryTimingMutationPreservesAllNonTimingOverridesAgainstPostgres(t *testing.T) {
+	database, ctx := newPostgresAnalysisTestDB(t)
+	trackRepo := NewTrackRepository(database)
+	analysisRepo := NewAnalysisRepository(database)
+	track, _, err := trackRepo.CreateTrackFromMetadata(
+		ctx, "Fixture Artist", "Timing Mutation Metadata", "", 120000,
+		WithStorage("tracks/fixture/timing-mutation-metadata.wav", 1024), WithMetadata(json.RawMessage(`{}`)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := analysisRepo.StoreResult(ctx, track.ID, AnalysisResult{
+		SummaryJSON: json.RawMessage(`{"bpm":{"value":120}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const existing = `{
+		"manual_timing_v2":{"schema_version":2,"bpm":120},
+		"manual_timing_override":{"bpm":119},
+		"bpm":{"value":118},
+		"beat_grid":{"beats_ms":[0,500]},
+		"downbeats":{"positions_ms":[0]},
+		"beatGridMs":[0,501],
+		"nativeBpm":117,
+		"key":{"value":"A minor"},
+		"camelot":{"value":"8A"},
+		"energy":{"value":0.73},
+		"vendor_fact":{"keep":true}
+	}`
+	if _, err := database.ExecContext(
+		ctx,
+		`UPDATE track_analysis
+		 SET overrides_json = $2::jsonb, manual_override_revision = 3
+		 WHERE track_id = $1`,
+		track.ID, existing,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	replaced, err := analysisRepo.SetOverridesWithTimingMutation(
+		ctx,
+		track.ID,
+		json.RawMessage(`{
+			"manual_timing_v2":{"schema_version":2,"bpm":126,"beat_anchor_ms":25},
+			"manualTimingV2":{"schemaVersion":2,"bpm":240},
+			"manualTimingOverride":{"bpm":239},
+			"nativeBpm":238,
+			"bpmConfidence":0.01,
+			"beatGrid":[0,250],
+			"beatGridMs":[0,251],
+			"beatsMs":[0,252],
+			"beatGridOffsetMs":99,
+			"offsetMs":98,
+			"downbeatsMs":[0],
+			"incoming_fact":{"keep":"replace"}
+		}`),
+		3,
+		AnalysisTimingReplace,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced.ManualOverrideRevision != 4 {
+		t.Fatalf("replace revision = %d, want 4", replaced.ManualOverrideRevision)
+	}
+	replacedDocument := decodeJSONMap(t, replaced.OverridesJSON)
+	assertAnalysisTimingRepresentationsAbsent(t, replacedDocument, "manual_timing_v2")
+	replacementTiming := replacedDocument["manual_timing_v2"].(map[string]any)
+	if replacementTiming["bpm"] != float64(126) || replacementTiming["revision"] != float64(4) {
+		t.Fatalf("replacement timing = %#v", replacementTiming)
+	}
+	if _, present := replacedDocument["incoming_fact"]; !present {
+		t.Fatalf("replace removed incoming non-timing fact: %#v", replacedDocument)
+	}
+	assertPreservedAnalysisMetadata(t, replacedDocument)
+
+	if _, err := analysisRepo.SetOverridesWithTimingMutation(
+		ctx,
+		track.ID,
+		json.RawMessage(`{"manual_timing_v2":{"schema_version":2,"bpm":999}}`),
+		3,
+		AnalysisTimingReplace,
+	); !errors.Is(err, ErrAnalysisOverrideConflict) {
+		t.Fatalf("stale replacement error = %v, want conflict", err)
+	}
+
+	cleared, err := analysisRepo.SetOverridesWithTimingMutation(
+		ctx,
+		track.ID,
+		json.RawMessage(`{
+			"manualTimingV2":{"schemaVersion":2,"bpm":230},
+			"manualTimingOverride":{"bpm":229},
+			"nativeBpm":228,
+			"beatGridMs":[0,260],
+			"downbeatsMs":[0],
+			"incoming_fact":{"keep":"clear"}
+		}`),
+		4,
+		AnalysisTimingClear,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.ManualOverrideRevision != 5 {
+		t.Fatalf("clear revision = %d, want 5", cleared.ManualOverrideRevision)
+	}
+	clearedDocument := decodeJSONMap(t, cleared.OverridesJSON)
+	assertAnalysisTimingRepresentationsAbsent(t, clearedDocument, "")
+	if got := clearedDocument["incoming_fact"].(map[string]any)["keep"]; got != "clear" {
+		t.Fatalf("clear incoming fact = %#v, want clear", got)
+	}
+	assertPreservedAnalysisMetadata(t, clearedDocument)
+}
+
+func decodeJSONMap(t *testing.T, raw json.RawMessage) map[string]any {
+	t.Helper()
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatal(err)
+	}
+	return document
+}
+
+func assertAnalysisTimingRepresentationsAbsent(t *testing.T, document map[string]any, except string) {
+	t.Helper()
+	for _, key := range []string{
+		"manual_timing_v2", "manualTimingV2",
+		"manual_timing_override", "manualTimingOverride",
+		"bpm", "native_bpm", "nativeBpm", "bpm_confidence", "bpmConfidence",
+		"beat_grid", "beatGrid", "beat_grid_ms", "beatGridMs", "beats_ms", "beatsMs",
+		"beat_grid_offset_ms", "beatGridOffsetMs", "offset_ms", "offsetMs",
+		"downbeats", "downbeats_ms", "downbeatsMs",
+	} {
+		if key == except {
+			continue
+		}
+		if _, present := document[key]; present {
+			t.Fatalf("timing representation %q survived: %#v", key, document[key])
+		}
+	}
+}
+
+func assertPreservedAnalysisMetadata(t *testing.T, document map[string]any) {
+	t.Helper()
+	for _, key := range []string{"key", "camelot", "energy", "vendor_fact"} {
+		if _, present := document[key]; !present {
+			t.Fatalf("non-timing override %q was removed: %#v", key, document)
+		}
+	}
+}
+
 func TestAnalysisRepositoryConcurrentManualTimingCASAllowsOneWinnerAgainstPostgres(t *testing.T) {
 	database, ctx := newPostgresAnalysisTestDB(t)
 	trackRepo := NewTrackRepository(database)

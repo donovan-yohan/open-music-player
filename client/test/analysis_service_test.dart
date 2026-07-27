@@ -14,6 +14,7 @@ class _CapturingApiClient extends ApiClient {
   final bool conflict;
   String? capturedEndpoint;
   Map<String, dynamic>? capturedBody;
+  final List<Map<String, dynamic>> capturedBodies = [];
 
   @override
   Future<T> get<T>(
@@ -36,6 +37,7 @@ class _CapturingApiClient extends ApiClient {
   }) async {
     capturedEndpoint = endpoint;
     capturedBody = body;
+    if (body != null) capturedBodies.add(body);
     if (conflict) {
       throw ApiException(
         code: 'OVERRIDE_REVISION_CONFLICT',
@@ -306,6 +308,47 @@ void main() {
         DateTime.utc(2026, 7, 26, 10, 11, 12),
       );
       expect(analysis.overrides?.manualTiming?.downbeatPhaseIndex, 2);
+    });
+
+    test('PATCH preserves omission and serializes replace and clear mutations',
+        () async {
+      final api = _CapturingApiClient({
+        'status': 'analyzed',
+        'overrides': <String, dynamic>{},
+      });
+      final service = AnalysisService(api);
+
+      await service.updateTrackAnalysisOverrides(
+        42,
+        const TrackAnalysisOverrides(musicalKey: 'A minor'),
+      );
+      await service.updateTrackAnalysisOverrides(
+        42,
+        const TrackAnalysisOverrides(
+          manualTiming: ManualTimingOverride(bpm: 126),
+          timingMutation: AnalysisTimingMutation.replace,
+        ),
+        expectedRevision: 1,
+      );
+      await service.updateTrackAnalysisOverrides(
+        42,
+        const TrackAnalysisOverrides(
+          timingMutation: AnalysisTimingMutation.clear,
+        ),
+        expectedRevision: 2,
+      );
+
+      expect(api.capturedBodies, hasLength(3));
+      expect(api.capturedBodies[0], isNot(contains('timing_mutation')));
+      expect(api.capturedBodies[1]['timing_mutation'], 'replace');
+      expect(api.capturedBodies[1]['expected_revision'], 1);
+      expect(
+        api.capturedBodies[1]['overrides']['manual_timing_v2']['bpm'],
+        126,
+      );
+      expect(api.capturedBodies[2]['timing_mutation'], 'clear');
+      expect(api.capturedBodies[2]['expected_revision'], 2);
+      expect(api.capturedBodies[2]['overrides'], isEmpty);
     });
 
     test('PATCH surfaces an optimistic-concurrency conflict', () async {

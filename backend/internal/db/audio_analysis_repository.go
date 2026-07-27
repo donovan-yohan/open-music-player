@@ -55,6 +55,15 @@ var (
 	ErrAnalysisOverrideConflict = errors.New("analysis override revision conflict")
 )
 
+// AnalysisTimingMutation lets correction clients replace or remove all timing
+// facts without accidentally retaining a legacy fallback document.
+type AnalysisTimingMutation string
+
+const (
+	AnalysisTimingReplace AnalysisTimingMutation = "replace"
+	AnalysisTimingClear   AnalysisTimingMutation = "clear"
+)
+
 type TrackAnalysis struct {
 	TrackID                 int64
 	SchemaVersion           int
@@ -366,18 +375,55 @@ func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, res
 }
 
 func (r *AnalysisRepository) SetOverrides(ctx context.Context, trackID int64, overrides json.RawMessage, expectedRevision int64) (*TrackAnalysis, error) {
+	return r.setOverrides(ctx, trackID, overrides, expectedRevision, "")
+}
+
+func (r *AnalysisRepository) SetOverridesWithTimingMutation(
+	ctx context.Context,
+	trackID int64,
+	overrides json.RawMessage,
+	expectedRevision int64,
+	mutation AnalysisTimingMutation,
+) (*TrackAnalysis, error) {
+	if mutation != AnalysisTimingReplace && mutation != AnalysisTimingClear {
+		return nil, errors.New("invalid analysis timing mutation")
+	}
+	return r.setOverrides(ctx, trackID, overrides, expectedRevision, mutation)
+}
+
+func (r *AnalysisRepository) setOverrides(ctx context.Context, trackID int64, overrides json.RawMessage, expectedRevision int64, mutation AnalysisTimingMutation) (*TrackAnalysis, error) {
 	if expectedRevision < 0 {
 		return nil, ErrAnalysisOverrideConflict
 	}
 	overrideUpdatedAt := time.Now().UTC()
-	preserveLegacyTiming := hasOverrideFacts(overrides)
-	stampedOverrides, err := stampManualTimingOverrideMetadata(overrides, expectedRevision+1, overrideUpdatedAt)
+	preserveLegacyTiming := mutation == "" && hasOverrideFacts(overrides)
+	normalizedOverrides, err := applyAnalysisTimingMutation(overrides, mutation)
 	if err != nil {
 		return nil, err
 	}
+	stampedOverrides := normalizedOverrides
+	if mutation != AnalysisTimingClear {
+		stampedOverrides, err = stampManualTimingOverrideMetadata(normalizedOverrides, expectedRevision+1, overrideUpdatedAt)
+	}
+	if err != nil {
+		return nil, err
+	}
+	replaceTiming := mutation != ""
 	updateQuery := `
 		UPDATE track_analysis
-		SET overrides_json = CASE WHEN $5 THEN
+		SET overrides_json = CASE WHEN $6 THEN
+				(COALESCE(overrides_json, '{}'::jsonb) - ARRAY[
+					'manual_timing_v2', 'manualTimingV2',
+					'manual_timing_override', 'manualTimingOverride',
+					'bpm', 'native_bpm', 'nativeBpm',
+					'bpm_confidence', 'bpmConfidence',
+					'beat_grid', 'beatGrid',
+					'beat_grid_ms', 'beatGridMs', 'beats_ms', 'beatsMs',
+					'beat_grid_offset_ms', 'beatGridOffsetMs',
+					'offset_ms', 'offsetMs',
+					'downbeats', 'downbeats_ms', 'downbeatsMs'
+				]::text[]) || COALESCE($3::jsonb, '{}'::jsonb)
+			WHEN $5 THEN
 				jsonb_strip_nulls(jsonb_build_object(
 					'bpm', overrides_json->'bpm',
 					'beat_grid', overrides_json->'beat_grid',
@@ -396,7 +442,7 @@ func (r *AnalysisRepository) SetOverrides(ctx context.Context, trackID int64, ov
 		RETURNING ` + analysisReturningColumns
 	var analysis TrackAnalysis
 	err = scanTrackAnalysis(r.db.QueryRowContext(
-		ctx, updateQuery, trackID, expectedRevision, nullableRawJSON(stampedOverrides), overrideUpdatedAt, preserveLegacyTiming,
+		ctx, updateQuery, trackID, expectedRevision, nullableRawJSON(stampedOverrides), overrideUpdatedAt, preserveLegacyTiming, replaceTiming,
 	), &analysis)
 	if err == nil {
 		return &analysis, nil
@@ -431,6 +477,33 @@ func (r *AnalysisRepository) SetOverrides(ctx context.Context, trackID int64, ov
 		return nil, err
 	}
 	return &analysis, nil
+}
+
+func applyAnalysisTimingMutation(overrides json.RawMessage, mutation AnalysisTimingMutation) (json.RawMessage, error) {
+	if mutation == "" {
+		return overrides, nil
+	}
+	var document map[string]any
+	if err := json.Unmarshal(overrides, &document); err != nil {
+		return nil, err
+	}
+	for _, key := range []string{
+		"manual_timing_v2", "manualTimingV2",
+		"manual_timing_override", "manualTimingOverride",
+		"bpm", "native_bpm", "nativeBpm",
+		"bpm_confidence", "bpmConfidence",
+		"beat_grid", "beatGrid",
+		"beat_grid_ms", "beatGridMs", "beats_ms", "beatsMs",
+		"beat_grid_offset_ms", "beatGridOffsetMs",
+		"offset_ms", "offsetMs",
+		"downbeats", "downbeats_ms", "downbeatsMs",
+	} {
+		if mutation == AnalysisTimingReplace && key == "manual_timing_v2" {
+			continue
+		}
+		delete(document, key)
+	}
+	return json.Marshal(document)
 }
 
 type rowScanner interface {

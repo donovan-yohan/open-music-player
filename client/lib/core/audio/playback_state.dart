@@ -109,6 +109,12 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       _queueController.engine.positionMsStream;
   int get timelinePositionMs => _queueController.engine.positionMs;
   TimelineModel get timelineModel => _queueController.engine.model;
+  int? sourcePositionMsForQueueItemId(String queueItemId) {
+    final clip = uniqueMixClipForQueueItemId(timelineModel, queueItemId);
+    if (clip == null || !clip.isActiveAt(timelinePositionMs)) return null;
+    return clip.sourcePositionAt(timelinePositionMs);
+  }
+
   ClickAuditionLease openClickAudition(ClickAuditionRequest request) =>
       _queueController.engine.openClickAudition(request);
   BeatSnapMode get transitionSnapMode => _queueController.transitionSnapMode;
@@ -739,6 +745,17 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   Future<void> skipToIndex(int index) async {
     _transportCommandGeneration++;
     await _queueController.skipToIndex(index);
+  }
+
+  Future<bool> playQueueItemByQueueItemId(String queueItemId) async {
+    final commandGeneration = ++_transportCommandGeneration;
+    final selected =
+        await _queueController.selectQueueItemByQueueItemId(queueItemId);
+    if (!selected || commandGeneration != _transportCommandGeneration) {
+      return false;
+    }
+    await play();
+    return true;
   }
 
   Future<void> removeFromQueue(int index) =>

@@ -42,6 +42,7 @@ type AnalysisResponse struct {
 type AnalysisOverridesRequest struct {
 	Overrides        json.RawMessage `json:"overrides"`
 	ExpectedRevision *int64          `json:"expected_revision,omitempty"`
+	TimingMutation   string          `json:"timing_mutation,omitempty"`
 }
 
 const maxAnalysisOverridesRequestBytes = 1 << 20
@@ -160,7 +161,19 @@ func (h *AnalysisHandlers) UpdateTrackAnalysisOverrides(w http.ResponseWriter, r
 		writeLibraryError(w, http.StatusBadRequest, "INVALID_REQUEST", "expected_revision must be zero or greater")
 		return
 	}
-	analysis, err := h.analysisRepo.SetOverrides(r.Context(), trackID, normalized, expectedRevision)
+	var analysis *db.TrackAnalysis
+	switch req.TimingMutation {
+	case "":
+		analysis, err = h.analysisRepo.SetOverrides(r.Context(), trackID, normalized, expectedRevision)
+	case string(db.AnalysisTimingReplace), string(db.AnalysisTimingClear):
+		analysis, err = h.analysisRepo.SetOverridesWithTimingMutation(
+			r.Context(), trackID, normalized, expectedRevision,
+			db.AnalysisTimingMutation(req.TimingMutation),
+		)
+	default:
+		writeLibraryError(w, http.StatusBadRequest, "INVALID_REQUEST", "timing_mutation must be replace or clear")
+		return
+	}
 	if errors.Is(err, db.ErrAnalysisOverrideConflict) {
 		writeLibraryError(w, http.StatusConflict, "ANALYSIS_OVERRIDE_CONFLICT", "analysis overrides changed; refresh and retry")
 		return

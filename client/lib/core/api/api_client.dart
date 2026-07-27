@@ -437,6 +437,8 @@ class ApiClient {
         data: {
           'overrides': overrides.toJson(includeServerMetadata: false),
           'expected_revision': expectedRevision,
+          if (overrides.timingMutation != AnalysisTimingMutation.preserve)
+            'timing_mutation': overrides.timingMutation.wireValue,
         },
       );
       final data = _asMap(response.data);

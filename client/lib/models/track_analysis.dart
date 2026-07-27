@@ -13,6 +13,14 @@ enum TrackAnalysisStatus {
 
 enum TrackAnalysisSummaryProjection { generated, effective }
 
+enum AnalysisTimingMutation {
+  preserve,
+  replace,
+  clear;
+
+  String get wireValue => name;
+}
+
 const String trackAnalysisSummaryContractKey = '_omp_summary_contract';
 const int _analysisSummaryContractVersion = 1;
 
@@ -668,6 +676,7 @@ class TrackAnalysisOverrides {
   final String? bpmProvenance;
   final String? beatGridProvenance;
   final String? downbeatProvenance;
+  final AnalysisTimingMutation timingMutation;
 
   const TrackAnalysisOverrides({
     this.manualTiming,
@@ -682,6 +691,7 @@ class TrackAnalysisOverrides {
     this.bpmProvenance,
     this.beatGridProvenance,
     this.downbeatProvenance,
+    this.timingMutation = AnalysisTimingMutation.preserve,
   });
 
   static TrackAnalysisOverrides? fromJson(Object? json) {

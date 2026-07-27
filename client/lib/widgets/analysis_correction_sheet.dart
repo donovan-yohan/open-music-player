@@ -15,6 +15,22 @@ Future<TrackAnalysisOverrides?> showAnalysisCorrectionSheet({
   @Deprecated('Use currentSourcePositionMs') int? initialFirstDownbeatMs,
   AnalysisClickAuditionConfiguration? clickAudition,
 }) {
+  if (MediaQuery.sizeOf(context).width >= 840) {
+    return showDialog<TrackAnalysisOverrides>(
+      context: context,
+      builder: (_) => Dialog(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 920, maxHeight: 760),
+          child: AnalysisCorrectionSheet(
+            track: track,
+            currentSourcePositionMs:
+                currentSourcePositionMs ?? initialFirstDownbeatMs,
+            clickAudition: clickAudition,
+          ),
+        ),
+      ),
+    );
+  }
   return showModalBottomSheet<TrackAnalysisOverrides>(
     context: context,
     isScrollControlled: true,
@@ -216,6 +232,7 @@ TrackAnalysisOverrides manualTimingOverridesFromFields({
     musicalKey: cleanText(musicalKey),
     camelot: cleanText(camelot),
     provenance: 'manual_override',
+    timingMutation: AnalysisTimingMutation.replace,
   );
 }
 
@@ -694,6 +711,13 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
       musicalKey: musicalKey,
       camelot: camelot,
       provenance: existing?.provenance ?? 'manual_override',
+      timingMutation: (_bpmDirty ||
+              _anchorDirty ||
+              _meterDirty ||
+              _phaseDirty ||
+              _phraseDirty)
+          ? AnalysisTimingMutation.replace
+          : AnalysisTimingMutation.preserve,
     );
     Navigator.pop(context, overrides);
   }
@@ -1080,8 +1104,12 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
               children: [
                 TextButton(
                   key: const ValueKey('analysis_correction_reset'),
-                  onPressed: () =>
-                      Navigator.pop(context, const TrackAnalysisOverrides()),
+                  onPressed: () => Navigator.pop(
+                    context,
+                    const TrackAnalysisOverrides(
+                      timingMutation: AnalysisTimingMutation.clear,
+                    ),
+                  ),
                   child: const Text('Reset'),
                 ),
                 TextButton(

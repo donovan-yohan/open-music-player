@@ -100,16 +100,7 @@ ProjectedClickTrack? projectClickAudition({
   required TimelineModel model,
   required ClickAuditionRequest request,
 }) {
-  MixClip? target;
-  for (final clip in model.clips) {
-    if (clip.queueItemId != request.queueItemId) continue;
-    if (target != null) {
-      // Queue item identity must be unambiguous. Falling silent is safer than
-      // auditioning the wrong occurrence of a repeated track.
-      return null;
-    }
-    target = clip;
-  }
+  final target = uniqueMixClipForQueueItemId(model, request.queueItemId);
   if (target == null) return null;
   final targetClip = target;
 
@@ -161,6 +152,17 @@ ProjectedClickTrack? projectClickAudition({
     timelineEndMs: targetClip.timelineEndMs,
     markers: markers,
   );
+}
+
+MixClip? uniqueMixClipForQueueItemId(TimelineModel model, String queueItemId) {
+  if (queueItemId.isEmpty) return null;
+  MixClip? target;
+  for (final clip in model.clips) {
+    if (clip.queueItemId != queueItemId) continue;
+    if (target != null) return null;
+    target = clip;
+  }
+  return target;
 }
 
 bool _sameInts(List<int> left, List<int> right) {
