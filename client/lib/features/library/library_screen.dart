@@ -51,6 +51,26 @@ void seedLikedTracksFromLibraryLoad({
   );
 }
 
+@visibleForTesting
+Future<void> cacheRemoteLibraryTrackMetadata({
+  required OfflineDatabase offlineDatabase,
+  required List<Track> tracks,
+}) async {
+  try {
+    await offlineDatabase.updateTrackArtworks(tracks);
+  } catch (_) {
+    // Artwork caching is best-effort and cannot hide a remote Library page.
+  }
+  try {
+    await offlineDatabase.updateTrackAnalyses(
+      tracks.where((track) => track.analysis != null),
+    );
+  } catch (_) {
+    // Analysis caching is independent so an artwork write failure cannot
+    // prevent a newer analysis revision from reaching offline storage.
+  }
+}
+
 class _LibraryScreenState extends State<LibraryScreen> {
   static const _pageSize = 20;
 
@@ -276,27 +296,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
       query: _filter.query,
       fields: services.LibraryService.libraryListFields,
     );
-    unawaited(_cacheRemoteTrackAnalysis(offlineDatabase, page.tracks));
+    unawaited(
+      cacheRemoteLibraryTrackMetadata(
+        offlineDatabase: offlineDatabase,
+        tracks: page.tracks,
+      ),
+    );
 
     final counts = offset == 0
         ? await _loadRemoteCounts(apiClient)
         : Map<VerificationFilter, int>.from(_counts);
 
     return (tracks: page.tracks, total: page.total, counts: counts);
-  }
-
-  Future<void> _cacheRemoteTrackAnalysis(
-    OfflineDatabase offlineDatabase,
-    List<Track> tracks,
-  ) async {
-    try {
-      await offlineDatabase.updateTrackAnalyses(
-        tracks.where((track) => track.analysis != null),
-      );
-    } catch (_) {
-      // Offline analysis is a cache; a local write failure must not delay or
-      // hide a successfully loaded remote Library page.
-    }
   }
 
   Future<Map<VerificationFilter, int>> _loadRemoteCounts(
@@ -988,7 +999,12 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
                     color: theme.colorScheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: const Icon(Icons.music_note),
+                  child: TrackArtwork.fromTrack(
+                    track,
+                    width: compactActions ? 40 : 48,
+                    height: compactActions ? 40 : 48,
+                    borderRadius: BorderRadius.zero,
+                  ),
                 ),
                 if (!track.mbVerified)
                   Positioned(

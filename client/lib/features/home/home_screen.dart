@@ -9,6 +9,7 @@ import '../../core/services/api_client.dart';
 import '../../shared/models/models.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/song_metadata_chips.dart';
+import '../../shared/widgets/track_artwork.dart';
 import '../../core/services/home_service.dart';
 import 'home_state.dart';
 
@@ -340,10 +341,7 @@ class _DesktopPosterItem {
   String get title => track?.title ?? playlist!.name;
   String get subtitle =>
       track?.displayArtist ?? '${playlist!.trackCount} tracks';
-  String? get imageUrl =>
-      track?.metadata?['cover_art_url'] as String? ??
-      track?.coverArtThumbnailUrl ??
-      playlist?.coverUrl;
+  String? get imageUrl => playlist?.coverUrl;
 }
 
 class _DesktopPoster extends StatelessWidget {
@@ -366,14 +364,20 @@ class _DesktopPoster extends StatelessWidget {
             children: [
               Expanded(
                 child: SizedBox.expand(
-                  child: item.imageUrl == null || item.imageUrl!.isEmpty
-                      ? const _CoverPlaceholder()
-                      : CachedNetworkImage(
-                          imageUrl: item.imageUrl!,
-                          fit: BoxFit.cover,
-                          errorWidget: (_, __, ___) =>
-                              const _CoverPlaceholder(),
-                        ),
+                  child: item.track != null
+                      ? TrackArtwork.fromTrack(
+                          item.track!,
+                          width: double.infinity,
+                          height: double.infinity,
+                        )
+                      : item.imageUrl == null || item.imageUrl!.isEmpty
+                          ? const _CoverPlaceholder()
+                          : CachedNetworkImage(
+                              imageUrl: item.imageUrl!,
+                              fit: BoxFit.cover,
+                              errorWidget: (_, __, ___) =>
+                                  const _CoverPlaceholder(),
+                            ),
                 ),
               ),
               const SizedBox(height: 12),
@@ -440,8 +444,6 @@ class _TrackTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cover = track.metadata?['cover_art_url'] as String? ??
-        track.coverArtThumbnailUrl;
     return QueueSwipeAction(
       actionKey: actionKey,
       onAddToQueue: onAddToQueue,
@@ -452,14 +454,12 @@ class _TrackTile extends StatelessWidget {
           child: SizedBox(
             width: 48,
             height: 48,
-            child: cover != null && cover.isNotEmpty
-                ? CachedNetworkImage(
-                    imageUrl: cover,
-                    fit: BoxFit.cover,
-                    placeholder: (_, __) => const _CoverPlaceholder(),
-                    errorWidget: (_, __, ___) => const _CoverPlaceholder(),
-                  )
-                : const _CoverPlaceholder(),
+            child: TrackArtwork.fromTrack(
+              track,
+              width: 48,
+              height: 48,
+              borderRadius: BorderRadius.zero,
+            ),
           ),
         ),
         title: Text(

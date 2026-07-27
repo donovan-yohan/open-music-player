@@ -4,6 +4,11 @@ import 'dart:math';
 import 'package:audio_service/audio_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../shared/models/track.dart'
+    show
+        TrackArtworkKind,
+        resolveTrackArtworkDescriptor,
+        trackArtworkKindFromPayload;
 import 'playback_session.dart';
 
 /// Pure, testable decisions and (de)serialization for resumable playback:
@@ -199,6 +204,7 @@ bool _sameOrder(List<int> a, List<int> b) {
 /// stable, re-resolvable fields are kept — never the signed `url`/`expiresAt`.
 Map<String, dynamic> mediaItemToPlaybackJson(MediaItem item) {
   final parsedId = int.tryParse(item.id);
+  final artwork = _persistedArtwork(item);
   final analysisSummary = compactAnalysisSummary(
     item.extras?['analysisSummary'] ?? item.extras?['analysis_summary'],
   );
@@ -211,7 +217,8 @@ Map<String, dynamic> mediaItemToPlaybackJson(MediaItem item) {
     if (item.artist != null) 'artist': item.artist,
     if (item.album != null) 'album': item.album,
     'duration': item.duration?.inSeconds ?? 0,
-    if (item.artUri != null) 'artwork_url': item.artUri.toString(),
+    if (artwork.url != null) 'artwork_url': artwork.url,
+    'artwork_kind': artwork.kind.wireValue,
     if (item.extras?['isLiked'] is bool) 'isLiked': item.extras?['isLiked'],
     if (item.extras?['likedAccountId'] is String)
       'likedAccountId': item.extras?['likedAccountId'],
@@ -225,6 +232,17 @@ Map<String, dynamic> mediaItemToPlaybackJson(MediaItem item) {
     if (item.extras?['analysisUpdatedAt'] != null)
       'analysisUpdatedAt': item.extras?['analysisUpdatedAt'],
   };
+}
+
+({String? url, TrackArtworkKind kind}) _persistedArtwork(MediaItem item) {
+  final extras = item.extras;
+  final artworkKind = trackArtworkKindFromPayload(extras);
+  return resolveTrackArtworkDescriptor(
+    artworkUrl: item.artUri?.toString(),
+    artworkKind: artworkKind,
+    metadata: null,
+    mbReleaseId: null,
+  );
 }
 
 const int maxPersistedBeatPositions = 128;

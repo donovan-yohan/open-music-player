@@ -7,6 +7,7 @@ import '../../core/services/api_client.dart';
 import '../../core/services/library_service.dart';
 import '../../shared/models/track.dart';
 import '../../shared/widgets/song_metadata_chips.dart';
+import '../../shared/widgets/track_artwork.dart';
 
 /// Loads the tracks a local artist/album page should render. Returns the full
 /// (already-filtered) track list for the header + list.
@@ -209,15 +210,7 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
           final track = _tracks[index - 1];
           return ListTile(
             key: ValueKey('local_track_${track.id}'),
-            leading: Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: const Icon(Icons.music_note),
-            ),
+            leading: TrackArtwork.fromTrack(track),
             title: Text(
               track.title,
               maxLines: 1,

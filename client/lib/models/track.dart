@@ -1,5 +1,11 @@
 import 'playback_payload.dart';
 import 'track_analysis.dart';
+import '../shared/models/track.dart'
+    show
+        TrackArtworkDescriptor,
+        TrackArtworkKind,
+        resolveTrackArtworkDescriptor,
+        trackArtworkKindFromPayload;
 
 enum TrackQueueStatus { pending, downloading, failed, playable }
 
@@ -20,7 +26,7 @@ class QueueTrack {
   final String? artist;
   final String? album;
   final int duration;
-  final String? coverUrl;
+  final TrackArtworkDescriptor _artwork;
   final DateTime addedAt;
   final TrackQueueStatus queueStatus;
   final bool canPlay;
@@ -37,15 +43,26 @@ class QueueTrack {
     this.artist,
     this.album,
     required this.duration,
-    this.coverUrl,
+    String? coverUrl,
+    String? artworkUrl,
+    TrackArtworkKind? artworkKind,
     required this.addedAt,
     this.queueStatus = TrackQueueStatus.playable,
     bool? canPlay,
     bool? canRetry,
     this.analysis,
   })  : queueItemId = queueItemId ?? id,
+        _artwork = resolveTrackArtworkDescriptor(
+          artworkUrl: artworkUrl ?? coverUrl,
+          artworkKind: artworkKind,
+          metadata: null,
+          mbReleaseId: null,
+        ),
         canPlay = canPlay ?? queueStatus == TrackQueueStatus.playable,
         canRetry = canRetry ?? queueStatus == TrackQueueStatus.failed;
+
+  String? get artworkUrl => _artwork.url;
+  TrackArtworkKind get artworkKind => _artwork.kind;
 
   factory QueueTrack.fromJson(Map<String, dynamic> json) {
     final sourceCandidate = _readMap(json['sourceCandidate']);
@@ -67,6 +84,28 @@ class QueueTrack {
     final status = _parseQueueStatus(json);
     final canPlayOverride = json['canPlay'] as bool?;
     final analysis = trackAnalysisFromTrackJson(json);
+    final explicitArtworkUrl = _readString(
+      json,
+      const ['artworkUrl', 'artwork_url'],
+    );
+    final explicitArtworkKind = trackArtworkKindFromPayload(json);
+    final legacyCoverUrl = _readString(
+      json,
+      const ['coverUrl', 'cover_url'],
+    );
+    final providerThumbnail = _readString(
+      sourceCandidate,
+      const ['thumbnailUrl', 'thumbnail_url'],
+    );
+    final artworkUrl = explicitArtworkKind != null
+        ? explicitArtworkUrl
+        : explicitArtworkUrl ?? legacyCoverUrl ?? providerThumbnail;
+    final artworkKind = explicitArtworkKind ??
+        (explicitArtworkUrl != null || legacyCoverUrl != null
+            ? null
+            : providerThumbnail != null
+                ? TrackArtworkKind.providerThumbnail
+                : null);
 
     return QueueTrack(
       id: id,
@@ -82,9 +121,8 @@ class QueueTrack {
       album: json['album'] as String? ??
           _readString(sourceCandidate, const ['album', 'provider']),
       duration: _parseDuration(json, sourceCandidate),
-      coverUrl: json['coverUrl'] as String? ??
-          json['cover_url'] as String? ??
-          _readString(sourceCandidate, const ['thumbnailUrl', 'thumbnail_url']),
+      artworkUrl: artworkUrl,
+      artworkKind: artworkKind,
       addedAt: _parseDate(json['addedAt'] ?? json['added_at']),
       queueStatus: status,
       canPlay: status == TrackQueueStatus.playable && (canPlayOverride ?? true),
@@ -183,7 +221,9 @@ class QueueTrack {
       'artist': artist,
       'album': album,
       'duration': duration,
-      'coverUrl': coverUrl,
+      if (artworkUrl != null) 'artworkUrl': artworkUrl,
+      'artworkKind': artworkKind.wireValue,
+      if (coverUrl != null) 'coverUrl': coverUrl,
       'addedAt': addedAt.toIso8601String(),
       'status': queueStatus.name,
       'canPlay': canPlay,
@@ -198,7 +238,8 @@ class QueueTrack {
         artist: artist,
         album: album,
         duration: Duration(seconds: duration),
-        artworkUrl: coverUrl,
+        artworkUrl: artworkUrl,
+        artworkKind: artworkKind.wireValue,
         analysis: analysis,
       );
 
@@ -213,6 +254,8 @@ class QueueTrack {
     String? album,
     int? duration,
     String? coverUrl,
+    String? artworkUrl,
+    TrackArtworkKind? artworkKind,
     DateTime? addedAt,
     TrackQueueStatus? queueStatus,
     bool? canPlay,
@@ -229,7 +272,8 @@ class QueueTrack {
       artist: artist ?? this.artist,
       album: album ?? this.album,
       duration: duration ?? this.duration,
-      coverUrl: coverUrl ?? this.coverUrl,
+      artworkUrl: artworkUrl ?? coverUrl ?? this.artworkUrl,
+      artworkKind: artworkKind ?? (coverUrl != null ? null : this.artworkKind),
       addedAt: addedAt ?? this.addedAt,
       queueStatus: queueStatus ?? this.queueStatus,
       canPlay: canPlay ?? this.canPlay,
@@ -240,6 +284,13 @@ class QueueTrack {
 
   /// Track duration in milliseconds (stored as whole seconds).
   int get durationMs => duration * 1000;
+
+  /// Backward-compatible alias for callers that have not migrated to the
+  /// provenance-aware descriptor yet.
+  String? get coverUrl => artworkKind == TrackArtworkKind.coverArt ||
+          artworkKind == TrackArtworkKind.releaseCover
+      ? artworkUrl
+      : null;
 
   String get formattedDuration {
     final minutes = duration ~/ 60;

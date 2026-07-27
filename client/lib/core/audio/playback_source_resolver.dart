@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart';
 
 import '../cache/playback_cache_manager.dart';
+import '../../shared/models/track.dart'
+    show resolveTrackArtworkDescriptor, trackArtworkKindFromPayload;
 import 'audio_source_resolution_policy.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'queue_persistence.dart';
@@ -198,6 +200,14 @@ class PlaybackSourceResolver {
     final sampleRateHz = track['sampleRateHz'] ?? track['sample_rate_hz'];
     final contentType = track['contentType'] ?? track['content_type'];
     final sizeBytes = track['sizeBytes'] ?? track['file_size_bytes'];
+    final artworkKind = trackArtworkKindFromPayload(track);
+    final artwork = resolveTrackArtworkDescriptor(
+      artworkUrl: track['artworkUrl'] ?? track['artwork_url'],
+      artworkKind: artworkKind,
+      metadata: null,
+      mbReleaseId: null,
+    );
+    final artworkUri = artwork.url == null ? null : Uri.parse(artwork.url!);
     final analysisSummary = compactAnalysisSummary(
       track['analysisSummary'] ?? track['analysis_summary'],
     );
@@ -227,6 +237,7 @@ class PlaybackSourceResolver {
       if (track['channels'] != null) 'channels': track['channels'],
       if (contentType is String) 'contentType': contentType,
       if (sizeBytes != null) 'sizeBytes': sizeBytes,
+      'artworkKind': artwork.kind.wireValue,
       'analysisRef': trackId.toString(),
     };
     return MediaItem(
@@ -235,9 +246,7 @@ class PlaybackSourceResolver {
       artist: track['artist'] as String? ?? 'Unknown Artist',
       album: track['album'] as String? ?? 'Unknown Album',
       duration: Duration(seconds: track['duration'] as int? ?? 0),
-      artUri: track['artwork_url'] != null
-          ? Uri.parse(track['artwork_url'] as String)
-          : null,
+      artUri: artworkUri,
       extras: playbackExtras,
     );
   }

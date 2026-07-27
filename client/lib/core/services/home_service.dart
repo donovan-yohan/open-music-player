@@ -108,23 +108,10 @@ class HomeService {
         .toList();
   }
 
-  /// The play-history endpoints return `coverArtUrl` as a flat field, but the
-  /// shared [Track] only knows how to read cover art out of `metadata_json`.
-  /// Fold it in so both the tile artwork and `toPlaybackJson`'s `artwork_url`
-  /// carry the cover through.
-  static Track trackFromPlayEvent(Map<String, dynamic> json) {
-    final cover = json['coverArtUrl'] ?? json['cover_art_url'];
-    if (cover is String && cover.isNotEmpty) {
-      return Track.fromJson({
-        ...json,
-        'metadata_json': {
-          ...?(json['metadata_json'] as Map<String, dynamic>?),
-          'cover_art_url': cover,
-        },
-      });
-    }
-    return Track.fromJson(json);
-  }
+  /// Play-event and Library payloads now share the same artwork-aware Track
+  /// parser. Legacy flat cover fields remain readable inside Track.fromJson.
+  static Track trackFromPlayEvent(Map<String, dynamic> json) =>
+      Track.fromJson(json);
 }
 
 int _intValue(Object? value) {

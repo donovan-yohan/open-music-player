@@ -52,7 +52,7 @@ void main() {
       expect(api.capturedParams?['limit'], '5');
       expect(tracks, hasLength(1));
       expect(tracks.first.title, 'Highway to Hell');
-      // coverArtUrl is folded into playback artwork so it survives.
+      // Legacy flat cover fields remain readable without a Home-only fold.
       expect(tracks.first.toPlaybackJson()['artwork_url'], 'http://c/1.jpg');
       expect(tracks.first.analysis?.summary?.bpm?.numericValue, 128);
       expect(tracks.first.analysis?.summary?.camelot?.textValue, '8A');
@@ -60,6 +60,26 @@ void main() {
         tracks.first.toPlaybackJson()['analysisSummary']['key']['value'],
         'Am',
       );
+    });
+
+    test('provider artwork descriptor remains explicit through Home parsing',
+        () async {
+      final api = _CapturingApiClient({
+        'tracks': [
+          {
+            'id': 42,
+            'title': 'Provider',
+            'artworkUrl': 'https://provider.example/42.jpg',
+            'artworkKind': 'provider_thumbnail',
+          },
+        ],
+      });
+
+      final track = (await HomeService(api).recentlyPlayed()).single;
+
+      expect(track.displayArtworkUrl, 'https://provider.example/42.jpg');
+      expect(track.artworkKind.wireValue, 'provider_thumbnail');
+      expect(track.coverArtUrl, isNull);
     });
 
     test('topTracks -> GET /me/plays/top with days + limit', () async {

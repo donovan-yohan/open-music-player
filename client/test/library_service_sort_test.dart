@@ -87,5 +87,12 @@ void main() {
       expect(api.capturedParams?.containsKey('mb_verified'), isFalse);
       expect(api.capturedParams?.containsKey('fields'), isFalse);
     });
+
+    test('default Library projection requests the shared artwork descriptor',
+        () {
+      expect(LibraryService.libraryListFields, contains('artwork_url'));
+      expect(LibraryService.libraryListFields, contains('artwork_kind'));
+      expect(LibraryService.libraryListFields, contains('cover_art_url'));
+    });
   });
 }

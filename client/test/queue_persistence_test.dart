@@ -16,6 +16,7 @@ Map<String, dynamic> _track(int id) => {
       'album': 'Album $id',
       'duration': 100 + id,
       'artwork_url': 'https://art/$id.jpg',
+      'artwork_kind': 'provider_thumbnail',
     };
 
 void main() {
@@ -271,6 +272,7 @@ void main() {
             'bpm': {'value': 130},
           },
           'analysisUpdatedAt': '2026-07-10T11:00:00.123456Z',
+          'artworkKind': 'provider_thumbnail',
           'isLiked': true,
           'likedAccountId': 'user-a',
           'sourceUrl': ' https://source/42 ',
@@ -284,6 +286,7 @@ void main() {
       expect(json['album'], 'Back in Black');
       expect(json['duration'], 312);
       expect(json['artwork_url'], 'https://art/42.jpg');
+      expect(json['artwork_kind'], 'provider_thumbnail');
       expect(json['analysisStatus'], 'analyzed');
       expect(json['analysisSummary'], {
         'bpm': {'value': 128},
@@ -309,6 +312,49 @@ void main() {
 
       expect(json.containsKey('isLiked'), isFalse);
       expect(json.containsKey('sourceUrl'), isFalse);
+      expect(json['artwork_kind'], 'none');
+    });
+
+    test('normalizes inconsistent artwork provenance before persistence', () {
+      final unknown = mediaItemToPlaybackJson(
+        MediaItem(
+          id: '42',
+          title: 'Unknown provenance',
+          artUri: Uri.parse('https://provider.example/42.jpg'),
+          extras: const {'artworkKind': 'provider'},
+        ),
+      );
+      final absent = mediaItemToPlaybackJson(
+        const MediaItem(
+          id: '43',
+          title: 'Missing artwork',
+          extras: {'artworkKind': 'provider_thumbnail'},
+        ),
+      );
+      final explicitNone = mediaItemToPlaybackJson(
+        MediaItem(
+          id: '44',
+          title: 'Explicit none',
+          artUri: Uri.parse('https://provider.example/44.jpg'),
+          extras: const {'artworkKind': 'none'},
+        ),
+      );
+      final legacy = mediaItemToPlaybackJson(
+        MediaItem(
+          id: '45',
+          title: 'Legacy cover',
+          artUri: Uri.parse('https://legacy.example/45.jpg'),
+        ),
+      );
+
+      expect(unknown['artwork_kind'], 'none');
+      expect(unknown.containsKey('artwork_url'), isFalse);
+      expect(absent['artwork_kind'], 'none');
+      expect(absent.containsKey('artwork_url'), isFalse);
+      expect(explicitNone['artwork_kind'], 'none');
+      expect(explicitNone.containsKey('artwork_url'), isFalse);
+      expect(legacy['artwork_kind'], 'cover_art');
+      expect(legacy['artwork_url'], 'https://legacy.example/45.jpg');
     });
 
     test('50 hydrated tracks persist compact bounded tempo metadata', () {

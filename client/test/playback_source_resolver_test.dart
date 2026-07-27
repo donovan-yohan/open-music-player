@@ -18,6 +18,8 @@ Map<String, dynamic> trackMap(
   String? analysisUpdatedAt,
   bool? isLiked,
   String? sourceUrl,
+  String? artworkUrl,
+  String? artworkKind,
 }) =>
     {
       'id': id,
@@ -30,6 +32,8 @@ Map<String, dynamic> trackMap(
       if (analysisUpdatedAt != null) 'analysisUpdatedAt': analysisUpdatedAt,
       if (isLiked != null) 'isLiked': isLiked,
       if (sourceUrl != null) 'sourceUrl': sourceUrl,
+      if (artworkUrl != null) 'artwork_url': artworkUrl,
+      if (artworkKind != null) 'artwork_kind': artworkKind,
     };
 
 void main() {
@@ -257,6 +261,67 @@ void main() {
       expect(item.extras?['channels'], 2);
       expect(item.extras?['contentType'], 'audio/flac');
       expect(item.extras?['sizeBytes'], 123456789);
+    });
+
+    test('preserves safe artwork URL and kind in local playback media',
+        () async {
+      final resolver = PlaybackSourceResolver(
+        signedAudioUrlService: SignedAudioUrlService.withRequester(
+          (_) async => throw StateError('local playback must not sign a URL'),
+        ),
+        localResolver: _FakeLocalResolver({1: '/downloads/1.flac'}),
+      );
+
+      final item = await resolver.resolveTrack(
+        trackMap(
+          1,
+          artworkUrl: 'https://provider.example/1.jpg',
+          artworkKind: 'provider_thumbnail',
+        ),
+      );
+
+      expect(item.artUri, Uri.parse('https://provider.example/1.jpg'));
+      expect(item.extras?['artworkKind'], 'provider_thumbnail');
+    });
+
+    test('rejects unsafe artwork before MediaItem construction', () async {
+      final resolver = PlaybackSourceResolver(
+        signedAudioUrlService: SignedAudioUrlService.withRequester(
+          (_) async => throw StateError('local playback must not sign a URL'),
+        ),
+        localResolver: _FakeLocalResolver({1: '/downloads/1.flac'}),
+      );
+
+      final item = await resolver.resolveTrack(
+        trackMap(
+          1,
+          artworkUrl: 'file:///tmp/provider.jpg',
+          artworkKind: 'provider_thumbnail',
+        ),
+      );
+
+      expect(item.artUri, isNull);
+      expect(item.extras?['artworkKind'], 'none');
+    });
+
+    test('rejects unknown explicit artwork provenance', () async {
+      final resolver = PlaybackSourceResolver(
+        signedAudioUrlService: SignedAudioUrlService.withRequester(
+          (_) async => throw StateError('local playback must not sign a URL'),
+        ),
+        localResolver: _FakeLocalResolver({1: '/downloads/1.flac'}),
+      );
+
+      final item = await resolver.resolveTrack(
+        trackMap(
+          1,
+          artworkUrl: 'https://provider.example/1.jpg',
+          artworkKind: 'provider',
+        ),
+      );
+
+      expect(item.artUri, isNull);
+      expect(item.extras?['artworkKind'], 'none');
     });
 
     test('scopes live liked and source extras to the resolving account',

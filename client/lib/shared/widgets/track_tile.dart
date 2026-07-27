@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import '../../models/track_analysis.dart';
 import '../models/track.dart';
 import 'song_metadata_chips.dart';
+import 'track_artwork.dart';
 
 class TrackTile extends StatelessWidget {
   final String title;
@@ -10,6 +10,7 @@ class TrackTile extends StatelessWidget {
   final String? album;
   final String duration;
   final String? coverArtUrl;
+  final TrackArtworkKind? artworkKind;
   final VoidCallback? onTap;
   final VoidCallback? onMorePressed;
   final Widget? leading;
@@ -26,6 +27,7 @@ class TrackTile extends StatelessWidget {
     this.album,
     required this.duration,
     this.coverArtUrl,
+    this.artworkKind,
     this.onTap,
     this.onMorePressed,
     this.leading,
@@ -51,7 +53,8 @@ class TrackTile extends StatelessWidget {
       artist: track.artist,
       album: track.album,
       duration: track.formattedDuration,
-      coverArtUrl: track.coverArtUrl,
+      coverArtUrl: track.displayArtworkUrl,
+      artworkKind: track.artworkKind,
       onTap: onTap,
       onMorePressed: onMorePressed,
       leading: leading,
@@ -126,7 +129,7 @@ class TrackTile extends StatelessWidget {
             selectedTileColor: activeColor.withValues(alpha: 0.10),
             contentPadding:
                 const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            leading: leading ?? _buildCoverArt(theme),
+            leading: leading ?? _buildCoverArt(),
             title: Text(
               title,
               maxLines: 1,
@@ -152,23 +155,16 @@ class TrackTile extends StatelessWidget {
     );
   }
 
-  Widget _buildCoverArt(ThemeData theme) {
-    if (coverArtUrl != null && coverArtUrl!.isNotEmpty) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(4),
-        child: CachedNetworkImage(
-          imageUrl: coverArtUrl!,
-          width: 48,
-          height: 48,
-          fit: BoxFit.cover,
-          memCacheWidth: 96, // 2x for retina displays
-          memCacheHeight: 96,
-          placeholder: (_, __) => _CoverArtPlaceholder(theme: theme),
-          errorWidget: (_, __, ___) => _CoverArtPlaceholder(theme: theme),
-        ),
-      );
-    }
-    return _CoverArtPlaceholder(theme: theme);
+  Widget _buildCoverArt() {
+    final resolvedKind = artworkKind ??
+        (safeTrackArtworkUrl(coverArtUrl) == null
+            ? TrackArtworkKind.none
+            : TrackArtworkKind.coverArt);
+    return TrackArtwork(
+      url: coverArtUrl,
+      kind: resolvedKind,
+      cacheKey: '${resolvedKind.wireValue}:${coverArtUrl ?? "none"}',
+    );
   }
 
   Widget _buildTrailing(
@@ -225,7 +221,7 @@ class TrackTile extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              leading ?? _buildCoverArt(theme),
+              leading ?? _buildCoverArt(),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(
@@ -361,26 +357,6 @@ class _NowPlayingBadge extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-/// Placeholder widget for cover art - extracted for reuse and const optimization
-class _CoverArtPlaceholder extends StatelessWidget {
-  final ThemeData theme;
-
-  const _CoverArtPlaceholder({required this.theme});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Icon(Icons.music_note, color: theme.colorScheme.onSurfaceVariant),
     );
   }
 }

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/storage/offline_database.dart';
+import 'package:open_music_player/features/library/library_screen.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/shared/models/track.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -188,7 +189,7 @@ void main() {
     addTearDown(migrated.close);
 
     final version = await migrated.rawQuery('PRAGMA user_version');
-    expect(version.single.values.single, 6);
+    expect(version.single.values.single, 7);
     final columns = await migrated.rawQuery('PRAGMA table_info(tracks)');
     expect(
       columns.map((column) => column['name']),
@@ -198,6 +199,9 @@ void main() {
         'analysis_overrides',
         'analysis_updated_at',
         'analysis_updated_at_us',
+        'artwork_url',
+        'artwork_kind',
+        'artwork_descriptor_present',
       ]),
     );
 
@@ -388,6 +392,135 @@ void main() {
     expect(stored?.analysis?.summary?.bpm?.numericValue, 141.18);
     expect(stored?.analysis?.summary?.camelot?.textValue, '11A');
     expect(stored?.analysis?.updatedAt, isNull);
+  });
+
+  test('v6 artwork migration preserves legacy rows and release fallback',
+      () async {
+    sqfliteFfiInit();
+    final directory = await Directory.systemTemp.createTemp('omp_offline_v6_');
+    final path = '${directory.path}/open_music_player.db';
+    addTearDown(() async {
+      await databaseFactoryFfi.deleteDatabase(path);
+      if (await directory.exists()) await directory.delete(recursive: true);
+    });
+
+    final v6 = await databaseFactoryFfi.openDatabase(
+      path,
+      options: OpenDatabaseOptions(
+        version: 6,
+        onCreate: (db, _) async {
+          await db.execute('''
+            CREATE TABLE tracks (
+              id INTEGER PRIMARY KEY,
+              identity_hash TEXT NOT NULL,
+              title TEXT NOT NULL,
+              artist TEXT,
+              album TEXT,
+              duration_ms INTEGER,
+              version TEXT,
+              mb_recording_id TEXT,
+              mb_release_id TEXT,
+              mb_artist_id TEXT,
+              mb_verified INTEGER DEFAULT 0,
+              source_url TEXT,
+              source_type TEXT,
+              storage_key TEXT,
+              file_size_bytes INTEGER,
+              analysis_status TEXT,
+              analysis_summary TEXT,
+              analysis_overrides TEXT,
+              analysis_updated_at TEXT,
+              analysis_updated_at_us INTEGER,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+          ''');
+          await db.insert('tracks', {
+            'id': 91,
+            'identity_hash': 'legacy-artwork-91',
+            'title': 'Legacy release',
+            'mb_release_id': '11111111-1111-1111-1111-111111111111',
+            'created_at': '2026-01-01T00:00:00.000Z',
+            'updated_at': '2026-01-01T00:00:00.000Z',
+          });
+          await db.insert('tracks', {
+            'id': 92,
+            'identity_hash': 'legacy-artwork-92',
+            'title': 'Provider only after refresh',
+            'created_at': '2026-01-01T00:00:00.000Z',
+            'updated_at': '2026-01-01T00:00:00.000Z',
+          });
+        },
+      ),
+    );
+    await v6.close();
+
+    final offline = OfflineDatabase(
+      databaseFactory: databaseFactoryFfi,
+      databasePathProvider: () async => path,
+    );
+    final migrated = await offline.database;
+    addTearDown(migrated.close);
+
+    final columns = await migrated.rawQuery('PRAGMA table_info(tracks)');
+    expect(
+      columns.map((column) => column['name']),
+      containsAll([
+        'artwork_url',
+        'artwork_kind',
+        'artwork_descriptor_present',
+      ]),
+    );
+    final row = await offline.getTrack(91);
+    expect(row?.artworkKind, TrackArtworkKind.releaseCover);
+    expect(row?.artworkDescriptorPresent, isFalse);
+    expect(
+      row?.displayArtworkUrl,
+      'https://coverartarchive.org/release/'
+      '11111111-1111-1111-1111-111111111111/front-250',
+    );
+
+    final providerRefresh = Track.fromLibraryJson({
+      'id': 92,
+      'title': 'Provider only after refresh',
+      'added_at': '2026-07-26T00:00:00Z',
+      'artwork_url': 'https://provider.example/92.jpg',
+      'artwork_kind': 'provider_thumbnail',
+    });
+    await cacheRemoteLibraryTrackMetadata(
+      offlineDatabase: offline,
+      tracks: [providerRefresh],
+    );
+    var providerRow = await offline.getTrack(92);
+    expect(providerRow?.displayArtworkUrl, 'https://provider.example/92.jpg');
+    expect(providerRow?.artworkKind, TrackArtworkKind.providerThumbnail);
+    expect(providerRow?.artworkDescriptorPresent, isTrue);
+
+    await offline.insertTrack(
+      Track(
+        id: 92,
+        identityHash: 'legacy-artwork-92',
+        title: 'Legacy refresh without descriptor',
+        createdAt: DateTime.utc(2026),
+        updatedAt: DateTime.utc(2026, 1, 2),
+      ),
+    );
+    providerRow = await offline.getTrack(92);
+    expect(providerRow?.displayArtworkUrl, 'https://provider.example/92.jpg');
+    expect(providerRow?.artworkKind, TrackArtworkKind.providerThumbnail);
+
+    await offline.insertTrack(
+      Track.fromLibraryJson({
+        'id': 92,
+        'title': 'Authoritative clear',
+        'added_at': '2026-07-27T00:00:00Z',
+        'artwork_kind': 'none',
+      }),
+    );
+    providerRow = await offline.getTrack(92);
+    expect(providerRow?.displayArtworkUrl, isNull);
+    expect(providerRow?.artworkKind, TrackArtworkKind.none);
+    expect(providerRow?.artworkDescriptorPresent, isTrue);
   });
 }
 

@@ -17,6 +17,7 @@ import 'package:open_music_player/features/library/library_screen.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/shared/models/track.dart';
 import 'package:open_music_player/shared/models/playlist.dart';
+import 'package:open_music_player/shared/widgets/track_artwork.dart';
 
 Track _controlRichTrack() => Track(
       id: 42,
@@ -24,6 +25,8 @@ Track _controlRichTrack() => Track(
       title: 'A useful title that must retain readable width',
       artist: 'Control-rich artist',
       durationMs: 180000,
+      artworkUrl: 'https://provider.example/42.jpg',
+      artworkKind: TrackArtworkKind.providerThumbnail,
       mbVerified: false,
       mbSuggestions: const [
         MBSuggestion(
@@ -105,6 +108,8 @@ void main() {
       expect(find.byTooltip('Unlike'), findsNothing);
       expect(find.byTooltip('Download'), findsNothing);
       expect(find.byTooltip('More actions'), findsOneWidget);
+      expect(find.byType(TrackArtwork), findsOneWidget);
+      expect(find.byIcon(Icons.auto_fix_high), findsOneWidget);
       expect(tester.takeException(), isNull);
 
       await tester.tapAt(

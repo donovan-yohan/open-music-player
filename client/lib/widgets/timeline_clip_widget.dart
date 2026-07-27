@@ -6,6 +6,7 @@ import '../models/track.dart';
 import '../models/trim_range.dart';
 import '../models/waveform.dart';
 import '../shared/widgets/song_metadata_chips.dart';
+import '../shared/widgets/track_artwork.dart';
 import 'timeline_waveform_painter.dart';
 
 /// Visual role of a lane in the stacked timeline. Drives emphasis (contrast,
@@ -79,7 +80,7 @@ class TimelineLaneHeader extends StatelessWidget {
               ? _accessibleLayout(theme, muted)
               : Row(
                   children: [
-                    _artwork(theme),
+                    _artwork(),
                     const SizedBox(width: 8),
                     Expanded(
                       child: LayoutBuilder(
@@ -161,7 +162,7 @@ class TimelineLaneHeader extends StatelessWidget {
       children: [
         Row(
           children: [
-            _artwork(theme),
+            _artwork(),
             const SizedBox(width: 8),
             Expanded(
               child: _titleRow(
@@ -205,28 +206,15 @@ class TimelineLaneHeader extends StatelessWidget {
     );
   }
 
-  Widget _artwork(ThemeData theme) {
-    final url = track.coverUrl;
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(4),
-      child: SizedBox(
-        width: 36,
-        height: 36,
-        child: url == null || url.isEmpty
-            ? _artworkFallback()
-            : Image.network(
-                url,
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => _artworkFallback(),
-              ),
-      ),
-    );
-  }
-
-  Widget _artworkFallback() {
-    return Container(
-      color: accent.withValues(alpha: 0.16),
-      child: Icon(Icons.music_note, size: 18, color: accent),
+  Widget _artwork() {
+    return TrackArtwork(
+      url: track.artworkUrl,
+      kind: track.artworkKind,
+      cacheKey:
+          'timeline:${track.queueItemId}:${track.artworkKind.wireValue}:'
+          '${track.artworkUrl ?? "none"}',
+      width: 36,
+      height: 36,
     );
   }
 }
