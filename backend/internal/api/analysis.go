@@ -22,22 +22,26 @@ func NewAnalysisHandlers(analysisRepo *db.AnalysisRepository, libraryRepo *db.Li
 }
 
 type AnalysisResponse struct {
-	TrackID       int64           `json:"track_id"`
-	SchemaVersion int             `json:"schema_version"`
-	Status        string          `json:"status"`
-	Summary       json.RawMessage `json:"summary,omitempty"`
-	Overrides     json.RawMessage `json:"overrides,omitempty"`
-	Artifacts     json.RawMessage `json:"artifacts,omitempty"`
-	Provenance    json.RawMessage `json:"provenance,omitempty"`
-	Error         string          `json:"error,omitempty"`
-	RequestedAt   string          `json:"requested_at"`
-	StartedAt     string          `json:"started_at,omitempty"`
-	CompletedAt   string          `json:"completed_at,omitempty"`
-	UpdatedAt     string          `json:"updated_at"`
+	TrackID           int64           `json:"track_id"`
+	SchemaVersion     int             `json:"schema_version"`
+	Status            string          `json:"status"`
+	Summary           json.RawMessage `json:"summary,omitempty"`
+	EffectiveTiming   json.RawMessage `json:"effective_timing,omitempty"`
+	Overrides         json.RawMessage `json:"overrides,omitempty"`
+	Artifacts         json.RawMessage `json:"artifacts,omitempty"`
+	Provenance        json.RawMessage `json:"provenance,omitempty"`
+	Error             string          `json:"error,omitempty"`
+	RequestedAt       string          `json:"requested_at"`
+	StartedAt         string          `json:"started_at,omitempty"`
+	CompletedAt       string          `json:"completed_at,omitempty"`
+	UpdatedAt         string          `json:"updated_at"`
+	OverrideRevision  int64           `json:"override_revision"`
+	OverrideUpdatedAt string          `json:"override_updated_at,omitempty"`
 }
 
 type AnalysisOverridesRequest struct {
-	Overrides json.RawMessage `json:"overrides"`
+	Overrides        json.RawMessage `json:"overrides"`
+	ExpectedRevision *int64          `json:"expected_revision,omitempty"`
 }
 
 const maxAnalysisOverridesRequestBytes = 1 << 20
@@ -45,16 +49,25 @@ const maxAnalysisOverridesRequestBytes = 1 << 20
 const manualAnalysisOverrideProvenance = "manual_override"
 
 func newAnalysisResponse(analysis *db.TrackAnalysis) AnalysisResponse {
+	effectiveTiming, projectedOverrides := db.ProjectEffectiveTiming(
+		analysis.SummaryJSON,
+		analysis.OverridesJSON,
+	)
 	resp := AnalysisResponse{
-		TrackID:       analysis.TrackID,
-		SchemaVersion: analysis.SchemaVersion,
-		Status:        analysis.Status,
-		Summary:       analysis.SummaryJSON,
-		Overrides:     analysis.OverridesJSON,
-		Artifacts:     analysis.ArtifactsJSON,
-		Provenance:    analysis.ProvenanceJSON,
-		RequestedAt:   analysis.RequestedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:     analysis.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		TrackID:          analysis.TrackID,
+		SchemaVersion:    analysis.SchemaVersion,
+		Status:           analysis.Status,
+		Summary:          analysis.SummaryJSON,
+		EffectiveTiming:  effectiveTiming,
+		Overrides:        projectedOverrides,
+		Artifacts:        analysis.ArtifactsJSON,
+		Provenance:       analysis.ProvenanceJSON,
+		RequestedAt:      analysis.RequestedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:        analysis.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		OverrideRevision: analysis.ManualOverrideRevision,
+	}
+	if analysis.ManualOverrideUpdatedAt.Valid {
+		resp.OverrideUpdatedAt = analysis.ManualOverrideUpdatedAt.Time.UTC().Format(time.RFC3339Nano)
 	}
 	if analysis.Error.Valid {
 		resp.Error = analysis.Error.String
@@ -139,7 +152,19 @@ func (h *AnalysisHandlers) UpdateTrackAnalysisOverrides(w http.ResponseWriter, r
 		writeLibraryError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
-	analysis, err := h.analysisRepo.SetOverrides(r.Context(), trackID, normalized)
+	expectedRevision := int64(0)
+	if req.ExpectedRevision != nil {
+		expectedRevision = *req.ExpectedRevision
+	}
+	if expectedRevision < 0 {
+		writeLibraryError(w, http.StatusBadRequest, "INVALID_REQUEST", "expected_revision must be zero or greater")
+		return
+	}
+	analysis, err := h.analysisRepo.SetOverrides(r.Context(), trackID, normalized, expectedRevision)
+	if errors.Is(err, db.ErrAnalysisOverrideConflict) {
+		writeLibraryError(w, http.StatusConflict, "ANALYSIS_OVERRIDE_CONFLICT", "analysis overrides changed; refresh and retry")
+		return
+	}
 	if err != nil {
 		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to save analysis overrides")
 		return
@@ -165,20 +190,116 @@ func normalizeAnalysisOverrides(raw json.RawMessage) (json.RawMessage, error) {
 	if obj == nil {
 		return nil, errors.New("overrides must be a JSON object")
 	}
-	if err := normalizeManualBPMOverride(obj); err != nil {
-		return nil, err
+	_, hasV2Timing := obj["manual_timing_v2"]
+	_, hasProvisionalTiming := obj["manual_timing_override"]
+	if hasV2Timing {
+		if err := normalizeManualTimingV2(obj); err != nil {
+			return nil, err
+		}
+		delete(obj, "manual_timing_override")
+	} else if hasProvisionalTiming {
+		if err := normalizeManualTimingOverride(obj); err != nil {
+			return nil, err
+		}
 	}
-	if err := normalizeManualBeatGridOverride(obj); err != nil {
-		return nil, err
-	}
-	if err := normalizeManualDownbeatsOverride(obj); err != nil {
-		return nil, err
+	if !hasV2Timing && !hasProvisionalTiming {
+		if err := normalizeManualBPMOverride(obj); err != nil {
+			return nil, err
+		}
+		if err := normalizeManualBeatGridOverride(obj); err != nil {
+			return nil, err
+		}
+		if err := normalizeManualDownbeatsOverride(obj); err != nil {
+			return nil, err
+		}
 	}
 	normalized, err := json.Marshal(obj)
 	if err != nil {
 		return nil, errors.New("failed to normalize overrides")
 	}
 	return normalized, nil
+}
+
+func normalizeManualTimingOverride(overrides map[string]any) error {
+	raw, present := overrides["manual_timing_override"]
+	if !present {
+		return nil
+	}
+	fields, err := normalizeManualTimingFields(raw, "manual_timing_override", false)
+	if err != nil {
+		return err
+	}
+	fields["schema_version"] = float64(2)
+	delete(overrides, "manual_timing_override")
+	overrides["manual_timing_v2"] = fields
+	return nil
+}
+
+func normalizeManualTimingV2(overrides map[string]any) error {
+	raw, present := overrides["manual_timing_v2"]
+	if !present {
+		return nil
+	}
+	fields, err := normalizeManualTimingFields(raw, "manual_timing_v2", true)
+	if err != nil {
+		return err
+	}
+	overrides["manual_timing_v2"] = fields
+	return nil
+}
+
+func normalizeManualTimingFields(raw any, fieldName string, requireSchemaVersion bool) (map[string]any, error) {
+	fields, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New(fieldName + " must be a JSON object")
+	}
+	for key := range fields {
+		switch key {
+		case "schema_version", "bpm", "beat_anchor_ms", "beats_per_bar", "downbeat_phase_index", "phrase_length_bars",
+			"confidence", "provenance", "revision", "updated_at":
+		default:
+			return nil, errors.New(fieldName + " contains an unknown field")
+		}
+	}
+	if requireSchemaVersion {
+		schemaVersion, present := fields["schema_version"]
+		if !present || !isJSONInteger(schemaVersion) || schemaVersion.(float64) != 2 {
+			return nil, errors.New("manual_timing_v2 schema_version must be 2")
+		}
+	}
+
+	if bpm, present := fields["bpm"]; present && (!isFiniteJSONNumber(bpm) || bpm.(float64) < 30 || bpm.(float64) > 300) {
+		return nil, errors.New(fieldName + " bpm must be between 30 and 300")
+	}
+	anchor, hasAnchor := fields["beat_anchor_ms"]
+	if hasAnchor && (!isJSONInteger(anchor) || anchor.(float64) < 0) {
+		return nil, errors.New(fieldName + " beat_anchor_ms must be a non-negative integer")
+	}
+	meter, hasMeter := fields["beats_per_bar"]
+	if hasMeter && (!isJSONInteger(meter) || meter.(float64) < 1 || meter.(float64) > 32) {
+		return nil, errors.New(fieldName + " beats_per_bar must be between 1 and 32")
+	}
+	phase, hasPhase := fields["downbeat_phase_index"]
+	if hasPhase && (!isJSONInteger(phase) || phase.(float64) < 0) {
+		return nil, errors.New(fieldName + " downbeat_phase_index must be a non-negative integer")
+	}
+	if hasPhase && !hasMeter {
+		return nil, errors.New(fieldName + " downbeat_phase_index requires beats_per_bar")
+	}
+	if hasMeter && hasPhase && phase.(float64) >= meter.(float64) {
+		return nil, errors.New(fieldName + " downbeat_phase_index must be less than beats_per_bar")
+	}
+	phrase, hasPhrase := fields["phrase_length_bars"]
+	if hasPhrase && (!isJSONInteger(phrase) || phrase.(float64) < 1 || phrase.(float64) > 128) {
+		return nil, errors.New(fieldName + " phrase_length_bars must be between 1 and 128")
+	}
+	// Revision and timestamp are server-owned. Legacy timing fields remain as a
+	// fallback for facts the canonical document does not replace.
+	delete(fields, "revision")
+	delete(fields, "updated_at")
+	fields["schema_version"] = float64(2)
+	stampManualTrust(fields)
+	return fields, nil
 }
 
 func normalizeManualBPMOverride(overrides map[string]any) error {

@@ -50,8 +50,10 @@ QueueTrack _analyzedTrack(
   double confidence = 0.9,
   double? downbeatConfidence,
   List<int> downbeatsMs = const [0, 4000, 8000, 12000, 16000],
-}) =>
-    _track(
+  bool hasManualTimingAuthority = false,
+}) {
+  if (!hasManualTimingAuthority) {
+    return _track(
       id,
       title,
       duration,
@@ -68,6 +70,50 @@ QueueTrack _analyzedTrack(
         ),
       ),
     );
+  }
+  return _track(
+    id,
+    title,
+    duration,
+    analysis: TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: {
+        'bpm': {'value': bpm, 'confidence': confidence},
+        if (key != null) 'key': {'value': key},
+        if (camelot != null) 'camelot': {'value': camelot},
+        'beat_grid': {
+          'bpm': bpm,
+          if (hasManualTimingAuthority)
+            'beats_ms': _beatsForDownbeats(downbeatsMs),
+        },
+        'downbeats': {
+          'positions_ms': downbeatsMs,
+          if (downbeatConfidence != null) 'confidence': downbeatConfidence,
+        },
+      },
+      overrides: hasManualTimingAuthority
+          ? {
+              'manual_timing_v2': {
+                'schema_version': 2,
+                'beats_per_bar': 4,
+                'downbeat_phase_index': 0,
+              },
+            }
+          : null,
+    ),
+  );
+}
+
+List<int> _beatsForDownbeats(List<int> downbeatsMs) {
+  if (downbeatsMs.isEmpty) return const [];
+  final barLengthMs =
+      downbeatsMs.length > 1 ? downbeatsMs[1] - downbeatsMs.first : 4000;
+  final beatLengthMs = math.max(1, barLengthMs ~/ 4);
+  return [
+    for (final downbeatMs in downbeatsMs)
+      for (var beat = 0; beat < 4; beat++) downbeatMs + beat * beatLengthMs,
+  ];
+}
 
 MixClip _mixClip(
   String id,
@@ -176,6 +222,19 @@ Future<void> _pump(
   }
 }
 
+Future<void> _pumpFrames(
+  WidgetTester tester,
+  Duration duration, {
+  Duration frame = const Duration(milliseconds: 25),
+}) async {
+  var remaining = duration;
+  while (remaining > Duration.zero) {
+    final step = remaining < frame ? remaining : frame;
+    await tester.pump(step);
+    remaining -= step;
+  }
+}
+
 class _StableWaveformSource {
   TimelineWaveformData waveformFor(QueueTrack track, int sampleCount) =>
       richWaveformForTrack(track, sampleCount: sampleCount);
@@ -235,6 +294,52 @@ TimelineWaveformPainter _waveformPainter(WidgetTester tester, String trackId) {
 }
 
 void main() {
+  test('scrub edge velocity is bounded, symmetric, and has a center dead zone',
+      () {
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: 0,
+        paneWidth: 300,
+      ),
+      -timelineScrubMaxEdgeScrollPxPerSecond,
+    );
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: 300,
+        paneWidth: 300,
+      ),
+      timelineScrubMaxEdgeScrollPxPerSecond,
+    );
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: 28,
+        paneWidth: 300,
+      ),
+      closeTo(-timelineScrubMaxEdgeScrollPxPerSecond / 2, 0.001),
+    );
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: 272,
+        paneWidth: 300,
+      ),
+      closeTo(timelineScrubMaxEdgeScrollPxPerSecond / 2, 0.001),
+    );
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: 150,
+        paneWidth: 300,
+      ),
+      0,
+    );
+    expect(
+      timelineScrubEdgeVelocityPxPerSecond(
+        pointerPaneX: double.nan,
+        paneWidth: 300,
+      ),
+      0,
+    );
+  });
+
   testWidgets('lane header keeps default-scale BPM text untruncated', (
     tester,
   ) async {
@@ -588,8 +693,7 @@ void main() {
       );
     });
 
-    test('downbeat mode falls back to every fourth beat when downbeats miss',
-        () {
+    test('downbeat mode stays free when meter/downbeats are unknown', () {
       const tempo = ClipTempoMetadata(
         nativeBpm: 120,
         beatsMs: [120, 620, 1120, 1620, 2120, 2620, 3120, 3620],
@@ -602,7 +706,7 @@ void main() {
           clip: clip,
           tempo: tempo,
         ),
-        2120,
+        1980,
       );
     });
 
@@ -727,8 +831,13 @@ void main() {
       previous: null,
       current: _analyzedTrack('t1', 'Midnight Drive', 20),
       upcoming: [
-        _analyzedTrack('t2', 'Paper Planes', 20),
-        _analyzedTrack('t3', 'Glass', 20),
+        _analyzedTrack(
+          't2',
+          'Paper Planes',
+          20,
+          hasManualTimingAuthority: true,
+        ),
+        _analyzedTrack('t3', 'Glass', 20, hasManualTimingAuthority: true),
       ],
     );
 
@@ -1092,6 +1201,68 @@ void main() {
     expect(waveformBuilds, waveformBuildsBeforePosition);
   });
 
+  for (final direction in [-1.0, 1.0]) {
+    testWidgets(
+      'live playhead feedback keeps ${direction < 0 ? 'left' : 'right'} drag under the pointer',
+      (tester) async {
+        final positions = StreamController<int>.broadcast(sync: true);
+        addTearDown(positions.close);
+        final updates = <int>[];
+        final current = _track('t1', 'Midnight Drive', 390);
+
+        await _pump(
+          tester,
+          previous: null,
+          current: current,
+          upcoming: const [],
+          timelineModel: TimelineModel(
+            clips: [_mixClip('t1', 0, 390000)],
+          ),
+          playheadPositionMs: 180000,
+          positionMsStream: positions.stream,
+          onScrubStart: () {},
+          onScrubUpdate: (ms) {
+            updates.add(ms);
+            positions.add(ms);
+          },
+          onScrubEnd: (_) async {},
+        );
+
+        final handle =
+            find.byKey(const ValueKey('timeline_playhead_drag_handle'));
+        final startX = tester.getCenter(handle).dx;
+        final gesture = await tester.startGesture(tester.getCenter(handle));
+        await gesture.moveBy(Offset(24 * direction, 0));
+        await tester.pump();
+        updates.clear();
+        var expectedX = startX + 24 * direction;
+
+        for (var i = 0; i < 4; i++) {
+          await gesture.moveBy(Offset(8 * direction, 0));
+          await tester.pump();
+          expectedX += 8 * direction;
+          final handleX = tester.getRect(handle).center.dx;
+          final lineX = tester
+              .getRect(find.byKey(const ValueKey('timeline_playhead')))
+              .topLeft
+              .dx;
+          expect(handleX, closeTo(expectedX, 0.1));
+          expect(lineX, closeTo(expectedX, 0.1));
+        }
+
+        expect(updates, hasLength(4));
+        for (var i = 1; i < updates.length; i++) {
+          expect(
+            updates[i] - updates[i - 1],
+            (8000 * direction).round(),
+          );
+        }
+        await gesture.up();
+        await tester.pumpAndSettle();
+      },
+    );
+  }
+
   testWidgets('browse drag scrubs through the engine lifecycle', (
     tester,
   ) async {
@@ -1421,8 +1592,20 @@ void main() {
       await _pump(
         tester,
         previous: null,
-        current: _analyzedTrack('n1', 'Narrow Now', 20),
-        upcoming: [_analyzedTrack('n2', 'Narrow Next', 20)],
+        current: _analyzedTrack(
+          'n1',
+          'Narrow Now',
+          20,
+          hasManualTimingAuthority: true,
+        ),
+        upcoming: [
+          _analyzedTrack(
+            'n2',
+            'Narrow Next',
+            20,
+            hasManualTimingAuthority: true,
+          ),
+        ],
         size: const Size(StackedWaveformTimeline.railWidth + 1, 844),
       );
 
@@ -1462,11 +1645,11 @@ void main() {
     expect(find.byKey(const ValueKey('timeline_trim_start_t1')), findsNothing);
   });
 
-  testWidgets('selected timeline clip exposes analysis correction action', (
-    tester,
-  ) async {
+  testWidgets(
+      'analysis correction receives active clip source position, not timeline position',
+      (tester) async {
     QueueTrack? edited;
-    int? seededDownbeat;
+    int? capturedSourcePositionMs;
     await _pump(
       tester,
       previous: null,
@@ -1474,9 +1657,12 @@ void main() {
       upcoming: [_track('t2', 'Paper Planes', 188)],
       playheadPositionMs: 16000,
       positionMsStream: const Stream<int>.empty(),
-      onEditAnalysis: (track, {initialFirstDownbeatMs}) {
+      timelineModel: TimelineModel(
+        clips: [_mixClip('t1', 5000, 214000)],
+      ),
+      onEditAnalysis: (track, {currentSourcePositionMs}) {
         edited = track;
-        seededDownbeat = initialFirstDownbeatMs;
+        capturedSourcePositionMs = currentSourcePositionMs;
       },
     );
 
@@ -1489,14 +1675,14 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(edited?.id, 't1');
-    expect(seededDownbeat, 16000);
+    expect(capturedSourcePositionMs, 11000);
   });
 
   testWidgets('analysis correction action has no seed for inactive clip', (
     tester,
   ) async {
     QueueTrack? edited;
-    int? seededDownbeat;
+    int? capturedSourcePositionMs;
     await _pump(
       tester,
       previous: null,
@@ -1504,9 +1690,9 @@ void main() {
       upcoming: [_track('t2', 'Paper Planes', 188)],
       playheadPositionMs: 16000,
       positionMsStream: const Stream<int>.empty(),
-      onEditAnalysis: (track, {initialFirstDownbeatMs}) {
+      onEditAnalysis: (track, {currentSourcePositionMs}) {
         edited = track;
-        seededDownbeat = initialFirstDownbeatMs;
+        capturedSourcePositionMs = currentSourcePositionMs;
       },
     );
 
@@ -1519,7 +1705,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(edited?.id, 't2');
-    expect(seededDownbeat, isNull);
+    expect(capturedSourcePositionMs, isNull);
   });
 
   testWidgets('overlap bands and selected clips expose tempo diagnostics', (
@@ -1562,7 +1748,7 @@ void main() {
       current: current,
       upcoming: [incoming],
       timelineModel: timeline,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     expect(find.textContaining('Beat locked'), findsOneWidget);
@@ -1626,7 +1812,7 @@ void main() {
       current: current,
       upcoming: [incoming],
       timelineModel: timeline,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -1680,7 +1866,7 @@ void main() {
       current: current,
       upcoming: [incoming],
       timelineModel: timeline,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -1730,7 +1916,7 @@ void main() {
       current: current,
       upcoming: [incoming],
       timelineModel: timeline,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -1770,7 +1956,7 @@ void main() {
       upcoming: const [],
       timelineModel: timeline,
       pitchFallbackClipIds: const {'clip_t1'},
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -1831,7 +2017,7 @@ void main() {
         waveformBuilds++;
         return richWaveformForTrack(track, sampleCount: targetSampleCount);
       },
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
@@ -1883,6 +2069,7 @@ void main() {
       220,
       bpm: 141.18,
       downbeatsMs: downbeats,
+      hasManualTimingAuthority: true,
     );
     final upcoming = _analyzedTrack(
       't2',
@@ -1890,6 +2077,7 @@ void main() {
       180,
       bpm: 141.18,
       downbeatsMs: downbeats,
+      hasManualTimingAuthority: true,
     );
     const staleTempo = ClipTempoMetadata(nativeBpm: 90);
     final timeline = TimelineModel(
@@ -1905,7 +2093,7 @@ void main() {
       current: current,
       upcoming: [upcoming],
       timelineModel: timeline,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(find.byKey(const ValueKey('timeline_clip_t2')));
@@ -2368,13 +2556,96 @@ void main() {
     expect(events.first, 'begin');
   });
 
-  testWidgets('scrub drag only pans when held near a horizontal edge', (
+  testWidgets('edge scrub scroll is elapsed-time based and stops on release', (
     tester,
   ) async {
     final current = _track('t1', 'Midnight Drive', 240);
     final next = _track('t2', 'Paper Planes', 240);
     final later = _track('t3', 'Glass', 240);
+    final updates = <int>[];
 
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next, later],
+      onScrubStart: () {},
+      onScrubUpdate: updates.add,
+      onScrubEnd: (_) async {},
+    );
+
+    final ruler = tester.getRect(
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+    );
+    final edgeGesture = await tester.startGesture(
+      Offset(ruler.right - 30, ruler.center.dy),
+    );
+    await edgeGesture.moveBy(const Offset(24, 0));
+    await tester.pump();
+    final beforeJitter = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+
+    for (var i = 0; i < 20; i++) {
+      await edgeGesture.moveBy(Offset(i.isEven ? -0.5 : 0.5, 0));
+    }
+    await tester.pump();
+    final afterJitter = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    expect(
+      afterJitter.left,
+      closeTo(beforeJitter.left, 0.1),
+      reason: 'pointer event count must not drive viewport distance',
+    );
+
+    const hold = Duration(milliseconds: 250);
+    await _pumpFrames(tester, hold);
+    final afterHold = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    final paneWidth = ruler.width - StackedWaveformTimeline.railWidth;
+    final pointerPaneX = paneWidth - 6;
+    final expectedDistance = timelineScrubEdgeVelocityPxPerSecond(
+          pointerPaneX: pointerPaneX,
+          paneWidth: paneWidth,
+        ) *
+        hold.inMilliseconds /
+        1000;
+
+    expect(
+      beforeJitter.left - afterHold.left,
+      closeTo(expectedDistance, 1),
+    );
+    expect(
+      beforeJitter.left - afterHold.left,
+      lessThanOrEqualTo(
+        timelineScrubMaxEdgeScrollPxPerSecond *
+            hold.inMilliseconds /
+            1000,
+      ),
+    );
+
+    await edgeGesture.up();
+    await tester.pump();
+    final afterRelease = tester.getRect(
+      find.byKey(const ValueKey('timeline_clip_t2')),
+    );
+    final updateCountAfterRelease = updates.length;
+    await _pumpFrames(tester, hold);
+    expect(
+      tester.getRect(find.byKey(const ValueKey('timeline_clip_t2'))).left,
+      closeTo(afterRelease.left, 0.1),
+    );
+    expect(updates, hasLength(updateCountAfterRelease));
+  });
+
+  testWidgets('center scrub hold does not pan and leaving an edge stops pan', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    final later = _track('t3', 'Glass', 240);
     await _pump(
       tester,
       previous: null,
@@ -2388,41 +2659,188 @@ void main() {
     final ruler = tester.getRect(
       find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
     );
-    final beforeCenter = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t2')),
+    final clip = find.byKey(const ValueKey('timeline_clip_t2'));
+    final centerGesture = await tester.startGesture(
+      Offset(ruler.center.dx - 24, ruler.center.dy),
     );
-    final centerGesture = await tester.startGesture(ruler.center);
-    await centerGesture.moveBy(const Offset(80, 0));
+    await centerGesture.moveBy(const Offset(24, 0));
     await tester.pump();
-    final afterCenter = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t2')),
-    );
-    expect(afterCenter.left, closeTo(beforeCenter.left, 1));
+    final beforeCenterHold = tester.getRect(clip);
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    expect(tester.getRect(clip).left, closeTo(beforeCenterHold.left, 0.1));
     await centerGesture.up();
-    await tester.pumpAndSettle();
+    await tester.pump();
 
-    final beforeEdge = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t2')),
-    );
     final edgeGesture = await tester.startGesture(
-      Offset(ruler.right - 4, ruler.center.dy),
+      Offset(ruler.right - 30, ruler.center.dy),
     );
-    await edgeGesture.moveBy(const Offset(24, 0));
     await edgeGesture.moveBy(const Offset(24, 0));
     await tester.pump();
-    final afterEdge = tester.getRect(
-      find.byKey(const ValueKey('timeline_clip_t2')),
-    );
-
-    expect(
-      afterEdge.left,
-      lessThan(beforeEdge.left),
-      reason: 'edge scrub should reveal later timeline content',
-    );
-
+    await edgeGesture.moveTo(ruler.center);
+    await tester.pump();
+    final afterLeavingEdge = tester.getRect(clip);
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    expect(tester.getRect(clip).left, closeTo(afterLeavingEdge.left, 0.1));
     await edgeGesture.up();
-    await tester.pumpAndSettle();
   });
+
+  testWidgets('left and right edge holds scroll at symmetric rates', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    final later = _track('t3', 'Glass', 240);
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next, later],
+      onScrubStart: () {},
+      onScrubUpdate: (_) {},
+      onScrubEnd: (_) async {},
+    );
+
+    await tester.drag(
+      find.byKey(const ValueKey('timeline_pan_surface')),
+      const Offset(-100, 0),
+    );
+    await tester.pumpAndSettle();
+    final ruler = tester.getRect(
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+    );
+    final clip = find.byKey(const ValueKey('timeline_clip_t2'));
+
+    final rightGesture = await tester.startGesture(
+      Offset(ruler.right - 30, ruler.center.dy),
+    );
+    await rightGesture.moveBy(const Offset(24, 0));
+    await tester.pump();
+    final beforeRight = tester.getRect(clip).left;
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    final rightDistance = beforeRight - tester.getRect(clip).left;
+    await rightGesture.up();
+    await tester.pump();
+
+    final leftGesture = await tester.startGesture(
+      Offset(
+        ruler.left + StackedWaveformTimeline.railWidth + 30,
+        ruler.center.dy,
+      ),
+    );
+    await leftGesture.moveBy(const Offset(-24, 0));
+    await tester.pump();
+    final beforeLeft = tester.getRect(clip).left;
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    final leftDistance = tester.getRect(clip).left - beforeLeft;
+    await leftGesture.up();
+
+    expect(leftDistance, greaterThan(0));
+    expect(rightDistance, greaterThan(0));
+    expect(leftDistance, closeTo(rightDistance, 1));
+  });
+
+  testWidgets('edge scrub stops on cancel and widget disposal', (
+    tester,
+  ) async {
+    final current = _track('t1', 'Midnight Drive', 240);
+    final next = _track('t2', 'Paper Planes', 240);
+    final later = _track('t3', 'Glass', 240);
+    final updates = <int>[];
+    final ends = <int>[];
+    await _pump(
+      tester,
+      previous: null,
+      current: current,
+      upcoming: [next, later],
+      onScrubStart: () {},
+      onScrubUpdate: updates.add,
+      onScrubEnd: (ms) async => ends.add(ms),
+    );
+
+    final ruler = tester.getRect(
+      find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+    );
+    final gesture = await tester.startGesture(
+      Offset(ruler.right - 30, ruler.center.dy),
+    );
+    await gesture.moveBy(const Offset(24, 0));
+    await tester.pump();
+    await _pumpFrames(tester, const Duration(milliseconds: 100));
+    await gesture.cancel();
+    await tester.pump();
+    expect(ends, hasLength(1));
+    final afterCancel = updates.length;
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    expect(updates, hasLength(afterCancel));
+    expect(ends, hasLength(1));
+    ends.clear();
+
+    final disposalGesture = await tester.startGesture(
+      Offset(ruler.right - 30, ruler.center.dy),
+    );
+    await disposalGesture.moveBy(const Offset(24, 0));
+    await tester.pump();
+    final lastPreviewMs = updates.last;
+    await tester.pumpWidget(const SizedBox.shrink());
+    expect(ends, [lastPreviewMs]);
+    await _pumpFrames(tester, const Duration(milliseconds: 250));
+    expect(ends, [lastPreviewMs]);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final atRightBound in [false, true]) {
+    testWidgets(
+      '${atRightBound ? 'right' : 'left'} timeline bound stops edge scroll',
+      (tester) async {
+        final current = _track('t1', 'Midnight Drive', 240);
+        final next = _track('t2', 'Paper Planes', 240);
+        final later = _track('t3', 'Glass', 240);
+        final updates = <int>[];
+        await _pump(
+          tester,
+          previous: null,
+          current: current,
+          upcoming: [next, later],
+          onScrubStart: () {},
+          onScrubUpdate: updates.add,
+          onScrubEnd: (_) async {},
+        );
+        if (atRightBound) {
+          await tester.drag(
+            find.byKey(const ValueKey('timeline_pan_surface')),
+            const Offset(-2000, 0),
+          );
+          await tester.pumpAndSettle();
+        }
+
+        final ruler = tester.getRect(
+          find.byKey(const ValueKey('timeline_ruler_scrub_surface')),
+        );
+        final start = atRightBound
+            ? Offset(ruler.right - 30, ruler.center.dy)
+            : Offset(
+                ruler.left + StackedWaveformTimeline.railWidth + 30,
+                ruler.center.dy,
+              );
+        final gesture = await tester.startGesture(start);
+        await gesture.moveBy(Offset(atRightBound ? 24 : -24, 0));
+        await tester.pump();
+        final clipBefore = tester.getRect(
+          find.byKey(const ValueKey('timeline_clip_t2')),
+        );
+        final updatesBefore = updates.length;
+        await _pumpFrames(tester, const Duration(milliseconds: 250));
+        expect(
+          tester
+              .getRect(find.byKey(const ValueKey('timeline_clip_t2')))
+              .left,
+          closeTo(clipBefore.left, 0.1),
+        );
+        expect(updates, hasLength(updatesBefore));
+        await gesture.up();
+      },
+    );
+  }
 
   testWidgets('no-op edge pan does not create a manual offset lock', (
     tester,
@@ -2714,7 +3132,7 @@ void main() {
       upcoming: const [],
       onTimelineStartChanged: (_, startMs) => starts.add(startMs),
       onPitchModeChanged: (_, __) {},
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     final body = find.byKey(const ValueKey('timeline_clip_semantics_t1'));
@@ -2790,7 +3208,7 @@ void main() {
         size: size,
         textScaler: const TextScaler.linear(3),
         onPitchModeChanged: (_, __) {},
-        onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+        onEditAnalysis: (_, {currentSourcePositionMs}) {},
       );
       await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
       await tester.pumpAndSettle();
@@ -2849,7 +3267,7 @@ void main() {
           onScrubUpdate: (ms) => scrubEvents.add('update:$ms'),
           onScrubEnd: (ms) async => scrubEvents.add('end:$ms'),
           onPitchModeChanged: (_, mode) => pitchModes.add(mode),
-          onEditAnalysis: (_, {initialFirstDownbeatMs}) => analysisEdits++,
+          onEditAnalysis: (_, {currentSourcePositionMs}) => analysisEdits++,
         );
         await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
         await tester.pumpAndSettle();
@@ -2959,7 +3377,7 @@ void main() {
         textScaler: const TextScaler.linear(3),
         onTimelineStartChanged: (_, startMs) => starts.add(startMs),
         onPitchModeChanged: (_, __) {},
-        onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+        onEditAnalysis: (_, {currentSourcePositionMs}) {},
       );
       await tester.tap(find.byKey(const ValueKey('timeline_clip_t1')));
       await tester.pumpAndSettle();
@@ -3855,7 +4273,7 @@ void main() {
       current: _track('t1', 'Outgoing', 20),
       upcoming: [_track('t2', 'Incoming', 20)],
       transitionSnapMode: BeatSnapMode.free,
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
       timelineModel: TimelineModel(
         clips: [
           _mixClip('t1', 0, 20000, tempo: lowConfidenceTempo),
@@ -3900,11 +4318,13 @@ void main() {
       't1',
       'Outgoing',
       20,
+      hasManualTimingAuthority: true,
     );
     final incoming = _analyzedTrack(
       't2',
       'Incoming',
       20,
+      hasManualTimingAuthority: true,
     );
     await _pump(
       tester,
@@ -3952,7 +4372,7 @@ void main() {
         if (track.id == 't2') starts.add(startMs);
       },
       onPitchModeChanged: (_, __) {},
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     expect(
@@ -4083,7 +4503,7 @@ void main() {
       upcoming: [_track('t2', 'Paper Planes', 240)],
       onTimelineStartChanged: (_, startMs) => starts.add(startMs),
       onPitchModeChanged: (_, __) {},
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
     );
 
     await tester.tap(
@@ -4187,7 +4607,7 @@ void main() {
         if (track.id == 't2') starts.add(ms);
       },
       onPitchModeChanged: (_, __) {},
-      onEditAnalysis: (_, {initialFirstDownbeatMs}) {},
+      onEditAnalysis: (_, {currentSourcePositionMs}) {},
       onMoveEarlier: (_) {},
       onMoveLater: (_) {},
       transitionSnapMode: BeatSnapMode.free,
@@ -5263,8 +5683,20 @@ void main() {
       await _pump(
         tester,
         previous: null,
-        current: _analyzedTrack('t1', 'Midnight Drive', 20),
-        upcoming: [_analyzedTrack('t2', 'Phrase Entrance', 20)],
+        current: _analyzedTrack(
+          't1',
+          'Midnight Drive',
+          20,
+          hasManualTimingAuthority: true,
+        ),
+        upcoming: [
+          _analyzedTrack(
+            't2',
+            'Phrase Entrance',
+            20,
+            hasManualTimingAuthority: true,
+          ),
+        ],
       );
 
       expect(find.byKey(const ValueKey('transition_window')), findsOneWidget);

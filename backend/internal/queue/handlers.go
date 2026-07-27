@@ -102,31 +102,33 @@ type SourceDecisionResponse struct {
 }
 
 type QueueItemResponse struct {
-	ID                string           `json:"id"`
-	QueueItemID       string           `json:"queueItemId"`
-	Position          int              `json:"position"`
-	Kind              string           `json:"kind"`
-	TrackID           *int64           `json:"trackId"`
-	PlaybackState     string           `json:"playbackState"`
-	DownloadJobID     *string          `json:"downloadJobId"`
-	SourceCandidate   *SourceCandidate `json:"sourceCandidate"`
-	Title             string           `json:"title,omitempty"`
-	Artist            string           `json:"artist,omitempty"`
-	Album             string           `json:"album,omitempty"`
-	Uploader          string           `json:"uploader,omitempty"`
-	DurationMs        int              `json:"durationMs,omitempty"`
-	ThumbnailURL      string           `json:"thumbnailUrl,omitempty"`
-	Progress          int              `json:"progress"`
-	Error             *string          `json:"error"`
-	AnalysisStatus    string           `json:"analysisStatus,omitempty"`
-	AnalysisSummary   json.RawMessage  `json:"analysisSummary,omitempty"`
-	AnalysisOverrides json.RawMessage  `json:"analysisOverrides,omitempty"`
-	AnalysisUpdatedAt string           `json:"analysisUpdatedAt,omitempty"`
-	CanPlay           bool             `json:"canPlay"`
-	CanRetry          bool             `json:"canRetry"`
-	CanRemove         bool             `json:"canRemove"`
-	AddedAt           time.Time        `json:"addedAt"`
-	UpdatedAt         time.Time        `json:"updatedAt"`
+	ID                        string           `json:"id"`
+	QueueItemID               string           `json:"queueItemId"`
+	Position                  int              `json:"position"`
+	Kind                      string           `json:"kind"`
+	TrackID                   *int64           `json:"trackId"`
+	PlaybackState             string           `json:"playbackState"`
+	DownloadJobID             *string          `json:"downloadJobId"`
+	SourceCandidate           *SourceCandidate `json:"sourceCandidate"`
+	Title                     string           `json:"title,omitempty"`
+	Artist                    string           `json:"artist,omitempty"`
+	Album                     string           `json:"album,omitempty"`
+	Uploader                  string           `json:"uploader,omitempty"`
+	DurationMs                int              `json:"durationMs,omitempty"`
+	ThumbnailURL              string           `json:"thumbnailUrl,omitempty"`
+	Progress                  int              `json:"progress"`
+	Error                     *string          `json:"error"`
+	AnalysisStatus            string           `json:"analysisStatus,omitempty"`
+	AnalysisSummary           json.RawMessage  `json:"analysisSummary,omitempty"`
+	AnalysisOverrides         json.RawMessage  `json:"analysisOverrides,omitempty"`
+	AnalysisUpdatedAt         string           `json:"analysisUpdatedAt,omitempty"`
+	AnalysisOverrideRevision  int64            `json:"analysisOverrideRevision,omitempty"`
+	AnalysisOverrideUpdatedAt string           `json:"analysisOverrideUpdatedAt,omitempty"`
+	CanPlay                   bool             `json:"canPlay"`
+	CanRetry                  bool             `json:"canRetry"`
+	CanRemove                 bool             `json:"canRemove"`
+	AddedAt                   time.Time        `json:"addedAt"`
+	UpdatedAt                 time.Time        `json:"updatedAt"`
 }
 
 // AddQueueItemRequest is the mobile-facing queue insertion contract. It accepts
@@ -704,6 +706,10 @@ func buildQueueItemResponse(item QueueItem, updatedAt time.Time, job *download.D
 			response.AnalysisOverrides = compact.OverridesJSON
 			if !compact.UpdatedAt.IsZero() {
 				response.AnalysisUpdatedAt = compact.UpdatedAt.UTC().Format(time.RFC3339Nano)
+			}
+			response.AnalysisOverrideRevision = compact.ManualOverrideRevision
+			if compact.ManualOverrideUpdatedAt.Valid {
+				response.AnalysisOverrideUpdatedAt = compact.ManualOverrideUpdatedAt.Time.UTC().Format(time.RFC3339Nano)
 			}
 		}
 	}

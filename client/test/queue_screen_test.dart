@@ -138,6 +138,7 @@ void main() {
     WidgetTester tester, {
     QueueProvider? queueProvider,
     TextScaler? textScaler,
+    bool? disableAnimations,
     bool showImportJobs = false,
   }) async {
     await tester.pumpWidget(
@@ -151,11 +152,14 @@ void main() {
         ],
         child: MaterialApp(
           theme: AppTheme.lightTheme,
-          builder: textScaler == null
+          builder: textScaler == null && disableAnimations == null
               ? null
               : (context, child) => MediaQuery(
                     data:
-                        MediaQuery.of(context).copyWith(textScaler: textScaler),
+                        MediaQuery.of(context).copyWith(
+                          textScaler: textScaler,
+                          disableAnimations: disableAnimations,
+                        ),
                     child: child!,
                   ),
           home: QueueScreen(
@@ -298,6 +302,299 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(playbackState.skipToIndexCalls, [2]);
+  });
+
+  testWidgets('follows a newly current playback occurrence once in List view', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 500);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [
+        for (var index = 0; index < 16; index++)
+          _mediaItem(index + 1, 'Track ${index + 1}'),
+      ]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+    final list = find.byKey(const PageStorageKey('playback_queue_list_view'));
+    final scrollable = tester.widget<Scrollable>(
+      find.descendant(of: list, matching: find.byType(Scrollable)).first,
+    );
+    expect(scrollable.controller!.offset, 0);
+    expect(find.byKey(const ValueKey('playback_queue_5')), findsOneWidget);
+    expect(scrollable.controller!.position.maxScrollExtent, greaterThan(0));
+    expect(
+      tester.getRect(find.byKey(const ValueKey('playback_queue_5'))).center.dy,
+      greaterThan(tester.getRect(list).center.dy),
+    );
+
+    playbackState.emitCurrentIndex(4);
+    await tester.pumpAndSettle();
+
+    expect(tester.widget<TrackTile>(find.byKey(
+      const ValueKey('playback_queue_5'),
+    )).isCurrent, isTrue);
+    expect(scrollable.controller!.offset, greaterThan(0));
+    final currentRow = find.byKey(const ValueKey('playback_queue_5'));
+    expect(
+      tester.getRect(currentRow).center.dy,
+      closeTo(tester.getRect(list).center.dy, 2),
+    );
+  });
+
+  testWidgets('does not follow an equivalent reconstructed occurrence', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 320);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [
+        for (var index = 0; index < 16; index++)
+          _mediaItem(index + 1, 'Track ${index + 1}'),
+      ]
+      ..fakeCurrentIndex = 4;
+
+    await pumpQueueScreen(tester);
+    final list = find.byKey(const PageStorageKey('playback_queue_list_view'));
+    final scrollable = tester.widget<Scrollable>(
+      find.descendant(of: list, matching: find.byType(Scrollable)).first,
+    );
+    scrollable.controller!.jumpTo(40);
+    playbackState.emitReconstructedQueueSnapshot();
+    await tester.pumpAndSettle();
+
+    expect(scrollable.controller!.offset, 40);
+  });
+
+  testWidgets(
+    'does not follow a restored current occurrence after an ambiguous update',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 320);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      playbackState
+        ..fakeQueue = [
+          for (var index = 0; index < 16; index++)
+            _mediaItem(index + 1, 'Track ${index + 1}'),
+        ]
+        ..fakeCurrentIndex = 0;
+
+      await pumpQueueScreen(tester);
+      final list = find.byKey(const PageStorageKey('playback_queue_list_view'));
+      final scrollable = tester.widget<Scrollable>(
+        find.descendant(of: list, matching: find.byType(Scrollable)).first,
+      );
+      scrollable.controller!.jumpTo(40);
+
+      playbackState.duplicateCueForTest(0);
+      await tester.pumpAndSettle();
+      playbackState.emitReconstructedQueueSnapshot();
+      await tester.pumpAndSettle();
+
+      expect(scrollable.controller!.offset, 40);
+    },
+  );
+
+  testWidgets(
+      'first valid occurrence after an invalid initial update is baseline', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 320);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [
+        for (var index = 0; index < 16; index++)
+          _mediaItem(index + 1, 'Track ${index + 1}'),
+      ]
+      ..fakeCurrentIndex = 0
+      ..removeCueForTest(0);
+
+    await pumpQueueScreen(tester);
+    final list = find.byKey(const PageStorageKey('playback_queue_list_view'));
+    final scrollable = tester.widget<Scrollable>(
+      find.descendant(of: list, matching: find.byType(Scrollable)).first,
+    );
+    scrollable.controller!.jumpTo(40);
+
+    playbackState.emitReconstructedQueueSnapshot();
+    await tester.pumpAndSettle();
+
+    expect(scrollable.controller!.offset, 40);
+  });
+
+  testWidgets('local Play now consumes its auto-follow transition', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 500);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [
+        for (var index = 0; index < 16; index++)
+          _mediaItem(index + 1, 'Track ${index + 1}'),
+      ]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+    final list = find.byKey(const PageStorageKey('playback_queue_list_view'));
+    final scrollable = tester.widget<Scrollable>(
+      find.descendant(of: list, matching: find.byType(Scrollable)).first,
+    );
+    await tester.tap(find.byKey(const ValueKey('playback_queue_5')));
+    await tester.pumpAndSettle();
+
+    expect(playbackState.skipToIndexCalls, [4]);
+    expect(scrollable.controller!.offset, 0);
+  });
+
+  testWidgets('follow clamps the first and last built occurrences', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 500);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [
+        for (var index = 0; index < 6; index++)
+          _mediaItem(index + 1, 'Track ${index + 1}'),
+      ]
+      ..fakeCurrentIndex = 4;
+
+    await pumpQueueScreen(tester);
+    final list = find.byKey(const PageStorageKey('playback_queue_list_view'));
+    final scrollable = tester.widget<Scrollable>(
+      find.descendant(of: list, matching: find.byType(Scrollable)).first,
+    );
+    scrollable.controller!.jumpTo(40);
+    playbackState.emitCurrentIndex(0);
+    await tester.pumpAndSettle();
+    expect(scrollable.controller!.offset, 0);
+
+    playbackState.emitCurrentIndex(5);
+    await tester.pumpAndSettle();
+    expect(
+      scrollable.controller!.offset,
+      scrollable.controller!.position.maxScrollExtent,
+    );
+  });
+
+  testWidgets('invalid, ambiguous, and unbuilt current cues do not follow', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 500);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [
+        for (var index = 0; index < 20; index++)
+          _mediaItem(index + 1, 'Track ${index + 1}'),
+      ]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+    final list = find.byKey(const PageStorageKey('playback_queue_list_view'));
+    final scrollable = tester.widget<Scrollable>(
+      find.descendant(of: list, matching: find.byType(Scrollable)).first,
+    );
+    playbackState.removeCueForTest(4);
+    playbackState.emitCurrentIndex(4);
+    await tester.pumpAndSettle();
+    expect(scrollable.controller!.offset, 0);
+
+    playbackState.duplicateCueForTest(5);
+    playbackState.emitCurrentIndex(5);
+    await tester.pumpAndSettle();
+    expect(scrollable.controller!.offset, 0);
+
+    playbackState.emitCurrentIndex(19);
+    await tester.pumpAndSettle();
+    expect(scrollable.controller!.offset, 0);
+  });
+
+  testWidgets('Timeline-hidden changes and reduced motion do not animate', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 500);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [
+        for (var index = 0; index < 16; index++)
+          _mediaItem(index + 1, 'Track ${index + 1}'),
+      ]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester, disableAnimations: true);
+    final list = find.byKey(const PageStorageKey('playback_queue_list_view'));
+    final scrollable = tester.widget<Scrollable>(
+      find.descendant(of: list, matching: find.byType(Scrollable)).first,
+    );
+    playbackState.emitCurrentIndex(4);
+    await tester.pump();
+    expect(scrollable.controller!.offset, greaterThan(0));
+
+    await tester.tap(find.text('Timeline'));
+    await tester.pumpAndSettle();
+    playbackState.emitCurrentIndex(0);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('List'));
+    await tester.pumpAndSettle();
+    expect(scrollable.controller!.offset, greaterThan(0));
+  });
+
+  testWidgets('drag suppression consumes a coalesced current transition', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 500);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [
+        for (var index = 0; index < 16; index++)
+          _mediaItem(index + 1, 'Track ${index + 1}'),
+      ]
+      ..fakeCurrentIndex = 0;
+
+    await pumpQueueScreen(tester);
+    final list = find.byKey(const PageStorageKey('playback_queue_list_view'));
+    final scrollable = tester.widget<Scrollable>(
+      find.descendant(of: list, matching: find.byType(Scrollable)).first,
+    );
+    final listContext = tester.element(list);
+    ScrollStartNotification(
+      metrics: scrollable.controller!.position,
+      context: listContext,
+      dragDetails: DragStartDetails(),
+    ).dispatch(listContext);
+    playbackState.emitCurrentIndex(3);
+    playbackState.emitCurrentIndex(4);
+    await tester.pump();
+    ScrollEndNotification(
+      metrics: scrollable.controller!.position,
+      context: listContext,
+    ).dispatch(listContext);
+    await tester.pumpAndSettle();
+
+    expect(scrollable.controller!.offset, lessThan(100));
+    expect(
+      tester.widget<TrackTile>(
+        find.byKey(const ValueKey('playback_queue_5')),
+      ).isCurrent,
+      isTrue,
+    );
   });
 
   testWidgets('keeps playback and import queues separate when both have items',
@@ -1211,7 +1508,7 @@ void main() {
       '128',
     );
     await tester.enterText(
-      find.byKey(const ValueKey('analysis_correction_first_downbeat')),
+      find.byKey(const ValueKey('analysis_correction_anchor')),
       '120',
     );
     await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
@@ -1219,9 +1516,11 @@ void main() {
 
     expect(apiClient.analysisOverrideUpdates, hasLength(1));
     expect(apiClient.analysisOverrideUpdates.single.trackId, 101);
-    expect(apiClient.analysisOverrideUpdates.single.overrides.bpm, 128);
+    expect(apiClient.analysisOverrideUpdates.single.overrides.manualTiming?.bpm,
+        128);
     expect(
-      apiClient.analysisOverrideUpdates.single.overrides.downbeatsMs?.first,
+      apiClient
+          .analysisOverrideUpdates.single.overrides.manualTiming?.beatAnchorMs,
       120,
     );
     expect(find.text('128 BPM'), findsOneWidget);
@@ -1360,6 +1659,70 @@ void main() {
   );
 
   testWidgets(
+    'revision-only manual timing metadata refreshes playback',
+    (tester) async {
+      final summary = _tempoAnalysisSummary(124);
+      final provider = _HydrationWaveQueueProvider(apiClient);
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(
+            101,
+            'Manual Timing Track',
+            seconds: 198,
+            extras: {
+              'analysisRef': '101',
+              'analysisStatus': 'analyzed',
+              'analysisSummary': summary,
+              'analysisOverrides': {
+                'manual_timing_override': {
+                  'bpm': 124,
+                  'beat_anchor_ms': 0,
+                  'beats_per_bar': 4,
+                  'downbeat_phase_index': 0,
+                  'phrase_length_bars': 8,
+                  'revision': 1,
+                },
+              },
+              'analysisOverrideRevision': 1,
+            },
+          ),
+        ]
+        ..fakeCurrentIndex = 0;
+
+      await pumpQueueScreen(tester, queueProvider: provider);
+      await tester.tap(find.text('Timeline'));
+      await tester.pumpAndSettle();
+      expect(playbackState.analysisRefreshes, isEmpty);
+
+      provider.hydrate(
+        '101',
+        TrackAnalysis.fromJson(
+          status: 'analyzed',
+          summary: summary,
+          overrides: const {
+            'manual_timing_override': {
+              'bpm': 124,
+              'beat_anchor_ms': 0,
+              'beats_per_bar': 4,
+              'downbeat_phase_index': 0,
+              'phrase_length_bars': 8,
+              'revision': 2,
+            },
+          },
+          overrideRevision: 2,
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(playbackState.analysisRefreshWaves, hasLength(1));
+      final refreshed = playbackState.analysisRefreshes.single.analysis;
+      expect(refreshed.overrideRevision, 2);
+      expect(refreshed.overrides?.manualTiming?.phraseLengthBars, 8);
+    },
+  );
+
+  testWidgets(
     'playback timeline refreshes stale live clip tempo even when queue extras match',
     (tester) async {
       apiClient.useAnalysisFixture();
@@ -1464,7 +1827,7 @@ void main() {
   });
 
   testWidgets(
-    'timeline analysis correction seeds first downbeat from playhead',
+    'timeline analysis correction does not use playhead as an implicit anchor',
     (tester) async {
       tester.view.physicalSize = const Size(390, 2000);
       tester.view.devicePixelRatio = 1;
@@ -1493,21 +1856,17 @@ void main() {
       expect(
         tester
             .widget<TextField>(
-              find.byKey(const ValueKey('analysis_correction_first_downbeat')),
+              find.byKey(const ValueKey('analysis_correction_anchor')),
             )
             .controller
             ?.text,
-        '32000',
+        '',
       );
 
-      await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
+      await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
 
-      expect(apiClient.analysisOverrideUpdates, hasLength(1));
-      expect(
-        apiClient.analysisOverrideUpdates.single.overrides.downbeatsMs?.first,
-        32000,
-      );
+      expect(apiClient.analysisOverrideUpdates, isEmpty);
     },
   );
 
@@ -1542,7 +1901,7 @@ void main() {
         '141.18',
       );
       await tester.enterText(
-        find.byKey(const ValueKey('analysis_correction_first_downbeat')),
+        find.byKey(const ValueKey('analysis_correction_anchor')),
         '87',
       );
       await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
@@ -1550,21 +1909,25 @@ void main() {
 
       expect(apiClient.analysisOverrideUpdates, hasLength(1));
       expect(apiClient.analysisOverrideUpdates.single.trackId, 101);
-      expect(apiClient.analysisOverrideUpdates.single.overrides.bpm, 141.18);
       expect(
-        apiClient.analysisOverrideUpdates.single.overrides.downbeatsMs?.first,
+        apiClient.analysisOverrideUpdates.single.overrides.manualTiming?.bpm,
+        141.18,
+      );
+      expect(
+        apiClient.analysisOverrideUpdates.single.overrides.manualTiming
+            ?.beatAnchorMs,
         87,
       );
       expect(playbackState.analysisRefreshes, isNotEmpty);
 
       final refreshed = playbackState.analysisRefreshes.last.analysis.summary;
       expect(refreshed?.bpm?.numericValue, 141.18);
-      expect(refreshed?.downbeats?.positionsMs.first, 87);
+      expect(refreshed?.beatGrid?.offsetMs, 87);
 
       final refreshedSummary = playbackState
           .fakeQueue.single.extras?['analysisSummary'] as Map<String, dynamic>;
       expect(refreshedSummary['bpm']['value'], 141.18);
-      expect(refreshedSummary['downbeats']['positions_ms'].first, 87);
+      expect(refreshedSummary['beat_grid']['offset_ms'], 87);
     },
   );
 
@@ -2623,6 +2986,25 @@ class _FakePlaybackState extends Fake implements PlaybackState {
     _notifier.emit();
   }
 
+  void emitCurrentIndex(int? index) {
+    fakeCurrentIndex = index;
+    _notifier.emit();
+  }
+
+  void removeCueForTest(int queueIndex) {
+    _fakeCues = List.unmodifiable([
+      for (final cue in _fakeCues)
+        if (cue.queueIndex != queueIndex) cue,
+    ]);
+    _notifier.emit();
+  }
+
+  void duplicateCueForTest(int queueIndex) {
+    final cue = _fakeCues.firstWhere((cue) => cue.queueIndex == queueIndex);
+    _fakeCues = List.unmodifiable([..._fakeCues, cue]);
+    _notifier.emit();
+  }
+
   @override
   List<audio_service.MediaItem> get queue => fakeQueue;
 
@@ -2750,6 +3132,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   Future<void> skipToIndex(int index) async {
     skipToIndexCalls.add(index);
     fakeCurrentIndex = index;
+    _notifier.emit();
   }
 
   @override
@@ -3190,8 +3573,12 @@ class _FakeQueueApiClient extends ApiClient {
   final List<int> removedPositions = [];
   final List<(int, int)> reorders = [];
   final List<String> retriedQueueItemIds = [];
-  final List<({int trackId, TrackAnalysisOverrides overrides})>
-      analysisOverrideUpdates = [];
+  final List<
+      ({
+        int trackId,
+        TrackAnalysisOverrides overrides,
+        int expectedRevision
+      })> analysisOverrideUpdates = [];
   final List<int> analysisRequests = [];
   final List<({int trackId, Completer<TrackAnalysis> completer})>
       _heldAnalysisRequests = [];
@@ -3516,9 +3903,14 @@ class _FakeQueueApiClient extends ApiClient {
   @override
   Future<TrackAnalysis> updateTrackAnalysisOverrides(
     int trackId,
-    TrackAnalysisOverrides overrides,
-  ) async {
-    analysisOverrideUpdates.add((trackId: trackId, overrides: overrides));
+    TrackAnalysisOverrides overrides, {
+    int expectedRevision = 0,
+  }) async {
+    analysisOverrideUpdates.add((
+      trackId: trackId,
+      overrides: overrides,
+      expectedRevision: expectedRevision,
+    ));
     final track = _state.tracks.firstWhere(
       (track) => track.playbackTrackId == trackId.toString(),
     );

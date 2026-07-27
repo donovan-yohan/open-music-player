@@ -9,6 +9,7 @@ import '../../shared/models/track.dart'
         TrackArtworkKind,
         resolveTrackArtworkDescriptor,
         trackArtworkKindFromPayload;
+import '../../models/track_analysis.dart';
 import 'playback_session.dart';
 
 /// Pure, testable decisions and (de)serialization for resumable playback:
@@ -231,6 +232,10 @@ Map<String, dynamic> mediaItemToPlaybackJson(MediaItem item) {
     if (analysisOverrides != null) 'analysisOverrides': analysisOverrides,
     if (item.extras?['analysisUpdatedAt'] != null)
       'analysisUpdatedAt': item.extras?['analysisUpdatedAt'],
+    if (item.extras?['analysisOverrideRevision'] != null)
+      'analysisOverrideRevision': item.extras?['analysisOverrideRevision'],
+    if (item.extras?['analysisOverrideUpdatedAt'] != null)
+      'analysisOverrideUpdatedAt': item.extras?['analysisOverrideUpdatedAt'],
   };
 }
 
@@ -269,8 +274,26 @@ Map<String, dynamic>? _compactTempoMetadata(
   final source = Map<String, dynamic>.from(value);
   final compact = <String, dynamic>{};
 
+  final summaryContract = trackAnalysisSummaryContract(source);
+  if (summaryContract != null) {
+    compact[trackAnalysisSummaryContractKey] = summaryContract;
+  }
+
   final bpm = _compactAnalysisValue(source['bpm']);
   if (bpm != null) compact['bpm'] = bpm;
+  final meter = _compactTimingFact(
+    source['meter'],
+    canonicalValueKey: 'beats_per_bar',
+    legacyValueKey: 'beatsPerBar',
+  );
+  if (meter != null) compact['meter'] = meter;
+  final downbeatPhase = _compactTimingFact(
+    source['downbeat_phase'] ?? source['downbeatPhase'],
+    canonicalValueKey: 'index',
+  );
+  if (downbeatPhase != null) {
+    compact['downbeat_phase'] = downbeatPhase;
+  }
   for (final key in ['key', 'camelot']) {
     final analysisValue = _compactAnalysisValue(source[key]);
     if (analysisValue != null) compact[key] = analysisValue;
@@ -287,7 +310,10 @@ Map<String, dynamic>? _compactTempoMetadata(
     if (offset != null) compactBeatGrid['offset_ms'] = offset;
     final beats = beatGrid['beats_ms'] ?? beatGrid['beatsMs'];
     final compactBeats = _boundedIntList(beats, maxPersistedBeatPositions);
-    if (compactBeats.isNotEmpty) compactBeatGrid['beats_ms'] = compactBeats;
+    if (compactBeats.isNotEmpty ||
+        (preserveEmpty && beats is List && beats.isEmpty)) {
+      compactBeatGrid['beats_ms'] = compactBeats;
+    }
     if (compactBeatGrid.isNotEmpty) compact['beat_grid'] = compactBeatGrid;
   }
 
@@ -307,16 +333,75 @@ Map<String, dynamic>? _compactTempoMetadata(
     positions,
     maxPersistedDownbeatPositions,
   );
-  if (boundedDownbeats.isNotEmpty) {
+  if (boundedDownbeats.isNotEmpty ||
+      (preserveEmpty && positions is List && positions.isEmpty)) {
     compactDownbeats['positions_ms'] = boundedDownbeats;
   }
   if (compactDownbeats.isNotEmpty) compact['downbeats'] = compactDownbeats;
+
+  final v2Timing = source['manual_timing_v2'] ?? source['manualTimingV2'];
+  final validV2 = v2Timing is Map &&
+      (v2Timing['schema_version'] ?? v2Timing['schemaVersion']) == 2;
+  final manualTiming = _compactManualTimingOverride(
+    validV2
+        ? v2Timing
+        : source['manual_timing_override'] ?? source['manualTimingOverride'],
+  );
+  if (manualTiming != null) {
+    compact['manual_timing_v2'] = {
+      'schema_version': ManualTimingOverride.currentSchemaVersion,
+      ...manualTiming,
+    };
+  }
 
   if (source['provenance'] != null) {
     compact['provenance'] = source['provenance'];
   }
   if (compact.isEmpty && !preserveEmpty) return null;
   return compact;
+}
+
+/// The normalized manual timing record is already compact: it identifies a
+/// spacing/anchor/meter/phase correction without carrying a second generated
+/// marker array. Keep only its schema fields when a queue snapshot or media
+/// item crosses a persistence boundary.
+Map<String, dynamic>? _compactManualTimingOverride(Object? value) {
+  if (value is! Map) return null;
+  final source = Map<String, dynamic>.from(value);
+  final compact = <String, dynamic>{};
+  const fields = <String, String>{
+    'bpm': 'bpm',
+    'beat_anchor_ms': 'beatAnchorMs',
+    'beats_per_bar': 'beatsPerBar',
+    'downbeat_phase_index': 'downbeatPhaseIndex',
+    'phrase_length_bars': 'phraseLengthBars',
+    'confidence': 'confidence',
+    'provenance': 'provenance',
+    'revision': 'revision',
+    'updated_at': 'updatedAt',
+  };
+  for (final entry in fields.entries) {
+    final field = source[entry.key] ?? source[entry.value];
+    if (field != null) compact[entry.key] = field;
+  }
+  return compact.isEmpty ? null : compact;
+}
+
+Map<String, dynamic>? _compactTimingFact(
+  Object? value, {
+  required String canonicalValueKey,
+  String? legacyValueKey,
+}) {
+  if (value is! Map) return null;
+  final source = Map<String, dynamic>.from(value);
+  final compact = <String, dynamic>{};
+  final fact = source[canonicalValueKey] ??
+      (legacyValueKey == null ? null : source[legacyValueKey]);
+  if (fact != null) compact[canonicalValueKey] = fact;
+  for (final key in ['confidence', 'provenance']) {
+    if (source[key] != null) compact[key] = source[key];
+  }
+  return compact.isEmpty ? null : compact;
 }
 
 Object? _compactAnalysisValue(Object? value) {

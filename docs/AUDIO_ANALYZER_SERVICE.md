@@ -245,13 +245,14 @@ from analyzer output. Queue/library compact summaries overlay
 automation consume corrected BPM/downbeats immediately while future analyzer
 runs can still refresh waveform/loudness/artifacts.
 
-Update corrections with:
+Update legacy musical corrections with:
 
 ```http
 PATCH /api/v1/tracks/{track_id}/analysis/overrides
 Content-Type: application/json
 
 {
+  "expected_revision": 0,
   "overrides": {
     "bpm": { "value": 124.0, "confidence": 1.0 },
     "beat_grid": { "bpm": 124.0, "beats_ms": [120, 604, 1088] },
@@ -262,12 +263,71 @@ Content-Type: application/json
 }
 ```
 
-The response is the normal analysis envelope plus `overrides`. The queue list
-and selected timeline clip expose the current editor sheet. It lets users edit
-BPM, first downbeat offset, phrase length, key, and Camelot; the client expands
-BPM/offset/phrase edits into beat-grid and downbeat arrays before saving them,
-then refreshes queue/timeline analysis caches so markers and labels consume the
-corrected summary immediately.
+Write manual timing with the canonical v2 object. It keeps tempo, beat-grid
+anchor, meter, downbeat phase, and phrase length as independent facts; its
+`schema_version` is required and must be `2`.
+
+```json
+{
+  "expected_revision": 3,
+  "overrides": {
+    "manual_timing_v2": {
+      "schema_version": 2,
+      "bpm": 124.0,
+      "beat_anchor_ms": 120,
+      "beats_per_bar": 4,
+      "downbeat_phase_index": 0,
+      "phrase_length_bars": 8
+    }
+  }
+}
+```
+
+The server stamps `confidence: 1.0`, `provenance: "manual_override"`, a
+monotonic `revision`, and `updated_at`. Clients should send `expected_revision`
+for normal edits; omitting it is treated as `0` to migrate legacy rows. A stale
+revision receives `409 ANALYSIS_OVERRIDE_CONFLICT` rather than silently
+overwriting another editor. Sending an empty `overrides` object clears manual
+facts while advancing the revision, so current generated analysis is visible
+again. Legacy `manual_timing_override` remains accepted and readable for
+compatibility, but the server normalizes it to `manual_timing_v2` before it is
+stored or returned. Legacy `bpm`, `beat_grid`, and `downbeats` override payloads
+also remain readable. Analyzer reruns replace generated summaries/artifacts
+without changing the manual document or revision. An override write preserves an
+existing `pending` or `analyzing` lifecycle state; the analyzer's normal
+`StoreResult` path can then transition the row to `analyzed` while retaining
+that manual state.
+
+Generated `summary.meter` and `summary.downbeat_phase` are facts only when the
+analyzer provided them. Missing generated facts are explicitly unknown: the
+server does not infer a meter or phase from beat spacing, phrase length, or old
+downbeat arrays, and emits null-valued facts rather than inventing defaults:
+
+```json
+{
+  "meter": {
+    "beats_per_bar": null,
+    "confidence": null,
+    "provenance": "tempo-model"
+  },
+  "downbeat_phase": {
+    "index": null,
+    "confidence": null,
+    "provenance": "tempo-model"
+  }
+}
+```
+
+Responses expose the generated `summary`, the normalized `overrides` document
+(with canonical `manual_timing_v2`), and server-owned `effective_timing`.
+`effective_timing` is the compatibility projection for consumers that need
+resolved BPM, grid, meter, phase, downbeats, phrase length, and override
+revision; clients must not persist or construct a competing timing document.
+When a manual BPM or anchor changes the grid, the server regenerates effective
+beat markers over the existing stored beat span without mutating generated
+timestamps. It selects effective downbeats only when both meter and phase are
+known; otherwise no downbeats are manufactured. The queue list and selected
+timeline clip refresh from this response after a successful CAS update.
 
 ## Tempo automation and pitch mode
 
@@ -309,15 +369,12 @@ resume.
 ## Beat, downbeat, key, and Camelot analysis
 
 The analyzer uses the MIT-licensed Beat This `final0` model for beat and
-downbeat inference. Model downbeat candidates vote on a dominant four-beat
-phase. Agreement and song coverage determine confidence; sparse or conflicting
-candidates remain low-confidence markers instead of being expanded into a
-synthetic full-song grid. BPM is derived from tracked beat intervals with robust
-outlier rejection instead of quantized transient buckets. Sparse or irregular
-tempo grids remain below the client's automatic beat-sync threshold. Downbeat
-confidence travels with session tempo metadata; automatic phrase overlap and
-downbeat snap ignore generated markers below that threshold, while manual
-corrections are treated as authoritative.
+downbeat inference. Generated phase is uncalibrated and remains explicitly
+unknown; candidate markers are not expanded into a synthetic four-beat phase.
+BPM is derived from tracked beat intervals with robust outlier rejection instead
+of quantized transient buckets. Generated markers remain display/compatibility
+data regardless of confidence: automatic phrase overlap and downbeat snap require
+canonical v2 manual timing or explicit legacy manual marker corrections.
 
 Key detection uses librosa's constant-Q chroma over the harmonic signal and
 Pearson correlation against the Krumhansl major/minor profiles. The winning

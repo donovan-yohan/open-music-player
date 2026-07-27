@@ -372,6 +372,8 @@ func TestBuildResponseIncludesDJContractArtifacts(t *testing.T) {
 	for _, key := range []string{
 		"bpm",
 		"beat_grid",
+		"meter",
+		"downbeat_phase",
 		"downbeats",
 		"key",
 		"camelot",
@@ -390,6 +392,14 @@ func TestBuildResponseIncludesDJContractArtifacts(t *testing.T) {
 		if _, ok := summary[key]; !ok {
 			t.Fatalf("summary missing %q: %#v", key, summary)
 		}
+	}
+	meter := summary["meter"].(map[string]any)
+	phase := summary["downbeat_phase"].(map[string]any)
+	if meter["beats_per_bar"] != nil || meter["confidence"] != nil {
+		t.Fatalf("uncalibrated meter was fabricated: %#v", meter)
+	}
+	if phase["index"] != nil || phase["confidence"] != nil {
+		t.Fatalf("uncalibrated phase was fabricated: %#v", phase)
 	}
 
 	artifacts := response["artifacts"].(map[string]any)
@@ -521,6 +531,10 @@ func TestBuildResponseKeepsWaveformWhenMIRMetadataIsUnavailable(t *testing.T) {
 		if _, ok := summary[key]; ok {
 			t.Fatalf("summary unexpectedly contains %q: %#v", key, summary[key])
 		}
+	}
+	if summary["meter"].(map[string]any)["beats_per_bar"] != nil ||
+		summary["downbeat_phase"].(map[string]any)["index"] != nil {
+		t.Fatalf("missing MIR metadata fabricated meter/phase: %#v", summary)
 	}
 	if _, ok := summary["waveform"]; !ok {
 		t.Fatalf("summary missing waveform: %#v", summary)

@@ -593,6 +593,223 @@ void main() {
       playback.dispose();
     });
 
+    test(
+        'analysis refresh replaces override revision metadata across queue persistence',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final playback = _playbackState();
+      final oldOverrideUpdatedAt = DateTime.utc(2026, 7, 26, 10);
+      final newOverrideUpdatedAt =
+          DateTime.utc(2026, 7, 26, 11, 0, 0, 123, 456);
+      final summary = {
+        'bpm': {'value': 120, 'confidence': 1.0},
+        'beat_grid': {
+          'bpm': 120,
+          'offset_ms': 100,
+          'beats_ms': [100, 600, 1100, 1600, 2100],
+          'confidence': 1.0,
+        },
+        'downbeats': {
+          'positions_ms': [100, 2100],
+          'confidence': 1.0,
+        },
+      };
+
+      await playback.playQueue([
+        {
+          ..._track(1, seconds: 20),
+          'analysisStatus': 'analyzed',
+          'analysisSummary': summary,
+          'analysisOverrides': {
+            'manual_timing_v2': {
+              'schema_version': 2,
+              'bpm': 120,
+              'beat_anchor_ms': 100,
+              'beats_per_bar': 4,
+              'downbeat_phase_index': 0,
+              'phrase_length_bars': 8,
+              'revision': 1,
+              'updated_at': oldOverrideUpdatedAt.toIso8601String(),
+            },
+          },
+          'analysisOverrideRevision': 1,
+          'analysisOverrideUpdatedAt': oldOverrideUpdatedAt.toIso8601String(),
+        },
+      ]);
+
+      await playback.refreshTrackAnalysis(
+        '1',
+        TrackAnalysis.fromJson(
+          status: 'analyzed',
+          summary: summary,
+          overrides: {
+            'manual_timing_v2': {
+              'schema_version': 2,
+              'bpm': 120,
+              'beat_anchor_ms': 100,
+              'beats_per_bar': 4,
+              'downbeat_phase_index': 0,
+              'phrase_length_bars': 16,
+              'revision': 2,
+              'updated_at': newOverrideUpdatedAt.toIso8601String(),
+            },
+          },
+          updatedAt: newOverrideUpdatedAt,
+          overrideRevision: 2,
+          overrideUpdatedAt: newOverrideUpdatedAt,
+        ),
+      );
+
+      final refreshed = playback.queue.single;
+      expect(refreshed.extras?['analysisOverrideRevision'], 2);
+      expect(
+        refreshed.extras?['analysisOverrideUpdatedAt'],
+        newOverrideUpdatedAt.toIso8601String(),
+      );
+      expect(
+        refreshed.extras,
+        isNot(contains('analysis_override_revision')),
+      );
+      expect(
+        refreshed.extras,
+        isNot(contains('analysis_override_updated_at')),
+      );
+
+      final persisted = mediaItemToPlaybackJson(refreshed);
+      expect(persisted['analysisOverrideRevision'], 2);
+      expect(
+        persisted['analysisOverrideUpdatedAt'],
+        newOverrideUpdatedAt.toIso8601String(),
+      );
+      expect(
+        (persisted['analysisOverrides']
+            as Map<String, dynamic>)['manual_timing_v2']['schema_version'],
+        2,
+      );
+      expect(
+        (persisted['analysisOverrides']
+            as Map<String, dynamic>)['manual_timing_v2']['revision'],
+        2,
+      );
+
+      final restoredSession = MixSession.fromJson(
+        MixSession.fromQueue(
+          sessionId: 'override_revision_refresh',
+          queue: [refreshed],
+        ).toJson(),
+      );
+      expect(restoredSession.clips.single.tempo.overrideRevision, 2);
+      expect(restoredSession.clips.single.tempo.phraseLengthBars, 16);
+      playback.dispose();
+    });
+
+    test(
+        'analysis refresh and persisted restore retain clears and generated reset identity',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final store = _MemoryQueuePersistenceStore();
+      final active = _playbackState(
+        persistence: store,
+        persistenceDebounce: Duration.zero,
+      );
+      await active.restore();
+      final corrected = TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: const {
+          'bpm': {'value': 120, 'confidence': 0.8},
+          'beat_grid': {
+            'bpm': 120,
+            'offset_ms': 100,
+            'beats_ms': [100, 600, 1100, 1600, 2100],
+            'confidence': 0.8,
+          },
+          'downbeats': {
+            'positions_ms': [100, 2100],
+            'confidence': 0.8,
+          },
+        },
+        overrides: const {
+          'beat_grid': {'beats_ms': <int>[]},
+          'downbeats': <int>[],
+        },
+      );
+
+      await active.playQueue([_track(1, seconds: 20)]);
+      await active.refreshTrackAnalysis('1', corrected);
+      await Future<void>.delayed(Duration.zero);
+
+      final activeAnalysis = trackAnalysisFromTrackJson(
+        Map<String, dynamic>.from(active.queue.single.extras!),
+      )!;
+      expect(activeAnalysis.generatedSummary?.beatGrid?.beatsMs, [
+        100,
+        600,
+        1100,
+        1600,
+        2100,
+      ]);
+      expect(activeAnalysis.summary?.beatGrid?.beatsMs, isEmpty);
+      expect(activeAnalysis.summary?.downbeats?.positionsMs, isEmpty);
+
+      for (var attempt = 0; attempt < 10 && store.snapshot.isEmpty; attempt++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(store.snapshot.isEmpty, isFalse);
+      final persistedTrack = store.snapshot.tracks.single;
+      expect(
+        (persistedTrack['analysisSummary']
+            as Map<String, dynamic>)['_omp_summary_contract'],
+        {
+          'version': 1,
+          'projection': 'generated',
+        },
+      );
+      expect(
+        (persistedTrack['analysisOverrides']
+            as Map<String, dynamic>)['beat_grid']['beats_ms'],
+        isEmpty,
+      );
+      expect(
+        (persistedTrack['analysisOverrides']
+            as Map<String, dynamic>)['downbeats']['positions_ms'],
+        isEmpty,
+      );
+      active.dispose();
+
+      final restored = _playbackState(persistence: store);
+      await restored.restore();
+      await Future<void>.delayed(Duration.zero);
+
+      final restoredAnalysis = trackAnalysisFromTrackJson(
+        Map<String, dynamic>.from(restored.queue.single.extras!),
+      )!;
+      expect(restoredAnalysis.generatedSummary?.beatGrid?.beatsMs, [
+        100,
+        600,
+        1100,
+        1600,
+        2100,
+      ]);
+      expect(restoredAnalysis.summary?.beatGrid?.beatsMs, isEmpty);
+      expect(restoredAnalysis.summary?.downbeats?.positionsMs, isEmpty);
+
+      final reset = TrackAnalysis.fromJson(
+        status: restoredAnalysis.status.name,
+        summary: restoredAnalysis.generatedSummary?.toJson(),
+        overrides: const <String, dynamic>{},
+        overridesPresent: true,
+      );
+      expect(reset.summary?.beatGrid?.beatsMs, [
+        100,
+        600,
+        1100,
+        1600,
+        2100,
+      ]);
+      expect(reset.summary?.downbeats?.positionsMs, [100, 2100]);
+      restored.dispose();
+    });
+
     test('analysis refresh never puts waveform arrays in media extras',
         () async {
       SharedPreferences.setMockInitialValues({});
@@ -647,6 +864,7 @@ void main() {
         _analysis(
           bpm: 120,
           downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          hasManualTimingAuthority: true,
         ),
       );
       await playback.refreshTrackAnalysis(
@@ -654,6 +872,7 @@ void main() {
         _analysis(
           bpm: 120,
           downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          hasManualTimingAuthority: true,
         ),
       );
       await Future<void>.delayed(Duration.zero);
@@ -856,6 +1075,18 @@ class _ControllableQueuePersistenceStore extends QueuePersistenceStore {
   }
 }
 
+class _MemoryQueuePersistenceStore extends QueuePersistenceStore {
+  QueueSnapshot snapshot = const QueueSnapshot();
+
+  @override
+  Future<QueueSnapshot> load() async => snapshot;
+
+  @override
+  Future<void> save(QueueSnapshot value) async {
+    snapshot = value;
+  }
+}
+
 Map<String, dynamic> _track(int id, {required int seconds}) => {
       'id': id,
       'title': 'Track $id',
@@ -867,13 +1098,28 @@ TrackAnalysis _analysis({
   required double bpm,
   required List<int> downbeatsMs,
   DateTime? updatedAt,
+  bool hasManualTimingAuthority = false,
 }) =>
     TrackAnalysis.fromJson(
       status: 'analyzed',
       summary: {
         'bpm': {'value': bpm, 'confidence': 1.0},
-        'beat_grid': {'bpm': bpm, 'confidence': 1.0},
+        'beat_grid': {
+          'bpm': bpm,
+          'confidence': 1.0,
+          if (hasManualTimingAuthority)
+            'beats_ms': List<int>.generate(40, (index) => index * 500),
+        },
         'downbeats': {'positions_ms': downbeatsMs},
       },
+      overrides: hasManualTimingAuthority
+          ? {
+              'manual_timing_v2': {
+                'schema_version': 2,
+                'beats_per_bar': 4,
+                'downbeat_phase_index': 0,
+              },
+            }
+          : null,
       updatedAt: updatedAt,
     );

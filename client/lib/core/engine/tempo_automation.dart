@@ -1,5 +1,7 @@
 import 'dart:math' as math;
 
+import '../../models/track_analysis.dart';
+
 const double minTempoAutomationRate = 0.5;
 const double maxTempoAutomationRate = 2.0;
 const double reliableBpmConfidenceFloor = 0.55;
@@ -33,9 +35,25 @@ class ClipTempoMetadata {
   final double? nativeBpm;
   final double? bpmConfidence;
   final int? beatGridOffsetMs;
+
+  /// Canonical manual-grid anchor. This is deliberately distinct from a
+  /// derived list of beat timestamps so phase edits never rewrite the grid.
+  final int? beatAnchorMs;
+  final int? beatsPerBar;
+  final int? downbeatPhaseIndex;
+  final double? meterConfidence;
+  final String? meterProvenance;
+  final double? downbeatPhaseConfidence;
+  final String? downbeatPhaseProvenance;
+  final int? phraseLengthBars;
+  final int? overrideRevision;
   final List<int> beatsMs;
   final List<int> downbeatsMs;
   final double? downbeatConfidence;
+
+  /// Generated marker arrays whose meter/phase is explicitly unknown remain
+  /// display data, not automatic playback-lock authority.
+  final bool generatedTimingUnknown;
   final String? bpmProvenance;
   final String? beatGridProvenance;
   final String? downbeatProvenance;
@@ -46,9 +64,19 @@ class ClipTempoMetadata {
     this.nativeBpm,
     this.bpmConfidence,
     this.beatGridOffsetMs,
+    this.beatAnchorMs,
+    this.beatsPerBar,
+    this.downbeatPhaseIndex,
+    this.meterConfidence,
+    this.meterProvenance,
+    this.downbeatPhaseConfidence,
+    this.downbeatPhaseProvenance,
+    this.phraseLengthBars,
+    this.overrideRevision,
     this.beatsMs = const [],
     this.downbeatsMs = const [],
     this.downbeatConfidence,
+    this.generatedTimingUnknown = false,
     this.bpmProvenance,
     this.beatGridProvenance,
     this.downbeatProvenance,
@@ -90,6 +118,30 @@ class ClipTempoMetadata {
     if (!hasDownbeatMarkers || !_isStrictlyIncreasingNonNegative(downbeatsMs)) {
       return false;
     }
+    if (generatedTimingUnknown) return false;
+    final meter = beatsPerBar;
+    final phase = downbeatPhaseIndex;
+    final canonicalManualAuthority = meter != null &&
+        meter > 0 &&
+        phase != null &&
+        phase >= 0 &&
+        phase < meter &&
+        meterConfidence == 1.0 &&
+        downbeatPhaseConfidence == 1.0 &&
+        meterProvenance == manualTempoProvenance &&
+        downbeatPhaseProvenance == manualTempoProvenance;
+    final legacyCompatibilityAuthority = meter == null &&
+        phase == null &&
+        meterConfidence == null &&
+        downbeatPhaseConfidence == null &&
+        meterProvenance == null &&
+        downbeatPhaseProvenance == null;
+    if (!canonicalManualAuthority && !legacyCompatibilityAuthority) {
+      // Generated meter/phase remain automation-ineligible until #312
+      // introduces a calibrated eligibility signal. Marker arrays alone are
+      // compatibility data, not authority.
+      return false;
+    }
     if (beatsMs.isNotEmpty) {
       if (!_isStrictlyIncreasingNonNegative(beatsMs)) return false;
       if (!_downbeatsFollowBeatGrid(beatsMs, downbeatsMs)) {
@@ -107,18 +159,32 @@ class ClipTempoMetadata {
   bool get hasLowConfidenceDownbeats {
     final confidence = downbeatConfidence;
     return hasDownbeatMarkers &&
-        confidence != null &&
-        confidence < reliableDownbeatConfidenceFloor;
+        (!hasReliableDownbeats ||
+            confidence == null ||
+            confidence < reliableDownbeatConfidenceFloor);
   }
 
   Map<String, dynamic> toJson() => {
         if (nativeBpm != null) 'nativeBpm': nativeBpm,
         if (bpmConfidence != null) 'bpmConfidence': bpmConfidence,
         if (beatGridOffsetMs != null) 'beatGridOffsetMs': beatGridOffsetMs,
+        if (beatAnchorMs != null) 'beatAnchorMs': beatAnchorMs,
+        if (beatsPerBar != null) 'beatsPerBar': beatsPerBar,
+        if (downbeatPhaseIndex != null)
+          'downbeatPhaseIndex': downbeatPhaseIndex,
+        if (meterConfidence != null) 'meterConfidence': meterConfidence,
+        if (meterProvenance != null) 'meterProvenance': meterProvenance,
+        if (downbeatPhaseConfidence != null)
+          'downbeatPhaseConfidence': downbeatPhaseConfidence,
+        if (downbeatPhaseProvenance != null)
+          'downbeatPhaseProvenance': downbeatPhaseProvenance,
+        if (phraseLengthBars != null) 'phraseLengthBars': phraseLengthBars,
+        if (overrideRevision != null) 'overrideRevision': overrideRevision,
         if (beatsMs.isNotEmpty) 'beatGridMs': beatsMs,
         if (downbeatsMs.isNotEmpty) 'downbeatsMs': downbeatsMs,
         if (downbeatConfidence != null)
           'downbeatConfidence': downbeatConfidence,
+        if (generatedTimingUnknown) 'generatedTimingUnknown': true,
         if (bpmProvenance != null) 'bpmProvenance': bpmProvenance,
         if (beatGridProvenance != null)
           'beatGridProvenance': beatGridProvenance,
@@ -133,9 +199,25 @@ class ClipTempoMetadata {
       nativeBpm: _readDouble(json['nativeBpm'] ?? json['bpm']),
       bpmConfidence: _readDouble(json['bpmConfidence']),
       beatGridOffsetMs: _readInt(json['beatGridOffsetMs'] ?? json['offsetMs']),
+      beatAnchorMs: _readInt(json['beatAnchorMs'] ?? json['beat_anchor_ms']),
+      beatsPerBar: _readInt(json['beatsPerBar'] ?? json['beats_per_bar']),
+      downbeatPhaseIndex: _readInt(
+        json['downbeatPhaseIndex'] ?? json['downbeat_phase_index'],
+      ),
+      meterConfidence: _readDouble(json['meterConfidence']),
+      meterProvenance: _readString(json['meterProvenance']),
+      downbeatPhaseConfidence: _readDouble(json['downbeatPhaseConfidence']),
+      downbeatPhaseProvenance: _readString(json['downbeatPhaseProvenance']),
+      phraseLengthBars: _readInt(
+        json['phraseLengthBars'] ?? json['phrase_length_bars'],
+      ),
+      overrideRevision: _readInt(
+        json['overrideRevision'] ?? json['override_revision'],
+      ),
       beatsMs: _readIntList(json['beatGridMs'] ?? json['beatsMs']),
       downbeatsMs: _readIntList(json['downbeatsMs']),
       downbeatConfidence: _readDouble(json['downbeatConfidence']),
+      generatedTimingUnknown: json['generatedTimingUnknown'] == true,
       bpmProvenance: _readString(json['bpmProvenance']),
       beatGridProvenance: _readString(json['beatGridProvenance']),
       downbeatProvenance: _readString(json['downbeatProvenance']),
@@ -149,47 +231,61 @@ class ClipTempoMetadata {
     Object? overrides,
   }) {
     final map = _readMap(summary);
-    final base = map == null || map.isEmpty
-        ? ClipTempoMetadata.empty
-        : ClipTempoMetadata._fromAnalysisMap(map);
-
     final embeddedOverrides = map == null
         ? null
         : map['analysisOverrides'] ??
             map['analysis_overrides'] ??
             map['overrides'];
-    final parsedOverrides = _ClipTempoOverrides.fromJson(
-      overrides ?? embeddedOverrides,
+    return ClipTempoMetadata.fromTrackAnalysis(
+      TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: summary,
+        overrides: overrides ?? embeddedOverrides,
+        overridesPresent: overrides != null || embeddedOverrides != null,
+      ),
     );
-    return parsedOverrides == null ? base : parsedOverrides.applyTo(base);
   }
 
-  factory ClipTempoMetadata._fromAnalysisMap(Map<String, dynamic> map) {
-    final bpmValue = _readAnalysisValue(map['bpm']);
-    final bpmMap = _readMap(map['bpm']);
-    final beatGrid = _readMap(map['beat_grid'] ?? map['beatGrid']);
-    final downbeats = _readMap(map['downbeats']);
-    final downbeatsRaw = downbeats == null
-        ? map['downbeats']
-        : downbeats['positions_ms'] ?? downbeats['positionsMs'];
-    final keyValue = _readAnalysisText(map['key']);
-    final camelotValue = _readAnalysisText(map['camelot']);
-
+  /// The track-analysis model is the only timing-override interpreter. Every
+  /// playback consumer receives its effective grid/downbeats from this adapter
+  /// instead of maintaining a parallel legacy override merge.
+  factory ClipTempoMetadata.fromTrackAnalysis(TrackAnalysis analysis) {
+    final summary = analysis.summary;
+    final timing = analysis.effectiveTiming;
+    final beatGrid = timing.beatGrid;
+    final meter = timing.meter;
+    final phase = timing.downbeatPhase;
+    final downbeats = timing.downbeats;
+    final canonicalManualDownbeats = timing.hasManualDownbeatAuthority;
+    final legacyManualDownbeats = analysis.overrides?.downbeatsMs != null;
+    final trustedDownbeats = canonicalManualDownbeats || legacyManualDownbeats;
     return ClipTempoMetadata(
-      nativeBpm: bpmValue ?? _readDouble(beatGrid?['bpm']),
-      bpmConfidence: _readDouble(bpmMap?['confidence']) ??
-          _readDouble(beatGrid?['confidence']),
-      beatGridOffsetMs:
-          _readInt(beatGrid?['offset_ms'] ?? beatGrid?['offsetMs']),
-      beatsMs: _readIntList(beatGrid?['beats_ms'] ?? beatGrid?['beatsMs']),
-      downbeatsMs: _readIntList(downbeatsRaw),
-      downbeatConfidence: _readDouble(downbeats?['confidence']),
-      bpmProvenance: _readString(bpmMap?['provenance']) ??
-          _readString(beatGrid?['provenance']),
-      beatGridProvenance: _readString(beatGrid?['provenance']),
-      downbeatProvenance: _readString(downbeats?['provenance']),
-      musicalKey: keyValue,
-      camelot: camelotValue,
+      nativeBpm: timing.bpm?.numericValue?.toDouble() ??
+          beatGrid?.bpm ??
+          analysis.overrides?.manualTiming?.bpm,
+      bpmConfidence: timing.bpm?.confidence ?? beatGrid?.confidence,
+      beatGridOffsetMs: beatGrid?.offsetMs,
+      beatAnchorMs: analysis.overrides?.manualTiming?.beatAnchorMs,
+      beatsPerBar: meter?.beatsPerBar,
+      downbeatPhaseIndex: phase?.index,
+      meterConfidence: meter?.confidence,
+      meterProvenance: meter?.provenance,
+      downbeatPhaseConfidence: phase?.confidence,
+      downbeatPhaseProvenance: phase?.provenance,
+      phraseLengthBars: timing.phraseLengthBars,
+      overrideRevision: timing.overrideRevision,
+      beatsMs: beatGrid?.beatsMs ?? const [],
+      // Generated marker arrays without manual timing authority remain visible
+      // in analysis, but cannot become playback snap authority by omission.
+      // Explicit legacy manual markers keep their pre-v2 compatibility path.
+      downbeatsMs: downbeats?.positionsMs ?? const [],
+      downbeatConfidence: downbeats?.confidence,
+      generatedTimingUnknown: downbeats != null && !trustedDownbeats,
+      bpmProvenance: timing.bpm?.provenance ?? beatGrid?.provenance,
+      beatGridProvenance: beatGrid?.provenance,
+      downbeatProvenance: downbeats?.provenance,
+      musicalKey: summary?.key?.textValue,
+      camelot: summary?.camelot?.textValue,
     );
   }
 
@@ -197,9 +293,19 @@ class ClipTempoMetadata {
       nativeBpm == null &&
       bpmConfidence == null &&
       beatGridOffsetMs == null &&
+      beatAnchorMs == null &&
+      beatsPerBar == null &&
+      downbeatPhaseIndex == null &&
+      meterConfidence == null &&
+      meterProvenance == null &&
+      downbeatPhaseConfidence == null &&
+      downbeatPhaseProvenance == null &&
+      phraseLengthBars == null &&
+      overrideRevision == null &&
       beatsMs.isEmpty &&
       downbeatsMs.isEmpty &&
       downbeatConfidence == null &&
+      !generatedTimingUnknown &&
       bpmProvenance == null &&
       beatGridProvenance == null &&
       downbeatProvenance == null &&
@@ -212,9 +318,19 @@ class ClipTempoMetadata {
       other.nativeBpm == nativeBpm &&
       other.bpmConfidence == bpmConfidence &&
       other.beatGridOffsetMs == beatGridOffsetMs &&
+      other.beatAnchorMs == beatAnchorMs &&
+      other.beatsPerBar == beatsPerBar &&
+      other.downbeatPhaseIndex == downbeatPhaseIndex &&
+      other.meterConfidence == meterConfidence &&
+      other.meterProvenance == meterProvenance &&
+      other.downbeatPhaseConfidence == downbeatPhaseConfidence &&
+      other.downbeatPhaseProvenance == downbeatPhaseProvenance &&
+      other.phraseLengthBars == phraseLengthBars &&
+      other.overrideRevision == overrideRevision &&
       _sameInts(other.beatsMs, beatsMs) &&
       _sameInts(other.downbeatsMs, downbeatsMs) &&
       other.downbeatConfidence == downbeatConfidence &&
+      other.generatedTimingUnknown == generatedTimingUnknown &&
       other.bpmProvenance == bpmProvenance &&
       other.beatGridProvenance == beatGridProvenance &&
       other.downbeatProvenance == downbeatProvenance &&
@@ -222,151 +338,29 @@ class ClipTempoMetadata {
       other.camelot == camelot;
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
         nativeBpm,
         bpmConfidence,
         beatGridOffsetMs,
+        beatAnchorMs,
+        beatsPerBar,
+        downbeatPhaseIndex,
+        meterConfidence,
+        meterProvenance,
+        downbeatPhaseConfidence,
+        downbeatPhaseProvenance,
+        phraseLengthBars,
+        overrideRevision,
         Object.hashAll(beatsMs),
         Object.hashAll(downbeatsMs),
         downbeatConfidence,
+        generatedTimingUnknown,
         bpmProvenance,
         beatGridProvenance,
         downbeatProvenance,
         musicalKey,
         camelot,
-      );
-}
-
-class _ClipTempoOverrides {
-  final double? nativeBpm;
-  final double? bpmConfidence;
-  final int? beatGridOffsetMs;
-  final List<int>? beatsMs;
-  final List<int>? downbeatsMs;
-  final double? downbeatConfidence;
-  final String? bpmProvenance;
-  final String? beatGridProvenance;
-  final String? downbeatProvenance;
-  final bool hasTrustedBeatGridOverride;
-  final String? musicalKey;
-  final String? camelot;
-
-  const _ClipTempoOverrides({
-    this.nativeBpm,
-    this.bpmConfidence,
-    this.beatGridOffsetMs,
-    this.beatsMs,
-    this.downbeatsMs,
-    this.downbeatConfidence,
-    this.bpmProvenance,
-    this.beatGridProvenance,
-    this.downbeatProvenance,
-    this.hasTrustedBeatGridOverride = false,
-    this.musicalKey,
-    this.camelot,
-  });
-
-  static _ClipTempoOverrides? fromJson(Object? json) {
-    final map = _readMap(json);
-    if (map == null || map.isEmpty) return null;
-    final bpmMap = _readMap(map['bpm']);
-    final beatGrid = _readMap(map['beat_grid'] ?? map['beatGrid']);
-    final downbeats = _readMap(map['downbeats']);
-    final bpmValue = _readAnalysisValue(map['bpm']);
-    final legacyBpm = _readDouble(map['nativeBpm']);
-    final beatGridBpm = _readDouble(beatGrid?['bpm']);
-    final nativeBpm = bpmValue ?? legacyBpm ?? beatGridBpm;
-    final beatGridOffsetMs = _readInt(
-      map['beatGridOffsetMs'] ??
-          map['offsetMs'] ??
-          beatGrid?['offset_ms'] ??
-          beatGrid?['offsetMs'],
-    );
-    final beatsMs = _readNullableIntList(
-      map['beatGridMs'] ??
-          map['beatsMs'] ??
-          beatGrid?['beats_ms'] ??
-          beatGrid?['beatsMs'],
-    );
-    final downbeatsRaw = downbeats == null
-        ? map['downbeats']
-        : downbeats['positions_ms'] ?? downbeats['positionsMs'];
-    final key = map['key'] ?? map['musicalKey'];
-    final bpmConfidence = nativeBpm == null
-        ? null
-        : _readDouble(map['bpmConfidence']) ??
-            _readDouble(bpmMap?['confidence']) ??
-            _readDouble(beatGrid?['confidence']);
-    final bpmProvenance = bpmValue != null
-        ? _readString(bpmMap?['provenance']) ?? _readString(map['provenance'])
-        : legacyBpm != null
-            ? _readString(map['provenance'])
-            : beatGridBpm != null
-                ? _readString(beatGrid?['provenance']) ??
-                    _readString(map['provenance'])
-                : null;
-    final overrides = _ClipTempoOverrides(
-      nativeBpm: nativeBpm,
-      bpmConfidence: bpmConfidence,
-      beatGridOffsetMs: beatGridOffsetMs,
-      beatsMs: beatsMs,
-      downbeatsMs: _readNullableIntList(map['downbeatsMs'] ?? downbeatsRaw),
-      downbeatConfidence: _readDouble(map['downbeatConfidence']) ??
-          _readDouble(downbeats?['confidence']),
-      bpmProvenance: bpmProvenance,
-      beatGridProvenance: _readString(beatGrid?['provenance']) ??
-          _readString(map['beatGridProvenance']) ??
-          _readString(map['provenance']),
-      downbeatProvenance: _readString(downbeats?['provenance']) ??
-          _readString(map['provenance']),
-      hasTrustedBeatGridOverride: beatsMs != null,
-      musicalKey: _readAnalysisText(key),
-      camelot: _readAnalysisText(map['camelot']),
-    );
-    return overrides.isEmpty ? null : overrides;
-  }
-
-  bool get isEmpty =>
-      nativeBpm == null &&
-      bpmConfidence == null &&
-      beatGridOffsetMs == null &&
-      beatsMs == null &&
-      downbeatsMs == null &&
-      downbeatConfidence == null &&
-      bpmProvenance == null &&
-      beatGridProvenance == null &&
-      downbeatProvenance == null &&
-      musicalKey == null &&
-      camelot == null;
-
-  ClipTempoMetadata applyTo(ClipTempoMetadata base) {
-    final effectiveBpmConfidence =
-        bpmConfidence ?? (nativeBpm == null ? null : 1.0);
-    final effectiveDownbeatConfidence =
-        downbeatConfidence ?? (downbeatsMs == null ? null : 1.0);
-    final effectiveBpmProvenance =
-        bpmProvenance ?? (nativeBpm == null ? null : manualTempoProvenance);
-    final effectiveBeatGridProvenance = hasTrustedBeatGridOverride
-        ? beatGridProvenance ?? manualTempoProvenance
-        : base.beatGridProvenance;
-    final effectiveDownbeatProvenance = downbeatProvenance ??
-        (downbeatsMs == null ? null : manualTempoProvenance);
-    return ClipTempoMetadata(
-      nativeBpm: nativeBpm ?? base.nativeBpm,
-      bpmConfidence: effectiveBpmConfidence ?? base.bpmConfidence,
-      beatGridOffsetMs: beatGridOffsetMs ?? base.beatGridOffsetMs,
-      beatsMs: beatsMs ?? base.beatsMs,
-      downbeatsMs: downbeatsMs ?? base.downbeatsMs,
-      downbeatConfidence:
-          effectiveDownbeatConfidence ?? base.downbeatConfidence,
-      bpmProvenance: effectiveBpmProvenance ?? base.bpmProvenance,
-      beatGridProvenance: effectiveBeatGridProvenance,
-      downbeatProvenance:
-          effectiveDownbeatProvenance ?? base.downbeatProvenance,
-      musicalKey: musicalKey ?? base.musicalKey,
-      camelot: camelot ?? base.camelot,
-    );
-  }
+      ]);
 }
 
 class PlaybackRateSegment {
@@ -1290,18 +1284,6 @@ int defaultDownbeatLockedTransitionStartMs({
   return snapped;
 }
 
-double? _readAnalysisValue(Object? value) {
-  final map = _readMap(value);
-  if (map != null) return _readDouble(map['value']);
-  return _readDouble(value);
-}
-
-String? _readAnalysisText(Object? value) {
-  final map = _readMap(value);
-  if (map != null) return _readString(map['value']);
-  return _readString(value);
-}
-
 Map<String, dynamic>? _readMap(Object? value) {
   if (value is Map<String, dynamic>) return value;
   if (value is Map) return Map<String, dynamic>.from(value);
@@ -1338,11 +1320,6 @@ List<int> _readIntList(Object? value) {
       .whereType<int>()
       .where((entry) => entry >= 0)
       .toList(growable: false);
-}
-
-List<int>? _readNullableIntList(Object? value) {
-  if (value == null) return null;
-  return _readIntList(value);
 }
 
 double _lerp(double a, double b, double t) => a + (b - a) * t;

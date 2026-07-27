@@ -1,10 +1,79 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
+import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 
 void main() {
   group('tempo-matched transition planner', () {
+    test('canonical manual phase selects downbeats without mutating beats', () {
+      const beats = [100, 600, 1100, 1600, 2100, 2600, 3100, 3600];
+      final analysis = TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'bpm': {'value': 120, 'confidence': 0.8},
+          'beat_grid': {
+            'bpm': 120,
+            'offset_ms': 100,
+            'beats_ms': beats,
+            'confidence': 0.8,
+          },
+          'downbeats': {
+            'positions_ms': [100, 2100]
+          },
+        },
+        overrides: {
+          'manual_timing_override': {
+            'bpm': 120,
+            'beat_anchor_ms': 100,
+            'beats_per_bar': 4,
+            'downbeat_phase_index': 2,
+            'phrase_length_bars': 8,
+            'revision': 7,
+          },
+        },
+        overrideRevision: 7,
+      );
+
+      final tempo = ClipTempoMetadata.fromTrackAnalysis(analysis);
+
+      expect(tempo.beatsMs, beats);
+      expect(tempo.downbeatsMs, [1100, 3100]);
+      expect(tempo.beatAnchorMs, 100);
+      expect(tempo.beatsPerBar, 4);
+      expect(tempo.downbeatPhaseIndex, 2);
+      expect(tempo.phraseLengthBars, 8);
+      expect(tempo.overrideRevision, 7);
+      expect(
+        beatMarkersForSnapMode(tempo, BeatSnapMode.downbeat),
+        [1100, 3100],
+      );
+      expect(analysis.summary?.beatGrid?.beatsMs, beats);
+    });
+
+    test('unknown meter does not synthesize downbeat snap markers', () {
+      final analysis = TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'beat_grid': {
+            'bpm': 120,
+            'beats_ms': [0, 500, 1000, 1500]
+          },
+        },
+        overrides: {
+          'manual_timing_override': {
+            'downbeat_phase_index': 1,
+            'revision': 2,
+          },
+        },
+      );
+
+      final tempo = ClipTempoMetadata.fromTrackAnalysis(analysis);
+      expect(tempo.downbeatsMs, isEmpty);
+      expect(beatMarkersForSnapMode(tempo, BeatSnapMode.downbeat), isEmpty);
+      expect(tempo.beatsMs, [0, 500, 1000, 1500]);
+    });
+
     test('ramps outgoing and incoming clips across the overlap', () {
       const outgoing = ClipTempoMetadata(
         nativeBpm: 100,
