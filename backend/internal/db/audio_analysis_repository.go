@@ -27,6 +27,7 @@ const analysisCompactOverridesExpression = `jsonb_strip_nulls(jsonb_build_object
 	'bpm', ta.overrides_json->'bpm',
 	'beat_grid', ta.overrides_json->'beat_grid',
 	'downbeats', ta.overrides_json->'downbeats',
+	'manual_timing_v2', ta.overrides_json->'manual_timing_v2',
 	'manual_timing_override', ta.overrides_json->'manual_timing_override',
 	'key', ta.overrides_json->'key',
 	'camelot', ta.overrides_json->'camelot',
@@ -36,6 +37,8 @@ const analysisCompactOverridesExpression = `jsonb_strip_nulls(jsonb_build_object
 const analysisCompactSummaryExpression = `CASE WHEN ta.track_id IS NULL THEN NULL ELSE jsonb_strip_nulls(jsonb_build_object(
 		'bpm', ta.summary_json->'bpm',
 		'beat_grid', ta.summary_json->'beat_grid',
+		'meter', ta.summary_json->'meter',
+		'downbeat_phase', ta.summary_json->'downbeat_phase',
 		'downbeats', ta.summary_json->'downbeats',
 		'key', ta.summary_json->'key',
 		'camelot', ta.summary_json->'camelot',
@@ -472,20 +475,25 @@ func stampManualTimingOverrideMetadata(overrides json.RawMessage, revision int64
 	if err := json.Unmarshal(overrides, &document); err != nil {
 		return nil, err
 	}
-	rawTiming, present := document["manual_timing_override"]
+	rawTiming, present := document["manual_timing_v2"]
+	if !present {
+		rawTiming, present = document["manual_timing_override"]
+	}
 	timing := map[string]any{}
 	if present {
 		var ok bool
 		timing, ok = rawTiming.(map[string]any)
 		if !ok {
-			return nil, errors.New("manual_timing_override must be a JSON object")
+			return nil, errors.New("manual timing override must be a JSON object")
 		}
 	}
+	timing["schema_version"] = float64(2)
 	timing["revision"] = revision
 	timing["updated_at"] = updatedAt.Format(time.RFC3339Nano)
 	timing["confidence"] = 1.0
 	timing["provenance"] = "manual_override"
-	document["manual_timing_override"] = timing
+	delete(document, "manual_timing_override")
+	document["manual_timing_v2"] = timing
 	return json.Marshal(document)
 }
 

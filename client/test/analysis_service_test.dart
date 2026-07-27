@@ -296,7 +296,8 @@ void main() {
       );
 
       expect(api.capturedBody?['expected_revision'], 7);
-      final timing = api.capturedBody?['overrides']['manual_timing_override'];
+      final timing = api.capturedBody?['overrides']['manual_timing_v2'];
+      expect(timing['schema_version'], 2);
       expect(timing['beat_anchor_ms'], 87);
       expect(timing.containsKey('revision'), isFalse);
       expect(analysis.overrideRevision, 8);

@@ -1384,6 +1384,8 @@ class QueueProvider extends ChangeNotifier {
               confidence: beatGrid.confidence,
               provenance: beatGrid.provenance,
             ),
+      meter: source.meter,
+      downbeatPhase: source.downbeatPhase,
       downbeats: downbeats == null
           ? null
           : DownbeatSummary(
@@ -1862,6 +1864,12 @@ class QueueProvider extends ChangeNotifier {
           manualTiming.downbeatPhaseIndex != null) {
         summary.remove('downbeats');
       }
+      if (manualTiming.beatsPerBar != null) {
+        summary.remove('meter');
+        summary.remove('downbeat_phase');
+      } else if (manualTiming.downbeatPhaseIndex != null) {
+        summary.remove('downbeat_phase');
+      }
     }
 
     if (overrides.bpm != null) summary.remove('bpm');
@@ -1944,14 +1952,15 @@ class QueueProvider extends ChangeNotifier {
 
   int _analysisCompactSignature(TrackAnalysis analysis) {
     final summary = analysis.summary;
-    final beatGrid = summary?.beatGrid;
-    final downbeats = summary?.downbeats;
+    final timing = analysis.effectiveTiming;
+    final beatGrid = timing.beatGrid;
+    final downbeats = timing.downbeats;
     return Object.hash(
       analysis.status,
       analysis.overridesPresent,
       analysis.overrideRevision,
       analysis.overrideUpdatedAt,
-      _analysisValueSignature(summary?.bpm),
+      _analysisValueSignature(timing.bpm),
       beatGrid == null
           ? null
           : Object.hash(
@@ -1967,6 +1976,20 @@ class QueueProvider extends ChangeNotifier {
               downbeats.confidence,
               downbeats.provenance,
               Object.hashAll(downbeats.positionsMs),
+            ),
+      timing.meter == null
+          ? null
+          : Object.hash(
+              timing.meter?.beatsPerBar,
+              timing.meter?.confidence,
+              timing.meter?.provenance,
+            ),
+      timing.downbeatPhase == null
+          ? null
+          : Object.hash(
+              timing.downbeatPhase?.index,
+              timing.downbeatPhase?.confidence,
+              timing.downbeatPhase?.provenance,
             ),
       _analysisValueSignature(summary?.key),
       _analysisValueSignature(summary?.camelot),

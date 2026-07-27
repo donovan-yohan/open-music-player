@@ -712,6 +712,19 @@ func buildResponse(req analyzeRequest, a waveformAnalysis) map[string]any {
 	}
 
 	summary := map[string]any{
+		// The current MIR model emits observed beat/downbeat markers but does
+		// not produce a calibrated global meter or phase. Keep those facts
+		// explicitly unknown instead of inferring 4/4 from marker spacing.
+		"meter": map[string]any{
+			"beats_per_bar": nil,
+			"confidence":    nil,
+			"provenance":    tempoModelVersion,
+		},
+		"downbeat_phase": map[string]any{
+			"index":      nil,
+			"confidence": nil,
+			"provenance": tempoModelVersion,
+		},
 		"energy": map[string]any{
 			"value":      round(a.energy, 4),
 			"confidence": 0.72,

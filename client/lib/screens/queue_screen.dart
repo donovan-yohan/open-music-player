@@ -884,6 +884,10 @@ class _QueueScreenState extends State<QueueScreen> {
         beatAnchorMs: tempo.beatAnchorMs,
         beatsPerBar: tempo.beatsPerBar,
         downbeatPhaseIndex: tempo.downbeatPhaseIndex,
+        meterConfidence: tempo.meterConfidence,
+        meterProvenance: tempo.meterProvenance,
+        downbeatPhaseConfidence: tempo.downbeatPhaseConfidence,
+        downbeatPhaseProvenance: tempo.downbeatPhaseProvenance,
         phraseLengthBars: tempo.phraseLengthBars,
         overrideRevision: tempo.overrideRevision,
         beatsMs: _boundedTempoPositions(

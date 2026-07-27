@@ -1241,14 +1241,30 @@ Map<String, dynamic> _analysisSummary({
   required double bpm,
   double bpmConfidence = 0.95,
   required List<int> downbeatsMs,
-}) =>
-    {
-      'bpm': {'value': bpm, 'confidence': bpmConfidence},
-      'beat_grid': {
-        'bpm': bpm,
-        'confidence': bpmConfidence,
+}) {
+  final hasExplicitTimingAuthority = bpmConfidence >= 0.8;
+  return {
+    'bpm': {'value': bpm, 'confidence': bpmConfidence},
+    'beat_grid': {
+      'bpm': bpm,
+      'confidence': bpmConfidence,
+    },
+    'downbeats': {
+      'positions_ms': downbeatsMs,
+      if (hasExplicitTimingAuthority) 'confidence': 1.0,
+      if (hasExplicitTimingAuthority) 'provenance': 'manual_override',
+    },
+    if (hasExplicitTimingAuthority)
+      'meter': {
+        'beats_per_bar': 4,
+        'confidence': 1.0,
+        'provenance': 'manual_override',
       },
-      'downbeats': {
-        'positions_ms': downbeatsMs,
+    if (hasExplicitTimingAuthority)
+      'downbeat_phase': {
+        'index': 0,
+        'confidence': 1.0,
+        'provenance': 'manual_override',
       },
-    };
+  };
+}

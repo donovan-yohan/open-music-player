@@ -54,12 +54,23 @@ TrackAnalysis _tempoAnalysis({
         ),
         confidence: 0.9,
       ),
+      meter: const MeterSummary(
+        beatsPerBar: 4,
+        confidence: 1,
+        provenance: manualTempoProvenance,
+      ),
+      downbeatPhase: const DownbeatPhaseSummary(
+        index: 0,
+        confidence: 1,
+        provenance: manualTempoProvenance,
+      ),
       downbeats: DownbeatSummary(
         positionsMs: List<int>.generate(
           (durationMs / downbeatMs).floor() + 1,
           (index) => index * downbeatMs,
         ),
-        confidence: 0.9,
+        confidence: 1,
+        provenance: manualTempoProvenance,
       ),
     ),
     updatedAt: updatedAt,

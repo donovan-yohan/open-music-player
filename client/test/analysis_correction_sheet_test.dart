@@ -28,7 +28,8 @@ void main() {
 
     expect(tappedBpm, 120);
     expect(tapped.toJson(), typed.toJson());
-    expect(typed.toJson()['manual_timing_override'], {
+    expect(typed.toJson()['manual_timing_v2'], {
+      'schema_version': 2,
       'bpm': 120.0,
       'beat_anchor_ms': 87,
       'beats_per_bar': 4,
@@ -381,7 +382,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final request = saved!.toJson(includeServerMetadata: false);
-    expect(request['manual_timing_override'], isEmpty);
+    expect(request['manual_timing_v2'], {'schema_version': 2});
     expect(
         request['key'], {'value': 'D minor', 'provenance': 'manual_override'});
     expect(request, isNot(contains('bpm')));

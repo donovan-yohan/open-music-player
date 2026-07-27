@@ -166,6 +166,23 @@ func TestUpdateTrackAnalysisOverridesRevisionContractAgainstPostgres(t *testing.
 	if response.OverrideRevision != 1 {
 		t.Fatalf("initial update override_revision = %d, want 1", response.OverrideRevision)
 	}
+	var responseOverrides map[string]any
+	if err := json.Unmarshal(response.Overrides, &responseOverrides); err != nil {
+		t.Fatalf("decode projected overrides: %v", err)
+	}
+	if _, present := responseOverrides["manual_timing_override"]; present {
+		t.Fatal("response dual-emitted provisional manual_timing_override")
+	}
+	if got := responseOverrides["manual_timing_v2"].(map[string]any)["schema_version"]; got != float64(2) {
+		t.Fatalf("response manual timing schema = %#v, want 2", got)
+	}
+	var effectiveTiming map[string]any
+	if err := json.Unmarshal(response.EffectiveTiming, &effectiveTiming); err != nil {
+		t.Fatalf("decode effective timing: %v", err)
+	}
+	if got := effectiveTiming["bpm"].(map[string]any)["value"]; got != float64(120) {
+		t.Fatalf("effective BPM = %#v, want 120", got)
+	}
 
 	stale := update(`{
 		"overrides":{"manual_timing_override":{"bpm":122}},
@@ -366,7 +383,10 @@ func TestNormalizeAnalysisOverridesCanonicalManualTimingIsIndependent(t *testing
 	if got := overrides["downbeats"].(map[string]any)["positions_ms"].([]any); len(got) != 1 || got[0] != float64(0) {
 		t.Fatalf("legacy downbeat fallback changed: %#v", got)
 	}
-	timing := overrides["manual_timing_override"].(map[string]any)
+	timing := overrides["manual_timing_v2"].(map[string]any)
+	if timing["schema_version"] != float64(2) {
+		t.Fatalf("manual timing schema = %#v, want 2", timing["schema_version"])
+	}
 	if timing["confidence"] != float64(1) || timing["provenance"] != manualAnalysisOverrideProvenance {
 		t.Fatalf("manual timing trust = %#v", timing)
 	}
@@ -436,12 +456,56 @@ func TestNormalizeAnalysisOverridesAcceptsResetMetadataEnvelope(t *testing.T) {
 	if err := json.Unmarshal(normalized, &document); err != nil {
 		t.Fatal(err)
 	}
-	timing := document["manual_timing_override"].(map[string]any)
+	timing := document["manual_timing_v2"].(map[string]any)
 	if _, present := timing["revision"]; present {
 		t.Fatal("client revision survived reset normalization")
 	}
 	if timing["confidence"] != float64(1) || timing["provenance"] != manualAnalysisOverrideProvenance {
 		t.Fatalf("reset manual trust = %#v", timing)
+	}
+}
+
+func TestNormalizeAnalysisOverridesRequiresExactV2Schema(t *testing.T) {
+	for name, input := range map[string]string{
+		"missing": `{"manual_timing_v2":{"bpm":120}}`,
+		"old":     `{"manual_timing_v2":{"schema_version":1,"bpm":120}}`,
+		"future":  `{"manual_timing_v2":{"schema_version":3,"bpm":120}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := normalizeAnalysisOverrides(json.RawMessage(input)); err == nil {
+				t.Fatal("expected schema validation error")
+			}
+		})
+	}
+
+	normalized, err := normalizeAnalysisOverrides(json.RawMessage(`{
+		"manual_timing_v2":{
+			"schema_version":2,
+			"bpm":123,
+			"revision":77,
+			"updated_at":"forged",
+			"confidence":0.1,
+			"provenance":"forged"
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("normalize v2: %v", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(normalized, &document); err != nil {
+		t.Fatal(err)
+	}
+	timing := document["manual_timing_v2"].(map[string]any)
+	if timing["schema_version"] != float64(2) ||
+		timing["confidence"] != float64(1) ||
+		timing["provenance"] != manualAnalysisOverrideProvenance {
+		t.Fatalf("normalized v2 trust = %#v", timing)
+	}
+	if _, present := timing["revision"]; present {
+		t.Fatal("forged v2 revision survived")
+	}
+	if _, present := timing["updated_at"]; present {
+		t.Fatal("forged v2 timestamp survived")
 	}
 }
 

@@ -245,7 +245,7 @@ from analyzer output. Queue/library compact summaries overlay
 automation consume corrected BPM/downbeats immediately while future analyzer
 runs can still refresh waveform/loudness/artifacts.
 
-Update corrections with:
+Update legacy musical corrections with:
 
 ```http
 PATCH /api/v1/tracks/{track_id}/analysis/overrides
@@ -263,16 +263,16 @@ Content-Type: application/json
 }
 ```
 
-New timing corrections use the additive canonical object below. It keeps tempo,
-beat-grid anchor, meter, downbeat phase, and phrase length as independent
-facts. Analyzer and retained legacy beat arrays remain stored unchanged as the
-fallback span for effective timing projection.
+Write manual timing with the canonical v2 object. It keeps tempo, beat-grid
+anchor, meter, downbeat phase, and phrase length as independent facts; its
+`schema_version` is required and must be `2`.
 
 ```json
 {
   "expected_revision": 3,
   "overrides": {
-    "manual_timing_override": {
+    "manual_timing_v2": {
+      "schema_version": 2,
       "bpm": 124.0,
       "beat_anchor_ms": 120,
       "beats_per_bar": 4,
@@ -289,27 +289,45 @@ for normal edits; omitting it is treated as `0` to migrate legacy rows. A stale
 revision receives `409 ANALYSIS_OVERRIDE_CONFLICT` rather than silently
 overwriting another editor. Sending an empty `overrides` object clears manual
 facts while advancing the revision, so current generated analysis is visible
-again. Legacy `bpm`, `beat_grid`, and `downbeats` override payloads remain
-readable. Canonical writes preserve them as fallback data but take precedence;
-reset is the operation that clears all manual facts. Analyzer reruns replace
-generated summaries/artifacts without changing the manual document or revision.
-An override write preserves an existing `pending` or `analyzing` lifecycle
-state; the analyzer's normal `StoreResult` path can then transition the row to
-`analyzed` while retaining that manual state.
+again. Legacy `manual_timing_override` remains accepted and readable for
+compatibility, but the server normalizes it to `manual_timing_v2` before it is
+stored or returned. Legacy `bpm`, `beat_grid`, and `downbeats` override payloads
+also remain readable. Analyzer reruns replace generated summaries/artifacts
+without changing the manual document or revision. An override write preserves an
+existing `pending` or `analyzing` lifecycle state; the analyzer's normal
+`StoreResult` path can then transition the row to `analyzed` while retaining
+that manual state.
 
-For compact queue/list payloads, a manual BPM or anchor deterministically
-regenerates effective beat markers over the existing stored beat span. The
-stored analyzer/legacy timestamps are not mutated. A phase-only edit keeps the
-effective beat timestamps unchanged; when both meter and phase are known,
-downbeats are selected from that effective list modulo the meter. No downbeats
-are manufactured when meter is unknown, and phrase length is metadata rather
-than a downbeat interval.
+Generated `summary.meter` and `summary.downbeat_phase` are facts only when the
+analyzer provided them. Missing generated facts are explicitly unknown: the
+server does not infer a meter or phase from beat spacing, phrase length, or old
+downbeat arrays, and emits null-valued facts rather than inventing defaults:
 
-The response is the normal analysis envelope plus `overrides`. The queue list
-and selected timeline clip expose the current editor sheet. It lets users edit
-BPM, grid anchor, meter, phase, phrase length, key, and Camelot as facts. After
-a successful CAS update, the client refreshes queue/timeline analysis caches so
-markers and labels consume the corrected effective summary immediately.
+```json
+{
+  "meter": {
+    "beats_per_bar": null,
+    "confidence": null,
+    "provenance": "tempo-model"
+  },
+  "downbeat_phase": {
+    "index": null,
+    "confidence": null,
+    "provenance": "tempo-model"
+  }
+}
+```
+
+Responses expose the generated `summary`, the normalized `overrides` document
+(with canonical `manual_timing_v2`), and server-owned `effective_timing`.
+`effective_timing` is the compatibility projection for consumers that need
+resolved BPM, grid, meter, phase, downbeats, phrase length, and override
+revision; clients must not persist or construct a competing timing document.
+When a manual BPM or anchor changes the grid, the server regenerates effective
+beat markers over the existing stored beat span without mutating generated
+timestamps. It selects effective downbeats only when both meter and phase are
+known; otherwise no downbeats are manufactured. The queue list and selected
+timeline clip refresh from this response after a successful CAS update.
 
 ## Tempo automation and pitch mode
 
@@ -351,15 +369,12 @@ resume.
 ## Beat, downbeat, key, and Camelot analysis
 
 The analyzer uses the MIT-licensed Beat This `final0` model for beat and
-downbeat inference. Model downbeat candidates vote on a dominant four-beat
-phase. Agreement and song coverage determine confidence; sparse or conflicting
-candidates remain low-confidence markers instead of being expanded into a
-synthetic full-song grid. BPM is derived from tracked beat intervals with robust
-outlier rejection instead of quantized transient buckets. Sparse or irregular
-tempo grids remain below the client's automatic beat-sync threshold. Downbeat
-confidence travels with session tempo metadata; automatic phrase overlap and
-downbeat snap ignore generated markers below that threshold, while manual
-corrections are treated as authoritative.
+downbeat inference. Generated phase is uncalibrated and remains explicitly
+unknown; candidate markers are not expanded into a synthetic four-beat phase.
+BPM is derived from tracked beat intervals with robust outlier rejection instead
+of quantized transient buckets. Generated markers remain display/compatibility
+data regardless of confidence: automatic phrase overlap and downbeat snap require
+canonical v2 manual timing or explicit legacy manual marker corrections.
 
 Key detection uses librosa's constant-Q chroma over the harmonic signal and
 Pearson correlation against the Krumhansl major/minor profiles. The winning

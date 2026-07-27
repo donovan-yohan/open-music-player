@@ -214,8 +214,12 @@ func TestAnalysisRepositoryManualTimingRevisionConflictsAndResetSurvivesRerunAga
 	if err := json.Unmarshal(first.OverridesJSON, &firstOverrides); err != nil {
 		t.Fatal(err)
 	}
-	if got := firstOverrides["manual_timing_override"].(map[string]any)["revision"]; got != float64(1) {
+	firstTiming := firstOverrides["manual_timing_v2"].(map[string]any)
+	if got := firstTiming["revision"]; got != float64(1) {
 		t.Fatalf("stored manual timing revision = %#v", got)
+	}
+	if got := firstTiming["schema_version"]; got != float64(2) {
+		t.Fatalf("stored manual timing schema = %#v, want 2", got)
 	}
 	if _, err := analysisRepo.SetOverrides(ctx, track.ID, json.RawMessage(`{"manual_timing_override":{"bpm":122}}`), 0); !errors.Is(err, ErrAnalysisOverrideConflict) {
 		t.Fatalf("stale write error = %v, want revision conflict", err)
@@ -257,7 +261,7 @@ func TestAnalysisRepositoryManualTimingRevisionConflictsAndResetSurvivesRerunAga
 	if err := json.Unmarshal(afterRerun.OverridesJSON, &overrides); err != nil {
 		t.Fatal(err)
 	}
-	timing := overrides["manual_timing_override"].(map[string]any)
+	timing := overrides["manual_timing_v2"].(map[string]any)
 	if len(timing) < 4 || timing["revision"] != float64(2) {
 		t.Fatalf("reset metadata was not retained: %#v", timing)
 	}
@@ -279,9 +283,12 @@ func TestStampManualTimingOverrideMetadataRetainsResetRevision(t *testing.T) {
 	if err := json.Unmarshal(stamped, &document); err != nil {
 		t.Fatal(err)
 	}
-	timing := document["manual_timing_override"].(map[string]any)
+	timing := document["manual_timing_v2"].(map[string]any)
 	if timing["revision"] != float64(4) || timing["updated_at"] != updatedAt.Format(time.RFC3339Nano) {
 		t.Fatalf("stamped timing = %#v", timing)
+	}
+	if timing["schema_version"] != float64(2) {
+		t.Fatalf("stamped timing schema = %#v, want 2", timing["schema_version"])
 	}
 }
 
@@ -391,9 +398,9 @@ func TestAnalysisRepositoryOverrideDuringAnalyzingPreservesLifecycleAgainstPostg
 	if err := json.Unmarshal(landed.OverridesJSON, &landedOverrides); err != nil {
 		t.Fatal(err)
 	}
-	manualTiming, ok := landedOverrides["manual_timing_override"].(map[string]any)
+	manualTiming, ok := landedOverrides["manual_timing_v2"].(map[string]any)
 	if !ok || manualTiming["bpm"] != float64(120) {
-		t.Fatalf("analyzer result lost manual override: %#v", landedOverrides["manual_timing_override"])
+		t.Fatalf("analyzer result lost manual override: %#v", landedOverrides["manual_timing_v2"])
 	}
 }
 

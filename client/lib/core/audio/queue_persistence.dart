@@ -281,6 +281,19 @@ Map<String, dynamic>? _compactTempoMetadata(
 
   final bpm = _compactAnalysisValue(source['bpm']);
   if (bpm != null) compact['bpm'] = bpm;
+  final meter = _compactTimingFact(
+    source['meter'],
+    canonicalValueKey: 'beats_per_bar',
+    legacyValueKey: 'beatsPerBar',
+  );
+  if (meter != null) compact['meter'] = meter;
+  final downbeatPhase = _compactTimingFact(
+    source['downbeat_phase'] ?? source['downbeatPhase'],
+    canonicalValueKey: 'index',
+  );
+  if (downbeatPhase != null) {
+    compact['downbeat_phase'] = downbeatPhase;
+  }
   for (final key in ['key', 'camelot']) {
     final analysisValue = _compactAnalysisValue(source[key]);
     if (analysisValue != null) compact[key] = analysisValue;
@@ -326,10 +339,20 @@ Map<String, dynamic>? _compactTempoMetadata(
   }
   if (compactDownbeats.isNotEmpty) compact['downbeats'] = compactDownbeats;
 
+  final v2Timing = source['manual_timing_v2'] ?? source['manualTimingV2'];
+  final validV2 = v2Timing is Map &&
+      (v2Timing['schema_version'] ?? v2Timing['schemaVersion']) == 2;
   final manualTiming = _compactManualTimingOverride(
-    source['manual_timing_override'] ?? source['manualTimingOverride'],
+    validV2
+        ? v2Timing
+        : source['manual_timing_override'] ?? source['manualTimingOverride'],
   );
-  if (manualTiming != null) compact['manual_timing_override'] = manualTiming;
+  if (manualTiming != null) {
+    compact['manual_timing_v2'] = {
+      'schema_version': ManualTimingOverride.currentSchemaVersion,
+      ...manualTiming,
+    };
+  }
 
   if (source['provenance'] != null) {
     compact['provenance'] = source['provenance'];
@@ -360,6 +383,23 @@ Map<String, dynamic>? _compactManualTimingOverride(Object? value) {
   for (final entry in fields.entries) {
     final field = source[entry.key] ?? source[entry.value];
     if (field != null) compact[entry.key] = field;
+  }
+  return compact.isEmpty ? null : compact;
+}
+
+Map<String, dynamic>? _compactTimingFact(
+  Object? value, {
+  required String canonicalValueKey,
+  String? legacyValueKey,
+}) {
+  if (value is! Map) return null;
+  final source = Map<String, dynamic>.from(value);
+  final compact = <String, dynamic>{};
+  final fact = source[canonicalValueKey] ??
+      (legacyValueKey == null ? null : source[legacyValueKey]);
+  if (fact != null) compact[canonicalValueKey] = fact;
+  for (final key in ['confidence', 'provenance']) {
+    if (source[key] != null) compact[key] = source[key];
   }
   return compact.isEmpty ? null : compact;
 }

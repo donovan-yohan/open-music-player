@@ -445,7 +445,8 @@ void main() {
         'bpm': {'value': 128},
       });
       expect(json['analysisOverrides'], {
-        'manual_timing_override': {
+        'manual_timing_v2': {
+          'schema_version': 2,
           'bpm': 130,
           'beat_anchor_ms': 120,
           'beats_per_bar': 4,

@@ -215,7 +215,8 @@ void main() {
         },
       };
       final analysisOverrides = {
-        'manual_timing_override': {
+        'manual_timing_v2': {
+          'schema_version': 2,
           'bpm': 124,
           'beat_anchor_ms': 120,
           'beats_per_bar': 4,

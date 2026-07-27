@@ -259,9 +259,12 @@ func TestProjectCompactAnalysisSelectsPhaseWithoutMutatingBeats(t *testing.T) {
 	if err := json.Unmarshal(compactOverrides, &overrideDocument); err != nil {
 		t.Fatal(err)
 	}
-	timing := overrideDocument["manual_timing_override"].(map[string]any)
+	timing := overrideDocument["manual_timing_v2"].(map[string]any)
 	if timing["revision"] != float64(7) || timing["phrase_length_bars"] != float64(8) {
 		t.Fatalf("compact timing metadata = %#v", timing)
+	}
+	if timing["schema_version"] != float64(2) {
+		t.Fatalf("compact timing schema = %#v, want 2", timing["schema_version"])
 	}
 }
 
@@ -413,14 +416,97 @@ func TestProjectCompactAnalysisPreservesManualTimingRevisionOnReset(t *testing.T
 		json.RawMessage(`{"beat_grid":{"beats_ms":[0,500]}}`),
 		json.RawMessage(`{"manual_timing_override":{"revision":4,"updated_at":"2026-07-26T00:00:00Z","confidence":1,"provenance":"manual_override"}}`),
 	)
-	for name, payload := range map[string]json.RawMessage{"merged": merged, "overrides": overrides} {
-		var document map[string]any
-		if err := json.Unmarshal(payload, &document); err != nil {
-			t.Fatalf("decode %s: %v", name, err)
-		}
-		timing, ok := document["manual_timing_override"].(map[string]any)
-		if !ok || timing["revision"] != float64(4) {
-			t.Fatalf("%s reset metadata = %#v", name, document["manual_timing_override"])
-		}
+	var effective map[string]any
+	if err := json.Unmarshal(merged, &effective); err != nil {
+		t.Fatalf("decode effective projection: %v", err)
+	}
+	if _, present := effective["manual_timing_v2"]; present {
+		t.Fatalf("effective projection leaked manual document: %#v", effective)
+	}
+
+	var document map[string]any
+	if err := json.Unmarshal(overrides, &document); err != nil {
+		t.Fatalf("decode overrides: %v", err)
+	}
+	timing, ok := document["manual_timing_v2"].(map[string]any)
+	if !ok || timing["revision"] != float64(4) {
+		t.Fatalf("reset metadata = %#v", document["manual_timing_v2"])
+	}
+}
+
+func TestProjectCompactAnalysisV2WinsAndGeneratedUnknownFactsStayUnknown(t *testing.T) {
+	beats := `[100,600,1100,1600,2100]`
+	merged, overrides := projectCompactAnalysis(
+		json.RawMessage(`{
+			"beat_grid":{"bpm":120,"beats_ms":`+beats+`},
+			"meter":{"beats_per_bar":null,"confidence":null,"provenance":"tempo-model"},
+			"downbeat_phase":{"index":null,"confidence":null,"provenance":"tempo-model"},
+			"downbeats":{"positions_ms":[100,2100],"confidence":0.9,"provenance":"tempo-model"}
+		}`),
+		json.RawMessage(`{
+			"manual_timing_override":{"beats_per_bar":3,"downbeat_phase_index":2},
+			"manual_timing_v2":{"schema_version":2,"beats_per_bar":4,"downbeat_phase_index":1}
+		}`),
+	)
+	var effective map[string]any
+	if err := json.Unmarshal(merged, &effective); err != nil {
+		t.Fatal(err)
+	}
+	gotBeats, err := json.Marshal(effective["beat_grid"].(map[string]any)["beats_ms"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotBeats) != beats {
+		t.Fatalf("phase-only edit mutated beats: %s, want %s", gotBeats, beats)
+	}
+	if got := effective["meter"].(map[string]any)["beats_per_bar"]; got != float64(4) {
+		t.Fatalf("effective meter = %#v, want v2 value 4", got)
+	}
+	if got := effective["downbeat_phase"].(map[string]any)["index"]; got != float64(1) {
+		t.Fatalf("effective phase = %#v, want v2 value 1", got)
+	}
+	gotDownbeats := effective["downbeats"].(map[string]any)["positions_ms"].([]any)
+	if len(gotDownbeats) != 1 || gotDownbeats[0] != float64(600) {
+		t.Fatalf("v2 downbeats = %#v, want [600]", gotDownbeats)
+	}
+	var projectedOverrides map[string]any
+	if err := json.Unmarshal(overrides, &projectedOverrides); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := projectedOverrides["manual_timing_override"]; present {
+		t.Fatal("provisional manual_timing_override was dual-emitted")
+	}
+	if projectedOverrides["manual_timing_v2"].(map[string]any)["schema_version"] != float64(2) {
+		t.Fatalf("canonical v2 missing: %#v", projectedOverrides)
+	}
+}
+
+func TestProjectEffectiveTimingDoesNotInferLegacyMeterOrPhrase(t *testing.T) {
+	effective, projectedOverrides := ProjectEffectiveTiming(
+		json.RawMessage(`{
+			"beat_grid":{"beats_ms":[0,500,1000,1500,2000]},
+			"downbeats":{"positions_ms":[0,2000],"confidence":0.9}
+		}`),
+		json.RawMessage(`{"downbeats":{"positions_ms":[0,2000]}}`),
+	)
+	var timing map[string]any
+	if err := json.Unmarshal(effective, &timing); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := timing["meter"]; present {
+		t.Fatalf("legacy spacing inferred meter: %#v", timing["meter"])
+	}
+	if _, present := timing["downbeat_phase"]; present {
+		t.Fatalf("legacy spacing inferred phase: %#v", timing["downbeat_phase"])
+	}
+	if _, present := timing["phrase_length_bars"]; present {
+		t.Fatalf("legacy spacing inferred phrase: %#v", timing["phrase_length_bars"])
+	}
+	var overrides map[string]any
+	if err := json.Unmarshal(projectedOverrides, &overrides); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := overrides["manual_timing_v2"]; present {
+		t.Fatal("legacy array row was silently normalized to v2")
 	}
 }

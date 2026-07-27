@@ -52,6 +52,7 @@ class TrackAnalysis {
   factory TrackAnalysis.fromJson({
     Object? status,
     Object? summary,
+    Object? effectiveTiming,
     Object? artifacts,
     Object? overrides,
     bool? overridesPresent,
@@ -64,20 +65,29 @@ class TrackAnalysis {
     final baseSummary = summary == null
         ? null
         : TrackAnalysisSummary.fromJson(summary, artifacts: artifacts);
+    final projectedTiming = effectiveTiming == null
+        ? null
+        : TrackAnalysisSummary.fromJson(effectiveTiming);
     final parsedOverrides = TrackAnalysisOverrides.fromJson(overrides);
     final manualTiming = parsedOverrides?.manualTiming;
     final resolvedProjection = _summaryProjectionFromPayload(summary) ??
         summaryProjection ??
         TrackAnalysisSummaryProjection.generated;
-    final generatedSummary =
-        resolvedProjection == TrackAnalysisSummaryProjection.generated
-            ? baseSummary
-            : null;
-    final effectiveSummary = resolvedProjection ==
-                TrackAnalysisSummaryProjection.effective ||
-            parsedOverrides == null
+    final generatedSummary = projectedTiming != null ||
+            resolvedProjection == TrackAnalysisSummaryProjection.generated
         ? baseSummary
-        : parsedOverrides.applyTo(baseSummary ?? const TrackAnalysisSummary());
+        : null;
+    final effectiveSummary = projectedTiming != null
+        ? _overlayEffectiveTiming(
+            baseSummary ?? const TrackAnalysisSummary(),
+            projectedTiming,
+          )
+        : resolvedProjection == TrackAnalysisSummaryProjection.effective ||
+                parsedOverrides == null
+            ? baseSummary
+            : parsedOverrides.applyTo(
+                baseSummary ?? const TrackAnalysisSummary(),
+              );
     return TrackAnalysis(
       status: parsedStatus,
       generatedSummary: generatedSummary,
@@ -99,6 +109,12 @@ class TrackAnalysis {
       status == TrackAnalysisStatus.unsupported;
 
   bool get hasDisplayableSummary => summary?.displayLabels.isNotEmpty ?? false;
+
+  /// Single timing projection consumed by queue, timeline, and playback code.
+  ///
+  /// The generated summary and manual document remain separately serializable,
+  /// but consumers never merge them independently.
+  EffectiveTiming get effectiveTiming => EffectiveTiming.fromAnalysis(this);
 
   TrackAnalysisSummary? get _serializedSummary => generatedSummary ?? summary;
 
@@ -123,6 +139,31 @@ class TrackAnalysis {
         'override_updated_at': overrideUpdatedAt!.toUtc().toIso8601String(),
     };
   }
+}
+
+TrackAnalysisSummary _overlayEffectiveTiming(
+  TrackAnalysisSummary base,
+  TrackAnalysisSummary timing,
+) {
+  return TrackAnalysisSummary(
+    bpm: timing.bpm ?? base.bpm,
+    beatGrid: timing.beatGrid ?? base.beatGrid,
+    meter: timing.meter ?? base.meter,
+    downbeatPhase: timing.downbeatPhase ?? base.downbeatPhase,
+    downbeats: timing.downbeats ?? base.downbeats,
+    key: base.key,
+    camelot: base.camelot,
+    energy: base.energy,
+    loudness: base.loudness,
+    truePeak: base.truePeak,
+    waveform: base.waveform,
+    transients: base.transients,
+    silence: base.silence,
+    intro: base.intro,
+    outro: base.outro,
+    sections: base.sections,
+    cueCandidates: base.cueCandidates,
+  );
 }
 
 /// Reads analysis fields from any track-list payload shape.
@@ -359,6 +400,9 @@ TrackAnalysisStatus parseTrackAnalysisStatus(Object? value) {
 /// the facts a DJ changed and remains available to the editor and for legacy
 /// payload migration.
 class ManualTimingOverride {
+  static const int currentSchemaVersion = 2;
+
+  final int schemaVersion;
   final double? bpm;
   final int? beatAnchorMs;
   final int? beatsPerBar;
@@ -370,6 +414,7 @@ class ManualTimingOverride {
   final DateTime? updatedAt;
 
   const ManualTimingOverride({
+    this.schemaVersion = currentSchemaVersion,
     this.bpm,
     this.beatAnchorMs,
     this.beatsPerBar,
@@ -381,10 +426,20 @@ class ManualTimingOverride {
     this.updatedAt,
   });
 
-  static ManualTimingOverride? fromJson(Object? json) {
+  static ManualTimingOverride? fromJson(
+    Object? json, {
+    bool requireSchemaVersion = false,
+  }) {
     final map = _readMap(json);
     if (map == null || map.isEmpty) return null;
+    final schemaVersion = _readInt(
+      map['schema_version'] ?? map['schemaVersion'],
+    );
+    if (requireSchemaVersion && schemaVersion != currentSchemaVersion) {
+      return null;
+    }
     final value = ManualTimingOverride(
+      schemaVersion: currentSchemaVersion,
       bpm: _readDouble(map['bpm']),
       beatAnchorMs: _readInt(map['beat_anchor_ms'] ?? map['beatAnchorMs']),
       beatsPerBar: _readInt(map['beats_per_bar'] ?? map['beatsPerBar']),
@@ -419,6 +474,7 @@ class ManualTimingOverride {
   }
 
   ManualTimingOverride copyWith({
+    int? schemaVersion,
     double? bpm,
     int? beatAnchorMs,
     int? beatsPerBar,
@@ -430,6 +486,7 @@ class ManualTimingOverride {
     DateTime? updatedAt,
   }) =>
       ManualTimingOverride(
+        schemaVersion: schemaVersion ?? this.schemaVersion,
         bpm: bpm ?? this.bpm,
         beatAnchorMs: beatAnchorMs ?? this.beatAnchorMs,
         beatsPerBar: beatsPerBar ?? this.beatsPerBar,
@@ -442,6 +499,7 @@ class ManualTimingOverride {
       );
 
   Map<String, dynamic> toJson({bool includeServerMetadata = true}) => {
+        'schema_version': currentSchemaVersion,
         if (bpm != null) 'bpm': bpm,
         if (beatAnchorMs != null) 'beat_anchor_ms': beatAnchorMs,
         if (beatsPerBar != null) 'beats_per_bar': beatsPerBar,
@@ -494,20 +552,49 @@ class ManualTimingOverride {
                 : baseGrid?.provenance,
           )
         : null;
-    final hasAnyPhaseFact = beatsPerBar != null || downbeatPhaseIndex != null;
-    final phase = normalizedDownbeatPhaseIndex;
-    final effectiveDownbeats = phase == null
-        ? ((rewritesGrid || hasAnyPhaseFact) ? null : base.downbeats)
-        : DownbeatSummary(
-            positionsMs: List<int>.unmodifiable([
-              for (var index = phase;
-                  index < projectedBeats.length;
-                  index += beatsPerBar!)
-                projectedBeats[index],
-            ]),
+    final effectiveMeter = beatsPerBar == null
+        ? base.meter
+        : MeterSummary(
+            beatsPerBar: beatsPerBar,
             confidence: confidence ?? 1.0,
             provenance: source,
           );
+    final effectivePhase = downbeatPhaseIndex != null
+        ? DownbeatPhaseSummary(
+            index: normalizedDownbeatPhaseIndex,
+            confidence: confidence ?? 1.0,
+            provenance: source,
+          )
+        : beatsPerBar != null
+            ? null
+            : base.downbeatPhase;
+    final meter = effectiveMeter?.beatsPerBar;
+    final phase = effectivePhase?.index;
+    final changesDownbeatProjection =
+        rewritesGrid || beatsPerBar != null || downbeatPhaseIndex != null;
+    final effectiveDownbeats = meter != null &&
+            meter > 0 &&
+            phase != null &&
+            phase >= 0 &&
+            phase < meter
+        ? DownbeatSummary(
+            positionsMs: List<int>.unmodifiable([
+              for (var index = phase;
+                  index < projectedBeats.length;
+                  index += meter)
+                projectedBeats[index],
+            ]),
+            confidence: _minimumConfidence(
+              effectiveMeter?.confidence,
+              effectivePhase?.confidence,
+            ),
+            provenance: effectivePhase?.provenance ??
+                effectiveMeter?.provenance ??
+                source,
+          )
+        : changesDownbeatProjection
+            ? null
+            : base.downbeats;
     return TrackAnalysisSummary(
       bpm: bpm == null
           ? base.bpm
@@ -517,6 +604,8 @@ class ManualTimingOverride {
               provenance: source,
             ),
       beatGrid: effectiveGrid,
+      meter: effectiveMeter,
+      downbeatPhase: effectivePhase,
       downbeats: effectiveDownbeats,
       key: base.key,
       camelot: base.camelot,
@@ -599,9 +688,14 @@ class TrackAnalysisOverrides {
     final map = _readMap(json);
     if (map == null || map.isEmpty) return null;
 
-    final manualTiming = ManualTimingOverride.fromJson(
-      map['manual_timing_override'] ?? map['manualTimingOverride'],
+    final v2Timing = ManualTimingOverride.fromJson(
+      map['manual_timing_v2'] ?? map['manualTimingV2'],
+      requireSchemaVersion: true,
     );
+    final manualTiming = v2Timing ??
+        ManualTimingOverride.fromJson(
+          map['manual_timing_override'] ?? map['manualTimingOverride'],
+        );
     final bpmValue = AnalysisValue.fromJson(map['bpm']);
     final bpmMap = _readMap(map['bpm']);
     final beatGrid = _readMap(map['beat_grid'] ?? map['beatGrid']);
@@ -664,8 +758,8 @@ class TrackAnalysisOverrides {
       camelot == null;
 
   TrackAnalysisSummary applyTo(TrackAnalysisSummary base) {
-    final legacy = _applyLegacyTo(base);
     final canonicalTiming = manualTiming;
+    final legacy = _applyLegacyTo(base);
     return canonicalTiming == null ? legacy : canonicalTiming.applyTo(legacy);
   }
 
@@ -674,36 +768,43 @@ class TrackAnalysisOverrides {
     final bpmSource = bpmProvenance ?? source;
     final beatGridSource = beatGridProvenance ?? source;
     final downbeatSource = downbeatProvenance ?? source;
-    final effectiveBpmConfidence = bpm == null ? null : 1.0;
+    final legacyBpm = bpm;
+    final legacyGridOffset = beatGridOffsetMs;
+    final legacyBeats = beatsMs;
+    final legacyDownbeats = downbeatsMs;
+    final effectiveBpmConfidence = legacyBpm == null ? null : 1.0;
     // A legacy BPM-only correction changes tempo automation but never blesses
     // or rewrites analyzer beat markers. Only an explicit legacy marker list
     // can make the grid manual; normalized overrides use [manualTiming].
-    final hasTrustedBeatGridOverride = beatsMs != null;
+    final hasTrustedBeatGridOverride = legacyBeats != null;
     final effectiveBeatGridConfidence = hasTrustedBeatGridOverride ? 1.0 : null;
     return TrackAnalysisSummary(
-      bpm: bpm == null
+      bpm: legacyBpm == null
           ? base.bpm
           : AnalysisValue(
-              value: bpm!,
+              value: legacyBpm,
               confidence: effectiveBpmConfidence ?? base.bpm?.confidence,
               provenance: bpmSource,
             ),
-      beatGrid: (bpm == null && beatGridOffsetMs == null && beatsMs == null)
-          ? base.beatGrid
-          : BeatGridSummary(
-              bpm: bpm ?? base.beatGrid?.bpm,
-              offsetMs: beatGridOffsetMs ?? base.beatGrid?.offsetMs,
-              beatsMs: beatsMs ?? base.beatGrid?.beatsMs ?? const [],
-              confidence:
-                  effectiveBeatGridConfidence ?? base.beatGrid?.confidence,
-              provenance: hasTrustedBeatGridOverride
-                  ? beatGridSource
-                  : base.beatGrid?.provenance,
-            ),
-      downbeats: downbeatsMs == null
+      beatGrid:
+          (legacyBpm == null && legacyGridOffset == null && legacyBeats == null)
+              ? base.beatGrid
+              : BeatGridSummary(
+                  bpm: legacyBpm ?? base.beatGrid?.bpm,
+                  offsetMs: legacyGridOffset ?? base.beatGrid?.offsetMs,
+                  beatsMs: legacyBeats ?? base.beatGrid?.beatsMs ?? const [],
+                  confidence:
+                      effectiveBeatGridConfidence ?? base.beatGrid?.confidence,
+                  provenance: hasTrustedBeatGridOverride
+                      ? beatGridSource
+                      : base.beatGrid?.provenance,
+                ),
+      meter: base.meter,
+      downbeatPhase: base.downbeatPhase,
+      downbeats: legacyDownbeats == null
           ? base.downbeats
           : DownbeatSummary(
-              positionsMs: downbeatsMs!,
+              positionsMs: legacyDownbeats,
               confidence: 1.0,
               provenance: downbeatSource,
             ),
@@ -747,7 +848,7 @@ class TrackAnalysisOverrides {
     final effectiveBeatGridConfidence = hasTrustedBeatGridOverride ? 1.0 : null;
     return {
       if (canonicalTiming != null)
-        'manual_timing_override': canonicalTiming.toJson(
+        'manual_timing_v2': canonicalTiming.toJson(
           includeServerMetadata: includeServerMetadata,
         ),
       if (bpm != null)
@@ -783,6 +884,8 @@ class TrackAnalysisOverrides {
 class TrackAnalysisSummary {
   final AnalysisValue? bpm;
   final BeatGridSummary? beatGrid;
+  final MeterSummary? meter;
+  final DownbeatPhaseSummary? downbeatPhase;
   final DownbeatSummary? downbeats;
   final AnalysisValue? key;
   final AnalysisValue? camelot;
@@ -800,6 +903,8 @@ class TrackAnalysisSummary {
   const TrackAnalysisSummary({
     this.bpm,
     this.beatGrid,
+    this.meter,
+    this.downbeatPhase,
     this.downbeats,
     this.key,
     this.camelot,
@@ -821,6 +926,10 @@ class TrackAnalysisSummary {
     return TrackAnalysisSummary(
       bpm: AnalysisValue.fromJson(map['bpm']),
       beatGrid: BeatGridSummary.fromJson(map['beat_grid'] ?? map['beatGrid']),
+      meter: MeterSummary.fromJson(map['meter']),
+      downbeatPhase: DownbeatPhaseSummary.fromJson(
+        map['downbeat_phase'] ?? map['downbeatPhase'],
+      ),
       downbeats: DownbeatSummary.fromJson(map['downbeats']),
       key: AnalysisValue.fromJson(map['key']),
       camelot: AnalysisValue.fromJson(map['camelot']),
@@ -931,6 +1040,8 @@ class TrackAnalysisSummary {
     return {
       if (bpm != null) 'bpm': bpm!.toJson(),
       if (beatGrid != null) 'beat_grid': beatGrid!.toJson(),
+      if (meter != null) 'meter': meter!.toJson(),
+      if (downbeatPhase != null) 'downbeat_phase': downbeatPhase!.toJson(),
       if (downbeats != null) 'downbeats': downbeats!.toJson(),
       if (key != null) 'key': key!.toJson(),
       if (camelot != null) 'camelot': camelot!.toJson(),
@@ -947,6 +1058,61 @@ class TrackAnalysisSummary {
       if (cueCandidates.isNotEmpty)
         'cue_candidates': cueCandidates.map((cue) => cue.toJson()).toList(),
     };
+  }
+}
+
+/// The one derived timing value used by playback-facing code.
+///
+/// This object never owns generated or manual state. It is rebuilt from the
+/// effective summary and the canonical semantic override, so reset/reanalysis
+/// always reveals the latest generated projection.
+class EffectiveTiming {
+  final AnalysisValue? bpm;
+  final BeatGridSummary? beatGrid;
+  final MeterSummary? meter;
+  final DownbeatPhaseSummary? downbeatPhase;
+  final DownbeatSummary? downbeats;
+  final int? phraseLengthBars;
+  final int? overrideRevision;
+
+  const EffectiveTiming({
+    this.bpm,
+    this.beatGrid,
+    this.meter,
+    this.downbeatPhase,
+    this.downbeats,
+    this.phraseLengthBars,
+    this.overrideRevision,
+  });
+
+  factory EffectiveTiming.fromAnalysis(TrackAnalysis analysis) {
+    final summary = analysis.summary;
+    final manual = analysis.overrides?.manualTiming;
+    return EffectiveTiming(
+      bpm: summary?.bpm,
+      beatGrid: summary?.beatGrid,
+      meter: summary?.meter,
+      downbeatPhase: summary?.downbeatPhase,
+      downbeats: summary?.downbeats,
+      phraseLengthBars: manual?.phraseLengthBars,
+      overrideRevision: analysis.overrideRevision ?? manual?.revision,
+    );
+  }
+
+  bool get hasManualDownbeatAuthority {
+    final meterValue = meter?.beatsPerBar;
+    final phaseValue = downbeatPhase?.index;
+    if (meterValue == null ||
+        meterValue <= 0 ||
+        phaseValue == null ||
+        phaseValue < 0 ||
+        phaseValue >= meterValue) {
+      return false;
+    }
+    return meter?.confidence == 1.0 &&
+        downbeatPhase?.confidence == 1.0 &&
+        meter?.provenance == 'manual_override' &&
+        downbeatPhase?.provenance == 'manual_override';
   }
 }
 
@@ -1028,6 +1194,62 @@ class BeatGridSummary {
       if (provenance != null) 'provenance': provenance,
     };
   }
+}
+
+class MeterSummary {
+  final int? beatsPerBar;
+  final double? confidence;
+  final String? provenance;
+
+  const MeterSummary({
+    this.beatsPerBar,
+    this.confidence,
+    this.provenance,
+  });
+
+  static MeterSummary? fromJson(Object? json) {
+    final map = _readMap(json);
+    if (map == null) return null;
+    return MeterSummary(
+      beatsPerBar: _readInt(map['beats_per_bar'] ?? map['beatsPerBar']),
+      confidence: _readDouble(map['confidence']),
+      provenance: _readString(map['provenance']),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        if (beatsPerBar != null) 'beats_per_bar': beatsPerBar,
+        if (confidence != null) 'confidence': confidence,
+        if (provenance != null) 'provenance': provenance,
+      };
+}
+
+class DownbeatPhaseSummary {
+  final int? index;
+  final double? confidence;
+  final String? provenance;
+
+  const DownbeatPhaseSummary({
+    this.index,
+    this.confidence,
+    this.provenance,
+  });
+
+  static DownbeatPhaseSummary? fromJson(Object? json) {
+    final map = _readMap(json);
+    if (map == null) return null;
+    return DownbeatPhaseSummary(
+      index: _readInt(map['index']),
+      confidence: _readDouble(map['confidence']),
+      provenance: _readString(map['provenance']),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        if (index != null) 'index': index,
+        if (confidence != null) 'confidence': confidence,
+        if (provenance != null) 'provenance': provenance,
+      };
 }
 
 class DownbeatSummary {
@@ -1732,6 +1954,12 @@ double? _readDouble(Object? value) {
   if (value is double) return value;
   if (value is num) return value.toDouble();
   return double.tryParse(value?.toString() ?? '');
+}
+
+double? _minimumConfidence(double? first, double? second) {
+  if (first == null) return second;
+  if (second == null) return first;
+  return math.min(first, second);
 }
 
 String _formatMs(int ms) {

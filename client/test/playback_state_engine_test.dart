@@ -621,7 +621,8 @@ void main() {
           'analysisStatus': 'analyzed',
           'analysisSummary': summary,
           'analysisOverrides': {
-            'manual_timing_override': {
+            'manual_timing_v2': {
+              'schema_version': 2,
               'bpm': 120,
               'beat_anchor_ms': 100,
               'beats_per_bar': 4,
@@ -642,7 +643,8 @@ void main() {
           status: 'analyzed',
           summary: summary,
           overrides: {
-            'manual_timing_override': {
+            'manual_timing_v2': {
+              'schema_version': 2,
               'bpm': 120,
               'beat_anchor_ms': 100,
               'beats_per_bar': 4,
@@ -681,7 +683,12 @@ void main() {
       );
       expect(
         (persisted['analysisOverrides']
-            as Map<String, dynamic>)['manual_timing_override']['revision'],
+            as Map<String, dynamic>)['manual_timing_v2']['schema_version'],
+        2,
+      );
+      expect(
+        (persisted['analysisOverrides']
+            as Map<String, dynamic>)['manual_timing_v2']['revision'],
         2,
       );
 
@@ -857,6 +864,7 @@ void main() {
         _analysis(
           bpm: 120,
           downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          hasManualTimingAuthority: true,
         ),
       );
       await playback.refreshTrackAnalysis(
@@ -864,6 +872,7 @@ void main() {
         _analysis(
           bpm: 120,
           downbeatsMs: [0, 4000, 8000, 12000, 16000],
+          hasManualTimingAuthority: true,
         ),
       );
       await Future<void>.delayed(Duration.zero);
@@ -1089,13 +1098,28 @@ TrackAnalysis _analysis({
   required double bpm,
   required List<int> downbeatsMs,
   DateTime? updatedAt,
+  bool hasManualTimingAuthority = false,
 }) =>
     TrackAnalysis.fromJson(
       status: 'analyzed',
       summary: {
         'bpm': {'value': bpm, 'confidence': 1.0},
-        'beat_grid': {'bpm': bpm, 'confidence': 1.0},
+        'beat_grid': {
+          'bpm': bpm,
+          'confidence': 1.0,
+          if (hasManualTimingAuthority)
+            'beats_ms': List<int>.generate(40, (index) => index * 500),
+        },
         'downbeats': {'positions_ms': downbeatsMs},
       },
+      overrides: hasManualTimingAuthority
+          ? {
+              'manual_timing_v2': {
+                'schema_version': 2,
+                'beats_per_bar': 4,
+                'downbeat_phase_index': 0,
+              },
+            }
+          : null,
       updatedAt: updatedAt,
     );

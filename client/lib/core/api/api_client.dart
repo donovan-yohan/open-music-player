@@ -408,6 +408,7 @@ class ApiClient {
       return TrackAnalysis.fromJson(
         status: data['status'],
         summary: data['summary'],
+        effectiveTiming: data['effective_timing'] ?? data['effectiveTiming'],
         artifacts: data['artifacts'],
         overrides: data['overrides'],
         overridesPresent: data.containsKey('overrides'),
@@ -442,6 +443,7 @@ class ApiClient {
       return TrackAnalysis.fromJson(
         status: data['status'],
         summary: data['summary'],
+        effectiveTiming: data['effective_timing'] ?? data['effectiveTiming'],
         artifacts: data['artifacts'],
         overrides: data['overrides'],
         overridesPresent: data.containsKey('overrides'),

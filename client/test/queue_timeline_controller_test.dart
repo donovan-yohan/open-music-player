@@ -437,6 +437,7 @@ void main() {
             bpm: 120,
             downbeatsMs: [0, 4000, 8000],
           ),
+          hasManualTimingAuthority: true,
         ),
         _item(
           '2',
@@ -445,6 +446,7 @@ void main() {
             bpm: 120,
             downbeatsMs: [0, 4000],
           ),
+          hasManualTimingAuthority: true,
         ),
       ]);
 
@@ -502,6 +504,7 @@ void main() {
             bpm: 120,
             downbeatsMs: [0, 4000, 8000, 12000, 16000],
           ),
+          hasManualTimingAuthority: true,
         ),
         _item(
           '2',
@@ -510,6 +513,7 @@ void main() {
             bpm: 120,
             downbeatsMs: [0, 4000, 8000, 12000],
           ),
+          hasManualTimingAuthority: true,
         ),
       ]);
 
@@ -534,6 +538,7 @@ void main() {
             bpm: 120,
             downbeatsMs: downbeats,
           ),
+          hasManualTimingAuthority: true,
         ),
         _item(
           '2',
@@ -542,6 +547,7 @@ void main() {
             bpm: 120,
             downbeatsMs: downbeats,
           ),
+          hasManualTimingAuthority: true,
         ),
       ]);
 
@@ -609,6 +615,7 @@ void main() {
             bpm: 120,
             downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
           ),
+          hasManualTimingAuthority: true,
         ),
         _item(
           '2',
@@ -617,6 +624,7 @@ void main() {
             bpm: 150,
             downbeatsMs: [2000, 3600, 5200, 6800],
           ),
+          hasManualTimingAuthority: true,
         ),
       ]);
 
@@ -660,6 +668,7 @@ void main() {
               (beat) => firstDownbeatMs + beat * 2000,
             ),
           ),
+          hasManualTimingAuthority: true,
         );
       });
 
@@ -697,6 +706,7 @@ void main() {
             bpm: 120,
             downbeatsMs: [0, 4000, 8000, 12000, 16000, 20000],
           ),
+          hasManualTimingAuthority: true,
         ),
         _item(
           '2',
@@ -705,6 +715,7 @@ void main() {
             bpm: 150,
             downbeatsMs: [500, 2100, 3700, 5300, 6900, 8500, 10100],
           ),
+          hasManualTimingAuthority: true,
         ),
       ]);
 
@@ -750,6 +761,7 @@ void main() {
             bpm: 72.73,
             downbeatsMs: List<int>.generate(56, (index) => 112 + index * 3300),
           ),
+          hasManualTimingAuthority: true,
         ),
         _item(
           'csirac',
@@ -758,6 +770,7 @@ void main() {
             bpm: 72.73,
             downbeatsMs: List<int>.generate(62, (index) => 562 + index * 3300),
           ),
+          hasManualTimingAuthority: true,
         ),
       ]);
 
@@ -1018,6 +1031,7 @@ void main() {
             bpm: 120,
             downbeatsMs: [0, 4000, 8000, 12000, 16000],
           ),
+          hasManualTimingAuthority: true,
         ),
         _item('2', seconds: 20),
       ]);
@@ -1037,6 +1051,7 @@ void main() {
               bpm: 120,
               downbeatsMs: [0, 4000, 8000, 12000, 16000],
             ),
+            hasManualTimingAuthority: true,
           ),
           _item(
             '2',
@@ -1045,6 +1060,7 @@ void main() {
               bpm: 120,
               downbeatsMs: [0, 4000, 8000, 12000, 16000],
             ),
+            hasManualTimingAuthority: true,
           ),
         ],
         preserveCurrentTransport: true,
@@ -1574,6 +1590,7 @@ MediaItem _item(
   String? title,
   Map<String, dynamic>? analysisSummary,
   Map<String, dynamic>? analysisOverrides,
+  bool hasManualTimingAuthority = false,
 }) =>
     MediaItem(
       id: id,
@@ -1582,7 +1599,9 @@ MediaItem _item(
       extras: {
         'url': 'https://example.com/$id.mp3',
         if (analysisSummary != null) 'analysisSummary': analysisSummary,
-        if (analysisOverrides != null) 'analysisOverrides': analysisOverrides,
+        if (analysisOverrides != null || hasManualTimingAuthority)
+          'analysisOverrides':
+              analysisOverrides ?? _manualTimingAuthorityOverrides(),
       },
     );
 
@@ -1592,9 +1611,31 @@ Map<String, dynamic> _analysisSummary({
 }) =>
     {
       'bpm': {'value': bpm, 'confidence': 0.95},
-      'beat_grid': {'bpm': bpm},
+      'beat_grid': {
+        'bpm': bpm,
+        'beats_ms': _beatsForDownbeats(downbeatsMs),
+      },
       'downbeats': {'positions_ms': downbeatsMs},
     };
+
+Map<String, dynamic> _manualTimingAuthorityOverrides() => {
+      'manual_timing_v2': {
+        'schema_version': 2,
+        'beats_per_bar': 4,
+        'downbeat_phase_index': 0,
+      },
+    };
+
+List<int> _beatsForDownbeats(List<int> downbeatsMs) {
+  if (downbeatsMs.isEmpty) return const [];
+  final barLengthMs =
+      downbeatsMs.length > 1 ? downbeatsMs[1] - downbeatsMs.first : 2000;
+  final beatLengthMs = math.max(1, barLengthMs ~/ 4);
+  return [
+    for (final downbeatMs in downbeatsMs)
+      for (var beat = 0; beat < 4; beat++) downbeatMs + beat * beatLengthMs,
+  ];
+}
 
 Map<String, dynamic> _bpmOnlyAnalysis({required double bpm}) => {
       'bpm': {'value': bpm, 'confidence': 0.95},

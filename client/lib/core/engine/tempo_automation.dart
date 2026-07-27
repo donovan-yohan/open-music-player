@@ -41,11 +41,19 @@ class ClipTempoMetadata {
   final int? beatAnchorMs;
   final int? beatsPerBar;
   final int? downbeatPhaseIndex;
+  final double? meterConfidence;
+  final String? meterProvenance;
+  final double? downbeatPhaseConfidence;
+  final String? downbeatPhaseProvenance;
   final int? phraseLengthBars;
   final int? overrideRevision;
   final List<int> beatsMs;
   final List<int> downbeatsMs;
   final double? downbeatConfidence;
+
+  /// Generated marker arrays whose meter/phase is explicitly unknown remain
+  /// display data, not automatic playback-lock authority.
+  final bool generatedTimingUnknown;
   final String? bpmProvenance;
   final String? beatGridProvenance;
   final String? downbeatProvenance;
@@ -59,11 +67,16 @@ class ClipTempoMetadata {
     this.beatAnchorMs,
     this.beatsPerBar,
     this.downbeatPhaseIndex,
+    this.meterConfidence,
+    this.meterProvenance,
+    this.downbeatPhaseConfidence,
+    this.downbeatPhaseProvenance,
     this.phraseLengthBars,
     this.overrideRevision,
     this.beatsMs = const [],
     this.downbeatsMs = const [],
     this.downbeatConfidence,
+    this.generatedTimingUnknown = false,
     this.bpmProvenance,
     this.beatGridProvenance,
     this.downbeatProvenance,
@@ -105,6 +118,30 @@ class ClipTempoMetadata {
     if (!hasDownbeatMarkers || !_isStrictlyIncreasingNonNegative(downbeatsMs)) {
       return false;
     }
+    if (generatedTimingUnknown) return false;
+    final meter = beatsPerBar;
+    final phase = downbeatPhaseIndex;
+    final canonicalManualAuthority = meter != null &&
+        meter > 0 &&
+        phase != null &&
+        phase >= 0 &&
+        phase < meter &&
+        meterConfidence == 1.0 &&
+        downbeatPhaseConfidence == 1.0 &&
+        meterProvenance == manualTempoProvenance &&
+        downbeatPhaseProvenance == manualTempoProvenance;
+    final legacyCompatibilityAuthority = meter == null &&
+        phase == null &&
+        meterConfidence == null &&
+        downbeatPhaseConfidence == null &&
+        meterProvenance == null &&
+        downbeatPhaseProvenance == null;
+    if (!canonicalManualAuthority && !legacyCompatibilityAuthority) {
+      // Generated meter/phase remain automation-ineligible until #312
+      // introduces a calibrated eligibility signal. Marker arrays alone are
+      // compatibility data, not authority.
+      return false;
+    }
     if (beatsMs.isNotEmpty) {
       if (!_isStrictlyIncreasingNonNegative(beatsMs)) return false;
       if (!_downbeatsFollowBeatGrid(beatsMs, downbeatsMs)) {
@@ -122,8 +159,9 @@ class ClipTempoMetadata {
   bool get hasLowConfidenceDownbeats {
     final confidence = downbeatConfidence;
     return hasDownbeatMarkers &&
-        confidence != null &&
-        confidence < reliableDownbeatConfidenceFloor;
+        (!hasReliableDownbeats ||
+            confidence == null ||
+            confidence < reliableDownbeatConfidenceFloor);
   }
 
   Map<String, dynamic> toJson() => {
@@ -134,12 +172,19 @@ class ClipTempoMetadata {
         if (beatsPerBar != null) 'beatsPerBar': beatsPerBar,
         if (downbeatPhaseIndex != null)
           'downbeatPhaseIndex': downbeatPhaseIndex,
+        if (meterConfidence != null) 'meterConfidence': meterConfidence,
+        if (meterProvenance != null) 'meterProvenance': meterProvenance,
+        if (downbeatPhaseConfidence != null)
+          'downbeatPhaseConfidence': downbeatPhaseConfidence,
+        if (downbeatPhaseProvenance != null)
+          'downbeatPhaseProvenance': downbeatPhaseProvenance,
         if (phraseLengthBars != null) 'phraseLengthBars': phraseLengthBars,
         if (overrideRevision != null) 'overrideRevision': overrideRevision,
         if (beatsMs.isNotEmpty) 'beatGridMs': beatsMs,
         if (downbeatsMs.isNotEmpty) 'downbeatsMs': downbeatsMs,
         if (downbeatConfidence != null)
           'downbeatConfidence': downbeatConfidence,
+        if (generatedTimingUnknown) 'generatedTimingUnknown': true,
         if (bpmProvenance != null) 'bpmProvenance': bpmProvenance,
         if (beatGridProvenance != null)
           'beatGridProvenance': beatGridProvenance,
@@ -159,6 +204,10 @@ class ClipTempoMetadata {
       downbeatPhaseIndex: _readInt(
         json['downbeatPhaseIndex'] ?? json['downbeat_phase_index'],
       ),
+      meterConfidence: _readDouble(json['meterConfidence']),
+      meterProvenance: _readString(json['meterProvenance']),
+      downbeatPhaseConfidence: _readDouble(json['downbeatPhaseConfidence']),
+      downbeatPhaseProvenance: _readString(json['downbeatPhaseProvenance']),
       phraseLengthBars: _readInt(
         json['phraseLengthBars'] ?? json['phrase_length_bars'],
       ),
@@ -168,6 +217,7 @@ class ClipTempoMetadata {
       beatsMs: _readIntList(json['beatGridMs'] ?? json['beatsMs']),
       downbeatsMs: _readIntList(json['downbeatsMs']),
       downbeatConfidence: _readDouble(json['downbeatConfidence']),
+      generatedTimingUnknown: json['generatedTimingUnknown'] == true,
       bpmProvenance: _readString(json['bpmProvenance']),
       beatGridProvenance: _readString(json['beatGridProvenance']),
       downbeatProvenance: _readString(json['downbeatProvenance']),
@@ -201,24 +251,37 @@ class ClipTempoMetadata {
   /// instead of maintaining a parallel legacy override merge.
   factory ClipTempoMetadata.fromTrackAnalysis(TrackAnalysis analysis) {
     final summary = analysis.summary;
-    final timing = analysis.overrides?.manualTiming;
-    final beatGrid = summary?.beatGrid;
-    final downbeats = summary?.downbeats;
+    final timing = analysis.effectiveTiming;
+    final beatGrid = timing.beatGrid;
+    final meter = timing.meter;
+    final phase = timing.downbeatPhase;
+    final downbeats = timing.downbeats;
+    final canonicalManualDownbeats = timing.hasManualDownbeatAuthority;
+    final legacyManualDownbeats = analysis.overrides?.downbeatsMs != null;
+    final trustedDownbeats = canonicalManualDownbeats || legacyManualDownbeats;
     return ClipTempoMetadata(
-      nativeBpm: summary?.bpm?.numericValue?.toDouble() ??
+      nativeBpm: timing.bpm?.numericValue?.toDouble() ??
           beatGrid?.bpm ??
-          timing?.bpm,
-      bpmConfidence: summary?.bpm?.confidence ?? beatGrid?.confidence,
+          analysis.overrides?.manualTiming?.bpm,
+      bpmConfidence: timing.bpm?.confidence ?? beatGrid?.confidence,
       beatGridOffsetMs: beatGrid?.offsetMs,
-      beatAnchorMs: timing?.beatAnchorMs,
-      beatsPerBar: timing?.beatsPerBar,
-      downbeatPhaseIndex: timing?.downbeatPhaseIndex,
-      phraseLengthBars: timing?.phraseLengthBars,
-      overrideRevision: analysis.overrideRevision ?? timing?.revision,
+      beatAnchorMs: analysis.overrides?.manualTiming?.beatAnchorMs,
+      beatsPerBar: meter?.beatsPerBar,
+      downbeatPhaseIndex: phase?.index,
+      meterConfidence: meter?.confidence,
+      meterProvenance: meter?.provenance,
+      downbeatPhaseConfidence: phase?.confidence,
+      downbeatPhaseProvenance: phase?.provenance,
+      phraseLengthBars: timing.phraseLengthBars,
+      overrideRevision: timing.overrideRevision,
       beatsMs: beatGrid?.beatsMs ?? const [],
+      // Generated marker arrays without manual timing authority remain visible
+      // in analysis, but cannot become playback snap authority by omission.
+      // Explicit legacy manual markers keep their pre-v2 compatibility path.
       downbeatsMs: downbeats?.positionsMs ?? const [],
       downbeatConfidence: downbeats?.confidence,
-      bpmProvenance: summary?.bpm?.provenance ?? beatGrid?.provenance,
+      generatedTimingUnknown: downbeats != null && !trustedDownbeats,
+      bpmProvenance: timing.bpm?.provenance ?? beatGrid?.provenance,
       beatGridProvenance: beatGrid?.provenance,
       downbeatProvenance: downbeats?.provenance,
       musicalKey: summary?.key?.textValue,
@@ -233,11 +296,16 @@ class ClipTempoMetadata {
       beatAnchorMs == null &&
       beatsPerBar == null &&
       downbeatPhaseIndex == null &&
+      meterConfidence == null &&
+      meterProvenance == null &&
+      downbeatPhaseConfidence == null &&
+      downbeatPhaseProvenance == null &&
       phraseLengthBars == null &&
       overrideRevision == null &&
       beatsMs.isEmpty &&
       downbeatsMs.isEmpty &&
       downbeatConfidence == null &&
+      !generatedTimingUnknown &&
       bpmProvenance == null &&
       beatGridProvenance == null &&
       downbeatProvenance == null &&
@@ -253,11 +321,16 @@ class ClipTempoMetadata {
       other.beatAnchorMs == beatAnchorMs &&
       other.beatsPerBar == beatsPerBar &&
       other.downbeatPhaseIndex == downbeatPhaseIndex &&
+      other.meterConfidence == meterConfidence &&
+      other.meterProvenance == meterProvenance &&
+      other.downbeatPhaseConfidence == downbeatPhaseConfidence &&
+      other.downbeatPhaseProvenance == downbeatPhaseProvenance &&
       other.phraseLengthBars == phraseLengthBars &&
       other.overrideRevision == overrideRevision &&
       _sameInts(other.beatsMs, beatsMs) &&
       _sameInts(other.downbeatsMs, downbeatsMs) &&
       other.downbeatConfidence == downbeatConfidence &&
+      other.generatedTimingUnknown == generatedTimingUnknown &&
       other.bpmProvenance == bpmProvenance &&
       other.beatGridProvenance == beatGridProvenance &&
       other.downbeatProvenance == downbeatProvenance &&
@@ -265,24 +338,29 @@ class ClipTempoMetadata {
       other.camelot == camelot;
 
   @override
-  int get hashCode => Object.hash(
+  int get hashCode => Object.hashAll([
         nativeBpm,
         bpmConfidence,
         beatGridOffsetMs,
         beatAnchorMs,
         beatsPerBar,
         downbeatPhaseIndex,
+        meterConfidence,
+        meterProvenance,
+        downbeatPhaseConfidence,
+        downbeatPhaseProvenance,
         phraseLengthBars,
         overrideRevision,
         Object.hashAll(beatsMs),
         Object.hashAll(downbeatsMs),
         downbeatConfidence,
+        generatedTimingUnknown,
         bpmProvenance,
         beatGridProvenance,
         downbeatProvenance,
         musicalKey,
         camelot,
-      );
+      ]);
 }
 
 class PlaybackRateSegment {

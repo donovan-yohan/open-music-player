@@ -50,8 +50,10 @@ QueueTrack _analyzedTrack(
   double confidence = 0.9,
   double? downbeatConfidence,
   List<int> downbeatsMs = const [0, 4000, 8000, 12000, 16000],
-}) =>
-    _track(
+  bool hasManualTimingAuthority = false,
+}) {
+  if (!hasManualTimingAuthority) {
+    return _track(
       id,
       title,
       duration,
@@ -68,6 +70,50 @@ QueueTrack _analyzedTrack(
         ),
       ),
     );
+  }
+  return _track(
+    id,
+    title,
+    duration,
+    analysis: TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: {
+        'bpm': {'value': bpm, 'confidence': confidence},
+        if (key != null) 'key': {'value': key},
+        if (camelot != null) 'camelot': {'value': camelot},
+        'beat_grid': {
+          'bpm': bpm,
+          if (hasManualTimingAuthority)
+            'beats_ms': _beatsForDownbeats(downbeatsMs),
+        },
+        'downbeats': {
+          'positions_ms': downbeatsMs,
+          if (downbeatConfidence != null) 'confidence': downbeatConfidence,
+        },
+      },
+      overrides: hasManualTimingAuthority
+          ? {
+              'manual_timing_v2': {
+                'schema_version': 2,
+                'beats_per_bar': 4,
+                'downbeat_phase_index': 0,
+              },
+            }
+          : null,
+    ),
+  );
+}
+
+List<int> _beatsForDownbeats(List<int> downbeatsMs) {
+  if (downbeatsMs.isEmpty) return const [];
+  final barLengthMs =
+      downbeatsMs.length > 1 ? downbeatsMs[1] - downbeatsMs.first : 4000;
+  final beatLengthMs = math.max(1, barLengthMs ~/ 4);
+  return [
+    for (final downbeatMs in downbeatsMs)
+      for (var beat = 0; beat < 4; beat++) downbeatMs + beat * beatLengthMs,
+  ];
+}
 
 MixClip _mixClip(
   String id,
@@ -726,8 +772,13 @@ void main() {
       previous: null,
       current: _analyzedTrack('t1', 'Midnight Drive', 20),
       upcoming: [
-        _analyzedTrack('t2', 'Paper Planes', 20),
-        _analyzedTrack('t3', 'Glass', 20),
+        _analyzedTrack(
+          't2',
+          'Paper Planes',
+          20,
+          hasManualTimingAuthority: true,
+        ),
+        _analyzedTrack('t3', 'Glass', 20, hasManualTimingAuthority: true),
       ],
     );
 
@@ -1420,8 +1471,20 @@ void main() {
       await _pump(
         tester,
         previous: null,
-        current: _analyzedTrack('n1', 'Narrow Now', 20),
-        upcoming: [_analyzedTrack('n2', 'Narrow Next', 20)],
+        current: _analyzedTrack(
+          'n1',
+          'Narrow Now',
+          20,
+          hasManualTimingAuthority: true,
+        ),
+        upcoming: [
+          _analyzedTrack(
+            'n2',
+            'Narrow Next',
+            20,
+            hasManualTimingAuthority: true,
+          ),
+        ],
         size: const Size(StackedWaveformTimeline.railWidth + 1, 844),
       );
 
@@ -1885,6 +1948,7 @@ void main() {
       220,
       bpm: 141.18,
       downbeatsMs: downbeats,
+      hasManualTimingAuthority: true,
     );
     final upcoming = _analyzedTrack(
       't2',
@@ -1892,6 +1956,7 @@ void main() {
       180,
       bpm: 141.18,
       downbeatsMs: downbeats,
+      hasManualTimingAuthority: true,
     );
     const staleTempo = ClipTempoMetadata(nativeBpm: 90);
     final timeline = TimelineModel(
@@ -3902,11 +3967,13 @@ void main() {
       't1',
       'Outgoing',
       20,
+      hasManualTimingAuthority: true,
     );
     final incoming = _analyzedTrack(
       't2',
       'Incoming',
       20,
+      hasManualTimingAuthority: true,
     );
     await _pump(
       tester,
@@ -5265,8 +5332,20 @@ void main() {
       await _pump(
         tester,
         previous: null,
-        current: _analyzedTrack('t1', 'Midnight Drive', 20),
-        upcoming: [_analyzedTrack('t2', 'Phrase Entrance', 20)],
+        current: _analyzedTrack(
+          't1',
+          'Midnight Drive',
+          20,
+          hasManualTimingAuthority: true,
+        ),
+        upcoming: [
+          _analyzedTrack(
+            't2',
+            'Phrase Entrance',
+            20,
+            hasManualTimingAuthority: true,
+          ),
+        ],
       );
 
       expect(find.byKey(const ValueKey('transition_window')), findsOneWidget);

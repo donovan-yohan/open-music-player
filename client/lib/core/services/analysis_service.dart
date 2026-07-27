@@ -25,6 +25,7 @@ class AnalysisService {
       parser: (json) => TrackAnalysis.fromJson(
         status: json['status'],
         summary: json['summary'],
+        effectiveTiming: json['effective_timing'] ?? json['effectiveTiming'],
         artifacts: json['artifacts'],
         overrides: json['overrides'],
         overridesPresent: json.containsKey('overrides'),
@@ -50,6 +51,7 @@ class AnalysisService {
       parser: (json) => TrackAnalysis.fromJson(
         status: json['status'],
         summary: json['summary'],
+        effectiveTiming: json['effective_timing'] ?? json['effectiveTiming'],
         artifacts: json['artifacts'],
         overrides: json['overrides'],
         overridesPresent: json.containsKey('overrides'),
