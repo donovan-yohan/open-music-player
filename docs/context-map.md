@@ -45,6 +45,33 @@ domain concept moves or a new production harness becomes canonical.
   use `beatAlignmentCorrectionMs` against the rate-adjusted `TimelineModel`;
   explicit freeform placements bypass that refinement.
 
+### Analysis Correction Click Audition
+
+- Engine integration and projection:
+  `client/lib/core/engine/click_auditioner.dart`,
+  `client/lib/core/engine/click_audition_projection.dart`, and
+  `client/lib/core/engine/procedural_click_audio_source.dart`.
+- Editor and device-local route settings:
+  `client/lib/widgets/analysis_correction_sheet.dart`,
+  `client/lib/screens/queue_screen.dart`,
+  `client/lib/core/audio/audition_output_route_monitor.dart`,
+  `client/lib/core/models/settings_model.dart`, and
+  `client/lib/core/providers/settings_provider.dart`.
+- Focused tests: `client/test/click_auditioner_test.dart`,
+  `client/test/click_audition_projection_test.dart`,
+  `client/test/procedural_click_audio_source_test.dart`,
+  `client/test/audition_output_route_monitor_test.dart`,
+  `client/test/analysis_correction_sheet_test.dart`,
+  `client/test/queue_screen_test.dart`, and
+  `client/test/settings_model_test.dart`.
+- Guardrail: audition is an engine-owned auxiliary consumer of the canonical
+  timeline and exact `queueItemId`, not another transport or audio-focus owner.
+  Route-specific signed offsets and volume stay local and must never mutate or
+  enter track-analysis payloads.
+- Guardrail: Android output categories are inferred from connected outputs;
+  active-route confirmation and physical speaker, wired, and Bluetooth
+  behavior require device dogfood.
+
 ### Command Layer
 
 - Vocabulary and dispatch:

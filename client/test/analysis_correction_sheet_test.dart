@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/audio/audition_output_route_monitor.dart';
+import 'package:open_music_player/core/models/settings_model.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/widgets/analysis_correction_sheet.dart';
@@ -137,6 +139,186 @@ void main() {
       ManualTimingOverride(revision: 3),
     ]) {
       expect(timing.applyTo(base).downbeats?.positionsMs, [100, 2100]);
+    }
+  });
+
+  test('typed and tapped BPM produce the same audible preview', () {
+    const effective = TrackAnalysisSummary(
+      bpm: AnalysisValue(value: 100),
+      beatGrid: BeatGridSummary(
+        bpm: 100,
+        offsetMs: 100,
+        beatsMs: [100, 700, 1300, 1900, 2500, 3100, 3700],
+      ),
+      downbeats: DownbeatSummary(positionsMs: [700, 3100]),
+    );
+    const overrides = TrackAnalysisOverrides(
+      manualTiming: ManualTimingOverride(
+        bpm: 100,
+        beatAnchorMs: 100,
+        beatsPerBar: 4,
+        downbeatPhaseIndex: 1,
+      ),
+    );
+    final tappedBpm = bpmFromTapTimes([0, 500, 1000, 1500]);
+
+    AnalysisTimingAuditionProjection project(double? bpm) =>
+        analysisTimingAuditionProjection(
+          effectiveSummary: effective,
+          existingOverrides: overrides,
+          bpm: bpm,
+          beatAnchorMs: 100,
+          bpmDirty: true,
+        );
+
+    final typed = project(120);
+    final tapped = project(tappedBpm);
+    expect(tapped.sourceBeatsMs, typed.sourceBeatsMs);
+    expect(tapped.sourceDownbeatsMs, typed.sourceDownbeatsMs);
+    expect(tapped.beatsPerBar, 4);
+    expect(tapped.downbeatPhaseIndex, 1);
+  });
+
+  test('phase-only audible preview rotates accents without moving beats', () {
+    const beats = [100, 600, 1100, 1600, 2100, 2600, 3100, 3600];
+    final analysis = TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: {
+        'beat_grid': {'beats_ms': beats},
+        'meter': {'beats_per_bar': 4},
+        'downbeat_phase': {'index': 0},
+        'downbeats': {'positions_ms': [100, 2100]},
+      },
+    );
+    final preview = analysisTimingAuditionProjection(
+      effectiveSummary: analysis.summary!,
+      effectiveTiming: analysis.effectiveTiming,
+      beatsPerBar: 4,
+      downbeatPhaseIndex: 2,
+      phaseDirty: true,
+    );
+
+    expect(preview.sourceBeatsMs, beats);
+    expect(preview.sourceDownbeatsMs, [1100, 3100]);
+  });
+
+  test('generated known meter and phase seed downbeat accents', () {
+    final track = QueueTrack(
+      id: '1',
+      title: 'Known generated meter and phase',
+      duration: 30,
+      addedAt: DateTime.utc(2026, 7, 26),
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'beat_grid': {
+            'beats_ms': [100, 600, 1100, 1600, 2100, 2600, 3100, 3600],
+          },
+          'meter': {'beats_per_bar': 4},
+          'downbeat_phase': {'index': 1},
+          'downbeats': {'positions_ms': [600, 2600]},
+        },
+      ),
+    );
+
+    final preview = analysisTimingAuditionProjectionForTrack(track);
+    expect(preview.sourceBeatsMs,
+        [100, 600, 1100, 1600, 2100, 2600, 3100, 3600]);
+    expect(preview.beatsPerBar, 4);
+    expect(preview.downbeatPhaseIndex, 1);
+    expect(preview.sourceDownbeatsMs, [600, 2600]);
+  });
+
+  test('unknown generated meter or phase suppresses downbeat accents', () {
+    TrackAnalysis analysisFor(Map<String, dynamic> summary) =>
+        TrackAnalysis.fromJson(status: 'analyzed', summary: summary);
+
+    final summaries = [
+      {
+        'beat_grid': {
+          'beats_ms': [100, 600, 1100, 1600],
+        },
+        'downbeat_phase': {'index': 0},
+        'downbeats': {'positions_ms': [100]},
+      },
+      {
+        'beat_grid': {
+          'beats_ms': [100, 600, 1100, 1600],
+        },
+        'meter': {'beats_per_bar': 4},
+        'downbeats': {'positions_ms': [100]},
+      },
+    ];
+
+    for (final summary in summaries) {
+      final track = QueueTrack(
+        id: '1',
+        title: 'Unknown generated timing',
+        duration: 30,
+        addedAt: DateTime.utc(2026, 7, 26),
+        analysis: analysisFor(summary),
+      );
+      final preview = analysisTimingAuditionProjectionForTrack(track);
+      expect(preview.sourceBeatsMs, [100, 600, 1100, 1600]);
+      expect(preview.sourceDownbeatsMs, isEmpty);
+    }
+  });
+
+  test('unknown meter suppresses generated downbeat accents', () {
+    final track = QueueTrack(
+      id: '1',
+      title: 'Unknown meter',
+      duration: 30,
+      addedAt: DateTime.utc(2026, 7, 26),
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'beat_grid': {
+            'beats_ms': [100, 600, 1100, 1600],
+          },
+          'downbeats': {
+            'positions_ms': [100],
+          },
+        },
+      ),
+    );
+
+    final preview = analysisTimingAuditionProjectionForTrack(track);
+    expect(preview.sourceBeatsMs, [100, 600, 1100, 1600]);
+    expect(preview.beatsPerBar, isNull);
+    expect(preview.sourceDownbeatsMs, isEmpty);
+  });
+
+  test('half/double audible previews preserve anchor, meter, and phase', () {
+    const effective = TrackAnalysisSummary(
+      bpm: AnalysisValue(value: 120),
+      beatGrid: BeatGridSummary(
+        bpm: 120,
+        offsetMs: 87,
+        beatsMs: [87, 587, 1087, 1587, 2087, 2587, 3087, 3587],
+      ),
+      downbeats: DownbeatSummary(positionsMs: [1587, 3587]),
+    );
+    const overrides = TrackAnalysisOverrides(
+      manualTiming: ManualTimingOverride(
+        bpm: 120,
+        beatAnchorMs: 87,
+        beatsPerBar: 4,
+        downbeatPhaseIndex: 3,
+      ),
+    );
+
+    for (final bpm in [60.0, 240.0]) {
+      final preview = analysisTimingAuditionProjection(
+        effectiveSummary: effective,
+        existingOverrides: overrides,
+        bpm: bpm,
+        beatAnchorMs: 87,
+        bpmDirty: true,
+      );
+      expect(preview.summary.beatGrid?.offsetMs, 87);
+      expect(preview.beatsPerBar, 4);
+      expect(preview.downbeatPhaseIndex, 3);
     }
   });
 
@@ -329,6 +511,392 @@ void main() {
     expect(saved?.manualTiming?.beatAnchorMs, isNull);
     expect(saved?.manualTiming?.beatsPerBar, 4);
     expect(saved?.manualTiming?.downbeatPhaseIndex, 2);
+  });
+
+  testWidgets(
+    'audition controls and calibration stay independent of route hints',
+    (tester) async {
+      TrackAnalysisOverrides? saved;
+      final previews = <AnalysisClickAuditionPreview>[];
+      final volumeWrites = <double>[];
+      final accentWrites = <bool>[];
+      final offsetWrites = <(ClickAuditionOutputRoute, int)>[];
+      final routeListenable = ValueNotifier(
+        AuditionOutputRouteObservation.fromConnectedOutputs([
+          const AuditionOutputDevice(
+            id: 'speaker',
+            route: ClickAuditionOutputRoute.speaker,
+          ),
+        ]),
+      );
+      final track = QueueTrack(
+        id: '1',
+        queueItemId: 'queue-occurrence-1',
+        title: 'Audition fixture',
+        duration: 30,
+        addedAt: DateTime.utc(2026, 7, 26),
+        analysis: TrackAnalysis.fromJson(
+          status: 'analyzed',
+          summary: {
+            'bpm': {'value': 120},
+            'beat_grid': {
+              'bpm': 120,
+              'offset_ms': 100,
+              'beats_ms': [100, 600, 1100, 1600, 2100, 2600, 3100, 3600],
+            },
+          },
+          overrides: {
+            'manual_timing_override': {
+              'beats_per_bar': 4,
+              'downbeat_phase_index': 0,
+            },
+          },
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => FilledButton(
+              onPressed: () async {
+                saved = await showAnalysisCorrectionSheet(
+                  context: context,
+                  track: track,
+                  clickAudition: AnalysisClickAuditionConfiguration(
+                    initialRoute: routeListenable.value,
+                    routeListenable: routeListenable,
+                    outputOffsetForRoute: (route) =>
+                        route == ClickAuditionOutputRoute.speaker ? -25 : 0,
+                    onPreviewChanged: previews.add,
+                    onVolumeChanged: volumeWrites.add,
+                    onDownbeatAccentsChanged: accentWrites.add,
+                    onOutputOffsetChanged: (route, offsetMs) =>
+                        offsetWrites.add((route, offsetMs)),
+                  ),
+                );
+              },
+              child: const Text('Edit'),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Edit'));
+      await tester.pumpAndSettle();
+      expect(previews, isNotEmpty);
+      expect(previews.last.beatClicksEnabled, isFalse);
+      expect(previews.last.downbeatAccentsEnabled, isTrue);
+      expect(previews.last.outputOffsetMs, 0);
+      expect(
+        find.textContaining('active media route unconfirmed'),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          'Active media route unavailable; choose the output you hear.',
+        ),
+        findsOneWidget,
+      );
+      final calibrationOutput = find.byKey(
+        const ValueKey('analysis_correction_calibration_output'),
+      );
+      expect(
+        tester
+            .widget<DropdownButtonFormField<ClickAuditionOutputRoute>>(
+              calibrationOutput,
+            )
+            .initialValue,
+        ClickAuditionOutputRoute.unknown,
+      );
+
+      final previewCountBeforeConnectedHint = previews.length;
+      routeListenable.value =
+          AuditionOutputRouteObservation.fromConnectedOutputs([
+        const AuditionOutputDevice(
+          id: 'headphones',
+          route: ClickAuditionOutputRoute.bluetooth,
+        ),
+      ]);
+      await tester.pump();
+      expect(previews, hasLength(previewCountBeforeConnectedHint));
+      expect(previews.last.outputOffsetMs, 0);
+      expect(
+        tester
+            .widget<DropdownButtonFormField<ClickAuditionOutputRoute>>(
+              calibrationOutput,
+            )
+            .initialValue,
+        ClickAuditionOutputRoute.unknown,
+      );
+
+      final master =
+          find.byKey(const ValueKey('analysis_correction_beat_clicks'));
+      tester.widget<SwitchListTile>(master).onChanged!(true);
+      await tester.pump();
+      expect(previews.last.beatClicksEnabled, isTrue);
+      expect(previews.last.downbeatAccentsEnabled, isTrue);
+
+      final accents =
+          find.byKey(const ValueKey('analysis_correction_downbeat_accents'));
+      tester.widget<SwitchListTile>(accents).onChanged!(false);
+      await tester.pump();
+      expect(accentWrites, [false]);
+      expect(previews.last.beatClicksEnabled, isTrue);
+      expect(previews.last.downbeatAccentsEnabled, isFalse);
+
+      tester.widget<SwitchListTile>(master).onChanged!(false);
+      await tester.pump();
+      tester.widget<SwitchListTile>(accents).onChanged!(true);
+      await tester.pump();
+      expect(accentWrites, [false, true]);
+      expect(previews.last.beatClicksEnabled, isFalse);
+      expect(previews.last.downbeatAccentsEnabled, isTrue);
+      tester.widget<SwitchListTile>(master).onChanged!(true);
+      await tester.pump();
+      expect(previews.last.beatClicksEnabled, isTrue);
+      expect(previews.last.downbeatAccentsEnabled, isTrue);
+
+      final volumeFinder =
+          find.byKey(const ValueKey('analysis_correction_audition_volume'));
+      tester.widget<Slider>(volumeFinder).onChanged!(0.55);
+      await tester.pump();
+      expect(volumeWrites, [0.55]);
+      expect(previews.last.volume, 0.55);
+
+      tester
+          .widget<DropdownButtonFormField<ClickAuditionOutputRoute>>(
+            calibrationOutput,
+          )
+          .onChanged!(ClickAuditionOutputRoute.speaker);
+      await tester.pump();
+      expect(previews.last.outputOffsetMs, -25);
+
+      final offsetFinder =
+          find.byKey(const ValueKey('analysis_correction_output_offset'));
+      final previewCountBeforeDrag = previews.length;
+      tester.widget<Slider>(offsetFinder).onChanged!(-75);
+      await tester.pump();
+      tester.widget<Slider>(offsetFinder).onChanged!(-100);
+      await tester.pump();
+      tester.widget<Slider>(offsetFinder).onChanged!(-125);
+      await tester.pump();
+      expect(offsetWrites, isEmpty);
+      expect(previews, hasLength(previewCountBeforeDrag));
+      expect(previews.last.outputOffsetMs, -25);
+      expect(find.textContaining('125 ms earlier'), findsOneWidget);
+
+      tester.widget<Slider>(offsetFinder).onChangeEnd!(-125);
+      await tester.pump();
+      expect(
+        offsetWrites,
+        [(ClickAuditionOutputRoute.speaker, -125)],
+      );
+      expect(previews.last.outputOffsetMs, -125);
+      expect(previews, hasLength(previewCountBeforeDrag + 1));
+
+      final reset = find.byKey(
+        const ValueKey('analysis_correction_output_offset_reset'),
+      );
+      tester.widget<TextButton>(reset).onPressed!();
+      await tester.pump();
+      expect(
+        offsetWrites,
+        [
+          (ClickAuditionOutputRoute.speaker, -125),
+          (ClickAuditionOutputRoute.speaker, 0),
+        ],
+      );
+      expect(previews.last.outputOffsetMs, 0);
+      expect(
+        find.text('Output offset: aligned (0 ms)'),
+        findsOneWidget,
+      );
+
+      final previewCountBeforeInvalidInput = previews.length;
+      await tester.enterText(
+        find.byKey(const ValueKey('analysis_correction_bpm')),
+        'not-a-number',
+      );
+      await tester.pump();
+      expect(previews, hasLength(previewCountBeforeInvalidInput));
+      await tester.enterText(
+        find.byKey(const ValueKey('analysis_correction_bpm')),
+        '130',
+      );
+      await tester.pump();
+      expect(previews, hasLength(previewCountBeforeInvalidInput + 1));
+
+      await tester.enterText(
+        find.byKey(const ValueKey('analysis_correction_meter')),
+        '3',
+      );
+      await tester.pump();
+      expect(previews.last.sourceDownbeatsMs, isEmpty);
+      expect(previews.last.downbeatAccentsEnabled, isFalse);
+      tester
+          .widget<IconButton>(
+            find.byKey(const ValueKey('analysis_correction_phase_right')),
+          )
+          .onPressed!();
+      await tester.pump();
+      expect(previews.last.sourceDownbeatsMs, isNotEmpty);
+      expect(previews.last.downbeatAccentsEnabled, isTrue);
+
+      final save = find.byKey(const ValueKey('analysis_correction_save'));
+      await tester.ensureVisible(save);
+      await tester.tap(save);
+      await tester.pumpAndSettle();
+
+      final payload = saved!.toJson(includeServerMetadata: false);
+      expect(payload, contains('manual_timing_v2'));
+      expect(payload.toString(), isNot(contains('clickAudition')));
+      expect(payload.toString(), isNot(contains('outputOffset')));
+      expect(payload.toString(), isNot(contains('volume')));
+      routeListenable.dispose();
+    },
+  );
+
+  testWidgets('confirmed active route initializes its calibration profile',
+      (tester) async {
+    final previews = <AnalysisClickAuditionPreview>[];
+    final track = QueueTrack(
+      id: '1',
+      title: 'Confirmed route fixture',
+      duration: 30,
+      addedAt: DateTime.utc(2026, 7, 26),
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'beat_grid': {
+            'beats_ms': [100, 600, 1100, 1600],
+          },
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => FilledButton(
+            onPressed: () => showAnalysisCorrectionSheet(
+              context: context,
+              track: track,
+              clickAudition: AnalysisClickAuditionConfiguration(
+                initialRoute:
+                    AuditionOutputRouteObservation.confirmedActiveRoute(
+                  ClickAuditionOutputRoute.speaker,
+                ),
+                outputOffsetForRoute: (route) =>
+                    route == ClickAuditionOutputRoute.speaker ? -40 : 0,
+                onPreviewChanged: previews.add,
+              ),
+            ),
+            child: const Text('Edit'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+
+    expect(previews.last.outputOffsetMs, -40);
+    expect(
+      tester
+          .widget<DropdownButtonFormField<ClickAuditionOutputRoute>>(
+            find.byKey(
+              const ValueKey('analysis_correction_calibration_output'),
+            ),
+          )
+          .initialValue,
+      ClickAuditionOutputRoute.speaker,
+    );
+    expect(
+      find.byKey(
+        const ValueKey('analysis_correction_output_route_guidance'),
+      ),
+      findsNothing,
+    );
+    expect(find.text('Device speaker (active media route)'), findsOneWidget);
+
+    tester
+        .widget<TextButton>(find.widgetWithText(TextButton, 'Cancel'))
+        .onPressed!();
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('route offsets are clamped before reaching the slider',
+      (tester) async {
+    final previews = <AnalysisClickAuditionPreview>[];
+    final track = QueueTrack(
+      id: '1',
+      title: 'Offset clamp fixture',
+      duration: 30,
+      addedAt: DateTime.utc(2026, 7, 27),
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'beat_grid': {
+            'beats_ms': [100, 600, 1100, 1600],
+          },
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => FilledButton(
+            onPressed: () => showAnalysisCorrectionSheet(
+              context: context,
+              track: track,
+              clickAudition: AnalysisClickAuditionConfiguration(
+                initialRoute:
+                    AuditionOutputRouteObservation.confirmedActiveRoute(
+                  ClickAuditionOutputRoute.speaker,
+                ),
+                outputOffsetForRoute: (route) =>
+                    route == ClickAuditionOutputRoute.speaker
+                        ? minClickAuditionOutputOffsetMs - 1
+                        : maxClickAuditionOutputOffsetMs + 1,
+                onPreviewChanged: previews.add,
+              ),
+            ),
+            child: const Text('Edit'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+
+    final offsetFinder =
+        find.byKey(const ValueKey('analysis_correction_output_offset'));
+    expect(tester.takeException(), isNull);
+    expect(
+      tester.widget<Slider>(offsetFinder).value,
+      minClickAuditionOutputOffsetMs,
+    );
+    expect(previews.last.outputOffsetMs, minClickAuditionOutputOffsetMs);
+
+    tester
+        .widget<DropdownButtonFormField<ClickAuditionOutputRoute>>(
+          find.byKey(
+            const ValueKey('analysis_correction_calibration_output'),
+          ),
+        )
+        .onChanged!(ClickAuditionOutputRoute.bluetooth);
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(
+      tester.widget<Slider>(offsetFinder).value,
+      maxClickAuditionOutputOffsetMs,
+    );
+    expect(previews.last.outputOffsetMs, maxClickAuditionOutputOffsetMs);
+
+    tester
+        .widget<TextButton>(find.widgetWithText(TextButton, 'Cancel'))
+        .onPressed!();
+    await tester.pumpAndSettle();
   });
 
   testWidgets(

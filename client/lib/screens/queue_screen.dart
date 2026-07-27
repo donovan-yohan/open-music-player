@@ -1,10 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show setEquals;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode, setEquals;
 import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import 'package:audio_service/audio_service.dart' as audio_service;
+import 'package:flutter_riverpod/flutter_riverpod.dart'
+    show ProviderContainer, ProviderScope;
 import 'package:provider/provider.dart';
+import '../core/audio/audition_output_route_monitor.dart';
 import '../core/audio/playback_state.dart';
 import '../core/audio/playback_context.dart';
 import '../core/audio/playback_session.dart';
@@ -13,8 +16,12 @@ import '../core/commands/app_command.dart';
 import '../core/commands/command_registry.dart';
 import '../core/commands/command_widgets.dart';
 import '../app/theme.dart';
+import '../core/engine/click_audition_projection.dart';
+import '../core/engine/click_auditioner.dart';
 import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
+import '../core/models/settings_model.dart';
+import '../core/providers/settings_provider.dart';
 import '../models/track.dart';
 import '../models/track_analysis.dart';
 import '../models/trim_range.dart';
@@ -27,6 +34,9 @@ import '../widgets/analysis_correction_sheet.dart';
 import '../widgets/stacked_waveform_timeline.dart';
 
 enum _QueueViewMode { list, timeline }
+
+typedef AuditionOutputRouteMonitorFactory = Future<AuditionOutputRouteMonitor>
+    Function();
 
 @visibleForTesting
 class ListeningQueueEntry {
@@ -183,12 +193,17 @@ class _CanonicalPlaybackQueueOccurrence {
 }
 
 class QueueScreen extends StatefulWidget {
-  const QueueScreen({super.key, this.showImportJobs = false});
+  const QueueScreen({
+    super.key,
+    this.showImportJobs = false,
+    this.auditionOutputRouteMonitorFactory,
+  });
 
   /// The playback queue and backend import jobs are independent domains.
   /// `/queue` stays focused on listening, while `/queue/imports` explicitly
   /// opts into the backend job surface.
   final bool showImportJobs;
+  final AuditionOutputRouteMonitorFactory? auditionOutputRouteMonitorFactory;
 
   @override
   State<QueueScreen> createState() => _QueueScreenState();
@@ -1776,27 +1791,175 @@ class _QueueScreenState extends State<QueueScreen> {
       return;
     }
 
-    final corrected = await showAnalysisCorrectionSheet(
-      context: context,
-      track: provider.trackWithAnalysis(track, requestHydration: false),
-      currentSourcePositionMs: currentSourcePositionMs,
+    final playback = context.read<PlaybackState>();
+    final editorTrack =
+        provider.trackWithAnalysis(track, requestHydration: false);
+    final settingsContainer = _settingsContainer(context);
+    final initialSettings =
+        settingsContainer?.read(settingsProvider) ?? const SettingsModel();
+    AuditionOutputRouteMonitor? routeMonitor;
+    try {
+      routeMonitor = await (widget.auditionOutputRouteMonitorFactory ??
+          AuditionOutputRouteMonitor.create)();
+      await routeMonitor.start();
+    } catch (error) {
+      await _disposeRouteMonitor(routeMonitor);
+      routeMonitor = null;
+      if (kDebugMode) {
+        debugPrint('Click audition route observation unavailable: $error');
+      }
+    }
+    if (!mounted) {
+      await _disposeRouteMonitor(routeMonitor);
+      return;
+    }
+
+    final route =
+        routeMonitor?.current ?? AuditionOutputRouteObservation.unknown;
+    final initialCalibrationRoute = route.activeRouteConfirmed
+        ? route.route
+        : ClickAuditionOutputRoute.unknown;
+    final routeListenable =
+        ValueNotifier<AuditionOutputRouteObservation>(route);
+    final routeSubscription = routeMonitor?.observations.listen(
+      (observation) => routeListenable.value = observation,
     );
-    if (corrected == null || !context.mounted) return;
+    final initialProjection =
+        analysisTimingAuditionProjectionForTrack(editorTrack);
+    ClickAuditionLease? lease;
+    try {
+      lease = playback.openClickAudition(
+        ClickAuditionRequest(
+          queueItemId: track.queueItemId,
+          sourceBeatsMs: initialProjection.sourceBeatsMs,
+          sourceDownbeatsMs: initialProjection.sourceDownbeatsMs,
+          // Both toggles are independent. Beat clicks remain session-local and
+          // off by default; the remembered accent preference can audition
+          // explicit downbeats on its own.
+          beatClicksEnabled: false,
+          downbeatAccentsEnabled:
+              initialSettings.clickAuditionDownbeatAccentEnabled &&
+                  initialProjection.sourceDownbeatsMs.isNotEmpty,
+          volume: initialSettings.clickAuditionVolume,
+          outputOffsetMs: initialSettings
+              .clickAuditionOutputOffsetMsFor(initialCalibrationRoute),
+        ),
+      );
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('Click audition unavailable: $error');
+      }
+    }
+
+    TrackAnalysisOverrides? corrected;
+    try {
+      corrected = await showAnalysisCorrectionSheet(
+        context: this.context,
+        track: editorTrack,
+        currentSourcePositionMs: currentSourcePositionMs,
+        clickAudition: AnalysisClickAuditionConfiguration(
+          initialDownbeatAccentsEnabled:
+              initialSettings.clickAuditionDownbeatAccentEnabled,
+          initialVolume: initialSettings.clickAuditionVolume,
+          initialRoute: route,
+          routeListenable: routeListenable,
+          outputOffsetForRoute: (outputRoute) {
+            return (settingsContainer?.read(settingsProvider) ??
+                    initialSettings)
+                .clickAuditionOutputOffsetMsFor(outputRoute);
+          },
+          onPreviewChanged: (preview) {
+            final activeLease = lease;
+            if (activeLease == null) return;
+            unawaited(
+              _updateClickAudition(
+                activeLease,
+                ClickAuditionRequest(
+                  queueItemId: track.queueItemId,
+                  sourceBeatsMs: preview.sourceBeatsMs,
+                  sourceDownbeatsMs: preview.sourceDownbeatsMs,
+                  beatClicksEnabled: preview.beatClicksEnabled,
+                  downbeatAccentsEnabled: preview.downbeatAccentsEnabled,
+                  volume: preview.volume,
+                  outputOffsetMs: preview.outputOffsetMs,
+                ),
+              ),
+            );
+          },
+          onVolumeChanged: (volume) => settingsContainer
+              ?.read(settingsProvider.notifier)
+              .setClickAuditionVolume(volume),
+          onDownbeatAccentsChanged: (enabled) => settingsContainer
+              ?.read(settingsProvider.notifier)
+              .setClickAuditionDownbeatAccentEnabled(enabled),
+          onOutputOffsetChanged: (outputRoute, offsetMs) => settingsContainer
+              ?.read(settingsProvider.notifier)
+              .setClickAuditionOutputOffsetMs(outputRoute, offsetMs),
+        ),
+      );
+    } finally {
+      await _disposeClickAuditionLease(lease);
+      await routeSubscription?.cancel();
+      routeListenable.dispose();
+      await _disposeRouteMonitor(routeMonitor);
+    }
+    if (corrected == null || !mounted) return;
 
     try {
       final analysis = await provider.updateAnalysisOverrides(track, corrected);
       final trackId = _analysisTrackId(track);
-      if (trackId != null && context.mounted) {
-        await context.read<PlaybackState>().refreshTrackAnalysis(
+      if (trackId != null && mounted) {
+        await this.context.read<PlaybackState>().refreshTrackAnalysis(
               trackId,
               analysis,
             );
       }
     } catch (_) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      if (!mounted) return;
+      ScaffoldMessenger.of(this.context).showSnackBar(
         SnackBar(content: Text('Could not save analysis for "${track.title}"')),
       );
+    }
+  }
+
+  ProviderContainer? _settingsContainer(BuildContext context) {
+    try {
+      return ProviderScope.containerOf(context, listen: false);
+    } catch (_) {
+      // Some narrow widget harnesses mount QueueScreen without the app-level
+      // ProviderScope. Audition still works with safe local defaults.
+      return null;
+    }
+  }
+
+  Future<void> _updateClickAudition(
+    ClickAuditionLease lease,
+    ClickAuditionRequest request,
+  ) async {
+    try {
+      await lease.update(request);
+    } catch (error) {
+      if (kDebugMode) debugPrint('Could not update click audition: $error');
+    }
+  }
+
+  Future<void> _disposeClickAuditionLease(ClickAuditionLease? lease) async {
+    try {
+      await lease?.dispose();
+    } catch (error) {
+      if (kDebugMode) debugPrint('Could not close click audition: $error');
+    }
+  }
+
+  Future<void> _disposeRouteMonitor(
+    AuditionOutputRouteMonitor? monitor,
+  ) async {
+    try {
+      await monitor?.dispose();
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('Could not close click audition route monitor: $error');
+      }
     }
   }
 

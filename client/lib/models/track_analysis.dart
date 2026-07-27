@@ -1099,6 +1099,32 @@ class EffectiveTiming {
     );
   }
 
+  /// Validated generated-or-manual meter for ephemeral click audition seeding.
+  ///
+  /// This deliberately does not grant manual authority or infer a meter: it
+  /// only exposes the already-effective fact when it is safe to use.
+  int? get auditionBeatsPerBar {
+    final value = meter?.beatsPerBar;
+    return value == null || value <= 0 ? null : value;
+  }
+
+  /// Validated effective phase for ephemeral click audition seeding.
+  ///
+  /// A phase without a valid meter remains unknown, so callers keep beat
+  /// clicks unaccented instead of manufacturing downbeats from a partial
+  /// analysis response.
+  int? get auditionDownbeatPhaseIndex {
+    final meterValue = auditionBeatsPerBar;
+    final phaseValue = downbeatPhase?.index;
+    if (meterValue == null ||
+        phaseValue == null ||
+        phaseValue < 0 ||
+        phaseValue >= meterValue) {
+      return null;
+    }
+    return phaseValue;
+  }
+
   bool get hasManualDownbeatAuthority {
     final meterValue = meter?.beatsPerBar;
     final phaseValue = downbeatPhase?.index;

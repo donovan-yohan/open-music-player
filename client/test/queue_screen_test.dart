@@ -3,19 +3,26 @@ import 'dart:async';
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart' show ProviderScope;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:open_music_player/app/theme.dart';
 import 'package:open_music_player/core/api/api_client.dart';
+import 'package:open_music_player/core/audio/audition_output_route_monitor.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/queue_persistence.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/commands/app_command.dart';
 import 'package:open_music_player/core/commands/command_registry.dart';
+import 'package:open_music_player/core/engine/click_audition_projection.dart';
+import 'package:open_music_player/core/engine/click_auditioner.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
+import 'package:open_music_player/core/models/settings_model.dart';
+import 'package:open_music_player/core/providers/settings_provider.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/queue_state.dart';
@@ -140,33 +147,54 @@ void main() {
     TextScaler? textScaler,
     bool? disableAnimations,
     bool showImportJobs = false,
+    AuditionOutputRouteMonitorFactory? auditionOutputRouteMonitorFactory,
+    SharedPreferences? settingsPreferences,
   }) async {
-    await tester.pumpWidget(
-      MultiProvider(
-        providers: [
-          ChangeNotifierProvider<QueueProvider>(
-            create: (_) => queueProvider ?? QueueProvider(apiClient),
-          ),
-          ListenableProvider<PlaybackState>.value(value: playbackState),
-          Provider<CommandRegistry>.value(value: commandRegistry),
-        ],
-        child: MaterialApp(
-          theme: AppTheme.lightTheme,
-          builder: textScaler == null && disableAnimations == null
-              ? null
-              : (context, child) => MediaQuery(
-                    data:
-                        MediaQuery.of(context).copyWith(
-                          textScaler: textScaler,
-                          disableAnimations: disableAnimations,
-                        ),
-                    child: child!,
+    Widget app = MultiProvider(
+      providers: [
+        ChangeNotifierProvider<QueueProvider>(
+          create: (_) => queueProvider ?? QueueProvider(apiClient),
+        ),
+        ListenableProvider<PlaybackState>.value(value: playbackState),
+        Provider<CommandRegistry>.value(value: commandRegistry),
+      ],
+      child: MaterialApp(
+        theme: AppTheme.lightTheme,
+        builder: textScaler == null && disableAnimations == null
+            ? null
+            : (context, child) => MediaQuery(
+                  data: MediaQuery.of(context).copyWith(
+                    textScaler: textScaler,
+                    disableAnimations: disableAnimations,
                   ),
-          home: QueueScreen(
-            showImportJobs: showImportJobs,
-          ),
+                  child: child!,
+                ),
+        home: QueueScreen(
+          showImportJobs: showImportJobs,
+          auditionOutputRouteMonitorFactory:
+              auditionOutputRouteMonitorFactory ??
+                  () async => _RecordingAuditionOutputRouteMonitor(),
         ),
       ),
+    );
+    if (settingsPreferences != null) {
+      app = ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(settingsPreferences),
+        ],
+        child: app,
+      );
+    }
+    await tester.pumpWidget(app);
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> settleAnalysisWorkflow(WidgetTester tester) async {
+    await tester.pumpAndSettle();
+    // Lease/route teardown is intentionally awaited before the API call and
+    // can finish without scheduling a frame. Yield the real async queue once.
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 1)),
     );
     await tester.pumpAndSettle();
   }
@@ -1484,8 +1512,13 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     apiClient.useAnalysisFixture();
+    final routeMonitor = _RecordingAuditionOutputRouteMonitor();
 
-    await pumpQueueScreen(tester, showImportJobs: true);
+    await pumpQueueScreen(
+      tester,
+      showImportJobs: true,
+      auditionOutputRouteMonitorFactory: () async => routeMonitor,
+    );
     await tester.tap(find.byKey(const ValueKey('analysis_edit_t1')));
     await tester.pumpAndSettle();
 
@@ -1511,9 +1544,12 @@ void main() {
       find.byKey(const ValueKey('analysis_correction_anchor')),
       '120',
     );
-    await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
-    await tester.pumpAndSettle();
+    final save = find.byKey(const ValueKey('analysis_correction_save'));
+    tester.widget<FilledButton>(save).onPressed!();
+    await settleAnalysisWorkflow(tester);
 
+    expect(playbackState.clickAuditionLeases.single.disposeCalls, 1);
+    expect(routeMonitor.disposeCalls, 1);
     expect(apiClient.analysisOverrideUpdates, hasLength(1));
     expect(apiClient.analysisOverrideUpdates.single.trackId, 101);
     expect(apiClient.analysisOverrideUpdates.single.overrides.manualTiming?.bpm,
@@ -1525,6 +1561,211 @@ void main() {
     );
     expect(find.text('128 BPM'), findsOneWidget);
     expect(find.text('124 BPM'), findsNothing);
+    expect(playbackState.clickAuditionOpens, hasLength(1));
+    expect(playbackState.clickAuditionOpens.single.queueItemId, 't1');
+  });
+
+  testWidgets(
+    'analysis audition uses explicit calibration profile instead of route hint',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 2000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      SharedPreferences.setMockInitialValues({});
+      final preferences = await SharedPreferences.getInstance();
+      apiClient.useAnalysisFixture();
+      final routeMonitor = _RecordingAuditionOutputRouteMonitor();
+
+      await pumpQueueScreen(
+        tester,
+        showImportJobs: true,
+        auditionOutputRouteMonitorFactory: () async => routeMonitor,
+        settingsPreferences: preferences,
+      );
+      final settingsContainer = ProviderScope.containerOf(
+        tester.element(find.byType(QueueScreen)),
+        listen: false,
+      );
+      final settings = settingsContainer.read(settingsProvider.notifier);
+      settings
+        ..setClickAuditionOutputOffsetMs(
+          ClickAuditionOutputRoute.unknown,
+          -10,
+        )
+        ..setClickAuditionOutputOffsetMs(
+          ClickAuditionOutputRoute.speaker,
+          -25,
+        );
+      await tester.pump();
+
+      await tester.tap(find.byKey(const ValueKey('analysis_edit_t1')));
+      await tester.pumpAndSettle();
+
+      expect(playbackState.clickAuditionOpens.single.outputOffsetMs, -10);
+      final lease = playbackState.clickAuditionLeases.single;
+      expect(lease.updates.last.outputOffsetMs, -10);
+      final calibrationOutput = find.byKey(
+        const ValueKey('analysis_correction_calibration_output'),
+      );
+      expect(
+        tester
+            .widget<DropdownButtonFormField<ClickAuditionOutputRoute>>(
+              calibrationOutput,
+            )
+            .initialValue,
+        ClickAuditionOutputRoute.unknown,
+      );
+
+      tester
+          .widget<DropdownButtonFormField<ClickAuditionOutputRoute>>(
+            calibrationOutput,
+          )
+          .onChanged!(ClickAuditionOutputRoute.speaker);
+      await tester.pump();
+      expect(lease.updates.last.outputOffsetMs, -25);
+
+      final offset = find.byKey(
+        const ValueKey('analysis_correction_output_offset'),
+      );
+      final updatesBeforeDrag = lease.updates.length;
+      tester.widget<Slider>(offset).onChanged!(-75);
+      await tester.pump();
+      expect(lease.updates, hasLength(updatesBeforeDrag));
+      expect(
+        settingsContainer.read(settingsProvider).clickAuditionOutputOffsetMsFor(
+              ClickAuditionOutputRoute.speaker,
+            ),
+        -25,
+      );
+
+      tester.widget<Slider>(offset).onChangeEnd!(-75);
+      await tester.pump();
+      expect(lease.updates.last.outputOffsetMs, -75);
+      expect(
+        settingsContainer.read(settingsProvider).clickAuditionOutputOffsetMsFor(
+              ClickAuditionOutputRoute.speaker,
+            ),
+        -75,
+      );
+
+      tester
+          .widget<DropdownButtonFormField<ClickAuditionOutputRoute>>(
+            calibrationOutput,
+          )
+          .onChanged!(ClickAuditionOutputRoute.unknown);
+      await tester.pump();
+      expect(lease.updates.last.outputOffsetMs, -10);
+      tester
+          .widget<DropdownButtonFormField<ClickAuditionOutputRoute>>(
+            calibrationOutput,
+          )
+          .onChanged!(ClickAuditionOutputRoute.speaker);
+      await tester.pump();
+      expect(lease.updates.last.outputOffsetMs, -75);
+
+      await tester.tap(find.text('Cancel'));
+      await settleAnalysisWorkflow(tester);
+      expect(lease.disposeCalls, 1);
+      expect(routeMonitor.disposeCalls, 1);
+    },
+  );
+
+  testWidgets('analysis audition closes its lease and route monitor on cancel',
+      (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    apiClient.useAnalysisFixture();
+    final routeMonitor = _RecordingAuditionOutputRouteMonitor();
+
+    await pumpQueueScreen(
+      tester,
+      showImportJobs: true,
+      auditionOutputRouteMonitorFactory: () async => routeMonitor,
+    );
+    await tester.tap(find.byKey(const ValueKey('analysis_edit_t1')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel'));
+    await settleAnalysisWorkflow(tester);
+
+    expect(apiClient.analysisOverrideUpdates, isEmpty);
+    expect(playbackState.clickAuditionOpens.single.queueItemId, 't1');
+    expect(playbackState.clickAuditionLeases.single.disposeCalls, 1);
+    expect(routeMonitor.disposeCalls, 1);
+  });
+
+  testWidgets('analysis audition closes exactly once before reset is saved', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    apiClient.useAnalysisFixture();
+    final routeMonitor = _RecordingAuditionOutputRouteMonitor();
+    apiClient.analysisAuditionDisposedProbe = () =>
+        playbackState.clickAuditionLeases.single.disposeCalls == 1 &&
+        routeMonitor.disposeCalls == 1;
+
+    await pumpQueueScreen(
+      tester,
+      showImportJobs: true,
+      auditionOutputRouteMonitorFactory: () async => routeMonitor,
+    );
+    await tester.tap(find.byKey(const ValueKey('analysis_edit_t1')));
+    await tester.pumpAndSettle();
+    final reset = find.byKey(const ValueKey('analysis_correction_reset'));
+    tester.widget<TextButton>(reset).onPressed!();
+    await settleAnalysisWorkflow(tester);
+
+    expect(playbackState.clickAuditionLeases.single.disposeCalls, 1);
+    expect(routeMonitor.disposeCalls, 1);
+    expect(apiClient.analysisOverrideUpdates, hasLength(1));
+    expect(apiClient.analysisOverrideUpdates.single.overrides.isEmpty, isTrue);
+    expect(apiClient.analysisAuditionDisposedAtUpdate, isTrue);
+  });
+
+  testWidgets('analysis API failure happens only after audition teardown', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 2000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    apiClient
+      ..useAnalysisFixture()
+      ..failAnalysisOverrideUpdates = true;
+    final routeMonitor = _RecordingAuditionOutputRouteMonitor();
+    apiClient.analysisAuditionDisposedProbe = () =>
+        playbackState.clickAuditionLeases.single.disposeCalls == 1 &&
+        routeMonitor.disposeCalls == 1;
+
+    await pumpQueueScreen(
+      tester,
+      showImportJobs: true,
+      auditionOutputRouteMonitorFactory: () async => routeMonitor,
+    );
+    await tester.tap(find.byKey(const ValueKey('analysis_edit_t1')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('analysis_correction_bpm')),
+      '128',
+    );
+    final save = find.byKey(const ValueKey('analysis_correction_save'));
+    tester.widget<FilledButton>(save).onPressed!();
+    await settleAnalysisWorkflow(tester);
+
+    expect(playbackState.clickAuditionLeases.single.disposeCalls, 1);
+    expect(routeMonitor.disposeCalls, 1);
+    expect(apiClient.analysisAuditionDisposedAtUpdate, isTrue);
+    expect(
+      find.text('Could not save analysis for "Analyzed Track"'),
+      findsOneWidget,
+    );
   });
 
   testWidgets(
@@ -1864,7 +2105,7 @@ void main() {
       );
 
       await tester.tap(find.text('Cancel'));
-      await tester.pumpAndSettle();
+      await settleAnalysisWorkflow(tester);
 
       expect(apiClient.analysisOverrideUpdates, isEmpty);
     },
@@ -1904,8 +2145,9 @@ void main() {
         find.byKey(const ValueKey('analysis_correction_anchor')),
         '87',
       );
-      await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
-      await tester.pumpAndSettle();
+      final save = find.byKey(const ValueKey('analysis_correction_save'));
+      tester.widget<FilledButton>(save).onPressed!();
+      await settleAnalysisWorkflow(tester);
 
       expect(apiClient.analysisOverrideUpdates, hasLength(1));
       expect(apiClient.analysisOverrideUpdates.single.trackId, 101);
@@ -2815,6 +3057,51 @@ double _contrastRatio(Color foreground, Color background) {
       (darker.computeLuminance() + 0.05);
 }
 
+class _RecordingClickAuditionLease extends Fake implements ClickAuditionLease {
+  final List<ClickAuditionRequest> updates = [];
+  int disposeCalls = 0;
+
+  @override
+  bool get isCurrent => disposeCalls == 0;
+
+  @override
+  Future<void> update(ClickAuditionRequest request) async {
+    if (!isCurrent) return;
+    updates.add(request);
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposeCalls++;
+  }
+}
+
+class _StaticAuditionOutputRouteSource implements AuditionOutputRouteSource {
+  @override
+  Stream<void> get connectedOutputsChanged => const Stream.empty();
+
+  @override
+  Future<Set<AuditionOutputDevice>> getConnectedOutputs() async => {
+        const AuditionOutputDevice(
+          id: 'speaker',
+          route: ClickAuditionOutputRoute.speaker,
+        ),
+      };
+}
+
+class _RecordingAuditionOutputRouteMonitor extends AuditionOutputRouteMonitor {
+  _RecordingAuditionOutputRouteMonitor()
+      : super(source: _StaticAuditionOutputRouteSource());
+
+  int disposeCalls = 0;
+
+  @override
+  Future<void> dispose() async {
+    disposeCalls++;
+    await super.dispose();
+  }
+}
+
 class _FakePlaybackState extends Fake implements PlaybackState {
   final _notifier = _PlaybackStateNotifier();
   final List<({List<Map<String, dynamic>> tracks, int startIndex})>
@@ -2834,6 +3121,8 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   final List<int> removeFromQueueCalls = [];
   final List<({String trackId, TrackAnalysis analysis})> analysisRefreshes = [];
   final List<Map<String, TrackAnalysis>> analysisRefreshWaves = [];
+  final List<ClickAuditionRequest> clickAuditionOpens = [];
+  final List<_RecordingClickAuditionLease> clickAuditionLeases = [];
   int seekCalls = 0;
   int pauseCalls = 0;
   int _nextOccurrenceOrdinal = 1;
@@ -2849,6 +3138,14 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   int fakeTimelinePositionMs = 0;
   TimelineModel fakeTimelineModel = TimelineModel();
   BeatSnapMode fakeTransitionSnapMode = BeatSnapMode.downbeat;
+
+  @override
+  ClickAuditionLease openClickAudition(ClickAuditionRequest request) {
+    final lease = _RecordingClickAuditionLease();
+    clickAuditionOpens.add(request);
+    clickAuditionLeases.add(lease);
+    return lease;
+  }
 
   List<audio_service.MediaItem> get fakeQueue => _fakeQueue;
 
@@ -3586,6 +3883,9 @@ class _FakeQueueApiClient extends ApiClient {
   bool deferLoad = false;
   bool hydrateAnalysisFixture = false;
   bool holdAnalysisRequests = false;
+  bool failAnalysisOverrideUpdates = false;
+  bool Function()? analysisAuditionDisposedProbe;
+  bool? analysisAuditionDisposedAtUpdate;
   Completer<QueueState>? _loadCompleter;
 
   List<int> get renderedTimelineAnalysisTrackIds {
@@ -3906,11 +4206,15 @@ class _FakeQueueApiClient extends ApiClient {
     TrackAnalysisOverrides overrides, {
     int expectedRevision = 0,
   }) async {
+    analysisAuditionDisposedAtUpdate = analysisAuditionDisposedProbe?.call();
     analysisOverrideUpdates.add((
       trackId: trackId,
       overrides: overrides,
       expectedRevision: expectedRevision,
     ));
+    if (failAnalysisOverrideUpdates) {
+      throw StateError('test analysis update failure');
+    }
     final track = _state.tracks.firstWhere(
       (track) => track.playbackTrackId == trackId.toString(),
     );

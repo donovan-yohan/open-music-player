@@ -7,6 +7,24 @@ import 'package:open_music_player/core/models/settings_model.dart';
 import 'package:open_music_player/core/providers/settings_provider.dart';
 
 void main() {
+  test('click audition settings have safe local defaults', () {
+    const model = SettingsModel();
+
+    expect(model.clickAuditionVolume, defaultClickAuditionVolume);
+    expect(model.clickAuditionDownbeatAccentEnabled, isTrue);
+    expect(
+      model.clickAuditionOutputOffsets.asMap,
+      {
+        'bluetooth': 0,
+        'wired': 0,
+        'speaker': 0,
+        'other': 0,
+        'unknown': 0,
+      },
+    );
+    expect(model.toJson(), isNot(contains('clickAuditionEnabled')));
+  });
+
   test('key notation defaults and migrates to Camelot', () {
     expect(const SettingsModel().keyNotation, KeyNotation.camelot);
     expect(SettingsModel.fromJson(const {}).keyNotation, KeyNotation.camelot);
@@ -31,6 +49,62 @@ void main() {
     expect(model.toJson(), isNot(contains('gaplessPlayback')));
     expect(model.toJson(), isNot(contains('streamingQuality')));
     expect(model.toJson(), isNot(contains('downloadQuality')));
+  });
+
+  test('click audition JSON is canonical and tolerates malformed values', () {
+    final model = SettingsModel.fromJson(const {
+      'crossfadeDuration': 'not-a-number',
+      'themeMode': 99,
+      'clickAuditionVolume': '1.25',
+      'clickAuditionDownbeatAccentEnabled': 'false',
+      'clickAuditionOutputOffsetsMs': {
+        'bluetooth': 900,
+        'wired': '-900',
+        'speaker': 'invalid',
+        'other': 12.6,
+        'unknown': null,
+        'future-route': 321,
+      },
+    });
+
+    expect(model.crossfadeDuration, 0);
+    expect(model.themeMode, AppThemeMode.system);
+    expect(model.clickAuditionVolume, 1);
+    expect(model.clickAuditionDownbeatAccentEnabled, isFalse);
+    expect(
+      model.clickAuditionOutputOffsets.asMap,
+      {
+        'bluetooth': maxClickAuditionOutputOffsetMs,
+        'wired': minClickAuditionOutputOffsetMs,
+        'speaker': 0,
+        'other': 13,
+        'unknown': 0,
+      },
+    );
+    expect(
+      model.toJson()['clickAuditionOutputOffsetsMs'],
+      model.clickAuditionOutputOffsets.asMap,
+    );
+  });
+
+  test('route offset copies preserve other routes and expose no mutable map',
+      () {
+    final original = ClickAuditionOutputOffsets(
+      bluetooth: 900,
+      wired: -900,
+    );
+    final changed = original.withOffset(
+      ClickAuditionOutputRoute.speaker,
+      750,
+    );
+
+    expect(changed.bluetooth, maxClickAuditionOutputOffsetMs);
+    expect(changed.wired, minClickAuditionOutputOffsetMs);
+    expect(changed.speaker, maxClickAuditionOutputOffsetMs);
+    expect(
+      () => changed.asMap['speaker'] = 0,
+      throwsUnsupportedError,
+    );
   });
 
   test(
@@ -62,5 +136,39 @@ void main() {
     final saved = jsonDecode(preferences.getString('app_settings')!)
         as Map<String, dynamic>;
     expect(saved['keyNotation'], 'musical');
+  });
+
+  test('settings notifier persists clamped local audition preferences',
+      () async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final notifier = SettingsNotifier(preferences);
+
+    notifier.setClickAuditionVolume(-1);
+    notifier.setClickAuditionDownbeatAccentEnabled(false);
+    notifier.setClickAuditionOutputOffsetMs(
+      ClickAuditionOutputRoute.bluetooth,
+      700,
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(notifier.state.clickAuditionVolume, 0);
+    expect(notifier.state.clickAuditionDownbeatAccentEnabled, isFalse);
+    expect(
+      notifier.state.clickAuditionOutputOffsetMsFor(
+        ClickAuditionOutputRoute.bluetooth,
+      ),
+      maxClickAuditionOutputOffsetMs,
+    );
+
+    final saved = jsonDecode(preferences.getString('app_settings')!)
+        as Map<String, dynamic>;
+    expect(saved['clickAuditionVolume'], 0);
+    expect(saved['clickAuditionDownbeatAccentEnabled'], isFalse);
+    expect(
+      (saved['clickAuditionOutputOffsetsMs']
+          as Map<String, dynamic>)['bluetooth'],
+      maxClickAuditionOutputOffsetMs,
+    );
   });
 }

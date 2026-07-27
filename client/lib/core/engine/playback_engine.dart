@@ -1,6 +1,9 @@
 import 'dart:async';
 
+import 'click_audition_projection.dart';
+import 'click_auditioner.dart';
 import 'engine_audio_source_resolver.dart';
+import 'procedural_click_audio_source.dart';
 import 'timeline_clock.dart';
 import 'timeline_model.dart';
 import 'voice.dart';
@@ -35,6 +38,7 @@ class PlaybackEngine implements PlaybackEngineControls {
     TimelineClock? clock,
     VoicePool? voicePool,
     VoiceFactory? voiceFactory,
+    ClickAudioOutputFactory clickAudioOutputFactory = JustAudioClickOutput.new,
     EngineAudioSourceResolver resolver =
         const DirectEngineAudioSourceResolver(),
   }) {
@@ -51,12 +55,17 @@ class PlaybackEngine implements PlaybackEngineControls {
                     ),
             resolver: resolver,
           ),
+      clickAuditioner: ClickAuditioner(
+        clock: actualClock,
+        outputFactory: clickAudioOutputFactory,
+      ),
     );
   }
 
   PlaybackEngine.withClock({
     required TimelineClock clock,
     required VoiceFactory voiceFactory,
+    ClickAudioOutputFactory clickAudioOutputFactory = JustAudioClickOutput.new,
     EngineAudioSourceResolver resolver =
         const DirectEngineAudioSourceResolver(),
   }) : this._(
@@ -64,21 +73,28 @@ class PlaybackEngine implements PlaybackEngineControls {
           ownsClock: false,
           pool: VoicePool(
               clock: clock, voiceFactory: voiceFactory, resolver: resolver),
+          clickAuditioner: ClickAuditioner(
+            clock: clock,
+            outputFactory: clickAudioOutputFactory,
+          ),
         );
 
   PlaybackEngine._({
     required TimelineClock clock,
     required bool ownsClock,
     required VoicePool pool,
+    required ClickAuditioner clickAuditioner,
   })  : _clock = clock,
         _ownsClock = ownsClock,
-        _pool = pool {
+        _pool = pool,
+        _clickAuditioner = clickAuditioner {
     _bind();
   }
 
   final TimelineClock _clock;
   final bool _ownsClock;
   final VoicePool _pool;
+  final ClickAuditioner _clickAuditioner;
   final List<StreamSubscription> _subscriptions = [];
   final _clipCompletionController =
       StreamController<ClipCompletionEvent>.broadcast();
@@ -91,6 +107,9 @@ class PlaybackEngine implements PlaybackEngineControls {
   VoicePool get pool => _pool;
   TimelineClock get clock => _clock;
   TimelineModel get model => _model;
+  ClickAuditionState get clickAuditionState => _clickAuditioner.state;
+  Stream<ClickAuditionState> get clickAuditionStateStream =>
+      _clickAuditioner.stateStream;
   Stream<ClipCompletionEvent> get clipCompletionStream =>
       _clipCompletionController.stream;
 
@@ -120,16 +139,35 @@ class PlaybackEngine implements PlaybackEngineControls {
       _manualPositionJumpPending = false;
       _completedClipIds.clear();
     }
-    await _pool.loadMix(
-      model,
-      preserveActivePlayback: preserveActivePlayback,
-    );
+    final clickReplacement = _clickAuditioner.beginModelReplacement(model);
+    try {
+      await _pool.loadMix(
+        model,
+        preserveActivePlayback: preserveActivePlayback,
+      );
+    } finally {
+      // Canonical voice readiness defines loadMix completion. Click audition
+      // is reconciled only afterwards and never holds up model replacement.
+      unawaited(
+        _clickAuditioner.completeModelReplacement(clickReplacement),
+      );
+    }
   }
 
   void replaceMixMetadata(TimelineModel model) {
     _model = model;
-    _pool.replaceMixMetadata(model);
+    final clickReplacement = _clickAuditioner.beginModelReplacement(model);
+    try {
+      _pool.replaceMixMetadata(model);
+    } finally {
+      unawaited(
+        _clickAuditioner.completeModelReplacement(clickReplacement),
+      );
+    }
   }
+
+  ClickAuditionLease openClickAudition(ClickAuditionRequest request) =>
+      _clickAuditioner.open(request);
 
   @override
   Future<void> play() async {
@@ -138,6 +176,7 @@ class PlaybackEngine implements PlaybackEngineControls {
       await _pool.syncAt(_clock.positionMs, forceSeek: true);
       await _clock.play();
       await _pool.playActiveFromClock();
+      unawaited(_clickAuditioner.transportChanged(forceSeek: true));
     } finally {
       _pool.endCoordinatedResume();
     }
@@ -147,23 +186,30 @@ class PlaybackEngine implements PlaybackEngineControls {
   Future<void> pause() async {
     await _clock.pause();
     await _pool.pauseActive();
+    unawaited(_clickAuditioner.transportChanged(forceSeek: true));
   }
 
-  void beginScrub() => _clock.beginScrub();
+  void beginScrub() {
+    _clock.beginScrub();
+    unawaited(_clickAuditioner.transportChanged(forceSeek: true));
+  }
+
   void updateScrub(int globalMs) {
     _markManualPositionJump();
     _clock.updateScrub(globalMs);
   }
 
-  Future<void> endScrub(int globalMs) {
+  Future<void> endScrub(int globalMs) async {
     _markManualPositionJump();
-    return _clock.endScrub(globalMs);
+    await _clock.endScrub(globalMs);
+    unawaited(_clickAuditioner.transportChanged(forceSeek: true));
   }
 
   @override
-  Future<void> seek(int globalMs) {
+  Future<void> seek(int globalMs) async {
     _markManualPositionJump();
-    return _clock.seek(globalMs);
+    await _clock.seek(globalMs);
+    unawaited(_clickAuditioner.transportChanged(forceSeek: true));
   }
 
   Future<void> dispose() async {
@@ -171,6 +217,7 @@ class PlaybackEngine implements PlaybackEngineControls {
       await sub.cancel();
     }
     _subscriptions.clear();
+    await _clickAuditioner.dispose();
     await _pool.dispose();
     if (_ownsClock) await _clock.dispose();
     await _clipCompletionController.close();

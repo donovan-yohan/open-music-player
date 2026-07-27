@@ -329,6 +329,28 @@ timestamps. It selects effective downbeats only when both meter and phase are
 known; otherwise no downbeats are manufactured. The queue list and selected
 timeline clip refresh from this response after a successful CAS update.
 
+## Beat and downbeat click audition
+
+The analysis correction sheet can audition saved or unsaved timing through an
+auxiliary click output owned by `PlaybackEngine`. The auditioner follows the
+canonical `TimelineClock` and targets one exact `queueItemId`; it does not own a
+preview transport. Source-time beat and downbeat markers are projected through
+that queue item's `MixClip`, including its rate automation, before the
+procedural click track is rendered.
+
+Changing downbeat phase changes only which existing beats are accented. Unknown
+meter or downbeat phase produces unaccented beat clicks rather than inferred
+downbeats. The procedural output is auxiliary: it does not activate the audio
+session, handle interruptions, or become another audio-focus owner.
+
+Click volume and the coarse Bluetooth, wired, speaker, other, or unknown output
+offset are device-local settings only. A negative offset renders clicks
+earlier; a positive offset renders them later. The offset is applied after
+timeline projection and never mutates BPM, beat timestamps, meter, phase, or
+any saved analysis payload. On Android, the displayed route is conservatively
+inferred from connected outputs because the active media route is unavailable;
+the UI therefore keeps the active route explicitly unconfirmed.
+
 ## Tempo automation and pitch mode
 
 The timeline model uses reliable BPM metadata to automate playback speed during
