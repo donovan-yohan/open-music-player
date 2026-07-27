@@ -47,6 +47,8 @@ class AnalysisService {
       body: {
         'overrides': overrides.toJson(includeServerMetadata: false),
         'expected_revision': expectedRevision,
+        if (overrides.timingMutation != AnalysisTimingMutation.preserve)
+          'timing_mutation': overrides.timingMutation.wireValue,
       },
       parser: (json) => TrackAnalysis.fromJson(
         status: json['status'],

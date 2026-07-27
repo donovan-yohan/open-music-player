@@ -55,6 +55,15 @@ var (
 	ErrAnalysisOverrideConflict = errors.New("analysis override revision conflict")
 )
 
+// AnalysisTimingMutation lets correction clients replace or remove all timing
+// facts without accidentally retaining a legacy fallback document.
+type AnalysisTimingMutation string
+
+const (
+	AnalysisTimingReplace AnalysisTimingMutation = "replace"
+	AnalysisTimingClear   AnalysisTimingMutation = "clear"
+)
+
 type TrackAnalysis struct {
 	TrackID                 int64
 	SchemaVersion           int
@@ -366,18 +375,48 @@ func (r *AnalysisRepository) StoreResult(ctx context.Context, trackID int64, res
 }
 
 func (r *AnalysisRepository) SetOverrides(ctx context.Context, trackID int64, overrides json.RawMessage, expectedRevision int64) (*TrackAnalysis, error) {
+	return r.setOverrides(ctx, trackID, overrides, expectedRevision, "")
+}
+
+func (r *AnalysisRepository) SetOverridesWithTimingMutation(
+	ctx context.Context,
+	trackID int64,
+	overrides json.RawMessage,
+	expectedRevision int64,
+	mutation AnalysisTimingMutation,
+) (*TrackAnalysis, error) {
+	if mutation != AnalysisTimingReplace && mutation != AnalysisTimingClear {
+		return nil, errors.New("invalid analysis timing mutation")
+	}
+	return r.setOverrides(ctx, trackID, overrides, expectedRevision, mutation)
+}
+
+func (r *AnalysisRepository) setOverrides(ctx context.Context, trackID int64, overrides json.RawMessage, expectedRevision int64, mutation AnalysisTimingMutation) (*TrackAnalysis, error) {
 	if expectedRevision < 0 {
 		return nil, ErrAnalysisOverrideConflict
 	}
 	overrideUpdatedAt := time.Now().UTC()
-	preserveLegacyTiming := hasOverrideFacts(overrides)
-	stampedOverrides, err := stampManualTimingOverrideMetadata(overrides, expectedRevision+1, overrideUpdatedAt)
+	preserveLegacyTiming := mutation == "" && hasOverrideFacts(overrides)
+	normalizedOverrides, err := applyAnalysisTimingMutation(overrides, mutation)
 	if err != nil {
 		return nil, err
 	}
+	stampedOverrides := normalizedOverrides
+	if mutation != AnalysisTimingClear {
+		stampedOverrides, err = stampManualTimingOverrideMetadata(normalizedOverrides, expectedRevision+1, overrideUpdatedAt)
+	}
+	if err != nil {
+		return nil, err
+	}
+	preserveMetadata := mutation == AnalysisTimingClear
 	updateQuery := `
 		UPDATE track_analysis
-		SET overrides_json = CASE WHEN $5 THEN
+		SET overrides_json = CASE WHEN $6 THEN
+				jsonb_strip_nulls(jsonb_build_object(
+					'key', overrides_json->'key',
+					'camelot', overrides_json->'camelot'
+				)) || COALESCE($3::jsonb, '{}'::jsonb)
+			WHEN $5 THEN
 				jsonb_strip_nulls(jsonb_build_object(
 					'bpm', overrides_json->'bpm',
 					'beat_grid', overrides_json->'beat_grid',
@@ -396,7 +435,7 @@ func (r *AnalysisRepository) SetOverrides(ctx context.Context, trackID int64, ov
 		RETURNING ` + analysisReturningColumns
 	var analysis TrackAnalysis
 	err = scanTrackAnalysis(r.db.QueryRowContext(
-		ctx, updateQuery, trackID, expectedRevision, nullableRawJSON(stampedOverrides), overrideUpdatedAt, preserveLegacyTiming,
+		ctx, updateQuery, trackID, expectedRevision, nullableRawJSON(stampedOverrides), overrideUpdatedAt, preserveLegacyTiming, preserveMetadata,
 	), &analysis)
 	if err == nil {
 		return &analysis, nil
@@ -431,6 +470,24 @@ func (r *AnalysisRepository) SetOverrides(ctx context.Context, trackID int64, ov
 		return nil, err
 	}
 	return &analysis, nil
+}
+
+func applyAnalysisTimingMutation(overrides json.RawMessage, mutation AnalysisTimingMutation) (json.RawMessage, error) {
+	if mutation == "" {
+		return overrides, nil
+	}
+	var document map[string]any
+	if err := json.Unmarshal(overrides, &document); err != nil {
+		return nil, err
+	}
+	for _, key := range []string{"bpm", "beat_grid", "downbeats"} {
+		delete(document, key)
+	}
+	if mutation == AnalysisTimingClear {
+		delete(document, "manual_timing_v2")
+		delete(document, "manual_timing_override")
+	}
+	return json.Marshal(document)
 }
 
 type rowScanner interface {

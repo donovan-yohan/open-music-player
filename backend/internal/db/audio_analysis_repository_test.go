@@ -292,6 +292,37 @@ func TestStampManualTimingOverrideMetadataRetainsResetRevision(t *testing.T) {
 	}
 }
 
+func TestApplyAnalysisTimingMutationSeparatesReplaceAndClear(t *testing.T) {
+	input := json.RawMessage(`{
+		"manual_timing_v2":{"schema_version":2,"bpm":120},
+		"manual_timing_override":{"bpm":119},
+		"bpm":{"value":120},"beat_grid":{"beats_ms":[0]},"downbeats":{"positions_ms":[0]},
+		"key":{"value":"A minor"},"camelot":{"value":"8A"}
+	}`)
+	replaced, err := applyAnalysisTimingMutation(input, AnalysisTimingReplace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := applyAnalysisTimingMutation(input, AnalysisTimingClear)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []json.RawMessage{replaced, cleared} {
+		if strings.Contains(string(raw), `"beat_grid"`) || strings.Contains(string(raw), `"downbeats"`) || strings.Contains(string(raw), `"bpm":{"value"`) {
+			t.Fatalf("legacy timing survived mutation: %s", raw)
+		}
+	}
+	if !strings.Contains(string(replaced), `"manual_timing_v2"`) {
+		t.Fatalf("replace removed canonical timing: %s", replaced)
+	}
+	if strings.Contains(string(cleared), `"manual_timing_v2"`) || strings.Contains(string(cleared), `"manual_timing_override"`) {
+		t.Fatalf("clear retained timing envelope: %s", cleared)
+	}
+	if !strings.Contains(string(cleared), `"key"`) || !strings.Contains(string(cleared), `"camelot"`) {
+		t.Fatalf("clear removed metadata: %s", cleared)
+	}
+}
+
 func TestAnalysisRepositoryConcurrentManualTimingCASAllowsOneWinnerAgainstPostgres(t *testing.T) {
 	database, ctx := newPostgresAnalysisTestDB(t)
 	trackRepo := NewTrackRepository(database)
