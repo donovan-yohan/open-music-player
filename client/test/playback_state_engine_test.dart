@@ -696,6 +696,113 @@ void main() {
       playback.dispose();
     });
 
+    test(
+        'analysis refresh and persisted restore retain clears and generated reset identity',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final store = _MemoryQueuePersistenceStore();
+      final active = _playbackState(
+        persistence: store,
+        persistenceDebounce: Duration.zero,
+      );
+      await active.restore();
+      final corrected = TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: const {
+          'bpm': {'value': 120, 'confidence': 0.8},
+          'beat_grid': {
+            'bpm': 120,
+            'offset_ms': 100,
+            'beats_ms': [100, 600, 1100, 1600, 2100],
+            'confidence': 0.8,
+          },
+          'downbeats': {
+            'positions_ms': [100, 2100],
+            'confidence': 0.8,
+          },
+        },
+        overrides: const {
+          'beat_grid': {'beats_ms': <int>[]},
+          'downbeats': <int>[],
+        },
+      );
+
+      await active.playQueue([_track(1, seconds: 20)]);
+      await active.refreshTrackAnalysis('1', corrected);
+      await Future<void>.delayed(Duration.zero);
+
+      final activeAnalysis = trackAnalysisFromTrackJson(
+        Map<String, dynamic>.from(active.queue.single.extras!),
+      )!;
+      expect(activeAnalysis.generatedSummary?.beatGrid?.beatsMs, [
+        100,
+        600,
+        1100,
+        1600,
+        2100,
+      ]);
+      expect(activeAnalysis.summary?.beatGrid?.beatsMs, isEmpty);
+      expect(activeAnalysis.summary?.downbeats?.positionsMs, isEmpty);
+
+      for (var attempt = 0; attempt < 10 && store.snapshot.isEmpty; attempt++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(store.snapshot.isEmpty, isFalse);
+      final persistedTrack = store.snapshot.tracks.single;
+      expect(
+        (persistedTrack['analysisSummary']
+            as Map<String, dynamic>)['_omp_summary_contract'],
+        {
+          'version': 1,
+          'projection': 'generated',
+        },
+      );
+      expect(
+        (persistedTrack['analysisOverrides']
+            as Map<String, dynamic>)['beat_grid']['beats_ms'],
+        isEmpty,
+      );
+      expect(
+        (persistedTrack['analysisOverrides']
+            as Map<String, dynamic>)['downbeats']['positions_ms'],
+        isEmpty,
+      );
+      active.dispose();
+
+      final restored = _playbackState(persistence: store);
+      await restored.restore();
+      await Future<void>.delayed(Duration.zero);
+
+      final restoredAnalysis = trackAnalysisFromTrackJson(
+        Map<String, dynamic>.from(restored.queue.single.extras!),
+      )!;
+      expect(restoredAnalysis.generatedSummary?.beatGrid?.beatsMs, [
+        100,
+        600,
+        1100,
+        1600,
+        2100,
+      ]);
+      expect(restoredAnalysis.summary?.beatGrid?.beatsMs, isEmpty);
+      expect(restoredAnalysis.summary?.downbeats?.positionsMs, isEmpty);
+
+      final reset = TrackAnalysis.fromJson(
+        status: restoredAnalysis.status.name,
+        summary: restoredAnalysis.generatedSummary?.toJson(),
+        overrides: const <String, dynamic>{},
+        overridesPresent: true,
+      );
+      expect(reset.summary?.beatGrid?.beatsMs, [
+        100,
+        600,
+        1100,
+        1600,
+        2100,
+      ]);
+      expect(reset.summary?.downbeats?.positionsMs, [100, 2100]);
+      restored.dispose();
+    });
+
     test('analysis refresh never puts waveform arrays in media extras',
         () async {
       SharedPreferences.setMockInitialValues({});
@@ -956,6 +1063,18 @@ class _ControllableQueuePersistenceStore extends QueuePersistenceStore {
   @override
   Future<void> save(QueueSnapshot snapshot) async {
     savedSnapshots.add(snapshot);
+  }
+}
+
+class _MemoryQueuePersistenceStore extends QueuePersistenceStore {
+  QueueSnapshot snapshot = const QueueSnapshot();
+
+  @override
+  Future<QueueSnapshot> load() async => snapshot;
+
+  @override
+  Future<void> save(QueueSnapshot value) async {
+    snapshot = value;
   }
 }
 

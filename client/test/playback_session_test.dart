@@ -873,6 +873,10 @@ void main() {
             'playbackState': 'playable',
             'analysisStatus': 'analyzed',
             'analysisSummary': {
+              '_omp_summary_contract': {
+                'version': 1,
+                'projection': 'generated',
+              },
               'bpm': {'value': 120, 'confidence': 0.9},
               'downbeats': [0, 2000],
             },
@@ -912,6 +916,10 @@ void main() {
             'playbackState': 'playable',
             'analysisStatus': 'analyzed',
             'analysisSummary': {
+              '_omp_summary_contract': {
+                'version': 1,
+                'projection': 'generated',
+              },
               'bpm': {'value': 120, 'confidence': 0.9},
               'downbeats': [0, 2000],
             },

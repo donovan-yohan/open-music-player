@@ -1022,14 +1022,19 @@ void main() {
         provider.trackWithAnalysis(track, requestHydration: false).analysis!;
     final overrides = compacted.overrides!;
     final json = overrides.toJson();
-    final tempo = ClipTempoMetadata.fromSessionJson(
-      ClipTempoMetadata.fromAnalysisSummary(
-        compacted.summary?.toJson(),
-        overrides: json,
-      ).toJson(),
-    );
+    final tempo = ClipTempoMetadata.fromTrackAnalysis(compacted);
 
     expect(compacted.summary?.waveform, isNull);
+    expect(compacted.generatedSummary?.waveform, isNull);
+    expect(compacted.generatedSummary?.bpm?.numericValue, 120);
+    expect(compacted.summary?.bpm?.numericValue, 124);
+    final roundTrip = TrackAnalysis.fromJson(
+      status: compacted.status.name,
+      summary: compacted.toJson()['summary'],
+      overrides: compacted.toJson()['overrides'],
+    );
+    expect(roundTrip.generatedSummary?.bpm?.numericValue, 120);
+    expect(roundTrip.summary?.bpm?.numericValue, 124);
     expect(overrides.beatGridOffsetMs, 87);
     expect(overrides.bpmProvenance, 'bpm-source');
     expect(overrides.beatGridProvenance, 'grid-source');
@@ -1041,6 +1046,100 @@ void main() {
     expect(tempo.bpmProvenance, 'bpm-source');
     expect(tempo.beatGridProvenance, 'grid-source');
     expect(tempo.downbeatProvenance, 'downbeat-source');
+    provider.dispose();
+  });
+
+  test('effective compact refresh never becomes a generated reset base',
+      () async {
+    final hydrated = Completer<void>();
+    final provider = QueueProvider(
+      mockQueueApiClient((request) async {
+        if (!request.url.path.endsWith('/tracks/42/analysis')) {
+          return http.Response('', 404);
+        }
+        return http.Response(
+          jsonEncode({
+            'status': 'analyzed',
+            'updated_at': '2026-07-26T12:00:00Z',
+            'override_revision': 1,
+            'summary': {
+              'bpm': {'value': 120, 'provenance': 'analyzer'},
+              'beat_grid': {
+                'bpm': 120,
+                'offset_ms': 100,
+                'beats_ms': [100, 600, 1100],
+              },
+              'waveform': {
+                'sample_count': 2,
+                'peaks': [0.2, 0.8],
+              },
+            },
+            'overrides': {
+              'manual_timing_override': {
+                'bpm': 124,
+                'beat_anchor_ms': 100,
+                'revision': 1,
+              },
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+    provider.addListener(() {
+      if (!hydrated.isCompleted) hydrated.complete();
+    });
+    final base = _track(playbackTrackId: '42');
+    provider.trackWithAnalysis(base);
+    await hydrated.future.timeout(const Duration(seconds: 1));
+
+    final effectiveCompact = trackAnalysisFromTrackJson({
+      'analysisStatus': 'analyzed',
+      'analysisUpdatedAt': '2026-07-26T12:00:00Z',
+      'analysisOverrideRevision': 1,
+      'analysisSummary': {
+        '_omp_summary_contract': {
+          'version': 1,
+          'projection': 'effective',
+        },
+        'bpm': {'value': 124},
+        'beat_grid': {
+          'bpm': 124,
+          'offset_ms': 100,
+          'beats_ms': [100, 584, 1068],
+        },
+        'key': {'value': 'E minor'},
+      },
+      'analysisOverrides': {
+        'manual_timing_override': {
+          'bpm': 124,
+          'beat_anchor_ms': 100,
+          'revision': 1,
+        },
+        'key': {'value': 'E minor'},
+      },
+    })!;
+    final merged = provider
+        .trackWithAnalysis(
+          base.copyWith(analysis: effectiveCompact),
+          requestHydration: false,
+        )
+        .analysis!;
+
+    expect(merged.generatedSummary?.bpm?.numericValue, 120);
+    expect(merged.generatedSummary?.waveform?.peaks, [0.2, 0.8]);
+    expect(merged.summary?.bpm?.numericValue, 124);
+    final roundTrip = trackAnalysisFromTrackJson(trackAnalysisFields(merged))!;
+    expect(roundTrip.generatedSummary?.bpm?.numericValue, 120);
+    expect(roundTrip.summary?.bpm?.numericValue, 124);
+    final resetProjection = TrackAnalysis.fromJson(
+      status: merged.status.name,
+      summary: roundTrip.generatedSummary?.toJson(),
+      overrides: const <String, dynamic>{},
+      overridesPresent: true,
+    );
+    expect(resetProjection.summary?.bpm?.numericValue, 120);
     provider.dispose();
   });
 

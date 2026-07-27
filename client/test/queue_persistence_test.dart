@@ -250,6 +250,149 @@ void main() {
     });
   });
 
+  group('compact analysis override presence', () {
+    test('preserves only explicitly empty or valid beat lists', () {
+      final longBeats = [
+        for (var beat = 0; beat < maxPersistedBeatPositions + 4; beat++) beat,
+      ];
+      final boundedBeats = [
+        ...longBeats.take(maxPersistedBeatPositions ~/ 2),
+        ...longBeats.skip(
+          longBeats.length - (maxPersistedBeatPositions ~/ 2),
+        ),
+      ];
+      final cases = <(String, Map<String, dynamic>, List<int>?)>[
+        ('absent', const {}, null),
+        (
+          'null',
+          const {
+            'beat_grid': {'beats_ms': null},
+          },
+          null,
+        ),
+        (
+          'malformed',
+          const {
+            'beat_grid': {'beats_ms': 'not-a-list'},
+          },
+          null,
+        ),
+        (
+          'empty snake case',
+          const {
+            'beat_grid': {'beats_ms': <int>[]},
+          },
+          const [],
+        ),
+        (
+          'empty camel case',
+          const {
+            'beatGrid': {'beatsMs': <int>[]},
+          },
+          const [],
+        ),
+        (
+          'nonempty stays in input order',
+          const {
+            'beat_grid': {
+              'beats_ms': [300, 100, 200],
+            },
+          },
+          const [300, 100, 200],
+        ),
+        (
+          'bounded stays in input order',
+          {
+            'beat_grid': {'beats_ms': longBeats},
+          },
+          boundedBeats,
+        ),
+      ];
+
+      for (final (name, source, expected) in cases) {
+        final compact = compactAnalysisOverrides(source)!;
+        final beatGrid = compact['beat_grid'] as Map?;
+        final actual = beatGrid?.containsKey('beats_ms') == true
+            ? (beatGrid!['beats_ms'] as List).cast<int>()
+            : null;
+        expect(actual, expected, reason: name);
+      }
+    });
+
+    test('preserves mapped and bare explicit downbeat clears', () {
+      final longDownbeats = [
+        for (var beat = 0; beat < maxPersistedDownbeatPositions + 4; beat++)
+          beat,
+      ];
+      final boundedDownbeats = [
+        ...longDownbeats.take(maxPersistedDownbeatPositions ~/ 2),
+        ...longDownbeats.skip(
+          longDownbeats.length - (maxPersistedDownbeatPositions ~/ 2),
+        ),
+      ];
+      final cases = <(String, Map<String, dynamic>, List<int>?)>[
+        ('absent', const {}, null),
+        ('null', const {'downbeats': null}, null),
+        ('malformed', const {'downbeats': 'not-a-list'}, null),
+        (
+          'malformed mapped positions',
+          const {
+            'downbeats': {'positions_ms': 'not-a-list'},
+          },
+          null,
+        ),
+        (
+          'empty mapped snake case',
+          const {
+            'downbeats': {'positions_ms': <int>[]},
+          },
+          const [],
+        ),
+        (
+          'empty mapped camel case',
+          const {
+            'downbeats': {'positionsMs': <int>[]},
+          },
+          const [],
+        ),
+        ('empty bare list', const {'downbeats': <int>[]}, const []),
+        (
+          'nonempty bare list stays in input order',
+          const {
+            'downbeats': [300, 100, 200],
+          },
+          const [300, 100, 200],
+        ),
+        (
+          'bounded stays in input order',
+          {
+            'downbeats': {'positions_ms': longDownbeats},
+          },
+          boundedDownbeats,
+        ),
+      ];
+
+      for (final (name, source, expected) in cases) {
+        final compact = compactAnalysisOverrides(source)!;
+        final downbeats = compact['downbeats'] as Map?;
+        final actual = downbeats?.containsKey('positions_ms') == true
+            ? (downbeats!['positions_ms'] as List).cast<int>()
+            : null;
+        expect(actual, expected, reason: name);
+      }
+    });
+
+    test('summary compaction still omits explicit empty marker lists', () {
+      expect(
+        compactAnalysisSummary(const {
+          'beat_grid': {'beats_ms': <int>[]},
+          'downbeats': {'positions_ms': <int>[]},
+        }),
+        isNull,
+      );
+    });
+  });
+
   group('mediaItemToPlaybackJson', () {
     test('re-emits the re-resolvable playback shape and drops signed URL data',
         () {

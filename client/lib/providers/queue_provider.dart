@@ -1015,10 +1015,9 @@ class QueueProvider extends ChangeNotifier {
         (analysisTrackId == null
             ? null
             : _analysisByTrackId[analysisTrackId.toString()]);
-    return ClipTempoMetadata.fromAnalysisSummary(
-      analysis?.summary?.toJson(),
-      overrides: analysis?.overrides?.toJson(),
-    );
+    return analysis == null
+        ? ClipTempoMetadata.empty
+        : ClipTempoMetadata.fromTrackAnalysis(analysis);
   }
 
   String? _mixPlanTrackId(QueueTrack track) {
@@ -1326,38 +1325,7 @@ class QueueProvider extends ChangeNotifier {
   TrackAnalysis _compactRevisionSnapshot(TrackAnalysis analysis) {
     final sourceSummary = analysis.summary;
     final sourceOverrides = analysis.overrides;
-    final beatGrid = sourceSummary?.beatGrid;
-    final downbeats = sourceSummary?.downbeats;
-    final summary = sourceSummary == null
-        ? null
-        : TrackAnalysisSummary(
-            bpm: sourceSummary.bpm,
-            beatGrid: beatGrid == null
-                ? null
-                : BeatGridSummary(
-                    bpm: beatGrid.bpm,
-                    offsetMs: beatGrid.offsetMs,
-                    beatsMs: _boundedMarkerPositions(
-                      beatGrid.beatsMs,
-                      _maxRetainedBeatPositions,
-                    ),
-                    confidence: beatGrid.confidence,
-                    provenance: beatGrid.provenance,
-                  ),
-            downbeats: downbeats == null
-                ? null
-                : DownbeatSummary(
-                    positionsMs: _boundedMarkerPositions(
-                      downbeats.positionsMs,
-                      _maxRetainedDownbeatPositions,
-                    ),
-                    confidence: downbeats.confidence,
-                    provenance: downbeats.provenance,
-                  ),
-            key: sourceSummary.key,
-            camelot: sourceSummary.camelot,
-            energy: sourceSummary.energy,
-          );
+    final summary = _compactAnalysisSummary(sourceSummary);
     final overrides = sourceOverrides == null
         ? null
         : TrackAnalysisOverrides(
@@ -1386,12 +1354,49 @@ class QueueProvider extends ChangeNotifier {
           );
     return TrackAnalysis(
       status: analysis.status,
+      generatedSummary: _compactAnalysisSummary(analysis.generatedSummary),
       summary: summary,
       overrides: overrides,
       overridesPresent: analysis.overridesPresent,
       updatedAt: analysis.updatedAt,
       overrideRevision: analysis.overrideRevision,
       overrideUpdatedAt: analysis.overrideUpdatedAt,
+    );
+  }
+
+  TrackAnalysisSummary? _compactAnalysisSummary(
+    TrackAnalysisSummary? source,
+  ) {
+    if (source == null) return null;
+    final beatGrid = source.beatGrid;
+    final downbeats = source.downbeats;
+    return TrackAnalysisSummary(
+      bpm: source.bpm,
+      beatGrid: beatGrid == null
+          ? null
+          : BeatGridSummary(
+              bpm: beatGrid.bpm,
+              offsetMs: beatGrid.offsetMs,
+              beatsMs: _boundedMarkerPositions(
+                beatGrid.beatsMs,
+                _maxRetainedBeatPositions,
+              ),
+              confidence: beatGrid.confidence,
+              provenance: beatGrid.provenance,
+            ),
+      downbeats: downbeats == null
+          ? null
+          : DownbeatSummary(
+              positionsMs: _boundedMarkerPositions(
+                downbeats.positionsMs,
+                _maxRetainedDownbeatPositions,
+              ),
+              confidence: downbeats.confidence,
+              provenance: downbeats.provenance,
+            ),
+      key: source.key,
+      camelot: source.camelot,
+      energy: source.energy,
     );
   }
 
@@ -1794,28 +1799,41 @@ class QueueProvider extends ChangeNotifier {
     TrackAnalysis detailed,
     TrackAnalysis incoming,
   ) {
-    final baseSummary = incoming.overridesPresent
+    final generatedSummary = _deepMergeAnalysisMaps(
+      detailed.generatedSummary?.toJson() ?? const <String, dynamic>{},
+      incoming.generatedSummary?.toJson() ?? const <String, dynamic>{},
+    );
+    final effectiveBase = incoming.overridesPresent
         ? _summaryWithoutAppliedOverrides(detailed)
         : detailed.summary?.toJson() ?? const <String, dynamic>{};
-    final summary = _deepMergeAnalysisMaps(
-      baseSummary,
+    final effectiveSummary = _deepMergeAnalysisMaps(
+      effectiveBase,
       incoming.summary?.toJson() ?? const <String, dynamic>{},
     );
+    final hasGeneratedSummary = generatedSummary.isNotEmpty;
     final overrides = incoming.overridesPresent
         ? incoming.overrides?.toJson() ?? const <String, dynamic>{}
         : detailed.overrides?.toJson();
     return TrackAnalysis.fromJson(
       status: incoming.status.name,
-      summary: summary.isEmpty ? null : summary,
+      summary: hasGeneratedSummary
+          ? generatedSummary
+          : (effectiveSummary.isEmpty ? null : effectiveSummary),
       overrides: overrides,
       overridesPresent: incoming.overridesPresent || detailed.overridesPresent,
       updatedAt: incoming.updatedAt ?? detailed.updatedAt,
       overrideRevision: incoming.overrideRevision ?? detailed.overrideRevision,
       overrideUpdatedAt:
           incoming.overrideUpdatedAt ?? detailed.overrideUpdatedAt,
+      summaryProjection: hasGeneratedSummary
+          ? TrackAnalysisSummaryProjection.generated
+          : TrackAnalysisSummaryProjection.effective,
     );
   }
 
+  /// Removes only facts invalidated by the incoming override from an
+  /// already-effective summary. This map is never promoted to generated
+  /// provenance; it exists solely to retain non-compact detail safely.
   Map<String, dynamic> _summaryWithoutAppliedOverrides(TrackAnalysis analysis) {
     final summary = Map<String, dynamic>.from(
       analysis.summary?.toJson() ?? const <String, dynamic>{},

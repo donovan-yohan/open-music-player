@@ -198,5 +198,67 @@ void main() {
       expect(analysis.overrides?.manualTiming?.revision, 10);
       expect(analysis.summary, isNotNull);
     });
+
+    test('serialization preserves generated base apart from effective timing',
+        () {
+      final analysis = TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'bpm': {'value': 100, 'provenance': 'generated'},
+          'beat_grid': {
+            'bpm': 100,
+            'offset_ms': 100,
+            'beats_ms': [100, 700, 1300, 1900],
+          },
+        },
+        overrides: {
+          'manual_timing_override': {
+            'bpm': 120,
+            'beat_anchor_ms': 100,
+            'beats_per_bar': 4,
+            'downbeat_phase_index': 1,
+          },
+        },
+      );
+
+      expect(analysis.generatedSummary?.bpm?.numericValue, 100);
+      expect(analysis.summary?.bpm?.numericValue, 120);
+      expect(analysis.toJson()['summary']['bpm']['value'], 100);
+
+      for (final fields in [
+        trackAnalysisFields(analysis),
+        trackAnalysisFields(
+          analysis,
+          fieldStyle: TrackAnalysisFieldStyle.snakeCase,
+        ),
+      ]) {
+        final restored = trackAnalysisFromTrackJson(fields);
+        expect(restored?.generatedSummary?.bpm?.numericValue, 100);
+        expect(restored?.summary?.bpm?.numericValue, 120);
+        expect(restored?.summary?.beatGrid?.beatsMs, [100, 600, 1100, 1600]);
+      }
+    });
+
+    test('unmarked legacy cache summary with overrides stays effective', () {
+      final restored = trackAnalysisFromTrackJson({
+        'analysisStatus': 'analyzed',
+        'analysisSummary': {
+          'bpm': {'value': 120},
+          'beat_grid': {
+            'bpm': 120,
+            'beats_ms': [100, 600, 1100],
+          },
+        },
+        'analysisOverrides': {
+          'manual_timing_override': {
+            'bpm': 120,
+            'beat_anchor_ms': 100,
+          },
+        },
+      });
+
+      expect(restored?.generatedSummary, isNull);
+      expect(restored?.summary?.beatGrid?.beatsMs, [100, 600, 1100]);
+    });
   });
 }

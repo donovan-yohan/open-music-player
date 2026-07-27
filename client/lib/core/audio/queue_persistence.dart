@@ -9,6 +9,7 @@ import '../../shared/models/track.dart'
         TrackArtworkKind,
         resolveTrackArtworkDescriptor,
         trackArtworkKindFromPayload;
+import '../../models/track_analysis.dart';
 import 'playback_session.dart';
 
 /// Pure, testable decisions and (de)serialization for resumable playback:
@@ -273,6 +274,11 @@ Map<String, dynamic>? _compactTempoMetadata(
   final source = Map<String, dynamic>.from(value);
   final compact = <String, dynamic>{};
 
+  final summaryContract = trackAnalysisSummaryContract(source);
+  if (summaryContract != null) {
+    compact[trackAnalysisSummaryContractKey] = summaryContract;
+  }
+
   final bpm = _compactAnalysisValue(source['bpm']);
   if (bpm != null) compact['bpm'] = bpm;
   for (final key in ['key', 'camelot']) {
@@ -291,7 +297,10 @@ Map<String, dynamic>? _compactTempoMetadata(
     if (offset != null) compactBeatGrid['offset_ms'] = offset;
     final beats = beatGrid['beats_ms'] ?? beatGrid['beatsMs'];
     final compactBeats = _boundedIntList(beats, maxPersistedBeatPositions);
-    if (compactBeats.isNotEmpty) compactBeatGrid['beats_ms'] = compactBeats;
+    if (compactBeats.isNotEmpty ||
+        (preserveEmpty && beats is List && beats.isEmpty)) {
+      compactBeatGrid['beats_ms'] = compactBeats;
+    }
     if (compactBeatGrid.isNotEmpty) compact['beat_grid'] = compactBeatGrid;
   }
 
@@ -311,7 +320,8 @@ Map<String, dynamic>? _compactTempoMetadata(
     positions,
     maxPersistedDownbeatPositions,
   );
-  if (boundedDownbeats.isNotEmpty) {
+  if (boundedDownbeats.isNotEmpty ||
+      (preserveEmpty && positions is List && positions.isEmpty)) {
     compactDownbeats['positions_ms'] = boundedDownbeats;
   }
   if (compactDownbeats.isNotEmpty) compact['downbeats'] = compactDownbeats;

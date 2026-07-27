@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
 enum TrackAnalysisStatus {
@@ -10,8 +11,20 @@ enum TrackAnalysisStatus {
   unknown,
 }
 
+enum TrackAnalysisSummaryProjection { generated, effective }
+
+const String trackAnalysisSummaryContractKey = '_omp_summary_contract';
+const int _analysisSummaryContractVersion = 1;
+
 class TrackAnalysis {
   final TrackAnalysisStatus status;
+
+  /// Latest analyzer-owned facts before manual overrides are projected.
+  ///
+  /// [summary] remains the effective timing contract consumed by playback and
+  /// queue surfaces. Keeping the generated source alongside it lets correction
+  /// UIs reset without reverse-engineering analyzer facts from the projection.
+  final TrackAnalysisSummary? generatedSummary;
   final TrackAnalysisSummary? summary;
   final TrackAnalysisOverrides? overrides;
   final bool overridesPresent;
@@ -27,6 +40,7 @@ class TrackAnalysis {
 
   const TrackAnalysis({
     required this.status,
+    this.generatedSummary,
     this.summary,
     this.overrides,
     bool? overridesPresent,
@@ -44,6 +58,7 @@ class TrackAnalysis {
     Object? updatedAt,
     Object? overrideRevision,
     Object? overrideUpdatedAt,
+    TrackAnalysisSummaryProjection? summaryProjection,
   }) {
     final parsedStatus = parseTrackAnalysisStatus(status);
     final baseSummary = summary == null
@@ -51,11 +66,21 @@ class TrackAnalysis {
         : TrackAnalysisSummary.fromJson(summary, artifacts: artifacts);
     final parsedOverrides = TrackAnalysisOverrides.fromJson(overrides);
     final manualTiming = parsedOverrides?.manualTiming;
-    final effectiveSummary = parsedOverrides == null
+    final resolvedProjection = _summaryProjectionFromPayload(summary) ??
+        summaryProjection ??
+        TrackAnalysisSummaryProjection.generated;
+    final generatedSummary =
+        resolvedProjection == TrackAnalysisSummaryProjection.generated
+            ? baseSummary
+            : null;
+    final effectiveSummary = resolvedProjection ==
+                TrackAnalysisSummaryProjection.effective ||
+            parsedOverrides == null
         ? baseSummary
         : parsedOverrides.applyTo(baseSummary ?? const TrackAnalysisSummary());
     return TrackAnalysis(
       status: parsedStatus,
+      generatedSummary: generatedSummary,
       summary: effectiveSummary,
       overrides: parsedOverrides,
       overridesPresent: overridesPresent ?? overrides != null,
@@ -75,10 +100,22 @@ class TrackAnalysis {
 
   bool get hasDisplayableSummary => summary?.displayLabels.isNotEmpty ?? false;
 
+  TrackAnalysisSummary? get _serializedSummary => generatedSummary ?? summary;
+
+  TrackAnalysisSummaryProjection get _serializedSummaryProjection =>
+      generatedSummary != null || !overridesPresent
+          ? TrackAnalysisSummaryProjection.generated
+          : TrackAnalysisSummaryProjection.effective;
+
   Map<String, dynamic> toJson() {
+    final serializedSummary = _serializedSummary;
     return {
       'status': status.name,
-      if (summary != null) 'summary': summary!.toJson(),
+      if (serializedSummary != null)
+        'summary': _summaryWithContract(
+          serializedSummary.toJson(),
+          _serializedSummaryProjection,
+        ),
       if (overridesPresent) 'overrides': overrides?.toJson() ?? const {},
       if (updatedAt != null) 'updated_at': updatedAt!.toUtc().toIso8601String(),
       if (overrideRevision != null) 'override_revision': overrideRevision,
@@ -129,6 +166,9 @@ TrackAnalysis? trackAnalysisFromTrackJson(Map<String, dynamic> json) {
     updatedAt: rawUpdatedAt,
     overrideRevision: rawOverrideRevision,
     overrideUpdatedAt: rawOverrideUpdatedAt,
+    summaryProjection: overridesPresent
+        ? TrackAnalysisSummaryProjection.effective
+        : TrackAnalysisSummaryProjection.generated,
   );
   if (analysis.status == TrackAnalysisStatus.unknown &&
       !analysis.hasDisplayableSummary &&
@@ -152,7 +192,7 @@ Map<String, dynamic> analysisPlaybackFields(TrackAnalysis? analysis) {
 
 enum TrackAnalysisFieldStyle { camelCase, snakeCase }
 
-typedef TrackAnalysisSummarySerializer = Object Function(
+typedef TrackAnalysisSummarySerializer = Object? Function(
     TrackAnalysisSummary summary);
 typedef TrackAnalysisOverridesSerializer = Object Function(
     TrackAnalysisOverrides? overrides);
@@ -180,11 +220,19 @@ Map<String, dynamic> trackAnalysisFields(
   final overrideUpdatedAtKey =
       snakeCase ? 'analysis_override_updated_at' : 'analysisOverrideUpdatedAt';
   final updatedAt = analysis.updatedAt?.toUtc();
+  final serializedSummary = analysis._serializedSummary;
+  final serializedSummaryValue = serializedSummary == null
+      ? null
+      : summarySerializer == null
+          ? serializedSummary.toJson()
+          : summarySerializer(serializedSummary);
   return {
     statusKey: analysis.status.name,
-    if (analysis.summary != null)
-      summaryKey: summarySerializer?.call(analysis.summary!) ??
-          analysis.summary!.toJson(),
+    if (serializedSummaryValue != null)
+      summaryKey: _serializedSummaryWithContract(
+        serializedSummaryValue,
+        analysis._serializedSummaryProjection,
+      ),
     if (analysis.overridesPresent)
       overridesKey: overridesSerializer?.call(analysis.overrides) ??
           analysis.overrides?.toJson() ??
@@ -198,6 +246,68 @@ Map<String, dynamic> trackAnalysisFields(
       overrideUpdatedAtKey:
           analysis.overrideUpdatedAt!.toUtc().toIso8601String(),
   };
+}
+
+TrackAnalysisSummaryProjection? _summaryProjectionFromPayload(Object? value) {
+  final summary = _readMap(value);
+  final contract = _readMap(summary?[trackAnalysisSummaryContractKey]);
+  if (_readInt(contract?['version']) != _analysisSummaryContractVersion) {
+    return null;
+  }
+  return switch (_readString(contract?['projection'])) {
+    'generated' => TrackAnalysisSummaryProjection.generated,
+    'effective' => TrackAnalysisSummaryProjection.effective,
+    _ => null,
+  };
+}
+
+/// Returns the normalized projection marker for a supported summary payload.
+///
+/// Playback and persistence boundaries use this instead of interpreting the
+/// marker independently, leaving this model as the sole projection authority.
+Map<String, dynamic>? trackAnalysisSummaryContract(Object? summary) {
+  final projection = _summaryProjectionFromPayload(summary);
+  return projection == null ? null : _summaryContract(projection);
+}
+
+Map<String, dynamic> _summaryWithContract(
+  Map<String, dynamic> summary,
+  TrackAnalysisSummaryProjection projection,
+) {
+  return {
+    ...summary,
+    trackAnalysisSummaryContractKey: _summaryContract(projection),
+  };
+}
+
+Map<String, dynamic> _summaryContract(
+  TrackAnalysisSummaryProjection projection,
+) =>
+    {
+      'version': _analysisSummaryContractVersion,
+      'projection': projection.name,
+    };
+
+Object _serializedSummaryWithContract(
+  Object serialized,
+  TrackAnalysisSummaryProjection projection,
+) {
+  if (serialized is String) {
+    try {
+      final decoded = jsonDecode(serialized);
+      final summary = _readMap(decoded);
+      if (summary != null) {
+        return jsonEncode(_summaryWithContract(summary, projection));
+      }
+    } catch (_) {
+      return serialized;
+    }
+    return serialized;
+  }
+  final summary = _readMap(serialized);
+  return summary == null
+      ? serialized
+      : _summaryWithContract(summary, projection);
 }
 
 DateTime? _readDateTime(Object? value) {

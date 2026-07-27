@@ -1222,10 +1222,7 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline> {
     if (analysis == null) return ClipTempoMetadata.empty;
     final cached = _tempoMetadataCache[analysis];
     if (cached != null) return cached;
-    final tempo = ClipTempoMetadata.fromAnalysisSummary(
-      analysis.summary?.toJson(),
-      overrides: analysis.overrides?.toJson(),
-    );
+    final tempo = ClipTempoMetadata.fromTrackAnalysis(analysis);
     if (_tempoMetadataCache.length >= _maxCachedTempoMetadata) {
       _tempoMetadataCache.remove(_tempoMetadataCache.keys.first);
     }
