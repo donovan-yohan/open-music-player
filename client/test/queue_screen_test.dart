@@ -1608,6 +1608,64 @@ void main() {
   );
 
   testWidgets(
+    'desktop editor reload applies a persisted v2-only timing override',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final persisted = TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'bpm': {'value': 124, 'provenance': 'generated'},
+          'beat_grid': {
+            'bpm': 124,
+            'offset_ms': 100,
+            'beats_ms': [100, 584, 1068, 1552],
+            'provenance': 'generated',
+          },
+          'downbeats': {
+            'positions_ms': [100],
+            'provenance': 'generated',
+          },
+        },
+        overrides: {
+          'manual_timing_v2': {
+            'schema_version': 2,
+            'bpm': 106,
+            'beat_anchor_ms': 100,
+            'beats_per_bar': 4,
+            'downbeat_phase_index': 0,
+          },
+        },
+      );
+      expect(persisted.overrides?.bpm, isNull);
+      expect(persisted.overrides?.beatGridOffsetMs, isNull);
+      expect(persisted.overrides?.beatsMs, isNull);
+      expect(persisted.overrides?.downbeatsMs, isNull);
+      apiClient
+        ..useAnalysisFixture(authoritative: true)
+        ..authoritativeAnalysisFixture = persisted;
+
+      await pumpQueueScreen(tester, showImportJobs: true);
+      await tester.tap(find.byKey(const ValueKey('analysis_edit_t1')));
+      await tester.pumpAndSettle();
+
+      expect(apiClient.analysisRequests, [101]);
+      expect(
+        tester
+            .widget<TextField>(
+              find.byKey(const ValueKey('analysis_correction_bpm')),
+            )
+            .controller
+            ?.text,
+        '106',
+        reason: 'the freshly loaded editor must project v2 timing over BPM 124',
+      );
+    },
+  );
+
+  testWidgets(
     'analysis audition uses explicit calibration profile instead of route hint',
     (tester) async {
       tester.view.physicalSize = const Size(390, 2000);
@@ -3931,6 +3989,7 @@ class _FakeQueueApiClient extends ApiClient {
   bool failLoads = false;
   bool deferLoad = false;
   bool hydrateAnalysisFixture = false;
+  TrackAnalysis? authoritativeAnalysisFixture;
   bool holdAnalysisRequests = false;
   bool failAnalysisOverrideUpdates = false;
   bool Function()? analysisAuditionDisposedProbe;
@@ -4176,7 +4235,7 @@ class _FakeQueueApiClient extends ApiClient {
       _heldAnalysisRequests.add((trackId: trackId, completer: completer));
       return completer.future;
     }
-    return _hydratedAnalysis(trackId);
+    return authoritativeAnalysisFixture ?? _hydratedAnalysis(trackId);
   }
 
   void releaseHeldAnalysisRequests() {
