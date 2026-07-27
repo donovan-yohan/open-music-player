@@ -20,9 +20,14 @@ class EvalInputError(ValueError):
 
 
 _ALLOWED_LABEL_KINDS = {"ground_truth", "external_reference", "synthetic"}
+_ALLOWED_EVALUATION_SPLITS = {"calibration", "holdout", "pilot"}
+EXPERIMENT_CONTEXT_FIELDS = ("id", "arm", "factor", "freeze_id")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
+_EVALUATION_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_EXPERIMENT_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 MIR_EVAL_MAX_EVENT_SECONDS = 30000.0
+MIR_EVAL_MAX_STRATA = 64
 
 
 def _finite_number(value: Any, field: str) -> float:
@@ -35,6 +40,42 @@ def _finite_number(value: Any, field: str) -> float:
     if not math.isfinite(number):
         raise EvalInputError(f"{field} must be finite")
     return number
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    """Encode evidence data reproducibly using only the Python standard library."""
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise EvalInputError("evidence value is not canonical JSON") from exc
+
+
+def canonical_json_sha256(value: Any) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def validate_experiment_context(
+    experiment: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    if experiment is None:
+        return None
+    if set(experiment) != set(EXPERIMENT_CONTEXT_FIELDS):
+        raise EvalInputError(
+            "experiment context must contain exactly id, arm, factor, and freeze_id"
+        )
+    if not all(
+        isinstance(experiment[field], str)
+        and _EXPERIMENT_VALUE_RE.fullmatch(experiment[field])
+        for field in EXPERIMENT_CONTEXT_FIELDS
+    ):
+        raise EvalInputError("experiment context values must be safe non-empty labels")
+    return {field: experiment[field] for field in EXPERIMENT_CONTEXT_FIELDS}
 
 
 def _event_list(value: Any, field: str) -> list[float]:
@@ -89,6 +130,7 @@ def _validated_key(value: Any, field: str) -> str:
 def load_manifest(path: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
+    seen_strata: set[str] = set()
     for index, raw in enumerate(_read_jsonl(path), 1):
         track_id = raw.get("id")
         if not isinstance(track_id, str) or not _ID_RE.fullmatch(track_id):
@@ -128,10 +170,43 @@ def load_manifest(path: Path) -> list[dict[str, Any]]:
                 normalized_reference[field] = _event_list(
                     reference[field], f"manifest {track_id}.reference.{field}"
                 )
+        if "meter_beats" in reference:
+            meter_beats = reference["meter_beats"]
+            if (
+                isinstance(meter_beats, bool)
+                or not isinstance(meter_beats, int)
+                or not 1 <= meter_beats <= 32
+            ):
+                raise EvalInputError(
+                    f"manifest {track_id}.reference.meter_beats must be an integer from 1 to 32"
+                )
+            normalized_reference["meter_beats"] = meter_beats
         if not normalized_reference:
             raise EvalInputError(
                 f"manifest {track_id}: reference has no supported task"
             )
+
+        evaluation_split = raw.get("evaluation_split", "unspecified")
+        if (
+            evaluation_split != "unspecified"
+            and evaluation_split not in _ALLOWED_EVALUATION_SPLITS
+        ):
+            raise EvalInputError(
+                f"manifest {track_id}: evaluation_split must be one of "
+                f"{sorted(_ALLOWED_EVALUATION_SPLITS)}"
+            )
+        stratum = raw.get("stratum", "unspecified")
+        if not isinstance(stratum, str) or not _EVALUATION_LABEL_RE.fullmatch(stratum):
+            raise EvalInputError(
+                f"manifest {track_id}: stratum must be a short safe label"
+            )
+        if stratum not in seen_strata:
+            if len(seen_strata) >= MIR_EVAL_MAX_STRATA:
+                raise EvalInputError(
+                    f"manifest has more than {MIR_EVAL_MAX_STRATA} strata; "
+                    "use a bounded analytical taxonomy"
+                )
+            seen_strata.add(stratum)
 
         audio_sha256 = raw.get("audio_sha256")
         if audio_sha256 is not None and (
@@ -146,6 +221,8 @@ def load_manifest(path: Path) -> list[dict[str, Any]]:
         record["id"] = track_id
         record["label_kind"] = label_kind
         record["reference"] = normalized_reference
+        record["evaluation_split"] = evaluation_split
+        record["stratum"] = stratum
         if isinstance(audio_sha256, str):
             record["audio_sha256"] = audio_sha256.lower()
         records.append(record)
@@ -307,3 +384,39 @@ def repo_head(repo_root: Path) -> str:
     except (OSError, subprocess.SubprocessError):
         return "unknown"
     return completed.stdout.strip() or "unknown"
+
+
+def repo_is_clean(repo_root: Path) -> bool:
+    """Return whether ``repo_root`` is the exact, clean checkout root.
+
+    A commit SHA alone cannot identify scorer or analyzer code when local edits
+    are present. Reports may still be generated from a dirty tree for debugging,
+    but promotion rejects them.
+    """
+    repo_root = repo_root.resolve()
+    git = shutil.which("git")
+    if git is None:
+        return False
+    git = str(Path(git).resolve())
+    try:
+        top_level = subprocess.run(
+            [git, "rev-parse", "--show-toplevel"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        if not top_level or Path(top_level).resolve() != repo_root:
+            return False
+        status = subprocess.run(
+            [git, "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return not status.strip()

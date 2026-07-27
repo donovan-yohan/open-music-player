@@ -289,12 +289,13 @@ class ClickAuditioner {
     _lastTargetActive = true;
     if (_failedContentGeneration == contentGeneration) return;
 
-    final output = _output ??= _createOutput(
-      contentGeneration,
-      leaseGeneration,
-    );
-    final expectedPositionMs = positionMs - projection.timelineStartMs;
+    ClickAudioOutput? output;
     try {
+      output = _output ??= _createOutput(
+        contentGeneration,
+        leaseGeneration,
+      );
+      final expectedPositionMs = positionMs - projection.timelineStartMs;
       final needsLoad =
           _loadedContentGeneration != contentGeneration || !output.isLoaded;
       if (needsLoad) {
@@ -370,6 +371,21 @@ class ClickAuditioner {
         queueItemId: request.queueItemId,
       ));
     } catch (error) {
+      if (output == null) {
+        if (_isCurrent(
+          reconcileGeneration,
+          contentGeneration,
+          leaseGeneration,
+        )) {
+          _failedContentGeneration = contentGeneration;
+          _emit(ClickAuditionState(
+            ClickAuditionStatus.error,
+            queueItemId: request.queueItemId,
+            error: error,
+          ));
+        }
+        return;
+      }
       await _failCurrentOutput(
         output: output,
         contentGeneration: contentGeneration,
