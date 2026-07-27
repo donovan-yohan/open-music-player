@@ -53,6 +53,7 @@ domain concept moves or a new production harness becomes canonical.
   `client/lib/core/engine/procedural_click_audio_source.dart`.
 - Editor and device-local route settings:
   `client/lib/widgets/analysis_correction_sheet.dart`,
+  `client/lib/screens/queue_screen.dart`,
   `client/lib/core/audio/audition_output_route_monitor.dart`,
   `client/lib/core/models/settings_model.dart`, and
   `client/lib/core/providers/settings_provider.dart`.
@@ -60,7 +61,8 @@ domain concept moves or a new production harness becomes canonical.
   `client/test/click_audition_projection_test.dart`,
   `client/test/procedural_click_audio_source_test.dart`,
   `client/test/audition_output_route_monitor_test.dart`,
-  `client/test/analysis_correction_sheet_test.dart`, and
+  `client/test/analysis_correction_sheet_test.dart`,
+  `client/test/queue_screen_test.dart`, and
   `client/test/settings_model_test.dart`.
 - Guardrail: audition is an engine-owned auxiliary consumer of the canonical
   timeline and exact `queueItemId`, not another transport or audio-focus owner.

@@ -428,6 +428,25 @@ void main() {
     await auditioner.dispose();
   });
 
+  test('output factory failure settles lease in an error state', () async {
+    await clock.seek(1500);
+    final failure = StateError('output factory failed');
+    final auditioner = ClickAuditioner(
+      clock: clock,
+      outputFactory: () => throw failure,
+    );
+    await auditioner.replaceModel(_model());
+
+    final lease = auditioner.open(_request());
+    await expectLater(lease.settled, completes);
+
+    expect(auditioner.state.status, ClickAuditionStatus.error);
+    expect(auditioner.state.error, same(failure));
+
+    await lease.dispose();
+    await auditioner.dispose();
+  });
+
   test('pause failure detaches output and remains fail-closed', () async {
     await clock.seek(1500);
     await clock.play();

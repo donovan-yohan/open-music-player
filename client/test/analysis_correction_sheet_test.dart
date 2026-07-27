@@ -823,6 +823,82 @@ void main() {
     await tester.pumpAndSettle();
   });
 
+  testWidgets('route offsets are clamped before reaching the slider',
+      (tester) async {
+    final previews = <AnalysisClickAuditionPreview>[];
+    final track = QueueTrack(
+      id: '1',
+      title: 'Offset clamp fixture',
+      duration: 30,
+      addedAt: DateTime.utc(2026, 7, 27),
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'beat_grid': {
+            'beats_ms': [100, 600, 1100, 1600],
+          },
+        },
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => FilledButton(
+            onPressed: () => showAnalysisCorrectionSheet(
+              context: context,
+              track: track,
+              clickAudition: AnalysisClickAuditionConfiguration(
+                initialRoute:
+                    AuditionOutputRouteObservation.confirmedActiveRoute(
+                  ClickAuditionOutputRoute.speaker,
+                ),
+                outputOffsetForRoute: (route) =>
+                    route == ClickAuditionOutputRoute.speaker
+                        ? minClickAuditionOutputOffsetMs - 1
+                        : maxClickAuditionOutputOffsetMs + 1,
+                onPreviewChanged: previews.add,
+              ),
+            ),
+            child: const Text('Edit'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Edit'));
+    await tester.pumpAndSettle();
+
+    final offsetFinder =
+        find.byKey(const ValueKey('analysis_correction_output_offset'));
+    expect(tester.takeException(), isNull);
+    expect(
+      tester.widget<Slider>(offsetFinder).value,
+      minClickAuditionOutputOffsetMs,
+    );
+    expect(previews.last.outputOffsetMs, minClickAuditionOutputOffsetMs);
+
+    tester
+        .widget<DropdownButtonFormField<ClickAuditionOutputRoute>>(
+          find.byKey(
+            const ValueKey('analysis_correction_calibration_output'),
+          ),
+        )
+        .onChanged!(ClickAuditionOutputRoute.bluetooth);
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(
+      tester.widget<Slider>(offsetFinder).value,
+      maxClickAuditionOutputOffsetMs,
+    );
+    expect(previews.last.outputOffsetMs, maxClickAuditionOutputOffsetMs);
+
+    tester
+        .widget<TextButton>(find.widgetWithText(TextButton, 'Cancel'))
+        .onPressed!();
+    await tester.pumpAndSettle();
+  });
+
   testWidgets(
       'key-only save migrates legacy timing without replaying compact markers',
       (tester) async {
