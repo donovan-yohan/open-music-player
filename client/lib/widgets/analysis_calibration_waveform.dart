@@ -62,6 +62,35 @@ class _AnalysisCalibrationWaveformState
   double _pixelsPerSecond = _initialPixelsPerSecond;
   int _offsetMs = 0;
   bool _followPlayhead = true;
+  _CalibrationWaveformCache? _waveformCache;
+
+  _CalibrationWaveformCache _cachedWaveform(int sampleCount) {
+    final cached = _waveformCache;
+    if (cached != null &&
+        cached.matches(
+          track: widget.track,
+          beatsMs: widget.beatsMs,
+          downbeatsMs: widget.downbeatsMs,
+          sampleCount: sampleCount,
+        )) {
+      return cached;
+    }
+
+    final waveform = calibrationWaveformDataForTrack(
+      track: widget.track,
+      beatsMs: widget.beatsMs,
+      downbeatsMs: widget.downbeatsMs,
+      sampleCount: sampleCount,
+    );
+    return _waveformCache = _CalibrationWaveformCache(
+      track: widget.track,
+      beatsMs: widget.beatsMs,
+      downbeatsMs: widget.downbeatsMs,
+      sampleCount: sampleCount,
+      waveform: waveform,
+      peaks: waveform.peaks,
+    );
+  }
 
   void _zoom(double multiplier, double width) {
     final viewport = _viewport(width);
@@ -103,12 +132,8 @@ class _AnalysisCalibrationWaveformState
           widget.track.durationMs / 1000 * viewport.pixelsPerSecond,
         );
         final sampleCount = contentWidth.ceil().clamp(256, 4096).toInt();
-        final waveform = calibrationWaveformDataForTrack(
-          track: widget.track,
-          beatsMs: widget.beatsMs,
-          downbeatsMs: widget.downbeatsMs,
-          sampleCount: sampleCount,
-        );
+        final cachedWaveform = _cachedWaveform(sampleCount);
+        final waveform = cachedWaveform.waveform;
         final playhead = widget.playheadMs;
         final playheadX = playhead == null ? null : viewport.msToX(playhead);
 
@@ -187,7 +212,7 @@ class _AnalysisCalibrationWaveformState
                         width: contentWidth,
                         child: CustomPaint(
                           painter: TimelineWaveformPainter(
-                            peaks: waveform.peaks,
+                            peaks: cachedWaveform.peaks,
                             waveform: waveform,
                             laneIdentity: widget.track.queueItemId,
                             viewportPixelsPerMs:
@@ -242,6 +267,59 @@ class _AnalysisCalibrationWaveformState
         );
       },
     );
+  }
+}
+
+class _CalibrationWaveformCache {
+  final String trackIdentity;
+  final int durationMs;
+  final Object? waveformSource;
+  final Object? transientsSource;
+  final Object? silenceSource;
+  final List<int> beatsMs;
+  final List<int> downbeatsMs;
+  final int sampleCount;
+  final TimelineWaveformData waveform;
+  final List<double> peaks;
+
+  _CalibrationWaveformCache({
+    required QueueTrack track,
+    required List<int> beatsMs,
+    required List<int> downbeatsMs,
+    required this.sampleCount,
+    required this.waveform,
+    required this.peaks,
+  })  : trackIdentity = track.queueItemId,
+        durationMs = track.durationMs,
+        waveformSource = track.analysis?.summary?.waveform,
+        transientsSource = track.analysis?.summary?.transients,
+        silenceSource = track.analysis?.summary?.silence,
+        beatsMs = List<int>.unmodifiable(beatsMs),
+        downbeatsMs = List<int>.unmodifiable(downbeatsMs);
+
+  bool matches({
+    required QueueTrack track,
+    required List<int> beatsMs,
+    required List<int> downbeatsMs,
+    required int sampleCount,
+  }) {
+    final summary = track.analysis?.summary;
+    return track.queueItemId == trackIdentity &&
+        track.durationMs == durationMs &&
+        identical(summary?.waveform, waveformSource) &&
+        identical(summary?.transients, transientsSource) &&
+        identical(summary?.silence, silenceSource) &&
+        sampleCount == this.sampleCount &&
+        _sameInts(beatsMs, this.beatsMs) &&
+        _sameInts(downbeatsMs, this.downbeatsMs);
+  }
+
+  static bool _sameInts(List<int> left, List<int> right) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
   }
 }
 

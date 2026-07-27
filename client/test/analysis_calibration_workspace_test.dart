@@ -7,6 +7,7 @@ import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/widgets/analysis_calibration_waveform.dart';
 import 'package:open_music_player/widgets/analysis_correction_sheet.dart';
+import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -26,6 +27,106 @@ void main() {
     expect(waveform.downbeatsMs, downbeats);
     expect(waveform.frames, isNotEmpty);
     expect(track.analysis?.summary?.beatGrid?.beatsMs, isNot(beats));
+  });
+
+  testWidgets(
+      'waveform cache survives pan and playhead rebuilds but refreshes inputs',
+      (tester) async {
+    final beats = [100, 600, 1100, 1600];
+    final downbeats = [600];
+    final sourcePeaks = List<double>.generate(
+      4096,
+      (index) => index.isEven ? 0.2 : 0.8,
+    );
+    var track = _trackWithWaveformPeaks(sourcePeaks);
+
+    Future<void> pumpCalibration({
+      required QueueTrack track,
+      required List<int> beatsMs,
+      required List<int> downbeatsMs,
+      required int playheadMs,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 1000,
+              child: AnalysisCalibrationWaveform(
+                track: track,
+                beatsMs: beatsMs,
+                downbeatsMs: downbeatsMs,
+                playheadMs: playheadMs,
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    TimelineWaveformPainter painter() => tester
+        .widget<CustomPaint>(
+          find.descendant(
+            of: find.byKey(const ValueKey('analysis_workspace_waveform')),
+            matching: find.byType(CustomPaint),
+          ),
+        )
+        .painter! as TimelineWaveformPainter;
+
+    await pumpCalibration(
+      track: track,
+      beatsMs: beats,
+      downbeatsMs: downbeats,
+      playheadMs: 500,
+    );
+    final initial = painter();
+
+    await tester.drag(
+      find.byKey(const ValueKey('analysis_workspace_waveform')),
+      const Offset(-120, 0),
+    );
+    await tester.pump();
+    final panned = painter();
+    expect(panned.waveform, same(initial.waveform));
+    expect(panned.peaks, same(initial.peaks));
+
+    final mutableBeats = List<int>.of(beats);
+    await pumpCalibration(
+      track: track,
+      beatsMs: mutableBeats,
+      downbeatsMs: List<int>.of(downbeats),
+      playheadMs: 900,
+    );
+    final playheadUpdated = painter();
+    expect(playheadUpdated.waveform, same(initial.waveform));
+    expect(playheadUpdated.peaks, same(initial.peaks));
+
+    mutableBeats[2] = 1200;
+    await pumpCalibration(
+      track: track,
+      beatsMs: mutableBeats,
+      downbeatsMs: downbeats,
+      playheadMs: 1000,
+    );
+    final changedMarkers = painter();
+    expect(changedMarkers.waveform, isNot(same(initial.waveform)));
+    expect(changedMarkers.peaks, isNot(same(initial.peaks)));
+
+    track = _trackWithWaveformPeaks(
+      List<double>.generate(
+        4096,
+        (index) => index.isEven ? 0.7 : 0.1,
+      ),
+    );
+    await pumpCalibration(
+      track: track,
+      beatsMs: mutableBeats,
+      downbeatsMs: downbeats,
+      playheadMs: 1100,
+    );
+    final changedSource = painter();
+    expect(changedSource.waveform, isNot(same(changedMarkers.waveform)));
+    expect(changedSource.peaks, isNot(same(changedMarkers.peaks)));
   });
 
   testWidgets('adaptive presenter keeps mobile sheet and bounds desktop dialog',
@@ -778,6 +879,19 @@ QueueTrack _track() {
           'provenance': 'manual_override',
         },
         'key': {'value': 'D minor'},
+      },
+    ),
+  );
+}
+
+QueueTrack _trackWithWaveformPeaks(List<double> peaks) {
+  final base = _track();
+  return base.copyWith(
+    analysis: TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: {
+        ...base.analysis!.summary!.toJson(),
+        'waveform': {'peaks': peaks},
       },
     ),
   );
