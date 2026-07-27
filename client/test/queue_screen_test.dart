@@ -362,9 +362,13 @@ void main() {
     playbackState.emitCurrentIndex(4);
     await tester.pumpAndSettle();
 
-    expect(tester.widget<TrackTile>(find.byKey(
-      const ValueKey('playback_queue_5'),
-    )).isCurrent, isTrue);
+    expect(
+        tester
+            .widget<TrackTile>(find.byKey(
+              const ValueKey('playback_queue_5'),
+            ))
+            .isCurrent,
+        isTrue);
     expect(scrollable.controller!.offset, greaterThan(0));
     final currentRow = find.byKey(const ValueKey('playback_queue_5'));
     expect(
@@ -618,9 +622,11 @@ void main() {
 
     expect(scrollable.controller!.offset, lessThan(100));
     expect(
-      tester.widget<TrackTile>(
-        find.byKey(const ValueKey('playback_queue_5')),
-      ).isCurrent,
+      tester
+          .widget<TrackTile>(
+            find.byKey(const ValueKey('playback_queue_5')),
+          )
+          .isCurrent,
       isTrue,
     );
   });

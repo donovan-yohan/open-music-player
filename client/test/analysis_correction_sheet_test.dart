@@ -187,7 +187,9 @@ void main() {
         'beat_grid': {'beats_ms': beats},
         'meter': {'beats_per_bar': 4},
         'downbeat_phase': {'index': 0},
-        'downbeats': {'positions_ms': [100, 2100]},
+        'downbeats': {
+          'positions_ms': [100, 2100]
+        },
       },
     );
     final preview = analysisTimingAuditionProjection(
@@ -216,14 +218,16 @@ void main() {
           },
           'meter': {'beats_per_bar': 4},
           'downbeat_phase': {'index': 1},
-          'downbeats': {'positions_ms': [600, 2600]},
+          'downbeats': {
+            'positions_ms': [600, 2600]
+          },
         },
       ),
     );
 
     final preview = analysisTimingAuditionProjectionForTrack(track);
-    expect(preview.sourceBeatsMs,
-        [100, 600, 1100, 1600, 2100, 2600, 3100, 3600]);
+    expect(
+        preview.sourceBeatsMs, [100, 600, 1100, 1600, 2100, 2600, 3100, 3600]);
     expect(preview.beatsPerBar, 4);
     expect(preview.downbeatPhaseIndex, 1);
     expect(preview.sourceDownbeatsMs, [600, 2600]);
@@ -239,14 +243,18 @@ void main() {
           'beats_ms': [100, 600, 1100, 1600],
         },
         'downbeat_phase': {'index': 0},
-        'downbeats': {'positions_ms': [100]},
+        'downbeats': {
+          'positions_ms': [100]
+        },
       },
       {
         'beat_grid': {
           'beats_ms': [100, 600, 1100, 1600],
         },
         'meter': {'beats_per_bar': 4},
-        'downbeats': {'positions_ms': [100]},
+        'downbeats': {
+          'positions_ms': [100]
+        },
       },
     ];
 
