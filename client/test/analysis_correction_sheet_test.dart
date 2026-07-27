@@ -181,17 +181,18 @@ void main() {
 
   test('phase-only audible preview rotates accents without moving beats', () {
     const beats = [100, 600, 1100, 1600, 2100, 2600, 3100, 3600];
+    final analysis = TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: {
+        'beat_grid': {'beats_ms': beats},
+        'meter': {'beats_per_bar': 4},
+        'downbeat_phase': {'index': 0},
+        'downbeats': {'positions_ms': [100, 2100]},
+      },
+    );
     final preview = analysisTimingAuditionProjection(
-      effectiveSummary: const TrackAnalysisSummary(
-        beatGrid: BeatGridSummary(beatsMs: beats),
-        downbeats: DownbeatSummary(positionsMs: [100, 2100]),
-      ),
-      existingOverrides: const TrackAnalysisOverrides(
-        manualTiming: ManualTimingOverride(
-          beatsPerBar: 4,
-          downbeatPhaseIndex: 0,
-        ),
-      ),
+      effectiveSummary: analysis.summary!,
+      effectiveTiming: analysis.effectiveTiming,
       beatsPerBar: 4,
       downbeatPhaseIndex: 2,
       phaseDirty: true,
@@ -199,6 +200,68 @@ void main() {
 
     expect(preview.sourceBeatsMs, beats);
     expect(preview.sourceDownbeatsMs, [1100, 3100]);
+  });
+
+  test('generated known meter and phase seed downbeat accents', () {
+    final track = QueueTrack(
+      id: '1',
+      title: 'Known generated meter and phase',
+      duration: 30,
+      addedAt: DateTime.utc(2026, 7, 26),
+      analysis: TrackAnalysis.fromJson(
+        status: 'analyzed',
+        summary: {
+          'beat_grid': {
+            'beats_ms': [100, 600, 1100, 1600, 2100, 2600, 3100, 3600],
+          },
+          'meter': {'beats_per_bar': 4},
+          'downbeat_phase': {'index': 1},
+          'downbeats': {'positions_ms': [600, 2600]},
+        },
+      ),
+    );
+
+    final preview = analysisTimingAuditionProjectionForTrack(track);
+    expect(preview.sourceBeatsMs,
+        [100, 600, 1100, 1600, 2100, 2600, 3100, 3600]);
+    expect(preview.beatsPerBar, 4);
+    expect(preview.downbeatPhaseIndex, 1);
+    expect(preview.sourceDownbeatsMs, [600, 2600]);
+  });
+
+  test('unknown generated meter or phase suppresses downbeat accents', () {
+    TrackAnalysis analysisFor(Map<String, dynamic> summary) =>
+        TrackAnalysis.fromJson(status: 'analyzed', summary: summary);
+
+    final summaries = [
+      {
+        'beat_grid': {
+          'beats_ms': [100, 600, 1100, 1600],
+        },
+        'downbeat_phase': {'index': 0},
+        'downbeats': {'positions_ms': [100]},
+      },
+      {
+        'beat_grid': {
+          'beats_ms': [100, 600, 1100, 1600],
+        },
+        'meter': {'beats_per_bar': 4},
+        'downbeats': {'positions_ms': [100]},
+      },
+    ];
+
+    for (final summary in summaries) {
+      final track = QueueTrack(
+        id: '1',
+        title: 'Unknown generated timing',
+        duration: 30,
+        addedAt: DateTime.utc(2026, 7, 26),
+        analysis: analysisFor(summary),
+      );
+      final preview = analysisTimingAuditionProjectionForTrack(track);
+      expect(preview.sourceBeatsMs, [100, 600, 1100, 1600]);
+      expect(preview.sourceDownbeatsMs, isEmpty);
+    }
   });
 
   test('unknown meter suppresses generated downbeat accents', () {
@@ -684,7 +747,7 @@ void main() {
       await tester.pumpAndSettle();
 
       final payload = saved!.toJson(includeServerMetadata: false);
-      expect(payload, contains('manual_timing_override'));
+      expect(payload, contains('manual_timing_v2'));
       expect(payload.toString(), isNot(contains('clickAudition')));
       expect(payload.toString(), isNot(contains('outputOffset')));
       expect(payload.toString(), isNot(contains('volume')));
