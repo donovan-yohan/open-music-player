@@ -76,3 +76,21 @@ VirtualDJ installation, copy its `database.xml`, run the documented exporter
 with an explicit root mapping, and inspect the logged match counts plus
 per-track BPM interpretations. Score the default artifact first; run a second
 export with `--assume-44-bars` only as a labeled exploratory downbeat result.
+
+## Fix addendum: case-insensitive Windows root mapping
+
+Review finding: `--audio-root-map` prefix matching was case-sensitive, so a
+Windows-cased mapping mismatch (VDJ paths originate on case-insensitive
+filesystems) silently skipped every song.
+
+Fix: mapping prefixes that look Windows-style (drive letter or backslash) now
+match case-insensitively while preserving the path remainder; POSIX prefixes
+stay case-sensitive. The exporter tracks per-mapping applied counts, logs them,
+and warns on stderr when a provided mapping matched zero songs.
+
+Evidence (this worktree): `scripts/lint audio-mir` — "All checks passed!";
+`scripts/test audio-mir` — 44 passed, including new tests for case-mismatched
+Windows prefixes, POSIX case sensitivity, path-boundary handling, and the
+zero-match warning. Implementation by Codex (gpt-5.6-sol); its run was killed
+by a full disk mid-commit, so the final commit and this addendum were completed
+by the orchestrator after re-running both gates.

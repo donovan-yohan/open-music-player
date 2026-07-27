@@ -83,6 +83,22 @@ def test_windows_root_remap_requires_a_path_boundary():
     )
 
 
+def test_windows_root_remap_ignores_prefix_case_and_preserves_path_remainder():
+    mappings = [(r"C:\Users\you\Music", "/local-audio")]
+
+    assert remap_audio_path(r"c:\users\You\music\Folder\Track.wav", mappings) == Path(
+        "/local-audio/Folder/Track.wav"
+    )
+
+
+def test_posix_root_remap_remains_case_sensitive():
+    mappings = [("/Users/you/Music", "/local-audio")]
+
+    assert remap_audio_path("/users/you/Music/track.wav", mappings) == Path(
+        "/users/you/Music/track.wav"
+    )
+
+
 def test_export_joins_remapped_audio_and_marks_missing_manifest_tracks(
     tmp_path: Path, capsys, monkeypatch
 ):
@@ -160,7 +176,57 @@ def test_export_joins_remapped_audio_and_marks_missing_manifest_tracks(
     assert predictions["bpm"]["bpm"] == 128.0
     assert predictions["bpm"]["mode"] == "major"
     assert predictions["missing"]["error"]["type"] == "MissingVirtualDJPrediction"
-    assert "matched=2 xml_only=1 manifest_only=1" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "matched=2 xml_only=1 manifest_only=1" in captured.out
+    assert f"audio_root_map_applied=OLD_ROOT={audio_root}:3" in captured.out
+
+
+def test_export_reports_distinct_root_map_counts_and_warns_only_for_zero_matches(
+    tmp_path: Path, capsys
+):
+    audio = tmp_path / "track.wav"
+    _write_wav(audio)
+    manifest = tmp_path / "manifest.jsonl"
+    _write_manifest(manifest, [_manifest_row("track", audio)])
+    database = tmp_path / "database.xml"
+    database.write_text(
+        '<VirtualDJ><Song FilePath="OLD_ROOT/nested/track.wav" /></VirtualDJ>',
+        encoding="utf-8",
+    )
+    output = tmp_path / "predictions.jsonl"
+    zero_match_map = f"OLD_ROOT={tmp_path / 'unused'}"
+    applied_map = f"OLD_ROOT/nested={tmp_path}"
+
+    assert (
+        main(
+            [
+                "--database",
+                str(database),
+                "--manifest",
+                str(manifest),
+                "--audio-root-map",
+                zero_match_map,
+                "--audio-root-map",
+                applied_map,
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    assert (
+        "audio_root_map_applied="
+        f"OLD_ROOT/nested={tmp_path}:1,OLD_ROOT={tmp_path / 'unused'}:0" in captured.out
+    )
+    assert (
+        f"WARNING: --audio-root-map {zero_match_map} matched zero songs" in captured.err
+    )
+    assert (
+        f"WARNING: --audio-root-map {applied_map} matched zero songs"
+        not in captured.err
+    )
 
 
 def test_exported_artifact_scores_with_existing_cli(tmp_path: Path):

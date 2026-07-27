@@ -202,18 +202,37 @@ def _parse_root_maps(values: list[str]) -> list[tuple[str, str]]:
     return sorted(mappings, key=lambda mapping: len(mapping[0]), reverse=True)
 
 
+def _windows_style_prefix(prefix: str) -> bool:
+    """Return whether a mapping prefix uses Windows path conventions."""
+
+    return "\\" in prefix or (
+        len(prefix) >= 2 and prefix[0].isalpha() and prefix[1] == ":"
+    )
+
+
+def _remap_audio_path(
+    path: str, mappings: list[tuple[str, str]]
+) -> tuple[Path, int | None]:
+    """Apply the first (longest) explicitly requested VDJ path-prefix remap."""
+
+    for index, (old, new) in enumerate(mappings):
+        case_insensitive = _windows_style_prefix(old)
+        if path == old or (case_insensitive and path.lower() == old.lower()):
+            return Path(new), index
+        for separator in ("/", "\\"):
+            prefix = old + separator
+            if path.startswith(prefix) or (
+                case_insensitive and path[: len(prefix)].lower() == prefix.lower()
+            ):
+                remainder = path[len(prefix) :].replace("\\", "/")
+                return Path(new) / remainder, index
+    return Path(path), None
+
+
 def remap_audio_path(path: str, mappings: list[tuple[str, str]]) -> Path:
     """Apply the first (longest) explicitly requested VDJ path-prefix remap."""
 
-    for old, new in mappings:
-        if path == old:
-            return Path(new)
-        for separator in ("/", "\\"):
-            prefix = old + separator
-            if path.startswith(prefix):
-                remainder = path[len(prefix) :].replace("\\", "/")
-                return Path(new) / remainder
-    return Path(path)
+    return _remap_audio_path(path, mappings)[0]
 
 
 def _duration_from_xml(song: VDJSong) -> float | None:
@@ -341,7 +360,7 @@ def export_predictions(
     audio_root_maps: list[str],
     bpm_encoding: str,
     assume_44_bars: bool,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Write one complete, score-compatible prediction set and return its counts."""
 
     if not database_path.is_file():
@@ -354,12 +373,15 @@ def export_predictions(
         if isinstance(digest, str):
             by_hash.setdefault(digest, []).append(item)
     matched: dict[str, dict[str, Any]] = {}
+    root_map_applied = [0] * len(mappings)
     xml_only = 0
     unparseable_keys = 0
     scan_versions: set[str] = set()
 
     for song in parse_database(database_path):
-        audio_path = remap_audio_path(song.path, mappings)
+        audio_path, mapping_index = _remap_audio_path(song.path, mappings)
+        if mapping_index is not None:
+            root_map_applied[mapping_index] += 1
         if not audio_path.is_file():
             xml_only += 1
             continue
@@ -440,6 +462,7 @@ def export_predictions(
         "xml_only": xml_only,
         "manifest_only": manifest_only,
         "unparseable_keys": unparseable_keys,
+        "root_map_applied": root_map_applied,
     }
 
 
@@ -479,8 +502,25 @@ def main(argv: list[str] | None = None) -> int:
         "audio-mir VDJ export: "
         f"matched={counts['matched']} xml_only={counts['xml_only']} "
         f"manifest_only={counts['manifest_only']} "
-        f"unparseable_keys={counts['unparseable_keys']} output={args.output}"
+        f"unparseable_keys={counts['unparseable_keys']} "
+        "audio_root_map_applied="
+        + ",".join(
+            f"{old}={new}:{applied}"
+            for (old, new), applied in zip(
+                _parse_root_maps(args.audio_root_map), counts["root_map_applied"]
+            )
+        )
+        + f" output={args.output}"
     )
+    for (old, new), applied in zip(
+        _parse_root_maps(args.audio_root_map), counts["root_map_applied"]
+    ):
+        if applied == 0:
+            print(
+                "audio-mir VDJ export: WARNING: "
+                f"--audio-root-map {old}={new} matched zero songs",
+                file=sys.stderr,
+            )
     return 0
 
 
