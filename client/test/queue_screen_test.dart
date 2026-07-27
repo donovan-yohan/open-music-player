@@ -371,6 +371,65 @@ void main() {
     expect(scrollable.controller!.offset, 40);
   });
 
+  testWidgets(
+    'does not follow a restored current occurrence after an ambiguous update',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 320);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      playbackState
+        ..fakeQueue = [
+          for (var index = 0; index < 16; index++)
+            _mediaItem(index + 1, 'Track ${index + 1}'),
+        ]
+        ..fakeCurrentIndex = 0;
+
+      await pumpQueueScreen(tester);
+      final list = find.byKey(const PageStorageKey('playback_queue_list_view'));
+      final scrollable = tester.widget<Scrollable>(
+        find.descendant(of: list, matching: find.byType(Scrollable)).first,
+      );
+      scrollable.controller!.jumpTo(40);
+
+      playbackState.duplicateCueForTest(0);
+      await tester.pumpAndSettle();
+      playbackState.emitReconstructedQueueSnapshot();
+      await tester.pumpAndSettle();
+
+      expect(scrollable.controller!.offset, 40);
+    },
+  );
+
+  testWidgets(
+      'first valid occurrence after an invalid initial update is baseline', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(390, 320);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    playbackState
+      ..fakeQueue = [
+        for (var index = 0; index < 16; index++)
+          _mediaItem(index + 1, 'Track ${index + 1}'),
+      ]
+      ..fakeCurrentIndex = 0
+      ..removeCueForTest(0);
+
+    await pumpQueueScreen(tester);
+    final list = find.byKey(const PageStorageKey('playback_queue_list_view'));
+    final scrollable = tester.widget<Scrollable>(
+      find.descendant(of: list, matching: find.byType(Scrollable)).first,
+    );
+    scrollable.controller!.jumpTo(40);
+
+    playbackState.emitReconstructedQueueSnapshot();
+    await tester.pumpAndSettle();
+
+    expect(scrollable.controller!.offset, 40);
+  });
+
   testWidgets('local Play now consumes its auto-follow transition', (
     tester,
   ) async {

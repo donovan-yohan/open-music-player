@@ -594,7 +594,8 @@ class _QueueScreenState extends State<QueueScreen> {
     _CanonicalPlaybackQueueOccurrence? occurrence, {
     required bool isListVisible,
   }) {
-    final queueItemId = occurrence?.queueItemId;
+    if (occurrence == null) return;
+    final queueItemId = occurrence.queueItemId;
     if (!_hasObservedPlaybackQueueCurrent) {
       _hasObservedPlaybackQueueCurrent = true;
       _lastObservedPlaybackQueueItemId = queueItemId;
@@ -602,10 +603,6 @@ class _QueueScreenState extends State<QueueScreen> {
     }
     if (_lastObservedPlaybackQueueItemId == queueItemId) return;
     _lastObservedPlaybackQueueItemId = queueItemId;
-    if (queueItemId == null) {
-      _suppressedPlaybackQueueFollowId = null;
-      return;
-    }
     if (_suppressedPlaybackQueueFollowId != null) {
       final isLocalPlayNow = _suppressedPlaybackQueueFollowId == queueItemId;
       _suppressedPlaybackQueueFollowId = null;
