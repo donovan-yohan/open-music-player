@@ -1566,6 +1566,48 @@ void main() {
   });
 
   testWidgets(
+    'desktop analysis save closes when playback refresh fails after PATCH',
+    (tester) async {
+      tester.view.physicalSize = const Size(1200, 900);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      apiClient.useAnalysisFixture(authoritative: true);
+
+      await pumpQueueScreen(tester, showImportJobs: true);
+      await tester.tap(find.byKey(const ValueKey('analysis_edit_t1')));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('analysis_correction_desktop_dialog')),
+        findsOneWidget,
+      );
+      await tester.enterText(
+        find.byKey(const ValueKey('analysis_correction_bpm')),
+        '128',
+      );
+      playbackState.failAnalysisRefreshesAfterRecording = true;
+      await tester.tap(
+        find.byKey(const ValueKey('analysis_correction_save')),
+      );
+      await settleAnalysisWorkflow(tester);
+
+      expect(apiClient.analysisOverrideUpdates, hasLength(1));
+      expect(apiClient.analysisOverrideUpdates.single.trackId, 101);
+      expect(playbackState.analysisRefreshes, hasLength(1));
+      expect(playbackState.analysisRefreshes.single.trackId, '101');
+      expect(
+        find.byKey(const ValueKey('analysis_correction_desktop_dialog')),
+        findsNothing,
+      );
+      expect(
+        find.textContaining('Could not save analysis'),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets(
     'analysis audition uses explicit calibration profile instead of route hint',
     (tester) async {
       tester.view.physicalSize = const Size(390, 2000);
@@ -3135,6 +3177,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   int? fakeCurrentIndex;
   PlaybackContext? fakeContext;
   bool fakeIsPlaying = false;
+  bool failAnalysisRefreshesAfterRecording = false;
   int fakeTimelinePositionMs = 0;
   TimelineModel fakeTimelineModel = TimelineModel();
   BeatSnapMode fakeTransitionSnapMode = BeatSnapMode.downbeat;
@@ -3346,6 +3389,9 @@ class _FakePlaybackState extends Fake implements PlaybackState {
 
   @override
   int get timelinePositionMs => fakeTimelinePositionMs;
+
+  @override
+  int? sourcePositionMsForQueueItemId(String queueItemId) => null;
 
   @override
   TimelineModel get timelineModel => fakeTimelineModel;
@@ -3644,6 +3690,9 @@ class _FakePlaybackState extends Fake implements PlaybackState {
       for (final entry in analysesByTrackId.entries)
         (trackId: entry.key, analysis: entry.value),
     ]);
+    if (failAnalysisRefreshesAfterRecording) {
+      throw StateError('test playback analysis refresh failure');
+    }
 
     audio_service.MediaItem refreshItem(audio_service.MediaItem item) {
       for (final entry in analysesByTrackId.entries) {
@@ -3994,7 +4043,8 @@ class _FakeQueueApiClient extends ApiClient {
     );
   }
 
-  void useAnalysisFixture() {
+  void useAnalysisFixture({bool authoritative = false}) {
+    hydrateAnalysisFixture = authoritative;
     final summary = TrackAnalysisSummary.fromJson({
       'bpm': {'value': 124.0},
       'key': {'value': 'A minor'},

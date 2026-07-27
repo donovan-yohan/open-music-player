@@ -557,7 +557,7 @@ void main() {
     expect(resaved?.musicalKey, 'E minor');
   });
 
-  testWidgets('key-only legacy save preserves every timing compatibility fact',
+  testWidgets('key-only legacy save migrates timing without replaying markers',
       (tester) async {
     TrackAnalysisOverrides? saved;
     await _pumpDesktopWorkspace(
@@ -585,11 +585,16 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(saved?.timingMutation, AnalysisTimingMutation.preserve);
-    expect(saved?.bpm, 121);
-    expect(saved?.beatGridOffsetMs, 17);
-    expect(saved?.beatsMs, [17, 513, 1009]);
-    expect(saved?.downbeatsMs, [17]);
+    expect(saved?.manualTiming, const ManualTimingOverride());
+    expect(saved?.bpm, isNull);
+    expect(saved?.beatGridOffsetMs, isNull);
+    expect(saved?.beatsMs, isNull);
+    expect(saved?.downbeatsMs, isNull);
     expect(saved?.musicalKey, 'B minor');
+    expect(
+      saved?.toJson(includeServerMetadata: false)['manual_timing_v2'],
+      {'schema_version': 2},
+    );
   });
 
   testWidgets('metadata-only manual revision is inactive in source card',

@@ -236,6 +236,7 @@ class AnalysisTimingAuditionProjection {
 AnalysisTimingAuditionProjection analysisTimingAuditionProjection({
   required TrackAnalysisSummary effectiveSummary,
   TrackAnalysisOverrides? existingOverrides,
+  EffectiveTiming? effectiveTiming,
   double? bpm,
   int? beatAnchorMs,
   int? beatsPerBar,
@@ -246,10 +247,19 @@ AnalysisTimingAuditionProjection analysisTimingAuditionProjection({
   bool phaseDirty = false,
 }) {
   final existingTiming = existingOverrides?.manualTiming;
-  final effectiveMeter = meterDirty ? beatsPerBar : existingTiming?.beatsPerBar;
+  // Older direct callers do not have a TrackAnalysis instance to supply.
+  // Preserve their manual-timing contract, but never let it override an
+  // explicitly supplied effective projection (which already includes it).
+  final seededMeter = effectiveTiming == null
+      ? existingTiming?.beatsPerBar
+      : effectiveTiming.auditionBeatsPerBar;
+  final seededPhase = effectiveTiming == null
+      ? existingTiming?.normalizedDownbeatPhaseIndex
+      : effectiveTiming.auditionDownbeatPhaseIndex;
+  final effectiveMeter = meterDirty ? beatsPerBar : seededMeter;
   final effectivePhase = phaseDirty
       ? (effectiveMeter == null ? null : downbeatPhaseIndex)
-      : (meterDirty ? null : existingTiming?.normalizedDownbeatPhaseIndex);
+      : (meterDirty ? null : seededPhase);
   final changesTiming = bpmDirty || anchorDirty || meterDirty || phaseDirty;
   final rewritesGrid = bpmDirty || anchorDirty;
   final candidate = ManualTimingOverride(
@@ -279,6 +289,7 @@ AnalysisTimingAuditionProjection analysisTimingAuditionProjectionForTrack(
   return analysisTimingAuditionProjection(
     effectiveSummary: analysis?.summary ?? const TrackAnalysisSummary(),
     existingOverrides: analysis?.overrides,
+    effectiveTiming: analysis?.effectiveTiming,
   );
 }
 
@@ -491,17 +502,18 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
     super.initState();
     final summary = widget.track.analysis?.summary;
     final overrides = widget.track.analysis?.overrides;
+    final effectiveTiming = widget.track.analysis?.effectiveTiming;
     _existingOverrides = overrides;
     final timing = overrides?.manualTiming;
     final beatGrid = summary?.beatGrid;
     _existingBeatsMs = List<int>.unmodifiable(beatGrid?.beatsMs ?? const []);
     final bpm = _effectiveAnalysisBpm(widget.track.analysis);
     final anchor = _effectiveAnalysisAnchorMs(widget.track.analysis);
-    _phase = timing?.normalizedDownbeatPhaseIndex;
+    _phase = effectiveTiming?.auditionDownbeatPhaseIndex;
     _bpmController = TextEditingController(text: _formatNullableDouble(bpm));
     _anchorController = TextEditingController(text: anchor?.toString() ?? '');
     _meterController = TextEditingController(
-      text: timing?.beatsPerBar?.toString() ?? '',
+      text: effectiveTiming?.auditionBeatsPerBar?.toString() ?? '',
     );
     _phraseLengthController = TextEditingController(
       text: timing?.phraseLengthBars?.toString() ?? '',
@@ -575,6 +587,7 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
     final refreshedAnchor = _effectiveAnalysisAnchorMs(analysis);
     final refreshedKey = overrides?.musicalKey ?? summary?.key?.textValue;
     final refreshedCamelot = overrides?.camelot ?? summary?.camelot?.textValue;
+    final effectiveTiming = analysis?.effectiveTiming;
     setState(() {
       // An authoritative refresh changes the clean-field baseline. Snapshots
       // recorded against the previous base must never be replayed by Undo.
@@ -595,10 +608,11 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
           _anchorController.text = refreshedAnchor?.toString() ?? '';
         }
         if (!_meterDirty) {
-          _meterController.text = timing?.beatsPerBar?.toString() ?? '';
+          _meterController.text =
+              effectiveTiming?.auditionBeatsPerBar?.toString() ?? '';
         }
         if (!_phaseDirty && !_meterDirty) {
-          _phase = timing?.normalizedDownbeatPhaseIndex;
+          _phase = effectiveTiming?.auditionDownbeatPhaseIndex;
         }
         if (!_phraseDirty) {
           _phraseLengthController.text =
@@ -754,6 +768,7 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
     return analysisTimingAuditionProjection(
       effectiveSummary: analysis?.summary ?? const TrackAnalysisSummary(),
       existingOverrides: analysis?.overrides,
+      effectiveTiming: analysis?.effectiveTiming,
       bpm: bpm,
       beatAnchorMs: anchor,
       beatsPerBar: meter,
@@ -936,7 +951,12 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
     }
     final existing = _existingOverrides;
     final existingTiming = existing?.manualTiming;
-    final effectiveMeter = _meterDirty ? meter : existingTiming?.beatsPerBar;
+    final phaseSeedMeter = _phaseDirty
+        ? _resolvedTrack.analysis?.effectiveTiming.auditionBeatsPerBar
+        : null;
+    final effectiveMeter = _meterDirty
+        ? meter
+        : (_phaseDirty ? phaseSeedMeter : existingTiming?.beatsPerBar);
     final effectivePhase = _phaseDirty
         ? (effectiveMeter == null ? null : _phase)
         : (_meterDirty ? null : existingTiming?.downbeatPhaseIndex);
@@ -974,18 +994,10 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
       await _completeSave(
         TrackAnalysisOverrides(
           timingMutation: AnalysisTimingMutation.preserve,
-          manualTiming: existing?.manualTiming,
-          bpm: existing?.bpm,
-          bpmConfidence: existing?.bpmConfidence,
-          beatGridOffsetMs: existing?.beatGridOffsetMs,
-          beatsMs: existing?.beatsMs,
-          downbeatsMs: existing?.downbeatsMs,
+          manualTiming: existing?.manualTiming ?? const ManualTimingOverride(),
           musicalKey: musicalKey,
           camelot: camelot,
           provenance: existing?.provenance ?? 'manual_override',
-          bpmProvenance: existing?.bpmProvenance,
-          beatGridProvenance: existing?.beatGridProvenance,
-          downbeatProvenance: existing?.downbeatProvenance,
         ),
       );
       return;
