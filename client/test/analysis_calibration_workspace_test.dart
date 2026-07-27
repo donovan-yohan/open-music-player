@@ -490,6 +490,18 @@ void main() {
     );
 
     final bpm = find.byKey(const ValueKey('analysis_correction_bpm'));
+    await tester.tap(
+      find.byKey(const ValueKey('analysis_correction_half_bpm')),
+    );
+    await tester.pump();
+    expect(
+      tester
+          .widget<TextButton>(
+            find.byKey(const ValueKey('analysis_correction_undo')),
+          )
+          .onPressed,
+      isNotNull,
+    );
     await tester.enterText(bpm, '130');
     await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
     await tester.pumpAndSettle();
@@ -525,6 +537,15 @@ void main() {
     );
     expect(find.textContaining('BPM 125'), findsOneWidget);
     expect(find.textContaining('key E minor'), findsOneWidget);
+    expect(
+      tester
+          .widget<TextButton>(
+            find.byKey(const ValueKey('analysis_correction_undo')),
+          )
+          .onPressed,
+      isNull,
+      reason: 'Undo must not restore snapshots from the pre-conflict base.',
+    );
 
     await tester.tap(find.byKey(const ValueKey('analysis_correction_save')));
     await tester.pumpAndSettle();

@@ -576,6 +576,9 @@ class _AnalysisCorrectionSheetState extends State<AnalysisCorrectionSheet> {
     final refreshedKey = overrides?.musicalKey ?? summary?.key?.textValue;
     final refreshedCamelot = overrides?.camelot ?? summary?.camelot?.textValue;
     setState(() {
+      // An authoritative refresh changes the clean-field baseline. Snapshots
+      // recorded against the previous base must never be replayed by Undo.
+      _undoHistory.clear();
       _existingOverrides = overrides;
       _authoritativeBaseDescription = _describeAuthoritativeBase(refreshed);
       if (_resetStaged) {

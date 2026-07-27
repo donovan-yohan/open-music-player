@@ -1922,7 +1922,15 @@ class _QueueScreenState extends State<QueueScreen> {
                   );
                   final trackId = _analysisTrackId(track);
                   if (trackId != null) {
-                    await playback.refreshTrackAnalysis(trackId, analysis);
+                    try {
+                      await playback.refreshTrackAnalysis(trackId, analysis);
+                    } catch (error) {
+                      if (kDebugMode) {
+                        debugPrint(
+                          'Saved analysis but could not refresh playback: $error',
+                        );
+                      }
+                    }
                   }
                   return null;
                 } catch (error) {
