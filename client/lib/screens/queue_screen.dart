@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show setEquals;
+import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import 'package:audio_service/audio_service.dart' as audio_service;
 import 'package:provider/provider.dart';
 import '../core/audio/playback_state.dart';
@@ -173,6 +174,14 @@ class _PlaybackViewState {
   }
 }
 
+class _CanonicalPlaybackQueueOccurrence {
+  const _CanonicalPlaybackQueueOccurrence({
+    required this.queueItemId,
+  });
+
+  final String queueItemId;
+}
+
 class QueueScreen extends StatefulWidget {
   const QueueScreen({super.key, this.showImportJobs = false});
 
@@ -207,6 +216,15 @@ class _QueueScreenState extends State<QueueScreen> {
   Map<String, QueueTrack> _hydrationSourcesByKey = <String, QueueTrack>{};
   List<String> _pinnedHydrationTrackKeys = <String>[];
   List<String> _visibleHydrationTrackKeys = <String>[];
+  final ScrollController _playbackQueueScrollController = ScrollController();
+  final Map<String, GlobalKey> _playbackQueueOccurrenceKeys = {};
+  bool _hasObservedPlaybackQueueCurrent = false;
+  bool _isPlaybackQueueUserInteracting = false;
+  bool _isReorderingPlaybackQueue = false;
+  int _playbackQueueFollowGeneration = 0;
+  String? _lastObservedPlaybackQueueItemId;
+  String? _pendingPlaybackQueueFollowId;
+  String? _suppressedPlaybackQueueFollowId;
 
   @override
   void initState() {
@@ -219,6 +237,7 @@ class _QueueScreenState extends State<QueueScreen> {
   @override
   void dispose() {
     _hydrationProvider?.clearAnalysisHydrationInterest();
+    _playbackQueueScrollController.dispose();
     super.dispose();
   }
 
@@ -315,6 +334,15 @@ class _QueueScreenState extends State<QueueScreen> {
     final entries = listeningQueueEntries(
       queue: playbackView.queue,
       currentIndex: playbackView.currentIndex,
+    );
+    _observePlaybackQueueCurrent(
+      playback,
+      _canonicalPlaybackQueueOccurrence(
+        queue: playbackView.queue,
+        cues: playbackView.cues,
+        currentIndex: playbackView.currentIndex,
+      ),
+      isListVisible: _viewMode == _QueueViewMode.list,
     );
 
     return Column(
@@ -416,19 +444,35 @@ class _QueueScreenState extends State<QueueScreen> {
     List<ListeningQueueEntry> entries,
     List<PlaybackCue> cues,
   ) {
-    return ReorderableListView.builder(
-      key: const PageStorageKey('playback_queue_list_view'),
-      buildDefaultDragHandles: false,
-      padding: const EdgeInsets.only(bottom: 100),
-      itemCount: entries.length,
-      onReorderItem: (oldIndex, newIndex) {
-        if (oldIndex == newIndex) return;
-        unawaited(playback.reorderPlaybackQueue(oldIndex, newIndex));
-      },
-      itemBuilder: (context, index) {
+    final stableQueueItemIds = <String>{};
+    for (final entry in entries) {
+      final queueItemId = _queueItemIdForPlaybackEntry(cues, entry).trim();
+      if (_isStablePlaybackQueueItemId(queueItemId)) {
+        stableQueueItemIds.add(queueItemId);
+      }
+    }
+    _playbackQueueOccurrenceKeys.removeWhere(
+      (queueItemId, _) => !stableQueueItemIds.contains(queueItemId),
+    );
+    return NotificationListener<ScrollNotification>(
+      onNotification: _handlePlaybackQueueScrollNotification,
+      child: ReorderableListView.builder(
+        key: const PageStorageKey('playback_queue_list_view'),
+        scrollController: _playbackQueueScrollController,
+        buildDefaultDragHandles: false,
+        padding: const EdgeInsets.only(bottom: 100),
+        itemCount: entries.length,
+        onReorderStart: (_) => _beginPlaybackQueueReorder(),
+        onReorderEnd: (_) => _endPlaybackQueueReorder(),
+        onReorderItem: (oldIndex, newIndex) {
+          if (oldIndex == newIndex) return;
+          unawaited(_reorderPlaybackQueue(playback, oldIndex, newIndex));
+        },
+        itemBuilder: (context, index) {
         final entry = entries[index];
         final item = entry.item;
         final queueItemId = _queueItemIdForPlaybackEntry(cues, entry);
+        final stableQueueItemId = queueItemId.trim();
         final track = playbackTrackForMediaItem(
           item,
           queueItemId: queueItemId,
@@ -440,9 +484,13 @@ class _QueueScreenState extends State<QueueScreen> {
           trackId: int.tryParse(item.id),
           queueItemId:
               queueItemId.startsWith('unresolved_') ? null : queueItemId,
-          playNow: () => _skipToPlaybackIndex(playback, entry),
+          playNow: () => _skipToPlaybackIndex(
+            playback,
+            entry,
+            queueItemId: stableQueueItemId,
+          ),
         );
-        return _buildSwipeToRemoveQueueItem(
+        final row = _buildSwipeToRemoveQueueItem(
           context: context,
           key: ValueKey('remove_playback_queue_$queueItemId'),
           enabled: registry[CommandId.removeFromQueue]
@@ -473,10 +521,23 @@ class _QueueScreenState extends State<QueueScreen> {
             isCurrent: entry.isCurrent,
             onTap: entry.isCurrent
                 ? null
-                : () => _skipToPlaybackIndex(playback, entry),
+                : () => _skipToPlaybackIndex(
+                    playback,
+                    entry,
+                    queueItemId: stableQueueItemId,
+                  ),
           ),
         );
+        if (!_isStablePlaybackQueueItemId(stableQueueItemId)) return row;
+        return KeyedSubtree(
+          key: _playbackQueueOccurrenceKeys.putIfAbsent(
+            stableQueueItemId,
+            () => GlobalKey(debugLabel: 'playback_queue_$stableQueueItemId'),
+          ),
+          child: row,
+        );
       },
+      ),
     );
   }
 
@@ -493,6 +554,162 @@ class _QueueScreenState extends State<QueueScreen> {
     // renderable during a transient snapshot update while avoiding track-ID
     // keys, which are not unique for duplicate queued occurrences.
     return 'unresolved_${entry.index}_${entry.item.id}';
+  }
+
+  bool _isStablePlaybackQueueItemId(String queueItemId) =>
+      queueItemId.isNotEmpty && !queueItemId.startsWith('unresolved_');
+
+  _CanonicalPlaybackQueueOccurrence? _canonicalPlaybackQueueOccurrence({
+    required List<audio_service.MediaItem> queue,
+    required List<PlaybackCue> cues,
+    required int? currentIndex,
+  }) {
+    if (currentIndex == null ||
+        currentIndex < 0 ||
+        currentIndex >= queue.length) {
+      return null;
+    }
+    final item = queue[currentIndex];
+    PlaybackCue? currentCue;
+    for (final cue in cues) {
+      if (cue.queueIndex != currentIndex ||
+          !_isStablePlaybackQueueItemId(cue.queueItemId.trim()) ||
+          (cue.trackId != item.id && cue.mediaItem.id != item.id)) {
+        continue;
+      }
+      if (currentCue != null) return null;
+      currentCue = cue;
+    }
+    if (currentCue == null) return null;
+    final queueItemId = currentCue.queueItemId.trim();
+    if (cues.where((cue) => cue.queueItemId.trim() == queueItemId).length !=
+        1) {
+      return null;
+    }
+    return _CanonicalPlaybackQueueOccurrence(queueItemId: queueItemId);
+  }
+
+  void _observePlaybackQueueCurrent(
+    PlaybackState playback,
+    _CanonicalPlaybackQueueOccurrence? occurrence, {
+    required bool isListVisible,
+  }) {
+    if (occurrence == null) return;
+    final queueItemId = occurrence.queueItemId;
+    if (!_hasObservedPlaybackQueueCurrent) {
+      _hasObservedPlaybackQueueCurrent = true;
+      _lastObservedPlaybackQueueItemId = queueItemId;
+      return;
+    }
+    if (_lastObservedPlaybackQueueItemId == queueItemId) return;
+    _lastObservedPlaybackQueueItemId = queueItemId;
+    if (_suppressedPlaybackQueueFollowId != null) {
+      final isLocalPlayNow = _suppressedPlaybackQueueFollowId == queueItemId;
+      _suppressedPlaybackQueueFollowId = null;
+      if (isLocalPlayNow) return;
+    }
+    if (!isListVisible ||
+        _isPlaybackQueueUserInteracting ||
+        _isReorderingPlaybackQueue) {
+      return;
+    }
+    _schedulePlaybackQueueFollow(playback, queueItemId);
+  }
+
+  void _schedulePlaybackQueueFollow(
+    PlaybackState playback,
+    String queueItemId,
+  ) {
+    if (_pendingPlaybackQueueFollowId == queueItemId) return;
+    final generation = ++_playbackQueueFollowGeneration;
+    _pendingPlaybackQueueFollowId = queueItemId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          generation != _playbackQueueFollowGeneration ||
+          _pendingPlaybackQueueFollowId != queueItemId) {
+        return;
+      }
+      _pendingPlaybackQueueFollowId = null;
+      if (_isPlaybackQueueUserInteracting ||
+          _isReorderingPlaybackQueue ||
+          !_playbackQueueScrollController.hasClients) {
+        return;
+      }
+      final current = _canonicalPlaybackQueueOccurrence(
+        queue: playback.queue,
+        cues: playback.snapshot.cues,
+        currentIndex: playback.currentIndex,
+      );
+      if (current?.queueItemId != queueItemId) return;
+      final targetRenderObject = _playbackQueueOccurrenceKeys[queueItemId]
+          ?.currentContext
+          ?.findRenderObject();
+      if (targetRenderObject == null || !targetRenderObject.attached) return;
+      final viewport = RenderAbstractViewport.maybeOf(targetRenderObject);
+      if (viewport == null) return;
+      final position = _playbackQueueScrollController.position;
+      if (!position.hasPixels) return;
+      final targetOffset = viewport
+          .getOffsetToReveal(targetRenderObject, 0.5)
+          .offset
+          .clamp(position.minScrollExtent, position.maxScrollExtent)
+          .toDouble();
+      if (MediaQuery.disableAnimationsOf(context)) {
+        _playbackQueueScrollController.jumpTo(targetOffset);
+      } else {
+        unawaited(_playbackQueueScrollController.animateTo(
+          targetOffset,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOutCubic,
+        ));
+      }
+    });
+  }
+
+  bool _handlePlaybackQueueScrollNotification(ScrollNotification notification) {
+    if (notification.depth != 0 || notification.metrics.axis != Axis.vertical) {
+      return false;
+    }
+    if ((notification is ScrollStartNotification &&
+            notification.dragDetails != null) ||
+        (notification is ScrollUpdateNotification &&
+            notification.dragDetails != null)) {
+      _isPlaybackQueueUserInteracting = true;
+      _cancelPendingPlaybackQueueFollow();
+    } else if (notification is ScrollEndNotification) {
+      _isPlaybackQueueUserInteracting = false;
+    }
+    return false;
+  }
+
+  void _beginPlaybackQueueReorder() {
+    _isReorderingPlaybackQueue = true;
+    _cancelPendingPlaybackQueueFollow();
+  }
+
+  Future<void> _reorderPlaybackQueue(
+    PlaybackState playback,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    _beginPlaybackQueueReorder();
+    try {
+      await playback.reorderPlaybackQueue(oldIndex, newIndex);
+    } finally {
+      _endPlaybackQueueReorder();
+    }
+  }
+
+  void _endPlaybackQueueReorder() {
+    _cancelPendingPlaybackQueueFollow();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _isReorderingPlaybackQueue = false;
+    });
+  }
+
+  void _cancelPendingPlaybackQueueFollow() {
+    _playbackQueueFollowGeneration++;
+    _pendingPlaybackQueueFollowId = null;
   }
 
   Widget _buildPlaybackTimelineView(
@@ -699,11 +916,19 @@ class _QueueScreenState extends State<QueueScreen> {
 
   Future<void> _skipToPlaybackIndex(
     PlaybackState playback,
-    ListeningQueueEntry entry,
+    ListeningQueueEntry entry, {
+    required String queueItemId,
+  }
   ) async {
+    if (_isStablePlaybackQueueItemId(queueItemId)) {
+      _suppressedPlaybackQueueFollowId = queueItemId;
+    }
     try {
       await playback.skipToIndex(entry.index);
     } catch (_) {
+      if (_suppressedPlaybackQueueFollowId == queueItemId) {
+        _suppressedPlaybackQueueFollowId = null;
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not play "${entry.item.title}"')),
