@@ -272,7 +272,19 @@ func TestUpdateTrackAnalysisTimingMutationPreservesMetadataAgainstPostgres(t *te
 	}
 
 	replaced := update(`{
-		"overrides":{"manual_timing_v2":{"schema_version":2,"bpm":126,"beat_anchor_ms":25}},
+		"overrides":{
+			"manual_timing_v2":{"schema_version":2,"bpm":126,"beat_anchor_ms":25},
+			"manualTimingV2":{"schemaVersion":2,"bpm":240},
+			"manualTimingOverride":{"bpm":239},
+			"nativeBpm":238,
+			"bpmConfidence":0.01,
+			"beatGridMs":[0,251],
+			"beatsMs":[0,252],
+			"beatGridOffsetMs":99,
+			"offsetMs":98,
+			"downbeatsMs":[0],
+			"incoming_fact":{"keep":"replace"}
+		},
 		"expected_revision":7,
 		"timing_mutation":"replace"
 	}`)
@@ -299,11 +311,11 @@ func TestUpdateTrackAnalysisTimingMutationPreservesMetadataAgainstPostgres(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertStoredAnalysisTimingRepresentationsAbsent(
-		t,
-		decodeStoredAnalysisOverrides(t, storedAfterReplace.OverridesJSON),
-		"manual_timing_v2",
-	)
+	storedReplaceDocument := decodeStoredAnalysisOverrides(t, storedAfterReplace.OverridesJSON)
+	assertStoredAnalysisTimingRepresentationsAbsent(t, storedReplaceDocument, "manual_timing_v2")
+	if got := storedReplaceDocument["incoming_fact"].(map[string]any)["keep"]; got != "replace" {
+		t.Fatalf("replace incoming fact = %#v, want replace", got)
+	}
 
 	stale := update(`{
 		"overrides":{},
@@ -313,7 +325,14 @@ func TestUpdateTrackAnalysisTimingMutationPreservesMetadataAgainstPostgres(t *te
 	assertAnalysisOverrideError(t, stale, http.StatusConflict, "ANALYSIS_OVERRIDE_CONFLICT")
 
 	cleared := update(`{
-		"overrides":{},
+		"overrides":{
+			"manualTimingV2":{"schemaVersion":2,"bpm":230},
+			"manualTimingOverride":{"bpm":229},
+			"nativeBpm":228,
+			"beatGridMs":[0,260],
+			"downbeatsMs":[0],
+			"incoming_fact":{"keep":"clear"}
+		},
 		"expected_revision":8,
 		"timing_mutation":"clear"
 	}`)
@@ -337,11 +356,11 @@ func TestUpdateTrackAnalysisTimingMutationPreservesMetadataAgainstPostgres(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertStoredAnalysisTimingRepresentationsAbsent(
-		t,
-		decodeStoredAnalysisOverrides(t, storedAfterClear.OverridesJSON),
-		"",
-	)
+	storedClearDocument := decodeStoredAnalysisOverrides(t, storedAfterClear.OverridesJSON)
+	assertStoredAnalysisTimingRepresentationsAbsent(t, storedClearDocument, "")
+	if got := storedClearDocument["incoming_fact"].(map[string]any)["keep"]; got != "clear" {
+		t.Fatalf("clear incoming fact = %#v, want clear", got)
+	}
 }
 
 func decodeStoredAnalysisOverrides(t *testing.T, raw json.RawMessage) map[string]any {
@@ -362,9 +381,10 @@ func assertStoredAnalysisTimingRepresentationsAbsent(
 	for _, key := range []string{
 		"manual_timing_v2", "manualTimingV2",
 		"manual_timing_override", "manualTimingOverride",
-		"bpm", "nativeBpm", "bpmConfidence",
-		"beat_grid", "beatGrid", "beatGridMs", "beatsMs",
-		"beatGridOffsetMs", "offsetMs", "downbeats", "downbeatsMs",
+		"bpm", "native_bpm", "nativeBpm", "bpm_confidence", "bpmConfidence",
+		"beat_grid", "beatGrid", "beat_grid_ms", "beatGridMs", "beats_ms", "beatsMs",
+		"beat_grid_offset_ms", "beatGridOffsetMs", "offset_ms", "offsetMs",
+		"downbeats", "downbeats_ms", "downbeatsMs",
 	} {
 		if key == except {
 			continue

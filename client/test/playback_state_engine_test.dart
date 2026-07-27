@@ -482,6 +482,39 @@ void main() {
       playback.dispose();
     });
 
+    test('pause wins while exact queue occurrence selection is pending',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final clock = _GateableTimelineClock();
+      final playback = _playbackState(
+        engine: PlaybackEngine.withClock(
+          clock: clock,
+          voiceFactory: () => FakeVoice('v'),
+        ),
+      );
+      await playback.playQueue([
+        _track(1, seconds: 30),
+        _track(2, seconds: 45),
+      ]);
+      await playback.pause();
+      final targetQueueItemId = playback.snapshot.cues[1].queueItemId;
+      final playCallsBeforeSelection = clock.playCalls;
+
+      clock.delayNextSeek();
+      final pendingSelection =
+          playback.playQueueItemByQueueItemId(targetQueueItemId);
+      await clock.waitForDelayedSeek();
+      final pendingPause = playback.pause();
+      clock.releaseDelayedSeek();
+
+      expect(await pendingSelection, isFalse);
+      await pendingPause;
+      expect(playback.currentIndex, 1);
+      expect(playback.isPlaying, isFalse);
+      expect(clock.playCalls, playCallsBeforeSelection);
+      playback.dispose();
+    });
+
     test('replacements and skips advance focus transport generation', () async {
       final playback = _playbackState();
 
@@ -1197,6 +1230,46 @@ class _SignedRequest {
 
   final List<int> trackIds;
   final Completer<Map<String, dynamic>> completer = Completer();
+}
+
+class _GateableTimelineClock extends DefaultTimelineClock {
+  _GateableTimelineClock()
+      : super(
+          now: () => DateTime.utc(2026),
+          uiTickInterval: const Duration(hours: 1),
+        );
+
+  Completer<void>? _seekStarted;
+  Completer<void>? _seekRelease;
+  int playCalls = 0;
+
+  void delayNextSeek() {
+    _seekStarted = Completer<void>();
+    _seekRelease = Completer<void>();
+  }
+
+  Future<void> waitForDelayedSeek() => _seekStarted!.future;
+
+  void releaseDelayedSeek() => _seekRelease!.complete();
+
+  @override
+  Future<void> play() async {
+    playCalls++;
+    await super.play();
+  }
+
+  @override
+  Future<void> seek(int globalMs) async {
+    final started = _seekStarted;
+    final release = _seekRelease;
+    if (started != null && release != null) {
+      started.complete();
+      await release.future;
+      _seekStarted = null;
+      _seekRelease = null;
+    }
+    await super.seek(globalMs);
+  }
 }
 
 class _ControllableQueuePersistenceStore extends QueuePersistenceStore {

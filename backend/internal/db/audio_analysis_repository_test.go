@@ -365,7 +365,20 @@ func TestAnalysisRepositoryTimingMutationPreservesAllNonTimingOverridesAgainstPo
 	replaced, err := analysisRepo.SetOverridesWithTimingMutation(
 		ctx,
 		track.ID,
-		json.RawMessage(`{"manual_timing_v2":{"schema_version":2,"bpm":126,"beat_anchor_ms":25}}`),
+		json.RawMessage(`{
+			"manual_timing_v2":{"schema_version":2,"bpm":126,"beat_anchor_ms":25},
+			"manualTimingV2":{"schemaVersion":2,"bpm":240},
+			"manualTimingOverride":{"bpm":239},
+			"nativeBpm":238,
+			"bpmConfidence":0.01,
+			"beatGrid":[0,250],
+			"beatGridMs":[0,251],
+			"beatsMs":[0,252],
+			"beatGridOffsetMs":99,
+			"offsetMs":98,
+			"downbeatsMs":[0],
+			"incoming_fact":{"keep":"replace"}
+		}`),
 		3,
 		AnalysisTimingReplace,
 	)
@@ -380,6 +393,9 @@ func TestAnalysisRepositoryTimingMutationPreservesAllNonTimingOverridesAgainstPo
 	replacementTiming := replacedDocument["manual_timing_v2"].(map[string]any)
 	if replacementTiming["bpm"] != float64(126) || replacementTiming["revision"] != float64(4) {
 		t.Fatalf("replacement timing = %#v", replacementTiming)
+	}
+	if _, present := replacedDocument["incoming_fact"]; !present {
+		t.Fatalf("replace removed incoming non-timing fact: %#v", replacedDocument)
 	}
 	assertPreservedAnalysisMetadata(t, replacedDocument)
 
@@ -396,7 +412,14 @@ func TestAnalysisRepositoryTimingMutationPreservesAllNonTimingOverridesAgainstPo
 	cleared, err := analysisRepo.SetOverridesWithTimingMutation(
 		ctx,
 		track.ID,
-		json.RawMessage(`{}`),
+		json.RawMessage(`{
+			"manualTimingV2":{"schemaVersion":2,"bpm":230},
+			"manualTimingOverride":{"bpm":229},
+			"nativeBpm":228,
+			"beatGridMs":[0,260],
+			"downbeatsMs":[0],
+			"incoming_fact":{"keep":"clear"}
+		}`),
 		4,
 		AnalysisTimingClear,
 	)
@@ -408,6 +431,9 @@ func TestAnalysisRepositoryTimingMutationPreservesAllNonTimingOverridesAgainstPo
 	}
 	clearedDocument := decodeJSONMap(t, cleared.OverridesJSON)
 	assertAnalysisTimingRepresentationsAbsent(t, clearedDocument, "")
+	if got := clearedDocument["incoming_fact"].(map[string]any)["keep"]; got != "clear" {
+		t.Fatalf("clear incoming fact = %#v, want clear", got)
+	}
 	assertPreservedAnalysisMetadata(t, clearedDocument)
 }
 
@@ -425,9 +451,10 @@ func assertAnalysisTimingRepresentationsAbsent(t *testing.T, document map[string
 	for _, key := range []string{
 		"manual_timing_v2", "manualTimingV2",
 		"manual_timing_override", "manualTimingOverride",
-		"bpm", "nativeBpm", "bpmConfidence",
-		"beat_grid", "beatGrid", "beatGridMs", "beatsMs",
-		"beatGridOffsetMs", "offsetMs", "downbeats", "downbeatsMs",
+		"bpm", "native_bpm", "nativeBpm", "bpm_confidence", "bpmConfidence",
+		"beat_grid", "beatGrid", "beat_grid_ms", "beatGridMs", "beats_ms", "beatsMs",
+		"beat_grid_offset_ms", "beatGridOffsetMs", "offset_ms", "offsetMs",
+		"downbeats", "downbeats_ms", "downbeatsMs",
 	} {
 		if key == except {
 			continue

@@ -415,10 +415,13 @@ func (r *AnalysisRepository) setOverrides(ctx context.Context, trackID int64, ov
 				(COALESCE(overrides_json, '{}'::jsonb) - ARRAY[
 					'manual_timing_v2', 'manualTimingV2',
 					'manual_timing_override', 'manualTimingOverride',
-					'bpm', 'nativeBpm', 'bpmConfidence',
-					'beat_grid', 'beatGrid', 'beatGridMs', 'beatsMs',
-					'beatGridOffsetMs', 'offsetMs',
-					'downbeats', 'downbeatsMs'
+					'bpm', 'native_bpm', 'nativeBpm',
+					'bpm_confidence', 'bpmConfidence',
+					'beat_grid', 'beatGrid',
+					'beat_grid_ms', 'beatGridMs', 'beats_ms', 'beatsMs',
+					'beat_grid_offset_ms', 'beatGridOffsetMs',
+					'offset_ms', 'offsetMs',
+					'downbeats', 'downbeats_ms', 'downbeatsMs'
 				]::text[]) || COALESCE($3::jsonb, '{}'::jsonb)
 			WHEN $5 THEN
 				jsonb_strip_nulls(jsonb_build_object(
@@ -484,12 +487,21 @@ func applyAnalysisTimingMutation(overrides json.RawMessage, mutation AnalysisTim
 	if err := json.Unmarshal(overrides, &document); err != nil {
 		return nil, err
 	}
-	for _, key := range []string{"bpm", "beat_grid", "downbeats"} {
+	for _, key := range []string{
+		"manual_timing_v2", "manualTimingV2",
+		"manual_timing_override", "manualTimingOverride",
+		"bpm", "native_bpm", "nativeBpm",
+		"bpm_confidence", "bpmConfidence",
+		"beat_grid", "beatGrid",
+		"beat_grid_ms", "beatGridMs", "beats_ms", "beatsMs",
+		"beat_grid_offset_ms", "beatGridOffsetMs",
+		"offset_ms", "offsetMs",
+		"downbeats", "downbeats_ms", "downbeatsMs",
+	} {
+		if mutation == AnalysisTimingReplace && key == "manual_timing_v2" {
+			continue
+		}
 		delete(document, key)
-	}
-	if mutation == AnalysisTimingClear {
-		delete(document, "manual_timing_v2")
-		delete(document, "manual_timing_override")
 	}
 	return json.Marshal(document)
 }
