@@ -97,6 +97,29 @@ func TestServiceSearchProviderTimeout(t *testing.T) {
 	}
 }
 
+func TestNewServiceAppliesTimeoutDefaults(t *testing.T) {
+	svc := NewService(ServiceConfig{})
+	if svc.perProviderTimeout != DefaultPerProviderTimeout {
+		t.Fatalf("per-provider timeout = %s, want %s", svc.perProviderTimeout, DefaultPerProviderTimeout)
+	}
+	if svc.overallTimeout != DefaultOverallTimeout {
+		t.Fatalf("overall timeout = %s, want %s", svc.overallTimeout, DefaultOverallTimeout)
+	}
+	if svc.overallTimeout < svc.perProviderTimeout {
+		t.Fatalf("overall timeout %s must be at least per-provider timeout %s", svc.overallTimeout, svc.perProviderTimeout)
+	}
+}
+
+func TestNewServiceKeepsOverallTimeoutAtLeastPerProviderTimeout(t *testing.T) {
+	svc := NewService(ServiceConfig{
+		PerProviderTimeout: 12 * time.Second,
+		OverallTimeout:     5 * time.Second,
+	})
+	if svc.overallTimeout != svc.perProviderTimeout {
+		t.Fatalf("overall timeout = %s, want it clamped to per-provider timeout %s", svc.overallTimeout, svc.perProviderTimeout)
+	}
+}
+
 func TestServiceSearchUnknownProvider(t *testing.T) {
 	svc := NewService(ServiceConfig{})
 	resp := svc.Search(context.Background(), "x", []string{"bogus"}, 10)

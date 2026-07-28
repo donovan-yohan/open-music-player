@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -109,6 +111,25 @@ func newSourceQualityJudge(cfg *config.Config) discovery.SourceQualityJudge {
 		return nil
 	}
 	return judge
+}
+
+// discoveryServiceConfigFromEnv reads the production-only discovery timeout
+// overrides. Invalid and absent values deliberately retain library defaults.
+func discoveryServiceConfigFromEnv(getenv func(string) string) discovery.ServiceConfig {
+	perProviderTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS", discovery.DefaultPerProviderTimeout)
+	overallTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_OVERALL_TIMEOUT_SECONDS", discovery.DefaultOverallTimeout)
+	return discovery.NormalizeServiceConfig(discovery.ServiceConfig{
+		PerProviderTimeout: perProviderTimeout,
+		OverallTimeout:     overallTimeout,
+	})
+}
+
+func discoveryTimeoutFromEnv(getenv func(string) string, key string, fallback time.Duration) time.Duration {
+	seconds, err := strconv.ParseInt(strings.TrimSpace(getenv(key)), 10, 64)
+	if err != nil || seconds <= 0 || seconds > (1<<63-1)/int64(time.Second) {
+		return fallback
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // newAgentToolsHandler wires the private research gateway independently from
@@ -427,7 +448,10 @@ func main() {
 	mbClient := musicbrainz.NewClient(redisCache)
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
 	sourceQualityJudge := newSourceQualityJudge(cfg)
-	discoveryService := discovery.NewDefaultServiceWithCatalogAndSourceQualityJudge(mbClient, sourceQualityJudge)
+	discoveryConfig := discoveryServiceConfigFromEnv(os.Getenv)
+	discoveryConfig.MusicCatalog = mbClient
+	discoveryConfig.SourceQualityJudge = sourceQualityJudge
+	discoveryService := discovery.NewDefaultServiceWithConfig(discoveryConfig)
 	researchRuntime, err := newResearchRuntime(cfg, database, discoveryService, appMetrics)
 	if err != nil {
 		log.Error(ctx, "Failed to initialize durable research", nil, err)

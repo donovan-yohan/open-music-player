@@ -142,7 +142,17 @@ type ServiceConfig struct {
 	PerProviderTimeout time.Duration
 }
 
+const (
+	// DefaultPerProviderTimeout leaves room for a cold or contended yt-dlp
+	// SoundCloud search to complete.
+	DefaultPerProviderTimeout = 8 * time.Second
+	// DefaultOverallTimeout leaves explicit merge headroom after the slowest
+	// provider while bounding the whole discovery request.
+	DefaultOverallTimeout = 12 * time.Second
+)
+
 func NewService(cfg ServiceConfig) *Service {
+	cfg = NormalizeServiceConfig(cfg)
 	providers := make(map[string]Provider)
 	for _, p := range cfg.Providers {
 		providers[p.Name()] = p
@@ -154,12 +164,6 @@ func NewService(cfg ServiceConfig) *Service {
 			defaults = append(defaults, name)
 		}
 	}
-	if cfg.OverallTimeout <= 0 {
-		cfg.OverallTimeout = 8 * time.Second
-	}
-	if cfg.PerProviderTimeout <= 0 {
-		cfg.PerProviderTimeout = 3 * time.Second
-	}
 	return &Service{
 		providers:          providers,
 		defaultProviders:   defaults,
@@ -170,22 +174,45 @@ func NewService(cfg ServiceConfig) *Service {
 	}
 }
 
+// NormalizeServiceConfig applies timeout defaults and keeps the overall request
+// budget from ending before any provider's configured budget.
+func NormalizeServiceConfig(cfg ServiceConfig) ServiceConfig {
+	if cfg.OverallTimeout <= 0 {
+		cfg.OverallTimeout = DefaultOverallTimeout
+	}
+	if cfg.PerProviderTimeout <= 0 {
+		cfg.PerProviderTimeout = DefaultPerProviderTimeout
+	}
+	if cfg.OverallTimeout < cfg.PerProviderTimeout {
+		cfg.OverallTimeout = cfg.PerProviderTimeout
+	}
+	return cfg
+}
+
 func NewDefaultService() *Service {
-	return NewDefaultServiceWithCatalogAndSourceQualityJudge(nil, nil)
+	return NewDefaultServiceWithConfig(ServiceConfig{})
 }
 
 func NewDefaultServiceWithCatalog(catalog MusicCatalog) *Service {
-	return NewDefaultServiceWithCatalogAndSourceQualityJudge(catalog, nil)
+	return NewDefaultServiceWithConfig(ServiceConfig{MusicCatalog: catalog})
 }
 
 // NewDefaultServiceWithCatalogAndSourceQualityJudge installs an optional judge
 // on the default source providers. A nil judge preserves deterministic ranking.
 func NewDefaultServiceWithCatalogAndSourceQualityJudge(catalog MusicCatalog, judge SourceQualityJudge) *Service {
+	return NewDefaultServiceWithConfig(ServiceConfig{MusicCatalog: catalog, SourceQualityJudge: judge})
+}
+
+// NewDefaultServiceWithConfig constructs the standard source provider set and
+// applies the supplied service configuration, including request timeouts.
+func NewDefaultServiceWithConfig(cfg ServiceConfig) *Service {
 	providers := []Provider{
 		NewYouTubeProvider(),
 		NewYTDLPProvider("soundcloud", "scsearch", ""),
 	}
-	return NewService(ServiceConfig{Providers: providers, DefaultProviders: []string{"youtube", "soundcloud"}, MusicCatalog: catalog, SourceQualityJudge: judge})
+	cfg.Providers = providers
+	cfg.DefaultProviders = []string{"youtube", "soundcloud"}
+	return NewService(cfg)
 }
 
 // NewYouTubeProvider searches both the ordinary YouTube video index and the
