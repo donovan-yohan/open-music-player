@@ -294,6 +294,9 @@ def _beat_anchor(song: VDJSong) -> tuple[float, str] | None:
         position = _number(_attribute(poi, "Pos", "Position"))
         if position is not None and position >= 0:
             return position, "beatgrid_poi"
+    phase = _number(_attribute(song.scan, "Phase"))
+    if phase is not None and phase >= 0:
+        return phase, "scan_phase"
     return None
 
 
@@ -336,10 +339,15 @@ def _song_prediction(
         anchor = _beat_anchor(song)
         duration = _duration_from_xml(song) or _duration_from_audio(audio_path)
         if anchor is not None and duration is not None:
-            beats_ms = synthesize_beat_grid(bpm, anchor[0], duration)
+            anchor_seconds, anchor_source = anchor
+            if anchor_source == "scan_phase":
+                # Scan Phase is a beat-phase offset, not an absolute first-beat
+                # time; some databases store values beyond one beat period.
+                anchor_seconds = math.fmod(anchor_seconds, 60.0 / bpm)
+            beats_ms = synthesize_beat_grid(bpm, anchor_seconds, duration)
             if beats_ms:
                 prediction["beats_ms"] = beats_ms
-                provenance["beat_anchor"] = anchor[1]
+                provenance["beat_anchor"] = anchor_source
                 provenance["duration_source"] = (
                     "xml" if _duration_from_xml(song) is not None else "audio_probe"
                 )

@@ -291,3 +291,109 @@ def test_exported_artifact_scores_with_existing_cli(tmp_path: Path):
     assert result["run"]["analyzer"]["bpm_interpretations"] == {"track": "period"}
     assert result["counts"]["completed"] == 1
     assert result["groups"]["ground_truth"]["tempo"]["acc1"] == 1.0
+
+
+def test_scan_phase_anchor_synthesizes_grid_from_vdj_2026_schema(tmp_path: Path):
+    audio = tmp_path / "track.wav"
+    _write_wav(audio, seconds=4)
+    manifest = tmp_path / "manifest.jsonl"
+    _write_manifest(manifest, [_manifest_row("track", audio)])
+    database = tmp_path / "database.xml"
+    database.write_text(
+        '<VirtualDJ_Database Version="2026">'
+        f'<Song FilePath="{audio}" FileSize="1">'
+        '<Infos SongLength="4.0" />'
+        '<Scan Version="801" Bpm="0.5" Phase="0.099" AltBpm="0.6" Key="E" />'
+        "</Song></VirtualDJ_Database>",
+        encoding="utf-8",
+    )
+    output = tmp_path / "predictions.jsonl"
+
+    assert (
+        main(
+            [
+                "--database",
+                str(database),
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    _, predictions = load_predictions(output)
+    row = predictions["track"]
+    assert row["bpm"] == 120.0
+    assert row["provenance"]["beat_anchor"] == "scan_phase"
+    assert row["beats_ms"][:3] == [99, 599, 1099]
+    assert "downbeats_ms" not in row
+
+
+def test_first_beat_takes_precedence_over_scan_phase(tmp_path: Path):
+    audio = tmp_path / "track.wav"
+    _write_wav(audio, seconds=4)
+    manifest = tmp_path / "manifest.jsonl"
+    _write_manifest(manifest, [_manifest_row("track", audio)])
+    database = tmp_path / "database.xml"
+    database.write_text(
+        f'<VirtualDJ><Song FilePath="{audio}" Duration="4">'
+        '<Scan Version="801" Bpm="0.5" Phase="0.099" FirstBeat="0.25" Key="E" />'
+        "</Song></VirtualDJ>",
+        encoding="utf-8",
+    )
+    output = tmp_path / "predictions.jsonl"
+
+    assert (
+        main(
+            [
+                "--database",
+                str(database),
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    _, predictions = load_predictions(output)
+    row = predictions["track"]
+    assert row["provenance"]["beat_anchor"] == "FirstBeat"
+    assert row["beats_ms"][:2] == [250, 750]
+
+
+def test_scan_phase_beyond_one_period_is_normalized(tmp_path: Path):
+    audio = tmp_path / "track.wav"
+    _write_wav(audio, seconds=4)
+    manifest = tmp_path / "manifest.jsonl"
+    _write_manifest(manifest, [_manifest_row("track", audio)])
+    database = tmp_path / "database.xml"
+    database.write_text(
+        f'<VirtualDJ><Song FilePath="{audio}" Duration="4">'
+        '<Scan Version="801" Bpm="0.5" Phase="0.7" Key="E" />'
+        "</Song></VirtualDJ>",
+        encoding="utf-8",
+    )
+    output = tmp_path / "predictions.jsonl"
+
+    assert (
+        main(
+            [
+                "--database",
+                str(database),
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+
+    _, predictions = load_predictions(output)
+    row = predictions["track"]
+    assert row["provenance"]["beat_anchor"] == "scan_phase"
+    assert row["beats_ms"][:3] == [200, 700, 1200]
