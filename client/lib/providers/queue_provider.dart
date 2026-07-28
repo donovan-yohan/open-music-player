@@ -31,6 +31,7 @@ class QueueProvider extends ChangeNotifier {
   QueueState _queue = QueueState.empty();
   bool _isLoading = false;
   String? _error;
+  bool _queueServiceDisabled = false;
   bool _disposed = false;
 
   String? _activeMixPlanId;
@@ -79,6 +80,10 @@ class QueueProvider extends ChangeNotifier {
   QueueState get queue => _queue;
   bool get isLoading => _isLoading;
   String? get error => _error;
+
+  /// The optional download queue is not running. Search remains usable, but
+  /// callers should avoid polling or presenting download-state controls.
+  bool get queueServiceDisabled => _queueServiceDisabled;
 
   QueueTrack? get currentTrack => _queue.currentTrack;
   List<QueueTrack> get upNext => _queue.upNext;
@@ -384,6 +389,7 @@ class QueueProvider extends ChangeNotifier {
       }
       final loadedQueue = await _apiClient.getQueue();
       if (!_isCurrentQueueOperation(operationGeneration)) return;
+      _queueServiceDisabled = false;
       _queue = _queueWithAuthoritativeAnalysis(loadedQueue);
       _rememberQueueAnalyses();
       _pruneTimingState();
@@ -391,13 +397,24 @@ class QueueProvider extends ChangeNotifier {
       if (!_isCurrentQueueOperation(operationGeneration)) return;
     } catch (e) {
       if (!_isCurrentQueueOperation(operationGeneration)) return;
-      _error = e.toString();
+      if (_isQueueServiceDisabled(e)) {
+        _queueServiceDisabled = true;
+        _error = null;
+      } else {
+        _error = e.toString();
+      }
     } finally {
       if (_isCurrentQueueOperation(operationGeneration)) {
         _isLoading = false;
         _notifyListeners();
       }
     }
+  }
+
+  bool _isQueueServiceDisabled(Object error) {
+    if (error is! ApiException || error.statusCode != 503) return false;
+    return error.errorCode?.toUpperCase() == 'SERVICE_DISABLED' ||
+        error.message.toUpperCase().contains('SERVICE_DISABLED');
   }
 
   Future<void> addToQueue(

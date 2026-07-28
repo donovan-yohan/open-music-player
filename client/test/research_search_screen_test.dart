@@ -287,21 +287,11 @@ Future<void> _pumpSearch(
 }
 
 Future<void> _submitResearch(WidgetTester tester, String prompt) async {
-  if (find.text('Assist').evaluate().isNotEmpty) {
-    final assistButton = find.text('Assist');
-    final segmentedButton = tester.widget<SegmentedButton<bool>>(
-      find.byType(SegmentedButton<bool>),
-    );
-    if (!segmentedButton.selected.contains(true)) {
-      await tester.tap(assistButton);
-      await tester.pump();
-    }
-  }
   await tester.enterText(
     find.byKey(const ValueKey('search_assist_input')),
     prompt,
   );
-  await tester.testTextInput.receiveAction(TextInputAction.done);
+  await tester.tap(find.byKey(const ValueKey('search_ai_button')));
   await tester.pump();
   await tester.pump();
 }

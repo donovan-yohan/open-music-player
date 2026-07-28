@@ -13,6 +13,24 @@ enum SearchScope { catalog, library }
 /// never has to retype to re-scope.
 enum SearchTypeFilter { all, songs, artists, albums }
 
+/// The shared mobile search navigation. It deliberately has no "all" state:
+/// each tab answers one thumb-sized question, in both Catalog and My Library.
+enum SearchResultTab { song, artist, album }
+
+extension SearchResultTabFilter on SearchResultTab {
+  SearchTypeFilter get localFilter => switch (this) {
+        SearchResultTab.song => SearchTypeFilter.songs,
+        SearchResultTab.artist => SearchTypeFilter.artists,
+        SearchResultTab.album => SearchTypeFilter.albums,
+      };
+
+  String get label => switch (this) {
+        SearchResultTab.song => 'Song',
+        SearchResultTab.artist => 'Artist',
+        SearchResultTab.album => 'Album',
+      };
+}
+
 extension SearchTypeFilterLabel on SearchTypeFilter {
   String get label => switch (this) {
         SearchTypeFilter.all => 'All',
@@ -76,7 +94,8 @@ class RecentSearches {
 
   /// Rebuilds a log from persisted [stored] values: trims blanks, dedups
   /// case-insensitively (newest kept), and caps the length.
-  factory RecentSearches.fromStored(List<String> stored, {int cap = defaultCap}) {
+  factory RecentSearches.fromStored(List<String> stored,
+      {int cap = defaultCap}) {
     var log = RecentSearches(cap: cap);
     // Persisted order is newest-first; re-add in reverse so the newest ends up
     // at the front after each prepend.
