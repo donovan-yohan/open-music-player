@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<VirtualDJ>
+  <Song FilePath="OLD_ROOT/period.wav" Duration="3.0">
+    <Infos SongLength="4.0" />
+    <Scan Version="8.5.0" Bpm="0.5" Key="Am" FirstBeat="1.0" />
+  </Song>
+  <Song FilePath="OLD_ROOT/bpm.wav" Duration="4.0">
+    <Scan Version="8.5.0" Bpm="128" Key="12B" FirstBeat="0.0" />
+  </Song>
+  <Song FilePath="OLD_ROOT/xml-only.wav" Duration="4.0">
+    <Scan Version="8.5.0" Bpm="0.461538" Key="not-a-key" />
+  </Song>
+</VirtualDJ>
