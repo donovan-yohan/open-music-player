@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/api/api_client.dart';
 import '../../core/audio/playback_state.dart';
@@ -29,11 +30,16 @@ class SearchScreen extends StatefulWidget {
   final List<Duration> researchPollDelays;
   final SearchFocusController? commandFocusController;
 
+  /// Injection seam for the source-verification link. Production always opens
+  /// the provider page in its native application where possible.
+  final Future<bool> Function(Uri url)? externalUrlLauncher;
+
   const SearchScreen({
     super.key,
     this.searchService,
     this.researchService,
     this.commandFocusController,
+    this.externalUrlLauncher,
     this.researchPollDelays = const [
       Duration(seconds: 1),
       Duration(seconds: 2),
@@ -68,7 +74,7 @@ class _SearchScreenState extends State<SearchScreen> {
   SearchService? _searchService;
   final RecentSearchesStore _recentSearches = RecentSearchesStore();
   List<String> _recentQueries = const [];
-  SearchTypeFilter _typeFilter = SearchTypeFilter.all;
+  SearchResultTab _resultTab = SearchResultTab.song;
   LocalSearchResults _localResults = const LocalSearchResults();
   int _localRequestSerial = 0;
   bool _isLocalSearching = false;
@@ -81,9 +87,9 @@ class _SearchScreenState extends State<SearchScreen> {
   String _query = '';
   String? _searchError;
 
-  // Assistive mode: the same search entry, switched to call the grounded AI
-  // assist endpoint. Default stays plain discovery search so the fallback path
-  // is always one tap away and never depends on the model being configured.
+  // Assist is an explicitly invoked result view, not a search mode. Typing or
+  // submitting continues to use normal catalog search unless the sparkle
+  // button was deliberately tapped.
   bool _assistMode = false;
   DiscoveryAssistResponse? _assistResponse;
   int _assistRequestSerial = 0;
@@ -101,12 +107,6 @@ class _SearchScreenState extends State<SearchScreen> {
   int _researchPollStep = 0;
   bool _isCreatingResearch = false;
   DateTime? _researchStartedAt;
-
-  // A prompt that begins with an absolute http(s) URL is routed to the assist
-  // endpoint even from Search mode: its direct-URL resolver grounds the link
-  // into a queueable candidate without the user rewriting it, and that path
-  // works even when the model is disabled.
-  static final RegExp _urlPrompt = RegExp(r'^https?://', caseSensitive: false);
 
   @override
   void initState() {
@@ -184,19 +184,13 @@ class _SearchScreenState extends State<SearchScreen> {
       return;
     }
 
+    // Editing always returns to ordinary search. AI is only invoked by its
+    // explicit inline control, never by keystrokes or the keyboard action.
     if (_assistMode) {
-      // Assist calls cost a model round-trip, so they never fire on keystroke
-      // debounce — only on explicit submit. Clearing the field clears the
-      // grounded result so a stale answer never lingers under an empty prompt,
-      // and bumps the serial so any in-flight request can neither resurrect a
-      // result nor leave the spinner stuck under the now-empty box.
-      _debounceTimer?.cancel();
-      if (value.trim().isEmpty) {
-        setState(_resetAssist);
-      } else {
-        setState(() {});
-      }
-      return;
+      setState(() {
+        _assistMode = false;
+        _resetAssist();
+      });
     }
 
     final next = value.trim();
@@ -301,10 +295,8 @@ class _SearchScreenState extends State<SearchScreen> {
     _isSearching = false;
   }
 
-  /// Route an explicit submit. Assist mode (or a pasted URL from search mode)
-  /// goes to the grounded assist endpoint; everything else is plain discovery
-  /// search. Switching to assist on a pasted URL is the only implicit mode
-  /// change, and it never queues/downloads — it only resolves a candidate.
+  /// Keyboard submit is intentionally boring: it always runs ordinary search.
+  /// AI research is opt-in via the sparkle control beside the field.
   void _onSubmit(String value) {
     final text = value.trim();
     if (text.isEmpty) return;
@@ -312,12 +304,13 @@ class _SearchScreenState extends State<SearchScreen> {
       _runLocalSearch(query: text);
       return;
     }
-    if (_assistMode || _urlPrompt.hasMatch(text)) {
-      if (!_assistMode) setState(() => _assistMode = true);
-      _runAssist(prompt: text);
-    } else {
-      _runSearch(query: text);
+    if (_assistMode) {
+      setState(() {
+        _assistMode = false;
+        _resetAssist();
+      });
     }
+    _runSearch(query: text);
   }
 
   /// Flip between Catalog (discovery/assist) and My Library (local search),
@@ -347,7 +340,7 @@ class _SearchScreenState extends State<SearchScreen> {
     _localError = null;
     _localQuery = '';
     _isLocalSearching = false;
-    _typeFilter = SearchTypeFilter.all;
+    _resultTab = SearchResultTab.song;
   }
 
   /// Runs a local library search across recordings/artists/releases in parallel,
@@ -465,17 +458,29 @@ class _SearchScreenState extends State<SearchScreen> {
     return 'Search failed. Please try again.';
   }
 
-  void _setAssistMode(bool enabled) {
-    if (enabled == _assistMode) return;
+  void _triggerAssist() {
+    if (_scope == SearchScope.library) return;
+    final prompt = _queryController.text.trim();
+    if (prompt.isEmpty) {
+      _queryFocusNode.requestFocus();
+      return;
+    }
     _debounceTimer?.cancel();
     setState(() {
-      _assistMode = enabled;
-      // Drop both modes' results because the typed prompt is carried across. A
-      // previous result from either mode would contradict the current input as
-      // soon as the user flips the Search/Assist toggle.
+      _assistMode = true;
       _resetSearch();
       _resetAssist();
     });
+    _runAssist(prompt: prompt);
+  }
+
+  void _dismissAssistResults() {
+    final query = _queryController.text.trim();
+    setState(() {
+      _assistMode = false;
+      _resetAssist();
+    });
+    if (query.isNotEmpty) _runSearch(query: query);
   }
 
   /// Fall back from a disabled/failing assistant to normal discovery search,
@@ -496,7 +501,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Future<void> _runAssist({String? prompt}) async {
     final text = (prompt ?? _queryController.text).trim();
-    if (_urlPrompt.hasMatch(text)) {
+    if (text.startsWith('http://') || text.startsWith('https://')) {
       return _runSynchronousAssist(prompt: text);
     }
     return _runResearch(prompt: text);
@@ -1000,6 +1005,11 @@ class _SearchScreenState extends State<SearchScreen> {
   Future<void> _refreshQueue({bool force = false}) async {
     if (!mounted || _isPollingQueue) return;
     final provider = context.read<QueueProvider>();
+    if (provider.queueServiceDisabled) {
+      _pollTimer?.cancel();
+      _pollTimer = null;
+      return;
+    }
     if (!force && !_queueHasActiveWork(provider)) {
       _ensurePolling();
       return;
@@ -1027,7 +1037,7 @@ class _SearchScreenState extends State<SearchScreen> {
     }
 
     final provider = context.read<QueueProvider>();
-    if (!_queueHasActiveWork(provider)) {
+    if (provider.queueServiceDisabled || !_queueHasActiveWork(provider)) {
       _pollTimer?.cancel();
       _pollTimer = null;
       return;
@@ -1039,6 +1049,7 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   bool _queueHasActiveWork(QueueProvider provider) {
+    if (provider.queueServiceDisabled) return false;
     if (_pendingCandidateKeys.isNotEmpty) return true;
     return provider.queue.tracks.any(
       (track) =>
@@ -1071,6 +1082,7 @@ class _SearchScreenState extends State<SearchScreen> {
   Widget build(BuildContext context) {
     final queueProvider = context.watch<QueueProvider>();
     final library = _scope == SearchScope.library;
+    final queueAvailable = !queueProvider.queueServiceDisabled;
 
     return Scaffold(
       appBar: AppBar(
@@ -1078,13 +1090,15 @@ class _SearchScreenState extends State<SearchScreen> {
           'Mobile Discovery',
           style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
         ),
-        actions: [
-          IconButton(
-            tooltip: 'Refresh queue status',
-            onPressed: () => _refreshQueue(force: true),
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
+        actions: queueAvailable
+            ? [
+                IconButton(
+                  tooltip: 'Refresh queue status',
+                  onPressed: () => _refreshQueue(force: true),
+                  icon: const Icon(Icons.refresh),
+                ),
+              ]
+            : const [],
       ),
       body: RefreshIndicator(
         onRefresh: () async {
@@ -1095,23 +1109,25 @@ class _SearchScreenState extends State<SearchScreen> {
               _runAssist(prompt: _askedPrompt)
             else if (!library && !_assistMode && _query.isNotEmpty)
               _runSearch(),
-            _refreshQueue(force: true),
+            if (queueAvailable) _refreshQueue(force: true),
           ]);
         },
         child: ListView(
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 120),
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 112),
           children: [
             _buildSearchBox(),
-            const SizedBox(height: 10),
+            const SizedBox(height: 6),
+            _buildResultTabs(),
+            const SizedBox(height: 6),
             _buildScopeToggle(),
-            const SizedBox(height: 10),
+            const SizedBox(height: 6),
             if (library)
               ..._buildLibraryBody()
             else
               ..._buildCatalogBody(queueProvider),
             const SizedBox(height: 16),
-            _buildQueueAffordance(queueProvider),
+            if (queueAvailable) _buildQueueAffordance(queueProvider),
           ],
         ),
       ),
@@ -1119,18 +1135,27 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   List<Widget> _buildCatalogBody(QueueProvider queueProvider) {
-    final queueError = queueProvider.error;
+    final queueError =
+        queueProvider.queueServiceDisabled ? null : queueProvider.error;
     final modeError = _assistMode ? _assistError : _searchError;
     return [
-      _buildModeToggle(),
       // A queue-load error is only shown when the active mode is otherwise
       // clean, so the mode's own error card stays the primary message.
       if (modeError == null && queueError != null)
         _buildErrorCard(queueError, () => _refreshQueue(force: true)),
       const SizedBox(height: 12),
-      if (_assistMode)
-        ..._buildAssistBody(queueProvider)
-      else
+      if (_assistMode) ...[
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            key: const ValueKey('search_assist_dismiss'),
+            onPressed: _dismissAssistResults,
+            icon: const Icon(Icons.arrow_back, size: 16),
+            label: const Text('Back to search'),
+          ),
+        ),
+        ..._buildAssistBody(queueProvider),
+      ] else
         ..._buildSearchModeBody(queueProvider),
     ];
   }
@@ -1169,35 +1194,11 @@ class _SearchScreenState extends State<SearchScreen> {
       if (_sourceSelectionStatus != null) _buildSourceSelectionStatus(),
       if (_response != null) _buildProviderRow(_response!.providers),
       const SizedBox(height: 12),
-      _buildResultsSection(queueProvider),
-    ];
-  }
-
-  Widget _buildModeToggle() {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: SegmentedButton<bool>(
-        showSelectedIcon: false,
-        style: const ButtonStyle(
-          visualDensity: VisualDensity.compact,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        segments: const [
-          ButtonSegment<bool>(
-            value: false,
-            icon: Icon(Icons.travel_explore, size: 18),
-            label: Text('Search'),
-          ),
-          ButtonSegment<bool>(
-            value: true,
-            icon: Icon(Icons.auto_awesome, size: 18),
-            label: Text('Assist'),
-          ),
-        ],
-        selected: {_assistMode},
-        onSelectionChanged: (selection) => _setAssistMode(selection.first),
+      _buildResultsSection(
+        queueProvider,
+        queueAvailable: !queueProvider.queueServiceDisabled,
       ),
-    );
+    ];
   }
 
   List<Widget> _buildLibraryBody() {
@@ -1207,11 +1208,7 @@ class _SearchScreenState extends State<SearchScreen> {
       return [_buildRecentSearches()];
     }
 
-    final hasActiveQuery = _localQuery.isNotEmpty || _isLocalSearching;
-    return [
-      if (hasActiveQuery) ...[_buildTypeChips(), const SizedBox(height: 12)],
-      _buildLocalResultsSection(),
-    ];
+    return [_buildLocalResultsSection()];
   }
 
   Widget _buildRecentSearches() {
@@ -1264,18 +1261,31 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildTypeChips() {
-    return Wrap(
-      key: const ValueKey('search_type_chips'),
-      spacing: 8,
-      children: SearchTypeFilter.values.map((filter) {
-        return ChoiceChip(
-          key: ValueKey('search_type_chip_${filter.name}'),
-          label: Text(filter.label),
-          selected: _typeFilter == filter,
-          onSelected: (_) => setState(() => _typeFilter = filter),
-        );
-      }).toList(),
+  Widget _buildResultTabs() {
+    return SizedBox(
+      // TabBar reserves a 2dp indicator/divider lane, so the 50dp container
+      // leaves each actual tab a full 48dp touch target.
+      height: 50,
+      child: DefaultTabController(
+        key: ValueKey('search_result_tabs_${_resultTab.name}'),
+        length: SearchResultTab.values.length,
+        initialIndex: _resultTab.index,
+        child: TabBar(
+          key: const ValueKey('search_result_tabs'),
+          onTap: (index) => setState(
+            () => _resultTab = SearchResultTab.values[index],
+          ),
+          labelPadding: EdgeInsets.zero,
+          tabs: [
+            for (final tab in SearchResultTab.values)
+              Tab(
+                key: ValueKey('search_result_tab_${tab.name}'),
+                height: 50,
+                text: tab.label,
+              ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1301,13 +1311,13 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
 
-    final filtered = _localResults.filtered(_typeFilter);
+    final filtered = _localResults.filtered(_resultTab.localFilter);
     if (filtered.isEmpty) {
       // Distinguish "nothing matched at all" from "this type is empty" so a
       // chip that hides every result never looks like a failed search.
       final scoped = _localResults.isEmpty
           ? 'No results for "$_localQuery"'
-          : 'No ${_typeFilter.label.toLowerCase()} for "$_localQuery"';
+          : 'No ${_resultTab.label.toLowerCase()} for "$_localQuery"';
       return _buildEmptyPanel(
         key: const ValueKey('search_local_empty'),
         icon: Icons.search_off,
@@ -1433,44 +1443,46 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _buildSearchBox() {
     final library = _scope == SearchScope.library;
-    final assist = !library && _assistMode;
     return TextField(
       key: const ValueKey('search_assist_input'),
       controller: _queryController,
       focusNode: _queryFocusNode,
       minLines: 1,
-      maxLines: assist ? 3 : 1,
-      textInputAction: assist ? TextInputAction.go : TextInputAction.search,
+      maxLines: 1,
+      textInputAction: TextInputAction.search,
       onChanged: _onQueryChanged,
       onSubmitted: _onSubmit,
       decoration: InputDecoration(
-        labelText: library
-            ? 'Search your library'
-            : assist
-                ? 'Ask for a song or paste a link'
-                : 'Search songs, artists, albums, or sources',
+        labelText:
+            library ? 'Search your library' : 'Search songs, artists, albums',
         hintText: library
             ? 'Songs, artists, albums in your library...'
-            : assist
-                ? 'that live Porter Robinson Shelter from YouTube...'
-                : 'iPod Touch, Ninajirachi, live set...',
+            : 'iPod Touch, Ninajirachi, live set...',
         prefixIcon: Icon(
-          library
-              ? Icons.library_music
-              : assist
-                  ? Icons.auto_awesome
-                  : Icons.travel_explore,
+          library ? Icons.library_music : Icons.travel_explore,
         ),
-        suffixIcon: _queryController.text.isNotEmpty
-            ? IconButton(
-                tooltip: _assistMode ? 'Clear prompt' : 'Clear search',
+        suffixIcon: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!library)
+              IconButton(
+                key: const ValueKey('search_ai_button'),
+                tooltip: 'Ask AI',
+                onPressed: _triggerAssist,
+                icon: const Icon(Icons.auto_awesome),
+              ),
+            if (_queryController.text.isNotEmpty)
+              IconButton(
+                tooltip: 'Clear search',
                 onPressed: () {
                   _queryController.clear();
                   _onQueryChanged('');
                 },
                 icon: const Icon(Icons.clear),
-              )
-            : null,
+              ),
+          ],
+        ),
+        suffixIconConstraints: const BoxConstraints(minWidth: 48),
         border: const OutlineInputBorder(),
       ),
     );
@@ -1582,6 +1594,7 @@ class _SearchScreenState extends State<SearchScreen> {
             queueProvider,
             candidate,
             selection: response.directSelection,
+            queueAvailable: !queueProvider.queueServiceDisabled,
           ),
         );
       }
@@ -1597,6 +1610,7 @@ class _SearchScreenState extends State<SearchScreen> {
           queueProvider,
           section,
           selection: response.searchSelection,
+          queueAvailable: !queueProvider.queueServiceDisabled,
         ),
       );
     }
@@ -1666,6 +1680,7 @@ class _SearchScreenState extends State<SearchScreen> {
           ),
           recommended: researchCandidate.candidateId == recommendedId,
           onChoose: () => _chooseResearchCandidate(researchCandidate),
+          queueAvailable: !queueProvider.queueServiceDisabled,
         ),
       if (candidates.isEmpty)
         _buildEmptyPanel(
@@ -2144,23 +2159,30 @@ class _SearchScreenState extends State<SearchScreen> {
       children: [
         Icon(icon, size: 18),
         const SizedBox(width: 6),
-        Text(
-          title,
-          style: Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+        Expanded(
+          child: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
         ),
       ],
     );
   }
 
-  Widget _buildResultsSection(QueueProvider queueProvider) {
+  Widget _buildResultsSection(
+    QueueProvider queueProvider, {
+    required bool queueAvailable,
+  }) {
     if (_query.isEmpty) {
       return _buildEmptyPanel(
         icon: Icons.search,
         title: 'Find external tracks',
         body:
-            'Search now groups songs, artists, albums, and queueable sources instead of dumping one cursed provider soup.',
+            'Search for a song, artist, or album. Downloadable sources appear first.',
       );
     }
 
@@ -2171,8 +2193,9 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
 
-    final sections = _response?.sections ?? const <DiscoverySearchSection>[];
-    if (sections.isEmpty) {
+    final response = _response;
+    final sections = response?.sections ?? const <DiscoverySearchSection>[];
+    if (sections.isEmpty && (response?.results.isEmpty ?? true)) {
       return _buildEmptyPanel(
         icon: Icons.search_off,
         title: 'No results',
@@ -2181,25 +2204,102 @@ class _SearchScreenState extends State<SearchScreen> {
       );
     }
 
+    final tab = _resultTab;
+    if (tab == SearchResultTab.song) {
+      final candidates = _rankSourceCandidates(response!);
+      if (candidates.isEmpty) {
+        return _buildEmptyPanel(
+          icon: Icons.cloud_off,
+          title: 'No downloadable sources',
+          body: 'Try Artist or Album for catalog matches, or refine the song.',
+        );
+      }
+      return Column(
+        key: const ValueKey('search_sources_primary'),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildSectionHeader(Icons.cloud_download, 'Downloadable sources'),
+          const SizedBox(height: 6),
+          for (final candidate in candidates)
+            _buildResultTile(
+              queueProvider,
+              candidate,
+              selection: response.selection,
+              queueAvailable: queueAvailable,
+            ),
+        ],
+      );
+    }
+
+    final kind = tab == SearchResultTab.artist ? 'artists' : 'albums';
+    final entities = sections
+        .where((section) => section.kind == kind)
+        .expand((section) => section.items)
+        .where((item) => item.candidate == null)
+        .toList(growable: false);
+    if (entities.isEmpty) {
+      return _buildEmptyPanel(
+        icon: tab == SearchResultTab.artist
+            ? Icons.person_off
+            : Icons.album_outlined,
+        title: 'No ${tab.label.toLowerCase()} matches',
+        body: 'Try Song for downloadable sources or refine your query.',
+      );
+    }
     return Column(
+      key: ValueKey('search_${tab.name}_entities'),
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final section in sections) ...[
-          _buildSearchSection(
-            queueProvider,
-            section,
-            selection: _response?.selection,
-          ),
-          const SizedBox(height: 16),
-        ],
+        _buildSectionHeader(_sectionIcon(kind), '${tab.label}s'),
+        const SizedBox(height: 6),
+        for (final item in entities) _buildEntityTile(item),
       ],
     );
   }
+
+  List<DiscoveryCandidate> _rankSourceCandidates(
+    DiscoverySearchResponse response,
+  ) {
+    final byKey = <String, DiscoveryCandidate>{};
+    for (final candidate in response.results) {
+      byKey[_candidateKey(candidate)] = candidate;
+    }
+    for (final section in response.sections) {
+      for (final item in section.items) {
+        final candidate = item.candidate;
+        if (candidate != null) byKey[_candidateKey(candidate)] = candidate;
+      }
+    }
+    final candidates = byKey.values
+        .where((candidate) => candidate.downloadable)
+        .toList(growable: false);
+    candidates.sort((a, b) {
+      final recommendation = response.selection;
+      final aRecommended = recommendation?.isRecommended(a) ?? false;
+      final bRecommended = recommendation?.isRecommended(b) ?? false;
+      if (aRecommended != bRecommended) return aRecommended ? -1 : 1;
+      final quality = (b.sourceQuality?.score ?? 0).compareTo(
+        a.sourceQuality?.score ?? 0,
+      );
+      if (quality != 0) return quality;
+      final aSimilar = _isSimilarRecommendation(a);
+      final bSimilar = _isSimilarRecommendation(b);
+      if (aSimilar != bSimilar) return aSimilar ? -1 : 1;
+      return a.title.compareTo(b.title);
+    });
+    return candidates;
+  }
+
+  bool _isSimilarRecommendation(DiscoveryCandidate candidate) =>
+      candidate.metadata['similar'] == true ||
+      candidate.metadata['recommended'] == true ||
+      candidate.metadata['isRecommended'] == true;
 
   Widget _buildSearchSection(
     QueueProvider queueProvider,
     DiscoverySearchSection section, {
     DiscoverySelectionSession? selection,
+    bool queueAvailable = true,
   }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2213,6 +2313,7 @@ class _SearchScreenState extends State<SearchScreen> {
               queueProvider,
               candidate,
               selection: selection,
+              queueAvailable: queueAvailable,
             );
           }
           return _buildEntityTile(item);
@@ -2309,8 +2410,10 @@ class _SearchScreenState extends State<SearchScreen> {
     Key? stableKey,
     bool recommended = false,
     VoidCallback? onChoose,
+    bool queueAvailable = true,
   }) {
-    final queuedTrack = _queuedTrackFor(queueProvider, candidate);
+    final queuedTrack =
+        queueAvailable ? _queuedTrackFor(queueProvider, candidate) : null;
     final pending = _pendingCandidateKeys.contains(_candidateKey(candidate));
     return Card(
       key: stableKey,
@@ -2325,7 +2428,9 @@ class _SearchScreenState extends State<SearchScreen> {
               children: [
                 _buildThumb(
                   candidate.thumbnailUrl,
-                  overlay: _queuedOverlay(queuedTrack, pending),
+                  overlay: queueAvailable
+                      ? _queuedOverlay(queuedTrack, pending)
+                      : null,
                   size: mobile ? 42 : 48,
                 ),
                 const SizedBox(width: 10),
@@ -2368,15 +2473,16 @@ class _SearchScreenState extends State<SearchScreen> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                _buildQueueAction(
-                  queueProvider,
-                  candidate,
-                  queuedTrack,
+                _buildCandidateActions(
+                  queueProvider: queueProvider,
+                  candidate: candidate,
+                  queuedTrack: queuedTrack,
                   pending: pending,
                   mobile: mobile,
                   selection: selection,
                   recommended: recommended,
                   onChoose: onChoose,
+                  queueAvailable: queueAvailable,
                 ),
               ],
             ),
@@ -2384,6 +2490,60 @@ class _SearchScreenState extends State<SearchScreen> {
         },
       ),
     );
+  }
+
+  Widget _buildCandidateActions({
+    required QueueProvider queueProvider,
+    required DiscoveryCandidate candidate,
+    required QueueTrack? queuedTrack,
+    required bool pending,
+    required bool mobile,
+    required DiscoverySelectionSession? selection,
+    required bool recommended,
+    required bool queueAvailable,
+    VoidCallback? onChoose,
+  }) {
+    final canOpen = Uri.tryParse(candidate.sourceUrl)?.hasScheme ?? false;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (canOpen)
+          IconButton(
+            key: ValueKey('search_open_source_${_candidateKey(candidate)}'),
+            tooltip: 'Open source',
+            onPressed: () => _openSource(candidate),
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+            padding: EdgeInsets.zero,
+            iconSize: 20,
+            icon: const Icon(Icons.open_in_new),
+          ),
+        if (canOpen && queueAvailable) const SizedBox(width: 4),
+        if (queueAvailable)
+          _buildQueueAction(
+            queueProvider,
+            candidate,
+            queuedTrack,
+            pending: pending,
+            mobile: mobile,
+            selection: selection,
+            recommended: recommended,
+            onChoose: onChoose,
+          ),
+      ],
+    );
+  }
+
+  Future<void> _openSource(DiscoveryCandidate candidate) async {
+    final uri = Uri.tryParse(candidate.sourceUrl);
+    if (uri == null || !uri.hasScheme) return;
+    final opened = await (widget.externalUrlLauncher?.call(uri) ??
+        launchUrl(uri, mode: LaunchMode.externalApplication));
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open source link')),
+      );
+    }
   }
 
   Widget _buildRecommendedSourceChip() {
@@ -2403,12 +2563,16 @@ class _SearchScreenState extends State<SearchScreen> {
             children: [
               Icon(Icons.recommend, size: 13, color: colors.onPrimaryContainer),
               const SizedBox(width: 4),
-              Text(
-                'Recommended',
-                style: TextStyle(
-                  color: colors.onPrimaryContainer,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
+              Flexible(
+                child: Text(
+                  'Recommended',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: colors.onPrimaryContainer,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ],
@@ -2833,25 +2997,81 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _buildProviderRow(List<DiscoveryProviderSummary> providers) {
     if (providers.isEmpty) return const SizedBox.shrink();
+    final available =
+        providers.where((provider) => provider.status == 'ok').length;
     return Padding(
-      padding: const EdgeInsets.only(top: 10),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: providers.map((provider) {
-          final ok = provider.status == 'ok';
-          return Tooltip(
-            message: provider.errorMessage ??
-                '${provider.resultCount} result(s) in ${provider.elapsedMs}ms',
-            child: Chip(
-              avatar: Icon(
-                ok ? Icons.check_circle : Icons.info_outline,
-                size: 18,
+      padding: const EdgeInsets.only(top: 4),
+      child: InkWell(
+        key: const ValueKey('search_provider_summary'),
+        borderRadius: BorderRadius.circular(8),
+        onTap: () => _showProviderDetails(providers),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(
+            children: [
+              Icon(
+                available == providers.length
+                    ? Icons.check_circle_outline
+                    : Icons.info_outline,
+                size: 16,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
-              label: Text('${provider.provider}: ${provider.status}'),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  '$available/${providers.length} sources available',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ),
+              const Icon(Icons.chevron_right, size: 18),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showProviderDetails(List<DiscoveryProviderSummary> providers) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+          children: [
+            Text(
+              'Search sources',
+              style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
             ),
-          );
-        }).toList(),
+            const SizedBox(height: 8),
+            for (final provider in providers)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  provider.status == 'ok'
+                      ? Icons.check_circle_outline
+                      : Icons.error_outline,
+                ),
+                title: Text('${provider.provider} · ${provider.status}'),
+                subtitle: Text(
+                  [
+                    '${provider.resultCount} result${provider.resultCount == 1 ? '' : 's'}',
+                    '${provider.elapsedMs}ms',
+                    if (provider.errorKind != null)
+                      'Error kind: ${provider.errorKind}',
+                    if (provider.errorMessage != null) provider.errorMessage!,
+                  ].join(' • '),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

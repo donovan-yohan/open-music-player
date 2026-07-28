@@ -129,7 +129,8 @@ void main() {
     return searchApi;
   }
 
-  Future<void> switchToLibraryAndSearch(WidgetTester tester, String query) async {
+  Future<void> switchToLibraryAndSearch(
+      WidgetTester tester, String query) async {
     await tester.tap(find.text('My Library'));
     await tester.pump();
     await tester.enterText(
@@ -141,34 +142,34 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
   }
 
-  testWidgets('My Library scope runs local search and renders all sections',
+  testWidgets('My Library scope defaults to Song and uses shared result tabs',
       (tester) async {
     final api = await pump(tester);
     await switchToLibraryAndSearch(tester, 'nirvana');
 
     expect(api.trackCalls, greaterThan(0));
     expect(find.text('Come as You Are'), findsOneWidget); // song
-    expect(find.text('12 tracks in library'), findsOneWidget); // artist section
-    expect(find.text('Nevermind'), findsOneWidget); // album title
     expect(find.text('120 BPM'), findsOneWidget);
     expect(find.text('8A'), findsOneWidget);
+    expect(find.text('12 tracks in library'), findsNothing);
+    expect(find.text('Nevermind'), findsNothing);
+    expect(
+        find.byKey(const ValueKey('search_result_tab_song')), findsOneWidget);
     expect(find.byKey(const ValueKey('search_local_results')), findsOneWidget);
   });
 
-  testWidgets('Songs chip re-scopes the same query client-side', (tester) async {
+  testWidgets('result tabs re-scope the same query client-side',
+      (tester) async {
     await pump(tester);
     await switchToLibraryAndSearch(tester, 'nirvana');
 
-    // Before filtering, artist + album sections are present.
-    expect(find.text('Nevermind'), findsOneWidget);
+    expect(find.text('Nevermind'), findsNothing);
 
-    await tester.tap(find.byKey(const ValueKey('search_type_chip_songs')));
+    await tester.tap(find.byKey(const ValueKey('search_result_tab_album')));
     await tester.pump();
 
-    // The song survives; the album/artist sections are filtered out without a
-    // refetch.
-    expect(find.text('Come as You Are'), findsOneWidget);
-    expect(find.text('Nevermind'), findsNothing);
+    expect(find.text('Come as You Are'), findsNothing);
+    expect(find.text('Nevermind'), findsOneWidget);
   });
 
   testWidgets('empty results show the "No results for" state', (tester) async {

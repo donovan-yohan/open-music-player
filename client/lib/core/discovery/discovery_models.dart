@@ -403,6 +403,7 @@ class DiscoveryProviderSummary {
   final int resultCount;
   final int elapsedMs;
   final String? errorMessage;
+  final String? errorKind;
 
   const DiscoveryProviderSummary({
     required this.provider,
@@ -410,6 +411,7 @@ class DiscoveryProviderSummary {
     required this.resultCount,
     required this.elapsedMs,
     this.errorMessage,
+    this.errorKind,
   });
 
   factory DiscoveryProviderSummary.fromJson(Map<String, dynamic> json) {
@@ -421,6 +423,9 @@ class DiscoveryProviderSummary {
       elapsedMs: json['elapsedMs'] as int? ?? 0,
       errorMessage:
           error is Map<String, dynamic> ? error['message'] as String? : null,
+      errorKind: error is Map<String, dynamic>
+          ? (error['kind'] ?? error['code']) as String?
+          : null,
     );
   }
 }

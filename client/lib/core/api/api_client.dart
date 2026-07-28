@@ -220,7 +220,17 @@ class ApiClient {
       final response = await _dio.get('/queue');
       return QueueState.fromJson(_asMap(response.data));
     } on DioException catch (e) {
-      throw ApiException('Failed to get queue', _statusCodeOf(e));
+      final data = e.response?.data;
+      final body = data is Map ? Map<String, dynamic>.from(data) : null;
+      final error = body?['error'];
+      final errorMap = error is Map
+          ? Map<String, dynamic>.from(error)
+          : const <String, dynamic>{};
+      throw ApiException(
+        'Failed to get queue',
+        _statusCodeOf(e),
+        errorCode: (errorMap['code'] ?? body?['code']) as String?,
+      );
     }
   }
 
@@ -547,8 +557,9 @@ class DownloadJobResponse {
 class ApiException implements Exception {
   final String message;
   final int statusCode;
+  final String? errorCode;
 
-  ApiException(this.message, this.statusCode);
+  ApiException(this.message, this.statusCode, {this.errorCode});
 
   @override
   String toString() => '$message (status: $statusCode)';

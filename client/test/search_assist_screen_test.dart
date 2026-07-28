@@ -62,13 +62,11 @@ void main() {
   }
 
   Future<void> enterAssistMode(WidgetTester tester, String prompt) async {
-    await tester.tap(find.text('Assist'));
-    await tester.pump();
     await tester.enterText(
       find.byKey(const ValueKey('search_assist_input')),
       prompt,
     );
-    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.tap(find.byKey(const ValueKey('search_ai_button')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
   }
@@ -191,14 +189,14 @@ void main() {
   });
 
   testWidgets(
-    'pasting a URL in search mode auto-routes to assist and shows a queueable candidate',
+    'Enter always runs normal search, while the AI button explicitly invokes assist',
     (tester) async {
       final queueClient = await pumpSearch(
         tester,
         assistEnvelope: _directUrlEnvelope,
       );
 
-      // Stay in Search mode; paste a URL and submit.
+      // Stay in normal search; even a URL submitted with Enter stays normal.
       await tester.enterText(
         find.byKey(const ValueKey('search_assist_input')),
         'https://youtu.be/abc',
@@ -207,7 +205,13 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
 
-      // Routed to assist: the direct-link candidate is shown, not auto-queued.
+      expect(find.text('Fallback Search Hit'), findsOneWidget);
+      expect(find.text('Pasted Track'), findsNothing);
+
+      // The inline sparkle is the only assist entry point.
+      await tester.tap(find.byKey(const ValueKey('search_ai_button')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
       expect(find.text('Pasted Track'), findsOneWidget);
       expect(find.text('Direct link'), findsOneWidget);
       expect(find.byIcon(Icons.playlist_add), findsOneWidget);
@@ -487,13 +491,11 @@ void main() {
         assistGate: gate.future,
       );
 
-      await tester.tap(find.text('Assist'));
-      await tester.pump();
       await tester.enterText(
         find.byKey(const ValueKey('search_assist_input')),
         'porter robinson',
       );
-      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.tap(find.byKey(const ValueKey('search_ai_button')));
       await tester.pump();
 
       // Request is in flight: spinner shown.
