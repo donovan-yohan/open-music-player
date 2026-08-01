@@ -27,14 +27,16 @@ var DefaultWeights = ScoreWeights{
 
 // MatchScore represents the similarity score between two tracks
 type MatchScore struct {
-	Overall         float64  `json:"overall"`         // Combined weighted score (0-100)
-	ArtistScore     float64  `json:"artistScore"`     // Artist name similarity (0-100)
-	TrackScore      float64  `json:"trackScore"`      // Track title similarity (0-100)
-	DurationScore   float64  `json:"durationScore"`   // Duration match score (0-100)
-	MBAPIScore      int      `json:"mbApiScore"`      // Original MusicBrainz API score
-	Confidence      string   `json:"confidence"`      // "high", "medium", "low"
-	IsAutoMatchable bool     `json:"isAutoMatchable"` // True if score is high enough for auto-matching
-	MatchReasons    []string `json:"match_reasons,omitempty"`
+	Overall                  float64  `json:"overall"`                  // Combined weighted score (0-100)
+	ArtistScore              float64  `json:"artistScore"`              // Artist name similarity (0-100)
+	TrackScore               float64  `json:"trackScore"`               // Track title similarity (0-100)
+	DurationScore            float64  `json:"durationScore"`            // Duration match score (0-100)
+	MissingDuration          bool     `json:"missingDuration"`          // A known source or candidate duration was unavailable
+	MissingCandidateDuration bool     `json:"missingCandidateDuration"` // A known source duration has no MusicBrainz duration
+	MBAPIScore               int      `json:"mbApiScore"`               // Original MusicBrainz API score
+	Confidence               string   `json:"confidence"`               // "high", "medium", "low"
+	IsAutoMatchable          bool     `json:"isAutoMatchable"`          // True if score is high enough for auto-matching
+	MatchReasons             []string `json:"match_reasons,omitempty"`
 }
 
 const (
@@ -55,6 +57,8 @@ func CalculateScore(parsed *ParsedTitle, mbArtist, mbTrack string, parsedDuratio
 	score.ArtistScore = calculateStringSimilarity(parsed.Artist, mbArtist)
 	score.TrackScore = calculateStringSimilarity(parsed.Track, mbTrack)
 	score.DurationScore = calculateDurationScore(parsedDurationMs, mbDurationMs)
+	score.MissingDuration = parsedDurationMs <= 0 || mbDurationMs <= 0
+	score.MissingCandidateDuration = parsedDurationMs > 0 && mbDurationMs <= 0
 
 	// Calculate weighted overall score
 	score.Overall = (score.ArtistScore * weights.ArtistWeight) +
@@ -71,6 +75,12 @@ func CalculateScore(parsed *ParsedTitle, mbArtist, mbTrack string, parsedDuratio
 	if score.DurationScore >= 95 {
 		score.MatchReasons = append(score.MatchReasons, "duration_match")
 	}
+	if score.MissingDuration {
+		score.MatchReasons = append(score.MatchReasons, "missing_duration")
+	}
+	if score.MissingCandidateDuration {
+		score.MatchReasons = append(score.MatchReasons, "musicbrainz_duration_missing")
+	}
 
 	// Boost score if featuring artists match
 	if len(parsed.Featuring) > 0 {
@@ -82,6 +92,20 @@ func CalculateScore(parsed *ParsedTitle, mbArtist, mbTrack string, parsedDuratio
 				score.MatchReasons = append(score.MatchReasons, "featuring_match")
 			}
 		}
+	}
+
+	// A remix/edit/cover is a distinct identity from the original recording. A
+	// candidate which omits that designation remains useful as a suggestion, but
+	// can never be automatically applied.
+	if parsed.IsRemix && !HasMatchingRemixDesignation(parsed, mbTrack) {
+		score.Overall = math.Min(score.Overall, AutoMatchThreshold-0.01)
+		score.MatchReasons = append(score.MatchReasons, "remix_designation_mismatch")
+	}
+	// A source with a known duration cannot be automatically verified against a
+	// MusicBrainz recording that has no duration. Apply this after bonuses so
+	// ancillary evidence cannot turn missing duration into auto-match evidence.
+	if score.MissingCandidateDuration {
+		score.Overall = math.Min(score.Overall, AutoMatchThreshold-0.01)
 	}
 
 	// Determine confidence level
@@ -200,9 +224,14 @@ func levenshteinDistance(s1, s2 string) int {
 
 // calculateDurationScore computes how well durations match
 func calculateDurationScore(durationMs1, durationMs2 int) float64 {
-	// If either duration is unknown, return a neutral score
-	if durationMs1 <= 0 || durationMs2 <= 0 {
-		return 50.0 // Neutral score when duration is unavailable
+	// Preserve the legacy neutral score when the provider does not know a source
+	// duration. The unsafe direction is a known source duration paired with a
+	// missing MusicBrainz duration: that contributes no evidence.
+	if durationMs1 <= 0 {
+		return 50.0
+	}
+	if durationMs2 <= 0 {
+		return 0.0
 	}
 
 	// Calculate difference in seconds
@@ -218,6 +247,22 @@ func calculateDurationScore(durationMs1, durationMs2 int) float64 {
 	score := 100.0 - ((diffSeconds - float64(DurationTolerance)) * 5.0)
 
 	return math.Max(0, score)
+}
+
+// HasMatchingRemixDesignation reports whether a candidate retains the source
+// title's remix/edit designation, including an identified remixer when present.
+func HasMatchingRemixDesignation(source *ParsedTitle, candidateTitle string) bool {
+	candidate := ParseTitle(candidateTitle)
+	if !candidate.IsRemix {
+		return false
+	}
+	if source.Version != "" && normalizeString(source.Version) != normalizeString(candidate.Version) {
+		return false
+	}
+	if source.RemixArtist == "" || candidate.RemixArtist == "" {
+		return true
+	}
+	return normalizeString(source.RemixArtist) == normalizeString(candidate.RemixArtist)
 }
 
 // checkFeaturingMatch checks if any featuring artists appear in the MB artist string

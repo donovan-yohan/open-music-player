@@ -285,3 +285,26 @@ func TestDeduplicationScenarios(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildTrackFromMetadataPreservesRemixDisplayIdentity(t *testing.T) {
+	original := buildTrackFromMetadata("Daft Punk", "One More Time", "", 136800)
+	remix := buildTrackFromMetadata("Daft Punk", "One More Time (Kodat Remix)", "", 136800, WithVersion("Kodat Remix"))
+
+	if remix.Title != "One More Time (Kodat Remix)" {
+		t.Fatalf("remix display title = %q, want human-readable remix title", remix.Title)
+	}
+	if !remix.Version.Valid || remix.Version.String != "Kodat Remix" {
+		t.Fatalf("remix version = %+v, want Kodat Remix", remix.Version)
+	}
+	if original.IdentityHash == remix.IdentityHash {
+		t.Fatalf("original and remix identity hashes must differ: %q", original.IdentityHash)
+	}
+}
+
+func TestBuildTrackFromMetadataHashesBracketedDesignationOnBaseTitle(t *testing.T) {
+	track := buildTrackFromMetadata("Artist", "Song [XYZ Flip]", "", 210000, WithVersion("XYZ Flip"))
+	want := CalculateIdentityHash("Artist", "Song", "", 210000, "XYZ Flip")
+	if track.IdentityHash != want {
+		t.Fatalf("flip identity hash = %q, want base-title hash %q", track.IdentityHash, want)
+	}
+}

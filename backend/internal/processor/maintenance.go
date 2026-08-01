@@ -201,6 +201,9 @@ func trackMetadataFromDBTrack(track *db.Track) *TrackMetadata {
 			"file_size_bytes": nullableInt64(track.FileSizeBytes),
 		},
 	}
+	if track.Version.Valid {
+		metadata.Version = track.Version.String
+	}
 	if len(track.MetadataProvenance) > 0 {
 		var provenance map[string]interface{}
 		if err := json.Unmarshal(track.MetadataProvenance, &provenance); err == nil {

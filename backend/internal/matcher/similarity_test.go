@@ -86,8 +86,8 @@ func TestCalculateDurationScore(t *testing.T) {
 		{180000, 185000, 99.0, 100.0}, // 5 seconds difference (within tolerance)
 		{180000, 190000, 99.0, 100.0}, // 10 seconds difference (at tolerance limit)
 		{180000, 200000, 40.0, 60.0},  // 20 seconds difference
-		{180000, 0, 40.0, 60.0},       // missing duration
-		{0, 180000, 40.0, 60.0},       // missing duration
+		{180000, 0, 0.0, 0.0},         // known source, missing candidate is not positive evidence
+		{0, 180000, 40.0, 60.0},       // unknown source preserves legacy neutral behavior
 	}
 
 	for _, tt := range tests {
@@ -159,6 +159,39 @@ func TestCalculateScore(t *testing.T) {
 			expectHigh: false,
 			minOverall: 0.0,
 		},
+		{
+			name:       "incident missing MusicBrainz duration cannot auto match",
+			parsed:     &ParsedTitle{Artist: "Daft Punk", Track: "One More Time"},
+			mbArtist:   "Daft Punk",
+			mbTrack:    "One More Time",
+			parsedDur:  136800,
+			mbDur:      0,
+			mbAPIScore: 100,
+			expectHigh: false,
+			minOverall: 80.0,
+		},
+		{
+			name:       "missing MusicBrainz duration remains suggestion only after featuring bonus",
+			parsed:     &ParsedTitle{Artist: "Daft Punk feat Pharrell", Track: "One More Time", Featuring: []string{"Pharrell"}},
+			mbArtist:   "Daft Punk feat Pharrell",
+			mbTrack:    "One More Time",
+			parsedDur:  136800,
+			mbDur:      0,
+			mbAPIScore: 100,
+			expectHigh: false,
+			minOverall: 80.0,
+		},
+		{
+			name:       "remix designation mismatch is suggestion only",
+			parsed:     &ParsedTitle{Artist: "Daft Punk", Track: "One More Time", IsRemix: true, RemixArtist: "Kodat", Version: "Kodat Remix"},
+			mbArtist:   "Daft Punk",
+			mbTrack:    "One More Time",
+			parsedDur:  136800,
+			mbDur:      136800,
+			mbAPIScore: 100,
+			expectHigh: false,
+			minOverall: 0.0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -175,6 +208,12 @@ func TestCalculateScore(t *testing.T) {
 
 			if !tt.expectHigh && result.IsAutoMatchable {
 				t.Errorf("Expected not auto-matchable, but got %s confidence", result.Confidence)
+			}
+			if tt.name == "incident missing MusicBrainz duration cannot auto match" && (!result.MissingDuration || result.DurationScore != 0 || result.ArtistScore != 100 || result.TrackScore != 100 || result.Overall != 80) {
+				t.Errorf("missing duration result = %+v, want zero duration score and missing flag", result)
+			}
+			if tt.name == "missing MusicBrainz duration remains suggestion only after featuring bonus" && (!result.MissingCandidateDuration || result.ArtistScore != 100 || result.TrackScore != 100 || result.Overall != AutoMatchThreshold-0.01) {
+				t.Errorf("missing candidate duration must cap post-bonus score: %+v", result)
 			}
 
 			// Verify match reasons for high confidence
