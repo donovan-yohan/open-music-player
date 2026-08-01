@@ -723,6 +723,43 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 	return p.candidatesFromOutput(string(out), limit), nil
 }
 
+// candidateThumbnailURL prefers the full-extraction singular "thumbnail" key;
+// flat-playlist entries only carry a "thumbnails" array, from which the
+// largest variant no taller than 480px is chosen so mobile clients are not
+// handed full-resolution covers.
+func candidateThumbnailURL(raw map[string]interface{}) string {
+	if direct := stringValue(raw, "thumbnail"); direct != "" {
+		return direct
+	}
+	entries, ok := raw["thumbnails"].([]interface{})
+	if !ok {
+		return ""
+	}
+	var best, fallback string
+	var bestHeight, fallbackHeight float64
+	for _, entry := range entries {
+		item, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		thumbnailURL := stringValue(item, "url")
+		if thumbnailURL == "" {
+			continue
+		}
+		height := floatValue(item, "height")
+		if height <= 480 && height >= bestHeight {
+			best, bestHeight = thumbnailURL, height
+		}
+		if height >= fallbackHeight {
+			fallback, fallbackHeight = thumbnailURL, height
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return fallback
+}
+
 func (p *YTDLPProvider) candidatesFromOutput(output string, limit int) []Candidate {
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	items := make([]Candidate, 0, len(lines))
@@ -756,7 +793,7 @@ func (p *YTDLPProvider) candidatesFromOutput(output string, limit int) []Candida
 			Artist:       firstNonEmpty(stringValue(raw, "artist"), stringValue(raw, "creator")),
 			Uploader:     stringValue(raw, "uploader"),
 			DurationMs:   int(floatValue(raw, "duration") * 1000),
-			ThumbnailURL: stringValue(raw, "thumbnail"),
+			ThumbnailURL: candidateThumbnailURL(raw),
 			Downloadable: sourceURL != "",
 			Playable:     false,
 			Metadata:     metadata,

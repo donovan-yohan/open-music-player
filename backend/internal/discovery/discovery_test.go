@@ -527,3 +527,76 @@ func TestSearchHandlerFailsWhenSelectionPersistenceFails(t *testing.T) {
 		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestCandidateThumbnailURLSelection(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  map[string]interface{}
+		want string
+	}{
+		{
+			name: "singular thumbnail wins",
+			raw: map[string]interface{}{
+				"thumbnail":  "https://img/direct.jpg",
+				"thumbnails": []interface{}{map[string]interface{}{"url": "https://img/array.jpg", "height": 360.0}},
+			},
+			want: "https://img/direct.jpg",
+		},
+		{
+			name: "largest height at most 480 preferred",
+			raw: map[string]interface{}{
+				"thumbnails": []interface{}{
+					map[string]interface{}{"url": "https://img/144.jpg", "height": 144.0},
+					map[string]interface{}{"url": "https://img/480.jpg", "height": 480.0},
+					map[string]interface{}{"url": "https://img/1080.jpg", "height": 1080.0},
+					map[string]interface{}{"url": "https://img/360.jpg", "height": 360.0},
+				},
+			},
+			want: "https://img/480.jpg",
+		},
+		{
+			name: "all above 480 falls back to largest",
+			raw: map[string]interface{}{
+				"thumbnails": []interface{}{
+					map[string]interface{}{"url": "https://img/720.jpg", "height": 720.0},
+					map[string]interface{}{"url": "https://img/1080.jpg", "height": 1080.0},
+				},
+			},
+			want: "https://img/1080.jpg",
+		},
+		{
+			name: "heightless entries still yield a url",
+			raw: map[string]interface{}{
+				"thumbnails": []interface{}{
+					map[string]interface{}{"url": "https://img/a.jpg"},
+					map[string]interface{}{"url": "https://img/b.jpg"},
+				},
+			},
+			want: "https://img/b.jpg",
+		},
+		{
+			name: "absent both yields empty",
+			raw:  map[string]interface{}{"id": "x"},
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateThumbnailURL(tc.raw); got != tc.want {
+				t.Fatalf("candidateThumbnailURL = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCandidatesFromOutputUsesThumbnailsArray(t *testing.T) {
+	provider := NewYTDLPProvider("youtube", "ytsearch", "https://www.youtube.com/watch?v=")
+	line := `{"id":"abc","title":"Track","webpage_url":"https://youtube.com/watch?v=abc","duration":200,"thumbnails":[{"url":"https://i.ytimg.com/vi/abc/hqdefault.jpg","height":360,"width":480}]}`
+	items := provider.candidatesFromOutput(line, 5)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(items))
+	}
+	if items[0].ThumbnailURL != "https://i.ytimg.com/vi/abc/hqdefault.jpg" {
+		t.Fatalf("ThumbnailURL = %q", items[0].ThumbnailURL)
+	}
+}
