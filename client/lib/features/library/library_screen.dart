@@ -344,6 +344,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
         title: const Text('Library'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.favorite_outline),
+            onPressed: _openLikedSongs,
+            tooltip: 'Liked Songs',
+          ),
+          IconButton(
             icon: const Icon(Icons.video_library_outlined),
             onPressed: () => context.push('/playlists/import'),
             tooltip: 'Import YouTube playlist',
@@ -356,34 +361,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
       body: Column(
         children: [
           _buildOfflineBanner(context),
-          _buildLikedSongsCard(context),
           _buildSearchField(context),
           _buildFilterChips(context),
           Expanded(child: _buildBody(context)),
         ],
-      ),
-    );
-  }
-
-  Widget _buildLikedSongsCard(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-      child: Card(
-        margin: EdgeInsets.zero,
-        child: ListTile(
-          leading: CircleAvatar(
-            backgroundColor: theme.colorScheme.primaryContainer,
-            child: Icon(
-              Icons.favorite,
-              color: theme.colorScheme.onPrimaryContainer,
-            ),
-          ),
-          title: const Text('Liked Songs'),
-          subtitle: const Text('Your favorites'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: _openLikedSongs,
-        ),
       ),
     );
   }
