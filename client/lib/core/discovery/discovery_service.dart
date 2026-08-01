@@ -21,6 +21,9 @@ class DiscoveryService {
         'limit': limit,
         if (providers.isNotEmpty) 'providers': providers.join(','),
       },
+      // Must exceed the backend's 12s overall discovery budget or the client
+      // aborts first and surfaces a transport error instead of results.
+      receiveTimeout: const Duration(seconds: 20),
     );
 
     final data = response.data;
@@ -41,6 +44,8 @@ class DiscoveryService {
     final response = await _apiClient.post<Map<String, dynamic>>(
       '/discovery/assist',
       data: {'prompt': prompt, if (limit != null) 'limit': limit},
+      // Grounded assist runs an LLM plus provider lookups server-side.
+      receiveTimeout: const Duration(seconds: 60),
     );
 
     final data = response.data;

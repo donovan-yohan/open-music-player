@@ -156,11 +156,14 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? queryParameters,
     Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) {
     return _dio.get<T>(
       path,
       queryParameters: queryParameters,
-      options: headers == null ? null : Options(headers: headers),
+      options: headers == null && receiveTimeout == null
+          ? null
+          : Options(headers: headers, receiveTimeout: receiveTimeout),
     );
   }
 
@@ -169,12 +172,15 @@ class ApiClient {
     dynamic data,
     Map<String, dynamic>? queryParameters,
     Map<String, dynamic>? headers,
+    Duration? receiveTimeout,
   }) {
     return _dio.post<T>(
       path,
       data: data,
       queryParameters: queryParameters,
-      options: headers == null ? null : Options(headers: headers),
+      options: headers == null && receiveTimeout == null
+          ? null
+          : Options(headers: headers, receiveTimeout: receiveTimeout),
     );
   }
 

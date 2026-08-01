@@ -3183,6 +3183,11 @@ class _SearchScreenState extends State<SearchScreen> {
 
   String _friendlyApiError(Object error) {
     if (error is DioException) {
+      if (error.type == DioExceptionType.receiveTimeout ||
+          error.type == DioExceptionType.connectionTimeout ||
+          error.type == DioExceptionType.sendTimeout) {
+        return 'Search took too long to respond. Try again.';
+      }
       final data = error.response?.data;
       if (data is Map<String, dynamic>) {
         return data['message'] as String? ?? error.message ?? 'Request failed.';
