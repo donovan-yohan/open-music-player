@@ -266,6 +266,21 @@ func CalculateIdentityHash(artist, title, album string, durationMs int, version 
 	return hex.EncodeToString(hash[:])[:16]
 }
 
+// CalculateLegacyIdentityHash returns the pre-version identity format. It is
+// intentionally retained only to locate and migrate rows written before
+// versions became part of the identity key.
+func CalculateLegacyIdentityHash(artist, title, album string, durationMs int) string {
+	normalized := fmt.Sprintf("%s|%s|%s|%d",
+		NormalizeString(artist),
+		NormalizeString(title),
+		NormalizeString(album),
+		DurationBucket(durationMs, 5000), // 5 second buckets
+	)
+
+	hash := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(hash[:])[:16]
+}
+
 // CalculateIdentityHashFromTrack calculates the identity hash from a TrackIdentity struct.
 func CalculateIdentityHashFromTrack(t TrackIdentity) string {
 	return CalculateIdentityHash(t.Artist, t.Title, t.Album, t.DurationMs, t.Version)

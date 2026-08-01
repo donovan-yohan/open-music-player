@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,6 +50,182 @@ func TestNormalMaintenanceCandidatesRetainAudioQualityFacts(t *testing.T) {
 		got.SampleRateHz.Int32 != 44100 || got.Channels.Int32 != 2 ||
 		got.ContentType.String != "audio/mpeg" {
 		t.Fatalf("normal maintenance lost audio quality facts: %+v", got)
+	}
+}
+
+func TestCreateOrGetPromotesLegacyVersionIdentityWithoutDuplicating(t *testing.T) {
+	repo, ctx := newPostgresTestRepository(t)
+
+	tests := []struct {
+		name       string
+		title      string
+		version    string
+		legacyHash func(string, string, string, int) string
+	}{
+		{
+			name:    "pre-version hash",
+			title:   "Legacy Song (Kodat Remix)",
+			version: "Kodat Remix",
+			legacyHash: func(artist, title, album string, durationMs int) string {
+				return CalculateLegacyIdentityHash(artist, title, album, durationMs)
+			},
+		},
+		{
+			name:    "canonicalized remix hash",
+			title:   "Canonical Song (Kodat Remix)",
+			version: "Kodat Remix",
+			legacyHash: func(artist, title, album string, durationMs int) string {
+				return CalculateIdentityHash(artist, title, album, durationMs, "remix")
+			},
+		},
+		{
+			name:    "stripped flip hash",
+			title:   "Flip Song [XYZ Flip]",
+			version: "XYZ Flip",
+			legacyHash: func(artist, title, album string, durationMs int) string {
+				return CalculateIdentityHash(artist, title, album, durationMs, "")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const artist = "Legacy Artist"
+			const album = "Legacy Album"
+			const durationMs = 210000
+			baseTitle := legacyIdentityBaseTitle(&Track{
+				Title:   tt.title,
+				Version: sql.NullString{String: tt.version, Valid: true},
+			}, tt.title)
+			legacy := &Track{
+				IdentityHash:       tt.legacyHash(artist, baseTitle, album, durationMs),
+				Title:              baseTitle,
+				Artist:             sql.NullString{String: artist, Valid: true},
+				Album:              sql.NullString{String: album, Valid: true},
+				DurationMs:         sql.NullInt32{Int32: durationMs, Valid: true},
+				MetadataJSON:       json.RawMessage(`{}`),
+				MetadataProvenance: json.RawMessage(`{}`),
+			}
+			if err := repo.Create(ctx, legacy); err != nil {
+				t.Fatalf("seed legacy row: %v", err)
+			}
+
+			got, created, err := repo.CreateTrackFromMetadata(ctx, artist, tt.title, album, durationMs, WithVersion(tt.version))
+			if err != nil {
+				t.Fatalf("reprocess legacy row: %v", err)
+			}
+			if created || got.ID != legacy.ID {
+				t.Fatalf("reprocess = id:%d created:%v, want existing id %d", got.ID, created, legacy.ID)
+			}
+			wantHash := CalculateIdentityHash(artist, baseTitle, album, durationMs, tt.version)
+			if got.IdentityHash != wantHash {
+				t.Fatalf("promoted identity hash = %q, want %q", got.IdentityHash, wantHash)
+			}
+			if !got.Version.Valid || got.Version.String != tt.version {
+				t.Fatalf("promoted version = %#v, want %q", got.Version, tt.version)
+			}
+			var count int
+			if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tracks WHERE id = $1 OR identity_hash = $2`, legacy.ID, wantHash).Scan(&count); err != nil {
+				t.Fatalf("count promoted rows: %v", err)
+			}
+			if count != 1 {
+				t.Fatalf("promoted row count = %d, want 1", count)
+			}
+		})
+	}
+}
+
+func TestCreateOrGetConcurrentLegacyPromotionReturnsCoherentForwardRows(t *testing.T) {
+	repo, ctx := newPostgresTestRepository(t)
+	const (
+		artist     = "Race Artist"
+		album      = "Race Album"
+		baseTitle  = "Race Song"
+		durationMs = 210000
+	)
+	legacy := &Track{
+		IdentityHash:       CalculateIdentityHash(artist, baseTitle, album, durationMs, ""),
+		Title:              baseTitle,
+		Artist:             sql.NullString{String: artist, Valid: true},
+		Album:              sql.NullString{String: album, Valid: true},
+		DurationMs:         sql.NullInt32{Int32: durationMs, Valid: true},
+		MetadataJSON:       json.RawMessage(`{}`),
+		MetadataProvenance: json.RawMessage(`{}`),
+	}
+	if err := repo.Create(ctx, legacy); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+
+	type result struct {
+		version string
+		track   *Track
+		created bool
+		err     error
+	}
+	versions := []string{"Alpha Remix", "Beta Remix"}
+	start := make(chan struct{})
+	ready := make(chan struct{}, len(versions))
+	results := make(chan result, len(versions))
+	var workers sync.WaitGroup
+	for _, version := range versions {
+		workers.Add(1)
+		go func(version string) {
+			defer workers.Done()
+			ready <- struct{}{}
+			<-start
+			track, created, err := repo.CreateTrackFromMetadata(ctx, artist, baseTitle+" ("+version+")", album, durationMs, WithVersion(version))
+			results <- result{version: version, track: track, created: created, err: err}
+		}(version)
+	}
+	for range versions {
+		<-ready
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+
+	createdCount := 0
+	legacyIDCount := 0
+	seenHashes := make(map[string]struct{}, len(versions))
+	returnedIDs := make(map[string]int64, len(versions))
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("race reprocess %q: %v", result.version, result.err)
+		}
+		wantHash := CalculateIdentityHash(artist, baseTitle, album, durationMs, result.version)
+		if result.track.IdentityHash != wantHash {
+			t.Fatalf("race reprocess %q returned hash %q, want %q", result.version, result.track.IdentityHash, wantHash)
+		}
+		if result.created {
+			createdCount++
+		}
+		if result.track.ID == legacy.ID {
+			legacyIDCount++
+		}
+		seenHashes[wantHash] = struct{}{}
+		returnedIDs[wantHash] = result.track.ID
+	}
+	if createdCount != 1 || legacyIDCount != 1 {
+		t.Fatalf("race outcomes = created:%d legacy-ID:%d, want 1/1", createdCount, legacyIDCount)
+	}
+	if len(seenHashes) != len(versions) {
+		t.Fatalf("race forward hashes = %v, want one per version", seenHashes)
+	}
+	var count int
+	if err := repo.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tracks`).Scan(&count); err != nil {
+		t.Fatalf("count persisted race rows: %v", err)
+	}
+	if count != len(versions) {
+		t.Fatalf("persisted race row count = %d, want %d", count, len(versions))
+	}
+	for hash := range seenHashes {
+		var persistedID int64
+		if err := repo.db.QueryRowContext(ctx, `SELECT id FROM tracks WHERE identity_hash = $1`, hash).Scan(&persistedID); err != nil {
+			t.Fatalf("load persisted forward hash %q: %v", hash, err)
+		}
+		if persistedID != returnedIDs[hash] {
+			t.Fatalf("persisted row for hash %q = %d, want returned row %d", hash, persistedID, returnedIDs[hash])
+		}
 	}
 }
 

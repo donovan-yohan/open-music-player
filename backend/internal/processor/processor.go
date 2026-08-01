@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,11 +29,20 @@ import (
 	"github.com/openmusicplayer/backend/internal/storage"
 )
 
+var identityDesignationPattern = regexp.MustCompile(`(?i)(?:[\(\[]\s*(?:(?:[^\(\)\[\]]+?)\s+)?(?:remix|edit|mix|bootleg|flip|rework|mashup|vip|cover)\s*[\)\]]|.*\s[-–—]\s*(?:(?:[[:alnum:]][[:alnum:] ._'&-]*?)\s+)?(?:remix|edit|mix|bootleg|flip|rework|mashup|vip|cover)\s*$)`)
+
 // ObjectStorage is the small MinIO surface the processor needs. storage.Client
 // satisfies this interface; tests can use a fake without a real MinIO server.
 type ObjectStorage interface {
 	PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
 	GetObject(ctx context.Context, key string) (io.ReadCloser, *storage.ObjectInfo, error)
+}
+
+// metadataMatcher keeps matching testable at the processor boundary while the
+// public configuration continues to accept the concrete matcher implementation.
+type metadataMatcher interface {
+	Match(context.Context, matcher.TrackMetadata) (*matcher.MatchOutput, error)
+	MatchNonMusic(matcher.TrackMetadata) bool
 }
 
 // AnalysisStore is the audio-analysis persistence surface used by Processor.
@@ -62,7 +72,7 @@ type analysisTask struct {
 
 // Processor handles the full download and matching pipeline
 type Processor struct {
-	matcher                 *matcher.Matcher
+	matcher                 metadataMatcher
 	trackRepo               *db.TrackRepository
 	libraryRepo             *db.LibraryRepository
 	playlistRepo            *db.PlaylistRepository
@@ -113,7 +123,6 @@ func New(config *ProcessorConfig) *Processor {
 		analysisConcurrency = 4
 	}
 	processor := &Processor{
-		matcher:                 config.Matcher,
 		trackRepo:               config.TrackRepo,
 		libraryRepo:             config.LibraryRepo,
 		playlistRepo:            config.PlaylistRepo,
@@ -124,6 +133,9 @@ func New(config *ProcessorConfig) *Processor {
 		analyzerClient:          config.AnalyzerClient,
 		requireAnalyzerIdentity: config.RequireAnalyzerIdentity,
 		storage:                 config.Storage,
+	}
+	if config.Matcher != nil {
+		processor.matcher = config.Matcher
 	}
 	if processor.analysisRepo != nil && processor.analyzerClient != nil {
 		processor.analysisCtx, processor.analysisCancel = context.WithCancel(context.Background())
@@ -215,6 +227,8 @@ type TrackMetadata struct {
 	Title           string
 	Artist          string
 	Album           string
+	Version         string
+	RemixArtist     string
 	Uploader        string
 	DurationMs      int
 	SourceURL       string
@@ -591,13 +605,15 @@ func populateMetadataFromInfo(path string, metadata *TrackMetadata) {
 }
 
 type deterministicCleanup struct {
-	RawTitle   string  `json:"raw_title,omitempty"`
-	RawArtist  string  `json:"raw_artist,omitempty"`
-	Title      string  `json:"title,omitempty"`
-	Artist     string  `json:"artist,omitempty"`
-	Method     string  `json:"method,omitempty"`
-	Applied    bool    `json:"applied"`
-	Confidence float64 `json:"confidence,omitempty"`
+	RawTitle    string  `json:"raw_title,omitempty"`
+	RawArtist   string  `json:"raw_artist,omitempty"`
+	Title       string  `json:"title,omitempty"`
+	Artist      string  `json:"artist,omitempty"`
+	Version     string  `json:"version,omitempty"`
+	RemixArtist string  `json:"remix_artist,omitempty"`
+	Method      string  `json:"method,omitempty"`
+	Applied     bool    `json:"applied"`
+	Confidence  float64 `json:"confidence,omitempty"`
 }
 
 func applyDeterministicCleanup(metadata *TrackMetadata) deterministicCleanup {
@@ -607,14 +623,18 @@ func applyDeterministicCleanup(metadata *TrackMetadata) deterministicCleanup {
 	}
 	parsed := matcher.ParseTitle(metadata.Title)
 	cleanup.Method = parsed.Method
-	cleanup.Title = parsed.Track
+	cleanup.Title = firstNonEmpty(parsed.DisplayTrack, parsed.Track)
 	cleanup.Artist = parsed.Artist
+	cleanup.RemixArtist = parsed.RemixArtist
+	cleanup.Version = parsed.Version
+	metadata.Version = parsed.Version
+	metadata.RemixArtist = parsed.RemixArtist
 
 	if parsed.Method != "separator" || parsed.Artist == "" || parsed.Track == "" {
 		return cleanup
 	}
 
-	metadata.Title = parsed.Track
+	metadata.Title = firstNonEmpty(parsed.DisplayTrack, parsed.Track)
 	metadata.Artist = parsed.Artist
 	cleanup.Applied = true
 	cleanup.Confidence = 0.65
@@ -715,6 +735,7 @@ func (p *Processor) createTrack(ctx context.Context, job *download.DownloadJob, 
 		),
 		db.WithMetadata(provenance),
 		db.WithMetadataEnrichment(status, confidence, provenance, ""),
+		db.WithVersion(metadata.Version),
 	}
 
 	if metadata.PreselectedMBID != "" {
@@ -820,7 +841,7 @@ func hasCompleteAudioQuality(track *db.Track) bool {
 
 // runMatching runs MusicBrainz matching and stores suggestions
 func (p *Processor) runMatching(ctx context.Context, track *db.Track, metadata *TrackMetadata) error {
-	if track.MBVerified || metadata.PreselectedMBID != "" || p.matcher == nil {
+	if track.MBVerified || track.MetadataUserEdited || metadata.PreselectedMBID != "" || p.matcher == nil {
 		return nil
 	}
 	provider := providerMetadata(metadata)
@@ -847,8 +868,77 @@ func (p *Processor) runMatching(ctx context.Context, track *db.Track, metadata *
 		_ = p.trackRepo.UpdateMBMatch(ctx, track.ID, failedMBMatchUpdate(err))
 		return fmt.Errorf("matching failed: %w", err)
 	}
+	blockAutomaticMBIdentityForProviderDesignation(output, provider)
 	update := automaticMBMatchUpdate(output)
 	return p.trackRepo.UpdateMBMatch(ctx, track.ID, update)
+}
+
+func blockAutomaticMBIdentityForProviderDesignation(output *matcher.MatchOutput, provider map[string]interface{}) {
+	if output == nil || !output.Verified || output.BestMatch == nil {
+		return
+	}
+	var blockedReasons []string
+	if output.BestMatch.Score != nil && output.BestMatch.Score.MissingCandidateDuration {
+		blockedReasons = append(blockedReasons, "musicbrainz_duration_missing")
+	}
+	for _, sourceTitle := range rawProviderTitleSurfaces(provider) {
+		if !hasIdentityDesignation(sourceTitle) {
+			continue
+		}
+		parsedSource := matcher.ParseTitle(sourceTitle)
+		candidateMatches := hasIdentityDesignation(output.BestMatch.Title)
+		if parsedSource.IsRemix {
+			candidateMatches = matcher.HasMatchingRemixDesignation(parsedSource, output.BestMatch.Title)
+		}
+		if !candidateMatches {
+			blockedReasons = append(blockedReasons, "provider_designation_missing_from_musicbrainz_title")
+			break
+		}
+	}
+	if len(blockedReasons) == 0 {
+		return
+	}
+	output.Verified = false
+	output.AutoMatchBlockedReason = strings.Join(blockedReasons, ",")
+	output.Suggestions = prependSuggestion(*output.BestMatch, output.Suggestions)
+}
+
+func rawProviderTitleSurfaces(provider map[string]interface{}) []string {
+	titles := make([]string, 0, 2)
+	for _, key := range []string{"title", "fulltitle"} {
+		title := stringValueFromMap(provider, key)
+		if title == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range titles {
+			if title == existing {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			titles = append(titles, title)
+		}
+	}
+	return titles
+}
+
+func hasIdentityDesignation(title string) bool {
+	return identityDesignationPattern.MatchString(title)
+}
+
+func prependSuggestion(best matcher.MatchResult, suggestions []matcher.MatchResult) []matcher.MatchResult {
+	result := []matcher.MatchResult{best}
+	for _, suggestion := range suggestions {
+		if suggestion.MBID != best.MBID {
+			result = append(result, suggestion)
+		}
+	}
+	if len(result) > 3 {
+		return result[:3]
+	}
+	return result
 }
 
 func failedMBMatchUpdate(matchErr error) *db.MBMatchUpdate {
@@ -905,12 +995,13 @@ func automaticMBMatchUpdate(output *matcher.MatchOutput) *db.MBMatchUpdate {
 	}
 	mbProvenance, _ := json.Marshal(map[string]interface{}{
 		"musicbrainz": map[string]interface{}{
-			"status":       update.MetadataStatus,
-			"verified":     output.Verified,
-			"best_match":   output.BestMatch,
-			"suggestions":  output.Suggestions,
-			"parsed_title": output.ParsedTitle,
-			"ollama":       output.Disambiguation,
+			"status":                    update.MetadataStatus,
+			"verified":                  output.Verified,
+			"best_match":                output.BestMatch,
+			"suggestions":               output.Suggestions,
+			"parsed_title":              output.ParsedTitle,
+			"auto_match_blocked_reason": output.AutoMatchBlockedReason,
+			"ollama":                    output.Disambiguation,
 		},
 	})
 	update.MetadataProvenance = mbProvenance

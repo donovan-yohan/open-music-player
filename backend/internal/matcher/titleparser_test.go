@@ -6,11 +6,15 @@ import (
 
 func TestParseTitle(t *testing.T) {
 	tests := []struct {
-		name           string
-		input          string
-		expectedArtist string
-		expectedTrack  string
-		expectedFeat   []string
+		name                 string
+		input                string
+		expectedArtist       string
+		expectedTrack        string
+		expectedFeat         []string
+		expectedRemix        bool
+		expectedRemixArtist  string
+		expectedDisplayTrack string
+		expectedVersion      string
 	}{
 		{
 			name:           "standard artist - track format",
@@ -70,10 +74,68 @@ func TestParseTitle(t *testing.T) {
 			expectedFeat:   []string{"Justin Bieber", "Quavo", "Chance the Rapper"},
 		},
 		{
-			name:           "remix in brackets",
-			input:          "The Weeknd - Blinding Lights (Chromatics Remix)",
-			expectedArtist: "The Weeknd",
-			expectedTrack:  "Blinding Lights",
+			name:                 "remix in brackets",
+			input:                "The Weeknd - Blinding Lights (Chromatics Remix)",
+			expectedArtist:       "The Weeknd",
+			expectedTrack:        "Blinding Lights",
+			expectedRemix:        true,
+			expectedRemixArtist:  "Chromatics",
+			expectedDisplayTrack: "Blinding Lights (Chromatics Remix)",
+			expectedVersion:      "Chromatics Remix",
+		},
+		{
+			name:                 "bare remix designation",
+			input:                "Artist - Song (Remix)",
+			expectedArtist:       "Artist",
+			expectedTrack:        "Song",
+			expectedRemix:        true,
+			expectedDisplayTrack: "Song (Remix)",
+			expectedVersion:      "Remix",
+		},
+		{
+			name:                 "bare VIP designation",
+			input:                "Artist - Song (VIP)",
+			expectedArtist:       "Artist",
+			expectedTrack:        "Song",
+			expectedRemix:        true,
+			expectedDisplayTrack: "Song (VIP)",
+			expectedVersion:      "VIP",
+		},
+		{
+			name:                 "chained edit remix has no remix artist",
+			input:                "Artist - Song (Edit Remix)",
+			expectedArtist:       "Artist",
+			expectedTrack:        "Song",
+			expectedRemix:        true,
+			expectedDisplayTrack: "Song (Edit Remix)",
+			expectedVersion:      "Edit Remix",
+		},
+		{
+			name:                 "chained VIP edit has no remix artist",
+			input:                "Artist - Song (VIP Edit)",
+			expectedArtist:       "Artist",
+			expectedTrack:        "Song",
+			expectedRemix:        true,
+			expectedDisplayTrack: "Song (VIP Edit)",
+			expectedVersion:      "VIP Edit",
+		},
+		{
+			name:                 "chained extended remix has no remix artist",
+			input:                "Artist - Song (Extended Remix)",
+			expectedArtist:       "Artist",
+			expectedTrack:        "Song",
+			expectedRemix:        true,
+			expectedDisplayTrack: "Song (Extended Remix)",
+			expectedVersion:      "Extended Remix",
+		},
+		{
+			name:                 "mismatched designation brackets retain content",
+			input:                "Artist - Song (Remix]",
+			expectedArtist:       "Artist",
+			expectedTrack:        "Song",
+			expectedRemix:        true,
+			expectedDisplayTrack: "Song (Remix]",
+			expectedVersion:      "Remix",
 		},
 		{
 			name:           "remastered version",
@@ -129,6 +191,15 @@ func TestParseTitle(t *testing.T) {
 
 			if result.Track != tt.expectedTrack {
 				t.Errorf("Track = %q, want %q", result.Track, tt.expectedTrack)
+			}
+			if result.IsRemix != tt.expectedRemix || result.RemixArtist != tt.expectedRemixArtist {
+				t.Errorf("remix = %v/%q, want %v/%q", result.IsRemix, result.RemixArtist, tt.expectedRemix, tt.expectedRemixArtist)
+			}
+			if tt.expectedDisplayTrack != "" && result.DisplayTrack != tt.expectedDisplayTrack {
+				t.Errorf("DisplayTrack = %q, want %q", result.DisplayTrack, tt.expectedDisplayTrack)
+			}
+			if tt.expectedVersion != "" && result.Version != tt.expectedVersion {
+				t.Errorf("Version = %q, want %q", result.Version, tt.expectedVersion)
 			}
 
 			if len(tt.expectedFeat) > 0 {

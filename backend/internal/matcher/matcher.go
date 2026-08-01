@@ -66,11 +66,12 @@ func BuildSuggestionsJSON(suggestions []MatchResult) map[string]interface{} {
 
 // MatchOutput is the result of the matching process
 type MatchOutput struct {
-	Verified       bool                    `json:"verified"`                 // True if auto-matched with high confidence
-	BestMatch      *MatchResult            `json:"best_match,omitempty"`     // The best match (if any)
-	Suggestions    []MatchResult           `json:"suggestions,omitempty"`    // Top 3 suggestions for uncertain matches
-	ParsedTitle    *ParsedTitle            `json:"parsed_title,omitempty"`   // How the title was parsed
-	Disambiguation *DisambiguationDecision `json:"disambiguation,omitempty"` // Optional validated local-LLM decision
+	Verified               bool                    `json:"verified"`                 // True if auto-matched with high confidence
+	BestMatch              *MatchResult            `json:"best_match,omitempty"`     // The best match (if any)
+	Suggestions            []MatchResult           `json:"suggestions,omitempty"`    // Top 3 suggestions for uncertain matches
+	ParsedTitle            *ParsedTitle            `json:"parsed_title,omitempty"`   // How the title was parsed
+	Disambiguation         *DisambiguationDecision `json:"disambiguation,omitempty"` // Optional validated local-LLM decision
+	AutoMatchBlockedReason string                  `json:"auto_match_blocked_reason,omitempty"`
 }
 
 // Matcher handles automatic MusicBrainz matching

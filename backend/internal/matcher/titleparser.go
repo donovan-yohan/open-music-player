@@ -7,13 +7,15 @@ import (
 
 // ParsedTitle contains extracted artist and track information from a title
 type ParsedTitle struct {
-	Artist      string   `json:"artist"`
-	Track       string   `json:"track"`
-	Featuring   []string `json:"featuring,omitempty"`
-	IsRemix     bool     `json:"is_remix"`
-	RemixArtist string   `json:"remix_artist,omitempty"`
-	Raw         string   `json:"raw"`
-	Method      string   `json:"method,omitempty"`
+	Artist       string   `json:"artist"`
+	Track        string   `json:"track"`                   // Clean base title used for MusicBrainz matching
+	DisplayTrack string   `json:"display_track,omitempty"` // Identity-bearing human-readable provider title
+	Featuring    []string `json:"featuring,omitempty"`
+	IsRemix      bool     `json:"is_remix"`
+	RemixArtist  string   `json:"remix_artist,omitempty"`
+	Version      string   `json:"version,omitempty"`
+	Raw          string   `json:"raw"`
+	Method       string   `json:"method,omitempty"`
 }
 
 var (
@@ -32,8 +34,15 @@ var (
 	// Patterns for video suffixes to remove
 	videoSuffixes = regexp.MustCompile(`(?i)(?:\s*[\(\[]\s*(?:official\s*(?:video|audio|music\s*video|lyric\s*video|visualizer)|lyric\s*video|lyrics?|visualizer|audio|video|hd|hq|4k|1080p|720p|m/v|mv)\s*[\)\]]|\s+(?:hd|hq|4k|1080p|720p))\s*$`)
 
-	// Patterns for remix detection
-	remixPattern = regexp.MustCompile(`(?i)[\(\[]\s*(.+?)\s*(?:remix|edit|mix|bootleg|flip|rework)\s*[\)\]]`)
+	// Patterns for version/designation detection. These labels are identity-bearing
+	// provider metadata, so ParseTitle records them without removing them from the
+	// human-readable track title.
+	remixPattern = regexp.MustCompile(`(?i)[\(\[]\s*(?:(.+?)\s+)?(remix|edit|mix|bootleg|flip|rework|mashup|vip|cover)\s*[\)\]]`)
+
+	// designationContentPattern strips exactly one opening and one closing
+	// designation delimiter. It intentionally accepts mismatched delimiters from
+	// imperfect provider metadata, such as "(Remix]".
+	designationContentPattern = regexp.MustCompile(`^[\(\[]\s*(.*?)\s*[\)\]]$`)
 
 	// Pattern for quoted track titles: Artist "Track"
 	quotedPattern = regexp.MustCompile(`^(.+?)\s*[""](.+?)[""]`)
@@ -55,11 +64,17 @@ func ParseTitle(title string) *ParsedTitle {
 	cleaned, featuring := extractFeaturing(cleaned)
 	result.Featuring = featuring
 
-	// Check for remix
+	// Extract an identity-bearing designation before parsing the clean base
+	// title. Matching uses the base title, while DisplayTrack retains the exact
+	// human-readable designation for storage and provenance.
+	designation := ""
 	if match := remixPattern.FindStringSubmatch(cleaned); match != nil {
 		result.IsRemix = true
-		result.RemixArtist = strings.TrimSpace(match[1])
-		// Remove remix info from title for cleaner matching
+		if strings.EqualFold(match[2], "remix") && !isDesignationKeyword(match[1]) {
+			result.RemixArtist = strings.TrimSpace(match[1])
+		}
+		designation = strings.TrimSpace(match[0])
+		result.Version = designationContent(designation)
 		cleaned = remixPattern.ReplaceAllString(cleaned, "")
 		cleaned = strings.TrimSpace(cleaned)
 	}
@@ -81,7 +96,7 @@ func ParseTitle(title string) *ParsedTitle {
 		result.Artist = cleanArtist(artist)
 		result.Track = cleanTrack(track)
 		result.Method = "separator"
-		return result
+		return finalizeParsedTitle(result, designation)
 	}
 
 	// 2. Try quoted format: Artist "Track"
@@ -89,7 +104,7 @@ func ParseTitle(title string) *ParsedTitle {
 		result.Artist = cleanArtist(strings.TrimSpace(match[1]))
 		result.Track = cleanTrack(strings.TrimSpace(match[2]))
 		result.Method = "quoted"
-		return result
+		return finalizeParsedTitle(result, designation)
 	}
 
 	// 3. Try "Track by Artist" format
@@ -97,13 +112,38 @@ func ParseTitle(title string) *ParsedTitle {
 		result.Track = cleanTrack(strings.TrimSpace(match[1]))
 		result.Artist = cleanArtist(strings.TrimSpace(match[2]))
 		result.Method = "by"
-		return result
+		return finalizeParsedTitle(result, designation)
 	}
 
 	// 4. Fallback: use entire cleaned title as track, no artist
 	result.Track = cleanTrack(cleaned)
 	result.Method = "fallback"
 
+	return finalizeParsedTitle(result, designation)
+}
+
+func designationContent(designation string) string {
+	match := designationContentPattern.FindStringSubmatch(strings.TrimSpace(designation))
+	if match == nil {
+		return strings.TrimSpace(designation)
+	}
+	return strings.TrimSpace(match[1])
+}
+
+func isDesignationKeyword(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "remix", "edit", "mix", "bootleg", "flip", "rework", "mashup", "vip", "cover", "extended":
+		return true
+	default:
+		return false
+	}
+}
+
+func finalizeParsedTitle(result *ParsedTitle, designation string) *ParsedTitle {
+	result.DisplayTrack = result.Track
+	if designation != "" && result.Track != "" {
+		result.DisplayTrack = strings.TrimSpace(result.Track + " " + designation)
+	}
 	return result
 }
 

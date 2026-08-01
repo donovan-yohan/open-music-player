@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,6 +14,10 @@ import (
 
 var ErrTrackNotFound = errors.New("track not found")
 var ErrDuplicateTrack = errors.New("track with this identity hash already exists")
+
+type trackQueryRower interface {
+	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+}
 
 // trigramSearchThreshold is the minimum pg_trgm similarity() score a row must reach
 // to be considered a fuzzy match. It is deliberately loose enough that a single-character
@@ -678,6 +683,10 @@ func (r *TrackRepository) UpdateMetadata(ctx context.Context, trackID int64, upd
 
 // GetByIdentityHash retrieves a track by its identity hash.
 func (r *TrackRepository) GetByIdentityHash(ctx context.Context, identityHash string) (*Track, error) {
+	return getByIdentityHash(ctx, r.db, identityHash)
+}
+
+func getByIdentityHash(ctx context.Context, queryRower trackQueryRower, identityHash string) (*Track, error) {
 	query := `
 		SELECT id, identity_hash, title, artist, album, duration_ms, version,
 			   mb_recording_id, mb_release_id, mb_artist_id, mb_verified,
@@ -690,7 +699,7 @@ func (r *TrackRepository) GetByIdentityHash(ctx context.Context, identityHash st
 	`
 
 	var t Track
-	err := r.db.QueryRowContext(ctx, query, identityHash).Scan(
+	err := queryRower.QueryRowContext(ctx, query, identityHash).Scan(
 		&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 		&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 		&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
@@ -711,6 +720,10 @@ func (r *TrackRepository) GetByIdentityHash(ctx context.Context, identityHash st
 // Create inserts a new track into the database.
 // Returns ErrDuplicateTrack if a track with the same identity hash already exists.
 func (r *TrackRepository) Create(ctx context.Context, track *Track) error {
+	return createTrack(ctx, r.db, track)
+}
+
+func createTrack(ctx context.Context, queryRower trackQueryRower, track *Track) error {
 	query := `
 		INSERT INTO tracks (
 			identity_hash, title, artist, album, duration_ms, version,
@@ -722,7 +735,7 @@ func (r *TrackRepository) Create(ctx context.Context, track *Track) error {
 		RETURNING id, created_at, updated_at
 	`
 
-	err := r.db.QueryRowContext(ctx, query,
+	err := queryRower.QueryRowContext(ctx, query,
 		track.IdentityHash, track.Title, track.Artist, track.Album, track.DurationMs, track.Version,
 		track.MBRecordingID, track.MBReleaseID, track.MBArtistID, track.MBVerified,
 		track.SourceURL, track.SourceType, track.StorageKey, track.FileSizeBytes, nullableRawJSON(track.MetadataJSON),
@@ -731,10 +744,7 @@ func (r *TrackRepository) Create(ctx context.Context, track *Track) error {
 	).Scan(&track.ID, &track.CreatedAt, &track.UpdatedAt)
 
 	if err != nil {
-		// Check for unique constraint violation on identity_hash
-		if strings.Contains(err.Error(), "duplicate key") ||
-			strings.Contains(err.Error(), "unique constraint") ||
-			strings.Contains(err.Error(), "idx_tracks_identity_hash") {
+		if isDuplicateIdentityHashError(err) {
 			return ErrDuplicateTrack
 		}
 		return err
@@ -748,59 +758,223 @@ func (r *TrackRepository) Create(ctx context.Context, track *Track) error {
 // The second return value indicates whether a new track was created (true)
 // or an existing track was returned (false).
 func (r *TrackRepository) CreateOrGet(ctx context.Context, track *Track) (*Track, bool, error) {
-	// First, try to get existing track by identity hash
-	existing, err := r.GetByIdentityHash(ctx, track.IdentityHash)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	legacyHashes := legacyIdentityHashes(track)
+	// Lock both the requested forward identity and every possible legacy
+	// identity in a stable order. Two distinct provider versions can otherwise
+	// both observe the same legacy row, then one UPDATE affects zero rows after
+	// the other promotes it. The unique index still protects callers outside
+	// this path.
+	for _, identityHash := range identityHashLocks(track.IdentityHash, legacyHashes) {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, identityHash); err != nil {
+			return nil, false, err
+		}
+	}
+
+	existing, err := getByIdentityHash(ctx, tx, track.IdentityHash)
 	if err == nil {
-		// Track already exists, return it
+		if err := tx.Commit(); err != nil {
+			return nil, false, err
+		}
 		return existing, false, nil
 	}
 	if !errors.Is(err, ErrTrackNotFound) {
-		// Unexpected error
 		return nil, false, err
 	}
 
-	// Track doesn't exist, try to create it
-	if err := r.Create(ctx, track); err != nil {
-		if errors.Is(err, ErrDuplicateTrack) {
-			// Race condition: another process created the track
-			// Try to fetch it again
-			existing, err = r.GetByIdentityHash(ctx, track.IdentityHash)
-			if err != nil {
+	for _, legacyHash := range legacyHashes {
+		existing, err = getByIdentityHash(ctx, tx, legacyHash)
+		if errors.Is(err, ErrTrackNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		update, err := tx.ExecContext(ctx, `
+			UPDATE tracks
+			SET identity_hash = $2,
+				version = CASE
+					WHEN metadata_user_edited OR NULLIF($4, '') IS NULL THEN version
+					ELSE $4
+				END,
+				updated_at = NOW()
+			WHERE id = $1 AND identity_hash = $3
+		`, existing.ID, track.IdentityHash, legacyHash, nullableStringValue(track.Version))
+		if err != nil {
+			if isDuplicateIdentityHashError(err) {
+				_ = tx.Rollback()
+				existing, getErr := r.GetByIdentityHash(ctx, track.IdentityHash)
+				return existing, false, getErr
+			}
+			return nil, false, err
+		}
+		rows, err := update.RowsAffected()
+		if err != nil {
+			return nil, false, err
+		}
+		if rows == 0 {
+			// A caller outside this locking protocol may have won the forward
+			// identity. Never return the legacy row as though it had been
+			// promoted; re-check the requested key and otherwise continue to a
+			// normal create.
+			existing, err = getByIdentityHash(ctx, tx, track.IdentityHash)
+			if err == nil {
+				if err := tx.Commit(); err != nil {
+					return nil, false, err
+				}
+				return existing, false, nil
+			}
+			if !errors.Is(err, ErrTrackNotFound) {
 				return nil, false, err
 			}
-			return existing, false, nil
+			break
 		}
+		existing.IdentityHash = track.IdentityHash
+		if !existing.MetadataUserEdited && track.Version.Valid {
+			existing.Version = track.Version
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, false, err
+		}
+		return existing, false, nil
+	}
+
+	if err := createTrack(ctx, tx, track); err != nil {
+		if errors.Is(err, ErrDuplicateTrack) {
+			_ = tx.Rollback()
+			existing, getErr := r.GetByIdentityHash(ctx, track.IdentityHash)
+			return existing, false, getErr
+		}
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, false, err
 	}
 
 	return track, true, nil
 }
 
+func identityHashLocks(identityHash string, legacyHashes []string) []string {
+	locks := append([]string{identityHash}, legacyHashes...)
+	sort.Strings(locks)
+	unique := locks[:0]
+	for _, lock := range locks {
+		if len(unique) == 0 || unique[len(unique)-1] != lock {
+			unique = append(unique, lock)
+		}
+	}
+	return unique
+}
+
+func isDuplicateIdentityHashError(err error) bool {
+	return strings.Contains(err.Error(), "duplicate key") ||
+		strings.Contains(err.Error(), "unique constraint") ||
+		strings.Contains(err.Error(), "idx_tracks_identity_hash")
+}
+
+func legacyIdentityHashes(track *Track) []string {
+	artist := track.Artist.String
+	album := track.Album.String
+	durationMs := int(track.DurationMs.Int32)
+	identity := ParseTrackMetadata(artist, track.Title, album, durationMs)
+	identity.Title = legacyIdentityBaseTitle(track, identity.Title)
+	candidates := []string{
+		CalculateIdentityHash(artist, identity.Title, album, durationMs, ""),
+		CalculateLegacyIdentityHash(artist, identity.Title, album, durationMs),
+	}
+	if identity.Version != "" {
+		candidates = append(candidates, CalculateIdentityHash(artist, identity.Title, album, durationMs, identity.Version))
+	}
+
+	unique := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == track.IdentityHash {
+			continue
+		}
+		duplicate := false
+		for _, seen := range unique {
+			if candidate == seen {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			unique = append(unique, candidate)
+		}
+	}
+	return unique
+}
+
+func legacyIdentityBaseTitle(track *Track, parsedBaseTitle string) string {
+	if parsedBaseTitle != track.Title || !track.Version.Valid || track.Version.String == "" {
+		return parsedBaseTitle
+	}
+
+	title := strings.TrimSpace(track.Title)
+	if len(title) >= 3 && (strings.HasSuffix(title, ")") || strings.HasSuffix(title, "]")) {
+		if opening := strings.LastIndexAny(title[:len(title)-1], "(["); opening > 0 {
+			designation := strings.TrimSpace(title[opening+1 : len(title)-1])
+			if NormalizeString(designation) == NormalizeString(track.Version.String) {
+				return strings.TrimSpace(title[:opening])
+			}
+		}
+	}
+
+	if dash := strings.LastIndex(title, " - "); dash > 0 {
+		if NormalizeString(title[dash+3:]) == NormalizeString(track.Version.String) {
+			return strings.TrimSpace(title[:dash])
+		}
+	}
+	return parsedBaseTitle
+}
+
+func nullableStringValue(value sql.NullString) string {
+	if !value.Valid {
+		return ""
+	}
+	return value.String
+}
+
 // CreateTrackFromMetadata creates a track from raw metadata, handling normalization
 // and identity hash calculation automatically. Returns the created or existing track.
 func (r *TrackRepository) CreateTrackFromMetadata(ctx context.Context, artist, title, album string, durationMs int, opts ...TrackOption) (*Track, bool, error) {
+	track := buildTrackFromMetadata(artist, title, album, durationMs, opts...)
+	return r.CreateOrGet(ctx, track)
+}
+
+func buildTrackFromMetadata(artist, title, album string, durationMs int, opts ...TrackOption) *Track {
 	// Parse metadata and extract version
 	identity := ParseTrackMetadata(artist, title, album, durationMs)
 
-	// Calculate identity hash
-	identityHash := CalculateIdentityHashFromTrack(identity)
-
-	// Create track with normalized data
+	// Keep the provider/display title intact while hashing its normalized base
+	// title and explicit version. A remix must remain readable as a remix, and
+	// must not deduplicate onto its original recording.
 	track := &Track{
-		IdentityHash: identityHash,
-		Title:        identity.Title,
-		Artist:       sql.NullString{String: artist, Valid: artist != ""},
-		Album:        sql.NullString{String: album, Valid: album != ""},
-		DurationMs:   sql.NullInt32{Int32: int32(durationMs), Valid: durationMs > 0},
-		Version:      sql.NullString{String: identity.Version, Valid: identity.Version != ""},
+		Title:      title,
+		Artist:     sql.NullString{String: artist, Valid: artist != ""},
+		Album:      sql.NullString{String: album, Valid: album != ""},
+		DurationMs: sql.NullInt32{Int32: int32(durationMs), Valid: durationMs > 0},
+		Version:    sql.NullString{String: identity.Version, Valid: identity.Version != ""},
 	}
 
 	// Apply optional fields
 	for _, opt := range opts {
 		opt(track)
 	}
+	version := identity.Version
+	if track.Version.Valid {
+		version = track.Version.String
+	}
+	track.Version = sql.NullString{String: version, Valid: version != ""}
+	identity.Title = legacyIdentityBaseTitle(track, identity.Title)
+	track.IdentityHash = CalculateIdentityHash(artist, identity.Title, album, durationMs, version)
 
-	return r.CreateOrGet(ctx, track)
+	return track
 }
 
 // TrackOption is a functional option for configuring a track during creation.
@@ -815,6 +989,14 @@ func WithMusicBrainzIDs(recordingID, releaseID, artistID *uuid.UUID) TrackOption
 		if recordingID != nil || releaseID != nil || artistID != nil {
 			t.MBVerified = true
 		}
+	}
+}
+
+// WithVersion preserves a provider-derived version when creating a track.
+func WithVersion(version string) TrackOption {
+	return func(t *Track) {
+		version = strings.TrimSpace(version)
+		t.Version = sql.NullString{String: version, Valid: version != ""}
 	}
 }
 

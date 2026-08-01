@@ -34,6 +34,24 @@ type fakeObjectStorage struct {
 	getKeys     []string
 }
 
+type fakeMetadataMatcher struct {
+	output        *matcher.MatchOutput
+	err           error
+	matchCalls    int
+	nonMusicCalls int
+	nonMusic      bool
+}
+
+func (m *fakeMetadataMatcher) Match(ctx context.Context, metadata matcher.TrackMetadata) (*matcher.MatchOutput, error) {
+	m.matchCalls++
+	return m.output, m.err
+}
+
+func (m *fakeMetadataMatcher) MatchNonMusic(metadata matcher.TrackMetadata) bool {
+	m.nonMusicCalls++
+	return m.nonMusic
+}
+
 func (s *fakeObjectStorage) PutObject(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
 	s.key = key
 	s.contentType = contentType
@@ -991,6 +1009,138 @@ func TestRunAnalysisAppliesGenreHintAgainstPostgres(t *testing.T) {
 	}
 }
 
+func TestRedownloadPromotesUnverifiedLegacyRemixWithoutDuplicate(t *testing.T) {
+	database, ctx := newProcessorPostgresTestDB(t)
+	trackRepo := db.NewTrackRepository(database)
+	const (
+		artist     = "Maintenance Artist"
+		album      = "Maintenance Album"
+		baseTitle  = "Maintenance Song"
+		display    = "Maintenance Song (Kodat Remix)"
+		version    = "Kodat Remix"
+		durationMs = 210000
+	)
+	legacy := &db.Track{
+		IdentityHash:       db.CalculateIdentityHash(artist, baseTitle, album, durationMs, ""),
+		Title:              baseTitle,
+		Artist:             sqlNullString(artist),
+		Album:              sqlNullString(album),
+		DurationMs:         sql.NullInt32{Int32: durationMs, Valid: true},
+		MBVerified:         false,
+		MetadataJSON:       json.RawMessage(`{}`),
+		MetadataProvenance: json.RawMessage(`{}`),
+	}
+	if err := trackRepo.Create(ctx, legacy); err != nil {
+		t.Fatalf("seed unverified legacy row: %v", err)
+	}
+
+	processor := New(&ProcessorConfig{TrackRepo: trackRepo})
+	got, created, err := processor.createTrack(ctx, &download.DownloadJob{ID: "maintenance-reprocess"}, &TrackMetadata{
+		Title:      display,
+		Artist:     artist,
+		Album:      album,
+		Version:    version,
+		DurationMs: durationMs,
+	})
+	if err != nil {
+		t.Fatalf("re-download: %v", err)
+	}
+	if created || got.ID != legacy.ID {
+		t.Fatalf("re-download = id:%d created:%v, want existing id %d", got.ID, created, legacy.ID)
+	}
+	var count int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM tracks`).Scan(&count); err != nil {
+		t.Fatalf("count tracks: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("track count = %d, want 1", count)
+	}
+}
+
+func TestMaintenanceCandidatesKeepLegacyIDsAndExcludeUserEditedRows(t *testing.T) {
+	database, ctx := newProcessorPostgresTestDB(t)
+	trackRepo := db.NewTrackRepository(database)
+	legacy := &db.Track{
+		IdentityHash:       db.CalculateIdentityHash("Maintenance Artist", "Legacy Metadata", "", 180000, ""),
+		Title:              "Legacy Metadata",
+		Artist:             sqlNullString("Maintenance Artist"),
+		DurationMs:         sql.NullInt32{Int32: 180000, Valid: true},
+		MBVerified:         false,
+		MetadataJSON:       json.RawMessage(`{}`),
+		MetadataProvenance: json.RawMessage(`{}`),
+	}
+	if err := trackRepo.Create(ctx, legacy); err != nil {
+		t.Fatalf("seed unverified legacy row: %v", err)
+	}
+	userEdited := &db.Track{
+		IdentityHash:       db.CalculateIdentityHash("Maintenance Artist", "Human Metadata", "", 180000, ""),
+		Title:              "Human Metadata",
+		Artist:             sqlNullString("Maintenance Artist"),
+		DurationMs:         sql.NullInt32{Int32: 180000, Valid: true},
+		MetadataUserEdited: true,
+		MetadataJSON:       json.RawMessage(`{"human":true}`),
+		MetadataProvenance: json.RawMessage(`{"human":true}`),
+	}
+	if err := trackRepo.Create(ctx, userEdited); err != nil {
+		t.Fatalf("seed user-edited row: %v", err)
+	}
+
+	candidates, err := trackRepo.GetMaintenanceCandidates(ctx, true, false, time.Minute, 10)
+	if err != nil {
+		t.Fatalf("maintenance candidates: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].ID != legacy.ID {
+		t.Fatalf("maintenance candidates = %+v, want only legacy track %d", candidates, legacy.ID)
+	}
+
+	metadataMatcher := &fakeMetadataMatcher{output: &matcher.MatchOutput{
+		ParsedTitle: &matcher.ParsedTitle{Artist: "Maintenance Artist", Track: "Legacy Metadata"},
+	}}
+	processor := &Processor{matcher: metadataMatcher, trackRepo: trackRepo}
+	result, err := processor.RepairMetadata(ctx, &candidates[0], MetadataRepairOptions{})
+	if err != nil {
+		t.Fatalf("repair legacy metadata: %v", err)
+	}
+	if result.TrackID != legacy.ID || result.Status != "processed" || result.Reason != "metadata_match_reran" {
+		t.Fatalf("legacy repair result = %+v, want same ID and completed matching", result)
+	}
+	if metadataMatcher.matchCalls != 1 || metadataMatcher.nonMusicCalls != 1 {
+		t.Fatalf("maintenance matcher calls = match:%d nonMusic:%d, want 1/1", metadataMatcher.matchCalls, metadataMatcher.nonMusicCalls)
+	}
+	reloadedLegacy, err := trackRepo.GetByID(ctx, legacy.ID)
+	if err != nil {
+		t.Fatalf("reload legacy row after maintenance: %v", err)
+	}
+	if reloadedLegacy.MetadataStatus.String != "no_match" {
+		t.Fatalf("legacy metadata status = %#v, want no_match after concrete matcher", reloadedLegacy.MetadataStatus)
+	}
+	userEditedBefore, err := trackRepo.GetByID(ctx, userEdited.ID)
+	if err != nil {
+		t.Fatalf("load user-edited row: %v", err)
+	}
+	userEditedResult, err := processor.RepairMetadata(ctx, userEditedBefore, MetadataRepairOptions{})
+	if err != nil {
+		t.Fatalf("repair user-edited metadata: %v", err)
+	}
+	if userEditedResult.Status != "skipped" || userEditedResult.Reason != "user_edited_metadata" || metadataMatcher.matchCalls != 1 {
+		t.Fatalf("user-edited maintenance result = %+v, matcher calls = %d", userEditedResult, metadataMatcher.matchCalls)
+	}
+	userEditedAfter, err := trackRepo.GetByID(ctx, userEdited.ID)
+	if err != nil {
+		t.Fatalf("reload user-edited row: %v", err)
+	}
+	if userEditedAfter.Title != userEditedBefore.Title || userEditedAfter.IdentityHash != userEditedBefore.IdentityHash || !userEditedAfter.MetadataUserEdited {
+		t.Fatalf("maintenance changed user-edited row: before=%+v after=%+v", userEditedBefore, userEditedAfter)
+	}
+	var count int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM tracks`).Scan(&count); err != nil {
+		t.Fatalf("count tracks after maintenance: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("track count after maintenance = %d, want 2", count)
+	}
+}
+
 func TestDuplicateLegacyTrackBackfillsFromExistingReferencedObject(t *testing.T) {
 	database, ctx := newProcessorPostgresTestDB(t)
 	trackRepo := db.NewTrackRepository(database)
@@ -1347,6 +1497,37 @@ func TestApplyDeterministicCleanupPorterRobinsonOfficialVideo(t *testing.T) {
 	}
 }
 
+func TestApplyDeterministicCleanupPreservesVersionIdentity(t *testing.T) {
+	tests := []struct {
+		name            string
+		inputTitle      string
+		wantTitle       string
+		wantVersion     string
+		wantRemixArtist string
+	}{
+		{name: "named remix", inputTitle: "Daft Punk - One More Time (Kodat Remix)", wantTitle: "One More Time (Kodat Remix)", wantVersion: "Kodat Remix", wantRemixArtist: "Kodat"},
+		{name: "bare VIP", inputTitle: "Artist - Song (VIP)", wantTitle: "Song (VIP)", wantVersion: "VIP"},
+		{name: "radio edit", inputTitle: "Artist - Song (Radio Edit)", wantTitle: "Song (Radio Edit)", wantVersion: "Radio Edit"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metadata := &TrackMetadata{Title: tt.inputTitle, Artist: "Provider Artist"}
+			cleanup := applyDeterministicCleanup(metadata)
+
+			if !cleanup.Applied {
+				t.Fatal("expected deterministic cleanup to apply")
+			}
+			if metadata.Title != tt.wantTitle || metadata.Version != tt.wantVersion || metadata.RemixArtist != tt.wantRemixArtist {
+				t.Fatalf("metadata = %+v, want title/version/remixer %q/%q/%q", metadata, tt.wantTitle, tt.wantVersion, tt.wantRemixArtist)
+			}
+			if cleanup.Title != metadata.Title || cleanup.Version != tt.wantVersion || cleanup.RemixArtist != tt.wantRemixArtist {
+				t.Fatalf("cleanup = %+v, want preserved version identity", cleanup)
+			}
+		})
+	}
+}
+
 func TestApplyDeterministicCleanupDoesNotUseUploaderWhenTitleIsWeak(t *testing.T) {
 	metadata := &TrackMetadata{
 		Title:    "Cheerleader (Official Music Video)",
@@ -1490,6 +1671,70 @@ func TestAutomaticMBMatchUpdateNoMatchLeavesIdentityUnchanged(t *testing.T) {
 	}
 	if !update.ClearMetadataConfidence {
 		t.Fatalf("automatic no-match update must clear stale confidence")
+	}
+}
+
+func TestProviderDesignationSanityGateDemotesAutomaticMatches(t *testing.T) {
+	tests := []struct {
+		name                     string
+		sourceTitle              string
+		fullTitle                string
+		candidateTitle           string
+		missingCandidateDuration bool
+		wantBlocked              bool
+		wantReason               string
+	}{
+		{name: "remix missing from candidate", sourceTitle: "Daft Punk - One More Time (Kodat Remix)", candidateTitle: "One More Time", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+		{name: "clean title cannot mask designated full title", sourceTitle: "One More Time", fullTitle: "Daft Punk - One More Time (Kodat Remix)", candidateTitle: "One More Time", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+		{name: "edit missing from candidate", sourceTitle: "Artist - Song (Radio Edit)", candidateTitle: "Song", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+		{name: "bootleg missing from candidate", sourceTitle: "Artist - Song (DJ Bootleg)", candidateTitle: "Song", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+		{name: "flip missing from candidate", sourceTitle: "Artist - Song (Flip)", candidateTitle: "Song", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+		{name: "mashup missing from candidate", sourceTitle: "Artist - Song (Mashup)", candidateTitle: "Song", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+		{name: "VIP missing from candidate", sourceTitle: "Artist - Song (VIP)", candidateTitle: "Song", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+		{name: "cover missing from candidate", sourceTitle: "Artist - Song (Cover)", candidateTitle: "Song", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+		{name: "different remixer is not a matching designation", sourceTitle: "Artist - Song (Kodat Remix)", candidateTitle: "Song (Other Remix)", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+		{name: "missing candidate duration blocks disambiguated auto match", sourceTitle: "Artist - Song", candidateTitle: "Song", missingCandidateDuration: true, wantBlocked: true, wantReason: "musicbrainz_duration_missing"},
+		{name: "designation present in candidate", sourceTitle: "Artist - Song (Kodat Remix)", candidateTitle: "Song (Kodat Remix)", wantBlocked: false},
+		{name: "ordinary word does not imply cover designation", sourceTitle: "Artist - Discover", candidateTitle: "Discover", wantBlocked: false},
+		{name: "Editorial is not an edit designation", sourceTitle: "Artist - Editorial", candidateTitle: "Editorial", wantBlocked: false},
+		{name: "Undercover is not a cover designation", sourceTitle: "Artist - Undercover", candidateTitle: "Undercover", wantBlocked: false},
+		{name: "Cover Me is not a cover designation", sourceTitle: "Artist - Cover Me", candidateTitle: "Cover Me", wantBlocked: false},
+		{name: "cover word in artist phrase is not a designation", sourceTitle: "Song by The Cover", candidateTitle: "Song by The Cover", wantBlocked: false},
+		{name: "radio edit designation blocks", sourceTitle: "Artist - Song (Radio Edit)", candidateTitle: "Song", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+		{name: "bracketed flip designation blocks", sourceTitle: "Artist - Song [XYZ Flip]", candidateTitle: "Song", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+		{name: "VIP designation blocks", sourceTitle: "Artist - X (VIP)", candidateTitle: "X", wantBlocked: true, wantReason: "provider_designation_missing_from_musicbrainz_title"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := &matcher.MatchOutput{
+				Verified:  true,
+				BestMatch: &matcher.MatchResult{MBID: "11111111-1111-1111-1111-111111111111", Title: tt.candidateTitle, Confidence: 0.95, Score: &matcher.MatchScore{MissingCandidateDuration: tt.missingCandidateDuration}},
+			}
+			provider := map[string]interface{}{"title": tt.sourceTitle}
+			if tt.fullTitle != "" {
+				provider["fulltitle"] = tt.fullTitle
+			}
+			blockAutomaticMBIdentityForProviderDesignation(output, provider)
+			if got := !output.Verified; got != tt.wantBlocked {
+				t.Fatalf("blocked = %v, want %v (%+v)", got, tt.wantBlocked, output)
+			}
+			if tt.wantBlocked {
+				if output.AutoMatchBlockedReason == "" || len(output.Suggestions) != 1 || output.Suggestions[0].MBID != output.BestMatch.MBID {
+					t.Fatalf("blocked output did not retain candidate as suggestion: %+v", output)
+				}
+				update := automaticMBMatchUpdate(output)
+				if update.ApplyMBIdentity || update.MetadataStatus != "suggested" || update.MetadataJSON == nil {
+					t.Fatalf("blocked match update = %+v, want suggested-only update", update)
+				}
+				if !strings.Contains(string(update.MetadataProvenance), tt.wantReason) {
+					t.Fatalf("provenance does not record the sanity block: %s", update.MetadataProvenance)
+				}
+				if tt.missingCandidateDuration && !strings.Contains(string(update.MetadataProvenance), `"missingCandidateDuration":true`) {
+					t.Fatalf("provenance does not retain missing candidate duration flag: %s", update.MetadataProvenance)
+				}
+			}
+		})
 	}
 }
 
