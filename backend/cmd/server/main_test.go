@@ -15,6 +15,52 @@ import (
 	"github.com/openmusicplayer/backend/internal/research"
 )
 
+func TestDiscoveryServiceConfigFromEnvDefaults(t *testing.T) {
+	cfg := discoveryServiceConfigFromEnv(func(string) string { return "" })
+	if cfg.PerProviderTimeout != discovery.DefaultPerProviderTimeout {
+		t.Fatalf("per-provider timeout = %s, want %s", cfg.PerProviderTimeout, discovery.DefaultPerProviderTimeout)
+	}
+	if cfg.OverallTimeout != discovery.DefaultOverallTimeout {
+		t.Fatalf("overall timeout = %s, want %s", cfg.OverallTimeout, discovery.DefaultOverallTimeout)
+	}
+}
+
+func TestDiscoveryServiceConfigFromEnvOverrides(t *testing.T) {
+	values := map[string]string{
+		"DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS": "11",
+		"DISCOVERY_OVERALL_TIMEOUT_SECONDS":      "15",
+	}
+	cfg := discoveryServiceConfigFromEnv(func(key string) string { return values[key] })
+	if cfg.PerProviderTimeout != 11*time.Second {
+		t.Fatalf("per-provider timeout = %s, want 11s", cfg.PerProviderTimeout)
+	}
+	if cfg.OverallTimeout != 15*time.Second {
+		t.Fatalf("overall timeout = %s, want 15s", cfg.OverallTimeout)
+	}
+}
+
+func TestDiscoveryServiceConfigFromEnvInvalidValuesUseDefaults(t *testing.T) {
+	values := map[string]string{
+		"DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS": "9223372036854775807",
+		"DISCOVERY_OVERALL_TIMEOUT_SECONDS":      "0",
+	}
+	cfg := discoveryServiceConfigFromEnv(func(key string) string { return values[key] })
+	if cfg.PerProviderTimeout != discovery.DefaultPerProviderTimeout || cfg.OverallTimeout != discovery.DefaultOverallTimeout {
+		t.Fatalf("invalid env timeout config = %#v, want defaults", cfg)
+	}
+}
+
+func TestDiscoveryServiceConfigEnvAndServiceEnforceTimeoutInvariant(t *testing.T) {
+	values := map[string]string{
+		"DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS": "12",
+		"DISCOVERY_OVERALL_TIMEOUT_SECONDS":      "5",
+	}
+	cfg := discoveryServiceConfigFromEnv(func(key string) string { return values[key] })
+	if cfg.OverallTimeout != cfg.PerProviderTimeout {
+		t.Fatalf("overall timeout = %s, want it clamped to per-provider timeout %s", cfg.OverallTimeout, cfg.PerProviderTimeout)
+	}
+}
+
 func TestNewSourceQualityJudgeDisabledConfigReturnsNil(t *testing.T) {
 	judge := newSourceQualityJudge(&config.Config{SourceQualityLLMEnabled: false})
 	if judge != nil {

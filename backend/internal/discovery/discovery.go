@@ -142,7 +142,17 @@ type ServiceConfig struct {
 	PerProviderTimeout time.Duration
 }
 
+const (
+	// DefaultPerProviderTimeout leaves room for a cold or contended yt-dlp
+	// SoundCloud search to complete.
+	DefaultPerProviderTimeout = 8 * time.Second
+	// DefaultOverallTimeout leaves explicit merge headroom after the slowest
+	// provider while bounding the whole discovery request.
+	DefaultOverallTimeout = 12 * time.Second
+)
+
 func NewService(cfg ServiceConfig) *Service {
+	cfg = NormalizeServiceConfig(cfg)
 	providers := make(map[string]Provider)
 	for _, p := range cfg.Providers {
 		providers[p.Name()] = p
@@ -154,12 +164,6 @@ func NewService(cfg ServiceConfig) *Service {
 			defaults = append(defaults, name)
 		}
 	}
-	if cfg.OverallTimeout <= 0 {
-		cfg.OverallTimeout = 8 * time.Second
-	}
-	if cfg.PerProviderTimeout <= 0 {
-		cfg.PerProviderTimeout = 3 * time.Second
-	}
 	return &Service{
 		providers:          providers,
 		defaultProviders:   defaults,
@@ -170,22 +174,45 @@ func NewService(cfg ServiceConfig) *Service {
 	}
 }
 
+// NormalizeServiceConfig applies timeout defaults and keeps the overall request
+// budget from ending before any provider's configured budget.
+func NormalizeServiceConfig(cfg ServiceConfig) ServiceConfig {
+	if cfg.OverallTimeout <= 0 {
+		cfg.OverallTimeout = DefaultOverallTimeout
+	}
+	if cfg.PerProviderTimeout <= 0 {
+		cfg.PerProviderTimeout = DefaultPerProviderTimeout
+	}
+	if cfg.OverallTimeout < cfg.PerProviderTimeout {
+		cfg.OverallTimeout = cfg.PerProviderTimeout
+	}
+	return cfg
+}
+
 func NewDefaultService() *Service {
-	return NewDefaultServiceWithCatalogAndSourceQualityJudge(nil, nil)
+	return NewDefaultServiceWithConfig(ServiceConfig{})
 }
 
 func NewDefaultServiceWithCatalog(catalog MusicCatalog) *Service {
-	return NewDefaultServiceWithCatalogAndSourceQualityJudge(catalog, nil)
+	return NewDefaultServiceWithConfig(ServiceConfig{MusicCatalog: catalog})
 }
 
 // NewDefaultServiceWithCatalogAndSourceQualityJudge installs an optional judge
 // on the default source providers. A nil judge preserves deterministic ranking.
 func NewDefaultServiceWithCatalogAndSourceQualityJudge(catalog MusicCatalog, judge SourceQualityJudge) *Service {
+	return NewDefaultServiceWithConfig(ServiceConfig{MusicCatalog: catalog, SourceQualityJudge: judge})
+}
+
+// NewDefaultServiceWithConfig constructs the standard source provider set and
+// applies the supplied service configuration, including request timeouts.
+func NewDefaultServiceWithConfig(cfg ServiceConfig) *Service {
 	providers := []Provider{
 		NewYouTubeProvider(),
 		NewYTDLPProvider("soundcloud", "scsearch", ""),
 	}
-	return NewService(ServiceConfig{Providers: providers, DefaultProviders: []string{"youtube", "soundcloud"}, MusicCatalog: catalog, SourceQualityJudge: judge})
+	cfg.Providers = providers
+	cfg.DefaultProviders = []string{"youtube", "soundcloud"}
+	return NewService(cfg)
 }
 
 // NewYouTubeProvider searches both the ordinary YouTube video index and the
@@ -696,6 +723,43 @@ func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]
 	return p.candidatesFromOutput(string(out), limit), nil
 }
 
+// candidateThumbnailURL prefers the full-extraction singular "thumbnail" key;
+// flat-playlist entries only carry a "thumbnails" array, from which the
+// largest variant no taller than 480px is chosen so mobile clients are not
+// handed full-resolution covers.
+func candidateThumbnailURL(raw map[string]interface{}) string {
+	if direct := stringValue(raw, "thumbnail"); direct != "" {
+		return direct
+	}
+	entries, ok := raw["thumbnails"].([]interface{})
+	if !ok {
+		return ""
+	}
+	var best, fallback string
+	var bestHeight, fallbackHeight float64
+	for _, entry := range entries {
+		item, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		thumbnailURL := stringValue(item, "url")
+		if thumbnailURL == "" {
+			continue
+		}
+		height := floatValue(item, "height")
+		if height <= 480 && height >= bestHeight {
+			best, bestHeight = thumbnailURL, height
+		}
+		if height >= fallbackHeight {
+			fallback, fallbackHeight = thumbnailURL, height
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return fallback
+}
+
 func (p *YTDLPProvider) candidatesFromOutput(output string, limit int) []Candidate {
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	items := make([]Candidate, 0, len(lines))
@@ -729,7 +793,7 @@ func (p *YTDLPProvider) candidatesFromOutput(output string, limit int) []Candida
 			Artist:       firstNonEmpty(stringValue(raw, "artist"), stringValue(raw, "creator")),
 			Uploader:     stringValue(raw, "uploader"),
 			DurationMs:   int(floatValue(raw, "duration") * 1000),
-			ThumbnailURL: stringValue(raw, "thumbnail"),
+			ThumbnailURL: candidateThumbnailURL(raw),
 			Downloadable: sourceURL != "",
 			Playable:     false,
 			Metadata:     metadata,
