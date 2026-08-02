@@ -23,9 +23,9 @@ void main() {
   });
 
   testWidgets(
-    'mobile discovery result tiles use compact media and icon-only queue action',
+    '360px source tiles retain metadata and usable compact actions',
     (tester) async {
-      tester.view.physicalSize = const Size(390, 844);
+      tester.view.physicalSize = const Size(360, 800);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
@@ -66,6 +66,13 @@ void main() {
         matching: find.byType(IconButton),
       );
       expect(tester.getSize(queueButton), const Size(40, 40));
+      expect(tester.getRect(queueButton).right, lessThanOrEqualTo(360));
+
+      final openSourceButton =
+          find.byKey(const ValueKey('search_open_source_youtube:123'));
+      expect(openSourceButton, findsOneWidget);
+      expect(tester.getSize(openSourceButton), const Size(40, 40));
+      expect(tester.getRect(openSourceButton).right, lessThanOrEqualTo(360));
 
       final thumbBox = find.ancestor(
         of: find.byIcon(Icons.music_note),
@@ -78,9 +85,11 @@ void main() {
       );
       expect(title.style?.fontSize, 14);
 
-      final subtitle = tester.widget<Text>(
-        find.text('Porter Robinson • soundcloud • 4:32'),
-      );
+      final subtitleFinder =
+          find.text('Porter Robinson - Topic • youtube • 4:32');
+      expect(subtitleFinder, findsOneWidget);
+      expect(tester.getRect(subtitleFinder).right, lessThanOrEqualTo(360));
+      final subtitle = tester.widget<Text>(subtitleFinder);
       expect(subtitle.style?.fontSize, 12);
     },
   );
@@ -112,12 +121,12 @@ class _SearchResultAdapter implements HttpClientAdapter {
         'query': options.queryParameters['q'] ?? 'porter robinson',
         'results': [
           {
-            'candidateId': 'soundcloud:123',
-            'provider': 'soundcloud',
+            'candidateId': 'youtube:123',
+            'provider': 'youtube',
             'sourceId': '123',
-            'sourceUrl': 'https://soundcloud.com/porter/sad-machine',
+            'sourceUrl': 'https://youtube.com/watch?v=123',
             'title': 'Porter Robinson - Sad Machine',
-            'artist': 'Porter Robinson',
+            'uploader': 'Porter Robinson - Topic',
             'durationMs': 272000,
             'downloadable': true,
             'playable': false,
@@ -125,7 +134,7 @@ class _SearchResultAdapter implements HttpClientAdapter {
         ],
         'providers': [
           {
-            'provider': 'soundcloud',
+            'provider': 'youtube',
             'status': 'ok',
             'resultCount': 1,
             'elapsedMs': 12,

@@ -149,6 +149,16 @@ const (
 	// DefaultOverallTimeout leaves explicit merge headroom after the slowest
 	// provider while bounding the whole discovery request.
 	DefaultOverallTimeout = 12 * time.Second
+
+	// defaultYouTubeMusicMetadataEnrichmentConcurrency bounds the follow-up
+	// yt-dlp processes started after a flat YouTube Music Songs search. Search
+	// itself remains one flat-playlist process; only returned music candidates
+	// need individual metadata extraction.
+	defaultYouTubeMusicMetadataEnrichmentConcurrency = 6
+	// defaultYouTubeMusicMetadataEnrichmentTimeout is a child budget within the
+	// provider request. A stalled detail extraction must not consume the whole
+	// discovery provider deadline after flat results are already available.
+	defaultYouTubeMusicMetadataEnrichmentTimeout = 5 * time.Second
 )
 
 func NewService(cfg ServiceConfig) *Service {
@@ -689,11 +699,19 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 // YTDLPProvider shells out to yt-dlp for local dogfood discovery. If yt-dlp is
 // not installed, the provider fails in isolation instead of breaking the API.
 type YTDLPProvider struct {
-	name      string
-	prefix    string
-	urlPrefix string
-	music     bool
+	name                      string
+	prefix                    string
+	urlPrefix                 string
+	music                     bool
+	commandRunner             ytdlpCommandRunner
+	metadataEnrichmentTimeout time.Duration
+	metadataEnrichmentSlots   chan struct{}
 }
+
+// ytdlpCommandRunner is the process boundary used by yt-dlp discovery. It
+// makes metadata enrichment deterministic to test without network access or a
+// local yt-dlp installation.
+type ytdlpCommandRunner func(ctx context.Context, args []string) ([]byte, error)
 
 func NewYTDLPProvider(name, prefix, urlPrefix string) *YTDLPProvider {
 	return &YTDLPProvider{name: name, prefix: prefix, urlPrefix: urlPrefix}
@@ -703,24 +721,134 @@ func NewYTDLPProvider(name, prefix, urlPrefix string) *YTDLPProvider {
 // intentionally keeps the canonical youtube provider name so resolver, queue,
 // and downloader handling remain identical to ordinary YouTube candidates.
 func NewYouTubeMusicProvider(name string) *YTDLPProvider {
-	return &YTDLPProvider{name: name, music: true, urlPrefix: "https://www.youtube.com/watch?v="}
+	return &YTDLPProvider{
+		name:                      name,
+		music:                     true,
+		urlPrefix:                 "https://www.youtube.com/watch?v=",
+		metadataEnrichmentTimeout: defaultYouTubeMusicMetadataEnrichmentTimeout,
+		metadataEnrichmentSlots:   make(chan struct{}, defaultYouTubeMusicMetadataEnrichmentConcurrency),
+	}
+}
+
+func newYouTubeMusicProviderWithCommandRunner(name string, runner ytdlpCommandRunner) *YTDLPProvider {
+	provider := NewYouTubeMusicProvider(name)
+	provider.commandRunner = runner
+	return provider
 }
 
 func (p *YTDLPProvider) Name() string { return p.name }
 
 func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]Candidate, error) {
-	if _, err := exec.LookPath("yt-dlp"); err != nil {
-		return nil, &providerFailure{code: ErrProviderDisabled, status: ProviderStatusDisabled, err: fmt.Errorf("yt-dlp is not installed for provider %s: %w", p.name, err)}
+	if p.commandRunner == nil {
+		if _, err := exec.LookPath("yt-dlp"); err != nil {
+			return nil, &providerFailure{code: ErrProviderDisabled, status: ProviderStatusDisabled, err: fmt.Errorf("yt-dlp is not installed for provider %s: %w", p.name, err)}
+		}
 	}
-	cmd := exec.CommandContext(ctx, "yt-dlp", p.commandArgs(query, limit)...)
-	out, err := cmd.Output()
+	out, err := p.runCommand(ctx, p.commandArgs(query, limit))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, &providerFailure{code: ErrProviderBadResponse, status: ProviderStatusFailed, err: fmt.Errorf("yt-dlp search failed for %s: %w", p.name, err)}
 	}
-	return p.candidatesFromOutput(string(out), limit), nil
+	items := p.candidatesFromOutput(string(out), limit)
+	if !p.music {
+		return items, nil
+	}
+	return p.enrichYouTubeMusicCandidates(ctx, items), nil
+}
+
+func (p *YTDLPProvider) runCommand(ctx context.Context, args []string) ([]byte, error) {
+	if p.commandRunner != nil {
+		return p.commandRunner(ctx, args)
+	}
+	return exec.CommandContext(ctx, "yt-dlp", args...).Output()
+}
+
+func (p *YTDLPProvider) metadataCommandArgs(sourceURL string) []string {
+	return []string{"--no-playlist", "--dump-single-json", "--skip-download", sourceURL}
+}
+
+// enrichYouTubeMusicCandidates fills in detail omitted by --flat-playlist.
+// This is deliberately best-effort: each failed or cancelled detail process
+// leaves that exact flat candidate in its original result position.
+func (p *YTDLPProvider) enrichYouTubeMusicCandidates(ctx context.Context, candidates []Candidate) []Candidate {
+	if len(candidates) == 0 || ctx.Err() != nil {
+		return candidates
+	}
+	budget := p.metadataEnrichmentTimeout
+	if budget <= 0 {
+		budget = defaultYouTubeMusicMetadataEnrichmentTimeout
+	}
+	enrichmentCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	items := append([]Candidate(nil), candidates...)
+	// The provider instance is shared by the service, so these slots bound
+	// detail-process load across concurrent searches rather than per request.
+	semaphore := p.metadataEnrichmentSlots
+	if semaphore == nil {
+		semaphore = make(chan struct{}, defaultYouTubeMusicMetadataEnrichmentConcurrency)
+	}
+	var wg sync.WaitGroup
+	for index := range items {
+		select {
+		case semaphore <- struct{}{}:
+		case <-enrichmentCtx.Done():
+			wg.Wait()
+			return items
+		}
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			defer func() { <-semaphore }()
+			if enriched, err := p.enrichYouTubeMusicCandidate(enrichmentCtx, items[index]); err == nil {
+				items[index] = enriched
+			}
+		}(index)
+	}
+	wg.Wait()
+	return items
+}
+
+func (p *YTDLPProvider) enrichYouTubeMusicCandidate(ctx context.Context, candidate Candidate) (Candidate, error) {
+	if strings.TrimSpace(candidate.SourceURL) == "" {
+		return candidate, errors.New("source URL is required for metadata enrichment")
+	}
+	out, err := p.runCommand(ctx, p.metadataCommandArgs(candidate.SourceURL))
+	if err != nil {
+		return candidate, err
+	}
+	details := p.candidatesFromOutput(string(out), 1)
+	if len(details) == 0 {
+		return candidate, errors.New("yt-dlp metadata enrichment returned no candidate")
+	}
+	detail := details[0]
+	if candidate.SourceID != "" && detail.SourceID != candidate.SourceID {
+		return candidate, errors.New("yt-dlp metadata enrichment returned a different source ID")
+	}
+	if value := strings.TrimSpace(detail.Artist); value != "" {
+		candidate.Artist = value
+	}
+	if value := strings.TrimSpace(detail.Uploader); value != "" {
+		candidate.Uploader = value
+	}
+	if detail.DurationMs > 0 {
+		candidate.DurationMs = detail.DurationMs
+	}
+	if value := strings.TrimSpace(detail.ThumbnailURL); value != "" {
+		candidate.ThumbnailURL = value
+	}
+	metadata := make(map[string]interface{}, len(candidate.Metadata)+len(detail.Metadata))
+	for key, value := range candidate.Metadata {
+		metadata[key] = value
+	}
+	for key, value := range detail.Metadata {
+		if key != "discoverySurface" {
+			metadata[key] = value
+		}
+	}
+	candidate.Metadata = metadata
+	return candidate, nil
 }
 
 // candidateThumbnailURL prefers the full-extraction singular "thumbnail" key;
