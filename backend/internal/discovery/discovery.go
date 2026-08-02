@@ -847,7 +847,7 @@ func (p *YTDLPProvider) metadataCommandArgs(sourceURL string) []string {
 }
 
 // enrichYouTubeMusicCandidates fills in detail omitted by --flat-playlist.
-// This is deliberately best-effort: each failed or cancelled detail process
+// This is deliberately best-effort: each failed or canceled detail process
 // leaves that exact flat candidate in its original result position.
 func (p *YTDLPProvider) enrichYouTubeMusicCandidates(ctx context.Context, candidates []Candidate) []Candidate {
 	if len(candidates) == 0 || ctx.Err() != nil {
