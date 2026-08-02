@@ -85,8 +85,7 @@ void main() {
       );
       expect(title.style?.fontSize, 14);
 
-      final subtitleFinder =
-          find.text('Porter Robinson - Topic • youtube • 4:32');
+      final subtitleFinder = find.text('Porter Robinson • youtube • 4:32');
       expect(subtitleFinder, findsOneWidget);
       expect(tester.getRect(subtitleFinder).right, lessThanOrEqualTo(360));
       final subtitle = tester.widget<Text>(subtitleFinder);
@@ -126,6 +125,7 @@ class _SearchResultAdapter implements HttpClientAdapter {
             'sourceId': '123',
             'sourceUrl': 'https://youtube.com/watch?v=123',
             'title': 'Porter Robinson - Sad Machine',
+            'artist': 'Porter Robinson',
             'uploader': 'Porter Robinson - Topic',
             'durationMs': 272000,
             'downloadable': true,

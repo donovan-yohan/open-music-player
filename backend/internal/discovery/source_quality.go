@@ -242,7 +242,7 @@ func EvaluateSourceQuality(query string, candidate Candidate) SourceQuality {
 		score += 32
 		classification = SourceQualityOfficialAudio
 		reasons = append(reasons, "verified YouTube Music metadata identifies an official track")
-	} else if hasYouTubeMusicSongsSurface {
+	} else if hasYouTubeMusicSongsSurface && ((candidate.Artist == "" && candidate.Uploader == "") || candidate.DurationMs <= 0) {
 		warnings = append(warnings, "YouTube Music result lacks enough metadata to verify it as official audio")
 	}
 	if hasYouTubeMusicAttribution && hasStructuredMusicMetadata {

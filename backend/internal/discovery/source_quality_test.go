@@ -169,8 +169,8 @@ func TestSourceQualityFlatYouTubeMusicSongsDoNotInferOfficialAudio(t *testing.T)
 			if audioQuality.Classification != SourceQualityTopicAudio {
 				t.Fatalf("flat audio quality = %#v, want topic_audio from uploader evidence rather than official_audio from surface alone", audioQuality)
 			}
-			if !containsAny(strings.Join(audioQuality.Warnings, " "), "lacks enough metadata") {
-				t.Fatalf("flat audio quality = %#v, want insufficient-metadata warning", audioQuality)
+			if containsAny(strings.Join(audioQuality.Warnings, " "), "lacks enough metadata") {
+				t.Fatalf("identifiable flat audio quality = %#v, should not claim artist/duration metadata is missing", audioQuality)
 			}
 			if videoQuality.Classification != SourceQualityMusicVideo || videoQuality.Score >= audioQuality.Score {
 				t.Fatalf("official video quality = %#v, want lower score than %#v", videoQuality, audioQuality)
