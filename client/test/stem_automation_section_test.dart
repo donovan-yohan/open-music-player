@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/core/services/stems_service.dart';
+import 'package:open_music_player/core/stems/stem_channel_source.dart';
+import 'package:open_music_player/features/stems/track_stem_channel_source.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/stem_edits.dart';
 import 'package:open_music_player/widgets/stem_automation_section.dart';
@@ -26,6 +29,7 @@ Future<StemEdits Function()> _pump(
   required StemEdits edits,
   int? playheadSourceMs,
   List<int> beatGridMs = const <int>[],
+  StemChannelSource? stemSource,
 }) async {
   var current = edits;
   await tester.pumpWidget(
@@ -38,6 +42,7 @@ Future<StemEdits Function()> _pump(
               edits: current,
               playheadSourceMs: playheadSourceMs,
               beatGridMs: beatGridMs,
+              stemSource: stemSource,
               onEditsChanged: (next) => setState(() => current = next),
             ),
           ),
@@ -46,6 +51,34 @@ Future<StemEdits Function()> _pump(
     ),
   );
   return () => current;
+}
+
+/// Minimal [StemsService] returning one canned row, so the section can be
+/// driven by the same live source the DJ deck uses.
+class _FakeStemsService implements StemsService {
+  _FakeStemsService(this.response);
+
+  final TrackStems response;
+
+  @override
+  Future<TrackStems> getTrackStems(
+    int trackId, {
+    String channelSet = defaultStemChannelSet,
+  }) async =>
+      response;
+
+  @override
+  Future<StemsRequestResult> requestSeparation(
+    int trackId, {
+    String channelSet = defaultStemChannelSet,
+  }) async =>
+      throw UnimplementedError();
+}
+
+Future<TrackStemChannelSource> _boundSource(TrackStems response) async {
+  final source = TrackStemChannelSource(service: _FakeStemsService(response));
+  await source.bindTrack(42);
+  return source;
 }
 
 void main() {
@@ -260,5 +293,132 @@ void main() {
     final written = read().events.single;
     expect(written.atMs, 1000, reason: 'the snapped ms is what is stored');
     expect(written.beatIndex, 2, reason: 'beat index is advisory provenance');
+  });
+
+  group('wired to the live stem source', () {
+    testWidgets('no source leaves the registry-driven rows untouched', (
+      tester,
+    ) async {
+      await _pump(tester, edits: _edits());
+
+      expect(
+        find.byKey(const ValueKey('stem_automation_source_status')),
+        findsNothing,
+      );
+      expect(find.byKey(const ValueKey('stem_channel_row_perc')),
+          findsOneWidget);
+    });
+
+    testWidgets('a ready source names the real separated channels', (
+      tester,
+    ) async {
+      final source = await _boundSource(
+        const TrackStems(
+          trackId: 42,
+          channelSet: defaultStemChannelSet,
+          status: StemsStatus.ready,
+          channels: ['vocals', 'melody', 'bass', 'kick', 'perc'],
+        ),
+      );
+
+      await _pump(tester, edits: _edits(), stemSource: source);
+
+      expect(
+        find.text('Stems ready: Vocals, Melody, Bass, Kick (low drums), '
+            'Hats & Percussion'),
+        findsOneWidget,
+      );
+      for (final id in ['vocals', 'melody', 'bass', 'kick', 'perc']) {
+        expect(find.byKey(ValueKey('stem_channel_row_$id')), findsOneWidget);
+      }
+    });
+
+    testWidgets('a partial manifest only lists the stems that exist', (
+      tester,
+    ) async {
+      final source = await _boundSource(
+        const TrackStems(
+          trackId: 42,
+          channelSet: defaultStemChannelSet,
+          status: StemsStatus.ready,
+          channels: ['vocals', 'bass'],
+        ),
+      );
+
+      await _pump(tester, edits: _edits(), stemSource: source);
+
+      expect(find.byKey(const ValueKey('stem_channel_row_vocals')),
+          findsOneWidget);
+      expect(
+          find.byKey(const ValueKey('stem_channel_row_bass')), findsOneWidget);
+      expect(find.byKey(const ValueKey('stem_channel_row_perc')), findsNothing);
+    });
+
+    testWidgets('authoring is never gated on separation', (tester) async {
+      final source = await _boundSource(TrackStems.unavailable(42));
+
+      final read = await _pump(
+        tester,
+        edits: _edits(),
+        playheadSourceMs: 12000,
+        stemSource: source,
+      );
+
+      expect(
+        find.text('Stems not separated. Change points still save.'),
+        findsOneWidget,
+      );
+      // All five registry rows stay authorable: atMs is anchored to the source
+      // file, so an edit written now survives a later separation.
+      expect(find.byKey(const ValueKey('stem_channel_row_perc')),
+          findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('stem_add_change_point_perc')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const ValueKey('stem_change_point_save')));
+      await tester.pumpAndSettle();
+
+      expect(read().eventsFor('perc'), hasLength(1));
+    });
+
+    testWidgets('a pending source says separation is in flight', (
+      tester,
+    ) async {
+      final source = await _boundSource(
+        const TrackStems(
+          trackId: 42,
+          channelSet: defaultStemChannelSet,
+          status: StemsStatus.pending,
+        ),
+      );
+
+      await _pump(tester, edits: _edits(), stemSource: source);
+
+      expect(
+        find.text('Separating stems — change points still save.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('the section repaints when the shared source changes', (
+      tester,
+    ) async {
+      final source = await _boundSource(
+        const TrackStems(
+          trackId: 42,
+          channelSet: defaultStemChannelSet,
+          status: StemsStatus.ready,
+          channels: ['vocals', 'melody', 'bass', 'kick', 'perc'],
+        ),
+      );
+      await _pump(tester, edits: _edits(), stemSource: source);
+
+      // The DJ deck panel mutes a stem on the same object the timeline holds.
+      await source.setMute('kick', true);
+      await tester.pump();
+
+      expect(find.byKey(const ValueKey('stem_channel_row_kick')),
+          findsOneWidget);
+    });
   });
 }

@@ -304,7 +304,7 @@ class TimelineWaveformPaintCache {
   }
 }
 
-const Map<String, Color> _waveformChannelColors = {
+const Map<String, Color> _spectralBandColors = {
   'low': Color(0xFFFF0000),
   'bass': Color(0xFFFF0000),
   'sub': Color(0xFFFF0000),
@@ -317,9 +317,9 @@ const Map<String, Color> _waveformChannelColors = {
 };
 
 @visibleForTesting
-Color waveformChannelColor(String name) {
+Color spectralBandColor(String name) {
   final normalized = name.trim().toLowerCase().replaceAll('-', '_');
-  final registered = _waveformChannelColors[normalized];
+  final registered = _spectralBandColors[normalized];
   if (registered != null) return registered;
   var hash = 2166136261;
   for (final codeUnit in normalized.codeUnits) {
@@ -331,11 +331,18 @@ Color waveformChannelColor(String name) {
 /// Separated-stem channel hues (ADR 0006 `stems4-demucs-v1` /
 /// `stems5-hybrid-v1`).
 ///
-/// Deliberately a sibling of [_waveformChannelColors] rather than extra keys in
+/// Deliberately a sibling of [_spectralBandColors] rather than extra keys in
 /// it: spectral band colors are pure primaries chosen for the additive mixing
 /// in [seratoWaveformColorForChannels], and `bass` / `vocal` already mean
 /// *frequency band* there. Stem ticks are read individually, never mixed, so
 /// they use distinguishable hues instead.
+///
+/// The two maps were the same word ("channel") in both lanes before the demo
+/// merge, which is exactly what made the collision easy to miss. The names now
+/// say which axis each one keys off: `spectralBand*` = frequency band,
+/// `stemChannel*` = separated source. Every stem surface — the DJ deck panel,
+/// the timeline change-point ticks, the automation editor rows — reads
+/// [stemChannelColor], so one stem keeps one hue across the whole app.
 const Map<String, Color> _stemChannelColors = {
   'vocals': Color(0xFFE91E63),
   'melody': Color(0xFF7C4DFF),
@@ -349,11 +356,11 @@ const Map<String, Color> _stemChannelColors = {
 /// Stem-channel tick color. Unknown names fall through to the deterministic
 /// spectral hash so a future channel set still paints something stable.
 ///
-/// Unlike [waveformChannelColor] this is not `@visibleForTesting`: stem ticks
+/// Unlike [spectralBandColor] this is not `@visibleForTesting`: stem ticks
 /// are painted by `TimelineClipWidget`, so it is a real cross-file accessor.
 Color stemChannelColor(String name) {
   final normalized = name.trim().toLowerCase().replaceAll('-', '_');
-  return _stemChannelColors[normalized] ?? waveformChannelColor(normalized);
+  return _stemChannelColors[normalized] ?? spectralBandColor(normalized);
 }
 
 /// Serato-style additive channel hue. Amplitude changes column geometry, not
@@ -366,7 +373,7 @@ Color? seratoWaveformColorForChannels(Map<String, double> channels) {
   for (final entry in channels.entries) {
     final energy = entry.value.clamp(0.0, 1.0).toDouble();
     if (energy <= 0) continue;
-    final color = waveformChannelColor(entry.key);
+    final color = spectralBandColor(entry.key);
     red += energy * color.r;
     green += energy * color.g;
     blue += energy * color.b;

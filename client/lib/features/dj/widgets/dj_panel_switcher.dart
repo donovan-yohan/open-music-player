@@ -7,17 +7,17 @@ class DjPanelSwitcher extends StatelessWidget {
     super.key,
     required this.selected,
     required this.onSelected,
-    required this.stemsAvailable,
   });
 
   final DjPanel selected;
   final ValueChanged<DjPanel> onSelected;
-  final bool stemsAvailable;
 
   @override
   Widget build(BuildContext context) {
-    final panels = <DjPanel>[DjPanel.cues, DjPanel.loop];
-    if (stemsAvailable) panels.add(DjPanel.stems);
+    // STEMS is always reachable. It used to be hidden until stems existed,
+    // which made the opt-in unreachable: the panel behind this segment is now
+    // where a track gets separated in the first place.
+    const panels = <DjPanel>[DjPanel.cues, DjPanel.loop, DjPanel.stems];
     return SegmentedButton<DjPanel>(
       key: const ValueKey('dj_panel_switcher'),
       showSelectedIcon: false,

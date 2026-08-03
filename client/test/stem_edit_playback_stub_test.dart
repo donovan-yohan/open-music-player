@@ -127,8 +127,15 @@ void main() {
         .map((match) => match.group(1)!)
         .toList();
 
-    expect(imports, ['../../models/stem_edits.dart'],
-        reason: 'playback wiring is intentionally stubbed (ADR 0006 Rung A/B)');
+    expect(
+      imports,
+      [
+        // The shared stem mixer contract; dependency-free by construction.
+        '../../core/stems/stem_channel_source.dart',
+        '../../models/stem_edits.dart',
+      ],
+      reason: 'playback wiring is intentionally stubbed (ADR 0006 Rung A/B)',
+    );
 
     // The header comment deliberately names the engine types this file must
     // not touch, so only executable lines are searched for them.

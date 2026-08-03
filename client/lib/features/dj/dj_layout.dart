@@ -208,11 +208,7 @@ class _DeckControl extends StatelessWidget {
           Expanded(
             child: Column(
               children: [
-                DjPanelSwitcher(
-                  selected: panel,
-                  onSelected: onPanel,
-                  stemsAvailable: session.stems.isAvailable,
-                ),
+                DjPanelSwitcher(selected: panel, onSelected: onPanel),
                 const SizedBox(height: 6),
                 Expanded(child: _panel()),
               ],

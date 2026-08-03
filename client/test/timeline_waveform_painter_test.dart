@@ -87,9 +87,9 @@ double _blue(Color color) => color.b;
 void main() {
   group('TimelineWaveformPainter narrow slots', () {
     test('channel registry and additive ratio preserve spectral hue', () {
-      expect(waveformChannelColor('low'), const Color(0xFFFF0000));
-      expect(waveformChannelColor('mid'), const Color(0xFF00FF00));
-      expect(waveformChannelColor('high'), const Color(0xFF0000FF));
+      expect(spectralBandColor('low'), const Color(0xFFFF0000));
+      expect(spectralBandColor('mid'), const Color(0xFF00FF00));
+      expect(spectralBandColor('high'), const Color(0xFF0000FF));
 
       final quiet = seratoWaveformColorForChannels(
         const {'low': 0.1, 'mid': 0.05},

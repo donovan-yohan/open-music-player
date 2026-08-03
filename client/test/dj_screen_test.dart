@@ -52,16 +52,35 @@ void main() {
     expect(session.deckA.playing, isTrue);
   });
 
-  testWidgets('unavailable stem source is hidden', (tester) async {
+  testWidgets('the stems panel is reachable but exposes no mixer', (
+    tester,
+  ) async {
     await pumpDj(tester);
 
-    expect(find.text('STEMS'), findsNothing);
+    // STEMS used to be hidden until stems existed, which made the opt-in
+    // unreachable. The segment is now always present; what it shows is the
+    // honest state, and an unavailable source still yields no faders.
+    expect(find.text('STEMS'), findsWidgets);
     expect(
         find.byType(IconButton).evaluate().where((element) {
           final widget = element.widget as IconButton;
           return widget.tooltip?.contains('Mute') ?? false;
         }),
         isEmpty);
+  });
+
+  testWidgets('selecting STEMS shows the honest unavailable state', (
+    tester,
+  ) async {
+    await pumpDj(tester);
+
+    await tester.tap(find.text('STEMS').first);
+    await tester.pumpAndSettle();
+
+    // The default prototype session carries no backend-bound source, so the
+    // panel must not offer a separation it cannot queue.
+    expect(find.byKey(const ValueKey('dj_stem_unsupported')), findsWidgets);
+    expect(find.byKey(const ValueKey('dj_stem_separate')), findsNothing);
   });
 
   testWidgets('empty queue invokes local-file fallback and loads deck A', (

@@ -1,16 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../core/stems/stem_channel_source.dart';
 import '../models/mix_plan.dart';
 import '../models/stem_edits.dart';
 import 'timeline_waveform_painter.dart';
 
 /// Per-clip stem gain automation editor (ADR 0006 `stemEdits` v1).
 ///
-/// One row per channel of the active channel set, listing that channel's
-/// change points as chips. This is an authoring surface only: it mutates a
-/// [StemEdits] document and hands it back through [onEditsChanged]. It owns no
-/// playback, transport, or current-track state (ADR 0001).
+/// One row per channel, listing that channel's change points as chips. This is
+/// an authoring surface only: it mutates a [StemEdits] document and hands it
+/// back through [onEditsChanged]. It owns no playback, transport, or
+/// current-track state (ADR 0001).
+///
+/// When a [stemSource] is supplied it is the *same* [StemChannelSource] the DJ
+/// deck panel drives, so both surfaces agree on whether this track's stems
+/// exist. Once that source reports ready, the rows are driven by the real
+/// worker manifest instead of the static registry — a change point is then
+/// listed against a channel that genuinely exists on disk. Authoring is never
+/// gated on it: `atMs` is anchored to the source file, so an edit written
+/// before separation stays valid afterwards.
 class StemAutomationSection extends StatelessWidget {
   const StemAutomationSection({
     super.key,
@@ -19,11 +28,16 @@ class StemAutomationSection extends StatelessWidget {
     required this.onEditsChanged,
     this.playheadSourceMs,
     this.beatGridMs = const <int>[],
+    this.stemSource,
   });
 
   final MixPlanClip clip;
   final StemEdits edits;
   final ValueChanged<StemEdits> onEditsChanged;
+
+  /// Live separation state for this clip's track, shared with the DJ deck.
+  /// Null on surfaces that have no backend binding (pure authoring/tests).
+  final StemChannelSource? stemSource;
 
   /// Current playhead in absolute source ms, used to prefill a new change
   /// point. Falls back to the clip's source start.
@@ -38,8 +52,35 @@ class StemAutomationSection extends StatelessWidget {
           .clamp(clip.sourceStartMs, clip.sourceEndMs)
           .toInt();
 
+  /// Channels to render, newest-truth-first.
+  ///
+  /// A ready [stemSource] wins: its channel list came from the worker manifest,
+  /// so it names the stems that were actually rendered. Manifest channels the
+  /// registry does not describe are skipped here rather than rendered without
+  /// honesty copy — [StemEdits] cannot author them either.
+  List<StemChannelDescriptor> get _rows {
+    final source = stemSource;
+    if (source == null || !source.isAvailable) return edits.channelSet.channels;
+    return <StemChannelDescriptor>[
+      for (final descriptor in edits.channelSet.channels)
+        if (source.channels.any((channel) => channel.id == descriptor.id))
+          descriptor,
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
+    final source = stemSource;
+    if (source is Listenable) {
+      return ListenableBuilder(
+        listenable: source as Listenable,
+        builder: (context, _) => _body(context),
+      );
+    }
+    return _body(context);
+  }
+
+  Widget _body(BuildContext context) {
     final theme = Theme.of(context);
     return Column(
       key: const ValueKey('stem_automation_section'),
@@ -59,13 +100,32 @@ class StemAutomationSection extends StatelessWidget {
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
+              if (stemSource != null) ...[
+                const SizedBox(height: 2),
+                Text(
+                  _sourceStatusCopy,
+                  key: const ValueKey('stem_automation_source_status'),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
-        for (final descriptor in edits.channelSet.channels)
-          _channelRow(context, descriptor),
+        for (final descriptor in _rows) _channelRow(context, descriptor),
       ],
     );
+  }
+
+  String get _sourceStatusCopy {
+    final source = stemSource!;
+    if (source.isAvailable) {
+      final names = source.channels.map((channel) => channel.label).join(', ');
+      return 'Stems ready: $names';
+    }
+    if (source.isPending) return 'Separating stems — change points still save.';
+    return 'Stems not separated. Change points still save.';
   }
 
   Widget _channelRow(BuildContext context, StemChannelDescriptor descriptor) {

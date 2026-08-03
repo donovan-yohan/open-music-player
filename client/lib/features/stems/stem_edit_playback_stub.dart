@@ -1,58 +1,17 @@
-// Playback wiring intentionally stubbed — see ADR 0006 Rung A/B; designed to
-// satisfy the StemChannelSource interface defined in the DJ deck lane at
-// client/lib/features/dj/models/stem_channel_source.dart
+// Playback wiring intentionally stubbed — see ADR 0006 Rung A/B. The
+// StemChannel / StemChannelSource / StemsStatus / UnavailableStemChannelSource
+// declarations this file implements now live in the single shared home at
+// client/lib/core/stems/stem_channel_source.dart, which is re-exported below so
+// existing importers of this file keep compiling.
 //
 // Nothing in this file may touch the audio engine, VoicePool, PlaybackState, or
 // QueueTimelineController. It is a pure in-memory adapter over a [StemEdits]
 // authoring document (ADR 0001: no second playback or current-track authority).
 
+import '../../core/stems/stem_channel_source.dart';
 import '../../models/stem_edits.dart';
 
-/// Availability of rendered stems for a clip, as reported by the backend.
-enum StemsStatus {
-  /// Separation has not been requested, or the channel set is not
-  /// audio-addressable.
-  unavailable,
-
-  /// Separation/render is queued or running.
-  pending,
-
-  /// Stems exist, but Rung A still plays the pre-rendered mixdown — this stub
-  /// never becomes `isAvailable`.
-  ready,
-
-  /// Separation or render failed.
-  failed,
-}
-
-/// One mixer channel exposed to a deck surface.
-///
-/// Mirrors the DJ deck lane's `StemChannel` exactly so the two branches can be
-/// merged onto a single declaration.
-class StemChannel {
-  const StemChannel({
-    required this.id,
-    required this.label,
-    required this.gain,
-    required this.muted,
-  });
-
-  final String id;
-  final String label;
-  final double gain;
-  final bool muted;
-}
-
-/// Narrow adapter for the future stems5-v1 contract.
-///
-/// Mirrors the DJ deck lane's `StemChannelSource` exactly.
-abstract class StemChannelSource {
-  bool get isAvailable;
-  bool get isPending;
-  List<StemChannel> get channels;
-  Future<void> setGain(String id, double gain);
-  Future<void> setMute(String id, bool muted);
-}
+export '../../core/stems/stem_channel_source.dart';
 
 /// Authoring-only [StemChannelSource].
 ///
@@ -110,6 +69,7 @@ class StemEditPlaybackStub implements StemChannelSource {
             label: descriptor.label,
             gain: _edits.gainAt(descriptor.id, _positionMs),
             muted: _edits.gainAt(descriptor.id, _positionMs) <= 0,
+            honestyCopy: descriptor.honestyCopy,
           ),
       ]);
 
@@ -138,22 +98,4 @@ class StemEditPlaybackStub implements StemChannelSource {
     );
     onEditsChanged?.call(_edits);
   }
-}
-
-/// Honest empty source for clips with no stems at all.
-///
-/// Mirrors the DJ deck lane's `UnavailableStemChannelSource`.
-class UnavailableStemChannelSource implements StemChannelSource {
-  const UnavailableStemChannelSource({this.isPending = false});
-
-  @override
-  final bool isPending;
-  @override
-  bool get isAvailable => false;
-  @override
-  List<StemChannel> get channels => const [];
-  @override
-  Future<void> setGain(String id, double gain) async {}
-  @override
-  Future<void> setMute(String id, bool muted) async {}
 }

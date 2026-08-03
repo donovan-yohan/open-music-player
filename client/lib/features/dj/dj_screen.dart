@@ -10,7 +10,10 @@ import '../../core/api/api_client.dart';
 import '../../core/cache/playback_cache_manager.dart';
 import '../../core/download/download_service.dart';
 import '../../core/engine/engine_audio_source_resolver.dart';
+import '../../core/services/api_client.dart' as services;
+import '../../core/services/stems_service.dart';
 import '../../providers/queue_provider.dart';
+import '../stems/track_stem_channel_source.dart';
 import 'dj_layout.dart';
 import 'engine/deck_controller.dart';
 import 'providers/dj_session_provider.dart';
@@ -30,6 +33,7 @@ class DjScreen extends StatefulWidget {
 
 class _DjScreenState extends State<DjScreen> {
   DjSessionProvider? _session;
+  TrackStemChannelSource? _stems;
   bool _ownsSession = false;
   bool _seeded = false;
 
@@ -77,17 +81,36 @@ class _DjScreenState extends State<DjScreen> {
         next: next,
         filePicker: widget.filePicker ?? _promptForLocalFile,
       );
+      // Resolve stem availability for whatever actually landed on deck A. A
+      // local-file fallback load has no library track id, so the panel says so
+      // rather than offering a separation that cannot be queued.
+      await _stems?.bindTrack(_libraryTrackId(_session!.deckA.trackRef));
     });
   }
 
-  DjSessionProvider _newPrototypeSession() => DjSessionProvider.prototype(
-        resolver: DefaultEngineAudioSourceResolver(
-          signedAudioUrlService:
-              SignedAudioUrlService(context.read<ApiClient>()),
-          localResolver: context.read<DownloadService>(),
-          cacheManager: context.read<PlaybackCacheManager?>(),
-        ),
-      );
+  /// Deck refs are `playbackTrackId ?? queueItemId` for library tracks and
+  /// `local:<path>` for the picker fallback; only the former can be separated.
+  static int? _libraryTrackId(String? trackRef) {
+    if (trackRef == null) return null;
+    final parsed = int.tryParse(trackRef.trim());
+    return parsed != null && parsed > 0 ? parsed : null;
+  }
+
+  DjSessionProvider _newPrototypeSession() {
+    // The parser-based client is not in the provider tree (only the Dio one
+    // is), so it is constructed here the same way main.dart does for
+    // LibraryService. Its default SecureStorage is the shared token authority,
+    // so this is not a second session.
+    _stems = TrackStemChannelSource(service: StemsService(services.ApiClient()));
+    return DjSessionProvider.prototype(
+      resolver: DefaultEngineAudioSourceResolver(
+        signedAudioUrlService: SignedAudioUrlService(context.read<ApiClient>()),
+        localResolver: context.read<DownloadService>(),
+        cacheManager: context.read<PlaybackCacheManager?>(),
+      ),
+      stems: _stems,
+    );
+  }
 
   /// Dependency-free local source fallback for an empty queue. A user supplies
   /// an absolute device path; DeckController accepts only the resulting file:
@@ -131,6 +154,7 @@ class _DjScreenState extends State<DjScreen> {
 
   @override
   void dispose() {
+    _stems?.dispose();
     if (_ownsSession) {
       // DeckController.dispose releases its Voice; do not overlap it with a
       // second release from stopAll.

@@ -6,12 +6,12 @@ import '../../../core/engine/engine_audio_source_resolver.dart';
 import '../../../core/engine/gain_envelope.dart';
 import '../../../core/engine/voice.dart';
 import '../../../core/cache/playback_cache_manager.dart';
+import '../../../core/stems/stem_channel_source.dart';
 import '../../../models/track.dart';
 import '../../dj/engine/deck_controller.dart';
 import '../models/dj_deck_state.dart';
 import '../models/dj_hot_cue.dart';
 import '../models/dj_musical_grid.dart';
-import '../models/stem_channel_source.dart';
 
 typedef DjFilePicker = Future<DjDeckLoad?> Function();
 
