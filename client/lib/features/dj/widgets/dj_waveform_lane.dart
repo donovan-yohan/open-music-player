@@ -1,0 +1,157 @@
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+import '../../../models/track.dart';
+import '../../../models/timeline_viewport.dart';
+import '../../../models/waveform.dart';
+import '../../../widgets/timeline_waveform_painter.dart';
+import '../models/dj_deck_state.dart';
+
+class DjWaveformLane extends StatefulWidget {
+  const DjWaveformLane({
+    super.key,
+    required this.deck,
+    required this.track,
+    required this.color,
+  });
+  final DjDeckState deck;
+  final QueueTrack? track;
+  final Color color;
+  @override
+  State<DjWaveformLane> createState() => _DjWaveformLaneState();
+}
+
+class _DjWaveformLaneState extends State<DjWaveformLane> {
+  static const _pixelsPerSecond = 90.0;
+  final _cache = TimelineWaveformPaintCache();
+  _DjWaveformDataCache? _waveformCache;
+
+  _DjWaveformDataCache _cachedWaveform({
+    required QueueTrack? track,
+    required int durationMs,
+    required int sampleCount,
+  }) {
+    final cached = _waveformCache;
+    if (cached != null &&
+        cached.matches(
+          track: track,
+          durationMs: durationMs,
+          sampleCount: sampleCount,
+        )) {
+      return cached;
+    }
+    final waveform = track == null
+        ? TimelineWaveformData(
+            durationMs: durationMs,
+            frames: const [],
+            analyzed: false,
+          )
+        : richWaveformForTrack(track, sampleCount: sampleCount);
+    return _waveformCache = _DjWaveformDataCache(
+      track: track,
+      durationMs: durationMs,
+      sampleCount: sampleCount,
+      waveform: waveform,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => RepaintBoundary(
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final width = math.max(1.0, constraints.maxWidth);
+            final track = widget.track;
+            final durationMs = math.max(
+              1,
+              track?.durationMs ?? widget.deck.durationMs,
+            );
+            final viewport = TimelineViewport.clamped(
+              durationMs: durationMs,
+              widthPx: width,
+              pixelsPerSecond: _pixelsPerSecond,
+              offsetMs: widget.deck.positionMs,
+            ).panToOffsetMs(
+              widget.deck.positionMs -
+                  ((width / _pixelsPerSecond) * 1000).round() ~/ 2,
+            );
+            final contentWidth = math.max(
+              width,
+              durationMs / 1000 * _pixelsPerSecond,
+            );
+            final cachedWaveform = _cachedWaveform(
+              track: track,
+              durationMs: durationMs,
+              sampleCount: contentWidth.ceil().clamp(256, 4096),
+            );
+            final waveform = cachedWaveform.waveform;
+            return Semantics(
+              label: 'Deck ${widget.deck.deckId.name.toUpperCase()} waveform',
+              child: ClipRect(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Positioned(
+                      left: -(viewport.offsetMs / 1000) * _pixelsPerSecond,
+                      width: contentWidth,
+                      top: 0,
+                      bottom: 0,
+                      child: CustomPaint(
+                        painter: TimelineWaveformPainter(
+                          peaks: cachedWaveform.peaks,
+                          waveform: waveform,
+                          laneIdentity: widget.deck.queueItemId ??
+                              'deck-${widget.deck.deckId.name}',
+                          paintCache: _cache,
+                          viewportPixelsPerMs: _pixelsPerSecond / 1000,
+                          viewportOriginMs: 0,
+                          color: widget.color,
+                          dimColor:
+                              Theme.of(context).colorScheme.onSurfaceVariant,
+                          handleColor: Theme.of(context).colorScheme.secondary,
+                        ),
+                      ),
+                    ),
+                    const Align(
+                      alignment: Alignment.center,
+                      child: SizedBox(
+                        width: 2,
+                        height: double.infinity,
+                        child: ColoredBox(color: Colors.white),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      );
+}
+
+/// Retains waveform object identity over 30Hz deck-position updates. Analysis
+/// hydration replaces [QueueTrack.analysis], deliberately invalidating it.
+class _DjWaveformDataCache {
+  _DjWaveformDataCache({
+    required this.track,
+    required this.durationMs,
+    required this.sampleCount,
+    required this.waveform,
+  }) : peaks = waveform.peaks;
+
+  final QueueTrack? track;
+  final int durationMs;
+  final int sampleCount;
+  final TimelineWaveformData waveform;
+  final List<double> peaks;
+
+  bool matches({
+    required QueueTrack? track,
+    required int durationMs,
+    required int sampleCount,
+  }) =>
+      identical(this.track?.analysis, track?.analysis) &&
+      this.track?.queueItemId == track?.queueItemId &&
+      this.durationMs == durationMs &&
+      this.sampleCount == sampleCount;
+}

@@ -26,6 +26,10 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
+  static const bool _djPrototypeEnabled = bool.fromEnvironment(
+    'OMP_DJ_PROTOTYPE',
+    defaultValue: false,
+  );
   _PlayerTimeMode _timeMode = _PlayerTimeMode.song;
   String? _pendingLikedSeedItem;
 
@@ -72,6 +76,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
             centerTitle: true,
             actions: [
+              if (_djPrototypeEnabled)
+                IconButton(
+                  key: const ValueKey('player_dj_mode_action'),
+                  icon: const Icon(Icons.graphic_eq),
+                  tooltip: 'DJ mode',
+                  onPressed: () => context.push('/dj'),
+                ),
               IconButton(
                 icon: const Icon(Icons.info_outline),
                 tooltip: 'Song info',
