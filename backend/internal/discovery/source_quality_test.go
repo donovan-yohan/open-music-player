@@ -130,6 +130,40 @@ func TestSourceQualityPrefersOfficialYouTubeMusicAudioForReportedExamples(t *tes
 	}
 }
 
+func TestSourceQualityYouTubeMusicEvidenceIsNotDoubleCounted(t *testing.T) {
+	metadata := map[string]interface{}{
+		"description": "Provided to YouTube by Example Label",
+		"track":       "Song",
+		"artist":      "Artist",
+		"album":       "Album",
+	}
+	generic := Candidate{
+		CandidateID: "youtube:generic", Provider: "youtube", SourceID: "generic",
+		SourceURL: "https://www.youtube.com/watch?v=generic", Title: "Song", Artist: "Artist",
+		Uploader: "Label Channel", DurationMs: 200000, Downloadable: true, Metadata: metadata,
+	}
+	music := generic
+	music.CandidateID = "youtube:music"
+	music.SourceID = "music"
+	music.SourceURL = "https://www.youtube.com/watch?v=music"
+	music.Metadata = map[string]interface{}{
+		"description":      metadata["description"],
+		"track":            metadata["track"],
+		"artist":           metadata["artist"],
+		"album":            metadata["album"],
+		"discoverySurface": "youtube_music_songs",
+	}
+
+	genericQuality := EvaluateSourceQuality("Artist Song", generic)
+	musicQuality := EvaluateSourceQuality("Artist Song", music)
+	if musicQuality.Score != genericQuality.Score {
+		t.Fatalf("YouTube Music score = %d, generic attributed score = %d; evidence bonus must apply once", musicQuality.Score, genericQuality.Score)
+	}
+	if musicQuality.Classification != SourceQualityOfficialAudio {
+		t.Fatalf("YouTube Music quality = %#v, want official audio", musicQuality)
+	}
+}
+
 func TestSourceQualityFlatYouTubeMusicSongsDoNotInferOfficialAudio(t *testing.T) {
 	tests := []struct {
 		name    string

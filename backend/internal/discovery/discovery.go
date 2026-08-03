@@ -843,7 +843,7 @@ func (p *YTDLPProvider) runCommand(ctx context.Context, args []string) ([]byte, 
 }
 
 func (p *YTDLPProvider) metadataCommandArgs(sourceURL string) []string {
-	return []string{"--no-playlist", "--dump-single-json", "--skip-download", sourceURL}
+	return []string{"--no-playlist", "--dump-single-json", "--skip-download", "--", sourceURL}
 }
 
 // enrichYouTubeMusicCandidates fills in detail omitted by --flat-playlist.
@@ -926,10 +926,15 @@ func (p *YTDLPProvider) enrichYouTubeMusicCandidate(ctx context.Context, candida
 	if strings.TrimSpace(candidate.SourceID) == "" {
 		return candidate, errors.New("source ID is required for metadata enrichment")
 	}
-	if strings.TrimSpace(candidate.SourceURL) == "" {
+	sourceURL := strings.TrimSpace(candidate.SourceURL)
+	if sourceURL == "" {
 		return candidate, errors.New("source URL is required for metadata enrichment")
 	}
-	out, err := p.runCommand(ctx, p.metadataCommandArgs(candidate.SourceURL))
+	parsedSourceURL, err := url.Parse(sourceURL)
+	if err != nil || parsedSourceURL.Host == "" || (strings.ToLower(parsedSourceURL.Scheme) != "http" && strings.ToLower(parsedSourceURL.Scheme) != "https") {
+		return candidate, errors.New("source URL must use http or https for metadata enrichment")
+	}
+	out, err := p.runCommand(ctx, p.metadataCommandArgs(sourceURL))
 	if err != nil {
 		return candidate, err
 	}
@@ -1183,8 +1188,10 @@ func mergeDuplicateCandidate(existing, incoming Candidate) Candidate {
 	}
 	fallbackTitle := strings.TrimSpace(fallback.Title)
 	preferredTitle := strings.TrimSpace(preferred.Title)
-	if fallbackTitle != "" && preferredTitle != fallbackTitle && metadataStringValue(metadata, "alt_title") == "" && metadataStringValue(metadata, "altTitle") == "" {
-		metadata["alt_title"] = fallback.Title
+	if fallbackTitle != "" && preferredTitle != fallbackTitle && metadataStringValue(metadata, "duplicateSurfaceTitle") == "" {
+		// Preserve the alternate surface title without feeding ordinary-video
+		// wording back into source-quality classification.
+		metadata["duplicateSurfaceTitle"] = fallback.Title
 	}
 	merged.Metadata = metadata
 	return merged

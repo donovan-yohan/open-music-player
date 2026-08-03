@@ -194,7 +194,7 @@ func TestCombinedYouTubeProviderMergesHydratedMusicDuplicate(t *testing.T) {
 	const candidateID = "youtube:same"
 	ordinary := &recordingProvider{name: "youtube-video", items: []Candidate{{
 		CandidateID: candidateID, Provider: "youtube", SourceID: "same",
-		SourceURL: "https://www.youtube.com/watch?v=same", Title: "Sparse ordinary result", Downloadable: true,
+		SourceURL: "https://www.youtube.com/watch?v=same", Title: "Artist - Song (Official Video)", Downloadable: true,
 		Metadata: map[string]interface{}{"discoverySurface": "youtube_search"},
 	}}}
 	music := &recordingProvider{name: "youtube-music", items: []Candidate{{
@@ -221,8 +221,14 @@ func TestCombinedYouTubeProviderMergesHydratedMusicDuplicate(t *testing.T) {
 	if surface := metadataStringValue(got.Metadata, "discoverySurface"); surface != "youtube_music_songs" {
 		t.Fatalf("merged discovery surface = %q, want youtube_music_songs", surface)
 	}
-	if alternateTitle := metadataStringValue(got.Metadata, "alt_title"); alternateTitle != ordinary.items[0].Title {
+	if alternateTitle := metadataStringValue(got.Metadata, "duplicateSurfaceTitle"); alternateTitle != ordinary.items[0].Title {
 		t.Fatalf("merged alternate title = %q, want ordinary search title %q", alternateTitle, ordinary.items[0].Title)
+	}
+	if alternateTitle := metadataStringValue(got.Metadata, "alt_title"); alternateTitle != "" {
+		t.Fatalf("merged alt_title = %q, want no ranking-visible alternate title", alternateTitle)
+	}
+	if quality := EvaluateSourceQuality("Artist Song", got); quality.Classification != SourceQualityTopicAudio {
+		t.Fatalf("merged source quality = %#v, want topic audio unaffected by duplicate video title", quality)
 	}
 }
 
@@ -264,6 +270,37 @@ func TestYouTubeMusicSearchPassesLimitToSongsPlaylist(t *testing.T) {
 	provider := NewYouTubeMusicProvider("youtube")
 	if got, want := provider.commandArgs("Ninajirachi iPod Touch", 10), []string{"--flat-playlist", "--playlist-end", "10", "--dump-json", "--skip-download", "https://music.youtube.com/search?q=Ninajirachi+iPod+Touch#songs"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("yt-dlp args = %#v, want %#v", got, want)
+	}
+}
+
+func TestYouTubeMusicMetadataCommandTerminatesOptions(t *testing.T) {
+	provider := NewYouTubeMusicProvider("youtube")
+	if got, want := provider.metadataCommandArgs("https://www.youtube.com/watch?v=one"), []string{"--no-playlist", "--dump-single-json", "--skip-download", "--", "https://www.youtube.com/watch?v=one"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("yt-dlp metadata args = %#v, want %#v", got, want)
+	}
+}
+
+func TestYouTubeMusicMetadataEnrichmentRejectsUnsafeSourceURL(t *testing.T) {
+	for _, sourceURL := range []string{"--config-location", "file:///tmp/yt-dlp.conf", "javascript:alert(1)", "https:relative"} {
+		t.Run(sourceURL, func(t *testing.T) {
+			called := false
+			provider := newYouTubeMusicProviderWithCommandRunner("youtube", func(_ context.Context, _ []string) ([]byte, error) {
+				called = true
+				return nil, nil
+			})
+			candidate := Candidate{SourceID: "one", SourceURL: sourceURL}
+
+			got, err := provider.enrichYouTubeMusicCandidate(context.Background(), candidate)
+			if err == nil {
+				t.Fatalf("enrichYouTubeMusicCandidate() error = nil, want unsafe URL rejection")
+			}
+			if called {
+				t.Fatal("unsafe source URL reached yt-dlp command runner")
+			}
+			if !reflect.DeepEqual(got, candidate) {
+				t.Fatalf("rejected candidate = %#v, want original %#v", got, candidate)
+			}
+		})
 	}
 }
 
