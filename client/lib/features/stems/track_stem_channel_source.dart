@@ -134,6 +134,7 @@ class TrackStemChannelSource extends ChangeNotifier
     _loading = true;
     _errorMessage = null;
     notifyListeners();
+    var triggered = false;
     try {
       final result =
           await _service.requestSeparation(trackId, channelSet: channelSet);
@@ -148,13 +149,17 @@ class TrackStemChannelSource extends ChangeNotifier
           queuePosition: result.queuePosition,
         ),
       );
+      triggered = true;
     } catch (error) {
       _errorMessage = '$error';
     } finally {
       _loading = false;
       notifyListeners();
     }
-    await refresh();
+    // Only re-read after a trigger that landed. Refreshing after a failed POST
+    // would clear the error the user needs to see and leave the panel looking
+    // like nothing happened.
+    if (triggered) await refresh();
   }
 
   /// Sets a channel's client-side gain. Not audible — see the class doc.

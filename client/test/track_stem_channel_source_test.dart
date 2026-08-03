@@ -43,6 +43,31 @@ class _ScriptedStemsService implements StemsService {
   }
 }
 
+/// A backend that answers GET but refuses the trigger.
+class _FailingRequestStemsService implements StemsService {
+  int getCalls = 0;
+
+  @override
+  Future<TrackStems> getTrackStems(
+    int trackId, {
+    String channelSet = defaultStemChannelSet,
+  }) async {
+    getCalls++;
+    return TrackStems.unavailable(trackId);
+  }
+
+  @override
+  Future<StemsRequestResult> requestSeparation(
+    int trackId, {
+    String channelSet = defaultStemChannelSet,
+  }) async =>
+      throw ApiException(
+        code: 'QUEUE_FULL',
+        message: 'stem separation queue is full; retry later',
+        statusCode: 429,
+      );
+}
+
 TrackStems _ready({List<String> channels = const ['vocals', 'melody', 'bass', 'kick', 'perc']}) =>
     TrackStems(
       trackId: 42,
@@ -266,6 +291,18 @@ void main() {
     expect(source.trackId, isNull);
     expect(source.isAvailable, isFalse);
     expect(service.getCalls, 1);
+  });
+
+  test('a failed trigger keeps its error instead of being refreshed away',
+      () async {
+    final service = _FailingRequestStemsService();
+    final source = TrackStemChannelSource(service: service);
+    await source.bindTrack(42);
+
+    await source.requestSeparation();
+
+    expect(source.errorMessage, contains('queue is full'));
+    expect(service.getCalls, 1, reason: 'no re-read after a trigger that failed');
   });
 
   test('a transport failure is surfaced, not swallowed', () async {
