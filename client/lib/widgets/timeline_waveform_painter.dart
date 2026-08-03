@@ -328,6 +328,34 @@ Color waveformChannelColor(String name) {
   return HSVColor.fromAHSV(1, (hash % 360).toDouble(), 1, 1).toColor();
 }
 
+/// Separated-stem channel hues (ADR 0006 `stems4-demucs-v1` /
+/// `stems5-hybrid-v1`).
+///
+/// Deliberately a sibling of [_waveformChannelColors] rather than extra keys in
+/// it: spectral band colors are pure primaries chosen for the additive mixing
+/// in [seratoWaveformColorForChannels], and `bass` / `vocal` already mean
+/// *frequency band* there. Stem ticks are read individually, never mixed, so
+/// they use distinguishable hues instead.
+const Map<String, Color> _stemChannelColors = {
+  'vocals': Color(0xFFE91E63),
+  'melody': Color(0xFF7C4DFF),
+  'other': Color(0xFF7C4DFF),
+  'bass': Color(0xFF00BCD4),
+  'kick': Color(0xFFFFA726),
+  'drums': Color(0xFFFFA726),
+  'perc': Color(0xFF8BC34A),
+};
+
+/// Stem-channel tick color. Unknown names fall through to the deterministic
+/// spectral hash so a future channel set still paints something stable.
+///
+/// Unlike [waveformChannelColor] this is not `@visibleForTesting`: stem ticks
+/// are painted by `TimelineClipWidget`, so it is a real cross-file accessor.
+Color stemChannelColor(String name) {
+  final normalized = name.trim().toLowerCase().replaceAll('-', '_');
+  return _stemChannelColors[normalized] ?? waveformChannelColor(normalized);
+}
+
 /// Serato-style additive channel hue. Amplitude changes column geometry, not
 /// color brightness, so quiet and loud frames keep comparable spectral color.
 @visibleForTesting

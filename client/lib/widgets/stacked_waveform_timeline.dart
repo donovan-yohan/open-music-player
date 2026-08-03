@@ -9,6 +9,7 @@ import '../app/theme.dart';
 import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
 import '../core/engine/transition_diagnostics.dart';
+import '../models/stem_edits.dart';
 import '../models/timeline_clip.dart';
 import '../models/timeline_viewport.dart';
 import '../models/track.dart';
@@ -144,6 +145,12 @@ class StackedWaveformTimeline extends StatefulWidget {
   final Future<void> Function(int globalMs)? onScrubEnd;
   final ValueChanged<List<QueueTrack>>? onVisibleTracksChanged;
 
+  /// Optional per-clip ADR 0006 stem gain change points, in absolute source ms.
+  ///
+  /// When omitted the lanes render exactly as before — no marker subtree is
+  /// built at all. This is a display-only affordance; stem playback is stubbed.
+  final List<StemGainEvent> Function(QueueTrack)? stemChangePointsFor;
+
   const StackedWaveformTimeline({
     super.key,
     required this.previousTrack,
@@ -172,6 +179,7 @@ class StackedWaveformTimeline extends StatefulWidget {
     this.onScrubUpdate,
     this.onScrubEnd,
     this.onVisibleTracksChanged,
+    this.stemChangePointsFor,
   });
 
   /// Synthetic crossfade/transition window between adjacent clips (ms). Visual
@@ -1951,6 +1959,8 @@ class _StackedWaveformTimelineState extends State<StackedWaveformTimeline>
       gain: _clipDisplayGain(lane.mixClip),
       showGainBadge: widget.timelineModel?.clips.isNotEmpty ?? false,
       showInLaneChip: false,
+      stemChangePoints: widget.stemChangePointsFor?.call(lane.track) ??
+          const <StemGainEvent>[],
     );
 
     return _ActiveWaveformSliceLease(

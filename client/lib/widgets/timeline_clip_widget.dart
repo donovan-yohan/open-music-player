@@ -1,7 +1,9 @@
 import 'dart:collection';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import '../core/engine/timeline_model.dart';
+import '../models/stem_edits.dart';
 import '../models/track.dart';
 import '../models/trim_range.dart';
 import '../models/waveform.dart';
@@ -250,6 +252,13 @@ class TimelineClipWidget extends StatelessWidget {
   final bool showGainBadge;
   final bool showInLaneChip;
 
+  /// Optional ADR 0006 stem gain change points for this clip, in **absolute
+  /// source milliseconds**.
+  ///
+  /// When empty (the default) this widget adds no extra subtree at all, so
+  /// rendering is identical to a build without stem edits.
+  final List<StemGainEvent> stemChangePoints;
+
   const TimelineClipWidget({
     super.key,
     required this.track,
@@ -271,6 +280,7 @@ class TimelineClipWidget extends StatelessWidget {
     this.gain = 1,
     this.showGainBadge = false,
     this.showInLaneChip = true,
+    this.stemChangePoints = const <StemGainEvent>[],
   });
 
   bool get _active => role == LaneRole.current;
@@ -344,6 +354,8 @@ class TimelineClipWidget extends StatelessWidget {
                 },
               ),
             ),
+            if (stemChangePoints.isNotEmpty)
+              Positioned.fill(child: _stemChangePointOverlay()),
             if (showInLaneChip)
               Positioned(left: 4, top: 4, right: 4, child: _inLaneChip(theme)),
             if (showGainBadge)
@@ -370,6 +382,66 @@ class TimelineClipWidget extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Source-ms origin of this clip's box. Stem change points are stored in
+  /// absolute source time, but the box only spans the selected source range.
+  int get _stemSourceStartMs =>
+      mixClip?.placement.sourceStartMs ?? waveform?.sourceStartMs ?? 0;
+
+  int get _stemSelectedDurationMs {
+    final fromClip = mixClip?.placement.selectedDurationMs;
+    if (fromClip != null && fromClip > 0) return fromClip;
+    final fromTrim = trim.selectedDurationMs;
+    return fromTrim > 0 ? fromTrim : 0;
+  }
+
+  Widget _stemChangePointOverlay() {
+    final startMs = _stemSourceStartMs;
+    final durationMs = _stemSelectedDurationMs;
+    if (durationMs <= 0) return const SizedBox.shrink();
+
+    return IgnorePointer(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          if (!width.isFinite || width <= 0) return const SizedBox.shrink();
+          return Stack(
+            children: [
+              for (final event in stemChangePoints)
+                if (_stemTickFraction(event, startMs, durationMs)
+                    case final fraction?)
+                  Positioned(
+                    key: ValueKey(
+                      'timeline_stem_marker_${_laneIdentity}_'
+                      '${event.channel}_${event.atMs}',
+                    ),
+                    left: (fraction * width)
+                        .clamp(0.0, math.max(0.0, width - 2))
+                        .toDouble(),
+                    top: 0,
+                    bottom: 0,
+                    width: 2,
+                    child: TimelineStemChangePointTick(
+                      channel: event.channel,
+                      isCut: event.isCut,
+                    ),
+                  ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  static double? _stemTickFraction(
+    StemGainEvent event,
+    int sourceStartMs,
+    int selectedDurationMs,
+  ) {
+    final offsetMs = event.atMs - sourceStartMs;
+    if (offsetMs < 0 || offsetMs > selectedDurationMs) return null;
+    return offsetMs / selectedDurationMs;
   }
 
   List<int>? _projectedBeatMarkersForSelectedTempoScale() {
@@ -444,6 +516,30 @@ class TimelineClipWidget extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// A single thin channel-colored tick marking one stem gain change point on a
+/// clip lane. Purely a marker — it carries no playback or transport state.
+class TimelineStemChangePointTick extends StatelessWidget {
+  const TimelineStemChangePointTick({
+    super.key,
+    required this.channel,
+    required this.isCut,
+  });
+
+  final String channel;
+  final bool isCut;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = stemChannelColor(channel);
+    return Semantics(
+      label: '$channel change point',
+      child: ColoredBox(
+        color: color.withValues(alpha: isCut ? 0.95 : 0.6),
       ),
     );
   }

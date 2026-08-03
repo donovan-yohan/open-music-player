@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
+import 'package:open_music_player/models/stem_edits.dart';
 import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/trim_range.dart';
@@ -431,6 +432,131 @@ void main() {
         .painter! as TimelineWaveformPainter;
 
     expect(identical(painter.waveform, waveform), isTrue);
+  });
+
+  group('stem change point markers', () {
+    Future<void> pumpClip(
+      WidgetTester tester, {
+      List<StemGainEvent> stemChangePoints = const <StemGainEvent>[],
+      MixClip? mixClip,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 300,
+              height: 80,
+              child: TimelineClipWidget(
+                track: _track(),
+                peaks: List<double>.filled(64, 0.5),
+                mixClip: mixClip,
+                viewportPixelsPerMs: 1,
+                viewportOriginMs: 0,
+                trim: TrimRange.full(120000),
+                role: LaneRole.current,
+                accent: Colors.orange,
+                stateLabel: 'Now playing',
+                showInLaneChip: false,
+                stemChangePoints: stemChangePoints,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    MixClip clipFrom(int sourceStartMs, int sourceEndMs) => MixClip(
+          placement: TimelineClip.clamped(
+            id: 'clip_t1',
+            trackId: 't1',
+            sourceDurationMs: 120000,
+            sourceStartMs: sourceStartMs,
+            sourceEndMs: sourceEndMs,
+            timelineStartMs: 0,
+          ),
+        );
+
+    testWidgets('omitting the parameter adds no marker widgets', (
+      tester,
+    ) async {
+      await pumpClip(tester, mixClip: clipFrom(0, 60000));
+
+      expect(find.byType(TimelineStemChangePointTick), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('renders one tick per change point', (tester) async {
+      await pumpClip(
+        tester,
+        mixClip: clipFrom(0, 60000),
+        stemChangePoints: [
+          StemGainEvent(channel: 'vocals', atMs: 0, gain: 0),
+          StemGainEvent(channel: 'vocals', atMs: 30000, gain: 1),
+          StemGainEvent(channel: 'kick', atMs: 45000, gain: 0),
+        ],
+      );
+
+      expect(find.byType(TimelineStemChangePointTick), findsNWidgets(3));
+      expect(
+        find.byKey(const ValueKey('timeline_stem_marker_t1_vocals_30000')),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('ticks map source ms onto the clip box', (tester) async {
+      await pumpClip(
+        tester,
+        mixClip: clipFrom(0, 60000),
+        stemChangePoints: [
+          StemGainEvent(channel: 'vocals', atMs: 30000, gain: 0),
+        ],
+      );
+
+      final tick = tester.getTopLeft(
+        find.byType(TimelineStemChangePointTick),
+      );
+      final box = tester.getTopLeft(find.byType(TimelineClipWidget));
+
+      expect(tick.dx - box.dx, closeTo(150, 1),
+          reason: 'a mid-clip change point sits mid-box',
+      );
+    });
+
+    testWidgets('ticks are offset by the clip source start', (tester) async {
+      await pumpClip(
+        tester,
+        mixClip: clipFrom(30000, 90000),
+        stemChangePoints: [
+          StemGainEvent(channel: 'vocals', atMs: 60000, gain: 0),
+        ],
+      );
+
+      final tick = tester.getTopLeft(
+        find.byType(TimelineStemChangePointTick),
+      );
+      final box = tester.getTopLeft(find.byType(TimelineClipWidget));
+
+      expect(tick.dx - box.dx, closeTo(150, 1),
+          reason: 'atMs is absolute source time, not clip-relative',
+      );
+    });
+
+    testWidgets('change points outside the clip window are not drawn', (
+      tester,
+    ) async {
+      await pumpClip(
+        tester,
+        mixClip: clipFrom(30000, 90000),
+        stemChangePoints: [
+          StemGainEvent(channel: 'vocals', atMs: 1000, gain: 0),
+          StemGainEvent(channel: 'vocals', atMs: 119000, gain: 0),
+          StemGainEvent(channel: 'kick', atMs: 60000, gain: 0),
+        ],
+      );
+
+      expect(find.byType(TimelineStemChangePointTick), findsOneWidget);
+    });
   });
 }
 
