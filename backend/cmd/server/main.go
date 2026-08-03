@@ -34,6 +34,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/research"
 	"github.com/openmusicplayer/backend/internal/search"
+	"github.com/openmusicplayer/backend/internal/stems"
 	"github.com/openmusicplayer/backend/internal/storage"
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
@@ -621,6 +622,58 @@ func main() {
 	}
 	maintenanceHandlers := api.NewMaintenanceHandlers(trackRepo, jobProcessor)
 
+	// Optional on-demand stem separation. Every failure path here degrades to the
+	// router's unavailable handler: a missing worker, a malformed base URL, or an
+	// unreachable Redis must never block server startup, because separation is an
+	// opt-in enhancement and the rest of the library keeps working without it.
+	var stemsHandlers *api.StemsHandlers
+	stemsRepo := db.NewTrackStemsRepository(database)
+	switch {
+	case !cfg.StemsEnabled:
+		log.Info(ctx, "Stem separation disabled by configuration", nil)
+	case !cfg.RedisEnabled:
+		log.Info(ctx, "Stem separation disabled: the stems queue class requires Redis", nil)
+	default:
+		// The service client is constructed at startup so a malformed
+		// STEMS_BASE_URL surfaces here rather than on a user's first trigger. It
+		// is also the seam the worker pool will consume.
+		stemsServiceClient, stemsErr := stems.NewServiceClient(stems.ServiceConfig{
+			Enabled:   cfg.StemsEnabled,
+			BaseURL:   cfg.StemsBaseURL,
+			AuthToken: cfg.StemsAuthToken,
+			Timeout:   cfg.StemsTimeout,
+		})
+		switch {
+		case stemsErr != nil:
+			log.Error(ctx, "Stem separation unavailable: invalid worker configuration", map[string]interface{}{
+				"base_url": cfg.StemsBaseURL,
+			}, stemsErr)
+		case stemsServiceClient == nil:
+			log.Info(ctx, "Stem separation unavailable: worker client not configured", nil)
+		default:
+			stemsQueue, queueErr := stems.NewQueue(cfg.RedisURL, stems.QueueConfig{MaxDepth: cfg.StemsQueueMaxDepth})
+			if queueErr != nil {
+				log.Error(ctx, "Stem separation unavailable: queue could not be initialized", nil, queueErr)
+				break
+			}
+			defer stemsQueue.Close()
+			// The Postgres row is the durable authority for a separation, so a
+			// restart reclaims requests abandoned mid-run instead of stranding them.
+			if recovered, recoverErr := stemsRepo.RecoverInFlight(ctx, 0); recoverErr != nil {
+				log.Error(ctx, "Failed to recover in-flight stem separations", nil, recoverErr)
+			} else if recovered > 0 {
+				log.Info(ctx, "Recovered in-flight stem separations", map[string]interface{}{"rows": recovered})
+			}
+			stemsHandlers = api.NewStemsHandlers(stemsRepo, stemsQueue, trackRepo, libraryRepo)
+			// TODO(stems): worker pool consumes stems:queue
+			log.Info(ctx, "Initialized stem separation", map[string]interface{}{
+				"base_url":        cfg.StemsBaseURL,
+				"concurrency":     cfg.StemsConcurrency,
+				"queue_max_depth": cfg.StemsQueueMaxDepth,
+			})
+		}
+	}
+
 	// Initialize Redis-backed download and playback queue services only when enabled.
 	var downloadService *download.Service
 	var downloadHandlers *api.DownloadHandlers
@@ -703,6 +756,7 @@ func main() {
 		MatcherHandlers:         matcherHandlers,
 		LibraryHandlers:         libraryHandlers,
 		AnalysisHandlers:        analysisHandlers,
+		StemsHandlers:           stemsHandlers,
 		PlaybackHandlers:        playbackHandlers,
 		QueueHandlers:           queueHandlers,
 		DiscoveryHandlers:       discoveryHandlers,

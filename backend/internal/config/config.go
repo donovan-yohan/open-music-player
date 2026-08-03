@@ -84,6 +84,18 @@ type Config struct {
 	AnalyzerTimeout     time.Duration
 	AnalyzerConcurrency int
 
+	// Optional out-of-process stem separation worker. Disabled unless
+	// configured. Concurrency is capped at 2 and defaults to 1: htdemucs peaks
+	// at several GB RSS, so the cap is what keeps separation from starving the
+	// analyzer and download workers on the low-memory host. Queue depth is
+	// bounded so backlog is rejected visibly instead of promised silently.
+	StemsEnabled       bool
+	StemsBaseURL       string
+	StemsAuthToken     string
+	StemsTimeout       time.Duration
+	StemsConcurrency   int
+	StemsQueueMaxDepth int
+
 	// Optional "save playlist as mix" seam. Disabled by default; when enabled,
 	// POST /api/v1/playlists/{id}/mix creates a mix_plan from a playlist's
 	// ordered tracks. Backend seam only (no DJ/waveform UI or mixing logic).
@@ -166,6 +178,8 @@ func Load() *Config {
 	}
 	analyzerBaseURL := strings.TrimSpace(os.Getenv("ANALYZER_BASE_URL"))
 	analyzerEnabled := parseBoolEnv("ANALYZER_ENABLED", analyzerBaseURL != "")
+	stemsBaseURL := strings.TrimSpace(os.Getenv("STEMS_BASE_URL"))
+	stemsEnabled := parseBoolEnv("STEMS_ENABLED", stemsBaseURL != "")
 	researchLeaseDuration := parseBoundedDurationMsEnv("RESEARCH_LEASE_DURATION_MS", 30*time.Second, time.Second, 5*time.Minute)
 	researchRenewInterval := parseBoundedDurationMsEnv("RESEARCH_RENEW_INTERVAL_MS", 10*time.Second, time.Second, researchLeaseDuration-time.Millisecond)
 	if researchRenewInterval >= researchLeaseDuration {
@@ -232,6 +246,14 @@ func Load() *Config {
 		AnalyzerAuthToken:   strings.TrimSpace(os.Getenv("ANALYZER_AUTH_TOKEN")),
 		AnalyzerTimeout:     parseDurationMsEnv("ANALYZER_TIMEOUT_MS", 90*time.Second),
 		AnalyzerConcurrency: parseBoundedIntEnv("ANALYZER_CONCURRENCY", 1, 1, 4),
+
+		// Stem separation worker configuration
+		StemsEnabled:       stemsEnabled,
+		StemsBaseURL:       stemsBaseURL,
+		StemsAuthToken:     strings.TrimSpace(os.Getenv("STEMS_AUTH_TOKEN")),
+		StemsTimeout:       parseDurationMsEnv("STEMS_TIMEOUT_MS", 1800000*time.Millisecond),
+		StemsConcurrency:   parseBoundedIntEnv("STEMS_CONCURRENCY", 1, 1, 2),
+		StemsQueueMaxDepth: parseBoundedIntEnv("STEMS_QUEUE_MAX_DEPTH", 32, 1, 512),
 
 		// Save-playlist-as-mix seam (default OFF)
 		EnablePlaylistMix: parseBoolEnv("ENABLE_PLAYLIST_MIX", false),

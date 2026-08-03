@@ -1,4 +1,5 @@
 import '../core/engine/tempo_automation.dart';
+import 'stem_edits.dart';
 
 bool _isNonBlank(String value) => value.trim().isNotEmpty;
 
@@ -28,6 +29,10 @@ class MixPlanClip {
   final int? fadeOutMs;
   final String pitchMode;
 
+  /// Optional ADR 0006 `stemEdits` v1 document. Authoring/persistence only —
+  /// playback of stem cuts is not wired up on this path.
+  final StemEdits? stemEdits;
+
   MixPlanClip({
     required this.clipId,
     required this.queueItemId,
@@ -40,6 +45,7 @@ class MixPlanClip {
     this.fadeInMs,
     this.fadeOutMs,
     String pitchMode = pitchModePreserve,
+    this.stemEdits,
   })  : assert(_isNonBlank(clipId)),
         assert(_isNonBlank(queueItemId)),
         assert(_isPositiveIntString(trackId)),
@@ -66,6 +72,7 @@ class MixPlanClip {
         fadeInMs: fadeInMs,
         fadeOutMs: fadeOutMs,
         pitchMode: pitchMode,
+        stemEdits: stemEdits,
       );
 
   MixPlanClip withSourceRange({
@@ -84,6 +91,7 @@ class MixPlanClip {
         fadeInMs: fadeInMs,
         fadeOutMs: fadeOutMs,
         pitchMode: pitchMode,
+        stemEdits: stemEdits,
       );
 
   MixPlanClip withPitchMode(String mode) => MixPlanClip(
@@ -98,6 +106,23 @@ class MixPlanClip {
         fadeInMs: fadeInMs,
         fadeOutMs: fadeOutMs,
         pitchMode: mode,
+        stemEdits: stemEdits,
+      );
+
+  /// Replaces (or clears, with `null`) the stem edit document on this clip.
+  MixPlanClip withStemEdits(StemEdits? edits) => MixPlanClip(
+        clipId: clipId,
+        queueItemId: queueItemId,
+        hasExplicitQueueItemId: hasExplicitQueueItemId,
+        trackId: trackId,
+        sourceStartMs: sourceStartMs,
+        sourceEndMs: sourceEndMs,
+        timelineStartMs: timelineStartMs,
+        gainDb: gainDb,
+        fadeInMs: fadeInMs,
+        fadeOutMs: fadeOutMs,
+        pitchMode: pitchMode,
+        stemEdits: edits,
       );
 
   Map<String, dynamic> toJson() {
@@ -119,6 +144,9 @@ class MixPlanClip {
     if (pitchMode != pitchModePreserve) {
       json['pitchMode'] = pitchMode;
     }
+    if (stemEdits != null) {
+      json['stemEdits'] = stemEdits!.toJson();
+    }
     return json;
   }
 
@@ -126,6 +154,7 @@ class MixPlanClip {
     final clipId = json['clipId'] as String;
     final rawQueueItemId = (json['queueItemId'] as String?)?.trim();
     final hasExplicitQueueItemId = rawQueueItemId?.isNotEmpty ?? false;
+    final rawStemEdits = json['stemEdits'];
     return MixPlanClip(
       clipId: clipId,
       queueItemId: hasExplicitQueueItemId ? rawQueueItemId! : clipId,
@@ -138,6 +167,9 @@ class MixPlanClip {
       fadeInMs: (json['fadeInMs'] as num?)?.toInt(),
       fadeOutMs: (json['fadeOutMs'] as num?)?.toInt(),
       pitchMode: (json['pitchMode'] as String?) ?? pitchModePreserve,
+      stemEdits: rawStemEdits is Map
+          ? StemEdits.fromJson(Map<String, dynamic>.from(rawStemEdits))
+          : null,
     );
   }
 }
