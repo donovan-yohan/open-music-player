@@ -14,6 +14,7 @@ import '../features/library/library_screen.dart';
 import '../features/library/local_browse_screens.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/player/player_screen.dart';
+import '../features/dj/dj_screen.dart';
 import '../features/player/widgets/mini_player.dart';
 import '../features/share/share_import_screen.dart';
 import '../features/downloads/downloads_screen.dart';
@@ -66,6 +67,7 @@ GoRouter createRouter(
           },
         ),
       ),
+      GoRoute(path: '/dj', builder: (context, state) => const DjScreen()),
       GoRoute(
         path: '/downloads',
         builder: (context, state) => const DownloadsScreen(),
@@ -143,8 +145,8 @@ GoRouter createRouter(
           ),
           GoRoute(
             path: '/queue/imports',
-            pageBuilder: (context, state) =>
-                const NoTransitionPage(child: QueueScreen(showImportJobs: true)),
+            pageBuilder: (context, state) => const NoTransitionPage(
+                child: QueueScreen(showImportJobs: true)),
           ),
           GoRoute(
             path: '/settings',
