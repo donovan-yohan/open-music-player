@@ -23,12 +23,17 @@ func TestDiscoveryServiceConfigFromEnvDefaults(t *testing.T) {
 	if cfg.OverallTimeout != discovery.DefaultOverallTimeout {
 		t.Fatalf("overall timeout = %s, want %s", cfg.OverallTimeout, discovery.DefaultOverallTimeout)
 	}
+	if cfg.YouTubeMusicMetadataEnrichmentTimeout != discovery.DefaultYouTubeMusicMetadataEnrichmentTimeout || cfg.YouTubeMusicMetadataEnrichmentConcurrency != discovery.DefaultYouTubeMusicMetadataEnrichmentConcurrency {
+		t.Fatalf("metadata enrichment defaults = %#v", cfg)
+	}
 }
 
 func TestDiscoveryServiceConfigFromEnvOverrides(t *testing.T) {
 	values := map[string]string{
-		"DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS": "11",
-		"DISCOVERY_OVERALL_TIMEOUT_SECONDS":      "15",
+		"DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS":           "11",
+		"DISCOVERY_OVERALL_TIMEOUT_SECONDS":                "15",
+		"DISCOVERY_YOUTUBE_MUSIC_METADATA_TIMEOUT_SECONDS": "7",
+		"DISCOVERY_YOUTUBE_MUSIC_METADATA_CONCURRENCY":     "4",
 	}
 	cfg := discoveryServiceConfigFromEnv(func(key string) string { return values[key] })
 	if cfg.PerProviderTimeout != 11*time.Second {
@@ -37,27 +42,39 @@ func TestDiscoveryServiceConfigFromEnvOverrides(t *testing.T) {
 	if cfg.OverallTimeout != 15*time.Second {
 		t.Fatalf("overall timeout = %s, want 15s", cfg.OverallTimeout)
 	}
+	if cfg.YouTubeMusicMetadataEnrichmentTimeout != 7*time.Second || cfg.YouTubeMusicMetadataEnrichmentConcurrency != 4 {
+		t.Fatalf("metadata enrichment overrides = %#v", cfg)
+	}
 }
 
-func TestDiscoveryServiceConfigFromEnvInvalidValuesUseDefaults(t *testing.T) {
+func TestDiscoveryServiceConfigFromEnvInvalidValuesUseDefaultsAndClampMaximum(t *testing.T) {
 	values := map[string]string{
-		"DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS": "9223372036854775807",
-		"DISCOVERY_OVERALL_TIMEOUT_SECONDS":      "0",
+		"DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS":           "9223372036854775807",
+		"DISCOVERY_OVERALL_TIMEOUT_SECONDS":                "0",
+		"DISCOVERY_YOUTUBE_MUSIC_METADATA_TIMEOUT_SECONDS": "0",
+		"DISCOVERY_YOUTUBE_MUSIC_METADATA_CONCURRENCY":     "26",
 	}
 	cfg := discoveryServiceConfigFromEnv(func(key string) string { return values[key] })
-	if cfg.PerProviderTimeout != discovery.DefaultPerProviderTimeout || cfg.OverallTimeout != discovery.DefaultOverallTimeout {
-		t.Fatalf("invalid env timeout config = %#v, want defaults", cfg)
+	if cfg.PerProviderTimeout != discovery.DefaultPerProviderTimeout || cfg.OverallTimeout != discovery.DefaultOverallTimeout || cfg.YouTubeMusicMetadataEnrichmentTimeout != discovery.DefaultYouTubeMusicMetadataEnrichmentTimeout {
+		t.Fatalf("invalid env timeout config = %#v, want timeout defaults", cfg)
+	}
+	if cfg.YouTubeMusicMetadataEnrichmentConcurrency != discovery.MaxYouTubeMusicMetadataEnrichmentConcurrency {
+		t.Fatalf("metadata concurrency = %d, want maximum %d", cfg.YouTubeMusicMetadataEnrichmentConcurrency, discovery.MaxYouTubeMusicMetadataEnrichmentConcurrency)
 	}
 }
 
 func TestDiscoveryServiceConfigEnvAndServiceEnforceTimeoutInvariant(t *testing.T) {
 	values := map[string]string{
-		"DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS": "12",
-		"DISCOVERY_OVERALL_TIMEOUT_SECONDS":      "5",
+		"DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS":           "12",
+		"DISCOVERY_OVERALL_TIMEOUT_SECONDS":                "5",
+		"DISCOVERY_YOUTUBE_MUSIC_METADATA_TIMEOUT_SECONDS": "15",
 	}
 	cfg := discoveryServiceConfigFromEnv(func(key string) string { return values[key] })
 	if cfg.OverallTimeout != cfg.PerProviderTimeout {
 		t.Fatalf("overall timeout = %s, want it clamped to per-provider timeout %s", cfg.OverallTimeout, cfg.PerProviderTimeout)
+	}
+	if cfg.YouTubeMusicMetadataEnrichmentTimeout != cfg.PerProviderTimeout {
+		t.Fatalf("metadata timeout = %s, want it clamped to per-provider timeout %s", cfg.YouTubeMusicMetadataEnrichmentTimeout, cfg.PerProviderTimeout)
 	}
 }
 

@@ -38,8 +38,8 @@
     },
     {
       "candidateId": "youtube:nina-ipod",
-      "classification": "official_audio",
-      "confidence": 0.95,
+      "classification": "topic_audio",
+      "confidence": 0.87,
       "evidence": [
         {
           "ref": "youtube:nina-ipod",
@@ -47,13 +47,13 @@
         }
       ],
       "rank": 2,
-      "rationale": "official audio: YouTube Music Songs discovery surface identifies an official track.",
+      "rationale": "topic audio: YouTube topic upload is usually label-provided audio.",
       "warnings": []
     },
     {
       "candidateId": "youtube:nina-rukus",
-      "classification": "official_audio",
-      "confidence": 0.95,
+      "classification": "topic_audio",
+      "confidence": 0.87,
       "evidence": [
         {
           "ref": "youtube:nina-rukus",
@@ -61,7 +61,7 @@
         }
       ],
       "rank": 3,
-      "rationale": "official audio: YouTube Music Songs discovery surface identifies an official track.",
+      "rationale": "topic audio: YouTube topic upload is usually label-provided audio.",
       "warnings": []
     },
     {

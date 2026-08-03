@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -134,12 +135,14 @@ type Service struct {
 }
 
 type ServiceConfig struct {
-	Providers          []Provider
-	DefaultProviders   []string
-	MusicCatalog       MusicCatalog
-	SourceQualityJudge SourceQualityJudge
-	OverallTimeout     time.Duration
-	PerProviderTimeout time.Duration
+	Providers                                 []Provider
+	DefaultProviders                          []string
+	MusicCatalog                              MusicCatalog
+	SourceQualityJudge                        SourceQualityJudge
+	OverallTimeout                            time.Duration
+	PerProviderTimeout                        time.Duration
+	YouTubeMusicMetadataEnrichmentTimeout     time.Duration
+	YouTubeMusicMetadataEnrichmentConcurrency int
 }
 
 const (
@@ -149,6 +152,22 @@ const (
 	// DefaultOverallTimeout leaves explicit merge headroom after the slowest
 	// provider while bounding the whole discovery request.
 	DefaultOverallTimeout = 12 * time.Second
+
+	// DefaultYouTubeMusicMetadataEnrichmentConcurrency bounds the follow-up
+	// yt-dlp processes started after a flat YouTube Music Songs search. Search
+	// itself remains one flat-playlist process; only returned music candidates
+	// need individual metadata extraction.
+	DefaultYouTubeMusicMetadataEnrichmentConcurrency = 6
+	// MaxYouTubeMusicMetadataEnrichmentConcurrency prevents an operator typo
+	// from creating more detail processes than the largest accepted result set.
+	MaxYouTubeMusicMetadataEnrichmentConcurrency = 25
+	// DefaultYouTubeMusicMetadataEnrichmentTimeout is a child budget within the
+	// provider request. A stalled detail extraction must not consume the whole
+	// discovery provider deadline after flat results are already available.
+	DefaultYouTubeMusicMetadataEnrichmentTimeout = 5 * time.Second
+
+	defaultYouTubeMusicMetadataEnrichmentAcquireTimeout = 750 * time.Millisecond
+	defaultYTDLPCommandWaitDelay                        = time.Second
 )
 
 func NewService(cfg ServiceConfig) *Service {
@@ -183,6 +202,18 @@ func NormalizeServiceConfig(cfg ServiceConfig) ServiceConfig {
 	if cfg.PerProviderTimeout <= 0 {
 		cfg.PerProviderTimeout = DefaultPerProviderTimeout
 	}
+	if cfg.YouTubeMusicMetadataEnrichmentTimeout <= 0 {
+		cfg.YouTubeMusicMetadataEnrichmentTimeout = DefaultYouTubeMusicMetadataEnrichmentTimeout
+	}
+	if cfg.YouTubeMusicMetadataEnrichmentTimeout > cfg.PerProviderTimeout {
+		cfg.YouTubeMusicMetadataEnrichmentTimeout = cfg.PerProviderTimeout
+	}
+	if cfg.YouTubeMusicMetadataEnrichmentConcurrency <= 0 {
+		cfg.YouTubeMusicMetadataEnrichmentConcurrency = DefaultYouTubeMusicMetadataEnrichmentConcurrency
+	}
+	if cfg.YouTubeMusicMetadataEnrichmentConcurrency > MaxYouTubeMusicMetadataEnrichmentConcurrency {
+		cfg.YouTubeMusicMetadataEnrichmentConcurrency = MaxYouTubeMusicMetadataEnrichmentConcurrency
+	}
 	if cfg.OverallTimeout < cfg.PerProviderTimeout {
 		cfg.OverallTimeout = cfg.PerProviderTimeout
 	}
@@ -206,8 +237,12 @@ func NewDefaultServiceWithCatalogAndSourceQualityJudge(catalog MusicCatalog, jud
 // NewDefaultServiceWithConfig constructs the standard source provider set and
 // applies the supplied service configuration, including request timeouts.
 func NewDefaultServiceWithConfig(cfg ServiceConfig) *Service {
+	cfg = NormalizeServiceConfig(cfg)
 	providers := []Provider{
-		NewYouTubeProvider(),
+		newYouTubeProviderWithMetadataEnrichment(
+			cfg.YouTubeMusicMetadataEnrichmentConcurrency,
+			cfg.YouTubeMusicMetadataEnrichmentTimeout,
+		),
 		NewYTDLPProvider("soundcloud", "scsearch", ""),
 	}
 	cfg.Providers = providers
@@ -219,9 +254,16 @@ func NewDefaultServiceWithConfig(cfg ServiceConfig) *Service {
 // YouTube Music songs surface. The latter is required because label-provided
 // audio is not reliably present in ordinary video search results.
 func NewYouTubeProvider() Provider {
+	return newYouTubeProviderWithMetadataEnrichment(
+		DefaultYouTubeMusicMetadataEnrichmentConcurrency,
+		DefaultYouTubeMusicMetadataEnrichmentTimeout,
+	)
+}
+
+func newYouTubeProviderWithMetadataEnrichment(concurrency int, timeout time.Duration) Provider {
 	return newCombinedProvider("youtube", []Provider{
 		NewYTDLPProvider("youtube", "ytsearch", "https://www.youtube.com/watch?v="),
-		NewYouTubeMusicProvider("youtube"),
+		newYouTubeMusicProvider("youtube", concurrency, timeout),
 	})
 }
 
@@ -236,7 +278,8 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 	ctx, cancel := context.WithTimeout(ctx, s.overallTimeout)
 	defer cancel()
 	raw := s.searchSourcesWithContext(ctx, query, sourceProviders, limit)
-	resp := SearchResponse{Query: query, Results: rankSourceCandidatesWithJudge(ctx, query, raw.Results, s.sourceQualityJudge), Sections: []SearchSection{}, Providers: raw.Providers}
+	ranked := rankSourceCandidatesWithJudge(ctx, query, raw.Results, s.sourceQualityJudge)
+	resp := SearchResponse{Query: query, Results: stripSourceQualityInputMetadata(ranked), Sections: []SearchSection{}, Providers: raw.Providers}
 	sections, catalogSummary := s.buildSections(ctx, query, limit, resp.Results, includeCatalog)
 	resp.Sections = sections
 	if catalogSummary != nil {
@@ -498,6 +541,27 @@ func candidateSubtitle(candidate Candidate) string {
 	return joinParts(firstNonEmpty(candidate.Artist, candidate.Uploader), candidate.Provider)
 }
 
+// stripSourceQualityInputMetadata removes large extractor fields after ranking.
+// They are useful to classify a source but are not part of the mobile contract.
+func stripSourceQualityInputMetadata(candidates []Candidate) []Candidate {
+	for index := range candidates {
+		if len(candidates[index].Metadata) == 0 {
+			continue
+		}
+		metadata := make(map[string]interface{}, len(candidates[index].Metadata))
+		for key, value := range candidates[index].Metadata {
+			switch key {
+			case "description", "tags", "categories":
+				continue
+			default:
+				metadata[key] = value
+			}
+		}
+		candidates[index].Metadata = metadata
+	}
+	return candidates
+}
+
 func joinParts(parts ...string) string {
 	out := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -689,11 +753,20 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 // YTDLPProvider shells out to yt-dlp for local dogfood discovery. If yt-dlp is
 // not installed, the provider fails in isolation instead of breaking the API.
 type YTDLPProvider struct {
-	name      string
-	prefix    string
-	urlPrefix string
-	music     bool
+	name                      string
+	prefix                    string
+	urlPrefix                 string
+	music                     bool
+	commandRunner             ytdlpCommandRunner
+	metadataEnrichmentTimeout time.Duration
+	metadataAcquireTimeout    time.Duration
+	metadataEnrichmentSlots   chan struct{}
 }
+
+// ytdlpCommandRunner is the process boundary used by yt-dlp discovery. It
+// makes metadata enrichment deterministic to test without network access or a
+// local yt-dlp installation.
+type ytdlpCommandRunner func(ctx context.Context, args []string) ([]byte, error)
 
 func NewYTDLPProvider(name, prefix, urlPrefix string) *YTDLPProvider {
 	return &YTDLPProvider{name: name, prefix: prefix, urlPrefix: urlPrefix}
@@ -703,40 +776,212 @@ func NewYTDLPProvider(name, prefix, urlPrefix string) *YTDLPProvider {
 // intentionally keeps the canonical youtube provider name so resolver, queue,
 // and downloader handling remain identical to ordinary YouTube candidates.
 func NewYouTubeMusicProvider(name string) *YTDLPProvider {
-	return &YTDLPProvider{name: name, music: true, urlPrefix: "https://www.youtube.com/watch?v="}
+	return newYouTubeMusicProvider(
+		name,
+		DefaultYouTubeMusicMetadataEnrichmentConcurrency,
+		DefaultYouTubeMusicMetadataEnrichmentTimeout,
+	)
+}
+
+func newYouTubeMusicProvider(name string, concurrency int, timeout time.Duration) *YTDLPProvider {
+	if concurrency <= 0 {
+		concurrency = DefaultYouTubeMusicMetadataEnrichmentConcurrency
+	}
+	if concurrency > MaxYouTubeMusicMetadataEnrichmentConcurrency {
+		concurrency = MaxYouTubeMusicMetadataEnrichmentConcurrency
+	}
+	if timeout <= 0 {
+		timeout = DefaultYouTubeMusicMetadataEnrichmentTimeout
+	}
+	return &YTDLPProvider{
+		name:                      name,
+		music:                     true,
+		urlPrefix:                 "https://www.youtube.com/watch?v=",
+		metadataEnrichmentTimeout: timeout,
+		metadataAcquireTimeout:    defaultYouTubeMusicMetadataEnrichmentAcquireTimeout,
+		metadataEnrichmentSlots:   make(chan struct{}, concurrency),
+	}
+}
+
+func newYouTubeMusicProviderWithCommandRunner(name string, runner ytdlpCommandRunner) *YTDLPProvider {
+	provider := NewYouTubeMusicProvider(name)
+	provider.commandRunner = runner
+	return provider
 }
 
 func (p *YTDLPProvider) Name() string { return p.name }
 
 func (p *YTDLPProvider) Search(ctx context.Context, query string, limit int) ([]Candidate, error) {
-	if _, err := exec.LookPath("yt-dlp"); err != nil {
-		return nil, &providerFailure{code: ErrProviderDisabled, status: ProviderStatusDisabled, err: fmt.Errorf("yt-dlp is not installed for provider %s: %w", p.name, err)}
+	if p.commandRunner == nil {
+		if _, err := exec.LookPath("yt-dlp"); err != nil {
+			return nil, &providerFailure{code: ErrProviderDisabled, status: ProviderStatusDisabled, err: fmt.Errorf("yt-dlp is not installed for provider %s: %w", p.name, err)}
+		}
 	}
-	cmd := exec.CommandContext(ctx, "yt-dlp", p.commandArgs(query, limit)...)
-	out, err := cmd.Output()
+	out, err := p.runCommand(ctx, p.commandArgs(query, limit))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, &providerFailure{code: ErrProviderBadResponse, status: ProviderStatusFailed, err: fmt.Errorf("yt-dlp search failed for %s: %w", p.name, err)}
 	}
-	return p.candidatesFromOutput(string(out), limit), nil
+	items := p.candidatesFromOutput(string(out), limit)
+	if !p.music {
+		return items, nil
+	}
+	return p.enrichYouTubeMusicCandidates(ctx, items), nil
 }
 
-// candidateThumbnailURL prefers the full-extraction singular "thumbnail" key;
-// flat-playlist entries only carry a "thumbnails" array, from which the
-// largest variant no taller than 480px is chosen so mobile clients are not
-// handed full-resolution covers.
-func candidateThumbnailURL(raw map[string]interface{}) string {
-	if direct := stringValue(raw, "thumbnail"); direct != "" {
-		return direct
+func (p *YTDLPProvider) runCommand(ctx context.Context, args []string) ([]byte, error) {
+	if p.commandRunner != nil {
+		return p.commandRunner(ctx, args)
 	}
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	// CommandContext kills yt-dlp when its budget expires. WaitDelay also bounds
+	// pipe cleanup when a helper process inherited stdout and outlives yt-dlp.
+	cmd.WaitDelay = defaultYTDLPCommandWaitDelay
+	return cmd.Output()
+}
+
+func (p *YTDLPProvider) metadataCommandArgs(sourceURL string) []string {
+	return []string{"--no-playlist", "--dump-single-json", "--skip-download", "--", sourceURL}
+}
+
+// enrichYouTubeMusicCandidates fills in detail omitted by --flat-playlist.
+// This is deliberately best-effort: each failed or canceled detail process
+// leaves that exact flat candidate in its original result position.
+func (p *YTDLPProvider) enrichYouTubeMusicCandidates(ctx context.Context, candidates []Candidate) []Candidate {
+	if len(candidates) == 0 || ctx.Err() != nil {
+		return candidates
+	}
+	budget := p.metadataEnrichmentTimeout
+	if budget <= 0 {
+		budget = DefaultYouTubeMusicMetadataEnrichmentTimeout
+	}
+	enrichmentCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	items := append([]Candidate(nil), candidates...)
+	// The provider instance is shared by the service, so these slots bound
+	// detail-process load across concurrent searches rather than per request.
+	semaphore := p.metadataEnrichmentSlots
+	if semaphore == nil {
+		semaphore = make(chan struct{}, DefaultYouTubeMusicMetadataEnrichmentConcurrency)
+	}
+	acquireTimeout := p.metadataAcquireTimeout
+	if acquireTimeout <= 0 {
+		acquireTimeout = defaultYouTubeMusicMetadataEnrichmentAcquireTimeout
+	}
+	var wg sync.WaitGroup
+	var ownedSlots atomic.Int32
+launchCandidates:
+	for index := range items {
+		if enrichmentCtx.Err() != nil {
+			break
+		}
+		if strings.TrimSpace(items[index].SourceID) == "" {
+			continue
+		}
+		acquired := false
+		for !acquired {
+			hadOwnedSlot := ownedSlots.Load() > 0
+			acquireTimer := time.NewTimer(acquireTimeout)
+			select {
+			case semaphore <- struct{}{}:
+				acquireTimer.Stop()
+				acquired = true
+			case <-enrichmentCtx.Done():
+				acquireTimer.Stop()
+				break launchCandidates
+			case <-acquireTimer.C:
+				if !hadOwnedSlot {
+					// Another request owns all process slots. Return flat fallbacks
+					// promptly instead of waiting through the whole child budget.
+					break launchCandidates
+				}
+				// This request had work running when the wait began. Recheck ownership
+				// before deciding whether contention now belongs to another request.
+			}
+		}
+		if enrichmentCtx.Err() != nil {
+			<-semaphore
+			break launchCandidates
+		}
+		ownedSlots.Add(1)
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			defer func() {
+				<-semaphore
+				ownedSlots.Add(-1)
+			}()
+			if enriched, err := p.enrichYouTubeMusicCandidate(enrichmentCtx, items[index]); err == nil {
+				items[index] = enriched
+			}
+		}(index)
+	}
+	wg.Wait()
+	return items
+}
+
+func (p *YTDLPProvider) enrichYouTubeMusicCandidate(ctx context.Context, candidate Candidate) (Candidate, error) {
+	if strings.TrimSpace(candidate.SourceID) == "" {
+		return candidate, errors.New("source ID is required for metadata enrichment")
+	}
+	sourceURL := strings.TrimSpace(candidate.SourceURL)
+	if sourceURL == "" {
+		return candidate, errors.New("source URL is required for metadata enrichment")
+	}
+	parsedSourceURL, err := url.Parse(sourceURL)
+	if err != nil || parsedSourceURL.Host == "" || (strings.ToLower(parsedSourceURL.Scheme) != "http" && strings.ToLower(parsedSourceURL.Scheme) != "https") {
+		return candidate, errors.New("source URL must use http or https for metadata enrichment")
+	}
+	out, err := p.runCommand(ctx, p.metadataCommandArgs(sourceURL))
+	if err != nil {
+		return candidate, err
+	}
+	details := p.candidatesFromOutput(string(out), 1)
+	if len(details) == 0 {
+		return candidate, errors.New("yt-dlp metadata enrichment returned no candidate")
+	}
+	detail := details[0]
+	if detail.SourceID != candidate.SourceID {
+		return candidate, errors.New("yt-dlp metadata enrichment returned a different source ID")
+	}
+	if value := strings.TrimSpace(detail.Artist); value != "" {
+		candidate.Artist = value
+	}
+	if value := strings.TrimSpace(detail.Uploader); value != "" {
+		candidate.Uploader = value
+	}
+	if detail.DurationMs > 0 {
+		candidate.DurationMs = detail.DurationMs
+	}
+	if value := strings.TrimSpace(detail.ThumbnailURL); value != "" {
+		candidate.ThumbnailURL = value
+	}
+	metadata := make(map[string]interface{}, len(candidate.Metadata)+len(detail.Metadata))
+	for key, value := range candidate.Metadata {
+		metadata[key] = value
+	}
+	for key, value := range detail.Metadata {
+		if key != "discoverySurface" {
+			metadata[key] = value
+		}
+	}
+	candidate.Metadata = metadata
+	return candidate, nil
+}
+
+// candidateThumbnailURL prefers the largest thumbnail no taller than 480px so
+// mobile clients are not handed a full-resolution cover after detail hydration.
+// If only oversized images exist, it chooses the smallest one available.
+func candidateThumbnailURL(raw map[string]interface{}) string {
+	direct := stringValue(raw, "thumbnail")
 	entries, ok := raw["thumbnails"].([]interface{})
 	if !ok {
-		return ""
+		return direct
 	}
-	var best, fallback string
-	var bestHeight, fallbackHeight float64
+	var best, smallestOversized, unmeasured string
+	var bestHeight, smallestOversizedHeight float64
 	for _, entry := range entries {
 		item, ok := entry.(map[string]interface{})
 		if !ok {
@@ -747,17 +992,26 @@ func candidateThumbnailURL(raw map[string]interface{}) string {
 			continue
 		}
 		height := floatValue(item, "height")
-		if height <= 480 && height >= bestHeight {
+		if height > 0 && height <= 480 && height >= bestHeight {
 			best, bestHeight = thumbnailURL, height
 		}
-		if height >= fallbackHeight {
-			fallback, fallbackHeight = thumbnailURL, height
+		if height > 480 && (smallestOversized == "" || height < smallestOversizedHeight) {
+			smallestOversized, smallestOversizedHeight = thumbnailURL, height
+		}
+		if height <= 0 && unmeasured == "" {
+			unmeasured = thumbnailURL
 		}
 	}
 	if best != "" {
 		return best
 	}
-	return fallback
+	if smallestOversized != "" {
+		return smallestOversized
+	}
+	if direct != "" {
+		return direct
+	}
+	return unmeasured
 }
 
 func (p *YTDLPProvider) candidatesFromOutput(output string, limit int) []Candidate {
@@ -869,7 +1123,7 @@ func (p *combinedProvider) Search(ctx context.Context, query string, limit int) 
 	wg.Wait()
 
 	items := make([]Candidate, 0, limit*len(p.providers))
-	seen := make(map[string]struct{})
+	seen := make(map[string]int)
 	var errs []string
 	for _, result := range results {
 		if result.err != nil {
@@ -881,10 +1135,11 @@ func (p *combinedProvider) Search(ctx context.Context, query string, limit int) 
 			if key == "" {
 				key = candidate.SourceURL
 			}
-			if _, ok := seen[key]; ok {
+			if existingIndex, ok := seen[key]; ok {
+				items[existingIndex] = mergeDuplicateCandidate(items[existingIndex], candidate)
 				continue
 			}
-			seen[key] = struct{}{}
+			seen[key] = len(items)
 			items = append(items, candidate)
 		}
 	}
@@ -895,6 +1150,51 @@ func (p *combinedProvider) Search(ctx context.Context, query string, limit int) 
 		return nil, &providerFailure{code: ErrProviderBadResponse, status: ProviderStatusFailed, err: fmt.Errorf("all %s search surfaces failed: %s", p.name, strings.Join(errs, "; "))}
 	}
 	return items, nil
+}
+
+// mergeDuplicateCandidate keeps first-seen ordering and stable source identity,
+// while preferring hydrated YouTube Music details over a sparse ytsearch row.
+func mergeDuplicateCandidate(existing, incoming Candidate) Candidate {
+	preferred, fallback := existing, incoming
+	existingMusic := strings.EqualFold(metadataStringValue(existing.Metadata, "discoverySurface"), "youtube_music_songs")
+	incomingMusic := strings.EqualFold(metadataStringValue(incoming.Metadata, "discoverySurface"), "youtube_music_songs")
+	if incomingMusic && !existingMusic {
+		preferred, fallback = incoming, existing
+	}
+
+	merged := preferred
+	merged.CandidateID = firstNonEmpty(existing.CandidateID, incoming.CandidateID)
+	merged.Provider = firstNonEmpty(existing.Provider, incoming.Provider)
+	merged.SourceID = firstNonEmpty(existing.SourceID, incoming.SourceID)
+	merged.SourceURL = firstNonEmpty(existing.SourceURL, incoming.SourceURL)
+	merged.Title = firstNonEmpty(merged.Title, fallback.Title)
+	merged.Artist = firstNonEmpty(merged.Artist, fallback.Artist)
+	merged.Uploader = firstNonEmpty(merged.Uploader, fallback.Uploader)
+	if merged.DurationMs <= 0 {
+		merged.DurationMs = fallback.DurationMs
+	}
+	merged.ThumbnailURL = firstNonEmpty(merged.ThumbnailURL, fallback.ThumbnailURL)
+	merged.Downloadable = merged.Downloadable || fallback.Downloadable
+	merged.Playable = merged.Playable || fallback.Playable
+	if merged.Explicit == nil {
+		merged.Explicit = fallback.Explicit
+	}
+	metadata := make(map[string]interface{}, len(preferred.Metadata)+len(fallback.Metadata))
+	for key, value := range fallback.Metadata {
+		metadata[key] = value
+	}
+	for key, value := range preferred.Metadata {
+		metadata[key] = value
+	}
+	fallbackTitle := strings.TrimSpace(fallback.Title)
+	preferredTitle := strings.TrimSpace(preferred.Title)
+	if fallbackTitle != "" && preferredTitle != fallbackTitle && metadataStringValue(metadata, "duplicateSurfaceTitle") == "" {
+		// Preserve the alternate surface title without feeding ordinary-video
+		// wording back into source-quality classification.
+		metadata["duplicateSurfaceTitle"] = fallback.Title
+	}
+	merged.Metadata = metadata
+	return merged
 }
 
 func stringValue(raw map[string]interface{}, key string) string {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -189,6 +190,75 @@ func TestYouTubeProviderAcquiresYouTubeMusicSongsBeforeRanking(t *testing.T) {
 	}
 }
 
+func TestCombinedYouTubeProviderMergesHydratedMusicDuplicate(t *testing.T) {
+	const candidateID = "youtube:same"
+	ordinary := &recordingProvider{name: "youtube-video", items: []Candidate{{
+		CandidateID: candidateID, Provider: "youtube", SourceID: "same",
+		SourceURL: "https://www.youtube.com/watch?v=same", Title: "Artist - Song (Official Video)", Downloadable: true,
+		Metadata: map[string]interface{}{"discoverySurface": "youtube_search"},
+	}}}
+	music := &recordingProvider{name: "youtube-music", items: []Candidate{{
+		CandidateID: candidateID, Provider: "youtube", SourceID: "same",
+		SourceURL: "https://music.youtube.com/watch?v=same", Title: "Song", Artist: "Artist",
+		Uploader: "Artist - Topic", DurationMs: 201000, ThumbnailURL: "https://images.example/song.jpg", Downloadable: true,
+		Metadata: map[string]interface{}{"discoverySurface": "youtube_music_songs", "track": "Song", "artist": "Artist", "album": "Album"},
+	}}}
+
+	items, err := newCombinedProvider("youtube", []Provider{ordinary, music}).Search(context.Background(), "Artist Song", 10)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %#v, want one merged duplicate", items)
+	}
+	got := items[0]
+	if got.CandidateID != candidateID || got.SourceURL != ordinary.items[0].SourceURL {
+		t.Fatalf("merged identity = %#v, want first-seen candidate identity", got)
+	}
+	if got.Title != "Song" || got.Artist != "Artist" || got.Uploader != "Artist - Topic" || got.DurationMs != 201000 {
+		t.Fatalf("merged details = %#v, want hydrated YouTube Music details", got)
+	}
+	if surface := metadataStringValue(got.Metadata, "discoverySurface"); surface != "youtube_music_songs" {
+		t.Fatalf("merged discovery surface = %q, want youtube_music_songs", surface)
+	}
+	if alternateTitle := metadataStringValue(got.Metadata, "duplicateSurfaceTitle"); alternateTitle != ordinary.items[0].Title {
+		t.Fatalf("merged alternate title = %q, want ordinary search title %q", alternateTitle, ordinary.items[0].Title)
+	}
+	if alternateTitle := metadataStringValue(got.Metadata, "alt_title"); alternateTitle != "" {
+		t.Fatalf("merged alt_title = %q, want no ranking-visible alternate title", alternateTitle)
+	}
+	if quality := EvaluateSourceQuality("Artist Song", got); quality.Classification != SourceQualityTopicAudio {
+		t.Fatalf("merged source quality = %#v, want topic audio unaffected by duplicate video title", quality)
+	}
+}
+
+func TestSearchStripsLargeSourceQualityInputMetadata(t *testing.T) {
+	provider := fakeProvider{name: "youtube", items: []Candidate{{
+		CandidateID: "youtube:one", Provider: "youtube", SourceID: "one", SourceURL: "https://www.youtube.com/watch?v=one",
+		Title: "Song", Artist: "Artist", DurationMs: 201000, Downloadable: true,
+		Metadata: map[string]interface{}{
+			"description": "long uploader-authored text", "tags": []interface{}{"one", "two"}, "categories": []interface{}{"Music"},
+			"track": "Song", "artist": "Artist", "album": "Album", "discoverySurface": "youtube_music_songs",
+		},
+	}}}
+	svc := NewService(ServiceConfig{Providers: []Provider{provider}, DefaultProviders: []string{"youtube"}})
+
+	resp := svc.Search(context.Background(), "Artist Song", []string{"youtube"}, 10)
+	if len(resp.Results) != 1 || len(resp.Sections) != 1 || len(resp.Sections[0].Items) != 1 {
+		t.Fatalf("response = %#v, want one source candidate", resp)
+	}
+	for _, metadata := range []map[string]interface{}{resp.Results[0].Metadata, resp.Sections[0].Items[0].Candidate.Metadata} {
+		for _, key := range []string{"description", "tags", "categories"} {
+			if _, ok := metadata[key]; ok {
+				t.Fatalf("response metadata retained transient %q: %#v", key, metadata)
+			}
+		}
+		if metadata["track"] != "Song" || metadata[SourceQualityMetadataKey] == nil {
+			t.Fatalf("response metadata lost compact identity or quality fields: %#v", metadata)
+		}
+	}
+}
+
 func TestYouTubeMusicSearchArgTargetsSongsSurface(t *testing.T) {
 	provider := NewYouTubeMusicProvider("youtube")
 	if got, want := provider.searchArg("Ninajirachi iPod Touch", 10), "https://music.youtube.com/search?q=Ninajirachi+iPod+Touch#songs"; got != want {
@@ -203,10 +273,72 @@ func TestYouTubeMusicSearchPassesLimitToSongsPlaylist(t *testing.T) {
 	}
 }
 
+func TestYouTubeMusicMetadataCommandTerminatesOptions(t *testing.T) {
+	provider := NewYouTubeMusicProvider("youtube")
+	if got, want := provider.metadataCommandArgs("https://www.youtube.com/watch?v=one"), []string{"--no-playlist", "--dump-single-json", "--skip-download", "--", "https://www.youtube.com/watch?v=one"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("yt-dlp metadata args = %#v, want %#v", got, want)
+	}
+}
+
+func TestYouTubeMusicMetadataEnrichmentRejectsUnsafeSourceURL(t *testing.T) {
+	for _, sourceURL := range []string{"--config-location", "file:///tmp/yt-dlp.conf", "javascript:alert(1)", "https:relative"} {
+		t.Run(sourceURL, func(t *testing.T) {
+			called := false
+			provider := newYouTubeMusicProviderWithCommandRunner("youtube", func(_ context.Context, _ []string) ([]byte, error) {
+				called = true
+				return nil, nil
+			})
+			candidate := Candidate{SourceID: "one", SourceURL: sourceURL}
+
+			got, err := provider.enrichYouTubeMusicCandidate(context.Background(), candidate)
+			if err == nil {
+				t.Fatalf("enrichYouTubeMusicCandidate() error = nil, want unsafe URL rejection")
+			}
+			if called {
+				t.Fatal("unsafe source URL reached yt-dlp command runner")
+			}
+			if !reflect.DeepEqual(got, candidate) {
+				t.Fatalf("rejected candidate = %#v, want original %#v", got, candidate)
+			}
+		})
+	}
+}
+
 func TestYouTubeSearchUsesFlatPlaylistAcquisition(t *testing.T) {
 	provider := NewYTDLPProvider("youtube", "ytsearch", "https://www.youtube.com/watch?v=")
 	if got, want := provider.commandArgs("Ninajirachi iPod Touch", 10), []string{"--flat-playlist", "--playlist-end", "10", "--dump-json", "--skip-download", "ytsearch10:Ninajirachi iPod Touch"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("yt-dlp args = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewYouTubeMusicProviderAppliesMetadataDefaults(t *testing.T) {
+	provider := NewYouTubeMusicProvider("youtube")
+	if provider.metadataEnrichmentTimeout != DefaultYouTubeMusicMetadataEnrichmentTimeout {
+		t.Fatalf("metadata timeout = %s, want %s", provider.metadataEnrichmentTimeout, DefaultYouTubeMusicMetadataEnrichmentTimeout)
+	}
+	if got := cap(provider.metadataEnrichmentSlots); got != DefaultYouTubeMusicMetadataEnrichmentConcurrency {
+		t.Fatalf("metadata process slots = %d, want %d", got, DefaultYouTubeMusicMetadataEnrichmentConcurrency)
+	}
+	if provider.metadataAcquireTimeout != defaultYouTubeMusicMetadataEnrichmentAcquireTimeout {
+		t.Fatalf("metadata acquire timeout = %s, want %s", provider.metadataAcquireTimeout, defaultYouTubeMusicMetadataEnrichmentAcquireTimeout)
+	}
+}
+
+func TestNewDefaultServiceAppliesYouTubeMusicMetadataConfig(t *testing.T) {
+	svc := NewDefaultServiceWithConfig(ServiceConfig{
+		YouTubeMusicMetadataEnrichmentConcurrency: 3,
+		YouTubeMusicMetadataEnrichmentTimeout:     2 * time.Second,
+	})
+	combined, ok := svc.providers["youtube"].(*combinedProvider)
+	if !ok || len(combined.providers) != 2 {
+		t.Fatalf("youtube provider = %#v, want combined provider", svc.providers["youtube"])
+	}
+	music, ok := combined.providers[1].(*YTDLPProvider)
+	if !ok {
+		t.Fatalf("youtube music provider = %T, want *YTDLPProvider", combined.providers[1])
+	}
+	if cap(music.metadataEnrichmentSlots) != 3 || music.metadataEnrichmentTimeout != 2*time.Second {
+		t.Fatalf("metadata provider config = slots:%d timeout:%s", cap(music.metadataEnrichmentSlots), music.metadataEnrichmentTimeout)
 	}
 }
 
@@ -242,6 +374,313 @@ func TestFlatYouTubeMusicCandidateRetainsSongsSurfaceEvidence(t *testing.T) {
 	}
 	if candidate.Metadata["discoverySurface"] != "youtube_music_songs" {
 		t.Fatalf("flat candidate metadata = %#v, want YouTube Music songs surface", candidate.Metadata)
+	}
+}
+
+func TestYouTubeMusicMetadataEnrichmentPreservesCandidateIdentityAndOrder(t *testing.T) {
+	flatOutput := strings.Join([]string{
+		`{"id":"one","title":"Flat One"}`,
+		`{"id":"two","title":"Flat Two"}`,
+	}, "\n")
+	provider := newYouTubeMusicProviderWithCommandRunner("youtube", func(_ context.Context, args []string) ([]byte, error) {
+		if args[0] == "--flat-playlist" {
+			return []byte(flatOutput), nil
+		}
+		switch args[len(args)-1] {
+		case "https://www.youtube.com/watch?v=one":
+			return []byte(`{"id":"one","artist":"Artist One","uploader":"Artist One - Topic","duration":201,"thumbnail":"https://images.example/one-full.jpg","thumbnails":[{"url":"https://images.example/one-120.jpg","height":120},{"url":"https://images.example/one-480.jpg","height":480},{"url":"https://images.example/one-full.jpg","height":720}],"track":"One","album":"Album One"}`), nil
+		case "https://www.youtube.com/watch?v=two":
+			return []byte(`{"id":"two","artist":"Artist Two","uploader":"Artist Two - Topic","duration":202,"thumbnail":"https://images.example/two.jpg","track":"Two","album":"Album Two"}`), nil
+		default:
+			return nil, errors.New("unexpected source URL")
+		}
+	})
+
+	items, err := provider.Search(context.Background(), "artist", 2)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %#v, want two enriched candidates", items)
+	}
+	for index, want := range []struct {
+		id, url, title, artist, uploader, thumbnail string
+		duration                                    int
+	}{
+		{"youtube:one", "https://www.youtube.com/watch?v=one", "Flat One", "Artist One", "Artist One - Topic", "https://images.example/one-480.jpg", 201000},
+		{"youtube:two", "https://www.youtube.com/watch?v=two", "Flat Two", "Artist Two", "Artist Two - Topic", "https://images.example/two.jpg", 202000},
+	} {
+		got := items[index]
+		if got.CandidateID != want.id || got.SourceURL != want.url || got.Title != want.title || got.Artist != want.artist || got.Uploader != want.uploader || got.DurationMs != want.duration || got.ThumbnailURL != want.thumbnail {
+			t.Fatalf("candidate[%d] = %#v, want identity/order and enriched source metadata", index, got)
+		}
+		if !got.Downloadable || got.Playable {
+			t.Fatalf("candidate[%d] queue/playback state = %#v, want original downloadable non-playable state", index, got)
+		}
+		if got.Metadata["discoverySurface"] != "youtube_music_songs" {
+			t.Fatalf("candidate[%d] metadata = %#v, want retained surface evidence", index, got.Metadata)
+		}
+	}
+}
+
+func TestYouTubeMusicMetadataEnrichmentKeepsFlatCandidateOnPerSourceFailure(t *testing.T) {
+	flatOutput := strings.Join([]string{
+		`{"id":"one","title":"Flat One"}`,
+		`{"id":"two","title":"Flat Two","uploader":"Original Uploader","duration":200}`,
+	}, "\n")
+	provider := newYouTubeMusicProviderWithCommandRunner("youtube", func(_ context.Context, args []string) ([]byte, error) {
+		if args[0] == "--flat-playlist" {
+			return []byte(flatOutput), nil
+		}
+		if args[len(args)-1] == "https://www.youtube.com/watch?v=one" {
+			return []byte(`{"id":"one","artist":"Artist One","duration":201}`), nil
+		}
+		return nil, errors.New("metadata extraction failed")
+	})
+	wantFlat := provider.candidatesFromOutput(flatOutput, 2)[1]
+
+	items, err := provider.Search(context.Background(), "artist", 2)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if items[0].Artist != "Artist One" {
+		t.Fatalf("successful source was not enriched: %#v", items[0])
+	}
+	if !reflect.DeepEqual(items[1], wantFlat) {
+		t.Fatalf("failed source changed candidate = %#v, want original flat %#v", items[1], wantFlat)
+	}
+}
+
+func TestYouTubeMusicMetadataEnrichmentRejectsMismatchedSourceID(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		detailOutput string
+	}{
+		{name: "mismatched ID", detailOutput: `{"id":"other","artist":"Wrong Artist","duration":201}`},
+		{name: "missing ID", detailOutput: `{"artist":"Wrong Artist","duration":201}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			flatOutput := `{"id":"one","title":"Flat One"}`
+			provider := newYouTubeMusicProviderWithCommandRunner("youtube", func(_ context.Context, args []string) ([]byte, error) {
+				if args[0] == "--flat-playlist" {
+					return []byte(flatOutput), nil
+				}
+				return []byte(tc.detailOutput), nil
+			})
+			wantFlat := provider.candidatesFromOutput(flatOutput, 1)
+
+			items, err := provider.Search(context.Background(), "artist", 1)
+			if err != nil {
+				t.Fatalf("Search() error = %v", err)
+			}
+			if !reflect.DeepEqual(items, wantFlat) {
+				t.Fatalf("untrusted source ID changed candidate = %#v, want original flat %#v", items, wantFlat)
+			}
+		})
+	}
+}
+
+func TestYouTubeMusicMetadataEnrichmentHonorsCallerDeadline(t *testing.T) {
+	flatOutput := `{"id":"one","title":"Flat One"}`
+	provider := newYouTubeMusicProviderWithCommandRunner("youtube", func(ctx context.Context, args []string) ([]byte, error) {
+		if args[0] == "--flat-playlist" {
+			return []byte(flatOutput), nil
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	wantFlat := provider.candidatesFromOutput(flatOutput, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	items, err := provider.Search(ctx, "artist", 1)
+	if err != nil {
+		t.Fatalf("Search() error = %v, want best-effort flat result", err)
+	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("metadata runner did not receive the caller deadline: %v", ctx.Err())
+	}
+	if !reflect.DeepEqual(items, wantFlat) {
+		t.Fatalf("deadline changed candidate = %#v, want original flat %#v", items, wantFlat)
+	}
+}
+
+func TestServiceSearchSourcesReturnsAfterYouTubeMusicMetadataChildBudget(t *testing.T) {
+	const childBudget = 15 * time.Millisecond
+	flatOutput := `{"id":"music","title":"Flat Music"}`
+	music := newYouTubeMusicProviderWithCommandRunner("youtube", func(ctx context.Context, args []string) ([]byte, error) {
+		if args[0] == "--flat-playlist" {
+			return []byte(flatOutput), nil
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	music.metadataEnrichmentTimeout = childBudget
+	ordinary := fakeProvider{name: "youtube-video", items: []Candidate{{CandidateID: "youtube:video", Provider: "youtube", SourceID: "video", SourceURL: "https://www.youtube.com/watch?v=video", Title: "Video", Downloadable: true}}}
+	soundcloud := fakeProvider{name: "soundcloud", items: []Candidate{{CandidateID: "soundcloud:track", Provider: "soundcloud", SourceID: "track", SourceURL: "https://soundcloud.com/artist/track", Title: "Track", Downloadable: true}}}
+	svc := NewService(ServiceConfig{
+		Providers: []Provider{newCombinedProvider("youtube", []Provider{ordinary, music}), soundcloud}, DefaultProviders: []string{"youtube", "soundcloud"},
+		PerProviderTimeout: 200 * time.Millisecond, OverallTimeout: 250 * time.Millisecond,
+	})
+
+	started := time.Now()
+	resp := svc.SearchSources(context.Background(), "artist", []string{"youtube", "soundcloud"}, 10)
+	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+		t.Fatalf("search waited %s, want return after %s metadata child budget instead of provider budget", elapsed, childBudget)
+	}
+	if len(resp.Results) != 3 {
+		t.Fatalf("results = %#v, want ordinary YouTube, flat Music fallback, and SoundCloud", resp.Results)
+	}
+	if got := resp.Results[0].CandidateID; got != "youtube:video" {
+		t.Fatalf("ordinary YouTube result = %q, want youtube:video", got)
+	}
+	if got := resp.Results[1].CandidateID; got != "youtube:music" || resp.Results[1].Artist != "" {
+		t.Fatalf("YouTube Music fallback = %#v, want original flat candidate", resp.Results[1])
+	}
+	if got := resp.Results[2].CandidateID; got != "soundcloud:track" {
+		t.Fatalf("SoundCloud result = %q, want soundcloud:track", got)
+	}
+}
+
+func TestYouTubeMusicMetadataEnrichmentReturnsPromptlyWhenProcessSlotsAreBusy(t *testing.T) {
+	const acquireTimeout = 15 * time.Millisecond
+	var detailCalls atomic.Int32
+	provider := newYouTubeMusicProviderWithCommandRunner("youtube", func(_ context.Context, args []string) ([]byte, error) {
+		if args[0] == "--flat-playlist" {
+			return []byte(`{"id":"one","title":"Flat One"}`), nil
+		}
+		detailCalls.Add(1)
+		return []byte(`{"id":"one","artist":"Artist","duration":201}`), nil
+	})
+	provider.metadataEnrichmentSlots = make(chan struct{}, 1)
+	provider.metadataEnrichmentSlots <- struct{}{}
+	provider.metadataAcquireTimeout = acquireTimeout
+	provider.metadataEnrichmentTimeout = 200 * time.Millisecond
+
+	started := time.Now()
+	items, err := provider.Search(context.Background(), "artist", 1)
+	elapsed := time.Since(started)
+	<-provider.metadataEnrichmentSlots
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if elapsed >= 100*time.Millisecond {
+		t.Fatalf("busy-slot fallback took %s, want near %s acquire timeout", elapsed, acquireTimeout)
+	}
+	if detailCalls.Load() != 0 || len(items) != 1 || items[0].Artist != "" {
+		t.Fatalf("busy-slot fallback = %#v, detail calls = %d", items, detailCalls.Load())
+	}
+}
+
+func TestYouTubeMusicMetadataEnrichmentLetsOneRequestUseLaterWaves(t *testing.T) {
+	const acquireTimeout = 10 * time.Millisecond
+	flatOutput := strings.Join([]string{
+		`{"id":"one","title":"Flat One"}`,
+		`{"id":"two","title":"Flat Two"}`,
+	}, "\n")
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	provider := newYouTubeMusicProviderWithCommandRunner("youtube", func(_ context.Context, args []string) ([]byte, error) {
+		if args[0] == "--flat-playlist" {
+			return []byte(flatOutput), nil
+		}
+		if args[len(args)-1] == "https://www.youtube.com/watch?v=one" {
+			close(firstStarted)
+			<-releaseFirst
+			return []byte(`{"id":"one","artist":"Artist One","duration":201}`), nil
+		}
+		return []byte(`{"id":"two","artist":"Artist Two","duration":202}`), nil
+	})
+	provider.metadataEnrichmentSlots = make(chan struct{}, 1)
+	provider.metadataAcquireTimeout = acquireTimeout
+	provider.metadataEnrichmentTimeout = 200 * time.Millisecond
+
+	done := make(chan []Candidate, 1)
+	go func() {
+		items, _ := provider.Search(context.Background(), "artist", 2)
+		done <- items
+	}()
+	<-firstStarted
+	time.Sleep(2 * acquireTimeout)
+	close(releaseFirst)
+	items := <-done
+	if len(items) != 2 || items[0].Artist != "Artist One" || items[1].Artist != "Artist Two" {
+		t.Fatalf("later-wave enrichment = %#v, want both candidates hydrated", items)
+	}
+}
+
+func TestYouTubeMusicMetadataEnrichmentSkipsCandidateWithoutSourceID(t *testing.T) {
+	var detailCalls atomic.Int32
+	provider := newYouTubeMusicProviderWithCommandRunner("youtube", func(_ context.Context, args []string) ([]byte, error) {
+		if args[0] == "--flat-playlist" {
+			return []byte(`{"url":"https://www.youtube.com/watch?v=missing","title":"Flat"}`), nil
+		}
+		detailCalls.Add(1)
+		return []byte(`{"id":"other","artist":"Wrong"}`), nil
+	})
+
+	items, err := provider.Search(context.Background(), "artist", 1)
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if detailCalls.Load() != 0 || len(items) != 1 || items[0].SourceID != "" || items[0].Artist != "" {
+		t.Fatalf("missing-ID fallback = %#v, detail calls = %d", items, detailCalls.Load())
+	}
+}
+
+func TestYouTubeMusicMetadataEnrichmentBoundsConcurrentProcesses(t *testing.T) {
+	flatItems := make([]string, 0, DefaultYouTubeMusicMetadataEnrichmentConcurrency+3)
+	for index := 0; index < DefaultYouTubeMusicMetadataEnrichmentConcurrency+3; index++ {
+		flatItems = append(flatItems, `{"id":"item`+strconv.Itoa(index)+`","title":"Flat"}`)
+	}
+	started := make(chan struct{}, len(flatItems)*2)
+	release := make(chan struct{})
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	provider := newYouTubeMusicProviderWithCommandRunner("youtube", func(_ context.Context, args []string) ([]byte, error) {
+		if args[0] == "--flat-playlist" {
+			return []byte(strings.Join(flatItems, "\n")), nil
+		}
+		current := inFlight.Add(1)
+		for previous := maxInFlight.Load(); current > previous && !maxInFlight.CompareAndSwap(previous, current); previous = maxInFlight.Load() {
+		}
+		started <- struct{}{}
+		<-release
+		inFlight.Add(-1)
+		return []byte(`{"artist":"Artist"}`), nil
+	})
+	type outcome struct {
+		items []Candidate
+		err   error
+	}
+	done := make(chan outcome, 2)
+	for call := 0; call < 2; call++ {
+		go func() {
+			items, err := provider.Search(context.Background(), "artist", len(flatItems))
+			done <- outcome{items: items, err: err}
+		}()
+	}
+	for index := 0; index < DefaultYouTubeMusicMetadataEnrichmentConcurrency; index++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("metadata processes did not start")
+		}
+	}
+	select {
+	case <-started:
+		t.Fatal("metadata process concurrency exceeded configured bound")
+	default:
+	}
+	close(release)
+	for call := 0; call < 2; call++ {
+		result := <-done
+		if result.err != nil || len(result.items) != len(flatItems) {
+			t.Fatalf("Search() = %#v, %v", result.items, result.err)
+		}
+	}
+	if got := maxInFlight.Load(); got != DefaultYouTubeMusicMetadataEnrichmentConcurrency {
+		t.Fatalf("max concurrent metadata processes = %d, want %d", got, DefaultYouTubeMusicMetadataEnrichmentConcurrency)
 	}
 }
 
@@ -535,12 +974,12 @@ func TestCandidateThumbnailURLSelection(t *testing.T) {
 		want string
 	}{
 		{
-			name: "singular thumbnail wins",
+			name: "bounded array thumbnail wins over singular full resolution",
 			raw: map[string]interface{}{
 				"thumbnail":  "https://img/direct.jpg",
 				"thumbnails": []interface{}{map[string]interface{}{"url": "https://img/array.jpg", "height": 360.0}},
 			},
-			want: "https://img/direct.jpg",
+			want: "https://img/array.jpg",
 		},
 		{
 			name: "largest height at most 480 preferred",
@@ -555,24 +994,35 @@ func TestCandidateThumbnailURLSelection(t *testing.T) {
 			want: "https://img/480.jpg",
 		},
 		{
-			name: "all above 480 falls back to largest",
+			name: "all above 480 falls back to smallest",
 			raw: map[string]interface{}{
 				"thumbnails": []interface{}{
 					map[string]interface{}{"url": "https://img/720.jpg", "height": 720.0},
 					map[string]interface{}{"url": "https://img/1080.jpg", "height": 1080.0},
 				},
 			},
-			want: "https://img/1080.jpg",
+			want: "https://img/720.jpg",
 		},
 		{
-			name: "heightless entries still yield a url",
+			name: "heightless entries fall back to singular thumbnail",
+			raw: map[string]interface{}{
+				"thumbnail": "https://img/direct.jpg",
+				"thumbnails": []interface{}{
+					map[string]interface{}{"url": "https://img/a.jpg"},
+					map[string]interface{}{"url": "https://img/b.jpg"},
+				},
+			},
+			want: "https://img/direct.jpg",
+		},
+		{
+			name: "heightless entries still yield a url without singular fallback",
 			raw: map[string]interface{}{
 				"thumbnails": []interface{}{
 					map[string]interface{}{"url": "https://img/a.jpg"},
 					map[string]interface{}{"url": "https://img/b.jpg"},
 				},
 			},
-			want: "https://img/b.jpg",
+			want: "https://img/a.jpg",
 		},
 		{
 			name: "absent both yields empty",
