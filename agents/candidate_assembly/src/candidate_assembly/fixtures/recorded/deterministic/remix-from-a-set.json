@@ -24,8 +24,8 @@
   "recommendations": [
     {
       "candidateId": "youtube:skrillex-remix-standalone",
-      "classification": "official_audio",
-      "confidence": 0.95,
+      "classification": "topic_audio",
+      "confidence": 0.87,
       "evidence": [
         {
           "ref": "youtube:skrillex-remix-standalone",
@@ -37,7 +37,7 @@
         }
       ],
       "rank": 1,
-      "rationale": "official audio: YouTube Music Songs discovery surface identifies an official track.",
+      "rationale": "topic audio: YouTube topic upload is usually label-provided audio.",
       "warnings": []
     },
     {

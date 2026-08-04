@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -129,7 +130,41 @@ func TestSourceQualityPrefersOfficialYouTubeMusicAudioForReportedExamples(t *tes
 	}
 }
 
-func TestSourceQualityPrefersFlatYouTubeMusicSongsCandidatesForReportedExamples(t *testing.T) {
+func TestSourceQualityYouTubeMusicEvidenceIsNotDoubleCounted(t *testing.T) {
+	metadata := map[string]interface{}{
+		"description": "Provided to YouTube by Example Label",
+		"track":       "Song",
+		"artist":      "Artist",
+		"album":       "Album",
+	}
+	generic := Candidate{
+		CandidateID: "youtube:generic", Provider: "youtube", SourceID: "generic",
+		SourceURL: "https://www.youtube.com/watch?v=generic", Title: "Song", Artist: "Artist",
+		Uploader: "Label Channel", DurationMs: 200000, Downloadable: true, Metadata: metadata,
+	}
+	music := generic
+	music.CandidateID = "youtube:music"
+	music.SourceID = "music"
+	music.SourceURL = "https://www.youtube.com/watch?v=music"
+	music.Metadata = map[string]interface{}{
+		"description":      metadata["description"],
+		"track":            metadata["track"],
+		"artist":           metadata["artist"],
+		"album":            metadata["album"],
+		"discoverySurface": "youtube_music_songs",
+	}
+
+	genericQuality := EvaluateSourceQuality("Artist Song", generic)
+	musicQuality := EvaluateSourceQuality("Artist Song", music)
+	if musicQuality.Score != genericQuality.Score {
+		t.Fatalf("YouTube Music score = %d, generic attributed score = %d; evidence bonus must apply once", musicQuality.Score, genericQuality.Score)
+	}
+	if musicQuality.Classification != SourceQualityOfficialAudio {
+		t.Fatalf("YouTube Music quality = %#v, want official audio", musicQuality)
+	}
+}
+
+func TestSourceQualityFlatYouTubeMusicSongsDoNotInferOfficialAudio(t *testing.T) {
 	tests := []struct {
 		name    string
 		query   string
@@ -165,13 +200,41 @@ func TestSourceQualityPrefersFlatYouTubeMusicSongsCandidatesForReportedExamples(
 			}
 			audioQuality := sourceQualityFromMetadata(t, ranked[0].Metadata)
 			videoQuality := sourceQualityFromMetadata(t, ranked[1].Metadata)
-			if audioQuality.Classification != SourceQualityOfficialAudio || audioQuality.Recommendation != SourceQualityPreferred {
-				t.Fatalf("flat audio quality = %#v, want preferred official_audio", audioQuality)
+			if audioQuality.Classification != SourceQualityTopicAudio {
+				t.Fatalf("flat audio quality = %#v, want topic_audio from uploader evidence rather than official_audio from surface alone", audioQuality)
+			}
+			if containsAny(strings.Join(audioQuality.Warnings, " "), "lacks enough metadata") {
+				t.Fatalf("identifiable flat audio quality = %#v, should not claim artist/duration metadata is missing", audioQuality)
 			}
 			if videoQuality.Classification != SourceQualityMusicVideo || videoQuality.Score >= audioQuality.Score {
 				t.Fatalf("official video quality = %#v, want lower score than %#v", videoQuality, audioQuality)
 			}
 		})
+	}
+}
+
+func TestSourceQualityMetadataEmptyYouTubeMusicSurfaceIsNotPreferred(t *testing.T) {
+	quality := EvaluateSourceQuality("Artist Song", Candidate{
+		CandidateID: "youtube:flat", Provider: "youtube", SourceID: "flat",
+		SourceURL: "https://www.youtube.com/watch?v=flat", Title: "Song", Downloadable: true,
+		Metadata: map[string]interface{}{"discoverySurface": "youtube_music_songs"},
+	})
+	if quality.Classification == SourceQualityOfficialAudio || quality.Recommendation == SourceQualityPreferred || quality.Score >= 82 {
+		t.Fatalf("metadata-empty music surface quality = %#v, must not become proven preferred audio", quality)
+	}
+	if !containsAny(strings.Join(quality.Warnings, " "), "lacks enough metadata") {
+		t.Fatalf("metadata-empty music surface quality = %#v, want insufficient-metadata warning", quality)
+	}
+}
+
+func TestSourceQualityArbitraryUploaderDoesNotProveYouTubeMusicOfficialAudio(t *testing.T) {
+	quality := EvaluateSourceQuality("Artist Song", Candidate{
+		CandidateID: "youtube:flat", Provider: "youtube", SourceID: "flat",
+		SourceURL: "https://www.youtube.com/watch?v=flat", Title: "Song", Artist: "Unrelated Artist", Uploader: "arbitrary uploader", Downloadable: true,
+		Metadata: map[string]interface{}{"discoverySurface": "youtube_music_songs"},
+	})
+	if quality.Classification == SourceQualityOfficialAudio || quality.Score >= 82 || quality.Recommendation == SourceQualityPreferred {
+		t.Fatalf("arbitrary uploader quality = %#v, must not receive the YouTube Music official-audio bonus", quality)
 	}
 }
 

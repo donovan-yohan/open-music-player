@@ -119,9 +119,18 @@ func newSourceQualityJudge(cfg *config.Config) discovery.SourceQualityJudge {
 func discoveryServiceConfigFromEnv(getenv func(string) string) discovery.ServiceConfig {
 	perProviderTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS", discovery.DefaultPerProviderTimeout)
 	overallTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_OVERALL_TIMEOUT_SECONDS", discovery.DefaultOverallTimeout)
+	metadataTimeout := discoveryTimeoutFromEnv(getenv, "DISCOVERY_YOUTUBE_MUSIC_METADATA_TIMEOUT_SECONDS", discovery.DefaultYouTubeMusicMetadataEnrichmentTimeout)
+	metadataConcurrency := discoveryPositiveIntFromEnv(
+		getenv,
+		"DISCOVERY_YOUTUBE_MUSIC_METADATA_CONCURRENCY",
+		discovery.DefaultYouTubeMusicMetadataEnrichmentConcurrency,
+		discovery.MaxYouTubeMusicMetadataEnrichmentConcurrency,
+	)
 	return discovery.NormalizeServiceConfig(discovery.ServiceConfig{
-		PerProviderTimeout: perProviderTimeout,
-		OverallTimeout:     overallTimeout,
+		PerProviderTimeout:                        perProviderTimeout,
+		OverallTimeout:                            overallTimeout,
+		YouTubeMusicMetadataEnrichmentTimeout:     metadataTimeout,
+		YouTubeMusicMetadataEnrichmentConcurrency: metadataConcurrency,
 	})
 }
 
@@ -131,6 +140,17 @@ func discoveryTimeoutFromEnv(getenv func(string) string, key string, fallback ti
 		return fallback
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func discoveryPositiveIntFromEnv(getenv func(string) string, key string, fallback, maximum int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(getenv(key)))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
 }
 
 // newAgentToolsHandler wires the private research gateway independently from
