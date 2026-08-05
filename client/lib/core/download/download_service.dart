@@ -223,13 +223,22 @@ class DownloadService implements LocalAudioArtifactResolver {
     _emitProgress(track.id, 1.0, DownloadStatus.completed);
   }
 
-  Future<void> downloadPlaylist(Playlist playlist) async {
-    if (playlist.tracks == null || playlist.tracks!.isEmpty) return;
-
-    for (final track in playlist.tracks!) {
+  /// Downloads every track in [tracks] that is not already on disk.
+  ///
+  /// Two guards make a repeated "download all" tap idempotent: a track with a
+  /// validated completed artifact is skipped outright, and a track whose
+  /// transfer is already in flight shares that transfer via [downloadTrack]
+  /// rather than starting a second one. So re-running this mid-collection
+  /// never duplicates a job.
+  Future<void> downloadTracks(Iterable<Track> tracks) async {
+    for (final track in tracks) {
+      if (!isDownloading(track.id) && await isDownloaded(track.id)) continue;
       await downloadTrack(track);
     }
   }
+
+  Future<void> downloadPlaylist(Playlist playlist) =>
+      downloadTracks(playlist.tracks ?? const <Track>[]);
 
   /// Re-attempts a download. Identical to [downloadTrack]; the in-progress row
   /// replaces any prior failed/stale row so no duplicate or false-completed

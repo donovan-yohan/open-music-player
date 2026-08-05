@@ -7,6 +7,7 @@ import '../../core/audio/queue_ordering.dart';
 import '../../core/services/services.dart' as services;
 import '../../core/services/liked_tracks_state.dart';
 import '../../shared/models/track.dart';
+import '../../shared/widgets/download_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/track_tile.dart';
 
@@ -232,6 +233,13 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
                 ),
               ),
             ],
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: DownloadAllButton(
+              tracks: _tracks,
+              buttonKey: const ValueKey('liked_songs_download_all'),
+            ),
           ),
         ],
       ),
