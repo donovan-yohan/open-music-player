@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart' as riverpod;
 import 'package:go_router/go_router.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
@@ -9,6 +10,7 @@ import 'package:share_plus/share_plus.dart';
 import '../../app/theme.dart';
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
+import '../../core/providers/settings_provider.dart';
 import '../../core/services/analysis_service.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/liked_tracks_state.dart';
@@ -27,10 +29,6 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  static const bool _djPrototypeEnabled = bool.fromEnvironment(
-    'OMP_DJ_PROTOTYPE',
-    defaultValue: false,
-  );
   _PlayerTimeMode _timeMode = _PlayerTimeMode.song;
   String? _pendingLikedSeedItem;
 
@@ -77,13 +75,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             ),
             centerTitle: true,
             actions: [
-              if (_djPrototypeEnabled)
-                IconButton(
-                  key: const ValueKey('player_dj_mode_action'),
-                  icon: const Icon(Icons.graphic_eq),
-                  tooltip: 'DJ mode',
-                  onPressed: () => context.push('/dj'),
-                ),
+              const _DjModeAction(),
               IconButton(
                 icon: const Icon(Icons.info_outline),
                 tooltip: 'Song info',
@@ -778,3 +770,43 @@ int? _optionalQualityInt(Object? value) {
 }
 
 String? _optionalQualityString(Object? value) => value is String ? value : null;
+
+/// The only way into the DJ deck.
+///
+/// The deck drives two audio voices directly, outside the
+/// `QueueTimelineController` that ADR 0001 makes the single playback authority.
+/// The addendum to that ADR sanctions the exception only while it stays behind
+/// a switch the user controls, so this affordance — and therefore the deck — is
+/// bounded by `SettingsModel.djModeEnabled`.
+class _DjModeAction extends StatelessWidget {
+  const _DjModeAction();
+
+  @override
+  Widget build(BuildContext context) {
+    try {
+      riverpod.ProviderScope.containerOf(context, listen: false);
+    } catch (_) {
+      // Narrow widget harnesses mount PlayerScreen without the app-level
+      // ProviderScope. With no settings to consult there is no recorded opt-in,
+      // so the experimental entry point stays hidden rather than turning itself
+      // on by default.
+      return const SizedBox.shrink();
+    }
+    return riverpod.Consumer(
+      builder: (context, ref, _) {
+        final enabled = ref.watch(
+          settingsProvider.select((settings) => settings.djModeEnabled),
+        );
+        if (!enabled) {
+          return const SizedBox.shrink();
+        }
+        return IconButton(
+          key: const ValueKey('player_dj_mode_action'),
+          icon: const Icon(Icons.graphic_eq),
+          tooltip: 'DJ mode (experimental)',
+          onPressed: () => context.push('/dj'),
+        );
+      },
+    );
+  }
+}

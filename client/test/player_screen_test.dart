@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart' as riverpod;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -10,13 +11,81 @@ import 'package:open_music_player/app/theme.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
+import 'package:open_music_player/core/providers/settings_provider.dart';
 import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
 import 'package:open_music_player/features/player/player_screen.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  // The DJ deck is the sanctioned ADR 0001 exception: it drives two audio
+  // voices outside the QueueTimelineController. The exception is bounded by
+  // being reachable only through this one affordance, so the settings toggle
+  // has to actually control it.
+  Future<void> pumpPlayerWithSettings(
+    WidgetTester tester,
+    Map<String, Object> initialPrefs,
+  ) async {
+    SharedPreferences.setMockInitialValues(initialPrefs);
+    final preferences = await SharedPreferences.getInstance();
+    await tester.pumpWidget(
+      riverpod.ProviderScope(
+        overrides: [
+          sharedPreferencesProvider.overrideWithValue(preferences),
+        ],
+        child: ListenableProvider<PlaybackState>.value(
+          value: _FakePlaybackState(),
+          child: const MaterialApp(home: PlayerScreen()),
+        ),
+      ),
+    );
+    await tester.pump();
+  }
+
+  testWidgets('DJ mode entry is offered by default', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpPlayerWithSettings(tester, <String, Object>{});
+
+    expect(find.byKey(const ValueKey('player_dj_mode_action')), findsOneWidget);
+  });
+
+  testWidgets('turning DJ mode off removes the only way into the deck', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1200, 2200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pumpPlayerWithSettings(tester, <String, Object>{
+      'app_settings': '{"djModeEnabled":false}',
+    });
+
+    expect(find.byKey(const ValueKey('player_dj_mode_action')), findsNothing);
+  });
+
+  testWidgets('DJ mode entry stays hidden without app settings', (
+    tester,
+  ) async {
+    // A harness with no ProviderScope has no recorded opt-in, so the
+    // experimental surface must not present itself.
+    await tester.pumpWidget(
+      ListenableProvider<PlaybackState>.value(
+        value: _FakePlaybackState(),
+        child: const MaterialApp(home: PlayerScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('player_dj_mode_action')), findsNothing);
+  });
+
   testWidgets('mobile Sound Q player keeps its controls usable at large text', (
     tester,
   ) async {

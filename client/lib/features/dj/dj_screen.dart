@@ -18,10 +18,18 @@ import 'dj_layout.dart';
 import 'engine/deck_controller.dart';
 import 'providers/dj_session_provider.dart';
 
-/// Spike-only direct-Voice performance view.
+/// Direct-Voice performance view.
+///
+/// This screen owns two `Voice`s outside `QueueTimelineController`. That is a
+/// sanctioned but scoped exception to ADR 0001 — see the
+/// "DJ deck's direct-voice exception" addendum in
+/// `docs/adr/0001-playback-timeline-source-of-truth.md` for what the exception
+/// covers and what ends it. It is reachable only while
+/// `SettingsModel.djModeEnabled` is on.
 ///
 /// TODO(dj-production): replace [DjSessionProvider] direct voices with the
-/// QueueTimelineController projection required by ADR 0001.
+/// QueueTimelineController deck projection (step 1 of the addendum's
+/// integration path).
 class DjScreen extends StatefulWidget {
   const DjScreen({super.key, this.session, this.filePicker});
   final DjSessionProvider? session;

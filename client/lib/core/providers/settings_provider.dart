@@ -62,6 +62,11 @@ class SettingsNotifier extends StateNotifier<SettingsModel> {
     _saveSettings();
   }
 
+  void setDjModeEnabled(bool enabled) {
+    state = state.copyWith(djModeEnabled: enabled);
+    _saveSettings();
+  }
+
   void setClickAuditionOutputOffsetMs(
     ClickAuditionOutputRoute route,
     int offsetMs,
