@@ -23,6 +23,9 @@ import 'package:open_music_player/core/engine/click_auditioner.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/models/settings_model.dart';
 import 'package:open_music_player/core/providers/settings_provider.dart';
+import 'package:open_music_player/core/services/api_client.dart' as services_api;
+import 'package:open_music_player/core/services/library_service.dart';
+import 'package:open_music_player/core/services/liked_tracks_state.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/mix_plan.dart';
@@ -152,6 +155,7 @@ void main() {
     AuditionOutputRouteMonitorFactory? auditionOutputRouteMonitorFactory,
     SharedPreferences? settingsPreferences,
     PlaylistService? playlistService,
+    LikedTracksState? likedTracksState,
   }) async {
     Widget app = MultiProvider(
       providers: [
@@ -160,6 +164,10 @@ void main() {
         ),
         ListenableProvider<PlaybackState>.value(value: playbackState),
         Provider<CommandRegistry>.value(value: commandRegistry),
+        if (likedTracksState != null)
+          ChangeNotifierProvider<LikedTracksState>.value(
+            value: likedTracksState,
+          ),
       ],
       child: MaterialApp(
         theme: AppTheme.lightTheme,
@@ -279,6 +287,28 @@ void main() {
     );
 
     expect(remaining, 165000);
+  });
+
+
+  testWidgets('playback queue rows expose the like heart', (tester) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Heartable', seconds: 90),
+        _mediaItem(2, 'Also Heartable', seconds: 90),
+      ]
+      ..fakeCurrentIndex = 0;
+    final library = _QueueLikeLibraryService();
+    final liked = LikedTracksState(library);
+    addTearDown(liked.dispose);
+
+    await pumpQueueScreen(tester, likedTracksState: liked);
+
+    expect(find.byKey(const ValueKey('queue_like_1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('queue_like_2')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('queue_like_1')));
+    await tester.pumpAndSettle();
+    expect(library.likedIds, [1]);
   });
 
   testWidgets('renders live playback queue ahead of import queue', (
@@ -4669,4 +4699,17 @@ class _FakePlaylistService extends PlaylistService {
     return addResult ??
         AddTracksResult(added: trackIds, skipped: const <int>[]);
   }
+}
+
+/// Records the like/unlike persistence calls made from queue rows.
+class _QueueLikeLibraryService extends LibraryService {
+  _QueueLikeLibraryService() : super(services_api.ApiClient());
+
+  final likedIds = <int>[];
+
+  @override
+  Future<void> like(int trackId) async => likedIds.add(trackId);
+
+  @override
+  Future<void> unlike(int trackId) async => likedIds.remove(trackId);
 }

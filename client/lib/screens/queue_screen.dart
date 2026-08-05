@@ -31,6 +31,7 @@ import '../models/trim_range.dart';
 import '../providers/queue_provider.dart';
 import '../shared/models/playlist.dart';
 import '../shared/models/track.dart' show trackArtworkKindFromPayload;
+import '../shared/widgets/like_button.dart';
 import '../shared/widgets/playlist_picker_sheet.dart';
 import '../shared/widgets/track_tile.dart';
 import '../widgets/queue_item.dart';
@@ -581,6 +582,15 @@ class _QueueScreenState extends State<QueueScreen> {
               coverArtUrl: track.artworkUrl,
               artworkKind: track.artworkKind,
               analysis: track.analysis,
+              action: switch (int.tryParse(track.playbackTrackId ?? '')) {
+                // Source-backed queue items have no backend track row yet, so
+                // there is nothing to like until the download lands.
+                null => null,
+                final playbackId => LikeToggleButton.forId(
+                    trackId: playbackId,
+                    buttonKey: ValueKey('queue_like_$queueItemId'),
+                  ),
+              },
               leading: _buildReorderHandle(
                 queueItemId: queueItemId,
                 title: item.title,
