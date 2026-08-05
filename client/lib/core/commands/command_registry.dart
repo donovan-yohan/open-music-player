@@ -156,7 +156,7 @@ class CommandRegistry {
       ),
       _navigation(
         CommandId.goSearch,
-        'Search',
+        'Discover',
         Icons.search,
         '/search',
         '$primaryModifier+2',
@@ -206,7 +206,7 @@ class CommandRegistry {
       AppCommand(
         id: CommandId.focusSearch,
         category: CommandCategory.navigation,
-        label: 'Focus search',
+        label: 'Focus Discover',
         icon: Icons.manage_search,
         shortcutHint: '$primaryModifier+K or /',
         availability: _enabled,

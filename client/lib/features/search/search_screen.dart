@@ -7,26 +7,16 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/api/api_client.dart';
-import '../../core/audio/playback_state.dart';
 import '../../core/commands/search_focus_controller.dart';
 import '../../core/discovery/discovery_models.dart';
 import '../../core/discovery/research_models.dart';
 import '../../core/discovery/research_service.dart';
 import '../../core/discovery/discovery_service.dart';
-import '../../core/models/models.dart';
-import '../../core/services/api_client.dart' as local_api;
-import '../../core/services/search_service.dart';
 import '../../models/track.dart';
 import '../../providers/queue_provider.dart';
-import '../library/local_browse_navigation.dart';
-import '../../shared/widgets/queue_swipe_action.dart';
-import '../../shared/widgets/song_metadata_chips.dart';
 import 'search_local_logic.dart';
 
 class SearchScreen extends StatefulWidget {
-  /// Optional injection seam for tests: supply a [SearchService] wired to a
-  /// capturing/fake ApiClient. Production builds construct one lazily.
-  final SearchService? searchService;
   final ResearchJobService? researchService;
   final List<Duration> researchPollDelays;
   final SearchFocusController? commandFocusController;
@@ -37,7 +27,6 @@ class SearchScreen extends StatefulWidget {
 
   const SearchScreen({
     super.key,
-    this.searchService,
     this.researchService,
     this.commandFocusController,
     this.externalUrlLauncher,
@@ -65,22 +54,7 @@ class _SearchScreenState extends State<SearchScreen> {
   bool _didPrimeQueue = false;
   bool _isPollingQueue = false;
 
-  // Scope toggle: Catalog keeps the discovery/assist path; Library runs local
-  // library search via SearchService. Catalog stays the default so the existing
-  // discovery/AI-assist flow (and its tests) are untouched.
-  SearchScope _scope = SearchScope.catalog;
-
-  // Local (My Library) search state, kept fully separate from the discovery
-  // fields above so switching scope never crosses their view state.
-  SearchService? _searchService;
-  final RecentSearchesStore _recentSearches = RecentSearchesStore();
-  List<String> _recentQueries = const [];
   SearchResultTab _resultTab = SearchResultTab.song;
-  LocalSearchResults _localResults = const LocalSearchResults();
-  int _localRequestSerial = 0;
-  bool _isLocalSearching = false;
-  String _localQuery = '';
-  String? _localError;
 
   DiscoverySearchResponse? _response;
   int _searchRequestSerial = 0;
@@ -112,9 +86,7 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   void initState() {
     super.initState();
-    _queryFocusNode.addListener(_onFocusChanged);
     widget.commandFocusController?.register(_queryFocusNode);
-    _loadRecentSearches();
   }
 
   @override
@@ -137,32 +109,10 @@ class _SearchScreenState extends State<SearchScreen> {
     _debounceTimer?.cancel();
     _pollTimer?.cancel();
     _researchPollTimer?.cancel();
-    _queryFocusNode.removeListener(_onFocusChanged);
     widget.commandFocusController?.unregister(_queryFocusNode);
     _queryFocusNode.dispose();
     _queryController.dispose();
     super.dispose();
-  }
-
-  void _onFocusChanged() {
-    // Focus drives the focused-but-empty recent-searches panel in Library scope.
-    if (_scope == SearchScope.library) setState(() {});
-  }
-
-  /// Lazily built local-search service. Tests inject one via the widget; the
-  /// production default wraps the parser-based ApiClient (its own secure-storage
-  /// token read matches the app's stored access token).
-  SearchService get _localSearch => _searchService ??=
-      widget.searchService ?? SearchService(local_api.ApiClient());
-
-  Future<void> _loadRecentSearches() async {
-    try {
-      final entries = await _recentSearches.load();
-      if (!mounted) return;
-      setState(() => _recentQueries = entries);
-    } catch (_) {
-      // A missing/broken prefs store just means no history yet — never fatal.
-    }
   }
 
   void _onQueryChanged(String value) {
@@ -170,21 +120,6 @@ class _SearchScreenState extends State<SearchScreen> {
         _sourceSelectionRetryDecisionId != null) {
       setState(_clearSourceSelectionStatus);
     }
-    if (_scope == SearchScope.library) {
-      final next = value.trim();
-      _debounceTimer?.cancel();
-      if (next.isEmpty) {
-        setState(_resetLocalSearch);
-        return;
-      }
-      setState(() {});
-      _debounceTimer = Timer(const Duration(milliseconds: 350), () {
-        if (next == _localQuery) return;
-        _runLocalSearch(query: next);
-      });
-      return;
-    }
-
     // Editing always returns to ordinary search. AI is only invoked by its
     // explicit inline control, never by keystrokes or the keyboard action.
     if (_assistMode) {
@@ -301,10 +236,6 @@ class _SearchScreenState extends State<SearchScreen> {
   void _onSubmit(String value) {
     final text = value.trim();
     if (text.isEmpty) return;
-    if (_scope == SearchScope.library) {
-      _runLocalSearch(query: text);
-      return;
-    }
     if (_assistMode) {
       setState(() {
         _assistMode = false;
@@ -314,153 +245,7 @@ class _SearchScreenState extends State<SearchScreen> {
     _runSearch(query: text);
   }
 
-  /// Flip between Catalog (discovery/assist) and My Library (local search),
-  /// re-running the SAME typed query in the new scope so the user never retypes.
-  void _setScope(SearchScope scope) {
-    if (scope == _scope) return;
-    _debounceTimer?.cancel();
-    setState(() {
-      _scope = scope;
-      _clearSourceSelectionStatus();
-      _resetLocalSearch();
-      if (scope == SearchScope.library) _resetAssist();
-    });
-    final text = _queryController.text.trim();
-    if (text.isEmpty) return;
-    if (scope == SearchScope.library) {
-      _runLocalSearch(query: text);
-    } else if (!_assistMode) {
-      _runSearch(query: text);
-    }
-  }
-
-  void _resetLocalSearch() {
-    _clearSourceSelectionStatus();
-    _localRequestSerial++;
-    _localResults = const LocalSearchResults();
-    _localError = null;
-    _localQuery = '';
-    _isLocalSearching = false;
-    _resultTab = SearchResultTab.song;
-  }
-
-  /// Runs a local library search across recordings/artists/releases in parallel,
-  /// guarded by a monotonic serial so a superseded response can neither
-  /// overwrite a newer result nor strand the spinner. On success the query is
-  /// recorded in recent searches.
-  Future<void> _runLocalSearch({String? query}) async {
-    final text = (query ?? _queryController.text).trim();
-    _debounceTimer?.cancel();
-    final requestId = ++_localRequestSerial;
-
-    if (text.isEmpty) {
-      setState(_resetLocalSearch);
-      return;
-    }
-
-    setState(() {
-      _localQuery = text;
-      _isLocalSearching = true;
-      _localError = null;
-    });
-
-    try {
-      final results = await Future.wait([
-        _localSearch.searchTracks(text),
-        _localSearch.searchArtists(text),
-        _localSearch.searchAlbums(text),
-      ]);
-      if (!mounted || requestId != _localRequestSerial) return;
-      final tracks = results[0] as SearchResponse<TrackResult>;
-      final artists = results[1] as SearchResponse<ArtistResult>;
-      final albums = results[2] as SearchResponse<AlbumResult>;
-      setState(() {
-        _localResults = LocalSearchResults(
-          tracks: tracks.results,
-          artists: artists.results,
-          albums: albums.results,
-        );
-      });
-      unawaited(_recordRecentSearch(text));
-    } catch (error) {
-      if (!mounted || requestId != _localRequestSerial) return;
-      setState(() {
-        _localResults = const LocalSearchResults();
-        _localError = _friendlyLocalError(error);
-      });
-    } finally {
-      if (mounted && requestId == _localRequestSerial) {
-        setState(() => _isLocalSearching = false);
-      }
-    }
-  }
-
-  Future<void> _recordRecentSearch(String query) async {
-    try {
-      final entries = await _recentSearches.add(query);
-      if (!mounted) return;
-      setState(() => _recentQueries = entries);
-    } catch (_) {
-      // Persisting history is best-effort; never surface it to the user.
-    }
-  }
-
-  Future<void> _removeRecentSearch(String query) async {
-    final entries = await _recentSearches.remove(query);
-    if (!mounted) return;
-    setState(() => _recentQueries = entries);
-  }
-
-  Future<void> _clearRecentSearches() async {
-    final entries = await _recentSearches.clear();
-    if (!mounted) return;
-    setState(() => _recentQueries = entries);
-  }
-
-  void _runRecentSearch(String query) {
-    _queryController.text = query;
-    _queryController.selection = TextSelection.collapsed(offset: query.length);
-    _queryFocusNode.unfocus();
-    _runLocalSearch(query: query);
-  }
-
-  Future<void> _playLocalTrack(TrackResult track) async {
-    final id = track.id;
-    if (id == null) return;
-    await context.read<PlaybackState>().playQueue([
-      track.toPlaybackJson(),
-    ]);
-  }
-
-  Future<void> _enqueueLocalTrack(TrackResult track) async {
-    final id = track.id;
-    if (id == null) return;
-    final playback = context.read<PlaybackState>();
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      await playback.enqueue(track.toPlaybackJson());
-      if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(content: Text('Added "${track.title}" to queue')),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Could not add to queue')),
-      );
-    }
-  }
-
-  String _friendlyLocalError(Object error) {
-    if (error is local_api.ApiException) return error.message;
-    if (error is DioException) {
-      return error.message ?? 'Search failed. Please try again.';
-    }
-    return 'Search failed. Please try again.';
-  }
-
   void _triggerAssist() {
-    if (_scope == SearchScope.library) return;
     final prompt = _queryController.text.trim();
     if (prompt.isEmpty) {
       _queryFocusNode.requestFocus();
@@ -744,22 +529,10 @@ class _SearchScreenState extends State<SearchScreen> {
       _showSelectionRecoveryError();
       return;
     }
-    if (selection.isRecommended(candidate)) {
-      await _submitSourceChoice(
-        candidate,
-        selection,
-        SourceSelectionAction.accepted,
-      );
-      return;
-    }
-
-    final reason = await _promptForOverrideReason(candidate);
-    if (reason == null || !mounted) return;
     await _submitSourceChoice(
       candidate,
       selection,
-      SourceSelectionAction.overridden,
-      reason: reason,
+      SourceSelectionAction.selected,
     );
   }
 
@@ -941,9 +714,7 @@ class _SearchScreenState extends State<SearchScreen> {
       await provider.addSourceDecision(createdDecision.id);
       if (!mounted) return;
       setState(() {
-        _sourceSelectionStatus = action == SourceSelectionAction.accepted
-            ? 'Selected ${candidate.title} as recommended. ${candidate.sourceQuality?.debugReason ?? ''}'
-            : 'Selected ${candidate.title}. ${createdDecision.reason ?? reason ?? ''}';
+        _sourceSelectionStatus = 'Added ${candidate.title} to imports.';
       });
     } catch (error) {
       if (!mounted) return;
@@ -1060,7 +831,9 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   QueueTrack? _queuedTrackFor(
-      QueueProvider provider, DiscoveryCandidate candidate) {
+    QueueProvider provider,
+    DiscoveryCandidate candidate,
+  ) {
     final key = _candidateKey(candidate);
     for (final track in provider.queue.tracks) {
       if (track.sourceCandidateId != null && track.sourceCandidateId == key) {
@@ -1082,13 +855,12 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) {
     final queueProvider = context.watch<QueueProvider>();
-    final library = _scope == SearchScope.library;
     final queueAvailable = !queueProvider.queueServiceDisabled;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'Mobile Discovery',
+          'Discover',
           style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
         ),
         actions: queueAvailable
@@ -1104,11 +876,9 @@ class _SearchScreenState extends State<SearchScreen> {
       body: RefreshIndicator(
         onRefresh: () async {
           await Future.wait([
-            if (library && _localQuery.isNotEmpty)
-              _runLocalSearch()
-            else if (!library && _assistMode && _askedPrompt.isNotEmpty)
+            if (_assistMode && _askedPrompt.isNotEmpty)
               _runAssist(prompt: _askedPrompt)
-            else if (!library && !_assistMode && _query.isNotEmpty)
+            else if (!_assistMode && _query.isNotEmpty)
               _runSearch(),
             if (queueAvailable) _refreshQueue(force: true),
           ]);
@@ -1121,12 +891,7 @@ class _SearchScreenState extends State<SearchScreen> {
             const SizedBox(height: 6),
             _buildResultTabs(),
             const SizedBox(height: 6),
-            _buildScopeToggle(),
-            const SizedBox(height: 6),
-            if (library)
-              ..._buildLibraryBody()
-            else
-              ..._buildCatalogBody(queueProvider),
+            ..._buildCatalogBody(queueProvider),
             const SizedBox(height: 16),
             if (queueAvailable) _buildQueueAffordance(queueProvider),
           ],
@@ -1161,34 +926,6 @@ class _SearchScreenState extends State<SearchScreen> {
     ];
   }
 
-  Widget _buildScopeToggle() {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: SegmentedButton<SearchScope>(
-        key: const ValueKey('search_scope_toggle'),
-        showSelectedIcon: false,
-        style: const ButtonStyle(
-          visualDensity: VisualDensity.compact,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        segments: const [
-          ButtonSegment<SearchScope>(
-            value: SearchScope.catalog,
-            icon: Icon(Icons.public, size: 18),
-            label: Text('Catalog'),
-          ),
-          ButtonSegment<SearchScope>(
-            value: SearchScope.library,
-            icon: Icon(Icons.library_music, size: 18),
-            label: Text('My Library'),
-          ),
-        ],
-        selected: {_scope},
-        onSelectionChanged: (selection) => _setScope(selection.first),
-      ),
-    );
-  }
-
   List<Widget> _buildSearchModeBody(QueueProvider queueProvider) {
     return [
       if (_searchError != null) _buildErrorCard(_searchError!, _runSearch),
@@ -1202,66 +939,6 @@ class _SearchScreenState extends State<SearchScreen> {
     ];
   }
 
-  List<Widget> _buildLibraryBody() {
-    final fieldEmpty = _queryController.text.trim().isEmpty;
-    // Focused-but-empty surfaces recent searches for one-tap re-run.
-    if (_queryFocusNode.hasFocus && fieldEmpty && _recentQueries.isNotEmpty) {
-      return [_buildRecentSearches()];
-    }
-
-    return [_buildLocalResultsSection()];
-  }
-
-  Widget _buildRecentSearches() {
-    return Column(
-      key: const ValueKey('search_recent_searches'),
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(
-              Icons.history,
-              size: 18,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                'Recent searches',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(
-                  context,
-                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
-              ),
-            ),
-            TextButton(
-              key: const ValueKey('search_recent_clear_all'),
-              onPressed: _clearRecentSearches,
-              child: const Text('Clear all'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        for (final query in _recentQueries)
-          ListTile(
-            key: ValueKey('search_recent_$query'),
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.history),
-            title: Text(query, maxLines: 1, overflow: TextOverflow.ellipsis),
-            trailing: IconButton(
-              key: ValueKey('search_recent_remove_$query'),
-              tooltip: 'Remove',
-              icon: const Icon(Icons.close, size: 18),
-              onPressed: () => _removeRecentSearch(query),
-            ),
-            onTap: () => _runRecentSearch(query),
-          ),
-      ],
-    );
-  }
-
   Widget _buildResultTabs() {
     return SizedBox(
       // TabBar reserves a 2dp indicator/divider lane, so the 50dp container
@@ -1273,9 +950,8 @@ class _SearchScreenState extends State<SearchScreen> {
         initialIndex: _resultTab.index,
         child: TabBar(
           key: const ValueKey('search_result_tabs'),
-          onTap: (index) => setState(
-            () => _resultTab = SearchResultTab.values[index],
-          ),
+          onTap: (index) =>
+              setState(() => _resultTab = SearchResultTab.values[index]),
           labelPadding: EdgeInsets.zero,
           tabs: [
             for (final tab in SearchResultTab.values)
@@ -1290,171 +966,7 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildLocalResultsSection() {
-    if (_localError != null) {
-      return _buildErrorCard(_localError!, _runLocalSearch);
-    }
-
-    if (_isLocalSearching) {
-      return const Padding(
-        key: ValueKey('search_local_loading'),
-        padding: EdgeInsets.symmetric(vertical: 48),
-        child: Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    if (_localQuery.isEmpty) {
-      return _buildEmptyPanel(
-        icon: Icons.library_music,
-        title: 'Search your library',
-        body:
-            'Find the songs, artists, and albums already in your library. Switch to Catalog to discover new sources.',
-      );
-    }
-
-    final filtered = _localResults.filtered(_resultTab.localFilter);
-    if (filtered.isEmpty) {
-      // Distinguish "nothing matched at all" from "this type is empty" so a
-      // chip that hides every result never looks like a failed search.
-      final scoped = _localResults.isEmpty
-          ? 'No results for "$_localQuery"'
-          : 'No ${_resultTab.label.toLowerCase()} for "$_localQuery"';
-      return _buildEmptyPanel(
-        key: const ValueKey('search_local_empty'),
-        icon: Icons.search_off,
-        title: 'No results',
-        body: scoped,
-      );
-    }
-
-    return Column(
-      key: const ValueKey('search_local_results'),
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (filtered.tracks.isNotEmpty) ...[
-          _buildSectionHeader(Icons.music_note, 'Songs'),
-          const SizedBox(height: 8),
-          ...filtered.tracks.map(_buildLocalTrackTile),
-          const SizedBox(height: 12),
-        ],
-        if (filtered.artists.isNotEmpty) ...[
-          _buildSectionHeader(Icons.person, 'Artists'),
-          const SizedBox(height: 8),
-          ...filtered.artists.map(_buildLocalArtistTile),
-          const SizedBox(height: 12),
-        ],
-        if (filtered.albums.isNotEmpty) ...[
-          _buildSectionHeader(Icons.album, 'Albums'),
-          const SizedBox(height: 8),
-          ...filtered.albums.map(_buildLocalAlbumTile),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildLocalTrackTile(TrackResult track) {
-    final playable = track.id != null;
-    final subtitle = [
-      track.artist,
-      track.album,
-    ].where((value) => value != null && value.isNotEmpty).join(' • ');
-    final tile = Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        key: ValueKey('local_track_${track.id ?? track.title}'),
-        leading: _buildThumb(track.coverUrl, size: 44),
-        title: Text(
-          track.title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-        subtitle: subtitle.isEmpty
-            ? null
-            : Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SongMetadataChips(
-              analysis: track.analysis,
-              singleLine: true,
-              compact: true,
-            ),
-            if (playable) ...[
-              const SizedBox(width: 6),
-              IconButton(
-                tooltip: 'Play',
-                icon: const Icon(Icons.play_arrow),
-                onPressed: () => _playLocalTrack(track),
-              ),
-            ],
-          ],
-        ),
-        onTap: playable ? () => _playLocalTrack(track) : null,
-      ),
-    );
-    if (!playable) return tile;
-    return QueueSwipeAction(
-      actionKey: ValueKey('search_local_queue_${track.id}_${track.title}'),
-      onAddToQueue: () => _enqueueLocalTrack(track),
-      child: tile,
-    );
-  }
-
-  Widget _buildLocalArtistTile(ArtistResult artist) {
-    final count = artist.trackCount;
-    // Local search results are library rows, so the tile opens the local
-    // artist page rather than the MusicBrainz discovery screen: an unverified
-    // yt-dlp track has no artist MBID but still has a name to filter on.
-    final canOpen = canBrowseLocalName(artist.name);
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        key: ValueKey('search_local_artist_${artist.name}'),
-        leading: const CircleAvatar(child: Icon(Icons.person)),
-        title: Text(
-          artist.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-        subtitle: count != null
-            ? Text('$count track${count == 1 ? '' : 's'} in library')
-            : null,
-        trailing: canOpen ? const Icon(Icons.chevron_right) : null,
-        onTap: canOpen ? () => openLocalArtist(context, artist.name) : null,
-      ),
-    );
-  }
-
-  Widget _buildLocalAlbumTile(AlbumResult album) {
-    final subtitle = [
-      album.artist,
-      album.releaseYear,
-    ].where((value) => value != null && value.isNotEmpty).join(' • ');
-    final canOpen = canBrowseLocalName(album.title);
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        key: ValueKey('search_local_album_${album.title}'),
-        leading: _buildThumb(album.coverUrl, size: 44),
-        title: Text(
-          album.title,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-        subtitle: subtitle.isEmpty
-            ? null
-            : Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
-        trailing: canOpen ? const Icon(Icons.chevron_right) : null,
-        onTap: canOpen ? () => openLocalAlbum(context, album.title) : null,
-      ),
-    );
-  }
-
   Widget _buildSearchBox() {
-    final library = _scope == SearchScope.library;
     return TextField(
       key: const ValueKey('search_assist_input'),
       controller: _queryController,
@@ -1465,24 +977,18 @@ class _SearchScreenState extends State<SearchScreen> {
       onChanged: _onQueryChanged,
       onSubmitted: _onSubmit,
       decoration: InputDecoration(
-        labelText:
-            library ? 'Search your library' : 'Search songs, artists, albums',
-        hintText: library
-            ? 'Songs, artists, albums in your library...'
-            : 'iPod Touch, Ninajirachi, live set...',
-        prefixIcon: Icon(
-          library ? Icons.library_music : Icons.travel_explore,
-        ),
+        labelText: 'Discover songs, artists, albums',
+        hintText: 'iPod Touch, Ninajirachi, live set...',
+        prefixIcon: const Icon(Icons.travel_explore),
         suffixIcon: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (!library)
-              IconButton(
-                key: const ValueKey('search_ai_button'),
-                tooltip: 'Ask AI',
-                onPressed: _triggerAssist,
-                icon: const Icon(Icons.auto_awesome),
-              ),
+            IconButton(
+              key: const ValueKey('search_ai_button'),
+              tooltip: 'Ask AI',
+              onPressed: _triggerAssist,
+              icon: const Icon(Icons.auto_awesome),
+            ),
             if (_queryController.text.isNotEmpty)
               IconButton(
                 tooltip: 'Clear search',
@@ -1550,7 +1056,7 @@ class _SearchScreenState extends State<SearchScreen> {
           icon: Icons.info_outline,
           message: response.assistantText.isNotEmpty
               ? response.assistantText
-              : 'AI assist is not configured. You can still search directly or paste a YouTube/SoundCloud link.',
+              : 'AI assist is not configured. You can still discover directly or paste a YouTube/SoundCloud link.',
           tone: _AssistTone.info,
         ),
       );
@@ -1560,7 +1066,7 @@ class _SearchScreenState extends State<SearchScreen> {
           icon: Icons.error_outline,
           message: response.assistantText.isNotEmpty
               ? response.assistantText
-              : 'The assistant is unavailable right now. You can still search directly or paste a link.',
+              : 'The assistant is unavailable right now. You can still discover directly or paste a link.',
           tone: _AssistTone.error,
           showRetry: true,
         ),
@@ -1663,13 +1169,6 @@ class _SearchScreenState extends State<SearchScreen> {
         .map((id) => byId[id])
         .whereType<ResearchCandidate>()
         .toList(growable: false);
-    String? recommendedId;
-    for (final recommendation in latest.payload.recommendations) {
-      if (recommendation.rank == 1) {
-        recommendedId = recommendation.candidateId;
-        break;
-      }
-    }
     return [
       if (_assistError != null)
         _buildAssistStatusBanner(
@@ -1690,7 +1189,6 @@ class _SearchScreenState extends State<SearchScreen> {
           stableKey: ValueKey(
             'research_candidate_${researchCandidate.candidateId}',
           ),
-          recommended: researchCandidate.candidateId == recommendedId,
           onChoose: () => _chooseResearchCandidate(researchCandidate),
           queueAvailable: !queueProvider.queueServiceDisabled,
         ),
@@ -1853,7 +1351,7 @@ class _SearchScreenState extends State<SearchScreen> {
               ],
             ),
             const SizedBox(height: 6),
-            // Wrap (not Row) so Retry + Search directly reflow instead of
+            // Wrap (not Row) so Retry + Discover directly reflow instead of
             // overflowing the narrow mobile-web viewport when both are present.
             Align(
               alignment: Alignment.centerRight,
@@ -1869,7 +1367,7 @@ class _SearchScreenState extends State<SearchScreen> {
                   TextButton(
                     key: const ValueKey('assist_search_directly'),
                     onPressed: _searchDirectly,
-                    child: const Text('Search directly'),
+                    child: const Text('Discover directly'),
                   ),
                 ],
               ),
@@ -2194,7 +1692,7 @@ class _SearchScreenState extends State<SearchScreen> {
         icon: Icons.search,
         title: 'Find external tracks',
         body:
-            'Search for a song, artist, or album. Downloadable sources appear first.',
+            'Discover a song, artist, or album, then choose a source to import.',
       );
     }
 
@@ -2282,30 +1780,10 @@ class _SearchScreenState extends State<SearchScreen> {
         if (candidate != null) byKey[_candidateKey(candidate)] = candidate;
       }
     }
-    final candidates = byKey.values
+    return byKey.values
         .where((candidate) => candidate.downloadable)
         .toList(growable: false);
-    candidates.sort((a, b) {
-      final recommendation = response.selection;
-      final aRecommended = recommendation?.isRecommended(a) ?? false;
-      final bRecommended = recommendation?.isRecommended(b) ?? false;
-      if (aRecommended != bRecommended) return aRecommended ? -1 : 1;
-      final quality = (b.sourceQuality?.score ?? 0).compareTo(
-        a.sourceQuality?.score ?? 0,
-      );
-      if (quality != 0) return quality;
-      final aSimilar = _isSimilarRecommendation(a);
-      final bSimilar = _isSimilarRecommendation(b);
-      if (aSimilar != bSimilar) return aSimilar ? -1 : 1;
-      return a.title.compareTo(b.title);
-    });
-    return candidates;
   }
-
-  bool _isSimilarRecommendation(DiscoveryCandidate candidate) =>
-      candidate.metadata['similar'] == true ||
-      candidate.metadata['recommended'] == true ||
-      candidate.metadata['isRecommended'] == true;
 
   Widget _buildSearchSection(
     QueueProvider queueProvider,
@@ -2398,7 +1876,7 @@ class _SearchScreenState extends State<SearchScreen> {
                 minimumSize: const Size(0, 32),
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
-              child: const Text('Search', style: TextStyle(fontSize: 12)),
+              child: const Text('Discover', style: TextStyle(fontSize: 12)),
             ),
           ],
         ),
@@ -2420,86 +1898,82 @@ class _SearchScreenState extends State<SearchScreen> {
     DiscoveryCandidate candidate, {
     DiscoverySelectionSession? selection,
     Key? stableKey,
-    bool recommended = false,
     VoidCallback? onChoose,
     bool queueAvailable = true,
   }) {
     final queuedTrack =
         queueAvailable ? _queuedTrackFor(queueProvider, candidate) : null;
     final pending = _pendingCandidateKeys.contains(_candidateKey(candidate));
+    final canPreview = Uri.tryParse(candidate.sourceUrl)?.hasScheme ?? false;
     return Card(
       key: stableKey,
       margin: const EdgeInsets.only(bottom: 8),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final mobile = constraints.maxWidth < 520;
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                _buildThumb(
-                  candidate.thumbnailUrl,
-                  overlay: queueAvailable
-                      ? _queuedOverlay(queuedTrack, pending)
-                      : null,
-                  size: mobile ? 42 : 48,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        candidate.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          height: 1.18,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        candidate.displaySubtitle,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          fontSize: 12,
-                          height: 1.16,
-                        ),
-                      ),
-                      if (candidate.sourceQuality != null) ...[
-                        const SizedBox(height: 5),
-                        _buildSourceQualityChip(candidate.sourceQuality!),
-                      ],
-                      if (recommended ||
-                          (selection?.isRecommended(candidate) ?? false)) ...[
-                        const SizedBox(height: 5),
-                        _buildRecommendedSourceChip(),
-                      ],
-                    ],
+      child: InkWell(
+        onTap: canPreview ? () => _previewSource(candidate) : null,
+        borderRadius: BorderRadius.circular(12),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final mobile = constraints.maxWidth < 520;
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  _buildThumb(
+                    candidate.thumbnailUrl,
+                    overlay: queueAvailable
+                        ? _queuedOverlay(queuedTrack, pending)
+                        : null,
+                    size: mobile ? 42 : 48,
                   ),
-                ),
-                const SizedBox(width: 8),
-                _buildCandidateActions(
-                  queueProvider: queueProvider,
-                  candidate: candidate,
-                  queuedTrack: queuedTrack,
-                  pending: pending,
-                  mobile: mobile,
-                  selection: selection,
-                  recommended: recommended,
-                  onChoose: onChoose,
-                  queueAvailable: queueAvailable,
-                ),
-              ],
-            ),
-          );
-        },
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          candidate.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            height: 1.18,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          candidate.displaySubtitle,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurfaceVariant,
+                            fontSize: 12,
+                            height: 1.16,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _buildCandidateActions(
+                    queueProvider: queueProvider,
+                    candidate: candidate,
+                    queuedTrack: queuedTrack,
+                    pending: pending,
+                    mobile: mobile,
+                    selection: selection,
+                    onChoose: onChoose,
+                    queueAvailable: queueAvailable,
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -2511,26 +1985,27 @@ class _SearchScreenState extends State<SearchScreen> {
     required bool pending,
     required bool mobile,
     required DiscoverySelectionSession? selection,
-    required bool recommended,
     required bool queueAvailable,
     VoidCallback? onChoose,
   }) {
-    final canOpen = Uri.tryParse(candidate.sourceUrl)?.hasScheme ?? false;
+    final canPreview = Uri.tryParse(candidate.sourceUrl)?.hasScheme ?? false;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (canOpen)
+        if (canPreview)
           IconButton(
-            key: ValueKey('search_open_source_${_candidateKey(candidate)}'),
-            tooltip: 'Open source',
-            onPressed: () => _openSource(candidate),
+            key: ValueKey(
+              'discover_preview_source_${_candidateKey(candidate)}',
+            ),
+            tooltip: 'Preview source',
+            onPressed: () => _previewSource(candidate),
             visualDensity: VisualDensity.compact,
             constraints: const BoxConstraints.tightFor(width: 40, height: 40),
             padding: EdgeInsets.zero,
             iconSize: 20,
-            icon: const Icon(Icons.open_in_new),
+            icon: const Icon(Icons.play_circle_outline),
           ),
-        if (canOpen && queueAvailable) const SizedBox(width: 4),
+        if (canPreview && queueAvailable) const SizedBox(width: 4),
         if (queueAvailable)
           _buildQueueAction(
             queueProvider,
@@ -2539,59 +2014,22 @@ class _SearchScreenState extends State<SearchScreen> {
             pending: pending,
             mobile: mobile,
             selection: selection,
-            recommended: recommended,
             onChoose: onChoose,
           ),
       ],
     );
   }
 
-  Future<void> _openSource(DiscoveryCandidate candidate) async {
+  Future<void> _previewSource(DiscoveryCandidate candidate) async {
     final uri = Uri.tryParse(candidate.sourceUrl);
     if (uri == null || !uri.hasScheme) return;
     final opened = await (widget.externalUrlLauncher?.call(uri) ??
         launchUrl(uri, mode: LaunchMode.externalApplication));
     if (!opened && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not open source link')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Could not preview source')));
     }
-  }
-
-  Widget _buildRecommendedSourceChip() {
-    final colors = Theme.of(context).colorScheme;
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: DecoratedBox(
-        key: const ValueKey('source_recommended_chip'),
-        decoration: BoxDecoration(
-          color: colors.primaryContainer,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.recommend, size: 13, color: colors.onPrimaryContainer),
-              const SizedBox(width: 4),
-              Flexible(
-                child: Text(
-                  'Recommended',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: colors.onPrimaryContainer,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   Widget _buildSourceSelectionStatus() {
@@ -2617,216 +2055,6 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildSourceQualityChip(DiscoverySourceQuality quality) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final (icon, background, foreground) = switch (quality.recommendation) {
-      'preferred' => (
-          Icons.verified,
-          colorScheme.primaryContainer,
-          colorScheme.onPrimaryContainer,
-        ),
-      'acceptable' => (
-          Icons.check_circle_outline,
-          colorScheme.secondaryContainer,
-          colorScheme.onSecondaryContainer,
-        ),
-      'avoid' => (
-          Icons.warning_amber,
-          colorScheme.errorContainer,
-          colorScheme.onErrorContainer,
-        ),
-      _ => (
-          Icons.info_outline,
-          colorScheme.surfaceContainerHighest,
-          colorScheme.onSurfaceVariant,
-        ),
-    };
-    return Tooltip(
-      message: quality.debugReason,
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Material(
-          color: Colors.transparent,
-          child: InkWell(
-            key: ValueKey(
-              'source_quality_chip_${quality.classification}_${quality.recommendation}',
-            ),
-            borderRadius: BorderRadius.circular(999),
-            onTap: () => _showSourceQualityDetails(quality),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: background,
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(icon, size: 13, color: foreground),
-                    const SizedBox(width: 4),
-                    Flexible(
-                      child: Text(
-                        quality.label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: foreground,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          height: 1.1,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _showSourceQualityDetails(DiscoverySourceQuality quality) {
-    final theme = Theme.of(context);
-    final scoreLabel = '${quality.score}/100';
-    final confidenceLabel =
-        '${(quality.confidence.clamp(0, 1) * 100).round()}%';
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) {
-        return SafeArea(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-            shrinkWrap: true,
-            children: [
-              Text(
-                'Source quality',
-                style: theme.textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _buildSourceQualityDetailPill(
-                    icon: Icons.graphic_eq,
-                    label: quality.label,
-                  ),
-                  _buildSourceQualityDetailPill(
-                    icon: Icons.check_circle_outline,
-                    label: _humanizeSourceQualityToken(quality.recommendation),
-                  ),
-                  _buildSourceQualityDetailPill(
-                    icon: Icons.speed,
-                    label: scoreLabel,
-                  ),
-                  _buildSourceQualityDetailPill(
-                    icon: Icons.fact_check_outlined,
-                    label: confidenceLabel,
-                  ),
-                ],
-              ),
-              if (quality.warnings.isNotEmpty) ...[
-                const SizedBox(height: 18),
-                _buildSourceQualityDetailSection('Warnings', quality.warnings),
-              ],
-              if (quality.reasons.isNotEmpty) ...[
-                const SizedBox(height: 18),
-                _buildSourceQualityDetailSection('Reasons', quality.reasons),
-              ],
-              if (quality.provenance.isNotEmpty) ...[
-                const SizedBox(height: 18),
-                Text(
-                  'Provenance',
-                  style: theme.textTheme.labelLarge?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                SelectableText(
-                  quality.provenance,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildSourceQualityDetailPill({
-    required IconData icon,
-    required String label,
-  }) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: colorScheme.onSurfaceVariant),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: TextStyle(
-              color: colorScheme.onSurfaceVariant,
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSourceQualityDetailSection(String title, List<String> values) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: theme.textTheme.labelLarge?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        const SizedBox(height: 6),
-        ...values.map(
-          (value) => Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Text(value, style: theme.textTheme.bodyMedium),
-          ),
-        ),
-      ],
-    );
-  }
-
-  String _humanizeSourceQualityToken(String value) {
-    final words = value
-        .split('_')
-        .map((part) => part.trim())
-        .where((part) => part.isNotEmpty)
-        .toList();
-    if (words.isEmpty) return 'Review';
-    return words
-        .map((word) => word[0].toUpperCase() + word.substring(1))
-        .join(' ');
-  }
-
   Widget _buildQueueAction(
     QueueProvider queueProvider,
     DiscoveryCandidate candidate,
@@ -2834,7 +2062,6 @@ class _SearchScreenState extends State<SearchScreen> {
     required bool pending,
     required bool mobile,
     required DiscoverySelectionSession? selection,
-    bool recommended = false,
     VoidCallback? onChoose,
   }) {
     final queued = queuedTrack != null || pending;
@@ -2866,12 +2093,9 @@ class _SearchScreenState extends State<SearchScreen> {
     final onPressed = !candidate.downloadable
         ? null
         : onChoose ?? () => _chooseCandidate(candidate, selection);
-    final isRecommended =
-        recommended || (selection?.isRecommended(candidate) ?? false);
-
     if (mobile) {
       return IconButton.filledTonal(
-        tooltip: isRecommended ? 'Use recommended source' : 'Choose source',
+        tooltip: 'Add to queue',
         onPressed: onPressed,
         visualDensity: VisualDensity.compact,
         constraints: const BoxConstraints.tightFor(width: 40, height: 40),
@@ -2889,10 +2113,7 @@ class _SearchScreenState extends State<SearchScreen> {
         minimumSize: const Size(84, 36),
       ),
       icon: const Icon(Icons.playlist_add, size: 18),
-      label: Text(
-        isRecommended ? 'Use' : 'Choose',
-        style: const TextStyle(fontSize: 13),
-      ),
+      label: const Text('Add', style: TextStyle(fontSize: 13)),
     );
   }
 
@@ -3057,10 +2278,10 @@ class _SearchScreenState extends State<SearchScreen> {
           padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
           children: [
             Text(
-              'Search sources',
-              style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+              'Discover sources',
+              style: Theme.of(
+                sheetContext,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 8),
             for (final provider in providers)

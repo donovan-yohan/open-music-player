@@ -170,7 +170,24 @@ func sourceDecisionSnapshot(t *testing.T, sourceURL, mbID string) json.RawMessag
 }
 
 func sourceDecisionForQueue(t *testing.T, snapshot json.RawMessage) *db.SourceSelectionDecision {
-	return &db.SourceSelectionDecision{ID: uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), UserID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Action: db.SourceSelectionActionAccepted, SelectedCandidate: snapshot}
+	return &db.SourceSelectionDecision{ID: uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), UserID: uuid.MustParse("11111111-1111-1111-1111-111111111111"), Action: db.SourceSelectionActionSelected, SelectedCandidate: snapshot}
+}
+
+func scribbleRemixSourceDecisionSnapshot(t *testing.T) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(SourceCandidate{
+		CandidateID:  "youtube:scribble-remix",
+		Provider:     "youtube",
+		SourceID:     "scribble-remix",
+		SourceURL:    "https://www.youtube.com/watch?v=scribble-remix",
+		Title:        "Daft Punk - One More Time (Scribble Remix)",
+		Artist:       "Scribble",
+		Downloadable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func TestAddQueueItemStrictlyRejectsLegacySourceFields(t *testing.T) {
@@ -239,6 +256,30 @@ func TestSourceDecisionQueueUsesOwnedSnapshotAndStableResponse(t *testing.T) {
 	durableMBID, ok := store.calls[0][14].(*string)
 	if !ok || durableMBID == nil || *durableMBID != mbID {
 		t.Fatalf("durable MusicBrainz ID=%#v", store.calls[0][14])
+	}
+}
+
+func TestSelectedSourceDecisionQueuesExactNonFirstRemixSnapshot(t *testing.T) {
+	service := &fakeQueueHandlerService{state: &QueueState{Items: []QueueItem{}}}
+	downloads := &fakeQueueDownloadService{}
+	store := &fakeDurableDownloadJobStore{}
+	repo := &fakeSourceDecisionRepository{decision: sourceDecisionForQueue(t, scribbleRemixSourceDecisionSnapshot(t))}
+	h := NewHandlersWithSourceSelections(service, downloads, nil, repo, store)
+	rec := httptest.NewRecorder()
+	h.AddQueueItem(rec, queueDecisionRequest(`{"sourceDecisionId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","position":"last"}`))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(downloads.enqueued) != 1 {
+		t.Fatalf("enqueued=%#v", downloads.enqueued)
+	}
+	candidate := downloads.enqueued[0]
+	if candidate.CandidateID != "youtube:scribble-remix" || candidate.SourceURL != "https://www.youtube.com/watch?v=scribble-remix" || candidate.Title != "Daft Punk - One More Time (Scribble Remix)" {
+		t.Fatalf("download candidate did not preserve exact selected source: %#v", candidate)
+	}
+	if len(store.calls) != 1 || store.calls[0][3] != candidate.SourceURL || store.calls[0][7] != candidate.Title {
+		t.Fatalf("durable download values=%#v", store.calls)
 	}
 }
 

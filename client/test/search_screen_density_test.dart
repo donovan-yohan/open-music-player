@@ -69,7 +69,7 @@ void main() {
       expect(tester.getRect(queueButton).right, lessThanOrEqualTo(360));
 
       final openSourceButton =
-          find.byKey(const ValueKey('search_open_source_youtube:123'));
+          find.byKey(const ValueKey('discover_preview_source_youtube:123'));
       expect(openSourceButton, findsOneWidget);
       expect(tester.getSize(openSourceButton), const Size(40, 40));
       expect(tester.getRect(openSourceButton).right, lessThanOrEqualTo(360));
@@ -93,7 +93,6 @@ void main() {
     },
   );
 }
-
 class _FakePlaybackState extends Fake implements PlaybackState {
   @override
   void addListener(VoidCallback listener) {}

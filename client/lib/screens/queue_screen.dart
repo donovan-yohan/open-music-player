@@ -545,7 +545,7 @@ class _QueueScreenState extends State<QueueScreen> {
       PlaybackContextKind.artist => 'Artist',
       PlaybackContextKind.library => 'Library',
       PlaybackContextKind.queue => 'Queue',
-      PlaybackContextKind.search => 'Search',
+      PlaybackContextKind.search => 'Discover',
     };
     return '$kind • ${context.label}';
   }

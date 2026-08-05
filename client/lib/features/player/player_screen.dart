@@ -334,7 +334,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       PlaybackContextKind.artist => 'Artist',
       PlaybackContextKind.library => 'Library',
       PlaybackContextKind.queue => 'Queue',
-      PlaybackContextKind.search => 'Search',
+      PlaybackContextKind.search => 'Discover',
       null => 'Queue',
     };
     if (count <= 0) return kind;
@@ -680,7 +680,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
   }
 }
-
 @visibleForTesting
 class PlaybackControls extends StatelessWidget {
   const PlaybackControls({

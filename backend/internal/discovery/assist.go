@@ -259,7 +259,7 @@ func (s *AssistService) searchResponse(ctx context.Context, intent *aiassist.Int
 		}
 	}
 
-	result := s.search.Search(ctx, query, intent.Providers, limit)
+	result := s.search.SearchRanked(ctx, query, intent.Providers, limit)
 	merged := append([]string(nil), caveats...)
 	merged = append(merged, providerCaveats(result.Providers)...)
 

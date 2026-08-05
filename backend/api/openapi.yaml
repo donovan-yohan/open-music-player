@@ -295,7 +295,7 @@ paths:
           schema: { type: integer, minimum: 1, maximum: 25 }
       responses:
         '200':
-          description: Ranked candidates; selectionRequired is false only when results is empty.
+          description: Candidate options plus a short-lived server-owned selection snapshot. Discovery does not imply a recommended winner.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DiscoverySearchResponse' }
@@ -2673,7 +2673,7 @@ components:
         providers: { type: array, items: { type: object, additionalProperties: true } }
         selectionRequired: { type: boolean }
         selectionSessionId: { type: string, format: uuid }
-        recommendedCandidateId: { type: string }
+        recommendedCandidateId: { type: string, nullable: true, deprecated: true }
         selectionExpiresAt: { type: string, format: date-time }
 
     ResolveDiscoveryURLResponse:
@@ -2683,7 +2683,7 @@ components:
         candidate: { $ref: '#/components/schemas/DiscoveryCandidate' }
         selectionRequired: { type: boolean }
         selectionSessionId: { type: string, format: uuid }
-        recommendedCandidateId: { type: string }
+        recommendedCandidateId: { type: string, nullable: true, deprecated: true }
         selectionExpiresAt: { type: string, format: date-time }
 
     DiscoveryAssistResponse:
@@ -2704,7 +2704,7 @@ components:
         error: { type: object, additionalProperties: true }
         selectionRequired: { type: boolean }
         selectionSessionId: { type: string, format: uuid }
-        recommendedCandidateId: { type: string }
+        recommendedCandidateId: { type: string, nullable: true, deprecated: true }
         selectionExpiresAt: { type: string, format: date-time }
 
     DiscoveryAssistVerification:
@@ -2779,18 +2779,21 @@ components:
       properties:
         sessionId: { type: string, format: uuid }
         candidateId: { type: string, minLength: 1 }
-        action: { type: string, enum: [accepted, overridden] }
+        action:
+          type: string
+          enum: [selected, accepted, overridden]
+          description: selected is the canonical neutral discovery choice; accepted and overridden remain readable and accepted for compatibility.
         reason: { type: string, maxLength: 2000 }
 
     SourceSelectionDecision:
       type: object
-      required: [id, selectedCandidateId, recommendedCandidateId, action, origin, selectedCandidate, sourceQuality, createdAt]
+      required: [id, selectedCandidateId, action, origin, selectedCandidate, sourceQuality, createdAt]
       properties:
         id: { type: string, format: uuid }
         sessionId: { type: string, format: uuid, nullable: true }
         selectedCandidateId: { type: string }
-        recommendedCandidateId: { type: string }
-        action: { type: string, enum: [accepted, overridden] }
+        recommendedCandidateId: { type: string, nullable: true, deprecated: true }
+        action: { type: string, enum: [selected, accepted, overridden] }
         origin: { type: string, enum: [discovery, direct_url, playlist_explicit, research] }
         reason: { type: string, nullable: true }
         selectedCandidate: { $ref: '#/components/schemas/DiscoveryCandidate' }

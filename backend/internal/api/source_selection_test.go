@@ -53,17 +53,20 @@ func (r *fakeSourceSelectionRepository) ListDecisionsForUser(context.Context, uu
 }
 
 func sourceSelectionTestDecision(action string) *db.SourceSelectionDecision {
-	return &db.SourceSelectionDecision{
-		ID:                     uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-		SessionID:              uuid.NullUUID{UUID: uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), Valid: true},
-		SelectedCandidateID:    "youtube:selected",
-		RecommendedCandidateID: "youtube:recommended",
-		Action:                 action,
-		Origin:                 db.SourceSelectionOriginDiscovery,
-		SelectedCandidate:      json.RawMessage(`{"candidateId":"youtube:selected"}`),
-		SourceQuality:          json.RawMessage(`{}`),
-		CreatedAt:              time.Unix(1, 0).UTC(),
+	decision := &db.SourceSelectionDecision{
+		ID:                  uuid.MustParse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+		SessionID:           uuid.NullUUID{UUID: uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), Valid: true},
+		SelectedCandidateID: "youtube:selected",
+		Action:              action,
+		Origin:              db.SourceSelectionOriginDiscovery,
+		SelectedCandidate:   json.RawMessage(`{"candidateId":"youtube:selected"}`),
+		SourceQuality:       json.RawMessage(`{}`),
+		CreatedAt:           time.Unix(1, 0).UTC(),
 	}
+	if action != db.SourceSelectionActionSelected {
+		decision.RecommendedCandidateID = "youtube:recommended"
+	}
+	return decision
 }
 
 func sourceSelectionRequest(body string, authenticated bool) *http.Request {
@@ -84,8 +87,9 @@ func TestSourceSelectionCreateHTTPMappings(t *testing.T) {
 		wantCode      string
 	}{
 		{name: "authentication", authenticated: false, wantStatus: http.StatusUnauthorized, wantCode: "UNAUTHORIZED"},
-		{name: "accepted", authenticated: true, action: db.SourceSelectionActionAccepted, wantStatus: http.StatusCreated},
-		{name: "override", authenticated: true, action: db.SourceSelectionActionOverridden, wantStatus: http.StatusCreated},
+		{name: "selected", authenticated: true, action: db.SourceSelectionActionSelected, wantStatus: http.StatusCreated},
+		{name: "accepted compatibility", authenticated: true, action: db.SourceSelectionActionAccepted, wantStatus: http.StatusCreated},
+		{name: "override compatibility", authenticated: true, action: db.SourceSelectionActionOverridden, wantStatus: http.StatusCreated},
 		{name: "owner not found", authenticated: true, action: db.SourceSelectionActionAccepted, err: db.ErrSourceSelectionSessionNotFound, wantStatus: http.StatusNotFound, wantCode: "SOURCE_SELECTION_SESSION_NOT_FOUND"},
 		{name: "conflict", authenticated: true, action: db.SourceSelectionActionAccepted, err: db.ErrSourceSelectionConflict, wantStatus: http.StatusConflict, wantCode: "SOURCE_SELECTION_CONFLICT"},
 	}
@@ -103,6 +107,9 @@ func TestSourceSelectionCreateHTTPMappings(t *testing.T) {
 			}
 			if tc.wantStatus == http.StatusCreated && !strings.Contains(rec.Body.String(), `"action":"`+tc.action+`"`) {
 				t.Fatalf("created response = %s", rec.Body.String())
+			}
+			if tc.name == "selected" && strings.Contains(rec.Body.String(), "recommendedCandidateId") {
+				t.Fatalf("neutral selected response leaked a recommendation: %s", rec.Body.String())
 			}
 		})
 	}

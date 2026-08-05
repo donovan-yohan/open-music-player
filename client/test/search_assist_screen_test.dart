@@ -87,7 +87,7 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('Porter Robinson - Shelter (Live)'), findsOneWidget);
-      expect(find.text('Live'), findsOneWidget);
+      expect(find.text('Live'), findsNothing);
       expect(find.byIcon(Icons.playlist_add), findsOneWidget);
 
       // Nothing was queued by rendering candidates: the action is explicit.
@@ -107,37 +107,13 @@ void main() {
       });
       expect(queueClient.lastAddBody!.containsKey('sourceCandidate'), isFalse);
       expect(
-        find.textContaining('Selected Porter Robinson - Shelter (Live)'),
+        find.textContaining('Added Porter Robinson - Shelter (Live) to imports'),
         findsOneWidget,
       );
 
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
-
-  testWidgets('source quality chip opens auditable ranking details', (
-    tester,
-  ) async {
-    await pumpSearch(tester, assistEnvelope: _searchEnvelope);
-
-    await enterAssistMode(tester, 'that live porter robinson shelter');
-
-    await tester.tap(
-      find.byKey(const ValueKey('source_quality_chip_live_acceptable')),
-    );
-    await tester.pumpAndSettle();
-
-    expect(find.text('Source quality'), findsOneWidget);
-    expect(find.text('Acceptable'), findsOneWidget);
-    expect(find.text('73/100'), findsOneWidget);
-    expect(find.text('79%'), findsOneWidget);
-    expect(find.text('Reasons'), findsOneWidget);
-    expect(find.text('query asked for live content'), findsOneWidget);
-    expect(find.text('Provenance'), findsOneWidget);
-    expect(find.text('deterministic_source_quality_v1'), findsOneWidget);
-
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
 
   testWidgets('verification stays compact until the user asks why', (
     tester,
@@ -242,7 +218,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
   });
 
-  testWidgets('alternate source asks for a bounded override reason', (
+  testWidgets('non-first Scribble Remix adds directly without a source dialog', (
     tester,
   ) async {
     final queueClient = await pumpSearch(
@@ -252,11 +228,11 @@ void main() {
         'candidates': [
           ..._directUrlEnvelope['candidates'] as List<dynamic>,
           {
-            'candidateId': 'youtube:alternate',
+            'candidateId': 'youtube:scribble-remix',
             'provider': 'youtube',
-            'sourceId': 'alternate',
-            'sourceUrl': 'https://youtu.be/alternate',
-            'title': 'Alternate mix',
+            'sourceId': 'scribble-remix',
+            'sourceUrl': 'https://youtu.be/scribble-remix',
+            'title': 'Daft Punk - One More Time (Scribble Remix)',
             'downloadable': true,
             'playable': false,
           },
@@ -266,22 +242,16 @@ void main() {
 
     await enterAssistMode(tester, 'https://youtu.be/abc');
     await tester.tap(find.byIcon(Icons.playlist_add).last);
-    await tester.pumpAndSettle();
-    expect(find.text('Choose alternate source'), findsOneWidget);
-    await tester.enterText(
-      find.byKey(const ValueKey('source_override_reason')),
-      '  I prefer this mix.  ',
-    );
-    await tester.tap(find.text('Choose source'));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
 
     expect(queueClient.addItemRequests, 1);
+    expect(find.text('Choose alternate source'), findsNothing);
     expect(queueClient.sourceSelectionRequests, [
       {
         'sessionId': '11111111-1111-1111-1111-111111111111',
-        'candidateId': 'youtube:alternate',
-        'action': 'overridden',
-        'reason': 'I prefer this mix.',
+        'candidateId': 'youtube:scribble-remix',
+        'action': 'selected',
       },
     ]);
     await tester.pumpWidget(const SizedBox.shrink());
@@ -347,7 +317,7 @@ void main() {
   });
 
   testWidgets(
-    'disabled assist state shows a graceful banner and Search directly falls back to discovery search',
+    'disabled assist state shows a graceful banner and Discover directly falls back to catalog results',
     (tester) async {
       await pumpSearch(tester, assistEnvelope: _disabledEnvelope);
 
@@ -357,7 +327,7 @@ void main() {
         find.textContaining('AI assist is not configured'),
         findsOneWidget,
       );
-      expect(find.text('Search directly'), findsOneWidget);
+      expect(find.text('Discover directly'), findsOneWidget);
 
       await tester.tap(find.byKey(const ValueKey('assist_search_directly')));
       await tester.pump();
@@ -385,7 +355,7 @@ void main() {
   });
 
   testWidgets(
-    'assist error envelope shows the error banner with Retry and Search directly',
+    'assist error envelope shows the error banner with Retry and Discover directly',
     (tester) async {
       final queueClient = await pumpSearch(
         tester,
@@ -396,7 +366,7 @@ void main() {
 
       expect(find.textContaining('assistant is unavailable'), findsOneWidget);
       expect(find.text('Retry'), findsOneWidget);
-      expect(find.text('Search directly'), findsOneWidget);
+      expect(find.text('Discover directly'), findsOneWidget);
 
       // Retry re-hits the assist endpoint (no auto-queue side effect).
       await tester.tap(find.text('Retry'));
@@ -410,7 +380,7 @@ void main() {
   );
 
   testWidgets(
-    'a transport failure surfaces an error banner and Search directly still works',
+    'a transport failure surfaces an error banner and Discover directly still works',
     (tester) async {
       await pumpSearch(
         tester,
