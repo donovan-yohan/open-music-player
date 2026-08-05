@@ -431,6 +431,11 @@ func (r *TrackStemsRepository) MarkStaleByStemModelVersion(ctx context.Context, 
 // audio object changes, every stem set derived from the previous bytes is
 // invalid regardless of model identity. An empty hash is refused rather than
 // treated as a wildcard so an unknown hash can never invalidate a library.
+//
+// This is defensive rather than routinely exercised: every download writes a
+// per-job storage key and no code path repoints an existing track's
+// storage_key, so today only an out-of-band edit to the bucket or the row can
+// make a track's bytes change underneath its stems.
 func (r *TrackStemsRepository) MarkStaleBySourceHash(ctx context.Context, trackID int64, sourceFileHash string) (int64, error) {
 	if sourceFileHash == "" {
 		return 0, errors.New("source file hash is required to mark stems stale")

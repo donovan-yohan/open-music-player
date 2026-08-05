@@ -317,9 +317,14 @@ func (p *Processor) downloadAndStore(ctx context.Context, job *download.Download
 	// retry a failed part; a second sequential pass over a file that was just
 	// downloaded is far cheaper than losing upload retries. This is still the
 	// only moment the backend can be certain which bytes went to this key.
-	sourceFileHash, err := hashFileSHA256(file)
-	if err != nil {
-		return nil, fmt.Errorf("hash downloaded audio: %w", err)
+	sourceFileHash, hashErr := hashFileSHA256(file)
+	if hashErr != nil {
+		// Advisory, like recordSourceFileHash below: the bytes are on disk and
+		// about to upload fine. An unknown hash only disables staleness
+		// detection until the first separation backfills it, which is a far
+		// smaller loss than failing a download that would have succeeded.
+		log.Printf("Warning: failed to hash downloaded audio for job %s: %v", job.ID, hashErr)
+		sourceFileHash = ""
 	}
 	if err := p.storage.PutObject(ctx, key, file, info.Size(), quality.ContentType); err != nil {
 		return nil, fmt.Errorf("upload audio to object storage: %w", err)

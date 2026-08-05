@@ -84,7 +84,9 @@ case "$cmd" in
   test-infra)
     # Remove every app container, not just the API: the stems runtime holds
     # torch resident and would eat the memory budget this stack exists to keep.
-    "${COMPOSE[@]}" rm -sf backend analyzer stems >/dev/null 2>&1 || true
+    # The profile flag is required — without it Compose does not consider the
+    # profiled stems service a target and would leave it running.
+    "${COMPOSE[@]}" --profile stems rm -sf backend analyzer stems >/dev/null 2>&1 || true
     REDIS_ENABLED=true WORKER_COUNT=0 "${COMPOSE[@]}" --profile downloads up -d \
       --force-recreate --remove-orphans --wait --wait-timeout 60 \
       postgres minio redis

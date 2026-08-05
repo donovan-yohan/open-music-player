@@ -1083,6 +1083,10 @@ func (r *TrackRepository) GetSourceFileHash(ctx context.Context, trackID int64) 
 // Callers must only pass the hash of the bytes actually reachable at the track's
 // storage_key. Recording a hash for bytes stored elsewhere would silently
 // invalidate a correct artifact set.
+//
+// updated_at is deliberately left alone: this is derived-artifact bookkeeping,
+// not an edit to the track, and updated_at is the fairness tiebreaker the
+// maintenance sweeps order by.
 func (r *TrackRepository) ReconcileSourceFileHash(ctx context.Context, trackID int64, sourceFileHash string) (previous string, changed bool, err error) {
 	if strings.TrimSpace(sourceFileHash) == "" {
 		return "", false, errors.New("source file hash is required")
@@ -1095,8 +1099,7 @@ func (r *TrackRepository) ReconcileSourceFileHash(ctx context.Context, trackID i
 			SELECT id, source_file_hash FROM tracks WHERE id = $1 FOR UPDATE
 		)
 		UPDATE tracks
-		SET source_file_hash = $2,
-			updated_at = NOW()
+		SET source_file_hash = $2
 		FROM previous
 		WHERE tracks.id = previous.id
 		  AND tracks.source_file_hash IS DISTINCT FROM $2

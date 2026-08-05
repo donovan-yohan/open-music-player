@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -141,15 +142,20 @@ func (h *StemsHandlers) RequestStems(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = userCtx
 
-	// The recorded source hash arms the ready-row comparison: a completed
-	// separation whose source bytes have since been replaced is invalidated and
-	// re-requested instead of being served as current. An empty hash (a track
+	// The recorded source hash arms the ready-row comparison IN THIS TRIGGER: a
+	// completed separation whose source bytes have since been replaced is
+	// invalidated and re-requested here rather than reported ready. GetStems
+	// below does not repeat the comparison, so a client that only polls status
+	// still sees the old row until it triggers again. An empty hash (a track
 	// downloaded before hashes were recorded, or a read that failed) disables
 	// only that comparison — the worker fills the hash in from the object it
 	// actually separated, so the next trigger is armed. A hash lookup must never
 	// be able to block a separation the user asked for.
 	sourceFileHash, hashErr := h.trackRepo.GetSourceFileHash(r.Context(), trackID)
 	if hashErr != nil {
+		// Degrade, but not silently: a lookup that keeps failing permanently
+		// disables staleness detection, and that should be visible somewhere.
+		log.Printf("Warning: failed to read source file hash for track %d: %v", trackID, hashErr)
 		sourceFileHash = ""
 	}
 
