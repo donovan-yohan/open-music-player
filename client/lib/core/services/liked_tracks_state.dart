@@ -97,11 +97,15 @@ class LikedTracksState extends ChangeNotifier {
   ///
   /// Only the library listing annotates liked state, but hearts live on
   /// playlist / home / downloads rows too. This never overwrites a known value
-  /// or an in-flight toggle, and deliberately does not record a local-write
-  /// version — a later authoritative [seed] still corrects it.
+  /// or an in-flight toggle. Like [toggle], it records a local-write version so
+  /// an already in-flight collection request — one whose `seedVersion` was
+  /// captured *before* the assumption — cannot land afterwards and clobber it
+  /// with pre-assumption data. A later authoritative [seed], whose captured
+  /// version is at or beyond this write, still corrects the assumed value.
   void assume(int trackId, bool liked) {
     if (_likedByTrackId.containsKey(trackId)) return;
     if (_togglesInFlight.contains(trackId)) return;
+    _lastLocalWriteByTrackId[trackId] = ++_seedVersion;
     _likedByTrackId[trackId] = liked;
     notifyListeners();
   }

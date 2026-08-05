@@ -90,6 +90,13 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
   Object? _error;
   List<Track> _tracks = const [];
 
+  /// Monotonic id for the newest [_load] call. Overlapping loads (initState +
+  /// Retry, rapid retries, pull-to-refresh over an in-flight fetch) capture
+  /// their own id; a response whose id is no longer the newest is dropped
+  /// entirely so the last request — not the last response — owns the screen
+  /// and what it seeds into [LikedTracksState].
+  int _loadRequestId = 0;
+
   @override
   void initState() {
     super.initState();
@@ -97,6 +104,7 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
   }
 
   Future<void> _load() async {
+    final requestId = ++_loadRequestId;
     setState(() {
       _isLoading = true;
       _error = null;
@@ -108,6 +116,7 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
     try {
       final tracks = await widget.loader();
       if (!mounted) return;
+      if (requestId != _loadRequestId) return;
       likedState?.seed(tracks, responseToSeedVersion: seedVersion);
       setState(() {
         _tracks = tracks;
@@ -115,6 +124,7 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
       });
     } catch (e) {
       if (!mounted) return;
+      if (requestId != _loadRequestId) return;
       setState(() {
         _error = e;
         _isLoading = false;
