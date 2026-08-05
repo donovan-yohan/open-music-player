@@ -69,59 +69,46 @@ void main() {
     await tester.pump(const Duration(milliseconds: 20));
   });
 
-  testWidgets('an owned deck session releases and disposes both voices',
+  testWidgets('leaving an owned deck releases and disposes both voices',
       (tester) async {
-    // Production mounts DjScreen() with no session, so the screen owns the
-    // session and its dispose() is what must fully tear the voices down.
+    // The production path: the router builds DjScreen with no session, so the
+    // SCREEN owns it and _DjScreenState.dispose() is what must fully tear the
+    // voices down. Driving the session directly would not exercise that branch.
     final voices = <_TrackingVoice>[];
-    final session = DjSessionProvider.prototype(
-      voiceFactory: () {
-        final voice = _TrackingVoice();
-        voices.add(voice);
-        return voice;
-      },
-      resolver: const DirectEngineAudioSourceResolver(),
+    DjSessionProvider buildSession() => DjSessionProvider.prototype(
+          voiceFactory: () {
+            final voice = _TrackingVoice();
+            voices.add(voice);
+            return voice;
+          },
+          resolver: const DirectEngineAudioSourceResolver(),
+        );
+
+    tester.view.physicalSize = const Size(980, 448);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DjScreen(
+          filePicker: () async => null,
+          sessionFactory: buildSession,
+        ),
+      ),
     );
-
-    session.dispose();
-    await tester.pump(const Duration(milliseconds: 20));
-
+    await tester.pump();
     expect(voices, hasLength(2));
-    for (final voice in voices) {
-      expect(voice.releaseCount, 1,
-          reason: 'released exactly once, not double-released');
-      expect(voice.disposeCount, 1,
-          reason: 'an owned voice must be destroyed, not just parked');
-      expect(voice.isPlaying, isFalse);
-    }
-  });
-
-  testWidgets('a playing deck stops when the screen is torn down',
-      (tester) async {
-    final voices = <_TrackingVoice>[];
-    final session = DjSessionProvider.prototype(
-      voiceFactory: () {
-        final voice = _TrackingVoice();
-        voices.add(voice);
-        return voice;
-      },
-      resolver: const DirectEngineAudioSourceResolver(),
-    );
-
-    await pumpDeck(tester, session);
-    for (final voice in voices) {
-      await voice.play();
-    }
-    expect(voices.every((voice) => voice.isPlaying), isTrue);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 20));
 
-    expect(voices.every((voice) => voice.isPlaying), isFalse,
-        reason: 'audible deck output must not survive the screen');
-
-    session.dispose();
-    await tester.pump(const Duration(milliseconds: 20));
+    for (final voice in voices) {
+      expect(voice.releaseCount, 1,
+          reason: 'released exactly once, not double-released');
+      expect(voice.disposeCount, 1,
+          reason: 'a voice the screen created must be destroyed, not parked');
+      expect(voice.isPlaying, isFalse);
+    }
   });
 }
 

@@ -90,16 +90,32 @@ by accident and cannot outlive its screen.
    `Voice`, and it does not license a second current-track authority: the deck
    publishes no `PlaybackSnapshot` and writes nothing to `MixAudioHandler`,
    lock-screen controls, or the queue.
-2. **One entry point, user-controlled.** The deck is reachable only from the
-   player app bar, and only when `SettingsModel.djModeEnabled` is on. The switch
-   defaults on (the operator is the only user) and is labelled experimental.
-   Turning it off leaves playback entirely on the canonical path.
+2. **One gate, on the route.** `SettingsModel.djModeEnabled` guards the `/dj`
+   route itself, not merely the player app-bar button that leads to it — a
+   button-only gate would leave the deck reachable by URL on web, by restored
+   route state, or by any later `context.go('/dj')`, and the deck allocates its
+   voices the moment it mounts. The switch defaults on (the operator is the only
+   user) and is labelled experimental. Turning it off leaves playback entirely
+   on the canonical path.
 3. **Canonical playback is parked, not shared.** Entering the deck pauses
    `PlaybackState` before any deck voice loads.
 4. **Exit returns the voices.** Leaving the deck releases both voices, and
-   disposes them when the screen owns the session.
-   `client/test/dj_screen_voice_release_test.dart` is the standing proof of 1
-   and 4; `client/test/player_screen_test.dart` proves 2.
+   disposes them when the screen owns the session — which is the only case
+   production reaches, since the router builds `DjScreen` with no session.
+
+Standing proof, and its limits:
+
+- `client/test/dj_screen_voice_release_test.dart` proves 4 for both ownership
+  modes by mounting and unmounting `DjScreen`.
+- `client/test/router_dj_gate_test.dart` proves 2: the route carries a redirect,
+  the gate is open by default, closed when the setting is off, and closed when
+  there are no settings at all.
+- `client/test/player_screen_test.dart` proves the entry point follows the same
+  switch.
+- 1 and 3 are **not** covered by assertions. They hold by construction today
+  (the deck publishes no `PlaybackSnapshot` and `_DjScreenState` pauses
+  `PlaybackState` before seeding), but nothing fails if that changes. Adding
+  that coverage is the first follow-up this addendum owes.
 
 Anything outside this list is not covered by this addendum and needs its own
 decision.

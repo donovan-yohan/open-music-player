@@ -31,9 +31,24 @@ import 'providers/dj_session_provider.dart';
 /// QueueTimelineController deck projection (step 1 of the addendum's
 /// integration path).
 class DjScreen extends StatefulWidget {
-  const DjScreen({super.key, this.session, this.filePicker});
+  const DjScreen({
+    super.key,
+    this.session,
+    this.filePicker,
+    this.sessionFactory,
+  });
   final DjSessionProvider? session;
   final DjFilePicker? filePicker;
+
+  /// Test seam for the owned-session path.
+  ///
+  /// Production passes neither [session] nor this, so the screen builds — and
+  /// therefore owns — its own prototype session. A test cannot reach that
+  /// branch otherwise, because the real session builds `JustAudioVoice`s from
+  /// the app's provider tree. A screen that builds its own session owns it,
+  /// however it was built.
+  @visibleForTesting
+  final DjSessionProvider Function()? sessionFactory;
 
   @override
   State<DjScreen> createState() => _DjScreenState();
@@ -57,8 +72,14 @@ class _DjScreenState extends State<DjScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _session ??= widget.session ?? _newPrototypeSession();
-    _ownsSession = widget.session == null;
+    // _session is pinned on first resolution, so ownership must be pinned with
+    // it. Recomputing ownership against a later widget.session would make the
+    // screen release voices it created without ever disposing them.
+    if (_session == null) {
+      _session =
+          widget.session ?? (widget.sessionFactory ?? _newPrototypeSession)();
+      _ownsSession = widget.session == null;
+    }
     if (_seeded) return;
     _seeded = true;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -109,7 +130,8 @@ class _DjScreenState extends State<DjScreen> {
     // is), so it is constructed here the same way main.dart does for
     // LibraryService. Its default SecureStorage is the shared token authority,
     // so this is not a second session.
-    _stems = TrackStemChannelSource(service: StemsService(services.ApiClient()));
+    _stems =
+        TrackStemChannelSource(service: StemsService(services.ApiClient()));
     return DjSessionProvider.prototype(
       resolver: DefaultEngineAudioSourceResolver(
         signedAudioUrlService: SignedAudioUrlService(context.read<ApiClient>()),

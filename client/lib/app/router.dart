@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/auth/auth_state.dart';
 import '../core/commands/search_focus_controller.dart';
+import '../core/providers/settings_provider.dart';
 import '../features/auth/screens/biometric_unlock_screen.dart';
 import '../features/auth/screens/login_screen.dart';
 import '../features/auth/screens/register_screen.dart';
@@ -67,7 +69,17 @@ GoRouter createRouter(
           },
         ),
       ),
-      GoRoute(path: '/dj', builder: (context, state) => const DjScreen()),
+      GoRoute(
+        path: '/dj',
+        // The deck allocates two Voices outside QueueTimelineController the
+        // moment it mounts, so the ADR 0001 addendum scopes that exception to a
+        // user-controlled switch. Gating only the app-bar button would leave the
+        // route reachable by URL, restored route state, or any later
+        // context.go('/dj') — so the gate has to live on the route itself.
+        redirect: (context, state) =>
+            djModeEnabledForRouting(context) ? null : '/player',
+        builder: (context, state) => const DjScreen(),
+      ),
       GoRoute(
         path: '/downloads',
         builder: (context, state) => const DownloadsScreen(),
@@ -560,5 +572,21 @@ class _DesktopRailIconState extends State<_DesktopRailIcon> {
         ),
       ),
     );
+  }
+}
+
+/// Whether the experimental DJ deck may be entered.
+///
+/// Falls back to closed when there is no ProviderScope: a harness that builds
+/// the router without app settings has no recorded opt-in, and an experimental
+/// surface must not open itself by default.
+@visibleForTesting
+bool djModeEnabledForRouting(BuildContext context) {
+  try {
+    return ProviderScope.containerOf(context, listen: false)
+        .read(settingsProvider)
+        .djModeEnabled;
+  } catch (_) {
+    return false;
   }
 }
