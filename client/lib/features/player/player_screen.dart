@@ -13,6 +13,7 @@ import '../../core/services/analysis_service.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/liked_tracks_state.dart';
 import '../../models/track_analysis.dart';
+import '../library/local_browse_navigation.dart';
 import '../../shared/formatters/source_quality_formatter.dart';
 import 'widgets/song_info_sheet.dart';
 
@@ -132,6 +133,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                 _displayTitle(item, playback, activeTimeMode),
                                 _displaySubtitle(playback, activeTimeMode),
                                 _sourceQuality(item),
+                                // Only the song view's subtitle is an artist;
+                                // the queue view shows a context label, which
+                                // addresses no artist page.
+                                browseArtist:
+                                    activeTimeMode == _PlayerTimeMode.song
+                                        ? item.artist
+                                        : null,
                               ),
                               if (playback
                                   .snapshot.pitchPreservationFallback) ...[
@@ -294,9 +302,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
     BuildContext context,
     String title,
     String? artist,
-    String? sourceQuality,
-  ) {
+    String? sourceQuality, {
+    String? browseArtist,
+  }) {
     final colors = Theme.of(context).colorScheme;
+    final artistText = Text(
+      artist ?? 'Unknown Artist',
+      key: const ValueKey('player_track_artist'),
+      style: TextStyle(fontSize: 15, color: colors.onSurfaceVariant),
+      textAlign: TextAlign.center,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
     return Column(
       children: [
         Text(
@@ -312,14 +329,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
           overflow: TextOverflow.ellipsis,
         ),
         const SizedBox(height: 8),
-        Text(
-          artist ?? 'Unknown Artist',
-          key: const ValueKey('player_track_artist'),
-          style: TextStyle(fontSize: 15, color: colors.onSurfaceVariant),
-          textAlign: TextAlign.center,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
+        if (canBrowseLocalName(browseArtist))
+          InkWell(
+            key: const ValueKey('player_artist_link'),
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => openLocalArtist(context, browseArtist),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              child: artistText,
+            ),
+          )
+        else
+          artistText,
         if (sourceQuality != null) ...[
           const SizedBox(height: 6),
           Text(

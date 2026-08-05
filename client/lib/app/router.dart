@@ -11,7 +11,7 @@ import '../features/splash/splash_screen.dart';
 import '../features/home/home_screen.dart';
 import '../features/search/search_screen.dart';
 import '../features/library/library_screen.dart';
-import '../features/library/local_browse_screens.dart';
+import '../features/library/local_browse_navigation.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/player/player_screen.dart';
 import '../features/player/widgets/mini_player.dart';
@@ -101,22 +101,7 @@ GoRouter createRouter(
             pageBuilder: (context, state) =>
                 const NoTransitionPage(child: LibraryScreen()),
           ),
-          GoRoute(
-            path: '/library/artist/:name',
-            pageBuilder: (context, state) => NoTransitionPage(
-              child: LocalArtistScreen(
-                artist: Uri.decodeComponent(state.pathParameters['name']!),
-              ),
-            ),
-          ),
-          GoRoute(
-            path: '/library/album/:name',
-            pageBuilder: (context, state) => NoTransitionPage(
-              child: LocalAlbumScreen(
-                album: Uri.decodeComponent(state.pathParameters['name']!),
-              ),
-            ),
-          ),
+          ...localBrowseRoutes(),
           GoRoute(
             path: '/playlists',
             pageBuilder: (context, state) =>
