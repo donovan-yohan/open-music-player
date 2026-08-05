@@ -40,6 +40,17 @@ run_audio_mir() {
   )
 }
 
+# Fast stem DSP contract stage: numpy + scipy + ffmpeg, no torch and no
+# checkpoint. The full stems-runtime image (torch-cpu + demucs + baked weights)
+# is deliberately NOT part of the default sweep; build it explicitly with
+#   docker build --target stems-runtime backend
+run_stems() {
+  docker build \
+    --target stems-test \
+    --tag open-music-player-stems-test:local \
+    "$ROOT/backend"
+}
+
 run_client() {
   (
     cd "$ROOT/client"
@@ -76,6 +87,9 @@ case "$TARGET" in
   analyzer)
     run_analyzer
     ;;
+  stems)
+    run_stems
+    ;;
   audio-mir)
     run_audio_mir
     ;;
@@ -89,12 +103,13 @@ case "$TARGET" in
     run_delivery
     run_backend
     run_analyzer
+    run_stems
     run_audio_mir
     run_client
     run_extension
     ;;
   *)
-    echo "usage: scripts/test [delivery|harness|backend|analyzer|audio-mir|client|extension|all]" >&2
+    echo "usage: scripts/test [delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
     exit 2
     ;;
 esac

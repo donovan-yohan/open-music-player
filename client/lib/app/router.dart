@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/auth/auth_state.dart';
 import '../core/commands/search_focus_controller.dart';
+import '../core/providers/settings_provider.dart';
 import '../features/auth/screens/biometric_unlock_screen.dart';
 import '../features/auth/screens/login_screen.dart';
 import '../features/auth/screens/register_screen.dart';
@@ -14,6 +16,7 @@ import '../features/library/library_screen.dart';
 import '../features/library/local_browse_navigation.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/player/player_screen.dart';
+import '../features/dj/dj_screen.dart';
 import '../features/player/widgets/mini_player.dart';
 import '../features/share/share_import_screen.dart';
 import '../features/downloads/downloads_screen.dart';
@@ -65,6 +68,17 @@ GoRouter createRouter(
             );
           },
         ),
+      ),
+      GoRoute(
+        path: '/dj',
+        // The deck allocates two Voices outside QueueTimelineController the
+        // moment it mounts, so the ADR 0001 addendum scopes that exception to a
+        // user-controlled switch. Gating only the app-bar button would leave the
+        // route reachable by URL, restored route state, or any later
+        // context.go('/dj') — so the gate has to live on the route itself.
+        redirect: (context, state) =>
+            djModeEnabledForRouting(context) ? null : '/player',
+        builder: (context, state) => const DjScreen(),
       ),
       GoRoute(
         path: '/downloads',
@@ -128,8 +142,8 @@ GoRouter createRouter(
           ),
           GoRoute(
             path: '/queue/imports',
-            pageBuilder: (context, state) =>
-                const NoTransitionPage(child: QueueScreen(showImportJobs: true)),
+            pageBuilder: (context, state) => const NoTransitionPage(
+                child: QueueScreen(showImportJobs: true)),
           ),
           GoRoute(
             path: '/settings',
@@ -558,5 +572,21 @@ class _DesktopRailIconState extends State<_DesktopRailIcon> {
         ),
       ),
     );
+  }
+}
+
+/// Whether the experimental DJ deck may be entered.
+///
+/// Falls back to closed when there is no ProviderScope: a harness that builds
+/// the router without app settings has no recorded opt-in, and an experimental
+/// surface must not open itself by default.
+@visibleForTesting
+bool djModeEnabledForRouting(BuildContext context) {
+  try {
+    return ProviderScope.containerOf(context, listen: false)
+        .read(settingsProvider)
+        .djModeEnabled;
+  } catch (_) {
+    return false;
   }
 }

@@ -335,6 +335,18 @@ class SettingsPlaybackSection extends ConsumerWidget {
             ],
           ),
         ),
+        SwitchListTile(
+          key: const ValueKey('settings_dj_mode_toggle'),
+          secondary: const Icon(Icons.graphic_eq),
+          title: const Text('DJ mode (experimental)'),
+          subtitle: const Text(
+            'Adds the landscape deck to the player. The deck runs its own two '
+            'audio voices alongside normal playback; turn this off to leave '
+            'playback entirely on the standard engine.',
+          ),
+          value: settings.djModeEnabled,
+          onChanged: settingsNotifier.setDjModeEnabled,
+        ),
         ListTile(
           key: const ValueKey('settings_end_of_queue'),
           leading: const Icon(Icons.all_inclusive_outlined),

@@ -35,6 +35,16 @@ run_analyzer() {
   )
 }
 
+run_stems() {
+  (
+    cache_dir="$(mktemp -d)"
+    trap 'rm -rf "$cache_dir"' EXIT
+    PYTHONPYCACHEPREFIX="$cache_dir" python3 -m py_compile \
+      "$ROOT/backend/cmd/stems-worker/stems_dsp.py" \
+      "$ROOT/backend/cmd/stems-worker/stems_dsp_test.py"
+  )
+}
+
 run_audio_mir() {
   (
     cd "$ROOT/evals/audio_mir"
@@ -71,6 +81,9 @@ case "$TARGET" in
   analyzer)
     run_analyzer
     ;;
+  stems)
+    run_stems
+    ;;
   audio-mir)
     run_audio_mir
     ;;
@@ -84,12 +97,13 @@ case "$TARGET" in
     run_delivery
     run_backend
     run_analyzer
+    run_stems
     run_audio_mir
     run_client
     run_extension
     ;;
   *)
-    echo "usage: scripts/lint [delivery|harness|backend|analyzer|audio-mir|client|extension|all]" >&2
+    echo "usage: scripts/lint [delivery|harness|backend|analyzer|stems|audio-mir|client|extension|all]" >&2
     exit 2
     ;;
 esac

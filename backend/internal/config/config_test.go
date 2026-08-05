@@ -327,6 +327,72 @@ func TestLoadAnalyzerRespectsExplicitDisable(t *testing.T) {
 	}
 }
 
+func TestLoadStemsDisabledByDefault(t *testing.T) {
+	for _, key := range []string{"STEMS_ENABLED", "STEMS_BASE_URL", "STEMS_AUTH_TOKEN", "STEMS_TIMEOUT_MS", "STEMS_CONCURRENCY", "STEMS_QUEUE_MAX_DEPTH"} {
+		withUnsetEnv(t, key)
+	}
+	cfg := Load()
+	if cfg.StemsEnabled {
+		t.Fatal("StemsEnabled = true with no config, want disabled")
+	}
+	if cfg.StemsTimeout != 1800*time.Second {
+		t.Fatalf("StemsTimeout = %s, want default 1800000ms", cfg.StemsTimeout)
+	}
+	if cfg.StemsConcurrency != 1 {
+		t.Fatalf("StemsConcurrency = %d, want default 1", cfg.StemsConcurrency)
+	}
+	if cfg.StemsQueueMaxDepth != 32 {
+		t.Fatalf("StemsQueueMaxDepth = %d, want default 32", cfg.StemsQueueMaxDepth)
+	}
+}
+
+func TestLoadStemsEnabledWhenBaseURLConfigured(t *testing.T) {
+	withUnsetEnv(t, "STEMS_ENABLED")
+	t.Setenv("STEMS_BASE_URL", "http://stems.local:18290")
+	t.Setenv("STEMS_AUTH_TOKEN", "stems-token")
+	t.Setenv("STEMS_TIMEOUT_MS", "600000")
+	t.Setenv("STEMS_CONCURRENCY", "2")
+	t.Setenv("STEMS_QUEUE_MAX_DEPTH", "8")
+
+	cfg := Load()
+	if !cfg.StemsEnabled {
+		t.Fatal("StemsEnabled = false with base URL, want enabled")
+	}
+	if cfg.StemsBaseURL != "http://stems.local:18290" || cfg.StemsAuthToken != "stems-token" {
+		t.Fatalf("stems config not loaded: base=%q token=%q", cfg.StemsBaseURL, cfg.StemsAuthToken)
+	}
+	if cfg.StemsTimeout != 600*time.Second {
+		t.Fatalf("StemsTimeout = %s, want 600000ms", cfg.StemsTimeout)
+	}
+	if cfg.StemsConcurrency != 2 {
+		t.Fatalf("StemsConcurrency = %d, want 2", cfg.StemsConcurrency)
+	}
+	if cfg.StemsQueueMaxDepth != 8 {
+		t.Fatalf("StemsQueueMaxDepth = %d, want 8", cfg.StemsQueueMaxDepth)
+	}
+}
+
+func TestLoadClampsStemsConcurrency(t *testing.T) {
+	// The cap is load-bearing on the low-memory host: htdemucs peaks at several
+	// GB RSS, so concurrency must never follow an operator typo upward.
+	t.Setenv("STEMS_CONCURRENCY", "16")
+
+	cfg := Load()
+	if cfg.StemsConcurrency != 2 {
+		t.Fatalf("StemsConcurrency = %d, want cap 2", cfg.StemsConcurrency)
+	}
+}
+
+func TestLoadStemsRespectsExplicitDisable(t *testing.T) {
+	t.Setenv("STEMS_ENABLED", "false")
+	t.Setenv("STEMS_BASE_URL", "http://stems.local:18290")
+
+	cfg := Load()
+	if cfg.StemsEnabled {
+		t.Fatal("StemsEnabled = true despite STEMS_ENABLED=false")
+	}
+}
+
 func TestLoadResearchDisabledByDefaultWithBoundedLifecycleDefaults(t *testing.T) {
 	withUnsetResearchEnv(t)
 

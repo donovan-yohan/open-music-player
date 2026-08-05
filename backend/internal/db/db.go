@@ -95,6 +95,12 @@ func (db *DB) Migrate() error {
 		source_type VARCHAR(50),
 		storage_key VARCHAR(500),
 		file_size_bytes BIGINT,
+		-- Content identity of the bytes stored at storage_key, as "sha256:<hex>".
+		-- Empty means "not known yet": tracks downloaded before this column, or
+		-- tracks whose hash has not been backfilled by a first separation.
+		-- Derived artifacts (track_stems) compare against it to detect replaced
+		-- audio, so it must only ever be written by whoever wrote those bytes.
+		source_file_hash VARCHAR(128) NOT NULL DEFAULT '',
 		codec TEXT,
 		bitrate_kbps INTEGER,
 		sample_rate_hz INTEGER,
@@ -433,6 +439,7 @@ func (db *DB) Migrate() error {
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS source_type VARCHAR(50);
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS storage_key VARCHAR(500);
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS source_file_hash VARCHAR(128) NOT NULL DEFAULT '';
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS codec TEXT;
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS bitrate_kbps INTEGER;
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS sample_rate_hz INTEGER;
@@ -490,6 +497,35 @@ func (db *DB) Migrate() error {
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS overrides_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS manual_override_revision BIGINT NOT NULL DEFAULT 0;
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS manual_override_updated_at TIMESTAMP WITH TIME ZONE;
+
+	-- Stem separation artifacts are deliberately NOT overloaded onto
+	-- track_analysis: they have a different lifecycle, a different model
+	-- identity, and a different artifact class. track_analysis stays
+	-- single-writer (the analyzer); the stems service only ever writes here.
+	CREATE TABLE IF NOT EXISTS track_stems (
+		id BIGSERIAL PRIMARY KEY,
+		track_id BIGINT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+		channel_set VARCHAR(64) NOT NULL,
+		stem_model_version VARCHAR(128) NOT NULL,
+		schema_version INTEGER NOT NULL DEFAULT 1,
+		status VARCHAR(32) NOT NULL DEFAULT 'pending',
+		source_file_hash VARCHAR(128) NOT NULL DEFAULT '',
+		source_storage_key TEXT NOT NULL DEFAULT '',
+		artifacts_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+		provenance_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+		error TEXT,
+		requested_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		started_at TIMESTAMP WITH TIME ZONE,
+		completed_at TIMESTAMP WITH TIME ZONE,
+		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		CONSTRAINT chk_track_stems_schema_version CHECK (schema_version >= 1),
+		CONSTRAINT chk_track_stems_status CHECK (status IN ('pending', 'separating', 'ready', 'failed', 'stale')),
+		CONSTRAINT uq_track_stems_identity UNIQUE (track_id, channel_set, stem_model_version)
+	);
+	CREATE INDEX IF NOT EXISTS idx_track_stems_status ON track_stems(status);
+	CREATE INDEX IF NOT EXISTS idx_track_stems_track ON track_stems(track_id);
+	CREATE INDEX IF NOT EXISTS idx_track_stems_updated_at ON track_stems(updated_at DESC);
 
 	CREATE TABLE IF NOT EXISTS play_events (
 		id BIGSERIAL PRIMARY KEY,

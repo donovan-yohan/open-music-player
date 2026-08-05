@@ -127,6 +127,25 @@ jobs:
       - name: Build pinned analyzer image
         run: scripts/build analyzer
 
+  stems:
+    name: Stem Separation (DSP contract)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Fast contract stage only: crossover null-sum, opus encoder uniformity,
+      # manifest shape, and the checkpoint-source allowlist. The full
+      # stems-runtime image (torch-cpu + demucs + baked weights) is not built in
+      # CI; it is an explicit `docker build --target stems-runtime backend`.
+      - name: Lint stems DSP helper
+        run: scripts/lint stems
+
+      - name: Run stems DSP contract image
+        run: scripts/test stems
+
   client:
     name: Client (Flutter)
     runs-on: ubuntu-latest

@@ -3,6 +3,16 @@ import 'dart:math' as math;
 /// Shape of a per-clip fade ramp.
 enum FadeCurve { linear, equalPower }
 
+/// Equal-power two-channel crossfade gains for a normalized [position].
+///
+/// Kept next to [GainEnvelope] so performance controls use the same gain law
+/// as timeline transitions. At center each channel is 1/sqrt(2), so total
+/// power remains unity.
+({double left, double right}) equalPowerCrossfadeGains(double position) {
+  final t = position.clamp(0.0, 1.0);
+  return (left: math.cos(t * math.pi / 2), right: math.sin(t * math.pi / 2));
+}
+
 /// Trapezoid gain envelope for one clip.
 ///
 /// [equalPower] is the Phase 0 default so the midpoint of a two-track
@@ -51,32 +61,32 @@ class GainEnvelope {
   }
 
   GainEnvelope withBaseGainDb(double db) => GainEnvelope(
-    baseGainDb: db,
-    fadeInMs: fadeInMs,
-    fadeOutMs: fadeOutMs,
-    curve: curve,
-  );
+        baseGainDb: db,
+        fadeInMs: fadeInMs,
+        fadeOutMs: fadeOutMs,
+        curve: curve,
+      );
 
   GainEnvelope withFadeInMs(int ms) => GainEnvelope(
-    baseGainDb: baseGainDb,
-    fadeInMs: math.max(0, ms),
-    fadeOutMs: fadeOutMs,
-    curve: curve,
-  );
+        baseGainDb: baseGainDb,
+        fadeInMs: math.max(0, ms),
+        fadeOutMs: fadeOutMs,
+        curve: curve,
+      );
 
   GainEnvelope withFadeOutMs(int ms) => GainEnvelope(
-    baseGainDb: baseGainDb,
-    fadeInMs: fadeInMs,
-    fadeOutMs: math.max(0, ms),
-    curve: curve,
-  );
+        baseGainDb: baseGainDb,
+        fadeInMs: fadeInMs,
+        fadeOutMs: math.max(0, ms),
+        curve: curve,
+      );
 
   GainEnvelope withCurve(FadeCurve curve) => GainEnvelope(
-    baseGainDb: baseGainDb,
-    fadeInMs: fadeInMs,
-    fadeOutMs: fadeOutMs,
-    curve: curve,
-  );
+        baseGainDb: baseGainDb,
+        fadeInMs: fadeInMs,
+        fadeOutMs: fadeOutMs,
+        curve: curve,
+      );
 
   _EffectiveFades _effectiveFades(int clipDurationMs) {
     final requestedIn = math.max(0, fadeInMs);

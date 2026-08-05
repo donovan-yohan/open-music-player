@@ -197,4 +197,41 @@ void main() {
       maxClickAuditionOutputOffsetMs,
     );
   });
+
+  test('DJ mode defaults on and survives an upgrade from an older blob', () {
+    // The deck is the sanctioned ADR 0001 exception, scoped by this switch.
+    // Default-on is deliberate (the operator is the only user), and an existing
+    // stored blob predating the key must land on that default rather than
+    // silently disabling a feature the user never turned off.
+    expect(const SettingsModel().djModeEnabled, isTrue);
+    expect(SettingsModel.fromJson(const {}).djModeEnabled, isTrue);
+    expect(
+      SettingsModel.fromJson(const {'crossfadeDuration': 4}).djModeEnabled,
+      isTrue,
+    );
+    expect(
+      SettingsModel.fromJson(const {'djModeEnabled': false}).djModeEnabled,
+      isFalse,
+    );
+    expect(const SettingsModel().toJson()['djModeEnabled'], isTrue);
+  });
+
+  test('settings notifier persists the DJ mode opt-out', () async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final notifier = SettingsNotifier(preferences);
+
+    expect(notifier.state.djModeEnabled, isTrue);
+
+    notifier.setDjModeEnabled(false);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(notifier.state.djModeEnabled, isFalse);
+    final saved = jsonDecode(preferences.getString('app_settings')!)
+        as Map<String, dynamic>;
+    expect(saved['djModeEnabled'], isFalse);
+
+    // The opt-out has to survive a restart, otherwise the gate is decorative.
+    expect(SettingsNotifier(preferences).state.djModeEnabled, isFalse);
+  });
 }

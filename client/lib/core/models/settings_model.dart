@@ -181,6 +181,16 @@ class SettingsModel {
   final bool clickAuditionDownbeatAccentEnabled;
   final ClickAuditionOutputOffsets clickAuditionOutputOffsets;
 
+  /// Whether the experimental DJ deck entry point is offered.
+  ///
+  /// The deck drives two audio voices of its own, outside the
+  /// `QueueTimelineController` that ADR 0001 makes the single playback
+  /// authority. That exception is sanctioned but scoped (see the ADR 0001
+  /// addendum), and this flag is the runtime switch that bounds it: turning it
+  /// off removes the only way into the deck, so normal playback runs with the
+  /// canonical voice pool alone.
+  final bool djModeEnabled;
+
   const SettingsModel({
     this.crossfadeDuration = 0,
     this.themeMode = AppThemeMode.system,
@@ -189,6 +199,7 @@ class SettingsModel {
     this.clickAuditionVolume = defaultClickAuditionVolume,
     this.clickAuditionDownbeatAccentEnabled = true,
     this.clickAuditionOutputOffsets = const ClickAuditionOutputOffsets._(),
+    this.djModeEnabled = true,
   });
 
   SettingsModel copyWith({
@@ -199,6 +210,7 @@ class SettingsModel {
     double? clickAuditionVolume,
     bool? clickAuditionDownbeatAccentEnabled,
     ClickAuditionOutputOffsets? clickAuditionOutputOffsets,
+    bool? djModeEnabled,
   }) {
     return SettingsModel(
       crossfadeDuration: crossfadeDuration ?? this.crossfadeDuration,
@@ -212,6 +224,7 @@ class SettingsModel {
           this.clickAuditionDownbeatAccentEnabled,
       clickAuditionOutputOffsets:
           clickAuditionOutputOffsets ?? this.clickAuditionOutputOffsets,
+      djModeEnabled: djModeEnabled ?? this.djModeEnabled,
     );
   }
 
@@ -227,6 +240,7 @@ class SettingsModel {
       'clickAuditionVolume': clickAuditionVolume,
       'clickAuditionDownbeatAccentEnabled': clickAuditionDownbeatAccentEnabled,
       'clickAuditionOutputOffsetsMs': clickAuditionOutputOffsets.toJson(),
+      'djModeEnabled': djModeEnabled,
     };
   }
 
@@ -244,6 +258,9 @@ class SettingsModel {
       clickAuditionOutputOffsets: ClickAuditionOutputOffsets.fromJson(
         json['clickAuditionOutputOffsetsMs'],
       ),
+      // Absent from an existing stored blob means "never chosen", which lands
+      // on the default rather than silently disabling the feature on upgrade.
+      djModeEnabled: _readBool(json['djModeEnabled'], fallback: true),
     );
   }
 }

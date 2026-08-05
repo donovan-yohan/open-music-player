@@ -34,6 +34,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/queue"
 	"github.com/openmusicplayer/backend/internal/research"
 	"github.com/openmusicplayer/backend/internal/search"
+	"github.com/openmusicplayer/backend/internal/stems"
 	"github.com/openmusicplayer/backend/internal/storage"
 	"github.com/openmusicplayer/backend/internal/websocket"
 )
@@ -643,6 +644,71 @@ func main() {
 	}
 	maintenanceHandlers := api.NewMaintenanceHandlers(trackRepo, jobProcessor)
 
+	// Optional on-demand stem separation. Every failure path here degrades to the
+	// router's unavailable handler: a missing worker, a malformed base URL, or an
+	// unreachable Redis must never block server startup, because separation is an
+	// opt-in enhancement and the rest of the library keeps working without it.
+	var stemsHandlers *api.StemsHandlers
+	var stemsWorkers *stems.WorkerPool
+	stemsRepo := db.NewTrackStemsRepository(database)
+	switch {
+	case !cfg.StemsEnabled:
+		log.Info(ctx, "Stem separation disabled by configuration", nil)
+	case !cfg.RedisEnabled:
+		log.Info(ctx, "Stem separation disabled: the stems queue class requires Redis", nil)
+	default:
+		// The service client is constructed at startup so a malformed
+		// STEMS_BASE_URL surfaces here rather than on a user's first trigger. It
+		// is also the seam the worker pool consumes.
+		stemsServiceClient, stemsErr := stems.NewServiceClient(stems.ServiceConfig{
+			Enabled:   cfg.StemsEnabled,
+			BaseURL:   cfg.StemsBaseURL,
+			AuthToken: cfg.StemsAuthToken,
+			Timeout:   cfg.StemsTimeout,
+		})
+		switch {
+		case stemsErr != nil:
+			log.Error(ctx, "Stem separation unavailable: invalid worker configuration", map[string]interface{}{
+				"base_url": cfg.StemsBaseURL,
+			}, stemsErr)
+		case stemsServiceClient == nil:
+			log.Info(ctx, "Stem separation unavailable: worker client not configured", nil)
+		default:
+			stemsQueue, queueErr := stems.NewQueue(cfg.RedisURL, stems.QueueConfig{MaxDepth: cfg.StemsQueueMaxDepth})
+			if queueErr != nil {
+				log.Error(ctx, "Stem separation unavailable: queue could not be initialized", nil, queueErr)
+				break
+			}
+			defer stemsQueue.Close()
+			// The Postgres row is the durable authority for a separation, so a
+			// restart reclaims requests abandoned mid-run instead of stranding
+			// them. Start runs that reconciliation before the first worker
+			// dequeues, and repeats it on a timer, because a row abandoned by
+			// this process only becomes reclaimable once it has been untouched
+			// long enough that no live worker can still own it.
+			pool, poolErr := stems.NewWorkerPool(stemsQueue, stemsServiceClient, stemsRepo, stems.WorkerPoolConfig{
+				Concurrency: cfg.StemsConcurrency,
+				JobTimeout:  cfg.StemsTimeout,
+				Tracks:      trackRepo,
+			})
+			if poolErr != nil {
+				log.Error(ctx, "Stem separation unavailable: worker pool could not be initialized", nil, poolErr)
+				break
+			}
+			stemsWorkers = pool
+			stemsWorkers.Start(ctx)
+			// Handlers go live only once something is consuming the queue.
+			// Exposing the trigger without a consumer would accept work that
+			// nothing can ever finish, which is worse than reporting 503.
+			stemsHandlers = api.NewStemsHandlers(stemsRepo, stemsQueue, trackRepo, libraryRepo)
+			log.Info(ctx, "Initialized stem separation", map[string]interface{}{
+				"base_url":        cfg.StemsBaseURL,
+				"concurrency":     cfg.StemsConcurrency,
+				"queue_max_depth": cfg.StemsQueueMaxDepth,
+			})
+		}
+	}
+
 	// Initialize Redis-backed download and playback queue services only when enabled.
 	var downloadService *download.Service
 	var downloadHandlers *api.DownloadHandlers
@@ -726,6 +792,7 @@ func main() {
 		LibraryHandlers:         libraryHandlers,
 		TrackOverrideHandlers:   trackOverrideHandlers,
 		AnalysisHandlers:        analysisHandlers,
+		StemsHandlers:           stemsHandlers,
 		PlaybackHandlers:        playbackHandlers,
 		QueueHandlers:           queueHandlers,
 		DiscoveryHandlers:       discoveryHandlers,
@@ -794,6 +861,14 @@ func main() {
 		if downloadService != nil {
 			if err := downloadService.Stop(shutdownCtx); err != nil {
 				log.Error(ctx, "Download service shutdown error", nil, err)
+			}
+		}
+		// A separation in flight can legitimately outlive the shutdown budget.
+		// Cancelling it leaves its row in `separating`, which the next process's
+		// recovery sweep reclaims, so a timeout here is not data loss.
+		if stemsWorkers != nil {
+			if err := stemsWorkers.Stop(shutdownCtx); err != nil {
+				log.Error(ctx, "Stems worker pool shutdown error", nil, err)
 			}
 		}
 		if err := jobProcessor.Shutdown(shutdownCtx); err != nil {

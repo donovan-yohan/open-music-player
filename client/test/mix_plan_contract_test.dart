@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/models/mix_plan.dart';
+import 'package:open_music_player/models/stem_edits.dart';
 
 void main() {
   MixPlanClip clip({
@@ -11,6 +12,7 @@ void main() {
     int sourceEndMs = 5000,
     int timelineStartMs = 12000,
     String pitchMode = pitchModePreserve,
+    StemEdits? stemEdits,
   }) =>
       MixPlanClip(
         clipId: clipId,
@@ -22,6 +24,19 @@ void main() {
         gainDb: -1.5,
         fadeInMs: 250,
         pitchMode: pitchMode,
+        stemEdits: stemEdits,
+      );
+
+  StemEdits stemEditsFixture() => StemEdits(
+        channelSet: StemChannelSet.stems5Hybrid,
+        sourceFileHash: 'sha256:deadbeef',
+        beatGridRef: StemBeatGridRef(
+          analysisRef: 'analysis-77',
+          analysisVersion: 'bands3-v1',
+        ),
+        events: [
+          StemGainEvent(channel: 'vocals', atMs: 2000, gain: 0, beatIndex: 8),
+        ],
       );
 
   test('timelineEndMs is derived from placement plus selected source duration',
@@ -128,5 +143,97 @@ void main() {
     expect(plan.version, 3);
     expect(plan.updatedAt.toUtc(), DateTime.parse('2026-06-04T00:05:00Z'));
     expect(plan.clips.single.queueItemId, 'queue-a');
+  });
+
+  group('stemEdits on a mix plan clip', () {
+    test('a clip without stemEdits serializes exactly as before', () {
+      final json = clip().toJson();
+
+      expect(json, {
+        'clipId': 'clip-a',
+        'queueItemId': 'queue-a',
+        'trackId': 42,
+        'sourceStartMs': 1000,
+        'sourceEndMs': 5000,
+        'timelineStartMs': 12000,
+        'gainDb': -1.5,
+        'fadeInMs': 250,
+      });
+      expect(json.containsKey('stemEdits'), isFalse);
+      expect(clip().stemEdits, isNull);
+      expect(MixPlanClip.fromJson(json).stemEdits, isNull);
+    });
+
+    test('stemEdits survives a clip json round-trip', () {
+      final source = clip(stemEdits: stemEditsFixture());
+      final json = source.toJson();
+
+      expect(json['stemEdits'], isA<Map<String, dynamic>>());
+      expect((json['stemEdits'] as Map)['channelSet'], 'stems5-hybrid-v1');
+
+      final decoded = MixPlanClip.fromJson(json);
+
+      expect(decoded.stemEdits, source.stemEdits);
+      expect(decoded.stemEdits!.eventsFor('vocals').single.atMs, 2000);
+      expect(decoded.stemEdits!.gainAt('vocals', 2000), 0.0);
+      expect(decoded.toJson(), json);
+    });
+
+    test('a whole mix plan carries clip stem edits through fromJson', () {
+      final plan = MixPlan.fromJson({
+        'id': 'plan-1',
+        'schemaVersion': 1,
+        'name': 'Stem mix',
+        'clips': [clip(stemEdits: stemEditsFixture()).toJson()],
+        'summary': {
+          'clipCount': 1,
+          'trackIds': [42],
+          'durationMs': 16000,
+        },
+        'version': 1,
+        'createdAt': '2026-06-04T00:00:00Z',
+        'updatedAt': '2026-06-04T00:05:00Z',
+      });
+
+      expect(plan.clips.single.stemEdits?.channelSet.id, 'stems5-hybrid-v1');
+    });
+
+    test('stemEdits survives every copy helper', () {
+      final edits = stemEditsFixture();
+      final source = clip(stemEdits: edits);
+
+      expect(source.withTimelineStartMs(30000).stemEdits, edits,
+          reason: 'moving a clip must not drop its stem edits');
+      expect(
+        source
+            .withSourceRange(sourceStartMs: 2000, sourceEndMs: 8000)
+            .stemEdits,
+        edits,
+        reason: 'retrimming a clip must not drop its stem edits',
+      );
+      expect(source.withPitchMode(pitchModeFollowTempo).stemEdits, edits,
+          reason: 'changing pitch mode must not drop its stem edits');
+    });
+
+    test('retrimming keeps source-anchored change points unmoved', () {
+      final trimmed = clip(stemEdits: stemEditsFixture())
+          .withSourceRange(sourceStartMs: 2000, sourceEndMs: 8000);
+
+      expect(trimmed.stemEdits!.eventsFor('vocals').single.atMs, 2000,
+          reason: 'atMs is anchored to the source file, not the trim window');
+    });
+
+    test('withStemEdits replaces and clears the document', () {
+      final edits = stemEditsFixture();
+
+      expect(clip().withStemEdits(edits).stemEdits, edits);
+      expect(clip(stemEdits: edits).withStemEdits(null).stemEdits, isNull);
+      expect(
+        clip(stemEdits: edits).withStemEdits(null).toJson().containsKey(
+              'stemEdits',
+            ),
+        isFalse,
+      );
+    });
   });
 }

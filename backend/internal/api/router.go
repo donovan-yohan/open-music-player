@@ -32,6 +32,7 @@ type Router struct {
 	libraryHandlers         *LibraryHandlers
 	trackOverrideHandlers   *TrackMetadataOverrideHandlers
 	analysisHandlers        *AnalysisHandlers
+	stemsHandlers           *StemsHandlers
 	playbackHandlers        *PlaybackHandlers
 	queueHandlers           *queue.Handlers
 	discoveryHandlers       *discovery.Handlers
@@ -67,6 +68,7 @@ type RouterConfig struct {
 	LibraryHandlers         *LibraryHandlers
 	TrackOverrideHandlers   *TrackMetadataOverrideHandlers
 	AnalysisHandlers        *AnalysisHandlers
+	StemsHandlers           *StemsHandlers
 	PlaybackHandlers        *PlaybackHandlers
 	QueueHandlers           *queue.Handlers
 	DiscoveryHandlers       *discovery.Handlers
@@ -127,6 +129,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		libraryHandlers:         cfg.LibraryHandlers,
 		trackOverrideHandlers:   cfg.TrackOverrideHandlers,
 		analysisHandlers:        cfg.AnalysisHandlers,
+		stemsHandlers:           cfg.StemsHandlers,
 		playbackHandlers:        cfg.PlaybackHandlers,
 		queueHandlers:           cfg.QueueHandlers,
 		discoveryHandlers:       cfg.DiscoveryHandlers,
@@ -277,6 +280,16 @@ func (r *Router) setupRoutes() {
 	} else {
 		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/analysis", r.withAuth(unavailableHandler("Track analysis is unavailable")))
 		r.mux.HandleFunc("PATCH /api/v1/tracks/{track_id}/analysis/overrides", r.withAuth(unavailableHandler("Track analysis is unavailable")))
+	}
+	// Opt-in, on-demand stem separation. Registered even when disabled so auth is
+	// evaluated before an availability response, and never as a library sweep.
+	if r.stemsHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/tracks/{track_id}/stems", r.withAuth(r.stemsHandlers.RequestStems))
+		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/stems", r.withAuth(r.stemsHandlers.GetStems))
+	} else {
+		stemsUnavailable := r.withAuth(unavailableHandler("Stem separation is unavailable"))
+		r.mux.HandleFunc("POST /api/v1/tracks/{track_id}/stems", stemsUnavailable)
+		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/stems", stemsUnavailable)
 	}
 
 	// Direct playback/download URL issuance (auth required)
