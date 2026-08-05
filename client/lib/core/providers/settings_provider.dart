@@ -52,6 +52,11 @@ class SettingsNotifier extends StateNotifier<SettingsModel> {
     _saveSettings();
   }
 
+  void setEndOfQueueMode(EndOfQueueMode mode) {
+    state = state.copyWith(endOfQueueMode: mode);
+    _saveSettings();
+  }
+
   void setClickAuditionVolume(double volume) {
     state = state.copyWith(clickAuditionVolume: volume);
     _saveSettings();

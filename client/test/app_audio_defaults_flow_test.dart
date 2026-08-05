@@ -9,6 +9,7 @@ import 'package:open_music_player/app/app.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/auth/auth_state.dart';
+import 'package:open_music_player/core/models/settings_model.dart';
 import 'package:open_music_player/core/providers/settings_provider.dart';
 import 'package:open_music_player/core/share/shared_intent_receiver.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -42,10 +43,51 @@ void main() {
 
     expect(playback.appliedDefaults.last.defaultCrossfadeMs, 3000);
   });
+
+  testWidgets('settings provider end-of-queue mode reaches playback',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final playback = _PlaybackState();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [sharedPreferencesProvider.overrideWithValue(preferences)],
+        child: OpenMusicPlayerApp(
+          apiClient: ApiClient(),
+          authState: _AuthState(),
+          playbackState: playback,
+          sharedIntentReceiver: _SharedIntentReceiver(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // Seeded from the stored preference before the listener is armed, so a
+    // relaunch honors the saved choice without the user touching settings.
+    expect(playback.appliedEndOfQueueModes, [EndOfQueueMode.off]);
+
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(OpenMusicPlayerApp)),
+      listen: false,
+    );
+    container
+        .read(settingsProvider.notifier)
+        .setEndOfQueueMode(EndOfQueueMode.shuffleLibrary);
+    await tester.pump();
+
+    expect(playback.appliedEndOfQueueModes.last, EndOfQueueMode.shuffleLibrary);
+  });
 }
 
 class _PlaybackState extends Fake implements PlaybackState {
   final List<AudioPlaybackDefaults> appliedDefaults = [];
+  final List<EndOfQueueMode> appliedEndOfQueueModes = [];
+
+  @override
+  void setEndOfQueueMode(EndOfQueueMode mode) {
+    appliedEndOfQueueModes.add(mode);
+  }
 
   @override
   bool get hasTrack => false;

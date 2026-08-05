@@ -267,6 +267,12 @@ Map<String, dynamic> mediaItemToPlaybackJson(MediaItem item) {
     'duration': item.duration?.inSeconds ?? 0,
     if (artwork.url != null) 'artwork_url': artwork.url,
     'artwork_kind': artwork.kind.wireValue,
+    // The queue-item origin is persisted so a restored queue keeps telling the
+    // truth about how it was built. An auto-continuation segment (#352) must
+    // not come back looking user-built, and a restored manual "Add to queue"
+    // item must keep playing before the context tail.
+    if (item.extras?['itemOrigin'] is String)
+      'itemOrigin': item.extras?['itemOrigin'],
     if (item.extras?['isLiked'] is bool) 'isLiked': item.extras?['isLiked'],
     if (item.extras?['likedAccountId'] is String)
       'likedAccountId': item.extras?['likedAccountId'],

@@ -10,6 +10,7 @@ import 'package:audio_service/audio_service.dart' as audio_service;
 import 'app/app.dart';
 import 'core/api/api_client.dart';
 import 'core/audio/audio_focus_coordinator.dart';
+import 'core/audio/library_shuffle_continuation.dart';
 import 'core/audio/mix_audio_handler.dart';
 import 'core/audio/playback_state.dart';
 import 'core/audio/play_recorder_service.dart';
@@ -42,8 +43,11 @@ void main() async {
   Future<String?> currentAccountId() async =>
       accountIdFromAccessToken(await storage.getAccessToken());
   final initialAccountId = await currentAccountId();
+  final libraryService = LibraryService(
+    services_api.ApiClient(storage: storage),
+  );
   final likedTracksState = LikedTracksState(
-    LibraryService(services_api.ApiClient(storage: storage)),
+    libraryService,
     accountId: initialAccountId,
   );
 
@@ -85,6 +89,9 @@ void main() async {
     cacheManager: playbackCacheManager,
     persistence: queuePersistence,
     accountIdProvider: currentAccountId,
+    // End-of-queue continuation (#352). Inert until the listener picks a mode
+    // in Settings; the selected mode is pushed in from OpenMusicPlayerApp.
+    continuationSource: LibraryShuffleContinuationSource(libraryService),
   );
   // Surface the app playback session as one OS media session/notification. The
   // handler consumes PlaybackState's canonical session snapshot so lock-screen
