@@ -38,6 +38,19 @@ services:
       ANALYZER_BASE_URL: http://analyzer:18190
       ANALYZER_CONCURRENCY: ${ANALYZER_CONCURRENCY:-1}
 
+      # On-demand stem separation. Off by default: the stems runtime is a
+      # multi-GB torch image and one separation saturates the CPU for minutes,
+      # which this low-memory stack exists to avoid paying for by accident.
+      # Turning it on means all three of: STEMS_ENABLED=true, the stems profile
+      # started, and Redis running (REDIS_ENABLED=true + the downloads profile),
+      # because the stems queue class requires Redis.
+      STEMS_ENABLED: ${STEMS_ENABLED:-false}
+      STEMS_BASE_URL: http://stems:18290
+      STEMS_AUTH_TOKEN: ${STEMS_AUTH_TOKEN:-}
+      STEMS_CONCURRENCY: ${STEMS_CONCURRENCY:-1}
+      STEMS_QUEUE_MAX_DEPTH: ${STEMS_QUEUE_MAX_DEPTH:-32}
+      STEMS_TIMEOUT_MS: ${STEMS_TIMEOUT_MS:-1800000}
+
       SOURCE_QUALITY_LLM_ENABLED: ${SOURCE_QUALITY_LLM_ENABLED:-false}
       SOURCE_QUALITY_LLM_BASE_URL: ${SOURCE_QUALITY_LLM_BASE_URL:-http://host.docker.internal:11434}
       SOURCE_QUALITY_LLM_MODEL: ${SOURCE_QUALITY_LLM_MODEL:-}
@@ -108,6 +121,46 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    networks:
+      - omp-lowmem-network
+
+  # Stem separation worker. Behind a profile because the image bakes torch-cpu,
+  # demucs, and a pinned checkpoint (multi-GB), and because a running container
+  # is only useful when the backend has STEMS_ENABLED=true. The backend
+  # deliberately does NOT depend_on this service: a depends_on would pull the
+  # profile in on every `up`, and the backend already degrades to its unavailable
+  # handler when the worker cannot be reached.
+  stems:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: stems-runtime
+    profiles:
+      - stems
+    restart: unless-stopped
+    environment:
+      STEMS_ADDR: ":18290"
+      STEMS_AUTH_TOKEN: ${STEMS_AUTH_TOKEN:-}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-audio-files}
+      MINIO_USE_SSL: "false"
+      S3_USE_PATH_STYLE: "true"
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18290/health"]
+      interval: 30s
+      timeout: 5s
+      # Loading the checkpoint is slow on a cold container, and a separation in
+      # flight keeps the process busy, so the probe is given far more room than
+      # the analyzer's before it declares the worker dead.
+      retries: 5
+      start_period: 120s
     networks:
       - omp-lowmem-network
 
