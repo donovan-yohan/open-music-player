@@ -24,6 +24,11 @@ const (
 	// pop on an idle queue.
 	workerDequeueTimeout = 1 * time.Second
 
+	// dequeueErrorBackoff paces retries when the queue itself is unhealthy. A
+	// failed pop returns immediately, unlike an idle one, so the loop needs its
+	// own pause to avoid spinning through an outage.
+	dequeueErrorBackoff = 2 * time.Second
+
 	// DefaultRecoveryInterval is how often durable state is reconciled against
 	// the queue. A restart drops the Redis list entries but not the track_stems
 	// rows, and RecoverInFlight only reclaims rows that have been untouched long
@@ -281,13 +286,28 @@ func (p *WorkerPool) processNext(runCtx context.Context, workerID int) {
 			// unaffected and a recovery sweep republishes it.
 			return
 		}
+		// An unreachable Redis fails the blocking pop immediately rather than
+		// waiting out its timeout, so without a pause here the loop would spin a
+		// core and flood the log for as long as the outage lasts.
 		log.Printf("stems worker %d: failed to dequeue: %v", workerID, err)
+		sleepCtx(runCtx, dequeueErrorBackoff)
 		return
 	}
 	if job == nil {
 		return
 	}
 	p.process(runCtx, workerID, job)
+}
+
+// sleepCtx pauses unless the pool is stopping, so a backoff can never hold up
+// shutdown.
+func sleepCtx(ctx context.Context, delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 func (p *WorkerPool) process(runCtx context.Context, workerID int, job *Job) {

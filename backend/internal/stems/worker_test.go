@@ -500,3 +500,24 @@ func TestNewWorkerPoolRequiresCollaborators(t *testing.T) {
 		t.Fatalf("concurrency = %d, want default %d", pool.concurrency, DefaultConcurrency)
 	}
 }
+
+func TestSleepCtxYieldsToShutdown(t *testing.T) {
+	// The dequeue backoff must never hold up Stop: a pool waiting out a Redis
+	// outage still has to unwind inside the shutdown budget.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	sleepCtx(ctx, time.Minute)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("sleepCtx waited %s on a canceled context, want an immediate return", elapsed)
+	}
+
+	// It must still actually pause when nothing is stopping it, otherwise the
+	// backoff is decorative and the loop spins through an outage.
+	start = time.Now()
+	sleepCtx(context.Background(), 20*time.Millisecond)
+	if elapsed := time.Since(start); elapsed < 10*time.Millisecond {
+		t.Fatalf("sleepCtx returned after %s, want it to wait out the delay", elapsed)
+	}
+}
