@@ -10,14 +10,29 @@ import '../models/track.dart';
 /// playlist row is visible on the player, the library and Liked Songs without
 /// a refetch.
 class LikeToggleButton extends StatelessWidget {
-  const LikeToggleButton({
+  LikeToggleButton({
     super.key,
-    required this.track,
+    required Track track,
+    this.buttonKey,
+    this.iconSize = 20,
+  })  : trackId = track.id,
+        isLiked = track.isLiked;
+
+  /// For surfaces that carry only a backend track id (e.g. playback queue
+  /// rows, whose payloads are queue items rather than full track models).
+  const LikeToggleButton.forId({
+    super.key,
+    required this.trackId,
+    this.isLiked,
     this.buttonKey,
     this.iconSize = 20,
   });
 
-  final Track track;
+  final int trackId;
+
+  /// The payload's `is_liked` annotation; null when the source payload did not
+  /// carry one (only the library listing annotates it).
+  final bool? isLiked;
 
   /// Key placed on the button itself, for surface-specific tests.
   final Key? buttonKey;
@@ -31,11 +46,11 @@ class LikeToggleButton extends StatelessWidget {
     final likedState = context.watch<LikedTracksState?>();
     if (likedState == null) return const SizedBox.shrink();
 
-    final liked = likedState.isLiked(track.id) ?? track.isLiked ?? false;
-    final busy = likedState.isToggling(track.id);
+    final liked = likedState.isLiked(trackId) ?? isLiked ?? false;
+    final busy = likedState.isToggling(trackId);
 
     return IconButton(
-      key: buttonKey ?? ValueKey('like_toggle_${track.id}'),
+      key: buttonKey ?? ValueKey('like_toggle_$trackId'),
       iconSize: iconSize,
       visualDensity: VisualDensity.compact,
       icon: Icon(
@@ -56,9 +71,9 @@ class LikeToggleButton extends StatelessWidget {
     // playlist / home / downloads payload can have no known value yet. Seed the
     // value the heart is already showing before flipping it, otherwise the
     // toggle would reject an unknown track.
-    likedState.assume(track.id, track.isLiked ?? false);
+    likedState.assume(trackId, isLiked ?? false);
     try {
-      await likedState.toggle(track.id);
+      await likedState.toggle(trackId);
     } catch (_) {
       messenger.showSnackBar(
         const SnackBar(content: Text('Could not update liked status')),
