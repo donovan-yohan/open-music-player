@@ -46,6 +46,8 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   bool _persistenceDirty = false;
   bool _receivedInitialQueueEmission = false;
   bool _receivedInitialIndexEmission = false;
+  bool _receivedInitialShuffleEmission = false;
+  bool _receivedInitialLoopModeEmission = false;
   final Duration _persistenceDebounce;
   Timer? _persistenceTimer;
 
@@ -254,11 +256,17 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         notifyListeners();
       }),
       _queueController.shuffleEnabledStream.listen((enabled) {
+        final isStartupSeed = !_receivedInitialShuffleEmission;
+        _receivedInitialShuffleEmission = true;
         _shuffleEnabled = enabled;
+        _persistQueue(isStartupSeed: isStartupSeed);
         notifyListeners();
       }),
       _queueController.loopModeStream.listen((mode) {
+        final isStartupSeed = !_receivedInitialLoopModeEmission;
+        _receivedInitialLoopModeEmission = true;
         _loopMode = mode;
+        _persistQueue(isStartupSeed: isStartupSeed);
         notifyListeners();
       }),
     ];
@@ -686,6 +694,13 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         initialIndex: index,
         session: snapshot.session,
       );
+      // Playback modes are restored against the rebuilt queue: shuffle has to
+      // run after setQueue so the fresh permutation covers the restored items
+      // (setQueue always resets the play order to linear).
+      await setLoopMode(snapshot.loopMode);
+      if (snapshot.shuffleEnabled) {
+        await setShuffleEnabled(true);
+      }
       if (snapshot.positionMs > 0) {
         await _queueController.seek(
           Duration(milliseconds: snapshot.positionMs),
@@ -737,6 +752,8 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
             tracks: currentQueue.map(mediaItemToPlaybackJson).toList(),
             currentIndex: currentIndex ?? 0,
             positionMs: position.inMilliseconds,
+            shuffleEnabled: _shuffleEnabled,
+            loopMode: _loopMode,
             session: _queueController.session,
           );
     unawaited(store.save(snapshot));
@@ -764,6 +781,14 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       _queueController.removeFromQueueByQueueItemId(queueItemId);
   Future<void> toggleShuffle() => _queueController.toggleShuffle();
   Future<void> cycleLoopMode() => _queueController.cycleLoopMode();
+
+  /// Idempotent absolute forms of [toggleShuffle] / [cycleLoopMode]. Restore
+  /// and OS media-session commands both carry a target mode rather than a
+  /// "next" intent, so they must not flip an already-correct mode.
+  Future<void> setShuffleEnabled(bool enabled) =>
+      _queueController.setShuffleMode(enabled);
+  Future<void> setLoopMode(LoopMode mode) =>
+      _queueController.setLoopMode(mode);
 
   Future<void> togglePlayPause() async {
     if (isPlaying || _isResolvingSignedUrl) {
