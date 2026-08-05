@@ -9,7 +9,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
   static Database? _database;
   static Future<Database>? _openingDatabase;
   static const String _dbName = 'open_music_player.db';
-  static const int _dbVersion = 7;
+  static const int _dbVersion = 8;
 
   final Future<Database> Function()? _databaseProvider;
   final DatabaseFactory? _databaseFactory;
@@ -100,6 +100,7 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
         mb_release_id TEXT,
         mb_artist_id TEXT,
         mb_verified INTEGER DEFAULT 0,
+        has_metadata_override INTEGER NOT NULL DEFAULT 0,
         source_url TEXT,
         source_type TEXT,
         storage_key TEXT,
@@ -214,6 +215,15 @@ class OfflineDatabase implements OfflineDownloadStore, PlaybackCacheStore {
       await db.execute(
         'ALTER TABLE tracks ADD COLUMN '
         'artwork_descriptor_present INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+
+    // v8: cached rows already store the effective (override-applied) title,
+    // artist and album, so the "Edited" affordance must travel with them.
+    if (oldVersion < 8) {
+      await db.execute(
+        'ALTER TABLE tracks ADD COLUMN '
+        'has_metadata_override INTEGER NOT NULL DEFAULT 0',
       );
     }
   }

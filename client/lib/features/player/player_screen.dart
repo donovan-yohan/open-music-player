@@ -12,8 +12,10 @@ import '../../core/audio/playback_state.dart';
 import '../../core/services/analysis_service.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/liked_tracks_state.dart';
+import '../../core/services/library_service.dart';
 import '../../models/track_analysis.dart';
 import '../library/local_browse_navigation.dart';
+import '../library/track_metadata_edit_sheet.dart';
 import '../../shared/formatters/source_quality_formatter.dart';
 import 'widgets/song_info_sheet.dart';
 
@@ -217,6 +219,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _showSongInfo(BuildContext context, MediaItem item) {
     final trackId = int.tryParse(item.id);
     final analysisService = AnalysisService(context.read<ApiClient>());
+    final editableTrackId = trackId != null && trackId > 0 ? trackId : null;
     showModalBottomSheet(
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHigh,
@@ -226,6 +229,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
         title: item.title,
         artist: item.artist,
         sourceQuality: _sourceQuality(item),
+        onEditMetadata: editableTrackId == null
+            ? null
+            : () => _editMetadata(context, item, editableTrackId),
         analysisLoader: () {
           if (trackId == null || trackId <= 0) {
             // No numeric track id (e.g. a placeholder item) — surface the
@@ -234,6 +240,41 @@ class _PlayerScreenState extends State<PlayerScreen> {
           }
           return analysisService.getTrackAnalysis(trackId);
         },
+      ),
+    );
+  }
+
+  /// Opens the per-user metadata editor for the playing item.
+  ///
+  /// The already-loaded [MediaItem] is the only metadata this screen has, so
+  /// the editor is seeded from it. A saved edit does not rewrite the live
+  /// media item — the player keeps showing the queued title until the track is
+  /// queued again — so the confirmation says so rather than implying otherwise.
+  Future<void> _editMetadata(
+    BuildContext context,
+    MediaItem item,
+    int trackId,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final result = await showTrackMetadataEditSheet(
+      context: context,
+      trackId: trackId,
+      title: item.title,
+      artist: item.artist,
+      album: item.album,
+      // The playback payload carries no override flag, so "Reset to original"
+      // stays a Library-row action.
+      hasMetadataOverride: false,
+      // Construct the parser-based services client directly, the way
+      // LibraryScreen does. Only the Dio `core/api` ApiClient is registered with
+      // Provider, so a `context.read<ApiClient>()` here would resolve to an
+      // unregistered type.
+      libraryService: LibraryService(ApiClient()),
+    );
+    if (result == null) return;
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Updated metadata. The player refreshes on replay.'),
       ),
     );
   }

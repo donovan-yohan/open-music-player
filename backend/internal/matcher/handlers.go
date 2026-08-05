@@ -124,7 +124,13 @@ func (h *Handler) HandleMatchTrack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build metadata from track
+	// Build metadata from track.
+	//
+	// track here comes from TrackRepository.GetByID, which reads the canonical tracks
+	// row. That is deliberate: per-user manual metadata overrides
+	// (track_metadata_overrides, issue #344) are display-layer only and must never
+	// feed the MusicBrainz matcher, or one user's correction would steer the shared
+	// match result for every other user.
 	metadata := TrackMetadata{
 		Title: track.Title,
 	}

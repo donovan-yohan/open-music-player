@@ -37,12 +37,25 @@ type playEventStore interface {
 type PlayEventHandlers struct {
 	playEventRepo playEventStore
 	trackRepo     playEventTrackRepository
+	// overrideRepo is optional. When set, history/recent/top payloads render the
+	// caller's per-user metadata overrides (issue #344) so the home surfaces agree
+	// with the library instead of showing the pre-edit title.
+	overrideRepo *db.TrackMetadataOverrideRepository
 }
 
 func NewPlayEventHandlers(playEventRepo playEventStore, trackRepo playEventTrackRepository) *PlayEventHandlers {
+	return NewPlayEventHandlersWithMetadataOverrides(playEventRepo, trackRepo, nil)
+}
+
+func NewPlayEventHandlersWithMetadataOverrides(
+	playEventRepo playEventStore,
+	trackRepo playEventTrackRepository,
+	overrideRepo *db.TrackMetadataOverrideRepository,
+) *PlayEventHandlers {
 	return &PlayEventHandlers{
 		playEventRepo: playEventRepo,
 		trackRepo:     trackRepo,
+		overrideRepo:  overrideRepo,
 	}
 }
 
@@ -73,6 +86,9 @@ type PlayEventTrackResponse struct {
 	AnalysisUpdatedAt string          `json:"analysisUpdatedAt,omitempty"`
 	LastPlayedAt      time.Time       `json:"lastPlayedAt"`
 	PlayCount         int             `json:"playCount,omitempty"`
+	// HasMetadataOverride reports that title/artist/album carry the caller's manual
+	// correction rather than the canonical track values (issue #344).
+	HasMetadataOverride bool `json:"hasMetadataOverride,omitempty"`
 }
 
 type RecentlyPlayedResponse struct {
@@ -165,6 +181,15 @@ func (h *PlayEventHandlers) PlayHistory(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	historyTracks := make([]*db.Track, 0, len(events))
+	for i := range events {
+		historyTracks = append(historyTracks, &events[i].Track)
+	}
+	if err := applyMetadataOverridesToTrackPointers(r.Context(), h.overrideRepo, userCtx.UserID, historyTracks); err != nil {
+		writePlayEventError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load track metadata")
+		return
+	}
+
 	responses := make([]PlayHistoryEntryResponse, 0, len(events))
 	for _, event := range events {
 		track := trackToPlayEventResponse(event.Track)
@@ -207,6 +232,15 @@ func (h *PlayEventHandlers) RecentlyPlayed(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	recentTracks := make([]*db.Track, 0, len(tracks))
+	for i := range tracks {
+		recentTracks = append(recentTracks, &tracks[i].Track)
+	}
+	if err := applyMetadataOverridesToTrackPointers(r.Context(), h.overrideRepo, userCtx.UserID, recentTracks); err != nil {
+		writePlayEventError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load track metadata")
+		return
+	}
+
 	responses := make([]PlayEventTrackResponse, 0, len(tracks))
 	for _, t := range tracks {
 		resp := trackToPlayEventResponse(t.Track)
@@ -238,6 +272,15 @@ func (h *PlayEventHandlers) TopTracks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	topTracks := make([]*db.Track, 0, len(tracks))
+	for i := range tracks {
+		topTracks = append(topTracks, &tracks[i].Track)
+	}
+	if err := applyMetadataOverridesToTrackPointers(r.Context(), h.overrideRepo, userCtx.UserID, topTracks); err != nil {
+		writePlayEventError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load track metadata")
+		return
+	}
+
 	responses := make([]PlayEventTrackResponse, 0, len(tracks))
 	for _, t := range tracks {
 		resp := trackToPlayEventResponse(t.Track)
@@ -255,9 +298,10 @@ func (h *PlayEventHandlers) TopTracks(w http.ResponseWriter, r *http.Request) {
 
 func trackToPlayEventResponse(t db.Track) PlayEventTrackResponse {
 	resp := PlayEventTrackResponse{
-		ID:            t.ID,
-		Title:         t.Title,
-		MBRecordingID: t.MBRecordingID,
+		ID:                  t.ID,
+		Title:               t.Title,
+		HasMetadataOverride: t.HasMetadataOverride,
+		MBRecordingID:       t.MBRecordingID,
 	}
 	if t.Artist.Valid {
 		resp.Artist = t.Artist.String

@@ -159,6 +159,25 @@ func (db *DB) Migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_track_favorites_user_created ON track_favorites(user_id, created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_track_favorites_track_id ON track_favorites(track_id);
 
+	-- Per-user manual metadata corrections (issue #344). tracks rows are global and
+	-- shared across users, so a user edit never mutates tracks.title/artist/album.
+	-- A NULL column here means "not overridden"; a row with all three NULL is deleted
+	-- rather than stored. These values are DISPLAY-LAYER ONLY: they must never feed the
+	-- MusicBrainz matcher, the identity hash, or any ingestion path.
+	CREATE TABLE IF NOT EXISTS track_metadata_overrides (
+		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		track_id BIGINT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+		title VARCHAR(500),
+		artist VARCHAR(500),
+		album VARCHAR(500),
+		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (user_id, track_id),
+		CONSTRAINT chk_track_metadata_overrides_not_empty CHECK (
+			title IS NOT NULL OR artist IS NOT NULL OR album IS NOT NULL
+		)
+	);
+
 	CREATE TABLE IF NOT EXISTS download_jobs (
 		id UUID PRIMARY KEY,
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

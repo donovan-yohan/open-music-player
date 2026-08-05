@@ -53,11 +53,16 @@ type Track struct {
 	MetadataProvenance json.RawMessage
 	CoverArtURL        sql.NullString
 	MetadataUserEdited bool
-	AnalysisStatus     sql.NullString
-	AnalysisSummary    json.RawMessage
-	AnalysisUpdatedAt  sql.NullTime
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// HasMetadataOverride is not a tracks column. It is set by the display-layer
+	// merge (see track_metadata_override_repository.go) when the requesting user has
+	// a per-user override for this track, so clients can render an "edited" affordance.
+	// Repository reads leave it false; matcher/ingestion paths must ignore it.
+	HasMetadataOverride bool
+	AnalysisStatus      sql.NullString
+	AnalysisSummary     json.RawMessage
+	AnalysisUpdatedAt   sql.NullTime
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 type Artist struct {

@@ -253,6 +253,11 @@ func DurationBucket(durationMs, bucketSizeMs int) int {
 // CalculateIdentityHash generates a unique identity hash for a track.
 // The hash is based on normalized artist, title, album, duration bucket, and version.
 // Returns a 16-character hex string (first 16 chars of SHA256).
+//
+// Callers MUST pass canonical tracks.title/artist/album. Per-user manual metadata
+// overrides (track_metadata_overrides, issue #344) are a display layer only: feeding
+// them in here would fork one user's edit into a different global track identity and
+// break dedupe for everyone else.
 func CalculateIdentityHash(artist, title, album string, durationMs int, version string) string {
 	normalized := fmt.Sprintf("%s|%s|%s|%d|%s",
 		NormalizeString(artist),

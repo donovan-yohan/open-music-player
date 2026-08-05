@@ -129,6 +129,13 @@ class Track {
   /// Null means the source payload did not carry a backend `is_liked`
   /// annotation. Model construction must not turn that unknown into false.
   final bool? isLiked;
+
+  /// Whether the current user has a manual metadata override on this track.
+  ///
+  /// [title], [artist] and [album] are already the effective (override-applied)
+  /// values on every read path, so this flag only drives the "Edited"
+  /// affordance and the availability of "Reset to original".
+  final bool hasMetadataOverride;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -160,6 +167,7 @@ class Track {
     TrackArtworkKind? artworkKind,
     bool? artworkDescriptorPresent,
     this.isLiked,
+    this.hasMetadataOverride = false,
     required this.createdAt,
     required this.updatedAt,
   })  : _artwork = resolveTrackArtworkDescriptor(
@@ -260,6 +268,10 @@ class Track {
       ),
       artworkKind: artworkKind,
       isLiked: json['isLiked'] as bool? ?? json['is_liked'] as bool?,
+      hasMetadataOverride: _optionalBool(
+            json['hasMetadataOverride'] ?? json['has_metadata_override'],
+          ) ??
+          false,
       createdAt: _dateTimeValue(json['createdAt'] ?? json['created_at']),
       updatedAt: _dateTimeValue(json['updatedAt'] ?? json['updated_at']),
     );
@@ -319,6 +331,10 @@ class Track {
       ),
       artworkKind: artworkKind,
       isLiked: json['is_liked'] as bool?,
+      hasMetadataOverride: _optionalBool(
+            json['has_metadata_override'] ?? json['hasMetadataOverride'],
+          ) ??
+          false,
       createdAt:
           DateTime.tryParse(json['created_at'] as String? ?? '') ?? addedAt,
       updatedAt:
@@ -360,6 +376,7 @@ class Track {
         fieldStyle: TrackAnalysisFieldStyle.snakeCase,
       ),
       if (isLiked != null) 'is_liked': isLiked,
+      'has_metadata_override': hasMetadataOverride,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
     };
@@ -378,6 +395,7 @@ class Track {
       'mb_release_id': mbReleaseId,
       'mb_artist_id': mbArtistId,
       'mb_verified': mbVerified ? 1 : 0,
+      'has_metadata_override': hasMetadataOverride ? 1 : 0,
       'source_url': sourceUrl,
       'source_type': sourceType,
       'storage_key': storageKey,
@@ -416,6 +434,7 @@ class Track {
       mbReleaseId: map['mb_release_id'] as String?,
       mbArtistId: map['mb_artist_id'] as String?,
       mbVerified: (map['mb_verified'] as int?) == 1,
+      hasMetadataOverride: (map['has_metadata_override'] as int?) == 1,
       sourceUrl: map['source_url'] as String?,
       sourceType: map['source_type'] as String?,
       storageKey: map['storage_key'] as String?,
@@ -462,13 +481,19 @@ class Track {
   /// Returns true if this track needs verification (unverified with suggestions)
   bool get needsVerification => !mbVerified && hasSuggestions;
 
-  /// Creates a copy of this track with updated fields
+  /// Creates a copy of this track with updated fields.
+  ///
+  /// The `??` merge cannot express "set this back to null", which a cleared
+  /// metadata override needs. [clearArtist] and [clearAlbum] are the narrow
+  /// escape hatches for exactly that, and win over the matching value.
   Track copyWith({
     int? id,
     String? identityHash,
     String? title,
     String? artist,
     String? album,
+    bool clearArtist = false,
+    bool clearAlbum = false,
     int? durationMs,
     String? version,
     String? mbRecordingId,
@@ -491,6 +516,7 @@ class Track {
     TrackArtworkKind? artworkKind,
     bool? artworkDescriptorPresent,
     bool? isLiked,
+    bool? hasMetadataOverride,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -498,8 +524,8 @@ class Track {
       id: id ?? this.id,
       identityHash: identityHash ?? this.identityHash,
       title: title ?? this.title,
-      artist: artist ?? this.artist,
-      album: album ?? this.album,
+      artist: clearArtist ? null : artist ?? this.artist,
+      album: clearAlbum ? null : album ?? this.album,
       durationMs: durationMs ?? this.durationMs,
       version: version ?? this.version,
       mbRecordingId: mbRecordingId ?? this.mbRecordingId,
@@ -523,6 +549,7 @@ class Track {
       artworkDescriptorPresent: artworkDescriptorPresent ??
           (artworkKind != null ? true : this.artworkDescriptorPresent),
       isLiked: isLiked ?? this.isLiked,
+      hasMetadataOverride: hasMetadataOverride ?? this.hasMetadataOverride,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -534,6 +561,8 @@ String? _optionalString(dynamic value) {
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
 }
+
+bool? _optionalBool(dynamic value) => value is bool ? value : null;
 
 Map<String, dynamic>? _optionalMap(dynamic value) {
   if (value is! Map) return null;

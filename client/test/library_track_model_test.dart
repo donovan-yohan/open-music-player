@@ -124,6 +124,93 @@ void main() {
     expect(clearedRestored.analysis?.overridesPresent, isTrue);
     expect(clearedRestored.toDbMap()['analysis_overrides'], '{}');
   });
+
+  group('metadata override flag', () {
+    Map<String, dynamic> libraryRow(Map<String, dynamic> extra) => {
+          'id': 9,
+          'title': 'Effective Title',
+          'artist': 'Effective Artist',
+          'added_at': '2026-06-26T04:40:00Z',
+          ...extra,
+        };
+
+    test('parses both key spellings and defaults to false when absent', () {
+      expect(
+        Track.fromLibraryJson(
+          libraryRow({'has_metadata_override': true}),
+        ).hasMetadataOverride,
+        isTrue,
+      );
+      expect(
+        Track.fromLibraryJson(
+          libraryRow({'hasMetadataOverride': true}),
+        ).hasMetadataOverride,
+        isTrue,
+      );
+      expect(
+        Track.fromLibraryJson(
+          libraryRow({'has_metadata_override': false}),
+        ).hasMetadataOverride,
+        isFalse,
+      );
+      // Search and playlist payloads omit the field entirely when it is false.
+      expect(
+        Track.fromLibraryJson(libraryRow(const {})).hasMetadataOverride,
+        isFalse,
+      );
+
+      expect(
+        Track.fromJson(
+          libraryRow({'hasMetadataOverride': true}),
+        ).hasMetadataOverride,
+        isTrue,
+      );
+      expect(
+        Track.fromJson(
+          libraryRow({'has_metadata_override': true}),
+        ).hasMetadataOverride,
+        isTrue,
+      );
+      expect(
+        Track.fromJson(libraryRow(const {})).hasMetadataOverride,
+        isFalse,
+      );
+    });
+
+    test('survives the JSON and offline database round trips', () {
+      final edited = Track.fromLibraryJson(
+        libraryRow({'has_metadata_override': true}),
+      );
+      final untouched = Track.fromLibraryJson(libraryRow(const {}));
+
+      expect(Track.fromJson(edited.toJson()).hasMetadataOverride, isTrue);
+      expect(Track.fromJson(untouched.toJson()).hasMetadataOverride, isFalse);
+
+      expect(edited.toDbMap()['has_metadata_override'], 1);
+      expect(untouched.toDbMap()['has_metadata_override'], 0);
+      expect(Track.fromDbMap(edited.toDbMap()).hasMetadataOverride, isTrue);
+      expect(Track.fromDbMap(untouched.toDbMap()).hasMetadataOverride, isFalse);
+    });
+
+    test('copyWith can lower the flag and clear artist or album', () {
+      final edited = Track.fromLibraryJson(
+        libraryRow({'album': 'Effective Album', 'has_metadata_override': true}),
+      );
+
+      final restored = edited.copyWith(
+        hasMetadataOverride: false,
+        clearArtist: true,
+        clearAlbum: true,
+      );
+
+      expect(restored.hasMetadataOverride, isFalse);
+      expect(restored.artist, isNull);
+      expect(restored.album, isNull);
+      // Unrelated fields still merge normally.
+      expect(restored.title, 'Effective Title');
+      expect(edited.artist, 'Effective Artist');
+    });
+  });
 }
 
 Track _trackWithAnalysis(TrackAnalysis analysis) => Track(
