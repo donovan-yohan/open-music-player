@@ -30,6 +30,49 @@ func (f *fakeSourceQualityJudge) JudgeSourceQuality(_ context.Context, _ string,
 	return f.judgments, nil
 }
 
+func TestSearchPreservesProviderOrderWithoutSourceQualityJudge(t *testing.T) {
+	judge := &fakeSourceQualityJudge{judgments: []SourceQualityJudgment{
+		{CandidateID: "youtube:second", Quality: SourceQuality{Score: 100, Classification: SourceQualityOfficialAudio, Recommendation: SourceQualityPreferred}},
+	}}
+	svc := NewService(ServiceConfig{
+		Providers: []Provider{
+			fakeProvider{name: "youtube", items: []Candidate{
+				{CandidateID: "youtube:first", Provider: "youtube", SourceURL: "https://example.invalid/first", Title: "Artist - One More Time (Scribble Remix)", Downloadable: true},
+				{CandidateID: "youtube:second", Provider: "youtube", SourceURL: "https://example.invalid/second", Title: "Artist - One More Time (Official Audio)", Downloadable: true},
+			}},
+			fakeProvider{name: "soundcloud", items: []Candidate{
+				{CandidateID: "soundcloud:third", Provider: "soundcloud", SourceURL: "https://example.invalid/third", Title: "Artist - One More Time (Club Edit)", Downloadable: true},
+			}},
+		},
+		DefaultProviders:   []string{"youtube", "soundcloud"},
+		SourceQualityJudge: judge,
+	})
+
+	resp := svc.Search(context.Background(), "one more time remix", nil, 10)
+	if len(resp.Results) != 3 {
+		t.Fatalf("Discover result count = %d, want 3", len(resp.Results))
+	}
+	got := []string{resp.Results[0].CandidateID, resp.Results[1].CandidateID, resp.Results[2].CandidateID}
+	want := []string{"youtube:first", "youtube:second", "soundcloud:third"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("Discover result order = %#v, want provider/source order %#v", got, want)
+	}
+	if len(judge.seen) != 0 {
+		t.Fatalf("ordinary Discover invoked source-quality judge with %#v", judge.seen)
+	}
+	if len(resp.Sections) != 1 || resp.Sections[0].Kind != "sources" {
+		t.Fatalf("Discover source section = %#v, want ordered sources section", resp.Sections)
+	}
+	if len(resp.Sections[0].Items) != len(want) {
+		t.Fatalf("Discover source section has %d items, want %d", len(resp.Sections[0].Items), len(want))
+	}
+	for index, candidateID := range want {
+		if got := resp.Sections[0].Items[index].Candidate.CandidateID; got != candidateID {
+			t.Fatalf("Discover section item %d = %q, want %q", index, got, candidateID)
+		}
+	}
+}
+
 func TestSourceQualityRanksOfficialAudioAheadOfMusicVideo(t *testing.T) {
 	svc := NewService(ServiceConfig{
 		Providers: []Provider{
@@ -61,7 +104,7 @@ func TestSourceQualityRanksOfficialAudioAheadOfMusicVideo(t *testing.T) {
 		DefaultProviders: []string{"youtube"},
 	})
 
-	resp := svc.Search(context.Background(), "Ninajirachi iPod Touch", []string{"youtube"}, 10)
+	resp := svc.SearchRanked(context.Background(), "Ninajirachi iPod Touch", []string{"youtube"}, 10)
 
 	if len(resp.Results) != 2 {
 		t.Fatalf("results = %d, want 2", len(resp.Results))
@@ -301,7 +344,7 @@ func TestSourceQualityJudgeCanPromoteGroundedCandidate(t *testing.T) {
 		SourceQualityJudge: judge,
 	})
 
-	resp := svc.Search(context.Background(), "Artist Song", []string{"youtube"}, 10)
+	resp := svc.SearchRanked(context.Background(), "Artist Song", []string{"youtube"}, 10)
 
 	if got := resp.Results[0].CandidateID; got != "youtube:b" {
 		t.Fatalf("top result = %s, want judge-promoted youtube:b", got)
@@ -349,7 +392,7 @@ func TestSourceQualityJudgeCannotInvertDeterministicHardNegative(t *testing.T) {
 		SourceQualityJudge: judge,
 	})
 
-	resp := svc.Search(context.Background(), "Artist Song", []string{"youtube"}, 10)
+	resp := svc.SearchRanked(context.Background(), "Artist Song", []string{"youtube"}, 10)
 	if got := resp.Results[0].CandidateID; got != "youtube:official" {
 		t.Fatalf("top result = %s, want official audio despite inverted model judgments", got)
 	}
@@ -400,7 +443,7 @@ func TestSourceQualityJudgeErrorFallsBackToDeterministicRanking(t *testing.T) {
 		SourceQualityJudge: &fakeSourceQualityJudge{err: errors.New("model offline")},
 	})
 
-	resp := svc.Search(context.Background(), "Ninajirachi iPod Touch", []string{"youtube"}, 10)
+	resp := svc.SearchRanked(context.Background(), "Ninajirachi iPod Touch", []string{"youtube"}, 10)
 
 	if got := resp.Results[0].CandidateID; got != "youtube:audio" {
 		t.Fatalf("top result = %s, want deterministic official audio fallback", got)
@@ -453,7 +496,7 @@ func TestSourceQualityRanksOfficialAudioAheadOfVisualizerAndLyricVideo(t *testin
 		DefaultProviders: []string{"youtube"},
 	})
 
-	resp := svc.Search(context.Background(), "Ninajirachi iPod Touch", []string{"youtube"}, 10)
+	resp := svc.SearchRanked(context.Background(), "Ninajirachi iPod Touch", []string{"youtube"}, 10)
 
 	if len(resp.Results) != 3 {
 		t.Fatalf("results = %d, want 3", len(resp.Results))
@@ -502,7 +545,7 @@ func TestSourceQualityPrefersTopicAudioOverLongLiveClip(t *testing.T) {
 		DefaultProviders: []string{"youtube"},
 	})
 
-	resp := svc.Search(context.Background(), "Ninajirachi iPod Touch", []string{"youtube"}, 10)
+	resp := svc.SearchRanked(context.Background(), "Ninajirachi iPod Touch", []string{"youtube"}, 10)
 
 	if got := resp.Results[0].CandidateID; got != "youtube:topic" {
 		t.Fatalf("top result = %s, want topic audio first", got)

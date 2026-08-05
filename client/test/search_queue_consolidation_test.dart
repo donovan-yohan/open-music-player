@@ -111,6 +111,61 @@ void main() {
   );
 
   testWidgets(
+    'ordinary Discover selection accepts a non-first Scribble Remix without ranking metadata',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      final sourceSelectionRequests = <Map<String, dynamic>>[];
+      final discoveryClient = ApiClient(
+        storage: SecureStorage(),
+        dio: Dio()
+          ..httpClientAdapter = _NeutralSelectionSearchAdapter(
+            sourceSelectionRequests,
+          ),
+      );
+      final queueClient = _QueueMutationClient();
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            Provider<ApiClient>.value(value: discoveryClient),
+            ChangeNotifierProvider<QueueProvider>(
+              create: (_) => QueueProvider(queueClient),
+            ),
+          ],
+          child: const MaterialApp(home: SearchScreen()),
+        ),
+      );
+      await tester.pump();
+
+      await tester.enterText(find.byType(TextField), 'one more time remix');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump();
+
+      expect(
+        find.text('Daft Punk - One More Time (Scribble Remix)'),
+        findsOneWidget,
+      );
+      await tester.tap(find.byIcon(Icons.playlist_add).last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(find.text('Choose alternate source'), findsNothing);
+      expect(sourceSelectionRequests, [
+        {
+          'sessionId': '22222222-2222-2222-2222-222222222222',
+          'candidateId': 'youtube:scribble-remix',
+          'action': 'selected',
+        },
+      ]);
+      expect(queueClient.postedSourceDecisions, 1);
+    },
+  );
+
+  testWidgets(
     'production imports deep link uses shell and Queue tab returns to playback',
     (tester) async {
       final authState = _RouterAuthState(authenticated: true);
@@ -397,6 +452,74 @@ class _SearchResultAdapter implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
+class _NeutralSelectionSearchAdapter implements HttpClientAdapter {
+  _NeutralSelectionSearchAdapter(this.sourceSelectionRequests);
+
+  final List<Map<String, dynamic>> sourceSelectionRequests;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    if (options.method == 'GET' && options.path == '/discovery/search') {
+      return ResponseBody.fromString(
+        jsonEncode({
+          'query': options.queryParameters['q'] ?? '',
+          'results': [_ordinaryFirstCandidate(), _scribbleRemixCandidate()],
+          'selectionSessionId': '22222222-2222-2222-2222-222222222222',
+          'selectionExpiresAt': '2099-01-01T00:00:00Z',
+          'providers': [
+            {
+              'provider': 'youtube',
+              'status': 'ok',
+              'resultCount': 2,
+              'elapsedMs': 12,
+            },
+          ],
+        }),
+        200,
+        headers: {
+          Headers.contentTypeHeader: [Headers.jsonContentType],
+        },
+      );
+    }
+
+    if (options.method == 'POST' && options.path == '/source-selections') {
+      final request = Map<String, dynamic>.from(options.data as Map);
+      sourceSelectionRequests.add(request);
+      return ResponseBody.fromString(
+        jsonEncode({
+          'id': 'decision-scribble',
+          'sessionId': request['sessionId'],
+          'selectedCandidateId': request['candidateId'],
+          'action': request['action'],
+          'origin': 'search',
+          'selectedCandidate': _scribbleRemixCandidate(),
+          'sourceQuality': const {},
+          'createdAt': '2026-08-05T00:00:00Z',
+        }),
+        201,
+        headers: {
+          Headers.contentTypeHeader: [Headers.jsonContentType],
+        },
+      );
+    }
+
+    return ResponseBody.fromString(
+      jsonEncode({'message': 'unexpected ${options.method} ${options.path}'}),
+      404,
+      headers: {
+        Headers.contentTypeHeader: [Headers.jsonContentType],
+      },
+    );
+  }
+
+  @override
+  void close({bool force = false}) {}
+}
+
 Map<String, dynamic> _emptyQueue() => {'items': [], 'currentPosition': 0};
 
 Map<String, dynamic> _queuedSourceQueue() {
@@ -430,6 +553,30 @@ Map<String, dynamic> _candidateJson() {
     'title': 'Plastic Love',
     'uploader': 'mariya channel',
     'durationMs': 253000,
+    'downloadable': true,
+    'playable': false,
+  };
+}
+
+Map<String, dynamic> _ordinaryFirstCandidate() {
+  return {
+    'candidateId': 'youtube:official',
+    'provider': 'youtube',
+    'sourceId': 'official',
+    'sourceUrl': 'https://youtube.test/watch?v=official',
+    'title': 'Daft Punk - One More Time',
+    'downloadable': true,
+    'playable': false,
+  };
+}
+
+Map<String, dynamic> _scribbleRemixCandidate() {
+  return {
+    'candidateId': 'youtube:scribble-remix',
+    'provider': 'youtube',
+    'sourceId': 'scribble-remix',
+    'sourceUrl': 'https://youtube.test/watch?v=scribble-remix',
+    'title': 'Daft Punk - One More Time (Scribble Remix)',
     'downloadable': true,
     'playable': false,
   };

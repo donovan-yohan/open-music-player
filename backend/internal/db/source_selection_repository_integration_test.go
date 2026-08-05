@@ -74,12 +74,54 @@ func createSourceSelectionSession(t *testing.T, repo *SourceSelectionRepository,
 		Candidates: sourceSelectionCandidates(t,
 			sourceSelectionCandidate(t, "youtube:recommended", 94),
 			sourceSelectionCandidate(t, "youtube:alternate", 71)),
-		RecommendedCandidateID: "youtube:recommended", ExpiresAt: expiry,
+		RecommendedCandidateID: "youtube:recommended",
+		ExpiresAt:              expiry,
 	}
 	if err := repo.CreateSession(ctx, session); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	return session
+}
+
+func TestSourceSelectionNeutralSessionPersistsExactNonFirstCandidate(t *testing.T) {
+	database, repo, ctx := newSourceSelectionTestRepository(t)
+	userID := seedSourceSelectionUser(t, database, "scribble-remix@test.local")
+	first := sourceSelectionCandidate(t, "youtube:official-one-more-time", 99)
+	remix, err := json.Marshal(map[string]any{
+		"candidateId":  "youtube:scribble-remix",
+		"provider":     "youtube",
+		"sourceId":     "scribble-remix",
+		"sourceUrl":    "https://www.youtube.com/watch?v=scribble-remix",
+		"title":        "Daft Punk - One More Time (Scribble Remix)",
+		"downloadable": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &SourceSelectionSession{
+		UserID:     userID,
+		Query:      "Daft Punk - One More Time (Scribble Remix)",
+		Context:    "discovery_search",
+		Candidates: sourceSelectionCandidates(t, first, remix),
+		ExpiresAt:  time.Now().Add(10 * time.Minute),
+	}
+	if err := repo.CreateSession(ctx, session); err != nil {
+		t.Fatalf("create neutral session: %v", err)
+	}
+	decision, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, "youtube:scribble-remix", SourceSelectionActionSelected, "")
+	if err != nil {
+		t.Fatalf("select non-first remix without a reason: %v", err)
+	}
+	if decision.Action != SourceSelectionActionSelected || decision.RecommendedCandidateID != "" || decision.SelectedCandidateID != "youtube:scribble-remix" || decision.Reason.Valid {
+		t.Fatalf("neutral decision = %#v", decision)
+	}
+	var selected map[string]any
+	if err := json.Unmarshal(decision.SelectedCandidate, &selected); err != nil {
+		t.Fatal(err)
+	}
+	if selected["sourceUrl"] != "https://www.youtube.com/watch?v=scribble-remix" || selected["title"] != "Daft Punk - One More Time (Scribble Remix)" {
+		t.Fatalf("selected snapshot drifted: %#v", selected)
+	}
 }
 
 func trustedSourceSelectionCandidate() TrustedSourceSelectionCandidate {
@@ -107,6 +149,103 @@ func TestSourceSelectionMigrateFreshInitAndRerun(t *testing.T) {
 		!strings.Contains(after, "download_job_id|uuid") ||
 		!strings.Contains(after, "fk_source_selection_decisions_session_owner") {
 		t.Fatalf("fresh schema misses required source-selection constraints:\n%s", after)
+	}
+	var freshMatchingConstraintValidated bool
+	if err := database.QueryRow(`
+		SELECT convalidated
+		FROM pg_constraint
+		WHERE conrelid = 'source_selection_decisions'::regclass
+			AND conname = 'chk_source_selection_decisions_action_matches_recommendation'
+	`).Scan(&freshMatchingConstraintValidated); err != nil || !freshMatchingConstraintValidated {
+		t.Fatalf("fresh source-selection matching constraint validation = %t, %v; want true, nil", freshMatchingConstraintValidated, err)
+	}
+}
+
+func TestSourceSelectionMigrateUpgradesLegacyRecommendationContract(t *testing.T) {
+	database, repo, ctx := newSourceSelectionTestRepository(t)
+	if _, err := database.Exec(`
+		ALTER TABLE source_selection_sessions
+			DROP CONSTRAINT chk_source_selection_sessions_recommended_candidate_id;
+		ALTER TABLE source_selection_sessions
+			ALTER COLUMN recommended_candidate_id SET NOT NULL;
+		ALTER TABLE source_selection_sessions
+			ADD CONSTRAINT chk_source_selection_sessions_recommended_candidate_id
+			CHECK (char_length(BTRIM(recommended_candidate_id)) BETWEEN 1 AND 256);
+		ALTER TABLE source_selection_decisions
+			DROP CONSTRAINT chk_source_selection_decisions_recommended_candidate_id;
+		ALTER TABLE source_selection_decisions
+			ALTER COLUMN recommended_candidate_id SET NOT NULL;
+		ALTER TABLE source_selection_decisions
+			ADD CONSTRAINT chk_source_selection_decisions_recommended_candidate_id
+			CHECK (char_length(BTRIM(recommended_candidate_id)) BETWEEN 1 AND 256);
+		ALTER TABLE source_selection_decisions
+			DROP CONSTRAINT chk_source_selection_decisions_action;
+		ALTER TABLE source_selection_decisions
+			ADD CONSTRAINT chk_source_selection_decisions_action
+			CHECK (action IN ('accepted', 'overridden'));
+		ALTER TABLE source_selection_decisions
+			DROP CONSTRAINT chk_source_selection_decisions_action_matches_recommendation;
+		ALTER TABLE source_selection_decisions
+			ADD CONSTRAINT chk_source_selection_decisions_action_matches_recommendation
+			CHECK (
+				(action = 'accepted' AND selected_candidate_id = recommended_candidate_id)
+				OR (action = 'overridden' AND selected_candidate_id <> recommended_candidate_id)
+			);
+	`); err != nil {
+		t.Fatalf("establish legacy source-selection schema: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("upgrade legacy source-selection schema: %v", err)
+	}
+	var upgradedMatchingConstraintValidated bool
+	if err := database.QueryRow(`
+		SELECT convalidated
+		FROM pg_constraint
+		WHERE conrelid = 'source_selection_decisions'::regclass
+			AND conname = 'chk_source_selection_decisions_action_matches_recommendation'
+	`).Scan(&upgradedMatchingConstraintValidated); err != nil || upgradedMatchingConstraintValidated {
+		t.Fatalf("upgraded source-selection matching constraint validation = %t, %v; want false, nil", upgradedMatchingConstraintValidated, err)
+	}
+	var nullable string
+	if err := database.QueryRow(`
+		SELECT is_nullable FROM information_schema.columns
+		WHERE table_name = 'source_selection_sessions' AND column_name = 'recommended_candidate_id'
+	`).Scan(&nullable); err != nil || nullable != "YES" {
+		t.Fatalf("session recommendation nullability = %q, %v; want YES, nil", nullable, err)
+	}
+	var actionConstraint string
+	if err := database.QueryRow(`
+		SELECT pg_get_constraintdef(oid)
+		FROM pg_constraint
+		WHERE conrelid = 'source_selection_decisions'::regclass
+			AND conname = 'chk_source_selection_decisions_action'
+	`).Scan(&actionConstraint); err != nil || !strings.Contains(actionConstraint, "selected") {
+		t.Fatalf("action constraint = %q, %v; want selected", actionConstraint, err)
+	}
+	var matchingConstraint string
+	if err := database.QueryRow(`
+		SELECT pg_get_constraintdef(oid)
+		FROM pg_constraint
+		WHERE conrelid = 'source_selection_decisions'::regclass
+			AND conname = 'chk_source_selection_decisions_action_matches_recommendation'
+	`).Scan(&matchingConstraint); err != nil || !strings.Contains(matchingConstraint, "recommended_candidate_id IS NULL") || !strings.Contains(matchingConstraint, "accepted") || !strings.Contains(matchingConstraint, "overridden") {
+		t.Fatalf("recommendation matching constraint = %q, %v", matchingConstraint, err)
+	}
+
+	userID := seedSourceSelectionUser(t, database, "legacy-upgrade@test.local")
+	session := &SourceSelectionSession{
+		UserID: userID, Query: "artist track", Context: "discovery_search",
+		Candidates: sourceSelectionCandidates(t,
+			sourceSelectionCandidate(t, "youtube:recommended", 94),
+			sourceSelectionCandidate(t, "youtube:alternate", 71)),
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}
+	if err := repo.CreateSession(ctx, session); err != nil {
+		t.Fatalf("create neutral session after legacy upgrade: %v", err)
+	}
+	decision, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, "youtube:alternate", SourceSelectionActionSelected, "")
+	if err != nil || decision.Action != SourceSelectionActionSelected || decision.RecommendedCandidateID != "" {
+		t.Fatalf("neutral choice after legacy upgrade = %#v, %v", decision, err)
 	}
 }
 
@@ -219,6 +358,9 @@ func TestSourceSelectionDiscoveryDecisionSingleUseAndIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first decision: %v", err)
 	}
+	if first.RecommendedCandidateID != "youtube:recommended" {
+		t.Fatalf("accepted decision recommendation = %q; want session recommendation", first.RecommendedCandidateID)
+	}
 	retry, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, "youtube:recommended", SourceSelectionActionAccepted, "")
 	if err != nil || retry.ID != first.ID {
 		t.Fatalf("idempotent retry = %#v, %v; want existing %s", retry, err, first.ID)
@@ -268,6 +410,62 @@ func TestSourceSelectionDiscoveryDecisionSingleUseAndIdempotency(t *testing.T) {
 	}
 	if err := database.QueryRow(`SELECT COUNT(*) FROM source_selection_decisions WHERE session_id = $1`, concurrentSession.ID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("concurrent decision count = %d, %v; want 1, nil", count, err)
+	}
+}
+
+func TestSourceSelectionDiscoveryDecisionActionMatchesSessionContract(t *testing.T) {
+	database, repo, ctx := newSourceSelectionTestRepository(t)
+	userID := seedSourceSelectionUser(t, database, "action-contract@test.local")
+
+	for _, tc := range []struct {
+		name        string
+		candidateID string
+		action      string
+	}{
+		{name: "accepted alternate", candidateID: "youtube:alternate", action: SourceSelectionActionAccepted},
+		{name: "overridden recommended", candidateID: "youtube:recommended", action: SourceSelectionActionOverridden},
+		{name: "selected legacy recommended", candidateID: "youtube:recommended", action: SourceSelectionActionSelected},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := createSourceSelectionSession(t, repo, ctx, userID, time.Now().Add(10*time.Minute))
+			if _, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, tc.candidateID, tc.action, ""); !errors.Is(err, ErrInvalidSourceSelection) {
+				t.Fatalf("legacy action %q for %q = %v; want invalid source selection", tc.action, tc.candidateID, err)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name   string
+		action string
+	}{
+		{name: "accepted", action: SourceSelectionActionAccepted},
+		{name: "overridden", action: SourceSelectionActionOverridden},
+	} {
+		t.Run("neutral "+tc.name, func(t *testing.T) {
+			session := &SourceSelectionSession{
+				UserID: userID, Query: "artist track", Context: "discovery_search",
+				Candidates: sourceSelectionCandidates(t,
+					sourceSelectionCandidate(t, "youtube:recommended", 94),
+					sourceSelectionCandidate(t, "youtube:alternate", 71)),
+				ExpiresAt: time.Now().Add(10 * time.Minute),
+			}
+			if err := repo.CreateSession(ctx, session); err != nil {
+				t.Fatalf("create neutral session: %v", err)
+			}
+			if _, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, "youtube:alternate", tc.action, ""); !errors.Is(err, ErrInvalidSourceSelection) {
+				t.Fatalf("neutral action %q = %v; want invalid source selection", tc.action, err)
+			}
+			decision, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, "youtube:alternate", SourceSelectionActionSelected, "")
+			if err != nil || decision.RecommendedCandidateID != "" {
+				t.Fatalf("neutral selected decision = %#v, %v", decision, err)
+			}
+		})
+	}
+
+	legacy := createSourceSelectionSession(t, repo, ctx, userID, time.Now().Add(10*time.Minute))
+	decision, err := repo.CreateDiscoveryDecision(ctx, userID, legacy.ID, "youtube:alternate", SourceSelectionActionOverridden, "prefer shorter intro")
+	if err != nil || decision.RecommendedCandidateID != "youtube:recommended" {
+		t.Fatalf("legacy override decision = %#v, %v", decision, err)
 	}
 }
 

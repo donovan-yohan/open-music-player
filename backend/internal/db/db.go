@@ -220,7 +220,7 @@ func (db *DB) Migrate() error {
 		query TEXT NOT NULL,
 		context TEXT NOT NULL DEFAULT '',
 		candidates JSONB NOT NULL,
-		recommended_candidate_id TEXT NOT NULL,
+		recommended_candidate_id TEXT,
 		created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
 		expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
 		CONSTRAINT chk_source_selection_sessions_candidates CHECK (
@@ -229,7 +229,8 @@ func (db *DB) Migrate() error {
 			AND octet_length(candidates::text) <= 49152
 		),
 		CONSTRAINT chk_source_selection_sessions_recommended_candidate_id CHECK (
-			char_length(BTRIM(recommended_candidate_id)) BETWEEN 1 AND 256
+			recommended_candidate_id IS NULL
+			OR char_length(BTRIM(recommended_candidate_id)) BETWEEN 1 AND 256
 		),
 		CONSTRAINT chk_source_selection_sessions_expiry CHECK (expires_at > created_at),
 		CONSTRAINT uq_source_selection_sessions_id_user UNIQUE (id, user_id)
@@ -245,7 +246,7 @@ func (db *DB) Migrate() error {
 		session_owner_id UUID,
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 		selected_candidate_id TEXT NOT NULL,
-		recommended_candidate_id TEXT NOT NULL,
+		recommended_candidate_id TEXT,
 		action VARCHAR(16) NOT NULL,
 		origin VARCHAR(32) NOT NULL,
 		reason TEXT,
@@ -259,9 +260,17 @@ func (db *DB) Migrate() error {
 			char_length(BTRIM(selected_candidate_id)) BETWEEN 1 AND 256
 		),
 		CONSTRAINT chk_source_selection_decisions_recommended_candidate_id CHECK (
-			char_length(BTRIM(recommended_candidate_id)) BETWEEN 1 AND 256
+			recommended_candidate_id IS NULL
+			OR char_length(BTRIM(recommended_candidate_id)) BETWEEN 1 AND 256
 		),
-		CONSTRAINT chk_source_selection_decisions_action CHECK (action IN ('accepted', 'overridden')),
+		CONSTRAINT chk_source_selection_decisions_action CHECK (action IN ('selected', 'accepted', 'overridden')),
+		CONSTRAINT chk_source_selection_decisions_action_matches_recommendation CHECK (
+			(recommended_candidate_id IS NULL AND action = 'selected')
+			OR (recommended_candidate_id IS NOT NULL AND (
+				(action = 'accepted' AND selected_candidate_id = recommended_candidate_id)
+				OR (action = 'overridden' AND selected_candidate_id <> recommended_candidate_id)
+			))
+		),
 		CONSTRAINT chk_source_selection_decisions_origin CHECK (origin IN ('discovery', 'direct_url', 'playlist_explicit', 'research')),
 		CONSTRAINT chk_source_selection_decisions_reason CHECK (reason IS NULL OR char_length(BTRIM(reason)) BETWEEN 1 AND 2000),
 		CONSTRAINT chk_source_selection_decisions_candidate CHECK (
@@ -270,10 +279,6 @@ func (db *DB) Migrate() error {
 			AND octet_length(selected_candidate::text) <= 49152
 		),
 		CONSTRAINT chk_source_selection_decisions_source_quality CHECK (jsonb_typeof(source_quality) = 'object'),
-		CONSTRAINT chk_source_selection_decisions_action_matches_recommendation CHECK (
-			(action = 'accepted' AND selected_candidate_id = recommended_candidate_id)
-			OR (action = 'overridden' AND selected_candidate_id <> recommended_candidate_id)
-		),
 		CONSTRAINT chk_source_selection_decisions_session_reference CHECK (
 			(session_id IS NULL) = (session_owner_id IS NULL)
 		),
@@ -826,6 +831,9 @@ func (db *DB) Migrate() error {
 	if err := db.refreshResearchSchemaConstraints(); err != nil {
 		return err
 	}
+	if err := db.refreshSourceSelectionSchemaConstraints(); err != nil {
+		return err
+	}
 
 	// Best-effort: enable pg_trgm for fuzzy/typo-tolerant local search. This is
 	// intentionally OUTSIDE the required schema above and MUST NOT be fatal:
@@ -834,6 +842,71 @@ func (db *DB) Migrate() error {
 	// gracefully to the FTS path — the server still starts and search still works.
 	db.TrigramEnabled = db.tryEnableTrigram()
 
+	return nil
+}
+
+// refreshSourceSelectionSchemaConstraints upgrades only databases whose
+// session catalog still carries the pre-neutral NOT NULL recommendation field.
+// The action-matching constraint name exists in both contracts, so it is not a
+// reliable upgrade signal. Existing accepted/overridden decisions remain
+// readable; new discovery sessions intentionally persist no recommendation and
+// record `selected`.
+func (db *DB) refreshSourceSelectionSchemaConstraints() error {
+	var legacySessionRecommendationRequired bool
+	err := db.QueryRow(`
+		SELECT is_nullable = 'NO'
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+			AND table_name = 'source_selection_sessions'
+			AND column_name = 'recommended_candidate_id'
+	`).Scan(&legacySessionRecommendationRequired)
+	if err != nil {
+		return fmt.Errorf("inspect source-selection legacy schema: %w", err)
+	}
+	if !legacySessionRecommendationRequired {
+		return nil
+	}
+
+	_, err = db.Exec(`
+		ALTER TABLE source_selection_sessions
+			ALTER COLUMN recommended_candidate_id DROP NOT NULL;
+		ALTER TABLE source_selection_sessions
+			DROP CONSTRAINT IF EXISTS chk_source_selection_sessions_recommended_candidate_id;
+		ALTER TABLE source_selection_sessions
+			ADD CONSTRAINT chk_source_selection_sessions_recommended_candidate_id CHECK (
+				recommended_candidate_id IS NULL
+				OR char_length(BTRIM(recommended_candidate_id)) BETWEEN 1 AND 256
+			);
+
+		ALTER TABLE source_selection_decisions
+			ALTER COLUMN recommended_candidate_id DROP NOT NULL;
+		ALTER TABLE source_selection_decisions
+			DROP CONSTRAINT IF EXISTS chk_source_selection_decisions_recommended_candidate_id;
+		ALTER TABLE source_selection_decisions
+			ADD CONSTRAINT chk_source_selection_decisions_recommended_candidate_id CHECK (
+				recommended_candidate_id IS NULL
+				OR char_length(BTRIM(recommended_candidate_id)) BETWEEN 1 AND 256
+			);
+		ALTER TABLE source_selection_decisions
+			DROP CONSTRAINT IF EXISTS chk_source_selection_decisions_action;
+		ALTER TABLE source_selection_decisions
+			ADD CONSTRAINT chk_source_selection_decisions_action CHECK (
+				action IN ('selected', 'accepted', 'overridden')
+			);
+		ALTER TABLE source_selection_decisions
+			DROP CONSTRAINT IF EXISTS chk_source_selection_decisions_action_matches_recommendation;
+		ALTER TABLE source_selection_decisions
+			ADD CONSTRAINT chk_source_selection_decisions_action_matches_recommendation CHECK (
+				(recommended_candidate_id IS NULL AND action = 'selected')
+				OR (recommended_candidate_id IS NOT NULL AND (
+					(action = 'accepted' AND selected_candidate_id = recommended_candidate_id)
+					OR (action = 'overridden' AND selected_candidate_id <> recommended_candidate_id)
+				))
+			) NOT VALID;
+	`)
+	if err != nil {
+		return fmt.Errorf("refresh source-selection schema constraints: %w", err)
+	}
 	return nil
 }
 

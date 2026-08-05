@@ -229,7 +229,7 @@ func (h *Handlers) AddQueueItem(w http.ResponseWriter, r *http.Request) {
 		writeSourceDecisionError(w, err)
 		return
 	}
-	if decision.Action != db.SourceSelectionActionAccepted && decision.Action != db.SourceSelectionActionOverridden {
+	if decision.Action != db.SourceSelectionActionSelected && decision.Action != db.SourceSelectionActionAccepted && decision.Action != db.SourceSelectionActionOverridden {
 		writeError(w, http.StatusConflict, "SOURCE_DECISION_NOT_QUALIFIED", "source decision is not eligible for queueing")
 		return
 	}

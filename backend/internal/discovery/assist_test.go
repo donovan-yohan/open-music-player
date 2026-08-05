@@ -298,6 +298,31 @@ func TestAssistSearchGroundsAgainstDiscoveryAndShowsProvenance(t *testing.T) {
 	}
 }
 
+func TestAssistSearchUsesExplicitSourceQualityRanking(t *testing.T) {
+	judge := &fakeSourceQualityJudge{}
+	provider := fakeProvider{name: "youtube", items: []Candidate{
+		{CandidateID: "youtube:video", Provider: "youtube", SourceURL: "https://www.youtube.com/watch?v=video", Title: "Artist - Song (Official Music Video)", Artist: "Artist", DurationMs: 245000, Downloadable: true},
+		{CandidateID: "youtube:audio", Provider: "youtube", SourceURL: "https://www.youtube.com/watch?v=audio", Title: "Artist - Song (Official Audio)", Artist: "Artist", DurationMs: 240000, Downloadable: true},
+	}}
+	client := &fakeAssistClient{intent: &aiassist.Intent{Kind: aiassist.KindSearch, SearchQuery: "Artist Song", Providers: []string{"youtube"}}}
+	svc := NewAssistService(AssistConfig{
+		Client: client,
+		Search: NewService(ServiceConfig{
+			Providers:          []Provider{provider},
+			DefaultProviders:   []string{"youtube"},
+			SourceQualityJudge: judge,
+		}),
+	})
+
+	resp := svc.Assist(context.Background(), "find Artist Song", 10)
+	if resp.Search == nil || len(resp.Search.Results) != 2 || resp.Search.Results[0].CandidateID != "youtube:audio" {
+		t.Fatalf("assist search was not source-quality ranked: %#v", resp.Search)
+	}
+	if len(judge.seen) != 2 {
+		t.Fatalf("assist source-quality judge saw %d candidates, want 2", len(judge.seen))
+	}
+}
+
 func TestAssistVerificationShowsFallbackQueryUsedForSearch(t *testing.T) {
 	provider := fakeProvider{name: "youtube"}
 	client := &fakeAssistClient{intent: &aiassist.Intent{
@@ -507,7 +532,7 @@ func TestAssistHandlerPersistsDirectCandidateSelection(t *testing.T) {
 	if store.session == nil || len(store.session.Candidates) == 0 || store.session.Context != "discovery_assist_direct_url" {
 		t.Fatalf("persisted session = %#v", store.session)
 	}
-	if !response.SelectionRequired || response.SelectionSessionID == "" || response.RecommendedCandidateID == "" || response.SelectionExpiresAt == nil {
+	if !response.SelectionRequired || response.SelectionSessionID == "" || response.RecommendedCandidateID != "" || response.SelectionExpiresAt == nil {
 		t.Fatalf("selection metadata = %#v", response)
 	}
 }
@@ -531,7 +556,7 @@ func TestAssistHandlerPersistsNestedSearchSelection(t *testing.T) {
 	if store.session == nil || store.session.Query != "found" || store.session.Context != "discovery_assist_search" {
 		t.Fatalf("persisted session = %#v", store.session)
 	}
-	if response.Search == nil || !response.SelectionRequired || response.SelectionSessionID == "" || response.RecommendedCandidateID != "youtube:found" || response.SelectionExpiresAt == nil {
+	if response.Search == nil || !response.SelectionRequired || response.SelectionSessionID == "" || response.RecommendedCandidateID != "" || response.SelectionExpiresAt == nil {
 		t.Fatalf("assist response = %#v", response)
 	}
 }

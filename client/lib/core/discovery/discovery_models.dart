@@ -2,6 +2,8 @@ import '../../models/queue_state.dart';
 
 class DiscoverySelectionSession {
   final String sessionId;
+
+  /// Deprecated ranking metadata. A selection session is valid without it.
   final String recommendedCandidateId;
   final DateTime? expiresAt;
 
@@ -13,19 +15,20 @@ class DiscoverySelectionSession {
 
   factory DiscoverySelectionSession.fromJson(Map<String, dynamic> json) {
     return DiscoverySelectionSession(
-      sessionId: json['selectionSessionId'] as String? ?? '',
+      sessionId: (json['selectionSessionId'] as String? ?? '').trim(),
       recommendedCandidateId: json['recommendedCandidateId'] as String? ?? '',
       expiresAt: _readDate(json['selectionExpiresAt']),
     );
   }
 
-  bool get isPresent =>
-      sessionId.isNotEmpty && recommendedCandidateId.isNotEmpty;
+  bool get isPresent => sessionId.isNotEmpty;
 
   bool get isExpired =>
       expiresAt != null && !expiresAt!.isAfter(DateTime.now());
 
   bool isRecommended(DiscoveryCandidate candidate) =>
+      recommendedCandidateId.isNotEmpty &&
+      candidate.candidateId.isNotEmpty &&
       candidate.candidateId == recommendedCandidateId;
 }
 
@@ -610,7 +613,7 @@ class DiscoveryAssistResponse {
   DiscoverySelectionSession? get searchSelection => search?.selection;
 }
 
-enum SourceSelectionAction { accepted, overridden }
+enum SourceSelectionAction { accepted, overridden, selected }
 
 extension SourceSelectionActionJson on SourceSelectionAction {
   String get jsonValue => name;
@@ -653,9 +656,11 @@ class SourceSelectionDecision {
       sessionId: _blankToNull(json['sessionId'] as String?),
       selectedCandidateId: json['selectedCandidateId'] as String? ?? '',
       recommendedCandidateId: json['recommendedCandidateId'] as String? ?? '',
-      action: json['action'] == 'overridden'
-          ? SourceSelectionAction.overridden
-          : SourceSelectionAction.accepted,
+      action: switch (json['action']) {
+        'overridden' => SourceSelectionAction.overridden,
+        'selected' => SourceSelectionAction.selected,
+        _ => SourceSelectionAction.accepted,
+      },
       origin: json['origin'] as String? ?? '',
       reason: _blankToNull(json['reason'] as String?),
       selectedCandidate: DiscoveryCandidate.fromJson(candidate),

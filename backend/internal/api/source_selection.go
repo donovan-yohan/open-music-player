@@ -48,7 +48,7 @@ type sourceSelectionResponse struct {
 	ID                     string          `json:"id"`
 	SessionID              *string         `json:"sessionId,omitempty"`
 	SelectedCandidateID    string          `json:"selectedCandidateId"`
-	RecommendedCandidateID string          `json:"recommendedCandidateId"`
+	RecommendedCandidateID *string         `json:"recommendedCandidateId,omitempty"`
 	Action                 string          `json:"action"`
 	Origin                 string          `json:"origin"`
 	Reason                 *string         `json:"reason,omitempty"`
@@ -162,7 +162,11 @@ func sourceSelectionPage(r *http.Request) (int, int, error) {
 }
 
 func sourceSelectionFromDB(decision *db.SourceSelectionDecision) sourceSelectionResponse {
-	response := sourceSelectionResponse{ID: decision.ID.String(), SelectedCandidateID: decision.SelectedCandidateID, RecommendedCandidateID: decision.RecommendedCandidateID, Action: decision.Action, Origin: decision.Origin, SelectedCandidate: decision.SelectedCandidate, SourceQuality: decision.SourceQuality, CreatedAt: decision.CreatedAt}
+	response := sourceSelectionResponse{ID: decision.ID.String(), SelectedCandidateID: decision.SelectedCandidateID, Action: decision.Action, Origin: decision.Origin, SelectedCandidate: decision.SelectedCandidate, SourceQuality: decision.SourceQuality, CreatedAt: decision.CreatedAt}
+	if decision.RecommendedCandidateID != "" {
+		value := decision.RecommendedCandidateID
+		response.RecommendedCandidateID = &value
+	}
 	if decision.SessionID.Valid {
 		value := decision.SessionID.UUID.String()
 		response.SessionID = &value

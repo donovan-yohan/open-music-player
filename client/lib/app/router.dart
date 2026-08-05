@@ -265,7 +265,6 @@ class ScaffoldWithNavBar extends StatelessWidget {
     }
   }
 }
-
 class _MobileShell extends StatelessWidget {
   const _MobileShell({
     required this.child,
@@ -296,7 +295,7 @@ class _MobileShell extends StatelessWidget {
           NavigationDestination(
             icon: Icon(Icons.search_outlined),
             selectedIcon: Icon(Icons.search),
-            label: 'Search',
+            label: 'Discover',
           ),
           NavigationDestination(
             icon: Icon(Icons.library_music_outlined),
@@ -444,7 +443,7 @@ class _DesktopShellState extends State<_DesktopShell> {
                             focusNode: _destinationFocusNodes[1],
                             onActivate: widget.onDestinationSelected,
                           ),
-                          label: const Text('Search'),
+                          label: const Text('Discover'),
                         ),
                         NavigationRailDestination(
                           icon: _DesktopRailIcon(

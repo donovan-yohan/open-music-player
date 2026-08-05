@@ -65,11 +65,11 @@ void main() {
         of: find.byIcon(Icons.playlist_add),
         matching: find.byType(IconButton),
       );
-      expect(tester.getSize(queueButton), const Size(40, 40));
+      expect(tester.getSize(queueButton), const Size(48, 48));
       expect(tester.getRect(queueButton).right, lessThanOrEqualTo(360));
 
       final openSourceButton =
-          find.byKey(const ValueKey('search_open_source_youtube:123'));
+          find.byKey(const ValueKey('discover_preview_source_youtube:123'));
       expect(openSourceButton, findsOneWidget);
       expect(tester.getSize(openSourceButton), const Size(40, 40));
       expect(tester.getRect(openSourceButton).right, lessThanOrEqualTo(360));

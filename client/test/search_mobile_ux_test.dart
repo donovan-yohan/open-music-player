@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/api/api_client.dart';
+import 'package:open_music_player/core/discovery/discovery_models.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/search/search_screen.dart';
 import 'package:open_music_player/models/mix_plan.dart';
@@ -20,7 +21,7 @@ void main() {
 
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
 
-  Future<void> pumpSearch(
+  Future<_SearchAdapter> pumpSearch(
     WidgetTester tester, {
     ApiClient? queueClient,
   }) async {
@@ -28,9 +29,10 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
+    final searchAdapter = _SearchAdapter();
     final discovery = ApiClient(
       storage: SecureStorage(),
-      dio: Dio()..httpClientAdapter = _SearchAdapter(),
+      dio: Dio()..httpClientAdapter = searchAdapter,
     );
     await tester.pumpWidget(
       MultiProvider(
@@ -44,6 +46,7 @@ void main() {
       ),
     );
     await tester.pump();
+    return searchAdapter;
   }
 
   Future<void> search(WidgetTester tester) async {
@@ -56,7 +59,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
   }
 
-  testWidgets('Song is the default tab and quality-ranked sources are primary',
+  testWidgets(
+      'Song is the default tab and catalog sources stay in response order',
       (tester) async {
     await pumpSearch(tester);
     expect(
@@ -95,25 +99,25 @@ void main() {
     expect(find.text('youtube: ok'), findsNothing);
     await tester.tap(find.byKey(const ValueKey('search_provider_summary')));
     await tester.pumpAndSettle();
-    expect(find.text('Search sources'), findsOneWidget);
+    expect(find.text('Discover sources'), findsOneWidget);
     expect(find.text('youtube · degraded'), findsOneWidget);
     expect(find.textContaining('Error kind: RATE_LIMITED'), findsOneWidget);
     await tester.tapAt(const Offset(4, 4));
     await tester.pumpAndSettle();
   });
 
-  testWidgets('source links use the external application launcher',
+  testWidgets(
+      'tapping a source previews its exact provider URL without queueing',
       (tester) async {
     final originalLauncher = UrlLauncherPlatform.instance;
     final launcher = _RecordingUrlLauncher();
+    final queueClient = _EmptyQueueClient();
     UrlLauncherPlatform.instance = launcher;
     addTearDown(() => UrlLauncherPlatform.instance = originalLauncher);
 
-    await pumpSearch(tester);
+    final searchAdapter = await pumpSearch(tester, queueClient: queueClient);
     await search(tester);
-    await tester.tap(
-      find.byKey(const ValueKey('search_open_source_youtube:official')),
-    );
+    await tester.tap(find.text('Official source'));
     await tester.pump();
 
     expect(launcher.url, 'https://youtube.com/watch?v=official');
@@ -121,6 +125,9 @@ void main() {
       launcher.options?.mode,
       PreferredLaunchMode.externalApplication,
     );
+    expect(queueClient.addSourceDecisionCalls, 0);
+    expect(searchAdapter.sourceSelectionRequests, isEmpty);
+    expect(find.byIcon(Icons.playlist_add), findsWidgets);
   });
 
   testWidgets('SERVICE_DISABLED queue is silent and removes queue affordances',
@@ -142,18 +149,26 @@ void main() {
     expect(find.textContaining('SERVICE_DISABLED'), findsNothing);
     expect(find.byIcon(Icons.playlist_add), findsNothing);
     expect(find.byKey(const ValueKey('search_queue_affordance')), findsNothing);
-    expect(find.byKey(const ValueKey('search_open_source_youtube:official')),
+    expect(
+        find.byKey(const ValueKey('discover_preview_source_youtube:official')),
         findsOneWidget);
   });
 }
 
 class _SearchAdapter implements HttpClientAdapter {
+  final List<Map<String, dynamic>> sourceSelectionRequests = [];
+
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
   ) async {
+    if (options.method == 'POST' && options.path == '/source-selections') {
+      sourceSelectionRequests.add(
+        Map<String, dynamic>.from(options.data as Map),
+      );
+    }
     return ResponseBody.fromString(
       jsonEncode({
         'query': options.queryParameters['q'] ?? '',
@@ -232,12 +247,23 @@ const _lowQuality = {
 };
 
 class _EmptyQueueClient extends ApiClient {
+  int addSourceDecisionCalls = 0;
+
   @override
   Future<QueueState> getQueue() async => QueueState.empty();
 
   @override
   Future<List<MixPlan>> listMixPlans({int limit = 50, int offset = 0}) async =>
       const [];
+
+  @override
+  Future<SourceDecisionQueueResponse> addSourceDecisionToQueue({
+    required String sourceDecisionId,
+    String position = 'last',
+  }) async {
+    addSourceDecisionCalls++;
+    throw UnimplementedError('preview must not queue a source');
+  }
 }
 
 class _ActiveThenDisabledQueueClient extends _EmptyQueueClient {

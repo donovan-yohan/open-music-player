@@ -1,0 +1,4 @@
+-- This reference rollback is intentionally non-destructive: neutral `selected`
+-- decisions cannot be made to satisfy the former recommendation constraint
+-- without inventing a recommendation. Restore from backup before reintroducing
+-- the old ranked-source schema.

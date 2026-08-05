@@ -180,7 +180,7 @@ func TestYouTubeProviderAcquiresYouTubeMusicSongsBeforeRanking(t *testing.T) {
 	}}}
 	svc := NewService(ServiceConfig{Providers: []Provider{newCombinedProvider("youtube", []Provider{video, music})}, DefaultProviders: []string{"youtube"}})
 
-	resp := svc.Search(context.Background(), "Kylie Minogue Speakerphone", []string{"youtube"}, 10)
+	resp := svc.SearchRanked(context.Background(), "Kylie Minogue Speakerphone", []string{"youtube"}, 10)
 
 	if video.calls.Load() != 1 || music.calls.Load() != 1 {
 		t.Fatalf("source calls = video:%d music:%d, want both surfaces queried", video.calls.Load(), music.calls.Load())
@@ -243,7 +243,7 @@ func TestSearchStripsLargeSourceQualityInputMetadata(t *testing.T) {
 	}}}
 	svc := NewService(ServiceConfig{Providers: []Provider{provider}, DefaultProviders: []string{"youtube"}})
 
-	resp := svc.Search(context.Background(), "Artist Song", []string{"youtube"}, 10)
+	resp := svc.SearchRanked(context.Background(), "Artist Song", []string{"youtube"}, 10)
 	if len(resp.Results) != 1 || len(resp.Sections) != 1 || len(resp.Sections[0].Items) != 1 {
 		t.Fatalf("response = %#v, want one source candidate", resp)
 	}
@@ -934,7 +934,7 @@ func TestServiceSearchMusicBrainzTimeoutUsesTimeoutSummary(t *testing.T) {
 	}
 }
 
-func TestSearchHandlerPersistsRankedSelectionSession(t *testing.T) {
+func TestSearchHandlerPersistsNeutralSelectionSession(t *testing.T) {
 	store := &captureSelectionStore{}
 	h := NewHandlersWithAssistAndSelectionStore(NewService(ServiceConfig{Providers: []Provider{fakeProvider{name: "youtube", items: []Candidate{{CandidateID: "first", Provider: "youtube", SourceURL: "https://example.test/1", Title: "First", Downloadable: true, Metadata: map[string]interface{}{"sourceQuality": map[string]interface{}{"score": 99}}}, {CandidateID: "second", Provider: "youtube", SourceURL: "https://example.test/2", Title: "Second", Downloadable: true}}}}, DefaultProviders: []string{"youtube"}}), nil, store)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/discovery/search?q=first", nil)
@@ -944,14 +944,14 @@ func TestSearchHandlerPersistsRankedSelectionSession(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
 	}
-	if store.session == nil || store.session.RecommendedCandidateID != "first" || len(store.session.Candidates) == 0 {
+	if store.session == nil || store.session.RecommendedCandidateID != "" || len(store.session.Candidates) == 0 {
 		t.Fatalf("persisted session = %#v", store.session)
 	}
 	var body SearchResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if !body.SelectionRequired || body.SelectionSessionID == "" || body.RecommendedCandidateID != "first" || body.SelectionExpiresAt == nil {
+	if !body.SelectionRequired || body.SelectionSessionID == "" || body.RecommendedCandidateID != "" || body.SelectionExpiresAt == nil {
 		t.Fatalf("selection envelope = %#v", body)
 	}
 }

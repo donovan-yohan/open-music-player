@@ -74,14 +74,16 @@ type ProviderSummary struct {
 }
 
 type SearchResponse struct {
-	Query                  string            `json:"query"`
-	Results                []Candidate       `json:"results"`
-	Sections               []SearchSection   `json:"sections"`
-	Providers              []ProviderSummary `json:"providers"`
-	SelectionRequired      bool              `json:"selectionRequired"`
-	SelectionSessionID     string            `json:"selectionSessionId,omitempty"`
-	RecommendedCandidateID string            `json:"recommendedCandidateId,omitempty"`
-	SelectionExpiresAt     *time.Time        `json:"selectionExpiresAt,omitempty"`
+	Query              string            `json:"query"`
+	Results            []Candidate       `json:"results"`
+	Sections           []SearchSection   `json:"sections"`
+	Providers          []ProviderSummary `json:"providers"`
+	SelectionRequired  bool              `json:"selectionRequired"`
+	SelectionSessionID string            `json:"selectionSessionId,omitempty"`
+	// Kept as an empty-compatible legacy field while callers transition to the
+	// neutral source-session contract. Discovery does not set a recommendation.
+	RecommendedCandidateID string     `json:"recommendedCandidateId,omitempty"`
+	SelectionExpiresAt     *time.Time `json:"selectionExpiresAt,omitempty"`
 }
 
 type SearchSection struct {
@@ -267,7 +269,21 @@ func newYouTubeProviderWithMetadataEnrichment(concurrency int, timeout time.Dura
 	})
 }
 
+// Search returns ordinary Discover results in the provider and source order in
+// which they were searched. It deliberately does not infer a preferred source
+// or invoke the source-quality judge: choosing the exact downloadable item is
+// a user action.
 func (s *Service) Search(ctx context.Context, query string, requested []string, limit int) SearchResponse {
+	return s.search(ctx, query, requested, limit, false)
+}
+
+// SearchRanked is for explicit assist flows that ask for source-quality
+// analysis. Unlike ordinary Discover, it may classify and reorder candidates.
+func (s *Service) SearchRanked(ctx context.Context, query string, requested []string, limit int) SearchResponse {
+	return s.search(ctx, query, requested, limit, true)
+}
+
+func (s *Service) search(ctx context.Context, query string, requested []string, limit int, rankSources bool) SearchResponse {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -278,8 +294,11 @@ func (s *Service) Search(ctx context.Context, query string, requested []string, 
 	ctx, cancel := context.WithTimeout(ctx, s.overallTimeout)
 	defer cancel()
 	raw := s.searchSourcesWithContext(ctx, query, sourceProviders, limit)
-	ranked := rankSourceCandidatesWithJudge(ctx, query, raw.Results, s.sourceQualityJudge)
-	resp := SearchResponse{Query: query, Results: stripSourceQualityInputMetadata(ranked), Sections: []SearchSection{}, Providers: raw.Providers}
+	results := raw.Results
+	if rankSources {
+		results = rankSourceCandidatesWithJudge(ctx, query, results, s.sourceQualityJudge)
+	}
+	resp := SearchResponse{Query: query, Results: stripSourceQualityInputMetadata(results), Sections: []SearchSection{}, Providers: raw.Providers}
 	sections, catalogSummary := s.buildSections(ctx, query, limit, resp.Results, includeCatalog)
 	resp.Sections = sections
 	if catalogSummary != nil {
@@ -708,20 +727,15 @@ func (h *Handlers) persistSelection(w http.ResponseWriter, r *http.Request, user
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to persist source selection")
 		return false
 	}
-	recommended := response.Results[0].CandidateID
-	if strings.TrimSpace(recommended) == "" {
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to persist source selection")
-		return false
-	}
 	expiresAt := time.Now().Add(sourceSelectionSessionTTL)
-	session := &db.SourceSelectionSession{UserID: userID, Query: response.Query, Context: selectionContext, Candidates: snapshot, RecommendedCandidateID: recommended, ExpiresAt: expiresAt}
+	session := &db.SourceSelectionSession{UserID: userID, Query: response.Query, Context: selectionContext, Candidates: snapshot, ExpiresAt: expiresAt}
 	if err := h.selectionStore.CreateSession(r.Context(), session); err != nil {
 		writeError(w, http.StatusInternalServerError, "SOURCE_SELECTION_PERSISTENCE_FAILED", "failed to persist source selection")
 		return false
 	}
 	response.SelectionRequired = true
 	response.SelectionSessionID = session.ID.String()
-	response.RecommendedCandidateID = recommended
+	response.RecommendedCandidateID = ""
 	response.SelectionExpiresAt = &session.ExpiresAt
 	return true
 }

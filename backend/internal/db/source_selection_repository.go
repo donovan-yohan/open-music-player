@@ -14,6 +14,10 @@ import (
 )
 
 const (
+	// SourceSelectionActionSelected is the neutral discovery action. A search
+	// result is an option, not an implicit assertion that another result is the
+	// intended track.
+	SourceSelectionActionSelected   = "selected"
 	SourceSelectionActionAccepted   = "accepted"
 	SourceSelectionActionOverridden = "overridden"
 
@@ -115,6 +119,10 @@ func (r *SourceSelectionRepository) CreateSession(ctx context.Context, session *
 	if session == nil {
 		return fmt.Errorf("%w: session is required", ErrInvalidSourceSelection)
 	}
+	// The nullable column represents the absence of a recommendation. Normalize
+	// whitespace before validation and persistence so it cannot become an
+	// invalid non-NULL value under the bounded-text check.
+	session.RecommendedCandidateID = strings.TrimSpace(session.RecommendedCandidateID)
 	if session.ID == uuid.Nil {
 		session.ID = uuid.New()
 	}
@@ -125,7 +133,7 @@ func (r *SourceSelectionRepository) CreateSession(ctx context.Context, session *
 	return r.db.QueryRowContext(ctx, `
 		INSERT INTO source_selection_sessions
 			(id, user_id, query, context, candidates, recommended_candidate_id, expires_at)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+		VALUES ($1, $2, $3, $4, $5::jsonb, NULLIF($6, ''), $7)
 		RETURNING created_at
 	`, session.ID, session.UserID, session.Query, session.Context, session.Candidates,
 		session.RecommendedCandidateID, session.ExpiresAt).Scan(&session.CreatedAt)
@@ -134,7 +142,7 @@ func (r *SourceSelectionRepository) CreateSession(ctx context.Context, session *
 func (r *SourceSelectionRepository) GetSessionForUser(ctx context.Context, userID, id uuid.UUID) (*SourceSelectionSession, error) {
 	session := &SourceSelectionSession{}
 	err := r.db.QueryRowContext(ctx, `
-		SELECT id, user_id, query, context, candidates, recommended_candidate_id, created_at, expires_at
+		SELECT id, user_id, query, context, candidates, COALESCE(recommended_candidate_id, ''), created_at, expires_at
 		FROM source_selection_sessions
 		WHERE id = $1 AND user_id = $2 AND expires_at > clock_timestamp()
 	`, id, userID).Scan(&session.ID, &session.UserID, &session.Query, &session.Context,
@@ -150,7 +158,8 @@ func (r *SourceSelectionRepository) GetSessionForUser(ctx context.Context, userI
 
 // CreateDiscoveryDecision atomically locks an owned, unexpired session and
 // derives the selected candidate and source-quality evidence from its JSONB
-// snapshot. Callers can control only candidate ID, action, and optional reason.
+// snapshot. Callers can control only candidate ID, action, and optional reason;
+// they can never provide a URL or candidate payload.
 func (r *SourceSelectionRepository) CreateDiscoveryDecision(ctx context.Context, userID, sessionID uuid.UUID, candidateID, action, reason string) (*SourceSelectionDecision, error) {
 	reason = strings.TrimSpace(reason)
 	if userID == uuid.Nil || sessionID == uuid.Nil || !validCandidateID(candidateID) || !validAction(action) || !validReason(reason) {
@@ -167,7 +176,7 @@ func (r *SourceSelectionRepository) CreateDiscoveryDecision(ctx context.Context,
 	var recommended string
 	var expiresAt time.Time
 	err = tx.QueryRowContext(ctx, `
-		SELECT s.candidates, s.recommended_candidate_id, s.expires_at
+		SELECT s.candidates, COALESCE(s.recommended_candidate_id, ''), s.expires_at
 		FROM source_selection_sessions AS s
 		WHERE s.id = $1
 			AND s.user_id = $2
@@ -198,10 +207,9 @@ func (r *SourceSelectionRepository) CreateDiscoveryDecision(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	if (action == SourceSelectionActionAccepted) != (candidateID == recommended) {
-		return nil, fmt.Errorf("%w: action does not match recommendation", ErrInvalidSourceSelection)
+	if !validDiscoveryActionForRecommendation(recommended, candidateID, action) {
+		return nil, fmt.Errorf("%w: action does not match session recommendation", ErrInvalidSourceSelection)
 	}
-
 	existing := &SourceSelectionDecision{}
 	err = tx.QueryRowContext(ctx, decisionSelect+` WHERE session_id = $1`, sessionID).Scan(decisionScanTargets(existing)...)
 	if err == nil {
@@ -222,11 +230,11 @@ func (r *SourceSelectionRepository) CreateDiscoveryDecision(ctx context.Context,
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO source_selection_decisions
 			(id, session_id, session_owner_id, user_id, selected_candidate_id, recommended_candidate_id, action, origin, reason, selected_candidate, source_quality)
-		VALUES ($1, $2, $3, $3, $4, $5, $6, $7, NULLIF($8, ''), $9::jsonb, $10::jsonb)
-		RETURNING id, session_id, user_id, selected_candidate_id, recommended_candidate_id, action, origin, reason,
+		VALUES ($1, $2, $3, $3, $4, NULLIF($5, ''), $6, $7, NULLIF($8, ''), $9::jsonb, $10::jsonb)
+		RETURNING id, session_id, user_id, selected_candidate_id, COALESCE(recommended_candidate_id, ''), action, origin, reason,
 			selected_candidate, source_quality, download_job_id, track_id, created_at
-	`, decision.ID, sessionID, userID, candidateID, recommended, action, SourceSelectionOriginDiscovery,
-		reason, candidate, quality).Scan(decisionScanTargets(decision)...)
+	`, decision.ID, sessionID, userID, candidateID, recommended, action,
+		SourceSelectionOriginDiscovery, reason, candidate, quality).Scan(decisionScanTargets(decision)...)
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +429,7 @@ func (r *SourceSelectionRepository) PurgeExpiredSessions(ctx context.Context) (i
 }
 
 const decisionSelect = `
-	SELECT id, session_id, user_id, selected_candidate_id, recommended_candidate_id, action, origin, reason,
+	SELECT id, session_id, user_id, selected_candidate_id, COALESCE(recommended_candidate_id, ''), action, origin, reason,
 		selected_candidate, source_quality, download_job_id, track_id, created_at
 	FROM source_selection_decisions`
 
@@ -433,7 +441,8 @@ func decisionScanTargets(decision *SourceSelectionDecision) []any {
 
 func validateSession(session *SourceSelectionSession) error {
 	if session.UserID == uuid.Nil || !validBoundedText(session.Query, maxSourceSelectionQueryBytes, false) ||
-		!validBoundedText(session.Context, maxSourceSelectionContextBytes, true) || !validCandidateID(session.RecommendedCandidateID) {
+		!validBoundedText(session.Context, maxSourceSelectionContextBytes, true) ||
+		(strings.TrimSpace(session.RecommendedCandidateID) != "" && !validCandidateID(session.RecommendedCandidateID)) {
 		return fmt.Errorf("%w: session fields", ErrInvalidSourceSelection)
 	}
 	if session.ExpiresAt.Before(time.Now().Add(time.Second)) || session.ExpiresAt.After(time.Now().Add(maxSourceSelectionSessionTTL)) {
@@ -461,6 +470,9 @@ func validateCandidatesSnapshot(snapshot json.RawMessage, recommended string) (m
 			return nil, nil, fmt.Errorf("%w: duplicate candidate id", ErrInvalidSourceSelection)
 		}
 		byID[candidateID] = candidate
+	}
+	if strings.TrimSpace(recommended) == "" {
+		return byID, nil, nil
 	}
 	recommendedCandidate, ok := byID[recommended]
 	if !ok {
@@ -578,7 +590,19 @@ func validTrustedSourceQualityText(values []string) bool {
 }
 
 func validAction(action string) bool {
-	return action == SourceSelectionActionAccepted || action == SourceSelectionActionOverridden
+	return action == SourceSelectionActionSelected || action == SourceSelectionActionAccepted || action == SourceSelectionActionOverridden
+}
+
+// validDiscoveryActionForRecommendation preserves the legacy/Assist decision
+// vocabulary only when the session actually contains its server-owned
+// recommendation. Neutral discovery sessions intentionally have no winner, so
+// their only truthful action is selected.
+func validDiscoveryActionForRecommendation(recommendedCandidateID, candidateID, action string) bool {
+	if recommendedCandidateID == "" {
+		return action == SourceSelectionActionSelected
+	}
+	return (action == SourceSelectionActionAccepted && candidateID == recommendedCandidateID) ||
+		(action == SourceSelectionActionOverridden && candidateID != recommendedCandidateID)
 }
 
 func validTrustedOrigin(origin string) bool {
