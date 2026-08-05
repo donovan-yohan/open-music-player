@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:just_audio/just_audio.dart' show LoopMode;
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/queue_persistence.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
@@ -197,6 +198,92 @@ void main() {
         'positionMs': -500,
       });
       expect(restored.positionMs, 0);
+    });
+
+    test('shuffle and repeat modes survive encode -> decode', () {
+      for (final mode in LoopMode.values) {
+        final snapshot = QueueSnapshot(
+          tracks: [_track(1), _track(2)],
+          currentIndex: 1,
+          positionMs: 4000,
+          shuffleEnabled: true,
+          loopMode: mode,
+        );
+
+        final restored = QueueSnapshot.decode(snapshot.encode());
+
+        expect(restored.shuffleEnabled, isTrue);
+        expect(restored.loopMode, mode);
+      }
+    });
+
+    test('shuffle-off snapshots round-trip as linear playback', () {
+      final snapshot = QueueSnapshot(
+        tracks: [_track(1), _track(2)],
+        shuffleEnabled: false,
+        loopMode: LoopMode.off,
+      );
+
+      final restored = QueueSnapshot.decode(snapshot.encode());
+
+      expect(restored.shuffleEnabled, isFalse);
+      expect(restored.loopMode, LoopMode.off);
+    });
+
+    test('legacy snapshots without playback modes restore as off', () {
+      // A snapshot written before shuffle/repeat were persisted at all.
+      final legacy = jsonEncode({
+        'tracks': [_track(1), _track(2)],
+        'currentIndex': 1,
+        'positionMs': 7000,
+      });
+
+      final restored = QueueSnapshot.decode(legacy);
+
+      expect(restored.tracks, hasLength(2));
+      expect(restored.currentIndex, 1);
+      expect(restored.positionMs, 7000);
+      expect(restored.shuffleEnabled, isFalse);
+      expect(restored.loopMode, LoopMode.off);
+    });
+
+    test('unreadable playback-mode tokens fall back to off', () {
+      final restored = QueueSnapshot.fromJson({
+        'tracks': [_track(1)],
+        'shuffleEnabled': 'yes',
+        'loopMode': 'sideways',
+      });
+
+      expect(restored.shuffleEnabled, isFalse);
+      expect(restored.loopMode, LoopMode.off);
+    });
+
+    test('the loop-mode wire token is stable and not the enum index', () {
+      expect(loopModeWireValue(LoopMode.off), 'off');
+      expect(loopModeWireValue(LoopMode.one), 'one');
+      expect(loopModeWireValue(LoopMode.all), 'all');
+      expect(loopModeFromWireValue('all'), LoopMode.all);
+      expect(loopModeFromWireValue(null), LoopMode.off);
+
+      final encoded = jsonDecode(
+        QueueSnapshot(tracks: [_track(1)], loopMode: LoopMode.one).encode(),
+      ) as Map<String, dynamic>;
+      expect(encoded['loopMode'], 'one');
+      expect(encoded['shuffleEnabled'], false);
+    });
+
+    test('account scoping preserves the persisted playback modes', () {
+      final snapshot = QueueSnapshot(
+        tracks: [_track(1)],
+        shuffleEnabled: true,
+        loopMode: LoopMode.all,
+        accountId: 'user-1',
+      );
+
+      final scoped = snapshot.scopedTo('user-1').withAccountId('user-1');
+
+      expect(scoped.shuffleEnabled, isTrue);
+      expect(scoped.loopMode, LoopMode.all);
     });
   });
 

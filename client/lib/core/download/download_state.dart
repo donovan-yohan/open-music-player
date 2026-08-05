@@ -85,6 +85,21 @@ class DownloadState extends ChangeNotifier {
     await _downloadService.downloadPlaylist(playlist);
   }
 
+  /// Downloads a whole collection (playlist, Liked Songs, ...), skipping the
+  /// tracks already on disk. See [DownloadService.downloadTracks] for why a
+  /// repeated call cannot duplicate a job.
+  Future<void> downloadTracks(Iterable<Track> tracks) async {
+    await _downloadService.downloadTracks(tracks);
+  }
+
+  /// Ids with a validated completed artifact on disk.
+  ///
+  /// The synchronous counterpart to [isDownloaded], for collection-level UI
+  /// that would otherwise need one `Future` per row to render a single label.
+  Set<int> get downloadedTrackIds => {
+        for (final download in _downloads) download.trackId,
+      };
+
   void cancelDownload(int trackId) {
     _downloadService.cancelDownload(trackId);
     _activeProgress.remove(trackId);

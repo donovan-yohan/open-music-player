@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
+import 'package:just_audio/just_audio.dart' show LoopMode;
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/audio/queue_persistence.dart';
@@ -85,6 +86,151 @@ void main() {
       expect(playback.position, const Duration(seconds: 12));
       expect(playback.duration, const Duration(seconds: 45));
       expect(playback.isPlaying, isFalse);
+      playback.dispose();
+    });
+
+    test('restore reapplies persisted shuffle and repeat modes', () async {
+      SharedPreferences.setMockInitialValues({
+        QueuePersistenceStore.storageKey: QueueSnapshot(
+          tracks: [
+            _track(1, seconds: 30),
+            _track(2, seconds: 30),
+            _track(3, seconds: 30),
+            _track(4, seconds: 30),
+          ],
+          currentIndex: 0,
+          shuffleEnabled: true,
+          loopMode: LoopMode.all,
+        ).encode(),
+      });
+      final playback = _playbackState();
+
+      await playback.restore();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.shuffleEnabled, isTrue);
+      expect(playback.loopMode, LoopMode.all);
+      // shufflePermutation keeps the current item first and guarantees a
+      // non-linear upcoming order for more than two tracks.
+      final order = _timelinePlayOrder(playback);
+      expect(order.first, 0);
+      expect(order, isNot([0, 1, 2, 3]));
+      expect(order.toSet(), {0, 1, 2, 3});
+      playback.dispose();
+    });
+
+    test('restore keeps the saved track current when shuffle is reapplied',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        QueuePersistenceStore.storageKey: QueueSnapshot(
+          tracks: [
+            _track(1, seconds: 30),
+            _track(2, seconds: 30),
+            _track(3, seconds: 30),
+            _track(4, seconds: 30),
+          ],
+          currentIndex: 2,
+          positionMs: 9000,
+          shuffleEnabled: true,
+          loopMode: LoopMode.all,
+        ).encode(),
+      });
+      final playback = _playbackState();
+
+      await playback.restore();
+      await Future<void>.delayed(Duration.zero);
+
+      // Shuffle is reapplied after setQueue, which resets the play order to
+      // linear. The permutation has to be built around the restored item, so
+      // the saved track stays current and the saved position stays on it —
+      // never rebased onto whichever track shuffle put first.
+      expect(playback.shuffleEnabled, isTrue);
+      expect(playback.loopMode, LoopMode.all);
+      expect(playback.currentIndex, 2);
+      expect(playback.currentItem?.id, '3');
+      expect(playback.position, const Duration(seconds: 9));
+      expect(playback.isPlaying, isFalse);
+      final order = _timelinePlayOrder(playback);
+      expect(order.first, 2);
+      expect(order, isNot([0, 1, 2, 3]));
+      expect(order.toSet(), {0, 1, 2, 3});
+      playback.dispose();
+    });
+
+    test('restore keeps shuffle-off queues in linear order', () async {
+      SharedPreferences.setMockInitialValues({
+        QueuePersistenceStore.storageKey: QueueSnapshot(
+          tracks: [
+            _track(1, seconds: 30),
+            _track(2, seconds: 30),
+            _track(3, seconds: 30),
+            _track(4, seconds: 30),
+          ],
+        ).encode(),
+      });
+      final playback = _playbackState();
+
+      await playback.restore();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.shuffleEnabled, isFalse);
+      expect(playback.loopMode, LoopMode.off);
+      expect(_timelinePlayOrder(playback), [0, 1, 2, 3]);
+      playback.dispose();
+    });
+
+    test('shuffle and repeat changes are persisted for the next launch',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final store = QueuePersistenceStore();
+      final playback = _playbackState(persistence: store);
+      await playback.restore();
+      await playback.playQueue([
+        _track(1, seconds: 30),
+        _track(2, seconds: 30),
+        _track(3, seconds: 30),
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      await playback.toggleShuffle();
+      await playback.cycleLoopMode();
+      await Future<void>.delayed(Duration.zero);
+
+      final saved = await store.load();
+      expect(saved.shuffleEnabled, isTrue);
+      expect(saved.loopMode, LoopMode.all);
+      playback.dispose();
+    });
+
+    test('seeded mode emissions never erase the durable snapshot', () async {
+      final stored = QueueSnapshot(
+        tracks: [_track(1, seconds: 30), _track(2, seconds: 30)],
+        currentIndex: 1,
+        positionMs: 9000,
+        shuffleEnabled: true,
+        loopMode: LoopMode.one,
+      );
+      SharedPreferences.setMockInitialValues({
+        QueuePersistenceStore.storageKey: stored.encode(),
+      });
+      final store = QueuePersistenceStore();
+      final playback = _playbackState(persistence: store);
+
+      // The shuffle/loop subjects replay their seeded "off" values before
+      // startup gets to call restore().
+      await Future<void>.delayed(Duration.zero);
+      final beforeRestore = await store.load();
+      expect(beforeRestore.shuffleEnabled, isTrue);
+      expect(beforeRestore.loopMode, LoopMode.one);
+
+      await playback.restore();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.shuffleEnabled, isTrue);
+      expect(playback.loopMode, LoopMode.one);
+      final afterRestore = await store.load();
+      expect(afterRestore.shuffleEnabled, isTrue);
+      expect(afterRestore.loopMode, LoopMode.one);
       playback.dispose();
     });
 
@@ -1305,6 +1451,21 @@ class _MemoryQueuePersistenceStore extends QueuePersistenceStore {
   Future<void> save(QueueSnapshot value) async {
     snapshot = value;
   }
+}
+
+/// The queue indices ordered by where their clips sit on the mix timeline —
+/// i.e. the order the restored queue will actually play in.
+List<int> _timelinePlayOrder(PlaybackState playback) {
+  final entries = <({int index, int startMs})>[
+    for (var index = 0; index < playback.queue.length; index++)
+      (
+        index: index,
+        startMs:
+            playback.timelineClipForQueueIndex(index)?.timelineStartMs ?? index,
+      ),
+  ];
+  entries.sort((left, right) => left.startMs.compareTo(right.startMs));
+  return [for (final entry in entries) entry.index];
 }
 
 Map<String, dynamic> _track(int id, {required int seconds}) => {

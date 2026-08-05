@@ -23,6 +23,10 @@ import 'package:open_music_player/core/engine/click_auditioner.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/models/settings_model.dart';
 import 'package:open_music_player/core/providers/settings_provider.dart';
+import 'package:open_music_player/core/services/api_client.dart' as services_api;
+import 'package:open_music_player/core/services/library_service.dart';
+import 'package:open_music_player/core/services/liked_tracks_state.dart';
+import 'package:open_music_player/core/services/playlist_service.dart';
 import 'package:open_music_player/core/engine/timeline_model.dart';
 import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/queue_state.dart';
@@ -33,6 +37,7 @@ import 'package:open_music_player/models/trim_range.dart';
 import 'package:open_music_player/models/waveform.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:open_music_player/screens/queue_screen.dart';
+import 'package:open_music_player/shared/models/playlist.dart';
 import 'package:open_music_player/shared/models/track.dart'
     show TrackArtworkKind;
 import 'package:open_music_player/shared/widgets/track_tile.dart';
@@ -149,6 +154,8 @@ void main() {
     bool showImportJobs = false,
     AuditionOutputRouteMonitorFactory? auditionOutputRouteMonitorFactory,
     SharedPreferences? settingsPreferences,
+    PlaylistService? playlistService,
+    LikedTracksState? likedTracksState,
   }) async {
     Widget app = MultiProvider(
       providers: [
@@ -157,6 +164,10 @@ void main() {
         ),
         ListenableProvider<PlaybackState>.value(value: playbackState),
         Provider<CommandRegistry>.value(value: commandRegistry),
+        if (likedTracksState != null)
+          ChangeNotifierProvider<LikedTracksState>.value(
+            value: likedTracksState,
+          ),
       ],
       child: MaterialApp(
         theme: AppTheme.lightTheme,
@@ -174,6 +185,7 @@ void main() {
           auditionOutputRouteMonitorFactory:
               auditionOutputRouteMonitorFactory ??
                   () async => _RecordingAuditionOutputRouteMonitor(),
+          playlistService: playlistService,
         ),
       ),
     );
@@ -277,6 +289,28 @@ void main() {
     expect(remaining, 165000);
   });
 
+
+  testWidgets('playback queue rows expose the like heart', (tester) async {
+    playbackState
+      ..fakeQueue = [
+        _mediaItem(1, 'Heartable', seconds: 90),
+        _mediaItem(2, 'Also Heartable', seconds: 90),
+      ]
+      ..fakeCurrentIndex = 0;
+    final library = _QueueLikeLibraryService();
+    final liked = LikedTracksState(library);
+    addTearDown(liked.dispose);
+
+    await pumpQueueScreen(tester, likedTracksState: liked);
+
+    expect(find.byKey(const ValueKey('queue_like_1')), findsOneWidget);
+    expect(find.byKey(const ValueKey('queue_like_2')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('queue_like_1')));
+    await tester.pumpAndSettle();
+    expect(library.likedIds, [1]);
+  });
+
   testWidgets('renders live playback queue ahead of import queue', (
     tester,
   ) async {
@@ -330,6 +364,166 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(playbackState.skipToIndexCalls, [2]);
+  });
+
+  test('saveable queue track ids keep the visible order and drop local-only',
+      () {
+    expect(
+      saveableQueueTrackIds([
+        _mediaItem(7, 'Opener'),
+        const audio_service.MediaItem(id: 'local-file', title: 'Local only'),
+        _mediaItem(3, 'Closer'),
+        // A repeat is preserved: added/skipped is the backend's call.
+        _mediaItem(7, 'Opener again'),
+      ]),
+      [7, 3, 7],
+    );
+    expect(saveableQueueTrackIds(const []), isEmpty);
+  });
+
+  group('save queue as playlist', () {
+    Future<void> openSaveQueueMenu(WidgetTester tester) async {
+      await tester.tap(find.byKey(const ValueKey('playback_queue_menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey('queue_save_as_playlist_action')),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('appends the queue order to an existing playlist',
+        (tester) async {
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(11, 'First', seconds: 90),
+          _mediaItem(22, 'Second', seconds: 90),
+          _mediaItem(33, 'Third', seconds: 90),
+        ]
+        ..fakeCurrentIndex = 1;
+      final playlistService = _FakePlaylistService(
+        playlists: [_playlist(5, 'Late night')],
+      );
+
+      await pumpQueueScreen(tester, playlistService: playlistService);
+      await openSaveQueueMenu(tester);
+
+      expect(find.text('Save queue as playlist'), findsOneWidget);
+      await tester.tap(find.text('Late night'));
+      await tester.pumpAndSettle();
+
+      // Full queue in visible order — not just the tracks after the current.
+      expect(playlistService.addedTo, [5]);
+      expect(playlistService.addedTrackIds, [
+        [11, 22, 33]
+      ]);
+      expect(find.text('Added 3 tracks to "Late night"'), findsOneWidget);
+    });
+
+    testWidgets('a shuffled queue saves the order the user can see',
+        (tester) async {
+      // Shuffle rewrites the visible queue order; that is what gets saved.
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(33, 'Third', seconds: 90),
+          _mediaItem(11, 'First', seconds: 90),
+          _mediaItem(22, 'Second', seconds: 90),
+        ]
+        ..fakeCurrentIndex = 0
+        ..fakeShuffleEnabled = true;
+      final playlistService = _FakePlaylistService(
+        playlists: [_playlist(5, 'Late night')],
+      );
+
+      await pumpQueueScreen(tester, playlistService: playlistService);
+      await openSaveQueueMenu(tester);
+      await tester.tap(find.text('Late night'));
+      await tester.pumpAndSettle();
+
+      expect(playlistService.addedTrackIds, [
+        [33, 11, 22]
+      ]);
+    });
+
+    testWidgets('creates a new playlist from the queue', (tester) async {
+      playbackState.fakeQueue = [
+        _mediaItem(11, 'First', seconds: 90),
+        _mediaItem(22, 'Second', seconds: 90),
+      ];
+      final playlistService = _FakePlaylistService(playlists: const []);
+
+      await pumpQueueScreen(tester, playlistService: playlistService);
+      await openSaveQueueMenu(tester);
+      await tester.tap(find.text('New playlist'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextFormField).first, 'Tonight');
+      await tester.tap(find.text('Create'));
+      await tester.pumpAndSettle();
+
+      expect(playlistService.createdNames, ['Tonight']);
+      expect(playlistService.addedTo, [77]);
+      expect(playlistService.addedTrackIds, [
+        [11, 22]
+      ]);
+      expect(find.text('Added 2 tracks to "Tonight"'), findsOneWidget);
+    });
+
+    testWidgets('duplicate tracks report the backend added/skipped split',
+        (tester) async {
+      playbackState.fakeQueue = [
+        _mediaItem(11, 'First', seconds: 90),
+        _mediaItem(22, 'Second', seconds: 90),
+      ];
+      final playlistService = _FakePlaylistService(
+        playlists: [_playlist(5, 'Late night')],
+        addResult: const AddTracksResult(added: [11], skipped: [22]),
+      );
+
+      await pumpQueueScreen(tester, playlistService: playlistService);
+      await openSaveQueueMenu(tester);
+      await tester.tap(find.text('Late night'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Added 1 • 1 already in "Late night"'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a local-only queue never opens the picker', (tester) async {
+      // Local-only entries have no backend track id, so there is nothing a
+      // server playlist could hold.
+      playbackState.fakeQueue = [
+        const audio_service.MediaItem(
+          id: 'local-file',
+          title: 'Local only',
+          duration: Duration(seconds: 90),
+        ),
+      ];
+      final playlistService = _FakePlaylistService(playlists: const []);
+
+      await pumpQueueScreen(tester, playlistService: playlistService);
+      await openSaveQueueMenu(tester);
+
+      expect(playlistService.listCalls, 0);
+      expect(find.text('No saveable tracks in the queue'), findsOneWidget);
+    });
+
+    testWidgets('a failed add surfaces feedback instead of throwing',
+        (tester) async {
+      playbackState.fakeQueue = [_mediaItem(11, 'First', seconds: 90)];
+      final playlistService = _FakePlaylistService(
+        playlists: [_playlist(5, 'Late night')],
+        addFailure: StateError('offline'),
+      );
+
+      await pumpQueueScreen(tester, playlistService: playlistService);
+      await openSaveQueueMenu(tester);
+      await tester.tap(find.text('Late night'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Failed to save queue as playlist'), findsOneWidget);
+    });
   });
 
   testWidgets('follows a newly current playback occurrence once in List view', (
@@ -3241,6 +3435,7 @@ class _FakePlaybackState extends Fake implements PlaybackState {
   int? fakeCurrentIndex;
   PlaybackContext? fakeContext;
   bool fakeIsPlaying = false;
+  bool fakeShuffleEnabled = false;
   bool failAnalysisRefreshesAfterRecording = false;
   int fakeTimelinePositionMs = 0;
   TimelineModel fakeTimelineModel = TimelineModel();
@@ -3423,6 +3618,9 @@ class _FakePlaybackState extends Fake implements PlaybackState {
 
   @override
   LoopMode get loopMode => LoopMode.off;
+
+  @override
+  bool get shuffleEnabled => fakeShuffleEnabled;
 
   @override
   bool get canSkipNext =>
@@ -4439,4 +4637,79 @@ List<int> _boundedTempoPositions(List<int> positions, int limit) {
     ...positions.take(headLength),
     ...positions.skip(positions.length - (limit - headLength)),
   ];
+}
+
+Playlist _playlist(int id, String name) => Playlist(
+      id: id,
+      name: name,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      trackCount: 4,
+    );
+
+class _FakePlaylistService extends PlaylistService {
+  _FakePlaylistService({
+    required this.playlists,
+    this.addResult,
+    this.addFailure,
+  }) : super(api: ApiClient());
+
+  final List<Playlist> playlists;
+  final AddTracksResult? addResult;
+  final Object? addFailure;
+
+  int listCalls = 0;
+  final List<String> createdNames = [];
+  final List<int> addedTo = [];
+  final List<List<int>> addedTrackIds = [];
+
+  @override
+  Future<PlaylistsResponse> getPlaylists({
+    int limit = 50,
+    int offset = 0,
+    String? q,
+    String? sort,
+    String? order,
+  }) async {
+    listCalls++;
+    return PlaylistsResponse(
+      playlists: playlists,
+      total: playlists.length,
+      offset: 0,
+      limit: limit,
+    );
+  }
+
+  @override
+  Future<Playlist> createPlaylist({
+    required String name,
+    String? description,
+    String? coverUrl,
+    bool? isPublic,
+  }) async {
+    createdNames.add(name);
+    return _playlist(77, name);
+  }
+
+  @override
+  Future<AddTracksResult> addTracks(int playlistId, List<int> trackIds) async {
+    addedTo.add(playlistId);
+    addedTrackIds.add(trackIds);
+    if (addFailure != null) throw addFailure!;
+    return addResult ??
+        AddTracksResult(added: trackIds, skipped: const <int>[]);
+  }
+}
+
+/// Records the like/unlike persistence calls made from queue rows.
+class _QueueLikeLibraryService extends LibraryService {
+  _QueueLikeLibraryService() : super(services_api.ApiClient());
+
+  final likedIds = <int>[];
+
+  @override
+  Future<void> like(int trackId) async => likedIds.add(trackId);
+
+  @override
+  Future<void> unlike(int trackId) async => likedIds.remove(trackId);
 }

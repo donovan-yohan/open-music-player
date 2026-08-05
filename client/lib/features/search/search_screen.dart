@@ -18,6 +18,7 @@ import '../../core/services/api_client.dart' as local_api;
 import '../../core/services/search_service.dart';
 import '../../models/track.dart';
 import '../../providers/queue_provider.dart';
+import '../library/local_browse_navigation.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/song_metadata_chips.dart';
 import 'search_local_logic.dart';
@@ -1402,9 +1403,14 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Widget _buildLocalArtistTile(ArtistResult artist) {
     final count = artist.trackCount;
+    // Local search results are library rows, so the tile opens the local
+    // artist page rather than the MusicBrainz discovery screen: an unverified
+    // yt-dlp track has no artist MBID but still has a name to filter on.
+    final canOpen = canBrowseLocalName(artist.name);
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
+        key: ValueKey('search_local_artist_${artist.name}'),
         leading: const CircleAvatar(child: Icon(Icons.person)),
         title: Text(
           artist.name,
@@ -1415,6 +1421,8 @@ class _SearchScreenState extends State<SearchScreen> {
         subtitle: count != null
             ? Text('$count track${count == 1 ? '' : 's'} in library')
             : null,
+        trailing: canOpen ? const Icon(Icons.chevron_right) : null,
+        onTap: canOpen ? () => openLocalArtist(context, artist.name) : null,
       ),
     );
   }
@@ -1424,9 +1432,11 @@ class _SearchScreenState extends State<SearchScreen> {
       album.artist,
       album.releaseYear,
     ].where((value) => value != null && value.isNotEmpty).join(' • ');
+    final canOpen = canBrowseLocalName(album.title);
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
+        key: ValueKey('search_local_album_${album.title}'),
         leading: _buildThumb(album.coverUrl, size: 44),
         title: Text(
           album.title,
@@ -1437,6 +1447,8 @@ class _SearchScreenState extends State<SearchScreen> {
         subtitle: subtitle.isEmpty
             ? null
             : Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+        trailing: canOpen ? const Icon(Icons.chevron_right) : null,
+        onTap: canOpen ? () => openLocalAlbum(context, album.title) : null,
       ),
     );
   }

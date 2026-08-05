@@ -7,6 +7,7 @@ import '../../core/audio/playback_state.dart';
 import '../../core/errors/error_widgets.dart';
 import '../../core/services/api_client.dart';
 import '../../shared/models/models.dart';
+import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/song_metadata_chips.dart';
 import '../../shared/widgets/track_artwork.dart';
@@ -472,10 +473,21 @@ class _TrackTile extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
-        trailing: SongMetadataChips(
-          analysis: track.analysis,
-          singleLine: true,
-          compact: true,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: SongMetadataChips(
+                analysis: track.analysis,
+                singleLine: true,
+                compact: true,
+              ),
+            ),
+            LikeToggleButton(
+              track: track,
+              buttonKey: ValueKey('home_like_${track.id}'),
+            ),
+          ],
         ),
       ),
     );

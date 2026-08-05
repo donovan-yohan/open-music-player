@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:just_audio/just_audio.dart' show LoopMode;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../shared/models/track.dart'
@@ -48,6 +49,14 @@ class QueueSnapshot {
   final List<Map<String, dynamic>> tracks;
   final int currentIndex;
   final int positionMs;
+
+  /// Whether the listener had shuffle enabled. Only the flag is persisted, not
+  /// the permutation: a restore re-derives a fresh play order via
+  /// [shufflePermutation] so the upcoming order is non-linear again.
+  final bool shuffleEnabled;
+
+  /// The repeat mode in effect for the persisted queue.
+  final LoopMode loopMode;
   final MixSession? session;
   final String? accountId;
 
@@ -55,6 +64,8 @@ class QueueSnapshot {
     this.tracks = const [],
     this.currentIndex = 0,
     this.positionMs = 0,
+    this.shuffleEnabled = false,
+    this.loopMode = LoopMode.off,
     this.session,
     this.accountId,
   });
@@ -65,6 +76,8 @@ class QueueSnapshot {
         'tracks': tracks,
         'currentIndex': currentIndex,
         'positionMs': positionMs,
+        'shuffleEnabled': shuffleEnabled,
+        'loopMode': loopModeWireValue(loopMode),
         if (session != null) 'session': session!.toJson(),
         if (accountId != null) 'accountId': accountId,
       };
@@ -97,6 +110,8 @@ class QueueSnapshot {
       tracks: tracks,
       currentIndex: currentIndex,
       positionMs: positionMs,
+      shuffleEnabled: json['shuffleEnabled'] == true,
+      loopMode: loopModeFromWireValue(json['loopMode']),
       session: session,
       accountId: json['accountId'] as String?,
     );
@@ -117,6 +132,8 @@ class QueueSnapshot {
       ],
       currentIndex: currentIndex,
       positionMs: positionMs,
+      shuffleEnabled: shuffleEnabled,
+      loopMode: loopMode,
       session: session,
       accountId: currentAccountId,
     );
@@ -126,6 +143,8 @@ class QueueSnapshot {
         tracks: tracks,
         currentIndex: currentIndex,
         positionMs: positionMs,
+        shuffleEnabled: shuffleEnabled,
+        loopMode: loopMode,
         session: session,
         accountId: value,
       );
@@ -146,6 +165,34 @@ class QueueSnapshot {
       // Corrupt payload — fall through to an empty (no-op) snapshot.
     }
     return const QueueSnapshot();
+  }
+}
+
+/// Stable storage token for [mode]. Kept independent of `LoopMode.index` so a
+/// future enum reordering in just_audio can never silently reinterpret an
+/// already-persisted snapshot.
+String loopModeWireValue(LoopMode mode) {
+  switch (mode) {
+    case LoopMode.off:
+      return 'off';
+    case LoopMode.one:
+      return 'one';
+    case LoopMode.all:
+      return 'all';
+  }
+}
+
+/// Reads a persisted repeat mode. Legacy snapshots (written before repeat was
+/// persisted at all), absent values, and unknown tokens all restore as
+/// [LoopMode.off] — the historical behavior.
+LoopMode loopModeFromWireValue(Object? value) {
+  switch (value) {
+    case 'one':
+      return LoopMode.one;
+    case 'all':
+      return LoopMode.all;
+    default:
+      return LoopMode.off;
   }
 }
 

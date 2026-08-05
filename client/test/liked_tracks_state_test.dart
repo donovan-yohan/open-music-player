@@ -98,6 +98,35 @@ void main() {
     expect(state.isLiked(123), isTrue);
   });
 
+  test('seed captured before an assume cannot clobber the assumed value', () {
+    final state = LikedTracksState(_LibraryService());
+    final responseVersion = state.seedVersion;
+
+    state.assume(123, true);
+    state.seed(
+      [_track(isLiked: false)],
+      responseToSeedVersion: responseVersion,
+    );
+
+    expect(state.isLiked(123), isTrue);
+  });
+
+  test('seed captured after an assume still corrects the assumed value', () {
+    final state = LikedTracksState(_LibraryService());
+
+    state.assume(123, true);
+    state.seed(
+      [_track(isLiked: false)],
+      responseToSeedVersion: state.seedVersion,
+    );
+    expect(state.isLiked(123), isFalse);
+
+    // An unversioned seed reads the current version, so it corrects too —
+    // assume() is a working default, not a permanent pin.
+    state.seed([_track(isLiked: true)]);
+    expect(state.isLiked(123), isTrue);
+  });
+
   test('downloaded row with unknown annotation cannot overwrite known liked',
       () {
     final state = LikedTracksState(_LibraryService())..seedValue(123, true);

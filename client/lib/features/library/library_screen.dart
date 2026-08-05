@@ -20,6 +20,7 @@ import '../discovery/screens/album_detail_screen.dart';
 import '../discovery/screens/artist_detail_screen.dart';
 import 'library_filter_logic.dart';
 import 'liked_songs_screen.dart';
+import 'local_browse_navigation.dart';
 import 'library_sort_logic.dart';
 import 'library_track_actions.dart';
 
@@ -1146,6 +1147,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
         ],
         trailing: [
           ListTile(
+            key: ValueKey('library_go_to_artist_${track.id}'),
             leading: const Icon(Icons.person),
             title: const Text('Go to artist'),
             onTap: () {
@@ -1154,6 +1156,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
             },
           ),
           ListTile(
+            key: ValueKey('library_go_to_album_${track.id}'),
             leading: const Icon(Icons.album),
             title: const Text('Go to album'),
             onTap: () {
@@ -1161,6 +1164,26 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
               _goToAlbum();
             },
           ),
+          if (track.mbArtistId?.isNotEmpty == true)
+            ListTile(
+              key: ValueKey('library_artist_details_${track.id}'),
+              leading: const Icon(Icons.travel_explore),
+              title: const Text('Artist details'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _goToArtistDetails();
+              },
+            ),
+          if (track.mbReleaseId?.isNotEmpty == true)
+            ListTile(
+              key: ValueKey('library_album_details_${track.id}'),
+              leading: const Icon(Icons.travel_explore),
+              title: const Text('Album details'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                _goToAlbumDetails();
+              },
+            ),
           ListTile(
             key: ValueKey('library_download_action_${track.id}'),
             title: const Text('Download'),
@@ -1222,7 +1245,35 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     }
   }
 
+  /// Opens the user's own library filtered to this track's artist.
+  ///
+  /// Deliberately name-keyed rather than MBID-gated: a yt-dlp-heavy library is
+  /// mostly unverified, and "go to artist" must work for those rows too. The
+  /// MusicBrainz discovery screen stays available under "Artist details" for
+  /// the verified rows that have an MBID.
   void _goToArtist() {
+    if (!canBrowseLocalName(track.artist)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No artist name for this track')),
+      );
+      return;
+    }
+    openLocalArtist(context, track.artist);
+  }
+
+  /// Opens the user's own library filtered to this track's album. See
+  /// [_goToArtist] for why this is name-keyed.
+  void _goToAlbum() {
+    if (!canBrowseLocalName(track.album)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No album name for this track')),
+      );
+      return;
+    }
+    openLocalAlbum(context, track.album);
+  }
+
+  void _goToArtistDetails() {
     final mbid = track.mbArtistId;
     if (mbid == null || mbid.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1240,7 +1291,7 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
     );
   }
 
-  void _goToAlbum() {
+  void _goToAlbumDetails() {
     final mbid = track.mbReleaseId;
     if (mbid == null || mbid.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(

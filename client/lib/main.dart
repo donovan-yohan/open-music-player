@@ -89,9 +89,19 @@ void main() async {
   // Surface the app playback session as one OS media session/notification. The
   // handler consumes PlaybackState's canonical session snapshot so lock-screen
   // metadata and transport controls stay aligned with the visible player.
+  //
+  // Ownership: audio_service builds this handler once and holds it for the
+  // whole process — there is no destroy hook, and an OS stop ends the session
+  // without ending the handler, so nothing here disposes it. Its listeners
+  // therefore live exactly as long as the app that owns them (LikedTracksState
+  // included). MixAudioHandler.dispose() exists for tests and for embedders
+  // that do own a shorter-lived handler, and is idempotent for that reason.
   if (!kIsWeb) {
     await audio_service.AudioService.init<MixAudioHandler>(
-      builder: () => MixAudioHandler(playbackState: playbackState),
+      builder: () => MixAudioHandler(
+        playbackState: playbackState,
+        likedTracksState: likedTracksState,
+      ),
       config: const audio_service.AudioServiceConfig(
         androidNotificationChannelId: 'com.openmusicplayer.app.channel.audio',
         androidNotificationChannelName: 'Playback',

@@ -23,11 +23,16 @@ import '../core/engine/tempo_automation.dart';
 import '../core/engine/timeline_model.dart';
 import '../core/models/settings_model.dart';
 import '../core/providers/settings_provider.dart';
+import '../core/services/playlist_service.dart';
+import '../features/playlists/playlist_edit_dialog.dart';
 import '../models/track.dart';
 import '../models/track_analysis.dart';
 import '../models/trim_range.dart';
 import '../providers/queue_provider.dart';
+import '../shared/models/playlist.dart';
 import '../shared/models/track.dart' show trackArtworkKindFromPayload;
+import '../shared/widgets/like_button.dart';
+import '../shared/widgets/playlist_picker_sheet.dart';
 import '../shared/widgets/track_tile.dart';
 import '../widgets/queue_item.dart';
 import '../shared/widgets/soundq_status_chip.dart';
@@ -193,11 +198,26 @@ class _CanonicalPlaybackQueueOccurrence {
   final String queueItemId;
 }
 
+/// Backend track ids for [queue], in the order the user sees (and hears) them.
+///
+/// Local-only entries have no numeric backend id and cannot join a server
+/// playlist, so they are dropped rather than failing the whole save. Repeats
+/// are kept: the backend's add-tracks report decides what is added vs skipped.
+List<int> saveableQueueTrackIds(List<audio_service.MediaItem> queue) {
+  final trackIds = <int>[];
+  for (final item in queue) {
+    final trackId = int.tryParse(item.id);
+    if (trackId != null && trackId > 0) trackIds.add(trackId);
+  }
+  return trackIds;
+}
+
 class QueueScreen extends StatefulWidget {
   const QueueScreen({
     super.key,
     this.showImportJobs = false,
     this.auditionOutputRouteMonitorFactory,
+    this.playlistService,
   });
 
   /// The playback queue and backend import jobs are independent domains.
@@ -205,6 +225,9 @@ class QueueScreen extends StatefulWidget {
   /// opts into the backend job surface.
   final bool showImportJobs;
   final AuditionOutputRouteMonitorFactory? auditionOutputRouteMonitorFactory;
+
+  /// Injected in tests; otherwise built from the provided [ApiClient].
+  final PlaylistService? playlistService;
 
   @override
   State<QueueScreen> createState() => _QueueScreenState();
@@ -395,6 +418,30 @@ class _QueueScreenState extends State<QueueScreen> {
             fontWeight: FontWeight.w700,
           ),
     );
+    // Sized to the view switch it sits beside so adding this action does not
+    // grow the header and push the queue list down.
+    final menu = PopupMenuButton<String>(
+      key: const ValueKey('playback_queue_menu'),
+      tooltip: 'Queue actions',
+      iconColor: headerForeground,
+      padding: EdgeInsets.zero,
+      style: IconButton.styleFrom(
+        minimumSize: const Size(40, 40),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+      onSelected: (value) => _handleMenuAction(context, value),
+      itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: 'save_playlist',
+          child: ListTile(
+            key: ValueKey('queue_save_as_playlist_action'),
+            leading: Icon(Icons.playlist_add),
+            title: Text('Save queue as playlist'),
+            contentPadding: EdgeInsets.zero,
+          ),
+        ),
+      ],
+    );
 
     return Container(
       key: const ValueKey('playback_queue_header'),
@@ -406,13 +453,19 @@ class _QueueScreenState extends State<QueueScreen> {
           if (stackedHeader) ...[
             title,
             const SizedBox(height: 8),
-            _buildViewSwitch(context, expanded: true),
+            Row(
+              children: [
+                Expanded(child: _buildViewSwitch(context, expanded: true)),
+                menu,
+              ],
+            ),
           ] else
             Row(
               children: [
                 Expanded(child: title),
                 const SizedBox(width: 8),
                 _buildViewSwitch(context),
+                menu,
               ],
             ),
           SizedBox(height: stackedHeader ? 8 : 4),
@@ -529,6 +582,15 @@ class _QueueScreenState extends State<QueueScreen> {
               coverArtUrl: track.artworkUrl,
               artworkKind: track.artworkKind,
               analysis: track.analysis,
+              action: switch (int.tryParse(track.playbackTrackId ?? '')) {
+                // Source-backed queue items have no backend track row yet, so
+                // there is nothing to like until the download lands.
+                null => null,
+                final playbackId => LikeToggleButton.forId(
+                    trackId: playbackId,
+                    buttonKey: ValueKey('queue_like_$queueItemId'),
+                  ),
+              },
               leading: _buildReorderHandle(
                 queueItemId: queueItemId,
                 title: item.title,
@@ -1763,6 +1825,118 @@ class _QueueScreenState extends State<QueueScreen> {
       case 'clear':
         _showClearQueueDialog(context);
         break;
+      case 'save_playlist':
+        unawaited(_saveQueueAsPlaylist());
+        break;
+    }
+  }
+
+  /// Keeps an ad-hoc queue (drag-reordered, play-next inserts) as a playlist.
+  ///
+  /// The saved order is the visible play order — the listening queue itself,
+  /// not the collection it was launched from — so a shuffled session saves what
+  /// the user can actually see.
+  Future<void> _saveQueueAsPlaylist() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final trackIds = saveableQueueTrackIds(context.read<PlaybackState>().queue);
+    if (trackIds.isEmpty) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('No saveable tracks in the queue')),
+      );
+      return;
+    }
+    final playlistService = widget.playlistService ??
+        PlaylistService(api: context.read<ApiClient>());
+
+    List<Playlist> playlists;
+    try {
+      playlists = (await playlistService.getPlaylists()).playlists;
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Failed to load playlists')),
+      );
+      return;
+    }
+    if (!mounted) return;
+
+    var createNew = false;
+    final selected = await showModalBottomSheet<Playlist>(
+      context: context,
+      builder: (sheetContext) => PlaylistPickerSheet(
+        playlists: playlists,
+        title: 'Save queue as playlist',
+        leading: ListTile(
+          key: const ValueKey('queue_new_playlist_from_queue'),
+          leading: const Icon(Icons.add),
+          title: const Text('New playlist'),
+          onTap: () {
+            createNew = true;
+            Navigator.of(sheetContext).pop();
+          },
+        ),
+      ),
+    );
+    if (!mounted) return;
+
+    if (createNew) {
+      await _createPlaylistFromQueue(messenger, playlistService, trackIds);
+      return;
+    }
+    if (selected == null) return;
+    await _addQueueToPlaylist(messenger, playlistService, selected, trackIds);
+  }
+
+  Future<void> _createPlaylistFromQueue(
+    ScaffoldMessengerState messenger,
+    PlaylistService playlistService,
+    List<int> trackIds,
+  ) {
+    return showDialog<void>(
+      context: context,
+      builder: (_) => PlaylistEditDialog(
+        onSave: (result) async {
+          Playlist created;
+          try {
+            created = await playlistService.createPlaylist(
+              name: result.name,
+              description: result.description,
+              coverUrl: result.coverUrl,
+              isPublic: result.isPublic,
+            );
+          } catch (_) {
+            messenger.showSnackBar(
+              const SnackBar(content: Text('Failed to create playlist')),
+            );
+            return;
+          }
+          await _addQueueToPlaylist(
+            messenger,
+            playlistService,
+            created,
+            trackIds,
+          );
+        },
+      ),
+    );
+  }
+
+  /// Duplicate handling is the backend's: [AddTracksResult] reports what was
+  /// added versus already present, and that report is what the user is told.
+  Future<void> _addQueueToPlaylist(
+    ScaffoldMessengerState messenger,
+    PlaylistService playlistService,
+    Playlist playlist,
+    List<int> trackIds,
+  ) async {
+    try {
+      final result = await playlistService.addTracks(playlist.id, trackIds);
+      messenger.showSnackBar(
+        SnackBar(content: Text(result.feedbackMessage(playlist.name))),
+      );
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Failed to save queue as playlist')),
+      );
     }
   }
 

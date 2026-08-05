@@ -9,6 +9,8 @@ import '../../core/api/api_client.dart';
 import '../../core/storage/secure_storage.dart';
 import '../../shared/models/playlist.dart';
 import '../../shared/models/track.dart';
+import '../../shared/widgets/download_button.dart';
+import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/track_tile.dart';
 import 'playlist_edit_dialog.dart';
@@ -541,6 +543,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 ),
               ],
             ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: DownloadAllButton.forPlaylist(
+                _playlist!,
+                buttonKey: const ValueKey('playlist_download_all'),
+              ),
+            ),
           ],
         ),
       ),
@@ -658,6 +667,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               isCurrent: isCurrent,
               onTap: () => _playFromIndex(index),
               activeLabel: isCurrent ? _activeTrackLabel(isPlaying) : null,
+              action: LikeToggleButton(
+                track: track,
+                buttonKey: ValueKey('playlist_like_${track.id}'),
+              ),
             ),
           );
         },

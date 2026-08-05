@@ -400,6 +400,120 @@ void main() {
     });
   });
 
+  group('collection download (Download all)', () {
+    test('downloads only the tracks that are not already on disk', () async {
+      var transfers = 0;
+      final svc = service(
+        downloader: (
+          String url,
+          String destinationPath, {
+          CancelToken? cancelToken,
+          void Function(int received, int total)? onProgress,
+        }) async {
+          transfers++;
+          await File(destinationPath).writeAsBytes(List.filled(100, 0x41));
+          onProgress?.call(100, 100);
+        },
+      );
+
+      final tracks = [makeTrack(1), makeTrack(2), makeTrack(3)];
+      await svc.downloadTrack(tracks[1]);
+      expect(transfers, 1);
+
+      await svc.downloadTracks(tracks);
+
+      // Track 2 was already complete, so only 1 and 3 were fetched.
+      expect(transfers, 3);
+      for (final track in tracks) {
+        expect(await svc.isDownloaded(track.id), isTrue);
+      }
+    });
+
+    test('a re-tap while in progress does not duplicate jobs', () async {
+      var transfers = 0;
+      final gate = Completer<void>();
+      final svc = service(
+        downloader: (
+          String url,
+          String destinationPath, {
+          CancelToken? cancelToken,
+          void Function(int received, int total)? onProgress,
+        }) async {
+          transfers++;
+          await gate.future;
+          await File(destinationPath).writeAsBytes(List.filled(100, 0x41));
+          onProgress?.call(100, 100);
+        },
+      );
+
+      final tracks = [makeTrack(1), makeTrack(2)];
+      // First tap: track 1 parks on the gate, so the run is mid-collection.
+      final first = svc.downloadTracks(tracks);
+      await pumpEventQueue();
+      expect(transfers, 1);
+      expect(svc.isDownloading(1), isTrue);
+
+      // Second tap while that transfer is still in flight.
+      final second = svc.downloadTracks(tracks);
+      await pumpEventQueue();
+      expect(transfers, 1, reason: 'in-flight transfer must be shared');
+
+      gate.complete();
+      await first;
+      await second;
+
+      // Two tracks, two transfers total: neither tap queued a second job.
+      expect(transfers, 2);
+      expect(await svc.isDownloaded(1), isTrue);
+      expect(await svc.isDownloaded(2), isTrue);
+      expect(store.downloads.length, 2);
+    });
+
+    test('downloadPlaylist routes through the same skip rules', () async {
+      var transfers = 0;
+      final svc = service(
+        downloader: (
+          String url,
+          String destinationPath, {
+          CancelToken? cancelToken,
+          void Function(int received, int total)? onProgress,
+        }) async {
+          transfers++;
+          await File(destinationPath).writeAsBytes(List.filled(100, 0x41));
+          onProgress?.call(100, 100);
+        },
+      );
+
+      final playlist = Playlist(
+        id: 7,
+        name: 'Mix',
+        createdAt: DateTime.utc(2026),
+        updatedAt: DateTime.utc(2026),
+        tracks: [makeTrack(1), makeTrack(2)],
+      );
+
+      await svc.downloadPlaylist(playlist);
+      expect(transfers, 2);
+
+      await svc.downloadPlaylist(playlist);
+      expect(transfers, 2, reason: 'already-downloaded tracks are skipped');
+    });
+
+    test('an empty collection is a no-op', () async {
+      final svc = service(downloader: writeBytes(100));
+      await svc.downloadTracks(const <Track>[]);
+      await svc.downloadPlaylist(
+        Playlist(
+          id: 1,
+          name: 'Empty',
+          createdAt: DateTime.utc(2026),
+          updatedAt: DateTime.utc(2026),
+        ),
+      );
+      expect(store.downloads, isEmpty);
+    });
+  });
+
   group('reconciliation', () {
     test('an interrupted in-progress row is failed and its .part removed',
         () async {
