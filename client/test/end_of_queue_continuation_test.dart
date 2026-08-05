@@ -96,6 +96,53 @@ void main() {
       await harness.dispose();
     });
 
+    test('a continuation that plays out triggers a second fetch', () async {
+      final source = _RecordingContinuationSource(
+        batches: [
+          [_track(90, seconds: 5), _track(91, seconds: 5)],
+          [_track(92, seconds: 5)],
+        ],
+      );
+      final harness = _Harness(continuationSource: source);
+      harness.playback.setEndOfQueueMode(EndOfQueueMode.shuffleLibrary);
+
+      await harness.playback.playQueue([_track(1, seconds: 5)]);
+      await harness.playToEndOfQueue();
+
+      expect(source.calls, hasLength(1));
+      expect(source.calls[0].excludeTrackIds, {'1'});
+      expect(harness.playback.queue.map((item) => item.id), ['1', '90', '91']);
+
+      // The appended batch now plays out on its own. Its last track completing
+      // naturally is a fresh exhaustion, not a re-fire of the first one, so the
+      // continuation chains rather than stopping after one batch.
+      await harness.playToEndOfQueue();
+
+      expect(source.calls, hasLength(2));
+      // Exclusion is "everything currently queued", so the second call covers
+      // the first continuation batch as well as the listener's own tracks.
+      expect(source.calls[1].excludeTrackIds, {'1', '90', '91'});
+      expect(
+        harness.playback.queue.map((item) => item.id),
+        ['1', '90', '91', '92'],
+      );
+      expect(harness.playback.currentIndex, 3);
+      expect(harness.playback.isPlaying, isTrue);
+      // Every appended segment stays labelled auto-generated, not just the
+      // first one.
+      expect(
+        harness.playback.queue.map(itemOrigin),
+        [
+          queueOriginContext,
+          queueOriginContinuation,
+          queueOriginContinuation,
+          queueOriginContinuation,
+        ],
+      );
+
+      await harness.dispose();
+    });
+
     test('a source with nothing left to offer stops instead of looping',
         () async {
       final source = _RecordingContinuationSource(batches: [[]]);

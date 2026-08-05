@@ -28,6 +28,21 @@ class LibraryShuffleContinuationSource implements QueueContinuationSource {
   /// generous page is the whole collection" limit the other library reads use.
   final int candidatePoolSize;
 
+  /// [excludeTrackIds] carries `MediaItem.id` values (see
+  /// `PlaybackState._handleQueueExhausted`), and `Track.id` is the backend's
+  /// numeric track id, so the comparison is stringly-typed on purpose. It is
+  /// still exact: every queue [MediaItem] is built by
+  /// `PlaybackSourceResolver._mediaItem` as `trackId.toString()`, and that
+  /// `trackId` is an `int` from `PlaybackSourceResolver.readTrackId` (local) or
+  /// `SignedAudioDescriptor.trackId` (remote). Both are the same backend id
+  /// this [Track.id] holds, rendered in canonical decimal.
+  ///
+  /// Source-backed queue rows do not diverge either: their UUID lives in
+  /// `QueueTrack.id`, but `QueueTrack.toPlaybackJson` emits
+  /// `playbackTrackId ?? id`, and a row carrying no numeric playback id makes
+  /// `readTrackId` throw `INVALID_TRACK_ID` — it never becomes a queue item to
+  /// exclude in the first place. Pinned by the round-trip test in
+  /// `test/library_shuffle_continuation_test.dart`.
   @override
   Future<List<Map<String, dynamic>>> fetch({
     required Set<String> excludeTrackIds,

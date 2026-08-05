@@ -2,8 +2,11 @@ import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/library_shuffle_continuation.dart';
+import 'package:open_music_player/core/audio/playback_source_resolver.dart';
+import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
+import 'package:open_music_player/models/track.dart';
 
 /// Captures the endpoint/params the source asked for and returns a canned
 /// parsed body, mirroring the fake in library_service_sort_test.dart.
@@ -156,4 +159,91 @@ void main() {
       );
     });
   });
+
+  group('exclusion id round trip', () {
+    // The exclusion set is built from MediaItem.id (PlaybackState
+    // ._handleQueueExhausted) but compared against Track.id.toString(). These
+    // pin that the two representations cannot drift apart, including for the
+    // one shape that looks like it should: a source-backed queue row whose own
+    // `id` is a UUID rather than the backend track id.
+    test('a source-backed queue item resolves to the numeric library id',
+        () async {
+      final queueTrack = QueueTrack.fromJson({
+        'id': '7a1f4d02-3c9b-4f11-9a55-2f6c8de40b13',
+        'queueItemId': '7a1f4d02-3c9b-4f11-9a55-2f6c8de40b13',
+        // Backend track id, carried separately from the queue item UUID.
+        'trackId': 2,
+        'title': 'Source backed',
+        'artist': 'Artist 2',
+        'duration': 180,
+        'status': 'completed',
+      });
+      expect(queueTrack.id, isNot('2'), reason: 'the row id is the item UUID');
+
+      final items = await _resolver().resolveQueue([
+        queueTrack.toPlaybackJson(),
+      ]);
+
+      // MediaItem.id is PlaybackSourceResolver's `trackId.toString()`, never
+      // the queue item UUID — so the exclusion key is the library id.
+      expect(items.single.id, '2');
+    });
+
+    test('an excluded source-backed item is dropped from the candidate pool',
+        () async {
+      final queueTrack = QueueTrack.fromJson({
+        'id': '7a1f4d02-3c9b-4f11-9a55-2f6c8de40b13',
+        'trackId': 2,
+        'title': 'Source backed',
+        'duration': 180,
+        'status': 'completed',
+      });
+      final items = await _resolver().resolveQueue([
+        queueTrack.toPlaybackJson(),
+      ]);
+      final source = LibraryShuffleContinuationSource(
+        LibraryService(_CapturingApiClient(_envelope(3))),
+        random: Random(5),
+      );
+
+      final batch = await source.fetch(
+        // Exactly how PlaybackState assembles the set from the played queue.
+        excludeTrackIds: {for (final item in items) item.id},
+        limit: 5,
+      );
+
+      expect(batch.map((track) => track['id']), isNot(contains(2)));
+      expect(batch.map((track) => track['id']).toSet(), {1, 3});
+    });
+
+    test('a library track resolves to the same id it is excluded by', () async {
+      final page = await LibraryService(
+        _CapturingApiClient(_envelope(1)),
+      ).getLibraryPage(limit: 1);
+      final track = page.tracks.single;
+
+      final items = await _resolver().resolveQueue([track.toPlaybackJson()]);
+
+      expect(items.single.id, track.id.toString());
+    });
+  });
 }
+
+/// A resolver wired to a canned signing backend, so `resolveQueue` exercises
+/// the real MediaItem construction path without network or platform audio.
+PlaybackSourceResolver _resolver() => PlaybackSourceResolver(
+      signedAudioUrlService: SignedAudioUrlService.withRequester((body) async {
+        final ids = (body['trackIds'] as List).cast<int>();
+        return {
+          'urls': [
+            for (final id in ids)
+              {
+                'trackId': id,
+                'url': 'https://example.com/$id.mp3',
+                'expiresAt': DateTime.utc(2027).toIso8601String(),
+              },
+          ],
+          'unavailable': <Map<String, dynamic>>[],
+        };
+      }),
+    );

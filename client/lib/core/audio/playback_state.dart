@@ -356,6 +356,14 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         for (final item in resolved)
           markOrigin(item, queueOriginContinuation),
       ]);
+      // Accepted asymmetry, not a race to "fix": a generation change landing
+      // between the append and this check leaves the batch in the queue while
+      // the skip and play below are abandoned. That is the intended graceful
+      // degradation — the append is an additive tail insert that keeps session
+      // placements, so the worst outcome is a labelled auto-continuation
+      // segment sitting unplayed after whatever the listener redirected to.
+      // Rolling it back would mean mutating a queue the user is now driving,
+      // which is strictly worse than leaving a visible, removable tail.
       if (!stillCurrent()) return;
       await _queueController.skipToIndex(appendIndex);
       if (!stillCurrent()) return;
