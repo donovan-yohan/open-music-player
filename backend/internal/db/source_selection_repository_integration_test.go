@@ -150,6 +150,15 @@ func TestSourceSelectionMigrateFreshInitAndRerun(t *testing.T) {
 		!strings.Contains(after, "fk_source_selection_decisions_session_owner") {
 		t.Fatalf("fresh schema misses required source-selection constraints:\n%s", after)
 	}
+	var freshMatchingConstraintValidated bool
+	if err := database.QueryRow(`
+		SELECT convalidated
+		FROM pg_constraint
+		WHERE conrelid = 'source_selection_decisions'::regclass
+			AND conname = 'chk_source_selection_decisions_action_matches_recommendation'
+	`).Scan(&freshMatchingConstraintValidated); err != nil || !freshMatchingConstraintValidated {
+		t.Fatalf("fresh source-selection matching constraint validation = %t, %v; want true, nil", freshMatchingConstraintValidated, err)
+	}
 }
 
 func TestSourceSelectionMigrateUpgradesLegacyRecommendationContract(t *testing.T) {
@@ -187,6 +196,15 @@ func TestSourceSelectionMigrateUpgradesLegacyRecommendationContract(t *testing.T
 	}
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("upgrade legacy source-selection schema: %v", err)
+	}
+	var upgradedMatchingConstraintValidated bool
+	if err := database.QueryRow(`
+		SELECT convalidated
+		FROM pg_constraint
+		WHERE conrelid = 'source_selection_decisions'::regclass
+			AND conname = 'chk_source_selection_decisions_action_matches_recommendation'
+	`).Scan(&upgradedMatchingConstraintValidated); err != nil || upgradedMatchingConstraintValidated {
+		t.Fatalf("upgraded source-selection matching constraint validation = %t, %v; want false, nil", upgradedMatchingConstraintValidated, err)
 	}
 	var nullable string
 	if err := database.QueryRow(`

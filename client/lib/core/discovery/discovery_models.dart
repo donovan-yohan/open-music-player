@@ -27,6 +27,8 @@ class DiscoverySelectionSession {
       expiresAt != null && !expiresAt!.isAfter(DateTime.now());
 
   bool isRecommended(DiscoveryCandidate candidate) =>
+      recommendedCandidateId.isNotEmpty &&
+      candidate.candidateId.isNotEmpty &&
       candidate.candidateId == recommendedCandidateId;
 }
 

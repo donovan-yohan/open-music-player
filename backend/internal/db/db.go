@@ -845,12 +845,29 @@ func (db *DB) Migrate() error {
 	return nil
 }
 
-// refreshSourceSelectionSchemaConstraints upgrades old self-contained
-// databases whose original source-selection contract required a ranked winner.
-// Existing accepted/overridden decisions remain readable; new discovery
-// sessions intentionally persist no recommendation and record `selected`.
+// refreshSourceSelectionSchemaConstraints upgrades only databases whose
+// session catalog still carries the pre-neutral NOT NULL recommendation field.
+// The action-matching constraint name exists in both contracts, so it is not a
+// reliable upgrade signal. Existing accepted/overridden decisions remain
+// readable; new discovery sessions intentionally persist no recommendation and
+// record `selected`.
 func (db *DB) refreshSourceSelectionSchemaConstraints() error {
-	_, err := db.Exec(`
+	var legacySessionRecommendationRequired bool
+	err := db.QueryRow(`
+		SELECT is_nullable = 'NO'
+		FROM information_schema.columns
+		WHERE table_schema = current_schema()
+			AND table_name = 'source_selection_sessions'
+			AND column_name = 'recommended_candidate_id'
+	`).Scan(&legacySessionRecommendationRequired)
+	if err != nil {
+		return fmt.Errorf("inspect source-selection legacy schema: %w", err)
+	}
+	if !legacySessionRecommendationRequired {
+		return nil
+	}
+
+	_, err = db.Exec(`
 		ALTER TABLE source_selection_sessions
 			ALTER COLUMN recommended_candidate_id DROP NOT NULL;
 		ALTER TABLE source_selection_sessions

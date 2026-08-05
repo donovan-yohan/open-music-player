@@ -1716,7 +1716,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
     final tab = _resultTab;
     if (tab == SearchResultTab.song) {
-      final candidates = _rankSourceCandidates(response!);
+      final candidates = _collectSourceCandidates(response!);
       if (candidates.isEmpty) {
         return _buildEmptyPanel(
           icon: Icons.cloud_off,
@@ -1767,7 +1767,7 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  List<DiscoveryCandidate> _rankSourceCandidates(
+  List<DiscoveryCandidate> _collectSourceCandidates(
     DiscoverySearchResponse response,
   ) {
     final byKey = <String, DiscoveryCandidate>{};
@@ -1904,7 +1904,7 @@ class _SearchScreenState extends State<SearchScreen> {
     final queuedTrack =
         queueAvailable ? _queuedTrackFor(queueProvider, candidate) : null;
     final pending = _pendingCandidateKeys.contains(_candidateKey(candidate));
-    final canPreview = Uri.tryParse(candidate.sourceUrl)?.hasScheme ?? false;
+    final canPreview = _previewUri(candidate) != null;
     return Card(
       key: stableKey,
       margin: const EdgeInsets.only(bottom: 8),
@@ -1965,6 +1965,7 @@ class _SearchScreenState extends State<SearchScreen> {
                     queuedTrack: queuedTrack,
                     pending: pending,
                     mobile: mobile,
+                    canPreview: canPreview,
                     selection: selection,
                     onChoose: onChoose,
                     queueAvailable: queueAvailable,
@@ -1984,11 +1985,11 @@ class _SearchScreenState extends State<SearchScreen> {
     required QueueTrack? queuedTrack,
     required bool pending,
     required bool mobile,
+    required bool canPreview,
     required DiscoverySelectionSession? selection,
     required bool queueAvailable,
     VoidCallback? onChoose,
   }) {
-    final canPreview = Uri.tryParse(candidate.sourceUrl)?.hasScheme ?? false;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -2021,8 +2022,8 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Future<void> _previewSource(DiscoveryCandidate candidate) async {
-    final uri = Uri.tryParse(candidate.sourceUrl);
-    if (uri == null || !uri.hasScheme) return;
+    final uri = _previewUri(candidate);
+    if (uri == null) return;
     final opened = await (widget.externalUrlLauncher?.call(uri) ??
         launchUrl(uri, mode: LaunchMode.externalApplication));
     if (!opened && mounted) {
@@ -2030,6 +2031,17 @@ class _SearchScreenState extends State<SearchScreen> {
         context,
       ).showSnackBar(const SnackBar(content: Text('Could not preview source')));
     }
+  }
+
+  Uri? _previewUri(DiscoveryCandidate candidate) {
+    final uri = Uri.tryParse(candidate.sourceUrl);
+    return uri != null &&
+            uri.hasAuthority &&
+            uri.host.isNotEmpty &&
+            (uri.scheme.toLowerCase() == 'http' ||
+                uri.scheme.toLowerCase() == 'https')
+        ? uri
+        : null;
   }
 
   Widget _buildSourceSelectionStatus() {
@@ -2097,8 +2109,7 @@ class _SearchScreenState extends State<SearchScreen> {
       return IconButton.filledTonal(
         tooltip: 'Add to queue',
         onPressed: onPressed,
-        visualDensity: VisualDensity.compact,
-        constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+        constraints: const BoxConstraints.tightFor(width: 48, height: 48),
         padding: EdgeInsets.zero,
         iconSize: 20,
         icon: const Icon(Icons.playlist_add),

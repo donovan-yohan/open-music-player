@@ -65,7 +65,7 @@ void main() {
         of: find.byIcon(Icons.playlist_add),
         matching: find.byType(IconButton),
       );
-      expect(tester.getSize(queueButton), const Size(40, 40));
+      expect(tester.getSize(queueButton), const Size(48, 48));
       expect(tester.getRect(queueButton).right, lessThanOrEqualTo(360));
 
       final openSourceButton =
@@ -93,6 +93,7 @@ void main() {
     },
   );
 }
+
 class _FakePlaybackState extends Fake implements PlaybackState {
   @override
   void addListener(VoidCallback listener) {}

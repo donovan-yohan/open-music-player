@@ -280,7 +280,7 @@ paths:
   /discovery/search:
     get:
       tags: [Browse]
-      summary: Search ranked source candidates and create a short-lived selection session
+      summary: Search neutral provider-order source candidates and create a short-lived selection session
       operationId: discoverySearch
       parameters:
         - name: q
