@@ -12,6 +12,7 @@ import '../core/audio/audition_output_route_monitor.dart';
 import '../core/audio/playback_state.dart';
 import '../core/audio/playback_context.dart';
 import '../core/audio/playback_session.dart';
+import '../core/audio/queue_ordering.dart';
 import '../core/audio/queue_persistence.dart';
 import '../core/commands/app_command.dart';
 import '../core/commands/command_registry.dart';
@@ -50,11 +51,17 @@ class ListeningQueueEntry {
     required this.index,
     required this.item,
     required this.isCurrent,
+    this.isContinuationStart = false,
   });
 
   final int index;
   final audio_service.MediaItem item;
   final bool isCurrent;
+
+  /// True on the first item of an auto-continuation segment (#352), i.e. the
+  /// row the "Auto-continuation" header is drawn above. Set per segment rather
+  /// than per item so consecutive continuation batches read as one section.
+  final bool isContinuationStart;
 }
 
 (int, int) queueListReorderIndices({
@@ -83,8 +90,43 @@ List<ListeningQueueEntry> listeningQueueEntries({
         index: i,
         item: queue[i],
         isCurrent: normalizedCurrent != null && i == normalizedCurrent,
+        isContinuationStart: itemOrigin(queue[i]) == queueOriginContinuation &&
+            (i == 0 || itemOrigin(queue[i - 1]) != queueOriginContinuation),
       ),
   ];
+}
+
+/// Marks where the queue stops being what the listener built and starts being
+/// what end-of-queue continuation appended (#352).
+class _AutoContinuationHeader extends StatelessWidget {
+  const _AutoContinuationHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+      child: Row(
+        children: [
+          Icon(
+            Icons.all_inclusive_outlined,
+            size: 16,
+            color: theme.colorScheme.primary,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Auto-continuation',
+              style: theme.textTheme.labelLarge?.copyWith(
+                color: theme.colorScheme.primary,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 @visibleForTesting
@@ -606,13 +648,29 @@ class _QueueScreenState extends State<QueueScreen> {
                       ),
             ),
           );
-          if (!_isStablePlaybackQueueItemId(stableQueueItemId)) return row;
+          // The header rides inside the row rather than as its own list child:
+          // ReorderableListView needs one child per queue index, so an extra
+          // entry would desync every reorder index from the queue.
+          final rowWithSection = entry.isContinuationStart
+              ? Column(
+                  key: ValueKey('continuation_section_$queueItemId'),
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const _AutoContinuationHeader(),
+                    row,
+                  ],
+                )
+              : row;
+          if (!_isStablePlaybackQueueItemId(stableQueueItemId)) {
+            return rowWithSection;
+          }
           return KeyedSubtree(
             key: _playbackQueueOccurrenceKeys.putIfAbsent(
               stableQueueItemId,
               () => GlobalKey(debugLabel: 'playback_queue_$stableQueueItemId'),
             ),
-            child: row,
+            child: rowWithSection,
           );
         },
       ),

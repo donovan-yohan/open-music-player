@@ -27,7 +27,7 @@ class SettingsScreen extends ConsumerWidget {
       body: ListView(
         children: const [
           _AccountSection(),
-          _PlaybackSection(),
+          SettingsPlaybackSection(),
           SettingsStorageSection(),
           _AppearanceSection(),
           _AboutSection(),
@@ -289,9 +289,11 @@ class _LogoutOptionsDialogState extends State<LogoutOptionsDialog> {
   }
 }
 
-/// Playback section with the default crossfade for untempo'd transitions.
-class _PlaybackSection extends ConsumerWidget {
-  const _PlaybackSection();
+/// Playback section: the default crossfade for untempo'd transitions and what
+/// happens when the queue reaches its end.
+@visibleForTesting
+class SettingsPlaybackSection extends ConsumerWidget {
+  const SettingsPlaybackSection({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -333,7 +335,51 @@ class _PlaybackSection extends ConsumerWidget {
             ],
           ),
         ),
+        ListTile(
+          key: const ValueKey('settings_end_of_queue'),
+          leading: const Icon(Icons.all_inclusive_outlined),
+          title: const Text('End of queue'),
+          subtitle: Text(
+            '${settings.endOfQueueMode.displayName} · '
+            '${settings.endOfQueueMode.description}',
+          ),
+          onTap: () => _showEndOfQueuePicker(
+            context,
+            settings.endOfQueueMode,
+            settingsNotifier,
+          ),
+        ),
       ],
+    );
+  }
+
+  /// Picker over [EndOfQueueMode.values]. Phase 2's similar-track radio will
+  /// appear here automatically once the enum value exists (#352); it is left
+  /// out rather than shown disabled, because an option that cannot be honored
+  /// is a worse answer than an option that is not offered yet.
+  void _showEndOfQueuePicker(
+    BuildContext context,
+    EndOfQueueMode currentMode,
+    SettingsNotifier notifier,
+  ) {
+    showDialog(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('End of queue'),
+        children: EndOfQueueMode.values.map((mode) {
+          return RadioListTile<EndOfQueueMode>(
+            key: ValueKey('settings_end_of_queue_${mode.name}'),
+            title: Text(mode.displayName),
+            subtitle: Text(mode.description),
+            value: mode,
+            groupValue: currentMode,
+            onChanged: (value) {
+              if (value != null) notifier.setEndOfQueueMode(value);
+              Navigator.pop(context);
+            },
+          );
+        }).toList(),
+      ),
     );
   }
 }

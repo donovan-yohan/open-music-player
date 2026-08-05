@@ -12,7 +12,9 @@ import '../engine/timeline_model.dart';
 import '../../models/timeline_clip.dart';
 import '../../models/track_analysis.dart';
 import '../../models/trim_range.dart';
+import '../models/settings_model.dart';
 import 'audio_focus_playback.dart';
+import 'queue_continuation.dart';
 import 'local_audio_artifact_resolver.dart';
 import 'playback_media_item_source.dart';
 import 'playback_session.dart';
@@ -67,6 +69,19 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// B finishes resolving, that stale pending request must not auto-start B.
   int _playRequestGeneration = 0;
   int _transportCommandGeneration = 0;
+
+  /// End-of-queue continuation (#352). The source is injected so the playback
+  /// core never learns about the library API; a null source (tests, or a build
+  /// without a continuation wired up) makes the feature inert regardless of the
+  /// selected mode.
+  final QueueContinuationSource? _continuationSource;
+  final int _continuationBatchSize;
+  EndOfQueueMode _endOfQueueMode = EndOfQueueMode.off;
+
+  /// Guards against a second continuation starting while one is still fetching
+  /// or appending. The controller emits at most one exhaustion per completion,
+  /// but the fetch is async and an appended batch can itself finish quickly.
+  bool _continuationInFlight = false;
 
   @override
   bool get isPlaying => _queueController.snapshot.playing;
@@ -207,12 +222,16 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     PlaybackCacheManager? cacheManager,
     QueuePersistenceStore? persistence,
     Future<String?> Function()? accountIdProvider,
+    QueueContinuationSource? continuationSource,
+    int continuationBatchSize = defaultQueueContinuationBatchSize,
     Duration persistenceDebounce = const Duration(milliseconds: 500),
   })  : _queueController = QueueTimelineController(engine),
         _signedAudioUrlService = signedAudioUrlService,
         _persistence = persistence,
         _persistenceReady = persistence == null,
         _persistenceDebounce = persistenceDebounce,
+        _continuationSource = continuationSource,
+        _continuationBatchSize = continuationBatchSize,
         _sourceResolver = PlaybackSourceResolver(
           signedAudioUrlService: signedAudioUrlService,
           localResolver: localResolver,
@@ -275,7 +294,81 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         _persistQueue(isStartupSeed: isStartupSeed);
         notifyListeners();
       }),
+      _queueController.queueExhaustedStream.listen((_) {
+        unawaited(_handleQueueExhausted());
+      }),
     ];
+  }
+
+  /// The selected end-of-queue behavior (#352). Pushed in from the settings
+  /// screen — the playback core never reads preferences itself, mirroring how
+  /// crossfade arrives via [applyAudioDefaults].
+  EndOfQueueMode get endOfQueueMode => _endOfQueueMode;
+
+  void setEndOfQueueMode(EndOfQueueMode mode) {
+    _endOfQueueMode = mode;
+  }
+
+  /// Continues playback past the natural end of the queue.
+  ///
+  /// Runs only for a natural completion: [QueueTimelineController]
+  /// .queueExhaustedStream is fed exclusively by the repeat-off completion path,
+  /// so a manual stop, pause, or skip never reaches here.
+  ///
+  /// Every failure degrades to the historical silent stop. The listener did not
+  /// ask for this fetch, so an offline library must not raise a
+  /// [playbackError] or a toast — the queue simply ends, exactly as it did
+  /// before the feature existed.
+  Future<void> _handleQueueExhausted() async {
+    if (_endOfQueueMode == EndOfQueueMode.off) return;
+    if (_continuationInFlight) return;
+    final source = _continuationSource;
+    if (source == null) return;
+    final exhaustedQueue = queue;
+    if (exhaustedQueue.isEmpty) return;
+
+    _continuationInFlight = true;
+    final playGeneration = _playRequestGeneration;
+    final transportGeneration = _transportCommandGeneration;
+    // Anything the user does while the batch is in flight (play, pause, stop,
+    // skip, starting a different queue) wins: an appended batch that lands
+    // afterwards would hijack a session the listener already redirected.
+    bool stillCurrent() =>
+        playGeneration == _playRequestGeneration &&
+        transportGeneration == _transportCommandGeneration;
+
+    try {
+      final tracks = await source.fetch(
+        // Exclude everything already in the queue so a continuation never
+        // replays what the listener just heard. Once the source has nothing
+        // left to offer it returns empty and playback stops, which is the
+        // honest end of a shuffled library pass.
+        excludeTrackIds: {for (final item in exhaustedQueue) item.id},
+        limit: _continuationBatchSize,
+      );
+      if (tracks.isEmpty || !stillCurrent()) return;
+
+      final resolved = await _sourceResolver.resolveQueue(tracks);
+      if (resolved.isEmpty || !stillCurrent()) return;
+
+      final appendIndex = queue.length;
+      await _queueController.appendToQueue([
+        for (final item in resolved)
+          markOrigin(item, queueOriginContinuation),
+      ]);
+      if (!stillCurrent()) return;
+      await _queueController.skipToIndex(appendIndex);
+      if (!stillCurrent()) return;
+      // Straight to the controller: PlaybackState.play() would bump the
+      // transport generation and cancel the guard we are still holding.
+      await _queueController.play();
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('End-of-queue continuation skipped: $error');
+      }
+    } finally {
+      _continuationInFlight = false;
+    }
   }
 
   Future<void> playTrack(Map<String, dynamic> track) async {
@@ -682,6 +775,14 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// resolver so their signed URLs are fresh. Empty/absent saved state is a
   /// no-op ([hasTrack] stays false) and any restore failure is swallowed so it
   /// can never surface as a [playbackError] or crash startup.
+  ///
+  /// Auto-continuation and the snapshot (#352 x #339): a continuation segment is
+  /// part of the real listening queue, so it is snapshotted and restored like
+  /// any other item — dropping it would lose whatever is currently playing. What
+  /// it is *not* is user-built, so the per-item origin marker is persisted too
+  /// (see `mediaItemToPlaybackJson`) and restamped here. A restored queue
+  /// therefore comes back still labelled "Auto-continuation" in the queue
+  /// screen rather than masquerading as a queue the listener assembled.
   Future<void> restore() async {
     final store = _persistence;
     if (store == null) return;
@@ -689,7 +790,11 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     try {
       final snapshot = await store.load();
       if (snapshot.isEmpty) return;
-      final items = await _sourceResolver.resolveQueue(snapshot.tracks);
+      final resolved = await _sourceResolver.resolveQueue(snapshot.tracks);
+      final items = [
+        for (var index = 0; index < resolved.length; index++)
+          _withPersistedOrigin(resolved[index], snapshot.tracks[index]),
+      ];
       if (items.isEmpty) return;
       // A queue change made while loading/resolving is newer than the durable
       // startup snapshot. Leave it authoritative and replay it in [finally].
@@ -729,6 +834,17 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         _persistQueue();
       }
     }
+  }
+
+  /// Restamps the persisted queue-item origin onto a re-resolved item.
+  ///
+  /// The source resolver rebuilds extras from the track payload and only owns
+  /// the fields it resolves (URLs, artwork, analysis), so the origin annotation
+  /// has to be re-applied from the snapshot row it came from.
+  MediaItem _withPersistedOrigin(MediaItem item, Map<String, dynamic> track) {
+    final origin = track['itemOrigin'];
+    if (origin is! String || origin.isEmpty) return item;
+    return markOrigin(item, origin);
   }
 
   /// Fire-and-forget persistence of the current queue/index/position. A no-op

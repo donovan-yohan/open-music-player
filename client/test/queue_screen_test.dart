@@ -13,6 +13,7 @@ import 'package:open_music_player/app/theme.dart';
 import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/audio/audition_output_route_monitor.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
+import 'package:open_music_player/core/audio/queue_ordering.dart';
 import 'package:open_music_player/core/audio/queue_persistence.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
@@ -379,6 +380,45 @@ void main() {
       [7, 3, 7],
     );
     expect(saveableQueueTrackIds(const []), isEmpty);
+  });
+
+  group('auto-continuation section', () {
+    testWidgets('labels where the appended segment starts', (tester) async {
+      playbackState.fakeQueue = [
+        _mediaItem(11, 'Listener pick'),
+        _mediaItem(
+          22,
+          'Continued one',
+          extras: const {'itemOrigin': queueOriginContinuation},
+        ),
+        _mediaItem(
+          33,
+          'Continued two',
+          extras: const {'itemOrigin': queueOriginContinuation},
+        ),
+      ];
+      playbackState.fakeCurrentIndex = 0;
+
+      await pumpQueueScreen(tester);
+
+      // One header for the whole segment, not one per appended track.
+      expect(find.text('Auto-continuation'), findsOneWidget);
+      expect(find.text('Continued one'), findsOneWidget);
+      expect(find.text('Continued two'), findsOneWidget);
+    });
+
+    testWidgets('a user-built queue shows no continuation header',
+        (tester) async {
+      playbackState.fakeQueue = [
+        _mediaItem(11, 'First'),
+        _mediaItem(22, 'Second'),
+      ];
+      playbackState.fakeCurrentIndex = 0;
+
+      await pumpQueueScreen(tester);
+
+      expect(find.text('Auto-continuation'), findsNothing);
+    });
   });
 
   group('save queue as playlist', () {

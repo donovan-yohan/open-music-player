@@ -78,9 +78,9 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
     widget.authState.addListener(_handleAuthStateChanged);
     _commandRegistry = CommandRegistry(playbackState: widget.playbackState);
     _startShareIntentListener();
-    _applyCrossfadeDuration(
-      ref.read(settingsProvider).crossfadeDuration,
-    );
+    final settings = ref.read(settingsProvider);
+    _applyCrossfadeDuration(settings.crossfadeDuration);
+    widget.playbackState.setEndOfQueueMode(settings.endOfQueueMode);
   }
 
   @override
@@ -104,6 +104,10 @@ class _OpenMusicPlayerAppState extends ConsumerState<OpenMusicPlayerApp>
     ref.listen<int>(
       settingsProvider.select((settings) => settings.crossfadeDuration),
       (_, seconds) => _applyCrossfadeDuration(seconds),
+    );
+    ref.listen<EndOfQueueMode>(
+      settingsProvider.select((settings) => settings.endOfQueueMode),
+      (_, mode) => widget.playbackState.setEndOfQueueMode(mode),
     );
     final settings = ref.watch(settingsProvider);
 
