@@ -103,6 +103,12 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       _queueController.playerStateStream;
   ValueStream<PlaybackSnapshot> get snapshotStream =>
       _queueController.snapshotStream;
+
+  /// Shuffle/repeat are queue-mode facts rather than snapshot facts, so OS
+  /// media-session surfaces observe them separately from [snapshotStream].
+  Stream<bool> get shuffleEnabledStream =>
+      _queueController.shuffleEnabledStream;
+  Stream<LoopMode> get loopModeStream => _queueController.loopModeStream;
   PlaybackSnapshot get snapshot => _queueController.snapshot;
 
   /// Live global mix timeline state for the waveform surface. This is the raw
@@ -787,8 +793,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   /// "next" intent, so they must not flip an already-correct mode.
   Future<void> setShuffleEnabled(bool enabled) =>
       _queueController.setShuffleMode(enabled);
-  Future<void> setLoopMode(LoopMode mode) =>
-      _queueController.setLoopMode(mode);
+  Future<void> setLoopMode(LoopMode mode) => _queueController.setLoopMode(mode);
 
   Future<void> togglePlayPause() async {
     if (isPlaying || _isResolvingSignedUrl) {
