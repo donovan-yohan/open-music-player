@@ -535,6 +535,72 @@ void main() {
       await harness.dispose();
     });
 
+    test(
+      'a queue rebuilt between publish and tap makes the stale position a '
+      'no-op',
+      () async {
+        final harness = _PlaybackHarness();
+        await harness.playback.playQueue([
+          _track(1, seconds: 5),
+          _track(2, seconds: 5),
+          _track(3, seconds: 5),
+        ]);
+        final publishedSessionId = harness.playback.snapshot.sessionId;
+
+        MixAudioHandler? handler;
+        List<String>? publishedQueueAtTap;
+        bool? consumedTransportCommand;
+        Future<void>? staleTap;
+        // Subscribed ahead of the handler, so it runs while the handler still
+        // mirrors the queue the OS was shown: exactly the window in which an
+        // already-dispatched queue tap lands on a rebuilt queue.
+        final probe = harness.playback.snapshotStream.listen((snapshot) {
+          final live = handler;
+          if (staleTap != null || live == null) return;
+          if (snapshot.sessionId == publishedSessionId) return;
+          publishedQueueAtTap = [
+            for (final item in live.queue.value) item.id,
+          ];
+          final generationBefore = harness.playback.transportCommandGeneration;
+          staleTap = live.skipToQueueItem(2);
+          consumedTransportCommand =
+              harness.playback.transportCommandGeneration != generationBefore;
+        });
+
+        handler = MixAudioHandler(
+          playbackState: harness.playback,
+          statePushThrottle: Duration.zero,
+          now: () => harness.now,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        await harness.playback.playQueue([
+          _track(4, seconds: 5),
+          _track(5, seconds: 5),
+        ]);
+        await staleTap;
+        await Future<void>.delayed(Duration.zero);
+
+        // The race really happened: the tap was resolved against the published
+        // three-item queue, so position 2 was in range and named an occurrence
+        // that no longer exists.
+        expect(publishedQueueAtTap, ['1', '2', '3']);
+        expect(
+          consumedTransportCommand,
+          isFalse,
+          reason: 'a dead queue position must not pre-empt live transport '
+              'commands',
+        );
+        expect(harness.playback.queue.map((item) => item.id), ['4', '5']);
+        expect(harness.playback.currentIndex, 0);
+        expect(harness.playback.currentItem?.id, '4');
+
+        await probe.cancel();
+        await handler.dispose();
+        await harness.dispose();
+      },
+    );
+
     test('the like custom action toggles the current track liked state',
         () async {
       final harness = _PlaybackHarness();
@@ -641,6 +707,57 @@ void main() {
 
       await stateSub.cancel();
       await handler.dispose();
+      await harness.dispose();
+    });
+
+    test('disposing twice releases the liked listener exactly once', () async {
+      final harness = _PlaybackHarness();
+      final library = _RecordingLibraryService();
+      final likedTracks = LikedTracksState(library);
+      await harness.playback.playQueue([_track(1, seconds: 5, isLiked: false)]);
+      final handler = MixAudioHandler(
+        playbackState: harness.playback,
+        likedTracksState: likedTracks,
+        statePushThrottle: Duration.zero,
+        now: () => harness.now,
+      );
+      final states = <audio_service.PlaybackState>[];
+      final stateSub = handler.playbackState.listen(states.add);
+      await Future<void>.delayed(Duration.zero);
+
+      // Liked changes reach the notification while the handler is live.
+      likedTracks.seedValue(1, true);
+      await Future<void>.delayed(Duration.zero);
+      expect(_likeControl(states.last)?.label, 'Unlike');
+
+      await handler.dispose();
+      // A second teardown must be a no-op, not a throw and not a re-subscribe.
+      await handler.dispose();
+      final publishedByDispose = states.length;
+
+      // App-side changes no longer reach the notification once the listeners
+      // are released...
+      likedTracks.seedValue(1, false);
+      await harness.playback.playQueue([_track(2, seconds: 5, isLiked: true)]);
+      await Future<void>.delayed(Duration.zero);
+
+      // ...and neither do OS commands that were already in flight when the
+      // handler was torn down, which push state directly rather than through a
+      // subscription.
+      await handler.setRepeatMode(audio_service.AudioServiceRepeatMode.all);
+      await handler.setShuffleMode(audio_service.AudioServiceShuffleMode.all);
+      await handler.seek(const Duration(seconds: 1));
+      handler.updateDuration();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(
+        states.length,
+        publishedByDispose,
+        reason: 'a disposed handler must publish nothing, from app state or '
+            'from a late OS command',
+      );
+
+      await stateSub.cancel();
       await harness.dispose();
     });
 

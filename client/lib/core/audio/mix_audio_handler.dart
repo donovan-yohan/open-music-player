@@ -85,6 +85,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
       audio_service.AudioProcessingState.ready;
   DateTime? _lastStatePushAt;
   Timer? _pendingStateTimer;
+  bool _disposed = false;
 
   @override
   Future<void> play() => _playbackState.play();
@@ -142,10 +143,26 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   /// Tapping an entry in a system queue UI. The OS supplies a position in the
   /// queue this handler published, which maps to the occurrence id
   /// PlaybackState selects by.
+  ///
+  /// The position is only meaningful against the queue it was rendered from,
+  /// and that queue can be rebuilt between the OS dispatching the tap and this
+  /// call arriving. So the position is resolved to an occurrence id under the
+  /// published snapshot, and that occurrence must still be in the live queue
+  /// before anything plays: a stale position is a no-op, never a wrong-track
+  /// play, and never a transport command that pre-empts an in-flight skip.
   @override
   Future<void> skipToQueueItem(int index) async {
     if (index < 0 || index >= _queueItemIds.length) return;
-    await _playbackState.playQueueItemByQueueItemId(_queueItemIds[index]);
+    final queueItemId = _queueItemIds[index];
+    if (!_isLiveQueueItemId(queueItemId)) return;
+    await _playbackState.playQueueItemByQueueItemId(queueItemId);
+  }
+
+  bool _isLiveQueueItemId(String queueItemId) {
+    for (final cue in _playbackState.snapshot.cues) {
+      if (cue.queueItemId == queueItemId) return true;
+    }
+    return false;
   }
 
   @override
@@ -160,7 +177,22 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
     return null;
   }
 
+  /// Releases the snapshot/mode subscriptions, the [LikedTracksState] listener
+  /// and any pending throttled state push.
+  ///
+  /// Idempotent, and safe to call from more than one teardown path: the
+  /// liked-state listener outlives the handler's subscriptions (it hangs off an
+  /// app-scoped notifier, not a stream this handler owns), so a second dispose
+  /// must not re-run removal against a notifier that has already moved on, and
+  /// nothing may publish afterwards.
+  ///
+  /// Deliberately not wired into [stop]: an OS stop ends the media session but
+  /// leaves this handler and its [app_audio.PlaybackState] alive, and playback
+  /// can be started again from the in-app transport. Dropping the liked-state
+  /// listener there would leave the notification heart permanently stale.
   Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
     for (final sub in _subscriptions) {
       await sub.cancel();
     }
@@ -302,6 +334,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _publishState({bool force = false}) {
+    if (_disposed) return;
     if (!force && !_shouldPublishStateNow()) {
       _scheduleTrailingStatePush();
       return;
@@ -339,6 +372,7 @@ class MixAudioHandler extends audio_service.BaseAudioHandler
   }
 
   void _publishStateNow() {
+    if (_disposed) return;
     _lastStatePushAt = _now();
     final liked = _currentLiked();
     playbackState.add(

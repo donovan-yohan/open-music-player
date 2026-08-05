@@ -119,6 +119,44 @@ void main() {
       playback.dispose();
     });
 
+    test('restore keeps the saved track current when shuffle is reapplied',
+        () async {
+      SharedPreferences.setMockInitialValues({
+        QueuePersistenceStore.storageKey: QueueSnapshot(
+          tracks: [
+            _track(1, seconds: 30),
+            _track(2, seconds: 30),
+            _track(3, seconds: 30),
+            _track(4, seconds: 30),
+          ],
+          currentIndex: 2,
+          positionMs: 9000,
+          shuffleEnabled: true,
+          loopMode: LoopMode.all,
+        ).encode(),
+      });
+      final playback = _playbackState();
+
+      await playback.restore();
+      await Future<void>.delayed(Duration.zero);
+
+      // Shuffle is reapplied after setQueue, which resets the play order to
+      // linear. The permutation has to be built around the restored item, so
+      // the saved track stays current and the saved position stays on it —
+      // never rebased onto whichever track shuffle put first.
+      expect(playback.shuffleEnabled, isTrue);
+      expect(playback.loopMode, LoopMode.all);
+      expect(playback.currentIndex, 2);
+      expect(playback.currentItem?.id, '3');
+      expect(playback.position, const Duration(seconds: 9));
+      expect(playback.isPlaying, isFalse);
+      final order = _timelinePlayOrder(playback);
+      expect(order.first, 2);
+      expect(order, isNot([0, 1, 2, 3]));
+      expect(order.toSet(), {0, 1, 2, 3});
+      playback.dispose();
+    });
+
     test('restore keeps shuffle-off queues in linear order', () async {
       SharedPreferences.setMockInitialValues({
         QueuePersistenceStore.storageKey: QueueSnapshot(
