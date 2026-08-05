@@ -175,6 +175,8 @@ func TestSourceSelectionMigrateUpgradesLegacyRecommendationContract(t *testing.T
 			ADD CONSTRAINT chk_source_selection_decisions_action
 			CHECK (action IN ('accepted', 'overridden'));
 		ALTER TABLE source_selection_decisions
+			DROP CONSTRAINT chk_source_selection_decisions_action_matches_recommendation;
+		ALTER TABLE source_selection_decisions
 			ADD CONSTRAINT chk_source_selection_decisions_action_matches_recommendation
 			CHECK (
 				(action = 'accepted' AND selected_candidate_id = recommended_candidate_id)
