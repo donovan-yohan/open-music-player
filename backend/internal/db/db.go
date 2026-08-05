@@ -95,6 +95,12 @@ func (db *DB) Migrate() error {
 		source_type VARCHAR(50),
 		storage_key VARCHAR(500),
 		file_size_bytes BIGINT,
+		-- Content identity of the bytes stored at storage_key, as "sha256:<hex>".
+		-- Empty means "not known yet": tracks downloaded before this column, or
+		-- tracks whose hash has not been backfilled by a first separation.
+		-- Derived artifacts (track_stems) compare against it to detect replaced
+		-- audio, so it must only ever be written by whoever wrote those bytes.
+		source_file_hash VARCHAR(128) NOT NULL DEFAULT '',
 		codec TEXT,
 		bitrate_kbps INTEGER,
 		sample_rate_hz INTEGER,
@@ -414,6 +420,7 @@ func (db *DB) Migrate() error {
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS source_type VARCHAR(50);
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS storage_key VARCHAR(500);
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT;
+	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS source_file_hash VARCHAR(128) NOT NULL DEFAULT '';
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS codec TEXT;
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS bitrate_kbps INTEGER;
 	ALTER TABLE tracks ADD COLUMN IF NOT EXISTS sample_rate_hz INTEGER;

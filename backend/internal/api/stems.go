@@ -38,6 +38,7 @@ type stemsQueue interface {
 
 type stemsTrackRepository interface {
 	GetByID(ctx context.Context, id int64) (*db.Track, error)
+	GetSourceFileHash(ctx context.Context, id int64) (string, error)
 }
 
 type stemsLibraryRepository interface {
@@ -140,11 +141,20 @@ func (h *StemsHandlers) RequestStems(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = userCtx
 
-	// The current source hash is not known to the API (only the worker hashes
-	// the object it downloads), so the ready-row hash comparison is left to the
-	// worker's manifest and to MarkStaleBySourceHash on re-download.
+	// The recorded source hash arms the ready-row comparison: a completed
+	// separation whose source bytes have since been replaced is invalidated and
+	// re-requested instead of being served as current. An empty hash (a track
+	// downloaded before hashes were recorded, or a read that failed) disables
+	// only that comparison — the worker fills the hash in from the object it
+	// actually separated, so the next trigger is armed. A hash lookup must never
+	// be able to block a separation the user asked for.
+	sourceFileHash, hashErr := h.trackRepo.GetSourceFileHash(r.Context(), trackID)
+	if hashErr != nil {
+		sourceFileHash = ""
+	}
+
 	provenance := stemsRequestProvenance(identity)
-	row, queued, reason, err := h.stemsRepo.RequestSeparation(r.Context(), trackID, identity, storageKey, "", provenance)
+	row, queued, reason, err := h.stemsRepo.RequestSeparation(r.Context(), trackID, identity, storageKey, sourceFileHash, provenance)
 	if err != nil {
 		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to request stem separation")
 		return

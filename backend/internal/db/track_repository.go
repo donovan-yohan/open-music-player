@@ -1052,6 +1052,71 @@ func (r *TrackRepository) UpdateAudioQuality(ctx context.Context, trackID int64,
 	return nil
 }
 
+// GetSourceFileHash returns the recorded content identity of the bytes stored at
+// a track's storage_key, or the empty string when it has never been recorded.
+//
+// It is deliberately a single-column read rather than a field on Track: the hash
+// is only meaningful to derived-artifact staleness (track_stems), and putting it
+// on the shared struct would mean threading a column nothing else reads through
+// every track SELECT in the schema.
+func (r *TrackRepository) GetSourceFileHash(ctx context.Context, trackID int64) (string, error) {
+	var hash string
+	err := r.db.QueryRowContext(ctx, `SELECT source_file_hash FROM tracks WHERE id = $1`, trackID).Scan(&hash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrTrackNotFound
+		}
+		return "", err
+	}
+	return hash, nil
+}
+
+// ReconcileSourceFileHash records the content identity of a track's stored audio
+// and reports what was there before.
+//
+// changed is true only when a DIFFERENT non-empty hash was already recorded,
+// which is the "the audio under this track was replaced" signal: every artifact
+// derived from the previous bytes is invalid. Filling in a previously unknown
+// hash (the hash-on-first-separation backfill) is not a change, because nothing
+// was ever derived from a contradicting identity.
+//
+// Callers must only pass the hash of the bytes actually reachable at the track's
+// storage_key. Recording a hash for bytes stored elsewhere would silently
+// invalidate a correct artifact set.
+func (r *TrackRepository) ReconcileSourceFileHash(ctx context.Context, trackID int64, sourceFileHash string) (previous string, changed bool, err error) {
+	if strings.TrimSpace(sourceFileHash) == "" {
+		return "", false, errors.New("source file hash is required")
+	}
+	// The CTE reads the prior value under a row lock before the UPDATE writes the
+	// new one, so concurrent reconciles serialize and exactly one of them can
+	// observe (and act on) a replacement.
+	err = r.db.QueryRowContext(ctx, `
+		WITH previous AS (
+			SELECT id, source_file_hash FROM tracks WHERE id = $1 FOR UPDATE
+		)
+		UPDATE tracks
+		SET source_file_hash = $2,
+			updated_at = NOW()
+		FROM previous
+		WHERE tracks.id = previous.id
+		  AND tracks.source_file_hash IS DISTINCT FROM $2
+		RETURNING previous.source_file_hash
+	`, trackID, sourceFileHash).Scan(&previous)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Either the track is gone or the hash already matches. Distinguish the
+		// two so a missing track is never reported as an agreeing hash.
+		existing, getErr := r.GetSourceFileHash(ctx, trackID)
+		if getErr != nil {
+			return "", false, getErr
+		}
+		return existing, false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return previous, previous != "", nil
+}
+
 // MarkAudioQualityProbeAttempt moves a failed artifact to the end of the
 // maintenance queue so one corrupt object cannot starve later rows.
 func (r *TrackRepository) MarkAudioQualityProbeAttempt(ctx context.Context, trackID int64) error {

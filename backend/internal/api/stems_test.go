@@ -30,6 +30,7 @@ type fakeStemsRepo struct {
 
 	seenIdentity   db.StemsIdentity
 	seenStorageKey string
+	seenSourceHash string
 	seenProvenance json.RawMessage
 }
 
@@ -38,12 +39,13 @@ func (f *fakeStemsRepo) RequestSeparation(
 	trackID int64,
 	identity db.StemsIdentity,
 	sourceStorageKey string,
-	_ string,
+	sourceFileHash string,
 	provenance json.RawMessage,
 ) (db.TrackStems, bool, string, error) {
 	f.requests++
 	f.seenIdentity = identity
 	f.seenStorageKey = sourceStorageKey
+	f.seenSourceHash = sourceFileHash
 	f.seenProvenance = provenance
 	if f.err != nil {
 		return db.TrackStems{}, false, "", f.err
@@ -93,8 +95,11 @@ func (f *fakeStemsQueue) QueuePosition(_ context.Context, _ string) (int64, erro
 }
 
 type fakeStemsTrackRepo struct {
-	track *db.Track
-	err   error
+	track           *db.Track
+	err             error
+	sourceHash      string
+	sourceHashErr   error
+	sourceHashReads int
 }
 
 func (f *fakeStemsTrackRepo) GetByID(_ context.Context, id int64) (*db.Track, error) {
@@ -107,6 +112,14 @@ func (f *fakeStemsTrackRepo) GetByID(_ context.Context, id int64) (*db.Track, er
 	clone := *f.track
 	clone.ID = id
 	return &clone, nil
+}
+
+func (f *fakeStemsTrackRepo) GetSourceFileHash(_ context.Context, _ int64) (string, error) {
+	f.sourceHashReads++
+	if f.sourceHashErr != nil {
+		return "", f.sourceHashErr
+	}
+	return f.sourceHash, nil
 }
 
 type fakeStemsLibraryRepo struct {
@@ -381,6 +394,51 @@ func TestRequestStemsDefaultsToStems5AndStampsExpectedWorker(t *testing.T) {
 	}
 	if queue.enqueued[0].ChannelSet != stems.ChannelSetStems5Hybrid || queue.enqueued[0].StorageKey != "tracks/youtube/x.mp3" {
 		t.Fatalf("enqueued job = %+v, want the resolved identity and storage key", queue.enqueued[0])
+	}
+}
+
+func TestRequestStemsPassesRecordedSourceFileHash(t *testing.T) {
+	// The hash is what arms the ready-row comparison in RequestSeparation and,
+	// downstream, MarkStaleBySourceHash. Passing an empty string silently
+	// disables replaced-audio detection, so the wiring is worth pinning.
+	repo := &fakeStemsRepo{row: db.TrackStems{Status: db.StemsStatusPending}, queued: true, reason: "missing_stems_row"}
+	queue := &fakeStemsQueue{position: 0}
+	trackRepo := &fakeStemsTrackRepo{track: stemsTestTrack(), sourceHash: "sha256:knownbytes"}
+	handlers := NewStemsHandlers(repo, queue, trackRepo, &fakeStemsLibraryRepo{inLibrary: true})
+
+	recorder := httptest.NewRecorder()
+	handlers.RequestStems(recorder, newStemsRequest(t, http.MethodPost, "", true))
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	if trackRepo.sourceHashReads != 1 {
+		t.Fatalf("source hash read %d times, want 1", trackRepo.sourceHashReads)
+	}
+	if repo.seenSourceHash != "sha256:knownbytes" {
+		t.Fatalf("source file hash = %q, want the recorded hash", repo.seenSourceHash)
+	}
+}
+
+func TestRequestStemsDegradesWhenSourceFileHashUnavailable(t *testing.T) {
+	// A hash lookup failure must never block a separation the user asked for:
+	// an unknown hash only disables the staleness comparison.
+	repo := &fakeStemsRepo{row: db.TrackStems{Status: db.StemsStatusPending}, queued: true, reason: "missing_stems_row"}
+	queue := &fakeStemsQueue{position: 0}
+	trackRepo := &fakeStemsTrackRepo{track: stemsTestTrack(), sourceHashErr: errors.New("boom")}
+	handlers := NewStemsHandlers(repo, queue, trackRepo, &fakeStemsLibraryRepo{inLibrary: true})
+
+	recorder := httptest.NewRecorder()
+	handlers.RequestStems(recorder, newStemsRequest(t, http.MethodPost, "", true))
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	if repo.seenSourceHash != "" {
+		t.Fatalf("source file hash = %q, want empty when the lookup failed", repo.seenSourceHash)
+	}
+	if len(queue.enqueued) != 1 {
+		t.Fatalf("enqueued %d jobs, want 1", len(queue.enqueued))
 	}
 }
 

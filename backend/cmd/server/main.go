@@ -647,6 +647,7 @@ func main() {
 	// unreachable Redis must never block server startup, because separation is an
 	// opt-in enhancement and the rest of the library keeps working without it.
 	var stemsHandlers *api.StemsHandlers
+	var stemsWorkers *stems.WorkerPool
 	stemsRepo := db.NewTrackStemsRepository(database)
 	switch {
 	case !cfg.StemsEnabled:
@@ -656,7 +657,7 @@ func main() {
 	default:
 		// The service client is constructed at startup so a malformed
 		// STEMS_BASE_URL surfaces here rather than on a user's first trigger. It
-		// is also the seam the worker pool will consume.
+		// is also the seam the worker pool consumes.
 		stemsServiceClient, stemsErr := stems.NewServiceClient(stems.ServiceConfig{
 			Enabled:   cfg.StemsEnabled,
 			BaseURL:   cfg.StemsBaseURL,
@@ -678,14 +679,26 @@ func main() {
 			}
 			defer stemsQueue.Close()
 			// The Postgres row is the durable authority for a separation, so a
-			// restart reclaims requests abandoned mid-run instead of stranding them.
-			if recovered, recoverErr := stemsRepo.RecoverInFlight(ctx, 0); recoverErr != nil {
-				log.Error(ctx, "Failed to recover in-flight stem separations", nil, recoverErr)
-			} else if recovered > 0 {
-				log.Info(ctx, "Recovered in-flight stem separations", map[string]interface{}{"rows": recovered})
+			// restart reclaims requests abandoned mid-run instead of stranding
+			// them. Start runs that reconciliation before the first worker
+			// dequeues, and repeats it on a timer, because a row abandoned by
+			// this process only becomes reclaimable once it has been untouched
+			// long enough that no live worker can still own it.
+			pool, poolErr := stems.NewWorkerPool(stemsQueue, stemsServiceClient, stemsRepo, stems.WorkerPoolConfig{
+				Concurrency: cfg.StemsConcurrency,
+				JobTimeout:  cfg.StemsTimeout,
+				Tracks:      trackRepo,
+			})
+			if poolErr != nil {
+				log.Error(ctx, "Stem separation unavailable: worker pool could not be initialized", nil, poolErr)
+				break
 			}
+			stemsWorkers = pool
+			stemsWorkers.Start(ctx)
+			// Handlers go live only once something is consuming the queue.
+			// Exposing the trigger without a consumer would accept work that
+			// nothing can ever finish, which is worse than reporting 503.
 			stemsHandlers = api.NewStemsHandlers(stemsRepo, stemsQueue, trackRepo, libraryRepo)
-			// TODO(stems): worker pool consumes stems:queue
 			log.Info(ctx, "Initialized stem separation", map[string]interface{}{
 				"base_url":        cfg.StemsBaseURL,
 				"concurrency":     cfg.StemsConcurrency,
@@ -845,6 +858,14 @@ func main() {
 		if downloadService != nil {
 			if err := downloadService.Stop(shutdownCtx); err != nil {
 				log.Error(ctx, "Download service shutdown error", nil, err)
+			}
+		}
+		// A separation in flight can legitimately outlive the shutdown budget.
+		// Cancelling it leaves its row in `separating`, which the next process's
+		// recovery sweep reclaims, so a timeout here is not data loss.
+		if stemsWorkers != nil {
+			if err := stemsWorkers.Stop(shutdownCtx); err != nil {
+				log.Error(ctx, "Stems worker pool shutdown error", nil, err)
 			}
 		}
 		if err := jobProcessor.Shutdown(shutdownCtx); err != nil {

@@ -637,3 +637,160 @@ func TestTrackStemsRepositoryFailureRetriesAndLookupsAgainstPostgres(t *testing.
 		t.Fatalf("incomplete identity error = %v, want ErrStemsIdentityRequired", err)
 	}
 }
+
+func TestTrackStemsListPendingSeparations(t *testing.T) {
+	database, ctx := newPostgresStemsTestDB(t)
+	repo := NewTrackStemsRepository(database)
+	trackA := createStemsTestTrack(t, ctx, database, "pending-a")
+	trackB := createStemsTestTrack(t, ctx, database, "pending-b")
+	identity := stemsIdentity5()
+
+	if _, _, _, err := repo.RequestSeparation(ctx, trackA.ID, identity, "tracks/fixture/pending-a.mp3", "", stemsRequestProvenanceJSON()); err != nil {
+		t.Fatalf("request separation for track A: %v", err)
+	}
+	if _, _, _, err := repo.RequestSeparation(ctx, trackB.ID, identity, "tracks/fixture/pending-b.mp3", "", stemsRequestProvenanceJSON()); err != nil {
+		t.Fatalf("request separation for track B: %v", err)
+	}
+
+	pending, err := repo.ListPendingSeparations(ctx, 0)
+	if err != nil {
+		t.Fatalf("list pending separations: %v", err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("pending rows = %d, want 2", len(pending))
+	}
+	// Oldest first: recovery must not starve the request that has waited longest.
+	if pending[0].TrackID != trackA.ID || pending[1].TrackID != trackB.ID {
+		t.Fatalf("pending order = [%d %d], want [%d %d]", pending[0].TrackID, pending[1].TrackID, trackA.ID, trackB.ID)
+	}
+	// The storage key travels on the row, which is what lets a recovery sweep
+	// rebuild a queue job without re-reading the track.
+	if pending[0].SourceStorageKey != "tracks/fixture/pending-a.mp3" {
+		t.Fatalf("pending source storage key = %q, want the requested object", pending[0].SourceStorageKey)
+	}
+
+	// A claimed row is no longer pending: recovery must not republish work a
+	// worker already owns.
+	if err := repo.MarkSeparating(ctx, trackA.ID, identity, stemsRequestProvenanceJSON()); err != nil {
+		t.Fatalf("mark separating: %v", err)
+	}
+	pending, err = repo.ListPendingSeparations(ctx, 0)
+	if err != nil {
+		t.Fatalf("list pending separations after claim: %v", err)
+	}
+	if len(pending) != 1 || pending[0].TrackID != trackB.ID {
+		t.Fatalf("pending rows after claim = %+v, want only track B", pending)
+	}
+
+	limited, err := repo.ListPendingSeparations(ctx, 1)
+	if err != nil {
+		t.Fatalf("list pending separations with limit: %v", err)
+	}
+	if len(limited) != 1 {
+		t.Fatalf("limited pending rows = %d, want 1", len(limited))
+	}
+}
+
+func TestTrackStemsSourceHashStalenessEndToEnd(t *testing.T) {
+	// The whole point of recording a source hash: once a track's audio is
+	// replaced, a completed separation derived from the previous bytes must stop
+	// being served as current.
+	database, ctx := newPostgresStemsTestDB(t)
+	repo := NewTrackStemsRepository(database)
+	trackRepo := NewTrackRepository(database)
+	track := createStemsTestTrack(t, ctx, database, "hash-staleness")
+	identity := stemsIdentity5()
+
+	hash, err := trackRepo.GetSourceFileHash(ctx, track.ID)
+	if err != nil {
+		t.Fatalf("get source file hash: %v", err)
+	}
+	if hash != "" {
+		t.Fatalf("initial source file hash = %q, want empty", hash)
+	}
+
+	// First separation backfills the hash for a track that predates recording.
+	previous, changed, err := trackRepo.ReconcileSourceFileHash(ctx, track.ID, "sha256:first")
+	if err != nil {
+		t.Fatalf("reconcile first hash: %v", err)
+	}
+	if changed || previous != "" {
+		t.Fatalf("first reconcile = (%q, %v), want an unchanged backfill", previous, changed)
+	}
+
+	// Re-recording the same hash is not a replacement.
+	previous, changed, err = trackRepo.ReconcileSourceFileHash(ctx, track.ID, "sha256:first")
+	if err != nil {
+		t.Fatalf("reconcile identical hash: %v", err)
+	}
+	if changed || previous != "sha256:first" {
+		t.Fatalf("identical reconcile = (%q, %v), want no change", previous, changed)
+	}
+
+	if _, _, _, err := repo.RequestSeparation(ctx, track.ID, identity, "tracks/fixture/hash-staleness.mp3", "sha256:first", stemsRequestProvenanceJSON()); err != nil {
+		t.Fatalf("request separation: %v", err)
+	}
+	if err := repo.MarkSeparating(ctx, track.ID, identity, stemsRequestProvenanceJSON()); err != nil {
+		t.Fatalf("mark separating: %v", err)
+	}
+	if err := repo.StoreResult(ctx, track.ID, StemsResult{
+		SchemaVersion:    1,
+		ChannelSet:       identity.ChannelSet,
+		StemModelVersion: identity.StemModelVersion,
+		SourceFileHash:   "sha256:first",
+		ArtifactsJSON:    json.RawMessage(`{"objects":[]}`),
+		ProvenanceJSON:   stemsWorkerProvenanceJSON(testStemsWorker, testStemsWorkerVer),
+	}); err != nil {
+		t.Fatalf("store result: %v", err)
+	}
+
+	// The audio is replaced. Reconciling reports the change...
+	previous, changed, err = trackRepo.ReconcileSourceFileHash(ctx, track.ID, "sha256:second")
+	if err != nil {
+		t.Fatalf("reconcile replaced hash: %v", err)
+	}
+	if !changed || previous != "sha256:first" {
+		t.Fatalf("replacement reconcile = (%q, %v), want the previous hash and changed=true", previous, changed)
+	}
+
+	// ...and the artifact set derived from the old bytes goes stale.
+	marked, err := repo.MarkStaleBySourceHash(ctx, track.ID, "sha256:second")
+	if err != nil {
+		t.Fatalf("mark stale by source hash: %v", err)
+	}
+	if marked != 1 {
+		t.Fatalf("marked %d rows stale, want 1", marked)
+	}
+	stale, err := repo.GetByTrackAndIdentity(ctx, track.ID, identity)
+	if err != nil {
+		t.Fatalf("get stale row: %v", err)
+	}
+	if stale.Status != StemsStatusStale {
+		t.Fatalf("status = %q, want %q", stale.Status, StemsStatusStale)
+	}
+
+	// A trigger carrying the new hash re-requests rather than reporting ready.
+	requested, queued, reason, err := repo.RequestSeparation(ctx, track.ID, identity, "tracks/fixture/hash-staleness.mp3", "sha256:second", stemsRequestProvenanceJSON())
+	if err != nil {
+		t.Fatalf("re-request after staleness: %v", err)
+	}
+	if !queued || reason != "stale_retry" || requested.Status != StemsStatusPending {
+		t.Fatalf("queued=%v reason=%q status=%q, want a queued stale_retry", queued, reason, requested.Status)
+	}
+}
+
+func TestTrackSourceFileHashRequiresATrackAndAValue(t *testing.T) {
+	database, ctx := newPostgresStemsTestDB(t)
+	trackRepo := NewTrackRepository(database)
+	track := createStemsTestTrack(t, ctx, database, "hash-guards")
+
+	if _, _, err := trackRepo.ReconcileSourceFileHash(ctx, track.ID, "   "); err == nil {
+		t.Fatal("reconcile accepted a blank hash")
+	}
+	if _, _, err := trackRepo.ReconcileSourceFileHash(ctx, track.ID+9999, "sha256:whatever"); !errors.Is(err, ErrTrackNotFound) {
+		t.Fatalf("reconcile for a missing track = %v, want ErrTrackNotFound", err)
+	}
+	if _, err := trackRepo.GetSourceFileHash(ctx, track.ID+9999); !errors.Is(err, ErrTrackNotFound) {
+		t.Fatalf("get hash for a missing track = %v, want ErrTrackNotFound", err)
+	}
+}

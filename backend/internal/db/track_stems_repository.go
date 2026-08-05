@@ -22,6 +22,11 @@ const (
 // deliberately far longer than a normal run.
 const defaultStemsRecoveryAge = 45 * time.Minute
 
+// defaultStemsPendingLimit bounds one recovery sweep. The queue itself caps
+// visible backlog at MaxDepth, so a sweep never needs to load more than a
+// queue's worth of durable requests at a time.
+const defaultStemsPendingLimit = 64
+
 const trackStemsColumns = `id, track_id, channel_set, stem_model_version, schema_version, status,
 	source_file_hash, source_storage_key, artifacts_json, provenance_json, error,
 	requested_at, started_at, completed_at, created_at, updated_at`
@@ -484,6 +489,41 @@ func (r *TrackStemsRepository) RecoverInFlight(ctx context.Context, staleAfter t
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+// ListPendingSeparations returns durable requests waiting for a worker, oldest
+// first. It is the other half of restart recovery: RecoverInFlight resets an
+// abandoned `separating` row to pending, but a pending row whose Redis list
+// entry died with the process would otherwise wait forever. Re-enqueueing from
+// this list is safe because the queue dedupes on the deterministic job ID.
+func (r *TrackStemsRepository) ListPendingSeparations(ctx context.Context, limit int) ([]TrackStems, error) {
+	if limit <= 0 {
+		limit = defaultStemsPendingLimit
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+trackStemsColumns+`
+		FROM track_stems
+		WHERE status = $1
+		ORDER BY requested_at ASC
+		LIMIT $2
+	`, StemsStatusPending, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []TrackStems
+	for rows.Next() {
+		var stems TrackStems
+		if err := scanTrackStems(rows, &stems); err != nil {
+			return nil, err
+		}
+		results = append(results, stems)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 func (r *TrackStemsRepository) GetByTrackAndIdentity(ctx context.Context, trackID int64, identity StemsIdentity) (*TrackStems, error) {

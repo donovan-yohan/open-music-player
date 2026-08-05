@@ -2,7 +2,9 @@ package processor
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -194,6 +196,13 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 			}
 		}
 	}
+	if isNew {
+		// Only a newly created track points at the bytes we just uploaded. A
+		// duplicate download resolves to an existing track that still references
+		// its original object, so recording this hash there would claim its
+		// audio had been replaced and invalidate correct stem artifacts.
+		p.recordSourceFileHash(ctx, track.ID, metadata.SourceFileHash)
+	}
 	job.TrackID = &track.ID
 	p.recordTrackSource(ctx, job, track.ID)
 	progress(65)
@@ -224,16 +233,20 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 
 // TrackMetadata holds extracted metadata from a download
 type TrackMetadata struct {
-	Title           string
-	Artist          string
-	Album           string
-	Version         string
-	RemixArtist     string
-	Uploader        string
-	DurationMs      int
-	SourceURL       string
-	SourceType      string
-	StorageKey      string
+	Title       string
+	Artist      string
+	Album       string
+	Version     string
+	RemixArtist string
+	Uploader    string
+	DurationMs  int
+	SourceURL   string
+	SourceType  string
+	StorageKey  string
+	// SourceFileHash is "sha256:<hex>" over the exact bytes uploaded to
+	// StorageKey. It is the content identity derived artifacts (track_stems) key
+	// off, so it must only ever describe bytes actually reachable at StorageKey.
+	SourceFileHash  string
 	FileSizeBytes   int64
 	AudioQuality    AudioQuality
 	PreselectedMBID string
@@ -299,10 +312,20 @@ func (p *Processor) downloadAndStore(ctx context.Context, job *download.Download
 		return nil, fmt.Errorf("probe downloaded audio: %w", err)
 	}
 	key := storageKey(job, tmpPath)
+	// Hash the local file rather than teeing the upload reader. A TeeReader is
+	// not an io.Seeker, which would cost the S3 client its ability to rewind and
+	// retry a failed part; a second sequential pass over a file that was just
+	// downloaded is far cheaper than losing upload retries. This is still the
+	// only moment the backend can be certain which bytes went to this key.
+	sourceFileHash, err := hashFileSHA256(file)
+	if err != nil {
+		return nil, fmt.Errorf("hash downloaded audio: %w", err)
+	}
 	if err := p.storage.PutObject(ctx, key, file, info.Size(), quality.ContentType); err != nil {
 		return nil, fmt.Errorf("upload audio to object storage: %w", err)
 	}
 	metadata.StorageKey = key
+	metadata.SourceFileHash = sourceFileHash
 	metadata.FileSizeBytes = info.Size()
 	metadata.AudioQuality = quality
 	return metadata, nil
@@ -710,6 +733,37 @@ func sanitizeKeyPart(value string) string {
 		return '-'
 	}, value)
 	return strings.Trim(value, "-")
+}
+
+// hashFileSHA256 returns "sha256:<hex>" over a file's bytes and rewinds it, so
+// the caller can hand the same handle to a reader that expects to start at zero.
+// The prefix matches what the stems worker reports for the object it downloads,
+// which is what makes the two hashes comparable.
+func hashFileSHA256(file *os.File) (string, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	digest := sha256.New()
+	if _, err := io.Copy(digest, file); err != nil {
+		return "", err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+// recordSourceFileHash stores the content identity of a track's stored audio.
+// It is advisory: a download that cannot record its hash still succeeds, and the
+// hash is backfilled on first separation. Failing a download over it would trade
+// a working library for a staleness optimization.
+func (p *Processor) recordSourceFileHash(ctx context.Context, trackID int64, sourceFileHash string) {
+	if p.trackRepo == nil || strings.TrimSpace(sourceFileHash) == "" {
+		return
+	}
+	if _, _, err := p.trackRepo.ReconcileSourceFileHash(ctx, trackID, sourceFileHash); err != nil {
+		log.Printf("Warning: failed to record source file hash for track %d: %v", trackID, err)
+	}
 }
 
 // createTrack creates or retrieves the track record

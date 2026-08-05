@@ -3,8 +3,10 @@ package processor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -1978,4 +1980,39 @@ func newYTDLPTempDirs(t *testing.T, before map[string]struct{}) []string {
 		}
 	}
 	return leaked
+}
+
+func TestHashFileSHA256MatchesTheStemsWorkerFormat(t *testing.T) {
+	// The stems worker hashes the object it downloads as "sha256:<hex>" and the
+	// backend compares the two strings directly. A format drift on either side
+	// would silently make every track look like its audio had been replaced.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audio.bin")
+	payload := []byte("open music player stem source bytes")
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	defer file.Close()
+
+	hash, err := hashFileSHA256(file)
+	if err != nil {
+		t.Fatalf("hash file: %v", err)
+	}
+	expected := sha256.Sum256(payload)
+	if want := "sha256:" + hex.EncodeToString(expected[:]); hash != want {
+		t.Fatalf("hash = %q, want %q", hash, want)
+	}
+
+	// The handle must be rewound: the same file is uploaded straight afterwards.
+	rest, err := io.ReadAll(file)
+	if err != nil {
+		t.Fatalf("read after hashing: %v", err)
+	}
+	if !bytes.Equal(rest, payload) {
+		t.Fatalf("file was not rewound after hashing: read %d of %d bytes", len(rest), len(payload))
+	}
 }
