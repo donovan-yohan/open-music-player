@@ -312,7 +312,7 @@ func TestWorkerPoolLeavesCanceledRunForRecovery(t *testing.T) {
 		pool.process(ctx, 0, testJob())
 	}()
 
-	// Wait until the separation is actually in flight before cancelling.
+	// Wait until the separation is actually in flight before canceling.
 	deadline := time.Now().Add(2 * time.Second)
 	for len(separator.calls()) == 0 {
 		if time.Now().After(deadline) {

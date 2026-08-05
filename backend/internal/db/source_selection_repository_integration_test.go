@@ -74,7 +74,8 @@ func createSourceSelectionSession(t *testing.T, repo *SourceSelectionRepository,
 		Candidates: sourceSelectionCandidates(t,
 			sourceSelectionCandidate(t, "youtube:recommended", 94),
 			sourceSelectionCandidate(t, "youtube:alternate", 71)),
-		ExpiresAt: expiry,
+		RecommendedCandidateID: "youtube:recommended",
+		ExpiresAt:              expiry,
 	}
 	if err := repo.CreateSession(ctx, session); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -201,9 +202,27 @@ func TestSourceSelectionMigrateUpgradesLegacyRecommendationContract(t *testing.T
 	`).Scan(&actionConstraint); err != nil || !strings.Contains(actionConstraint, "selected") {
 		t.Fatalf("action constraint = %q, %v; want selected", actionConstraint, err)
 	}
+	var matchingConstraint string
+	if err := database.QueryRow(`
+		SELECT pg_get_constraintdef(oid)
+		FROM pg_constraint
+		WHERE conrelid = 'source_selection_decisions'::regclass
+			AND conname = 'chk_source_selection_decisions_action_matches_recommendation'
+	`).Scan(&matchingConstraint); err != nil || !strings.Contains(matchingConstraint, "recommended_candidate_id IS NULL") || !strings.Contains(matchingConstraint, "accepted") || !strings.Contains(matchingConstraint, "overridden") {
+		t.Fatalf("recommendation matching constraint = %q, %v", matchingConstraint, err)
+	}
 
 	userID := seedSourceSelectionUser(t, database, "legacy-upgrade@test.local")
-	session := createSourceSelectionSession(t, repo, ctx, userID, time.Now().Add(10*time.Minute))
+	session := &SourceSelectionSession{
+		UserID: userID, Query: "artist track", Context: "discovery_search",
+		Candidates: sourceSelectionCandidates(t,
+			sourceSelectionCandidate(t, "youtube:recommended", 94),
+			sourceSelectionCandidate(t, "youtube:alternate", 71)),
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}
+	if err := repo.CreateSession(ctx, session); err != nil {
+		t.Fatalf("create neutral session after legacy upgrade: %v", err)
+	}
 	decision, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, "youtube:alternate", SourceSelectionActionSelected, "")
 	if err != nil || decision.Action != SourceSelectionActionSelected || decision.RecommendedCandidateID != "" {
 		t.Fatalf("neutral choice after legacy upgrade = %#v, %v", decision, err)
@@ -319,6 +338,9 @@ func TestSourceSelectionDiscoveryDecisionSingleUseAndIdempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first decision: %v", err)
 	}
+	if first.RecommendedCandidateID != "youtube:recommended" {
+		t.Fatalf("accepted decision recommendation = %q; want session recommendation", first.RecommendedCandidateID)
+	}
 	retry, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, "youtube:recommended", SourceSelectionActionAccepted, "")
 	if err != nil || retry.ID != first.ID {
 		t.Fatalf("idempotent retry = %#v, %v; want existing %s", retry, err, first.ID)
@@ -368,6 +390,62 @@ func TestSourceSelectionDiscoveryDecisionSingleUseAndIdempotency(t *testing.T) {
 	}
 	if err := database.QueryRow(`SELECT COUNT(*) FROM source_selection_decisions WHERE session_id = $1`, concurrentSession.ID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("concurrent decision count = %d, %v; want 1, nil", count, err)
+	}
+}
+
+func TestSourceSelectionDiscoveryDecisionActionMatchesSessionContract(t *testing.T) {
+	database, repo, ctx := newSourceSelectionTestRepository(t)
+	userID := seedSourceSelectionUser(t, database, "action-contract@test.local")
+
+	for _, tc := range []struct {
+		name        string
+		candidateID string
+		action      string
+	}{
+		{name: "accepted alternate", candidateID: "youtube:alternate", action: SourceSelectionActionAccepted},
+		{name: "overridden recommended", candidateID: "youtube:recommended", action: SourceSelectionActionOverridden},
+		{name: "selected legacy recommended", candidateID: "youtube:recommended", action: SourceSelectionActionSelected},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := createSourceSelectionSession(t, repo, ctx, userID, time.Now().Add(10*time.Minute))
+			if _, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, tc.candidateID, tc.action, ""); !errors.Is(err, ErrInvalidSourceSelection) {
+				t.Fatalf("legacy action %q for %q = %v; want invalid source selection", tc.action, tc.candidateID, err)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name   string
+		action string
+	}{
+		{name: "accepted", action: SourceSelectionActionAccepted},
+		{name: "overridden", action: SourceSelectionActionOverridden},
+	} {
+		t.Run("neutral "+tc.name, func(t *testing.T) {
+			session := &SourceSelectionSession{
+				UserID: userID, Query: "artist track", Context: "discovery_search",
+				Candidates: sourceSelectionCandidates(t,
+					sourceSelectionCandidate(t, "youtube:recommended", 94),
+					sourceSelectionCandidate(t, "youtube:alternate", 71)),
+				ExpiresAt: time.Now().Add(10 * time.Minute),
+			}
+			if err := repo.CreateSession(ctx, session); err != nil {
+				t.Fatalf("create neutral session: %v", err)
+			}
+			if _, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, "youtube:alternate", tc.action, ""); !errors.Is(err, ErrInvalidSourceSelection) {
+				t.Fatalf("neutral action %q = %v; want invalid source selection", tc.action, err)
+			}
+			decision, err := repo.CreateDiscoveryDecision(ctx, userID, session.ID, "youtube:alternate", SourceSelectionActionSelected, "")
+			if err != nil || decision.RecommendedCandidateID != "" {
+				t.Fatalf("neutral selected decision = %#v, %v", decision, err)
+			}
+		})
+	}
+
+	legacy := createSourceSelectionSession(t, repo, ctx, userID, time.Now().Add(10*time.Minute))
+	decision, err := repo.CreateDiscoveryDecision(ctx, userID, legacy.ID, "youtube:alternate", SourceSelectionActionOverridden, "prefer shorter intro")
+	if err != nil || decision.RecommendedCandidateID != "youtube:recommended" {
+		t.Fatalf("legacy override decision = %#v, %v", decision, err)
 	}
 }
 

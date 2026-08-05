@@ -207,6 +207,9 @@ func (r *SourceSelectionRepository) CreateDiscoveryDecision(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	if !validDiscoveryActionForRecommendation(recommended, candidateID, action) {
+		return nil, fmt.Errorf("%w: action does not match session recommendation", ErrInvalidSourceSelection)
+	}
 	existing := &SourceSelectionDecision{}
 	err = tx.QueryRowContext(ctx, decisionSelect+` WHERE session_id = $1`, sessionID).Scan(decisionScanTargets(existing)...)
 	if err == nil {
@@ -227,11 +230,11 @@ func (r *SourceSelectionRepository) CreateDiscoveryDecision(ctx context.Context,
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO source_selection_decisions
 			(id, session_id, session_owner_id, user_id, selected_candidate_id, recommended_candidate_id, action, origin, reason, selected_candidate, source_quality)
-		VALUES ($1, $2, $3, $3, $4, NULL, $5, $6, NULLIF($7, ''), $8::jsonb, $9::jsonb)
+		VALUES ($1, $2, $3, $3, $4, NULLIF($5, ''), $6, $7, NULLIF($8, ''), $9::jsonb, $10::jsonb)
 		RETURNING id, session_id, user_id, selected_candidate_id, COALESCE(recommended_candidate_id, ''), action, origin, reason,
 			selected_candidate, source_quality, download_job_id, track_id, created_at
-	`, decision.ID, sessionID, userID, candidateID, action, SourceSelectionOriginDiscovery,
-		reason, candidate, quality).Scan(decisionScanTargets(decision)...)
+	`, decision.ID, sessionID, userID, candidateID, recommended, action,
+		SourceSelectionOriginDiscovery, reason, candidate, quality).Scan(decisionScanTargets(decision)...)
 	if err != nil {
 		return nil, err
 	}
@@ -588,6 +591,18 @@ func validTrustedSourceQualityText(values []string) bool {
 
 func validAction(action string) bool {
 	return action == SourceSelectionActionSelected || action == SourceSelectionActionAccepted || action == SourceSelectionActionOverridden
+}
+
+// validDiscoveryActionForRecommendation preserves the legacy/Assist decision
+// vocabulary only when the session actually contains its server-owned
+// recommendation. Neutral discovery sessions intentionally have no winner, so
+// their only truthful action is selected.
+func validDiscoveryActionForRecommendation(recommendedCandidateID, candidateID, action string) bool {
+	if recommendedCandidateID == "" {
+		return action == SourceSelectionActionSelected
+	}
+	return (action == SourceSelectionActionAccepted && candidateID == recommendedCandidateID) ||
+		(action == SourceSelectionActionOverridden && candidateID != recommendedCandidateID)
 }
 
 func validTrustedOrigin(origin string) bool {

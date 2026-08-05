@@ -864,7 +864,7 @@ func main() {
 			}
 		}
 		// A separation in flight can legitimately outlive the shutdown budget.
-		// Cancelling it leaves its row in `separating`, which the next process's
+		// Canceling it leaves its row in `separating`, which the next process's
 		// recovery sweep reclaims, so a timeout here is not data loss.
 		if stemsWorkers != nil {
 			if err := stemsWorkers.Stop(shutdownCtx); err != nil {

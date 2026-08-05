@@ -264,6 +264,13 @@ func (db *DB) Migrate() error {
 			OR char_length(BTRIM(recommended_candidate_id)) BETWEEN 1 AND 256
 		),
 		CONSTRAINT chk_source_selection_decisions_action CHECK (action IN ('selected', 'accepted', 'overridden')),
+		CONSTRAINT chk_source_selection_decisions_action_matches_recommendation CHECK (
+			(recommended_candidate_id IS NULL AND action = 'selected')
+			OR (recommended_candidate_id IS NOT NULL AND (
+				(action = 'accepted' AND selected_candidate_id = recommended_candidate_id)
+				OR (action = 'overridden' AND selected_candidate_id <> recommended_candidate_id)
+			))
+		),
 		CONSTRAINT chk_source_selection_decisions_origin CHECK (origin IN ('discovery', 'direct_url', 'playlist_explicit', 'research')),
 		CONSTRAINT chk_source_selection_decisions_reason CHECK (reason IS NULL OR char_length(BTRIM(reason)) BETWEEN 1 AND 2000),
 		CONSTRAINT chk_source_selection_decisions_candidate CHECK (
@@ -871,6 +878,14 @@ func (db *DB) refreshSourceSelectionSchemaConstraints() error {
 			);
 		ALTER TABLE source_selection_decisions
 			DROP CONSTRAINT IF EXISTS chk_source_selection_decisions_action_matches_recommendation;
+		ALTER TABLE source_selection_decisions
+			ADD CONSTRAINT chk_source_selection_decisions_action_matches_recommendation CHECK (
+				(recommended_candidate_id IS NULL AND action = 'selected')
+				OR (recommended_candidate_id IS NOT NULL AND (
+					(action = 'accepted' AND selected_candidate_id = recommended_candidate_id)
+					OR (action = 'overridden' AND selected_candidate_id <> recommended_candidate_id)
+				))
+			) NOT VALID;
 	`)
 	if err != nil {
 		return fmt.Errorf("refresh source-selection schema constraints: %w", err)

@@ -25,3 +25,11 @@ ALTER TABLE source_selection_decisions
     );
 ALTER TABLE source_selection_decisions
     DROP CONSTRAINT IF EXISTS chk_source_selection_decisions_action_matches_recommendation;
+ALTER TABLE source_selection_decisions
+    ADD CONSTRAINT chk_source_selection_decisions_action_matches_recommendation CHECK (
+        (recommended_candidate_id IS NULL AND action = 'selected')
+        OR (recommended_candidate_id IS NOT NULL AND (
+            (action = 'accepted' AND selected_candidate_id = recommended_candidate_id)
+            OR (action = 'overridden' AND selected_candidate_id <> recommended_candidate_id)
+        ))
+    ) NOT VALID;
