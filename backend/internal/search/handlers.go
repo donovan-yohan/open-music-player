@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
 )
 
@@ -35,6 +36,9 @@ type RecordingResponse struct {
 	AnalysisStatus    string          `json:"analysisStatus,omitempty"`
 	AnalysisSummary   json.RawMessage `json:"analysisSummary,omitempty"`
 	AnalysisUpdatedAt string          `json:"analysisUpdatedAt,omitempty"`
+	// HasMetadataOverride reports that title/artist/album carry the caller's manual
+	// correction rather than the canonical track values (issue #344).
+	HasMetadataOverride bool `json:"hasMetadataOverride,omitempty"`
 }
 
 type ArtistResponse struct {
@@ -76,10 +80,36 @@ type ErrorResponse struct {
 
 type Handlers struct {
 	trackRepo *db.TrackRepository
+	// overrideRepo is optional. When set, track results render the requesting user's
+	// per-user metadata overrides (issue #344). The underlying repository search stays
+	// canonical so the MusicBrainz matcher and identity hash never see user edits.
+	overrideRepo *db.TrackMetadataOverrideRepository
 }
 
 func NewHandlers(trackRepo *db.TrackRepository) *Handlers {
 	return &Handlers{trackRepo: trackRepo}
+}
+
+func NewHandlersWithMetadataOverrides(trackRepo *db.TrackRepository, overrideRepo *db.TrackMetadataOverrideRepository) *Handlers {
+	return &Handlers{trackRepo: trackRepo, overrideRepo: overrideRepo}
+}
+
+// applyMetadataOverrides overlays the requesting user's manual metadata corrections
+// on search results in place. Unauthenticated requests and handlers without an
+// override repository are no-ops.
+func (h *Handlers) applyMetadataOverrides(r *http.Request, tracks []db.Track) error {
+	if h.overrideRepo == nil || len(tracks) == 0 {
+		return nil
+	}
+	userCtx := auth.GetUserFromContext(r.Context())
+	if userCtx == nil {
+		return nil
+	}
+	pointers := make([]*db.Track, len(tracks))
+	for i := range tracks {
+		pointers[i] = &tracks[i]
+	}
+	return h.overrideRepo.ApplyToTracks(r.Context(), userCtx.UserID, pointers)
 }
 
 // SearchRecordings handles GET /api/v1/search/recordings
@@ -95,6 +125,10 @@ func (h *Handlers) SearchRecordings(w http.ResponseWriter, r *http.Request) {
 	tracks, total, err := h.trackRepo.SearchRecordings(r.Context(), query, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to search recordings")
+		return
+	}
+	if err := h.applyMetadataOverrides(r, tracks); err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load track metadata")
 		return
 	}
 
@@ -177,6 +211,10 @@ func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to search recordings")
 		return
 	}
+	if err := h.applyMetadataOverrides(r, tracks); err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load track metadata")
+		return
+	}
 
 	artists, _, err := h.trackRepo.SearchArtists(r.Context(), query, limit, offset)
 	if err != nil {
@@ -233,6 +271,7 @@ func toRecordingResponses(tracks []db.Track) []RecordingResponse {
 		if t.AnalysisUpdatedAt.Valid {
 			rec.AnalysisUpdatedAt = t.AnalysisUpdatedAt.Time.UTC().Format(time.RFC3339Nano)
 		}
+		rec.HasMetadataOverride = t.HasMetadataOverride
 		recordings = append(recordings, rec)
 	}
 	return recordings

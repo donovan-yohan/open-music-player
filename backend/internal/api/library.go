@@ -46,6 +46,9 @@ type LibraryTrackResponse struct {
 	AnalysisStatus     string                 `json:"analysis_status,omitempty"`
 	AnalysisSummary    json.RawMessage        `json:"analysis_summary,omitempty"`
 	AnalysisUpdatedAt  string                 `json:"analysis_updated_at,omitempty"`
+	// HasMetadataOverride reports that title/artist/album carry the caller's manual
+	// correction rather than the canonical track values (issue #344).
+	HasMetadataOverride bool `json:"has_metadata_override"`
 }
 
 type LibraryListResponse struct {
@@ -97,7 +100,12 @@ func (s *FieldSelector) Include(field string) bool {
 // genre (exact match; "Unknown" matches tracks with no genre),
 // artist (exact match, local artist listing), album (exact match, local album listing),
 // fields (comma-separated field selection).
-// Available fields: id, title, artist, album, duration_ms, mb_verified, genre, added_at, cover_art_url, artwork_url, artwork_kind, source_url, file_size_bytes, codec, bitrate_kbps, sample_rate_hz, channels, content_type, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, is_liked, analysis_status, analysis_summary, analysis_updated_at
+// Available fields: id, title, artist, album, duration_ms, mb_verified, genre, added_at, cover_art_url, artwork_url, artwork_kind, source_url, file_size_bytes, codec, bitrate_kbps, sample_rate_hz, channels, content_type, metadata_status, metadata_confidence, metadata_provenance, mb_recording_id, mb_suggestions, is_liked, has_metadata_override, analysis_status, analysis_summary, analysis_updated_at
+//
+// title/artist/album are the effective values for the requesting user: the library
+// query merges that user's row in track_metadata_overrides (issue #344) over the
+// canonical tracks values. The merge is display-only and never reaches the
+// MusicBrainz matcher or the track identity hash.
 //
 // Note: liked/is_liked here are scoped to the caller's library — this endpoint
 // lists the library, optionally filtered to liked tracks. A standalone "Liked
@@ -244,6 +252,12 @@ func (h *LibraryHandlers) GetLibrary(w http.ResponseWriter, r *http.Request) {
 		}
 		if fields.Include("is_liked") {
 			track["is_liked"] = t.IsLiked
+		}
+		// title/artist/album above are already the effective values (the repository
+		// query merges the caller's per-user override). This flag lets clients render
+		// an "edited" affordance and a reset action.
+		if fields.Include("has_metadata_override") {
+			track["has_metadata_override"] = t.HasMetadataOverride
 		}
 		if fields.Include("analysis_status") && t.AnalysisStatus.Valid {
 			track["analysis_status"] = t.AnalysisStatus.String

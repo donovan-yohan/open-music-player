@@ -132,11 +132,16 @@ class SongInfoSheet extends StatefulWidget {
     required this.artist,
     required this.analysisLoader,
     this.sourceQuality,
+    this.onEditMetadata,
   });
 
   final String title;
   final String? artist;
   final String? sourceQuality;
+
+  /// Opens the metadata editor for this track. Null when the playing item has
+  /// no numeric library track id, which is the only case that cannot be edited.
+  final VoidCallback? onEditMetadata;
 
   /// Lazily loads the analysis. Implementations typically delegate to
   /// `AnalysisService.getTrackAnalysis`. May throw; the sheet catches it.
@@ -245,6 +250,21 @@ class _SongInfoSheetState extends State<SongInfoSheet> {
                   );
                 },
               ),
+              if (widget.onEditMetadata != null) ...[
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    key: const ValueKey('song_info_edit_metadata'),
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                      widget.onEditMetadata!();
+                    },
+                    icon: const Icon(Icons.edit_note),
+                    label: const Text('Edit metadata'),
+                  ),
+                ),
+              ],
             ],
           ),
         ),

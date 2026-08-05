@@ -23,6 +23,7 @@ import 'liked_songs_screen.dart';
 import 'local_browse_navigation.dart';
 import 'library_sort_logic.dart';
 import 'library_track_actions.dart';
+import 'track_metadata_edit_sheet.dart';
 
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({super.key});
@@ -1035,6 +1036,12 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
                     onTap: () => _showMatchSuggestions(context),
                   ),
                 ],
+                if (track.hasMetadataOverride && !compactActions) ...[
+                  const SizedBox(width: 8),
+                  MetadataEditedBadge(
+                    key: ValueKey('track_metadata_edited_badge_${track.id}'),
+                  ),
+                ],
               ],
             ),
             subtitle: Text(
@@ -1210,7 +1217,35 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
         addTrackToPlaylist: (_) => _addToPlaylist(),
         addToQueue: _addToQueue,
         toggleLiked: _toggleLike,
+        editMetadata: () => _editMetadata(context),
       );
+
+  /// Opens the per-user metadata editor and, on any successful write, asks the
+  /// screen for a full reload. The backend owns the effective values after a
+  /// reset, so patching this row locally would be a guess.
+  Future<void> _editMetadata(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final result = await showTrackMetadataEditSheet(
+      context: context,
+      trackId: track.id,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      hasMetadataOverride: track.hasMetadataOverride,
+      libraryService: _libraryService,
+    );
+    if (result == null) return;
+    onTrackUpdated?.call();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          result.action == TrackMetadataEditAction.reset
+              ? 'Restored the original metadata'
+              : 'Updated metadata',
+        ),
+      ),
+    );
+  }
 
   Future<void> _addToPlaylist() async {
     final messenger = ScaffoldMessenger.of(context);

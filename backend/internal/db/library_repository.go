@@ -61,7 +61,11 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			// library — this mirrors the track/artist/release search paths.
 			return []LibraryTrack{}, 0, nil
 		}
-		baseCondition += " AND to_tsvector('english', COALESCE(t.title, '') || ' ' || COALESCE(t.artist, '') || ' ' || COALESCE(t.album, '')) @@ to_tsquery('english', $" + itoa(argIndex) + ")"
+		// Search covers both the canonical track text and the caller's per-user
+		// metadata override (issue #344), so a renamed track is findable by either
+		// its edited name or the original noisy one.
+		baseCondition += " AND to_tsvector('english', COALESCE(t.title, '') || ' ' || COALESCE(t.artist, '') || ' ' || COALESCE(t.album, '')" +
+			" || ' ' || COALESCE(tmo.title, '') || ' ' || COALESCE(tmo.artist, '') || ' ' || COALESCE(tmo.album, '')) @@ to_tsquery('english', $" + itoa(argIndex) + ")"
 		args = append(args, tsQuery)
 		argIndex++
 	}
@@ -86,13 +90,17 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	}
 
 	// Exact-match artist/album filters back the local artist/album listing pages.
+	// They match either the effective (override-applied) value or the canonical one:
+	// the aggregate artist/album listings are global and stay canonical, while rows in
+	// the library render the caller's edited value, so navigation from either surface
+	// must land on the same tracks.
 	if opts.Artist != "" {
-		baseCondition += " AND t.artist = $" + itoa(argIndex)
+		baseCondition += " AND (COALESCE(tmo.artist, t.artist) = $" + itoa(argIndex) + " OR t.artist = $" + itoa(argIndex) + ")"
 		args = append(args, opts.Artist)
 		argIndex++
 	}
 	if opts.Album != "" {
-		baseCondition += " AND t.album = $" + itoa(argIndex)
+		baseCondition += " AND (COALESCE(tmo.album, t.album) = $" + itoa(argIndex) + " OR t.album = $" + itoa(argIndex) + ")"
 		args = append(args, opts.Album)
 		argIndex++
 	}
@@ -107,7 +115,8 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 		baseCondition += " AND EXISTS (SELECT 1 FROM track_favorites tf WHERE tf.user_id = ul.user_id AND tf.track_id = t.id)"
 	}
 
-	// Determine sort order
+	// Determine sort order. Title/artist sort on the effective (override-applied)
+	// value so an A-Z page matches what the caller actually sees on the row.
 	orderBy := "ul.added_at DESC" // default
 	switch opts.SortBy {
 	case "added_at":
@@ -118,15 +127,15 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 		}
 	case "title":
 		if opts.SortOrder == "desc" {
-			orderBy = "t.title DESC"
+			orderBy = "COALESCE(tmo.title, t.title) DESC"
 		} else {
-			orderBy = "t.title ASC"
+			orderBy = "COALESCE(tmo.title, t.title) ASC"
 		}
 	case "artist":
 		if opts.SortOrder == "desc" {
-			orderBy = "t.artist DESC NULLS LAST"
+			orderBy = "COALESCE(tmo.artist, t.artist) DESC NULLS LAST"
 		} else {
-			orderBy = "t.artist ASC NULLS LAST"
+			orderBy = "COALESCE(tmo.artist, t.artist) ASC NULLS LAST"
 		}
 	case "duration":
 		if opts.SortOrder == "desc" {
@@ -137,13 +146,23 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	}
 
 	// Single query with window function for total count (eliminates separate COUNT query)
+	// title/artist/album are read through the caller's per-user metadata override
+	// (issue #344) so every library surface renders the same effective value without a
+	// second response shape. The override join is user-scoped; it is display-only and
+	// never reaches the MusicBrainz matcher or the identity hash.
 	selectQuery := `
-		SELECT t.id, t.identity_hash, t.title, t.artist, t.album, t.duration_ms, t.version,
+		SELECT t.id, t.identity_hash,
+			   COALESCE(tmo.title, t.title) AS title,
+			   COALESCE(tmo.artist, t.artist) AS artist,
+			   COALESCE(tmo.album, t.album) AS album,
+			   t.duration_ms, t.version,
 			   t.mb_recording_id, t.mb_release_id, t.mb_artist_id, t.mb_verified,
 			   t.source_url, t.source_type, t.storage_key, t.file_size_bytes,
 			   t.codec, t.bitrate_kbps, t.sample_rate_hz, t.channels, t.content_type,
 			   t.metadata_json, t.metadata_status, t.metadata_confidence, t.metadata_provenance,
-			   t.cover_art_url, t.metadata_user_edited, t.created_at, t.updated_at, ul.added_at,
+			   t.cover_art_url, t.metadata_user_edited,
+			   (tmo.track_id IS NOT NULL) AS has_metadata_override,
+			   t.created_at, t.updated_at, ul.added_at,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb) AS analysis_summary,
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb) AS analysis_overrides,
 			   ta.updated_at AS analysis_updated_at,
@@ -153,6 +172,7 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 		FROM user_library ul
 		JOIN tracks t ON ul.track_id = t.id
 		LEFT JOIN track_analysis ta ON ta.track_id = t.id
+		LEFT JOIN track_metadata_overrides tmo ON tmo.track_id = t.id AND tmo.user_id = ul.user_id
 		WHERE ` + baseCondition + `
 		ORDER BY ` + orderBy + `
 		LIMIT $` + itoa(argIndex) + ` OFFSET $` + itoa(argIndex+1)
@@ -176,7 +196,7 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 			&lt.SourceURL, &lt.SourceType, &lt.StorageKey, &lt.FileSizeBytes,
 			&lt.Codec, &lt.BitrateKbps, &lt.SampleRateHz, &lt.Channels, &lt.ContentType,
 			&lt.MetadataJSON, &lt.MetadataStatus, &lt.MetadataConfidence, &lt.MetadataProvenance,
-			&lt.CoverArtURL, &lt.MetadataUserEdited, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt,
+			&lt.CoverArtURL, &lt.MetadataUserEdited, &lt.HasMetadataOverride, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt,
 			&lt.AnalysisStatus, &lt.AnalysisSummary, &analysisOverrides, &lt.AnalysisUpdatedAt, &lt.IsLiked, &lt.Genre, &total,
 		)
 		if err != nil {

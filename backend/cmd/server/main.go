@@ -460,11 +460,12 @@ func main() {
 	mixPlanRepo := db.NewMixPlanRepository(database)
 	playEventRepo := db.NewPlayEventRepository(database)
 	sourceSelectionRepo := db.NewSourceSelectionRepository(database)
+	metadataOverrideRepo := db.NewTrackMetadataOverrideRepository(database)
 
 	// Initialize services
 	authService := auth.NewService(userRepo, tokenRepo, cfg.JWTSecret)
 	authHandlers := auth.NewHandlers(authService)
-	searchHandlers := search.NewHandlers(trackRepo)
+	searchHandlers := search.NewHandlersWithMetadataOverrides(trackRepo, metadataOverrideRepo)
 	mbClient := musicbrainz.NewClient(redisCache)
 	mbHandlers := musicbrainz.NewHandlers(mbClient)
 	sourceQualityJudge := newSourceQualityJudge(cfg)
@@ -517,11 +518,12 @@ func main() {
 		"firecrawl_enabled":   agentToolsHandler != nil && cfg.FirecrawlAPIKey != "",
 	})
 	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
+	trackOverrideHandlers := api.NewTrackMetadataOverrideHandlers(metadataOverrideRepo, libraryRepo)
 	analysisHandlers := api.NewAnalysisHandlers(analysisRepo, libraryRepo)
-	playlistHandlers := api.NewPlaylistHandlers(playlistRepo, trackRepo)
+	playlistHandlers := api.NewPlaylistHandlersWithMetadataOverrides(playlistRepo, trackRepo, metadataOverrideRepo)
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
 	playlistMixHandlers := api.NewPlaylistMixHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
-	playEventHandlers := api.NewPlayEventHandlers(playEventRepo, trackRepo)
+	playEventHandlers := api.NewPlayEventHandlersWithMetadataOverrides(playEventRepo, trackRepo, metadataOverrideRepo)
 
 	// Initialize storage client
 	storageClient, err := storage.New(&storage.Config{
@@ -722,6 +724,7 @@ func main() {
 		WSHandler:               wsHandler,
 		MatcherHandlers:         matcherHandlers,
 		LibraryHandlers:         libraryHandlers,
+		TrackOverrideHandlers:   trackOverrideHandlers,
 		AnalysisHandlers:        analysisHandlers,
 		PlaybackHandlers:        playbackHandlers,
 		QueueHandlers:           queueHandlers,

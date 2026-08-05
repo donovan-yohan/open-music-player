@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -17,12 +18,25 @@ import (
 type PlaylistHandlers struct {
 	playlistRepo *db.PlaylistRepository
 	trackRepo    *db.TrackRepository
+	// overrideRepo is optional. When set, playlist track payloads render the caller's
+	// per-user metadata overrides (issue #344) so a playlist queued into the player
+	// shows the same edited title/artist/album as the library.
+	overrideRepo *db.TrackMetadataOverrideRepository
 }
 
 func NewPlaylistHandlers(playlistRepo *db.PlaylistRepository, trackRepo *db.TrackRepository) *PlaylistHandlers {
+	return NewPlaylistHandlersWithMetadataOverrides(playlistRepo, trackRepo, nil)
+}
+
+func NewPlaylistHandlersWithMetadataOverrides(
+	playlistRepo *db.PlaylistRepository,
+	trackRepo *db.TrackRepository,
+	overrideRepo *db.TrackMetadataOverrideRepository,
+) *PlaylistHandlers {
 	return &PlaylistHandlers{
 		playlistRepo: playlistRepo,
 		trackRepo:    trackRepo,
+		overrideRepo: overrideRepo,
 	}
 }
 
@@ -104,6 +118,9 @@ type TrackResponse struct {
 	AnalysisStatus    string          `json:"analysisStatus,omitempty"`
 	AnalysisSummary   json.RawMessage `json:"analysisSummary,omitempty"`
 	AnalysisUpdatedAt string          `json:"analysisUpdatedAt,omitempty"`
+	// HasMetadataOverride reports that title/artist/album carry the caller's manual
+	// correction rather than the canonical track values (issue #344).
+	HasMetadataOverride bool `json:"hasMetadataOverride,omitempty"`
 }
 
 type PaginatedPlaylistResponse struct {
@@ -215,7 +232,12 @@ func (h *PlaylistHandlers) GetPlaylist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writePlaylistJSON(w, http.StatusOK, newPlaylistWithTracksResponse(playlist, mapTrackResponses(playlist.Tracks)))
+	trackResponses, err := h.mapTrackResponsesForUser(r.Context(), userCtx.UserID, playlist.Tracks)
+	if err != nil {
+		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load track metadata")
+		return
+	}
+	writePlaylistJSON(w, http.StatusOK, newPlaylistWithTracksResponse(playlist, trackResponses))
 }
 
 // UpdatePlaylist handles PUT /api/v1/playlists/{id}
@@ -444,7 +466,12 @@ func (h *PlaylistHandlers) BatchRemoveTracks(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	writePlaylistJSON(w, http.StatusOK, newPlaylistWithTracksResponse(updatedPlaylist, mapTrackResponses(updatedPlaylist.Tracks)))
+	trackResponses, err := h.mapTrackResponsesForUser(r.Context(), userCtx.UserID, updatedPlaylist.Tracks)
+	if err != nil {
+		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load track metadata")
+		return
+	}
+	writePlaylistJSON(w, http.StatusOK, newPlaylistWithTracksResponse(updatedPlaylist, trackResponses))
 }
 
 // RemoveTrack handles DELETE /api/v1/playlists/{id}/tracks/{trackId}
@@ -557,7 +584,12 @@ func (h *PlaylistHandlers) ReorderTracks(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	writePlaylistJSON(w, http.StatusOK, newPlaylistWithTracksResponse(updatedPlaylist, mapTrackResponses(updatedPlaylist.Tracks)))
+	trackResponses, err := h.mapTrackResponsesForUser(r.Context(), userCtx.UserID, updatedPlaylist.Tracks)
+	if err != nil {
+		writePlaylistError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load track metadata")
+		return
+	}
+	writePlaylistJSON(w, http.StatusOK, newPlaylistWithTracksResponse(updatedPlaylist, trackResponses))
 }
 
 // Helper functions
@@ -603,6 +635,16 @@ func newPlaylistWithTracksResponse(p *db.PlaylistWithTracks, tracks []TrackRespo
 		resp.CoverURL = p.CoverURL.String
 	}
 	return resp
+}
+
+// mapTrackResponsesForUser applies the caller's per-user metadata overrides
+// (issue #344) before converting repository tracks into API track responses, so
+// playlist payloads match what the library shows.
+func (h *PlaylistHandlers) mapTrackResponsesForUser(ctx context.Context, userID uuid.UUID, in []db.Track) ([]TrackResponse, error) {
+	if err := applyMetadataOverridesToTracks(ctx, h.overrideRepo, userID, in); err != nil {
+		return nil, err
+	}
+	return mapTrackResponses(in), nil
 }
 
 // mapTrackResponses converts repository tracks into API track responses.
@@ -652,6 +694,7 @@ func mapTrackResponses(in []db.Track) []TrackResponse {
 		if t.AnalysisUpdatedAt.Valid {
 			track.AnalysisUpdatedAt = t.AnalysisUpdatedAt.Time.UTC().Format(time.RFC3339Nano)
 		}
+		track.HasMetadataOverride = t.HasMetadataOverride
 		tracks = append(tracks, track)
 	}
 	return tracks
