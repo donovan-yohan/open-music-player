@@ -21,4 +21,3 @@ CREATE TABLE IF NOT EXISTS track_metadata_overrides (
         title IS NOT NULL OR artist IS NOT NULL OR album IS NOT NULL
     )
 );
-CREATE INDEX IF NOT EXISTS idx_track_metadata_overrides_track_id ON track_metadata_overrides(track_id);

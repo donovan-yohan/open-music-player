@@ -76,7 +76,10 @@ func (h *TrackMetadataOverrideHandlers) UpdateTrackMetadataOverride(w http.Respo
 
 	// Library membership is the ownership check: a user may only correct metadata for
 	// a track they actually hold. It also keeps the override table from accumulating
-	// rows for tracks the user never sees.
+	// rows for tracks the user never sees. The check-then-write window means a
+	// concurrent library removal can leave an override for a track no longer held;
+	// that is intended, not a leak: reads join through library membership so the
+	// row stays invisible, and re-adding the track restores the user's edits.
 	inLibrary, err := h.libraryRepo.IsTrackInLibrary(r.Context(), userCtx.UserID, trackID)
 	if err != nil {
 		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to verify library membership")

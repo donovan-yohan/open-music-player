@@ -177,7 +177,6 @@ func (db *DB) Migrate() error {
 			title IS NOT NULL OR artist IS NOT NULL OR album IS NOT NULL
 		)
 	);
-	CREATE INDEX IF NOT EXISTS idx_track_metadata_overrides_track_id ON track_metadata_overrides(track_id);
 
 	CREATE TABLE IF NOT EXISTS download_jobs (
 		id UUID PRIMARY KEY,
