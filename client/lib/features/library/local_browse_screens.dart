@@ -5,7 +5,9 @@ import '../../core/audio/playback_state.dart';
 import '../../core/audio/queue_ordering.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/library_service.dart';
+import '../../core/services/liked_tracks_state.dart';
 import '../../shared/models/track.dart';
+import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/song_metadata_chips.dart';
 import '../../shared/widgets/track_artwork.dart';
 
@@ -88,6 +90,13 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
   Object? _error;
   List<Track> _tracks = const [];
 
+  /// Monotonic id for the newest [_load] call. Overlapping loads (initState +
+  /// Retry, rapid retries, pull-to-refresh over an in-flight fetch) capture
+  /// their own id; a response whose id is no longer the newest is dropped
+  /// entirely so the last request — not the last response — owns the screen
+  /// and what it seeds into [LikedTracksState].
+  int _loadRequestId = 0;
+
   @override
   void initState() {
     super.initState();
@@ -95,19 +104,27 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
   }
 
   Future<void> _load() async {
+    final requestId = ++_loadRequestId;
     setState(() {
       _isLoading = true;
       _error = null;
     });
+    // These rows come from the library listing, which is the one endpoint that
+    // annotates `is_liked`, so seed the shared liked state from the response.
+    final likedState = context.read<LikedTracksState?>();
+    final seedVersion = likedState?.seedVersion;
     try {
       final tracks = await widget.loader();
       if (!mounted) return;
+      if (requestId != _loadRequestId) return;
+      likedState?.seed(tracks, responseToSeedVersion: seedVersion);
       setState(() {
         _tracks = tracks;
         _isLoading = false;
       });
     } catch (e) {
       if (!mounted) return;
+      if (requestId != _loadRequestId) return;
       setState(() {
         _error = e;
         _isLoading = false;
@@ -229,7 +246,10 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
                   singleLine: true,
                   compact: true,
                 ),
-                const SizedBox(width: 6),
+                LikeToggleButton(
+                  track: track,
+                  buttonKey: ValueKey('local_browse_like_${track.id}'),
+                ),
                 Text(
                   track.formattedDuration,
                   style: Theme.of(context).textTheme.bodySmall,
