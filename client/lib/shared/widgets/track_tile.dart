@@ -15,6 +15,12 @@ class TrackTile extends StatelessWidget {
   final VoidCallback? onMorePressed;
   final Widget? leading;
   final Widget? trailing;
+
+  /// An extra row action (a like heart, say) rendered alongside the default
+  /// duration/more affordances. Unlike [trailing] it augments them instead of
+  /// replacing them, so a surface can add a heart without re-implementing the
+  /// duration text.
+  final Widget? action;
   final bool showDragHandle;
   final bool isCurrent;
   final String? activeLabel;
@@ -32,6 +38,7 @@ class TrackTile extends StatelessWidget {
     this.onMorePressed,
     this.leading,
     this.trailing,
+    this.action,
     this.showDragHandle = false,
     this.isCurrent = false,
     this.activeLabel,
@@ -44,6 +51,7 @@ class TrackTile extends StatelessWidget {
     VoidCallback? onMorePressed,
     Widget? leading,
     Widget? trailing,
+    Widget? action,
     bool showDragHandle = false,
     bool isCurrent = false,
     String? activeLabel,
@@ -59,6 +67,7 @@ class TrackTile extends StatelessWidget {
       onMorePressed: onMorePressed,
       leading: leading,
       trailing: trailing,
+      action: action,
       showDragHandle: showDragHandle,
       isCurrent: isCurrent,
       activeLabel: activeLabel,
@@ -295,6 +304,7 @@ class TrackTile extends StatelessWidget {
           else if (isCurrent) ...[
             Icon(Icons.equalizer, size: 18, color: theme.colorScheme.primary),
           ],
+          if (action != null) action!,
           Text(
             duration,
             style: isCurrent

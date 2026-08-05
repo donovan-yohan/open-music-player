@@ -5,7 +5,9 @@ import '../../core/audio/playback_state.dart';
 import '../../core/audio/queue_ordering.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/library_service.dart';
+import '../../core/services/liked_tracks_state.dart';
 import '../../shared/models/track.dart';
+import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/song_metadata_chips.dart';
 import '../../shared/widgets/track_artwork.dart';
 
@@ -99,9 +101,14 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
       _isLoading = true;
       _error = null;
     });
+    // These rows come from the library listing, which is the one endpoint that
+    // annotates `is_liked`, so seed the shared liked state from the response.
+    final likedState = context.read<LikedTracksState?>();
+    final seedVersion = likedState?.seedVersion;
     try {
       final tracks = await widget.loader();
       if (!mounted) return;
+      likedState?.seed(tracks, responseToSeedVersion: seedVersion);
       setState(() {
         _tracks = tracks;
         _isLoading = false;
@@ -229,7 +236,10 @@ class _LocalBrowseViewState extends State<LocalBrowseView> {
                   singleLine: true,
                   compact: true,
                 ),
-                const SizedBox(width: 6),
+                LikeToggleButton(
+                  track: track,
+                  buttonKey: ValueKey('local_browse_like_${track.id}'),
+                ),
                 Text(
                   track.formattedDuration,
                   style: Theme.of(context).textTheme.bodySmall,

@@ -1,4 +1,5 @@
 export 'download_button.dart';
+export 'like_button.dart';
 export 'queue_swipe_action.dart';
 export 'song_metadata_chips.dart';
 export 'track_tile.dart';

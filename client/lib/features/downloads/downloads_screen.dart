@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../../core/download/download_state.dart';
 import '../../shared/formatters/byte_formatter.dart';
 import '../../shared/models/models.dart';
+import '../../shared/widgets/like_button.dart';
 
 class DownloadsScreen extends StatelessWidget {
   const DownloadsScreen({super.key});
@@ -57,24 +58,34 @@ class DownloadsScreen extends StatelessWidget {
             color: Theme.of(context).colorScheme.primary,
           ),
           const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Storage Used',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              Text(
-                state.formattedTotalSize,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-              ),
-            ],
+          // Expanded rather than a Spacer: at 320dp the label column plus the
+          // count already exceeded the row, so the slack has to be absorbed by
+          // a flexible child instead of a rigid one.
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Storage Used',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                Text(
+                  state.formattedTotalSize,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                ),
+              ],
+            ),
           ),
-          const Spacer(),
           Text(
             '${state.downloadCount} tracks',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: Theme.of(context).textTheme.bodyMedium,
           ),
         ],
@@ -195,8 +206,16 @@ class _DownloadListTile extends StatelessWidget {
             formatBytes(download.fileSizeBytes),
             style: Theme.of(context).textTheme.bodySmall,
           ),
+          if (track != null)
+            LikeToggleButton(
+              track: track,
+              buttonKey: ValueKey('downloads_like_${track.id}'),
+            ),
           IconButton(
             icon: const Icon(Icons.delete_outline),
+            iconSize: 20,
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Remove download',
             onPressed: () => _showDeleteDialog(context),
           ),
         ],

@@ -92,6 +92,20 @@ class LikedTracksState extends ChangeNotifier {
     seedValue(trackId, liked);
   }
 
+  /// Establishes a working value for a track whose payload carried no
+  /// `is_liked` annotation, so a heart on that surface is still actionable.
+  ///
+  /// Only the library listing annotates liked state, but hearts live on
+  /// playlist / home / downloads rows too. This never overwrites a known value
+  /// or an in-flight toggle, and deliberately does not record a local-write
+  /// version — a later authoritative [seed] still corrects it.
+  void assume(int trackId, bool liked) {
+    if (_likedByTrackId.containsKey(trackId)) return;
+    if (_togglesInFlight.contains(trackId)) return;
+    _likedByTrackId[trackId] = liked;
+    notifyListeners();
+  }
+
   /// Drops account-scoped state when the authenticated session ends.
   void clear() {
     final hadVisibleState =
