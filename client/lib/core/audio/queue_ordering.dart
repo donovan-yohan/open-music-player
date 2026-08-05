@@ -24,8 +24,14 @@ List<T> playCollectionOrder<T>(
 /// library) via PlaybackState.playQueue. `manual` items were explicitly
 /// added by the user via enqueue / play-next and are consumed *before* the
 /// context tail, matching how a mainstream player treats "Add to queue".
+/// `continuation` items were appended automatically when the queue reached its
+/// natural end (end-of-queue continuation, #352). They are not user-built, so
+/// the queue screen labels them under an "Auto-continuation" header and
+/// [manualEnqueueIndex] treats them like the context tail: an "Add to queue"
+/// still plays before them.
 const String queueOriginContext = 'context';
 const String queueOriginManual = 'manual';
+const String queueOriginContinuation = 'continuation';
 
 /// The origin of [item]; items without an explicit marker are treated as
 /// `context` (the default for anything that came through `setQueue`).

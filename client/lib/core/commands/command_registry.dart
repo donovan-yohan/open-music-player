@@ -349,6 +349,22 @@ class CommandRegistry {
             context.toggleLiked?.call() ??
             context.likedTracksState!.toggle(context.trackId!),
       ),
+      AppCommand(
+        id: CommandId.editMetadata,
+        category: CommandCategory.item,
+        label: 'Edit metadata',
+        icon: Icons.edit_note,
+        availability: _enabled,
+        visible: (context) =>
+            context.trackId != null && context.editMetadata != null,
+        contextAvailability: (context) =>
+            context.trackId != null && context.editMetadata != null
+                ? const CommandAvailability.enabled()
+                : const CommandAvailability.disabled(
+                    'Metadata editing is unavailable',
+                  ),
+        execute: (context) => context.editMetadata!.call(),
+      ),
     ];
   }
 

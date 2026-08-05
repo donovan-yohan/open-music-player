@@ -194,3 +194,20 @@ func TestSavedMixPlanItemRoutesUseOpenAPIPathParam(t *testing.T) {
 		t.Fatal("saved mix-plan routes must use OpenAPI path parameter {mixPlanId}, not {id}")
 	}
 }
+
+func TestMetadataOverrideRouteRequiresAuth(t *testing.T) {
+	router := NewRouterWithConfig(&RouterConfig{
+		AuthHandlers: auth.NewHandlers(nil),
+	})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/tracks/1/metadata-override", strings.NewReader(`{"title":"Edited"}`))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	// A 404 here would mean the route was never registered; the handler-less
+	// configuration must still resolve the pattern and reject the anonymous call.
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("PUT /api/v1/tracks/1/metadata-override without auth = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}

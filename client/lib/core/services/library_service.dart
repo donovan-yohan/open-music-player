@@ -1,6 +1,38 @@
 import '../../shared/models/track.dart';
 import 'api_client.dart';
 
+/// Authoritative state of one track's per-user metadata override, as returned
+/// by `PUT /tracks/{id}/metadata-override`.
+///
+/// [title], [artist] and [album] are the stored *override* values, not the
+/// effective display values: a null field means that field is not overridden
+/// and falls back to the track's original metadata.
+class TrackMetadataOverrideResult {
+  final int trackId;
+  final bool hasMetadataOverride;
+  final String? title;
+  final String? artist;
+  final String? album;
+
+  const TrackMetadataOverrideResult({
+    required this.trackId,
+    required this.hasMetadataOverride,
+    this.title,
+    this.artist,
+    this.album,
+  });
+
+  factory TrackMetadataOverrideResult.fromJson(Map<String, dynamic> json) {
+    return TrackMetadataOverrideResult(
+      trackId: json['track_id'] as int? ?? 0,
+      hasMetadataOverride: json['has_metadata_override'] as bool? ?? false,
+      title: json['title'] as String?,
+      artist: json['artist'] as String?,
+      album: json['album'] as String?,
+    );
+  }
+}
+
 class LibraryService {
   final ApiClient _apiClient;
 
@@ -28,6 +60,7 @@ class LibraryService {
     'channels',
     'content_type',
     'is_liked',
+    'has_metadata_override',
     'analysis_status',
     'analysis_summary',
     'analysis_updated_at',
@@ -143,6 +176,7 @@ class LibraryService {
         'channels',
         'content_type',
         'is_liked',
+        'has_metadata_override',
         'analysis_status',
         'analysis_summary',
         'analysis_updated_at',
@@ -203,4 +237,41 @@ class LibraryService {
       '/tracks/$trackId/match',
     );
   }
+
+  /// Replaces this user's display-metadata override for [trackId].
+  ///
+  /// The write is a full replacement rather than a merge, so every field is
+  /// sent explicitly: a null or blank value clears that field's override, and
+  /// all three null deletes the override entirely. Conditional keys are
+  /// deliberately avoided — an omitted key would mean the same thing as an
+  /// explicit null, and the wire body should say so out loud.
+  ///
+  /// Throws [ApiException] on a rejected write.
+  Future<TrackMetadataOverrideResult> updateTrackMetadataOverride({
+    required int trackId,
+    String? title,
+    String? artist,
+    String? album,
+  }) async {
+    return _apiClient.put<TrackMetadataOverrideResult>(
+      '/tracks/$trackId/metadata-override',
+      body: {
+        'title': _overrideField(title),
+        'artist': _overrideField(artist),
+        'album': _overrideField(album),
+      },
+      parser: TrackMetadataOverrideResult.fromJson,
+    );
+  }
+
+  /// Clears every metadata override for [trackId], restoring the original
+  /// backend metadata for this user.
+  Future<TrackMetadataOverrideResult> resetTrackMetadataOverride(int trackId) {
+    return updateTrackMetadataOverride(trackId: trackId);
+  }
+}
+
+String? _overrideField(String? value) {
+  final trimmed = value?.trim();
+  return trimmed == null || trimmed.isEmpty ? null : trimmed;
 }

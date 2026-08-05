@@ -30,6 +30,32 @@ void main() {
     expect(SettingsModel.fromJson(const {}).keyNotation, KeyNotation.camelot);
   });
 
+  test('end-of-queue defaults to off and persists by stable enum name', () {
+    expect(const SettingsModel().endOfQueueMode, EndOfQueueMode.off);
+    expect(SettingsModel.fromJson(const {}).endOfQueueMode, EndOfQueueMode.off);
+
+    const chosen = SettingsModel(endOfQueueMode: EndOfQueueMode.shuffleLibrary);
+    expect(chosen.toJson()['endOfQueueMode'], 'shuffleLibrary');
+    expect(
+      SettingsModel.fromJson(chosen.toJson()).endOfQueueMode,
+      EndOfQueueMode.shuffleLibrary,
+    );
+  });
+
+  test('an unknown end-of-queue mode degrades to off, not to a guess', () {
+    // A snapshot written by a build that ships phase 2's radio mode must not
+    // make this build drive some other continuation the listener never chose.
+    expect(
+      SettingsModel.fromJson(const {'endOfQueueMode': 'similarRadio'})
+          .endOfQueueMode,
+      EndOfQueueMode.off,
+    );
+    expect(
+      SettingsModel.fromJson(const {'endOfQueueMode': 7}).endOfQueueMode,
+      EndOfQueueMode.off,
+    );
+  });
+
   test('key notation persists by stable enum name', () {
     final model = SettingsModel.fromJson(const {'keyNotation': 'musical'});
 

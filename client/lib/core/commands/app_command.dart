@@ -33,6 +33,7 @@ enum CommandId {
   removeFromQueue,
   addToPlaylist,
   toggleLiked,
+  editMetadata,
 }
 
 enum CommandCategory { transport, navigation, item, global }
@@ -139,6 +140,7 @@ class CommandContext {
     this.playNow,
     this.addToQueue,
     this.toggleLiked,
+    this.editMetadata,
   });
 
   final PlaybackState playbackState;
@@ -151,6 +153,11 @@ class CommandContext {
   final SurfaceCommandDelegate? playNow;
   final SurfaceCommandDelegate? addToQueue;
   final SurfaceCommandDelegate? toggleLiked;
+
+  /// Opens the surface's metadata editor. Only surfaces that own a
+  /// [BuildContext] able to present the editor supply this, so the command
+  /// stays hidden everywhere else.
+  final SurfaceCommandDelegate? editMetadata;
 }
 
 typedef CommandExecutor = FutureOr<void> Function(CommandContext context);

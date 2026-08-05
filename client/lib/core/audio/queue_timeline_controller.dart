@@ -49,6 +49,12 @@ class QueueTimelineController {
   final BehaviorSubject<PlaybackSnapshot> _snapshotSubject =
       BehaviorSubject.seeded(PlaybackSnapshot.empty());
 
+  /// Fires when the mix clock runs off the end of a non-empty queue with repeat
+  /// off. Deliberately not a [BehaviorSubject]: this is an event, and a late
+  /// subscriber must not be handed a stale "the queue already ended".
+  final StreamController<void> _queueExhaustedController =
+      StreamController<void>.broadcast();
+
   List<MediaItem> _queue = const [];
   List<int> _playOrder = const [];
   MixSession _session = MixSession.empty();
@@ -100,6 +106,16 @@ class QueueTimelineController {
   Stream<PlayerState> get playerStateStream => _playerStateSubject.stream;
   ValueStream<PlaybackSnapshot> get snapshotStream => _snapshotSubject.stream;
   PlaybackSnapshot get snapshot => _snapshotSubject.value;
+
+  /// Emits once each time playback runs past the last item of a non-empty queue
+  /// with repeat off — the natural end of the queue (#352).
+  ///
+  /// This is the *only* path that emits, which is what makes it a trustworthy
+  /// end-of-queue trigger: pause, stop, and skip never reach [_handleCompleted]
+  /// (they pause the clock, and the clock only completes by playing past its
+  /// duration), and the clock latches its own completion so a queue that sits
+  /// finished cannot re-emit without playing again.
+  Stream<void> get queueExhaustedStream => _queueExhaustedController.stream;
 
   Future<void> start() async {
     if (_started) return;
@@ -254,6 +270,54 @@ class QueueTimelineController {
 
   Future<void> insertIntoQueue(int index, MediaItem item) async {
     await _enqueueCommand(() => _insertIntoQueue(index, item));
+  }
+
+  /// Appends [items] to the tail of the queue in a single command.
+  ///
+  /// This is the bulk, tail-only form of [insertIntoQueue]. Looping
+  /// [insertIntoQueue] would be correct but rebuilds the mix model — and re-runs
+  /// the O(queue) downbeat-alignment refinement — once per item, so a
+  /// continuation batch would cost a quadratic reload storm. Unlike [setQueue]
+  /// it keeps the existing session placements and rebuilds the play order
+  /// through [_rebuildPlayOrderKeepCurrent], so an active shuffle keeps covering
+  /// the whole queue instead of silently reverting to linear order.
+  Future<void> appendToQueue(List<MediaItem> items) async {
+    await _enqueueCommand(() => _appendToQueue(items));
+  }
+
+  Future<void> _appendToQueue(List<MediaItem> items) async {
+    if (items.isEmpty) return;
+    await start();
+    final appendIndex = _queue.length;
+    final previousCurrent = _currentIndex;
+    final previousCurrentQueueItemId = previousCurrent == null
+        ? null
+        : _session.clipAt(previousCurrent)?.queueItemId;
+    final localPosition = livePosition.inMilliseconds;
+    final preserveActivePlayback = _canPreserveActivePlaybackForFutureInsert(
+      appendIndex,
+      previousCurrent,
+      previousCurrentQueueItemId,
+    );
+    final nextQueue = List<MediaItem>.from(_queue)..addAll(items);
+    _queue = List.unmodifiable(nextQueue);
+    var session = _session;
+    for (var offset = 0; offset < items.length; offset++) {
+      session = session.insertAt(appendIndex + offset, items[offset]);
+    }
+    _session = session.normalizedForQueue(_queue);
+    // A tail append never shifts an existing index, so the current item is
+    // unchanged; an empty queue starts at the first appended item.
+    _currentIndex = previousCurrent ?? 0;
+    _rebuildPlayOrderKeepCurrent();
+    _session = _refineSessionRuntimeBeatAlignments(_session);
+    _processingState = ProcessingState.ready;
+    await _loadModel(
+      seekToCurrent: !preserveActivePlayback,
+      localPositionMs: localPosition,
+      preserveActivePlayback: preserveActivePlayback,
+    );
+    _publishQueueState();
   }
 
   Future<void> _insertIntoQueue(int index, MediaItem item) async {
@@ -824,6 +888,7 @@ class QueueTimelineController {
     await _currentMediaItemSubject.close();
     await _playerStateSubject.close();
     await _snapshotSubject.close();
+    await _queueExhaustedController.close();
     await _engine.dispose();
   }
 
@@ -1482,5 +1547,11 @@ class QueueTimelineController {
     _processingState = ProcessingState.completed;
     _publishPosition(_engine.positionMs);
     _publishPlayerState();
+    // The queue is published as completed *before* the notification so a
+    // listener that declines to continue leaves the historical silent-stop
+    // behavior exactly as it was.
+    if (_queue.isNotEmpty && !_queueExhaustedController.isClosed) {
+      _queueExhaustedController.add(null);
+    }
   }
 }

@@ -26,6 +26,36 @@ enum KeyNotation {
       };
 }
 
+/// What playback does when the listening queue reaches its natural end with
+/// repeat off (#352).
+///
+/// [off] is the historical behavior: the player publishes `completed` and goes
+/// silent. [shuffleLibrary] appends a shuffled batch of library tracks as an
+/// auto-continuation segment and keeps playing.
+///
+/// Phase 2 of #352 adds a third mode, similar-track radio. It is deliberately
+/// NOT declared here yet: no recommendation source exists, so a selectable
+/// option would be a lie in the UI and would persist a value the playback core
+/// could not honor on the next launch. Adding it is a one-line enum value plus
+/// a `QueueContinuationSource` implementation — see
+/// `lib/core/audio/queue_continuation.dart`.
+enum EndOfQueueMode {
+  off,
+  shuffleLibrary;
+  // similarRadio, — phase 2 (#352).
+
+  String get displayName => switch (this) {
+        EndOfQueueMode.off => 'Off',
+        EndOfQueueMode.shuffleLibrary => 'Shuffle library',
+      };
+
+  String get description => switch (this) {
+        EndOfQueueMode.off => 'Playback stops when the queue runs out',
+        EndOfQueueMode.shuffleLibrary =>
+          'Keep playing shuffled tracks from your library',
+      };
+}
+
 const double defaultClickAuditionVolume = 0.20;
 const int minClickAuditionOutputOffsetMs = -500;
 const int maxClickAuditionOutputOffsetMs = 500;
@@ -142,6 +172,11 @@ class SettingsModel {
   final int crossfadeDuration;
   final AppThemeMode themeMode;
   final KeyNotation keyNotation;
+
+  /// What happens when the listening queue reaches its natural end. Defaults to
+  /// [EndOfQueueMode.off] so an upgrade preserves the existing "stop when the
+  /// queue runs out" behavior until the listener opts in.
+  final EndOfQueueMode endOfQueueMode;
   final double clickAuditionVolume;
   final bool clickAuditionDownbeatAccentEnabled;
   final ClickAuditionOutputOffsets clickAuditionOutputOffsets;
@@ -160,6 +195,7 @@ class SettingsModel {
     this.crossfadeDuration = 0,
     this.themeMode = AppThemeMode.system,
     this.keyNotation = KeyNotation.camelot,
+    this.endOfQueueMode = EndOfQueueMode.off,
     this.clickAuditionVolume = defaultClickAuditionVolume,
     this.clickAuditionDownbeatAccentEnabled = true,
     this.clickAuditionOutputOffsets = const ClickAuditionOutputOffsets._(),
@@ -170,6 +206,7 @@ class SettingsModel {
     int? crossfadeDuration,
     AppThemeMode? themeMode,
     KeyNotation? keyNotation,
+    EndOfQueueMode? endOfQueueMode,
     double? clickAuditionVolume,
     bool? clickAuditionDownbeatAccentEnabled,
     ClickAuditionOutputOffsets? clickAuditionOutputOffsets,
@@ -179,6 +216,7 @@ class SettingsModel {
       crossfadeDuration: crossfadeDuration ?? this.crossfadeDuration,
       themeMode: themeMode ?? this.themeMode,
       keyNotation: keyNotation ?? this.keyNotation,
+      endOfQueueMode: endOfQueueMode ?? this.endOfQueueMode,
       clickAuditionVolume: _clampVolume(
         clickAuditionVolume ?? this.clickAuditionVolume,
       ),
@@ -198,6 +236,7 @@ class SettingsModel {
       'crossfadeDuration': crossfadeDuration,
       'themeMode': themeMode.index,
       'keyNotation': keyNotation.name,
+      'endOfQueueMode': endOfQueueMode.name,
       'clickAuditionVolume': clickAuditionVolume,
       'clickAuditionDownbeatAccentEnabled': clickAuditionDownbeatAccentEnabled,
       'clickAuditionOutputOffsetsMs': clickAuditionOutputOffsets.toJson(),
@@ -210,6 +249,7 @@ class SettingsModel {
       crossfadeDuration: _readInt(json['crossfadeDuration']) ?? 0,
       themeMode: _themeModeFromJson(json['themeMode']),
       keyNotation: _keyNotationFromJson(json['keyNotation']),
+      endOfQueueMode: _endOfQueueModeFromJson(json['endOfQueueMode']),
       clickAuditionVolume: _readVolume(json['clickAuditionVolume']),
       clickAuditionDownbeatAccentEnabled: _readBool(
         json['clickAuditionDownbeatAccentEnabled'],
@@ -241,6 +281,20 @@ KeyNotation _keyNotationFromJson(Object? value) {
   return switch (normalized) {
     'musical' || 'musical_key' || 'raw' => KeyNotation.musical,
     _ => KeyNotation.camelot,
+  };
+}
+
+/// Reads a persisted [EndOfQueueMode], defaulting to [EndOfQueueMode.off].
+///
+/// Unknown names fall back to `off` on purpose: a snapshot written by a newer
+/// build (phase 2's radio mode, say) must degrade to "stop at the end of the
+/// queue" rather than to some other continuation the running build would drive
+/// without the listener having chosen it.
+EndOfQueueMode _endOfQueueModeFromJson(Object? value) {
+  final normalized = value?.toString().trim().toLowerCase();
+  return switch (normalized) {
+    'shufflelibrary' || 'shuffle_library' => EndOfQueueMode.shuffleLibrary,
+    _ => EndOfQueueMode.off,
   };
 }
 

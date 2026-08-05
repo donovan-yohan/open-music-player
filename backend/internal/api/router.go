@@ -30,6 +30,7 @@ type Router struct {
 	validatorHandlers       *validators.Handlers
 	matcherHandlers         *matcher.Handler
 	libraryHandlers         *LibraryHandlers
+	trackOverrideHandlers   *TrackMetadataOverrideHandlers
 	analysisHandlers        *AnalysisHandlers
 	stemsHandlers           *StemsHandlers
 	playbackHandlers        *PlaybackHandlers
@@ -65,6 +66,7 @@ type RouterConfig struct {
 	WSHandler               *websocket.Handler
 	MatcherHandlers         *matcher.Handler
 	LibraryHandlers         *LibraryHandlers
+	TrackOverrideHandlers   *TrackMetadataOverrideHandlers
 	AnalysisHandlers        *AnalysisHandlers
 	StemsHandlers           *StemsHandlers
 	PlaybackHandlers        *PlaybackHandlers
@@ -125,6 +127,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		validatorHandlers:       validators.NewHandlers(validatorRegistry),
 		matcherHandlers:         cfg.MatcherHandlers,
 		libraryHandlers:         cfg.LibraryHandlers,
+		trackOverrideHandlers:   cfg.TrackOverrideHandlers,
 		analysisHandlers:        cfg.AnalysisHandlers,
 		stemsHandlers:           cfg.StemsHandlers,
 		playbackHandlers:        cfg.PlaybackHandlers,
@@ -264,6 +267,13 @@ func (r *Router) setupRoutes() {
 	r.mux.HandleFunc("DELETE /api/v1/library/tracks/{track_id}", r.withAuth(r.libraryHandlers.RemoveTrackFromLibrary))
 	r.mux.HandleFunc("POST /api/v1/library/tracks/{track_id}/like", r.withAuth(r.libraryHandlers.LikeTrack))
 	r.mux.HandleFunc("DELETE /api/v1/library/tracks/{track_id}/like", r.withAuth(r.libraryHandlers.UnlikeTrack))
+	// Per-user manual metadata correction (issue #344). Overrides are display-layer
+	// only and never reach the MusicBrainz matcher or the track identity hash.
+	if r.trackOverrideHandlers != nil {
+		r.mux.HandleFunc("PUT /api/v1/tracks/{track_id}/metadata-override", r.withAuth(r.trackOverrideHandlers.UpdateTrackMetadataOverride))
+	} else {
+		r.mux.HandleFunc("PUT /api/v1/tracks/{track_id}/metadata-override", r.withAuth(unavailableHandler("Metadata editing is unavailable")))
+	}
 	if r.analysisHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/analysis", r.withAuth(r.analysisHandlers.GetTrackAnalysis))
 		r.mux.HandleFunc("PATCH /api/v1/tracks/{track_id}/analysis/overrides", r.withAuth(r.analysisHandlers.UpdateTrackAnalysisOverrides))

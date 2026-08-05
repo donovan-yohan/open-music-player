@@ -189,7 +189,7 @@ void main() {
     addTearDown(migrated.close);
 
     final version = await migrated.rawQuery('PRAGMA user_version');
-    expect(version.single.values.single, 7);
+    expect(version.single.values.single, 8);
     final columns = await migrated.rawQuery('PRAGMA table_info(tracks)');
     expect(
       columns.map((column) => column['name']),
@@ -202,6 +202,7 @@ void main() {
         'artwork_url',
         'artwork_kind',
         'artwork_descriptor_present',
+        'has_metadata_override',
       ]),
     );
 
