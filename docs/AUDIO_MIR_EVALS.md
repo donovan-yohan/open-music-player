@@ -28,8 +28,8 @@ The existing Python suite mostly verifies synthetic invariants and two productio
 | Task | Primary metrics | Diagnostic splits |
 | --- | --- | --- |
 | Tempo | MIREX Acc1 within 4%; Acc2 also allowing 1/3×, 1/2×, 2×, or 3× tempo; absolute log2 error | exact, third, half, double, triple, other |
-| Beats | F-measure at 70 ms; Cemgil; CMLc/CMLt; AMLc/AMLt after the standard first-five-second trim | missing events, phase/localization, continuity, metrical-level errors |
-| Downbeats | same event and continuity metrics as beats | beat-grid failure vs bar-phase/meter failure |
+| Beats | F-measure at 70 ms; Cemgil; CMLc/CMLt; AMLc/AMLt; matched local-tempo interval error and interval coverage after the standard first-five-second trim | missing events, phase/localization, continuity, metrical-level errors |
+| Downbeats | same event and continuity metrics as beats; one-to-one bar-phase precision and reference-downbeat recall | beat-grid failure vs one/two/three-beat phase shift, off-grid, or annotation-unanchored event |
 | Key | exact accuracy; MIREX weighted score | exact, perfect fifth, relative, parallel, other |
 | Runtime | per-track wall time, p50, p95 | analyzer errors are counted separately and never averaged into model quality |
 
@@ -43,6 +43,66 @@ Camelot is a deterministic projection of tonic and mode; test that mapping as a 
 4. **MUSDB18** — use the package's seven-second excerpts only for source-separation plumbing smoke. Full MUSDB18 requires approved academic access and carries per-track rights; use its 50-track test set with `museval`/BSSEval v4 only after a stem model exists. Do not mix stem scores into tempo/key reports.
 
 Tunebat has two distinct products. Its public database says its BPM/key fields are supplied by Spotify. Its upload analyzer runs different Music Technology Group-derived algorithms in the browser. Therefore a scraped Tunebat song page is an `external_reference`, not an independent Tunebat analysis and not training ground truth.
+
+## Downbeat calibration artifact contract
+
+Every manifest row remains local-only and may declare two evaluator-only fields:
+
+```json
+{
+  "evaluation_split": "calibration",
+  "stratum": "steady_edm"
+}
+```
+
+`evaluation_split` is one of `pilot`, `calibration`, or `holdout`; omitted rows
+are reported as `unspecified` and cannot satisfy the promotion gate. The
+32-track Raveform pilot must remain `pilot`: it may support plumbing inspection,
+but must not select a threshold, appear in a promotion input, or support a
+quality claim. Promotion rejects every split other than `calibration` and
+`holdout`, and rejects an audio hash that appears in both of those splits.
+`stratum` is a short stable label such as `steady_edm`, `weak_intro`, `breakdown`,
+`half_time`, `variable_tempo`, or `unknown_meter`. The scorer keeps label kinds,
+splits, and strata separate: each stratum also has its own per-split summaries.
+Manifests are capped at 64 strata so a track-ID-like taxonomy cannot inflate the
+report. It never blends `external_reference` or `synthetic` rows into a
+ground-truth quality claim.
+
+Schema-3 reports pin the manifest, prediction artifact, scorer Git head and
+clean-worktree state, model hash, analyzer-script hash, event tolerance, and
+five-second trim. They include per-split sample counts, abstentions, confidence
+reliability bins, and risk-versus-coverage curves. For downbeats, phase is evaluated only against
+annotation-bounded reference bars with every downbeat anchored to the reference
+beat grid; unanchored annotations are marked unevaluable rather than counted as
+model mistakes. No 4/4 phase is extrapolated through an unknown tail or meter
+change. The runner records p50/p95 per-track wall time, infrastructure failures,
+and its child-process peak RSS in KiB. Invoke the runner as a fresh process when
+comparing RSS; its scope is explicitly recorded
+as `runner_process_children_lifetime`.
+
+For a paired comparison, supply the same experiment ID, factor, and freeze ID
+to both arms, with only the arm label changing. The evaluator refuses a resume
+when this provenance changes. `freeze_id` identifies the saved packet covering
+decode setup, audio hashes, annotations, metric code, model checkpoint, and
+baseline intent; it is not a substitute for the report's concrete hashes.
+
+```bash
+scripts/eval audio-mir run \
+  --manifest /private/evals/downbeats-calibration.jsonl \
+  --analyzer-python /private/evals/omp-mir-runtime/bin/python \
+  --analyzer-script backend/cmd/audio-analyzer/audio_mir.py \
+  --model /private/evals/models/beat_this-final0.ckpt \
+  --experiment-id downbeat-phase-2026-07 \
+  --experiment-arm omp-regularized \
+  --experiment-factor downbeat-postprocessor \
+  --freeze-id <saved-freeze-packet-id> \
+  --output /tmp/downbeat-baseline.predictions.jsonl
+```
+
+Repeat for the candidate with the same `--experiment-id`,
+`--experiment-factor`, and `--freeze-id`, but a distinct `--experiment-arm`.
+Score each complete prediction artifact before comparing it. Keep private audio,
+private reports, model files, and caches outside Git.
 
 ## Commands
 
@@ -89,6 +149,74 @@ scripts/eval audio-mir score \
   --output /tmp/omp-mir-report.json
 ```
 
+Promote only from a human-ground-truth holdout using a checked-in-or-private
+policy artifact whose threshold was chosen on the separate calibration split.
+The evaluator does not ship a universal confidence threshold and does not turn
+the current `0.55` distribution into an automatic product lock.
+
+```json
+{
+  "schema_version": 1,
+  "label_kind": "ground_truth",
+  "evaluation_split": "holdout",
+  "minimum_holdout_tracks": 20,
+  "downbeats": {
+    "minimum_phase_precision_delta": 0.02,
+    "maximum_f_measure_regression": 0.01,
+    "maximum_cemgil_regression": 0.01,
+    "maximum_cmlc_regression": 0.01,
+    "maximum_cmlt_regression": 0.01,
+    "maximum_reference_downbeat_recall_regression": 0.01,
+    "maximum_phase_f1_regression": 0.01
+  },
+  "beats": {
+    "maximum_f_measure_regression": 0.01,
+    "maximum_cemgil_regression": 0.01,
+    "maximum_cmlc_regression": 0.01,
+    "maximum_cmlt_regression": 0.01,
+    "maximum_local_tempo_coverage_regression": 0.01,
+    "maximum_local_tempo_error_increase": 0.01
+  },
+  "resources": {
+    "maximum_runtime_p95_ratio": 1.15,
+    "maximum_peak_rss_ratio": 1.15
+  },
+  "automation": {
+    "threshold_source": "calibration",
+    "confidence_threshold": 0.80,
+    "minimum_calibration_tracks": 20,
+    "minimum_calibration_coverage": 0.20,
+    "minimum_holdout_coverage": 0.20,
+    "minimum_track_phase_precision": 0.95,
+    "maximum_holdout_false_lock_rate": 0.05,
+    "maximum_calibration_false_lock_rate": 0.05
+  }
+}
+```
+
+```bash
+scripts/eval audio-mir promote \
+  --baseline-report /tmp/downbeat-baseline.report.json \
+  --candidate-report /tmp/downbeat-candidate.report.json \
+  --policy /private/evals/downbeat-promotion-policy.json \
+  --output /tmp/downbeat-promotion-decision.json
+```
+
+The numeric values above are illustrative policy fields, not calibrated defaults
+or shipped analyzer thresholds. Choose and freeze them from a separate
+calibration corpus; the promotion command then checks calibration and sealed
+holdout false-lock risk at that selected threshold.
+
+The command exits non-zero unless every clean-checkout, frozen-input,
+split-disjointness, sample-count, phase, beat/downbeat event and continuity,
+local-tempo, zero-infrastructure-error, runtime/RSS, calibration, coverage,
+unknown-phase abstention, and false-lock gate passes. It writes a decision
+artifact either way.
+`confidence_threshold`, per-track phase quality, and false-lock budget are
+explicit policy inputs, not hidden evaluator defaults. Record representative
+success and failure click-track listening separately; it is a required review
+input but cannot be fabricated by the scorer.
+
 The analyzer runner uses argument arrays, not a shell template, and accepts filesystem paths rather than URLs. Dataset manifests are trusted local inputs: adapters fingerprint each audio asset, pin dataset/archive provenance, and run artifacts pin both the analyzer script and model checkpoint by SHA-256. The scorer refuses incomplete artifacts or a manifest-hash mismatch. Timeouts and analyzer failures remain visible as infrastructure errors and make the command fail without depressing model-accuracy means.
 
 ## Measured smoke runs
@@ -99,7 +227,7 @@ The analyzer artifacts and reports were produced at repository head `35eca3fc1d6
 - [GiantSteps key report](evidence/audio-mir/2026-07-25-giantsteps-key-5.report.json): 2/5 exact, MIREX weighted score 0.44, coverage 4/5; one parallel-mode miss, one unrelated miss, and one abstention; p50 11.48 seconds.
 - [GuitarSet report](evidence/audio-mir/2026-07-25-guitarset-5.report.json): 5/5 tempo Acc1; beat F-measure 0.903 and CMLc 0.593; downbeat F-measure 0.676 and CMLc 0.508; key exact/MIREX 0.60; p50 3.93 seconds per roughly 30-second clip.
 
-This is plumbing evidence, not an accuracy claim. Tempo is not obviously broken on the ten tempo-labeled tracks. After standard five-second trimming, global BPM can still be right while the event grid is incomplete or unstable; downbeat alignment/continuity is the clearest measured beat-side weakness. Key is weak enough to justify a larger S-KEY comparison before tuning fixed profiles.
+This is plumbing evidence, not an accuracy claim. Tempo is not obviously broken on the ten tempo-labeled tracks. After standard five-second trimming, global BPM can still be right while the event grid is incomplete or unstable; local-tempo interval coverage/error, downbeat alignment, and continuity make that failure visible. Key is weak enough to justify a larger S-KEY comparison before tuning fixed profiles. This repository change provides reproducible scoring and a fail-closed gate; it does not run a private calibration or sealed holdout and does not by itself close issue #312.
 
 ## Experiment order
 

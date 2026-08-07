@@ -11,6 +11,7 @@ from audio_mir_eval.io import (
     load_manifest,
     load_predictions,
     repo_head,
+    repo_is_clean,
     write_json,
     write_manifest,
 )
@@ -82,6 +83,45 @@ def test_manifest_requires_reference_provenance_class(tmp_path: Path):
     )
 
     with pytest.raises(EvalInputError, match="label_kind"):
+        load_manifest(path)
+
+
+def test_manifest_preserves_split_and_stratum_and_rejects_unknown_split(tmp_path: Path):
+    path = tmp_path / "manifest.jsonl"
+    record = {
+        "id": "track",
+        "label_kind": "ground_truth",
+        "evaluation_split": "holdout",
+        "stratum": "variable_tempo",
+        "provenance": {"dataset": "fixture"},
+        "reference": {"bpm": 120},
+    }
+    _write_jsonl(path, [record])
+
+    assert load_manifest(path)[0]["evaluation_split"] == "holdout"
+    assert load_manifest(path)[0]["stratum"] == "variable_tempo"
+
+    _write_jsonl(path, [record | {"evaluation_split": "train"}])
+    with pytest.raises(EvalInputError, match="evaluation_split"):
+        load_manifest(path)
+
+
+def test_manifest_rejects_unbounded_strata_taxonomy(tmp_path: Path):
+    path = tmp_path / "manifest.jsonl"
+    record = {
+        "label_kind": "ground_truth",
+        "provenance": {"dataset": "fixture"},
+        "reference": {"bpm": 120},
+    }
+    _write_jsonl(
+        path,
+        [
+            record | {"id": f"track-{index}", "stratum": f"stratum-{index}"}
+            for index in range(65)
+        ],
+    )
+
+    with pytest.raises(EvalInputError, match="more than 64 strata"):
         load_manifest(path)
 
 
@@ -180,6 +220,28 @@ def test_repo_head_rejects_an_enclosing_repository(monkeypatch):
 
     monkeypatch.setattr("audio_mir_eval.io.shutil.which", lambda _command: None)
     assert repo_head(root) == "unknown"
+
+
+def test_repo_is_clean_requires_an_exact_root_and_no_local_changes(monkeypatch):
+    root = Path(__file__).resolve().parents[3]
+    status = ""
+
+    def fake_run(command: list[str], **_kwargs):
+        if "--show-toplevel" in command:
+            stdout = str(root)
+        elif "status" in command:
+            stdout = status
+        else:
+            raise AssertionError(f"unexpected command: {command}")
+        return type("Completed", (), {"stdout": stdout})()
+
+    monkeypatch.setattr("audio_mir_eval.io.shutil.which", lambda _command: "/bin/git")
+    monkeypatch.setattr("audio_mir_eval.io.subprocess.run", fake_run)
+
+    assert repo_is_clean(root) is True
+    status = " M evals/audio_mir/src/audio_mir_eval/score.py\n"
+    assert repo_is_clean(root) is False
+    assert repo_is_clean(root / "backend") is False
 
 
 def test_atomic_write_respects_restrictive_umask(tmp_path: Path):

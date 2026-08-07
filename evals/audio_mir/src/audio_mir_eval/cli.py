@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -13,9 +14,11 @@ from .io import (
     load_manifest,
     load_predictions,
     repo_head,
+    repo_is_clean,
     sha256_file,
     write_json,
 )
+from .promotion import evaluate_promotion
 from .runner import run_analyzer
 from .score import build_report
 
@@ -74,11 +77,35 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="resume a compatible partial artifact and retry prior infra errors",
     )
+    run.add_argument(
+        "--experiment-id",
+        help="frozen experiment identifier; required with the other experiment fields",
+    )
+    run.add_argument(
+        "--experiment-arm",
+        help="baseline or candidate arm label; required with the other experiment fields",
+    )
+    run.add_argument(
+        "--experiment-factor",
+        help="single changed factor label; required with the other experiment fields",
+    )
+    run.add_argument(
+        "--freeze-id",
+        help="frozen decode/annotation/metric packet identifier; required with experiment fields",
+    )
 
     score = subparsers.add_parser("score", help="score a complete prediction artifact")
     score.add_argument("--manifest", type=Path, required=True)
     score.add_argument("--predictions", type=Path, required=True)
     score.add_argument("--output", type=Path, required=True)
+
+    promote = subparsers.add_parser(
+        "promote", help="apply an explicit held-out downbeat promotion policy"
+    )
+    promote.add_argument("--baseline-report", type=Path, required=True)
+    promote.add_argument("--candidate-report", type=Path, required=True)
+    promote.add_argument("--policy", type=Path, required=True)
+    promote.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -91,8 +118,9 @@ def main(argv: list[str] | None = None) -> int:
     args.repo_root = args.repo_root.resolve()
     try:
         head = repo_head(args.repo_root)
-        if args.command in {"run", "score"} and head == "unknown":
+        if args.command in {"run", "score", "promote"} and head == "unknown":
             raise EvalInputError("--repo-root must be an exact Git checkout root")
+        worktree_clean = repo_is_clean(args.repo_root)
         if args.command == "prepare-giantsteps":
             count, missing = prepare_giantsteps_manifest(
                 args.dataset_root,
@@ -118,8 +146,27 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
+        if args.command == "promote":
+            baseline = json.loads(args.baseline_report.read_text(encoding="utf-8"))
+            candidate = json.loads(args.candidate_report.read_text(encoding="utf-8"))
+            policy = json.loads(args.policy.read_text(encoding="utf-8"))
+            decision = evaluate_promotion(baseline, candidate, policy)
+            write_json(args.output, decision)
+            failed = sum(not gate["passed"] for gate in decision["gates"])
+            print(
+                f"audio-mir eval: promotion_passed={decision['passed']} "
+                f"failed_gates={failed} decision={args.output}"
+            )
+            return 0 if decision["passed"] else 1
+
         manifest = load_manifest(args.manifest)
         if args.command == "run":
+            experiment_fields = {
+                "id": args.experiment_id,
+                "arm": args.experiment_arm,
+                "factor": args.experiment_factor,
+                "freeze_id": args.freeze_id,
+            }
             count, errors = run_analyzer(
                 manifest,
                 manifest_path=args.manifest,
@@ -128,8 +175,12 @@ def main(argv: list[str] | None = None) -> int:
                 model_path=_repo_path(args.model, args.repo_root),
                 output_path=args.output,
                 repo_head=head,
+                repo_worktree_clean=worktree_clean,
                 timeout_seconds=args.timeout_seconds,
                 resume=args.resume,
+                experiment=experiment_fields
+                if any(value is not None for value in experiment_fields.values())
+                else None,
             )
             print(
                 f"audio-mir eval: run tracks={count} infra_errors={errors} artifact={args.output}"
@@ -158,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest_sha256=manifest_sha256,
             predictions_sha256=sha256_file(args.predictions),
             generated_at=datetime.now(UTC).isoformat(),
+            scorer_worktree_clean=worktree_clean,
         )
         write_json(args.output, report)
         errors = report["counts"]["infra_errors"]

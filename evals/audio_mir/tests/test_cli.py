@@ -96,6 +96,14 @@ else:
         str(model),
         "--output",
         str(predictions),
+        "--experiment-id",
+        "fixture-phase-v1",
+        "--experiment-arm",
+        "baseline",
+        "--experiment-factor",
+        "downbeat-postprocessor",
+        "--freeze-id",
+        "fixture-freeze-v1",
     ]
     run_exit = main(run_args)
     # Deleting the audio proves resume reuses the completed prediction.
@@ -143,6 +151,16 @@ else:
         == hashlib.sha256(analyzer.read_bytes()).hexdigest()
     )
     assert result["run"]["complete"] is True
+    assert result["run"]["experiment"] == {
+        "id": "fixture-phase-v1",
+        "arm": "baseline",
+        "factor": "downbeat-postprocessor",
+        "freeze_id": "fixture-freeze-v1",
+    }
+    assert (
+        result["run"]["resource_usage"]["scope"] == "runner_process_children_lifetime"
+    )
+    assert result["run"]["resource_usage"]["peak_rss_kib"] > 0
     assert result["groups"]["ground_truth"]["tempo"]["acc1"] == 1.0
     assert result["groups"]["ground_truth"]["key"]["weighted_score"] == 1.0
 
@@ -272,3 +290,55 @@ def test_run_rejects_unknown_repository_head(tmp_path: Path, capsys):
         == 1
     )
     assert "exact Git checkout root" in capsys.readouterr().err
+
+
+def test_run_preserves_manifest_audio_identity_after_a_missing_file(tmp_path: Path):
+    analyzer = tmp_path / "fake_analyzer.py"
+    analyzer.write_text(
+        "import json\nprint(json.dumps({'analyzer': 'fake'}))\n", encoding="utf-8"
+    )
+    model = tmp_path / "model.ckpt"
+    model.write_bytes(b"fixture")
+    expected_audio_sha256 = "a" * 64
+    manifest = tmp_path / "manifest.jsonl"
+    _write_jsonl(
+        manifest,
+        [
+            {
+                "id": "missing-audio",
+                "audio_path": "missing.wav",
+                "audio_sha256": expected_audio_sha256,
+                "label_kind": "ground_truth",
+                "provenance": {"dataset": "fixture"},
+                "reference": {"bpm": 120},
+            }
+        ],
+    )
+    predictions = tmp_path / "predictions.jsonl"
+
+    exit_code = main(
+        [
+            "--repo-root",
+            str(_repo_root()),
+            "run",
+            "--manifest",
+            str(manifest),
+            "--analyzer-python",
+            sys.executable,
+            "--analyzer-script",
+            str(analyzer),
+            "--model",
+            str(model),
+            "--output",
+            str(predictions),
+        ]
+    )
+
+    rows = [
+        json.loads(line)
+        for line in predictions.read_text(encoding="utf-8").splitlines()
+    ]
+    prediction = next(row for row in rows if row.get("record_type") == "prediction")
+    assert exit_code == 1
+    assert prediction["audio_sha256"] == expected_audio_sha256
+    assert prediction["error"]["type"] == "EvalInputError"
