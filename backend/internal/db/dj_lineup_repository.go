@@ -28,6 +28,7 @@ type DJLineupTrack struct {
 	LastRecentPlayedAt   time.Time
 	TotalPlayCount       int64
 	HistoricalPlayCount  int64
+	MidWindowPlayCount   int64
 	LastHistoricalPlayed time.Time
 }
 
@@ -42,8 +43,14 @@ func NewDJLineupRepository(db *DB) *DJLineupRepository {
 }
 
 // ListDJLineupTracks returns every track in the user's library with its play
-// windows and effective compact analysis facts. The 90-day and 180-day windows
-// intentionally mirror the endpoint's stable lineup themes.
+// windows and effective compact analysis facts. Play windows split at 90 days
+// (recent), 90-180 days (mid), and older than 180 days (historical); together
+// they partition history so every played track belongs to a lineup theme.
+//
+// The read is intentionally unbounded: correct cross-block partitioning and
+// partial fills require scoring every library track before selection caps the
+// result. Bounding this per theme would starve later blocks on large
+// libraries; revisit only with a real performance signal.
 func (r *DJLineupRepository) ListDJLineupTracks(ctx context.Context, userID uuid.UUID) ([]DJLineupTrack, error) {
 	query := `
 		WITH play_stats AS (
@@ -51,8 +58,9 @@ func (r *DJLineupRepository) ListDJLineupTracks(ctx context.Context, userID uuid
 				COUNT(*) FILTER (WHERE pe.played_at >= NOW() - INTERVAL '90 days') AS recent_play_count,
 				MAX(pe.played_at) FILTER (WHERE pe.played_at >= NOW() - INTERVAL '90 days') AS last_recent_played_at,
 				COUNT(*) AS total_play_count,
+				COUNT(*) FILTER (WHERE pe.played_at >= NOW() - INTERVAL '180 days' AND pe.played_at < NOW() - INTERVAL '90 days') AS mid_window_play_count,
 				COUNT(*) FILTER (WHERE pe.played_at < NOW() - INTERVAL '180 days') AS historical_play_count,
-				MAX(pe.played_at) FILTER (WHERE pe.played_at < NOW() - INTERVAL '180 days') AS last_historical_played_at
+				MAX(pe.played_at) FILTER (WHERE pe.played_at < NOW() - INTERVAL '90 days') AS last_prior_played_at
 			FROM play_events pe
 			WHERE pe.user_id = $1
 			GROUP BY pe.track_id
@@ -89,7 +97,7 @@ func (r *DJLineupRepository) ListDJLineupTracks(ctx context.Context, userID uuid
 	for rows.Next() {
 		var track DJLineupTrack
 		var summaryJSON, overridesJSON json.RawMessage
-		var lastRecentPlayedAt, lastHistoricalPlayedAt sql.NullTime
+		var lastRecentPlayedAt, lastPriorPlayedAt sql.NullTime
 		if err := rows.Scan(
 			&track.ID,
 			&track.Title,
@@ -103,15 +111,16 @@ func (r *DJLineupRepository) ListDJLineupTracks(ctx context.Context, userID uuid
 			&lastRecentPlayedAt,
 			&track.TotalPlayCount,
 			&track.HistoricalPlayCount,
-			&lastHistoricalPlayedAt,
+			&track.MidWindowPlayCount,
+			&lastPriorPlayedAt,
 		); err != nil {
 			return nil, err
 		}
 		if lastRecentPlayedAt.Valid {
 			track.LastRecentPlayedAt = lastRecentPlayedAt.Time
 		}
-		if lastHistoricalPlayedAt.Valid {
-			track.LastHistoricalPlayed = lastHistoricalPlayedAt.Time
+		if lastPriorPlayedAt.Valid {
+			track.LastHistoricalPlayed = lastPriorPlayedAt.Time
 		}
 		track.BPM, track.Camelot, track.Energy, track.GenreHints = djLineupAnalysisFacts(summaryJSON, overridesJSON)
 		tracks = append(tracks, track)

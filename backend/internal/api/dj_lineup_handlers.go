@@ -36,11 +36,9 @@ func NewDJLineupHandlers(store DJLineupStore) *DJLineupHandlers {
 }
 
 type DJLineupRequestedFilters struct {
-	Energy   *string `json:"energy"`
-	Genre    *string `json:"genre"`
-	EraStart *int    `json:"eraStart"`
-	EraEnd   *int    `json:"eraEnd"`
-	Q        *string `json:"q"`
+	Energy *string `json:"energy"`
+	Genre  *string `json:"genre"`
+	Q      *string `json:"q"`
 }
 
 type DJLineupTrackResponse struct {
@@ -144,20 +142,11 @@ func parseDJLineupQuery(r *http.Request) (djLineupQuery, error) {
 	}
 
 	var err error
-	if raw, present := values["eraStart"]; present {
-		query.Requested.EraStart, err = parseDJLineupYear(firstDJLineupValue(raw), "eraStart")
-		if err != nil {
-			return query, err
-		}
+	if _, present := values["eraStart"]; present {
+		return query, errors.New("era filtering is not supported: the library has no release-year data")
 	}
-	if raw, present := values["eraEnd"]; present {
-		query.Requested.EraEnd, err = parseDJLineupYear(firstDJLineupValue(raw), "eraEnd")
-		if err != nil {
-			return query, err
-		}
-	}
-	if query.Requested.EraStart != nil && query.Requested.EraEnd != nil && *query.Requested.EraStart > *query.Requested.EraEnd {
-		return query, errors.New("eraStart must be less than or equal to eraEnd")
+	if _, present := values["eraEnd"]; present {
+		return query, errors.New("era filtering is not supported: the library has no release-year data")
 	}
 
 	if raw, present := values["blocks"]; present {
@@ -311,8 +300,9 @@ func matchesDJLineupFilters(track db.DJLineupTrack, query djLineupQuery) bool {
 		return false
 	}
 
-	// The tracks schema has no release-year column, so eraStart/eraEnd are
-	// accepted and reflected in the response but intentionally do not filter.
+	// The tracks schema has no release-year column. Era filtering is therefore
+	// not offered: the query parser rejects eraStart/eraEnd rather than
+	// accepting filters it cannot honor.
 	return true
 }
 
@@ -359,11 +349,11 @@ func eligibleDJLineupTracks(tracks []db.DJLineupTrack, usedTrackIDs map[int64]st
 				continue
 			}
 		case "flashback":
-			if track.HistoricalPlayCount == 0 || track.RecentPlayCount > 0 {
+			if track.HistoricalPlayCount+track.MidWindowPlayCount == 0 || track.RecentPlayCount > 0 {
 				continue
 			}
 		case "fresh-finds":
-			if track.TotalPlayCount > 1 {
+			if track.TotalPlayCount > 0 {
 				continue
 			}
 		}
@@ -384,8 +374,8 @@ func orderDJLineupTracks(tracks []db.DJLineupTrack, themeID string) {
 				return left.LastRecentPlayedAt.After(right.LastRecentPlayedAt)
 			}
 		case "flashback":
-			if left.HistoricalPlayCount != right.HistoricalPlayCount {
-				return left.HistoricalPlayCount > right.HistoricalPlayCount
+			if left.MidWindowPlayCount != right.MidWindowPlayCount {
+				return left.MidWindowPlayCount > right.MidWindowPlayCount
 			}
 			if !left.LastHistoricalPlayed.Equal(right.LastHistoricalPlayed) {
 				return left.LastHistoricalPlayed.After(right.LastHistoricalPlayed)
@@ -425,5 +415,16 @@ func writeDJLineupJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeDJLineupError(w http.ResponseWriter, status int, message string) {
-	writeDJLineupJSON(w, status, map[string]string{"error": message})
+	writeErrorResponse(w, status, djLineupErrorCode(status), message)
+}
+
+func djLineupErrorCode(status int) string {
+	switch status {
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusBadRequest:
+		return "invalid_request"
+	default:
+		return "internal_error"
+	}
 }

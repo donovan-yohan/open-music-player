@@ -134,7 +134,7 @@ func TestDJLineupRouteWithAuthenticatedFixtures(t *testing.T) {
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1/dj/lineup?block=fresh-finds&perBlock=2&energy=high&genre=TECHNO&q=night&seed=12", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/api/v1/dj/lineup?block=fresh-finds&perBlock=2&energy=high&genre=TECHNO&q=night&seed=12", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -180,10 +180,49 @@ func TestDJLineupRejectsInvalidEnergyAndSeed(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 				t.Fatalf("decode error response: %v", err)
 			}
-			if body["error"] == "" {
-				t.Fatalf("error response = %v, want error message", body)
+			if body["error"] != "" || body["message"] == "" || body["code"] != "invalid_request" {
+				t.Fatalf("error response = %v, want {code, message} shape", body)
 			}
 		})
+	}
+}
+
+func TestDJLineupFreshFindsExcludesAnyPlayedTrack(t *testing.T) {
+	store := &fakeDJLineupStore{tracks: []db.DJLineupTrack{
+		{ID: 1, Title: "Never played", Energy: 0.8, TotalPlayCount: 0},
+		{ID: 2, Title: "Played once", Energy: 0.8, TotalPlayCount: 1},
+	}}
+	handler := NewDJLineupHandlers(store)
+
+	response := requestDJLineup(t, handler, "/api/v1/dj/lineup?block=fresh-finds&perBlock=10")
+	if got, want := sortedLineupTrackIDs(response), []int64{1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("track IDs = %v, want %v", got, want)
+	}
+}
+
+func TestDJLineupFlashbackIncludesMidWindowPlays(t *testing.T) {
+	store := &fakeDJLineupStore{tracks: []db.DJLineupTrack{
+		// Played only ~100 days ago: not recent (<90d), not historical
+		// (>180d), but must still land in flashback.
+		{ID: 7, Title: "Mid window", HistoricalPlayCount: 0, MidWindowPlayCount: 3, RecentPlayCount: 0},
+	}}
+	handler := NewDJLineupHandlers(store)
+
+	response := requestDJLineup(t, handler, "/api/v1/dj/lineup?block=flashback&perBlock=10")
+	if got, want := sortedLineupTrackIDs(response), []int64{7}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("track IDs = %v, want %v", got, want)
+	}
+}
+
+func TestDJLineupRejectsEraFilters(t *testing.T) {
+	handler := NewDJLineupHandlers(&fakeDJLineupStore{})
+	for _, param := range []string{"eraStart=1990", "eraEnd=2000"} {
+		req := withUser(httptest.NewRequest(http.MethodGet, "/api/v1/dj/lineup?"+param, nil), uuid.New())
+		rec := httptest.NewRecorder()
+		handler.GetLineup(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400 (body=%s)", param, rec.Code, rec.Body.String())
+		}
 	}
 }
 
