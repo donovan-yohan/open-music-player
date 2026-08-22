@@ -17,6 +17,17 @@ void main() {
       );
     });
 
+    test('maps literal high energy / low energy phrases', () {
+      expect(
+        parseDjVibeText('high energy please'),
+        const DjSessionFilters(energy: DjEnergy.high),
+      );
+      expect(
+        parseDjVibeText('something low-energy'),
+        const DjSessionFilters(energy: DjEnergy.low),
+      );
+    });
+
     test('passes unrelated free text through as q', () {
       expect(
         parseDjVibeText('late-night synthwave'),

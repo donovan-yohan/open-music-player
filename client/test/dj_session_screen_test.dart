@@ -67,6 +67,34 @@ void main() {
     expect(queueProvider.queue.tracks.single.playbackTrackId, '101');
     expect(find.text('Added to queue'), findsOneWidget);
   });
+  testWidgets('shows the empty-library state for an empty blocks response',
+      (tester) async {
+    final apiClient = mockQueueApiClient((request) async {
+      if (request.url.path.endsWith('/dj/lineup')) {
+        return http.Response(
+            jsonEncode({'requested': <String, Object?>{}, 'blocks': []}), 200);
+      }
+      return http.Response('{}', 404);
+    });
+    final queueProvider = QueueProvider(apiClient);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<QueueProvider>.value(
+        value: queueProvider,
+        child: MaterialApp(
+          home: DjSessionScreen(
+            service: DjSessionService(apiClient),
+            randomSeed: () => 77,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('On Repeat'), findsNothing);
+    expect(find.text('Your DJ session starts with your library'), findsOneWidget);
+  });
+
   testWidgets('ignores a stale full lineup after a newer request',
       (tester) async {
     final service = _DeferredDjSessionDataSource();

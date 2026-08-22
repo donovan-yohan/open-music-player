@@ -67,6 +67,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   int _fullResponseGeneration = 0;
   final Map<String, int> _rerollGenerations = {};
   bool _loadingAll = true;
+  bool _loadedAllOnce = false;
   String? _refreshError;
 
   @override
@@ -90,7 +91,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   bool get _isEmptyLibrary =>
       !_loadingAll &&
       _blockErrors.isEmpty &&
-      _blocks.isNotEmpty &&
+      _loadedAllOnce &&
       _blocks.every((block) => block.tracks.isEmpty);
 
   DjLineupRequest _requestForFilters({
@@ -126,6 +127,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
       setState(() {
         _blocks = lineup.blocks;
         _loadingAll = false;
+        _loadedAllOnce = true;
         _loadingBlockIds.clear();
         _blockErrors.clear();
       });
