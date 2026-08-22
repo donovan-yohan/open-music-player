@@ -55,7 +55,8 @@ class MatchSuggestionsSheet extends StatelessWidget {
               width: 40,
               height: 4,
               decoration: BoxDecoration(
-                color: theme.colorScheme.onSurfaceVariant.withOpacity(0.4),
+                color:
+                    theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -114,13 +115,15 @@ class MatchSuggestionsSheet extends StatelessWidget {
               child: ListView.separated(
                 controller: scrollController,
                 padding: const EdgeInsets.symmetric(vertical: 8),
-                itemCount: track.mbSuggestions.length + 1, // +1 for manual search option
+                itemCount: track.mbSuggestions.length +
+                    1, // +1 for manual search option
                 separatorBuilder: (context, index) => const Divider(height: 1),
                 itemBuilder: (context, index) {
                   if (index == track.mbSuggestions.length) {
                     return _buildManualSearchOption(context);
                   }
-                  return _buildSuggestionTile(context, track.mbSuggestions[index]);
+                  return _buildSuggestionTile(
+                      context, track.mbSuggestions[index]);
                 },
               ),
             ),
@@ -148,7 +151,7 @@ class MatchSuggestionsSheet extends StatelessWidget {
               width: 48,
               height: 48,
               decoration: BoxDecoration(
-                color: confidenceColor.withOpacity(0.15),
+                color: confidenceColor.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Center(
@@ -190,7 +193,8 @@ class MatchSuggestionsSheet extends StatelessWidget {
                     Text(
                       suggestion.album!,
                       style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant.withOpacity(0.7),
+                        color: theme.colorScheme.onSurfaceVariant
+                            .withValues(alpha: 0.7),
                       ),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -202,7 +206,8 @@ class MatchSuggestionsSheet extends StatelessWidget {
                       spacing: 4,
                       children: suggestion.formattedMatchReasons.map((reason) {
                         return Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
                           decoration: BoxDecoration(
                             color: theme.colorScheme.secondaryContainer,
                             borderRadius: BorderRadius.circular(4),
@@ -321,10 +326,10 @@ class UnverifiedTrackIndicator extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         decoration: BoxDecoration(
-          color: Colors.orange.withOpacity(0.15),
+          color: Colors.orange.withValues(alpha: 0.15),
           borderRadius: BorderRadius.circular(4),
           border: Border.all(
-            color: Colors.orange.withOpacity(0.3),
+            color: Colors.orange.withValues(alpha: 0.3),
             width: 1,
           ),
         ),

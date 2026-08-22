@@ -78,6 +78,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
             centerTitle: true,
             actions: [
               const _DjModeAction(),
+              const _DjSessionAction(),
               IconButton(
                 icon: const Icon(Icons.info_outline),
                 tooltip: 'Song info',
@@ -680,6 +681,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
   }
 }
+
 @visibleForTesting
 class PlaybackControls extends StatelessWidget {
   const PlaybackControls({
@@ -845,6 +847,35 @@ class _DjModeAction extends StatelessWidget {
           icon: const Icon(Icons.graphic_eq),
           tooltip: 'DJ mode (experimental)',
           onPressed: () => context.push('/dj'),
+        );
+      },
+    );
+  }
+}
+
+/// Queue-backed DJ discovery is gated alongside the deck, while leaving the
+/// deck's experimental direct-voice path untouched.
+class _DjSessionAction extends StatelessWidget {
+  const _DjSessionAction();
+
+  @override
+  Widget build(BuildContext context) {
+    try {
+      riverpod.ProviderScope.containerOf(context, listen: false);
+    } catch (_) {
+      return const SizedBox.shrink();
+    }
+    return riverpod.Consumer(
+      builder: (context, ref, _) {
+        final enabled = ref.watch(
+          settingsProvider.select((settings) => settings.djModeEnabled),
+        );
+        if (!enabled) return const SizedBox.shrink();
+        return IconButton(
+          key: const ValueKey('player_dj_session_action'),
+          icon: const Icon(Icons.auto_awesome),
+          tooltip: 'DJ Session',
+          onPressed: () => context.push('/dj-session'),
         );
       },
     );

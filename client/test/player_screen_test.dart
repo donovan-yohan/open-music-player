@@ -53,9 +53,13 @@ void main() {
     await pumpPlayerWithSettings(tester, <String, Object>{});
 
     expect(find.byKey(const ValueKey('player_dj_mode_action')), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('player_dj_session_action')),
+      findsOneWidget,
+    );
   });
 
-  testWidgets('turning DJ mode off removes the only way into the deck', (
+  testWidgets('turning DJ mode off removes the DJ entries', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(1200, 2200);
@@ -68,6 +72,10 @@ void main() {
     });
 
     expect(find.byKey(const ValueKey('player_dj_mode_action')), findsNothing);
+    expect(
+      find.byKey(const ValueKey('player_dj_session_action')),
+      findsNothing,
+    );
   });
 
   testWidgets('DJ mode entry stays hidden without app settings', (
@@ -589,25 +597,24 @@ class _FakePlaybackState extends Fake implements PlaybackState {
     List<MediaItem>? queue,
     PlaybackSnapshot? snapshot,
     MediaItem? currentItem,
-  }) : _playbackContext = playbackContext,
-       _queue = queue ?? const [testItem],
-       _currentItem = currentItem ?? testItem,
-       _snapshot =
-           snapshot ??
-           const PlaybackSnapshot(
-             sessionId: 'session_test',
-             cues: [],
-             currentCueId: 'cue_1',
-             currentQueueIndex: 0,
-             currentMediaItem: testItem,
-             localPosition: Duration(seconds: 10),
-             localDuration: Duration(seconds: 60),
-             globalPosition: Duration(seconds: 10),
-             globalDuration: Duration(seconds: 60),
-             playing: false,
-             processingState: ProcessingState.ready,
-             activeVoiceCount: 1,
-           );
+  })  : _playbackContext = playbackContext,
+        _queue = queue ?? const [testItem],
+        _currentItem = currentItem ?? testItem,
+        _snapshot = snapshot ??
+            const PlaybackSnapshot(
+              sessionId: 'session_test',
+              cues: [],
+              currentCueId: 'cue_1',
+              currentQueueIndex: 0,
+              currentMediaItem: testItem,
+              localPosition: Duration(seconds: 10),
+              localDuration: Duration(seconds: 60),
+              globalPosition: Duration(seconds: 10),
+              globalDuration: Duration(seconds: 60),
+              playing: false,
+              processingState: ProcessingState.ready,
+              activeVoiceCount: 1,
+            );
 
   static const testItem = MediaItem(
     id: '1',
@@ -721,11 +728,9 @@ Matcher atLeast(num value) => greaterThanOrEqualTo(value);
 double _contrastRatio(Color first, Color second) {
   final firstLuminance = first.computeLuminance();
   final secondLuminance = second.computeLuminance();
-  final lighter = firstLuminance > secondLuminance
-      ? firstLuminance
-      : secondLuminance;
-  final darker = firstLuminance > secondLuminance
-      ? secondLuminance
-      : firstLuminance;
+  final lighter =
+      firstLuminance > secondLuminance ? firstLuminance : secondLuminance;
+  final darker =
+      firstLuminance > secondLuminance ? secondLuminance : firstLuminance;
   return (lighter + 0.05) / (darker + 0.05);
 }

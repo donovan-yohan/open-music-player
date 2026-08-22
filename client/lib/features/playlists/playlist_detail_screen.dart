@@ -171,8 +171,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   Future<void> _reorderTrack(int oldIndex, int newIndex) async {
     if (_playlist == null || _playlist!.tracks == null) return;
 
-    if (newIndex > oldIndex) newIndex--;
-
     final tracks = List<Track>.from(_playlist!.tracks!);
     final track = tracks.removeAt(oldIndex);
     tracks.insert(newIndex, track);
@@ -234,14 +232,17 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   void _showDeleteConfirmation() {
-    if (_playlist == null) return;
+    final playlist = _playlist;
+    if (playlist == null) return;
+    final router = GoRouter.of(context);
+    final messenger = ScaffoldMessenger.of(context);
 
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete playlist?'),
         content: Text(
-          'Are you sure you want to delete "${_playlist!.name}"? This action cannot be undone.',
+          'Are you sure you want to delete "${playlist.name}"? This action cannot be undone.',
         ),
         actions: [
           TextButton(
@@ -252,19 +253,17 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             onPressed: () async {
               Navigator.pop(context);
               try {
-                await _playlistService.deletePlaylist(_playlist!.id);
-                if (mounted) {
-                  context.pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Deleted "${_playlist!.name}"')),
-                  );
-                }
+                await _playlistService.deletePlaylist(playlist.id);
+                if (!mounted) return;
+                router.pop();
+                messenger.showSnackBar(
+                  SnackBar(content: Text('Deleted "${playlist.name}"')),
+                );
               } catch (e) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Failed to delete: $e')),
-                  );
-                }
+                if (!mounted) return;
+                messenger.showSnackBar(
+                  SnackBar(content: Text('Failed to delete: $e')),
+                );
               }
             },
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
@@ -618,7 +617,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     if (_isEditMode) {
       return SliverReorderableList(
         itemCount: tracks.length,
-        onReorder: _reorderTrack,
+        onReorderItem: _reorderTrack,
         itemBuilder: (context, index) {
           final track = tracks[index];
           final isCurrent = _isCurrentTrackInThisPlaylist(
