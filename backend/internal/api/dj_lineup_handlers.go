@@ -80,9 +80,9 @@ type djLineupTheme struct {
 }
 
 var djLineupThemes = []djLineupTheme{
-	{ID: "on-repeat", Title: "On Repeat", Reason: "Tracks you keep coming back to"},
-	{ID: "flashback", Title: "Flashback", Reason: "Old favorites ready for another spin"},
-	{ID: "fresh-finds", Title: "Fresh Finds", Reason: "New additions with room to grow"},
+	{ID: "on-repeat", Title: "On repeat", Reason: "The ones you keep coming back to."},
+	{ID: "flashback", Title: "Flashback", Reason: "Haven't heard this in a minute."},
+	{ID: "fresh-finds", Title: "Fresh finds", Reason: "Barely played. Worth your time."},
 }
 
 // GetLineup handles GET /api/v1/dj/lineup. It is deterministic and relies only
