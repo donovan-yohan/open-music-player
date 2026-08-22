@@ -226,6 +226,27 @@ func TestDJLineupRejectsEraFilters(t *testing.T) {
 	}
 }
 
+func TestDJLineupServesDesignSpecBlockCopy(t *testing.T) {
+	want := map[string]djLineupTheme{
+		"on-repeat":   {ID: "on-repeat", Title: "On repeat", Reason: "The ones you keep coming back to."},
+		"flashback":   {ID: "flashback", Title: "Flashback", Reason: "Haven't heard this in a minute."},
+		"fresh-finds": {ID: "fresh-finds", Title: "Fresh finds", Reason: "Barely played. Worth your time."},
+	}
+	if len(djLineupThemes) != len(want) {
+		t.Fatalf("djLineupThemes = %d entries, want %d", len(djLineupThemes), len(want))
+	}
+	for _, theme := range djLineupThemes {
+		expected, ok := want[theme.ID]
+		if !ok {
+			t.Fatalf("unexpected block ID %q", theme.ID)
+		}
+		if theme.Title != expected.Title || theme.Reason != expected.Reason {
+			t.Fatalf("block %q: title=%q reason=%q, want title=%q reason=%q",
+				theme.ID, theme.Title, theme.Reason, expected.Title, expected.Reason)
+		}
+	}
+}
+
 func requestDJLineup(t *testing.T, handler *DJLineupHandlers, rawURL string) DJLineupResponse {
 	t.Helper()
 	req := withUser(httptest.NewRequest(http.MethodGet, rawURL, nil), uuid.New())

@@ -14,9 +14,10 @@ import 'support/mock_dio_client.dart';
 
 void main() {
   testWidgets(
-      'renders the fixture lineup, rerolls one block, and queues a card',
+      'renders the fixture lineup, swaps a block, and queues from the card sheet',
       (tester) async {
     final lineupRequests = <http.Request>[];
+    final queueBodies = <Map<String, Object?>>[];
     final apiClient = mockQueueApiClient((request) async {
       if (request.url.path.endsWith('/dj/lineup')) {
         lineupRequests.add(request);
@@ -25,6 +26,7 @@ void main() {
       }
       if (request.method == 'POST' &&
           request.url.path.endsWith('/queue/items')) {
+        queueBodies.add(jsonDecode(request.body) as Map<String, Object?>);
         return http.Response(_queueAfterAdding(), 200);
       }
       return http.Response('{}', 404);
@@ -44,15 +46,20 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(find.text('Reroll session'), findsOneWidget);
+    expect(find.text('Built from your library.'), findsOneWidget);
     expect(find.text('On Repeat'), findsOneWidget);
-    expect(find.text('Flashback'), findsOneWidget);
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, -360));
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -400));
     await tester.pumpAndSettle();
-    expect(find.text('Fresh Finds'), findsOneWidget);
-    await tester.drag(find.byType(CustomScrollView), const Offset(0, 360));
+    expect(find.text('Flashback'), findsOneWidget);
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -400));
+    await tester.pumpAndSettle();
+    expect(find.text('Fresh finds'), findsOneWidget);
+    expect(find.text("That's the set. Reroll anytime."), findsOneWidget);
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 800));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const ValueKey('dj_reroll_on-repeat')));
+    await tester.tap(find.byKey(const ValueKey('dj_swap_on-repeat')));
     await tester.pumpAndSettle();
 
     final rerollRequest = lineupRequests.last;
@@ -60,13 +67,70 @@ void main() {
     expect(rerollRequest.url.queryParameters['excludeIds'], '101,102');
     expect(rerollRequest.url.queryParameters['seed'], '77');
 
+    // Card tap opens the actions sheet instead of enqueueing directly.
     await tester.tap(find.byKey(const ValueKey('dj_track_101')));
+    await tester.pumpAndSettle();
+    expect(find.text('Play next'), findsOneWidget);
+    expect(find.text('Cancel'), findsOneWidget);
+
+    // Explicit Play next item in the sheet enqueues with playNext.
+    await tester.tap(find.text('Play next'));
     await tester.pumpAndSettle();
 
     expect(queueProvider.queue.tracks, hasLength(1));
     expect(queueProvider.queue.tracks.single.playbackTrackId, '101');
+    expect(find.text('Playing next'), findsOneWidget);
+    expect(queueBodies.single['position'], 'next');
+    expect(queueBodies.single['trackId'], 101);
+
+    // The card's Add-to-queue button appends (position: last), matching the
+    // "Added to queue" snackbar. Advance past the previous snackbar's timer
+    // first so the new one is on screen for its assertion.
+    await tester.pump(const Duration(seconds: 5));
+    await tester.tap(find.byTooltip('Add to queue').first);
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(queueBodies, hasLength(2));
+    expect(queueBodies.last['position'], 'last');
+    expect(queueBodies.last['trackId'], 101);
     expect(find.text('Added to queue'), findsOneWidget);
   });
+
+  testWidgets('hero pill rerolls the full lineup with fresh seeds',
+      (tester) async {
+    final lineupRequests = <http.Request>[];
+    final apiClient = mockQueueApiClient((request) async {
+      if (request.url.path.endsWith('/dj/lineup')) {
+        lineupRequests.add(request);
+        return http.Response(_lineupFixture(null), 200);
+      }
+      return http.Response('{}', 404);
+    });
+    final queueProvider = QueueProvider(apiClient);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<QueueProvider>.value(
+        value: queueProvider,
+        child: MaterialApp(
+          home: DjSessionScreen(
+            service: DjSessionService(apiClient),
+            randomSeed: () => 42,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(lineupRequests, hasLength(1));
+
+    await tester.tap(find.byKey(const ValueKey('dj_reroll_session')));
+    await tester.pumpAndSettle();
+
+    expect(lineupRequests, hasLength(2));
+    expect(lineupRequests.last.url.queryParameters['seed'], '42');
+    expect(find.text('Steering…'), findsNothing);
+  });
+
   testWidgets('shows the empty-library state for an empty blocks response',
       (tester) async {
     final apiClient = mockQueueApiClient((request) async {
@@ -92,7 +156,12 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('On Repeat'), findsNothing);
-    expect(find.text('Your DJ session starts with your library'), findsOneWidget);
+    expect(find.text('Your library is empty'), findsOneWidget);
+    expect(
+      find.text('Add some tracks and the session writes itself.'),
+      findsOneWidget,
+    );
+    expect(find.text('Add tracks'), findsOneWidget);
   });
 
   testWidgets('ignores a stale full lineup after a newer request',
@@ -111,7 +180,7 @@ void main() {
     expect(service.requests, hasLength(1));
 
     await tester.enterText(find.byType(TextField), 'calm study session');
-    await tester.tap(find.byTooltip('Apply DJ request'));
+    await tester.tap(find.byTooltip('Send request'));
     await tester.pump();
     expect(service.requests, hasLength(2));
 
@@ -124,6 +193,28 @@ void main() {
 
     expect(_hasRenderedText(tester, 'Current pick'), isTrue);
     expect(_hasRenderedText(tester, 'Stale pick'), isFalse);
+  });
+
+  testWidgets('shows skeletons while the first lineup loads', (tester) async {
+    final service = _DeferredDjSessionDataSource();
+    final queueProvider = QueueProvider(EmptyQueueApiClient());
+    addTearDown(queueProvider.dispose);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<QueueProvider>.value(
+        value: queueProvider,
+        child: MaterialApp(home: DjSessionScreen(service: service)),
+      ),
+    );
+    await tester.pump();
+    // Only the first section is on stage before scrolling; assert skeletons
+    // and the Swap affordance render while the lineup request is in flight.
+    expect(find.byTooltip('Swap these tracks'), findsOneWidget);
+    expect(find.text('On repeat'), findsOneWidget);
+
+    service.responses[0].complete(_lineupWithTrackTitle('Loaded track'));
+    await tester.pumpAndSettle();
+    expect(_hasRenderedText(tester, 'Loaded track'), isTrue);
   });
 }
 
@@ -169,7 +260,7 @@ String _lineupFixture(String? block) {
     {
       'id': 'on-repeat',
       'title': 'On Repeat',
-      'reason': 'Tracks you keep coming back to',
+      'reason': 'The ones you keep coming back to.',
       'tracks': [
         {
           'id': 101,
@@ -196,7 +287,7 @@ String _lineupFixture(String? block) {
     {
       'id': 'flashback',
       'title': 'Flashback',
-      'reason': 'A familiar turn from your archive',
+      'reason': "Haven't heard this in a minute.",
       'tracks': [
         {
           'id': 201,
@@ -212,8 +303,8 @@ String _lineupFixture(String? block) {
     },
     {
       'id': 'fresh-finds',
-      'title': 'Fresh Finds',
-      'reason': 'A new lane in your library',
+      'title': 'Fresh finds',
+      'reason': 'Barely played. Worth your time.',
       'tracks': [
         {
           'id': 301,

@@ -7,9 +7,13 @@ extension DjEnergyWireValue on DjEnergy {
 
   String get label => switch (this) {
         DjEnergy.low => 'Low',
-        DjEnergy.medium => 'Medium',
+        DjEnergy.medium => 'Mid',
         DjEnergy.high => 'High',
       };
+
+  /// Copy-table label for active-filter chips: `Low energy`, `Mid energy`,
+  /// `High energy`.
+  String get chipLabel => label;
 }
 
 enum DjVibePreset { chill, workout, focus, party }
