@@ -77,7 +77,8 @@ func (r *DJLineupRepository) ListDJLineupTracks(ctx context.Context, userID uuid
 			ps.last_recent_played_at,
 			COALESCE(ps.total_play_count, 0),
 			COALESCE(ps.historical_play_count, 0),
-			ps.last_historical_played_at
+			COALESCE(ps.mid_window_play_count, 0),
+			ps.last_prior_played_at
 		FROM user_library ul
 		JOIN tracks t ON t.id = ul.track_id
 		LEFT JOIN track_metadata_overrides tmo
