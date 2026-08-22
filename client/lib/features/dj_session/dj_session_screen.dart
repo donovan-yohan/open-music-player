@@ -39,10 +39,11 @@ class DjSessionScreen extends StatefulWidget {
 
 class _DjSessionScreenState extends State<DjSessionScreen> {
   static const _coachMarkSeenKey = 'dj_session.coach_mark_seen';
+  static const _requestSubmittedKey = 'dj_session.request_submitted';
   static const _fallbackBlocks = [
     DjLineupBlock(
       id: 'on-repeat',
-      title: 'On Repeat',
+      title: 'On repeat',
       reason: 'The ones you keep coming back to.',
       tracks: [],
     ),
@@ -84,7 +85,6 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   bool _coachMarkVisible = false;
   String _refreshError = '';
   String _announcement = '';
-  int _announcementToken = 0;
 
   @override
   void initState() {
@@ -331,6 +331,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
 
   void _applyTextRequest() {
     _dismissCoachMark();
+    unawaited(_markRequestSubmitted());
     _applyFilters(parseDjVibeText(_requestController.text));
   }
 
@@ -355,15 +356,31 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   void _announce(String message) {
     if (!mounted) return;
     setState(() {
-      _announcementToken += 1;
       _announcement = message;
     });
+  }
+
+  /// Whether the user has ever submitted a request. The coach mark is
+  /// suppressed entirely once a request has been submitted (spec).
+  Future<void> _markRequestSubmitted() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_requestSubmittedKey, true);
+    } catch (_) {
+      // Preferences unavailable (e.g. widget tests): nothing to persist.
+    }
   }
 
   Future<void> _maybeShowCoachMark() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      if (!mounted || (prefs.getBool(_coachMarkSeenKey) ?? false)) return;
+      final submittedBefore =
+          prefs.getBool(_requestSubmittedKey) ?? false;
+      if (!mounted ||
+          submittedBefore ||
+          (prefs.getBool(_coachMarkSeenKey) ?? false)) {
+        return;
+      }
       setState(() => _coachMarkVisible = true);
       await prefs.setBool(_coachMarkSeenKey, true);
     } catch (_) {
@@ -429,6 +446,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                       sliver: SliverToBoxAdapter(
                         child: Semantics(
                           liveRegion: true,
+                          label: _announcement,
                           child: _LineupBlockSection(
                             block: _visibleBlocks[0],
                             isLoading:
@@ -439,7 +457,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                             onReroll: () => _reroll(_visibleBlocks[0]),
                             onTrackActivated: _showTrackActions,
                             onEnqueueTrack: (track) =>
-                                _enqueue(track, playNext: true),
+                                _enqueue(track, playNext: false),
                             reducedMotion: reducedMotion,
                           ),
                         ),
@@ -451,6 +469,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                         sliver: SliverToBoxAdapter(
                           child: Semantics(
                             liveRegion: true,
+                            label: _announcement,
                             child: _LineupBlockSection(
                               block: _visibleBlocks[i],
                               isLoading: _loadingBlockIds
@@ -462,7 +481,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                               onReroll: () => _reroll(_visibleBlocks[i]),
                               onTrackActivated: _showTrackActions,
                               onEnqueueTrack: (track) =>
-                                  _enqueue(track, playNext: true),
+                                  _enqueue(track, playNext: false),
                               reducedMotion: reducedMotion,
                             ),
                           ),
@@ -474,18 +493,6 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                     ),
                   ],
                 ],
-              ),
-            ),
-            // Live-region announcement node for screen readers; visually empty.
-            Positioned(
-              left: -20000,
-              top: 0,
-              width: 100,
-              height: 10,
-              child: Offstage(
-                child: Text(
-                  '$_announcement\xA0$_announcementToken',
-                ),
               ),
             ),
           ],
@@ -524,7 +531,6 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
             key: const ValueKey('dj_reroll_session'),
             child: GestureDetector(
               onLongPress: () {
-                HapticFeedback.mediumImpact();
                 _heroPressed = false;
                 setState(() {});
                 _focusRequestField();

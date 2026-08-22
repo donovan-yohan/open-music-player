@@ -17,6 +17,7 @@ void main() {
       'renders the fixture lineup, swaps a block, and queues from the card sheet',
       (tester) async {
     final lineupRequests = <http.Request>[];
+    final queueBodies = <Map<String, Object?>>[];
     final apiClient = mockQueueApiClient((request) async {
       if (request.url.path.endsWith('/dj/lineup')) {
         lineupRequests.add(request);
@@ -25,6 +26,7 @@ void main() {
       }
       if (request.method == 'POST' &&
           request.url.path.endsWith('/queue/items')) {
+        queueBodies.add(jsonDecode(request.body) as Map<String, Object?>);
         return http.Response(_queueAfterAdding(), 200);
       }
       return http.Response('{}', 404);
@@ -78,6 +80,21 @@ void main() {
     expect(queueProvider.queue.tracks, hasLength(1));
     expect(queueProvider.queue.tracks.single.playbackTrackId, '101');
     expect(find.text('Playing next'), findsOneWidget);
+    expect(queueBodies.single['position'], 'next');
+    expect(queueBodies.single['trackId'], 101);
+
+    // The card's Add-to-queue button appends (position: last), matching the
+    // "Added to queue" snackbar. Advance past the previous snackbar's timer
+    // first so the new one is on screen for its assertion.
+    await tester.pump(const Duration(seconds: 5));
+    await tester.tap(find.byTooltip('Add to queue').first);
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(queueBodies, hasLength(2));
+    expect(queueBodies.last['position'], 'last');
+    expect(queueBodies.last['trackId'], 101);
+    expect(find.text('Added to queue'), findsOneWidget);
   });
 
   testWidgets('hero pill rerolls the full lineup with fresh seeds',
@@ -193,7 +210,7 @@ void main() {
     // Only the first section is on stage before scrolling; assert skeletons
     // and the Swap affordance render while the lineup request is in flight.
     expect(find.byTooltip('Swap these tracks'), findsOneWidget);
-    expect(find.text('On Repeat'), findsOneWidget);
+    expect(find.text('On repeat'), findsOneWidget);
 
     service.responses[0].complete(_lineupWithTrackTitle('Loaded track'));
     await tester.pumpAndSettle();
