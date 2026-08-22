@@ -197,14 +197,6 @@ func firstDJLineupValue(values []string) string {
 	return values[0]
 }
 
-func parseDJLineupYear(raw, name string) (*int, error) {
-	value, err := parseDJLineupBoundedInt(raw, name, 0, 9999)
-	if err != nil {
-		return nil, err
-	}
-	return &value, nil
-}
-
 func parseDJLineupBoundedInt(raw, name string, min, max int) (int, error) {
 	value, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil || value < min || value > max {
