@@ -45,6 +45,7 @@ type Router struct {
 	sourceSelectionHandlers *SourceSelectionHandlers
 	maintenanceHandlers     *MaintenanceHandlers
 	playEventHandlers       *PlayEventHandlers
+	djLineupHandlers        *DJLineupHandlers
 	researchHandlers        *ResearchHandlers
 	healthHandler           *health.Handler
 	metricsHandler          http.HandlerFunc
@@ -81,6 +82,7 @@ type RouterConfig struct {
 	SourceSelectionHandlers *SourceSelectionHandlers
 	MaintenanceHandlers     *MaintenanceHandlers
 	PlayEventHandlers       *PlayEventHandlers
+	DJLineupHandlers        *DJLineupHandlers
 	ResearchHandlers        *ResearchHandlers
 	HealthHandler           *health.Handler
 	Metrics                 *metrics.Metrics
@@ -142,6 +144,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		sourceSelectionHandlers: cfg.SourceSelectionHandlers,
 		maintenanceHandlers:     cfg.MaintenanceHandlers,
 		playEventHandlers:       cfg.PlayEventHandlers,
+		djLineupHandlers:        cfg.DJLineupHandlers,
 		researchHandlers:        cfg.ResearchHandlers,
 		healthHandler:           cfg.HealthHandler,
 		metricsHandler:          metricsHandler,
@@ -373,6 +376,11 @@ func (r *Router) setupRoutes() {
 		r.mux.HandleFunc("GET /api/v1/me/plays/history", playEventUnavailable)
 		r.mux.HandleFunc("GET /api/v1/me/plays/recent", playEventUnavailable)
 		r.mux.HandleFunc("GET /api/v1/me/plays/top", playEventUnavailable)
+	}
+
+	// Deterministic, data-only lineup generation for a personalized DJ session.
+	if r.djLineupHandlers != nil {
+		r.mux.HandleFunc("GET /api/v1/dj/lineup", r.withAuth(r.djLineupHandlers.GetLineup))
 	}
 
 	// Maintenance repair routes (auth required)
