@@ -17,6 +17,7 @@ import '../features/library/local_browse_navigation.dart';
 import '../features/settings/settings_screen.dart';
 import '../features/player/player_screen.dart';
 import '../features/dj/dj_screen.dart';
+import '../features/dj_session/dj_session_screen.dart';
 import '../features/player/widgets/mini_player.dart';
 import '../features/share/share_import_screen.dart';
 import '../features/downloads/downloads_screen.dart';
@@ -79,6 +80,14 @@ GoRouter createRouter(
         redirect: (context, state) =>
             djModeEnabledForRouting(context) ? null : '/player',
         builder: (context, state) => const DjScreen(),
+      ),
+      GoRoute(
+        path: '/dj-session',
+        // Discovery and queue mutations are canonical, but the surface remains
+        // an intentional DJ-mode feature while it is being iterated.
+        redirect: (context, state) =>
+            djModeEnabledForRouting(context) ? null : '/player',
+        builder: (context, state) => const DjSessionScreen(),
       ),
       GoRoute(
         path: '/downloads',
@@ -265,6 +274,7 @@ class ScaffoldWithNavBar extends StatelessWidget {
     }
   }
 }
+
 class _MobileShell extends StatelessWidget {
   const _MobileShell({
     required this.child,

@@ -90,6 +90,21 @@ void main() {
       reason: '/dj must refuse to build the deck when DJ mode is off',
     );
   });
+
+  test('/dj-session is closed with DJ mode disabled', () {
+    final router = createRouter(_FakeAuthState());
+    addTearDown(router.dispose);
+
+    final sessionRoute = router.configuration.routes
+        .whereType<GoRoute>()
+        .firstWhere((route) => route.path == '/dj-session');
+
+    expect(
+      sessionRoute.redirect,
+      isNotNull,
+      reason: '/dj-session must not be reachable when DJ mode is off',
+    );
+  });
 }
 
 class _FakeAuthState extends Fake implements AuthState {
