@@ -422,6 +422,59 @@ flutter build windows --release
 flutter build web --release
 ```
 
+## Nightly Android APK
+
+Every push to `main` builds a debug APK automatically via the
+[`nightly-apk`](.github/workflows/nightly-apk.yml) workflow. There are no
+formal releases — just one rolling artifact, overwritten on each build
+(7-day retention).
+
+**To download the latest nightly:**
+
+1. Go to the repo's [Actions tab](../../actions) and open the most recent
+   **nightly-apk** run.
+2. Download the `soundq-nightly` artifact from the run's **Artifacts**
+   section (you must be signed in to GitHub).
+3. Install the APK on an Android device ("install unknown apps" permission
+   may be required).
+
+**What the nightly needs to connect to a backend:**
+
+The APK is built with an API base URL baked in at compile time. Which URL
+depends on how the repo is configured:
+
+- **Default (no configuration):** the emulator loopback address
+  `http://10.0.2.2:8080/api/v1` — this only works from an Android emulator
+  running the stack on the same host.
+- **With the `OMP_NIGHTLY_API_BASE_URL` repository variable set:** that URL
+  is baked in instead. Point it at your backend, e.g.
+  `http://your-host:8080/api/v1`, reachable from the device's network.
+
+To set or change it: repo **Settings → Secrets and variables → Actions →
+Variables →** new variable `OMP_NIGHTLY_API_BASE_URL`. The next nightly
+build picks it up; the current value is printed in each run's summary.
+
+**Self-hosting checklist for your own device:**
+
+1. Run the backend somewhere the phone can reach (see
+   [Deployment](#deployment) or the low-memory local stack above).
+2. Ensure the queue/download endpoints you need are enabled (Redis +
+   downloads profile) — see `scripts/local-low-memory.sh`.
+3. Set `OMP_NIGHTLY_API_BASE_URL` to your backend's `/api/v1` root and let
+   the workflow rebuild, or build locally:
+
+   ```bash
+   cd client
+   flutter build apk --debug \
+     --dart-define=OMP_API_BASE_URL=http://your-host:8080/api/v1
+   ```
+
+4. Register a user against that backend (`POST /api/v1/auth/register`) and
+   sign in from the app.
+
+Note: debug builds sign with the default debug keystore and are intended for
+development/personal use only.
+
 ## Development Notes
 
 - The backend uses graceful shutdown, waiting for in-progress downloads to complete
