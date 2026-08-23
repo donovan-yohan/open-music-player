@@ -51,6 +51,11 @@ func (f *fakePlayStore) RecordPlay(ctx context.Context, userID uuid.UUID, trackI
 	return nil
 }
 
+func (f *fakePlayStore) RecordSkip(ctx context.Context, userID uuid.UUID, trackID int64) error {
+	f.records = append(f.records, recordedPlay{userID: userID, trackID: trackID, contextType: "skip"})
+	return nil
+}
+
 func (f *fakePlayStore) RecentlyPlayed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]db.RecentlyPlayedTrack, error) {
 	return f.recent, nil
 }

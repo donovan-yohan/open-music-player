@@ -527,7 +527,7 @@ func main() {
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
 	playlistMixHandlers := api.NewPlaylistMixHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
 	playEventHandlers := api.NewPlayEventHandlersWithMetadataOverrides(playEventRepo, trackRepo, metadataOverrideRepo)
-	djLineupHandlers := api.NewDJLineupHandlersWithPinStore(djLineupRepo, djPinRepo)
+	djLineupHandlers := api.NewDJLineupHandlersWithSkipSignals(djLineupRepo, djPinRepo, playEventRepo)
 	djPinHandlers := api.NewDJPinHandlers(djPinRepo, djLineupRepo)
 
 	// Initialize storage client

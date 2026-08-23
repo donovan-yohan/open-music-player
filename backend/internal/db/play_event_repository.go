@@ -61,6 +61,81 @@ func (r *PlayEventRepository) RecordPlay(ctx context.Context, userID uuid.UUID, 
 	return err
 }
 
+// RecordSkip inserts a play event marked skipped=true with a server-set played_at.
+// Skips are stored in play_events rather than a separate table so every
+// listen-touch (play or skip) shares one user+track timeline and one index;
+// consumers filter on the skipped flag.
+func (r *PlayEventRepository) RecordSkip(ctx context.Context, userID uuid.UUID, trackID int64) error {
+	query := `
+		INSERT INTO play_events (user_id, track_id, skipped)
+		VALUES ($1, $2, TRUE)
+	`
+	_, err := r.db.ExecContext(ctx, query, userID, trackID)
+	return err
+}
+
+// SkipStats is the per-track skip signal used by DJ lineup sequencing.
+type SkipStats struct {
+	TrackID int64
+	Skips   int64
+	Plays   int64
+}
+
+// SkipRate returns skips / max(plays, 1): 0 for never-touched tracks, and the
+// raw skip count when a track was only ever skipped.
+func (s SkipStats) SkipRate() float64 {
+	denominator := s.Plays
+	if denominator <= 0 {
+		denominator = 1
+	}
+	return float64(s.Skips) / float64(denominator)
+}
+
+// ListSkipStats returns per-track skip counts over the trailing window of days
+// for the user's library, plus the same-window play counts needed to normalize
+// them into skip rates.
+func (r *PlayEventRepository) ListSkipStats(ctx context.Context, userID uuid.UUID, days int) ([]SkipStats, error) {
+	if days <= 0 {
+		days = 30
+	}
+	query := `
+		SELECT track_id,
+		       COUNT(*) FILTER (WHERE skipped)::bigint AS skips,
+		       COUNT(*) FILTER (WHERE NOT skipped)::bigint AS plays
+		FROM play_events
+		WHERE user_id = $1 AND played_at >= NOW() - make_interval(days => $2)
+		GROUP BY track_id
+	`
+	rows, err := r.db.QueryContext(ctx, query, userID, days)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []SkipStats
+	for rows.Next() {
+		var stat SkipStats
+		if err := rows.Scan(&stat.TrackID, &stat.Skips, &stat.Plays); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
+}
+
+// CountRecentSkips counts the user's skip events within the trailing window,
+// used for fast-exit detection.
+func (r *PlayEventRepository) CountRecentSkips(ctx context.Context, userID uuid.UUID, window time.Duration) (int64, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM play_events
+		WHERE user_id = $1 AND skipped AND played_at >= NOW() - make_interval(secs => $2)
+	`
+	var count int64
+	err := r.db.QueryRowContext(ctx, query, userID, window.Seconds()).Scan(&count)
+	return count, err
+}
+
 // RecentlyPlayed returns the user's recently played tracks deduped by track (one
 // row per track at its most recent play), newest first, honoring limit/offset.
 func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]RecentlyPlayedTrack, error) {

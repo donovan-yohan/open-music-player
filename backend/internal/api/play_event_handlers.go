@@ -29,6 +29,7 @@ type playEventTrackRepository interface {
 
 type playEventStore interface {
 	RecordPlay(ctx context.Context, userID uuid.UUID, trackID int64, contextType, contextID string) error
+	RecordSkip(ctx context.Context, userID uuid.UUID, trackID int64) error
 	RecentlyPlayed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]db.RecentlyPlayedTrack, error)
 	PlayHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]db.PlayHistoryEvent, error)
 	TopTracks(ctx context.Context, userID uuid.UUID, days, limit int) ([]db.TopTrack, error)
@@ -161,6 +162,49 @@ func (h *PlayEventHandlers) RecordPlay(w http.ResponseWriter, r *http.Request) {
 	writePlayEventJSON(w, http.StatusCreated, map[string]interface{}{
 		"trackId": req.TrackID,
 		"played":  true,
+	})
+}
+
+// RecordSkip handles POST /api/v1/plays/skip. It records a skip event at the
+// server's current time for the authenticated user. Clients that do not report
+// skips simply never call it; nothing else in the API changes shape.
+func (h *PlayEventHandlers) RecordSkip(w http.ResponseWriter, r *http.Request) {
+	userCtx := auth.GetUserFromContext(r.Context())
+	if userCtx == nil {
+		writePlayEventError(w, http.StatusUnauthorized, "UNAUTHORIZED", "not authenticated")
+		return
+	}
+
+	var req RecordPlayRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writePlayEventError(w, http.StatusBadRequest, "VALIDATION_ERROR", "invalid request body")
+		return
+	}
+
+	if req.TrackID <= 0 {
+		writePlayEventError(w, http.StatusBadRequest, "VALIDATION_ERROR", "trackId is required")
+		return
+	}
+
+	// Verify the track exists so an unknown/foreign track is a clean 404 and no row
+	// is inserted.
+	if _, err := h.trackRepo.GetByID(r.Context(), req.TrackID); err != nil {
+		if errors.Is(err, db.ErrTrackNotFound) {
+			writePlayEventError(w, http.StatusNotFound, "TRACK_NOT_FOUND", "track not found")
+			return
+		}
+		writePlayEventError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to verify track")
+		return
+	}
+
+	if err := h.playEventRepo.RecordSkip(r.Context(), userCtx.UserID, req.TrackID); err != nil {
+		writePlayEventError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to record skip")
+		return
+	}
+
+	writePlayEventJSON(w, http.StatusCreated, map[string]interface{}{
+		"trackId": req.TrackID,
+		"skipped": true,
 	})
 }
 
