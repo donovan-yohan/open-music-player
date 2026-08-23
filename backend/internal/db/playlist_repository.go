@@ -135,6 +135,7 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 		var t Track
 		var trackID sql.NullInt64
 		var analysisOverrides json.RawMessage
+		var metadataJSON sql.NullString
 
 		err := rows.Scan(
 			&p.ID, &p.UserID, &p.Name, &p.Description, &p.CoverURL, &p.IsPublic, &p.CreatedAt, &p.UpdatedAt,
@@ -142,12 +143,13 @@ func (r *PlaylistRepository) GetByIDWithTracks(ctx context.Context, id int64) (*
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 			&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
-			&t.MetadataJSON, &t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt,
+			&metadataJSON, &t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt,
 			&t.CreatedAt, &t.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
+		t.MetadataJSON = rawJSONFromNullString(metadataJSON)
 
 		// Initialize playlist on first row
 		if result == nil {

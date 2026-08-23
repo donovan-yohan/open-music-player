@@ -107,18 +107,21 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 	for rows.Next() {
 		var rt RecentlyPlayedTrack
 		var analysisOverrides json.RawMessage
+		var metadataJSON, metadataProvenance sql.NullString
 		if err := rows.Scan(
 			&rt.ID, &rt.IdentityHash, &rt.Title, &rt.Artist, &rt.Album, &rt.DurationMs, &rt.Version,
 			&rt.MBRecordingID, &rt.MBReleaseID, &rt.MBArtistID, &rt.MBVerified,
 			&rt.SourceURL, &rt.SourceType, &rt.StorageKey, &rt.FileSizeBytes,
 			&rt.Codec, &rt.BitrateKbps, &rt.SampleRateHz, &rt.Channels, &rt.ContentType,
-			&rt.MetadataJSON, &rt.MetadataStatus, &rt.MetadataConfidence, &rt.MetadataProvenance,
+			&metadataJSON, &rt.MetadataStatus, &rt.MetadataConfidence, &metadataProvenance,
 			&rt.CoverArtURL, &rt.MetadataUserEdited, &rt.CreatedAt, &rt.UpdatedAt,
 			&rt.AnalysisStatus, &rt.AnalysisSummary, &analysisOverrides, &rt.AnalysisUpdatedAt,
 			&rt.LastPlayedAt,
 		); err != nil {
 			return nil, err
 		}
+		rt.MetadataJSON = rawJSONFromNullString(metadataJSON)
+		rt.MetadataProvenance = rawJSONFromNullString(metadataProvenance)
 		rt.AnalysisSummary, _ = projectCompactAnalysis(rt.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, rt)
 	}
@@ -171,19 +174,22 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 	for rows.Next() {
 		var event PlayHistoryEvent
 		var analysisOverrides json.RawMessage
+		var metadataJSON, metadataProvenance sql.NullString
 		if err := rows.Scan(
 			&event.ID,
 			&event.Track.ID, &event.Track.IdentityHash, &event.Track.Title, &event.Track.Artist, &event.Track.Album, &event.Track.DurationMs, &event.Track.Version,
 			&event.Track.MBRecordingID, &event.Track.MBReleaseID, &event.Track.MBArtistID, &event.Track.MBVerified,
 			&event.Track.SourceURL, &event.Track.SourceType, &event.Track.StorageKey, &event.Track.FileSizeBytes,
 			&event.Track.Codec, &event.Track.BitrateKbps, &event.Track.SampleRateHz, &event.Track.Channels, &event.Track.ContentType,
-			&event.Track.MetadataJSON, &event.Track.MetadataStatus, &event.Track.MetadataConfidence, &event.Track.MetadataProvenance,
+			&metadataJSON, &event.Track.MetadataStatus, &event.Track.MetadataConfidence, &metadataProvenance,
 			&event.Track.CoverArtURL, &event.Track.MetadataUserEdited, &event.Track.CreatedAt, &event.Track.UpdatedAt,
 			&event.Track.AnalysisStatus, &event.Track.AnalysisSummary, &analysisOverrides, &event.Track.AnalysisUpdatedAt,
 			&event.PlayedAt, &event.ContextType, &event.ContextID,
 		); err != nil {
 			return nil, err
 		}
+		event.Track.MetadataJSON = rawJSONFromNullString(metadataJSON)
+		event.Track.MetadataProvenance = rawJSONFromNullString(metadataProvenance)
 		event.Track.AnalysisSummary, _ = projectCompactAnalysis(event.Track.AnalysisSummary, analysisOverrides)
 		events = append(events, event)
 	}
@@ -240,18 +246,21 @@ func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, d
 	for rows.Next() {
 		var tt TopTrack
 		var analysisOverrides json.RawMessage
+		var metadataJSON, metadataProvenance sql.NullString
 		if err := rows.Scan(
 			&tt.ID, &tt.IdentityHash, &tt.Title, &tt.Artist, &tt.Album, &tt.DurationMs, &tt.Version,
 			&tt.MBRecordingID, &tt.MBReleaseID, &tt.MBArtistID, &tt.MBVerified,
 			&tt.SourceURL, &tt.SourceType, &tt.StorageKey, &tt.FileSizeBytes,
 			&tt.Codec, &tt.BitrateKbps, &tt.SampleRateHz, &tt.Channels, &tt.ContentType,
-			&tt.MetadataJSON, &tt.MetadataStatus, &tt.MetadataConfidence, &tt.MetadataProvenance,
+			&metadataJSON, &tt.MetadataStatus, &tt.MetadataConfidence, &metadataProvenance,
 			&tt.CoverArtURL, &tt.MetadataUserEdited, &tt.CreatedAt, &tt.UpdatedAt,
 			&tt.AnalysisStatus, &tt.AnalysisSummary, &analysisOverrides, &tt.AnalysisUpdatedAt,
 			&tt.PlayCount, &tt.LastPlayedAt,
 		); err != nil {
 			return nil, err
 		}
+		tt.MetadataJSON = rawJSONFromNullString(metadataJSON)
+		tt.MetadataProvenance = rawJSONFromNullString(metadataProvenance)
 		tt.AnalysisSummary, _ = projectCompactAnalysis(tt.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, tt)
 	}
