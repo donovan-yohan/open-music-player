@@ -609,7 +609,11 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Tooltip(
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Tooltip(
           message: 'Reroll the full lineup. Hold to request a vibe.',
           child: Semantics(
             button: true,
@@ -669,32 +673,39 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
             ),
           ),
         ),
-        const SizedBox(height: 8),
-        SizedBox(
-          width: double.infinity,
-          height: 56,
-          child: OutlinedButton.icon(
-            key: const ValueKey('dj_play_session'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: theme.colorScheme.onSurface,
-              side: BorderSide(
-                color: theme.colorScheme.outlineVariant,
-                width: 1.4,
-              ),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+            ),
+            const SizedBox(width: 12),
+            SizedBox(
+              width: 148,
+              height: 56,
+              child: OutlinedButton.icon(
+                key: const ValueKey('dj_play_session'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: theme.colorScheme.onSurface,
+                  side: BorderSide(
+                    color: theme.colorScheme.outlineVariant,
+                    width: 1.4,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+                  ),
+                ),
+                onPressed: _isAnySectionLoading ? null : _enqueueSession,
+                icon: const Icon(Icons.play_arrow, size: 24),
+                label: Text(
+                  'Play session',
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 15,
+                    color:
+                        _isAnySectionLoading ? null : theme.colorScheme.onSurface,
+                  ),
+                ),
               ),
             ),
-            onPressed: _isAnySectionLoading ? null : _enqueueSession,
-            icon: const Icon(Icons.play_arrow, size: 24),
-            label: Text(
-              'Play session',
-              style: theme.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w700,
-                color: _isAnySectionLoading ? null : theme.colorScheme.onSurface,
-              ),
-            ),
-          ),
+          ],
         ),
         if (_coachMarkVisible) ...[
           const SizedBox(height: 8),
