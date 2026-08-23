@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
 	"sort"
@@ -130,6 +131,7 @@ func (h *DJLineupHandlers) GetLineup(w http.ResponseWriter, r *http.Request) {
 	}
 	tracks, err := h.store.ListDJLineupTracks(r.Context(), userCtx.UserID)
 	if err != nil {
+		log.Printf("Error: failed to load DJ lineup for user %s: %v", userCtx.UserID, err)
 		writeDJLineupError(w, http.StatusInternalServerError, "failed to load DJ lineup")
 		return
 	}
@@ -138,6 +140,7 @@ func (h *DJLineupHandlers) GetLineup(w http.ResponseWriter, r *http.Request) {
 	if h.pins != nil {
 		pin, err = h.pins.GetDJPin(r.Context(), userCtx.UserID)
 		if err != nil {
+			log.Printf("Error: failed to load DJ pin for user %s: %v", userCtx.UserID, err)
 			writeDJLineupError(w, http.StatusInternalServerError, "failed to load DJ pin")
 			return
 		}
@@ -148,6 +151,7 @@ func (h *DJLineupHandlers) GetLineup(w http.ResponseWriter, r *http.Request) {
 
 	signals, err := loadDJSkipSignals(r.Context(), h.skipSignals, userCtx.UserID)
 	if err != nil {
+		log.Printf("Error: failed to load skip signals for user %s: %v", userCtx.UserID, err)
 		writeDJLineupError(w, http.StatusInternalServerError, "failed to load skip signals")
 		return
 	}

@@ -33,6 +33,9 @@ type PlayHistoryEvent struct {
 	PlayedAt    time.Time
 	ContextType sql.NullString
 	ContextID   sql.NullString
+	// Skipped reports that this event is a skip rather than a listen. History is
+	// an audit log, so skips stay in it; aggregate listings filter them out.
+	Skipped bool
 }
 
 // PlayEventRepository records play events and serves recently-played / top-track
@@ -138,6 +141,8 @@ func (r *PlayEventRepository) CountRecentSkips(ctx context.Context, userID uuid.
 
 // RecentlyPlayed returns the user's recently played tracks deduped by track (one
 // row per track at its most recent play), newest first, honoring limit/offset.
+// Skipped events are excluded: a skip is not a listen, so a track whose only
+// events are skips never appears here.
 func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]RecentlyPlayedTrack, error) {
 	if limit <= 0 {
 		limit = 20
@@ -160,17 +165,17 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   ta.updated_at,
 			   pe.last_played_at
-		FROM (
-			SELECT track_id, MAX(played_at) AS last_played_at
-			FROM play_events
-			WHERE user_id = $1
-			GROUP BY track_id
-		) pe
-		JOIN tracks t ON t.id = pe.track_id
-		LEFT JOIN track_analysis ta ON ta.track_id = t.id
-		ORDER BY pe.last_played_at DESC, t.id DESC
-		LIMIT $2 OFFSET $3
-	`
+			   FROM (
+			   SELECT track_id, MAX(played_at) AS last_played_at
+			   FROM play_events
+			   WHERE user_id = $1 AND NOT skipped
+			   GROUP BY track_id
+			   ) pe
+			   JOIN tracks t ON t.id = pe.track_id
+			   LEFT JOIN track_analysis ta ON ta.track_id = t.id
+			   ORDER BY pe.last_played_at DESC, t.id DESC
+			   LIMIT $2 OFFSET $3
+			   `
 
 	rows, err := r.db.QueryContext(ctx, query, userID, limit, offset)
 	if err != nil {
@@ -207,7 +212,9 @@ func (r *PlayEventRepository) RecentlyPlayed(ctx context.Context, userID uuid.UU
 }
 
 // PlayHistory returns the user's raw play events newest-first, preserving repeat
-// listens and their optional playback context.
+// listens and their optional playback context. It is an audit log, so skip
+// events are included; each event carries Skipped so clients can distinguish
+// skips from listens.
 func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID, limit, offset int) ([]PlayHistoryEvent, error) {
 	if limit <= 0 {
 		limit = 50
@@ -230,7 +237,7 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 			   ta.status, COALESCE(` + analysisCompactSummaryExpression + `, '{}'::jsonb),
 			   COALESCE(` + analysisCompactOverridesExpression + `, '{}'::jsonb),
 			   ta.updated_at,
-			   pe.played_at, pe.context_type, pe.context_id
+			   pe.played_at, pe.context_type, pe.context_id, pe.skipped
 		FROM play_events pe
 		JOIN tracks t ON t.id = pe.track_id
 		LEFT JOIN track_analysis ta ON ta.track_id = t.id
@@ -259,7 +266,7 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 			&metadataJSON, &event.Track.MetadataStatus, &event.Track.MetadataConfidence, &metadataProvenance,
 			&event.Track.CoverArtURL, &event.Track.MetadataUserEdited, &event.Track.CreatedAt, &event.Track.UpdatedAt,
 			&event.Track.AnalysisStatus, &event.Track.AnalysisSummary, &analysisOverrides, &event.Track.AnalysisUpdatedAt,
-			&event.PlayedAt, &event.ContextType, &event.ContextID,
+			&event.PlayedAt, &event.ContextType, &event.ContextID, &event.Skipped,
 		); err != nil {
 			return nil, err
 		}
@@ -276,7 +283,8 @@ func (r *PlayEventRepository) PlayHistory(ctx context.Context, userID uuid.UUID,
 
 // TopTracks returns the user's most-played tracks within the trailing window of
 // days, ordered by play count desc then most-recent play. Tracks with no plays in
-// the window are absent.
+// the window are absent, as are skipped events: skips do not count toward play
+// counts.
 func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, days, limit int) ([]TopTrack, error) {
 	if days <= 0 {
 		days = 30
@@ -302,7 +310,7 @@ func (r *PlayEventRepository) TopTracks(ctx context.Context, userID uuid.UUID, d
 		FROM (
 			SELECT track_id, COUNT(*) AS play_count, MAX(played_at) AS last_played_at
 			FROM play_events
-			WHERE user_id = $1 AND played_at >= NOW() - make_interval(days => $2)
+			WHERE user_id = $1 AND NOT skipped AND played_at >= NOW() - make_interval(days => $2)
 			GROUP BY track_id
 		) agg
 		JOIN tracks t ON t.id = agg.track_id

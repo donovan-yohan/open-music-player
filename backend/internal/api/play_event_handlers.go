@@ -104,6 +104,9 @@ type PlayHistoryEntryResponse struct {
 	PlayedAt    time.Time              `json:"playedAt"`
 	ContextType string                 `json:"contextType,omitempty"`
 	ContextID   string                 `json:"contextId,omitempty"`
+	// Skipped reports that this event is a skip rather than a listen. History
+	// keeps skips (audit log); aggregate listings exclude them server-side.
+	Skipped bool `json:"skipped"`
 }
 
 type PlayHistoryResponse struct {
@@ -242,6 +245,7 @@ func (h *PlayEventHandlers) PlayHistory(w http.ResponseWriter, r *http.Request) 
 			ID:       event.ID,
 			Track:    track,
 			PlayedAt: event.PlayedAt,
+			Skipped:  event.Skipped,
 		}
 		if event.ContextType.Valid {
 			response.ContextType = event.ContextType.String
