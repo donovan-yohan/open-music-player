@@ -542,6 +542,17 @@ func (db *DB) Migrate() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_play_events_user_played_at ON play_events(user_id, played_at DESC);
 
+	-- DJ vibe pins: at most one live pin per user; upsert replaces the previous one.
+	CREATE TABLE IF NOT EXISTS dj_pins (
+		user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+		block_id TEXT NOT NULL,
+		energy_low REAL NOT NULL,
+		energy_high REAL NOT NULL,
+		genres JSONB NOT NULL DEFAULT '[]',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		expires_at TIMESTAMPTZ NOT NULL
+	);
+
 	CREATE TABLE IF NOT EXISTS research_jobs (
 		id UUID PRIMARY KEY,
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

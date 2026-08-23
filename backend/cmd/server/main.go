@@ -461,6 +461,7 @@ func main() {
 	mixPlanRepo := db.NewMixPlanRepository(database)
 	playEventRepo := db.NewPlayEventRepository(database)
 	djLineupRepo := db.NewDJLineupRepository(database)
+	djPinRepo := db.NewDJPinRepository(database)
 	sourceSelectionRepo := db.NewSourceSelectionRepository(database)
 	metadataOverrideRepo := db.NewTrackMetadataOverrideRepository(database)
 
@@ -526,7 +527,8 @@ func main() {
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
 	playlistMixHandlers := api.NewPlaylistMixHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
 	playEventHandlers := api.NewPlayEventHandlersWithMetadataOverrides(playEventRepo, trackRepo, metadataOverrideRepo)
-	djLineupHandlers := api.NewDJLineupHandlers(djLineupRepo)
+	djLineupHandlers := api.NewDJLineupHandlersWithPinStore(djLineupRepo, djPinRepo)
+	djPinHandlers := api.NewDJPinHandlers(djPinRepo, djLineupRepo)
 
 	// Initialize storage client
 	storageClient, err := storage.New(&storage.Config{
@@ -808,6 +810,7 @@ func main() {
 		MaintenanceHandlers:     maintenanceHandlers,
 		PlayEventHandlers:       playEventHandlers,
 		DJLineupHandlers:        djLineupHandlers,
+		DJPinHandlers:           djPinHandlers,
 		ResearchHandlers:        researchRuntime.handlers,
 		HealthHandler:           healthHandler,
 		Metrics:                 appMetrics,

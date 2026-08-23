@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -27,12 +28,23 @@ type DJLineupStore interface {
 	ListDJLineupTracks(ctx context.Context, userID uuid.UUID) ([]db.DJLineupTrack, error)
 }
 
+type DJPinReader interface {
+	GetDJPin(ctx context.Context, userID uuid.UUID) (*db.DJPin, error)
+}
+
 type DJLineupHandlers struct {
 	store DJLineupStore
+	pins  DJPinReader
 }
 
 func NewDJLineupHandlers(store DJLineupStore) *DJLineupHandlers {
 	return &DJLineupHandlers{store: store}
+}
+
+// NewDJLineupHandlersWithPinStore wires lineup generation to the user's vibe
+// pin so the lineup can filter candidate tracks to the pinned envelope.
+func NewDJLineupHandlersWithPinStore(store DJLineupStore, pins DJPinReader) *DJLineupHandlers {
+	return &DJLineupHandlers{store: store, pins: pins}
 }
 
 type DJLineupRequestedFilters struct {
@@ -56,11 +68,19 @@ type DJLineupBlock struct {
 	ID     string                  `json:"id"`
 	Title  string                  `json:"title"`
 	Reason string                  `json:"reason"`
+	Detail string                  `json:"detail,omitempty"`
 	Tracks []DJLineupTrackResponse `json:"tracks"`
+}
+
+// DJLineupPinned mirrors the active vibe pin's block identity in lineup
+// responses; nil (and thus omitted) when no unexpired pin exists.
+type DJLineupPinned struct {
+	BlockID string `json:"blockId"`
 }
 
 type DJLineupResponse struct {
 	Requested DJLineupRequestedFilters `json:"requested"`
+	Pinned    *DJLineupPinned          `json:"pinned,omitempty"`
 	Blocks    []DJLineupBlock          `json:"blocks"`
 }
 
@@ -106,11 +126,39 @@ func (h *DJLineupHandlers) GetLineup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var pin *db.DJPin
+	if h.pins != nil {
+		pin, err = h.pins.GetDJPin(r.Context(), userCtx.UserID)
+		if err != nil {
+			writeDJLineupError(w, http.StatusInternalServerError, "failed to load DJ pin")
+			return
+		}
+	}
+	if pin != nil {
+		tracks = filterDJLineupTracksByPin(tracks, *pin)
+	}
+
 	response := DJLineupResponse{
 		Requested: query.Requested,
 		Blocks:    buildDJLineup(tracks, query),
 	}
+	if pin != nil {
+		response.Pinned = &DJLineupPinned{BlockID: pin.BlockID}
+	}
 	writeDJLineupJSON(w, http.StatusOK, response)
+}
+
+// filterDJLineupTracksByPin keeps only tracks inside the pinned vibe envelope:
+// energy within [low, high] inclusive and — when the pin carries a non-empty
+// genre list — at least one matching pinned genre.
+func filterDJLineupTracksByPin(tracks []db.DJLineupTrack, pin db.DJPin) []db.DJLineupTrack {
+	filtered := make([]db.DJLineupTrack, 0, len(tracks))
+	for _, track := range tracks {
+		if matchesDJLineupPin(track, pin) {
+			filtered = append(filtered, track)
+		}
+	}
+	return filtered
 }
 
 func parseDJLineupQuery(r *http.Request) (djLineupQuery, error) {
@@ -237,6 +285,7 @@ func buildDJLineup(tracks []db.DJLineupTrack, query djLineupQuery) []DJLineupBlo
 			ID:     theme.ID,
 			Title:  theme.Title,
 			Reason: theme.Reason,
+			Detail: djLineupDetail(theme.ID, candidates),
 			Tracks: make([]DJLineupTrackResponse, 0, len(tracks)),
 		}
 		for _, track := range tracks {
@@ -267,6 +316,62 @@ func selectedDJLineupThemes(query djLineupQuery) []djLineupTheme {
 		return nil
 	}
 	return djLineupThemes[:query.Blocks]
+}
+
+// djLineupDetail derives a data-grounded one-liner for a block from the same
+// aggregates that selected its candidates. It returns an empty string when the
+// underlying data is absent so responses never fabricate context.
+func djLineupDetail(themeID string, candidates []db.DJLineupTrack) string {
+	switch themeID {
+	case "on-repeat":
+		return djLineupOnRepeatDetail(candidates)
+	case "flashback":
+		return djLineupFlashbackDetail(candidates)
+	case "fresh-finds":
+		return djLineupFreshFindsDetail(candidates)
+	default:
+		return ""
+	}
+}
+
+// on-repeat: "<N> plays in the last 90 days" summed across candidates, capped
+// at a 999+ display.
+func djLineupOnRepeatDetail(candidates []db.DJLineupTrack) string {
+	var total int64
+	for _, track := range candidates {
+		total += track.RecentPlayCount
+	}
+	if total <= 0 {
+		return ""
+	}
+	if total > 999 {
+		return "999+ plays in the last 90 days"
+	}
+	return fmt.Sprintf("%d plays in the last 90 days", total)
+}
+
+// flashback: "Last played <Month Year>" from the most recent prior play across
+// candidates; omitted when none of them carry a pre-recent play timestamp.
+func djLineupFlashbackDetail(candidates []db.DJLineupTrack) string {
+	var latest time.Time
+	for _, track := range candidates {
+		if track.LastHistoricalPlayed.After(latest) {
+			latest = track.LastHistoricalPlayed
+		}
+	}
+	if latest.IsZero() {
+		return ""
+	}
+	return "Last played " + latest.Format("January 2006")
+}
+
+// fresh-finds: "<N> unplayed tracks waiting" counts the zero-play library
+// tracks eligible for the block.
+func djLineupFreshFindsDetail(candidates []db.DJLineupTrack) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d unplayed tracks waiting", len(candidates))
 }
 
 func matchesDJLineupFilters(track db.DJLineupTrack, query djLineupQuery) bool {
