@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
 	"sort"
@@ -33,8 +34,9 @@ type DJPinReader interface {
 }
 
 type DJLineupHandlers struct {
-	store DJLineupStore
-	pins  DJPinReader
+	store       DJLineupStore
+	pins        DJPinReader
+	skipSignals DJSkipSignalStore
 }
 
 func NewDJLineupHandlers(store DJLineupStore) *DJLineupHandlers {
@@ -45,6 +47,13 @@ func NewDJLineupHandlers(store DJLineupStore) *DJLineupHandlers {
 // pin so the lineup can filter candidate tracks to the pinned envelope.
 func NewDJLineupHandlersWithPinStore(store DJLineupStore, pins DJPinReader) *DJLineupHandlers {
 	return &DJLineupHandlers{store: store, pins: pins}
+}
+
+// NewDJLineupHandlersWithSkipSignals wires lineup generation to the user's skip
+// telemetry so recently-skipped material (and its genre/energy neighborhood) is
+// demoted, and rapid skipping enables fast-exit sequencing.
+func NewDJLineupHandlersWithSkipSignals(store DJLineupStore, pins DJPinReader, skips DJSkipSignalStore) *DJLineupHandlers {
+	return &DJLineupHandlers{store: store, pins: pins, skipSignals: skips}
 }
 
 type DJLineupRequestedFilters struct {
@@ -122,6 +131,7 @@ func (h *DJLineupHandlers) GetLineup(w http.ResponseWriter, r *http.Request) {
 	}
 	tracks, err := h.store.ListDJLineupTracks(r.Context(), userCtx.UserID)
 	if err != nil {
+		log.Printf("Error: failed to load DJ lineup for user %s: %v", userCtx.UserID, err)
 		writeDJLineupError(w, http.StatusInternalServerError, "failed to load DJ lineup")
 		return
 	}
@@ -130,6 +140,7 @@ func (h *DJLineupHandlers) GetLineup(w http.ResponseWriter, r *http.Request) {
 	if h.pins != nil {
 		pin, err = h.pins.GetDJPin(r.Context(), userCtx.UserID)
 		if err != nil {
+			log.Printf("Error: failed to load DJ pin for user %s: %v", userCtx.UserID, err)
 			writeDJLineupError(w, http.StatusInternalServerError, "failed to load DJ pin")
 			return
 		}
@@ -138,9 +149,17 @@ func (h *DJLineupHandlers) GetLineup(w http.ResponseWriter, r *http.Request) {
 		tracks = filterDJLineupTracksByPin(tracks, *pin)
 	}
 
+	signals, err := loadDJSkipSignals(r.Context(), h.skipSignals, userCtx.UserID)
+	if err != nil {
+		log.Printf("Error: failed to load skip signals for user %s: %v", userCtx.UserID, err)
+		writeDJLineupError(w, http.StatusInternalServerError, "failed to load skip signals")
+		return
+	}
+	signals.withCandidates(tracks)
+
 	response := DJLineupResponse{
 		Requested: query.Requested,
-		Blocks:    buildDJLineup(tracks, query),
+		Blocks:    buildDJLineup(tracks, query, signals),
 	}
 	if pin != nil {
 		response.Pinned = &DJLineupPinned{BlockID: pin.BlockID}
@@ -262,7 +281,7 @@ func isDJLineupTheme(id string) bool {
 	return false
 }
 
-func buildDJLineup(tracks []db.DJLineupTrack, query djLineupQuery) []DJLineupBlock {
+func buildDJLineup(tracks []db.DJLineupTrack, query djLineupQuery, signals djSkipSignals) []DJLineupBlock {
 	filtered := make([]db.DJLineupTrack, 0, len(tracks))
 	for _, track := range tracks {
 		if matchesDJLineupFilters(track, query) {
@@ -276,6 +295,7 @@ func buildDJLineup(tracks []db.DJLineupTrack, query djLineupQuery) []DJLineupBlo
 	for themeIndex, theme := range themes {
 		candidates := eligibleDJLineupTracks(filtered, usedTrackIDs, theme.ID)
 		orderDJLineupTracks(candidates, theme.ID)
+		candidates = applyDJSkipSequencing(candidates, theme.ID, signals)
 		tracks := selectDJLineupTracks(candidates, query.PerBlock, query.Seed+int64(themeIndex)*7919)
 		if len(tracks) == 0 {
 			continue

@@ -51,6 +51,11 @@ func (f *fakePlayStore) RecordPlay(ctx context.Context, userID uuid.UUID, trackI
 	return nil
 }
 
+func (f *fakePlayStore) RecordSkip(ctx context.Context, userID uuid.UUID, trackID int64) error {
+	f.records = append(f.records, recordedPlay{userID: userID, trackID: trackID, contextType: "skip"})
+	return nil
+}
+
 func (f *fakePlayStore) RecentlyPlayed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]db.RecentlyPlayedTrack, error) {
 	return f.recent, nil
 }
@@ -178,6 +183,12 @@ func TestPlayHistoryHTTP(t *testing.T) {
 			Track:    *newTrack(2, "Bravo"),
 			PlayedAt: now.Add(-time.Minute),
 		},
+		{
+			ID:       8,
+			Track:    *newTrack(3, "Charlie"),
+			PlayedAt: now.Add(-2 * time.Minute),
+			Skipped:  true,
+		},
 	}}
 	h := NewPlayEventHandlers(store, &fakePlayTrackRepo{})
 
@@ -191,14 +202,20 @@ func TestPlayHistoryHTTP(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Plays) != 2 {
-		t.Fatalf("plays len = %d, want 2 raw events", len(resp.Plays))
+	if len(resp.Plays) != 3 {
+		t.Fatalf("plays len = %d, want 3 raw events", len(resp.Plays))
 	}
 	if resp.Plays[0].ID != 10 || resp.Plays[0].Track.ID != 2 || resp.Plays[0].ContextType != "playlist" || resp.Plays[0].ContextID != "pl-1" {
 		t.Fatalf("first play = %#v, want event 10 track 2 playlist pl-1", resp.Plays[0])
 	}
 	if resp.Plays[1].ID != 9 || resp.Plays[1].Track.ID != 2 {
 		t.Fatalf("second play = %#v, want repeated track event 9", resp.Plays[1])
+	}
+	if resp.Plays[0].Skipped || resp.Plays[1].Skipped {
+		t.Fatalf("listen events must carry skipped=false: %#v", resp.Plays[:2])
+	}
+	if resp.Plays[2].ID != 8 || !resp.Plays[2].Skipped {
+		t.Fatalf("skip event = %#v, want event 8 with skipped=true", resp.Plays[2])
 	}
 }
 

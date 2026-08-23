@@ -379,6 +379,12 @@ func (r *Router) setupRoutes() {
 		r.mux.HandleFunc("GET /api/v1/me/plays/history", playEventUnavailable)
 		r.mux.HandleFunc("GET /api/v1/me/plays/recent", playEventUnavailable)
 		r.mux.HandleFunc("GET /api/v1/me/plays/top", playEventUnavailable)
+		r.mux.HandleFunc("POST /api/v1/plays/skip", playEventUnavailable)
+	}
+
+	// Skip reporting: optional client telemetry feeding skip-aware DJ sequencing.
+	if r.playEventHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/plays/skip", r.withAuth(r.playEventHandlers.RecordSkip))
 	}
 
 	// Deterministic, data-only lineup generation for a personalized DJ session.

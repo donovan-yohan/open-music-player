@@ -47,6 +47,11 @@ func NewDJLineupRepository(db *DB) *DJLineupRepository {
 // (recent), 90-180 days (mid), and older than 180 days (historical); together
 // they partition history so every played track belongs to a lineup theme.
 //
+// Skipped events are excluded from these play windows: a skip is not a listen,
+// so a track that was only ever skipped keeps TotalPlayCount 0 and remains
+// fresh-finds eligible. Skip telemetry is read separately by ListSkipStats /
+// CountRecentSkips, which do consider skip rows.
+//
 // The read is intentionally unbounded: correct cross-block partitioning and
 // partial fills require scoring every library track before selection caps the
 // result. Bounding this per theme would starve later blocks on large
@@ -62,7 +67,7 @@ func (r *DJLineupRepository) ListDJLineupTracks(ctx context.Context, userID uuid
 				COUNT(*) FILTER (WHERE pe.played_at < NOW() - INTERVAL '180 days') AS historical_play_count,
 				MAX(pe.played_at) FILTER (WHERE pe.played_at < NOW() - INTERVAL '90 days') AS last_prior_played_at
 			FROM play_events pe
-			WHERE pe.user_id = $1
+			WHERE pe.user_id = $1 AND NOT pe.skipped
 			GROUP BY pe.track_id
 		)
 		SELECT t.id,

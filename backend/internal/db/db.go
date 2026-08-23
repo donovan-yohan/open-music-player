@@ -538,9 +538,11 @@ func (db *DB) Migrate() error {
 		track_id BIGINT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
 		played_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		context_type VARCHAR(32),
-		context_id TEXT
+		context_id TEXT,
+		skipped BOOLEAN NOT NULL DEFAULT FALSE
 	);
 	CREATE INDEX IF NOT EXISTS idx_play_events_user_played_at ON play_events(user_id, played_at DESC);
+	ALTER TABLE play_events ADD COLUMN IF NOT EXISTS skipped BOOLEAN NOT NULL DEFAULT FALSE;
 
 	-- DJ vibe pins: at most one live pin per user; upsert replaces the previous one.
 	CREATE TABLE IF NOT EXISTS dj_pins (

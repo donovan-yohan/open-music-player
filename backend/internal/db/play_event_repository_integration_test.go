@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -69,6 +70,17 @@ func insertPlayAt(t *testing.T, database *DB, userID uuid.UUID, trackID int64, a
 		`INSERT INTO play_events (user_id, track_id, played_at, context_type) VALUES ($1, $2, $3, 'library')`,
 		userID, trackID, at); err != nil {
 		t.Fatalf("insert play event: %v", err)
+	}
+}
+
+// insertSkipAt inserts a skipped play event at an explicit played_at so
+// skip-aware listing behavior can be asserted deterministically.
+func insertSkipAt(t *testing.T, database *DB, userID uuid.UUID, trackID int64, at time.Time) {
+	t.Helper()
+	if _, err := database.Exec(
+		`INSERT INTO play_events (user_id, track_id, played_at, skipped) VALUES ($1, $2, $3, TRUE)`,
+		userID, trackID, at); err != nil {
+		t.Fatalf("insert skip event: %v", err)
 	}
 }
 
@@ -244,4 +256,114 @@ func TestPlayEventsIndexExists(t *testing.T) {
 	if !exists {
 		t.Fatal("expected idx_play_events_user_played_at index on play_events(user_id, played_at DESC)")
 	}
+}
+
+// TestSkipsExcludedFromAggregates pins the skip semantics: a skip is not a
+// listen, so a track whose only events are skips stays out of RecentlyPlayed
+// and TopTracks and remains fresh-finds eligible (zero play counts in the DJ
+// lineup projection), while PlayHistory keeps the skip with skipped=true.
+func TestSkipsExcludedFromAggregates(t *testing.T) {
+	database, ctx := newPlayEventTestDB(t)
+	trackRepo := NewTrackRepository(database)
+	playRepo := NewPlayEventRepository(database)
+
+	user := seedPlayUser(t, database, "skips@example.test")
+	skipOnly := seedPlayTrack(t, trackRepo, ctx, "Artist S", "SkipOnly")
+	mixed := seedPlayTrack(t, trackRepo, ctx, "Artist M", "Mixed")
+
+	now := time.Now()
+	insertSkipAt(t, database, user, skipOnly, now.Add(-5*time.Minute))
+	insertSkipAt(t, database, user, mixed, now.Add(-4*time.Minute))
+	insertPlayAt(t, database, user, mixed, now.Add(-3*time.Minute))
+
+	recent, err := playRepo.RecentlyPlayed(ctx, user, 10, 0)
+	if err != nil {
+		t.Fatalf("RecentlyPlayed: %v", err)
+	}
+	if len(recent) != 1 || recent[0].ID != mixed {
+		t.Fatalf("recent = %#v, want only the played track %d (skip-only track must be absent)", recentIDs(recent), mixed)
+	}
+
+	top, err := playRepo.TopTracks(ctx, user, 30, 10)
+	if err != nil {
+		t.Fatalf("TopTracks: %v", err)
+	}
+	if len(top) != 1 || top[0].ID != mixed || top[0].PlayCount != 1 {
+		t.Fatalf("top = %#v, want only track %d count 1 (skips must not count as plays)", topTrackSummary(top), mixed)
+	}
+
+	history, err := playRepo.PlayHistory(ctx, user, 10, 0)
+	if err != nil {
+		t.Fatalf("PlayHistory: %v", err)
+	}
+	if len(history) != 3 {
+		t.Fatalf("history len = %d, want 3 raw events including both skips", len(history))
+	}
+	for _, event := range history {
+		switch event.Track.ID {
+		case skipOnly:
+			if !event.Skipped {
+				t.Fatalf("history event for skip-only track %d must carry skipped=true", event.Track.ID)
+			}
+		case mixed:
+		default:
+			t.Fatalf("unexpected history event for unknown track %d", event.Track.ID)
+		}
+	}
+	// mixed has exactly one skip event and one listen event in history.
+	mixedSkips, mixedPlays := 0, 0
+	for _, event := range history {
+		if event.Track.ID != mixed {
+			continue
+		}
+		if event.Skipped {
+			mixedSkips++
+		} else {
+			mixedPlays++
+		}
+	}
+	if mixedSkips != 1 || mixedPlays != 1 {
+		t.Fatalf("mixed-track history = %d skips / %d plays, want 1 of each with correct skipped flags", mixedSkips, mixedPlays)
+	}
+
+	// DJ lineup projection: the skip-only track keeps zero play counts so it is
+	// still fresh-finds eligible; the played track counts exactly one play.
+	lineupRepo := NewDJLineupRepository(database)
+	if _, err := database.Exec(
+		`INSERT INTO user_library (user_id, track_id) VALUES ($1, $2), ($1, $3)`, user, skipOnly, mixed); err != nil {
+		t.Fatalf("seed library: %v", err)
+	}
+	tracks, err := lineupRepo.ListDJLineupTracks(ctx, user)
+	if err != nil {
+		t.Fatalf("ListDJLineupTracks: %v", err)
+	}
+	counts := make(map[int64]DJLineupTrack, len(tracks))
+	for _, track := range tracks {
+		counts[track.ID] = track
+	}
+	skipStats := counts[skipOnly]
+	if skipStats.TotalPlayCount != 0 || skipStats.RecentPlayCount != 0 ||
+		skipStats.HistoricalPlayCount != 0 || skipStats.MidWindowPlayCount != 0 {
+		t.Fatalf("skip-only track play stats = %#v, want all-zero counts (fresh-finds eligibility)", skipStats)
+	}
+	mixedStats := counts[mixed]
+	if mixedStats.TotalPlayCount != 1 || mixedStats.RecentPlayCount != 1 {
+		t.Fatalf("played track stats = %#v, want total=1 recent=1 (skip excluded from counts)", mixedStats)
+	}
+}
+
+func recentIDs(tracks []RecentlyPlayedTrack) []int64 {
+	ids := make([]int64, 0, len(tracks))
+	for _, t := range tracks {
+		ids = append(ids, t.ID)
+	}
+	return ids
+}
+
+func topTrackSummary(tracks []TopTrack) []string {
+	summaries := make([]string, 0, len(tracks))
+	for _, t := range tracks {
+		summaries = append(summaries, fmt.Sprintf("{id:%d count:%d}", t.ID, t.PlayCount))
+	}
+	return summaries
 }
