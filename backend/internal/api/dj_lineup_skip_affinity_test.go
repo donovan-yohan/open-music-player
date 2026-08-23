@@ -330,14 +330,18 @@ func TestRecordSkipRouteRegisteredWithAuth(t *testing.T) {
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	unauthed, err := http.Post(server.URL+"/api/v1/plays/skip", "application/json",
-		strings.NewReader(`{"trackId":7}`))
+	unauthed, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		server.URL+"/api/v1/plays/skip", strings.NewReader(`{"trackId":7}`))
+	if err != nil {
+		t.Fatalf("new unauthenticated request: %v", err)
+	}
+	unauthedRes, err := server.Client().Do(unauthed)
 	if err != nil {
 		t.Fatalf("POST skip unauthenticated: %v", err)
 	}
-	defer unauthed.Body.Close()
-	if unauthed.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated status = %d, want 401", unauthed.StatusCode)
+	defer unauthedRes.Body.Close()
+	if unauthedRes.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want 401", unauthedRes.StatusCode)
 	}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
