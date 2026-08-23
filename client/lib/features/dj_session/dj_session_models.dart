@@ -40,15 +40,27 @@ class DjLineupRequest {
 }
 
 class DjLineup {
-  const DjLineup({required this.requested, required this.blocks});
+  const DjLineup({
+    required this.requested,
+    required this.blocks,
+    this.pinnedBlockId,
+  });
 
   final Map<String, dynamic> requested;
   final List<DjLineupBlock> blocks;
 
+  /// Block id of the active vibe pin, mirrored by the server in every lineup
+  /// response while a pin exists. Null when nothing is pinned.
+  final String? pinnedBlockId;
+
   factory DjLineup.fromJson(Map<String, dynamic> json) {
     final requested = json['requested'];
     final rawBlocks = json['blocks'];
+    final pinned = json['pinned'];
     return DjLineup(
+      pinnedBlockId: pinned is Map
+          ? _stringValue(pinned['blockId'])
+          : null,
       requested: requested is Map
           ? Map<String, dynamic>.from(requested)
           : const <String, dynamic>{},

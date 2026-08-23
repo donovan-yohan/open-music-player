@@ -100,6 +100,17 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   String _refreshError = '';
   String _announcement = '';
 
+  /// Block id of the active vibe pin as mirrored by the lineup response.
+  /// Null when no pin exists.
+  String? _pinnedBlockId;
+
+  /// Block id whose pin/unpin request is currently in flight (drives the
+  /// inline spinner and disables competing pin toggles).
+  String? _pendingPinBlockId;
+
+  bool get _isPinBusy =>
+      _pendingPinBlockId != null || _loadingBlockIds.isNotEmpty;
+
   @override
   void initState() {
     super.initState();
@@ -120,6 +131,13 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
 
   List<DjLineupBlock> get _visibleBlocks =>
       _blocks.isEmpty ? _fallbackBlocks : _blocks;
+
+  String _titleOf(String blockId) {
+    for (final block in _visibleBlocks) {
+      if (block.id == blockId) return block.title;
+    }
+    return 'vibe';
+  }
 
   bool get _isEmptyLibrary =>
       !_loadingAll &&
@@ -164,6 +182,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
       if (!mounted || responseGeneration != _fullResponseGeneration) return;
       setState(() {
         _blocks = lineup.blocks;
+        _pinnedBlockId = lineup.pinnedBlockId;
         _loadingAll = false;
         _loadedAllOnce = true;
         _loadingBlockIds.clear();
@@ -278,6 +297,78 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
         _blockErrors[block.id] = "Swap didn't take. Try again.";
       });
     }
+  }
+
+  /// Toggles this block's pin. Optimistic: the pinned state flips immediately
+  /// and rolls back with an inline snackbar if the request fails. On success
+  /// the full lineup is refetched so the server-side envelope filtering shows
+  /// up right away (per-section loading spinners render during the refetch).
+  Future<void> _togglePin(DjLineupBlock block) async {
+    if (_pendingPinBlockId != null || _loadingBlockIds.contains(block.id)) {
+      return;
+    }
+    final wasPinned = _pinnedBlockId == block.id;
+    setState(() => _pendingPinBlockId = block.id);
+
+    try {
+      if (wasPinned) {
+        await _service.unpinBlock();
+      } else {
+        await _service.pinBlock(block.id);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _pendingPinBlockId = null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text(wasPinned ? "Couldn't unpin" : "Couldn't pin that vibe"),
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
+
+    // Optimistic flip while the refetch runs; the refetched lineup is the
+    // authority and corrects any divergence.
+    setState(() {
+      _pinnedBlockId = wasPinned ? null : block.id;
+      _pendingPinBlockId = null;
+      _loadingBlockIds.addAll(_visibleBlocks.map((item) => item.id));
+    });
+
+    final loadGeneration = _fullLoadGeneration;
+    try {
+      final lineup =
+          await _service.fetchLineup(_requestForFilters());
+      if (!mounted || loadGeneration != _fullLoadGeneration) return;
+      setState(() {
+        _blocks = lineup.blocks;
+        _pinnedBlockId = lineup.pinnedBlockId;
+        _loadingBlockIds.clear();
+        _blockErrors.clear();
+        _emptySwapBlockIds.clear();
+      });
+      _announce(
+        wasPinned ? 'Vibe unlocked' : 'Vibe locked: ${block.title}',
+      );
+    } catch (_) {
+      if (!mounted || loadGeneration != _fullLoadGeneration) return;
+      setState(() {
+        _loadingBlockIds.clear();
+        _refreshError = "Couldn't refresh the session.";
+      });
+    }
+  }
+
+  /// Unlock affordance on the pinned banner: DELETE then refetch.
+  Future<void> _unlockFromBanner() async {
+    final pinnedId = _pinnedBlockId;
+    if (pinnedId == null) return;
+    await _togglePin(_visibleBlocks.firstWhere(
+      (item) => item.id == pinnedId,
+      orElse: () => _visibleBlocks.first,
+    ));
   }
 
   /// Enqueues every track across all loaded blocks in visual order (block
@@ -521,6 +612,18 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                         ),
                       ),
                     ),
+                  if (_pinnedBlockId != null)
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+                      sliver: SliverToBoxAdapter(
+                        child: _PinnedBanner(
+                          blockTitle: _titleOf(_pinnedBlockId!),
+                          onUnlock: _unlockFromBanner,
+                          enabled:
+                              !_isPinBusy && !_isAnySectionLoading,
+                        ),
+                      ),
+                    ),
                   if (_isEmptyLibrary)
                     const SliverFillRemaining(
                       hasScrollBody: false,
@@ -547,6 +650,17 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                             onEnqueueTrack: (track) =>
                                 _enqueue(track, playNext: false),
                             reducedMotion: reducedMotion,
+                            isPinned:
+                                _pinnedBlockId == _visibleBlocks[0].id,
+                            pinPending:
+                                _pendingPinBlockId == _visibleBlocks[0].id,
+                            pinBlockedByOther: (_pendingPinBlockId != null &&
+                                    _pendingPinBlockId !=
+                                        _visibleBlocks[0].id) ||
+                                (_pinnedBlockId != null &&
+                                    _pinnedBlockId !=
+                                        _visibleBlocks[0].id),
+                            onTogglePin: () => _togglePin(_visibleBlocks[0]),
                           ),
                         ),
                       ),
@@ -573,6 +687,19 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                               onEnqueueTrack: (track) =>
                                   _enqueue(track, playNext: false),
                               reducedMotion: reducedMotion,
+                              isPinned:
+                                  _pinnedBlockId == _visibleBlocks[i].id,
+                              pinPending:
+                                  _pendingPinBlockId == _visibleBlocks[i].id,
+                              pinBlockedByOther:
+                                  (_pendingPinBlockId != null &&
+                                          _pendingPinBlockId !=
+                                              _visibleBlocks[i].id) ||
+                                      (_pinnedBlockId != null &&
+                                          _pinnedBlockId !=
+                                              _visibleBlocks[i].id),
+                              onTogglePin: () =>
+                                  _togglePin(_visibleBlocks[i]),
                             ),
                           ),
                         ),
@@ -841,6 +968,10 @@ class _LineupBlockSection extends StatelessWidget {
     required this.onTrackActivated,
     required this.onEnqueueTrack,
     required this.reducedMotion,
+    required this.isPinned,
+    required this.pinPending,
+    required this.pinBlockedByOther,
+    required this.onTogglePin,
   });
 
   final DjLineupBlock block;
@@ -852,6 +983,10 @@ class _LineupBlockSection extends StatelessWidget {
   final Future<void> Function(DjLineupTrack track) onTrackActivated;
   final Future<void> Function(DjLineupTrack track) onEnqueueTrack;
   final bool reducedMotion;
+  final bool isPinned;
+  final bool pinPending;
+  final bool pinBlockedByOther;
+  final VoidCallback onTogglePin;
 
   @override
   Widget build(BuildContext context) {
@@ -895,6 +1030,13 @@ class _LineupBlockSection extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
+              _PinButton(
+                blockId: block.id,
+                isPinned: isPinned,
+                pending: pinPending,
+                disabled: pinBlockedByOther || isLoading,
+                onTogglePin: onTogglePin,
+              ),
               Tooltip(
                 message: 'Swap these tracks',
                 child: TextButton.icon(
@@ -951,6 +1093,132 @@ class _LineupBlockSection extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// Pin affordance in the section header, next to Swap. Outlined pin while
+/// unpinned, filled pin plus a muted "Pinned" badge while pinned, spinner
+/// while its request is in flight, and a disabled state while another block's
+/// pin request is pending — the server allows only one active pin.
+class _PinButton extends StatelessWidget {
+  const _PinButton({
+    required this.blockId,
+    required this.isPinned,
+    required this.pending,
+    required this.disabled,
+    required this.onTogglePin,
+  });
+
+  final String blockId;
+  final bool isPinned;
+  final bool pending;
+  final bool disabled;
+  final VoidCallback onTogglePin;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        SizedBox(
+          width: 36,
+          height: 36,
+          child: IconButton(
+            key: ValueKey('dj_pin_$blockId'),
+            tooltip: isPinned ? 'Unlock vibe' : 'Pin this vibe',
+            onPressed: pending || disabled ? null : onTogglePin,
+            icon: pending
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(
+                    isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                    size: 20,
+                  ),
+          ),
+        ),
+        if (isPinned) ...[
+          const SizedBox(height: 2),
+          Container(
+            key: ValueKey('dj_pinned_badge_$blockId'),
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primary.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(AppTheme.radiusSmall),
+            ),
+            child: Text(
+              'Pinned',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// Slim muted banner between the chips area and the first section announcing
+/// the active pin with an inline Unlock action. Deliberately not error red.
+class _PinnedBanner extends StatelessWidget {
+  const _PinnedBanner({
+    required this.blockTitle,
+    required this.onUnlock,
+    required this.enabled,
+  });
+
+  final String blockTitle;
+  final VoidCallback onUnlock;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      key: const ValueKey('dj_pinned_banner'),
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceRaised,
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.push_pin,
+            size: 18,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Vibe locked: $blockTitle',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          TextButton(
+            key: const ValueKey('dj_unlock_pin'),
+            onPressed: enabled ? onUnlock : null,
+            style: TextButton.styleFrom(
+              foregroundColor: AppTheme.orange,
+              textStyle: const TextStyle(
+                fontWeight: FontWeight.w800,
+                color: AppTheme.orange,
+              ),
+            ),
+            child: const Text('Unlock'),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -255,6 +255,13 @@ class _DeferredDjSessionDataSource implements DjSessionDataSource {
     responses.add(response);
     return response.future;
   }
+
+  @override
+  Future<DjPin> pinBlock(String blockId) async =>
+      DjPin.fromJson(const {});
+
+  @override
+  Future<void> unpinBlock() async {}
 }
 
 String _lineupFixture(String? block) {

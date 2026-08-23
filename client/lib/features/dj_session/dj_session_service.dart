@@ -5,6 +5,14 @@ import 'dj_session_models.dart';
 
 abstract interface class DjSessionDataSource {
   Future<DjLineup> fetchLineup(DjLineupRequest request);
+
+  /// Pins the given lineup block so its energy/genre guidance survives across
+  /// sessions until it expires or is replaced.
+  Future<DjPin> pinBlock(String blockId);
+
+  /// Removes the active pin. A missing pin (404) is treated as already gone
+  /// rather than a failure, matching the idempotent backend contract.
+  Future<void> unpinBlock();
 }
 
 /// Authenticated client boundary for the server-owned DJ lineup contract.
@@ -32,6 +40,7 @@ class DjSessionService implements DjSessionDataSource {
 
   /// Pins the given lineup block so its energy/genre guidance survives across
   /// sessions until it expires or is replaced.
+  @override
   Future<DjPin> pinBlock(String blockId) async {
     final response = await _apiClient.post<Map<String, dynamic>>(
       '/dj/pin',
@@ -42,6 +51,7 @@ class DjSessionService implements DjSessionDataSource {
 
   /// Removes the active pin. A missing pin (404) is treated as already gone
   /// rather than a failure, matching the idempotent backend contract.
+  @override
   Future<void> unpinBlock() async {
     try {
       await _apiClient.delete<dynamic>('/dj/pin');
