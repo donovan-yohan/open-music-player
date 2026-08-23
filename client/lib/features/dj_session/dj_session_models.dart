@@ -70,6 +70,7 @@ class DjLineupBlock {
     required this.title,
     required this.reason,
     required this.tracks,
+    this.detail = '',
   });
 
   final String id;
@@ -77,12 +78,17 @@ class DjLineupBlock {
   final String reason;
   final List<DjLineupTrack> tracks;
 
+  /// Optional data-derived secondary line (e.g. "23 plays in the last 90
+  /// days"). Empty when the backend omits it, so callers can hide it.
+  final String detail;
+
   factory DjLineupBlock.fromJson(Map<String, dynamic> json) {
     final rawTracks = json['tracks'];
     return DjLineupBlock(
       id: _stringValue(json['id']),
       title: _stringValue(json['title']),
       reason: _stringValue(json['reason']),
+      detail: _stringValue(json['detail']),
       tracks: rawTracks is List
           ? rawTracks
               .whereType<Map>()
@@ -137,6 +143,38 @@ class DjLineupTrack {
         if (camelot != null && camelot!.isNotEmpty) camelot!,
         if (energy != null) '${(energy! * 100).round()}%',
       ];
+}
+
+/// The active lineup pin as returned by GET/POST /dj/pin.
+class DjPin {
+  const DjPin({
+    required this.blockId,
+    required this.energyLow,
+    required this.energyHigh,
+    required this.genres,
+    required this.expiresAt,
+  });
+
+  final String blockId;
+  final double energyLow;
+  final double energyHigh;
+  final List<String> genres;
+  final DateTime? expiresAt;
+
+  factory DjPin.fromJson(Map<String, dynamic> json) {
+    final rawGenres = json['genres'];
+    return DjPin(
+      blockId: _stringValue(json['blockId']),
+      energyLow: _nullableDouble(json['energyLow']) ?? 0,
+      energyHigh: _nullableDouble(json['energyHigh']) ?? 0,
+      genres: rawGenres is List
+          ? rawGenres.map(_stringValue).toList(growable: false)
+          : const [],
+      expiresAt: json['expiresAt'] is String
+          ? DateTime.tryParse(json['expiresAt'] as String)
+          : null,
+    );
+  }
 }
 
 int _intValue(Object? value) => _nullableInt(value) ?? 0;

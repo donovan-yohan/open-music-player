@@ -90,5 +90,52 @@ DjSessionFilters djPresetFilters(DjVibePreset preset) {
   };
 }
 
+/// A local, time-of-day prompt suggestion shown when the request bar is empty.
+@immutable
+class DjPromptSuggestion {
+  const DjPromptSuggestion({required this.label, required this.text});
+
+  /// Short chip label. Also the deterministic rotation key.
+  final String label;
+
+  /// Text submitted through the typed-request pipeline when tapped.
+  final String text;
+}
+
+/// The two time-of-day suggestions for [now], paired with the always-present
+/// "Something new". The time-of-day pair rotates deterministically by
+/// day-of-week so the pairing changes daily without any network call:
+///
+/// - morning (before 11:00): "Slow start", "Coffee first"
+/// - midday (11:00–18:00):   "Focus mode", "Reset"
+/// - evening (18:00+):       "Wind down", "Late drive"
+List<DjPromptSuggestion> djPromptSuggestions({DateTime? now}) {
+  final moment = now ?? DateTime.now();
+  const morningPair = [
+    DjPromptSuggestion(label: 'Slow start', text: 'slow start'),
+    DjPromptSuggestion(label: 'Coffee first', text: 'coffee first'),
+  ];
+  const middayPair = [
+    DjPromptSuggestion(label: 'Focus mode', text: 'focus mode'),
+    DjPromptSuggestion(label: 'Reset', text: 'reset'),
+  ];
+  const eveningPair = [
+    DjPromptSuggestion(label: 'Wind down', text: 'wind down'),
+    DjPromptSuggestion(label: 'Late drive', text: 'late drive'),
+  ];
+
+  final pair = switch (moment.hour) {
+    < 11 => morningPair,
+    >= 18 => eveningPair,
+    _ => middayPair,
+  };
+  // Rotate within the pair by day-of-week; "Something new" is always present.
+  final rotated = moment.weekday.isOdd ? pair : [pair[1], pair[0]];
+  return [
+    ...rotated,
+    const DjPromptSuggestion(label: 'Something new', text: 'something new'),
+  ];
+}
+
 final _highEnergyWords = RegExp(r'\b(energetic|hype|gym|party|dance|high[ -]energy)\b');
 final _lowEnergyWords = RegExp(r'\b(chill|calm|sleep|focus|study|low[ -]energy)\b');
