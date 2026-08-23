@@ -46,6 +46,7 @@ type Router struct {
 	maintenanceHandlers     *MaintenanceHandlers
 	playEventHandlers       *PlayEventHandlers
 	djLineupHandlers        *DJLineupHandlers
+	djPinHandlers           *DJPinHandlers
 	researchHandlers        *ResearchHandlers
 	healthHandler           *health.Handler
 	metricsHandler          http.HandlerFunc
@@ -83,6 +84,7 @@ type RouterConfig struct {
 	MaintenanceHandlers     *MaintenanceHandlers
 	PlayEventHandlers       *PlayEventHandlers
 	DJLineupHandlers        *DJLineupHandlers
+	DJPinHandlers           *DJPinHandlers
 	ResearchHandlers        *ResearchHandlers
 	HealthHandler           *health.Handler
 	Metrics                 *metrics.Metrics
@@ -145,6 +147,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		maintenanceHandlers:     cfg.MaintenanceHandlers,
 		playEventHandlers:       cfg.PlayEventHandlers,
 		djLineupHandlers:        cfg.DJLineupHandlers,
+		djPinHandlers:           cfg.DJPinHandlers,
 		researchHandlers:        cfg.ResearchHandlers,
 		healthHandler:           cfg.HealthHandler,
 		metricsHandler:          metricsHandler,
@@ -381,6 +384,13 @@ func (r *Router) setupRoutes() {
 	// Deterministic, data-only lineup generation for a personalized DJ session.
 	if r.djLineupHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/dj/lineup", r.withAuth(r.djLineupHandlers.GetLineup))
+	}
+
+	// DJ vibe pin lifecycle: capture, read, and clear the user's pinned vibe envelope.
+	if r.djPinHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/dj/pin", r.withAuth(r.djPinHandlers.CreatePin))
+		r.mux.HandleFunc("GET /api/v1/dj/pin", r.withAuth(r.djPinHandlers.GetPin))
+		r.mux.HandleFunc("DELETE /api/v1/dj/pin", r.withAuth(r.djPinHandlers.DeletePin))
 	}
 
 	// Maintenance repair routes (auth required)
