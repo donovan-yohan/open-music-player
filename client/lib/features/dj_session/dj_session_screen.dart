@@ -28,10 +28,15 @@ class DjSessionScreen extends StatefulWidget {
     super.key,
     this.service,
     this.randomSeed,
+    this.clock,
   });
 
   final DjSessionDataSource? service;
   final int Function()? randomSeed;
+
+  /// Injectable clock for time-of-day UI (prompt suggestions). Production
+  /// callers omit it; widget tests pin it so suggestions are deterministic.
+  final DateTime Function()? clock;
 
   @override
   State<DjSessionScreen> createState() => _DjSessionScreenState();
@@ -63,6 +68,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
 
   late final DjSessionDataSource _service;
   late final int Function() _randomSeed;
+  late final DateTime Function() _clock;
   late final TextEditingController _requestController;
   final FocusNode _requestFocusNode = FocusNode();
   DjSessionFilters _filters = const DjSessionFilters();
@@ -70,6 +76,14 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   final Set<String> _loadingBlockIds = {};
   final Map<String, String> _blockErrors = {};
   final Map<String, int> _blockRevisions = {};
+
+  /// Block ids whose latest Swap returned an empty-but-successful block while
+  /// other sections still had content. These render the friendly inline line
+  /// instead of the transport-failure banner (spec QA-a).
+  final Set<String> _emptySwapBlockIds = {};
+
+  bool get _isAnySectionLoading =>
+      _loadingAll || _loadingBlockIds.isNotEmpty;
 
   // Full requests invalidate every in-flight block reroll, while rerolls only
   // invalidate a full response that started before them. That keeps two
@@ -91,6 +105,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
     super.initState();
     _service = widget.service ?? DjSessionService(context.read<ApiClient>());
     _randomSeed = widget.randomSeed ?? () => Random().nextInt(1 << 31);
+    _clock = widget.clock ?? DateTime.now;
     _requestController = TextEditingController();
     _loadAll();
     _maybeShowCoachMark();
@@ -237,6 +252,16 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
         }
         _blockRevisions[block.id] = (_blockRevisions[block.id] ?? 0) + 1;
         _loadingBlockIds.remove(block.id);
+        // An empty swap is a success ("that's everyone here"), not a failure.
+        // Only treat it as such while other sections still carry content.
+        final othersHaveContent = _blocks.any(
+          (item) => item.id != block.id && item.tracks.isNotEmpty,
+        );
+        if (replacement.first.tracks.isEmpty && othersHaveContent) {
+          _emptySwapBlockIds.add(block.id);
+        } else {
+          _emptySwapBlockIds.remove(block.id);
+        }
       });
       _announce('${block.title} updated');
     } catch (_) {
@@ -250,6 +275,56 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
         _blockErrors[block.id] = "Swap didn't take. Try again.";
       });
     }
+  }
+
+  /// Enqueues every track across all loaded blocks in visual order (block
+  /// order, card order within each block) through the canonical QueueProvider
+  /// path. Tracks already in the queue — including duplicates within the
+  /// lineup itself — are skipped, matching append (playNext: false) semantics.
+  Future<void> _enqueueSession() async {
+    if (_isAnySectionLoading) return;
+    final queue = context.read<QueueProvider>();
+    // Seed the provider's view of the queue so pre-existing tracks aren't
+    // re-added; a failed load falls back to an empty snapshot (append-only).
+    await queue.loadQueue();
+    final queuedIds = queue.queue.tracks
+        .map((track) => track.playbackTrackId ?? track.id)
+        .whereType<String>()
+        .toSet();
+
+    final pending = <DjLineupTrack>[];
+    for (final block in _visibleBlocks) {
+      for (final track in block.tracks) {
+        final trackId = track.id.toString();
+        if (!queuedIds.add(trackId)) continue; // already queued or duplicate
+        pending.add(track);
+      }
+    }
+
+    var enqueued = 0;
+    for (final track in pending) {
+      await queue.addToQueue([track.id.toString()], playNext: false);
+      if (queue.error != null) break; // transport/5xx: stop and report partial
+      enqueued++;
+    }
+
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    if (pending.isEmpty) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Everything here is already queued')),
+      );
+      return;
+    }
+    if (queue.error != null || enqueued < pending.length) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Queued $enqueued of ${pending.length} tracks')),
+      );
+      return;
+    }
+    messenger.showSnackBar(
+      SnackBar(content: Text('Session queued · $enqueued tracks')),
+    );
   }
 
   Future<void> _enqueue(DjLineupTrack track, {bool playNext = false}) async {
@@ -333,6 +408,14 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
     _dismissCoachMark();
     unawaited(_markRequestSubmitted());
     _applyFilters(parseDjVibeText(_requestController.text));
+  }
+
+  /// Submits a suggestion chip through the exact typed-text pipeline: the chip
+  /// text goes through [parseDjVibeText] as if the listener had typed it.
+  void _applySuggestion(DjPromptSuggestion suggestion) {
+    _requestController.text = suggestion.text;
+    _applyTextRequest();
+    if (mounted) _requestFocusNode.unfocus();
   }
 
   void _applyFilters(DjSessionFilters filters) {
@@ -452,6 +535,8 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                             isLoading:
                                 _loadingBlockIds.contains(_visibleBlocks[0].id),
                             errorMessage: _blockErrors[_visibleBlocks[0].id],
+                            showEmptySwapNote: _emptySwapBlockIds
+                                .contains(_visibleBlocks[0].id),
                             revision:
                                 _blockRevisions[_visibleBlocks[0].id] ?? 0,
                             onReroll: () => _reroll(_visibleBlocks[0]),
@@ -476,6 +561,8 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
                                   .contains(_visibleBlocks[i].id),
                               errorMessage:
                                   _blockErrors[_visibleBlocks[i].id],
+                              showEmptySwapNote: _emptySwapBlockIds
+                                  .contains(_visibleBlocks[i].id),
                               revision:
                                   _blockRevisions[_visibleBlocks[i].id] ?? 0,
                               onReroll: () => _reroll(_visibleBlocks[i]),
@@ -582,6 +669,33 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
             ),
           ),
         ),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          height: 56,
+          child: OutlinedButton.icon(
+            key: const ValueKey('dj_play_session'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: theme.colorScheme.onSurface,
+              side: BorderSide(
+                color: theme.colorScheme.outlineVariant,
+                width: 1.4,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+              ),
+            ),
+            onPressed: _isAnySectionLoading ? null : _enqueueSession,
+            icon: const Icon(Icons.play_arrow, size: 24),
+            label: Text(
+              'Play session',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: _isAnySectionLoading ? null : theme.colorScheme.onSurface,
+              ),
+            ),
+          ),
+        ),
         if (_coachMarkVisible) ...[
           const SizedBox(height: 8),
           Text(
@@ -607,6 +721,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
       controller: _requestController,
       focusNode: _requestFocusNode,
       textInputAction: TextInputAction.search,
+      onChanged: (_) => setState(() {}),
       onSubmitted: (_) => _applyTextRequest(),
       decoration: InputDecoration(
         hintText: 'Request a vibe',
@@ -635,6 +750,8 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
       if (_filters.query != null && _filters.query!.isNotEmpty)
         InputChip(label: Text('“${_filters.query}”'), onDeleted: _clearQuery),
     ];
+    final showSuggestions =
+        _requestController.text.trim().isEmpty && _filters.isEmpty;
     return SizedBox(
       height: 40,
       child: Row(
@@ -644,6 +761,25 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
+                  if (showSuggestions) ...[
+                    for (final suggestion
+                        in djPromptSuggestions(now: _clock())) ...[
+                      ActionChip(
+                        key: ValueKey('dj_suggestion_${suggestion.label}'),
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.padded,
+                        label: Text(suggestion.label),
+                        onPressed: () => _applySuggestion(suggestion),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    VerticalDivider(
+                      width: 17,
+                      indent: 8,
+                      endIndent: 8,
+                      color: theme.colorScheme.outlineVariant,
+                    ),
+                  ],
                   for (final preset in DjVibePreset.values) ...[
                     ActionChip(
                       visualDensity: VisualDensity.compact,
@@ -685,6 +821,7 @@ class _LineupBlockSection extends StatelessWidget {
     required this.block,
     required this.isLoading,
     required this.errorMessage,
+    required this.showEmptySwapNote,
     required this.revision,
     required this.onReroll,
     required this.onTrackActivated,
@@ -695,6 +832,7 @@ class _LineupBlockSection extends StatelessWidget {
   final DjLineupBlock block;
   final bool isLoading;
   final String? errorMessage;
+  final bool showEmptySwapNote;
   final int revision;
   final VoidCallback onReroll;
   final Future<void> Function(DjLineupTrack track) onTrackActivated;
@@ -729,6 +867,16 @@ class _LineupBlockSection extends StatelessWidget {
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
+                    if (block.detail.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        block.detail,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant
+                              .withValues(alpha: 0.8),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -750,6 +898,8 @@ class _LineupBlockSection extends StatelessWidget {
           _InlineBlockFailure(message: errorMessage!, onRetry: onReroll)
         else if (isLoading && block.tracks.isEmpty)
           const _RailSkeleton()
+        else if (block.tracks.isEmpty && showEmptySwapNote)
+          const _EmptySwapNote()
         else if (block.tracks.isEmpty)
           const _EmptyBlockState()
         else
@@ -1033,19 +1183,44 @@ class _InlineBlockFailure extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    // Dark red panel with high-contrast message text and a bright retry link
+    // so both clear the 4.5:1 contrast bar against the panel color.
+    const panelColor = Color(0xFF3A0E0C);
     return Container(
       constraints: const BoxConstraints(minHeight: 88),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
-        color: Theme.of(context).colorScheme.errorContainer,
+        color: panelColor,
       ),
       child: Row(
         children: [
-          const Icon(Icons.error_outline),
+          Icon(
+            Icons.error_outline,
+            color: theme.colorScheme.error,
+          ),
           const SizedBox(width: 10),
-          Expanded(child: Text(message)),
-          TextButton(onPressed: onRetry, child: const Text('Retry')),
+          Expanded(
+            child: Text(
+              message,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.95),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: onRetry,
+            style: TextButton.styleFrom(
+              foregroundColor: AppTheme.orange,
+              textStyle: const TextStyle(
+                fontWeight: FontWeight.w800,
+                color: AppTheme.orange,
+              ),
+            ),
+            child: const Text('Retry'),
+          ),
         ],
       ),
     );
@@ -1063,6 +1238,25 @@ class _RefreshFailure extends StatelessWidget {
         message: message,
         onRetry: onRetry,
       );
+}
+
+class _EmptySwapNote extends StatelessWidget {
+  const _EmptySwapNote();
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 88,
+      child: Center(
+        child: Text(
+          "That's everyone here for now.",
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+        ),
+      ),
+    );
+  }
 }
 
 class _EmptyBlockState extends StatelessWidget {
@@ -1086,7 +1280,9 @@ class _FooterSignOff extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 32, 20, 0),
+      // 24dp bottom padding keeps breathing room without the dead void QA
+      // flagged on the emulator.
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, AppTheme.space5),
       child: Text(
         "That's the set. Reroll anytime.",
         textAlign: TextAlign.center,
