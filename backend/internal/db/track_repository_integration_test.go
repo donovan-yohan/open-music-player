@@ -481,6 +481,163 @@ func decodeJSONRawMessage(t *testing.T, raw json.RawMessage) map[string]any {
 	return decoded
 }
 
+// TestNullMetadataJSONScansWithoutErrorAgainstPostgres is the regression test for
+// the staging 500s: rows created by paths that never set metadata_json leave the
+// column NULL, and scanning NULL into *json.RawMessage fails with
+// "unsupported Scan, storing driver.Value type <nil> into type *json.RawMessage".
+// Every track-scanning surface must tolerate the NULL row and surface an empty
+// MetadataJSON instead of erroring.
+func TestNullMetadataJSONScansWithoutErrorAgainstPostgres(t *testing.T) {
+	repo, ctx := newPostgresTestRepository(t)
+	database := repo.db
+
+	// A track created without WithMetadata leaves metadata_json NULL.
+	nullTrack, created, err := repo.CreateTrackFromMetadata(ctx, "Nullmeta Artist", "Nullmeta Track", "Nullmeta Album", 123000)
+	if err != nil {
+		t.Fatalf("create null-metadata track: %v", err)
+	}
+	if !created {
+		t.Fatal("expected new null-metadata track")
+	}
+
+	// Control: a track with metadata must keep scanning it through unchanged.
+	controlTrack, _, err := repo.CreateTrackFromMetadata(ctx, "Control Artist", "Control Track", "", 124000,
+		WithMetadata(json.RawMessage(`{"provider":"youtube"}`)))
+	if err != nil {
+		t.Fatalf("create control track: %v", err)
+	}
+
+	// GetByID backs POST /api/v1/library/tracks/{id}.
+	got, err := repo.GetByID(ctx, nullTrack.ID)
+	if err != nil {
+		t.Fatalf("GetByID on NULL metadata_json: %v", err)
+	}
+	if len(got.MetadataJSON) != 0 {
+		t.Fatalf("GetByID MetadataJSON = %s, want empty", string(got.MetadataJSON))
+	}
+
+	// GetByIdentityHash backs the create-or-get dedupe path.
+	got, err = repo.GetByIdentityHash(ctx, nullTrack.IdentityHash)
+	if err != nil {
+		t.Fatalf("GetByIdentityHash on NULL metadata_json: %v", err)
+	}
+	if len(got.MetadataJSON) != 0 {
+		t.Fatalf("GetByIdentityHash MetadataJSON = %s, want empty", string(got.MetadataJSON))
+	}
+
+	// SearchRecordings backs library search.
+	tracks, total, err := repo.SearchRecordings(ctx, "Nullmeta", 20, 0)
+	if err != nil {
+		t.Fatalf("SearchRecordings on NULL metadata_json: %v", err)
+	}
+	if total != 1 || len(tracks) != 1 || tracks[0].ID != nullTrack.ID {
+		t.Fatalf("SearchRecordings = %d tracks (total %d), want the null-metadata track", len(tracks), total)
+	}
+	if len(tracks[0].MetadataJSON) != 0 {
+		t.Fatalf("SearchRecordings MetadataJSON = %s, want empty", string(tracks[0].MetadataJSON))
+	}
+
+	// GetUnverifiedTracks backs the batch matcher.
+	tracks, total, err = repo.GetUnverifiedTracks(ctx, 20, 0)
+	if err != nil {
+		t.Fatalf("GetUnverifiedTracks on NULL metadata_json: %v", err)
+	}
+	if total < 2 {
+		t.Fatalf("GetUnverifiedTracks total = %d, want >= 2", total)
+	}
+	for _, tr := range tracks {
+		if tr.ID == nullTrack.ID && len(tr.MetadataJSON) != 0 {
+			t.Fatalf("GetUnverifiedTracks MetadataJSON = %s, want empty", string(tr.MetadataJSON))
+		}
+	}
+
+	// GetMaintenanceCandidates backs the metadata maintenance worker.
+	candidates, err := repo.GetMaintenanceCandidates(ctx, true, false, time.Minute, 10)
+	if err != nil {
+		t.Fatalf("GetMaintenanceCandidates on NULL metadata_json: %v", err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("GetMaintenanceCandidates returned no candidates")
+	}
+
+	// Library listing backs GET /api/v1/library and the home feed.
+	userID := uuid.New()
+	if _, err := database.Exec(`INSERT INTO users (id, email, username, password_hash) VALUES ($1, $2, $3, 'x')`, userID, "nullmeta@example.test", "nullmeta"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	libraryRepo := NewLibraryRepository(database)
+	if _, err := libraryRepo.AddTrackToLibrary(ctx, userID, nullTrack.ID); err != nil {
+		t.Fatalf("add null-metadata track to library: %v", err)
+	}
+	libraryTracks, total, err := libraryRepo.GetUserLibrary(ctx, userID, LibraryQueryOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("GetUserLibrary on NULL metadata_json: %v", err)
+	}
+	if total != 1 || len(libraryTracks) != 1 {
+		t.Fatalf("GetUserLibrary = %d tracks (total %d), want 1", len(libraryTracks), total)
+	}
+	if len(libraryTracks[0].MetadataJSON) != 0 {
+		t.Fatalf("GetUserLibrary MetadataJSON = %s, want empty", string(libraryTracks[0].MetadataJSON))
+	}
+
+	// Play-event listings back GET /api/v1/me/plays/recent, /top, and history.
+	playRepo := NewPlayEventRepository(database)
+	if err := playRepo.RecordPlay(ctx, userID, nullTrack.ID, "library", ""); err != nil {
+		t.Fatalf("record play: %v", err)
+	}
+	recent, err := playRepo.RecentlyPlayed(ctx, userID, 20, 0)
+	if err != nil {
+		t.Fatalf("RecentlyPlayed on NULL metadata_json: %v", err)
+	}
+	if len(recent) != 1 || len(recent[0].MetadataJSON) != 0 {
+		t.Fatalf("RecentlyPlayed = %+v, want 1 track with empty MetadataJSON", recent)
+	}
+	history, err := playRepo.PlayHistory(ctx, userID, 20, 0)
+	if err != nil {
+		t.Fatalf("PlayHistory on NULL metadata_json: %v", err)
+	}
+	if len(history) != 1 || len(history[0].Track.MetadataJSON) != 0 {
+		t.Fatalf("PlayHistory = %+v, want 1 event with empty MetadataJSON", history)
+	}
+	top, err := playRepo.TopTracks(ctx, userID, 30, 20)
+	if err != nil {
+		t.Fatalf("TopTracks on NULL metadata_json: %v", err)
+	}
+	if len(top) != 1 || len(top[0].MetadataJSON) != 0 {
+		t.Fatalf("TopTracks = %+v, want 1 track with empty MetadataJSON", top)
+	}
+
+	// Playlist detail backs GET /api/v1/playlists/{id}.
+	playlistRepo := NewPlaylistRepository(database)
+	playlist := &Playlist{UserID: userID, Name: "nullmeta playlist"}
+	if err := playlistRepo.Create(ctx, playlist); err != nil {
+		t.Fatalf("create playlist: %v", err)
+	}
+	if err := playlistRepo.AddTrack(ctx, playlist.ID, nullTrack.ID); err != nil {
+		t.Fatalf("add null-metadata track to playlist: %v", err)
+	}
+	withTracks, err := playlistRepo.GetByIDWithTracks(ctx, playlist.ID)
+	if err != nil {
+		t.Fatalf("GetByIDWithTracks on NULL metadata_json: %v", err)
+	}
+	if len(withTracks.Tracks) != 1 || len(withTracks.Tracks[0].MetadataJSON) != 0 {
+		t.Fatalf("GetByIDWithTracks = %+v, want 1 track with empty MetadataJSON", withTracks.Tracks)
+	}
+
+	// Control: non-NULL metadata still scans through unchanged.
+	control, err := repo.GetByID(ctx, controlTrack.ID)
+	if err != nil {
+		t.Fatalf("GetByID on control track: %v", err)
+	}
+	var controlDoc map[string]any
+	if err := json.Unmarshal(control.MetadataJSON, &controlDoc); err != nil {
+		t.Fatalf("control MetadataJSON %s is not valid JSON: %v", string(control.MetadataJSON), err)
+	}
+	if controlDoc["provider"] != "youtube" {
+		t.Fatalf("control MetadataJSON = %s, want provider youtube", string(control.MetadataJSON))
+	}
+}
+
 func assertTrackGenre(t *testing.T, database *DB, trackID int64, want sql.NullString) {
 	t.Helper()
 	var got sql.NullString

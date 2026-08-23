@@ -3,6 +3,7 @@ package playlistimport
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -513,11 +514,12 @@ func (r *TrackSourceRepository) FindTrackBySource(ctx context.Context, provider,
 		LIMIT 1
 	`
 	var track db.Track
+	var metadataJSON, metadataProvenance sql.NullString
 	err := r.db.QueryRowContext(ctx, query, provider, sourceID, sourceURL).Scan(
 		&track.ID, &track.IdentityHash, &track.Title, &track.Artist, &track.Album, &track.DurationMs, &track.Version,
 		&track.MBRecordingID, &track.MBReleaseID, &track.MBArtistID, &track.MBVerified,
 		&track.SourceURL, &track.SourceType, &track.StorageKey, &track.FileSizeBytes,
-		&track.MetadataJSON, &track.MetadataStatus, &track.MetadataConfidence, &track.MetadataProvenance,
+		&metadataJSON, &track.MetadataStatus, &track.MetadataConfidence, &metadataProvenance,
 		&track.CoverArtURL, &track.MetadataUserEdited, &track.CreatedAt, &track.UpdatedAt,
 	)
 	if err != nil {
@@ -525,6 +527,12 @@ func (r *TrackSourceRepository) FindTrackBySource(ctx context.Context, provider,
 			return nil, db.ErrTrackNotFound
 		}
 		return nil, err
+	}
+	if metadataJSON.Valid {
+		track.MetadataJSON = json.RawMessage(metadataJSON.String)
+	}
+	if metadataProvenance.Valid {
+		track.MetadataProvenance = json.RawMessage(metadataProvenance.String)
 	}
 	return &track, nil
 }

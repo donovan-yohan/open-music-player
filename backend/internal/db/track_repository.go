@@ -144,18 +144,21 @@ func (r *TrackRepository) SearchRecordings(ctx context.Context, query string, li
 	for rows.Next() {
 		var t Track
 		var analysisOverrides json.RawMessage
+		var metadataJSON, metadataProvenance sql.NullString
 		err := rows.Scan(
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 			&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
-			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
+			&metadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &metadataProvenance,
 			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt, &total,
 		)
 		if err != nil {
 			return nil, 0, err
 		}
+		t.MetadataJSON = rawJSONFromNullString(metadataJSON)
+		t.MetadataProvenance = rawJSONFromNullString(metadataProvenance)
 		t.AnalysisSummary, _ = projectCompactAnalysis(t.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, t)
 	}
@@ -232,18 +235,21 @@ func (r *TrackRepository) searchRecordingsTrigram(ctx context.Context, query str
 	for rows.Next() {
 		var t Track
 		var analysisOverrides json.RawMessage
+		var metadataJSON, metadataProvenance sql.NullString
 		err := rows.Scan(
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 			&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
-			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
+			&metadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &metadataProvenance,
 			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 			&t.AnalysisStatus, &t.AnalysisSummary, &analysisOverrides, &t.AnalysisUpdatedAt, &total,
 		)
 		if err != nil {
 			return nil, 0, err
 		}
+		t.MetadataJSON = rawJSONFromNullString(metadataJSON)
+		t.MetadataProvenance = rawJSONFromNullString(metadataProvenance)
 		t.AnalysisSummary, _ = projectCompactAnalysis(t.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, t)
 	}
@@ -493,12 +499,13 @@ func (r *TrackRepository) GetByID(ctx context.Context, id int64) (*Track, error)
 	`
 
 	var t Track
+	var metadataJSON, metadataProvenance sql.NullString
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 		&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 		&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 		&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
-		&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
+		&metadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &metadataProvenance,
 		&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
@@ -507,6 +514,8 @@ func (r *TrackRepository) GetByID(ctx context.Context, id int64) (*Track, error)
 		}
 		return nil, err
 	}
+	t.MetadataJSON = rawJSONFromNullString(metadataJSON)
+	t.MetadataProvenance = rawJSONFromNullString(metadataProvenance)
 
 	return &t, nil
 }
@@ -601,6 +610,18 @@ func nullableRawJSON(raw json.RawMessage) any {
 		return nil
 	}
 	return string(raw)
+}
+
+// rawJSONFromNullString converts a scanned nullable JSONB column into a
+// json.RawMessage. database/sql cannot scan SQL NULL into *json.RawMessage
+// (it fails with "unsupported Scan, storing driver.Value type <nil> into type
+// *json.RawMessage"), so nullable JSON columns are scanned into sql.NullString
+// first; a NULL column yields nil.
+func rawJSONFromNullString(s sql.NullString) json.RawMessage {
+	if !s.Valid {
+		return nil
+	}
+	return json.RawMessage(s.String)
 }
 
 // ApplyAnalysisGenreHint stores the top analyzer genre hint on a track.
@@ -704,12 +725,13 @@ func getByIdentityHash(ctx context.Context, queryRower trackQueryRower, identity
 	`
 
 	var t Track
+	var metadataJSON, metadataProvenance sql.NullString
 	err := queryRower.QueryRowContext(ctx, query, identityHash).Scan(
 		&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 		&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 		&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
 		&t.Codec, &t.BitrateKbps, &t.SampleRateHz, &t.Channels, &t.ContentType,
-		&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
+		&metadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &metadataProvenance,
 		&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 	)
 	if err != nil {
@@ -718,6 +740,8 @@ func getByIdentityHash(ctx context.Context, queryRower trackQueryRower, identity
 		}
 		return nil, err
 	}
+	t.MetadataJSON = rawJSONFromNullString(metadataJSON)
+	t.MetadataProvenance = rawJSONFromNullString(metadataProvenance)
 
 	return &t, nil
 }
@@ -1191,16 +1215,19 @@ func (r *TrackRepository) GetUnverifiedTracks(ctx context.Context, limit, offset
 	var tracks []Track
 	for rows.Next() {
 		var t Track
+		var metadataJSON, metadataProvenance sql.NullString
 		err := rows.Scan(
 			&t.ID, &t.IdentityHash, &t.Title, &t.Artist, &t.Album, &t.DurationMs, &t.Version,
 			&t.MBRecordingID, &t.MBReleaseID, &t.MBArtistID, &t.MBVerified,
 			&t.SourceURL, &t.SourceType, &t.StorageKey, &t.FileSizeBytes,
-			&t.MetadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &t.MetadataProvenance,
+			&metadataJSON, &t.MetadataStatus, &t.MetadataConfidence, &metadataProvenance,
 			&t.CoverArtURL, &t.MetadataUserEdited, &t.CreatedAt, &t.UpdatedAt,
 		)
 		if err != nil {
 			return nil, 0, err
 		}
+		t.MetadataJSON = rawJSONFromNullString(metadataJSON)
+		t.MetadataProvenance = rawJSONFromNullString(metadataProvenance)
 		tracks = append(tracks, t)
 	}
 

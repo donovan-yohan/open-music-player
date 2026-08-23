@@ -190,18 +190,21 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	for rows.Next() {
 		var lt LibraryTrack
 		var analysisOverrides json.RawMessage
+		var metadataJSON, metadataProvenance sql.NullString
 		err := rows.Scan(
 			&lt.ID, &lt.IdentityHash, &lt.Title, &lt.Artist, &lt.Album, &lt.DurationMs, &lt.Version,
 			&lt.MBRecordingID, &lt.MBReleaseID, &lt.MBArtistID, &lt.MBVerified,
 			&lt.SourceURL, &lt.SourceType, &lt.StorageKey, &lt.FileSizeBytes,
 			&lt.Codec, &lt.BitrateKbps, &lt.SampleRateHz, &lt.Channels, &lt.ContentType,
-			&lt.MetadataJSON, &lt.MetadataStatus, &lt.MetadataConfidence, &lt.MetadataProvenance,
+			&metadataJSON, &lt.MetadataStatus, &lt.MetadataConfidence, &metadataProvenance,
 			&lt.CoverArtURL, &lt.MetadataUserEdited, &lt.HasMetadataOverride, &lt.CreatedAt, &lt.UpdatedAt, &lt.AddedAt,
 			&lt.AnalysisStatus, &lt.AnalysisSummary, &analysisOverrides, &lt.AnalysisUpdatedAt, &lt.IsLiked, &lt.Genre, &total,
 		)
 		if err != nil {
 			return nil, 0, err
 		}
+		lt.MetadataJSON = rawJSONFromNullString(metadataJSON)
+		lt.MetadataProvenance = rawJSONFromNullString(metadataProvenance)
 		lt.AnalysisSummary, _ = projectCompactAnalysis(lt.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, lt)
 	}
