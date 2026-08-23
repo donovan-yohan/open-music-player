@@ -334,6 +334,74 @@ void main() {
     expect(find.widgetWithText(TextButton, 'Retry'), findsOneWidget);
   });
 
+  testWidgets('full refresh clears stale empty-swap markers', (tester) async {
+    var swapReturnsEmpty = false;
+    final apiClient = mockQueueApiClient((request) async {
+      if (request.url.path.endsWith('/dj/lineup')) {
+        if (request.url.queryParameters['block'] == 'flashback' &&
+            swapReturnsEmpty) {
+          // Empty-but-successful reroll while other blocks keep content.
+          return http.Response(
+            jsonEncode({
+              'requested': <String, Object?>{},
+              'blocks': [
+                {
+                  'id': 'flashback',
+                  'title': 'Flashback',
+                  'reason': "Haven't heard this in a minute.",
+                  'tracks': <Object?>[],
+                },
+              ],
+            }),
+            200,
+          );
+        }
+        return http.Response(_swapFixture(), 200);
+      }
+      return http.Response('{}', 404);
+    });
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<QueueProvider>.value(
+        value: QueueProvider(apiClient),
+        child: MaterialApp(
+          home: DjSessionScreen(service: DjSessionService(apiClient)),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Trigger an empty-swap result for the second block.
+    await tester.dragUntilVisible(
+      find.byKey(const ValueKey('dj_swap_flashback')),
+      find.byType(CustomScrollView),
+      const Offset(0, -300),
+    );
+    await tester.pumpAndSettle();
+    swapReturnsEmpty = true;
+    await tester.tap(find.byKey(const ValueKey('dj_swap_flashback')));
+    await tester.pumpAndSettle();
+    expect(find.text("That's everyone here for now."), findsOneWidget);
+
+    // A full refresh repopulates every block with non-empty data; the stale
+    // empty-swap marker must not keep rendering the grace line.
+    swapReturnsEmpty = false;
+    // Scroll fully back to the top, then overscroll slowly so the
+    // RefreshIndicator arms and fires _loadAll.
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 3000));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, 200));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    await tester.pumpAndSettle();
+
+    expect(find.text("That's everyone here for now."), findsNothing);
+    // The refresh restored the full lineup: the first rail renders its card
+    // again and the previously empty block no longer shows the grace line.
+    expect(find.byKey(const ValueKey('dj_track_101')), findsOneWidget);
+  });
+
   testWidgets('block detail renders under reason and hides when absent',
       (tester) async {
     final apiClient = mockQueueApiClient((request) async {

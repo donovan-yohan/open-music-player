@@ -168,6 +168,9 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
         _loadedAllOnce = true;
         _loadingBlockIds.clear();
         _blockErrors.clear();
+        // A full lineup refresh replaces every section, so any lingering
+        // empty-swap markers refer to blocks that no longer exist as rendered.
+        _emptySwapBlockIds.clear();
       });
       _scheduleStaggeredRevisionBumps(responseGeneration);
       if (steering) _finishSteering();
@@ -1192,12 +1195,18 @@ class _InlineBlockFailure extends StatelessWidget {
   final String message;
   final VoidCallback onRetry;
 
+  /// Dark red failure-panel background. Kept as a literal because AppTheme
+  /// has no dark-red surface token yet (its [AppTheme.error] is a bright
+  /// accent meant for icons/borders, not panel fills). If a token is added,
+  /// replace this literal with it.
+  static const Color _panelColor = Color(0xFF3A0E0C);
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    // Dark red panel with high-contrast message text and a bright retry link
-    // so both clear the 4.5:1 contrast bar against the panel color.
-    const panelColor = Color(0xFF3A0E0C);
+    // Near-white message text (~12:1) and a bright retry link (~4.9:1) both
+    // clear the 4.5:1 contrast bar against the dark red panel.
+    const panelColor = _panelColor;
     return Container(
       constraints: const BoxConstraints(minHeight: 88),
       padding: const EdgeInsets.all(14),
