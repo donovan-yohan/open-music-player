@@ -112,6 +112,7 @@ void main() {
       final sessionJson = Map<String, dynamic>.from(
         snapshotJson['session']! as Map,
       );
+      sessionJson['schemaVersion'] = 1;
       final clips = [
         for (final clip in sessionJson['clips']! as List)
           Map<String, dynamic>.from(clip as Map),
@@ -141,6 +142,65 @@ void main() {
       expect(timeline.clips[1].envelope.fadeInMs, 3000);
     });
 
+    test('schema v2 per-clip fades survive queue persistence', () {
+      const queue = [
+        MediaItem(
+          id: '1',
+          title: 'Track 1',
+          duration: Duration(seconds: 30),
+          extras: {'url': 'https://audio.test/1.mp3'},
+        ),
+        MediaItem(
+          id: '2',
+          title: 'Track 2',
+          duration: Duration(seconds: 30),
+          extras: {'url': 'https://audio.test/2.mp3'},
+        ),
+      ];
+      const session = MixSession(
+        sessionId: 'canonical_clip_fades',
+        clips: [
+          MixSessionClip(
+            clipId: 'clip-1',
+            queueItemId: 'queue-1',
+            trackId: '1',
+            sourceDurationMs: 30000,
+            sourceStartMs: 0,
+            sourceEndMs: 30000,
+            timelineStartMs: 0,
+            fadeOutMs: 1750,
+          ),
+          MixSessionClip(
+            clipId: 'clip-2',
+            queueItemId: 'queue-2',
+            trackId: '2',
+            sourceDurationMs: 30000,
+            sourceStartMs: 0,
+            sourceEndMs: 30000,
+            timelineStartMs: 27000,
+            fadeInMs: 1250,
+          ),
+        ],
+      );
+      final restored = QueueSnapshot.decode(
+        QueueSnapshot(
+          tracks: [_track(1), _track(2)],
+          session: session,
+        ).encode(),
+      );
+      final timeline = CueTimeline.fromSession(
+        session: restored.session!,
+        queue: queue,
+        playOrder: const [0, 1],
+      ).toTimelineModel();
+
+      expect(restored.session?.schemaVersion, mixSessionSchemaVersion);
+      expect(restored.session?.clips[0].fadeOutMs, 1750);
+      expect(restored.session?.clips[1].fadeInMs, 1250);
+      expect(timeline.clips[0].envelope.fadeOutMs, 1750);
+      expect(timeline.clips[1].envelope.fadeInMs, 1250);
+    });
+
     test('schema v1 session without crossfade field restores as off', () {
       final sessionJson = MixSession.fromQueue(
         sessionId: 'legacy_session',
@@ -152,6 +212,7 @@ void main() {
           ),
         ],
       ).toJson()
+        ..['schemaVersion'] = 1
         ..remove('defaultCrossfadeMs');
 
       final restored = QueueSnapshot.fromJson({

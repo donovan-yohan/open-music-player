@@ -11,6 +11,7 @@ import 'package:open_music_player/core/engine/click_audition_projection.dart';
 import 'package:open_music_player/core/engine/click_auditioner.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
+import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -511,6 +512,72 @@ void main() {
       expect(playback.position, const Duration(seconds: 7));
       expect(playback.duration, const Duration(seconds: 45));
       expect(playback.isPlaying, isTrue);
+      playback.dispose();
+    });
+
+    test('playMixPlan preserves plan order, geometry, gain, and fades',
+        () async {
+      final playback = _playbackState();
+      final now = DateTime.utc(2026, 8, 24);
+      final plan = MixPlan(
+        id: 'auto-plan',
+        schemaVersion: 1,
+        name: 'Auto mix',
+        clips: [
+          MixPlanClip(
+            clipId: 'clip-2',
+            queueItemId: 'queue-2',
+            trackId: '2',
+            sourceStartMs: 0,
+            sourceEndMs: 45000,
+            timelineStartMs: 0,
+            gainDb: -2,
+            fadeOutMs: 6000,
+          ),
+          MixPlanClip(
+            clipId: 'clip-1',
+            queueItemId: 'queue-1',
+            trackId: '1',
+            sourceStartMs: 0,
+            sourceEndMs: 30000,
+            timelineStartMs: 39000,
+            fadeInMs: 4000,
+          ),
+        ],
+        summary: const MixPlanSummary(
+          clipCount: 2,
+          trackIds: ['2', '1'],
+          durationMs: 69000,
+        ),
+        version: 3,
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      await playback.playMixPlan(
+        [_track(1, seconds: 30), _track(2, seconds: 45)],
+        plan,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(playback.queue.map((item) => item.id), ['2', '1']);
+      expect(playback.currentIndex, 0);
+      expect(playback.currentItem?.id, '2');
+      expect(
+        playback.snapshot.cues.map((cue) => cue.queueItemId),
+        ['queue-2', 'queue-1'],
+      );
+      expect(playback.timelineClipForQueueIndex(0)?.timelineStartMs, 0);
+      expect(playback.timelineClipForQueueIndex(1)?.timelineStartMs, 39000);
+
+      final outgoing = playback.timelineModel.clips
+          .firstWhere((clip) => clip.id == 'clip-2');
+      final incoming = playback.timelineModel.clips
+          .firstWhere((clip) => clip.id == 'clip-1');
+      expect(outgoing.envelope.baseGainDb, -2);
+      expect(outgoing.envelope.fadeOutMs, 6000);
+      expect(incoming.envelope.fadeInMs, 4000);
+      expect(playback.timelineModel.overlapDepthAt(40000), 2);
       playback.dispose();
     });
 

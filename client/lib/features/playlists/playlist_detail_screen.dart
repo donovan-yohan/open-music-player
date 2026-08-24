@@ -18,8 +18,6 @@ import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/track_tile.dart';
 import 'mix/mix_models.dart';
-import 'mix/mix_preferences.dart';
-import 'mix/mix_reorder.dart';
 import 'mixed_playlist_view.dart';
 import 'playlist_edit_dialog.dart';
 import 'playlist_selection.dart';
@@ -51,7 +49,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   bool _mixEnabled = false;
   bool _isMixLoading = false;
   AutoMixResult? _mixPlan;
-  List<int> _displayOrder = const [];
 
   /// True while the blended list is scrolling fast; seam connectors collapse
   /// to hairlines so long playlists stay scannable.
@@ -66,7 +63,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   void initState() {
     super.initState();
     _loadPlaylist();
-    _restoreMixPreference();
   }
 
   void _handleScrollMetrics(ScrollUpdateNotification notification) {
@@ -83,14 +79,23 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final pixelsPerMs = delta.abs() / deltaMs;
 
     if (pixelsPerMs >= _fastScrollVelocityDpPerMs) {
-      _seamExpandTimer?.cancel();
       if (!_fastScrolling.value) _fastScrolling.value = true;
-    } else {
-      _seamExpandTimer?.cancel();
-      _seamExpandTimer = Timer(const Duration(milliseconds: 180), () {
-        if (_fastScrolling.value) _fastScrolling.value = false;
-      });
     }
+    _scheduleSeamExpansion();
+  }
+
+  void _scheduleSeamExpansion() {
+    _seamExpandTimer?.cancel();
+    _seamExpandTimer = Timer(const Duration(milliseconds: 180), () {
+      _lastScrollTimestamp = null;
+      if (_fastScrolling.value) _fastScrolling.value = false;
+    });
+  }
+
+  void _handleScrollSettled() {
+    _seamExpandTimer?.cancel();
+    _lastScrollTimestamp = null;
+    if (_fastScrolling.value) _fastScrolling.value = false;
   }
 
   @override
@@ -101,47 +106,25 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     super.dispose();
   }
 
-  Future<void> _restoreMixPreference() async {
-    final enabled = await loadMixEnabled(widget.playlistId);
-    if (!mounted || !enabled) return;
-    setState(() => _mixEnabled = true);
-    // Re-arm the blended view; the saved plan lives server-side, so refresh
-    // the transitions without blocking the list render.
-    try {
-      final result = await _playlistService.autoMix(widget.playlistId);
-      if (!mounted) return;
-      setState(() {
-        _mixPlan = result;
-        _displayOrder = const [];
-      });
-    } catch (_) {
-      // Plan fetch failed; keep plain view until the user re-toggles.
-      if (mounted) setState(() => _mixEnabled = false);
-    }
-  }
-
   /// Toggles the blended view. Turning it on calls POST /auto-mix and keeps
   /// the returned plan in memory; turning it off only changes the local view
   /// — the server-side plan is preserved for later slices.
   Future<void> _toggleMix() async {
-    if (_isMixLoading) return;
+    if (_isMixLoading || !_hasMixEligibleTracks) return;
     final messenger = ScaffoldMessenger.of(context);
 
     if (_mixEnabled) {
       setState(() => _mixEnabled = false);
-      await saveMixEnabled(widget.playlistId, false);
       return;
     }
 
     setState(() => _isMixLoading = true);
     try {
       final result = await _playlistService.autoMix(widget.playlistId);
-      await saveMixEnabled(widget.playlistId, true);
       if (!mounted) return;
       setState(() {
         _mixEnabled = true;
         _mixPlan = result;
-        _displayOrder = const [];
         _isMixLoading = false;
       });
       messenger.showSnackBar(
@@ -160,34 +143,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         ),
       );
     }
-  }
-
-  /// Greedy nearest-neighbor reorder over BPM + Camelot key, client-side
-  /// only: the displayed order changes but no server call is made.
-  void _reorderByMusicalDistance() {
-    final tracks = _playlist?.tracks;
-    if (tracks == null || tracks.length < 2) return;
-
-    final analyses =
-        tracks.map((track) => track.analysis).toList(growable: false);
-    final order = MixReorder.orderIndices(analyses);
-    final isIdentity = order.indexed.every((entry) => entry.$1 == entry.$2);
-    if (isIdentity) return;
-
-    setState(() => _displayOrder = order);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Reordered by key and tempo')),
-    );
-  }
-
-  List<Track> get _orderedTracks {
-    final tracks = _playlist?.tracks ?? const <Track>[];
-    if (!_mixEnabled ||
-        _displayOrder.isEmpty ||
-        _displayOrder.length != tracks.length) {
-      return List.of(tracks);
-    }
-    return [for (final index in _displayOrder) tracks[index]];
   }
 
   void _openSeam(MixTransition? transition) {
@@ -428,6 +383,18 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   bool get _hasPlayableTracks => _playlist?.tracks?.isNotEmpty ?? false;
+  bool get _hasMixEligibleTracks => (_playlist?.tracks?.length ?? 0) >= 2;
+
+  Future<bool> _tryMixPlayback(Future<void> Function() start) async {
+    try {
+      await start();
+      return true;
+    } on FormatException {
+      // A stale or unmappable server plan must never make the playlist
+      // unplayable. Plain queue playback is the safe fallback.
+      return false;
+    }
+  }
 
   /// Plays the whole playlist into the listening queue, optionally shuffled.
   Future<void> _playAll({bool shuffle = false}) async {
@@ -437,6 +404,17 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
     if (tracks.isEmpty) return;
     final playback = context.read<PlaybackState>();
+    final plan = !shuffle && _mixEnabled ? _mixPlan?.mixPlan : null;
+    if (plan != null &&
+        await _tryMixPlayback(
+          () => playback.playMixPlan(
+            tracks.map((track) => track.toPlaybackJson()).toList(),
+            plan,
+            context: _playlistContext(),
+          ),
+        )) {
+      return;
+    }
     await playback.playQueue(
       tracks.map((t) => t.toPlaybackJson()).toList(),
       context: _playlistContext(),
@@ -458,6 +436,18 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final tracks = _playlist?.tracks ?? const [];
     if (index < 0 || index >= tracks.length) return;
     final playback = context.read<PlaybackState>();
+    final plan = _mixEnabled ? _mixPlan?.mixPlan : null;
+    if (plan != null &&
+        await _tryMixPlayback(
+          () => playback.playMixPlan(
+            tracks.map((track) => track.toPlaybackJson()).toList(),
+            plan,
+            startIndex: index,
+            context: _playlistContext(),
+          ),
+        )) {
+      return;
+    }
     await playback.playQueue(
       tracks.map((t) => t.toPlaybackJson()).toList(),
       startIndex: index,
@@ -533,9 +523,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   /// view without owning a second scroll position.
   Widget _withScrollObserver(Widget child) {
     if (!_mixEnabled) return child;
-    return NotificationListener<ScrollUpdateNotification>(
+    return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
-        _handleScrollMetrics(notification);
+        if (notification is ScrollUpdateNotification) {
+          _handleScrollMetrics(notification);
+        } else if (notification is ScrollEndNotification) {
+          _handleScrollSettled();
+        }
         return false;
       },
       child: child,
@@ -578,7 +572,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         ),
       ),
       actions: [
-        if (_isMixLoading)
+        if (_hasMixEligibleTracks && _isMixLoading)
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 12),
             child: Center(
@@ -588,8 +582,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ),
-          )
-        else
+          ),
+        if (_hasMixEligibleTracks && !_isMixLoading)
           IconButton(
             key: const ValueKey('mix_toggle'),
             icon: Icon(
@@ -600,13 +594,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             tooltip: _mixEnabled
                 ? 'Blended — transitions between every track'
                 : 'Blend this playlist',
-          ),
-        if (_mixEnabled && !_isMixLoading)
-          IconButton(
-            key: const ValueKey('mix_reorder_button'),
-            icon: const Icon(Icons.sort),
-            onPressed: _reorderByMusicalDistance,
-            tooltip: 'Reorder by key and tempo',
           ),
         IconButton(
           icon: Icon(_isEditMode ? Icons.check : Icons.edit),
@@ -730,7 +717,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: _hasPlayableTracks
+                    onPressed: _hasPlayableTracks && !_mixEnabled
                         ? () => _playAll(shuffle: true)
                         : null,
                     icon: const Icon(Icons.shuffle),
@@ -879,7 +866,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   /// rows is separated by a tappable seam connector. Seams collapse to
   /// hairlines while the user scrolls fast and expand back on settle.
   Widget _buildMixedTracksList() {
-    final tracks = _orderedTracks;
+    final tracks = _playlist!.tracks ?? const <Track>[];
     if (tracks.isEmpty) return _buildTracksList();
 
     final playbackContext = context.select<PlaybackState, PlaybackContext?>(
@@ -901,7 +888,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             final transition =
                 _mixPlan?.between(tracks[seamIndex], tracks[seamIndex + 1]);
             return ValueListenableBuilder<bool>(
-              key: Key('mix_seam_${tracks[seamIndex].id}_${tracks[seamIndex + 1].id}'),
+              key: Key(
+                  'mix_seam_${tracks[seamIndex].id}_${tracks[seamIndex + 1].id}'),
               valueListenable: _fastScrolling,
               builder: (context, collapsed, _) {
                 return MixSeamConnector(

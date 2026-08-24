@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 
+import '../../models/mix_plan.dart';
 import '../../models/timeline_clip.dart';
 import '../../models/track_analysis.dart';
 import '../engine/gain_envelope.dart';
@@ -10,7 +11,7 @@ import '../engine/tempo_automation.dart';
 import '../engine/timeline_model.dart';
 import 'playback_media_item_source.dart';
 
-const int mixSessionSchemaVersion = 1;
+const int mixSessionSchemaVersion = 2;
 
 /// Versioned canonical clip/session state for queue, playlist, and timeline
 /// playback. Signed URLs stay on [MediaItem]; this carries durable edit data.
@@ -81,6 +82,95 @@ class MixSession {
     );
   }
 
+  /// Projects a persisted plan into the canonical queue session used by
+  /// [QueueTimelineController]. The queue must already be ordered by plan clip,
+  /// which keeps duplicate track occurrences unambiguous.
+  factory MixSession.fromMixPlan({
+    required MixPlan plan,
+    required List<MediaItem> queue,
+  }) {
+    if (plan.clips.length != queue.length) {
+      throw FormatException(
+        'Mix plan clip count (${plan.clips.length}) does not match the resolved '
+        'queue (${queue.length}).',
+      );
+    }
+
+    final clips = <MixSessionClip>[];
+    final clipIds = <String>{};
+    final queueItemIds = <String>{};
+    for (var index = 0; index < plan.clips.length; index++) {
+      final planClip = plan.clips[index];
+      final item = queue[index];
+      if (planClip.trackId != item.id) {
+        throw FormatException(
+          'Mix plan clip ${planClip.clipId} targets track '
+          '${planClip.trackId}, but queue item $index is ${item.id}.',
+        );
+      }
+      if (!clipIds.add(planClip.clipId) ||
+          !queueItemIds.add(planClip.queueItemId)) {
+        throw const FormatException(
+          'Mix plan clip and queue-item IDs must be unique.',
+        );
+      }
+      if (planClip.sourceStartMs < 0 ||
+          planClip.sourceEndMs <= planClip.sourceStartMs ||
+          planClip.timelineStartMs < 0 ||
+          !planClip.gainDb.isFinite ||
+          (planClip.fadeInMs ?? 0) < 0 ||
+          (planClip.fadeOutMs ?? 0) < 0) {
+        throw FormatException('Mix plan clip ${planClip.clipId} is invalid.');
+      }
+      final itemDurationMs = item.duration?.inMilliseconds ?? 0;
+      // Playback payloads carry whole-second duration, while plans retain
+      // millisecond precision. Anything beyond that rounding window is stale.
+      if (itemDurationMs > 0 && planClip.sourceEndMs > itemDurationMs + 999) {
+        throw FormatException(
+          'Mix plan clip ${planClip.clipId} exceeds track ${item.id}.',
+        );
+      }
+      final sourceDurationMs = math.max(
+        itemDurationMs,
+        planClip.sourceEndMs,
+      );
+      final placement = TimelineClip.clamped(
+        id: planClip.clipId,
+        trackId: item.id,
+        sourceDurationMs: sourceDurationMs,
+        sourceStartMs: planClip.sourceStartMs,
+        sourceEndMs: planClip.sourceEndMs,
+        timelineStartMs: planClip.timelineStartMs,
+      );
+      clips.add(
+        MixSessionClip(
+          clipId: placement.id,
+          queueItemId: planClip.queueItemId,
+          trackId: placement.trackId,
+          sourceDurationMs: placement.sourceDurationMs,
+          sourceStartMs: placement.sourceStartMs,
+          sourceEndMs: placement.sourceEndMs,
+          timelineStartMs: placement.timelineStartMs,
+          gainDb: planClip.gainDb,
+          fadeInMs: planClip.fadeInMs,
+          fadeOutMs: planClip.fadeOutMs,
+          pitchMode: planClip.pitchMode,
+          tempo: _tempoForMediaItem(item),
+          analysisRef: _analysisRefForMediaItem(item),
+          analysisVersion: _analysisVersionForMediaItem(item),
+        ),
+      );
+    }
+
+    return MixSession(
+      sessionId: 'mix_plan_${plan.id}_v${plan.version}',
+      clips: List.unmodifiable(clips),
+      nextClipOrdinal: clips.length,
+      transitionSnapMode: BeatSnapMode.free,
+      explicitPlacementClipIds: {for (final clip in clips) clip.clipId},
+    );
+  }
+
   factory MixSession.fromJson(Map<String, dynamic> json) {
     final rawSessionId = (json['sessionId'] as String?)?.trim();
     final schemaVersion =
@@ -92,6 +182,7 @@ class MixSession {
         if (rawClip is Map) {
           final clip = MixSessionClip.tryFromJson(
             Map<String, dynamic>.from(rawClip),
+            readExplicitFades: schemaVersion >= 2,
           );
           if (clip != null) clips.add(clip);
         }
@@ -704,6 +795,8 @@ class MixSessionClip {
     required this.sourceEndMs,
     required this.timelineStartMs,
     this.gainDb = 0,
+    this.fadeInMs,
+    this.fadeOutMs,
     this.playbackRate = 1,
     this.pitchMode = pitchModePreserve,
     this.tempo = ClipTempoMetadata.empty,
@@ -732,7 +825,10 @@ class MixSessionClip {
     );
   }
 
-  static MixSessionClip? tryFromJson(Map<String, dynamic> json) {
+  static MixSessionClip? tryFromJson(
+    Map<String, dynamic> json, {
+    bool readExplicitFades = true,
+  }) {
     final clipId = (json['clipId'] as String?)?.trim();
     final queueItemId = (json['queueItemId'] as String?)?.trim();
     final trackId = json['trackId']?.toString().trim();
@@ -757,6 +853,10 @@ class MixSessionClip {
       sourceEndMs: (json['sourceEndMs'] as num?)?.toInt() ?? sourceDurationMs,
       timelineStartMs: (json['timelineStartMs'] as num?)?.toInt() ?? 0,
     );
+    int? nonNegativeFade(String key) {
+      final raw = json[key];
+      return raw is num ? math.max(0, raw.toInt()) : null;
+    }
 
     return MixSessionClip(
       clipId: clipId,
@@ -767,6 +867,8 @@ class MixSessionClip {
       sourceEndMs: placement.sourceEndMs,
       timelineStartMs: placement.timelineStartMs,
       gainDb: (json['gainDb'] as num?)?.toDouble() ?? 0,
+      fadeInMs: readExplicitFades ? nonNegativeFade('fadeInMs') : null,
+      fadeOutMs: readExplicitFades ? nonNegativeFade('fadeOutMs') : null,
       playbackRate: (json['playbackRate'] as num?)?.toDouble() ?? 1,
       pitchMode: normalizePitchMode(
         (json['pitchMode'] as String?) ?? pitchModePreserve,
@@ -785,6 +887,8 @@ class MixSessionClip {
   final int sourceEndMs;
   final int timelineStartMs;
   final double gainDb;
+  final int? fadeInMs;
+  final int? fadeOutMs;
   final double playbackRate;
   final String pitchMode;
   final ClipTempoMetadata tempo;
@@ -823,6 +927,8 @@ class MixSessionClip {
       sourceEndMs: placement.sourceEndMs,
       timelineStartMs: placement.timelineStartMs,
       gainDb: gainDb,
+      fadeInMs: fadeInMs,
+      fadeOutMs: fadeOutMs,
       playbackRate: playbackRate,
       pitchMode: pitchMode,
       tempo: refreshedTempo.isEmpty ? tempo : refreshedTempo,
@@ -840,6 +946,8 @@ class MixSessionClip {
         sourceEndMs: placement.sourceEndMs,
         timelineStartMs: placement.timelineStartMs,
         gainDb: gainDb,
+        fadeInMs: fadeInMs,
+        fadeOutMs: fadeOutMs,
         playbackRate: playbackRate,
         pitchMode: pitchMode,
         tempo: tempo,
@@ -863,6 +971,8 @@ class MixSessionClip {
         sourceEndMs: sourceEndMs,
         timelineStartMs: timelineStartMs,
         gainDb: gainDb,
+        fadeInMs: fadeInMs,
+        fadeOutMs: fadeOutMs,
         playbackRate: playbackRate,
         pitchMode: normalizePitchMode(pitchMode),
         tempo: tempo,
@@ -879,6 +989,8 @@ class MixSessionClip {
         'sourceEndMs': sourceEndMs,
         'timelineStartMs': timelineStartMs,
         'gainDb': gainDb,
+        if (fadeInMs != null) 'fadeInMs': fadeInMs,
+        if (fadeOutMs != null) 'fadeOutMs': fadeOutMs,
         'playbackRate': playbackRate,
         'pitchMode': pitchMode,
         ...tempo.toJson(),
@@ -934,6 +1046,9 @@ class PlaybackCue {
     required this.sourceStart,
     required this.sourceEnd,
     required this.timelineStart,
+    this.gainDb = 0,
+    this.fadeInMs,
+    this.fadeOutMs,
     this.playbackRate = 1,
     this.pitchMode = pitchModePreserve,
     this.tempo = ClipTempoMetadata.empty,
@@ -949,6 +1064,9 @@ class PlaybackCue {
   final Duration sourceStart;
   final Duration sourceEnd;
   final Duration timelineStart;
+  final double gainDb;
+  final int? fadeInMs;
+  final int? fadeOutMs;
   final double playbackRate;
   final String pitchMode;
   final ClipTempoMetadata tempo;
@@ -1045,6 +1163,9 @@ class CueTimeline {
         sourceStart: Duration(milliseconds: placement.sourceStartMs),
         sourceEnd: Duration(milliseconds: placement.sourceEndMs),
         timelineStart: Duration(milliseconds: placement.timelineStartMs),
+        gainDb: sessionClip.gainDb,
+        fadeInMs: sessionClip.fadeInMs,
+        fadeOutMs: sessionClip.fadeOutMs,
         playbackRate: sessionClip.playbackRate,
         pitchMode: sessionClip.pitchMode,
         tempo: sessionClip.tempo,
@@ -1096,7 +1217,11 @@ class CueTimeline {
         fadeOutMs = math.max(fadeOutMs, overlapMs);
       }
     }
-    return GainEnvelope(fadeInMs: fadeInMs, fadeOutMs: fadeOutMs);
+    return GainEnvelope(
+      baseGainDb: cue.gainDb,
+      fadeInMs: cue.fadeInMs ?? fadeInMs,
+      fadeOutMs: cue.fadeOutMs ?? fadeOutMs,
+    );
   }
 
   PlaybackCue? cueForQueueIndex(int queueIndex) {

@@ -8,12 +8,12 @@ import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
 import 'package:open_music_player/core/storage/secure_storage.dart';
 import 'package:open_music_player/features/playlists/mix/mix_models.dart';
-import 'package:open_music_player/features/playlists/mix/mix_reorder.dart';
+import 'package:open_music_player/features/playlists/mixed_playlist_view.dart';
 import 'package:open_music_player/features/playlists/playlist_detail_screen.dart';
+import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 import 'package:open_music_player/shared/models/models.dart';
 import 'package:provider/provider.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 Track _track(
   int id, {
@@ -36,9 +36,7 @@ TrackAnalysis? _analysis({double? bpm, String? camelot}) {
   return TrackAnalysis(
     status: TrackAnalysisStatus.analyzed,
     summary: TrackAnalysisSummary(
-      bpm: bpm == null
-          ? null
-          : AnalysisValue(value: bpm),
+      bpm: bpm == null ? null : AnalysisValue(value: bpm),
       camelot: camelot == null ? null : AnalysisValue(value: camelot),
     ),
   );
@@ -49,6 +47,8 @@ Map<String, dynamic> _transitionJson(
   int incoming, {
   bool keyMatch = true,
   bool tempoMatched = false,
+  bool tempoShift = false,
+  bool simpleFade = false,
 }) =>
     {
       'index': 0,
@@ -60,8 +60,44 @@ Map<String, dynamic> _transitionJson(
       'confidence': {
         'keyMatch': keyMatch,
         'tempoMatched': tempoMatched,
+        'tempoShift': tempoShift,
+        'simpleFade': simpleFade,
       },
     };
+
+Map<String, dynamic> _mixPlanJson(List<int> trackIds) {
+  var cursorMs = 0;
+  final clips = <Map<String, dynamic>>[];
+  for (var index = 0; index < trackIds.length; index++) {
+    final startMs = index == 0 ? 0 : cursorMs - 10000;
+    clips.add({
+      'clipId': 'clip-${index + 1}',
+      'queueItemId': 'queue-${index + 1}',
+      'trackId': trackIds[index],
+      'sourceStartMs': 0,
+      'sourceEndMs': 200000,
+      'timelineStartMs': startMs,
+      'gainDb': index == 1 ? -1.5 : 0,
+      if (index > 0) 'fadeInMs': 7000,
+      if (index < trackIds.length - 1) 'fadeOutMs': 9000,
+    });
+    cursorMs = startMs + 200000;
+  }
+  return {
+    'id': 'plan-1',
+    'schemaVersion': 1,
+    'name': 'Auto mix',
+    'clips': clips,
+    'summary': {
+      'clipCount': clips.length,
+      'trackIds': trackIds,
+      'durationMs': cursorMs,
+    },
+    'version': 1,
+    'createdAt': '2026-08-24T00:00:00Z',
+    'updatedAt': '2026-08-24T00:00:00Z',
+  };
+}
 
 class _StubPlaylistService extends PlaylistService {
   _StubPlaylistService({
@@ -94,6 +130,23 @@ class _StubPlaylistService extends PlaylistService {
 }
 
 class _FakePlayback extends Fake implements PlaybackState {
+  _FakePlayback({this.rejectMixPlan = false});
+
+  final bool rejectMixPlan;
+  final List<
+      ({
+        List<Map<String, dynamic>> tracks,
+        MixPlan plan,
+        int startIndex,
+        PlaybackContext? context,
+      })> mixPlanCalls = [];
+  final List<
+      ({
+        List<Map<String, dynamic>> tracks,
+        int startIndex,
+        PlaybackContext? context,
+      })> playQueueCalls = [];
+
   @override
   MediaItem? get currentItem => null;
 
@@ -108,27 +161,93 @@ class _FakePlayback extends Fake implements PlaybackState {
 
   @override
   void removeListener(VoidCallback listener) {}
+
+  @override
+  Future<void> playMixPlan(
+    List<Map<String, dynamic>> tracks,
+    MixPlan plan, {
+    int startIndex = 0,
+    PlaybackContext? context,
+  }) async {
+    mixPlanCalls.add((
+      tracks: tracks,
+      plan: plan,
+      startIndex: startIndex,
+      context: context,
+    ));
+    if (rejectMixPlan) {
+      throw const FormatException('stale mix plan');
+    }
+  }
+
+  @override
+  Future<void> playQueue(
+    List<Map<String, dynamic>> tracks, {
+    int startIndex = 0,
+    PlaybackContext? context,
+  }) async {
+    playQueueCalls.add((
+      tracks: tracks,
+      startIndex: startIndex,
+      context: context,
+    ));
+  }
 }
 
-Future<void> _pumpDetail(
+Future<_FakePlayback> _pumpDetail(
   WidgetTester tester,
-  PlaylistService service,
-) async {
+  PlaylistService service, {
+  _FakePlayback? playback,
+}) async {
+  final fakePlayback = playback ?? _FakePlayback();
   await tester.pumpWidget(
     ListenableProvider<PlaybackState>.value(
-      value: _FakePlayback(),
+      value: fakePlayback,
       child: MaterialApp(
         home: PlaylistDetailScreen(playlistId: 7, playlistService: service),
       ),
     ),
   );
   await tester.pumpAndSettle();
+  return fakePlayback;
 }
 
 void main() {
   setUp(() {
-    SharedPreferences.setMockInitialValues({});
     FlutterSecureStorage.setMockInitialValues({});
+  });
+
+  test('auto-mix response retains a valid canonical plan tolerantly', () {
+    final parsed = AutoMixResult.fromJson({
+      'transitions': [_transitionJson(1, 2)],
+      'mixPlan': _mixPlanJson([1, 2]),
+    });
+
+    expect(parsed.mixPlan?.id, 'plan-1');
+    expect(parsed.mixPlan?.clips.map((clip) => clip.trackId), ['1', '2']);
+    expect(parsed.mixPlan?.clips.first.fadeOutMs, 9000);
+    expect(parsed.mixPlan?.clips.last.fadeInMs, 7000);
+
+    final malformed = AutoMixResult.fromJson({
+      'transitions': [_transitionJson(1, 2)],
+      'mixPlan': {'id': 7},
+    });
+    expect(malformed.mixPlan, isNull);
+    expect(malformed.transitions, hasLength(1));
+  });
+
+  testWidgets('mix action is unavailable for zero and one-track playlists',
+      (tester) async {
+    for (final tracks in <List<Track>>[
+      const [],
+      [_track(1)],
+    ]) {
+      final service = _StubPlaylistService(tracks: tracks);
+      await _pumpDetail(tester, service);
+
+      expect(find.byKey(const ValueKey('mix_toggle')), findsNothing);
+      expect(service.autoMixCalls, 0);
+    }
   });
 
   testWidgets('mix toggle calls auto-mix and shows mixed view with seams',
@@ -148,8 +267,7 @@ void main() {
         'playlistId': 7,
         'transitions': [
           _transitionJson(1, 2, keyMatch: true),
-          _transitionJson(2, 3,
-              keyMatch: false, tempoMatched: true),
+          _transitionJson(2, 3, keyMatch: false, tempoShift: true),
         ],
       },
     );
@@ -179,10 +297,10 @@ void main() {
     expect(find.text('124 BPM'), findsOneWidget);
     expect(find.text('10B'), findsOneWidget);
 
-    // Reorder button appears only while mix is on.
+    // Smart Reorder belongs to slice 3, where it can regenerate the plan.
     expect(
       find.byKey(const ValueKey('mix_reorder_button')),
-      findsOneWidget,
+      findsNothing,
     );
   });
 
@@ -192,12 +310,17 @@ void main() {
     expect(keyMatch.confidence, MixTransitionConfidence.keyMatch);
 
     final tempoShift = MixTransition.fromJson(
-      _transitionJson(1, 2, keyMatch: false, tempoMatched: true),
+      _transitionJson(1, 2, tempoShift: true),
     );
     expect(tempoShift.confidence, MixTransitionConfidence.tempoShift);
 
+    final tempoOnly = MixTransition.fromJson(
+      _transitionJson(1, 2, keyMatch: false, tempoMatched: true),
+    );
+    expect(tempoOnly.confidence, MixTransitionConfidence.tempoShift);
+
     final simpleFade = MixTransition.fromJson(
-      _transitionJson(1, 2, keyMatch: false, tempoMatched: false)
+      _transitionJson(1, 2, tempoShift: true, simpleFade: true)
         ..['preset'] = 'Fade',
     );
     expect(simpleFade.confidence, MixTransitionConfidence.simpleFade);
@@ -223,14 +346,18 @@ void main() {
     await tester.pumpAndSettle();
 
     // Dismiss the toggle's summary toast first so the seam toast can show.
-    await tester.drag(find.text('Blended 1 transitions. Tap any seam to adjust.'), const Offset(0, 40));
+    await tester.drag(
+        find.text('Blended 1 transitions. Tap any seam to adjust.'),
+        const Offset(0, 40));
     await tester.pumpAndSettle();
 
     await tester.tap(
-      find.descendant(
-        of: find.byKey(const Key('mix_seam_1_2')),
-        matching: find.byType(InkWell),
-      ).first,
+      find
+          .descendant(
+            of: find.byKey(const Key('mix_seam_1_2')),
+            matching: find.byType(InkWell),
+          )
+          .first,
     );
     await tester.pumpAndSettle();
 
@@ -270,69 +397,156 @@ void main() {
     expect(find.text('Track 1'), findsOneWidget);
   });
 
-  testWidgets('smart reorder places nearest track second by key and tempo',
+  testWidgets('mixed row playback routes the canonical plan through playback',
       (tester) async {
-    // First track (124 BPM / 10B). Candidate distances from it:
-    //  - track 3: 125 BPM (+0.1) + same-number letter hop 10B->10A (+1) = 1.1
-    //  - track 4: 128 BPM (+0.4) + adjacent number 10B->9B (+1) = 1.4
-    //  - track 5: 130 BPM (+0.6) + far key 10B->3B (+7) = 7.6
-    // Greedy order should be 1, 3, 4, 5.
-    final analyses = <TrackAnalysis?>[
-      _analysis(bpm: 124, camelot: '10B'),
-      _analysis(bpm: 999, camelot: '1A'),
-      _analysis(bpm: 125, camelot: '10A'),
-      _analysis(bpm: 128, camelot: '9B'),
-      _analysis(bpm: 130, camelot: '3B'),
-    ];
-
-    final order = MixReorder.orderIndices(analyses);
-
-    expect(order.first, 0, reason: 'first track stays in place');
-    expect(order[1], 2, reason: 'second track is nearest by key and tempo');
-    expect(order, [0, 2, 3, 4, 1]);
-
-    // The screen wires the reorder through the displayed list only.
     tester.view.physicalSize = const Size(600, 1400);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final service = _StubPlaylistService(
-      tracks: [
-        _track(1, bpm: 124, camelot: '10B'),
-        _track(2, bpm: 130, camelot: '3B'),
-        _track(3, bpm: 125, camelot: '10A'),
-      ],
+      tracks: [_track(1), _track(2)],
       autoMixResult: {
         'playlistId': 7,
-        'transitions': [
-          _transitionJson(1, 2),
-          _transitionJson(2, 3),
-        ],
+        'transitions': [_transitionJson(1, 2)],
+        'mixPlan': _mixPlanJson([1, 2]),
       },
     );
 
+    final playback = await _pumpDetail(tester, service);
+    await tester.tap(find.byKey(const ValueKey('mix_toggle')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('mixed_track_2')),
+        matching: find.text('Track 2'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(playback.playQueueCalls, isEmpty);
+    expect(playback.mixPlanCalls, hasLength(1));
+    expect(playback.mixPlanCalls.single.plan.id, 'plan-1');
+    expect(playback.mixPlanCalls.single.startIndex, 1);
+    expect(
+      playback.mixPlanCalls.single.tracks.map((track) => track['id']),
+      [1, 2],
+    );
+    expect(playback.mixPlanCalls.single.context?.id, '7');
+  });
+
+  testWidgets('unmappable canonical plan falls back to ordinary playback',
+      (tester) async {
+    tester.view.physicalSize = const Size(600, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final service = _StubPlaylistService(
+      tracks: [_track(1), _track(2)],
+      autoMixResult: {
+        'playlistId': 7,
+        'transitions': [_transitionJson(1, 2)],
+        'mixPlan': _mixPlanJson([1, 2]),
+      },
+    );
+    final playback = _FakePlayback(rejectMixPlan: true);
+
+    await _pumpDetail(tester, service, playback: playback);
+    await tester.tap(find.byKey(const ValueKey('mix_toggle')));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const Key('mixed_track_2')),
+        matching: find.text('Track 2'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(playback.mixPlanCalls, hasLength(1));
+    expect(playback.playQueueCalls, hasLength(1));
+    expect(playback.playQueueCalls.single.startIndex, 1);
+    expect(
+      playback.playQueueCalls.single.tracks.map((track) => track['id']),
+      [1, 2],
+    );
+  });
+
+  testWidgets('collapsed seams re-expand on timeout and scroll end',
+      (tester) async {
+    tester.view.physicalSize = const Size(600, 500);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final tracks = [for (var id = 1; id <= 8; id++) _track(id)];
+    final service = _StubPlaylistService(
+      tracks: tracks,
+      autoMixResult: {
+        'playlistId': 7,
+        'transitions': [
+          for (var id = 1; id < tracks.length; id++)
+            _transitionJson(id, id + 1),
+        ],
+      },
+    );
     await _pumpDetail(tester, service);
     await tester.tap(find.byKey(const ValueKey('mix_toggle')));
     await tester.pumpAndSettle();
 
-    // Dismiss the toggle's summary toast so the reorder toast can show.
-    await tester.drag(
-      find.text('Blended 2 transitions. Tap any seam to adjust.'),
-      const Offset(0, 40),
+    final scrollable =
+        tester.state<ScrollableState>(find.byType(Scrollable).first);
+    final listContext = tester.element(find.byType(CustomScrollView));
+
+    Future<void> dispatchFastPair() async {
+      ScrollUpdateNotification(
+        metrics: scrollable.position,
+        context: listContext,
+        scrollDelta: 1,
+      ).dispatch(listContext);
+      await tester.pump(const Duration(milliseconds: 1));
+      ScrollUpdateNotification(
+        metrics: scrollable.position,
+        context: listContext,
+        scrollDelta: 500,
+      ).dispatch(listContext);
+      await tester.pump();
+    }
+
+    await dispatchFastPair();
+    expect(
+      tester
+          .widget<MixSeamConnector>(find.byType(MixSeamConnector).first)
+          .collapsed,
+      isTrue,
     );
-    await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const ValueKey('mix_reorder_button')));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 181));
+    expect(
+      tester
+          .widget<MixSeamConnector>(find.byType(MixSeamConnector).first)
+          .collapsed,
+      isFalse,
+    );
 
-    expect(find.text('Reordered by key and tempo'), findsOneWidget);
-    // Track 3 (nearest) moves into second position.
-    final track1Center = tester.getCenter(find.byKey(const Key('mixed_track_1')));
-    final track3Center = tester.getCenter(find.byKey(const Key('mixed_track_3')));
-    final track2Center = tester.getCenter(find.byKey(const Key('mixed_track_2')));
-    expect(track3Center.dy, greaterThan(track1Center.dy));
-    expect(track3Center.dy, lessThan(track2Center.dy));
+    await dispatchFastPair();
+    expect(
+      tester
+          .widget<MixSeamConnector>(find.byType(MixSeamConnector).first)
+          .collapsed,
+      isTrue,
+    );
+    ScrollEndNotification(
+      metrics: scrollable.position,
+      context: listContext,
+    ).dispatch(listContext);
+    await tester.pump();
+    expect(
+      tester
+          .widget<MixSeamConnector>(find.byType(MixSeamConnector).first)
+          .collapsed,
+      isFalse,
+    );
   });
 
   testWidgets('auto-mix failure keeps normal view and shows an error toast',
@@ -353,7 +567,7 @@ void main() {
 
     expect(service.autoMixCalls, 1);
     expect(find.byKey(const Key('mixed_track_1')), findsNothing);
-    expect(find.text('Could not blend this playlist. Try again.'),
-        findsOneWidget);
+    expect(
+        find.text('Could not blend this playlist. Try again.'), findsOneWidget);
   });
 }
