@@ -27,8 +27,9 @@ const (
 	autoBlendDefaultBars   = 8
 	autoBlendSlowBars      = 4
 	autoBlendSlowBPMLimit  = 100.0
-	autoBlendTempoMatchMax = 0.05 // |bpm diff| / max <= 5% -> tempo-matched
-	autoBlendKeyMatchDist  = 1.0  // camelot distance 0-1 -> key-match
+	autoBlendTempoMatchMax = 0.05 // |bpm diff| / max < 5% -> tempo-matched
+	autoBlendTempoShiftMax = 0.15 // 5-15% -> short, aligned tempo-shift fade
+	autoBlendSimpleFadeMs  = int64(8000)
 )
 
 // Transition presets, ordered from smoothest to hardest.
@@ -36,15 +37,14 @@ const (
 	PresetBlend = "Blend"
 	PresetFade  = "Fade"
 	PresetRise  = "Rise"
-	PresetSlam  = "Slam"
 )
 
 type AutoMixTransitionConfidence struct {
-	KeyMatch     bool   `json:"keyMatch"`
-	TempoMatched bool   `json:"tempoMatched"`
-	Preset       string `json:"preset"`
-	Bars         int    `json:"bars"`
-	OverlapMs    int64  `json:"overlapMs"`
+	KeyMatch          bool     `json:"keyMatch"`
+	TempoMatched      bool     `json:"tempoMatched"`
+	TempoShift        bool     `json:"tempoShift"`
+	SimpleFade        bool     `json:"simpleFade"`
+	TempoDeltaPercent *float64 `json:"tempoDeltaPercent,omitempty"`
 }
 
 type AutoMixTransition struct {
@@ -66,13 +66,14 @@ type AutoMixResponse struct {
 // autoBlendTrackFacts carries the analyzer facts the algorithm needs per
 // track, decoded from the effective compact analysis projection.
 type autoBlendTrackFacts struct {
-	TrackID    int64
-	DurationMs int64
-	BPM        float64
-	HasBPM     bool
-	Downbeats  []int64
-	CamelotNum float64
-	HasCamelot bool
+	TrackID       int64
+	DurationMs    int64
+	BPM           float64
+	HasBPM        bool
+	Downbeats     []int64
+	CamelotNumber int
+	CamelotLetter byte
+	HasCamelot    bool
 }
 
 // PlaylistAutoBlendHandlers exposes POST /api/v1/playlists/{id}/auto-mix.
@@ -193,15 +194,16 @@ func buildAutoBlendMix(playlistID int64, facts []autoBlendTrackFacts) ([]MixPlan
 	timelineStart := int64(0)
 	for i := 0; i < n; i++ {
 		var fadeIn, fadeOut *int64
-		// Each overlap splits evenly: fade-out lands on the outgoing clip's
-		// tail, fade-in on the incoming clip's head.
+		// Both envelopes span the full overlap. CueTimeline derives the same
+		// volume-only shape at playback, so the persisted plan and live engine
+		// agree instead of fading for only half the transition.
 		if i > 0 && overlaps[i-1] > 0 {
-			half := overlaps[i-1] / 2
-			fadeIn = &half
+			fade := overlaps[i-1]
+			fadeIn = &fade
 		}
 		if i < n-1 && overlaps[i] > 0 {
-			half := overlaps[i] / 2
-			fadeOut = &half
+			fade := overlaps[i]
+			fadeOut = &fade
 		}
 		clips = append(clips, MixPlanClip{
 			ClipID:          fmt.Sprintf("clip-%d", i+1),
@@ -225,18 +227,26 @@ func buildAutoBlendMix(playlistID int64, facts []autoBlendTrackFacts) ([]MixPlan
 
 // computeAutoBlendTransition implements the per-pair algorithm:
 //
-//  1. Tempo: relative BPM difference classifies tempo-matched (<5%).
-//     Missing analysis on either side never counts as matched.
-//  2. Key: circular Camelot distance; 0-1 is a key match.
-//  3. Transition point: with downbeat grids on both sides, anchor on the
-//     outgoing downbeat nearest the ideal boundary so the incoming track's
-//     first downbeat lands on-grid; overlap derives from bar count x bar
-//     length (8 bars, or 4 under 100 BPM).
-//  4. Preset: Blend (key+tempo) > Fade (key) > Rise (tempo) > Slam.
+//  1. Tempo: <5% is matched, 5-15% is a warned tempo shift, and larger or
+//     unknown differences use a short simple fade without beat alignment.
+//  2. Key: same-number A/B or same-letter adjacent numbers are matches.
+//  3. Beat-aligned transitions require usable in-range downbeats on both
+//     tracks. Bad or sparse grids fall back to an 8-second simple fade.
+//  4. Preset: Blend (key+tempo), Rise (tempo), otherwise Fade. Slam remains
+//     an explicit editing preset; Auto never turns missing analysis into a cut.
 func computeAutoBlendTransition(index int, out, in autoBlendTrackFacts) AutoMixTransition {
 	tempoRatio := autoBlendTempoRatio(out.BPM, in.BPM, out.HasBPM, in.HasBPM)
 	tempoMatched := out.HasBPM && in.HasBPM && tempoRatio < autoBlendTempoMatchMax
-	keyMatch, _ := autoBlendCamelotDistance(out.CamelotNum, out.HasCamelot, in.CamelotNum, in.HasCamelot)
+	tempoShift := out.HasBPM && in.HasBPM &&
+		tempoRatio >= autoBlendTempoMatchMax && tempoRatio <= autoBlendTempoShiftMax
+	keyMatch, _ := autoBlendCamelotDistance(
+		out.CamelotNumber,
+		out.CamelotLetter,
+		out.HasCamelot,
+		in.CamelotNumber,
+		in.CamelotLetter,
+		in.HasCamelot,
+	)
 
 	bars := autoBlendDefaultBars
 	referenceBPM := out.BPM
@@ -246,99 +256,159 @@ func computeAutoBlendTransition(index int, out, in autoBlendTrackFacts) AutoMixT
 	if referenceBPM < autoBlendSlowBPMLimit {
 		bars = autoBlendSlowBars
 	}
-
-	preset := PresetSlam
-	switch {
-	case keyMatch && tempoMatched:
-		preset = PresetBlend
-	case keyMatch:
-		preset = PresetFade
-	case tempoMatched:
-		preset = PresetRise
+	if tempoShift {
+		bars = autoBlendSlowBars
 	}
 
 	transition := AutoMixTransition{
 		Index:           index,
 		OutgoingTrackID: out.TrackID,
 		IncomingTrackID: in.TrackID,
-		Preset:          preset,
-		Bars:            bars,
+		Preset:          PresetFade,
 	}
 	transition.Confidence = AutoMixTransitionConfidence{
-		KeyMatch:     keyMatch,
-		TempoMatched: tempoMatched,
-		Preset:       preset,
-		Bars:         bars,
+		KeyMatch:          keyMatch,
+		TempoMatched:      tempoMatched,
+		TempoShift:        tempoShift,
+		TempoDeltaPercent: autoBlendTempoDeltaPercent(tempoRatio),
 	}
 
-	// Slam is a hard cut: zero overlap and no crossfade length.
-	if preset == PresetSlam {
-		transition.Bars = 0
-		transition.Confidence.Bars = 0
-		transition.OverlapMs = 0
-		transition.Confidence.OverlapMs = 0
-		return transition
+	// Missing or very different tempos cannot stay aligned through a useful
+	// transition. Keep playback audible with a bounded simple fade.
+	if !out.HasBPM || !in.HasBPM || tempoRatio > autoBlendTempoShiftMax {
+		return autoBlendSimpleFade(transition, out, in)
 	}
 
 	barLenMs := autoBlendBarLengthMs(referenceBPM)
 	target := float64(bars) * barLenMs
-	overlap := autoBlendResolveOverlap(out, in, target)
+	overlap, aligned := autoBlendResolveOverlap(
+		out,
+		in,
+		target,
+		barLenMs,
+	)
+	if !aligned {
+		return autoBlendSimpleFade(transition, out, in)
+	}
+
+	transition.Bars = bars
 	transition.OverlapMs = overlap
-	transition.Confidence.OverlapMs = overlap
+	switch {
+	case tempoShift:
+		transition.Preset = PresetFade
+	case keyMatch && tempoMatched:
+		transition.Preset = PresetBlend
+	case tempoMatched:
+		transition.Preset = PresetRise
+	default:
+		transition.Preset = PresetFade
+	}
 	return transition
 }
 
-// autoBlendResolveOverlap picks the crossfade length. With downbeat grids on
-// both sides it anchors on the outgoing downbeat nearest the ideal boundary
-// (end - target), so the incoming track's first downbeat lands on-grid; the
-// overlap then spans from that anchor to the outgoing end plus whatever intro
-// precedes the incoming first downbeat. Without grids on either side it falls
-// back to the plain bar-count estimate.
-func autoBlendResolveOverlap(out, in autoBlendTrackFacts, targetMs float64) int64 {
-	if len(out.Downbeats) == 0 || len(in.Downbeats) == 0 || out.DurationMs <= 0 || in.DurationMs <= 0 {
-		return int64(math.Round(targetMs))
+func autoBlendSimpleFade(
+	transition AutoMixTransition,
+	out, in autoBlendTrackFacts,
+) AutoMixTransition {
+	overlap := autoBlendSimpleFadeMs
+	if out.DurationMs < overlap {
+		overlap = out.DurationMs
 	}
-
-	posOut := autoBlendNearestDownbeat(out.Downbeats, float64(out.DurationMs)-targetMs, float64(out.DurationMs))
-	posIn := int64(0)
-	if len(in.Downbeats) > 0 && in.Downbeats[0] > 0 {
-		posIn = in.Downbeats[0]
+	if in.DurationMs < overlap {
+		overlap = in.DurationMs
 	}
-
-	overlap := float64(out.DurationMs-posOut) + float64(posIn)
-	maxOverlap := math.Min(float64(out.DurationMs), float64(in.DurationMs-posIn))
-	if overlap > maxOverlap {
-		overlap = maxOverlap
+	if overlap < 0 {
+		overlap = 0
 	}
-	if overlap <= 0 {
-		return int64(math.Round(targetMs))
-	}
-	return int64(math.Round(overlap))
+	transition.Preset = PresetFade
+	transition.Bars = 0
+	transition.OverlapMs = overlap
+	transition.Confidence.SimpleFade = true
+	return transition
 }
 
-// autoBlendNearestDownbeat returns the downbeat nearest wantedMs among those
-// strictly before endMs; the grid is sorted defensively.
-func autoBlendNearestDownbeat(downbeats []int64, wantedMs, endMs float64) int64 {
-	sorted := make([]int64, len(downbeats))
-	copy(sorted, downbeats)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+func autoBlendTempoDeltaPercent(ratio float64) *float64 {
+	if math.IsInf(ratio, 0) || math.IsNaN(ratio) || ratio == math.MaxFloat64 {
+		return nil
+	}
+	percent := math.Min(100, math.Max(0, ratio*100))
+	percent = math.Round(percent*10) / 10
+	return &percent
+}
 
-	best := int64(-1)
-	bestDist := math.MaxFloat64
-	for _, position := range sorted {
-		if float64(position) >= endMs {
-			break
+// autoBlendResolveOverlap aligns two validated grids. The outgoing anchor must
+// be near the requested bar boundary; a lone zero or stale out-of-range grid is
+// not enough evidence to overlap most of a track.
+func autoBlendResolveOverlap(
+	out, in autoBlendTrackFacts,
+	targetMs, anchorToleranceMs float64,
+) (int64, bool) {
+	if out.DurationMs <= 0 || in.DurationMs <= 0 {
+		return 0, false
+	}
+	outDownbeats := autoBlendValidDownbeats(out.Downbeats, out.DurationMs)
+	inDownbeats := autoBlendValidDownbeats(in.Downbeats, in.DurationMs)
+	if len(outDownbeats) < 2 || len(inDownbeats) < 2 {
+		return 0, false
+	}
+
+	wanted := float64(out.DurationMs) - targetMs
+	posOut, ok := autoBlendNearestDownbeat(outDownbeats, wanted)
+	if !ok || math.Abs(float64(posOut)-wanted) > anchorToleranceMs {
+		return 0, false
+	}
+	posIn := inDownbeats[0]
+	if float64(posIn) > anchorToleranceMs {
+		return 0, false
+	}
+	overlap := out.DurationMs - posOut + posIn
+	maxOverlap := out.DurationMs
+	if in.DurationMs < maxOverlap {
+		maxOverlap = in.DurationMs
+	}
+	if alignedMax := int64(math.Ceil(targetMs + anchorToleranceMs)); alignedMax < maxOverlap {
+		maxOverlap = alignedMax
+	}
+	if overlap <= 0 || overlap > maxOverlap {
+		return 0, false
+	}
+	return overlap, true
+}
+
+func autoBlendValidDownbeats(downbeats []int64, durationMs int64) []int64 {
+	valid := make([]int64, 0, len(downbeats))
+	for _, position := range downbeats {
+		if position >= 0 && position < durationMs {
+			valid = append(valid, position)
 		}
+	}
+	sort.Slice(valid, func(i, j int) bool { return valid[i] < valid[j] })
+	if len(valid) < 2 {
+		return valid
+	}
+	deduped := valid[:1]
+	for _, position := range valid[1:] {
+		if position != deduped[len(deduped)-1] {
+			deduped = append(deduped, position)
+		}
+	}
+	return deduped
+}
+
+func autoBlendNearestDownbeat(downbeats []int64, wantedMs float64) (int64, bool) {
+	if len(downbeats) == 0 {
+		return 0, false
+	}
+	best := downbeats[0]
+	bestDist := math.Abs(float64(best) - wantedMs)
+	for _, position := range downbeats[1:] {
 		dist := math.Abs(float64(position) - wantedMs)
 		if dist < bestDist {
 			best = position
 			bestDist = dist
 		}
 	}
-	if best < 0 {
-		return 0
-	}
-	return best
+	return best, true
 }
 
 func autoBlendBarLengthMs(bpm float64) float64 {
@@ -361,31 +431,40 @@ func autoBlendTempoRatio(bpmOut, bpmIn float64, hasOut, hasIn bool) float64 {
 
 var autoBlendCamelotPattern = regexp.MustCompile(`^(\d{1,2})\s*([AaBb])$`)
 
-// autoBlendParseCamelot converts a Camelot label ("8A", "12B") into a numeric
-// wheel position: digit portion plus a half-step for B, so circular distance
-// math can stay purely numeric.
-func autoBlendParseCamelot(label string) (float64, bool) {
+func autoBlendParseCamelot(label string) (int, byte, bool) {
 	m := autoBlendCamelotPattern.FindStringSubmatch(strings.TrimSpace(label))
 	if m == nil {
-		return 0, false
+		return 0, 0, false
 	}
-	num, err := strconv.ParseFloat(m[1], 64)
+	num, err := strconv.Atoi(m[1])
 	if err != nil || num < 1 || num > 12 {
-		return 0, false
+		return 0, 0, false
 	}
-	if strings.EqualFold(m[2], "B") {
-		num += 0.5
-	}
-	return num, true
+	return num, strings.ToUpper(m[2])[0], true
 }
 
-func autoBlendCamelotDistance(a float64, hasA bool, b float64, hasB bool) (bool, float64) {
+func autoBlendCamelotDistance(
+	aNumber int,
+	aLetter byte,
+	hasA bool,
+	bNumber int,
+	bLetter byte,
+	hasB bool,
+) (bool, int) {
 	if !hasA || !hasB {
-		return false, math.MaxFloat64
+		return false, math.MaxInt
 	}
-	distance := math.Abs(a - b)
-	distance = math.Min(distance, 12-distance)
-	return distance <= autoBlendKeyMatchDist, distance
+	direct := aNumber - bNumber
+	if direct < 0 {
+		direct = -direct
+	}
+	numberDistance := direct
+	if wrapped := 12 - direct; wrapped < numberDistance {
+		numberDistance = wrapped
+	}
+	keyMatch := (aLetter == bLetter && numberDistance <= 1) ||
+		(aLetter != bLetter && numberDistance == 0)
+	return keyMatch, numberDistance
 }
 
 // autoBlendTrackFactsFromAnalysis decodes the effective compact analysis
@@ -423,8 +502,9 @@ func autoBlendTrackFactsFromAnalysis(track db.Track) autoBlendTrackFacts {
 			facts.Downbeats = *effective.Downbeats.PositionsMS
 		}
 		if effective.Camelot != nil && effective.Camelot.Value != nil {
-			if num, ok := autoBlendParseCamelot(*effective.Camelot.Value); ok {
-				facts.CamelotNum = num
+			if number, letter, ok := autoBlendParseCamelot(*effective.Camelot.Value); ok {
+				facts.CamelotNumber = number
+				facts.CamelotLetter = letter
 				facts.HasCamelot = true
 			}
 		}

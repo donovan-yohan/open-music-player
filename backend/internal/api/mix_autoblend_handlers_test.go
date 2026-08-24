@@ -44,125 +44,143 @@ func autoBlendPlaylist(userID uuid.UUID, playlistID int64, tracks []db.Track) *d
 	}
 }
 
-// Tempo-matched pair (120 vs 122 BPM, ~1.6% apart) with matching Camelot keys
-// and usable downbeat grids: expect Blend with an 8-bar overlap.
-func TestAutoBlendTempoMatchedKeyMatchedUsesBlend(t *testing.T) {
-	out := factsFor(autoBlendTrack(10, 200000, 120, true, "8A",
-		0, 8000, 160000, 168000, 176000, 184000))
-	in := factsFor(autoBlendTrack(11, 200000, 122, true, "8A", 0))
+func TestAutoBlendTempoBands(t *testing.T) {
+	tests := []struct {
+		name         string
+		incomingBPM  float64
+		wantMatched  bool
+		wantShift    bool
+		wantFallback bool
+		wantBars     int
+	}{
+		{name: "under five percent", incomingBPM: 115, wantMatched: true, wantBars: 8},
+		{name: "exactly five percent", incomingBPM: 114, wantShift: true, wantBars: 4},
+		{name: "exactly fifteen percent", incomingBPM: 102, wantShift: true, wantBars: 4},
+		{name: "above fifteen percent", incomingBPM: 101, wantFallback: true},
+	}
 
-	transition := computeAutoBlendTransition(0, out, in)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := factsFor(autoBlendTrack(10, 200000, 120, true, "8A",
+				0, 8000, 184000, 192000))
+			in := factsFor(autoBlendTrack(11, 200000, tt.incomingBPM, true, "8A",
+				0, 8000))
 
-	if transition.Preset != PresetBlend {
-		t.Fatalf("preset = %q, want Blend", transition.Preset)
-	}
-	if !transition.Confidence.KeyMatch || !transition.Confidence.TempoMatched {
-		t.Fatalf("confidence = %+v, want key+tempo match", transition.Confidence)
-	}
-	if transition.Bars != autoBlendDefaultBars {
-		t.Fatalf("bars = %d, want %d", transition.Bars, autoBlendDefaultBars)
-	}
-	// Bar length at 120 BPM is 2000ms; ideal boundary at end-16000 lands on a
-	// downbeat, so overlap resolves to exactly 8 bars.
-	wantOverlap := int64(8 * 4 * 60000 / 120.0)
-	if transition.OverlapMs != wantOverlap {
-		t.Fatalf("overlapMs = %d, want %d", transition.OverlapMs, wantOverlap)
+			transition := computeAutoBlendTransition(0, out, in)
+			if transition.Confidence.TempoMatched != tt.wantMatched ||
+				transition.Confidence.TempoShift != tt.wantShift ||
+				transition.Confidence.SimpleFade != tt.wantFallback {
+				t.Fatalf("confidence = %+v", transition.Confidence)
+			}
+			if transition.Bars != tt.wantBars {
+				t.Fatalf("bars = %d, want %d", transition.Bars, tt.wantBars)
+			}
+			if transition.Preset == "Slam" || transition.OverlapMs <= 0 {
+				t.Fatalf("unsafe automatic transition: %+v", transition)
+			}
+		})
 	}
 }
 
-// Same tempo but distant keys (8A vs 3A): per the spec, key-match selects
-// Fade and tempo-match alone selects Rise — so this pair is Rise.
+func TestAutoBlendMissingBPMUsesBoundedSimpleFade(t *testing.T) {
+	out := factsFor(autoBlendTrack(10, 3000, 0, false, "8A", 0, 1000))
+	in := factsFor(autoBlendTrack(11, 5000, 120, true, "8A", 0, 1000))
+
+	transition := computeAutoBlendTransition(0, out, in)
+	if transition.Preset != PresetFade || transition.Bars != 0 || transition.OverlapMs != 3000 {
+		t.Fatalf("transition = %+v, want bounded 3000ms Fade", transition)
+	}
+	if !transition.Confidence.SimpleFade || transition.Confidence.TempoDeltaPercent != nil {
+		t.Fatalf("confidence = %+v, want unavailable-tempo fallback", transition.Confidence)
+	}
+}
+
+func TestAutoBlendCamelotCompatibility(t *testing.T) {
+	tests := []struct {
+		name      string
+		out, in   string
+		wantMatch bool
+	}{
+		{name: "same key", out: "8A", in: "8A", wantMatch: true},
+		{name: "same letter adjacent", out: "8A", in: "9A", wantMatch: true},
+		{name: "same letter wraparound", out: "12A", in: "1A", wantMatch: true},
+		{name: "same number opposite letter", out: "8A", in: "8B", wantMatch: true},
+		{name: "cross-letter diagonal is not adjacent", out: "8B", in: "9A"},
+		{name: "same letter distant", out: "8A", in: "10A"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			aNumber, aLetter, aOK := autoBlendParseCamelot(tt.out)
+			bNumber, bLetter, bOK := autoBlendParseCamelot(tt.in)
+			matched, _ := autoBlendCamelotDistance(
+				aNumber, aLetter, aOK, bNumber, bLetter, bOK,
+			)
+			if matched != tt.wantMatch {
+				t.Fatalf("%s -> %s match = %v, want %v", tt.out, tt.in, matched, tt.wantMatch)
+			}
+		})
+	}
+}
+
 func TestAutoBlendKeyMismatchTempoMatchedUsesRise(t *testing.T) {
-	out := factsFor(autoBlendTrack(10, 200000, 120, true, "8A"))
-	in := factsFor(autoBlendTrack(11, 200000, 120, true, "3A"))
+	out := factsFor(autoBlendTrack(10, 200000, 120, true, "8A",
+		0, 8000, 184000, 192000))
+	in := factsFor(autoBlendTrack(11, 200000, 120, true, "3A", 0, 8000))
 
 	transition := computeAutoBlendTransition(0, out, in)
-
-	if transition.Preset != PresetRise {
-		t.Fatalf("preset = %q, want Rise", transition.Preset)
-	}
-	if transition.Confidence.KeyMatch {
-		t.Fatal("confidence.keyMatch = true, want false for distant keys")
-	}
-	if !transition.Confidence.TempoMatched {
-		t.Fatal("confidence.tempoMatched = false, want true")
-	}
-	if transition.OverlapMs <= 0 {
-		t.Fatalf("overlapMs = %d, want positive crossfade", transition.OverlapMs)
+	if transition.Preset != PresetRise || transition.Confidence.KeyMatch ||
+		!transition.Confidence.TempoMatched || transition.Confidence.SimpleFade {
+		t.Fatalf("transition = %+v, want aligned tempo-only Rise", transition)
 	}
 }
 
-// Key match without a tempo match: Fade preset.
-func TestAutoBlendKeyMatchTempoShiftedUsesFade(t *testing.T) {
-	out := factsFor(autoBlendTrack(10, 200000, 120, true, "8A"))
-	in := factsFor(autoBlendTrack(11, 200000, 132, true, "8A"))
-
-	transition := computeAutoBlendTransition(0, out, in)
-
-	if transition.Preset != PresetFade {
-		t.Fatalf("preset = %q, want Fade", transition.Preset)
+func TestAutoBlendInvalidAndSparseGridsUseSimpleFade(t *testing.T) {
+	tests := []struct {
+		name         string
+		outDownbeats []int64
+		inDownbeats  []int64
+	}{
+		{name: "missing", outDownbeats: nil, inDownbeats: nil},
+		{name: "sparse", outDownbeats: []int64{0}, inDownbeats: []int64{0}},
+		{name: "out of range", outDownbeats: []int64{-1, 250000}, inDownbeats: []int64{-1, 250000}},
+		{name: "no outgoing boundary anchor", outDownbeats: []int64{0, 8000}, inDownbeats: []int64{0, 8000}},
+		{name: "incoming anchor too late", outDownbeats: []int64{0, 184000}, inDownbeats: []int64{50000, 58000}},
 	}
-	if !transition.Confidence.KeyMatch || transition.Confidence.TempoMatched {
-		t.Fatalf("confidence = %+v, want key-only", transition.Confidence)
-	}
-}
 
-// Tempo matched but no key analysis at all: Rise preset via tempo only.
-func TestAutoBlendMissingKeyUsesRise(t *testing.T) {
-	out := factsFor(autoBlendTrack(10, 200000, 120, true, ""))
-	in := factsFor(autoBlendTrack(11, 200000, 121, true, ""))
-
-	transition := computeAutoBlendTransition(0, out, in)
-
-	if transition.Preset != PresetRise {
-		t.Fatalf("preset = %q, want Rise", transition.Preset)
-	}
-	if transition.Confidence.KeyMatch {
-		t.Fatal("confidence.keyMatch = true, want false without key data")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := factsFor(autoBlendTrack(10, 200000, 120, true, "8A", tt.outDownbeats...))
+			in := factsFor(autoBlendTrack(11, 200000, 122, true, "8A", tt.inDownbeats...))
+			transition := computeAutoBlendTransition(0, out, in)
+			if !transition.Confidence.SimpleFade || transition.Preset != PresetFade ||
+				transition.Bars != 0 || transition.OverlapMs != autoBlendSimpleFadeMs {
+				t.Fatalf("transition = %+v, want fixed simple fade", transition)
+			}
+		})
 	}
 }
 
-// Wildly different tempos (>15%) with no shared key: Slam hard cut.
-func TestAutoBlendWildTempoDifferenceSlams(t *testing.T) {
-	out := factsFor(autoBlendTrack(10, 200000, 90, true, "8A"))
-	in := factsFor(autoBlendTrack(11, 200000, 140, true, "2A"))
+func TestAutoBlendFiltersSortsAndDeduplicatesGrid(t *testing.T) {
+	out := factsFor(autoBlendTrack(10, 200000, 120, true, "8A",
+		200001, 192000, 184000, 184000, -1, 0))
+	in := factsFor(autoBlendTrack(11, 200000, 122, true, "8A", 8000, 0, 0))
 
 	transition := computeAutoBlendTransition(0, out, in)
-
-	if transition.Preset != PresetSlam {
-		t.Fatalf("preset = %q, want Slam", transition.Preset)
-	}
-	if transition.Bars != 0 || transition.OverlapMs != 0 {
-		t.Fatalf("slam must be a hard cut: bars=%d overlapMs=%d", transition.Bars, transition.OverlapMs)
+	if transition.Confidence.SimpleFade || transition.Preset != PresetBlend ||
+		transition.OverlapMs != 16000 {
+		t.Fatalf("transition = %+v, want validated 16s aligned Blend", transition)
 	}
 }
 
-// No beat grid anywhere: falls back to plain bar-count estimate rather than
-// failing or producing zero overlap.
-func TestAutoBlendNoBeatGridUsesBarEstimate(t *testing.T) {
-	out := factsFor(autoBlendTrack(10, 200000, 120, true, "8A"))
-	in := factsFor(autoBlendTrack(11, 200000, 122, true, "8A"))
-
-	transition := computeAutoBlendTransition(0, out, in)
-
-	if transition.Preset != PresetBlend {
-		t.Fatalf("preset = %q, want Blend", transition.Preset)
-	}
-	wantOverlap := int64(8 * 4 * 60000 / 120.0)
-	if transition.OverlapMs != wantOverlap {
-		t.Fatalf("overlapMs = %d, want bar estimate %d", transition.OverlapMs, wantOverlap)
-	}
-}
-
-// Slow outgoing track (<100 BPM) shortens the blend to 4 bars.
 func TestAutoBlendSlowTempoUsesFourBars(t *testing.T) {
-	out := factsFor(autoBlendTrack(10, 240000, 90, true, "8A"))
-	in := factsFor(autoBlendTrack(11, 240000, 91, true, "8A"))
+	out := factsFor(autoBlendTrack(10, 240000, 90, true, "8A",
+		0, 8000, 229333, 237333))
+	in := factsFor(autoBlendTrack(11, 240000, 91, true, "8A", 0, 8000))
 
 	transition := computeAutoBlendTransition(0, out, in)
-
-	if transition.Bars != autoBlendSlowBars {
-		t.Fatalf("bars = %d, want %d under 100 BPM", transition.Bars, autoBlendSlowBars)
+	if transition.Bars != autoBlendSlowBars || transition.Confidence.SimpleFade {
+		t.Fatalf("transition = %+v, want four aligned bars", transition)
 	}
 }
 
@@ -227,13 +245,13 @@ func TestCreateAutoMixNotFoundAndAuthz(t *testing.T) {
 	}
 }
 
-// Full handler path: clips laid out with overlaps, fades split evenly, plan
+// Full handler path: clips laid out with overlaps, fades span the seams, plan
 // persisted, and response carries transitions matching the schema contract.
 func TestCreateAutoMixGeneratesTransitionsAndClips(t *testing.T) {
 	userID := uuid.New()
 	reader := &fakePlaylistMixReader{playlist: autoBlendPlaylist(userID, 7, []db.Track{
-		autoBlendTrack(50, 200000, 120, true, "8A", 0, 2000, 40000),
-		autoBlendTrack(51, 150000, 122, true, "8A", 0, 500),
+		autoBlendTrack(50, 200000, 120, true, "8A", 0, 8000, 184000, 192000),
+		autoBlendTrack(51, 150000, 122, true, "8A", 0, 8000, 142000),
 		autoBlendTrack(52, 180000, 140, true, "1A"),
 	})}
 	store := &fakeMixPlanStore{}
@@ -269,11 +287,12 @@ func TestCreateAutoMixGeneratesTransitionsAndClips(t *testing.T) {
 	}
 
 	second := resp.Transitions[1]
-	if second.Preset != PresetSlam {
-		t.Fatalf("transition[1].preset = %q, want Slam", second.Preset)
+	if second.Preset != PresetFade || !second.Confidence.TempoShift ||
+		!second.Confidence.SimpleFade {
+		t.Fatalf("transition[1] = %+v, want safe fallback tempo-shift Fade", second)
 	}
-	if second.OverlapMs != 0 {
-		t.Fatalf("transition[1].overlapMs = %d, want 0", second.OverlapMs)
+	if second.OverlapMs != autoBlendSimpleFadeMs {
+		t.Fatalf("transition[1].overlapMs = %d, want %d", second.OverlapMs, autoBlendSimpleFadeMs)
 	}
 
 	var payload MixPlanPayload
@@ -284,32 +303,31 @@ func TestCreateAutoMixGeneratesTransitionsAndClips(t *testing.T) {
 		t.Fatalf("clip count = %d, want 3", len(payload.Clips))
 	}
 
-	// Clip 0 ends where clip 1 begins minus the resolved overlap of
-	// transition 0; slam means clip 1 -> clip 2 stays contiguous.
+	// Each incoming clip starts early by its resolved overlap.
 	overlap0 := resp.Transitions[0].OverlapMs
+	overlap1 := resp.Transitions[1].OverlapMs
 	if payload.Clips[0].SourceEndMs != 200000 {
 		t.Fatalf("clip[0].sourceEndMs = %d, want 200000", payload.Clips[0].SourceEndMs)
 	}
 	if payload.Clips[1].TimelineStartMs != 200000-overlap0 {
 		t.Fatalf("clip[1].timelineStartMs = %d, want %d", payload.Clips[1].TimelineStartMs, 200000-overlap0)
 	}
-	wantStart2 := 200000 - overlap0 + 150000
+	wantStart2 := 200000 - overlap0 + 150000 - overlap1
 	if payload.Clips[2].TimelineStartMs != wantStart2 {
-		t.Fatalf("clip[2].timelineStartMs = %d, want %d (slam keeps contiguity)", payload.Clips[2].TimelineStartMs, wantStart2)
+		t.Fatalf("clip[2].timelineStartMs = %d, want %d", payload.Clips[2].TimelineStartMs, wantStart2)
 	}
 
-	// Fades split each overlap evenly across the pair.
-	if overlap0 > 0 {
-		half := overlap0 / 2
-		if payload.Clips[0].FadeOutMs == nil || *payload.Clips[0].FadeOutMs != half {
-			t.Fatalf("clip[0].fadeOutMs = %v, want %d", payload.Clips[0].FadeOutMs, half)
-		}
-		if payload.Clips[1].FadeInMs == nil || *payload.Clips[1].FadeInMs != half {
-			t.Fatalf("clip[1].fadeInMs = %v, want %d", payload.Clips[1].FadeInMs, half)
-		}
+	if payload.Clips[0].FadeOutMs == nil || *payload.Clips[0].FadeOutMs != overlap0 {
+		t.Fatalf("clip[0].fadeOutMs = %v, want %d", payload.Clips[0].FadeOutMs, overlap0)
 	}
-	if payload.Clips[1].FadeOutMs != nil {
-		t.Fatalf("slam transition must not fade out clip[1], got %v", *payload.Clips[1].FadeOutMs)
+	if payload.Clips[1].FadeInMs == nil || *payload.Clips[1].FadeInMs != overlap0 {
+		t.Fatalf("clip[1].fadeInMs = %v, want %d", payload.Clips[1].FadeInMs, overlap0)
+	}
+	if payload.Clips[1].FadeOutMs == nil || *payload.Clips[1].FadeOutMs != overlap1 {
+		t.Fatalf("clip[1].fadeOutMs = %v, want %d", payload.Clips[1].FadeOutMs, overlap1)
+	}
+	if payload.Clips[2].FadeInMs == nil || *payload.Clips[2].FadeInMs != overlap1 {
+		t.Fatalf("clip[2].fadeInMs = %v, want %d", payload.Clips[2].FadeInMs, overlap1)
 	}
 
 	if resp.MixPlan.Summary.ClipCount != 3 {

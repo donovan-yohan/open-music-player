@@ -28,12 +28,18 @@ func TestPlaylistAutoMixIntegrationGeneratesTransitions(t *testing.T) {
 	t2 := seedMixTrack(t, trackRepo, ctx, "Auto Second", 150000)
 	t3 := seedMixTrack(t, trackRepo, ctx, "Auto Third", 90000)
 
-	seedAnalysis := func(t *testing.T, trackID int64, bpm float64, camelot string) {
+	seedAnalysis := func(
+		t *testing.T,
+		trackID int64,
+		bpm float64,
+		camelot string,
+		downbeats []int64,
+	) {
 		t.Helper()
 		summary, err := json.Marshal(map[string]any{
 			"bpm":       map[string]any{"value": bpm},
 			"camelot":   map[string]any{"value": camelot},
-			"downbeats": map[string]any{"positions_ms": []int64{0}},
+			"downbeats": map[string]any{"positions_ms": downbeats},
 		})
 		if err != nil {
 			t.Fatalf("marshal analysis summary: %v", err)
@@ -57,11 +63,11 @@ func TestPlaylistAutoMixIntegrationGeneratesTransitions(t *testing.T) {
 		}
 	}
 
-	// Pair 1 (t1 -> t2): same tempo, same key => Blend. Pair 2 (t2 -> t3):
-	// wildly different tempo and key => Slam.
-	seedAnalysis(t, t1, 120, "8A")
-	seedAnalysis(t, t2, 121, "8A")
-	seedAnalysis(t, t3, 160, "2A")
+	// Pair 1 (t1 -> t2): same tempo, same key, usable grids => Blend.
+	// Pair 2 (t2 -> t3): >15% tempo difference => bounded simple Fade.
+	seedAnalysis(t, t1, 120, "8A", []int64{0, 8000, 184000, 192000})
+	seedAnalysis(t, t2, 121, "8A", []int64{0, 8000, 134000, 142000})
+	seedAnalysis(t, t3, 160, "2A", []int64{0, 8000})
 
 	pl := &db.Playlist{UserID: userID, Name: "Auto Mixable"}
 	if err := playlistRepo.Create(ctx, pl); err != nil {
@@ -113,11 +119,11 @@ func TestPlaylistAutoMixIntegrationGeneratesTransitions(t *testing.T) {
 			first.OutgoingTrackID, first.IncomingTrackID, t1, t2)
 	}
 	second := resp.Transitions[1]
-	if second.Preset != PresetSlam {
-		t.Fatalf("transition[1].preset = %q, want Slam", second.Preset)
+	if second.Preset != PresetFade || !second.Confidence.SimpleFade {
+		t.Fatalf("transition[1] = %+v, want safe simple Fade", second)
 	}
-	if second.Bars != 0 || second.OverlapMs != 0 {
-		t.Fatalf("slam transition must be a hard cut: %+v", second)
+	if second.Bars != 0 || second.OverlapMs != autoBlendSimpleFadeMs {
+		t.Fatalf("simple Fade must use bounded fallback overlap: %+v", second)
 	}
 
 	// The persisted plan's timeline must respect the resolved overlaps:
@@ -137,7 +143,7 @@ func TestPlaylistAutoMixIntegrationGeneratesTransitions(t *testing.T) {
 	if payload.Clips[1].TimelineStartMs != wantStart1 {
 		t.Fatalf("clip[1].timelineStartMs = %d, want %d", payload.Clips[1].TimelineStartMs, wantStart1)
 	}
-	wantStart2 := wantStart1 + 150000 // slam keeps contiguity
+	wantStart2 := wantStart1 + 150000 - second.OverlapMs
 	if payload.Clips[2].TimelineStartMs != wantStart2 {
 		t.Fatalf("clip[2].timelineStartMs = %d, want %d", payload.Clips[2].TimelineStartMs, wantStart2)
 	}
