@@ -67,6 +67,7 @@ class MixTransition {
 
   /// Human label for the overlap: seconds always, bars when known.
   String overlapLabel() {
+    if (overlapMs <= 0) return 'No overlap';
     final seconds = (overlapMs / 1000).round();
     final barsValue = bars;
     if (barsValue != null && barsValue > 0) {
@@ -122,4 +123,57 @@ class AutoMixResult {
 
   MixTransition? between(Track outgoing, Track incoming) =>
       transitionsByPair['${outgoing.id}-${incoming.id}'];
+}
+
+/// Parsed response body of POST /playlists/{id}/smart-reorder.
+///
+/// [order] is the persisted track order — displayed order is this order, not
+/// a client-side sort. [mix] carries the regenerated plan and its transitions
+/// when the request named an active plan; it is null for an order-only
+/// reorder.
+class SmartReorderResult {
+  final List<int> order;
+  final int? planVersion;
+  final int editedSeamsKept;
+  final int seamsRegenerated;
+  final AutoMixResult? mix;
+
+  const SmartReorderResult({
+    required this.order,
+    this.planVersion,
+    this.editedSeamsKept = 0,
+    this.seamsRegenerated = 0,
+    this.mix,
+  });
+
+  factory SmartReorderResult.fromJson(Map<String, dynamic> json) {
+    final rawOrder = json['order'];
+    final order = rawOrder is List
+        ? rawOrder
+            .map((id) => (id as num?)?.toInt())
+            .whereType<int>()
+            .toList(growable: false)
+        : const <int>[];
+    // The plan block shares the auto-mix response shape, so reuse its tolerant
+    // parser: a partial or older server still yields a usable order.
+    final mix = json['mixPlan'] is Map ? AutoMixResult.fromJson(json) : null;
+    return SmartReorderResult(
+      order: order,
+      planVersion: (json['planVersion'] as num?)?.toInt(),
+      editedSeamsKept: (json['editedSeamsKept'] as num?)?.toInt() ?? 0,
+      seamsRegenerated: (json['seamsRegenerated'] as num?)?.toInt() ?? 0,
+      mix: mix?.mixPlan == null ? null : mix,
+    );
+  }
+
+  /// Sentence-case summary for the confirmation toast.
+  String feedbackMessage() {
+    if (mix == null) return 'Reordered by tempo and key.';
+    final parts = <String>[
+      if (seamsRegenerated > 0) 'reblended $seamsRegenerated',
+      if (editedSeamsKept > 0) 'kept $editedSeamsKept edited',
+    ];
+    if (parts.isEmpty) return 'Reordered by tempo and key.';
+    return 'Reordered by tempo and key — ${parts.join(', ')}.';
+  }
 }

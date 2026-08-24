@@ -20,6 +20,7 @@ import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/track_tile.dart';
 import 'mix/mix_models.dart';
+import 'mix/mix_presets.dart';
 import 'mix/mix_transition_editor.dart';
 import 'mixed_playlist_view.dart';
 import 'playlist_edit_dialog.dart';
@@ -178,6 +179,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       outgoingIsEndpoint: seamIndex == 0,
       incomingIsEndpoint: seamIndex + 1 == tracks.length - 1,
       onSave: (edit) => _saveSeamEdit(plan, edit),
+      onPreview: (draft) => _previewSeam(plan, seamIndex, draft),
+      onStopPreview: _stopSeamPreview,
     );
     if (edit == null || !mounted) return;
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(
@@ -185,26 +188,31 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
-  Future<void> _saveSeamEdit(MixPlan plan, MixTransitionEdit edit) async {
-    final clips = [...plan.clips];
+  /// Applies [edit] to [source], keeping the persisted invariant
+  /// `fadeOut(i) == fadeIn(i+1) == placement overlap` at every seam.
+  ///
+  /// The overlap change moves the edited pair, and because the incoming clip's
+  /// end moves with its start, the entire downstream tail shifts by the same
+  /// delta so all later seams keep their exact geometry. Returns null when
+  /// either edited clip is absent from [source] — e.g. a regeneration replaced
+  /// the clip set underneath the editor.
+  static List<MixPlanClip>? _clipsWithSeamEdit(
+    List<MixPlanClip> source,
+    MixTransitionEdit edit,
+  ) {
     final outgoingIndex =
-        plan.clips.indexWhere((clip) => clip.clipId == edit.outgoing.clipId);
+        source.indexWhere((clip) => clip.clipId == edit.outgoing.clipId);
     final incomingIndex =
-        plan.clips.indexWhere((clip) => clip.clipId == edit.incoming.clipId);
-    if (outgoingIndex < 0 || incomingIndex < 0) {
-      throw const FormatException('Edited clips are missing from the plan.');
-    }
+        source.indexWhere((clip) => clip.clipId == edit.incoming.clipId);
+    if (outgoingIndex < 0 || incomingIndex < 0) return null;
+
+    final clips = [...source];
     clips[outgoingIndex] = edit.outgoing;
     clips[incomingIndex] = edit.incoming;
 
-    // Keep the persisted invariant `fadeOut(i) == fadeIn(i+1) ==
-    // placement overlap` at every seam: the overlap change moves the
-    // edited pair, and because the incoming clip's end moves with its
-    // start, the entire downstream tail shifts by the same delta so all
-    // later seams keep their exact geometry.
-    final previousOutgoing = plan.clips[outgoingIndex];
-    final previousIncoming = plan.clips[incomingIndex];
-    final newOverlapMs = edit.incoming.fadeInMs ?? 0;
+    final previousOutgoing = source[outgoingIndex];
+    final previousIncoming = source[incomingIndex];
+    final newOverlapMs = edit.overlapMs;
     // Timeline overlap between two clips: outgoing end minus incoming start.
     final previousOverlapMs =
         previousOutgoing.timelineEndMs - previousIncoming.timelineStartMs;
@@ -214,6 +222,51 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     for (var j = incomingIndex + 1; j < clips.length; j++) {
       clips[j] = clips[j]
           .withTimelineStartMs(clips[j].timelineStartMs - placementDeltaMs);
+    }
+    return clips;
+  }
+
+  /// Auditions the draft seam without persisting it: the draft geometry is
+  /// applied to a throwaway copy of the plan and handed to the one playback
+  /// session, so the user hears exactly what Save would write.
+  Future<void> _previewSeam(
+    MixPlan plan,
+    int seamIndex,
+    MixTransitionEdit draft,
+  ) async {
+    final tracks = _playlist?.tracks ?? const <Track>[];
+    final clips = _clipsWithSeamEdit(plan.clips, draft);
+    if (clips == null || tracks.length != clips.length) return;
+    final playback = context.read<PlaybackState>();
+    await playback.previewMixSeam(
+      tracks.map((track) => track.toPlaybackJson()).toList(),
+      _planWithClips(plan, clips),
+      seamIndex: seamIndex,
+      context: _playlistContext(),
+    );
+  }
+
+  Future<void> _stopSeamPreview() async {
+    if (!mounted) return;
+    await context.read<PlaybackState>().endMixSeamPreview();
+  }
+
+  static MixPlan _planWithClips(MixPlan plan, List<MixPlanClip> clips) =>
+      MixPlan(
+        id: plan.id,
+        schemaVersion: plan.schemaVersion,
+        name: plan.name,
+        clips: clips,
+        summary: plan.summary,
+        version: plan.version,
+        createdAt: plan.createdAt,
+        updatedAt: plan.updatedAt,
+      );
+
+  Future<void> _saveSeamEdit(MixPlan plan, MixTransitionEdit edit) async {
+    final clips = _clipsWithSeamEdit(plan.clips, edit);
+    if (clips == null) {
+      throw const FormatException('Edited clips are missing from the plan.');
     }
 
     MixPlan saved;
@@ -263,31 +316,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   /// Applies [edit] to [fresh] by clipId. Returns null when either edited
   /// clip no longer exists in the fresh plan (e.g. a regeneration replaced
   /// the clip set), in which case the user must reopen the seam.
-  List<MixPlanClip>? _rebaseSeamEdit(MixPlan fresh, MixTransitionEdit edit) {
-    final outgoingIndex =
-        fresh.clips.indexWhere((clip) => clip.clipId == edit.outgoing.clipId);
-    final incomingIndex =
-        fresh.clips.indexWhere((clip) => clip.clipId == edit.incoming.clipId);
-    if (outgoingIndex < 0 || incomingIndex < 0) return null;
-
-    final clips = [...fresh.clips];
-    clips[outgoingIndex] = edit.outgoing;
-    clips[incomingIndex] = edit.incoming;
-
-    final previousOutgoing = fresh.clips[outgoingIndex];
-    final previousIncoming = fresh.clips[incomingIndex];
-    final newOverlapMs = edit.incoming.fadeInMs ?? 0;
-    final previousOverlapMs =
-        previousOutgoing.timelineEndMs - previousIncoming.timelineStartMs;
-    final placementDeltaMs = newOverlapMs - previousOverlapMs;
-    clips[incomingIndex] = clips[incomingIndex].withTimelineStartMs(
-        previousIncoming.timelineStartMs - placementDeltaMs);
-    for (var j = incomingIndex + 1; j < clips.length; j++) {
-      clips[j] = clips[j]
-          .withTimelineStartMs(clips[j].timelineStartMs - placementDeltaMs);
-    }
-    return clips;
-  }
+  List<MixPlanClip>? _rebaseSeamEdit(MixPlan fresh, MixTransitionEdit edit) =>
+      _clipsWithSeamEdit(fresh.clips, edit);
 
   /// Rebuilds the transition decorations from a freshly saved plan so seam
   /// badges reflect what was actually persisted.
@@ -311,7 +341,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           // instead of claiming Blend/Rise geometry that no longer holds.
           preset: _isUnchanged(stale, saved.clips[i], saved.clips[i + 1])
               ? (stale?.preset ?? 'Fade')
-              : 'Fade',
+              : MixPreset.forOverlapMs(
+                  _overlapBetween(saved.clips[i], saved.clips[i + 1]),
+                ).label,
           bars: _isUnchanged(stale, saved.clips[i], saved.clips[i + 1])
               ? stale?.bars
               : 0,
@@ -481,6 +513,75 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         SnackBar(content: Text('Failed to $label: $e')),
       );
     }
+  }
+
+  /// Sequences the playlist by tempo and key on the server.
+  ///
+  /// The server persists the new order and regenerates the active plan for it
+  /// in the same request, so what is shown here is what was persisted and what
+  /// will play — no client-side display ordering.
+  Future<void> _smartReorder() async {
+    if (_isMixLoading || !_hasMixEligibleTracks) return;
+    final playlist = _playlist;
+    final tracks = playlist?.tracks;
+    if (playlist == null || tracks == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+
+    setState(() => _isMixLoading = true);
+    try {
+      final result = await _playlistService.smartReorder(
+        playlist.id,
+        mixPlanId: _mixPlan?.mixPlan?.id,
+      );
+      if (!mounted) return;
+      final reordered = _tracksInOrder(tracks, result.order);
+      setState(() {
+        _isMixLoading = false;
+        if (reordered != null) {
+          _playlist = playlist.copyWith(tracks: reordered);
+        }
+        if (result.mix != null) {
+          _mixPlan = result.mix;
+        } else if (reordered != null && _mixPlan != null) {
+          // The order moved but no plan came back, so the plan we hold no
+          // longer describes what is displayed. Drop it rather than let the
+          // two disagree.
+          _mixPlan = null;
+          _mixEnabled = false;
+        }
+      });
+      if (reordered == null) {
+        // The server's order does not describe the list we are showing.
+        // Reload rather than render a guess.
+        await _loadPlaylist();
+        return;
+      }
+      messenger.showSnackBar(
+        SnackBar(content: Text(result.feedbackMessage())),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isMixLoading = false);
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Could not reorder this playlist. Try again.'),
+        ),
+      );
+    }
+  }
+
+  /// Reorders [tracks] to match [order], or null when [order] is not exactly
+  /// this playlist's track set.
+  static List<Track>? _tracksInOrder(List<Track> tracks, List<int> order) {
+    if (order.length != tracks.length) return null;
+    final byId = {for (final track in tracks) track.id: track};
+    final reordered = <Track>[];
+    for (final id in order) {
+      final track = byId.remove(id);
+      if (track == null) return null;
+      reordered.add(track);
+    }
+    return reordered;
   }
 
   Future<void> _reorderTrack(int oldIndex, int newIndex) async {
@@ -790,6 +891,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 child: CircularProgressIndicator(strokeWidth: 2),
               ),
             ),
+          ),
+        if (_mixEnabled && !_isMixLoading)
+          IconButton(
+            key: const ValueKey('mix_reorder_button'),
+            icon: const Icon(Icons.sort),
+            onPressed: _smartReorder,
+            tooltip: 'Smart reorder by tempo and key',
           ),
         if (_hasMixEligibleTracks && !_isMixLoading)
           IconButton(

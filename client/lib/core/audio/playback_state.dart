@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
@@ -78,6 +79,11 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   final QueueContinuationSource? _continuationSource;
   final int _continuationBatchSize;
   EndOfQueueMode _endOfQueueMode = EndOfQueueMode.off;
+
+  /// The listening queue a seam preview borrowed, or null when no preview is
+  /// running. Held here — not in the sheet — because the queue it describes is
+  /// this object's state.
+  _MixPreviewSnapshot? _mixPreview;
 
   /// Guards against a second continuation starting while one is still fetching
   /// or appending. The controller emits at most one exhaustion per completion,
@@ -441,6 +447,89 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
       });
     }, generation: generation);
   }
+
+  /// Auditions one seam of [plan] through the existing playback session.
+  ///
+  /// The preview borrows the single playback truth rather than starting a
+  /// second controller or session: it snapshots the live queue, loads the plan
+  /// as the queue, seeks [leadIn] before the seam using the ordinary
+  /// [QueueTimelineController.seek], and plays. [endMixSeamPreview] hands the
+  /// snapshot back. Nested calls re-target the same preview, so the snapshot
+  /// always describes the listening queue, never another preview.
+  Future<void> previewMixSeam(
+    List<Map<String, dynamic>> tracks,
+    MixPlan plan, {
+    required int seamIndex,
+    Duration leadIn = const Duration(seconds: 6),
+    PlaybackContext? context,
+  }) async {
+    if (tracks.isEmpty || plan.clips.isEmpty) return;
+    if (seamIndex < 0 || seamIndex + 1 >= plan.clips.length) return;
+    _validateMixPlanOrder(tracks, plan);
+
+    _mixPreview ??= _MixPreviewSnapshot(
+      queue: List<MediaItem>.from(_queueController.queue),
+      session: _queueController.session,
+      currentIndex: _queueController.currentIndex,
+      position: _queueController.snapshot.localPosition,
+      playing: _queueController.snapshot.playing,
+      context: _playbackContext,
+    );
+
+    await _queueController.pause();
+    final items = await _sourceResolver.resolveQueue(tracks);
+    final session = MixSession.fromMixPlan(plan: plan, queue: items);
+    await _queueController.setQueue(
+      items,
+      initialIndex: seamIndex,
+      session: session,
+    );
+    _playbackContext = context;
+    // The seam is the end of the outgoing clip. Start [leadIn] before the
+    // point where the overlap begins so the run-in is audible too.
+    final outgoing = plan.clips[seamIndex];
+    final overlapMs = math.max(
+      0,
+      outgoing.timelineEndMs - plan.clips[seamIndex + 1].timelineStartMs,
+    );
+    final startMs = math.max(
+      0,
+      outgoing.selectedDurationMs - overlapMs - leadIn.inMilliseconds,
+    );
+    await _queueController.seek(Duration(milliseconds: startMs));
+    await _queueController.play();
+    notifyListeners();
+  }
+
+  /// Restores the listening queue a seam preview borrowed: same queue, same
+  /// item, same position, and playing only if it was playing before. A no-op
+  /// when no preview is running, so callers can always call it on teardown.
+  Future<void> endMixSeamPreview() async {
+    final snapshot = _mixPreview;
+    if (snapshot == null) return;
+    _mixPreview = null;
+
+    await _queueController.pause();
+    _playbackContext = snapshot.context;
+    if (snapshot.queue.isEmpty) {
+      await _queueController.setQueue(const []);
+      notifyListeners();
+      return;
+    }
+    await _queueController.setQueue(
+      snapshot.queue,
+      initialIndex: snapshot.currentIndex ?? 0,
+      session: snapshot.session,
+    );
+    await _queueController.seek(snapshot.position);
+    if (snapshot.playing) {
+      await _queueController.play();
+    }
+    notifyListeners();
+  }
+
+  /// True while a seam preview has borrowed the listening queue.
+  bool get isPreviewingMixSeam => _mixPreview != null;
 
   void _validateMixPlanOrder(
     List<Map<String, dynamic>> tracks,
@@ -986,4 +1075,24 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     unawaited(_queueController.dispose());
     super.dispose();
   }
+}
+
+/// The listening queue captured before a seam preview takes over playback.
+@immutable
+class _MixPreviewSnapshot {
+  const _MixPreviewSnapshot({
+    required this.queue,
+    required this.session,
+    required this.currentIndex,
+    required this.position,
+    required this.playing,
+    required this.context,
+  });
+
+  final List<MediaItem> queue;
+  final MixSession session;
+  final int? currentIndex;
+  final Duration position;
+  final bool playing;
+  final PlaybackContext? context;
 }
