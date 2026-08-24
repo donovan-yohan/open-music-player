@@ -30,6 +30,12 @@ const (
 	autoBlendTempoMatchMax = 0.05 // |bpm diff| / max < 5% -> tempo-matched
 	autoBlendTempoShiftMax = 0.15 // 5-15% -> short, aligned tempo-shift fade
 	autoBlendSimpleFadeMs  = int64(8000)
+	// Endpoint clips spend at most half their duration in one seam. Interior
+	// clips spend at most a quarter per seam, preserving a half-duration
+	// full-gain plateau and preventing adjacent transitions from collapsing.
+	autoBlendEndpointSeamDivisor = int64(2)
+	autoBlendInteriorSeamDivisor = int64(4)
+	autoBlendBarsTolerance       = 0.05
 )
 
 // Transition presets, ordered from smoothest to hardest.
@@ -70,6 +76,7 @@ type autoBlendTrackFacts struct {
 	DurationMs    int64
 	BPM           float64
 	HasBPM        bool
+	BeatsPerBar   int
 	Downbeats     []int64
 	CamelotNumber int
 	CamelotLetter byte
@@ -80,10 +87,19 @@ type autoBlendTrackFacts struct {
 type PlaylistAutoBlendHandlers struct {
 	playlists playlistMixReader
 	store     MixPlanStore
+	enabled   bool
 }
 
-func NewPlaylistAutoBlendHandlers(playlists playlistMixReader, store MixPlanStore) *PlaylistAutoBlendHandlers {
-	return &PlaylistAutoBlendHandlers{playlists: playlists, store: store}
+func NewPlaylistAutoBlendHandlers(
+	playlists playlistMixReader,
+	store MixPlanStore,
+	enabled bool,
+) *PlaylistAutoBlendHandlers {
+	return &PlaylistAutoBlendHandlers{
+		playlists: playlists,
+		store:     store,
+		enabled:   enabled,
+	}
 }
 
 // CreateAutoMixFromPlaylist generates and persists a mix plan for the
@@ -92,6 +108,10 @@ func (h *PlaylistAutoBlendHandlers) CreateAutoMixFromPlaylist(w http.ResponseWri
 	userCtx := auth.GetUserFromContext(r.Context())
 	if userCtx == nil {
 		writeMixPlanError(w, http.StatusUnauthorized, "UNAUTHORIZED", "not authenticated")
+		return
+	}
+	if !h.enabled {
+		writeMixPlanError(w, http.StatusNotFound, "NOT_FOUND", "playlist mix is not enabled")
 		return
 	}
 
@@ -120,6 +140,10 @@ func (h *PlaylistAutoBlendHandlers) CreateAutoMixFromPlaylist(w http.ResponseWri
 
 	if len(playlist.Tracks) < 2 {
 		writeMixPlanError(w, http.StatusBadRequest, "VALIDATION_ERROR", "playlist must contain at least 2 tracks to auto-mix")
+		return
+	}
+	if len(playlist.Tracks) > mixPlanMaxClips {
+		writeMixPlanError(w, http.StatusBadRequest, "VALIDATION_ERROR", "playlist cannot contain more than 1000 tracks for auto-mix")
 		return
 	}
 
@@ -178,14 +202,21 @@ func (h *PlaylistAutoBlendHandlers) CreateAutoMixFromPlaylist(w http.ResponseWri
 
 // buildAutoBlendMix computes every transition first, then lays clips on the
 // timeline with the resolved overlaps (each subsequent clip starts one overlap
-// earlier). Source windows span the full track so nothing is trimmed; fades
-// split each overlap evenly across the outgoing and incoming clip.
+// earlier). Source windows span the full track so nothing is trimmed. A
+// per-clip seam budget preserves a full-gain plateau for short interior clips.
 func buildAutoBlendMix(playlistID int64, facts []autoBlendTrackFacts) ([]MixPlanClip, []AutoMixTransition) {
 	n := len(facts)
 	overlaps := make([]int64, n-1)
 	transitions := make([]AutoMixTransition, n-1)
 	for i := 0; i+1 < n; i++ {
 		tr := computeAutoBlendTransition(i, facts[i], facts[i+1])
+		tr = autoBlendBoundTransitionForClipBudgets(
+			tr,
+			facts[i].DurationMs,
+			i > 0,
+			facts[i+1].DurationMs,
+			i+1 < n-1,
+		)
 		transitions[i] = tr
 		overlaps[i] = tr.OverlapMs
 	}
@@ -223,6 +254,43 @@ func buildAutoBlendMix(playlistID int64, facts []autoBlendTrackFacts) ([]MixPlan
 		}
 	}
 	return clips, transitions
+}
+
+// autoBlendBoundTransitionForClipBudgets prevents two adjacent seams from
+// consuming an interior clip. Endpoint clips reserve half their duration;
+// interior clips reserve half in total by allowing a quarter on each side.
+// A shortened aligned transition is no longer bar-aligned, so expose it as a
+// conservative volume-only Fade instead of claiming Blend/Rise geometry.
+func autoBlendBoundTransitionForClipBudgets(
+	transition AutoMixTransition,
+	outDurationMs int64,
+	outHasOtherSeam bool,
+	inDurationMs int64,
+	inHasOtherSeam bool,
+) AutoMixTransition {
+	maxOverlap := autoBlendClipSeamBudget(outDurationMs, outHasOtherSeam)
+	if incomingBudget := autoBlendClipSeamBudget(inDurationMs, inHasOtherSeam); incomingBudget < maxOverlap {
+		maxOverlap = incomingBudget
+	}
+	if transition.OverlapMs <= maxOverlap {
+		return transition
+	}
+	transition.Preset = PresetFade
+	transition.Bars = 0
+	transition.OverlapMs = maxOverlap
+	transition.Confidence.SimpleFade = true
+	return transition
+}
+
+func autoBlendClipSeamBudget(durationMs int64, hasOtherSeam bool) int64 {
+	if durationMs <= 0 {
+		return 0
+	}
+	divisor := autoBlendEndpointSeamDivisor
+	if hasOtherSeam {
+		divisor = autoBlendInteriorSeamDivisor
+	}
+	return durationMs / divisor
 }
 
 // computeAutoBlendTransition implements the per-pair algorithm:
@@ -279,7 +347,7 @@ func computeAutoBlendTransition(index int, out, in autoBlendTrackFacts) AutoMixT
 		return autoBlendSimpleFade(transition, out, in)
 	}
 
-	barLenMs := autoBlendBarLengthMs(referenceBPM)
+	barLenMs := autoBlendBarLengthMs(referenceBPM, out.BeatsPerBar)
 	target := float64(bars) * barLenMs
 	overlap, aligned := autoBlendResolveOverlap(
 		out,
@@ -291,7 +359,7 @@ func computeAutoBlendTransition(index int, out, in autoBlendTrackFacts) AutoMixT
 		return autoBlendSimpleFade(transition, out, in)
 	}
 
-	transition.Bars = bars
+	transition.Bars = autoBlendResolvedBars(overlap, barLenMs)
 	transition.OverlapMs = overlap
 	switch {
 	case tempoShift:
@@ -411,11 +479,26 @@ func autoBlendNearestDownbeat(downbeats []int64, wantedMs float64) (int64, bool)
 	return best, true
 }
 
-func autoBlendBarLengthMs(bpm float64) float64 {
+func autoBlendResolvedBars(overlapMs int64, barLengthMs float64) int {
+	if overlapMs <= 0 || barLengthMs <= 0 {
+		return 0
+	}
+	bars := float64(overlapMs) / barLengthMs
+	resolved := math.Round(bars)
+	if resolved < 1 || math.Abs(bars-resolved) > autoBlendBarsTolerance {
+		return 0
+	}
+	return int(resolved)
+}
+
+func autoBlendBarLengthMs(bpm float64, beatsPerBar int) float64 {
 	if bpm <= 0 {
 		bpm = autoBlendDefaultBPM
 	}
-	return autoBlendBeatsPerBar * 60000 / bpm
+	if beatsPerBar <= 0 {
+		beatsPerBar = autoBlendBeatsPerBar
+	}
+	return float64(beatsPerBar) * 60000 / bpm
 }
 
 func autoBlendTempoRatio(bpmOut, bpmIn float64, hasOut, hasIn bool) float64 {
@@ -472,7 +555,10 @@ func autoBlendCamelotDistance(
 // (summary merged with manual overrides). Unknown or malformed facts degrade
 // to "absent" so mixes still generate without analysis.
 func autoBlendTrackFactsFromAnalysis(track db.Track) autoBlendTrackFacts {
-	facts := autoBlendTrackFacts{TrackID: track.ID}
+	facts := autoBlendTrackFacts{
+		TrackID:     track.ID,
+		BeatsPerBar: autoBlendBeatsPerBar,
+	}
 	if track.DurationMs.Valid && track.DurationMs.Int32 > 0 {
 		facts.DurationMs = int64(track.DurationMs.Int32)
 	} else {
@@ -486,6 +572,9 @@ func autoBlendTrackFactsFromAnalysis(track db.Track) autoBlendTrackFacts {
 		BPM *struct {
 			Value *float64 `json:"value"`
 		} `json:"bpm"`
+		Meter *struct {
+			BeatsPerBar *int `json:"beats_per_bar"`
+		} `json:"meter"`
 		Downbeats *struct {
 			PositionsMS *[]int64 `json:"positions_ms"`
 		} `json:"downbeats"`
@@ -497,6 +586,10 @@ func autoBlendTrackFactsFromAnalysis(track db.Track) autoBlendTrackFacts {
 		if effective.BPM != nil && effective.BPM.Value != nil && *effective.BPM.Value > 0 {
 			facts.BPM = *effective.BPM.Value
 			facts.HasBPM = true
+		}
+		if effective.Meter != nil && effective.Meter.BeatsPerBar != nil &&
+			*effective.Meter.BeatsPerBar > 0 {
+			facts.BeatsPerBar = *effective.Meter.BeatsPerBar
 		}
 		if effective.Downbeats != nil && effective.Downbeats.PositionsMS != nil {
 			facts.Downbeats = *effective.Downbeats.PositionsMS

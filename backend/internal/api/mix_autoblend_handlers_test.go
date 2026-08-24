@@ -184,13 +184,123 @@ func TestAutoBlendSlowTempoUsesFourBars(t *testing.T) {
 	}
 }
 
+func TestAutoBlendUsesAnalyzedMeterForBarGeometry(t *testing.T) {
+	outTrack := autoBlendTrack(10, 200000, 120, true, "8A",
+		0, 1500, 188000, 189500)
+	var summary map[string]any
+	if err := json.Unmarshal(outTrack.AnalysisSummary, &summary); err != nil {
+		t.Fatal(err)
+	}
+	summary["meter"] = map[string]any{"beats_per_bar": 3}
+	payload, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outTrack.AnalysisSummary = payload
+	out := factsFor(outTrack)
+	in := factsFor(autoBlendTrack(11, 200000, 121, true, "8A", 0, 1500))
+
+	transition := computeAutoBlendTransition(0, out, in)
+	if out.BeatsPerBar != 3 {
+		t.Fatalf("beatsPerBar = %d, want 3", out.BeatsPerBar)
+	}
+	if transition.Bars != 8 || transition.OverlapMs != 12000 {
+		t.Fatalf("transition = %+v, want eight 3/4 bars (12000ms)", transition)
+	}
+}
+
+func TestAutoBlendResolvedBarsMatchesActualOverlap(t *testing.T) {
+	if got := autoBlendResolvedBars(14001, 2000); got != 7 {
+		t.Fatalf("14001ms resolved bars = %d, want 7", got)
+	}
+	if got := autoBlendResolvedBars(17999, 2000); got != 9 {
+		t.Fatalf("17999ms resolved bars = %d, want 9", got)
+	}
+	if got := autoBlendResolvedBars(15000, 2000); got != 0 {
+		t.Fatalf("non-integral overlap resolved bars = %d, want 0", got)
+	}
+}
+
+func TestAutoBlendBudgetsAdjacentShortTrackSeams(t *testing.T) {
+	tests := []struct {
+		name             string
+		facts            []autoBlendTrackFacts
+		wantOverlapMs    int64
+		middleDurationMs int64
+	}{
+		{
+			name: "fallback fades preserve half of a ten second interlude",
+			facts: []autoBlendTrackFacts{
+				factsFor(autoBlendTrack(1, 200000, 0, false, "8A")),
+				factsFor(autoBlendTrack(2, 10000, 0, false, "8A")),
+				factsFor(autoBlendTrack(3, 200000, 0, false, "8A")),
+			},
+			wantOverlapMs:    2500,
+			middleDurationMs: 10000,
+		},
+		{
+			name: "aligned fades degrade safely around a seventeen second interlude",
+			facts: []autoBlendTrackFacts{
+				factsFor(autoBlendTrack(1, 200000, 120, true, "8A", 0, 2000, 184000)),
+				factsFor(autoBlendTrack(2, 17000, 120, true, "8A", 0, 1000, 2000)),
+				factsFor(autoBlendTrack(3, 200000, 120, true, "8A", 0, 2000)),
+			},
+			wantOverlapMs:    4250,
+			middleDurationMs: 17000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clips, transitions := buildAutoBlendMix(7, tt.facts)
+			if len(clips) != 3 || len(transitions) != 2 {
+				t.Fatalf("clips/transitions = %d/%d", len(clips), len(transitions))
+			}
+			for i, transition := range transitions {
+				if transition.OverlapMs != tt.wantOverlapMs || transition.Preset != PresetFade ||
+					transition.Bars != 0 || !transition.Confidence.SimpleFade {
+					t.Fatalf("transition[%d] = %+v", i, transition)
+				}
+			}
+			middle := clips[1]
+			if middle.FadeInMs == nil || middle.FadeOutMs == nil ||
+				*middle.FadeInMs+*middle.FadeOutMs > tt.middleDurationMs/2 {
+				t.Fatalf("middle fades = %v/%v for %dms clip", middle.FadeInMs, middle.FadeOutMs, tt.middleDurationMs)
+			}
+			firstEnd := clips[0].TimelineStartMs + clips[0].SourceEndMs
+			if clips[2].TimelineStartMs < firstEnd {
+				t.Fatalf("three-way overlap: first ends %d, third starts %d", firstEnd, clips[2].TimelineStartMs)
+			}
+		})
+	}
+}
+
+func TestAutoBlendRunOfShortTracksStillAdvancesTimeline(t *testing.T) {
+	facts := make([]autoBlendTrackFacts, 4)
+	for i := range facts {
+		facts[i] = factsFor(autoBlendTrack(int64(i+1), 6000, 0, false, "8A"))
+	}
+	clips, transitions := buildAutoBlendMix(7, facts)
+	for i, transition := range transitions {
+		if transition.OverlapMs != 1500 {
+			t.Fatalf("transition[%d].overlapMs = %d, want 1500", i, transition.OverlapMs)
+		}
+	}
+	wantStarts := []int64{0, 4500, 9000, 13500}
+	for i, clip := range clips {
+		if clip.TimelineStartMs != wantStarts[i] {
+			t.Fatalf("clip[%d].timelineStartMs = %d, want %d", i, clip.TimelineStartMs, wantStarts[i])
+		}
+	}
+}
+
 // Single-track playlist is rejected outright.
 func TestCreateAutoMixSingleTrackReturnsBadRequest(t *testing.T) {
 	userID := uuid.New()
 	reader := &fakePlaylistMixReader{playlist: autoBlendPlaylist(userID, 5, []db.Track{
 		autoBlendTrack(30, 200000, 120, true, "8A"),
 	})}
-	h := NewPlaylistAutoBlendHandlers(reader, &fakeMixPlanStore{})
+	h := NewPlaylistAutoBlendHandlers(reader, &fakeMixPlanStore{}, true)
 
 	w := httptest.NewRecorder()
 	h.CreateAutoMixFromPlaylist(w, playlistMixRequest(userID, 5))
@@ -200,11 +310,41 @@ func TestCreateAutoMixSingleTrackReturnsBadRequest(t *testing.T) {
 	}
 }
 
+func TestCreateAutoMixDisabledReturnsNotFound(t *testing.T) {
+	userID := uuid.New()
+	reader := &fakePlaylistMixReader{playlist: autoBlendPlaylist(userID, 5, []db.Track{
+		autoBlendTrack(30, 200000, 120, true, "8A"),
+		autoBlendTrack(31, 200000, 121, true, "8A"),
+	})}
+	h := NewPlaylistAutoBlendHandlers(reader, &fakeMixPlanStore{}, false)
+
+	w := httptest.NewRecorder()
+	h.CreateAutoMixFromPlaylist(w, playlistMixRequest(userID, 5))
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+}
+
 // Empty playlists are also rejected (< 2 tracks).
 func TestCreateAutoMixEmptyPlaylistReturnsBadRequest(t *testing.T) {
 	userID := uuid.New()
 	reader := &fakePlaylistMixReader{playlist: autoBlendPlaylist(userID, 6, nil)}
-	h := NewPlaylistAutoBlendHandlers(reader, &fakeMixPlanStore{})
+	h := NewPlaylistAutoBlendHandlers(reader, &fakeMixPlanStore{}, true)
+
+	w := httptest.NewRecorder()
+	h.CreateAutoMixFromPlaylist(w, playlistMixRequest(userID, 6))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateAutoMixRejectsPlaylistAbovePlanLimit(t *testing.T) {
+	userID := uuid.New()
+	tracks := make([]db.Track, mixPlanMaxClips+1)
+	reader := &fakePlaylistMixReader{playlist: autoBlendPlaylist(userID, 6, tracks)}
+	h := NewPlaylistAutoBlendHandlers(reader, &fakeMixPlanStore{}, true)
 
 	w := httptest.NewRecorder()
 	h.CreateAutoMixFromPlaylist(w, playlistMixRequest(userID, 6))
@@ -217,7 +357,11 @@ func TestCreateAutoMixEmptyPlaylistReturnsBadRequest(t *testing.T) {
 func TestCreateAutoMixNotFoundAndAuthz(t *testing.T) {
 	userID := uuid.New()
 
-	notFound := NewPlaylistAutoBlendHandlers(&fakePlaylistMixReader{err: db.ErrPlaylistNotFound}, &fakeMixPlanStore{})
+	notFound := NewPlaylistAutoBlendHandlers(
+		&fakePlaylistMixReader{err: db.ErrPlaylistNotFound},
+		&fakeMixPlanStore{},
+		true,
+	)
 	w := httptest.NewRecorder()
 	notFound.CreateAutoMixFromPlaylist(w, playlistMixRequest(userID, 404))
 	if w.Code != http.StatusNotFound {
@@ -229,7 +373,7 @@ func TestCreateAutoMixNotFoundAndAuthz(t *testing.T) {
 		autoBlendTrack(40, 200000, 120, true, "8A"),
 		autoBlendTrack(41, 200000, 122, true, "8A"),
 	})}
-	h := NewPlaylistAutoBlendHandlers(reader, &fakeMixPlanStore{})
+	h := NewPlaylistAutoBlendHandlers(reader, &fakeMixPlanStore{}, true)
 	w = httptest.NewRecorder()
 	h.CreateAutoMixFromPlaylist(w, playlistMixRequest(userID, 9))
 	if w.Code != http.StatusNotFound {
@@ -255,7 +399,7 @@ func TestCreateAutoMixGeneratesTransitionsAndClips(t *testing.T) {
 		autoBlendTrack(52, 180000, 140, true, "1A"),
 	})}
 	store := &fakeMixPlanStore{}
-	h := NewPlaylistAutoBlendHandlers(reader, store)
+	h := NewPlaylistAutoBlendHandlers(reader, store, true)
 
 	w := httptest.NewRecorder()
 	h.CreateAutoMixFromPlaylist(w, playlistMixRequest(userID, 7))

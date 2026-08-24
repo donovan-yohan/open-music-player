@@ -77,7 +77,7 @@ func TestPlaylistAutoMixIntegrationGeneratesTransitions(t *testing.T) {
 		t.Fatalf("add tracks: %v", err)
 	}
 
-	h := NewPlaylistAutoBlendHandlers(playlistRepo, mixPlanRepo)
+	h := NewPlaylistAutoBlendHandlers(playlistRepo, mixPlanRepo, true)
 
 	req := authedRequest(userID, http.MethodPost,
 		"/api/v1/playlists/"+strconv.FormatInt(pl.ID, 10)+"/auto-mix", nil)
@@ -168,7 +168,7 @@ func TestPlaylistAutoMixIntegrationSingleTrackRejected(t *testing.T) {
 		t.Fatalf("add tracks: %v", err)
 	}
 
-	h := NewPlaylistAutoBlendHandlers(playlistRepo, mixPlanRepo)
+	h := NewPlaylistAutoBlendHandlers(playlistRepo, mixPlanRepo, true)
 	req := authedRequest(userID, http.MethodPost,
 		"/api/v1/playlists/"+strconv.FormatInt(pl.ID, 10)+"/auto-mix", nil)
 	req.SetPathValue("id", strconv.FormatInt(pl.ID, 10))
