@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -10,6 +11,7 @@ import '../../core/audio/playback_state.dart';
 import '../../core/audio/queue_ordering.dart';
 import '../../core/services/playlist_service.dart';
 import '../../core/api/api_client.dart';
+import '../../../models/mix_plan.dart';
 import '../../core/storage/secure_storage.dart';
 import '../../shared/models/playlist.dart';
 import '../../shared/models/track.dart';
@@ -18,6 +20,7 @@ import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/track_tile.dart';
 import 'mix/mix_models.dart';
+import 'mix/mix_transition_editor.dart';
 import 'mixed_playlist_view.dart';
 import 'playlist_edit_dialog.dart';
 import 'playlist_selection.dart';
@@ -26,10 +29,16 @@ class PlaylistDetailScreen extends StatefulWidget {
   final int playlistId;
   final PlaylistService? playlistService;
 
+  /// Persists edited plan clips. Injectable so tests can stub persistence;
+  /// defaults to the authenticated mix-plan API.
+  final Future<MixPlan> Function(MixPlan plan, List<MixPlanClip> clips)?
+      onSaveMixPlan;
+
   const PlaylistDetailScreen({
     super.key,
     required this.playlistId,
     this.playlistService,
+    this.onSaveMixPlan,
   });
 
   @override
@@ -39,6 +48,7 @@ class PlaylistDetailScreen extends StatefulWidget {
 class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   late final PlaylistService _playlistService = widget.playlistService ??
       PlaylistService(api: ApiClient(storage: SecureStorage()));
+  late final ApiClient _mixPlanApiClient = ApiClient(storage: SecureStorage());
 
   Playlist? _playlist;
   bool _isLoading = true;
@@ -143,14 +153,205 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     }
   }
 
-  void _openSeam(MixTransition? transition) {
-    // The transition editor is the next slice; surface a placeholder now.
-    final messenger = ScaffoldMessenger.maybeOf(context);
-    messenger?.showSnackBar(
-      const SnackBar(
-        content: Text('Transition editor coming in slice 2'),
-      ),
+  Future<void> _openSeam(int seamIndex, MixTransition? transition) async {
+    final tracks = _playlist?.tracks ?? const <Track>[];
+    if (seamIndex + 1 >= tracks.length) return;
+    final plan = _mixPlan?.mixPlan;
+    if (plan == null || plan.clips.length < seamIndex + 2) return;
+
+    // Defense-in-depth: fail loudly if the displayed list no longer matches
+    // the plan's clip order, mirroring playback's order validation.
+    for (var i = 0; i < 2; i++) {
+      if (plan.clips[seamIndex + i].trackId !=
+          tracks[seamIndex + i].id.toString()) {
+        return;
+      }
+    }
+
+    final edit = await MixTransitionEditorSheet.show(
+      context,
+      outgoingTrack: tracks[seamIndex],
+      incomingTrack: tracks[seamIndex + 1],
+      outgoingClip: plan.clips[seamIndex],
+      incomingClip: plan.clips[seamIndex + 1],
+      transition: transition,
+      outgoingIsEndpoint: seamIndex == 0,
+      incomingIsEndpoint: seamIndex + 1 == tracks.length - 1,
+      onSave: (edit) => _saveSeamEdit(plan, edit),
     );
+    if (edit == null || !mounted) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      const SnackBar(content: Text('Transition saved')),
+    );
+  }
+
+  Future<void> _saveSeamEdit(MixPlan plan, MixTransitionEdit edit) async {
+    final clips = [...plan.clips];
+    final outgoingIndex =
+        plan.clips.indexWhere((clip) => clip.clipId == edit.outgoing.clipId);
+    final incomingIndex =
+        plan.clips.indexWhere((clip) => clip.clipId == edit.incoming.clipId);
+    if (outgoingIndex < 0 || incomingIndex < 0) {
+      throw const FormatException('Edited clips are missing from the plan.');
+    }
+    clips[outgoingIndex] = edit.outgoing;
+    clips[incomingIndex] = edit.incoming;
+
+    // Keep the persisted invariant `fadeOut(i) == fadeIn(i+1) ==
+    // placement overlap` at every seam: the overlap change moves the
+    // edited pair, and because the incoming clip's end moves with its
+    // start, the entire downstream tail shifts by the same delta so all
+    // later seams keep their exact geometry.
+    final previousOutgoing = plan.clips[outgoingIndex];
+    final previousIncoming = plan.clips[incomingIndex];
+    final newOverlapMs = edit.incoming.fadeInMs ?? 0;
+    // Timeline overlap between two clips: outgoing end minus incoming start.
+    final previousOverlapMs =
+        previousOutgoing.timelineEndMs - previousIncoming.timelineStartMs;
+    final placementDeltaMs = newOverlapMs - previousOverlapMs;
+    clips[incomingIndex] = clips[incomingIndex].withTimelineStartMs(
+        previousIncoming.timelineStartMs - placementDeltaMs);
+    for (var j = incomingIndex + 1; j < clips.length; j++) {
+      clips[j] = clips[j]
+          .withTimelineStartMs(clips[j].timelineStartMs - placementDeltaMs);
+    }
+
+    MixPlan saved;
+    if (widget.onSaveMixPlan != null) {
+      saved = await widget.onSaveMixPlan!(plan, clips);
+    } else {
+      try {
+        saved = await _mixPlanApiClient.updateMixPlan(
+          id: plan.id,
+          version: plan.version,
+          name: plan.name,
+          clips: clips,
+        );
+      } on ApiException catch (error) {
+        if (error.statusCode != http409Conflict ||
+            error.errorCode != 'VERSION_CONFLICT') {
+          rethrow;
+        }
+        // Someone else updated the plan underneath us. Reload it, reapply
+        // this edit against the fresh geometry, and retry once with the new
+        // version so "try again" is actually actionable.
+        final fresh = await _mixPlanApiClient.getMixPlan(plan.id);
+        final retried = _rebaseSeamEdit(fresh, edit);
+        if (retried == null) {
+          throw ApiException(
+            'This mix changed since you opened the editor. Reopen the seam and apply your change again.',
+            error.statusCode,
+            errorCode: 'VERSION_CONFLICT',
+          );
+        }
+        saved = await _mixPlanApiClient.updateMixPlan(
+          id: fresh.id,
+          version: fresh.version,
+          name: fresh.name,
+          clips: retried,
+        );
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _mixPlan = _resultWithSavedClips(saved);
+    });
+  }
+
+  static const int http409Conflict = 409;
+
+  /// Applies [edit] to [fresh] by clipId. Returns null when either edited
+  /// clip no longer exists in the fresh plan (e.g. a regeneration replaced
+  /// the clip set), in which case the user must reopen the seam.
+  List<MixPlanClip>? _rebaseSeamEdit(MixPlan fresh, MixTransitionEdit edit) {
+    final outgoingIndex =
+        fresh.clips.indexWhere((clip) => clip.clipId == edit.outgoing.clipId);
+    final incomingIndex =
+        fresh.clips.indexWhere((clip) => clip.clipId == edit.incoming.clipId);
+    if (outgoingIndex < 0 || incomingIndex < 0) return null;
+
+    final clips = [...fresh.clips];
+    clips[outgoingIndex] = edit.outgoing;
+    clips[incomingIndex] = edit.incoming;
+
+    final previousOutgoing = fresh.clips[outgoingIndex];
+    final previousIncoming = fresh.clips[incomingIndex];
+    final newOverlapMs = edit.incoming.fadeInMs ?? 0;
+    final previousOverlapMs =
+        previousOutgoing.timelineEndMs - previousIncoming.timelineStartMs;
+    final placementDeltaMs = newOverlapMs - previousOverlapMs;
+    clips[incomingIndex] = clips[incomingIndex].withTimelineStartMs(
+        previousIncoming.timelineStartMs - placementDeltaMs);
+    for (var j = incomingIndex + 1; j < clips.length; j++) {
+      clips[j] = clips[j]
+          .withTimelineStartMs(clips[j].timelineStartMs - placementDeltaMs);
+    }
+    return clips;
+  }
+
+  /// Rebuilds the transition decorations from a freshly saved plan so seam
+  /// badges reflect what was actually persisted.
+  AutoMixResult? _resultWithSavedClips(MixPlan saved) {
+    final current = _mixPlan;
+    if (current == null) return null;
+    final trackIds = [for (final clip in saved.clips) int.parse(clip.trackId)];
+    final rebuilt = <MixTransition>[];
+    for (var i = 0; i + 1 < saved.clips.length; i++) {
+      final stale =
+          current.transitionsByPair['${trackIds[i]}-${trackIds[i + 1]}'];
+      rebuilt.add(
+        MixTransition(
+          index: i,
+          outgoingTrackId: trackIds[i],
+          incomingTrackId: trackIds[i + 1],
+          overlapMs: _overlapBetween(saved.clips[i], saved.clips[i + 1]),
+          // Mirror the backend's downgrade rule: once the authored overlap
+          // no longer equals what the preset was derived for, the transition
+          // is no longer bar-aligned — report a plain volume-only Fade
+          // instead of claiming Blend/Rise geometry that no longer holds.
+          preset: _isUnchanged(stale, saved.clips[i], saved.clips[i + 1])
+              ? (stale?.preset ?? 'Fade')
+              : 'Fade',
+          bars: _isUnchanged(stale, saved.clips[i], saved.clips[i + 1])
+              ? stale?.bars
+              : 0,
+          keyMatch: stale?.keyMatch ?? false,
+          tempoMatched: stale?.tempoMatched ?? false,
+          tempoShift: stale?.tempoShift ?? false,
+          simpleFade: _isUnchanged(stale, saved.clips[i], saved.clips[i + 1])
+              ? (stale?.simpleFade ?? true)
+              : true,
+        ),
+      );
+    }
+    return AutoMixResult(
+      transitions: rebuilt,
+      mixPlan: saved,
+      transitionsByPair: {
+        for (final transition in rebuilt)
+          '${transition.outgoingTrackId}-${transition.incomingTrackId}':
+              transition,
+      },
+    );
+  }
+
+  static int _overlapBetween(MixPlanClip outgoing, MixPlanClip incoming) =>
+      math.max(
+        0,
+        outgoing.timelineEndMs - incoming.timelineStartMs,
+      );
+
+  /// True when the persisted seam still matches what the generator emitted,
+  /// i.e. its fades equal the transition's reported overlap.
+  static bool _isUnchanged(
+    MixTransition? stale,
+    MixPlanClip outgoing,
+    MixPlanClip incoming,
+  ) {
+    if (stale == null || stale.overlapMs <= 0) return true;
+    final fadeOut = outgoing.fadeOutMs;
+    if (fadeOut == null) return true;
+    return fadeOut == stale.overlapMs;
   }
 
   Future<void> _loadPlaylist() async {
@@ -902,7 +1103,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 return MixSeamConnector(
                   transition: transition,
                   collapsed: collapsed,
-                  onTap: () => _openSeam(transition),
+                  onTap: () => _openSeam(seamIndex, transition),
                 );
               },
             );

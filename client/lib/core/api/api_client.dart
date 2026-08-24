@@ -496,6 +496,17 @@ class ApiClient {
     }
   }
 
+  Future<MixPlan> getMixPlan(String id) async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>(
+        '/mix-plans/${Uri.encodeComponent(id)}',
+      );
+      return MixPlan.fromJson(_asMap(response.data));
+    } on DioException catch (e) {
+      throw ApiException('Failed to get mix plan', _statusCodeOf(e));
+    }
+  }
+
   Future<MixPlan> createMixPlan({
     required String name,
     required List<MixPlanClip> clips,
@@ -533,7 +544,17 @@ class ApiClient {
       );
       return MixPlan.fromJson(_asMap(response.data));
     } on DioException catch (e) {
-      throw ApiException('Failed to update mix plan', _statusCodeOf(e));
+      final data = e.response?.data;
+      final body = data is Map ? Map<String, dynamic>.from(data) : null;
+      final error = body?['error'];
+      final errorMap = error is Map
+          ? Map<String, dynamic>.from(error)
+          : const <String, dynamic>{};
+      throw ApiException(
+        'Failed to update mix plan',
+        _statusCodeOf(e),
+        errorCode: (errorMap['code'] ?? body?['code']) as String?,
+      );
     }
   }
 
