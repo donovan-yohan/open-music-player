@@ -526,6 +526,7 @@ func main() {
 	playlistHandlers := api.NewPlaylistHandlersWithMetadataOverrides(playlistRepo, trackRepo, metadataOverrideRepo)
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
 	playlistMixHandlers := api.NewPlaylistMixHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
+	autoBlendHandlers := api.NewPlaylistAutoBlendHandlers(playlistRepo, mixPlanRepo)
 	playEventHandlers := api.NewPlayEventHandlersWithMetadataOverrides(playEventRepo, trackRepo, metadataOverrideRepo)
 	djLineupHandlers := api.NewDJLineupHandlersWithSkipSignals(djLineupRepo, djPinRepo, playEventRepo)
 	djPinHandlers := api.NewDJPinHandlers(djPinRepo, djLineupRepo)
@@ -804,6 +805,7 @@ func main() {
 		PlaylistHandlers:        playlistHandlers,
 		PlaylistImportHandlers:  playlistImportHandlers,
 		PlaylistMixHandlers:     playlistMixHandlers,
+		AutoBlendHandlers:       autoBlendHandlers,
 		MixPlanHandlers:         mixPlanHandlers,
 		DownloadHandlers:        downloadHandlers,
 		SourceSelectionHandlers: sourceSelectionHandlers,
