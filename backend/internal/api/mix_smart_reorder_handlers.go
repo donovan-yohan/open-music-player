@@ -204,7 +204,7 @@ func (h *PlaylistSmartReorderHandlers) SmartReorderPlaylist(w http.ResponseWrite
 		Clips:         clips,
 	})
 	if err != nil {
-		h.restoreOrder(r.Context(), playlistID, previousOrder)
+		h.restoreOrder(context.WithoutCancel(r.Context()), playlistID, previousOrder)
 		writeMixPlanError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to build mix plan")
 		return
 	}
@@ -217,13 +217,13 @@ func (h *PlaylistSmartReorderHandlers) SmartReorderPlaylist(w http.ResponseWrite
 	}
 	updated.Payload, err = json.Marshal(payload)
 	if err != nil {
-		h.restoreOrder(r.Context(), playlistID, previousOrder)
+		h.restoreOrder(context.WithoutCancel(r.Context()), playlistID, previousOrder)
 		writeMixPlanError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to encode mix plan")
 		return
 	}
 	updated.Summary, err = json.Marshal(summary)
 	if err != nil {
-		h.restoreOrder(r.Context(), playlistID, previousOrder)
+		h.restoreOrder(context.WithoutCancel(r.Context()), playlistID, previousOrder)
 		writeMixPlanError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to encode mix plan summary")
 		return
 	}
@@ -232,7 +232,7 @@ func (h *PlaylistSmartReorderHandlers) SmartReorderPlaylist(w http.ResponseWrite
 	// must land together, so a concurrent plan edit rolls the order back
 	// rather than leaving the two out of step.
 	if err := h.store.Update(r.Context(), updated, plan.Version); err != nil {
-		h.restoreOrder(r.Context(), playlistID, previousOrder)
+		h.restoreOrder(context.WithoutCancel(r.Context()), playlistID, previousOrder)
 		if errors.Is(err, db.ErrMixPlanNotFound) {
 			writeMixPlanError(w, http.StatusNotFound, "NOT_FOUND", "mix plan not found")
 			return

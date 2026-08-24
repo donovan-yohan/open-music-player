@@ -562,12 +562,35 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     } catch (_) {
       if (!mounted) return;
       setState(() => _isMixLoading = false);
+      // A failed reorder may have persisted the order but not the plan
+      // (server-side compensation is best-effort), so the list we hold can be
+      // stale in either direction. Reload from the server, preserving the mix
+      // view so a transient failure does not tear down blended mode.
+      final reloaded = await _playlistService.getPlaylist(playlist.id);
+      if (!mounted) return;
+      setState(() {
+        _playlist = reloaded;
+        if (reloaded.tracks == null ||
+            _mixPlanMissingTracks(reloaded.tracks!)) {
+          _mixPlan = null;
+          _mixEnabled = false;
+        }
+      });
       messenger.showSnackBar(
         const SnackBar(
           content: Text('Could not reorder this playlist. Try again.'),
         ),
       );
     }
+  }
+
+  /// True when [tracks] no longer contains every clip track of [_mixPlan], i.e.
+  /// the held plan cannot describe this playlist anymore.
+  bool _mixPlanMissingTracks(List<Track> tracks) {
+    final plan = _mixPlan?.mixPlan;
+    if (plan == null) return false;
+    final ids = tracks.map((t) => t.id).toSet();
+    return plan.clips.any((c) => !ids.contains(int.parse(c.trackId)));
   }
 
   /// Reorders [tracks] to match [order], or null when [order] is not exactly

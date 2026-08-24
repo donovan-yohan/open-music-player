@@ -1000,6 +1000,10 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   void _persistQueue({bool isStartupSeed = false}) {
     final store = _persistence;
     if (store == null) return;
+    // The throwaway preview queue must never win the persistence race: if the
+    // process dies mid-preview, the next launch should restore the listening
+    // queue, not a seam preview. endMixSeamPreview restores and re-persists.
+    if (_mixPreview != null) return;
     if (!_persistenceReady) {
       if (!isStartupSeed) _persistenceDirty = true;
       return;
