@@ -125,6 +125,35 @@ class MixPlanClip {
         stemEdits: edits,
       );
 
+  /// General-purpose copy used by editing surfaces. Null arguments keep the
+  /// current value; fades may be explicitly cleared with [clearFadeIn] /
+  /// [clearFadeOut].
+  MixPlanClip copyWith({
+    String? queueItemId,
+    int? sourceStartMs,
+    int? sourceEndMs,
+    int? timelineStartMs,
+    double? gainDb,
+    int? fadeInMs,
+    int? fadeOutMs,
+    bool clearFadeIn = false,
+    bool clearFadeOut = false,
+  }) =>
+      MixPlanClip(
+        clipId: clipId,
+        queueItemId: queueItemId ?? this.queueItemId,
+        hasExplicitQueueItemId: hasExplicitQueueItemId,
+        trackId: trackId,
+        sourceStartMs: sourceStartMs ?? this.sourceStartMs,
+        sourceEndMs: sourceEndMs ?? this.sourceEndMs,
+        timelineStartMs: timelineStartMs ?? this.timelineStartMs,
+        gainDb: gainDb ?? this.gainDb,
+        fadeInMs: clearFadeIn ? null : (fadeInMs ?? this.fadeInMs),
+        fadeOutMs: clearFadeOut ? null : (fadeOutMs ?? this.fadeOutMs),
+        pitchMode: pitchMode,
+        stemEdits: stemEdits,
+      );
+
   Map<String, dynamic> toJson() {
     final json = <String, dynamic>{
       'clipId': clipId,

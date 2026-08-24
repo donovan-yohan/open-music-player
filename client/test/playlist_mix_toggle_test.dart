@@ -198,13 +198,19 @@ Future<_FakePlayback> _pumpDetail(
   WidgetTester tester,
   PlaylistService service, {
   _FakePlayback? playback,
+  Future<MixPlan> Function(MixPlan plan, List<MixPlanClip> clips)?
+      onSaveMixPlan,
 }) async {
   final fakePlayback = playback ?? _FakePlayback();
   await tester.pumpWidget(
     ListenableProvider<PlaybackState>.value(
       value: fakePlayback,
       child: MaterialApp(
-        home: PlaylistDetailScreen(playlistId: 7, playlistService: service),
+        home: PlaylistDetailScreen(
+          playlistId: 7,
+          playlistService: service,
+          onSaveMixPlan: onSaveMixPlan,
+        ),
       ),
     ),
   );
@@ -331,7 +337,7 @@ void main() {
     expect(simpleFade.confidence, MixTransitionConfidence.simpleFade);
   });
 
-  testWidgets('tapping a seam shows the slice-2 placeholder snackbar',
+  testWidgets('tapping a seam opens the transition editor and saves fades',
       (tester) async {
     tester.view.physicalSize = const Size(600, 1400);
     tester.view.devicePixelRatio = 1;
@@ -343,14 +349,34 @@ void main() {
       autoMixResult: {
         'playlistId': 7,
         'transitions': [_transitionJson(1, 2)],
+        'mixPlan': _mixPlanJson([1, 2]),
       },
     );
 
-    await _pumpDetail(tester, service);
+    MixPlan? savedPlan;
+    List<MixPlanClip>? savedClips;
+    await _pumpDetail(
+      tester,
+      service,
+      onSaveMixPlan: (plan, clips) async {
+        savedPlan = plan;
+        savedClips = clips;
+        return MixPlan(
+          id: plan.id,
+          schemaVersion: plan.schemaVersion,
+          name: plan.name,
+          clips: clips,
+          summary: plan.summary,
+          version: plan.version + 1,
+          createdAt: plan.createdAt,
+          updatedAt: DateTime.utc(2026, 8, 24, 12),
+        );
+      },
+    );
     await tester.tap(find.byKey(const ValueKey('mix_toggle')));
     await tester.pumpAndSettle();
 
-    // Dismiss the toggle's summary toast first so the seam toast can show.
+    // Dismiss the toggle's summary toast first so it cannot eat the tap.
     await tester.drag(
         find.text('Blended 1 transitions. Tap any seam to adjust.'),
         const Offset(0, 40));
@@ -366,7 +392,14 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Transition editor coming in slice 2'), findsOneWidget);
+    expect(find.text('Edit transition'), findsOneWidget);
+
+    await tester.tap(find.text('Save transition'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Transition saved'), findsOneWidget);
+    expect(savedPlan?.id, 'plan-1');
+    expect(savedClips?.first.fadeOutMs, isNotNull);
   });
 
   testWidgets('mix off reverts to the normal playlist view', (tester) async {

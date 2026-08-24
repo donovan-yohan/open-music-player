@@ -496,6 +496,17 @@ class ApiClient {
     }
   }
 
+  Future<MixPlan> getMixPlan(String id) async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>(
+        '/mix-plans/${Uri.encodeComponent(id)}',
+      );
+      return MixPlan.fromJson(_asMap(response.data));
+    } on DioException catch (e) {
+      throw ApiException('Failed to get mix plan', _statusCodeOf(e));
+    }
+  }
+
   Future<MixPlan> createMixPlan({
     required String name,
     required List<MixPlanClip> clips,
