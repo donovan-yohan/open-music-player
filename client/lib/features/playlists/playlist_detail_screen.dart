@@ -1,6 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
+
+import '../../app/theme.dart';
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/audio/queue_ordering.dart';
@@ -13,6 +17,8 @@ import '../../shared/widgets/download_button.dart';
 import '../../shared/widgets/like_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/track_tile.dart';
+import 'mix/mix_models.dart';
+import 'mixed_playlist_view.dart';
 import 'playlist_edit_dialog.dart';
 import 'playlist_selection.dart';
 
@@ -40,11 +46,111 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   bool _isEditMode = false;
   bool _isSelectMode = false;
   PlaylistSelection _selection = const PlaylistSelection();
+  bool _mixEnabled = false;
+  bool _isMixLoading = false;
+  AutoMixResult? _mixPlan;
+
+  /// True while the blended list is scrolling fast; seam connectors collapse
+  /// to hairlines so long playlists stay scannable.
+  final ValueNotifier<bool> _fastScrolling = ValueNotifier(false);
+  Timer? _seamExpandTimer;
+  DateTime? _lastScrollTimestamp;
+
+  static const double _fastScrollVelocityDpPerMs = 1.2;
 
   @override
   void initState() {
     super.initState();
     _loadPlaylist();
+  }
+
+  void _handleScrollMetrics(ScrollUpdateNotification notification) {
+    if (!_mixEnabled) return;
+
+    final now = DateTime.now();
+    final previous = _lastScrollTimestamp;
+    _lastScrollTimestamp = now;
+    final delta = notification.scrollDelta;
+    if (delta == null || previous == null) return;
+
+    final deltaMs = now.difference(previous).inMicroseconds / 1000;
+    if (deltaMs <= 0) return;
+    final pixelsPerMs = delta.abs() / deltaMs;
+
+    if (pixelsPerMs >= _fastScrollVelocityDpPerMs) {
+      if (!_fastScrolling.value) _fastScrolling.value = true;
+    }
+    _scheduleSeamExpansion();
+  }
+
+  void _scheduleSeamExpansion() {
+    _seamExpandTimer?.cancel();
+    _seamExpandTimer = Timer(const Duration(milliseconds: 180), () {
+      _lastScrollTimestamp = null;
+      if (_fastScrolling.value) _fastScrolling.value = false;
+    });
+  }
+
+  void _handleScrollSettled() {
+    _seamExpandTimer?.cancel();
+    _lastScrollTimestamp = null;
+    if (_fastScrolling.value) _fastScrolling.value = false;
+  }
+
+  @override
+  void dispose() {
+    _seamExpandTimer?.cancel();
+    _fastScrolling.dispose();
+    super.dispose();
+  }
+
+  /// Toggles the blended view. Turning it on calls POST /auto-mix and keeps
+  /// the returned plan in memory; turning it off only changes the local view
+  /// — the server-side plan is preserved for later slices.
+  Future<void> _toggleMix() async {
+    if (_isMixLoading || !_hasMixEligibleTracks) return;
+    final messenger = ScaffoldMessenger.of(context);
+
+    if (_mixEnabled) {
+      setState(() => _mixEnabled = false);
+      return;
+    }
+
+    setState(() => _isMixLoading = true);
+    try {
+      final result = await _playlistService.autoMix(widget.playlistId);
+      if (!mounted) return;
+      setState(() {
+        _mixEnabled = true;
+        _mixPlan = result;
+        _isMixLoading = false;
+      });
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Blended ${result.transitions.length} transitions. Tap any seam to adjust.',
+          ),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isMixLoading = false);
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Could not blend this playlist. Try again.'),
+        ),
+      );
+    }
+  }
+
+  void _openSeam(MixTransition? transition) {
+    // The transition editor is the next slice; surface a placeholder now.
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.showSnackBar(
+      const SnackBar(
+        content: Text('Transition editor coming in slice 2'),
+      ),
+    );
   }
 
   Future<void> _loadPlaylist() async {
@@ -57,6 +163,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       final playlist = await _playlistService.getPlaylist(widget.playlistId);
       setState(() {
         _playlist = playlist;
+        _mixEnabled = false;
+        _mixPlan = null;
         _isLoading = false;
       });
     } catch (e) {
@@ -79,7 +187,11 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         [track.id],
       );
       if (mounted) {
-        setState(() => _playlist = updated);
+        setState(() {
+          _playlist = updated;
+          _mixEnabled = false;
+          _mixPlan = null;
+        });
         messenger.showSnackBar(
           SnackBar(
             content: Text('Removed "${track.title}"'),
@@ -154,6 +266,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       if (!mounted) return;
       setState(() {
         _playlist = updated;
+        _mixEnabled = false;
+        _mixPlan = null;
         _isSelectMode = false;
         _selection = const PlaylistSelection();
       });
@@ -177,6 +291,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
     setState(() {
       _playlist = _playlist!.copyWith(tracks: tracks);
+      _mixEnabled = false;
+      _mixPlan = null;
     });
 
     try {
@@ -275,6 +391,18 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   bool get _hasPlayableTracks => _playlist?.tracks?.isNotEmpty ?? false;
+  bool get _hasMixEligibleTracks => (_playlist?.tracks?.length ?? 0) >= 2;
+
+  Future<bool> _tryMixPlayback(Future<void> Function() start) async {
+    try {
+      await start();
+      return true;
+    } on FormatException {
+      // A stale or unmappable server plan must never make the playlist
+      // unplayable. Plain queue playback is the safe fallback.
+      return false;
+    }
+  }
 
   /// Plays the whole playlist into the listening queue, optionally shuffled.
   Future<void> _playAll({bool shuffle = false}) async {
@@ -284,6 +412,17 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
     if (tracks.isEmpty) return;
     final playback = context.read<PlaybackState>();
+    final plan = !shuffle && _mixEnabled ? _mixPlan?.mixPlan : null;
+    if (plan != null &&
+        await _tryMixPlayback(
+          () => playback.playMixPlan(
+            tracks.map((track) => track.toPlaybackJson()).toList(),
+            plan,
+            context: _playlistContext(),
+          ),
+        )) {
+      return;
+    }
     await playback.playQueue(
       tracks.map((t) => t.toPlaybackJson()).toList(),
       context: _playlistContext(),
@@ -305,6 +444,18 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final tracks = _playlist?.tracks ?? const [];
     if (index < 0 || index >= tracks.length) return;
     final playback = context.read<PlaybackState>();
+    final plan = _mixEnabled ? _mixPlan?.mixPlan : null;
+    if (plan != null &&
+        await _tryMixPlayback(
+          () => playback.playMixPlan(
+            tracks.map((track) => track.toPlaybackJson()).toList(),
+            plan,
+            startIndex: index,
+            context: _playlistContext(),
+          ),
+        )) {
+      return;
+    }
     await playback.playQueue(
       tracks.map((t) => t.toPlaybackJson()).toList(),
       startIndex: index,
@@ -335,7 +486,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _buildBody(),
+      body: _withScrollObserver(_buildBody()),
     );
   }
 
@@ -370,8 +521,25 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       slivers: [
         _buildAppBar(),
         _buildHeader(),
-        _buildTracksList(),
+        _mixEnabled ? _buildMixedTracksList() : _buildTracksList(),
       ],
+    );
+  }
+
+  /// Notification wrapper keeps scroll-velocity handling local to the blended
+  /// view without owning a second scroll position.
+  Widget _withScrollObserver(Widget child) {
+    if (!_mixEnabled) return child;
+    return NotificationListener<ScrollNotification>(
+      onNotification: (notification) {
+        if (notification is ScrollUpdateNotification) {
+          _handleScrollMetrics(notification);
+        } else if (notification is ScrollEndNotification) {
+          _handleScrollSettled();
+        }
+        return false;
+      },
+      child: child,
     );
   }
 
@@ -411,6 +579,29 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         ),
       ),
       actions: [
+        if (_hasMixEligibleTracks && _isMixLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 12),
+            child: Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          ),
+        if (_hasMixEligibleTracks && !_isMixLoading)
+          IconButton(
+            key: const ValueKey('mix_toggle'),
+            icon: Icon(
+              Icons.auto_awesome,
+              color: _mixEnabled ? AppTheme.orange : null,
+            ),
+            onPressed: _toggleMix,
+            tooltip: _mixEnabled
+                ? 'Blended — transitions between every track'
+                : 'Blend this playlist',
+          ),
         IconButton(
           icon: Icon(_isEditMode ? Icons.check : Icons.edit),
           onPressed: () => setState(() => _isEditMode = !_isEditMode),
@@ -533,7 +724,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: _hasPlayableTracks
+                    onPressed: _hasPlayableTracks && !_mixEnabled
                         ? () => _playAll(shuffle: true)
                         : null,
                     icon: const Icon(Icons.shuffle),
@@ -674,6 +865,88 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           );
         },
         childCount: tracks.length,
+      ),
+    );
+  }
+
+  /// Blended list: track rows gain BPM/key badges, and every pair of adjacent
+  /// rows is separated by a tappable seam connector. Seams collapse to
+  /// hairlines while the user scrolls fast and expand back on settle.
+  Widget _buildMixedTracksList() {
+    final tracks = _playlist!.tracks ?? const <Track>[];
+    if (tracks.isEmpty) return _buildTracksList();
+
+    final playbackContext = context.select<PlaybackState, PlaybackContext?>(
+      (playback) => playback.playbackContext,
+    );
+    final currentItemId = context.select<PlaybackState, String?>(
+      (playback) => playback.currentItem?.id,
+    );
+    final isPlaying = context.select<PlaybackState, bool>(
+      (playback) => playback.isPlaying,
+    );
+
+    return SliverList(
+      delegate: SliverChildBuilderDelegate(
+        (context, index) {
+          // Interleave: even indices are track rows, odd ones are seams.
+          if (index.isOdd) {
+            final seamIndex = index ~/ 2;
+            final transition =
+                _mixPlan?.between(tracks[seamIndex], tracks[seamIndex + 1]);
+            return ValueListenableBuilder<bool>(
+              key: Key(
+                  'mix_seam_${tracks[seamIndex].id}_${tracks[seamIndex + 1].id}'),
+              valueListenable: _fastScrolling,
+              builder: (context, collapsed, _) {
+                return MixSeamConnector(
+                  transition: transition,
+                  collapsed: collapsed,
+                  onTap: () => _openSeam(transition),
+                );
+              },
+            );
+          }
+
+          final rowIndex = index ~/ 2;
+          final track = tracks[rowIndex];
+          final isCurrent = _isCurrentTrackInThisPlaylist(
+            playbackContext,
+            currentItemId,
+            track,
+          );
+          return Column(
+            key: Key('mixed_track_${track.id}'),
+            children: [
+              // Built directly (not via fromTrack) so the plain tile does not
+              // render its own metadata chips; the blended badges below are
+              // the single metadata surface in this view.
+              TrackTile(
+                title: track.title,
+                artist: track.artist,
+                album: track.album,
+                duration: track.formattedDuration,
+                coverArtUrl: track.displayArtworkUrl,
+                artworkKind: track.artworkKind,
+                isCurrent: isCurrent,
+                activeLabel: isCurrent ? _activeTrackLabel(isPlaying) : null,
+                onTap: () => _playFromIndex(rowIndex),
+                action: LikeToggleButton(
+                  track: track,
+                  buttonKey: ValueKey('playlist_like_${track.id}'),
+                ),
+              ),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 16),
+                  child: MixTrackBadges(analysis: track.analysis),
+                ),
+              ),
+            ],
+          );
+        },
+        childCount: tracks.length * 2 - 1,
       ),
     );
   }

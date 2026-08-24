@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/audio/playback_session.dart';
 import 'package:open_music_player/core/engine/gain_envelope.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
+import 'package:open_music_player/models/mix_plan.dart';
 import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/timeline_clip.dart';
 
@@ -403,11 +404,40 @@ void main() {
       expect(updated.clips[1].timelineStartMs, 10000);
     });
 
+    test('schema v2 persists explicit placement provenance', () {
+      final queue = [_item('a', seconds: 10), _item('b', seconds: 10)];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_explicit_round_trip',
+        queue: queue,
+      ).withPlacementAt(
+        1,
+        TimelineClip.clamped(
+          id: 'ignored',
+          trackId: 'b',
+          sourceDurationMs: 10000,
+          sourceStartMs: 0,
+          sourceEndMs: 10000,
+          // Butt joints look auto-managed after restore unless explicit
+          // placement provenance survives schema-v2 persistence.
+          timelineStartMs: 10000,
+        ),
+      );
+
+      final json = session.toJson();
+      final restored = MixSession.fromJson(json);
+      final updated = restored.withDefaultCrossfadeMs(3000);
+
+      expect(json['explicitPlacementClipIds'],
+          ['session_explicit_round_trip_clip_1']);
+      expect(updated.clips[1].timelineStartMs, 10000);
+    });
+
     test('legacy v1 butt joints explicitly adopt the configured crossfade', () {
       final json = MixSession.fromQueue(
         sessionId: 'session_legacy_crossfade',
         queue: [_item('a', seconds: 10), _item('b', seconds: 10)],
       ).toJson()
+        ..['schemaVersion'] = 1
         ..remove('defaultCrossfadeMs');
 
       final restored = MixSession.fromJson(json);
@@ -430,6 +460,7 @@ void main() {
         sessionId: 'session_legacy_zero_apply',
         queue: [_item('a', seconds: 10), _item('b', seconds: 10)],
       ).toJson()
+        ..['schemaVersion'] = 1
         ..remove('defaultCrossfadeMs');
       final restored = MixSession.fromJson(json);
 
@@ -707,6 +738,41 @@ void main() {
       expect(restored.clips.single.timelineStartMs, 7000);
       expect(restored.clips.single.playbackRate, 1);
       expect(restored.clips.single.pitchMode, pitchModePreserve);
+    });
+
+    test('mix plan projection rejects a mismatched resolved queue', () {
+      final now = DateTime.utc(2026, 8, 24);
+      final plan = MixPlan(
+        id: 'plan-mismatch',
+        schemaVersion: 1,
+        name: 'Mismatch',
+        clips: [
+          MixPlanClip(
+            clipId: 'clip-1',
+            queueItemId: 'queue-1',
+            trackId: '1',
+            sourceStartMs: 0,
+            sourceEndMs: 5000,
+            timelineStartMs: 0,
+          ),
+        ],
+        summary: const MixPlanSummary(
+          clipCount: 1,
+          trackIds: ['1'],
+          durationMs: 5000,
+        ),
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      expect(
+        () => MixSession.fromMixPlan(
+          plan: plan,
+          queue: [_item('2', seconds: 5)],
+        ),
+        throwsFormatException,
+      );
     });
 
     test('session stores normalized clip pitch mode', () {

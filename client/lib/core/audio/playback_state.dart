@@ -9,6 +9,7 @@ import '../engine/click_auditioner.dart';
 import '../engine/playback_engine.dart';
 import '../engine/tempo_automation.dart';
 import '../engine/timeline_model.dart';
+import '../../models/mix_plan.dart';
 import '../../models/timeline_clip.dart';
 import '../../models/track_analysis.dart';
 import '../../models/trim_range.dart';
@@ -353,8 +354,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
 
       final appendIndex = queue.length;
       await _queueController.appendToQueue([
-        for (final item in resolved)
-          markOrigin(item, queueOriginContinuation),
+        for (final item in resolved) markOrigin(item, queueOriginContinuation),
       ]);
       // Accepted asymmetry, not a race to "fix": a generation change landing
       // between the append and this check leaves the batch in the queue while
@@ -412,6 +412,56 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         await _queueController.play();
       });
     }, generation: generation);
+  }
+
+  /// Validates that the persisted plan retains Slice 1's canonical playlist
+  /// order, then loads it through the single queue timeline controller.
+  Future<void> playMixPlan(
+    List<Map<String, dynamic>> tracks,
+    MixPlan plan, {
+    int startIndex = 0,
+    PlaybackContext? context,
+  }) async {
+    if (tracks.isEmpty || plan.clips.isEmpty) return;
+    _validateMixPlanOrder(tracks, plan);
+    final generation = await _beginPlaybackReplacement(context: context);
+
+    await _resolveSignedUrls(() async {
+      await _startWithRecovery(() async {
+        final items = await _sourceResolver.resolveQueue(tracks);
+        if (!_isCurrentPlayRequest(generation)) return;
+        final session = MixSession.fromMixPlan(plan: plan, queue: items);
+        await _queueController.setQueue(
+          items,
+          initialIndex: startIndex,
+          session: session,
+        );
+        if (!_isCurrentPlayRequest(generation)) return;
+        await _queueController.play();
+      });
+    }, generation: generation);
+  }
+
+  void _validateMixPlanOrder(
+    List<Map<String, dynamic>> tracks,
+    MixPlan plan,
+  ) {
+    if (tracks.length != plan.clips.length) {
+      throw FormatException(
+        'Mix plan clip count (${plan.clips.length}) does not match playlist '
+        'track count (${tracks.length}).',
+      );
+    }
+    for (var index = 0; index < tracks.length; index++) {
+      final trackId = PlaybackSourceResolver.readTrackId(tracks[index]);
+      final clip = plan.clips[index];
+      if (trackId.toString() != clip.trackId) {
+        throw FormatException(
+          'Mix plan clip ${clip.clipId} does not match playlist position '
+          '$index (track $trackId).',
+        );
+      }
+    }
   }
 
   Future<int> _beginPlaybackReplacement({

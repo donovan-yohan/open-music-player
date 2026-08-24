@@ -1102,6 +1102,7 @@ void main() {
             markExplicit: false,
           )
           .toJson()
+        ..['schemaVersion'] = 1
         ..remove('defaultCrossfadeMs');
       final legacySession = MixSession.fromJson(legacyJson);
       final activeVoice = voices.first;
