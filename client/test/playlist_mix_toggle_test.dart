@@ -56,7 +56,8 @@ Map<String, dynamic> _transitionJson(
       'incomingTrackId': incoming,
       'preset': 'Blend',
       'bars': 8,
-      'overlapMs': 14769,
+      // Consistent with _mixPlanJson: fades equal the placement overlap.
+      'overlapMs': 10000,
       'confidence': {
         'keyMatch': keyMatch,
         'tempoMatched': tempoMatched,
@@ -304,8 +305,8 @@ void main() {
 
     // Preset chip text from the plan.
     expect(find.text('Blend'), findsNWidgets(2));
-    // Overlap label: 14769 ms -> "15s · 8 bars".
-    expect(find.text('15s · 8 bars'), findsNWidgets(2));
+    // Overlap label: 10000 ms -> "10s · 8 bars" (consistent fixture).
+    expect(find.text('10s · 8 bars'), findsNWidgets(2));
 
     // BPM + Camelot badges render for analyzed tracks.
     expect(find.text('124 BPM'), findsOneWidget);
@@ -400,19 +401,122 @@ void main() {
 
     expect(find.text('Transition saved'), findsOneWidget);
     // Fades and placement move together to preserve the generator invariant
-    // fadeOut(i) == fadeIn(i+1) == placement overlap.
-    expect(savedClips?.first.fadeOutMs, 14769);
-    expect(savedClips?.last.fadeInMs, 14769);
+    // fadeOut(i) == fadeIn(i+1) == placement overlap. The fixture is now
+    // internally consistent (transition overlap == clip fades == 10000), so
+    // an untouched save is a byte-for-byte no-op: the editor seeds from the
+    // persisted fades, placementDelta is zero, and nothing moves.
+    expect(savedClips?.first.fadeOutMs, 10000);
+    expect(savedClips?.last.fadeInMs, 10000);
     final outgoing = savedClips!.first;
     final incoming = savedClips!.last;
-    // The editor seeds from the persisted transition's overlapMs (14769 in
-    // the fixture), so an untouched save persists that value on both fades
-    // and moves placement to match.
     // Timeline overlap: outgoing end minus incoming start.
     final audibleOverlap =
         (outgoing.timelineStartMs + outgoing.selectedDurationMs) -
             incoming.timelineStartMs;
-    expect(audibleOverlap, 14769);
+    expect(audibleOverlap, 10000);
+    // Untouched-save no-op: geometry identical to the original fixture.
+    expect(incoming.timelineStartMs, 200000 - 10000);
+  });
+
+  testWidgets('editing one seam of a three-track plan preserves every seam',
+      (tester) async {
+    tester.view.physicalSize = const Size(600, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    // Matches _mixPlanJson's overlap for a generator-shaped plan.
+    const originalOverlapMs = 10000;
+    List<MixPlanClip>? savedClips;
+
+    final service = _StubPlaylistService(
+      tracks: [_track(1), _track(2), _track(3)],
+      autoMixResult: {
+        'playlistId': 7,
+        'transitions': [
+          _transitionJson(1, 2),
+          _transitionJson(2, 3),
+        ],
+        'mixPlan': _mixPlanJson([1, 2, 3]),
+      },
+    );
+
+    await _pumpDetail(
+      tester,
+      service,
+      onSaveMixPlan: (plan, clips) async {
+        savedClips = clips;
+        return MixPlan(
+          id: plan.id,
+          schemaVersion: plan.schemaVersion,
+          name: plan.name,
+          clips: clips,
+          summary: plan.summary,
+          version: plan.version + 1,
+          createdAt: plan.createdAt,
+          updatedAt: DateTime.utc(2026, 8, 24, 12),
+        );
+      },
+    );
+    await tester.tap(find.byKey(const ValueKey('mix_toggle')));
+    await tester.pumpAndSettle();
+
+    void assertInvariant(List<MixPlanClip> clips) {
+      for (var i = 0; i + 1 < clips.length; i++) {
+        final placementOverlap =
+            (clips[i].timelineStartMs + clips[i].selectedDurationMs) -
+                clips[i + 1].timelineStartMs;
+        expect(clips[i].fadeOutMs, placementOverlap, reason: 'seam $i fadeOut');
+        expect(clips[i + 1].fadeInMs, placementOverlap,
+            reason: 'seam $i fadeIn');
+      }
+    }
+
+    // Open seam 1_2 and grow it to double length.
+    await tester.drag(
+        find.text('Blended 2 transitions. Tap any seam to adjust.'),
+        const Offset(0, 40));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find
+          .descendant(
+            of: find.byKey(const Key('mix_seam_1_2')),
+            matching: find.byType(InkWell),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+
+    // Use the + stepper four times: deterministic +2000 ms total without
+    // depending on canvas width for drag scaling.
+    for (var i = 0; i < 4; i++) {
+      await tester.tap(find.byIcon(Icons.add));
+      await tester.pump();
+    }
+    await tester.tap(find.text('Save transition'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Transition saved'), findsOneWidget);
+    final clips = savedClips!;
+    expect(clips, hasLength(3));
+    // The edited seam grew by 4 x 500 ms; downstream tail shifted with it.
+    const newSeam0Overlap = originalOverlapMs + 2000;
+    expect(clips[0].fadeOutMs, newSeam0Overlap);
+    expect(clips[1].fadeInMs, newSeam0Overlap);
+    expect(
+      (clips[0].timelineStartMs + clips[0].selectedDurationMs) -
+          clips[1].timelineStartMs,
+      newSeam0Overlap,
+    );
+    // Seam 1 keeps its exact original geometry.
+    expect(clips[1].fadeOutMs, originalOverlapMs);
+    expect(clips[2].fadeInMs, originalOverlapMs);
+    expect(
+      (clips[1].timelineStartMs + clips[1].selectedDurationMs) -
+          clips[2].timelineStartMs,
+      originalOverlapMs,
+    );
+    assertInvariant(clips);
   });
 
   testWidgets('mix off reverts to the normal playlist view', (tester) async {

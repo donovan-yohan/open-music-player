@@ -53,7 +53,6 @@ class MixTransitionEditorSheet extends StatefulWidget {
   final Future<void> Function(MixTransitionEdit edit) onSave;
 
   static const int minOverlapMs = 500;
-  static const int maxOverlapCapMs = 20000;
   static const int defaultOverlapMs = 8000;
   static const int snapToleranceMs = 80;
 
@@ -177,22 +176,32 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
     _overlapMs = _initialOverlap();
   }
 
-  /// Seeds from persisted state without clamping: if the persisted overlap
-  /// exceeds today's budget, the user sees the true value and the slider max
-  /// grows to include it, so Save-without-editing rewrites nothing.
+  /// Seeds from the plan's own clips — the state this sheet edits — without
+  /// clamping. If the persisted overlap exceeds today's budget, the user sees
+  /// the true value and the slider max grows to include it, so
+  /// Save-without-editing rewrites nothing. The reported transition overlap
+  /// is only a fallback for plans whose clips carry no fades.
   int _initialOverlap() {
     final persisted = [
-      widget.transition?.overlapMs ?? 0,
       widget.outgoingClip.fadeOutMs ?? 0,
       widget.incomingClip.fadeInMs ?? 0,
     ].where((value) => value > 0).toList(growable: false);
-    if (persisted.isEmpty) {
-      return math.min(
-        MixTransitionEditorSheet.defaultOverlapMs,
-        _maxOverlapMs,
-      );
+    if (persisted.length >= 2) {
+      // Generator invariant: both fades equal the placement overlap.
+      return persisted.reduce(math.max);
     }
-    return persisted.reduce(math.max);
+    final reported = widget.transition?.overlapMs ?? 0;
+    if (persisted.isNotEmpty) {
+      return math.max(
+          persisted.first, reported > 0 ? reported : persisted.first);
+    }
+    if (reported > 0) {
+      return reported;
+    }
+    return math.min(
+      MixTransitionEditorSheet.defaultOverlapMs,
+      _maxOverlapMs,
+    );
   }
 
   int get _sliderMax => math.max(_maxOverlapMs, _overlapMs);
@@ -469,8 +478,12 @@ class _SeamCanvas extends StatelessWidget {
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onHorizontalDragUpdate: (details) {
-            final msPerPx = windowMs /
-                (context.size?.width ?? 1).clamp(1.0, double.infinity);
+            // Measure from the painted canvas box (inside the border and
+            // insets) so the drag scale exactly equals the paint scale.
+            final renderBox = context.findRenderObject();
+            final canvasWidth =
+                renderBox is RenderBox ? renderBox.size.width : 1.0;
+            final msPerPx = windowMs / canvasWidth.clamp(1.0, double.infinity);
             onDragDeltaMs((details.delta.dx * msPerPx).round());
           },
           child: Container(

@@ -118,11 +118,10 @@ void main() {
       expect(edited.gainDb, -3);
     });
 
-    test('clearFadeIn and clearFadeOut drop fades explicitly', () {
-      final noFades = clip().copyWith(clearFadeIn: true, clearFadeOut: true);
-
-      expect(noFades.fadeInMs, isNull);
-      expect(noFades.fadeOutMs, isNull);
+    test('copyWith keeps fades when not provided', () {
+      final same = clip().copyWith(gainDb: -3);
+      expect(same.fadeInMs, 4000);
+      expect(same.fadeOutMs, 8000);
     });
 
     test('withTimelineStartMs moves placement for overlap propagation', () {

@@ -136,8 +136,6 @@ class MixPlanClip {
     double? gainDb,
     int? fadeInMs,
     int? fadeOutMs,
-    bool clearFadeIn = false,
-    bool clearFadeOut = false,
   }) =>
       MixPlanClip(
         clipId: clipId,
@@ -148,8 +146,8 @@ class MixPlanClip {
         sourceEndMs: sourceEndMs ?? this.sourceEndMs,
         timelineStartMs: timelineStartMs ?? this.timelineStartMs,
         gainDb: gainDb ?? this.gainDb,
-        fadeInMs: clearFadeIn ? null : (fadeInMs ?? this.fadeInMs),
-        fadeOutMs: clearFadeOut ? null : (fadeOutMs ?? this.fadeOutMs),
+        fadeInMs: fadeInMs ?? this.fadeInMs,
+        fadeOutMs: fadeOutMs ?? this.fadeOutMs,
         pitchMode: pitchMode,
         stemEdits: stemEdits,
       );
