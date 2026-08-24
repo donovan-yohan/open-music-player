@@ -1,5 +1,6 @@
 import '../api/api_client.dart';
 import '../../shared/models/playlist.dart';
+import '../../features/playlists/mix/mix_models.dart';
 
 class PlaylistsResponse {
   final List<Playlist> playlists;
@@ -186,6 +187,17 @@ class PlaylistService {
       data: {'trackIds': trackIds},
     );
     return Playlist.fromJson(response.data!);
+  }
+
+  /// Runs the server-side auto-mix pass for [playlistId] and returns the
+  /// parsed transition list. 400 when fewer than 2 tracks, 404 when the
+  /// playlist is missing (surfaced by [ApiClient] as errors).
+  Future<AutoMixResult> autoMix(int playlistId) async {
+    final response = await _api.post<Map<String, dynamic>>(
+      '/playlists/$playlistId/auto-mix',
+      data: const {},
+    );
+    return AutoMixResult.fromJson(response.data ?? const {});
   }
 
   Future<void> reorderTrack(
