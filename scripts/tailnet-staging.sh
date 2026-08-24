@@ -24,6 +24,9 @@ FLUTTER_API_BASE_URL="${OMP_FLUTTER_API_BASE_URL:-${OMP_API_BASE_URL:-${BACKEND_
 MINIO_PUBLIC_ENDPOINT="${MINIO_PUBLIC_ENDPOINT:-http://${TAILNET_HOST}:${MINIO_PORT}}"
 WEB_URL="http://${TAILNET_HOST}:${WEB_PORT}"
 export MINIO_PUBLIC_ENDPOINT
+# Tailnet staging is the explicit dogfood surface for playlist Mix. Production
+# and ordinary Compose remain default-off unless their operator opts in.
+export ENABLE_PLAYLIST_MIX="${ENABLE_PLAYLIST_MIX:-true}"
 
 usage() {
   cat <<USAGE
@@ -46,6 +49,7 @@ env:
   OMP_BACKEND_BASE_URL         backend root override (default: http://\$OMP_TAILNET_HOST:\$SERVER_PORT)
   OMP_FLUTTER_API_BASE_URL     Flutter /api/v1 base override (default: \$OMP_BACKEND_BASE_URL/api/v1)
   MINIO_PUBLIC_ENDPOINT        signed-audio object URL root (default: http://\$OMP_TAILNET_HOST:\$MINIO_PORT)
+  ENABLE_PLAYLIST_MIX          expose playlist Mix endpoints (default: true for Tailnet staging)
 USAGE
 }
 

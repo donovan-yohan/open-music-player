@@ -40,6 +40,7 @@ type Router struct {
 	playlistHandlers        *PlaylistHandlers
 	playlistImportHandlers  *PlaylistImportHandlers
 	playlistMixHandlers     *PlaylistMixHandlers
+	autoBlendHandlers       *PlaylistAutoBlendHandlers
 	mixPlanHandlers         *MixPlanHandlers
 	downloadHandlers        *DownloadHandlers
 	sourceSelectionHandlers *SourceSelectionHandlers
@@ -78,6 +79,7 @@ type RouterConfig struct {
 	PlaylistHandlers        *PlaylistHandlers
 	PlaylistImportHandlers  *PlaylistImportHandlers
 	PlaylistMixHandlers     *PlaylistMixHandlers
+	AutoBlendHandlers       *PlaylistAutoBlendHandlers
 	MixPlanHandlers         *MixPlanHandlers
 	DownloadHandlers        *DownloadHandlers
 	SourceSelectionHandlers *SourceSelectionHandlers
@@ -141,6 +143,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		playlistHandlers:        cfg.PlaylistHandlers,
 		playlistImportHandlers:  cfg.PlaylistImportHandlers,
 		playlistMixHandlers:     cfg.PlaylistMixHandlers,
+		autoBlendHandlers:       cfg.AutoBlendHandlers,
 		mixPlanHandlers:         cfg.MixPlanHandlers,
 		downloadHandlers:        cfg.DownloadHandlers,
 		sourceSelectionHandlers: cfg.SourceSelectionHandlers,
@@ -338,6 +341,12 @@ func (r *Router) setupRoutes() {
 	// at all (legacy router construction) the route stays unregistered.
 	if r.playlistMixHandlers != nil {
 		r.mux.HandleFunc("POST /api/v1/playlists/{id}/mix", r.withAuth(r.playlistMixHandlers.CreateMixFromPlaylist))
+	}
+	// Auto-blend: derive a full mix plan with per-transition parameters from
+	// analyzer facts. Registered only when wired so legacy construction keeps
+	// the route absent rather than unauthenticated.
+	if r.autoBlendHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/playlists/{id}/auto-mix", r.withAuth(r.autoBlendHandlers.CreateAutoMixFromPlaylist))
 	}
 	if r.playlistImportHandlers != nil {
 		r.mux.HandleFunc("POST /api/v1/playlist-imports", r.withAuth(r.playlistImportHandlers.CreateImport))
