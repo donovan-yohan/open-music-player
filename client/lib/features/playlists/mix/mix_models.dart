@@ -36,13 +36,12 @@ class MixTransition {
     final confidenceMap = confidence is Map<String, dynamic>
         ? confidence
         : const <String, dynamic>{};
+    final preset = (json['preset'] as String?)?.trim();
     return MixTransition(
       index: (json['index'] as num?)?.toInt() ?? 0,
       outgoingTrackId: (json['outgoingTrackId'] as num?)?.toInt() ?? 0,
       incomingTrackId: (json['incomingTrackId'] as num?)?.toInt() ?? 0,
-      preset: (json['preset'] as String?)?.trim().isNotEmpty == true
-          ? json['preset'] as String
-          : 'Fade',
+      preset: preset?.isNotEmpty == true ? preset! : 'Fade',
       bars: (json['bars'] as num?)?.toInt(),
       overlapMs: (json['overlapMs'] as num?)?.toInt() ?? 0,
       keyMatch: confidenceMap['keyMatch'] == true,

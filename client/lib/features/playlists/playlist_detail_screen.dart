@@ -54,7 +54,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   /// to hairlines so long playlists stay scannable.
   final ValueNotifier<bool> _fastScrolling = ValueNotifier(false);
   Timer? _seamExpandTimer;
-  ScrollController? _scrollController;
   DateTime? _lastScrollTimestamp;
 
   static const double _fastScrollVelocityDpPerMs = 1.2;
@@ -101,7 +100,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   @override
   void dispose() {
     _seamExpandTimer?.cancel();
-    _scrollController?.dispose();
     _fastScrolling.dispose();
     super.dispose();
   }
@@ -165,6 +163,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       final playlist = await _playlistService.getPlaylist(widget.playlistId);
       setState(() {
         _playlist = playlist;
+        _mixEnabled = false;
+        _mixPlan = null;
         _isLoading = false;
       });
     } catch (e) {
@@ -187,7 +187,11 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         [track.id],
       );
       if (mounted) {
-        setState(() => _playlist = updated);
+        setState(() {
+          _playlist = updated;
+          _mixEnabled = false;
+          _mixPlan = null;
+        });
         messenger.showSnackBar(
           SnackBar(
             content: Text('Removed "${track.title}"'),
@@ -262,6 +266,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       if (!mounted) return;
       setState(() {
         _playlist = updated;
+        _mixEnabled = false;
+        _mixPlan = null;
         _isSelectMode = false;
         _selection = const PlaylistSelection();
       });
@@ -285,6 +291,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
     setState(() {
       _playlist = _playlist!.copyWith(tracks: tracks);
+      _mixEnabled = false;
+      _mixPlan = null;
     });
 
     try {
@@ -510,7 +518,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     }
 
     return CustomScrollView(
-      controller: _scrollController,
       slivers: [
         _buildAppBar(),
         _buildHeader(),

@@ -414,9 +414,8 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     }, generation: generation);
   }
 
-  /// Resolves playlist tracks in persisted plan order and loads that plan
-  /// through the single queue timeline controller. [startIndex] is an index in
-  /// the plan clip order, not the caller's input list.
+  /// Validates that the persisted plan retains Slice 1's canonical playlist
+  /// order, then loads it through the single queue timeline controller.
   Future<void> playMixPlan(
     List<Map<String, dynamic>> tracks,
     MixPlan plan, {
@@ -424,12 +423,12 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     PlaybackContext? context,
   }) async {
     if (tracks.isEmpty || plan.clips.isEmpty) return;
-    final orderedTracks = _tracksInMixPlanOrder(tracks, plan);
+    _validateMixPlanOrder(tracks, plan);
     final generation = await _beginPlaybackReplacement(context: context);
 
     await _resolveSignedUrls(() async {
       await _startWithRecovery(() async {
-        final items = await _sourceResolver.resolveQueue(orderedTracks);
+        final items = await _sourceResolver.resolveQueue(tracks);
         if (!_isCurrentPlayRequest(generation)) return;
         final session = MixSession.fromMixPlan(plan: plan, queue: items);
         await _queueController.setQueue(
@@ -443,7 +442,7 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
     }, generation: generation);
   }
 
-  List<Map<String, dynamic>> _tracksInMixPlanOrder(
+  void _validateMixPlanOrder(
     List<Map<String, dynamic>> tracks,
     MixPlan plan,
   ) {
@@ -453,23 +452,16 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
         'track count (${tracks.length}).',
       );
     }
-    final remaining = List<Map<String, dynamic>>.from(tracks);
-    final ordered = <Map<String, dynamic>>[];
-    for (final clip in plan.clips) {
-      final matchIndex = remaining.indexWhere(
-        (track) =>
-            PlaybackSourceResolver.readTrackId(track).toString() ==
-            clip.trackId,
-      );
-      if (matchIndex < 0) {
+    for (var index = 0; index < tracks.length; index++) {
+      final trackId = PlaybackSourceResolver.readTrackId(tracks[index]);
+      final clip = plan.clips[index];
+      if (trackId.toString() != clip.trackId) {
         throw FormatException(
-          'Mix plan clip ${clip.clipId} references missing track '
-          '${clip.trackId}.',
+          'Mix plan clip ${clip.clipId} does not match playlist position '
+          '$index (track $trackId).',
         );
       }
-      ordered.add(remaining.removeAt(matchIndex));
     }
-    return ordered;
   }
 
   Future<int> _beginPlaybackReplacement({

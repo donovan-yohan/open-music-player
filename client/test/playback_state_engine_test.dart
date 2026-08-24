@@ -529,7 +529,7 @@ void main() {
             queueItemId: 'queue-2',
             trackId: '2',
             sourceStartMs: 0,
-            sourceEndMs: 45000,
+            sourceEndMs: 45400,
             timelineStartMs: 0,
             gainDb: -2,
             fadeOutMs: 6000,
@@ -540,22 +540,31 @@ void main() {
             trackId: '1',
             sourceStartMs: 0,
             sourceEndMs: 30000,
-            timelineStartMs: 39000,
+            timelineStartMs: 39400,
             fadeInMs: 4000,
           ),
         ],
         summary: const MixPlanSummary(
           clipCount: 2,
           trackIds: ['2', '1'],
-          durationMs: 69000,
+          durationMs: 69400,
         ),
         version: 3,
         createdAt: now,
         updatedAt: now,
       );
 
+      await expectLater(
+        playback.playMixPlan(
+          [_track(1, seconds: 30), _track(2, seconds: 45)],
+          plan,
+        ),
+        throwsFormatException,
+      );
+      expect(playback.queue, isEmpty);
+
       await playback.playMixPlan(
-        [_track(1, seconds: 30), _track(2, seconds: 45)],
+        [_track(2, seconds: 45), _track(1, seconds: 30)],
         plan,
       );
       await Future<void>.delayed(Duration.zero);
@@ -568,7 +577,8 @@ void main() {
         ['queue-2', 'queue-1'],
       );
       expect(playback.timelineClipForQueueIndex(0)?.timelineStartMs, 0);
-      expect(playback.timelineClipForQueueIndex(1)?.timelineStartMs, 39000);
+      expect(playback.timelineClipForQueueIndex(0)?.sourceEndMs, 45400);
+      expect(playback.timelineClipForQueueIndex(1)?.timelineStartMs, 39400);
 
       final outgoing = playback.timelineModel.clips
           .firstWhere((clip) => clip.id == 'clip-2');

@@ -404,6 +404,32 @@ void main() {
       expect(updated.clips[1].timelineStartMs, 10000);
     });
 
+    test('schema v2 persists explicit placement provenance', () {
+      final queue = [_item('a', seconds: 10), _item('b', seconds: 10)];
+      final session = MixSession.fromQueue(
+        sessionId: 'session_explicit_round_trip',
+        queue: queue,
+      ).withPlacementAt(
+        1,
+        TimelineClip.clamped(
+          id: 'ignored',
+          trackId: 'b',
+          sourceDurationMs: 10000,
+          sourceStartMs: 0,
+          sourceEndMs: 10000,
+          timelineStartMs: 9500,
+        ),
+      );
+
+      final json = session.toJson();
+      final restored = MixSession.fromJson(json);
+      final updated = restored.withDefaultCrossfadeMs(3000);
+
+      expect(json['explicitPlacementClipIds'],
+          ['session_explicit_round_trip_clip_1']);
+      expect(updated.clips[1].timelineStartMs, 9500);
+    });
+
     test('legacy v1 butt joints explicitly adopt the configured crossfade', () {
       final json = MixSession.fromQueue(
         sessionId: 'session_legacy_crossfade',

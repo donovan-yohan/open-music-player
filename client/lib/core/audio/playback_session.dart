@@ -12,6 +12,7 @@ import '../engine/timeline_model.dart';
 import 'playback_media_item_source.dart';
 
 const int mixSessionSchemaVersion = 2;
+const int _wholeSecondDurationToleranceMs = 999;
 
 /// Versioned canonical clip/session state for queue, playlist, and timeline
 /// playback. Signed URLs stay on [MediaItem]; this carries durable edit data.
@@ -125,7 +126,9 @@ class MixSession {
       final itemDurationMs = item.duration?.inMilliseconds ?? 0;
       // Playback payloads carry whole-second duration, while plans retain
       // millisecond precision. Anything beyond that rounding window is stale.
-      if (itemDurationMs > 0 && planClip.sourceEndMs > itemDurationMs + 999) {
+      if (itemDurationMs > 0 &&
+          planClip.sourceEndMs >
+              itemDurationMs + _wholeSecondDurationToleranceMs) {
         throw FormatException(
           'Mix plan clip ${planClip.clipId} exceeds track ${item.id}.',
         );
@@ -188,6 +191,15 @@ class MixSession {
         }
       }
     }
+    final clipIds = {for (final clip in clips) clip.clipId};
+    final rawExplicitPlacementClipIds = json['explicitPlacementClipIds'];
+    final explicitPlacementClipIds =
+        schemaVersion >= 2 && rawExplicitPlacementClipIds is List
+            ? {
+                for (final value in rawExplicitPlacementClipIds)
+                  if (value is String && clipIds.contains(value)) value,
+              }
+            : const <String>{};
 
     return MixSession(
       sessionId: rawSessionId?.isNotEmpty == true ? rawSessionId! : 'session_0',
@@ -204,6 +216,7 @@ class MixSession {
       ),
       adoptLegacyDefaultCrossfade:
           schemaVersion == 1 && !json.containsKey('defaultCrossfadeMs'),
+      explicitPlacementClipIds: explicitPlacementClipIds,
     );
   }
 
@@ -781,6 +794,11 @@ class MixSession {
         'nextClipOrdinal': nextClipOrdinal,
         'transitionSnapMode': transitionSnapMode.name,
         'defaultCrossfadeMs': defaultCrossfadeMs,
+        if (schemaVersion >= 2)
+          'explicitPlacementClipIds': [
+            for (final clip in clips)
+              if (_explicitPlacementClipIds.contains(clip.clipId)) clip.clipId,
+          ],
         'clips': [for (final clip in clips) clip.toJson()],
       };
 }
@@ -908,7 +926,15 @@ class MixSessionClip {
       );
 
   MixSessionClip reconciledWithMediaItem(MediaItem item) {
-    final durationMs = item.duration?.inMilliseconds ?? sourceDurationMs;
+    final itemDurationMs = item.duration?.inMilliseconds ?? 0;
+    final durationMs = switch (itemDurationMs) {
+      <= 0 => sourceDurationMs,
+      _
+          when sourceEndMs > itemDurationMs &&
+              sourceEndMs - itemDurationMs <= _wholeSecondDurationToleranceMs =>
+        sourceEndMs,
+      _ => itemDurationMs,
+    };
     final placement = TimelineClip.clamped(
       id: clipId,
       trackId: item.id,

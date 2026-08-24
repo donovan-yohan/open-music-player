@@ -234,6 +234,11 @@ void main() {
     });
     expect(malformed.mixPlan, isNull);
     expect(malformed.transitions, hasLength(1));
+
+    final trimmedPreset = MixTransition.fromJson(
+      _transitionJson(1, 2)..['preset'] = '  Blend  ',
+    );
+    expect(trimmedPreset.preset, 'Blend');
   });
 
   testWidgets('mix action is unavailable for zero and one-track playlists',
