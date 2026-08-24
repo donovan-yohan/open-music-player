@@ -630,20 +630,19 @@ func (r *PlaylistRepository) SetTrackOrder(ctx context.Context, playlistID int64
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
+
 	existing := make(map[int64]bool)
 	for rows.Next() {
 		var trackID int64
 		if err := rows.Scan(&trackID); err != nil {
-			rows.Close()
 			return err
 		}
 		existing[trackID] = true
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return err
 	}
-	rows.Close()
 
 	if len(existing) == 0 {
 		return ErrPlaylistNotFound

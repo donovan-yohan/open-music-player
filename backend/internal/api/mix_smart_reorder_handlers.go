@@ -332,8 +332,8 @@ func smartReorderRegeneratePlan(
 			continue
 		}
 		// The edited overlap still has to fit the seam budgets of its new
-		// neighbours; an interior clip cannot fund a seam it no longer has
-		// room for. Clamping keeps the geometry valid while honouring the
+		// neighbors; an interior clip cannot fund a seam it no longer has
+		// room for. Clamping keeps the geometry valid while honoring the
 		// user's intent as closely as the new order allows.
 		budget := autoBlendSeamBudgetForPair(newFacts, i)
 		if preserved > budget {

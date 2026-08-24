@@ -80,7 +80,7 @@ func TestSmartReorderDistanceWrapsAroundTheCamelotWheel(t *testing.T) {
 		t.Fatalf("1A -> 2A distance = %v, want %v", unwrapped, wrapped)
 	}
 	if wrapped >= smartReorderDistance(twelve, smartReorderFacts(4, 120, "6A")) {
-		t.Fatal("wrapped neighbour must be closer than the far side of the wheel")
+		t.Fatal("wrapped neighbor must be closer than the far side of the wheel")
 	}
 
 	// 1B -> 12B wraps too, in the other direction.

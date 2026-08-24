@@ -66,7 +66,7 @@ func smartReorderDistance(a, b autoBlendTrackFacts) float64 {
 
 // smartReorderOrder returns the new ordering as indices into facts.
 //
-// Analyzed tracks are sequenced greedily nearest-neighbour from the first
+// Analyzed tracks are sequenced greedily nearest-neighbor from the first
 // analyzed track in the current order (keeping the user's chosen opener), then
 // each unanalyzed track is re-emitted directly after the analyzed track it
 // trailed before. The result is always a permutation of the input.
