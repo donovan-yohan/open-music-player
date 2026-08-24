@@ -42,10 +42,14 @@ const (
 	sampleRate          = 44100
 )
 
-// fixtureSpec describes one seeded track. BPM/key pairs are chosen so the
-// auto-blend ladder produces non-trivial seams between consecutive tracks:
-// 120→126 BPM (~5%) lands at the tempoMatched/tempoShift boundary, 8B→9A is a
-// compatible Camelot move, and 126→140 (~11%) forces a tempoShift seam.
+// fixtureSpec describes one seeded track. Tracks are 90 s so the interior-seam
+// clip budget (duration/4 = 22.5 s) stays above the bar-aligned overlap the
+// ladder picks (16 s at 120 BPM), letting aligned seams survive instead of
+// collapsing to the bounded simple fade. BPM/key pairs still straddle the
+// tempoMatched/tempoShift boundary (120→126 ≈ 4.8%, 126→140 ≈ 11%) with a
+// compatible Camelot move on seam 0 and an opposite-letter same-number move on
+// seam 1. Downbeats are emitted across the full track (no cap) so an outgoing
+// anchor exists near duration − overlap for both seams.
 type fixtureSpec struct {
 	name        string // stable identifier used in titles and storage keys
 	title       string
@@ -59,9 +63,9 @@ type fixtureSpec struct {
 }
 
 var fixtures = []fixtureSpec{
-	{name: "a", title: "Mix QA A 120bpm 8B", artist: "MixQA Seeds", bpm: 120, camelot: "8B", beatsPerBar: 4, seconds: 30, freqA: 220, freqB: 330},
-	{name: "b", title: "Mix QA B 126bpm 9A", artist: "MixQA Seeds", bpm: 126, camelot: "9A", beatsPerBar: 4, seconds: 30, freqA: 247, freqB: 370},
-	{name: "c", title: "Mix QA C 140bpm 8A", artist: "MixQA Seeds", bpm: 140, camelot: "8A", beatsPerBar: 4, seconds: 30, freqA: 262, freqB: 392},
+	{name: "a", title: "Mix QA A 120bpm 8B", artist: "MixQA Seeds", bpm: 120, camelot: "8B", beatsPerBar: 4, seconds: 90, freqA: 220, freqB: 330},
+	{name: "b", title: "Mix QA B 126bpm 9A", artist: "MixQA Seeds", bpm: 126, camelot: "9A", beatsPerBar: 4, seconds: 90, freqA: 247, freqB: 370},
+	{name: "c", title: "Mix QA C 140bpm 8A", artist: "MixQA Seeds", bpm: 140, camelot: "8A", beatsPerBar: 4, seconds: 90, freqA: 262, freqB: 392},
 }
 
 type seedConfig struct {
@@ -305,12 +309,14 @@ func seedFixtureTrack(ctx context.Context, database *db.DB, storageClient *stora
 
 	// Analysis summary shaped like the analyzer's compact document: bpm.value,
 	// camelot.value, meter.beats_per_bar, downbeats.positions_ms. The auto-blend
-	// handler reads exactly these fields; downbeats land on real bars so seam
-	// alignment uses actual grid anchors instead of falling back.
-	downbeats := make([]int64, 0, 8)
-	barMs := int64(4 * 60000 / spec.bpm)
-	for ms := int64(200); ms < int64(spec.seconds*1000)-barMs && len(downbeats) < 8; ms += barMs {
-		downbeats = append(downbeats, ms)
+	// handler reads exactly these fields. Downbeats are emitted across the whole
+	// track (no cap), rounded to the nearest millisecond so the grid matches the
+	// declared BPM without truncation drift, and spaced by spec.beatsPerBar so
+	// the grid cannot contradict the meter.
+	downbeats := make([]int64, 0, spec.seconds)
+	barLen := float64(spec.beatsPerBar) * 60000 / spec.bpm
+	for ms := 200.0; ms < float64(spec.seconds*1000)-barLen; ms += barLen {
+		downbeats = append(downbeats, int64(math.Round(ms)))
 	}
 	summary, err := json.Marshal(map[string]any{
 		"bpm":       map[string]any{"value": spec.bpm},
