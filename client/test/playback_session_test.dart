@@ -417,7 +417,9 @@ void main() {
           sourceDurationMs: 10000,
           sourceStartMs: 0,
           sourceEndMs: 10000,
-          timelineStartMs: 9500,
+          // Butt joints look auto-managed after restore unless explicit
+          // placement provenance survives schema-v2 persistence.
+          timelineStartMs: 10000,
         ),
       );
 
@@ -427,7 +429,7 @@ void main() {
 
       expect(json['explicitPlacementClipIds'],
           ['session_explicit_round_trip_clip_1']);
-      expect(updated.clips[1].timelineStartMs, 9500);
+      expect(updated.clips[1].timelineStartMs, 10000);
     });
 
     test('legacy v1 butt joints explicitly adopt the configured crossfade', () {
