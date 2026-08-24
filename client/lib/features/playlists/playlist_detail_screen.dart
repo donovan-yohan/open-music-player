@@ -1,7 +1,7 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import '../../core/api/api_client.dart' as core_api;
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
@@ -48,8 +48,7 @@ class PlaylistDetailScreen extends StatefulWidget {
 class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   late final PlaylistService _playlistService = widget.playlistService ??
       PlaylistService(api: ApiClient(storage: SecureStorage()));
-  late final core_api.ApiClient _apiClient =
-      core_api.ApiClient(storage: SecureStorage());
+  late final ApiClient _mixPlanApiClient = ApiClient(storage: SecureStorage());
 
   Playlist? _playlist;
   bool _isLoading = true;
@@ -160,6 +159,15 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final plan = _mixPlan?.mixPlan;
     if (plan == null || plan.clips.length < seamIndex + 2) return;
 
+    // Defense-in-depth: fail loudly if the displayed list no longer matches
+    // the plan's clip order, mirroring playback's order validation.
+    for (var i = 0; i < 2; i++) {
+      if (plan.clips[seamIndex + i].trackId !=
+          tracks[seamIndex + i].id.toString()) {
+        return;
+      }
+    }
+
     final edit = await MixTransitionEditorSheet.show(
       context,
       outgoingTrack: tracks[seamIndex],
@@ -167,6 +175,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       outgoingClip: plan.clips[seamIndex],
       incomingClip: plan.clips[seamIndex + 1],
       transition: transition,
+      outgoingIsEndpoint: seamIndex == 0,
+      incomingIsEndpoint: seamIndex + 1 == tracks.length - 1,
       onSave: (edit) => _saveSeamEdit(plan, edit),
     );
     if (edit == null || !mounted) return;
@@ -186,9 +196,23 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     }
     clips[outgoingIndex] = edit.outgoing;
     clips[incomingIndex] = edit.incoming;
+
+    // Keep the persisted invariant `fadeOut(i) == fadeIn(i+1) ==
+    // placement overlap`: moving the fades moves the incoming clip's
+    // timelineStartMs so the audible overlap equals the authored value.
+    final previousOutgoing = plan.clips[outgoingIndex];
+    final previousIncoming = plan.clips[incomingIndex];
+    final newOverlapMs = edit.incoming.fadeInMs ?? 0;
+    // Timeline overlap between two clips: outgoing end minus incoming start.
+    final previousOverlapMs =
+        previousOutgoing.timelineEndMs - previousIncoming.timelineStartMs;
+    final placementDeltaMs = newOverlapMs - previousOverlapMs;
+    clips[incomingIndex] = clips[incomingIndex].withTimelineStartMs(
+        previousIncoming.timelineStartMs - placementDeltaMs);
+
     final saved = widget.onSaveMixPlan != null
         ? await widget.onSaveMixPlan!(plan, clips)
-        : await _apiClient.updateMixPlan(
+        : await _mixPlanApiClient.updateMixPlan(
             id: plan.id,
             version: plan.version,
             name: plan.name,
@@ -196,13 +220,51 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           );
     if (!mounted) return;
     setState(() {
-      _mixPlan = AutoMixResult(
-        transitions: _mixPlan!.transitions,
-        transitionsByPair: _mixPlan!.transitionsByPair,
-        mixPlan: saved,
-      );
+      _mixPlan = _resultWithSavedClips(saved);
     });
   }
+
+  /// Rebuilds the transition decorations from a freshly saved plan so seam
+  /// badges reflect what was actually persisted.
+  AutoMixResult? _resultWithSavedClips(MixPlan saved) {
+    final current = _mixPlan;
+    if (current == null) return null;
+    final trackIds = [for (final clip in saved.clips) int.parse(clip.trackId)];
+    final rebuilt = <MixTransition>[];
+    for (var i = 0; i + 1 < saved.clips.length; i++) {
+      final stale =
+          current.transitionsByPair['${trackIds[i]}-${trackIds[i + 1]}'];
+      rebuilt.add(
+        MixTransition(
+          index: i,
+          outgoingTrackId: trackIds[i],
+          incomingTrackId: trackIds[i + 1],
+          preset: stale?.preset ?? 'Fade',
+          bars: stale?.bars,
+          overlapMs: _overlapBetween(saved.clips[i], saved.clips[i + 1]),
+          keyMatch: stale?.keyMatch ?? false,
+          tempoMatched: stale?.tempoMatched ?? false,
+          tempoShift: stale?.tempoShift ?? false,
+          simpleFade: stale?.simpleFade ?? false,
+        ),
+      );
+    }
+    return AutoMixResult(
+      transitions: rebuilt,
+      mixPlan: saved,
+      transitionsByPair: {
+        for (final transition in rebuilt)
+          '${transition.outgoingTrackId}-${transition.incomingTrackId}':
+              transition,
+      },
+    );
+  }
+
+  static int _overlapBetween(MixPlanClip outgoing, MixPlanClip incoming) =>
+      math.max(
+        0,
+        outgoing.timelineEndMs - incoming.timelineStartMs,
+      );
 
   Future<void> _loadPlaylist() async {
     setState(() {

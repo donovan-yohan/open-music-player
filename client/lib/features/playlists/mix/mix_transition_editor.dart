@@ -1,9 +1,10 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../models/mix_plan.dart';
 import '../../../shared/models/track.dart';
-import '../../../app/theme.dart';
 import '../mix/mix_models.dart';
 
 /// Result of an accepted edit in the transition editor.
@@ -14,12 +15,17 @@ class MixTransitionEdit {
   const MixTransitionEdit({required this.outgoing, required this.incoming});
 }
 
-/// Portrait-first full-height sheet for editing one transition between two
-/// persisted plan clips (design spec §4).
+/// Portrait-first sheet for editing one transition between two persisted plan
+/// clips.
 ///
-/// The sheet is pure presentation + local draft state: it emits a
-/// [MixTransitionEdit] on save and never talks to the API or the playback
-/// engine directly. Callers own persistence and preview.
+/// The sheet holds draft state only: it emits a [MixTransitionEdit] on save
+/// (fades plus the chosen overlap) and never talks to the API or the playback
+/// engine. Callers own persistence, placement propagation, and preview.
+///
+/// Overlap semantics match the auto-blend generator: the audible overlap is
+/// the placement overlap (`fadeOut(i) == fadeIn(i+1) == overlap`), so the
+/// value authored here is the value callers must apply to both envelopes and
+/// to `timelineStartMs`.
 class MixTransitionEditorSheet extends StatefulWidget {
   const MixTransitionEditorSheet({
     super.key,
@@ -28,6 +34,8 @@ class MixTransitionEditorSheet extends StatefulWidget {
     required this.outgoingClip,
     required this.incomingClip,
     this.transition,
+    required this.outgoingIsEndpoint,
+    required this.incomingIsEndpoint,
     required this.onSave,
   });
 
@@ -36,7 +44,72 @@ class MixTransitionEditorSheet extends StatefulWidget {
   final MixPlanClip outgoingClip;
   final MixPlanClip incomingClip;
   final MixTransition? transition;
+
+  /// True when the clip is the first/last clip of the plan; interior clips
+  /// have two seams and get half the per-seam budget.
+  final bool outgoingIsEndpoint;
+  final bool incomingIsEndpoint;
+
   final Future<void> Function(MixTransitionEdit edit) onSave;
+
+  static const int minOverlapMs = 500;
+  static const int maxOverlapCapMs = 20000;
+  static const int defaultOverlapMs = 8000;
+  static const int snapToleranceMs = 80;
+
+  /// Fallback for tracks whose duration is unknown, mirroring the backend's
+  /// default clip duration so budgets stay meaningful.
+  static const int unknownDurationFallbackMs = 180000;
+
+  /// Per-clip seam budget, mirroring the backend's `autoBlendClipSeamBudget`.
+  ///
+  /// Degenerate windows (0/1 ms) cannot fund a real seam, but the sheet needs
+  /// a movable control, so the result is floored at the minimum overlap.
+  static int seamBudgetMs(MixPlanClip clip, bool isEndpoint) {
+    final duration = clip.selectedDurationMs > 0
+        ? clip.selectedDurationMs
+        : unknownDurationFallbackMs;
+    return math.max(
+      minOverlapMs,
+      duration ~/ (isEndpoint ? 2 : 4),
+    );
+  }
+
+  /// Snaps [value] onto the nearest beat tick within tolerance.
+  ///
+  /// Incoming downbeats are positions from the incoming track's start, so the
+  /// candidate overlap equals the marker. Outgoing downbeats are positions in
+  /// the outgoing track, so the candidate overlap is the distance from the
+  /// marker back to the outgoing clip's end.
+  static (int, bool) snapOverlap({
+    required int value,
+    required int maxValue,
+    required List<int> incomingDownbeats,
+    required List<int> outgoingDownbeats,
+    required int outgoingSourceEndMs,
+    int toleranceMs = snapToleranceMs,
+  }) {
+    var best = value;
+    var bestDistance = toleranceMs + 1;
+    void consider(int candidate) {
+      final distance = (candidate - value).abs();
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = candidate;
+      }
+    }
+
+    for (final marker in incomingDownbeats) {
+      consider(marker);
+    }
+    for (final marker in outgoingDownbeats) {
+      consider(outgoingSourceEndMs - marker);
+    }
+    return (
+      best.clamp(minOverlapMs, math.max(minOverlapMs, maxValue)).toInt(),
+      bestDistance <= toleranceMs,
+    );
+  }
 
   /// Opens the editor and returns the accepted edit, or null when discarded.
   static Future<MixTransitionEdit?> show(
@@ -46,19 +119,24 @@ class MixTransitionEditorSheet extends StatefulWidget {
     required MixPlanClip outgoingClip,
     required MixPlanClip incomingClip,
     MixTransition? transition,
+    required bool outgoingIsEndpoint,
+    required bool incomingIsEndpoint,
     required Future<void> Function(MixTransitionEdit edit) onSave,
   }) {
     return showModalBottomSheet<MixTransitionEdit>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      showDragHandle: true,
+      isDismissible: false,
+      enableDrag: false,
       builder: (_) => MixTransitionEditorSheet(
         outgoingTrack: outgoingTrack,
         incomingTrack: incomingTrack,
         outgoingClip: outgoingClip,
         incomingClip: incomingClip,
         transition: transition,
+        outgoingIsEndpoint: outgoingIsEndpoint,
+        incomingIsEndpoint: incomingIsEndpoint,
         onSave: onSave,
       ),
     );
@@ -70,85 +148,66 @@ class MixTransitionEditorSheet extends StatefulWidget {
 }
 
 class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
-  static const double _canvasHeight = 220;
-
-  /// Snap window for dragging the seam onto a beat tick.
-  static const int _snapToleranceMs = 80;
-
   late int _overlapMs;
+  late int _maxOverlapMs;
   bool _saving = false;
+
+  List<int> _downbeats(Track track) {
+    final downbeats = track.analysis?.summary?.downbeats?.positionsMs;
+    if (downbeats == null || downbeats.isEmpty) return const [];
+    return downbeats;
+  }
 
   @override
   void initState() {
     super.initState();
+    _maxOverlapMs = math.max(
+      MixTransitionEditorSheet.minOverlapMs,
+      math.min(
+        MixTransitionEditorSheet.seamBudgetMs(
+          widget.outgoingClip,
+          widget.outgoingIsEndpoint,
+        ),
+        MixTransitionEditorSheet.seamBudgetMs(
+          widget.incomingClip,
+          widget.incomingIsEndpoint,
+        ),
+      ),
+    );
     _overlapMs = _initialOverlap();
   }
 
-  int get _maxOverlapMs {
-    final outDuration = widget.outgoingTrack.durationMs ?? 0;
-    final inDuration = widget.incomingTrack.durationMs ?? 0;
-    final smallest = outDuration <= 0 || inDuration <= 0
-        ? (outDuration > 0 ? outDuration : inDuration)
-        : (outDuration < inDuration ? outDuration : inDuration);
-    // Keep at least half of the shorter clip audible at full gain so neither
-    // track is swallowed by its own seams.
-    final budget = smallest ~/ 4;
-    return budget.clamp(500, 20000).toInt();
-  }
-
+  /// Seeds from persisted state without clamping: if the persisted overlap
+  /// exceeds today's budget, the user sees the true value and the slider max
+  /// grows to include it, so Save-without-editing rewrites nothing.
   int _initialOverlap() {
-    final fromFades = (widget.outgoingClip.fadeOutMs ?? 0) > 0
-        ? widget.outgoingClip.fadeOutMs!
-        : (widget.incomingClip.fadeInMs ?? 0);
-    if (fromFades > 0) return fromFades.clamp(0, _maxOverlapMs).toInt();
-    if ((widget.transition?.overlapMs ?? 0) > 0) {
-      return widget.transition!.overlapMs.clamp(0, _maxOverlapMs).toInt();
+    final persisted = [
+      widget.transition?.overlapMs ?? 0,
+      widget.outgoingClip.fadeOutMs ?? 0,
+      widget.incomingClip.fadeInMs ?? 0,
+    ].where((value) => value > 0).toList(growable: false);
+    if (persisted.isEmpty) {
+      return math.min(
+        MixTransitionEditorSheet.defaultOverlapMs,
+        _maxOverlapMs,
+      );
     }
-    return 8000.clamp(0, _maxOverlapMs).toInt();
+    return persisted.reduce(math.max);
   }
 
-  List<int> get _outgoingDownbeats {
-    final downbeats =
-        widget.outgoingTrack.analysis?.summary?.downbeats?.positionsMs;
-    if (downbeats == null || downbeats.isEmpty) return const [];
-    return downbeats;
-  }
+  int get _sliderMax => math.max(_maxOverlapMs, _overlapMs);
 
-  List<int> get _incomingDownbeats {
-    final downbeats =
-        widget.incomingTrack.analysis?.summary?.downbeats?.positionsMs;
-    if (downbeats == null || downbeats.isEmpty) return const [];
-    return downbeats;
-  }
-
-  /// Snaps [value] to the nearest beat/downbeat tick within tolerance and
-  /// reports whether a snap happened (for the haptic).
-  (int, bool) _snapped(int value) {
-    int best = value;
-    int bestDistance = _snapToleranceMs + 1;
-    void consider(List<int> markers, int offset) {
-      for (final marker in markers) {
-        final candidate = marker - offset;
-        final distance = (candidate - value).abs();
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          best = candidate;
-        }
-      }
-    }
-
-    consider(_incomingDownbeats, 0);
-    consider(_outgoingDownbeats, widget.outgoingClip.sourceEndMs - value);
-    final (snappedValue, distance) = (best, bestDistance);
-    return (
-      snappedValue.clamp(500, _maxOverlapMs).toInt(),
-      distance <= _snapToleranceMs,
+  void _setOverlap(int value) {
+    final (snapped, didSnap) = MixTransitionEditorSheet.snapOverlap(
+      value: value.clamp(
+        MixTransitionEditorSheet.minOverlapMs,
+        _sliderMax,
+      ),
+      maxValue: _sliderMax,
+      incomingDownbeats: _downbeats(widget.incomingTrack),
+      outgoingDownbeats: _downbeats(widget.outgoingTrack),
+      outgoingSourceEndMs: widget.outgoingClip.sourceEndMs,
     );
-  }
-
-  Future<void> _dragBy(int deltaMs) async {
-    final target = (_overlapMs + deltaMs).clamp(500, _maxOverlapMs).toInt();
-    final (snapped, didSnap) = _snapped(target);
     if (didSnap) HapticFeedback.selectionClick();
     setState(() => _overlapMs = snapped);
   }
@@ -157,19 +216,13 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
     if (_saving) return;
     setState(() => _saving = true);
     try {
-      await widget.onSave(
-        MixTransitionEdit(
-          outgoing: widget.outgoingClip.copyWith(fadeOutMs: _overlapMs),
-          incoming: widget.incomingClip.copyWith(fadeInMs: _overlapMs),
-        ),
+      final edit = MixTransitionEdit(
+        outgoing: widget.outgoingClip.copyWith(fadeOutMs: _overlapMs),
+        incoming: widget.incomingClip.copyWith(fadeInMs: _overlapMs),
       );
+      await widget.onSave(edit);
       if (!mounted) return;
-      Navigator.of(context).pop(
-        MixTransitionEdit(
-          outgoing: widget.outgoingClip.copyWith(fadeOutMs: _overlapMs),
-          incoming: widget.incomingClip.copyWith(fadeInMs: _overlapMs),
-        ),
-      );
+      Navigator.of(context).pop(edit);
     } catch (_) {
       if (!mounted) return;
       setState(() => _saving = false);
@@ -206,152 +259,240 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
-      child: SizedBox(
-        height: MediaQuery.sizeOf(context).height * 0.92,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Edit transition',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _contextLine,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            _SeamCanvas(
-              overlapMs: _overlapMs,
-              maxOverlapMs: _maxOverlapMs,
-              outgoingPeaks:
-                  widget.outgoingTrack.analysis?.summary?.waveform != null
-                      ? const []
-                      : const [],
-              onDragDelta: _dragBy,
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  IconButton.outlined(
-                    onPressed: () => _dragBy(-500),
-                    tooltip: 'Shorten by half a second',
-                    icon: const Icon(Icons.remove),
-                  ),
-                  Expanded(
-                    child: Slider(
-                      value: _overlapMs.toDouble(),
-                      min: 500,
-                      max: _maxOverlapMs.toDouble(),
-                      divisions: ((_maxOverlapMs - 500) ~/ 250).clamp(1, 78),
-                      label: '${(_overlapMs / 1000).toStringAsFixed(1)}s',
-                      onChanged: (value) =>
-                          setState(() => _overlapMs = value.round()),
+    final dividerColor = Theme.of(context).dividerColor;
+    final accentColor = Theme.of(context).colorScheme.primary;
+    return PopScope(
+      canPop: !_saving,
+      child: Padding(
+        padding:
+            EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        child: SizedBox(
+          height: MediaQuery.sizeOf(context).height * 0.92,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Edit transition',
+                      style: Theme.of(context).textTheme.titleMedium,
                     ),
-                  ),
-                  IconButton.outlined(
-                    onPressed: () => _dragBy(500),
-                    tooltip: 'Lengthen by half a second',
-                    icon: const Icon(Icons.add),
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Wrap(
-                spacing: 8,
-                children: [
-                  for (final preset in const ['Fade', 'Cut'])
-                    ChoiceChip(
-                      label: Text(preset),
-                      selected: true,
-                      onSelected: (_) {},
+                    const SizedBox(height: 4),
+                    Text(
+                      _contextLine,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
                     ),
-                ],
+                  ],
+                ),
               ),
-            ),
-            const Spacer(),
-            SafeArea(
-              minimum: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed:
-                          _saving ? null : () => Navigator.of(context).pop(),
-                      child: const Text('Discard'),
-                    ),
+              const SizedBox(height: 12),
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _SeamCanvas(
+                        windowMs: _sliderMax,
+                        overlapMs: _overlapMs,
+                        outgoingPeaks:
+                            _windowPeaks(widget.outgoingTrack, tail: true),
+                        incomingPeaks:
+                            _windowPeaks(widget.incomingTrack, tail: false),
+                        outgoingDownbeats: _windowMarkers(
+                            _downbeats(widget.outgoingTrack),
+                            tail: true),
+                        incomingDownbeats: _windowMarkers(
+                            _downbeats(widget.incomingTrack),
+                            tail: false),
+                        dividerColor: dividerColor,
+                        accentColor: accentColor,
+                        onDragDeltaMs: (deltaMs) =>
+                            _setOverlap(_overlapMs - deltaMs),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Row(
+                          children: [
+                            IconButton.outlined(
+                              onPressed: _saving
+                                  ? null
+                                  : () => _setOverlap(
+                                        _overlapMs - 500,
+                                      ),
+                              tooltip: 'Shorten by half a second',
+                              icon: const Icon(Icons.remove),
+                            ),
+                            Expanded(
+                              child: Slider(
+                                value: _overlapMs.toDouble(),
+                                min: MixTransitionEditorSheet.minOverlapMs
+                                    .toDouble(),
+                                max: _sliderMax.toDouble(),
+                                divisions: ((_sliderMax -
+                                            MixTransitionEditorSheet
+                                                .minOverlapMs) ~/
+                                        250)
+                                    .clamp(1, 200),
+                                label:
+                                    '${(_overlapMs / 1000).toStringAsFixed(1)}s',
+                                onChanged: _saving
+                                    ? null
+                                    : (value) => setState(
+                                          () => _overlapMs = value.round(),
+                                        ),
+                              ),
+                            ),
+                            IconButton.outlined(
+                              onPressed: _saving
+                                  ? null
+                                  : () => _setOverlap(
+                                        _overlapMs + 500,
+                                      ),
+                              tooltip: 'Lengthen by half a second',
+                              icon: const Icon(Icons.add),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton(
-                      onPressed: _saving ? null : _save,
-                      child: _saving
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text('Save transition'),
-                    ),
-                  ),
-                ],
+                ),
               ),
-            ),
-          ],
+              SafeArea(
+                minimum: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed:
+                            _saving ? null : () => Navigator.of(context).pop(),
+                        child: const Text('Discard'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: _saving ? null : _save,
+                        child: _saving
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Text('Save transition'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
+
+  /// Peaks covering the seam window: the tail of the outgoing track and the
+  /// head of the incoming track. Empty when no analysis exists; the painter
+  /// draws honest flat fallback lanes in that case.
+  List<double> _windowPeaks(Track track, {required bool tail}) {
+    final summary = track.analysis?.summary;
+    final waveform = summary?.waveform;
+    if (waveform == null) return const [];
+    List<double>? peaks;
+    for (final resolution in waveform.resolutions) {
+      if (resolution.peaks.length > (peaks?.length ?? 0)) {
+        peaks = resolution.peaks;
+      }
+    }
+    if (peaks == null || peaks.isEmpty) return const [];
+    final durationMs = track.durationMs ?? 0;
+    if (durationMs <= 0) return const [];
+    final windowMs = math.min(_sliderMax, durationMs);
+    final count = ((windowMs / durationMs) * peaks.length).floor();
+    if (count <= 0) return const [];
+    return tail ? peaks.sublist(peaks.length - count) : peaks.sublist(0, count);
+  }
+
+  List<int> _windowMarkers(List<int> markers, {required bool tail}) {
+    final durationMs = tail
+        ? (widget.outgoingTrack.durationMs ?? 0)
+        : (widget.incomingTrack.durationMs ?? 0);
+    if (durationMs <= 0) return markers;
+    final windowMs = math.min(_sliderMax, durationMs);
+    return tail
+        ? markers.where((m) => m > durationMs - windowMs).toList()
+        : markers.where((m) => m < windowMs).toList();
+  }
 }
 
-/// Minimal two-lane canvas showing both waveforms around the seam anchor with
-/// a draggable transition window. Waveform detail renders from analysis peaks
-/// when present; unanalyzed tracks draw flat fallback lanes per design §4.
+/// Two-lane seam view. The horizontal axis spans [windowMs]: the top lane is
+/// the outgoing track's final window, the bottom lane is the incoming track's
+/// first window, and the shaded region spanning both lanes at the right edge
+/// is the overlap. Dragging the shaded edge resizes the overlap; pixels map
+/// linearly to milliseconds so the drag scale equals the paint scale.
 class _SeamCanvas extends StatelessWidget {
   const _SeamCanvas({
+    required this.windowMs,
     required this.overlapMs,
-    required this.maxOverlapMs,
     required this.outgoingPeaks,
-    required this.onDragDelta,
+    required this.incomingPeaks,
+    required this.outgoingDownbeats,
+    required this.incomingDownbeats,
+    required this.dividerColor,
+    required this.accentColor,
+    required this.onDragDeltaMs,
   });
 
+  final int windowMs;
   final int overlapMs;
-  final int maxOverlapMs;
   final List<double> outgoingPeaks;
-  final ValueChanged<int> onDragDelta;
+  final List<double> incomingPeaks;
+  final List<int> outgoingDownbeats;
+  final List<int> incomingDownbeats;
+  final Color dividerColor;
+  final Color accentColor;
+  final ValueChanged<int> onDragDeltaMs;
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onHorizontalDragUpdate: (details) =>
-          onDragDelta(details.delta.dx.round() * 10),
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 16),
-        height: _MixTransitionEditorSheetState._canvasHeight,
-        decoration: BoxDecoration(
-          border: Border.all(color: Theme.of(context).dividerColor),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: CustomPaint(
-          painter:
-              _SeamCanvasPainter(overlapFraction: overlapMs / maxOverlapMs),
-          size: Size.infinite,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragUpdate: (details) {
+            final msPerPx = windowMs /
+                (context.size?.width ?? 1).clamp(1.0, double.infinity);
+            onDragDeltaMs((details.delta.dx * msPerPx).round());
+          },
+          child: Container(
+            height: 220,
+            decoration: BoxDecoration(
+              border: Border.all(color: dividerColor),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: CustomPaint(
+              painter: _SeamCanvasPainter(
+                windowMs: windowMs,
+                overlapMs: overlapMs,
+                outgoingPeaks: outgoingPeaks,
+                incomingPeaks: incomingPeaks,
+                outgoingDownbeats: outgoingDownbeats,
+                incomingDownbeats: incomingDownbeats,
+                dividerColor: dividerColor,
+                accentColor: accentColor,
+              ),
+              size: Size.infinite,
+            ),
+          ),
         ),
       ),
     );
@@ -359,42 +500,126 @@ class _SeamCanvas extends StatelessWidget {
 }
 
 class _SeamCanvasPainter extends CustomPainter {
-  const _SeamCanvasPainter({required this.overlapFraction});
+  const _SeamCanvasPainter({
+    required this.windowMs,
+    required this.overlapMs,
+    required this.outgoingPeaks,
+    required this.incomingPeaks,
+    required this.outgoingDownbeats,
+    required this.incomingDownbeats,
+    required this.dividerColor,
+    required this.accentColor,
+  });
 
-  final double overlapFraction;
+  final int windowMs;
+  final int overlapMs;
+  final List<double> outgoingPeaks;
+  final List<double> incomingPeaks;
+  final List<int> outgoingDownbeats;
+  final List<int> incomingDownbeats;
+  final Color dividerColor;
+  final Color accentColor;
 
   @override
   void paint(Canvas canvas, Size size) {
     final laneHeight = size.height / 2;
-    final dividerPaint = Paint()
-      ..color = Colors.grey.shade400
-      ..strokeWidth = 1;
     canvas.drawLine(
       Offset(0, laneHeight),
       Offset(size.width, laneHeight),
-      dividerPaint,
+      Paint()
+        ..color = dividerColor
+        ..strokeWidth = 1,
     );
 
-    // Shade the overlap region ending at the seam anchor.
-    final anchorX = size.width * 0.7;
-    final overlapWidth = size.width * overlapFraction.clamp(0.02, 0.9);
-    final shade = Paint()..color = AppTheme.orange.withValues(alpha: 0.12);
+    double xForFraction(double fraction) =>
+        fraction.clamp(0.0, 1.0) * size.width;
+
+    void drawLane(List<double> peaks, Rect lane, List<int> downbeats,
+        {required bool tail, required int trackDurationMs}) {
+      if (peaks.isEmpty) {
+        canvas.drawLine(
+          Offset(0, lane.center.dy),
+          Offset(size.width, lane.center.dy),
+          Paint()
+            ..color = dividerColor
+            ..strokeWidth = 1,
+        );
+      } else {
+        final barWidth = size.width / peaks.length;
+        final paint = Paint()..color = accentColor.withValues(alpha: 0.55);
+        for (var i = 0; i < peaks.length; i++) {
+          final amplitude =
+              (peaks[i].abs().clamp(0.05, 1.0)) * (lane.height / 2 - 4);
+          canvas.drawRect(
+            Rect.fromLTWH(
+              i * barWidth,
+              lane.center.dy - amplitude,
+              math.max(1.0, barWidth * 0.8),
+              amplitude * 2,
+            ),
+            paint,
+          );
+        }
+      }
+      // Beat ticks. Window-local positions: the outgoing lane shows the tail
+      // of the track, so a marker at absolute ms maps to
+      // (marker - (duration - window)) / window.
+      final tickPaint = Paint()
+        ..color = accentColor
+        ..strokeWidth = 1;
+      for (final marker in downbeats) {
+        final localMs = tail ? marker - (trackDurationMs - windowMs) : marker;
+        if (localMs < 0 || localMs > windowMs) continue;
+        final x = xForFraction(localMs / windowMs);
+        canvas.drawLine(
+          Offset(x, lane.top),
+          Offset(x, lane.bottom),
+          tickPaint,
+        );
+      }
+    }
+
+    final outgoingDuration = windowMs; // window never exceeds track length
+    final incomingDuration = windowMs;
+    drawLane(
+      outgoingPeaks,
+      Rect.fromLTWH(0, 0, size.width, laneHeight),
+      outgoingDownbeats,
+      tail: true,
+      trackDurationMs: outgoingDuration,
+    );
+    drawLane(
+      incomingPeaks,
+      Rect.fromLTWH(0, laneHeight, size.width, laneHeight),
+      incomingDownbeats,
+      tail: false,
+      trackDurationMs: incomingDuration,
+    );
+
+    // Overlap region: the rightmost portion of both lanes.
+    final overlapWidth =
+        (overlapMs / math.max(1, windowMs)).clamp(0.0, 1.0) * size.width;
     canvas.drawRect(
-      Rect.fromLTWH(anchorX - overlapWidth, 0, overlapWidth, size.height),
-      shade,
+      Rect.fromLTWH(size.width - overlapWidth, 0, overlapWidth, size.height),
+      Paint()..color = accentColor.withValues(alpha: 0.14),
     );
 
-    final anchorPaint = Paint()
-      ..color = AppTheme.orange
-      ..strokeWidth = 2;
+    // Seam anchor at the right edge.
     canvas.drawLine(
-      Offset(anchorX, 0),
-      Offset(anchorX, size.height),
-      anchorPaint,
+      Offset(size.width - 1, 0),
+      Offset(size.width - 1, size.height),
+      Paint()
+        ..color = accentColor
+        ..strokeWidth = 2,
     );
   }
 
   @override
   bool shouldRepaint(_SeamCanvasPainter old) =>
-      old.overlapFraction != overlapFraction;
+      old.windowMs != windowMs ||
+      old.overlapMs != overlapMs ||
+      !identical(old.outgoingPeaks, outgoingPeaks) ||
+      !identical(old.incomingPeaks, incomingPeaks) ||
+      old.dividerColor != dividerColor ||
+      old.accentColor != accentColor;
 }

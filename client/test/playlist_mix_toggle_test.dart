@@ -67,9 +67,10 @@ Map<String, dynamic> _transitionJson(
 
 Map<String, dynamic> _mixPlanJson(List<int> trackIds) {
   var cursorMs = 0;
+  const overlapMs = 10000;
   final clips = <Map<String, dynamic>>[];
   for (var index = 0; index < trackIds.length; index++) {
-    final startMs = index == 0 ? 0 : cursorMs - 10000;
+    final startMs = index == 0 ? 0 : cursorMs - overlapMs;
     clips.add({
       'clipId': 'clip-${index + 1}',
       'queueItemId': 'queue-${index + 1}',
@@ -78,8 +79,9 @@ Map<String, dynamic> _mixPlanJson(List<int> trackIds) {
       'sourceEndMs': 200000,
       'timelineStartMs': startMs,
       'gainDb': index == 1 ? -1.5 : 0,
-      if (index > 0) 'fadeInMs': 7000,
-      if (index < trackIds.length - 1) 'fadeOutMs': 9000,
+      // Generator invariant: fadeOut(i) == fadeIn(i+1) == placement overlap.
+      if (index > 0) 'fadeInMs': overlapMs,
+      if (index < trackIds.length - 1) 'fadeOutMs': overlapMs,
     });
     cursorMs = startMs + 200000;
   }
@@ -231,8 +233,9 @@ void main() {
 
     expect(parsed.mixPlan?.id, 'plan-1');
     expect(parsed.mixPlan?.clips.map((clip) => clip.trackId), ['1', '2']);
-    expect(parsed.mixPlan?.clips.first.fadeOutMs, 9000);
-    expect(parsed.mixPlan?.clips.last.fadeInMs, 7000);
+    // Fixture models the generator invariant: fades equal the overlap.
+    expect(parsed.mixPlan?.clips.first.fadeOutMs, 10000);
+    expect(parsed.mixPlan?.clips.last.fadeInMs, 10000);
 
     final malformed = AutoMixResult.fromJson({
       'transitions': [_transitionJson(1, 2)],
@@ -353,13 +356,11 @@ void main() {
       },
     );
 
-    MixPlan? savedPlan;
     List<MixPlanClip>? savedClips;
     await _pumpDetail(
       tester,
       service,
       onSaveMixPlan: (plan, clips) async {
-        savedPlan = plan;
         savedClips = clips;
         return MixPlan(
           id: plan.id,
@@ -398,8 +399,20 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Transition saved'), findsOneWidget);
-    expect(savedPlan?.id, 'plan-1');
-    expect(savedClips?.first.fadeOutMs, isNotNull);
+    // Fades and placement move together to preserve the generator invariant
+    // fadeOut(i) == fadeIn(i+1) == placement overlap.
+    expect(savedClips?.first.fadeOutMs, 14769);
+    expect(savedClips?.last.fadeInMs, 14769);
+    final outgoing = savedClips!.first;
+    final incoming = savedClips!.last;
+    // The editor seeds from the persisted transition's overlapMs (14769 in
+    // the fixture), so an untouched save persists that value on both fades
+    // and moves placement to match.
+    // Timeline overlap: outgoing end minus incoming start.
+    final audibleOverlap =
+        (outgoing.timelineStartMs + outgoing.selectedDurationMs) -
+            incoming.timelineStartMs;
+    expect(audibleOverlap, 14769);
   });
 
   testWidgets('mix off reverts to the normal playlist view', (tester) async {
