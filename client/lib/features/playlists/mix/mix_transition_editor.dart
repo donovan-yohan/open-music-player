@@ -3,16 +3,28 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../../app/theme.dart';
 import '../../../models/mix_plan.dart';
 import '../../../shared/models/track.dart';
 import '../mix/mix_models.dart';
+import '../mix/mix_presets.dart';
 
 /// Result of an accepted edit in the transition editor.
 class MixTransitionEdit {
   final MixPlanClip outgoing;
   final MixPlanClip incoming;
 
-  const MixTransitionEdit({required this.outgoing, required this.incoming});
+  /// The preset whose concrete envelope values were written into the clips.
+  final MixPreset preset;
+
+  const MixTransitionEdit({
+    required this.outgoing,
+    required this.incoming,
+    this.preset = MixPreset.fade,
+  });
+
+  /// The placement overlap the clips were authored for. Cut is zero.
+  int get overlapMs => incoming.fadeInMs ?? 0;
 }
 
 /// Portrait-first sheet for editing one transition between two persisted plan
@@ -37,6 +49,8 @@ class MixTransitionEditorSheet extends StatefulWidget {
     required this.outgoingIsEndpoint,
     required this.incomingIsEndpoint,
     required this.onSave,
+    this.onPreview,
+    this.onStopPreview,
   });
 
   final Track outgoingTrack;
@@ -51,6 +65,15 @@ class MixTransitionEditorSheet extends StatefulWidget {
   final bool incomingIsEndpoint;
 
   final Future<void> Function(MixTransitionEdit edit) onSave;
+
+  /// Auditions the draft seam through the existing playback session. Null
+  /// disables the preview control entirely (tests, or a host with no
+  /// playback available).
+  final Future<void> Function(MixTransitionEdit draft)? onPreview;
+
+  /// Restores the listening queue the preview borrowed. Always called before
+  /// the sheet goes away, including on dispose.
+  final Future<void> Function()? onStopPreview;
 
   static const int minOverlapMs = 500;
   static const int defaultOverlapMs = 8000;
@@ -121,6 +144,8 @@ class MixTransitionEditorSheet extends StatefulWidget {
     required bool outgoingIsEndpoint,
     required bool incomingIsEndpoint,
     required Future<void> Function(MixTransitionEdit edit) onSave,
+    Future<void> Function(MixTransitionEdit draft)? onPreview,
+    Future<void> Function()? onStopPreview,
   }) {
     return showModalBottomSheet<MixTransitionEdit>(
       context: context,
@@ -137,6 +162,8 @@ class MixTransitionEditorSheet extends StatefulWidget {
         outgoingIsEndpoint: outgoingIsEndpoint,
         incomingIsEndpoint: incomingIsEndpoint,
         onSave: onSave,
+        onPreview: onPreview,
+        onStopPreview: onStopPreview,
       ),
     );
   }
@@ -149,7 +176,9 @@ class MixTransitionEditorSheet extends StatefulWidget {
 class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
   late int _overlapMs;
   late int _maxOverlapMs;
+  late MixPreset _preset;
   bool _saving = false;
+  bool _previewing = false;
 
   List<int> _downbeats(Track track) {
     final downbeats = track.analysis?.summary?.downbeats?.positionsMs;
@@ -174,6 +203,80 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
       ),
     );
     _overlapMs = _initialOverlap();
+    _preset = MixPreset.forOverlapMs(_overlapMs);
+    if (_preset.isCut) {
+      // A cut has no overlap to seed the slider from, so park the fade length
+      // at the default: switching back to Fade must land on something audible.
+      _overlapMs = math.min(
+        MixTransitionEditorSheet.defaultOverlapMs,
+        _maxOverlapMs,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    // The preview borrows the listening queue; it must be handed back even
+    // when the sheet goes away without Save or Discard being pressed.
+    if (_previewing) {
+      _previewing = false;
+      widget.onStopPreview?.call();
+    }
+    super.dispose();
+  }
+
+  /// The draft this sheet would save right now, with the selected preset's
+  /// concrete values already written into both clips.
+  MixTransitionEdit get _draft {
+    final applied = _preset.applyTo(
+      outgoing: widget.outgoingClip,
+      incoming: widget.incomingClip,
+      overlapMs: _overlapMs,
+    );
+    return MixTransitionEdit(
+      outgoing: applied.outgoing,
+      incoming: applied.incoming,
+      preset: _preset,
+    );
+  }
+
+  void _selectPreset(MixPreset preset) {
+    if (_preset == preset) return;
+    setState(() => _preset = preset);
+    // Switching presets changes what would be auditioned, so end the running
+    // preview rather than leaving it playing the previous shape.
+    _stopPreview();
+  }
+
+  Future<void> _togglePreview() async {
+    final onPreview = widget.onPreview;
+    if (onPreview == null) return;
+    if (_previewing) {
+      _stopPreview();
+      return;
+    }
+    setState(() => _previewing = true);
+    try {
+      await onPreview(_draft);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _previewing = false);
+      await widget.onStopPreview?.call();
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(content: Text('Could not preview this transition.')),
+      );
+    }
+  }
+
+  void _stopPreview() {
+    if (!_previewing) return;
+    if (mounted) {
+      setState(() => _previewing = false);
+    } else {
+      _previewing = false;
+    }
+    widget.onStopPreview?.call();
   }
 
   /// Seeds from the plan's own clips — the state this sheet edits — without
@@ -223,12 +326,10 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
 
   Future<void> _save() async {
     if (_saving) return;
+    _stopPreview();
     setState(() => _saving = true);
     try {
-      final edit = MixTransitionEdit(
-        outgoing: widget.outgoingClip.copyWith(fadeOutMs: _overlapMs),
-        incoming: widget.incomingClip.copyWith(fadeInMs: _overlapMs),
-      );
+      final edit = _draft;
       await widget.onSave(edit);
       if (!mounted) return;
       Navigator.of(context).pop(edit);
@@ -328,11 +429,11 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
                         child: Row(
                           children: [
                             IconButton.outlined(
-                              onPressed: _saving
-                                  ? null
-                                  : () => _setOverlap(
+                              onPressed: _overlapControlsEnabled
+                                  ? () => _setOverlap(
                                         _overlapMs - 500,
-                                      ),
+                                      )
+                                  : null,
                               tooltip: 'Shorten by half a second',
                               icon: const Icon(Icons.remove),
                             ),
@@ -349,25 +450,26 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
                                     .clamp(1, 200),
                                 label:
                                     '${(_overlapMs / 1000).toStringAsFixed(1)}s',
-                                onChanged: _saving
-                                    ? null
-                                    : (value) => setState(
+                                onChanged: _overlapControlsEnabled
+                                    ? (value) => setState(
                                           () => _overlapMs = value.round(),
-                                        ),
+                                        )
+                                    : null,
                               ),
                             ),
                             IconButton.outlined(
-                              onPressed: _saving
-                                  ? null
-                                  : () => _setOverlap(
+                              onPressed: _overlapControlsEnabled
+                                  ? () => _setOverlap(
                                         _overlapMs + 500,
-                                      ),
+                                      )
+                                  : null,
                               tooltip: 'Lengthen by half a second',
                               icon: const Icon(Icons.add),
                             ),
                           ],
                         ),
                       ),
+                      _buildPresetLadder(context),
                     ],
                   ),
                 ),
@@ -378,8 +480,12 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
                   children: [
                     Expanded(
                       child: OutlinedButton(
-                        onPressed:
-                            _saving ? null : () => Navigator.of(context).pop(),
+                        onPressed: _saving
+                            ? null
+                            : () {
+                                _stopPreview();
+                                Navigator.of(context).pop();
+                              },
                         child: const Text('Discard'),
                       ),
                     ),
@@ -403,6 +509,60 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// Cut has no overlap to author, so its length controls are inert rather
+  /// than silently ignored.
+  bool get _overlapControlsEnabled => !_saving && !_preset.isCut;
+
+  /// The shipped preset ladder: one chip per preset the engine can render,
+  /// each carrying the curve it will actually apply, plus the seam preview.
+  Widget _buildPresetLadder(BuildContext context) {
+    final theme = Theme.of(context);
+    final accent = theme.colorScheme.primary;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              for (final preset in MixPreset.shipped) ...[
+                ChoiceChip(
+                  key: ValueKey('mix_preset_${preset.id.name}'),
+                  selected: _preset == preset,
+                  onSelected:
+                      _saving ? null : (_) => _selectPreset(preset),
+                  avatar: MixPresetGlyph(
+                    preset: preset,
+                    color: _preset == preset ? accent : AppTheme.textSecondary,
+                  ),
+                  label: Text(preset.label),
+                ),
+                const SizedBox(width: 8),
+              ],
+              const Spacer(),
+              if (widget.onPreview != null)
+                TextButton.icon(
+                  key: const ValueKey('mix_preview_button'),
+                  onPressed: _saving ? null : _togglePreview,
+                  icon: Icon(
+                    _previewing ? Icons.stop_circle_outlined : Icons.headphones,
+                  ),
+                  label: Text(_previewing ? 'Stop' : 'Preview'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _preset.blurb,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
       ),
     );
   }

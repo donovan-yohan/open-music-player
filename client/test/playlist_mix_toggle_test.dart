@@ -312,10 +312,11 @@ void main() {
     expect(find.text('124 BPM'), findsOneWidget);
     expect(find.text('10B'), findsOneWidget);
 
-    // Smart Reorder belongs to slice 3, where it can regenerate the plan.
+    // Smart Reorder lives in the mix toolbar and is only offered while the
+    // blended view is on, where it can regenerate the plan with the order.
     expect(
       find.byKey(const ValueKey('mix_reorder_button')),
-      findsNothing,
+      findsOneWidget,
     );
   });
 

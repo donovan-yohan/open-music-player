@@ -200,6 +200,24 @@ class PlaylistService {
     return AutoMixResult.fromJson(response.data ?? const {});
   }
 
+  /// Sequences the playlist by tempo and key on the server, which persists the
+  /// new order and — when [mixPlanId] names the playlist's active plan —
+  /// regenerates that plan for the new order in the same operation.
+  Future<SmartReorderResult> smartReorder(
+    int playlistId, {
+    String? mixPlanId,
+    bool regeneratePlan = true,
+  }) async {
+    final response = await _api.post<Map<String, dynamic>>(
+      '/playlists/$playlistId/smart-reorder',
+      data: {
+        if (mixPlanId != null) 'mixPlanId': mixPlanId,
+        'regeneratePlan': regeneratePlan,
+      },
+    );
+    return SmartReorderResult.fromJson(response.data ?? const {});
+  }
+
   Future<void> reorderTrack(
     int playlistId, {
     required int trackId,

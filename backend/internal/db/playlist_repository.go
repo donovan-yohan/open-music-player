@@ -596,3 +596,78 @@ func (r *PlaylistRepository) ReorderTrack(ctx context.Context, playlistID, track
 	_, err = r.db.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID)
 	return err
 }
+
+// ErrPlaylistOrderMismatch reports that a requested full ordering does not
+// describe exactly the playlist's current track set.
+var ErrPlaylistOrderMismatch = errors.New("playlist order does not match the playlist's tracks")
+
+// SetTrackOrder rewrites the playlist's positions to match orderedTrackIDs
+// exactly, in one transaction.
+//
+// ReorderTrack moves a single track and is not transactional, so replaying it
+// once per track would leave a partially reordered playlist behind any failure
+// — exactly the displayed-order/played-order desync this endpoint exists to
+// prevent. The ordering must be a permutation of the playlist's current track
+// set; anything else is rejected before a row is touched.
+func (r *PlaylistRepository) SetTrackOrder(ctx context.Context, playlistID int64, orderedTrackIDs []int64) error {
+	if len(orderedTrackIDs) == 0 {
+		return ErrPlaylistOrderMismatch
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Lock the playlist's rows for the duration so a concurrent add/remove
+	// cannot slip between the validation and the rewrite.
+	rows, err := tx.QueryContext(
+		ctx,
+		`SELECT track_id FROM playlist_tracks WHERE playlist_id = $1 FOR UPDATE`,
+		playlistID,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	existing := make(map[int64]bool)
+	for rows.Next() {
+		var trackID int64
+		if err := rows.Scan(&trackID); err != nil {
+			return err
+		}
+		existing[trackID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if len(existing) == 0 {
+		return ErrPlaylistNotFound
+	}
+	if len(existing) != len(orderedTrackIDs) {
+		return ErrPlaylistOrderMismatch
+	}
+	seen := make(map[int64]bool, len(orderedTrackIDs))
+	for _, trackID := range orderedTrackIDs {
+		if !existing[trackID] || seen[trackID] {
+			return ErrPlaylistOrderMismatch
+		}
+		seen[trackID] = true
+	}
+
+	updateQuery := `UPDATE playlist_tracks SET position = $1 WHERE playlist_id = $2 AND track_id = $3`
+	for position, trackID := range orderedTrackIDs {
+		if _, err := tx.ExecContext(ctx, updateQuery, position, playlistID, trackID); err != nil {
+			return err
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE playlists SET updated_at = NOW() WHERE id = $1`, playlistID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
