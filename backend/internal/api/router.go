@@ -41,6 +41,7 @@ type Router struct {
 	playlistImportHandlers  *PlaylistImportHandlers
 	playlistMixHandlers     *PlaylistMixHandlers
 	autoBlendHandlers       *PlaylistAutoBlendHandlers
+	smartReorderHandlers    *PlaylistSmartReorderHandlers
 	mixPlanHandlers         *MixPlanHandlers
 	downloadHandlers        *DownloadHandlers
 	sourceSelectionHandlers *SourceSelectionHandlers
@@ -80,6 +81,7 @@ type RouterConfig struct {
 	PlaylistImportHandlers  *PlaylistImportHandlers
 	PlaylistMixHandlers     *PlaylistMixHandlers
 	AutoBlendHandlers       *PlaylistAutoBlendHandlers
+	SmartReorderHandlers    *PlaylistSmartReorderHandlers
 	MixPlanHandlers         *MixPlanHandlers
 	DownloadHandlers        *DownloadHandlers
 	SourceSelectionHandlers *SourceSelectionHandlers
@@ -144,6 +146,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		playlistImportHandlers:  cfg.PlaylistImportHandlers,
 		playlistMixHandlers:     cfg.PlaylistMixHandlers,
 		autoBlendHandlers:       cfg.AutoBlendHandlers,
+		smartReorderHandlers:    cfg.SmartReorderHandlers,
 		mixPlanHandlers:         cfg.MixPlanHandlers,
 		downloadHandlers:        cfg.DownloadHandlers,
 		sourceSelectionHandlers: cfg.SourceSelectionHandlers,
@@ -347,6 +350,11 @@ func (r *Router) setupRoutes() {
 	// the route absent rather than unauthenticated.
 	if r.autoBlendHandlers != nil {
 		r.mux.HandleFunc("POST /api/v1/playlists/{id}/auto-mix", r.withAuth(r.autoBlendHandlers.CreateAutoMixFromPlaylist))
+	}
+	// Smart reorder: sequence the playlist by DJ adjacency and keep the active
+	// plan coherent with the persisted order in the same request.
+	if r.smartReorderHandlers != nil {
+		r.mux.HandleFunc("POST /api/v1/playlists/{id}/smart-reorder", r.withAuth(r.smartReorderHandlers.SmartReorderPlaylist))
 	}
 	if r.playlistImportHandlers != nil {
 		r.mux.HandleFunc("POST /api/v1/playlist-imports", r.withAuth(r.playlistImportHandlers.CreateImport))

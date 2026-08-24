@@ -205,8 +205,23 @@ func (h *PlaylistAutoBlendHandlers) CreateAutoMixFromPlaylist(w http.ResponseWri
 // earlier). Source windows span the full track so nothing is trimmed. A
 // per-clip seam budget preserves a full-gain plateau for short interior clips.
 func buildAutoBlendMix(playlistID int64, facts []autoBlendTrackFacts) ([]MixPlanClip, []AutoMixTransition) {
+	transitions := computeAutoBlendTransitions(facts)
+	overlaps := make([]int64, len(transitions))
+	for i, transition := range transitions {
+		overlaps[i] = transition.OverlapMs
+	}
+	return layoutAutoBlendClips(playlistID, facts, overlaps), transitions
+}
+
+// computeAutoBlendTransitions derives every seam for an ordered track list,
+// already bounded by the per-clip seam budgets. Callers that need to override
+// individual overlaps (smart reorder preserving user-edited seams) reuse this
+// and then re-lay the clips with layoutAutoBlendClips.
+func computeAutoBlendTransitions(facts []autoBlendTrackFacts) []AutoMixTransition {
 	n := len(facts)
-	overlaps := make([]int64, n-1)
+	if n < 2 {
+		return nil
+	}
 	transitions := make([]AutoMixTransition, n-1)
 	for i := 0; i+1 < n; i++ {
 		tr := computeAutoBlendTransition(i, facts[i], facts[i+1])
@@ -218,9 +233,18 @@ func buildAutoBlendMix(playlistID int64, facts []autoBlendTrackFacts) ([]MixPlan
 			i+1 < n-1,
 		)
 		transitions[i] = tr
-		overlaps[i] = tr.OverlapMs
 	}
+	return transitions
+}
 
+// layoutAutoBlendClips places one clip per track with the supplied per-seam
+// overlaps. Overlaps must have exactly len(facts)-1 entries.
+func layoutAutoBlendClips(
+	playlistID int64,
+	facts []autoBlendTrackFacts,
+	overlaps []int64,
+) []MixPlanClip {
+	n := len(facts)
 	clips := make([]MixPlanClip, 0, n)
 	timelineStart := int64(0)
 	for i := 0; i < n; i++ {
@@ -253,7 +277,7 @@ func buildAutoBlendMix(playlistID int64, facts []autoBlendTrackFacts) ([]MixPlan
 			timelineStart -= overlaps[i]
 		}
 	}
-	return clips, transitions
+	return clips
 }
 
 // autoBlendBoundTransitionForClipBudgets prevents two adjacent seams from
