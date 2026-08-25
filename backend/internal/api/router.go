@@ -42,6 +42,7 @@ type Router struct {
 	playlistMixHandlers     *PlaylistMixHandlers
 	autoBlendHandlers       *PlaylistAutoBlendHandlers
 	smartReorderHandlers    *PlaylistSmartReorderHandlers
+	nearbyTracksHandlers    *NearbyTracksHandlers
 	mixPlanHandlers         *MixPlanHandlers
 	downloadHandlers        *DownloadHandlers
 	sourceSelectionHandlers *SourceSelectionHandlers
@@ -82,6 +83,7 @@ type RouterConfig struct {
 	PlaylistMixHandlers     *PlaylistMixHandlers
 	AutoBlendHandlers       *PlaylistAutoBlendHandlers
 	SmartReorderHandlers    *PlaylistSmartReorderHandlers
+	NearbyTracksHandlers    *NearbyTracksHandlers
 	MixPlanHandlers         *MixPlanHandlers
 	DownloadHandlers        *DownloadHandlers
 	SourceSelectionHandlers *SourceSelectionHandlers
@@ -147,6 +149,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		playlistMixHandlers:     cfg.PlaylistMixHandlers,
 		autoBlendHandlers:       cfg.AutoBlendHandlers,
 		smartReorderHandlers:    cfg.SmartReorderHandlers,
+		nearbyTracksHandlers:    cfg.NearbyTracksHandlers,
 		mixPlanHandlers:         cfg.MixPlanHandlers,
 		downloadHandlers:        cfg.DownloadHandlers,
 		sourceSelectionHandlers: cfg.SourceSelectionHandlers,
@@ -292,6 +295,11 @@ func (r *Router) setupRoutes() {
 	} else {
 		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/analysis", r.withAuth(unavailableHandler("Track analysis is unavailable")))
 		r.mux.HandleFunc("PATCH /api/v1/tracks/{track_id}/analysis/overrides", r.withAuth(unavailableHandler("Track analysis is unavailable")))
+	}
+	// Harmonic candidate search is only wired with its optional mix handler. A
+	// configured but disabled handler answers 404 after the ordinary auth boundary.
+	if r.nearbyTracksHandlers != nil {
+		r.mux.HandleFunc("GET /api/v1/tracks/nearby", r.withAuth(r.nearbyTracksHandlers.GetNearbyTracks))
 	}
 	// Opt-in, on-demand stem separation. Registered even when disabled so auth is
 	// evaluated before an availability response, and never as a library sweep.
