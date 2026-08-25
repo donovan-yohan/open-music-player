@@ -15,11 +15,14 @@ import (
 )
 
 type nearbyTrackReader interface {
-	NearbyTracks(ctx context.Context, userID uuid.UUID, bpm, tolerance float64, camelotCandidates []string) ([]db.NearbyTrack, error)
+	NearbyTracks(ctx context.Context, userID uuid.UUID, bpm, tolerance float64, camelotCandidates []string, rank db.AffinityRank) ([]db.NearbyTrack, error)
 }
 
 // NearbyTracksHandlers exposes GET /api/v1/tracks/nearby. It is configured by
 // ENABLE_PLAYLIST_MIX alongside the other server-side DJ building blocks.
+// order=history re-ranks the harmonically feasible set by the caller's
+// play_events listening affinity (recency-decayed); the default ordering is
+// pure harmonic proximity.
 type NearbyTracksHandlers struct {
 	tracks  nearbyTrackReader
 	enabled bool
@@ -43,6 +46,7 @@ type NearbyTracksResponse struct {
 	BPM       float64               `json:"bpm"`
 	Camelot   string                `json:"camelot"`
 	Tolerance float64               `json:"tolerance"`
+	Order     string                `json:"order,omitempty"`
 }
 
 func (h *NearbyTracksHandlers) GetNearbyTracks(w http.ResponseWriter, r *http.Request) {
@@ -61,9 +65,14 @@ func (h *NearbyTracksHandlers) GetNearbyTracks(w http.ResponseWriter, r *http.Re
 		writeErrorResponse(w, http.StatusBadRequest, "VALIDATION_ERROR", "bpm, camelot, and non-negative tolerance are required")
 		return
 	}
+	rank, ok := parseNearbyRankQuery(r)
+	if !ok {
+		writeErrorResponse(w, http.StatusBadRequest, "VALIDATION_ERROR", "order must be one of: (empty), history")
+		return
+	}
 
 	candidates := compatibleCamelotLabels(number, letter)
-	tracks, err := h.tracks.NearbyTracks(r.Context(), userCtx.UserID, bpm, tolerance, candidates)
+	tracks, err := h.tracks.NearbyTracks(r.Context(), userCtx.UserID, bpm, tolerance, candidates, rank)
 	if err != nil {
 		writeErrorResponse(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to find nearby tracks")
 		return
@@ -91,11 +100,16 @@ func (h *NearbyTracksHandlers) GetNearbyTracks(w http.ResponseWriter, r *http.Re
 		responseTracks = append(responseTracks, response)
 	}
 
+	responseOrder := ""
+	if rank == db.AffinityRankHistory {
+		responseOrder = string(rank)
+	}
 	writeNearbyTracksJSON(w, http.StatusOK, NearbyTracksResponse{
 		Tracks:    responseTracks,
 		BPM:       bpm,
 		Camelot:   canonicalCamelotLabel(number, letter),
 		Tolerance: tolerance,
+		Order:     responseOrder,
 	})
 }
 
@@ -110,6 +124,20 @@ func parseNearbyTrackQuery(r *http.Request) (bpm, tolerance float64, number int,
 	}
 	number, letter, ok = autoBlendParseCamelot(r.URL.Query().Get("camelot"))
 	return bpm, tolerance, number, letter, ok
+}
+
+// parseNearbyRankQuery reads the optional ordering option. Empty means the
+// default harmonic-proximity order; "history" enables play_events affinity
+// ranking; anything else is a validation error.
+func parseNearbyRankQuery(r *http.Request) (db.AffinityRank, bool) {
+	switch r.URL.Query().Get("order") {
+	case "":
+		return db.AffinityRankOff, true
+	case string(db.AffinityRankHistory):
+		return db.AffinityRankHistory, true
+	default:
+		return db.AffinityRankOff, false
+	}
 }
 
 // compatibleCamelotLabels derives the indexed SQL candidate set by calling the

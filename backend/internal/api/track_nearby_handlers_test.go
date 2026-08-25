@@ -21,6 +21,7 @@ type fakeNearbyTrackReader struct {
 	gotBPM       float64
 	gotTolerance float64
 	gotCamelot   []string
+	gotRank      db.AffinityRank
 }
 
 func (r *fakeNearbyTrackReader) NearbyTracks(
@@ -28,11 +29,13 @@ func (r *fakeNearbyTrackReader) NearbyTracks(
 	userID uuid.UUID,
 	bpm, tolerance float64,
 	camelot []string,
+	rank db.AffinityRank,
 ) ([]db.NearbyTrack, error) {
 	r.gotUserID = userID
 	r.gotBPM = bpm
 	r.gotTolerance = tolerance
 	r.gotCamelot = append([]string(nil), camelot...)
+	r.gotRank = rank
 	return r.tracks, nil
 }
 
@@ -115,5 +118,42 @@ func TestNearbyTracksUsesSharedCamelotCompatibility(t *testing.T) {
 	}
 	if len(store.gotCamelot) != 4 {
 		t.Fatalf("candidate Camelot labels = %#v, want four canonical compatibility labels", store.gotCamelot)
+	}
+	if store.gotRank != db.AffinityRankOff {
+		t.Fatalf("default rank = %q, want %q", store.gotRank, db.AffinityRankOff)
+	}
+}
+
+func TestNearbyTracksPassesHistoryRankAndRejectsUnknownOrder(t *testing.T) {
+	userID := uuid.New()
+	store := &fakeNearbyTrackReader{tracks: []db.NearbyTrack{
+		{ID: 1, Title: "played", EffectiveBPM: 120, EffectiveCamelot: "1A"},
+	}}
+	h := NewNearbyTracksHandlers(store, true)
+
+	req := authedRequest(userID, http.MethodGet, "/api/v1/tracks/nearby?bpm=120&camelot=1A&tolerance=5&order=history", nil)
+	rec := httptest.NewRecorder()
+	h.GetNearbyTracks(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if store.gotRank != db.AffinityRankHistory {
+		t.Fatalf("rank = %q, want %q", store.gotRank, db.AffinityRankHistory)
+	}
+	var response NearbyTracksResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Order != string(db.AffinityRankHistory) {
+		t.Fatalf("response order = %q, want %q", response.Order, db.AffinityRankHistory)
+	}
+
+	badReq := authedRequest(userID, http.MethodGet, "/api/v1/tracks/nearby?bpm=120&camelot=1A&tolerance=5&order=vibes", nil)
+	badRec := httptest.NewRecorder()
+	h.GetNearbyTracks(badRec, badReq)
+
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown order status = %d, want %d", badRec.Code, http.StatusBadRequest)
 	}
 }
