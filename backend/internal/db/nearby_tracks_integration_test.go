@@ -96,7 +96,7 @@ func TestNearbyTracksUsesEffectiveAnalysisIndexAtTenThousandTracks(t *testing.T)
 			)
 		FROM tracks
 	`); err != nil {
-		t.Fatalf("seed analyses: %v", err)
+		t.Fatalf("seed analyzes: %v", err)
 	}
 	if _, err := database.ExecContext(ctx, `ANALYZE tracks; ANALYZE user_library; ANALYZE track_analysis`); err != nil {
 		t.Fatalf("analyze performance fixture: %v", err)
