@@ -416,7 +416,7 @@ func TestSmartReorderRegeneratesThePlanAndReportsSeamCounts(t *testing.T) {
 	// Hand-author seam 1 (track 2 -> track 3); seam 0 stays generated.
 	editedOverlap := generated[1].OverlapMs + 4000
 	clips := layoutAutoBlendClips(7, facts, []int64{generated[0].OverlapMs, editedOverlap})
-	plan := smartReorderPlan(t, userID, "Mix QA (Auto)", clips)
+	plan := smartReorderPlan(t, userID, autoBlendMixName("Autoblend"), clips)
 
 	store := &fakeMixPlanStore{getPlan: plan}
 	order := &fakePlaylistOrderWriter{}
@@ -474,7 +474,7 @@ func TestSmartReorderKeepsEditedSeamThatStaysAdjacent(t *testing.T) {
 	generated := computeAutoBlendTransitions(facts)
 	editedOverlap := generated[0].OverlapMs + 3000
 	clips := layoutAutoBlendClips(7, facts, []int64{editedOverlap, generated[1].OverlapMs})
-	plan := smartReorderPlan(t, userID, "Mix QA (Auto)", clips)
+	plan := smartReorderPlan(t, userID, autoBlendMixName("Autoblend"), clips)
 
 	store := &fakeMixPlanStore{getPlan: plan}
 	h := NewPlaylistSmartReorderHandlers(reader, &fakePlaylistOrderWriter{}, store, true)
@@ -505,7 +505,10 @@ func TestSmartReorderKeepsEditedSeamThatStaysAdjacent(t *testing.T) {
 	}
 }
 
-func TestSmartReorderSkipsPlanWorkWhenRegenerateIsFalse(t *testing.T) {
+func TestSmartReorderIgnoresRegeneratePlanFalseAndAlwaysReblends(t *testing.T) {
+	// F-2: regeneratePlan=false used to persist the order without touching the
+	// plan — the exact desync this endpoint exists to prevent. The field is
+	// now ignored; reblend-always is the contract.
 	userID := uuid.New()
 	tracks := []db.Track{
 		autoBlendTrack(1, 200000, 120, true, "8A"),
@@ -517,7 +520,7 @@ func TestSmartReorderSkipsPlanWorkWhenRegenerateIsFalse(t *testing.T) {
 		autoBlendTrackFactsFromAnalysis(tracks[1]),
 	}
 	clips, _ := buildAutoBlendMix(7, facts)
-	plan := smartReorderPlan(t, userID, "Mix QA (Auto)", clips)
+	plan := smartReorderPlan(t, userID, autoBlendMixName("Autoblend"), clips)
 	store := &fakeMixPlanStore{getPlan: plan}
 	h := NewPlaylistSmartReorderHandlers(reader, &fakePlaylistOrderWriter{}, store, true)
 
@@ -528,8 +531,8 @@ func TestSmartReorderSkipsPlanWorkWhenRegenerateIsFalse(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if store.updated != nil {
-		t.Fatal("regeneratePlan=false must not write the plan")
+	if store.updated == nil {
+		t.Fatal("regeneratePlan=false must be ignored; the plan is always regenerated")
 	}
 }
 
@@ -546,7 +549,7 @@ func TestSmartReorderRollsBackTheOrderWhenThePlanWriteFails(t *testing.T) {
 		facts[i] = autoBlendTrackFactsFromAnalysis(tracks[i])
 	}
 	clips, _ := buildAutoBlendMix(7, facts)
-	plan := smartReorderPlan(t, userID, "Mix QA (Auto)", clips)
+	plan := smartReorderPlan(t, userID, autoBlendMixName("Autoblend"), clips)
 
 	store := &fakeMixPlanStore{getPlan: plan, updateErr: db.ErrMixPlanVersionConflict}
 	order := &fakePlaylistOrderWriter{}

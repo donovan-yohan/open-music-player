@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../app/theme.dart';
 import '../../models/track_analysis.dart';
 import 'mix/mix_models.dart';
+import 'mix/mix_presets.dart';
 
 /// Right-aligned BPM + Camelot key badges for a blended playlist row.
 ///
@@ -106,7 +107,15 @@ class MixSeamConnector extends StatelessWidget {
     }
   }
 
-  String get preset => transition?.preset ?? 'Fade';
+  /// The preset badge shown on the seam. Server auto-blend may report
+  /// Rise/Blend (beat-aligned geometry), which the editor ladder cannot offer
+  /// until the engine renders filter automation; the badge shows only what
+  /// the engine actually renders so tapping through to the editor is never a
+  /// downgrade surprise (review finding F-4).
+  String get preset {
+    final label = transition?.preset ?? 'Fade';
+    return MixPreset.shipped.any((p) => p.label == label) ? label : 'Fade';
+  }
 
   String get overlapLabel =>
       transition?.overlapLabel() ?? 'Simple fade between tracks';

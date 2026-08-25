@@ -207,8 +207,15 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     if (outgoingIndex < 0 || incomingIndex < 0) return null;
 
     final clips = [...source];
-    clips[outgoingIndex] = edit.outgoing;
-    clips[incomingIndex] = edit.incoming;
+
+    // Apply only the authored fade values onto the CURRENT clips rather than
+    // substituting the stale editor copies wholesale: a concurrent writer's
+    // non-fade fields (gain, source bounds, stem edits) must survive a rebase.
+    // (Review finding H1.)
+    clips[outgoingIndex] =
+        source[outgoingIndex].copyWith(fadeOutMs: edit.outgoing.fadeOutMs);
+    clips[incomingIndex] =
+        source[incomingIndex].copyWith(fadeInMs: edit.incoming.fadeInMs);
 
     final previousOutgoing = source[outgoingIndex];
     final previousIncoming = source[incomingIndex];

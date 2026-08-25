@@ -33,7 +33,7 @@ void main() {
     expect(MixPresetId.values, [MixPresetId.fade, MixPresetId.cut]);
   });
 
-  test('Fade writes the requested overlap into both fades and unity gain', () {
+  test('Fade writes the requested overlap into both fades and preserves clip gain', () {
     final applied = MixPreset.fade.applyTo(
       outgoing: _clip('clip-1', timelineStartMs: 0, gainDb: -1.5),
       incoming: _clip('clip-2', timelineStartMs: 190000, gainDb: -1.5),
@@ -42,10 +42,9 @@ void main() {
 
     expect(applied.outgoing.fadeOutMs, 8000);
     expect(applied.incoming.fadeInMs, 8000);
-    // The preset is a complete statement of the seam envelope, so it writes
-    // its own gain rather than inheriting whatever the clip carried.
-    expect(applied.outgoing.gainDb, 0);
-    expect(applied.incoming.gainDb, 0);
+    // Unity presets must not clobber an authored per-clip gain (F-5).
+    expect(applied.outgoing.gainDb, -1.5);
+    expect(applied.incoming.gainDb, -1.5);
   });
 
   test('Cut writes zero fades regardless of the requested overlap', () {

@@ -145,7 +145,11 @@ func (h *PlaylistSmartReorderHandlers) SmartReorderPlaylist(w http.ResponseWrite
 		plan        *db.MixPlan
 		planPayload MixPlanPayload
 	)
-	regenerate := req.RegeneratePlan == nil || *req.RegeneratePlan
+	// The regeneratePlan request field is accepted for API compatibility but
+	// deliberately ignored: persisting an order without regenerating its plan
+	// is exactly the desync this endpoint exists to prevent (review finding
+	// F-2). Reblend-always is the contract.
+	regenerate := true
 	if req.MixPlanID != "" {
 		planID, parseErr := uuid.Parse(req.MixPlanID)
 		if parseErr != nil {
@@ -168,6 +172,17 @@ func (h *PlaylistSmartReorderHandlers) SmartReorderPlaylist(w http.ResponseWrite
 		if !smartReorderPlanCoversPlaylist(planPayload.Clips, previousOrder) {
 			writeMixPlanError(w, http.StatusBadRequest, "VALIDATION_ERROR",
 				"mix plan does not describe this playlist's tracks; reblend before reordering")
+			return
+		}
+		// Ownership-of-intent check (review finding F-6): mix plans carry no
+		// playlist FK, so a matching track multiset alone would let any of the
+		// user's plans over this same track set be reordered. Plans created by
+		// the app are named after the playlist (auto-blend derives the name;
+		// the editor save echoes it), so require that linkage.
+		if name := planPayload.Name; name != autoBlendMixName(playlist.Name) &&
+			name != playlist.Name {
+			writeMixPlanError(w, http.StatusBadRequest, "VALIDATION_ERROR",
+				"mix plan is not linked to this playlist; reblend from the playlist first")
 			return
 		}
 	}

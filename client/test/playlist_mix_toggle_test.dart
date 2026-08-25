@@ -304,7 +304,9 @@ void main() {
     expect(find.byKey(const Key('mix_seam_2_3')), findsOneWidget);
 
     // Preset chip text from the plan.
-    expect(find.text('Blend'), findsNWidgets(2));
+    // Server reports Blend (beat-aligned), but the engine-honest badge (F-4)
+    // renders Fade until filter automation ships.
+    expect(find.text('Fade'), findsNWidgets(2));
     // Overlap label: 10000 ms -> "10s · 8 bars" (consistent fixture).
     expect(find.text('10s · 8 bars'), findsNWidgets(2));
 
@@ -510,6 +512,102 @@ void main() {
       newSeam0Overlap,
     );
     // Seam 1 keeps its exact original geometry.
+    expect(clips[1].fadeOutMs, originalOverlapMs);
+    expect(clips[2].fadeInMs, originalOverlapMs);
+    expect(
+      (clips[1].timelineStartMs + clips[1].selectedDurationMs) -
+          clips[2].timelineStartMs,
+      originalOverlapMs,
+    );
+    assertInvariant(clips);
+  });
+
+  testWidgets('shortening one seam of a three-track plan preserves every seam',
+      (tester) async {
+    tester.view.physicalSize = const Size(600, 1400);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    const originalOverlapMs = 10000;
+    List<MixPlanClip>? savedClips;
+
+    final service = _StubPlaylistService(
+      tracks: [_track(1), _track(2), _track(3)],
+      autoMixResult: {
+        'playlistId': 7,
+        'transitions': [
+          _transitionJson(1, 2),
+          _transitionJson(2, 3),
+        ],
+        'mixPlan': _mixPlanJson([1, 2, 3]),
+      },
+    );
+
+    await _pumpDetail(
+      tester,
+      service,
+      onSaveMixPlan: (plan, clips) async {
+        savedClips = clips;
+        return MixPlan(
+          id: plan.id,
+          schemaVersion: plan.schemaVersion,
+          name: plan.name,
+          clips: clips,
+          summary: plan.summary,
+          version: plan.version + 1,
+          createdAt: plan.createdAt,
+          updatedAt: DateTime.utc(2026, 8, 24, 12),
+        );
+      },
+    );
+    await tester.tap(find.byKey(const ValueKey('mix_toggle')));
+    await tester.pumpAndSettle();
+
+    void assertInvariant(List<MixPlanClip> clips) {
+      for (var i = 0; i + 1 < clips.length; i++) {
+        final placementOverlap =
+            (clips[i].timelineStartMs + clips[i].selectedDurationMs) -
+                clips[i + 1].timelineStartMs;
+        expect(clips[i].fadeOutMs, placementOverlap, reason: 'seam $i fadeOut');
+        expect(clips[i + 1].fadeInMs, placementOverlap,
+            reason: 'seam $i fadeIn');
+      }
+    }
+
+    await tester.drag(
+        find.text('Blended 2 transitions. Tap any seam to adjust.'),
+        const Offset(0, 40));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find
+          .descendant(
+            of: find.byKey(const Key('mix_seam_1_2')),
+            matching: find.byType(InkWell),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+
+    // Shorten by four stepper steps (-2000 ms total), the mirror of the
+    // lengthen case above.
+    for (var i = 0; i < 4; i++) {
+      await tester.tap(find.byIcon(Icons.remove));
+      await tester.pump();
+    }
+    await tester.tap(find.text('Save transition'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Transition saved'), findsOneWidget);
+    final clips = savedClips!;
+    const newSeam0Overlap = originalOverlapMs - 2000;
+    expect(clips[0].fadeOutMs, newSeam0Overlap);
+    expect(clips[1].fadeInMs, newSeam0Overlap);
+    expect(
+      (clips[0].timelineStartMs + clips[0].selectedDurationMs) -
+          clips[1].timelineStartMs,
+      newSeam0Overlap,
+    );
     expect(clips[1].fadeOutMs, originalOverlapMs);
     expect(clips[2].fadeInMs, originalOverlapMs);
     expect(

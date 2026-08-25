@@ -67,6 +67,17 @@ cmd="${1:-}"
 case "$cmd" in
   start-backend)
     "$ROOT/scripts/local-low-memory.sh" start
+    # Guard against silent mis-provisioning: if the backend's signed URLs point
+    # at localhost (compose default when the export is lost), emulator/remote
+    # playback stalls with PLAYING-but-zero-position and no AudioTrack. Fail
+    # loudly instead (Mix slice-3 QA incident, 2026-08-24).
+    running_endpoint="$(docker exec "${COMPOSE_PROJECT_NAME:-open-music-player}-backend-1" env 2>/dev/null \
+      | awk -F= '/^MINIO_PUBLIC_ENDPOINT=/{print $2}')"
+    if [ -n "$running_endpoint" ] && [ "$running_endpoint" != "$MINIO_PUBLIC_ENDPOINT" ]; then
+      echo "ERROR: backend MINIO_PUBLIC_ENDPOINT=$running_endpoint but expected $MINIO_PUBLIC_ENDPOINT" >&2
+      echo "       signed audio URLs would be unreachable from other tailnet devices. Recreate the backend with the exported env." >&2
+      exit 1
+    fi
     print_urls
     ;;
   start-downloads)

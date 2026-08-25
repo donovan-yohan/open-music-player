@@ -126,8 +126,7 @@ class MixPlanClip {
       );
 
   /// General-purpose copy used by editing surfaces. Null arguments keep the
-  /// current value; fades may be explicitly cleared with [clearFadeIn] /
-  /// [clearFadeOut].
+  /// current value.
   MixPlanClip copyWith({
     String? queueItemId,
     int? sourceStartMs,

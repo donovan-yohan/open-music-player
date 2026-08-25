@@ -27,11 +27,11 @@ class MixPreset {
   /// One-line description shown under the chips, sentence case.
   final String blurb;
 
-  /// Clip gain, in dB, this preset writes into both clips of the seam.
+  /// Clip gain, in dB, this preset imposes on both clips of the seam.
   ///
-  /// No shipped preset attenuates, so both are unity. Writing it explicitly
-  /// keeps the persisted plan a complete statement of the preset rather than
-  /// whatever gain the clip happened to carry.
+  /// No shipped preset attenuates, so both are unity and — because applying
+  /// a preset must not clobber an authored per-clip gain — unity presets
+  /// leave existing gain values untouched on write.
   final double gainDb;
 
   static const fade = MixPreset._(
@@ -68,9 +68,16 @@ class MixPreset {
     required int overlapMs,
   }) {
     final overlap = overlapFor(overlapMs);
+    // Preserve any authored clip gain: shipped presets are unity, so writing
+    // gainDb unconditionally would silently zero a per-clip gain the user
+    // (or a future preset) had set. Only override when this preset actually
+    // attenuates (review finding F-5).
+    final appliesGain = gainDb != 0;
     return (
-      outgoing: outgoing.copyWith(fadeOutMs: overlap, gainDb: gainDb),
-      incoming: incoming.copyWith(fadeInMs: overlap, gainDb: gainDb),
+      outgoing: outgoing.copyWith(
+          fadeOutMs: overlap, gainDb: appliesGain ? gainDb : null),
+      incoming: incoming.copyWith(
+          fadeInMs: overlap, gainDb: appliesGain ? gainDb : null),
     );
   }
 
