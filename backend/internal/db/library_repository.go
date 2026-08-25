@@ -51,7 +51,6 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	baseCondition := "ul.user_id = $1"
 	args := []interface{}{userID}
 	argIndex := 2
-
 	// Use full-text search for search queries (sanitized; see buildPrefixTSQuery).
 	if opts.Search != "" {
 		tsQuery := buildPrefixTSQuery(opts.Search)
@@ -187,6 +186,8 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 
 	var tracks []LibraryTrack
 	var total int
+	rawSummaryByTrack := make(map[int64]json.RawMessage)
+	rawOverridesByTrack := make(map[int64]json.RawMessage)
 	for rows.Next() {
 		var lt LibraryTrack
 		var analysisOverrides json.RawMessage
@@ -205,6 +206,8 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 		}
 		lt.MetadataJSON = rawJSONFromNullString(metadataJSON)
 		lt.MetadataProvenance = rawJSONFromNullString(metadataProvenance)
+		rawSummaryByTrack[lt.ID] = lt.AnalysisSummary
+		rawOverridesByTrack[lt.ID] = analysisOverrides
 		lt.AnalysisSummary, _ = projectCompactAnalysis(lt.AnalysisSummary, analysisOverrides)
 		tracks = append(tracks, lt)
 	}
@@ -212,6 +215,8 @@ func (r *LibraryRepository) GetUserLibrary(ctx context.Context, userID uuid.UUID
 	if err := rows.Err(); err != nil {
 		return nil, 0, err
 	}
+
+	backfillLibrarySummariesFromAcousticBrainz(ctx, r.db, tracks, rawSummaryByTrack, rawOverridesByTrack)
 
 	return tracks, total, nil
 }

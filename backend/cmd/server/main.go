@@ -522,7 +522,10 @@ func main() {
 	})
 	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
 	trackOverrideHandlers := api.NewTrackMetadataOverrideHandlers(metadataOverrideRepo, libraryRepo)
-	analysisHandlers := api.NewAnalysisHandlers(analysisRepo, libraryRepo)
+	// trackRepo wires the AcousticBrainz backfill into the analysis detail
+	// response (issue #390): the handler resolves the track's recording MBID to
+	// look up cached external reference values.
+	analysisHandlers := api.NewAnalysisHandlersWithTrackRepo(analysisRepo, libraryRepo, trackRepo)
 	playlistHandlers := api.NewPlaylistHandlersWithMetadataOverrides(playlistRepo, trackRepo, metadataOverrideRepo)
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
 	playlistMixHandlers := api.NewPlaylistMixHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)

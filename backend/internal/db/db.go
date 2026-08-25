@@ -748,6 +748,29 @@ func (db *DB) Migrate() error {
 		expires_at TIMESTAMPTZ NOT NULL
 	);
 
+	-- AcousticBrainz external-reference cache (issue #390). One row per
+	-- MusicBrainz recording MBID, loaded one-time from the frozen CC0 dump by
+	-- cmd/acousticbrainz-import. This is coverage REFERENCE data only — never
+	-- ground truth, never an override of track_analysis (see
+	-- docs/AUDIO_MIR_EVALS.md); BackfillAcousticBrainzSummary projects it only
+	-- into fields the analyzer and user overrides left empty, provenance-tagged.
+	CREATE TABLE IF NOT EXISTS mb_acousticbrainz (
+		recording_mbid UUID PRIMARY KEY,
+		bpm DOUBLE PRECISION,
+		key_key TEXT,
+		key_scale TEXT,
+		camelot TEXT,
+		source TEXT NOT NULL DEFAULT 'acousticbrainz',
+		dump_revision TEXT NOT NULL DEFAULT '',
+		retrieved_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		CONSTRAINT chk_mb_acousticbrainz_bpm CHECK (
+			bpm IS NULL OR bpm BETWEEN 30 AND 300
+		),
+		CONSTRAINT chk_mb_acousticbrainz_payload CHECK (
+			bpm IS NOT NULL OR camelot IS NOT NULL
+		)
+	);
+
 	CREATE TABLE IF NOT EXISTS research_jobs (
 		id UUID PRIMARY KEY,
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
