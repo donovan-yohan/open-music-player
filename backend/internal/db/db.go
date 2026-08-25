@@ -477,12 +477,194 @@ func (db *DB) Migrate() error {
 
 	CREATE INDEX IF NOT EXISTS idx_mix_plans_user_updated ON mix_plans(user_id, updated_at DESC);
 
+	-- Filter projections are generated from the same compact fields served by the
+	-- analysis list boundary. The helper functions distinguish absent/invalid
+	-- override facts from valid values, so a malformed manual edit cannot hide a
+	-- valid analyzer result. manual_timing_v2.bpm is the canonical timing edit
+	-- and therefore wins before the ordinary compact BPM field.
+	CREATE OR REPLACE FUNCTION omp_compact_number_value(document JSONB, field TEXT)
+	RETURNS DOUBLE PRECISION
+	LANGUAGE SQL
+	IMMUTABLE
+	PARALLEL SAFE
+	AS $$
+		SELECT CASE
+			WHEN jsonb_typeof(document -> field) = 'number' THEN
+				CASE WHEN (document ->> field)::numeric BETWEEN -1.7976931348623157e308::numeric AND 1.7976931348623157e308::numeric
+					THEN (document ->> field)::DOUBLE PRECISION END
+			WHEN jsonb_typeof(document -> field) = 'object'
+				AND jsonb_typeof(document -> field -> 'value') = 'number' THEN
+				CASE WHEN (document -> field ->> 'value')::numeric BETWEEN -1.7976931348623157e308::numeric AND 1.7976931348623157e308::numeric
+					THEN (document -> field ->> 'value')::DOUBLE PRECISION END
+			WHEN jsonb_typeof(document -> field) = 'object'
+				AND NOT ((document -> field) ? 'value')
+				AND jsonb_typeof(document -> field -> 'nativeBpm') = 'number' THEN
+				CASE WHEN (document -> field ->> 'nativeBpm')::numeric BETWEEN -1.7976931348623157e308::numeric AND 1.7976931348623157e308::numeric
+					THEN (document -> field ->> 'nativeBpm')::DOUBLE PRECISION END
+		END
+	$$;
+
+	CREATE OR REPLACE FUNCTION omp_compact_camelot_value(document JSONB)
+	RETURNS TEXT
+	LANGUAGE SQL
+	IMMUTABLE
+	PARALLEL SAFE
+	AS $$
+		SELECT CASE
+			WHEN jsonb_typeof(document -> 'camelot') = 'string'
+				AND char_length(BTRIM(document ->> 'camelot')) BETWEEN 1 AND 128
+				THEN UPPER(BTRIM(document ->> 'camelot'))
+			WHEN jsonb_typeof(document -> 'camelot') = 'object'
+				AND jsonb_typeof(document -> 'camelot' -> 'value') = 'string'
+				AND char_length(BTRIM(document -> 'camelot' ->> 'value')) BETWEEN 1 AND 128
+				THEN UPPER(BTRIM(document -> 'camelot' ->> 'value'))
+		END
+	$$;
+
+	CREATE OR REPLACE FUNCTION omp_manual_timing_bpm(document JSONB)
+	RETURNS DOUBLE PRECISION
+	LANGUAGE SQL
+	IMMUTABLE
+	PARALLEL SAFE
+	AS $$
+		-- This mirrors decodeCompactManualTimingOverride and validCompactManualTiming:
+		-- malformed optional scalar values decode as absent; structurally valid v2
+		-- timing wins over its legacy form; timing with an invalid grid is ignored.
+		WITH timing AS (
+			SELECT document -> 'manual_timing_v2' AS value, TRUE AS requires_schema
+			UNION ALL
+			SELECT document -> 'manual_timing_override' AS value, FALSE AS requires_schema
+		), valid AS (
+			SELECT value
+			FROM timing
+			WHERE jsonb_typeof(value) = 'object'
+				AND NOT EXISTS (
+					SELECT 1
+					FROM jsonb_object_keys(value) AS key
+					WHERE key NOT IN (
+						'schema_version', 'bpm', 'beat_anchor_ms', 'beats_per_bar',
+						'downbeat_phase_index', 'phrase_length_bars', 'confidence',
+						'provenance', 'revision', 'updated_at'
+					)
+				)
+				AND (
+					(requires_schema
+						AND jsonb_typeof(value -> 'schema_version') = 'number'
+						AND value ->> 'schema_version' = '2')
+					OR (NOT requires_schema AND (
+						NOT (value ? 'schema_version')
+						OR (jsonb_typeof(value -> 'schema_version') = 'number' AND value ->> 'schema_version' = '2')
+					))
+				)
+				-- A finite decoded BPM outside the manual 30..300 range invalidates the
+				-- timing document. An unparseable value is absent, matching Go decoding.
+				AND (
+					jsonb_typeof(value -> 'bpm') IS DISTINCT FROM 'number'
+					OR (value ->> 'bpm')::numeric NOT BETWEEN -1.7976931348623157e308::numeric AND 1.7976931348623157e308::numeric
+					OR (value ->> 'bpm')::numeric BETWEEN 30 AND 300
+				)
+				-- A finite integer anchor below zero invalidates the timing document.
+				AND (
+					jsonb_typeof(value -> 'beat_anchor_ms') IS DISTINCT FROM 'number'
+					OR (value ->> 'beat_anchor_ms')::numeric <> trunc((value ->> 'beat_anchor_ms')::numeric)
+					OR (value ->> 'beat_anchor_ms')::numeric NOT BETWEEN -9223372036854775808 AND 9223372036854775807
+					OR (value ->> 'beat_anchor_ms')::numeric >= 0
+				)
+				-- A finite positive meter above 32 beats is rejected by the compact
+				-- timing validator. Invalid/non-integer meter values decode as absent.
+				AND (
+					jsonb_typeof(value -> 'beats_per_bar') IS DISTINCT FROM 'number'
+					OR (value ->> 'beats_per_bar')::numeric <> trunc((value ->> 'beats_per_bar')::numeric)
+					OR (value ->> 'beats_per_bar')::numeric NOT BETWEEN -9223372036854775808 AND 9223372036854775807
+					OR (value ->> 'beats_per_bar')::numeric <= 0
+					OR (value ->> 'beats_per_bar')::numeric <= 32
+				)
+				-- Positive phrases over 128 bars are explicitly rejected by the compact
+				-- validator. Non-integer/out-of-range values decode as absent instead.
+				AND (
+					jsonb_typeof(value -> 'phrase_length_bars') IS DISTINCT FROM 'number'
+					OR (value ->> 'phrase_length_bars')::numeric <> trunc((value ->> 'phrase_length_bars')::numeric)
+					OR (value ->> 'phrase_length_bars')::numeric NOT BETWEEN -9223372036854775808 AND 9223372036854775807
+					OR (value ->> 'phrase_length_bars')::numeric <= 0
+					OR (value ->> 'phrase_length_bars')::numeric <= 128
+				)
+				-- A decoded phase needs a decoded 1..32 meter and must lie in that
+				-- meter. Invalid/non-integer phase values themselves decode as absent.
+				AND (
+					jsonb_typeof(value -> 'downbeat_phase_index') IS DISTINCT FROM 'number'
+					OR (value ->> 'downbeat_phase_index')::numeric <> trunc((value ->> 'downbeat_phase_index')::numeric)
+					OR (value ->> 'downbeat_phase_index')::numeric NOT BETWEEN 0 AND 9223372036854775807
+					OR (
+						jsonb_typeof(value -> 'beats_per_bar') = 'number'
+						AND (value ->> 'beats_per_bar')::numeric = trunc((value ->> 'beats_per_bar')::numeric)
+						AND (value ->> 'beats_per_bar')::numeric BETWEEN 1 AND 32
+						AND (value ->> 'downbeat_phase_index')::numeric < (value ->> 'beats_per_bar')::numeric
+					)
+				)
+				-- The Go decoder returns nil unless at least one timing fact survives.
+				AND (
+					(jsonb_typeof(value -> 'bpm') = 'number'
+						AND (value ->> 'bpm')::numeric BETWEEN -1.7976931348623157e308::numeric AND 1.7976931348623157e308::numeric)
+					OR (jsonb_typeof(value -> 'beat_anchor_ms') = 'number'
+						AND (value ->> 'beat_anchor_ms')::numeric = trunc((value ->> 'beat_anchor_ms')::numeric)
+						AND (value ->> 'beat_anchor_ms')::numeric BETWEEN 0 AND 9223372036854775807)
+					OR (jsonb_typeof(value -> 'beats_per_bar') = 'number'
+						AND (value ->> 'beats_per_bar')::numeric = trunc((value ->> 'beats_per_bar')::numeric)
+						AND (value ->> 'beats_per_bar')::numeric BETWEEN 1 AND 32)
+					OR (jsonb_typeof(value -> 'downbeat_phase_index') = 'number'
+						AND (value ->> 'downbeat_phase_index')::numeric = trunc((value ->> 'downbeat_phase_index')::numeric)
+						AND (value ->> 'downbeat_phase_index')::numeric BETWEEN 0 AND 9223372036854775807)
+					OR (jsonb_typeof(value -> 'phrase_length_bars') = 'number'
+						AND (value ->> 'phrase_length_bars')::numeric = trunc((value ->> 'phrase_length_bars')::numeric)
+						AND (value ->> 'phrase_length_bars')::numeric BETWEEN 1 AND 9223372036854775807)
+					OR (jsonb_typeof(value -> 'revision') = 'number'
+						AND (value ->> 'revision')::numeric = trunc((value ->> 'revision')::numeric)
+						AND (value ->> 'revision')::numeric BETWEEN 0 AND 9223372036854775807)
+				)
+			ORDER BY requires_schema DESC
+			LIMIT 1
+		)
+		SELECT CASE
+			WHEN jsonb_typeof(value -> 'bpm') = 'number'
+				AND (value ->> 'bpm')::numeric BETWEEN 30 AND 300
+				THEN (value ->> 'bpm')::DOUBLE PRECISION
+		END
+		FROM valid
+	$$;
+
+	CREATE OR REPLACE FUNCTION omp_effective_analysis_bpm(summary JSONB, overrides JSONB)
+	RETURNS DOUBLE PRECISION
+	LANGUAGE SQL
+	IMMUTABLE
+	PARALLEL SAFE
+	AS $$
+		SELECT COALESCE(
+			omp_manual_timing_bpm(overrides),
+			omp_compact_number_value(overrides, 'bpm'),
+			omp_compact_number_value(summary, 'bpm')
+		)
+	$$;
+
+	CREATE OR REPLACE FUNCTION omp_effective_analysis_camelot(summary JSONB, overrides JSONB)
+	RETURNS TEXT
+	LANGUAGE SQL
+	IMMUTABLE
+	PARALLEL SAFE
+	AS $$
+		SELECT COALESCE(
+			omp_compact_camelot_value(overrides),
+			omp_compact_camelot_value(summary)
+		)
+	$$;
+
 	CREATE TABLE IF NOT EXISTS track_analysis (
 		track_id BIGINT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
 		schema_version INTEGER NOT NULL DEFAULT 1,
 		status VARCHAR(32) NOT NULL DEFAULT 'pending',
 		summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
 		overrides_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+		effective_bpm DOUBLE PRECISION GENERATED ALWAYS AS (omp_effective_analysis_bpm(summary_json, overrides_json)) STORED,
+		effective_camelot TEXT GENERATED ALWAYS AS (omp_effective_analysis_camelot(summary_json, overrides_json)) STORED,
 		manual_override_revision BIGINT NOT NULL DEFAULT 0,
 		manual_override_updated_at TIMESTAMP WITH TIME ZONE,
 		artifacts_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -502,6 +684,17 @@ func (db *DB) Migrate() error {
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS overrides_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS manual_override_revision BIGINT NOT NULL DEFAULT 0;
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS manual_override_updated_at TIMESTAMP WITH TIME ZONE;
+	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS effective_bpm DOUBLE PRECISION GENERATED ALWAYS AS (omp_effective_analysis_bpm(summary_json, overrides_json)) STORED;
+	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS effective_camelot TEXT GENERATED ALWAYS AS (omp_effective_analysis_camelot(summary_json, overrides_json)) STORED;
+	-- The composite partial index is the nearby query's hot path: Camelot is an
+	-- equality candidate set and BPM is a bounded range. The scalar BPM index is
+	-- retained for future BPM-only candidate generation.
+	CREATE INDEX IF NOT EXISTS idx_track_analysis_effective_bpm
+		ON track_analysis(effective_bpm)
+		WHERE status = 'analyzed' AND effective_bpm IS NOT NULL;
+	CREATE INDEX IF NOT EXISTS idx_track_analysis_effective_camelot_bpm
+		ON track_analysis(effective_camelot, effective_bpm)
+		WHERE status = 'analyzed' AND effective_camelot IS NOT NULL AND effective_bpm IS NOT NULL;
 
 	-- Stem separation artifacts are deliberately NOT overloaded onto
 	-- track_analysis: they have a different lifecycle, a different model
