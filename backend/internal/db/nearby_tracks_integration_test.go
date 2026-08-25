@@ -36,7 +36,7 @@ func TestNearbyTracksProjectsOverridesAndFiltersBoundariesAgainstPostgres(t *tes
 		t.Fatalf("set invalid analysis override: %v", err)
 	}
 
-	tracks, err := libraryRepo.NearbyTracks(ctx, userID, 120, 5, []string{"1A"})
+	tracks, err := libraryRepo.NearbyTracks(ctx, userID, 120, 5, []string{"1A"}, AffinityRankOff)
 	if err != nil {
 		t.Fatalf("nearby boundary query: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestNearbyTracksProjectsOverridesAndFiltersBoundariesAgainstPostgres(t *tes
 		t.Fatalf("set analysis override: %v", err)
 	}
 
-	tracks, err = libraryRepo.NearbyTracks(ctx, userID, 140, 0, []string{"6B"})
+	tracks, err = libraryRepo.NearbyTracks(ctx, userID, 140, 0, []string{"6B"}, AffinityRankOff)
 	if err != nil {
 		t.Fatalf("nearby override query: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestNearbyTracksProjectsOverridesAndFiltersBoundariesAgainstPostgres(t *tes
 		t.Fatalf("effective facts = bpm %v camelot %q, want override values", tracks[0].EffectiveBPM, tracks[0].EffectiveCamelot)
 	}
 
-	tracks, err = libraryRepo.NearbyTracks(ctx, userID, 120, 5, []string{"1A"})
+	tracks, err = libraryRepo.NearbyTracks(ctx, userID, 120, 5, []string{"1A"}, AffinityRankOff)
 	if err != nil {
 		t.Fatalf("nearby post-override query: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestNearbyTracksDoesNotLeakAcrossLibrariesAgainstPostgres(t *testing.T) {
 	}
 	seedNearbyAnalysis(t, analysisRepo, ctx, trackID, 120, "1A")
 
-	tracks, err := libraryRepo.NearbyTracks(ctx, otherID, 120, 0, []string{"1A"})
+	tracks, err := libraryRepo.NearbyTracks(ctx, otherID, 120, 0, []string{"1A"}, AffinityRankOff)
 	if err != nil {
 		t.Fatalf("other user nearby query: %v", err)
 	}
