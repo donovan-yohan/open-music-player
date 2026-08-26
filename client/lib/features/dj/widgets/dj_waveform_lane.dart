@@ -184,6 +184,13 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
             final theme = Theme.of(context);
             final beatToken = SoundQPlayerTheme.of(context).waveformBeat;
             return Semantics(
+              // The lane's own node, kept addressable by label. The analysis
+              // notice below carries a label of its own, and without an
+              // explicit child node it is merged into this one and the lane
+              // identity stops resolving (the same reason DjDeckNotice does
+              // this).
+              container: true,
+              explicitChildNodes: true,
               label: 'Deck ${widget.deck.deckId.name.toUpperCase()} waveform',
               child: ClipRect(
                 child: Stack(
