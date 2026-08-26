@@ -21,7 +21,7 @@ type fakeExpander struct {
 	got  uuid.UUID
 }
 
-func (f *fakeExpander) Expand(_ context.Context, mbid uuid.UUID, _ int) (*listenbrainz.Response, error) {
+func (f *fakeExpander) Expand(_ context.Context, mbid uuid.UUID) (*listenbrainz.Response, error) {
 	f.got = mbid
 	return f.resp, f.err
 }

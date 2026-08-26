@@ -56,7 +56,7 @@ type fakeClient struct {
 	calls int
 }
 
-func (c *fakeClient) SimilarArtists(_ context.Context, _ uuid.UUID, _ int) (*Response, error) {
+func (c *fakeClient) SimilarArtists(_ context.Context, _ uuid.UUID) (*Response, error) {
 	c.calls++
 	return c.resp, c.err
 }
@@ -76,7 +76,7 @@ func TestExpandFetchesMissAndBackfillsProvenance(t *testing.T) {
 	}}
 	svc := NewExpansionService(client, store)
 
-	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	resp, err := svc.Expand(context.Background(), testSeedMBID)
 	if err != nil || resp == nil {
 		t.Fatalf("Expand = %v, %v; want response", resp, err)
 	}
@@ -104,7 +104,7 @@ func TestExpandServesCacheWithoutUpstreamCall(t *testing.T) {
 	svc := NewExpansionService(client, store).
 		WithClock(func() time.Time { return time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC) })
 
-	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	resp, err := svc.Expand(context.Background(), testSeedMBID)
 	if err != nil || resp == nil {
 		t.Fatalf("Expand = %v, %v; want cached response", resp, err)
 	}
@@ -136,7 +136,7 @@ func TestExpandUnreachableDegradesToEmptyExpansion(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			svc := NewExpansionService(client, newFakeCacheStore())
-			resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+			resp, err := svc.Expand(context.Background(), testSeedMBID)
 			if err != nil {
 				t.Fatalf("Expand returned error %v, want empty expansion", err)
 			}
@@ -173,7 +173,7 @@ func TestFixtureServerFlagOnPathRoundTripsProvenance(t *testing.T) {
 	store := newFakeCacheStore()
 	svc := NewExpansionService(client, store)
 
-	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	resp, err := svc.Expand(context.Background(), testSeedMBID)
 	if err != nil || resp == nil {
 		t.Fatalf("Expand = %v, %v; want fixture response", resp, err)
 	}
@@ -187,7 +187,7 @@ func TestFixtureServerFlagOnPathRoundTripsProvenance(t *testing.T) {
 		t.Fatalf("upstream hits = %d, want exactly 1 for a miss", hits.Load())
 	}
 	// Second expand must come from the cache: no additional upstream hit.
-	resp2, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	resp2, err := svc.Expand(context.Background(), testSeedMBID)
 	if err != nil || resp2 == nil || len(resp2.Similar) != 1 {
 		t.Fatalf("second Expand = %v, %v; want cached payload", resp2, err)
 	}
@@ -219,7 +219,7 @@ func TestFixtureServerMalformedPayloadRejectedDeterministically(t *testing.T) {
 			store := newFakeCacheStore()
 			svc := NewExpansionService(client, store)
 
-			resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+			resp, err := svc.Expand(context.Background(), testSeedMBID)
 			if err != nil {
 				t.Fatalf("malformed payload surfaced error %v, want empty expansion", err)
 			}
@@ -251,7 +251,7 @@ func TestRateLimit429RetriesWithBackoffThenDegrades(t *testing.T) {
 	store := newFakeCacheStore()
 	svc := NewExpansionService(client, store)
 
-	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	resp, err := svc.Expand(context.Background(), testSeedMBID)
 	if err != nil || resp != nil {
 		t.Fatalf("exhausted 429s must degrade to nil,nil, got %v, %v", resp, err)
 	}
@@ -305,7 +305,7 @@ func TestFixtureServerAcceptsRealLabsPayloadShape(t *testing.T) {
 	store := newFakeCacheStore()
 	svc := NewExpansionService(client, store)
 
-	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	resp, err := svc.Expand(context.Background(), testSeedMBID)
 	if err != nil {
 		t.Fatalf("Expand returned error %v", err)
 	}
@@ -355,7 +355,7 @@ func TestExpandFreshCacheRowSkipsUpstream(t *testing.T) {
 	client := &fakeClient{}
 	svc := NewExpansionService(client, store).WithClock(ttlTestClock)
 
-	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	resp, err := svc.Expand(context.Background(), testSeedMBID)
 	if err != nil || resp == nil {
 		t.Fatalf("Expand = %v, %v; want the fresh cached row", resp, err)
 	}
@@ -381,7 +381,7 @@ func TestExpandStaleCacheRowRefetchesAndReplaces(t *testing.T) {
 	}}
 	svc := NewExpansionService(client, store).WithClock(ttlTestClock)
 
-	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	resp, err := svc.Expand(context.Background(), testSeedMBID)
 	if err != nil || resp == nil {
 		t.Fatalf("Expand = %v, %v; want the refreshed response", resp, err)
 	}
@@ -405,7 +405,7 @@ func TestExpandStaleCacheRowServedWhenUpstreamFails(t *testing.T) {
 	client := &fakeClient{err: ErrRateLimited}
 	svc := NewExpansionService(client, store).WithClock(ttlTestClock)
 
-	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	resp, err := svc.Expand(context.Background(), testSeedMBID)
 	if err != nil {
 		t.Fatalf("Expand returned error %v, want the stale row", err)
 	}
@@ -442,7 +442,7 @@ func TestExpandZeroRetrievedAtIsTreatedAsStale(t *testing.T) {
 	}}
 	svc := NewExpansionService(client, store).WithClock(ttlTestClock)
 
-	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	resp, err := svc.Expand(context.Background(), testSeedMBID)
 	if err != nil || resp == nil {
 		t.Fatalf("Expand = %v, %v; want a refetched response", resp, err)
 	}
@@ -460,7 +460,7 @@ func TestExpandCacheTTLIsConfigurable(t *testing.T) {
 	client := &fakeClient{err: ErrUnreachable}
 	svc := NewExpansionService(client, store).WithClock(ttlTestClock).WithCacheTTL(time.Hour)
 
-	if _, err := svc.Expand(context.Background(), testSeedMBID, 5); err != nil {
+	if _, err := svc.Expand(context.Background(), testSeedMBID); err != nil {
 		t.Fatalf("Expand returned error %v", err)
 	}
 	if client.calls != 1 {

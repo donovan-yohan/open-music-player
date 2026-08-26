@@ -43,9 +43,10 @@ type ExpansionService struct {
 	now func() time.Time
 }
 
-// ClientInterface narrows the client surface for tests.
+// ClientInterface narrows the client surface for tests. Page size is baked
+// into the pinned algorithm name, so there is no count parameter.
 type ClientInterface interface {
-	SimilarArtists(ctx context.Context, artistMBID uuid.UUID, count int) (*Response, error)
+	SimilarArtists(ctx context.Context, artistMBID uuid.UUID) (*Response, error)
 }
 
 func NewExpansionService(client ClientInterface, store CacheStore) *ExpansionService {
@@ -80,7 +81,7 @@ func (s *ExpansionService) WithClock(now func() time.Time) *ExpansionService {
 // stale cache row, and finally nil when there is nothing at all to serve.
 // It never surfaces an error to callers: nil means empty candidate expansion.
 // See ExpansionService for the full freshness contract.
-func (s *ExpansionService) Expand(ctx context.Context, artistMBID uuid.UUID, count int) (*Response, error) {
+func (s *ExpansionService) Expand(ctx context.Context, artistMBID uuid.UUID) (*Response, error) {
 	if artistMBID == uuid.Nil || s.client == nil || s.store == nil {
 		return nil, nil
 	}
@@ -98,7 +99,7 @@ func (s *ExpansionService) Expand(ctx context.Context, artistMBID uuid.UUID, cou
 		stale = &cached
 	}
 
-	resp, err := s.client.SimilarArtists(ctx, artistMBID, count)
+	resp, err := s.client.SimilarArtists(ctx, artistMBID)
 	if err != nil || resp == nil {
 		// Includes ErrRateLimited/ErrUpstreamStatus/ErrBadPayload/
 		// ErrUnreachable: callers get the stale row when there is one and

@@ -27,7 +27,8 @@ import (
 // strict enum and answers HTTP 400 for an unknown one, so an upstream enum
 // rename surfaces as a deterministic ErrUpstreamStatus in the logs rather than
 // silent drift to whatever default the service would otherwise pick. The
-// `limit_100` segment also fixes the page size upstream returns.
+// `limit_100` segment also fixes the page size, which is why this client takes
+// no count parameter.
 const PinnedAlgorithm = "session_based_days_7500_session_300_contribution_3_threshold_10_limit_100_filter_True_skip_30"
 
 const (
@@ -155,7 +156,7 @@ type Response struct {
 //     request budget, or a cancelled caller context.
 //
 // Degrading to an empty candidate expansion is ExpansionService.Expand's job.
-func (c *Client) SimilarArtists(ctx context.Context, artistMBID uuid.UUID, count int) (*Response, error) {
+func (c *Client) SimilarArtists(ctx context.Context, artistMBID uuid.UUID) (*Response, error) {
 	if artistMBID == uuid.Nil {
 		return nil, nil
 	}

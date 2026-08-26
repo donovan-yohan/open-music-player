@@ -31,7 +31,7 @@ func TestClientBadPayloadIsTyped(t *testing.T) {
 	}))
 	defer server.Close()
 
-	resp, err := testClient(server.URL).SimilarArtists(context.Background(), testSeedMBID, 5)
+	resp, err := testClient(server.URL).SimilarArtists(context.Background(), testSeedMBID)
 	if resp != nil {
 		t.Fatalf("malformed body returned a response: %+v", resp)
 	}
@@ -48,7 +48,7 @@ func TestClientUpstreamStatusIsTypedAndCarriesCode(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(status)
 		}))
-		resp, err := testClient(server.URL).SimilarArtists(context.Background(), testSeedMBID, 5)
+		resp, err := testClient(server.URL).SimilarArtists(context.Background(), testSeedMBID)
 		server.Close()
 		if resp != nil {
 			t.Fatalf("status %d returned a response: %+v", status, resp)
@@ -69,7 +69,7 @@ func TestClientUnreachableIsTyped(t *testing.T) {
 	url := server.URL
 	server.Close() // nothing is listening any more
 
-	resp, err := testClient(url).SimilarArtists(context.Background(), testSeedMBID, 5)
+	resp, err := testClient(url).SimilarArtists(context.Background(), testSeedMBID)
 	if resp != nil {
 		t.Fatalf("closed server returned a response: %+v", resp)
 	}
@@ -87,7 +87,7 @@ func TestClientRateLimitExhaustionIsTyped(t *testing.T) {
 
 	client := testClient(server.URL)
 	client.maxRetries = 1
-	resp, err := client.SimilarArtists(context.Background(), testSeedMBID, 5)
+	resp, err := client.SimilarArtists(context.Background(), testSeedMBID)
 	if resp != nil {
 		t.Fatalf("429 exhaustion returned a response: %+v", resp)
 	}
@@ -98,7 +98,7 @@ func TestClientRateLimitExhaustionIsTyped(t *testing.T) {
 
 // TestClientNilMBIDIsANoOp keeps the one documented (nil, nil) case.
 func TestClientNilMBIDIsANoOp(t *testing.T) {
-	resp, err := testClient("http://127.0.0.1:1").SimilarArtists(context.Background(), uuid.Nil, 5)
+	resp, err := testClient("http://127.0.0.1:1").SimilarArtists(context.Background(), uuid.Nil)
 	if resp != nil || err != nil {
 		t.Fatalf("nil MBID = %v, %v; want nil, nil", resp, err)
 	}
@@ -121,7 +121,7 @@ func TestClientRequestBudgetBoundsStackedRetries(t *testing.T) {
 	client.requestBudget = 50 * time.Millisecond
 
 	start := time.Now()
-	resp, err := client.SimilarArtists(context.Background(), testSeedMBID, 5)
+	resp, err := client.SimilarArtists(context.Background(), testSeedMBID)
 	elapsed := time.Since(start)
 
 	if resp != nil {
@@ -155,7 +155,7 @@ func TestClientCancelledParentContextIsUnreachable(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := client.SimilarArtists(ctx, testSeedMBID, 5)
+	_, err := client.SimilarArtists(ctx, testSeedMBID)
 	if !errors.Is(err, ErrUnreachable) {
 		t.Fatalf("err = %v, want ErrUnreachable on cancelled context", err)
 	}

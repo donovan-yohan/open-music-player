@@ -14,9 +14,11 @@ import (
 
 // listenbrainzExpander is the read surface ListenBrainzHandlers needs from the
 // expansion service. Narrowing it to an interface keeps the handler unit
-// testable without the real client or cache.
+// testable without the real client or cache. The expander takes no count: the
+// upstream page size is baked into the pinned algorithm name and the handler
+// does its own truncation.
 type listenbrainzExpander interface {
-	Expand(ctx context.Context, artistMBID uuid.UUID, count int) (*listenbrainz.Response, error)
+	Expand(ctx context.Context, artistMBID uuid.UUID) (*listenbrainz.Response, error)
 }
 
 // ListenBrainzHandlers exposes GET /api/v1/tracks/{track_id}/similar-artists,
@@ -61,9 +63,11 @@ type ListenBrainzSimilarArtistsResponse struct {
 }
 
 // GetSimilarArtists handles GET /api/v1/tracks/{track_id}/similar-artists.
-// track_id here is an artist MBID (the labs API is MBID-keyed). retrieved_at
-// in the response may predate the request by up to the cache TTL, or by more
-// when a stale row is being served because upstream is unavailable.
+// track_id here is an artist MBID (the labs API is MBID-keyed). count clamps
+// how many entries this handler returns; it does not change what is fetched or
+// cached upstream. retrieved_at in the response may predate the request by up
+// to the cache TTL, or by more when a stale row is being served because
+// upstream is unavailable.
 func (h *ListenBrainzHandlers) GetSimilarArtists(w http.ResponseWriter, r *http.Request) {
 	userCtx := auth.GetUserFromContext(r.Context())
 	if userCtx == nil {
@@ -86,7 +90,7 @@ func (h *ListenBrainzHandlers) GetSimilarArtists(w http.ResponseWriter, r *http.
 	}
 	count := parseSimilarArtistsCount(r)
 
-	resp, _ := h.expander.Expand(r.Context(), mbid, count)
+	resp, _ := h.expander.Expand(r.Context(), mbid)
 	entryCount := 0
 	similar := make([]SimilarArtistEntry, 0)
 	if resp != nil {

@@ -54,9 +54,6 @@ func (r *AnalysisRepository) UpsertListenBrainzSimilarArtists(ctx context.Contex
 	if err != nil {
 		return err
 	}
-	if !json.Valid(payload) { // defensive: Marshal of typed slice cannot fail validity
-		return ErrInvalidListenBrainzPayload
-	}
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO mb_listenbrainz_similar_artists (
 			artist_mbid, algorithm, payload, retrieved_at
@@ -70,42 +67,15 @@ func (r *AnalysisRepository) UpsertListenBrainzSimilarArtists(ctx context.Contex
 	return err
 }
 
-// GetListenBrainzSimilarArtists loads one cached response for an artist MBID.
-// Rows cached under a different algorithm than the currently pinned one are
-// treated as absent: the pinned algorithm is part of the contract recorded in
-// responses, so stale-algorithm rows must never be served as if current.
-// Missing MBIDs return ok=false without error.
-func (r *AnalysisRepository) GetListenBrainzSimilarArtists(
-	ctx context.Context,
-	artistMBID uuid.UUID,
-	algorithm string,
-) (ListenBrainzCacheEntry, bool, error) {
-	var entry ListenBrainzCacheEntry
-	if artistMBID == uuid.Nil || algorithm == "" {
-		return entry, false, nil
-	}
-	var raw []byte
-	err := r.db.QueryRowContext(ctx, `
-		SELECT algorithm, payload, retrieved_at
-		FROM mb_listenbrainz_similar_artists
-		WHERE artist_mbid = $1 AND algorithm = $2
-	`, artistMBID, algorithm).Scan(&entry.Algorithm, &raw, &entry.RetrievedAt)
-	if err == sql.ErrNoRows {
-		return ListenBrainzCacheEntry{}, false, nil
-	}
-	if err != nil {
-		return ListenBrainzCacheEntry{}, false, err
-	}
-	entry.ArtistMBID = artistMBID
-	if err := json.Unmarshal(raw, &entry.Payload); err != nil {
-		return ListenBrainzCacheEntry{}, false, ErrInvalidListenBrainzPayload
-	}
-	return entry, true, nil
-}
-
 // GetListenBrainzSimilarArtistsByMBIDs batch-loads cached responses for many
-// artist MBIDs under one pinned algorithm. Missing or stale-algorithm rows are
-// simply absent from the map.
+// artist MBIDs under one pinned algorithm. Rows cached under a DIFFERENT
+// algorithm than the one requested are treated as absent: the pinned algorithm
+// is part of the contract recorded in responses, so stale-algorithm rows must
+// never be served as if current. Because the table is keyed by artist MBID
+// alone, the next successful fetch under the requested algorithm overwrites
+// such a row. Missing MBIDs are simply absent from the map, without error.
+// Freshness (retrieved_at vs. the service TTL) is the caller's concern; this
+// method returns whatever row exists together with its provenance.
 func (r *AnalysisRepository) GetListenBrainzSimilarArtistsByMBIDs(
 	ctx context.Context,
 	artistMBIDs []uuid.UUID,
