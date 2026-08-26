@@ -198,13 +198,11 @@ func (c *Client) SimilarArtists(ctx context.Context, artistMBID uuid.UUID) (*Res
 // waitBackoff sleeps for d but abandons the wait as soon as ctx is done, so a
 // cancelled request or an exhausted request budget never pays a full backoff.
 func waitBackoff(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
 	if d <= 0 {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("%w: %v", ErrUnreachable, ctx.Err())
-		default:
-			return nil
-		}
+		return nil
 	}
 	timer := time.NewTimer(d)
 	defer timer.Stop()

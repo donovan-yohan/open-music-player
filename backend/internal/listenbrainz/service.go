@@ -137,21 +137,11 @@ func (s *ExpansionService) Expand(ctx context.Context, artistMBID uuid.UUID) (*R
 
 // isFresh reports whether a cached row is inside the TTL window. A zero or
 // invalid retrieved_at counts as stale: without provenance we cannot claim the
-// row is current.
+// row is current. NewExpansionService and the With* setters guarantee cacheTTL
+// and now are always usable.
 func (s *ExpansionService) isFresh(entry db.ListenBrainzCacheEntry) bool {
 	retrieved := entry.RetrievedAtTime()
-	if retrieved.IsZero() {
-		return false
-	}
-	ttl := s.cacheTTL
-	if ttl <= 0 {
-		ttl = DefaultCacheTTL
-	}
-	clock := s.now
-	if clock == nil {
-		clock = time.Now
-	}
-	return retrieved.After(clock().Add(-ttl))
+	return !retrieved.IsZero() && retrieved.After(s.now().Add(-s.cacheTTL))
 }
 
 func formatRetrievedAt(ts time.Time) string {

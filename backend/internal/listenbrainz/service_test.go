@@ -119,13 +119,9 @@ func TestExpandServesCacheWithoutUpstreamCall(t *testing.T) {
 	}
 }
 
-// sqlNullTime builds a valid sql.NullTime for cache-row fixtures. The
-// *testing.T parameter is accepted (and may be nil) so call sites read like
-// the other helpers in this file.
+// sqlNullTime builds a valid sql.NullTime for cache-row fixtures.
 func sqlNullTime(t *testing.T, ts time.Time) sql.NullTime {
-	if t != nil {
-		t.Helper()
-	}
+	t.Helper()
 	return sql.NullTime{Time: ts, Valid: true}
 }
 
@@ -167,9 +163,7 @@ func TestFixtureServerFlagOnPathRoundTripsProvenance(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	client := NewClientWithBaseURL(server.URL)
-	client.maxRetries = 0
-	client.retryBackoff = func(int) time.Duration { return time.Millisecond }
+	client := testClient(server.URL)
 	store := newFakeCacheStore()
 	svc := NewExpansionService(client, store)
 
@@ -213,9 +207,7 @@ func TestFixtureServerMalformedPayloadRejectedDeterministically(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			client := NewClientWithBaseURL(server.URL)
-			client.maxRetries = 0
-			client.retryBackoff = func(int) time.Duration { return time.Millisecond }
+			client := testClient(server.URL)
 			store := newFakeCacheStore()
 			svc := NewExpansionService(client, store)
 
@@ -299,9 +291,7 @@ func TestFixtureServerAcceptsRealLabsPayloadShape(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(server.URL)
-	client.maxRetries = 0
-	client.retryBackoff = func(int) time.Duration { return time.Millisecond }
+	client := testClient(server.URL)
 	store := newFakeCacheStore()
 	svc := NewExpansionService(client, store)
 
@@ -331,12 +321,13 @@ func TestFixtureServerAcceptsRealLabsPayloadShape(t *testing.T) {
 }
 
 // cachedEntryAt builds a pinned-algorithm cache row retrieved at ts.
-func cachedEntryAt(ts time.Time, name string) db.ListenBrainzCacheEntry {
+func cachedEntryAt(t *testing.T, ts time.Time, name string) db.ListenBrainzCacheEntry {
+	t.Helper()
 	return db.ListenBrainzCacheEntry{
 		ArtistMBID:  testSeedMBID,
 		Algorithm:   PinnedAlgorithm,
 		Payload:     []db.ListenBrainzSimilarArtist{{ArtistMBID: testSimMBID, Name: name, Score: 50, ReferenceMBID: testSeedMBID}},
-		RetrievedAt: sqlNullTime(nil, ts),
+		RetrievedAt: sqlNullTime(t, ts),
 	}
 }
 
@@ -351,7 +342,7 @@ func ttlTestClock() time.Time { return ttlTestNow }
 
 func TestExpandFreshCacheRowSkipsUpstream(t *testing.T) {
 	store := newFakeCacheStore()
-	store.entries[testSeedMBID] = cachedEntryAt(ttlTestFreshAt, "Fresh")
+	store.entries[testSeedMBID] = cachedEntryAt(t, ttlTestFreshAt, "Fresh")
 	client := &fakeClient{}
 	svc := NewExpansionService(client, store).WithClock(ttlTestClock)
 
@@ -372,7 +363,7 @@ func TestExpandFreshCacheRowSkipsUpstream(t *testing.T) {
 
 func TestExpandStaleCacheRowRefetchesAndReplaces(t *testing.T) {
 	store := newFakeCacheStore()
-	store.entries[testSeedMBID] = cachedEntryAt(ttlTestStaleAt, "Stale")
+	store.entries[testSeedMBID] = cachedEntryAt(t, ttlTestStaleAt, "Stale")
 	client := &fakeClient{resp: &Response{
 		ArtistMBID:  testSeedMBID,
 		Algorithm:   PinnedAlgorithm,
@@ -401,7 +392,7 @@ func TestExpandStaleCacheRowRefetchesAndReplaces(t *testing.T) {
 
 func TestExpandStaleCacheRowServedWhenUpstreamFails(t *testing.T) {
 	store := newFakeCacheStore()
-	store.entries[testSeedMBID] = cachedEntryAt(ttlTestStaleAt, "Stale")
+	store.entries[testSeedMBID] = cachedEntryAt(t, ttlTestStaleAt, "Stale")
 	client := &fakeClient{err: ErrRateLimited}
 	svc := NewExpansionService(client, store).WithClock(ttlTestClock)
 
@@ -431,7 +422,7 @@ func TestExpandStaleCacheRowServedWhenUpstreamFails(t *testing.T) {
 
 func TestExpandZeroRetrievedAtIsTreatedAsStale(t *testing.T) {
 	store := newFakeCacheStore()
-	entry := cachedEntryAt(ttlTestFreshAt, "NoProvenance")
+	entry := cachedEntryAt(t, ttlTestFreshAt, "NoProvenance")
 	entry.RetrievedAt = sql.NullTime{}
 	store.entries[testSeedMBID] = entry
 	client := &fakeClient{resp: &Response{
@@ -456,7 +447,7 @@ func TestExpandZeroRetrievedAtIsTreatedAsStale(t *testing.T) {
 
 func TestExpandCacheTTLIsConfigurable(t *testing.T) {
 	store := newFakeCacheStore()
-	store.entries[testSeedMBID] = cachedEntryAt(ttlTestNow.Add(-2*time.Hour), "HourOld")
+	store.entries[testSeedMBID] = cachedEntryAt(t, ttlTestNow.Add(-2*time.Hour), "HourOld")
 	client := &fakeClient{err: ErrUnreachable}
 	svc := NewExpansionService(client, store).WithClock(ttlTestClock).WithCacheTTL(time.Hour)
 
