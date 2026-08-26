@@ -1,5 +1,6 @@
 import '../../../core/engine/tempo_automation.dart';
 import '../../../models/track.dart';
+import 'dj_beat_grid.dart';
 import 'dj_deck_load_failure.dart';
 import 'dj_hot_cue.dart';
 
@@ -90,6 +91,22 @@ class DjDeckState {
     }
     return (beatInBar - 1) % beatsPerBar + 1;
   }
+
+  /// Display bar/beat/phrase for the deck's beat counter and ruler (#416).
+  ///
+  /// Deliberately distinct from [beatPhase], and the two must not be unified:
+  ///
+  /// * [beatPhase] is the **automation-authority** value. It returns null
+  ///   unless `ClipTempoMetadata.hasReliableDownbeats` grants manual (or
+  ///   legacy) authority, because sync and quantize may not act on generated
+  ///   meter — see tempo_automation.dart:117-154.
+  /// * [beatPosition] is the **display** value. It follows
+  ///   docs/dj-deck-spec.md:83, which grants generated downbeats bar-level
+  ///   *display* while withholding bar numbering: `DjBeatRuler.numbered` is
+  ///   false there, so the counter shows an unnumbered beat pulse instead of
+  ///   `bar.beat · phrase N`.
+  DjBeatPosition? get beatPosition =>
+      DjBeatRuler.forAnalysis(queueTrack?.analysis)?.positionAt(positionMs);
 
   DjDeckState copyWith({
     String? queueItemId,
