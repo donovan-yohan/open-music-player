@@ -24,6 +24,9 @@ void main() {
 
     expect(find.byKey(const ValueKey('dj_rotate_prompt')), findsOneWidget);
     expect(find.text('Rotate your phone to use the deck'), findsOneWidget);
+    // #414: the prompt said what to do but never why. Landscape-only is a
+    // deliberate scope decision, so the state says so in one sentence.
+    expect(find.text('The deck is landscape only.'), findsOneWidget);
     expect(find.byKey(const ValueKey('dj_cue')), findsNothing);
     expect(find.byKey(const ValueKey('dj_crossfader')), findsNothing);
     expect(errors.overflows, isEmpty);
@@ -51,6 +54,30 @@ void main() {
     expect(errors.overflows, isEmpty);
     expect(tester.takeException(), isNull);
   });
+
+  // The rotate state gained a second line in #414, so it is held to the same
+  // bar as the too-small state below.
+  for (final textScale in <double>[1.0, 1.6]) {
+    testWidgets('the rotate notice fits a portrait phone at textScale '
+        '$textScale', (tester) async {
+      final errors = DjErrorCollector()..install();
+      addTearDown(errors.restore);
+
+      await pumpDjScreen(
+        tester,
+        session: deck.session,
+        viewport: textScale == 1.0
+            ? portraitReference
+            : portraitReference.withTextScale(textScale),
+      );
+
+      expect(find.byKey(const ValueKey('dj_rotate_prompt')), findsOneWidget);
+      expect(find.text('The deck is landscape only.'), findsOneWidget);
+      expect(errors.overflows, isEmpty,
+          reason: 'the rotate notice overflowed: ${errors.overflows}');
+      expect(tester.takeException(), isNull);
+    });
+  }
 
   // The notice replaces overflow banners, so it is held to the same bar as the
   // deck it rescues: a near-minimum freeform window, at an ordinary and at an

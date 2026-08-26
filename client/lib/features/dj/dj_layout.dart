@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../app/theme.dart';
+import 'dj_deck_copy.dart';
 import 'models/dj_deck_state.dart';
 import 'models/dj_hot_cue.dart';
 import 'providers/dj_session_provider.dart';
 import 'widgets/dj_beat_counter.dart';
 import 'widgets/dj_crossfader.dart';
 import 'widgets/dj_deck_header.dart';
+import 'widgets/dj_deck_notice.dart';
 import 'widgets/dj_hot_cue_pads.dart';
 import 'widgets/dj_loop_panel.dart';
 import 'widgets/dj_mixer_panel.dart';
@@ -184,7 +186,8 @@ class _DjLayoutState extends State<DjLayout> {
             return const _DjDeckNotice(
               key: ValueKey('dj_rotate_prompt'),
               icon: Icons.screen_rotation,
-              message: 'Rotate your phone to use the deck',
+              message: djDeckRotatePrompt,
+              detail: djDeckRotateDetail,
             );
           }
           if (constraints.maxHeight < kDjMinDeckHeight ||
@@ -192,8 +195,8 @@ class _DjLayoutState extends State<DjLayout> {
             return const _DjDeckNotice(
               key: ValueKey('dj_deck_too_small'),
               icon: Icons.aspect_ratio,
-              message: 'Not enough room for the deck',
-              detail: 'Try a smaller display size or a larger window.',
+              message: djDeckTooSmall,
+              detail: djDeckTooSmallDetail,
             );
           }
           final grid = DjDeckGrid.of(constraints);
@@ -486,6 +489,7 @@ class _DeckControl extends StatelessWidget {
             cues: {
               for (final cue in session.hotCuesFor(deck.deckId)) cue.slot: cue
             },
+            enabled: deck.isLoaded,
             onTrigger: (slot) => session.triggerHotCue(deck.deckId, slot),
             onSet: (slot) => session.setHotCue(deck.deckId, slot),
           ),
@@ -508,6 +512,9 @@ class _Transport extends StatelessWidget {
   final DjDeckId deck;
   final DjDeckState state;
   final DjSessionProvider session;
+  // The transport slot carries the beat counter beside the transport itself;
+  // the counter keeps its intrinsic width and the gated transport flexes into
+  // whatever is left.
   @override
   Widget build(BuildContext context) => Row(
         children: [
@@ -516,6 +523,10 @@ class _Transport extends StatelessWidget {
           Expanded(
             child: DjTransport(
               playing: state.playing,
+              enabled: state.isLoaded,
+              disabledReason: state.loadFailure == null
+                  ? null
+                  : DjDeckNotice.messageFor(state.loadFailure!.kind),
               onCuePress: () => session.cuePress(deck),
               onCueRelease: () => session.cueRelease(deck),
               onPlayPause: () => session.togglePlay(deck),

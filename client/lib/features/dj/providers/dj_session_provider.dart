@@ -139,6 +139,7 @@ class DjSessionProvider extends ChangeNotifier {
   /// Matching is by queue item first, then by the resolver-backed track ref, so
   /// a re-queued row still finds its deck.
   bool applyAnalysisUpdate(Iterable<QueueTrack> tracks) {
+    if (_disposed) return false;
     var changed = false;
     for (final track in tracks) {
       final trackRef = djDeckTrackRef(track);
@@ -154,7 +155,7 @@ class DjSessionProvider extends ChangeNotifier {
     }
     // One notify for the whole batch, and none at all when nothing moved: this
     // runs off a QueueProvider notification, not off the 33 Hz snapshot loop.
-    if (changed) notifyListeners();
+    if (changed) _notify();
     return changed;
   }
 
@@ -165,6 +166,7 @@ class DjSessionProvider extends ChangeNotifier {
     QueueTrack? next,
     DjFilePicker? filePicker,
   }) async {
+    if (_disposed) return;
     final seeds = queueSeeds(current, next);
     if (seeds.isEmpty && filePicker != null) {
       final picked = await filePicker();
@@ -178,6 +180,7 @@ class DjSessionProvider extends ChangeNotifier {
 
   /// Loads one deck without letting its outcome decide the other's (#409).
   Future<void> _seedDeck(DjDeckId deck, DjDeckLoad seed) async {
+    if (_disposed) return;
     try {
       await load(deck, seed);
     } catch (error) {
@@ -188,32 +191,36 @@ class DjSessionProvider extends ChangeNotifier {
       // voice that an unforeseen throw may have left holding audio.
       await _decks[deck]!.refuseLoad(seed, detail: '$error');
       _applyDeckGains();
-      notifyListeners();
+      _notify();
     }
   }
 
   Future<void> load(DjDeckId deck, DjDeckLoad seed) async {
+    if (_disposed) return;
     await _decks[deck]!.load(seed);
     _applyDeckGains();
-    notifyListeners();
+    _notify();
   }
 
   Future<void> togglePlay(DjDeckId deck) async {
+    if (_disposed) return;
     final controller = _decks[deck]!;
     if (controller.state.playing) {
       await controller.pause();
     } else {
       await controller.play();
     }
-    notifyListeners();
+    _notify();
   }
 
   Future<void> seek(DjDeckId deck, int positionMs) async {
+    if (_disposed) return;
     await _decks[deck]!.seek(positionMs);
-    notifyListeners();
+    _notify();
   }
 
   Future<void> cuePress(DjDeckId deck) async {
+    if (_disposed) return;
     final controller = _decks[deck]!;
     final state = controller.state;
     _cueWasPlaying[deck] = state.playing;
@@ -221,49 +228,55 @@ class DjSessionProvider extends ChangeNotifier {
     if (!state.playing) {
       await controller.play();
     }
-    notifyListeners();
+    _notify();
   }
 
   Future<void> cueRelease(DjDeckId deck) async {
+    if (_disposed) return;
     final controller = _decks[deck]!;
     if (_cueWasPlaying.remove(deck) == false) {
       await controller.pause();
       await controller.seek(controller.state.loadedCueMs);
     }
-    notifyListeners();
+    _notify();
   }
 
   Future<void> setPitchPercent(DjDeckId deck, double percent) async {
+    if (_disposed) return;
     await _decks[deck]!.setRate(1 + percent.clamp(-25.0, 25.0) / 100);
-    notifyListeners();
+    _notify();
   }
 
   Future<void> nudgePitchStart(DjDeckId deck, double deltaPercent) async {
+    if (_disposed) return;
     _preNudgeRates.putIfAbsent(deck, () => stateFor(deck).rate);
     final base = _preNudgeRates[deck]!;
     await _decks[deck]!
         .setRate(base * (1 + deltaPercent.clamp(-2.0, 2.0) / 100));
-    notifyListeners();
+    _notify();
   }
 
   Future<void> nudgePitchEnd(DjDeckId deck) async {
+    if (_disposed) return;
     final rate = _preNudgeRates.remove(deck);
     if (rate == null) return;
     await _decks[deck]!.setRate(rate);
-    notifyListeners();
+    _notify();
   }
 
   Future<void> setChannelGain(DjDeckId deck, double gain) async {
+    if (_disposed) return;
     final controller = _decks[deck]!;
     controller.setChannelGain(gain);
     _applyDeckGains();
-    notifyListeners();
+    _notify();
   }
 
   Future<void> setCrossfader(double value) async {
+    if (_disposed) return;
     _crossfader = value.clamp(0.0, 1.0).toDouble();
     _applyDeckGains();
-    notifyListeners();
+    _notify();
   }
 
   void _applyDeckGains() {
@@ -277,23 +290,26 @@ class DjSessionProvider extends ChangeNotifier {
   }
 
   Future<void> setHotCue(DjDeckId deck, int slot) async {
+    if (_disposed) return;
     if (slot < 1 || slot > 4) throw RangeError.range(slot, 1, 4, 'slot');
     final state = stateFor(deck);
     _hotCues[deck]![slot] = DjHotCue(
       slot: slot,
       positionMs: snapDjPositionToNearestBeat(state.positionMs, state.beatsMs),
     );
-    notifyListeners();
+    _notify();
   }
 
   Future<void> triggerHotCue(DjDeckId deck, int slot) async {
+    if (_disposed) return;
     final cue = _hotCues[deck]![slot];
     if (cue == null) return;
     await _decks[deck]!.seek(cue.positionMs);
-    notifyListeners();
+    _notify();
   }
 
   Future<void> setAutoLoop(DjDeckId deck, int beats) async {
+    if (_disposed) return;
     final state = stateFor(deck);
     final span = djLoopSpanAt(
       positionMs: state.positionMs,
@@ -305,7 +321,7 @@ class DjSessionProvider extends ChangeNotifier {
     final loop = DjLoop(startMs: span.startMs, endMs: span.endMs, beats: beats);
     _decks[deck]!.setActiveLoop(loop);
     _loops[deck] = loop;
-    notifyListeners();
+    _notify();
   }
 
   final Map<DjDeckId, DjLoop> _loops = {};
@@ -317,7 +333,7 @@ class DjSessionProvider extends ChangeNotifier {
     for (final entry in _loops.entries) {
       _requestLoopWrap(entry.key, entry.value);
     }
-    if (!_disposed) notifyListeners();
+    _notify();
   }
 
   void _requestLoopWrap(DjDeckId deck, DjLoop loop) {
@@ -341,28 +357,32 @@ class DjSessionProvider extends ChangeNotifier {
 
   DjLoop? activeLoopFor(DjDeckId deck) => _loops[deck];
   void clearLoop(DjDeckId deck) {
+    if (_disposed) return;
     _loops.remove(deck);
     _decks[deck]!.setActiveLoop(null);
-    notifyListeners();
+    _notify();
   }
 
   void setManualLoop(DjDeckId deck,
       {required int startMs, required int endMs}) {
+    if (_disposed) return;
     if (endMs <= startMs) return;
     final loop = DjLoop(startMs: startMs, endMs: endMs, beats: 0);
     _loops[deck] = loop;
     _decks[deck]!.setActiveLoop(loop);
-    notifyListeners();
+    _notify();
   }
 
   void setLoopIn(DjDeckId deck) {
+    if (_disposed) return;
     final state = stateFor(deck);
     _pendingLoopInMs[deck] =
         snapDjPositionToNearestBeat(state.positionMs, state.beatsMs);
-    notifyListeners();
+    _notify();
   }
 
   void setLoopOut(DjDeckId deck) {
+    if (_disposed) return;
     final start = _pendingLoopInMs.remove(deck);
     if (start == null) return;
     final state = stateFor(deck);
@@ -371,7 +391,21 @@ class DjSessionProvider extends ChangeNotifier {
   }
 
   Future<void> stopAll() async {
+    if (_disposed) return;
     await Future.wait([for (final deck in _decks.values) deck.release()]);
+    _notify();
+  }
+
+  /// Notifies unless this provider is already disposed.
+  ///
+  /// Every mutator here awaits the engine before it notifies, and the DJ route
+  /// can pop mid-await: the continuation then resumes against a provider
+  /// [dispose] has already torn down, and `notifyListeners` throws on a
+  /// disposed `ChangeNotifier` with nothing to catch it. The 33 Hz snapshot
+  /// loop had its own guard; the deck callbacks did not, so a play/pause tap
+  /// raced against a back-navigation crashed the zone (#414).
+  void _notify() {
+    if (_disposed) return;
     notifyListeners();
   }
 

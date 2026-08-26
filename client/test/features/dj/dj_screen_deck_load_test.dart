@@ -108,8 +108,8 @@ void main() {
     queue.dispose();
   });
 
-  testWidgets('a genuinely empty queue still invokes the picker once',
-      (tester) async {
+  testWidgets('a genuinely empty queue renders the inline load affordance '
+      'instead of a modal', (tester) async {
     pinViewport(tester);
     final api = _CountingQueueApiClient(QueueState.empty());
     final queue = QueueProvider(api);
@@ -141,7 +141,16 @@ void main() {
     await tester.pump();
     await tester.pump();
 
+    // #414: an empty queue is answered in the lane, not by a modal that
+    // ambushes a session that may already be playing.
     expect(api.getQueueCalls, 1);
+    expect(pickerCalls, 0);
+    expect(find.text('Load local audio file'), findsNothing);
+    expect(find.byKey(const ValueKey('dj_deck_load_file_a')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('dj_deck_load_file_a')));
+    await tester.pumpAndSettle();
+
     expect(pickerCalls, 1);
     expect(session.deckA.title, 'Picked track');
     expect(tester.takeException(), isNull);
@@ -150,6 +159,80 @@ void main() {
     await tester.pump(const Duration(milliseconds: 20));
     // The session is built inside the test body, so its 30 Hz snapshot timer
     // is a FakeTimer that must be cancelled before the binding's invariants.
+    session.dispose();
+    queue.dispose();
+  });
+
+  // #414 review: the lane draws this affordance on whichever deck is empty, and
+  // deck B is empty on the ordinary path — DjSessionProvider seeds deck B only
+  // when the queue has an up-next row. A deck-less callback loaded deck A from
+  // deck B's button, replacing the track deck A was playing and silencing it,
+  // while deck B stayed empty.
+  testWidgets("deck B's load affordance loads deck B and leaves deck A playing",
+      (tester) async {
+    pinViewport(tester);
+    final queue = QueueProvider(
+      _CountingQueueApiClient(
+        QueueState(tracks: [_track('11')], currentIndex: 0),
+      ),
+    );
+    final session = DjSessionProvider(
+      deckA: _deck(DjDeckId.a, const _LocalResolver()),
+      deckB: _deck(DjDeckId.b, const _LocalResolver()),
+    );
+    var pickerCalls = 0;
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<QueueProvider>.value(
+        value: queue,
+        child: MaterialApp(
+          home: DjScreen(
+            session: session,
+            filePicker: () async {
+              pickerCalls++;
+              return DjDeckLoad(
+                trackRef: 'local:/tmp/picked.mp3',
+                title: 'Picked track',
+                localUri: Uri.file('/tmp/picked.mp3'),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+
+    // A single-row queue seeds deck A only: this is the state the device
+    // evidence shows, not a contrived one.
+    expect(session.deckA.isLoaded, isTrue);
+    expect(session.deckB.isLoaded, isFalse);
+    await session.togglePlay(DjDeckId.a);
+    await tester.pump();
+    expect(session.deckA.playing, isTrue);
+    final deckATrackRef = session.deckA.trackRef;
+    final deckATitle = session.deckA.title;
+
+    final loadB = find.byKey(const ValueKey('dj_deck_load_file_b'));
+    expect(loadB, findsOneWidget);
+    expect(find.byKey(const ValueKey('dj_deck_load_file_a')), findsNothing);
+
+    await tester.tap(loadB);
+    await tester.pumpAndSettle();
+
+    expect(pickerCalls, 1);
+    expect(session.deckB.title, 'Picked track');
+    expect(session.deckB.trackRef, 'local:/tmp/picked.mp3');
+    expect(session.deckA.trackRef, deckATrackRef,
+        reason: "deck B's button must not replace deck A's track");
+    expect(session.deckA.title, deckATitle);
+    expect(session.deckA.playing, isTrue,
+        reason: "deck B's button must not stop deck A");
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 20));
     session.dispose();
     queue.dispose();
   });

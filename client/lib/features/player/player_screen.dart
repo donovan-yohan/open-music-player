@@ -20,6 +20,7 @@ import '../library/local_browse_navigation.dart';
 import '../library/track_metadata_edit_sheet.dart';
 import '../../shared/formatters/source_quality_formatter.dart';
 import 'widgets/song_info_sheet.dart';
+import '../dj/dj_entry_hint.dart';
 
 enum _PlayerTimeMode { song, queue }
 
@@ -842,11 +843,20 @@ class _DjModeAction extends StatelessWidget {
         if (!enabled) {
           return const SizedBox.shrink();
         }
-        return IconButton(
-          key: const ValueKey('player_dj_mode_action'),
-          icon: const Icon(Icons.graphic_eq),
-          tooltip: 'DJ mode (experimental)',
-          onPressed: () => context.push('/dj'),
+        // The deck plays local/cache-backed sources only. Advertise that at
+        // the entry point when the current queue row is not downloaded, rather
+        // than letting the user discover it as a dead deck (#414).
+        final hint = djDeckEntryHintFor(context, djModeEnabled: enabled);
+        return DjEntryHintBadge(
+          hint: hint,
+          child: IconButton(
+            key: const ValueKey('player_dj_mode_action'),
+            icon: const Icon(Icons.graphic_eq),
+            tooltip: hint == null
+                ? 'DJ mode (experimental)'
+                : 'DJ mode (experimental). $hint.',
+            onPressed: () => context.push('/dj'),
+          ),
         );
       },
     );

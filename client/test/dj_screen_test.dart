@@ -6,7 +6,10 @@ import 'package:open_music_player/core/engine/engine_audio_source_resolver.dart'
 import 'package:open_music_player/core/engine/voice.dart';
 import 'package:open_music_player/features/dj/dj_screen.dart';
 import 'package:open_music_player/features/dj/engine/deck_controller.dart';
+import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/providers/dj_session_provider.dart';
+import 'package:open_music_player/features/dj/widgets/dj_beat_counter.dart';
+import 'package:open_music_player/features/dj/widgets/dj_transport.dart';
 
 import 'support/dj_viewport_fixtures.dart';
 
@@ -42,14 +45,63 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('transport toggles deck playback state', (tester) async {
+  testWidgets('transport toggles a loaded deck and never an empty one',
+      (tester) async {
     await pumpDj(tester);
     expect(session.deckA.playing, isFalse);
+
+    // #414: an empty deck's transport is gated. PLAY used to latch
+    // `playing == true` over silence on a deck holding no audio.
+    await tester.tap(
+      find.byKey(const ValueKey('dj_play_pause')).first,
+      warnIfMissed: false,
+    );
+    await tester.pump();
+    expect(session.deckA.playing, isFalse);
+
+    await session.load(DjDeckId.a, djLoadedDeckSeed());
+    await tester.pump();
 
     await tester.tap(find.byKey(const ValueKey('dj_play_pause')).first);
     await tester.pump();
 
     expect(session.deckA.playing, isTrue);
+  });
+
+  testWidgets(
+      'the transport slot carries the beat counter beside a gated transport',
+      (tester) async {
+    // The rebase seam between #420 (beat counter in the transport row) and
+    // #414 (gating on a deck that holds no audio): both land in the same slot,
+    // and neither may displace the other.
+    await pumpDj(tester);
+
+    expect(find.byType(DjBeatCounter), findsNWidgets(2),
+        reason: 'one counter per deck, alongside the transport');
+    // Sharing one Row is what keeps #420's fixed flex: counter at its
+    // intrinsic width, transport flexing into the rest.
+    expect(
+      find.ancestor(
+        of: find.byType(DjBeatCounter).first,
+        matching: find.ancestor(
+          of: find.byType(DjTransport).first,
+          matching: find.byType(Row),
+        ),
+      ),
+      findsWidgets,
+    );
+
+    expect(tester.widget<DjTransport>(find.byType(DjTransport).first).enabled,
+        isFalse,
+        reason: 'an unseeded deck keeps #414\'s gate under #420\'s counter');
+
+    await session.load(DjDeckId.a, djLoadedDeckSeed());
+    await tester.pump();
+
+    expect(tester.widget<DjTransport>(find.byType(DjTransport).first).enabled,
+        isTrue);
+    expect(find.byType(DjBeatCounter), findsNWidgets(2),
+        reason: 'the counter survives the deck becoming playable');
   });
 
   testWidgets('the stems panel is reachable but exposes no mixer', (
@@ -83,7 +135,7 @@ void main() {
     expect(find.byKey(const ValueKey('dj_stem_separate')), findsNothing);
   });
 
-  testWidgets('empty queue invokes local-file fallback and loads deck A', (
+  testWidgets('the inline load affordance loads deck A from a picked file', (
     tester,
   ) async {
     var fallbackCalls = 0;
@@ -106,6 +158,14 @@ void main() {
     );
     await tester.pump();
     await tester.pump();
+
+    // #414: the picker is user-initiated. Entering the deck no longer opens
+    // anything over a session that may already be playing.
+    expect(fallbackCalls, 0);
+    expect(find.byKey(const ValueKey('dj_deck_load_file_a')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('dj_deck_load_file_a')));
+    await tester.pumpAndSettle();
 
     expect(fallbackCalls, 1);
     expect(session.deckA.trackRef, 'picked-track');

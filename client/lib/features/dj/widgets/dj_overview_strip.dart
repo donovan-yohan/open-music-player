@@ -2,6 +2,16 @@ import 'package:flutter/material.dart';
 
 import '../models/dj_hot_cue.dart';
 
+/// Cue markers as 0..1 fractions of the track.
+///
+/// Total by construction: a deck with no audio has `durationMs == 0`, and a
+/// cue divided by it produced NaN/Infinity offsets in the painter. `progress`
+/// already guarded that case; the cue run did not (#414).
+List<double> djOverviewCueFractions(Iterable<DjHotCue> cues, int durationMs) =>
+    durationMs <= 0
+        ? const <double>[]
+        : [for (final cue in cues) cue.positionMs / durationMs];
+
 class DjOverviewStrip extends StatelessWidget {
   const DjOverviewStrip({
     super.key,
@@ -33,9 +43,9 @@ class DjOverviewStrip extends StatelessWidget {
           );
         },
         child: CustomPaint(
-          painter: _OverviewPainter(
+          painter: DjOverviewPainter(
             progress: durationMs <= 0 ? 0 : positionMs / durationMs,
-            cues: [for (final cue in cues) cue.positionMs / durationMs],
+            cues: djOverviewCueFractions(cues, durationMs),
             color: Theme.of(context).colorScheme.primary,
           ),
           child: const SizedBox(height: 8, width: double.infinity),
@@ -43,8 +53,9 @@ class DjOverviewStrip extends StatelessWidget {
       );
 }
 
-class _OverviewPainter extends CustomPainter {
-  const _OverviewPainter({
+@visibleForTesting
+class DjOverviewPainter extends CustomPainter {
+  const DjOverviewPainter({
     required this.progress,
     required this.cues,
     required this.color,
@@ -74,6 +85,6 @@ class _OverviewPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _OverviewPainter old) =>
+  bool shouldRepaint(covariant DjOverviewPainter old) =>
       old.progress != progress || old.cues != cues || old.color != color;
 }
