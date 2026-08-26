@@ -158,3 +158,73 @@ func TestRunImportsRhythmAndTonalDeterministically(t *testing.T) {
 		t.Fatalf("stats = %+v, want total=2 imported=2 camelot_mapped=2", stats)
 	}
 }
+
+// TestParseRhythmRowRejectsRawDumpLayout pins the contract between the published
+// AcousticBrainz dump layout and the CSV this loader actually consumes.
+//
+// The real rhythm.csv shipped in
+// acousticbrainz-lowlevel-features-20220623-rhythm.tar.zst has this header:
+//
+//	mbid,submission_offset,bpm,bpm_histogram_first_peak_bpm_mean,bpm_histogram_first_peak_bpm_median,bpm_histogram_second_peak_bpm_mean,bpm_histogram_second_peak_bpm_median,danceability,onset_rate
+//
+// parseRhythmRow reads record[1] as BPM, which on a raw dump row is
+// submission_offset -- so every raw row is rejected. Operators must project the
+// dump down to "mbid,bpm" first. See docs/ACOUSTICBRAINZ_IMPORT.md
+// ("Dump layout vs loader input").
+func TestParseRhythmRowRejectsRawDumpLayout(t *testing.T) {
+	mbid := "0e11c0fd-a1da-4b88-a438-7ef55c5809ec"
+	raw := []string{mbid, "0", "120.763885498", "120", "120", "133", "133", "0.996203362942", "2.86757659912"}
+
+	if entry, ok := parseRhythmRow(raw); ok {
+		t.Fatalf("raw dump row accepted (entry = %+v); record[1] is submission_offset, not bpm", entry)
+	}
+
+	projected := []string{mbid, "120.763885498"}
+	entry, ok := parseRhythmRow(projected)
+	if !ok {
+		t.Fatalf("projected row (mbid,bpm) rejected, want accepted")
+	}
+	if entry.RecordingMBID.String() != mbid {
+		t.Fatalf("mbid = %s, want %s", entry.RecordingMBID, mbid)
+	}
+	if entry.BPM == nil || *entry.BPM != 120.763885498 {
+		t.Fatalf("entry = %+v, want bpm 120.763885498", entry)
+	}
+}
+
+// TestParseTonalRowRejectsRawDumpLayout pins the same contract for the tonal
+// dump. The real tonal.csv header is:
+//
+//	mbid,submission_offset,key_key,key_scale,tuning_frequency,tuning_equal_tempered_deviation
+//
+// parseTonalRow reads record[1]/record[2] as key/scale, which on a raw dump row
+// are submission_offset/key_key -- it "succeeds" with garbage that camelotFromKey
+// then silently drops. Operators must project to "mbid,key,scale" first. See
+// docs/ACOUSTICBRAINZ_IMPORT.md ("Dump layout vs loader input").
+func TestParseTonalRowRejectsRawDumpLayout(t *testing.T) {
+	mbid := "0e11c0fd-a1da-4b88-a438-7ef55c5809ec"
+	raw := []string{mbid, "0", "A", "major", "434.193115234", "0.141633972526"}
+
+	row, ok := parseTonalRow(raw)
+	if !ok {
+		t.Fatalf("raw dump row unexpectedly rejected outright; want silent garbage passthrough")
+	}
+	if row.key != "0" || row.scale != "A" {
+		t.Fatalf("raw row parsed key=%q scale=%q, want the wrong pair key=\"0\" scale=\"A\"", row.key, row.scale)
+	}
+	if got := camelotFromKey(row.key, row.scale); got != "" {
+		t.Fatalf("camelotFromKey(%q, %q) = %q, want \"\" (unmappable garbage)", row.key, row.scale, got)
+	}
+
+	projected := []string{mbid, "A", "major"}
+	row, ok = parseTonalRow(projected)
+	if !ok {
+		t.Fatalf("projected row (mbid,key,scale) rejected, want accepted")
+	}
+	if row.key != "A" || row.scale != "major" {
+		t.Fatalf("projected row parsed key=%q scale=%q, want key=\"A\" scale=\"major\"", row.key, row.scale)
+	}
+	if got := camelotFromKey(row.key, row.scale); got != "10B" {
+		t.Fatalf("camelotFromKey(%q, %q) = %q, want \"10B\"", row.key, row.scale, got)
+	}
+}
