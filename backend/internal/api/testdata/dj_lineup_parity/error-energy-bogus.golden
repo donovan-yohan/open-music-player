@@ -1,0 +1,2 @@
+status: 400
+{"code":"invalid_request","message":"energy must be one of: low, medium, high"}
