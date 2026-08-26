@@ -401,14 +401,14 @@ func TestSearchAcousticBrainzCandidateHintLookupFailureIsNonFatal(t *testing.T) 
 		}
 	})
 
-	t.Run("cancelled parent context", func(t *testing.T) {
+	t.Run("canceled parent context", func(t *testing.T) {
 		source := &fakeAcousticBrainzHintSource{hitAny: true}
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 		resp := hintService(source, hintCandidate("one", "mbRecordingId", hintRecordingMBID)).
 			Search(ctx, "Artist Song", []string{"youtube"}, 10)
 		for index := range resp.Results {
-			assertNoAcousticBrainzHints(t, "cancelled-context candidate", resp.Results[index].Metadata)
+			assertNoAcousticBrainzHints(t, "canceled-context candidate", resp.Results[index].Metadata)
 		}
 	})
 }
