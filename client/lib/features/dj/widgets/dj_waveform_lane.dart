@@ -8,7 +8,9 @@ import '../../../models/track_analysis.dart';
 import '../../../models/timeline_viewport.dart';
 import '../../../models/waveform.dart';
 import '../../../widgets/timeline_waveform_painter.dart';
+import '../models/dj_beat_grid.dart';
 import '../models/dj_deck_state.dart';
+import 'dj_beat_ruler_painter.dart';
 import 'dj_deck_notice.dart';
 
 class DjWaveformLane extends StatefulWidget {
@@ -17,18 +19,61 @@ class DjWaveformLane extends StatefulWidget {
     required this.deck,
     required this.track,
     required this.color,
+    this.pixelsPerSecond = kDjLaneDetailPixelsPerSecond,
   });
   final DjDeckState deck;
   final QueueTrack? track;
   final Color color;
+
+  /// Lane zoom. The deck has no zoom control yet, so production is always the
+  /// detail default; the parameter exists so the ruler's density rule is
+  /// directly pumpable at [kDjLaneOverviewPixelsPerSecond] (#416).
+  final double pixelsPerSecond;
   @override
   State<DjWaveformLane> createState() => _DjWaveformLaneState();
 }
 
 class _DjWaveformLaneState extends State<DjWaveformLane> {
-  static const _pixelsPerSecond = 90.0;
   final _cache = TimelineWaveformPaintCache();
   _DjWaveformDataCache? _waveformCache;
+  _DjRulerTickCache? _rulerCache;
+
+  /// Ruler geometry is rebuilt only when the analysis, the content width or the
+  /// zoom changes — never on a position tick (#416, ~508 beats per deck).
+  List<DjBeatTick> _cachedTicks({
+    required QueueTrack? track,
+    required int durationMs,
+    required double contentWidth,
+  }) {
+    final analysis = track?.analysis;
+    final cached = _rulerCache;
+    if (cached != null &&
+        cached.matches(
+          analysis: analysis,
+          durationMs: durationMs,
+          contentWidth: contentWidth,
+          pixelsPerSecond: widget.pixelsPerSecond,
+        )) {
+      return cached.ticks;
+    }
+    final ruler = DjBeatRuler.forAnalysis(analysis);
+    final ticks = ruler == null
+        ? const <DjBeatTick>[]
+        : djBeatRulerTicks(
+            ruler: ruler,
+            durationMs: durationMs,
+            contentWidth: contentWidth,
+            pixelsPerSecond: widget.pixelsPerSecond,
+          );
+    _rulerCache = _DjRulerTickCache(
+      analysis: analysis,
+      durationMs: durationMs,
+      contentWidth: contentWidth,
+      pixelsPerSecond: widget.pixelsPerSecond,
+      ticks: ticks,
+    );
+    return ticks;
+  }
 
   _DjWaveformDataCache _cachedWaveform({
     required QueueTrack? track,
@@ -114,15 +159,15 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
             final viewport = TimelineViewport.clamped(
               durationMs: durationMs,
               widthPx: width,
-              pixelsPerSecond: _pixelsPerSecond,
+              pixelsPerSecond: widget.pixelsPerSecond,
               offsetMs: widget.deck.positionMs,
             ).panToOffsetMs(
               widget.deck.positionMs -
-                  ((width / _pixelsPerSecond) * 1000).round() ~/ 2,
+                  ((width / widget.pixelsPerSecond) * 1000).round() ~/ 2,
             );
             final contentWidth = math.max(
               width,
-              durationMs / 1000 * _pixelsPerSecond,
+              durationMs / 1000 * widget.pixelsPerSecond,
             );
             final cachedWaveform = _cachedWaveform(
               track: track,
@@ -131,6 +176,13 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
             );
             final waveform = cachedWaveform.waveform;
             final analysisNotice = _analysisNotice(context, waveform, track);
+            final ticks = _cachedTicks(
+              track: track,
+              durationMs: durationMs,
+              contentWidth: contentWidth,
+            );
+            final theme = Theme.of(context);
+            final beatToken = SoundQPlayerTheme.of(context).waveformBeat;
             return Semantics(
               label: 'Deck ${widget.deck.deckId.name.toUpperCase()} waveform',
               child: ClipRect(
@@ -138,7 +190,7 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
                   fit: StackFit.expand,
                   children: [
                     Positioned(
-                      left: -(viewport.offsetMs / 1000) * _pixelsPerSecond,
+                      left: -(viewport.offsetMs / 1000) * widget.pixelsPerSecond,
                       width: contentWidth,
                       top: 0,
                       bottom: 0,
@@ -149,15 +201,42 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
                           laneIdentity: widget.deck.queueItemId ??
                               'deck-${widget.deck.deckId.name}',
                           paintCache: _cache,
-                          viewportPixelsPerMs: _pixelsPerSecond / 1000,
+                          viewportPixelsPerMs: widget.pixelsPerSecond / 1000,
                           viewportOriginMs: 0,
                           color: widget.color,
                           dimColor:
                               Theme.of(context).colorScheme.onSurfaceVariant,
                           handleColor: Theme.of(context).colorScheme.secondary,
+                          // The deck paints its own three-level ruler in design
+                          // tokens; the shared painter's white/amber literals
+                          // would double-draw underneath it (#416).
+                          musicalMarkers: false,
                         ),
                       ),
                     ),
+                    // Same geometry as the waveform above, so the ruler tracks
+                    // the peaks it annotates.
+                    if (ticks.isNotEmpty)
+                      Positioned(
+                        left: -(viewport.offsetMs / 1000) *
+                            widget.pixelsPerSecond,
+                        width: contentWidth,
+                        top: 0,
+                        bottom: 0,
+                        child: CustomPaint(
+                          painter: DjBeatRulerPainter(
+                            ticks: ticks,
+                            beatColor: beatToken.withValues(alpha: 0.28),
+                            barColor: beatToken.withValues(alpha: 0.55),
+                            phraseColor: beatToken.withValues(alpha: 0.85),
+                            labelStyle:
+                                (theme.textTheme.labelSmall ?? const TextStyle())
+                                    .copyWith(
+                              color: beatToken.withValues(alpha: 0.85),
+                            ),
+                          ),
+                        ),
+                      ),
                     // Peaks arrive from the per-track analysis endpoint long
                     // after the deck seed, and a lane with no frames paints a
                     // flat centre line that is indistinguishable from silence.
@@ -214,6 +293,34 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
 
 /// Retains waveform object identity over 30Hz deck-position updates. Analysis
 /// hydration replaces [QueueTrack.analysis], deliberately invalidating it.
+/// Retains ruler tick geometry over 30Hz deck-position updates.
+class _DjRulerTickCache {
+  const _DjRulerTickCache({
+    required this.analysis,
+    required this.durationMs,
+    required this.contentWidth,
+    required this.pixelsPerSecond,
+    required this.ticks,
+  });
+
+  final TrackAnalysis? analysis;
+  final int durationMs;
+  final double contentWidth;
+  final double pixelsPerSecond;
+  final List<DjBeatTick> ticks;
+
+  bool matches({
+    required TrackAnalysis? analysis,
+    required int durationMs,
+    required double contentWidth,
+    required double pixelsPerSecond,
+  }) =>
+      identical(this.analysis, analysis) &&
+      this.durationMs == durationMs &&
+      this.contentWidth == contentWidth &&
+      this.pixelsPerSecond == pixelsPerSecond;
+}
+
 class _DjWaveformDataCache {
   _DjWaveformDataCache({
     required this.track,
