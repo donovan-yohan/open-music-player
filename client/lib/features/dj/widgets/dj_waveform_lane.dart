@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../app/theme.dart';
 import '../../../models/track.dart';
+import '../../../models/track_analysis.dart';
 import '../../../models/timeline_viewport.dart';
 import '../../../models/waveform.dart';
 import '../../../widgets/timeline_waveform_painter.dart';
@@ -58,6 +59,44 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
     );
   }
 
+  /// The lane's explicit unanalyzed state, or null once frames exist.
+  ///
+  /// The flat-baseline branch in TimelineWaveformPainter still paints
+  /// underneath: this is the affordance, not a replacement lane. A refused deck
+  /// never reaches here — DjDeckNotice wins in [build].
+  Widget? _analysisNotice(
+    BuildContext context,
+    TimelineWaveformData waveform,
+    QueueTrack? track,
+  ) {
+    if (waveform.frames.isNotEmpty) return null;
+    final status = track?.analysis?.status;
+    // Everything else — no analysis object at all, pending/analyzing/stale/
+    // unknown, and analyzed-but-not-yet-hydrated — is still on its way.
+    final missing = status == TrackAnalysisStatus.failed ||
+        status == TrackAnalysisStatus.unsupported;
+    final theme = Theme.of(context);
+    final deckName = widget.deck.deckId.name;
+    return Align(
+      alignment: Alignment.center,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Text(
+          missing ? 'No analysis' : 'Analyzing…',
+          key: ValueKey(
+            'dj_lane_analysis_${missing ? 'missing' : 'pending'}_$deckName',
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // A refused deck explains itself where the waveform would be; the lane's
@@ -91,6 +130,7 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
               sampleCount: contentWidth.ceil().clamp(256, 4096),
             );
             final waveform = cachedWaveform.waveform;
+            final analysisNotice = _analysisNotice(context, waveform, track);
             return Semantics(
               label: 'Deck ${widget.deck.deckId.name.toUpperCase()} waveform',
               child: ClipRect(
@@ -118,6 +158,11 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
                         ),
                       ),
                     ),
+                    // Peaks arrive from the per-track analysis endpoint long
+                    // after the deck seed, and a lane with no frames paints a
+                    // flat centre line that is indistinguishable from silence.
+                    // Say which state the lane is in instead (#410).
+                    if (analysisNotice != null) analysisNotice,
                     // The fixed centre playhead. It resolves from the
                     // waveformPlayhead design token in both themes, and D1's
                     // shared column grid puts this axis down the middle of the
