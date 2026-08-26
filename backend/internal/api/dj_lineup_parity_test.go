@@ -102,7 +102,7 @@ func djLineupParityFixture() []db.DJLineupTrack {
 			LastHistoricalPlayed: historical(time.August, 1),
 		},
 		{
-			ID: 10, Title: "Back Catalogue", Artist: "Artist J", Album: "Album J", DurationMs: 270000,
+			ID: 10, Title: "Back Catalogue", Artist: "Artist J", Album: "Album J", DurationMs: 270000, //nolint:misspell // fixture title is baked into the parity goldens
 			BPM: 100, Camelot: "2B", Energy: 0.3, GenreHints: []string{"Ambient"},
 			AddedAt: added(10), TotalPlayCount: 6, MidWindowPlayCount: 6,
 			LastHistoricalPlayed: historical(time.December, 11),

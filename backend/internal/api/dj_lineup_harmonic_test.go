@@ -80,7 +80,7 @@ func djHarmonicFixtureTracks() []db.DJLineupTrack {
 			BPM: 140, Camelot: "8A", Energy: 0.70, GenreHints: []string{"House"}, AddedAt: added(7)},
 		{ID: 107, Title: "Unanalyzed", Artist: "Seven", Album: "Seven LP", DurationMs: 235000,
 			BPM: 0, Camelot: "", Energy: 0.70, GenreHints: []string{"House"}, AddedAt: added(8)},
-		{ID: 200, Title: "Recent Favourite", Artist: "Eight", Album: "Eight LP", DurationMs: 240000,
+		{ID: 200, Title: "Recent Favorite", Artist: "Eight", Album: "Eight LP", DurationMs: 240000,
 			BPM: 120, Camelot: "5A", Energy: 0.50, GenreHints: []string{"Disco"}, AddedAt: added(9),
 			RecentPlayCount: 6, LastRecentPlayedAt: added(20), TotalPlayCount: 6},
 		{ID: 201, Title: "Recent Second", Artist: "Nine", Album: "Nine LP", DurationMs: 245000,

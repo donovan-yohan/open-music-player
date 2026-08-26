@@ -120,7 +120,7 @@ func TestDJHarmonicLineupIntegrationFallsBackForUnanalyzedAnchor(t *testing.T) {
 	if _, err := libraryRepo.AddTrackToLibrary(ctx, userID, unanalyzed); err != nil {
 		t.Fatalf("add unanalyzed track to library: %v", err)
 	}
-	analyzed := seedMixTrack(t, trackRepo, ctx, "Analyzed neighbour", 200000)
+	analyzed := seedMixTrack(t, trackRepo, ctx, "Analyzed neighbor", 200000)
 	if _, err := libraryRepo.AddTrackToLibrary(ctx, userID, analyzed); err != nil {
 		t.Fatalf("add analyzed track to library: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestDJHarmonicLineupIntegrationFallsBackForUnanalyzedAnchor(t *testing.T) {
 
 	// The anchor rejection itself, against the real projection: an unanalyzed
 	// row comes back with no usable BPM/camelot and the resolver refuses it,
-	// while the analyzed neighbour resolves from the same read. Without this,
+	// while the analyzed neighbor resolves from the same read. Without this,
 	// relaxing resolveDJHarmonicAnchor's validation would still leave the
 	// response comparison below green, because a bogus anchor simply matches
 	// no candidates.
@@ -163,7 +163,7 @@ func TestDJHarmonicLineupIntegrationFallsBackForUnanalyzedAnchor(t *testing.T) {
 		t.Fatalf("flag-off arm returned no blocks; the seeded library was not read: %s", want)
 	}
 	if !djLineupContainsTrack(baseline, analyzed) {
-		t.Fatalf("analyzed neighbour %d is missing from the themed lineup: %s", analyzed, want)
+		t.Fatalf("analyzed neighbor %d is missing from the themed lineup: %s", analyzed, want)
 	}
 
 	if string(got) != string(want) {
