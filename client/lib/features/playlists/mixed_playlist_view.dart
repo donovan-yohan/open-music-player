@@ -6,8 +6,9 @@ import 'mix/mix_models.dart';
 
 /// Right-aligned BPM + Camelot key badges for a blended playlist row.
 ///
-/// Teal-outlined chips with tabular numerals, per the blended-view spec;
-/// missing analysis renders a dim dash badge instead of hiding the block.
+/// Thin adapter over [MixMetadataBadges] that reads the values out of a
+/// library track's [TrackAnalysis]; the display rule itself lives in one place
+/// so other harmonic surfaces render identical chips.
 class MixTrackBadges extends StatelessWidget {
   const MixTrackBadges({super.key, required this.analysis});
 
@@ -16,34 +17,57 @@ class MixTrackBadges extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final summary = analysis?.summary;
-    final bpm = summary?.bpm?.numericValue;
-    final camelot = _normalizeCamelot(summary?.camelot?.textValue);
+    return MixMetadataBadges(
+      bpm: summary?.bpm?.numericValue?.toDouble(),
+      camelot: summary?.camelot?.textValue,
+    );
+  }
+}
+
+/// Right-aligned BPM + Camelot key badges built from raw values.
+///
+/// Teal-outlined chips with tabular numerals, per the blended-view spec. The
+/// asymmetry is deliberate and shared by every caller: an unknown tempo renders
+/// no chip at all, while an unknown or off-wheel key renders a dim dash badge
+/// so the key column never silently disappears.
+class MixMetadataBadges extends StatelessWidget {
+  const MixMetadataBadges({super.key, this.bpm, this.camelot});
+
+  final double? bpm;
+  final String? camelot;
+
+  @override
+  Widget build(BuildContext context) {
+    final tempo = bpm;
+    final key = normalizeCamelot(camelot);
 
     return Row(
       key: const ValueKey('mix_track_badges'),
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (bpm != null) ...[
-          _MixMetadataBadge(label: '${bpm.round()} BPM'),
+        if (tempo != null && tempo.isFinite && tempo > 0) ...[
+          MixMetadataBadge(label: '${tempo.round()} BPM'),
           const SizedBox(width: 4),
         ],
-        if (camelot != null)
-          _MixMetadataBadge(label: camelot)
+        if (key != null)
+          MixMetadataBadge(label: key)
         else
-          const _MixMetadataBadge(label: '—', dim: true),
+          const MixMetadataBadge(label: '—', dim: true),
       ],
     );
   }
 
-  static String? _normalizeCamelot(String? value) {
+  /// Canonicalizes a Camelot label, or returns null when it is not on the
+  /// wheel. Shared so input validation and chip rendering cannot drift.
+  static String? normalizeCamelot(String? value) {
     final text = value?.trim().toUpperCase();
     if (text == null) return null;
     return RegExp(r'^(?:[1-9]|1[0-2])[AB]$').hasMatch(text) ? text : null;
   }
 }
 
-class _MixMetadataBadge extends StatelessWidget {
-  const _MixMetadataBadge({required this.label, this.dim = false});
+class MixMetadataBadge extends StatelessWidget {
+  const MixMetadataBadge({super.key, required this.label, this.dim = false});
 
   final String label;
   final bool dim;
