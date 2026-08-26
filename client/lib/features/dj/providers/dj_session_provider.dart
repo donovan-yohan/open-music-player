@@ -83,15 +83,37 @@ class DjSessionProvider extends ChangeNotifier {
         if (next != null) _seedForTrack(next),
       ];
 
-  static DjDeckLoad _seedForTrack(QueueTrack track) => DjDeckLoad(
-        trackRef: track.playbackTrackId ?? track.id,
-        queueItemId: track.queueItemId,
-        title: track.title,
-        queueTrack: track,
-        durationMs: track.duration,
-        beatsMs: track.analysis?.summary?.beatGrid?.beatsMs ?? const [],
-        initialCueMs: track.analysis?.summary?.intro?.startMs ?? 0,
-      );
+  /// The resolver-backed audio source key for [track]: the first candidate that
+  /// parses to a positive integer, matching QueueProvider._analysisTrackId
+  /// (queue_provider.dart:2079) and the downloads store key
+  /// (download_service.dart:301). Queue item UUIDs are never a downloads key.
+  static String? djDeckTrackRef(QueueTrack track) {
+    for (final candidate in [track.playbackTrackId, track.id]) {
+      if (candidate == null) continue;
+      final parsed = int.tryParse(candidate);
+      if (parsed != null && parsed > 0) return parsed.toString();
+    }
+    return null;
+  }
+
+  static DjDeckLoad _seedForTrack(QueueTrack track) {
+    // The fallback preserves today's identity for a row with no numeric id;
+    // such a deck now surfaces a load failure instead of throwing (#409).
+    final ref = djDeckTrackRef(track) ?? track.playbackTrackId ?? track.id;
+    if (kDebugMode) {
+      debugPrint('OMP DJ deck seed candidates '
+          'playbackTrackId=${track.playbackTrackId} id=${track.id} -> $ref');
+    }
+    return DjDeckLoad(
+      trackRef: ref,
+      queueItemId: track.queueItemId,
+      title: track.title,
+      queueTrack: track,
+      durationMs: track.duration,
+      beatsMs: track.analysis?.summary?.beatGrid?.beatsMs ?? const [],
+      initialCueMs: track.analysis?.summary?.intro?.startMs ?? 0,
+    );
+  }
 
   /// Loads current/next queue seeds. If neither is available the caller may
   /// provide a local-file picker seam (no file_picker dependency in the spike).
