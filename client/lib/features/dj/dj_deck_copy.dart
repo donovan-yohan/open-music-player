@@ -51,7 +51,8 @@ const String djDeckLoadFileAction = 'Load a file';
 /// metric run (`-- BPM`, `+0.0%`, `0:00/-0:00`).
 const String djDeckHeaderNotLoaded = 'Not loaded';
 
-/// Tooltip on the transport controls of a deck that holds no audio.
+/// Tooltip on the gated controls — transport and hot-cue pads — of a deck that
+/// holds no audio and gave no more specific reason.
 const String djDeckTransportDisabledReason = 'This deck has no track loaded';
 
 /// Sync is deferred to DJ-3; the glyph says so in the user's language.
