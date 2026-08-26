@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../app/theme.dart';
 import '../../core/api/api_client.dart';
 import '../../models/nearby_tracks.dart';
 import '../../shared/models/track.dart';
@@ -216,7 +215,7 @@ class _HarmonicDiscoverySheetState extends State<HarmonicDiscoverySheet> {
   }
 
   Future<void> _showResultActions(NearbyTrack match) async {
-    await showModalBottomSheet<void>(
+    final action = await showModalBottomSheet<_MatchAction>(
       context: context,
       showDragHandle: true,
       builder: (sheetContext) => SafeArea(
@@ -253,19 +252,14 @@ class _HarmonicDiscoverySheetState extends State<HarmonicDiscoverySheet> {
               key: const ValueKey('harmonic_action_add_to_queue'),
               leading: const Icon(Icons.queue_music),
               title: const Text('Add to queue'),
-              onTap: () async {
-                Navigator.of(sheetContext).pop();
-                await widget.onAddToQueue(match);
-              },
+              onTap: () => Navigator.of(sheetContext).pop(_MatchAction.queue),
             ),
             ListTile(
               key: const ValueKey('harmonic_action_add_to_playlist'),
               leading: const Icon(Icons.playlist_add),
               title: const Text('Add to this playlist'),
-              onTap: () async {
-                Navigator.of(sheetContext).pop();
-                await widget.onAddToPlaylist(match);
-              },
+              onTap: () =>
+                  Navigator.of(sheetContext).pop(_MatchAction.playlist),
             ),
             ListTile(
               leading: const Icon(Icons.close),
@@ -276,6 +270,19 @@ class _HarmonicDiscoverySheetState extends State<HarmonicDiscoverySheet> {
         ),
       ),
     );
+    if (!mounted || action == null) return;
+
+    // Both outcomes are reported by the host screen's SnackBar, which its
+    // Scaffold paints *underneath* this modal route and its barrier. Close
+    // discovery first, or a failed add looks exactly like a successful one.
+    // The callback is captured before the pop because this State is disposed
+    // with the route.
+    final report = switch (action) {
+      _MatchAction.queue => widget.onAddToQueue,
+      _MatchAction.playlist => widget.onAddToPlaylist,
+    };
+    await Navigator.of(context).maybePop();
+    await report(match);
   }
 
   @override
@@ -289,24 +296,29 @@ class _HarmonicDiscoverySheetState extends State<HarmonicDiscoverySheet> {
           16,
           16 + MediaQuery.viewInsetsOf(context).bottom,
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('Harmonic matches', style: theme.textTheme.titleLarge),
-            const SizedBox(height: 4),
-            Text(
-              'Tracks in your library that mix well from this tempo and key. '
-              'Add one to your queue or to "${widget.playlistName}".',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+        // Everything scrolls together. The soft keyboard is added as inner
+        // padding, so a fixed header + inputs block overflows a short viewport
+        // as soon as the results region has collapsed to nothing.
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Harmonic matches', style: theme.textTheme.titleLarge),
+              const SizedBox(height: 4),
+              Text(
+                'Tracks in your library that mix well from this tempo and key. '
+                'Add one to your queue or to "${widget.playlistName}".',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
-            ),
-            const SizedBox(height: 16),
-            _buildInputs(theme),
-            const SizedBox(height: 12),
-            Flexible(child: _buildBody(theme)),
-          ],
+              const SizedBox(height: 16),
+              _buildInputs(theme),
+              const SizedBox(height: 12),
+              _buildBody(theme),
+            ],
+          ),
         ),
       ),
     );
@@ -383,7 +395,9 @@ class _HarmonicDiscoverySheetState extends State<HarmonicDiscoverySheet> {
         FilledButton(
           key: const ValueKey('harmonic_search_button'),
           onPressed: _loading || !_inputsValid ? null : _search,
-          style: FilledButton.styleFrom(backgroundColor: AppTheme.orange),
+          // No local background: `filledButtonTheme` already resolves the
+          // palette's orange primary action, and it is the only source that
+          // carries the light-theme token plus the pressed/disabled states.
           child: const Text('Find matches'),
         ),
       ],
@@ -411,7 +425,10 @@ class _HarmonicDiscoverySheetState extends State<HarmonicDiscoverySheet> {
             const SizedBox(height: 12),
             FilledButton(
               key: const ValueKey('harmonic_discovery_retry'),
-              onPressed: _search,
+              // Same guard as the primary button: editing the query into an
+              // invalid state while the error panel is up must disable Retry
+              // rather than leave a live-looking control that does nothing.
+              onPressed: _inputsValid ? _search : null,
               child: const Text('Retry'),
             ),
           ],
@@ -467,38 +484,44 @@ class _HarmonicDiscoverySheetState extends State<HarmonicDiscoverySheet> {
               ),
             ),
           ),
-        Flexible(
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: matches.length,
-            itemBuilder: (context, index) {
-              final match = matches[index];
-              return ListTile(
-                key: ValueKey('harmonic_result_${match.id}'),
-                contentPadding: EdgeInsets.zero,
-                title: Text(
-                  match.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  match.artist ?? 'Unknown artist',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                trailing: MixMetadataBadges(
-                  bpm: match.bpm,
-                  camelot: match.camelot,
-                ),
-                onTap: () => unawaited(_showResultActions(match)),
-              );
-            },
-          ),
+        ListView.builder(
+          shrinkWrap: true,
+          // The whole sheet is the scrollable; the result cap is 100 rows.
+          physics: const NeverScrollableScrollPhysics(),
+          padding: EdgeInsets.zero,
+          itemCount: matches.length,
+          itemBuilder: (context, index) {
+            final match = matches[index];
+            return ListTile(
+              key: ValueKey('harmonic_result_${match.id}'),
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                match.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                match.artist ?? 'Unknown artist',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: MixMetadataBadges(
+                bpm: match.bpm,
+                camelot: match.camelot,
+              ),
+              onTap: () => unawaited(_showResultActions(match)),
+            );
+          },
         ),
       ],
     );
   }
 }
+
+/// What the nested per-result actions sheet was dismissed with. Returned rather
+/// than acted on inside that sheet, so the discovery sheet can close itself
+/// before the host screen reports the outcome.
+enum _MatchAction { queue, playlist }
 
 /// Camelot labels are canonically upper-case; typing `8a` should not read as a
 /// different key from `8A`.
