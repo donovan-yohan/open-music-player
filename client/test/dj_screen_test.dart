@@ -8,6 +8,8 @@ import 'package:open_music_player/features/dj/dj_screen.dart';
 import 'package:open_music_player/features/dj/engine/deck_controller.dart';
 import 'package:open_music_player/features/dj/providers/dj_session_provider.dart';
 
+import 'support/dj_viewport_fixtures.dart';
+
 void main() {
   late DjSessionProvider session;
 
@@ -21,10 +23,7 @@ void main() {
   tearDown(() => session.dispose());
 
   Future<void> pumpDj(WidgetTester tester) async {
-    tester.view.physicalSize = const Size(980, 448);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+    landscapeReference.apply(tester);
     await tester.pumpWidget(
       MaterialApp(
           home: DjScreen(session: session, filePicker: () async => null)),
@@ -32,8 +31,9 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('fits 980 by 448 and renders both waveform lanes',
-      (tester) async {
+  testWidgets(
+      'fits the Pixel 10 Pro landscape viewport and renders both waveform '
+      'lanes', (tester) async {
     await pumpDj(tester);
 
     expect(find.byKey(const ValueKey('dj_screen')), findsOneWidget);
@@ -87,10 +87,7 @@ void main() {
     tester,
   ) async {
     var fallbackCalls = 0;
-    tester.view.physicalSize = const Size(980, 448);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+    landscapeReference.apply(tester);
 
     await tester.pumpWidget(
       MaterialApp(

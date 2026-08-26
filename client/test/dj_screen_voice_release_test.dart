@@ -7,6 +7,8 @@ import 'package:open_music_player/core/engine/voice.dart';
 import 'package:open_music_player/features/dj/dj_screen.dart';
 import 'package:open_music_player/features/dj/providers/dj_session_provider.dart';
 
+import 'support/dj_viewport_fixtures.dart';
+
 /// The deck is the sanctioned ADR 0001 exception: it drives two audio voices of
 /// its own, in addition to the five the canonical `VoicePool` already holds.
 /// That exception is only bounded if leaving the deck actually gives those
@@ -18,10 +20,7 @@ import 'package:open_music_player/features/dj/providers/dj_session_provider.dart
 /// while an injected session stays caller-owned (release only).
 void main() {
   Future<void> pumpDeck(WidgetTester tester, DjSessionProvider session) async {
-    tester.view.physicalSize = const Size(980, 448);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+    landscapeReference.apply(tester);
     await tester.pumpWidget(
       MaterialApp(
         home: DjScreen(session: session, filePicker: () async => null),
@@ -84,10 +83,7 @@ void main() {
           resolver: const DirectEngineAudioSourceResolver(),
         );
 
-    tester.view.physicalSize = const Size(980, 448);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+    landscapeReference.apply(tester);
     await tester.pumpWidget(
       MaterialApp(
         home: DjScreen(
