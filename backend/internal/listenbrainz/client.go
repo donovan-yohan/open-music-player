@@ -14,7 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
+
 	"strings"
 	"time"
 
@@ -199,7 +199,7 @@ func parsePayload(reference uuid.UUID, raw []byte) (*Response, error) {
 		if err != nil || mbid == uuid.Nil {
 			return nil, fmt.Errorf("%w: bad artist_mbid %q", ErrBadPayload, e.ArtistMBID)
 		}
-		if e.Score < 0 || strconv.Itoa(e.Score) == "" {
+		if e.Score < 0 {
 			return nil, fmt.Errorf("%w: bad score %d", ErrBadPayload, e.Score)
 		}
 		response.Similar = append(response.Similar, SimilarArtist{ArtistMBID: mbid, Name: e.Name, Score: e.Score})
