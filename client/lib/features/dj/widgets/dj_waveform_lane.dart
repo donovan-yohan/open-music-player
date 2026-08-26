@@ -152,9 +152,12 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
 
   @override
   Widget build(BuildContext context) {
-    // A refused deck explains itself where the waveform would be; the lane's
-    // painter path below is untouched.
-    if (widget.deck.loadFailure != null) return DjDeckNotice(deck: widget.deck);
+    // A deck with no audio explains itself where the waveform would be —
+    // refused *and* never seeded, because both used to paint an empty lane
+    // beside an armed transport (#414). The painter path below is untouched.
+    if (widget.deck.loadFailure != null || !widget.deck.isLoaded) {
+      return DjDeckNotice(deck: widget.deck);
+    }
     return RepaintBoundary(
         child: LayoutBuilder(
           builder: (context, constraints) {
