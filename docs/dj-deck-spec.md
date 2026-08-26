@@ -91,10 +91,10 @@ There is no portrait deck and none is planned in this phase.
 
 ### 3. Sync
 
-SYNC is live (#413, DJ-3, slice 1). One tap matches the follower deck's tempo
-to the master, octave-normalized, and refuses honestly when it cannot. Phase
-alignment and the per-deck BPM/key controls are the following slices on the
-same issue.
+SYNC is live (#413, DJ-3, slices 1 and 2). One tap matches the follower deck's
+tempo to the master, octave-normalized, refuses honestly when it cannot, and
+then holds the two decks' beats lined up. The per-deck BPM/key controls are the
+remaining slice on the same issue.
 
 - **Master and follower.** `DjSessionProvider` holds one `syncMaster` plus a
   set of engaged followers, and `engine/deck_sync.dart` decides the tempo.
@@ -102,10 +102,18 @@ same issue.
   deck its follower. Pressing SYNC on the master swaps the master role to the
   other deck; because both decks are already at the same effective BPM, the new
   follower's target is the rate it already holds, so a swap moves no tempo.
-  Pressing SYNC on an engaged follower disengages it and leaves its rate exactly
-  where it is — snapping back to 1.0 mid-blend is an audible tempo jump. A
-  refusal applies nothing and moves no state. The master's rate is never
-  written by sync.
+  Pressing SYNC on an engaged follower disengages it and leaves it on the tempo
+  it was matched to — snapping back to 1.0 mid-blend is an audible tempo jump —
+  so only the transient alignment offset is unwound. A refusal applies nothing
+  and moves no state. The master's rate is never written by sync.
+- **The master mark clears with the last follower.** When the engaged set
+  becomes empty — the follower pressed SYNC again, moved its own fader, or lost
+  its track — `syncMaster` becomes null and both SYNC controls return to idle.
+  The ex-master used to keep its glyph and its "this deck sets the tempo"
+  tooltip with nobody following it, which claimed a relationship that no longer
+  existed. The rule is written against the set rather than against a count, so
+  the mark survives a master swap (the set never empties across one) and a
+  third deck would keep the master marked while any follower remained.
 - **Manual tempo wins.** Moving the pitch fader by hand disengages that deck;
   moving the *master's* fader returns the session to idle, because every
   follower's match was against a tempo that has since moved. Two authorities
@@ -113,7 +121,9 @@ same issue.
   restores the base rate by design, which is the same shape a phase correction
   has.
 - **Two different gates.** The tempo match is gated on `hasReliableBpm` only.
-  Phase correction (next slice) is gated on `hasReliableBeatGrid` on both decks.
+  Beat alignment is gated on `hasReliableBeatGrid` on **both** decks: a
+  correction computed against an untrustworthy grid pushes a deck away from the
+  beat rather than towards it.
   Requiring the grid for the tempo match would disable SYNC on roughly two
   thirds of the dogfood library — 17 of 48 analyzed tracks clear the 0.55 BPM
   confidence floor — for no benefit: a tempo match needs a trustworthy BPM and
@@ -126,6 +136,42 @@ same issue.
   128 over 64 takes the 2x interpretation and lands at exactly 1.0; 128 over 95
   resolves to 1.347 and is refused. The window is 0.737 octaves wide, so ratios
   in (1.25, 1.5) x 2^k are unreachable by construction.
+- **Alignment is measured in wall milliseconds, modulo the shorter beat.** For
+  each deck, take the local grid interval around the current position (from the
+  grid itself, not `60000 / bpm`), divide the elapsed part and the interval by
+  that deck's playback rate to get wall time, and subtract. The difference is
+  reduced into `(-P/2, +P/2]` where `P` is the **shorter** of the two wall beat
+  periods. Under octave normalization the two grids tick at different rates — a
+  64 BPM follower matched to a 128 BPM leader has beats twice as far apart — so
+  equating beat fractions is unsatisfiable, and would report a deck that is
+  234ms out as a whole 469ms out. Positive means the follower's beat sounded
+  first, so it is ahead. The wrap deliberately takes the shorter way round: a
+  deck 234ms late against a 469ms pulse is advanced by 234ms, never held back
+  by 235ms.
+- **A capped proportional correction, riding the 33ms snapshot pass.** The
+  offset is `clamp(-0.5 * error / P, +/-cap)` on top of the matched base rate,
+  where `cap = min(2%, the headroom up to 1.25, the headroom down to 0.75)`.
+  The cap shrinks into the headroom rather than becoming a new refusal: a
+  follower matched at 1.24 gets 0.806% of correction instead of being told
+  after the fact that its tempo is unreachable. The closed loop is
+  `d(error)/dt = offset`, so 2% is also the honest convergence rate — a
+  half-beat error at 128 BPM is 234ms of wall time and takes about 11.7s to
+  close. The deadband is 10ms because achievable holding on this stack is
+  +/-30-80ms, not 1ms. Commands are throttled to one per 250ms per deck and
+  only re-issued on a meaningful change, because `setSpeed` itself takes
+  100-200ms to settle. A disengage issues one last command that puts the deck
+  back on exactly its matched base rate.
+- **A paused follower is placed, not driven.** Pressing SYNC on a follower that
+  is not playing also seeks it by `error * rate` media milliseconds, so it
+  starts its first sample already in phase instead of spending the whole
+  convergence window catching up. A **playing** follower is never seeked: a
+  buffered ExoPlayer seek is 50-200ms and audible. A shift that would leave the
+  track is not taken, because clamping would land the deck off the pulse while
+  reporting success.
+- **Pressing SYNC is the quantize gate.** #413 adds no quantize toggle. A real
+  toggle would also have to gate the hot-cue and loop snapping that is
+  unconditional today, which is a different ticket. Engagement is the opt-in,
+  and the correction stays beat-level and never bar-level regardless.
 - **Six refusals, five sentences, and the direction matters.** `DjSyncRefusal`
   distinguishes `noLeader`, `leaderNotLoaded`, `followerNotLoaded`,
   `leaderTempoUnreliable`, `followerTempoUnreliable` and `tempoOutOfRange`.
@@ -212,9 +258,12 @@ client/lib/features/dj/
                                   fallback), then uses two directly. Production slots them behind the
                                   QueueTimelineController command chain.
   engine/deck_sync.dart           Deck sync as a PURE module: DjSyncRefusal / DjSyncMatch / djSyncTempoMatch take two
-                                  DjDeckState snapshots in and return an intent out. No Timer, no Voice, no
-                                  ChangeNotifier, no Flutter import - DjSessionProvider owns master/follower state and
-                                  is the only caller that applies the result through DeckController.setRate.
+                                  DjDeckState snapshots in and return an intent out, and djSyncPhaseReading /
+                                  djSyncRateOffset / djSyncCorrectionCap / djSyncPhaseCorrectionAllowed do the same for
+                                  beat alignment. No Timer, no Voice, no ChangeNotifier, no Flutter import -
+                                  DjSessionProvider owns master/follower state, runs the correction on its existing 33ms
+                                  snapshot pass, and is the only caller that applies either result through
+                                  DeckController.setRate.
   widgets/dj_waveform_lane.dart   DjWaveformLane: playhead-centered auto-scroll lane over the existing
                                   TimelineWaveformPainter (client/lib/widgets/timeline_waveform_painter.dart) +
                                   TimelineViewport; template = AnalysisCalibrationWaveform's follow-playhead mode
@@ -233,6 +282,7 @@ client/lib/features/dj/
                                   standard CDJ semantics), PLAY/PAUSE, SYNC toggle. Fixed positions across all panel states.
                                   SYNC is live (#413): one glyph, four states - disabled with a specific reason, idle,
                                   engaged follower (filled), master (filled tonal) - keyed dj_sync_off/on/master_<deck>.
+                                  Both controls return to idle as soon as nothing follows anything.
   widgets/dj_pitch_fader.dart     DjPitchFader: vertical fader, +/-25% default range (engine window is 0.5-2.0 so range is
                                   a UI clamp), pitch-bend nudge buttons (temporary +/-2% while held), double-tap reset.
   widgets/dj_panel_switcher.dart  DjPanelSwitcher: exclusive per-deck panel: [CUES | LOOP | STEMS]; loud selected state.
@@ -260,7 +310,9 @@ client/lib/features/dj/
 - No analysis (missing/pending/failed): lane falls back to peak-only waveform, no beat ticks, SYNC disabled with tooltip, quantize off, pitch fader still live, beat counter blank. Playback is never blocked.
 - Unreliable downbeats (hasReliableDownbeats false — the current common case, tempo_automation.dart:117-154): beat counter shows beat pulses without bar numbers; sync does beat-level phase only, never bar-level.
 - No reliable BPM on either deck (hasReliableBpm false): SYNC is disabled and says which honest reason applies, naming the deck it is actually about - this track has no reliable tempo, the other track has no reliable tempo, this deck is empty, the other deck is empty, or a tempo gap the deck cannot close. It is never a generic placeholder, and the disabled-with-a-reason state is a first-class deliverable rather than an afterthought: two thirds of the dogfood library lands in it.
-- Unreliable beat grid (hasReliableBeatGrid false) with a reliable BPM: the tempo match stays available and phase correction is withheld. Tempo and phase are deliberately gated separately.
+- Unreliable beat grid (hasReliableBeatGrid false) with a reliable BPM: the tempo match stays available and phase correction is withheld. Tempo and phase are deliberately gated separately. The follower stays on its matched base rate and no correction command is ever issued, so an untrustworthy grid degrades to tempo-matched-but-free-running rather than to a deck being pushed around by a guess.
+- No usable beat interval around the playhead (before the first marker, past the last, or an empty grid): the alignment signal is null for that pass and the follower is held on its matched base rate. Sync stays engaged; it simply stops correcting until the grid covers the playhead again.
+- Matched near the edge of the deck's 0.75-1.25 window: the correction cap shrinks into whatever headroom is left instead of refusing a match that has already been applied. At a base rate of 1.24 the cap is 0.806% and convergence is correspondingly slower; that is stated rather than hidden.
 
 ## Beat ruler and beat counter
 
@@ -309,7 +361,7 @@ Per-item verdicts:
 
 4. PITCH-PRESERVING STRETCH — EXISTS functionally / NEEDS-WORK for quality. pitchMode 'preserve' = setSpeed(r)+setPitch(1) via pitchFactorForRate (tempo_automation.dart:870-874) works on-device. But the Android implementation is ExoPlayer's Sonic processor, which is speech-grade (ExoPlayer issue #6575); #261 (eliminate ramp artifacts) is OPEN. Verdict: acceptable for v1 blends at small pitch offsets (+/-8%); audible degradation beyond that. Production keylock is NEEDS-NEW-DEPENDENCY: phase-2 backend swap to flutter_soloud (MIT plugin over zlib SoLoud/miniaudio, FFI) — decisive property is that all voices mix in ONE output stream with a shared sample clock; approximate keylock = setRelativePlaySpeed(r) + PitchShift filter at -12*log2(r) semitones. Phase-3 (only if soloud quality is insufficient): custom C++ engine via dart:ffi — Oboe (Apache-2.0) callback + Signalsmith Stretch (MIT, best in the 0.75x-1.5x DJ range). License traps to avoid: Rubber Band (GPL-or-paid), SoundTouch (LGPL static-link gray zone), Superpowered (no free release license).
 
-5. SYNC STRATEGY — NEEDS-WORK (new Dart service, existing data). Data exists: BeatGridSummary.beatsMs + BPM + downbeats per track (track_analysis.dart:1215-1340), reliability gates in ClipTempoMetadata, and (post-#313) the single effectiveTiming projection with manual corrections. Strategy: Dart port of Mixxx SyncLock — each deck implements a Syncable interface; phase expressed as beat_distance in [0,1) computed from positionMs against beatsMs; SYNC first sets rate = leaderBpm/followerBpm (with octave normalization, #262 shipped), then closes phase with a capped proportional rate adjustment (cap ~ +/-1-2% extra rate), phase correction gated on quantize. Leader = the audible/playing deck; InternalClock fallback not needed for 2 decks. LATENCY HONESTY: just_audio position reporting + ExoPlayer clock granularity means achievable phase holding is roughly +/-30-80ms, not sample-accurate. That is fine for tempo-matched blends with quantized corrections; it is NOT beat-juggle/scratch grade. Sample-tight phase (<10ms) requires the shared-sample-clock soloud backend (phase 2). The existing VoicePool drift machinery (150ms nudge window) is too coarse to reuse for deck sync — DeckSync runs its own tighter loop against player positions. AS SHIPPED (#413 slice 1): the tempo half of that strategy is live and the phase half is not. Two deviations are already decided for the phase slice and are recorded here so they are not re-litigated: (1) the correction rides DjSessionProvider's existing 33ms snapshot pass rather than a second Timer - 33ms is already 4.5x tighter than VoicePool's 150ms window, and a second timer would be a third rate authority for one deck; (2) rate commands are throttled to at most one per 250ms and only on a meaningful delta, because setSpeed itself takes 100-200ms to settle (see item 9) and a 30Hz command stream is useless. A third decision replaces the quantize gate: pressing SYNC IS the opt-in, and #413 adds no quantize toggle - a real toggle would also have to gate the hot-cue and loop snapping that is unconditional today, which is a different ticket. The correction stays beat-level and never bar-level regardless.
+5. SYNC STRATEGY — NEEDS-WORK (new Dart service, existing data). Data exists: BeatGridSummary.beatsMs + BPM + downbeats per track (track_analysis.dart:1215-1340), reliability gates in ClipTempoMetadata, and (post-#313) the single effectiveTiming projection with manual corrections. Strategy: Dart port of Mixxx SyncLock — each deck implements a Syncable interface; phase expressed as beat_distance in [0,1) computed from positionMs against beatsMs; SYNC first sets rate = leaderBpm/followerBpm (with octave normalization, #262 shipped), then closes phase with a capped proportional rate adjustment (cap ~ +/-1-2% extra rate), phase correction gated on quantize. Leader = the audible/playing deck; InternalClock fallback not needed for 2 decks. LATENCY HONESTY: just_audio position reporting + ExoPlayer clock granularity means achievable phase holding is roughly +/-30-80ms, not sample-accurate. That is fine for tempo-matched blends with quantized corrections; it is NOT beat-juggle/scratch grade. Sample-tight phase (<10ms) requires the shared-sample-clock soloud backend (phase 2). The existing VoicePool drift machinery (150ms nudge window) is too coarse to reuse for deck sync — DeckSync runs its own tighter loop against player positions. AS SHIPPED (#413 slices 1 and 2): both halves of that strategy are live. Three deviations from the sketch above were taken, and they are the shipped design rather than debt: (1) the correction rides DjSessionProvider's existing 33ms snapshot pass rather than a second Timer - 33ms is already 4.5x tighter than VoicePool's 150ms window, and a second timer would be a third rate authority for one deck; (2) rate commands are throttled to at most one per 250ms per deck and only on a change larger than 0.002, because setSpeed itself takes 100-200ms to settle (see item 9) and a 30Hz command stream would only ever measure its own transient; (3) pressing SYNC IS the quantize opt-in, and #413 adds no quantize toggle - a real toggle would also have to gate the hot-cue and loop snapping that is unconditional today, which is a different ticket. The correction stays beat-level and never bar-level regardless. Phase is NOT expressed as Mixxx's beat_distance in [0,1): under octave normalization the two decks' beat fractions cycle at different rates, so the error is taken in wall milliseconds modulo the shorter of the two wall beat periods instead (see section 3). Measured convergence on the 124.5-over-128 fixture pair: a 200ms error settles inside the 10ms deadband in 10.3s against a 9.7s analytic bound, with 3 rate commands.
 
 6. LOW-LATENCY CUE/SEEK — NEEDS-WORK. Buffered ExoPlayer seeks (bufferForPlayback 2s, voice.dart:59-65) over the resolver ladder are 50-200ms on local files, worse on network. Mitigations for v1: decks REQUIRE a local source — resolve through PlaybackCacheManager/offline downloads and refuse (or warn) signed-URL streaming for a loaded deck; pre-seek the paused deck to its cue point so PLAY is start-from-ready rather than seek+play; hot-cue jump on a playing deck accepts the ~100ms cost with quantize masking it. True instant cues (pad drumming) need in-memory PCM = soloud phase.
 
@@ -346,7 +398,7 @@ Documentation reconciliation: this performance-screen direction deliberately use
 
 - DJ-1 (performance epic, sibling to #202): DjSessionProvider as a projection over QueueTimelineController — deck A/B = current/next sounding clips; deck transport and rate ride the existing byQueueItemId command chain; delete the prototype's direct-controller mode. Acceptance: queue list, timeline, and DJ screen all show/edit the same state.
 - DJ-2 (epic #200): live control seam in the engine — liveRateMultiplier + liveGainMultiplier per voice composing with automation/envelopes, event-driven (not 100ms-polled) with slew. Unit tests in the engine harness; zipper check via the #261 rendered-audio harness when it lands.
-- DJ-3 (epic #200; #413): DeckSync — Mixxx SyncLock port (Syncable, beat_distance, capped P-controller) consuming the effectiveTiming projection landed with #313. Beat-level phase only until open #312/#316 make downbeats trustworthy. Device evidence: 5-minute tempo-matched blend holds audible lock on Pixel 10 Pro. Slice 1 (tempo match, master/follower, live SYNC control) shipped ahead of #314 and ahead of DJ-1: #314's implementation landed in merged PR #318 and the issue stays open only for human speaker/Bluetooth audibility, and DeckSync allocates no Voice, publishes no PlaybackSnapshot and writes nothing to MixAudioHandler, so it sits inside ADR 0001's existing deck exception (adr/0001-playback-timeline-source-of-truth.md:88-100) rather than needing a new decision. #363 (DJ-1) is therefore not a gate for it.
+- DJ-3 (epic #200; #413): DeckSync — Mixxx SyncLock port (Syncable, capped P-controller) consuming the effectiveTiming projection landed with #313, with the beat_distance fraction replaced by a wall-millisecond error modulo the shorter beat. Beat-level phase only until open #312/#316 make downbeats trustworthy. Device evidence: 5-minute tempo-matched blend holds audible lock on Pixel 10 Pro. Slice 1 (tempo match, master/follower, live SYNC control) and slice 2 (beat alignment, the capped correction loop, the paused-follower placement) shipped ahead of #314 and ahead of DJ-1: #314's implementation landed in merged PR #318 and the issue stays open only for human speaker/Bluetooth audibility, and DeckSync allocates no Voice, publishes no PlaybackSnapshot and writes nothing to MixAudioHandler, so it sits inside ADR 0001's existing deck exception (adr/0001-playback-timeline-source-of-truth.md:88-100) rather than needing a new decision. #363 (DJ-1) is therefore not a gate for it.
 - DJ-4 (epics #199/#198 + backend): dj_cues_v1 contract — hot cues and loops as versioned, source-ms-anchored edit events with advisory beat-index provenance against a beatGridRef, exactly the stem-edit edit-event shape (docs/stem-architecture.md:148-230), persisted in mix_plans.payload JSONB per docs/MIX_PLAN_TIMING_CONTRACT.md. Client model in models/dj_hot_cue.dart; backend accepts opaque payload (schema doc update only).
 - DJ-5 (epic #198): painter cue/loop marker layer — extend _paintMusicalMarkers/timelineWaveformMarkerXs with a cue lane (colored flags) and loop-region shading; first extract snapSourceMsToMusicalGrid and its grid-snap siblings from stacked_waveform_timeline.dart into a shared module, then use that module for DjHotCuePads + DjLoopPanel quantized triggers.
 - DJ-6 (epic #199): crossfader curves — equal-power default, constant-gain and sharp-cut options; setting persisted with AudioPlaybackDefaults; double-tap center reset.
