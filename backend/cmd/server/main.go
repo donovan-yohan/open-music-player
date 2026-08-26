@@ -475,6 +475,11 @@ func main() {
 	discoveryConfig := discoveryServiceConfigFromEnv(os.Getenv)
 	discoveryConfig.MusicCatalog = mbClient
 	discoveryConfig.SourceQualityJudge = sourceQualityJudge
+	// AcousticBrainz candidate hints (issue #400): a pure read of the local
+	// dump-loaded cache that attaches advisory ab_* metadata to discovery
+	// candidates. Hint-only — it never blocks, rejects, reorders, or delays a
+	// download, and a nil source is the documented off state.
+	discoveryConfig.AcousticBrainzHints = analysisRepo
 	discoveryService := discovery.NewDefaultServiceWithConfig(discoveryConfig)
 	researchRuntime, err := newResearchRuntime(cfg, database, discoveryService, appMetrics)
 	if err != nil {
