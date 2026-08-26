@@ -16,6 +16,9 @@ import 'widgets/dj_stem_panel.dart';
 import 'widgets/dj_transport.dart';
 import 'widgets/dj_waveform_lane.dart';
 
+/// Height reserved for the per-deck panel switcher inside the control field.
+const double kDjPanelSwitcherHeight = 40;
+
 class DjLayout extends StatefulWidget {
   const DjLayout({super.key});
   @override
@@ -208,7 +211,10 @@ class _DeckControl extends StatelessWidget {
           Expanded(
             child: Column(
               children: [
-                DjPanelSwitcher(selected: panel, onSelected: onPanel),
+                SizedBox(
+                  height: kDjPanelSwitcherHeight,
+                  child: DjPanelSwitcher(selected: panel, onSelected: onPanel),
+                ),
                 const SizedBox(height: 6),
                 Expanded(child: _panel()),
               ],
