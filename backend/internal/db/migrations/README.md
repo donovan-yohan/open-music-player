@@ -49,8 +49,26 @@ Upgrade path for a semantic change:
    dependent partial indexes.
 3. Keep the old function until no column or index references it.
 
-Only edits that provably cannot change output (comments, whitespace) are allowed
-in place.
+Only edits that provably cannot change output (comments, whitespace, and
+schema-qualifying a call that already resolved to the same `public` function) are
+allowed in place.
+
+### Restorability: qualify every inner `omp_*` call
+
+Every call one `omp_*` function makes to another **must** be written
+`public.omp_...`. `pg_dump` emits its archive under
+`set_config('search_path', '', false)`, and `pg_restore` inlines these `IMMUTABLE`
+`SQL` bodies while it builds `track_analysis`'s generated columns. An unqualified
+inner call cannot be resolved there, so `CREATE TABLE public.track_analysis`
+fails and the restore lands a database with **no `track_analysis` at all** — which
+the next `Migrate()` then recreates empty, so the stack comes back looking healthy
+with every analysis row gone (measured on PostgreSQL 15.18: 31 of 32 tables
+restored, `pg_restore` exit 1).
+
+Backpressure: `TestSchemaFunctionsResolveWithoutSearchPath` in
+`backend/internal/db/schema_restorability_integration_test.go` calls every `omp_*`
+SQL function under `search_path = ''` and fails if one loses its schema
+qualification.
 
 Backpressure: `checkGeneratedProjectionDrift` in `backend/internal/db/db.go`
 compares a bounded sample of stored values against a fresh evaluation on every

@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"testing"
 
@@ -14,30 +13,9 @@ import (
 // test can exercise both the track and library repositories against one schema.
 func newSearchTestDB(t *testing.T) (*DB, context.Context) {
 	t.Helper()
-
-	dsn := postgresTestDSN()
-	if dsn == "" {
-		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres search integration tests")
-	}
-
-	rawDB, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatalf("open test database: %v", err)
-	}
-	t.Cleanup(func() { _ = rawDB.Close() })
-
-	database := &DB{DB: rawDB}
-	if err := database.Ping(); err != nil {
-		t.Fatalf("ping test database: %v", err)
-	}
-	if err := database.Migrate(); err != nil {
-		t.Fatalf("migrate test database: %v", err)
-	}
-	if _, err := database.Exec("TRUNCATE TABLE tracks RESTART IDENTITY CASCADE"); err != nil {
-		t.Fatalf("truncate test database: %v", err)
-	}
-
-	return database, context.Background()
+	return newGuardedTestDB(t,
+		"set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres search integration tests",
+		"TRUNCATE TABLE tracks RESTART IDENTITY CASCADE")
 }
 
 // TestSearchSanitizesSpecialCharactersAgainstPostgres proves the to_tsquery

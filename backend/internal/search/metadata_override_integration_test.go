@@ -24,6 +24,11 @@ func TestSearchAppliesPerUserMetadataOverrides(t *testing.T) {
 		t.Skip("set OMP_POSTGRES_TEST_DSN or QA_DATABASE_URL to run Postgres search metadata override integration tests")
 	}
 
+	// Issue #407: refuse a DSN aimed at a protected (dogfood) database
+	// before a single statement can reach it.
+	if err := db.CheckDSNNotProtected(dsn); err != nil {
+		t.Fatalf("refusing destructive test setup: %v", err)
+	}
 	rawDB, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatalf("open test database: %v", err)
@@ -36,6 +41,9 @@ func TestSearchAppliesPerUserMetadataOverrides(t *testing.T) {
 	}
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("migrate test database: %v", err)
+	}
+	if err := database.CheckDatabaseNotProtected(context.Background()); err != nil {
+		t.Fatalf("refusing destructive test setup: %v", err)
 	}
 	if _, err := database.Exec("TRUNCATE TABLE track_metadata_overrides, tracks, users RESTART IDENTITY CASCADE"); err != nil {
 		t.Fatalf("truncate test database: %v", err)

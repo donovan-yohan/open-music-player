@@ -333,6 +333,109 @@ def check_doc_check_commands() -> None:
                 )
 
 
+def check_protected_stack_guard() -> None:
+    """The dogfood database's guards are only real while their tests pass.
+
+    `scripts/local-low-memory.sh clean` runs `down -v`, which deletes the named
+    volumes holding the only copy of the real library, and every truncating
+    integration-test helper points at whatever DSN the environment hands it. The
+    refusals (issue #407) are cheap to delete by accident, so `scripts/lint
+    delivery` runs their stubbed shell tests on every pass rather than trusting
+    the doctrine in deploy/README.md.
+    """
+    required_phrases = {
+        "scripts/local-low-memory.sh": [
+            "assert_teardown_allowed clean",
+            "OMP_ALLOW_PROTECTED_STACK_TEARDOWN",
+            "OMP_PROTECTED_COMPOSE_PROJECTS",
+        ],
+        "scripts/dogfood-backup.sh": [
+            "OMP_ALLOW_PROTECTED_DB_RESTORE",
+            # --single-transaction keeps --clean's DROPs from committing ahead of a
+            # load that then fails; MARKER_EXISTS_QUERY keeps the protection probe
+            # split in two so a marker-less database can still be restored into.
+            "--clean --if-exists --no-owner --single-transaction",
+            "MARKER_EXISTS_QUERY",
+        ],
+    }
+    for name, phrases in required_phrases.items():
+        path = ROOT / name
+        if not path.exists():
+            fail(f"{name}: protected-stack script is missing")
+            continue
+        text = path.read_text(errors="replace")
+        for phrase in phrases:
+            if phrase not in text:
+                fail(f"{name}: missing protected-stack guard phrase {phrase!r}")
+
+    for name in [
+        "scripts/tests/local_low_memory_guard_test.sh",
+        "scripts/tests/dogfood_backup_test.sh",
+    ]:
+        path = ROOT / name
+        if not path.exists():
+            fail(f"{name}: protected-stack guard test is missing")
+            continue
+        if not os.access(path, os.X_OK):
+            fail(f"{name}: script must be executable")
+            continue
+        result = subprocess.run(
+            ["bash", str(path)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
+            tail = " | ".join(detail[-5:]) if detail else "no output"
+            fail(f"{name}: protected-stack guard test failed: {tail}")
+
+
+def check_protected_test_db_guards() -> None:
+    """Every test that opens Postgres must carry BOTH protection guards.
+
+    Only package `db` has an executable proof (its guard test drives the real
+    helper), and only its helpers route through newGuardedTestDB. The truncating
+    helpers in api/search/processor/playlistimport/research each hand-paste the
+    same two lines, and a hand-pasted line is one an editor can delete without
+    anything going red -- those helpers TRUNCATE users and tracks, which is
+    precisely the loss issue #407 exists to prevent. This census is the
+    backpressure: deleting a guard call fails `scripts/lint delivery`.
+
+    Presence, not ordering, is what a text census can honestly assert. Ordering
+    (guard BEFORE sql.Open, marker check BEFORE the first TRUNCATE) is proven
+    executably by TestProtectedDatabaseGuardStopsRealTruncatingHelper.
+    """
+    backend = ROOT / "backend"
+    if not backend.is_dir():
+        fail("backend: directory is missing; cannot census the protected-database guards")
+        return
+
+    opener = 'sql.Open("postgres"'
+    required = {
+        "CheckDSNNotProtected": "refuse a DSN on a protected host port before opening a connection",
+        "CheckDatabaseNotProtected": "refuse a database whose omp_environment marker says protected",
+    }
+    censused = 0
+    for path in sorted(backend.rglob("*_test.go")):
+        text = path.read_text(errors="replace")
+        if opener not in text:
+            continue
+        censused += 1
+        for guard, why in required.items():
+            if guard not in text:
+                fail(
+                    f"{rel(path)}: opens Postgres in a test but never calls {guard}; "
+                    f"every helper that does must {why} (issue #407)"
+                )
+    if censused == 0:
+        fail(
+            "protected-database guard census matched no *_test.go under backend/; "
+            f"the marker {opener!r} changed, so the census is no longer proving anything"
+        )
+
+
 def check_json_syntax(files: list[Path]) -> None:
     for path in files:
         if path.suffix.lower() != ".json":
@@ -535,6 +638,8 @@ def main() -> int:
     check_ci_wires_harness()
     check_local_dev_contracts()
     check_doc_check_commands()
+    check_protected_stack_guard()
+    check_protected_test_db_guards()
     check_json_syntax(files)
     check_python_syntax(files)
     check_soundq_brand_assets()

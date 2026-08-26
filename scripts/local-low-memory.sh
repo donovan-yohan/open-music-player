@@ -33,6 +33,81 @@ if [ -f "$ROOT/.env" ]; then
 fi
 COMPOSE_FILE="$ROOT/docker-compose.local-low-memory.yml"
 COMPOSE=(docker compose -f "$COMPOSE_FILE")
+
+# --- protected stack guard (issue #407) -------------------------------------
+# `down -v` deletes the named volumes, and the dogfood/staging stack's postgres
+# volume holds the only copy of the real library. Credentials and database names
+# are identical across every local stack, so the compose PROJECT NAME is the only
+# thing that tells them apart -- resolve it the way Compose does and refuse.
+DEPLOY_ENV_FILE="${OMP_DEPLOY_ENV_FILE:-$ROOT/deploy/.env}"
+DEFAULT_PROTECTED_COMPOSE_PROJECTS="omp-local-run-vruka8"
+
+# Compose lowercases a project name and drops every character outside
+# [a-z0-9_-]; comparing raw strings would miss `OMP-Local-Run-vruka8`.
+normalize_compose_project_name() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'
+}
+
+# What Compose will actually use: COMPOSE_PROJECT_NAME when set (including from
+# the repo .env sourced above), otherwise the repo directory name.
+effective_compose_project_name() {
+  if [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then
+    normalize_compose_project_name "$COMPOSE_PROJECT_NAME"
+  else
+    normalize_compose_project_name "$(basename "$ROOT")"
+  fi
+}
+
+# Built-in default, plus OMP_PROTECTED_COMPOSE_PROJECTS, plus whatever
+# deploy/.env pins -- the last one is what makes this work on a host whose
+# dogfood project was renamed, and deploy/.env is gitignored so it cannot be the
+# only source.
+protected_compose_projects() {
+  local entry deploy_project
+  {
+    printf '%s\n' "$DEFAULT_PROTECTED_COMPOSE_PROJECTS"
+    if [ -n "${OMP_PROTECTED_COMPOSE_PROJECTS:-}" ]; then
+      printf '%s\n' "${OMP_PROTECTED_COMPOSE_PROJECTS//,/$'\n'}"
+    fi
+    if [ -f "$DEPLOY_ENV_FILE" ]; then
+      deploy_project="$(
+        sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}COMPOSE_PROJECT_NAME[[:space:]]*=[[:space:]]*//p' "$DEPLOY_ENV_FILE" |
+          tail -n 1 | tr -d "\"'\r"
+      )"
+      if [ -n "$deploy_project" ]; then
+        printf '%s\n' "$deploy_project"
+      fi
+    fi
+  } | while IFS= read -r entry; do
+    entry="$(normalize_compose_project_name "$entry")"
+    if [ -n "$entry" ]; then
+      printf '%s\n' "$entry"
+    fi
+  done
+}
+
+# Call before any command that can destroy data (anything passing -v/--volumes
+# to `down`, or `rm -v`). `stop` and plain `down` keep the volumes and are not
+# gated.
+assert_teardown_allowed() {
+  local action="$1" project protected
+  project="$(effective_compose_project_name)"
+  if [ "${OMP_ALLOW_PROTECTED_STACK_TEARDOWN:-}" = "1" ]; then
+    return 0
+  fi
+  while IFS= read -r protected; do
+    if [ "$protected" = "$project" ]; then
+      {
+        echo "refusing to run '$action': compose project '$project' is protected."
+        echo "'$action' removes the stack's named volumes, and this project is the dogfood/staging library."
+        echo "Back it up first (scripts/dogfood-backup.sh backup), then set OMP_ALLOW_PROTECTED_STACK_TEARDOWN=1 if you really mean it."
+      } >&2
+      exit 3
+    fi
+  done < <(protected_compose_projects)
+}
+# --- end protected stack guard ----------------------------------------------
+
 BACKEND_BASE_URL="${OMP_BACKEND_BASE_URL:-http://localhost:${SERVER_PORT:-8080}}"
 FLUTTER_API_BASE_URL="${OMP_FLUTTER_API_BASE_URL:-${OMP_API_BASE_URL:-$BACKEND_BASE_URL/api/v1}}"
 
@@ -47,6 +122,7 @@ commands:
   test-infra            start PostgreSQL + MinIO + Redis only, with no backend worker
   stop                  stop the low-memory compose stack, keeping low-memory volumes
   clean                 stop the low-memory stack and remove its containers, network, and volumes
+                        (refuses on a protected compose project; see deploy/README.md)
   status                show compose service status
   smoke                 check backend health, MinIO bucket access, and Flutter Web API base URL wiring
   playback-smoke        seed a tiny MinIO audio fixture and verify signed playback URL range reads
@@ -96,6 +172,7 @@ case "$cmd" in
     "${COMPOSE[@]}" --profile downloads --profile smoke --profile stems down
     ;;
   clean)
+    assert_teardown_allowed clean
     "${COMPOSE[@]}" --profile downloads --profile smoke --profile stems down -v --remove-orphans
     ;;
   status)
