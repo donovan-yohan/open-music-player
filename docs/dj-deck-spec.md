@@ -21,6 +21,81 @@ KEEP: stacked beat-aligned scrolling waveforms (deck A blue top, deck B red bott
 - Touch targets: 48dp minimum everywhere at and above the reference viewport. The control field is a roughly 8x3 main-control grid, so the panel switcher is mandatory rather than optional. Below the reference budget two controls degrade deliberately, and nothing else may: the pitch fader's nudge zones step 48 -> 40 -> 24dp and then disappear entirely (`DjPitchFader.nudgeExtentFor`), and the panel switcher's band steps 48 -> 40dp on the same rung (`DjRowBudget.panelSwitcherHeight`, taken when the control field falls below 144dp). Both keep their full 48dp target at and above the reference viewport, where the control field is >= 144dp.
 - Known degradation, not yet resolved: between the 488dp minimum serviceable width and roughly 840dp the deck panel sits on its 120dp floor and the hot-cue pads fall well below 48dp (about 26 x 19dp at 490dp of width). Raising `kDjMinDeckWidth` to the width that would keep the pads at target would blank the deck on the reference device itself, so the pad grid's `childAspectRatio` is the thing to revisit — the gate is correct as it stands.
 
+## Deck entry contract (what the deck can play, where, and what is not built)
+
+Three of the deck's constraints are deliberate and were undiscoverable: a user
+met them as "the deck is broken" (#414). Each is stated here with the copy that
+communicates it. Every string below lives in
+`client/lib/features/dj/dj_deck_copy.dart` as a named constant and is pinned by
+`client/test/features/dj/dj_deck_copy_test.dart`.
+
+### 1. Supported sources — local and cache-backed only
+
+Unchanged policy (Phase 0 item 3 below): the deck inspects the resolved source
+kind and refuses a signed-URL fallback. What changed is the delivery. A refusal
+now renders in the deck's own lane, in place of the waveform, with an action:
+
+| deck condition | copy | action |
+| --- | --- | --- |
+| refused, not on this device | `Download this track to use it on the deck` | `Download` (`dj_deck_download_<a\|b>`) |
+| refused, picker gave a non-local URI | `Pick a file on this device to use it on the deck` | `Load a file` (`dj_deck_load_file_<a\|b>`) |
+| refused, source unresolvable | `This track cannot be loaded on the deck right now` | none |
+| never seeded | `Add a track to the queue, or load a file from this device` | `Load a file` |
+
+The `Download` action goes through `DownloadState.downloadTrack` — the same call
+`client/lib/shared/widgets/download_button.dart` makes — and then re-seeds that
+one deck through `DjSessionProvider.queueSeeds`, so the deck reloads without the
+user leaving `/dj`. **One entry rule:** `lib/features/dj/` contains exactly one
+`.downloadTrack(` call, in `dj_screen.dart`, and constructs no
+`DownloadService` / `DownloadState` of its own. That is enforced by
+`client/test/features/dj/dj_download_entry_contract_test.dart`, not by this
+paragraph.
+
+A deck that holds no audio also has no metrics and no armed controls: the header
+renders the dimmed title plus `Not loaded`, and CUE / PLAY / hot-cue pads are
+disabled with the lane's own reason as their tooltip.
+
+### 2. Supported orientation and minimum viewport — landscape only
+
+Landscape is only *requested* (`SystemChrome.setPreferredOrientations`); Android
+ignores the request in split-screen, freeform and connected-display windows. The
+geometry budget above is the authority for the numbers (488 x 284 dp post-
+SafeArea minimum); the copy is:
+
+- portrait frame — `Rotate your phone to use the deck` / `The deck is landscape only.`
+- below the serviceable box — `Not enough room for the deck` / `Try a smaller display size or a larger window.`
+
+There is no portrait deck and none is planned in this phase.
+
+### 3. Not built yet — sync
+
+Sync is DJ-3, gated on #314. The glyph stays visible and hit-testable but
+disabled, and its tooltip reads `Sync is not available yet`. No user-facing
+surface names an internal phase or milestone; a source scan in
+`dj_deck_copy_test.dart` fails the build on `phase <n>` in any deck string.
+
+### 4. Entry points
+
+The deck has exactly one entry point (the player action); the queue has none, so
+the download requirement is advertised at the player action, at the settings
+toggle, and in the deck's own lane state rather than by adding a second entry
+point.
+
+- Player (`player_dj_mode_action`): badged, and its tooltip appends
+  `Download this track to load it on a deck`, when DJ mode is on and the current
+  queue row is not downloaded.
+- Settings (`settings_dj_mode_toggle`): the subtitle ends
+  `The deck plays downloaded tracks in landscape only.`
+
+### 5. Sentence-case exemption
+
+Epic #380 / #310 require sentence case and design tokens for all copy. The
+performance-control glyph labels — `CUE`, `CUES`, `LOOP`, `STEMS` — and the
+deck letters `A` / `B` are deliberate DJ-convention labels, not prose. They are
+exempt from the sentence-case rule and are deliberately **not** members of
+`djDeckCopyStrings`. Everything else the deck says to a user is in that list and
+is held to sentence case, no exclamation marks, and no internal jargon.
+
 ## Widget hierarchy — exact files under client/lib/features/dj/
 ```
 client/lib/features/dj/
