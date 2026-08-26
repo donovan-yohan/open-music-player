@@ -24,6 +24,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/health"
+	"github.com/openmusicplayer/backend/internal/listenbrainz"
 	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/metrics"
@@ -532,6 +533,16 @@ func main() {
 	autoBlendHandlers := api.NewPlaylistAutoBlendHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
 	smartReorderHandlers := api.NewPlaylistSmartReorderHandlers(playlistRepo, playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
 	nearbyTracksHandlers := api.NewNearbyTracksHandlers(libraryRepo, cfg.EnablePlaylistMix)
+
+	// ListenBrainz similar-artist candidate expansion (issue #392). The labs
+	// client targets the pinned algorithm; every upstream failure mode degrades
+	// to empty expansion inside ExpansionService, so construction here is
+	// always safe and the flag only controls route availability.
+	var listenBrainzHandlers *api.ListenBrainzHandlers
+	if cfg.EnableListenBrainzMix {
+		expansionService := listenbrainz.NewExpansionService(listenbrainz.NewClient(), analysisRepo)
+		listenBrainzHandlers = api.NewListenBrainzHandlers(expansionService, true)
+	}
 	playEventHandlers := api.NewPlayEventHandlersWithMetadataOverrides(playEventRepo, trackRepo, metadataOverrideRepo)
 	djLineupHandlers := api.NewDJLineupHandlersWithSkipSignals(djLineupRepo, djPinRepo, playEventRepo)
 	djPinHandlers := api.NewDJPinHandlers(djPinRepo, djLineupRepo)
@@ -813,6 +824,7 @@ func main() {
 		AutoBlendHandlers:       autoBlendHandlers,
 		SmartReorderHandlers:    smartReorderHandlers,
 		NearbyTracksHandlers:    nearbyTracksHandlers,
+		ListenBrainzHandlers:    listenBrainzHandlers,
 		MixPlanHandlers:         mixPlanHandlers,
 		DownloadHandlers:        downloadHandlers,
 		SourceSelectionHandlers: sourceSelectionHandlers,

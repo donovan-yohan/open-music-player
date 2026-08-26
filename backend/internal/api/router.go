@@ -43,6 +43,7 @@ type Router struct {
 	autoBlendHandlers       *PlaylistAutoBlendHandlers
 	smartReorderHandlers    *PlaylistSmartReorderHandlers
 	nearbyTracksHandlers    *NearbyTracksHandlers
+	listenBrainzHandlers    *ListenBrainzHandlers
 	mixPlanHandlers         *MixPlanHandlers
 	downloadHandlers        *DownloadHandlers
 	sourceSelectionHandlers *SourceSelectionHandlers
@@ -84,6 +85,7 @@ type RouterConfig struct {
 	AutoBlendHandlers       *PlaylistAutoBlendHandlers
 	SmartReorderHandlers    *PlaylistSmartReorderHandlers
 	NearbyTracksHandlers    *NearbyTracksHandlers
+	ListenBrainzHandlers    *ListenBrainzHandlers
 	MixPlanHandlers         *MixPlanHandlers
 	DownloadHandlers        *DownloadHandlers
 	SourceSelectionHandlers *SourceSelectionHandlers
@@ -150,6 +152,7 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		autoBlendHandlers:       cfg.AutoBlendHandlers,
 		smartReorderHandlers:    cfg.SmartReorderHandlers,
 		nearbyTracksHandlers:    cfg.NearbyTracksHandlers,
+		listenBrainzHandlers:    cfg.ListenBrainzHandlers,
 		mixPlanHandlers:         cfg.MixPlanHandlers,
 		downloadHandlers:        cfg.DownloadHandlers,
 		sourceSelectionHandlers: cfg.SourceSelectionHandlers,
@@ -300,6 +303,12 @@ func (r *Router) setupRoutes() {
 	// configured but disabled handler answers 404 after the ordinary auth boundary.
 	if r.nearbyTracksHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/tracks/nearby", r.withAuth(r.nearbyTracksHandlers.GetNearbyTracks))
+	}
+	// ListenBrainz similar-artist candidate expansion (issue #392). Registered
+	// only when wired so legacy construction keeps the route absent rather than
+	// unauthenticated; the handler itself 404s when the flag is disabled.
+	if r.listenBrainzHandlers != nil {
+		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/similar-artists", r.withAuth(r.listenBrainzHandlers.GetSimilarArtists))
 	}
 	// Opt-in, on-demand stem separation. Registered even when disabled so auth is
 	// evaluated before an availability response, and never as a library sweep.
