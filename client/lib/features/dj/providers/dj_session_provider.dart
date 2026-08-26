@@ -127,8 +127,24 @@ class DjSessionProvider extends ChangeNotifier {
       final picked = await filePicker();
       if (picked != null) seeds.add(picked);
     }
-    if (seeds.isNotEmpty) await load(DjDeckId.a, seeds.first);
-    if (seeds.length > 1) await load(DjDeckId.b, seeds[1]);
+    // Deck A is still awaited before deck B: the prototype's two voices share
+    // one audio session, so their loads must not overlap.
+    if (seeds.isNotEmpty) await _seedDeck(DjDeckId.a, seeds.first);
+    if (seeds.length > 1) await _seedDeck(DjDeckId.b, seeds[1]);
+  }
+
+  /// Loads one deck without letting its outcome decide the other's (#409).
+  Future<void> _seedDeck(DjDeckId deck, DjDeckLoad seed) async {
+    try {
+      await load(deck, seed);
+    } catch (error) {
+      // DeckController.load is total for a refusable source, so this catch is
+      // belt-and-braces: an unforeseen throw must still leave the other deck
+      // free to load, and this deck explaining itself in its lane.
+      _decks[deck]!.markLoadFailure(seed, detail: '$error');
+      _applyDeckGains();
+      notifyListeners();
+    }
   }
 
   Future<void> load(DjDeckId deck, DjDeckLoad seed) async {

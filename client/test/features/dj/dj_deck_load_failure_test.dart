@@ -157,8 +157,77 @@ void main() {
       expect(controller.state.loadFailure?.kind,
           DjDeckLoadFailureKind.unavailableOffline);
     });
+
+    test("one deck's refusal does not block the other", () async {
+      final provider = DjSessionProvider(
+        deckA: DeckController.empty(
+          deckId: DjDeckId.a,
+          voice: _FakeVoice(),
+          resolver: const _RemoteResolver(),
+        ),
+        deckB: DeckController.empty(
+          deckId: DjDeckId.b,
+          voice: _FakeVoice(),
+          resolver: const _LocalResolver(),
+        ),
+      );
+      addTearDown(provider.dispose);
+
+      await provider.seed(current: _track('11'), next: _track('12'));
+
+      expect(provider.deckB.isLoaded, isTrue);
+      expect(provider.deckA.loadFailure, isNotNull);
+      expect(provider.deckA.isLoaded, isFalse);
+    });
+
+    test('a throwing deck A load still leaves deck B loaded', () async {
+      final provider = DjSessionProvider(
+        // A load that throws past DeckController's own guards entirely: this
+        // proves the provider's belt-and-braces catch is load-bearing, not D2.
+        deckA: _ThrowingDeckController(
+          deckId: DjDeckId.a,
+          voice: _FakeVoice(),
+          resolver: const _LocalResolver(),
+        ),
+        deckB: DeckController.empty(
+          deckId: DjDeckId.b,
+          voice: _FakeVoice(),
+          resolver: const _LocalResolver(),
+        ),
+      );
+      addTearDown(provider.dispose);
+
+      await provider.seed(current: _track('11'), next: _track('12'));
+
+      expect(provider.deckB.isLoaded, isTrue);
+      expect(provider.deckA.loadFailure?.kind,
+          DjDeckLoadFailureKind.sourceUnavailable);
+      expect(provider.deckA.loadFailure?.detail, contains('deck load exploded'));
+    });
   });
 }
+
+/// A deck whose `load` throws outside every guard inside [DeckController].
+class _ThrowingDeckController extends DeckController {
+  _ThrowingDeckController({
+    required super.deckId,
+    required super.voice,
+    required super.resolver,
+  });
+
+  @override
+  Future<void> load(DjDeckLoad load) async =>
+      throw StateError('deck load exploded');
+}
+
+QueueTrack _track(String id) => QueueTrack(
+      id: id,
+      queueItemId: 'queue-item-$id',
+      playbackTrackId: id,
+      title: 'Track $id',
+      duration: 196,
+      addedAt: DateTime.utc(2026, 8, 26),
+    );
 
 class _FakeDownloads implements LocalAudioArtifactResolver {
   _FakeDownloads(this.paths);
