@@ -132,15 +132,26 @@ cmd_load_full() {
     # shellcheck disable=SC2206
     shards=($AB_SHARDS)
   fi
-  local s
+  # Failures are recorded in a file rather than a variable: the loop below runs
+  # in a subshell (it pipes into tee), so variable state would not survive.
+  local failed_marker="$AB_DIR/.load-failed"
+  rm -f "$failed_marker"
+  local s start elapsed
   for s in "${shards[@]}"; do
     echo "=== shard $s start $(date -Is)"
-    /usr/bin/time -f "shard $s elapsed=%e s maxrss=%MkB" \
-      env OMP_AB_DB_PASSWORD="$AB_DB_PASSWORD" "$AB_DIR/ab-import" \
-        -rhythm "$AB_DIR/shards/rhythm-$s.csv" -tonal "$AB_DIR/shards/tonal-$s.csv" \
-        -db-host "$AB_DB_HOST" -db-port "$AB_DB_PORT" \
-        -db-user "$AB_DB_USER" -db-password "$AB_DB_PASSWORD" -db-name "$AB_DB_NAME"
+    start=$SECONDS
+    if run_loader "$AB_DIR/shards/rhythm-$s.csv" "$AB_DIR/shards/tonal-$s.csv"; then
+      elapsed=$((SECONDS - start))
+      echo "shard $s elapsed=${elapsed}s status=ok"
+    else
+      elapsed=$((SECONDS - start))
+      echo "shard $s elapsed=${elapsed}s status=FAILED (shards are idempotent; re-run this shard)"
+      echo "$s" >> "$failed_marker"
+    fi
   done 2>&1 | tee -a "$AB_DIR/load.log"
+  if [[ -s "$failed_marker" ]]; then
+    die "shards failed: $(tr '\n' ' ' < "$failed_marker")"
+  fi
 }
 
 cmd_verify() {
