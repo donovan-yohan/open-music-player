@@ -9,6 +9,20 @@ class FakeVoice implements Voice {
   final String debugId;
   final bool pitchSupported;
 
+  /// Every rate, pitch factor and seek this voice was asked for, in order.
+  ///
+  /// Additive on purpose: `queue_timeline_controller_test.dart` subclasses this
+  /// fake, so a second forked fake would drift from it. Rate/pitch/seek
+  /// assertions in the DJ sync tests read these lists.
+  final List<double> speeds = <double>[];
+  final List<double> pitches = <double>[];
+  final List<int> seeks = <int>[];
+
+  /// Every source this voice was asked to load, in order. Deliberately not
+  /// named `loadCount`: `CountingFakeVoice` in `dj_analysis_fixtures.dart`
+  /// already owns that name on a subclass of this fake.
+  final List<Uri> loads = <Uri>[];
+
   final _events = StreamController<VoiceEvent>.broadcast();
   bool _ready = false;
   bool _playing = false;
@@ -29,8 +43,12 @@ class FakeVoice implements Voice {
   @override
   int? get currentLocalPositionMs => _localPositionMs;
 
+  /// Drives the fake transport clock from a test.
+  set localPositionMs(int value) => _localPositionMs = value;
+
   @override
   Future<void> load(Uri source, {int initialLocalPositionMs = 0}) async {
+    loads.add(source);
     _ready = true;
     _localPositionMs = initialLocalPositionMs;
     _events.add(const VoiceEvent(VoiceEventKind.ready));
@@ -50,14 +68,20 @@ class FakeVoice implements Voice {
 
   @override
   Future<void> seekLocal(int localPositionMs) async {
+    seeks.add(localPositionMs);
     _localPositionMs = localPositionMs;
   }
 
   @override
-  Future<void> setSpeed(double rate) async {}
+  Future<void> setSpeed(double rate) async {
+    speeds.add(rate);
+  }
 
   @override
-  Future<bool> setPitch(double factor) async => pitchSupported;
+  Future<bool> setPitch(double factor) async {
+    pitches.add(factor);
+    return pitchSupported;
+  }
 
   @override
   Future<void> setVolume(double linearGain) async {}
