@@ -96,6 +96,11 @@ type Config struct {
 	StemsConcurrency   int
 	StemsQueueMaxDepth int
 
+	// Queue-tail-anchored harmonic DJ lineup block (issue #401). Disabled by
+	// default; when off, GET /api/v1/dj/lineup is byte-identical to the themed
+	// lineup and anchorTrackId is ignored.
+	EnableHarmonicLineup bool
+
 	// Optional "save playlist as mix" seam. Disabled by default; when enabled,
 	// POST /api/v1/playlists/{id}/mix creates a mix_plan from a playlist's
 	// ordered tracks. Backend seam only (no DJ/waveform UI or mixing logic).
@@ -259,6 +264,9 @@ func Load() *Config {
 		StemsTimeout:       parseDurationMsEnv("STEMS_TIMEOUT_MS", 1800000*time.Millisecond),
 		StemsConcurrency:   parseBoundedIntEnv("STEMS_CONCURRENCY", 1, 1, 2),
 		StemsQueueMaxDepth: parseBoundedIntEnv("STEMS_QUEUE_MAX_DEPTH", 32, 1, 512),
+
+		// Queue-tail-anchored harmonic DJ lineup block (default OFF)
+		EnableHarmonicLineup: parseBoolEnv("ENABLE_HARMONIC_LINEUP", false),
 
 		// Save-playlist-as-mix seam (default OFF)
 		EnablePlaylistMix: parseBoolEnv("ENABLE_PLAYLIST_MIX", false),

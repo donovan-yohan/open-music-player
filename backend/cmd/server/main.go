@@ -547,7 +547,10 @@ func main() {
 	expansionService := listenbrainz.NewExpansionService(listenbrainz.NewClient(), analysisRepo)
 	listenBrainzHandlers := api.NewListenBrainzHandlers(expansionService, cfg.EnableListenBrainzMix)
 	playEventHandlers := api.NewPlayEventHandlersWithMetadataOverrides(playEventRepo, trackRepo, metadataOverrideRepo)
-	djLineupHandlers := api.NewDJLineupHandlersWithSkipSignals(djLineupRepo, djPinRepo, playEventRepo)
+	// libraryRepo supplies the harmonic nearby+affinity candidate read behind
+	// ENABLE_HARMONIC_LINEUP (issue #401); with the flag off the lineup is
+	// byte-identical to the themed lineup.
+	djLineupHandlers := api.NewDJLineupHandlersWithHarmonicCandidates(djLineupRepo, djPinRepo, playEventRepo, libraryRepo, cfg.EnableHarmonicLineup)
 	djPinHandlers := api.NewDJPinHandlers(djPinRepo, djLineupRepo)
 
 	// Initialize storage client
