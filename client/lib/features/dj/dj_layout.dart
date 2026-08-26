@@ -187,6 +187,7 @@ class _DjLayoutState extends State<DjLayout> {
               key: ValueKey('dj_rotate_prompt'),
               icon: Icons.screen_rotation,
               message: djDeckRotatePrompt,
+              detail: djDeckRotateDetail,
             );
           }
           if (constraints.maxHeight < kDjMinDeckHeight ||

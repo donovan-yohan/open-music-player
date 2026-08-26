@@ -14,6 +14,7 @@ import '../../core/commands/app_command.dart';
 import '../../core/commands/command_shortcuts.dart';
 import '../../core/models/settings_model.dart';
 import '../../core/providers/settings_provider.dart';
+import '../dj/dj_deck_copy.dart';
 import '../../shared/formatters/byte_formatter.dart';
 import 'listening_history_screen.dart';
 
@@ -342,7 +343,8 @@ class SettingsPlaybackSection extends ConsumerWidget {
           subtitle: const Text(
             'Adds the landscape deck to the player. The deck runs its own two '
             'audio voices alongside normal playback; turn this off to leave '
-            'playback entirely on the standard engine.',
+            'playback entirely on the standard engine. '
+            '$djDeckSettingsRequirement',
           ),
           value: settings.djModeEnabled,
           onChanged: settingsNotifier.setDjModeEnabled,
