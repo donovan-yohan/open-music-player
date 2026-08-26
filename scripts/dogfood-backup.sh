@@ -66,27 +66,23 @@ resolve_container() {
   printf '%s\n' "$name"
 }
 
-# Forward PGPASSWORD by NAME when it is set: `docker exec -e VAR` copies the
+# docker_exec [-i] <container> <command...>
+#
+# Forwards PGPASSWORD by NAME when it is set: `docker exec -e VAR` copies the
 # value out of this process's environment, so it never appears in argv, in
 # `docker ps`, or in a shell history.
 docker_exec() {
+  local -a exec_args=()
+  if [ "${1:-}" = "-i" ]; then
+    exec_args+=(-i)
+    shift
+  fi
   local container="$1"
   shift
-  local -a env_args=()
   if [ -n "${PGPASSWORD:-}" ]; then
-    env_args=(-e PGPASSWORD)
+    exec_args+=(-e PGPASSWORD)
   fi
-  docker exec "${env_args[@]}" "$container" "$@"
-}
-
-docker_exec_stdin() {
-  local container="$1"
-  shift
-  local -a env_args=()
-  if [ -n "${PGPASSWORD:-}" ]; then
-    env_args=(-e PGPASSWORD)
-  fi
-  docker exec -i "${env_args[@]}" "$container" "$@"
+  docker exec "${exec_args[@]}" "$container" "$@"
 }
 
 # Dump names carry a sortable UTC timestamp, so newest-first is a reverse sort by
@@ -178,7 +174,7 @@ cmd_restore() {
   fi
 
   echo "restoring $file into $DB_NAME (container $container)"
-  docker_exec_stdin "$container" pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists --no-owner < "$file"
+  docker_exec -i "$container" pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists --no-owner < "$file"
   echo "restore complete"
 }
 

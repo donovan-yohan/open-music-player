@@ -40,7 +40,7 @@ const undefinedTablePGCode = "42P01"
 // "protected", because the guards that call this would then fail closed on every
 // legacy throwaway database. The DSN-port guard is what covers that gap.
 func (db *DB) EnvironmentMarker(ctx context.Context) (EnvironmentMarker, error) {
-	marker := EnvironmentMarker{Name: unnamedEnvironment}
+	var marker EnvironmentMarker
 	err := db.QueryRowContext(
 		ctx,
 		`SELECT name, protected, updated_at FROM omp_environment WHERE id = 1`,
