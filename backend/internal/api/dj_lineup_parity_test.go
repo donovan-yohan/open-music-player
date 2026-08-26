@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"net/http"
@@ -170,10 +171,18 @@ const djLineupParityGoldenDir = "testdata/dj_lineup_parity"
 // assertDJLineupParity replays the whole case table against one handler and
 // compares status + raw body bytes to the recorded goldens. extraQuery is
 // appended to every case so a caller can prove that an additional query
-// parameter changes nothing.
-func assertDJLineupParity(t *testing.T, handler *DJLineupHandlers, extraQuery string) {
+// parameter changes nothing. skipCases names the cases a caller asserts
+// separately because the feature flag deliberately changes them.
+func assertDJLineupParity(t *testing.T, handler *DJLineupHandlers, extraQuery string, skipCases ...string) {
 	t.Helper()
+	skipped := make(map[string]struct{}, len(skipCases))
+	for _, name := range skipCases {
+		skipped[name] = struct{}{}
+	}
 	for _, tc := range djLineupParityCases {
+		if _, skip := skipped[tc.name]; skip {
+			continue
+		}
 		t.Run(tc.name, func(t *testing.T) {
 			query := tc.query
 			if extraQuery != "" {
@@ -227,4 +236,81 @@ func newDJLineupParityHandler() *DJLineupHandlers {
 // must not move.
 func TestDJLineupFlagOffResponseParity(t *testing.T) {
 	assertDJLineupParity(t, newDJLineupParityHandler(), "")
+}
+
+// countingNearbyReader fails the test if the harmonic candidate seam is
+// consulted at all. Both parity passes below must never reach it.
+type countingNearbyReader struct {
+	calls int
+}
+
+func (r *countingNearbyReader) NearbyTracks(
+	_ context.Context,
+	_ uuid.UUID,
+	_, _ float64,
+	_ []string,
+	_ db.AffinityRank,
+) ([]db.NearbyTrack, error) {
+	r.calls++
+	return nil, nil
+}
+
+// TestDJLineupHarmonicDisabledIgnoresAnchorParam proves the flag-off server is
+// byte-identical to the pre-#401 server even when the client always sends the
+// new anchorTrackId parameter: the key is never inspected while the block is
+// inactive.
+func TestDJLineupHarmonicDisabledIgnoresAnchorParam(t *testing.T) {
+	reader := &countingNearbyReader{}
+	handler := NewDJLineupHandlersWithHarmonicCandidates(
+		&fakeDJLineupStore{tracks: djLineupParityFixture()}, nil, nil, reader, false)
+
+	assertDJLineupParity(t, handler, "anchorTrackId=1")
+
+	if reader.calls != 0 {
+		t.Fatalf("nearby reader calls = %d, want 0 while the harmonic block is disabled", reader.calls)
+	}
+}
+
+// TestDJLineupHarmonicEnabledWithoutAnchorIsParity proves that turning the flag
+// on, without a queue tail to anchor to, changes nothing about the lineup.
+//
+// Two cases are asserted separately rather than against the goldens because
+// D3 deliberately changes them: with the block active, block=harmonic becomes a
+// valid selector and the block enum error names it.
+func TestDJLineupHarmonicEnabledWithoutAnchorIsParity(t *testing.T) {
+	reader := &countingNearbyReader{}
+	handler := NewDJLineupHandlersWithHarmonicCandidates(
+		&fakeDJLineupStore{tracks: djLineupParityFixture()}, nil, nil, reader, true)
+
+	assertDJLineupParity(t, handler, "", "error-block-harmonic", "error-block-bogus")
+
+	t.Run("block-harmonic-accepted", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler.GetLineup(rec, withUser(
+			httptest.NewRequest(http.MethodGet, "/api/v1/dj/lineup?block=harmonic", nil), djLineupParityUserID))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+		}
+		const want = `{"requested":{"energy":null,"genre":null,"q":null},"blocks":[]}` + "\n"
+		if rec.Body.String() != want {
+			t.Fatalf("body = %q, want %q", rec.Body.String(), want)
+		}
+	})
+
+	t.Run("block-enum-error-names-harmonic", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		handler.GetLineup(rec, withUser(
+			httptest.NewRequest(http.MethodGet, "/api/v1/dj/lineup?block=bogus", nil), djLineupParityUserID))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+		const want = `{"code":"invalid_request","message":"block must be one of: on-repeat, flashback, fresh-finds, harmonic"}` + "\n"
+		if rec.Body.String() != want {
+			t.Fatalf("body = %q, want %q", rec.Body.String(), want)
+		}
+	})
+
+	if reader.calls != 0 {
+		t.Fatalf("nearby reader calls = %d, want 0 without an anchorTrackId", reader.calls)
+	}
 }
