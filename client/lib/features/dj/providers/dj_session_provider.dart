@@ -162,6 +162,7 @@ class DjSessionProvider extends ChangeNotifier {
       // A deliberate disengage hands the deck back at the tempo it was matched
       // to, not at whatever the correction loop was holding at that instant.
       await _restoreSyncBaseRate(deck);
+      _clearMasterWithoutFollowers();
       _notify();
       // Nothing else was applied; this describes the match a re-engage uses.
       return syncMatchFor(deck);
@@ -246,6 +247,17 @@ class DjSessionProvider extends ChangeNotifier {
     _syncCommandAtMs.remove(deck);
   }
 
+  /// D4b: the master mark only means something while somebody follows it.
+  ///
+  /// The ex-master used to keep its glyph and its "this deck sets the tempo"
+  /// tooltip after the last follower left, which claimed a relationship that no
+  /// longer existed. With two decks the engaged set holds at most one follower,
+  /// so this fires on every disengage; the rule is written against the set
+  /// rather than against that count so a third deck would keep the master
+  /// marked while any follower remains.
+  void _clearMasterWithoutFollowers() {
+    if (_syncEngaged.isEmpty) _syncMaster = null;
+  }
 
   /// Takes [deck] out of whatever sync role it held.
   ///
@@ -272,6 +284,7 @@ class DjSessionProvider extends ChangeNotifier {
     // itself on the next line, and a deck that lost its audio has no rate left
     // to restore. Only the bookkeeping is dropped.
     _forgetSyncCorrection(deck);
+    _clearMasterWithoutFollowers();
   }
   List<DjHotCue> hotCuesFor(DjDeckId deck) =>
       _hotCues[deck]!.values.toList()..sort((a, b) => a.slot.compareTo(b.slot));
