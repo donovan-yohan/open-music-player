@@ -112,30 +112,22 @@ class DeckController {
       audioSourceRef: load.trackRef,
       queueItemId: load.queueItemId,
     );
-    // The two catches below are the only broad catches on the deck path: a deck
-    // seed must not escape into dj_screen.dart's un-awaited post-frame callback.
-    ResolvedAudioSource? resolved;
+    // The only broad catch on the deck path: a deck seed must not escape into
+    // dj_screen.dart's un-awaited post-frame callback. A refusal recorded
+    // inside the block is deliberately in scope too, so even a failing voice
+    // release still leaves the deck on a failure state rather than throwing.
     try {
-      resolved = localUri == null ? await _resolver.resolve(clip) : null;
-    } catch (error) {
-      await _refuse(
-        load,
-        DjDeckLoadFailureKind.sourceUnavailable,
-        detail: '$error',
-      );
-      return;
-    }
-    if (kDebugMode) {
-      debugPrint(
-        'OMP DJ deck ${deckId.name} seed trackRef=${load.trackRef} '
-        "resolved=${resolved?.isLocal == true ? 'local' : 'remote'}",
-      );
-    }
-    if (resolved != null && !resolved.isLocal) {
-      await _refuse(load, DjDeckLoadFailureKind.unavailableOffline);
-      return;
-    }
-    try {
+      final resolved = localUri == null ? await _resolver.resolve(clip) : null;
+      if (kDebugMode) {
+        debugPrint(
+          'OMP DJ deck ${deckId.name} seed trackRef=${load.trackRef} '
+          "resolved=${resolved?.isLocal == true ? 'local' : 'remote'}",
+        );
+      }
+      if (resolved != null && !resolved.isLocal) {
+        await _refuse(load, DjDeckLoadFailureKind.unavailableOffline);
+        return;
+      }
       await _voice.load(localUri ?? resolved!.uri);
     } catch (error) {
       await _refuse(

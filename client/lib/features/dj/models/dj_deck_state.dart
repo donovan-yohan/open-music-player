@@ -126,7 +126,6 @@ class DjDeckState {
         beatsMs: beatsMs ?? this.beatsMs,
         // The 30 Hz snapshot refresh copies a refused deck too; a failure must
         // survive it and only clear on an explicit request.
-        loadFailure:
-            clearLoadFailure ? null : loadFailure ?? this.loadFailure,
+        loadFailure: clearLoadFailure ? null : loadFailure ?? this.loadFailure,
       );
 }
