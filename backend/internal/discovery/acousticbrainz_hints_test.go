@@ -145,6 +145,28 @@ func assertNoAcousticBrainzHints(t *testing.T, where string, metadata map[string
 	}
 }
 
+// hintEnvelopeJSON marshals a search envelope for byte-identity comparison with
+// the wall-clock-derived provider timings zeroed. ProviderSummary.ElapsedMs is
+// time.Since(start).Milliseconds() measured around the provider goroutine, so
+// two otherwise identical responses can differ by a millisecond under scheduler
+// or GC noise. Nothing about the AcousticBrainz hint contract depends on it, and
+// comparing it makes a no-behavioral-change assertion flake as if hints had
+// leaked. Every other field, including the whole candidate payload, is compared
+// verbatim.
+func hintEnvelopeJSON(t *testing.T, resp SearchResponse) string {
+	t.Helper()
+	normalized := resp
+	normalized.Providers = append([]ProviderSummary(nil), resp.Providers...)
+	for index := range normalized.Providers {
+		normalized.Providers[index].ElapsedMs = 0
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
 // TestSearchAttachesAcousticBrainzCandidateHintsOnCacheHit pins the whole
 // metadata contract: every key, its Go type, the provenance constant, and the
 // atomic block behavior for a partially populated row.
@@ -206,6 +228,29 @@ func TestSearchAttachesAcousticBrainzCandidateHintsOnCacheHit(t *testing.T) {
 	for _, key := range []string{AcousticBrainzHintKeyKey, AcousticBrainzHintKeyScaleKey, AcousticBrainzHintCamelotKey} {
 		if _, ok := partial[key]; ok {
 			t.Fatalf("bpm-only row invented %q: %#v", key, partial)
+		}
+	}
+
+	// The published wire contract, witnessed by hardcoded strings instead of by
+	// the constants themselves. Every other assertion in this package indexes
+	// metadata through the AcousticBrainzHint*Key constants, which makes them
+	// self-referential: renaming all seven literals would leave the suite green
+	// while silently invalidating docs/ACOUSTICBRAINZ_IMPORT.md, any client
+	// reading ab_bpm, and every selection snapshot already persisted with the old
+	// keys. The literal db.AcousticBrainzSource value is pinned here for the same
+	// reason. This loop is the one place that must be edited deliberately when
+	// the published key names change.
+	for key, want := range map[string]interface{}{
+		"ab_bpm":           128.0,
+		"ab_key":           "A",
+		"ab_key_scale":     "minor",
+		"ab_camelot":       "8A",
+		"ab_source":        "acousticbrainz",
+		"ab_dump_revision": "acousticbrainz-dump-2022-06",
+		"ab_retrieved_at":  hintRetrievedAt.Format(time.RFC3339),
+	} {
+		if full[key] != want {
+			t.Fatalf("published metadata key %q = %#v, want %#v (full block: %#v)", key, full[key], want, full)
 		}
 	}
 
@@ -339,10 +384,7 @@ func TestSearchBatchesOneAcousticBrainzLookupPerCandidateResponse(t *testing.T) 
 func TestSearchAcousticBrainzCandidateHintLookupFailureIsNonFatal(t *testing.T) {
 	baseline := hintService(nil, hintCandidate("one", "mbRecordingId", hintRecordingMBID)).
 		Search(context.Background(), "Artist Song", []string{"youtube"}, 10)
-	baselineJSON, err := json.Marshal(baseline)
-	if err != nil {
-		t.Fatal(err)
-	}
+	baselineJSON := hintEnvelopeJSON(t, baseline)
 
 	t.Run("lookup error", func(t *testing.T) {
 		source := &fakeAcousticBrainzHintSource{err: errors.New("boom")}
@@ -354,11 +396,7 @@ func TestSearchAcousticBrainzCandidateHintLookupFailureIsNonFatal(t *testing.T) 
 		if len(resp.Results) != len(baseline.Results) || len(resp.Providers) != len(baseline.Providers) {
 			t.Fatalf("failed lookup changed the envelope: %#v", resp)
 		}
-		got, err := json.Marshal(resp)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(got) != string(baselineJSON) {
+		if got := hintEnvelopeJSON(t, resp); got != baselineJSON {
 			t.Fatalf("failed lookup response =\n%s\nwant nil-source response =\n%s", got, baselineJSON)
 		}
 	})
@@ -386,18 +424,12 @@ func TestSearchCandidatePayloadIsIdenticalWhenAcousticBrainzTableIsEmpty(t *test
 		}
 	}
 
-	disabled, err := json.Marshal(hintService(nil, fixtures()...).Search(context.Background(), "Artist Song", []string{"youtube"}, 10))
-	if err != nil {
-		t.Fatal(err)
-	}
+	disabled := hintEnvelopeJSON(t, hintService(nil, fixtures()...).Search(context.Background(), "Artist Song", []string{"youtube"}, 10))
 	// An empty table is exactly what the real repository returns: an empty,
 	// non-nil map and a nil error.
 	emptyTable := &fakeAcousticBrainzHintSource{entries: map[uuid.UUID]db.AcousticBrainzEntry{}}
-	enabled, err := json.Marshal(hintService(emptyTable, fixtures()...).Search(context.Background(), "Artist Song", []string{"youtube"}, 10))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(enabled) != string(disabled) {
+	enabled := hintEnvelopeJSON(t, hintService(emptyTable, fixtures()...).Search(context.Background(), "Artist Song", []string{"youtube"}, 10))
+	if enabled != disabled {
 		t.Fatalf("empty-table response =\n%s\nwant byte-identical to nil-source response =\n%s", enabled, disabled)
 	}
 	if emptyTable.calls != 1 {
