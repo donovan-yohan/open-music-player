@@ -282,6 +282,19 @@ domain concept moves or a new production harness becomes canonical.
 - Reference SQL notes: `backend/internal/db/migrations/`.
 - Object storage: `backend/internal/storage/`, MinIO in Compose.
 - Guardrail: do not introduce another schema/migration authority.
+- Guardrail: the `omp_*` SQL functions in `backend/internal/db/db.go` are a
+  frozen interface. `track_analysis.effective_bpm` and
+  `track_analysis.effective_camelot` are `GENERATED ALWAYS ... STORED` over them,
+  and `CREATE OR REPLACE` does not recompute already-stored values, so an
+  in-place semantic edit strands every deployed row on the old projection. A
+  semantic change needs a new versioned function plus either a generated-column
+  drop/re-add or a base-column rewrite of every row.
+- Backpressure: `checkGeneratedProjectionDrift` in `backend/internal/db/db.go`
+  runs on every `Migrate()` and logs loudly when stored projections disagree with
+  a fresh evaluation. Tests:
+  `TestGeneratedProjectionProbeCoversEveryGeneratedColumn`,
+  `TestGeneratedProjectionDriftProbeDetectsInPlaceFunctionEdit`,
+  `TestStoredProjectionStaysStaleUntilBaseColumnRewrite`.
 
 ### Dogfood And Deployment
 

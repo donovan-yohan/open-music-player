@@ -477,6 +477,40 @@ func (db *DB) Migrate() error {
 
 	CREATE INDEX IF NOT EXISTS idx_mix_plans_user_updated ON mix_plans(user_id, updated_at DESC);
 
+	-- FROZEN PROJECTION INTERFACE (omp_* functions)
+	--
+	-- Every omp_* function below is a FROZEN interface. track_analysis.effective_bpm
+	-- and track_analysis.effective_camelot are GENERATED ALWAYS ... STORED over these
+	-- functions, and PostgreSQL does NOT recompute already-stored values when a
+	-- function body is replaced. Because this block runs CREATE OR REPLACE on every
+	-- boot, an in-place semantic edit silently leaves every deployed row on the OLD
+	-- projection while only newly written rows use the new one -- and the partial
+	-- indexes idx_track_analysis_effective_bpm / idx_track_analysis_effective_camelot_bpm
+	-- keep serving those stale values to the nearby/harmonic queries.
+	--
+	-- Measured on PostgreSQL 15.18 after replacing such a function: VACUUM FULL, a
+	-- table-rewriting ALTER TABLE ... ALTER COLUMN TYPE, and an UPDATE that touches
+	-- only a non-base column all leave the stored value stale. ONLY these refresh it:
+	--   * UPDATE track_analysis SET summary_json = summary_json (assign a BASE column);
+	--   * ALTER TABLE track_analysis DROP COLUMN <generated>, then ADD COLUMN
+	--     <generated> ... GENERATED ALWAYS AS (...) STORED.
+	--
+	-- Upgrade path for a SEMANTIC change -- never edit a body in place:
+	--   1. Add a NEW versioned function (e.g. omp_effective_analysis_bpm_v2) and leave
+	--      the frozen one untouched.
+	--   2. In the same release, drop and re-add the generated column against the new
+	--      function (or batch-rewrite every row through its base columns) and rebuild
+	--      the dependent partial indexes.
+	--   3. Keep the old function until no column or index references it.
+	-- Only edits that provably cannot change output (comments, whitespace) are allowed
+	-- in place.
+	--
+	-- Backpressure: checkGeneratedProjectionDrift (bottom of this file) compares a
+	-- bounded sample of stored values against a fresh evaluation on every Migrate()
+	-- and logs loudly on mismatch. generatedProjectionProbes must list every generated
+	-- projection column; TestGeneratedProjectionProbeCoversEveryGeneratedColumn fails
+	-- if a new one is added without registering it.
+	--
 	-- Filter projections are generated from the same compact fields served by the
 	-- analysis list boundary. The helper functions distinguish absent/invalid
 	-- override facts from valid values, so a malformed manual edit cannot hide a
@@ -1092,6 +1126,12 @@ func (db *DB) Migrate() error {
 	// gracefully to the FTS path — the server still starts and search still works.
 	db.TrigramEnabled = db.tryEnableTrigram()
 
+	// Schema work is done: verify that the stored generated projections still agree
+	// with the frozen omp_* definitions just (re)created above. Best-effort and
+	// bounded; a mismatch means a function body was edited in place and deployed
+	// rows are stale, which must be loud but must never block startup.
+	db.logGeneratedProjectionDrift(context.Background())
+
 	return nil
 }
 
@@ -1369,4 +1409,107 @@ func (db *DB) tryEnableTrigram() bool {
 	}
 
 	return true
+}
+
+// generatedProjectionProbeSampleLimit bounds the probe to a PK-ordered head sample
+// so startup cost stays flat regardless of table size.
+const generatedProjectionProbeSampleLimit = 1000
+
+type generatedProjectionProbe struct {
+	Table      string
+	KeyColumn  string
+	Column     string
+	Expression string
+}
+
+// generatedProjectionProbes must list EVERY GENERATED ALWAYS ... STORED column in
+// the schema above; TestGeneratedProjectionProbeCoversEveryGeneratedColumn enforces it.
+var generatedProjectionProbes = []generatedProjectionProbe{
+	{Table: "track_analysis", KeyColumn: "track_id", Column: "effective_bpm", Expression: "omp_effective_analysis_bpm(summary_json, overrides_json)"},
+	{Table: "track_analysis", KeyColumn: "track_id", Column: "effective_camelot", Expression: "omp_effective_analysis_camelot(summary_json, overrides_json)"},
+}
+
+type generatedProjectionDriftReport struct {
+	Probe            generatedProjectionProbe
+	Sampled          int
+	Mismatched       int
+	FirstMismatchKey sql.NullInt64
+	Skipped          bool  // table empty in the sampled range; nothing to compare
+	Err              error // probe query failed; never fatal
+}
+
+// checkGeneratedProjectionDrift compares the stored value of every registered
+// GENERATED ALWAYS ... STORED projection against a fresh evaluation of the same
+// expression over a bounded, PK-ordered head sample. It exists because
+// PostgreSQL does not recompute stored generated columns when CREATE OR REPLACE
+// swaps the underlying function body, so an in-place edit to a frozen omp_*
+// function leaves deployed rows silently stale (see the FROZEN PROJECTION
+// INTERFACE block above). It returns exactly one report per registered probe, in
+// order, and never returns an error: a failed probe is reported via the report's
+// Err field so a diagnostic can never abort startup.
+func (db *DB) checkGeneratedProjectionDrift(ctx context.Context) []generatedProjectionDriftReport {
+	reports := make([]generatedProjectionDriftReport, 0, len(generatedProjectionProbes))
+	for _, probe := range generatedProjectionProbes {
+		report := generatedProjectionDriftReport{Probe: probe}
+
+		// Every Sprintf input below is a compile-time constant from
+		// generatedProjectionProbes -- identifiers and an SQL expression owned by
+		// this file. No user data ever reaches this string, and the probe is
+		// read-only (SELECT only; it never ALTERs or UPDATEs anything).
+		query := fmt.Sprintf(`
+			SELECT
+				COUNT(*),
+				COUNT(*) FILTER (WHERE stored IS DISTINCT FROM recomputed),
+				MIN(sample_key) FILTER (WHERE stored IS DISTINCT FROM recomputed)
+			FROM (
+				SELECT %[2]s AS sample_key, %[3]s AS stored, %[4]s AS recomputed
+				FROM %[1]s
+				ORDER BY %[2]s
+				LIMIT %[5]d
+			) AS sample
+		`, probe.Table, probe.KeyColumn, probe.Column, probe.Expression, generatedProjectionProbeSampleLimit)
+
+		var sampled, mismatched int
+		var firstMismatchKey sql.NullInt64
+		if err := db.QueryRowContext(ctx, query).Scan(&sampled, &mismatched, &firstMismatchKey); err != nil {
+			report.Err = err
+			reports = append(reports, report)
+			continue
+		}
+
+		report.Sampled = sampled
+		report.Mismatched = mismatched
+		report.FirstMismatchKey = firstMismatchKey
+		// Nothing in the sampled range means nothing to compare; stay quiet rather
+		// than reporting a clean result we did not actually observe.
+		report.Skipped = sampled == 0
+		reports = append(reports, report)
+	}
+	return reports
+}
+
+// logGeneratedProjectionDrift runs checkGeneratedProjectionDrift and reports the
+// outcome through the package logger. Clean and empty-table startups stay silent;
+// a mismatch is logged loudly with the remediation pointer. Like tryEnableTrigram
+// it never returns an error, so it can never abort startup.
+func (db *DB) logGeneratedProjectionDrift(ctx context.Context) {
+	for _, report := range db.checkGeneratedProjectionDrift(ctx) {
+		switch {
+		case report.Skipped:
+			// Table empty in the sampled range; nothing to say.
+		case report.Err != nil:
+			log.Printf("db: generated projection drift probe unavailable for %s.%s: %v",
+				report.Probe.Table, report.Probe.Column, report.Err)
+		case report.Mismatched > 0:
+			log.Printf("db: PROJECTION DRIFT: %s.%s differs from a fresh evaluation of %s in %d of %d sampled rows (first %s=%d). A frozen omp_* function body was edited in place; PostgreSQL does not recompute stored generated columns on CREATE OR REPLACE. See the FROZEN PROJECTION INTERFACE block in internal/db/db.go and backend/internal/db/migrations/README.md for the versioned-function upgrade path.",
+				report.Probe.Table,
+				report.Probe.Column,
+				report.Probe.Expression,
+				report.Mismatched,
+				report.Sampled,
+				report.Probe.KeyColumn,
+				report.FirstMismatchKey.Int64,
+			)
+		}
+	}
 }
