@@ -90,6 +90,72 @@ TrackAnalysis djSyncOverriddenAnalysis({
   );
 }
 
+/// A manual-authority analysis whose grid spans [beats] beats.
+///
+/// `djLoadedAnalysis` stops at 16 beats (about 7.7s), which is shorter than the
+/// convergence window this ticket has to demonstrate: once a deck walks off the
+/// end of its grid the alignment signal goes null and the run proves nothing.
+TrackAnalysis djSyncLongGridAnalysis({double bpm = 128, int beats = 256}) {
+  final beatMs = (60000 / bpm).round();
+  return TrackAnalysis.fromJson(
+    status: 'analyzed',
+    summary: <String, dynamic>{
+      ...djLoadedAnalysisSummary(bpm: bpm),
+      'beat_grid': {
+        'bpm': bpm,
+        'offset_ms': 0,
+        'beats_ms': [for (var i = 0; i < beats; i++) beatMs * i],
+        'confidence': 1,
+        'provenance': 'manual_override',
+      },
+      'downbeats': {
+        'positions_ms': [for (var i = 0; i * 4 < beats; i++) beatMs * i * 4],
+        'confidence': 1,
+        'provenance': 'manual_override',
+      },
+    },
+    overrides: const {
+      'manual_timing_v2': {
+        'schema_version': 2,
+        'beats_per_bar': 4,
+        'downbeat_phase_index': 0,
+        'confidence': 1,
+        'provenance': 'manual_override',
+      },
+    },
+    overridesPresent: true,
+  );
+}
+
+/// A trustworthy BPM on an untrustworthy grid.
+///
+/// `minReliableBeatGridMarkers` is 4 (tempo_automation.dart:9), so three
+/// markers clear `hasReliableBpm` and fail `hasReliableBeatGrid`. That is the
+/// exact pair of gates the correction has to honour: the tempo match still
+/// runs, the alignment correction does not. The grid is still long enough for
+/// `djSyncPhaseReading` to return a number, so a test that sees zero
+/// corrections is seeing the gate and not a missing signal.
+TrackAnalysis djSyncShortGridAnalysis({double bpm = 128}) {
+  final beatMs = (60000 / bpm).round();
+  return TrackAnalysis.fromJson(
+    status: 'analyzed',
+    summary: <String, dynamic>{
+      'bpm': {
+        'value': bpm,
+        'confidence': 0.96,
+        'provenance': 'beat-this-v1',
+      },
+      'beat_grid': {
+        'bpm': bpm,
+        'offset_ms': 0,
+        'beats_ms': [for (var i = 0; i < 3; i++) beatMs * i],
+        'confidence': 0.94,
+        'provenance': 'beat-this-v1',
+      },
+    },
+  );
+}
+
 QueueTrack djSyncQueueTrack({
   String id = '90',
   String title = 'Sync fixture track',
@@ -194,7 +260,7 @@ class DjSyncRig {
   FakeVoice voiceFor(DjDeckId deck) => _voices[deck]!;
 }
 
-DjSyncRig djSyncRig({bool pitchSupported = true}) {
+DjSyncRig djSyncRig({bool pitchSupported = true, DjSyncClock? clock}) {
   final voiceA = FakeVoice('dj-sync-a', pitchSupported: pitchSupported);
   final voiceB = FakeVoice('dj-sync-b', pitchSupported: pitchSupported);
   const resolver = DirectEngineAudioSourceResolver();
@@ -210,7 +276,19 @@ DjSyncRig djSyncRig({bool pitchSupported = true}) {
         voice: voiceB,
         resolver: resolver,
       ),
+      clock: clock,
     ),
     {DjDeckId.a: voiceA, DjDeckId.b: voiceB},
   );
+}
+
+/// A deterministic wall clock for the correction throttle.
+///
+/// The throttle is stated in milliseconds, so a tick-counting test would pin
+/// the wrong contract; this advances the same number of milliseconds the 33ms
+/// snapshot pass would have.
+class DjSyncFakeClock {
+  int nowMs = 0;
+  int read() => nowMs;
+  void advance(int ms) => nowMs += ms;
 }
