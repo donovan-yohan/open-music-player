@@ -33,7 +33,23 @@ case "$1" in
           exit 0
           ;;
         psql)
-          printf '%s\n' "$STUB_PROTECTED"
+          if [ "${STUB_PSQL_FAILS:-}" = "1" ]; then
+            echo "stub psql: query failed" >&2
+            exit 1
+          fi
+          # Answer per query: the marker-existence probe and the protected read
+          # are two separate statements now, exactly because one combined
+          # statement cannot survive a database with no marker table.
+          query=""
+          prev=""
+          for token in "$@"; do
+            if [ "$prev" = "-tAc" ]; then query="$token"; fi
+            prev="$token"
+          done
+          case "$query" in
+            *to_regclass*) printf '%s\n' "${STUB_HAS_MARKER:-t}" ;;
+            *) printf '%s\n' "$STUB_PROTECTED" ;;
+          esac
           exit 0
           ;;
         pg_restore)
@@ -67,6 +83,8 @@ run() {
   DOCKER_STUB_LOG="$DOCKER_LOG" \
   STUB_DUMP_BODY="$STUB_DUMP_BODY" \
   STUB_PROTECTED="$protected" \
+  STUB_HAS_MARKER="${HAS_MARKER:-t}" \
+  STUB_PSQL_FAILS="${PSQL_FAILS:-}" \
   OMP_DOGFOOD_BACKUP_DIR="$WORK/backups" \
   OMP_DOGFOOD_BACKUP_KEEP="${KEEP:-14}" \
   OMP_ALLOW_PROTECTED_DB_RESTORE="${ALLOW_RESTORE:-}" \
@@ -128,7 +146,7 @@ grep -q 'OMP_ALLOW_PROTECTED_DB_RESTORE=1' "$WORK/err" || fail "protected restor
 # (e) the escape hatch lets the restore through with the expected flags.
 ALLOW_RESTORE=1 run "escape hatch allows restore" t restore "$RESTORE_FILE"
 [ "$STATUS" = "0" ] || fail "allowed restore: exit $STATUS (stderr: $(cat "$WORK/err"))"
-grep -q -- 'pg_restore -U omp -d openmusicplayer --clean --if-exists --no-owner' "$DOCKER_LOG" ||
+grep -q -- 'pg_restore -U omp -d openmusicplayer --clean --if-exists --no-owner --single-transaction' "$DOCKER_LOG" ||
   fail "allowed restore: pg_restore argv wrong: $(cat "$DOCKER_LOG")"
 
 # (f) an unprotected target restores without the escape hatch.
@@ -143,6 +161,35 @@ run "missing dump file is refused" f restore "$WORK/backups/does-not-exist.dump"
 if grep -q 'pg_restore' "$DOCKER_LOG"; then
   fail "missing file: pg_restore ran anyway: $(cat "$DOCKER_LOG")"
 fi
+
+# (h) THE disaster-recovery case: a fresh database with no omp_environment table
+# at all. It must restore, not abort on the protection probe.
+HAS_MARKER=f run "restore into a marker-less database proceeds" '' restore "$RESTORE_FILE"
+[ "$STATUS" = "0" ] || fail "marker-less restore: exit $STATUS (stderr: $(cat "$WORK/err"))"
+grep -q -- 'pg_restore' "$DOCKER_LOG" || fail "marker-less restore: pg_restore did not run: $(cat "$DOCKER_LOG")"
+grep -q -- 'SELECT protected FROM omp_environment' "$DOCKER_LOG" &&
+  fail "marker-less restore: read the marker table that does not exist: $(cat "$DOCKER_LOG")"
+
+# (i) the restore is all-or-nothing, so a bad dump cannot empty the database
+# between --clean's DROPs and a failed load.
+grep -q -- '--single-transaction' "$DOCKER_LOG" ||
+  fail "marker-less restore: pg_restore ran without --single-transaction: $(cat "$DOCKER_LOG")"
+
+# (j) an unreadable probe fails CLOSED: no answer must never read as "unprotected".
+HAS_MARKER=t PSQL_FAILS=1 run "unreadable probe refuses" t restore "$RESTORE_FILE"
+[ "$STATUS" = "0" ] && fail "failing probe: exit 0, want non-zero"
+if grep -q 'pg_restore' "$DOCKER_LOG"; then
+  fail "failing probe: pg_restore ran anyway: $(cat "$DOCKER_LOG")"
+fi
+
+# (k) a garbage answer to the protected read is also fail-closed, and the
+# escape hatch does not launder it.
+ALLOW_RESTORE=1 run "garbage protected flag refuses" "" restore "$RESTORE_FILE"
+[ "$STATUS" = "0" ] && fail "garbage flag: exit 0, want non-zero"
+if grep -q 'pg_restore' "$DOCKER_LOG"; then
+  fail "garbage flag: pg_restore ran anyway: $(cat "$DOCKER_LOG")"
+fi
+ALLOW_RESTORE=
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "dogfood-backup test: $FAILURES failure(s)" >&2

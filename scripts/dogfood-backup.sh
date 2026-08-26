@@ -9,7 +9,7 @@
 # Usage:
 #   scripts/dogfood-backup.sh backup          # custom-format dump + retention prune
 #   scripts/dogfood-backup.sh list            # dumps on disk, newest first
-#   scripts/dogfood-backup.sh restore <file>  # refuses a protected target by default
+#   scripts/dogfood-backup.sh restore <file>  # refuses a protected target; restores all-or-nothing
 #   scripts/dogfood-backup.sh help
 #
 # Everything runs through `docker exec` against the container that publishes the
@@ -25,10 +25,16 @@ DB_USER="${OMP_DOGFOOD_DB_USER:-omp}"
 DB_NAME="${OMP_DOGFOOD_DB_NAME:-openmusicplayer}"
 DUMP_PREFIX="openmusicplayer-"
 
-# One statement that answers "is this database protected?" whether or not the
-# marker table exists yet, so a restore onto a fresh database is not blocked by a
-# missing table while a real dogfood database still refuses.
-PROTECTED_QUERY="SELECT CASE WHEN to_regclass('public.omp_environment') IS NULL THEN false ELSE COALESCE((SELECT protected FROM omp_environment WHERE id = 1), false) END"
+# "Is this database protected?" asked in TWO statements, deliberately.
+#
+# PostgreSQL resolves relation names when it PARSES a statement, so a single
+# query that hides `SELECT protected FROM omp_environment` behind a to_regclass()
+# CASE still fails outright on a database that has no marker table -- the arm is
+# never taken, but the name is still resolved. That is the disaster-recovery case
+# (`down -v`, fresh empty Postgres, restore), and under `set -euo pipefail` the
+# failure aborted the restore before pg_restore was ever invoked.
+MARKER_EXISTS_QUERY="SELECT to_regclass('public.omp_environment') IS NOT NULL"
+MARKER_PROTECTED_QUERY="SELECT COALESCE((SELECT protected FROM omp_environment WHERE id = 1), false)"
 
 usage() {
   cat <<'USAGE'
@@ -37,7 +43,8 @@ usage: scripts/dogfood-backup.sh <backup|list|restore <file>|help>
 commands:
   backup            pg_dump -Fc the dogfood database, then prune to the newest N dumps
   list              show the dumps on disk with size and age, newest first
-  restore <file>    pg_restore --clean --if-exists --no-owner from <file>
+  restore <file>    pg_restore --clean --if-exists --no-owner --single-transaction from <file>
+                    (all-or-nothing: a bad dump rolls back instead of emptying the database)
   help              show this message
 
 environment:
@@ -83,6 +90,41 @@ docker_exec() {
     exec_args+=(-e PGPASSWORD)
   fi
   docker exec "${exec_args[@]}" "$container" "$@"
+}
+
+# psql_answer <container> <query> -- one scalar answer, whitespace stripped.
+#
+# Dies on a failed query rather than returning an empty string: an unreadable
+# answer must never be mistaken for "not protected".
+psql_answer() {
+  local container="$1" query="$2" out
+  if ! out="$(docker_exec "$container" psql -U "$DB_USER" -d "$DB_NAME" -tAc "$query")"; then
+    die "could not query $DB_NAME in container $container (see the psql error above); refusing to continue"
+  fi
+  printf '%s\n' "${out//[[:space:]]/}"
+}
+
+# database_protected <container> -- prints t or f. Fails closed: anything that is
+# not a clean boolean is an error, never a quiet "f".
+database_protected() {
+  local container="$1" has_marker protected
+  has_marker="$(psql_answer "$container" "$MARKER_EXISTS_QUERY")"
+  case "$has_marker" in
+    f)
+      # No marker table: a database that predates the marker, or the fresh empty
+      # Postgres a disaster recovery restores into. Unprotected by definition.
+      printf 'f\n'
+      return 0
+      ;;
+    t) ;;
+    *) die "unreadable answer $has_marker from the omp_environment probe on $DB_NAME; refusing to continue" ;;
+  esac
+
+  protected="$(psql_answer "$container" "$MARKER_PROTECTED_QUERY")"
+  case "$protected" in
+    t | f) printf '%s\n' "$protected" ;;
+    *) die "unreadable protected flag $protected in omp_environment on $DB_NAME; refusing to continue" ;;
+  esac
 }
 
 # Dump names carry a sortable UTC timestamp, so newest-first is a reverse sort by
@@ -163,7 +205,7 @@ cmd_restore() {
   fi
   container="$(resolve_container)"
 
-  protected="$(docker_exec "$container" psql -U "$DB_USER" -d "$DB_NAME" -tAc "$PROTECTED_QUERY" | tr -d '[:space:]')"
+  protected="$(database_protected "$container")"
   if [ "$protected" = "t" ] && [ "${OMP_ALLOW_PROTECTED_DB_RESTORE:-}" != "1" ]; then
     {
       echo "refusing to restore over $DB_NAME in container $container: omp_environment says protected = true."
@@ -173,8 +215,15 @@ cmd_restore() {
     exit 3
   fi
 
+  # --single-transaction is load-bearing, not tidiness. --clean COMMITS its DROPs
+  # before the data is loaded, so a truncated or unrelated dump -- the kind of
+  # file a human reaches for mid-incident -- otherwise empties the live library
+  # and then fails, leaving nothing. Measured on PostgreSQL 15.18: a dump
+  # truncated to 90% took a 200k-row database to zero rows without it, and rolled
+  # back cleanly with it. (`pg_restore --list` is NOT a substitute: it reads only
+  # the TOC, so it exits 0 on exactly the truncated file that does the damage.)
   echo "restoring $file into $DB_NAME (container $container)"
-  docker_exec -i "$container" pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists --no-owner < "$file"
+  docker_exec -i "$container" pg_restore -U "$DB_USER" -d "$DB_NAME" --clean --if-exists --no-owner --single-transaction < "$file"
   echo "restore complete"
 }
 

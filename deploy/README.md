@@ -143,6 +143,27 @@ scripts/dogfood-backup.sh restore <file>  # refuses a protected target by defaul
 Dumps are named `openmusicplayer-<UTC timestamp>.dump`, so newest-first is a
 reverse sort by name and retention never depends on mtime.
 
+### What `restore` guarantees
+
+- **All-or-nothing.** `pg_restore` runs with `--single-transaction`, so a
+  truncated or unrelated dump rolls back instead of leaving the database emptied
+  by `--clean`'s DROPs. Verified on PostgreSQL 15.18: a dump truncated to 90%
+  takes a 200k-row database to zero rows without the flag and leaves it untouched
+  with it. `pg_restore --list` is not a substitute — it reads only the archive
+  TOC, so it exits 0 on exactly the truncated file that does the damage.
+- **A fresh, empty database is a supported target.** The protection probe asks
+  "does `omp_environment` exist?" and "is it protected?" as two separate
+  statements, because PostgreSQL resolves relation names at parse time: one
+  combined statement fails outright on a database with no marker table, which is
+  precisely the disaster-recovery case (`down -v`, fresh Postgres, restore).
+- **Fail closed.** An unreadable probe answer aborts the restore. Silence is
+  never read as "not protected".
+- **Dumps are restorable end to end.** Every `omp_*` SQL function schema-qualifies
+  its inner calls, because `pg_restore` inlines them under an empty `search_path`
+  while rebuilding `track_analysis`'s generated columns; an unqualified call makes
+  that `CREATE TABLE` fail and the restore silently arrives without
+  `track_analysis`. `TestSchemaFunctionsResolveWithoutSearchPath` guards it.
+
 ### Scheduling
 
 Neither snippet is installed by the script — copy whichever fits this host.
