@@ -18,6 +18,7 @@ import 'dj_layout.dart';
 import 'dj_system_overlay_style.dart';
 import 'engine/deck_controller.dart';
 import 'providers/dj_session_provider.dart';
+import '../../app/theme.dart';
 
 /// Direct-Voice performance view.
 ///
@@ -195,33 +196,19 @@ class _DjScreenState extends State<DjScreen> {
   /// Dependency-free local source fallback for an empty queue. A user supplies
   /// an absolute device path; DeckController accepts only the resulting file:
   /// URI and refuses remote schemes.
+  ///
+  /// The controller is owned by [_DjLocalFilePrompt], whose `State.dispose`
+  /// runs when the route actually unmounts. Disposing it here, the frame
+  /// `showDialog`'s future resolved, tore down a `TextEditingController` while
+  /// the dialog's `TextField` was still mounted for its exit transition;
+  /// `EditableText.dispose` then removed a listener from a disposed notifier,
+  /// threw mid-unmount and stranded an `InheritedElement`'s dependents
+  /// (`_dependents.isEmpty` assertion, #414 residual 2).
   Future<DjDeckLoad?> _promptForLocalFile() async {
-    final controller = TextEditingController();
     final path = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Load local audio file'),
-        content: TextField(
-          key: const ValueKey('dj_local_file_path'),
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: '/storage/emulated/0/Music/track.mp3',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
-            child: const Text('Load'),
-          ),
-        ],
-      ),
+      builder: (_) => const _DjLocalFilePrompt(),
     );
-    controller.dispose();
     final trimmed = path?.trim();
     if (trimmed == null || trimmed.isEmpty) return null;
     final slash = trimmed.lastIndexOf('/');
@@ -260,5 +247,56 @@ class _DjScreenState extends State<DjScreen> {
             body: DjLayout(),
           ),
         ),
+      );
+}
+
+/// The local-file prompt, owning its own [TextEditingController].
+///
+/// `scrollable` + a tightened inset keep it inside a landscape window with the
+/// soft keyboard up, where it used to paint `BOTTOM OVERFLOWED BY 70 PIXELS`.
+class _DjLocalFilePrompt extends StatefulWidget {
+  const _DjLocalFilePrompt();
+
+  @override
+  State<_DjLocalFilePrompt> createState() => _DjLocalFilePromptState();
+}
+
+class _DjLocalFilePromptState extends State<_DjLocalFilePrompt> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        scrollable: true,
+        insetPadding: const EdgeInsets.symmetric(
+          horizontal: AppTheme.space6,
+          vertical: AppTheme.space3,
+        ),
+        title: const Text('Load local audio file'),
+        content: TextField(
+          key: const ValueKey('dj_local_file_path'),
+          controller: _controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '/storage/emulated/0/Music/track.mp3',
+          ),
+        ),
+        actions: [
+          TextButton(
+            key: const ValueKey('dj_local_file_cancel'),
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const ValueKey('dj_local_file_load'),
+            onPressed: () => Navigator.of(context).pop(_controller.text),
+            child: const Text('Load'),
+          ),
+        ],
       );
 }
