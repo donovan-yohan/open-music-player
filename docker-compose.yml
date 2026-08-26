@@ -15,6 +15,7 @@ services:
       # Server
       SERVER_ADDR: ":8080"
       ENABLE_PLAYLIST_MIX: ${ENABLE_PLAYLIST_MIX:-false}
+      ENABLE_LISTENBRAINZ_MIX: ${ENABLE_LISTENBRAINZ_MIX:-false}
 
       # Discovery source budgets. Metadata concurrency is process-wide.
       DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS: ${DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS:-8}
