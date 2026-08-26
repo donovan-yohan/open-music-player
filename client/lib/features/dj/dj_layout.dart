@@ -5,6 +5,7 @@ import '../../app/theme.dart';
 import 'models/dj_deck_state.dart';
 import 'models/dj_hot_cue.dart';
 import 'providers/dj_session_provider.dart';
+import 'widgets/dj_beat_counter.dart';
 import 'widgets/dj_crossfader.dart';
 import 'widgets/dj_deck_header.dart';
 import 'widgets/dj_hot_cue_pads.dart';
@@ -508,10 +509,18 @@ class _Transport extends StatelessWidget {
   final DjDeckState state;
   final DjSessionProvider session;
   @override
-  Widget build(BuildContext context) => DjTransport(
-        playing: state.playing,
-        onCuePress: () => session.cuePress(deck),
-        onCueRelease: () => session.cueRelease(deck),
-        onPlayPause: () => session.togglePlay(deck),
+  Widget build(BuildContext context) => Row(
+        children: [
+          DjBeatCounter(deck: state),
+          const SizedBox(width: AppTheme.space1),
+          Expanded(
+            child: DjTransport(
+              playing: state.playing,
+              onCuePress: () => session.cuePress(deck),
+              onCueRelease: () => session.cueRelease(deck),
+              onPlayPause: () => session.togglePlay(deck),
+            ),
+          ),
+        ],
       );
 }
