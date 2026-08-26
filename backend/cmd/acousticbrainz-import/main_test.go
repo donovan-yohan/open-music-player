@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -72,6 +74,36 @@ func writeTempCSV(t *testing.T, name, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// failingSink fails on a chosen MBID to exercise the batch-boundary error path.
+type failingSink struct {
+	failOn uuid.UUID
+	calls  int
+}
+
+func (f *failingSink) UpsertAcousticBrainz(_ context.Context, entry db.AcousticBrainzEntry) error {
+	f.calls++
+	if entry.RecordingMBID == f.failOn {
+		return errors.New("boom")
+	}
+	return nil
+}
+
+func TestRunSurfacesFlushErrorInsteadOfPanicking(t *testing.T) {
+	mbidA := "d3f4a1e2-1111-4222-8333-444455556666"
+	mbidB := "d3f4a1e2-3333-4222-8333-444455556666"
+	rhythm := writeTempCSV(t, "rhythm.csv",
+		"mbid,bpm\n"+
+			mbidA+",128.5\n"+
+			mbidB+",140\n")
+
+	sink := &failingSink{failOn: uuid.MustParse(mbidB)}
+	if _, err := run(context.Background(), sink, rhythm, "", 1); err == nil {
+		t.Fatalf("run succeeded, want upsert failure surfaced at batch boundary")
+	} else if !strings.Contains(err.Error(), "upsert "+mbidB) || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("err = %v, want wrapped cause naming mbid %s", err, mbidB)
+	}
 }
 
 func TestRunImportsRhythmAndTonalDeterministically(t *testing.T) {

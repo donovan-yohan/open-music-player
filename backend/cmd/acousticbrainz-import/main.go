@@ -120,9 +120,10 @@ func run(ctx context.Context, sink rowSink, rhythmPath, tonalPath string, batchS
 				return uuid.Nil, false
 			}
 			return row.mbid, true
-		}, func(mbid uuid.UUID, record []string) {
+		}, func(mbid uuid.UUID, record []string) error {
 			row, _ := parseTonalRow(record)
 			tonalByKey[mbid] = row
+			return nil
 		})
 		if err != nil {
 			return stats, fmt.Errorf("read tonal csv: %w", err)
@@ -151,10 +152,10 @@ func run(ctx context.Context, sink rowSink, rhythmPath, tonalPath string, batchS
 				stats.Rejected++
 				return uuid.Nil, false
 			}
-			stats.Total++
+			stats.Total++ // pre-dedup accepted rows; duplicates may upsert twice
 			return entry.RecordingMBID, true
 		},
-		func(_ uuid.UUID, record []string) {
+		func(_ uuid.UUID, record []string) error {
 			entry, _ := parseRhythmRow(record)
 			if tonal, ok := tonalByKey[entry.RecordingMBID]; ok {
 				entry.Key = sqlString(tonal.key)
@@ -166,10 +167,9 @@ func run(ctx context.Context, sink rowSink, rhythmPath, tonalPath string, batchS
 			}
 			batch = append(batch, entry)
 			if len(batch) >= batchSize {
-				if err := flush(); err != nil {
-					halt(err)
-				}
+				return flush()
 			}
+			return nil
 		},
 	)
 	if err != nil {
@@ -181,14 +181,11 @@ func run(ctx context.Context, sink rowSink, rhythmPath, tonalPath string, batchS
 	return stats, nil
 }
 
-var errHalt = errors.New("halted")
-
-func halt(err error) { panic(errHalt) }
-
 // readCSV streams a UTF-8 CSV whose first row may be a header. keyOf decides
 // whether the record participates (and under which MBID); consume receives only
-// accepted records.
-func readCSV(path string, keyOf func([]string) (uuid.UUID, bool), consume func(uuid.UUID, []string)) error {
+// accepted records. A non-nil error from consume stops the stream and is
+// returned so callers can surface it through the normal failure contract.
+func readCSV(path string, keyOf func([]string) (uuid.UUID, bool), consume func(uuid.UUID, []string) error) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -215,7 +212,9 @@ func readCSV(path string, keyOf func([]string) (uuid.UUID, bool), consume func(u
 		if !ok {
 			continue
 		}
-		consume(mbid, record)
+		if err := consume(mbid, record); err != nil {
+			return err
+		}
 	}
 }
 
