@@ -9,6 +9,7 @@ import 'package:open_music_player/features/dj/models/dj_deck_load_failure.dart';
 import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/providers/dj_session_provider.dart';
 import 'package:open_music_player/models/track.dart';
+import 'package:open_music_player/models/track_analysis.dart';
 
 void main() {
   group('DJ deck load refusal', () {
@@ -204,6 +205,149 @@ void main() {
           DjDeckLoadFailureKind.sourceUnavailable);
       expect(provider.deckA.loadFailure?.detail, contains('deck load exploded'));
     });
+
+    test('a refused deck stops advertising the track it could not load',
+        () async {
+      final track = QueueTrack(
+        id: '4242',
+        queueItemId: 'queue-item-7f3a',
+        playbackTrackId: '4242',
+        title: 'phantom parade',
+        duration: 196,
+        addedAt: DateTime.utc(2026, 8, 26),
+        analysis: TrackAnalysis.fromJson(
+          status: 'analyzed',
+          summary: const {
+            'bpm': {'value': 142.1, 'confidence': 0.9},
+            'key': {'value': 'F#m'},
+          },
+        ),
+      );
+      final seed = DjSessionProvider.queueSeeds(track, null).first;
+      // The seed itself is fully populated: what follows is about the refusal.
+      expect(seed.queueTrack?.analysis, isNotNull);
+      expect(seed.durationMs, 196000);
+
+      final controller = DeckController.empty(
+        deckId: DjDeckId.a,
+        voice: _FakeVoice(),
+        resolver: const _RemoteResolver(),
+      );
+
+      await controller.load(seed);
+      final deck = controller.state;
+
+      expect(deck.loadFailure?.kind, DjDeckLoadFailureKind.unavailableOffline);
+      // A deck with no audio must not render as a loaded one: no analysis-backed
+      // bpm/key/beat phase, and no clock.
+      expect(deck.queueTrack, isNull);
+      expect(deck.bpm, isNull);
+      expect(deck.musicalKey, isNull);
+      expect(deck.camelot, isNull);
+      expect(deck.beatPhase, isNull);
+      expect(deck.durationMs, 0);
+      // The refused track is still identifiable.
+      expect(deck.title, 'phantom parade');
+      expect(deck.queueItemId, 'queue-item-7f3a');
+      expect(deck.loadFailure?.title, 'phantom parade');
+    });
+
+    test('a refusal survives a voice release that throws', () async {
+      final voice = _FakeVoice(releaseThrows: true);
+      final resolver = _SwitchableResolver();
+      final controller = DeckController.empty(
+        deckId: DjDeckId.a,
+        voice: voice,
+        resolver: resolver,
+      );
+
+      await controller.load(const DjDeckLoad(trackRef: '1', durationMs: 1000));
+      expect(controller.state.isLoaded, isTrue);
+
+      resolver.local = false;
+      await controller.load(const DjDeckLoad(trackRef: '2', durationMs: 1000));
+
+      expect(voice.releaseCalls, 1);
+      expect(controller.state.isLoaded, isFalse);
+      // The refusal is recorded, and keeps its own kind rather than being
+      // relabelled sourceUnavailable by the load()-level catch.
+      expect(controller.state.loadFailure?.kind,
+          DjDeckLoadFailureKind.unavailableOffline);
+    });
+
+    test('a picker refusal survives a voice release that throws', () async {
+      final voice = _FakeVoice(releaseThrows: true);
+      final controller = DeckController.empty(
+        deckId: DjDeckId.a,
+        voice: voice,
+        resolver: const _LocalResolver(),
+      );
+
+      await controller.load(const DjDeckLoad(trackRef: '1', durationMs: 1000));
+      expect(controller.state.isLoaded, isTrue);
+
+      // The picker guard runs before load()'s try block, so an unguarded
+      // release here escaped load() entirely.
+      await controller.load(
+        DjDeckLoad(
+          trackRef: 'local:remote',
+          localUri: Uri.parse('https://example.test/track.mp3'),
+        ),
+      );
+
+      expect(voice.releaseCalls, 1);
+      expect(controller.state.loadFailure?.kind,
+          DjDeckLoadFailureKind.pickerNotLocal);
+      expect(controller.state.isLoaded, isFalse);
+    });
+
+    test('a seed that throws after the voice took the source releases it',
+        () async {
+      final voice = _FakeVoice();
+      final controller = DeckController.empty(
+        deckId: DjDeckId.a,
+        voice: voice,
+        resolver: const _LocalResolver(),
+      );
+
+      // A negative durationMs reaches initialCueMs.clamp(0, durationMs), which
+      // throws ArgumentError after the voice already holds the source.
+      await controller.load(const DjDeckLoad(trackRef: '9', durationMs: -1000));
+
+      expect(voice.loadCalls, 1);
+      expect(controller.state.loadFailure?.kind,
+          DjDeckLoadFailureKind.sourceUnavailable);
+      expect(controller.state.isLoaded, isFalse);
+      // No orphan voice: nothing keeps audio a deck state no longer describes.
+      expect(voice.releaseCalls, 1);
+      expect(voice.isLoaded, isFalse);
+    });
+
+    test("a throwing deck A load releases deck A's voice", () async {
+      final voiceA = _FakeVoice()..loadedUri = Uri.file('/tmp/stale.mp3');
+      final provider = DjSessionProvider(
+        deckA: _ThrowingDeckController(
+          deckId: DjDeckId.a,
+          voice: voiceA,
+          resolver: const _LocalResolver(),
+        ),
+        deckB: DeckController.empty(
+          deckId: DjDeckId.b,
+          voice: _FakeVoice(),
+          resolver: const _LocalResolver(),
+        ),
+      );
+      addTearDown(provider.dispose);
+
+      await provider.seed(current: _track('11'), next: _track('12'));
+
+      expect(provider.deckA.loadFailure, isNotNull);
+      // The belt-and-braces catch refuses through the controller, so an
+      // unforeseen throw cannot leave the voice holding audio either.
+      expect(voiceA.releaseCalls, 1);
+      expect(voiceA.isLoaded, isFalse);
+      expect(provider.deckB.isLoaded, isTrue);
+    });
   });
 }
 
@@ -285,6 +429,10 @@ class _SwitchableResolver implements EngineAudioSourceResolver {
 }
 
 class _FakeVoice implements Voice {
+  _FakeVoice({this.releaseThrows = false});
+
+  /// JustAudioVoice.release is a bare platform `stop()`, which can throw.
+  final bool releaseThrows;
   bool _playing = false;
   int positionMs = 0;
   int loadCalls = 0;
@@ -324,6 +472,8 @@ class _FakeVoice implements Voice {
   Future<void> release() async {
     releaseCalls++;
     _playing = false;
+    if (releaseThrows) throw StateError('platform stop failed');
+    loadedUri = null;
   }
 
   @override

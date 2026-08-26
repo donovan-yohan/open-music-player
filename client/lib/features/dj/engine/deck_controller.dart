@@ -97,7 +97,9 @@ class DeckController {
   Future<void> load(DjDeckLoad load) async {
     final localUri = load.localUri;
     if (localUri != null && localUri.scheme != 'file') {
-      await _refuse(load, DjDeckLoadFailureKind.pickerNotLocal);
+      // refuseLoad is total: its release is best-effort, so this pre-guard
+      // refusal cannot throw out of load() either.
+      await refuseLoad(load, kind: DjDeckLoadFailureKind.pickerNotLocal);
       return;
     }
     final clip = MixClip(
@@ -113,9 +115,11 @@ class DeckController {
       queueItemId: load.queueItemId,
     );
     // The only broad catch on the deck path: a deck seed must not escape into
-    // dj_screen.dart's un-awaited post-frame callback. A refusal recorded
-    // inside the block is deliberately in scope too, so even a failing voice
-    // release still leaves the deck on a failure state rather than throwing.
+    // dj_screen.dart's un-awaited post-frame callback. The success state is
+    // built inside the block on purpose: a hostile seed can still throw after
+    // the voice took the source (`initialCueMs.clamp(0, durationMs)` throws for
+    // a negative durationMs), and the voice must not be left holding audio no
+    // deck state describes.
     try {
       final resolved = localUri == null ? await _resolver.resolve(clip) : null;
       if (kDebugMode) {
@@ -125,45 +129,72 @@ class DeckController {
         );
       }
       if (resolved != null && !resolved.isLocal) {
-        await _refuse(load, DjDeckLoadFailureKind.unavailableOffline);
+        await refuseLoad(load, kind: DjDeckLoadFailureKind.unavailableOffline);
         return;
       }
       await _voice.load(localUri ?? resolved!.uri);
+      // A freshly built success state carries loadFailure == null, so a
+      // recovered deck needs no explicit clearing.
+      _state = DjDeckState(
+        deckId: deckId,
+        queueItemId: load.queueItemId,
+        trackRef: load.trackRef,
+        title: load.title,
+        queueTrack: load.queueTrack,
+        durationMs: load.durationMs,
+        loadedCueMs: load.initialCueMs.clamp(0, load.durationMs).toInt(),
+        beatsMs: List.unmodifiable(load.beatsMs),
+      );
     } catch (error) {
-      await _refuse(
+      await refuseLoad(
         load,
-        DjDeckLoadFailureKind.sourceUnavailable,
+        kind: DjDeckLoadFailureKind.sourceUnavailable,
         detail: '$error',
       );
       return;
     }
-    // A freshly built success state carries loadFailure == null, so a recovered
-    // deck needs no explicit clearing.
-    _state = DjDeckState(
-      deckId: deckId,
-      queueItemId: load.queueItemId,
-      trackRef: load.trackRef,
-      title: load.title,
-      queueTrack: load.queueTrack,
-      durationMs: load.durationMs,
-      loadedCueMs: load.initialCueMs.clamp(0, load.durationMs).toInt(),
-      beatsMs: List.unmodifiable(load.beatsMs),
-    );
   }
 
-  /// Records a refusal for [load] without touching the voice.
+  /// Records a refusal for [load] and drops any audio the voice still holds.
   ///
   /// The provider's belt-and-braces seed guard uses this so a deck refusal is
-  /// always set through its controller rather than by mutating shared state.
-  void markLoadFailure(
+  /// always set through its controller — releasing the voice — rather than by
+  /// mutating shared state.
+  Future<void> refuseLoad(
     DjDeckLoad load, {
     DjDeckLoadFailureKind kind = DjDeckLoadFailureKind.sourceUnavailable,
     String? detail,
+  }) async {
+    // A deck that already held a track — or whose voice took this very seed
+    // before a later step failed — must not keep audio the lane no longer
+    // shows. Best-effort: `Voice.release` is a platform `stop()` that can
+    // throw, and a failed release must neither mask the refusal nor relabel
+    // its kind through the caller's catch.
+    if (_state.trackRef != null || _voice.isLoaded) {
+      try {
+        await _voice.release();
+      } catch (_) {
+        // Swallowed on purpose; the failure state below is the contract.
+      }
+    }
+    _markLoadFailure(load, kind: kind, detail: detail);
+  }
+
+  void _markLoadFailure(
+    DjDeckLoad load, {
+    required DjDeckLoadFailureKind kind,
+    String? detail,
   }) {
+    // Deliberately no queueTrack and no durationMs: a refused deck has no
+    // audio, so it must not keep advertising that track's bpm, key, beat phase
+    // or clock through DjDeckState's analysis-backed getters while the lane
+    // says the track is not on this device (#409). The title stays so the
+    // header still names the refused track, and queueItemId keeps the deck
+    // correlated with its queue row.
     _state = DjDeckState(
       deckId: deckId,
+      queueItemId: load.queueItemId,
       title: load.title,
-      queueTrack: load.queueTrack,
       loadFailure: DjDeckLoadFailure(
         kind: kind,
         trackRef: load.trackRef,
@@ -171,17 +202,6 @@ class DeckController {
         detail: detail,
       ),
     );
-  }
-
-  Future<void> _refuse(
-    DjDeckLoad load,
-    DjDeckLoadFailureKind kind, {
-    String? detail,
-  }) async {
-    // A deck that already held a track must not keep its voice loaded for a
-    // track the lane no longer shows.
-    if (_state.trackRef != null) await _voice.release();
-    markLoadFailure(load, kind: kind, detail: detail);
   }
 
   Future<void> play() async {

@@ -101,6 +101,12 @@ class DjSessionProvider extends ChangeNotifier {
     // The fallback preserves today's identity for a row with no numeric id;
     // such a deck now surfaces a load failure instead of throwing (#409).
     final ref = djDeckTrackRef(track) ?? track.playbackTrackId ?? track.id;
+    // Retained deliberately: the on-device miss behind #409 defect 3 is NOT yet
+    // root-caused. The row that was QA'd already had a numeric playbackTrackId,
+    // so this key resolution was a no-op for it and the original refusal of a
+    // downloaded track (a DownloadService._validateCompleted downgrade is the
+    // remaining suspect) can still recur. These two lines are the trail for
+    // that follow-up.
     if (kDebugMode) {
       debugPrint('OMP DJ deck seed candidates '
           'playbackTrackId=${track.playbackTrackId} id=${track.id} -> $ref');
@@ -148,8 +154,10 @@ class DjSessionProvider extends ChangeNotifier {
     } catch (error) {
       // DeckController.load is total for a refusable source, so this catch is
       // belt-and-braces: an unforeseen throw must still leave the other deck
-      // free to load, and this deck explaining itself in its lane.
-      _decks[deck]!.markLoadFailure(seed, detail: '$error');
+      // free to load, and this deck explaining itself in its lane. Refusing
+      // through the controller (rather than a bare state write) also releases a
+      // voice that an unforeseen throw may have left holding audio.
+      await _decks[deck]!.refuseLoad(seed, detail: '$error');
       _applyDeckGains();
       notifyListeners();
     }
