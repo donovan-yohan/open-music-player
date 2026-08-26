@@ -7,6 +7,7 @@ import '../../../models/timeline_viewport.dart';
 import '../../../models/waveform.dart';
 import '../../../widgets/timeline_waveform_painter.dart';
 import '../models/dj_deck_state.dart';
+import 'dj_deck_notice.dart';
 
 class DjWaveformLane extends StatefulWidget {
   const DjWaveformLane({
@@ -57,7 +58,11 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
   }
 
   @override
-  Widget build(BuildContext context) => RepaintBoundary(
+  Widget build(BuildContext context) {
+    // A refused deck explains itself where the waveform would be; the lane's
+    // painter path below is untouched.
+    if (widget.deck.loadFailure != null) return DjDeckNotice(deck: widget.deck);
+    return RepaintBoundary(
         child: LayoutBuilder(
           builder: (context, constraints) {
             final width = math.max(1.0, constraints.maxWidth);
@@ -126,7 +131,8 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
             );
           },
         ),
-      );
+    );
+  }
 }
 
 /// Retains waveform object identity over 30Hz deck-position updates. Analysis

@@ -94,6 +94,13 @@ class _DjScreenState extends State<DjScreen> {
       }
       if (!mounted) return;
       final queue = context.read<QueueProvider?>();
+      // Match dj_session_screen.dart:449 / queue_screen.dart:314: a cold deck
+      // entry must see the real queue before deciding it is empty, or it
+      // prompts for a local file over a track that is already playing (#409).
+      // QueueProvider.loadQueue records transport failures in `error` and does
+      // not throw (queue_provider.dart:403-445), so no try/catch here.
+      if (queue != null) await queue.loadQueue();
+      if (!mounted) return;
       final rawCurrent = queue?.currentTrack;
       final rawNext =
           queue?.upNext.isEmpty ?? true ? null : queue!.upNext.first;

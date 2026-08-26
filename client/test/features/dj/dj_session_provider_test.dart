@@ -5,6 +5,7 @@ import 'package:open_music_player/core/engine/engine_audio_source_resolver.dart'
 import 'package:open_music_player/core/engine/gain_envelope.dart';
 import 'package:open_music_player/core/engine/voice.dart';
 import 'package:open_music_player/features/dj/engine/deck_controller.dart';
+import 'package:open_music_player/features/dj/models/dj_deck_load_failure.dart';
 import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/providers/dj_session_provider.dart';
 
@@ -29,17 +30,21 @@ void main() {
       expect(controller.state.rate, 1.25);
     });
 
-    test('prototype rejects signed-url resolver fallback', () async {
+    test('prototype surfaces a deck failure for a signed-url resolver fallback',
+        () async {
       final controller = DeckController.empty(
         deckId: DjDeckId.a,
         voice: _FakeVoice(),
         resolver: const _RemoteResolver(),
       );
 
-      await expectLater(
-        controller.load(const DjDeckLoad(trackRef: '1', durationMs: 1000)),
-        throwsA(isA<StateError>()),
-      );
+      // The refusal itself is unchanged policy; it must complete normally and
+      // land on the deck snapshot instead of throwing (#409).
+      await controller.load(const DjDeckLoad(trackRef: '1', durationMs: 1000));
+
+      expect(controller.state.loadFailure?.kind,
+          DjDeckLoadFailureKind.unavailableOffline);
+      expect(controller.state.isLoaded, isFalse);
     });
 
     test('CDJ cue auditions from the loaded cue then returns when paused',
