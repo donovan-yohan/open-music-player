@@ -65,8 +65,90 @@ void main() {
       expect(provider.deckA.loadedCueMs, 8000);
     });
 
+    test(
+        'deck bpm honours a manual override when the effective summary has no '
+        'generated bpm', () {
+      final analysis = _manualBpmOnlyAnalysis();
+
+      // Preconditions, asserted so the fixture is self-documenting: the raw
+      // effective summary carries no bpm and no beat grid at all.
+      expect(analysis.summary?.bpm, isNull);
+      expect(analysis.summary?.beatGrid, isNull);
+
+      final deck = DjDeckState(
+        deckId: DjDeckId.a,
+        queueTrack: _track(duration: 196, analysis: analysis),
+      );
+
+      expect(deck.bpm, 128.0);
+    });
+
+    test('seeded beats come from the effective projection, never the generated '
+        'summary', () {
+      final analysis = _overriddenGridAnalysis();
+
+      // The fixture is provably discriminating: generated and effective grids
+      // differ.
+      expect(analysis.generatedSummary?.beatGrid?.beatsMs,
+          [0, 508, 1016, 1525, 2033, 2542, 3050]);
+
+      final seed = DjSessionProvider.queueSeeds(
+        _track(duration: 196, analysis: analysis),
+        null,
+      ).first;
+
+      expect(seed.beatsMs, [0, 500, 1000, 1500, 2000, 2500, 3000]);
+      expect(seed.beatsMs, isNot(analysis.generatedSummary!.beatGrid!.beatsMs));
+    });
+
+    test('a hot cue snaps to the overridden beat grid', () async {
+      final provider = _provider();
+      addTearDown(provider.dispose);
+
+      await provider.seed(
+        current: _track(duration: 196, analysis: _overriddenGridAnalysis()),
+      );
+      await provider.seek(DjDeckId.a, 720);
+      await provider.setHotCue(DjDeckId.a, 1);
+
+      expect(provider.hotCuesFor(DjDeckId.a).single.positionMs, 500);
+      expect(provider.hotCuesFor(DjDeckId.a).single.positionMs, isNot(508));
+    });
   });
 }
+
+/// Manual BPM correction with an effective summary that carries no bpm of its
+/// own — the one reachable divergence between the raw summary read and
+/// ClipTempoMetadata.nativeBpm.
+TrackAnalysis _manualBpmOnlyAnalysis() => TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: const {
+        '_omp_summary_contract': {'version': 1, 'projection': 'effective'},
+        'key': {'value': 'F#m'},
+      },
+      overrides: const {
+        'manual_timing_override': {'bpm': 128.0},
+      },
+    );
+
+/// A generated grid at 118 BPM corrected to an effective grid at 120 BPM.
+TrackAnalysis _overriddenGridAnalysis() => TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: const {
+        'bpm': {'value': 118, 'confidence': 0.8},
+        'beat_grid': {
+          'bpm': 118,
+          'beats_ms': [0, 508, 1016, 1525, 2033, 2542, 3050],
+        },
+      },
+      effectiveTiming: const {
+        'bpm': {'value': 120, 'confidence': 1, 'provenance': 'manual_override'},
+        'beat_grid': {
+          'bpm': 120,
+          'beats_ms': [0, 500, 1000, 1500, 2000, 2500, 3000],
+        },
+      },
+    );
 
 QueueTrack _track({required int duration, TrackAnalysis? analysis}) =>
     QueueTrack(

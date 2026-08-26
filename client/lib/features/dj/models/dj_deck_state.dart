@@ -52,8 +52,12 @@ class DjDeckState {
   bool get isLoaded => trackRef != null;
 
   double? get bpm {
-    final summary = queueTrack?.analysis?.summary;
-    return summary?.bpm?.numericValue?.toDouble() ?? summary?.beatGrid?.bpm;
+    final analysis = queueTrack?.analysis;
+    if (analysis == null) return null;
+    // Same interpreter as beatPhase below: analysis.effectiveTiming via
+    // ClipTempoMetadata. Clients never merge overrides themselves
+    // (docs/AUDIO_ANALYZER_SERVICE.md, docs/dj-deck-spec.md:131).
+    return ClipTempoMetadata.fromTrackAnalysis(analysis).nativeBpm;
   }
 
   String? get musicalKey => queueTrack?.analysis?.summary?.key?.textValue;

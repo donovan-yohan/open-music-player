@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../core/engine/engine_audio_source_resolver.dart';
 import '../../../core/engine/gain_envelope.dart';
+import '../../../core/engine/tempo_automation.dart';
 import '../../../core/engine/voice.dart';
 import '../../../core/cache/playback_cache_manager.dart';
 import '../../../core/stems/stem_channel_source.dart';
@@ -104,6 +105,7 @@ class DjSessionProvider extends ChangeNotifier {
       debugPrint('OMP DJ deck seed candidates '
           'playbackTrackId=${track.playbackTrackId} id=${track.id} -> $ref');
     }
+    final analysis = track.analysis;
     return DjDeckLoad(
       trackRef: ref,
       queueItemId: track.queueItemId,
@@ -111,8 +113,13 @@ class DjSessionProvider extends ChangeNotifier {
       queueTrack: track,
       // QueueTrack.duration is whole seconds (track.dart:286) — #412.
       durationMs: track.durationMs,
-      beatsMs: track.analysis?.summary?.beatGrid?.beatsMs ?? const [],
-      initialCueMs: track.analysis?.summary?.intro?.startMs ?? 0,
+      // The track-analysis model is the only timing-override interpreter; the
+      // deck reads the same effective grid as DjDeckState.beatPhase (#412).
+      beatsMs: analysis == null
+          ? const <int>[]
+          : ClipTempoMetadata.fromTrackAnalysis(analysis).beatsMs,
+      // The effective timing projection carries no intro range.
+      initialCueMs: analysis?.summary?.intro?.startMs ?? 0,
     );
   }
 
