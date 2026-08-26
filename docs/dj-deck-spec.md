@@ -18,7 +18,7 @@ KEEP: stacked beat-aligned scrolling waveforms (deck A blue top, deck B red bott
 - Row budget, derived from `constraints.maxHeight` (`client/lib/features/dj/dj_layout.dart`, `DjRowBudget`). Preferred heights are waveform stack 120dp, header + overview band 44dp, control field up to 180dp, transport 64dp. As the post-SafeArea height falls, the rows give way in this exact order: **1. control field** (the designated flexible region) 180 -> 120dp; **2. waveform stack** 120 -> 64dp; **3. header band** 44 -> 36dp, dropping the 8dp overview strip below 40dp of band height; **4. transport — never**, it is pinned at 64dp because it is the primary thumb surface. The control field is the `Column`'s only `Expanded` child, so the column cannot overflow. Below **284dp** of post-SafeArea height (64 + 36 + 120 + 64) the deck is not serviceable and paints the keyed too-small state instead.
 - Column budget: every row below the waveform stack is laid out on one shared grid — `Expanded(deck A) | 12dp gutter | centre column | 12dp gutter | Expanded(deck B)` — where `centerWidth = clamp(width * 0.19, 120, 180)`. The centre column carries the mixer in the control row and the crossfader in the transport row, so the fixed centre playhead runs down the middle of that column instead of down the deck A/B divider gap. The playhead itself is a 2dp `waveformPlayhead` bar inside a 4dp box, i.e. with a 1dp `colorScheme.surface` hairline on each side: the pixels it crosses are waveform peaks in the deck lane colour, and the dark playhead token is one hue step from deck B (1.12:1), so the hairline rather than the bar is what carries the contrast against the lane. Each deck column is a 48dp pitch-fader column + 4dp + the deck panel, and the deck panels absorb narrower devices. Minimum serviceable width is **488dp** = 2 x (48 + 4 + 120) + 2 x 12 + 120.
 - **Authority.** Where this spec and the shipped implementation disagreed, the split is: the **implementation** is authority for the **48dp pitch-fader column** (Material's minimum touch target; the spec's extra 8dp goes to the deck panel, which is the constrained region), and the **spec** is authority for the **180dp centre column**, which the clamp above now reaches at wide viewports in place of the shipped 128dp mixer (behind the Pixel 10 Pro's leading cutout the reference viewport resolves to ~171dp).
-- Touch targets: 48dp minimum everywhere at and above the reference viewport. The control field is a roughly 8x3 main-control grid, so the panel switcher is mandatory rather than optional. Below the reference budget two controls degrade deliberately, and nothing else may: the pitch fader's nudge zones step 48 -> 40 -> 24dp and then disappear entirely (`DjPitchFader.nudgeExtentFor`), and the panel switcher's band steps 48 -> 40dp on the same rung (`DjRowBudget.panelSwitcherHeight`, taken when the control field falls below 144dp). Both keep their full 48dp target at and above the reference viewport, where the control field is >= 144dp.
+- Touch targets: 48dp minimum everywhere at and above the reference viewport. The control field is a roughly 8x3 main-control grid, so the panel switcher is mandatory rather than optional. Below the reference budget two controls degrade deliberately, and nothing else may: the pitch fader's nudge zones step 48 -> 40 -> 24dp and then disappear entirely (`DjPitchFader.nudgeExtentFor`), and the panel switcher's band steps 48 -> 40dp on the same rung (`DjRowBudget.panelSwitcherHeight`, taken when the control field falls below 144dp). Both keep their full 48dp target at and above the reference viewport, where the control field is >= 144dp. A third control degrades on the same principle: the deck-lane recovery action (`Download` / `Retry` / `Load a file` in `DjDeckNotice`) is 48dp wherever the lane can hold one — at the reference viewport each of the two lanes is 56dp, which fits a full-height button beside the copy — and falls to a 32dp shrink-wrapped button only in a lane below 48dp, i.e. below the serviceable floor where a 48dp control cannot be honoured at all.
 - Known degradation, not yet resolved: between the 488dp minimum serviceable width and roughly 840dp the deck panel sits on its 120dp floor and the hot-cue pads fall well below 48dp (about 26 x 19dp at 490dp of width). Raising `kDjMinDeckWidth` to the width that would keep the pads at target would blank the deck on the reference device itself, so the pad grid's `childAspectRatio` is the thing to revisit — the gate is correct as it stands.
 
 ## Deck entry contract (what the deck can play, where, and what is not built)
@@ -40,7 +40,15 @@ now renders in the deck's own lane, in place of the waveform, with an action:
 | refused, not on this device | `Download this track to use it on the deck` | `Download` (`dj_deck_download_<a\|b>`) |
 | refused, picker gave a non-local URI | `Pick a file on this device to use it on the deck` | `Load a file` (`dj_deck_load_file_<a\|b>`) |
 | refused, source unresolvable | `This track cannot be loaded on the deck right now` | none |
-| never seeded | `Add a track to the queue, or load a file from this device` | `Load a file` |
+| never seeded, queue empty | `Add a track to the queue, or load a file from this device` | `Load a file` |
+| never seeded, queue not empty | `Nothing is loaded on this deck` | `Load a file` |
+
+Both actions are **per deck**: the key carries the deck letter and the callback
+carries `DjDeckId`, so the button loads or downloads the deck it is rendered on.
+Only deck A is seeded from a single-row queue, so an unseeded deck B beside a
+full queue is the ordinary state — telling that user to add a track they have
+already added would be factually wrong, which is why the never-seeded copy
+splits on whether the queue actually holds anything.
 
 The `Download` action goes through `DownloadState.downloadTrack` — the same call
 `client/lib/shared/widgets/download_button.dart` makes — and then re-seeds that
@@ -53,7 +61,21 @@ paragraph.
 
 A deck that holds no audio also has no metrics and no armed controls: the header
 renders the dimmed title plus `Not loaded`, and CUE / PLAY / hot-cue pads are
-disabled with the lane's own reason as their tooltip.
+disabled with the lane's own reason as their tooltip. A disabled control keeps
+its accessible name — `Tooltip` sets `SemanticsProperties.tooltip`, not `label`,
+so an icon-only control that drops its tooltip while gated becomes nameless and
+indistinguishable from its neighbour.
+
+**Known gap, deliberate.** "On this device" covers downloaded artifacts *and*
+playback-cache-backed sources, but the only synchronous device-side fact the
+entry points can consult is `DownloadState.downloadedTrackIds`:
+`PlaybackCacheManager.get` is asynchronous and needs a `SignedAudioDescriptor`,
+and the cache store exposes no cached-id set. The entry-point copy therefore
+hedges (`This track may need downloading to load on a deck`) rather than
+instructing a download the deck may not need for a streamed-but-cached row. The
+deck's own lane copy stays exact, because the deck has already tried to resolve
+the source. Follow-up: give the playback cache a synchronous cached-id
+projection and make the entry-point predicate exact.
 
 ### 2. Supported orientation and minimum viewport — landscape only
 
@@ -82,10 +104,15 @@ toggle, and in the deck's own lane state rather than by adding a second entry
 point.
 
 - Player (`player_dj_mode_action`): badged, and its tooltip appends
-  `Download this track to load it on a deck`, when DJ mode is on and the current
-  queue row is not downloaded.
+  `This track may need downloading to load on a deck`, when DJ mode is on and
+  the current queue row is not downloaded. The badge takes
+  `colorScheme.secondary`: Material's default badge colour is
+  `colorScheme.error`, and an advisory hint painted alert-red re-creates the
+  "the deck is broken" reading this ticket exists to remove. A queue row with no
+  numeric track id advertises nothing at all — it cannot be downloaded, so the
+  hint would name an impossible action.
 - Settings (`settings_dj_mode_toggle`): the subtitle ends
-  `The deck plays downloaded tracks in landscape only.`
+  `The deck plays tracks stored on this device, in landscape only.`
 
 ### 5. Sentence-case exemption
 
