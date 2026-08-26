@@ -21,9 +21,15 @@ const String djDeckPickLocalFile =
 const String djDeckSourceUnavailable =
     'This track cannot be loaded on the deck right now';
 
-/// Nothing was ever seeded onto this deck.
+/// The queue holds nothing, so there is nothing for the deck to take.
 const String djDeckEmpty =
     'Add a track to the queue, or load a file from this device';
+
+/// The queue is not empty but this deck was never seeded from it. Telling the
+/// user to add a track they have already added is worse than saying nothing:
+/// only deck A is seeded from a single-row queue, so deck B reaches this state
+/// on the ordinary path.
+const String djDeckNotSeeded = 'Nothing is loaded on this deck';
 
 /// Deck-lane action that sends the refused track through the app's one
 /// download pipeline.
@@ -65,15 +71,24 @@ const String djDeckTooSmall = 'Not enough room for the deck';
 const String djDeckTooSmallDetail =
     'Try a smaller display size or a larger window.';
 
-/// The one line the player's DJ action adds when the deck could not use what
-/// is currently playing.
+/// The one line the player's DJ action adds when the deck may not be able to
+/// use what is currently playing.
+///
+/// Hedged deliberately. The deck accepts local *and* playback-cache-backed
+/// sources, but the only synchronous device-side fact the player can consult is
+/// `DownloadState.downloadedTrackIds`: `PlaybackCacheManager.get` is async and
+/// needs a `SignedAudioDescriptor`, and the cache store exposes no cached-id
+/// set. A flat "download this track" therefore lies about a streamed-but-cached
+/// row, which loads on the deck today. Follow-up, recorded in
+/// docs/dj-deck-spec.md section 1: give the cache a synchronous cached-id
+/// projection and make this predicate exact.
 const String djDeckEntryDownloadHint =
-    'Download this track to load it on a deck';
+    'This track may need downloading to load on a deck';
 
 /// Appended to the settings toggle subtitle so the requirement is advertised
 /// before the user ever reaches the deck.
 const String djDeckSettingsRequirement =
-    'The deck plays downloaded tracks in landscape only.';
+    'The deck plays tracks stored on this device, in landscape only.';
 
 /// The copy contract, in one list, for `dj_deck_copy_test.dart`.
 ///
@@ -87,6 +102,7 @@ const List<String> djDeckCopyStrings = <String>[
   djDeckPickLocalFile,
   djDeckSourceUnavailable,
   djDeckEmpty,
+  djDeckNotSeeded,
   djDeckDownloadAction,
   djDeckDownloadRunningAction,
   djDeckDownloadRetryAction,
