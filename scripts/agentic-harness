@@ -351,7 +351,11 @@ def check_protected_stack_guard() -> None:
         ],
         "scripts/dogfood-backup.sh": [
             "OMP_ALLOW_PROTECTED_DB_RESTORE",
-            "--clean --if-exists --no-owner",
+            # --single-transaction keeps --clean's DROPs from committing ahead of a
+            # load that then fails; MARKER_EXISTS_QUERY keeps the protection probe
+            # split in two so a marker-less database can still be restored into.
+            "--clean --if-exists --no-owner --single-transaction",
+            "MARKER_EXISTS_QUERY",
         ],
     }
     for name, phrases in required_phrases.items():
@@ -386,6 +390,50 @@ def check_protected_stack_guard() -> None:
             detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
             tail = " | ".join(detail[-5:]) if detail else "no output"
             fail(f"{name}: protected-stack guard test failed: {tail}")
+
+
+def check_protected_test_db_guards() -> None:
+    """Every test that opens Postgres must carry BOTH protection guards.
+
+    Only package `db` has an executable proof (its guard test drives the real
+    helper), and only its helpers route through newGuardedTestDB. The truncating
+    helpers in api/search/processor/playlistimport/research each hand-paste the
+    same two lines, and a hand-pasted line is one an editor can delete without
+    anything going red -- those helpers TRUNCATE users and tracks, which is
+    precisely the loss issue #407 exists to prevent. This census is the
+    backpressure: deleting a guard call fails `scripts/lint delivery`.
+
+    Presence, not ordering, is what a text census can honestly assert. Ordering
+    (guard BEFORE sql.Open, marker check BEFORE the first TRUNCATE) is proven
+    executably by TestProtectedDatabaseGuardStopsRealTruncatingHelper.
+    """
+    backend = ROOT / "backend"
+    if not backend.is_dir():
+        fail("backend: directory is missing; cannot census the protected-database guards")
+        return
+
+    opener = 'sql.Open("postgres"'
+    required = {
+        "CheckDSNNotProtected": "refuse a DSN on a protected host port before opening a connection",
+        "CheckDatabaseNotProtected": "refuse a database whose omp_environment marker says protected",
+    }
+    censused = 0
+    for path in sorted(backend.rglob("*_test.go")):
+        text = path.read_text(errors="replace")
+        if opener not in text:
+            continue
+        censused += 1
+        for guard, why in required.items():
+            if guard not in text:
+                fail(
+                    f"{rel(path)}: opens Postgres in a test but never calls {guard}; "
+                    f"every helper that does must {why} (issue #407)"
+                )
+    if censused == 0:
+        fail(
+            "protected-database guard census matched no *_test.go under backend/; "
+            f"the marker {opener!r} changed, so the census is no longer proving anything"
+        )
 
 
 def check_json_syntax(files: list[Path]) -> None:
@@ -591,6 +639,7 @@ def main() -> int:
     check_local_dev_contracts()
     check_doc_check_commands()
     check_protected_stack_guard()
+    check_protected_test_db_guards()
     check_json_syntax(files)
     check_python_syntax(files)
     check_soundq_brand_assets()
