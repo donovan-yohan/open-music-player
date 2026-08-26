@@ -1,5 +1,6 @@
 import '../../../core/engine/tempo_automation.dart';
 import '../../../models/track.dart';
+import 'dj_deck_load_failure.dart';
 import 'dj_hot_cue.dart';
 
 enum DjDeckId { a, b }
@@ -21,6 +22,7 @@ class DjDeckState {
     this.loadedCueMs = 0,
     this.activeLoop,
     this.beatsMs = const [],
+    this.loadFailure,
   });
 
   final DjDeckId deckId;
@@ -41,6 +43,10 @@ class DjDeckState {
   final int loadedCueMs;
   final DjLoop? activeLoop;
   final List<int> beatsMs;
+
+  /// Set when the deck refused this seed. A refused deck carries no [trackRef],
+  /// so [isLoaded] stays honestly false while the lane explains why (#409).
+  final DjDeckLoadFailure? loadFailure;
 
   double get ratePercent => (rate - 1) * 100;
   bool get isLoaded => trackRef != null;
@@ -96,6 +102,8 @@ class DjDeckState {
     DjLoop? activeLoop,
     bool clearLoop = false,
     List<int>? beatsMs,
+    DjDeckLoadFailure? loadFailure,
+    bool clearLoadFailure = false,
   }) =>
       DjDeckState(
         deckId: deckId,
@@ -112,5 +120,9 @@ class DjDeckState {
         loadedCueMs: loadedCueMs ?? this.loadedCueMs,
         activeLoop: clearLoop ? null : activeLoop ?? this.activeLoop,
         beatsMs: beatsMs ?? this.beatsMs,
+        // The 30 Hz snapshot refresh copies a refused deck too; a failure must
+        // survive it and only clear on an explicit request.
+        loadFailure:
+            clearLoadFailure ? null : loadFailure ?? this.loadFailure,
       );
 }
