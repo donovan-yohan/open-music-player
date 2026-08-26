@@ -310,6 +310,29 @@ def check_local_dev_contracts() -> None:
                 fail(f"{name}: missing local dev contract phrase {phrase!r}")
 
 
+def check_doc_check_commands() -> None:
+    """Documented check commands must be runnable exactly as written.
+
+    `go test -run` takes an RE2 pattern, where `\\|` is an escaped LITERAL pipe,
+    not alternation. A markdown table cell that escapes the pipe to keep the row
+    intact therefore ships a filter that matches no test: the command exits 0
+    with "no tests to run", which reads as a green check while proving nothing.
+    Prefer a single substring filter (`-run AcousticBrainz`) over alternation in
+    any command a reader is meant to copy out of a table.
+    """
+    escaped_run_filter = re.compile(r"-run\s+\S*\\\|")
+    for name in ["docs/context-map.md", "docs/agentic-delivery.md", "AGENTS.md"]:
+        path = ROOT / name
+        if not path.exists():
+            continue
+        for number, line in enumerate(path.read_text(errors="replace").splitlines(), start=1):
+            if escaped_run_filter.search(line):
+                fail(
+                    f"{name}:{number}: documented `go test -run` filter escapes a pipe; "
+                    "RE2 reads `\\|` as a literal pipe, so the command runs zero tests and exits 0"
+                )
+
+
 def check_json_syntax(files: list[Path]) -> None:
     for path in files:
         if path.suffix.lower() != ".json":
@@ -511,6 +534,7 @@ def main() -> int:
     check_agent_docs()
     check_ci_wires_harness()
     check_local_dev_contracts()
+    check_doc_check_commands()
     check_json_syntax(files)
     check_python_syntax(files)
     check_soundq_brand_assets()
