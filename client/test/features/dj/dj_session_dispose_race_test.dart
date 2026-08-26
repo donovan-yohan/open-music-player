@@ -32,12 +32,12 @@ void main() {
   /// the only seam onto the production ownership branch, where the SCREEN
   /// disposes the provider on pop. An injected session stays caller-owned and
   /// is merely parked, which never reproduces this.
-  Future<void> openDeck(
-    WidgetTester tester, {
-    required GlobalKey<NavigatorState> navigator,
-    required void Function(DjSessionProvider) onSession,
-    required void Function(_GatedVoice) onVoice,
-  }) async {
+  Future<({DjSessionProvider session, List<_GatedVoice> voices})> openDeck(
+    WidgetTester tester,
+    GlobalKey<NavigatorState> navigator,
+  ) async {
+    final voices = <_GatedVoice>[];
+    DjSessionProvider? session;
     landscapeReference.apply(tester);
     await tester.pumpWidget(
       MaterialApp(
@@ -50,18 +50,14 @@ void main() {
         MaterialPageRoute<void>(
           builder: (_) => DjScreen(
             filePicker: () async => null,
-            sessionFactory: () {
-              final built = DjSessionProvider.prototype(
-                voiceFactory: () {
-                  final voice = _GatedVoice();
-                  onVoice(voice);
-                  return voice;
-                },
-                resolver: const DirectEngineAudioSourceResolver(),
-              );
-              onSession(built);
-              return built;
-            },
+            sessionFactory: () => session = DjSessionProvider.prototype(
+              voiceFactory: () {
+                final voice = _GatedVoice();
+                voices.add(voice);
+                return voice;
+              },
+              resolver: const DirectEngineAudioSourceResolver(),
+            ),
           ),
         ),
       ),
@@ -70,6 +66,9 @@ void main() {
     // period, so this tree never goes idle.
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 350));
+    // The factory runs during that first pump, so both are populated by now.
+    // Deck A is built first, so it holds the first voice.
+    return (session: session!, voices: voices);
   }
 
   /// Pops the deck and lets the reverse transition finish unmounting it. The
@@ -80,8 +79,10 @@ void main() {
     GlobalKey<NavigatorState> navigator,
   ) async {
     navigator.currentState!.pop();
-    for (var i = 0; i < 4; i++) {
-      await tester.pump(const Duration(milliseconds: 120));
+    // Comfortably past MaterialPageRoute's 300 ms reverse transition, with a
+    // frame to spare for the removal that follows it.
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
     }
   }
 
@@ -89,20 +90,11 @@ void main() {
       'a PLAY tap still in flight when the deck route pops does not notify a '
       'disposed session', (tester) async {
     final navigator = GlobalKey<NavigatorState>();
-    final voices = <_GatedVoice>[];
-    DjSessionProvider? session;
-
-    await openDeck(
-      tester,
-      navigator: navigator,
-      onSession: (built) => session = built,
-      onVoice: voices.add,
-    );
-    // Deck A is built first, so it holds the first voice.
+    final (:session, :voices) = await openDeck(tester, navigator);
     expect(voices, hasLength(2));
 
     // The transport is gated on a deck that holds audio (#414), so seed one.
-    await session!.load(DjDeckId.a, djLoadedDeckSeed());
+    await session.load(DjDeckId.a, djLoadedDeckSeed());
     await tester.pump();
 
     // PLAY. `togglePlay` reaches `await controller.play()` and parks there,
@@ -130,16 +122,8 @@ void main() {
   testWidgets('a deck callback captured across the pop drives no released voice',
       (tester) async {
     final navigator = GlobalKey<NavigatorState>();
-    final voices = <_GatedVoice>[];
-    DjSessionProvider? session;
-
-    await openDeck(
-      tester,
-      navigator: navigator,
-      onSession: (built) => session = built,
-      onVoice: voices.add,
-    );
-    await session!.load(DjDeckId.a, djLoadedDeckSeed());
+    final (:session, :voices) = await openDeck(tester, navigator);
+    await session.load(DjDeckId.a, djLoadedDeckSeed());
     await tester.pump();
 
     // A callback held by something that outlives the route — a tooltip, a
