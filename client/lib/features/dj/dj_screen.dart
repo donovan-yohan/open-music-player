@@ -137,8 +137,13 @@ class _DjScreenState extends State<DjScreen> {
       // read is always a cold cache and this subscription is the only thing
       // that lets the hydrated arrays reach the lane (#410).
       _queue = queue;
-      _lastAnalysisRevision = queue?.analysisRevision ?? -1;
       queue?.addListener(_onQueueAnalysisChanged);
+      // A hydration that completed while the seed above was awaiting fired
+      // before this listener existed, and recording the current revision as
+      // already-seen would strand the deck on the unhydrated snapshot forever.
+      // Reconcile once, from a deliberately impossible revision.
+      _lastAnalysisRevision = -1;
+      _onQueueAnalysisChanged();
     });
   }
 
