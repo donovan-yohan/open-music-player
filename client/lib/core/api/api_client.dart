@@ -5,6 +5,7 @@ import '../auth/auth_tokens.dart';
 import '../discovery/discovery_models.dart';
 import '../storage/secure_storage.dart';
 import '../../models/mix_plan.dart';
+import '../../models/nearby_tracks.dart';
 import '../../models/queue_state.dart';
 import '../../models/track_analysis.dart';
 
@@ -555,6 +556,32 @@ class ApiClient {
         _statusCodeOf(e),
         errorCode: (errorMap['code'] ?? body?['code']) as String?,
       );
+    }
+  }
+
+  /// GET /tracks/nearby — harmonically compatible tracks from the caller's own
+  /// library. [tolerance] is absolute BPM (±), matching the server predicate.
+  /// [orderByHistory] sends `order=history` (play-history affinity re-ranking);
+  /// it is omitted otherwise so the server keeps its pure harmonic order.
+  Future<NearbyTracksResult> getNearbyTracks({
+    required double bpm,
+    required String camelot,
+    required double tolerance,
+    bool orderByHistory = false,
+  }) async {
+    try {
+      final response = await _dio.get(
+        '/tracks/nearby',
+        queryParameters: {
+          'bpm': bpm.toString(),
+          'camelot': camelot,
+          'tolerance': tolerance.toString(),
+          if (orderByHistory) 'order': 'history',
+        },
+      );
+      return NearbyTracksResult.fromJson(_asMap(response.data));
+    } on DioException catch (e) {
+      throw ApiException('Failed to load nearby tracks', _statusCodeOf(e));
     }
   }
 

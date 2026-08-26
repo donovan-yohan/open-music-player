@@ -31,8 +31,13 @@ var ErrInvalidNearbyTrackQuery = errors.New("invalid nearby track query")
 // NearbyTrack is a library-scoped track candidate with the effective analyzer
 // values used to place it in the harmonic search bucket.
 type NearbyTrack struct {
-	ID               int64
-	Title            string
+	ID    int64
+	Title string
+	// DurationMs is the track's own length. It is carried because the client
+	// puts a nearby match straight into its playback timeline, where a clip of
+	// unknown length is never active: without a real duration the match would
+	// be silently skipped on playback.
+	DurationMs       sql.NullInt64
 	Artist           sql.NullString
 	Album            sql.NullString
 	EffectiveBPM     float64
@@ -93,6 +98,7 @@ func (r *LibraryRepository) NearbyTracks(
 			COALESCE(tmo.title, t.title) AS title,
 			COALESCE(tmo.artist, t.artist) AS artist,
 			COALESCE(tmo.album, t.album) AS album,
+			t.duration_ms,
 			ta.effective_bpm,
 			ta.effective_camelot
 		FROM track_analysis ta
@@ -120,6 +126,7 @@ func (r *LibraryRepository) NearbyTracks(
 			&track.Title,
 			&track.Artist,
 			&track.Album,
+			&track.DurationMs,
 			&track.EffectiveBPM,
 			&track.EffectiveCamelot,
 		); err != nil {

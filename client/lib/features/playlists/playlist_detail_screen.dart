@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart' as riverpod;
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
@@ -9,9 +10,12 @@ import '../../app/theme.dart';
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/audio/queue_ordering.dart';
+import '../../core/providers/settings_provider.dart';
 import '../../core/services/playlist_service.dart';
 import '../../core/api/api_client.dart';
 import '../../../models/mix_plan.dart';
+import '../../models/nearby_tracks.dart';
+import '../../models/playback_payload.dart';
 import '../../core/storage/secure_storage.dart';
 import '../../shared/models/playlist.dart';
 import '../../shared/models/track.dart';
@@ -22,6 +26,7 @@ import '../../shared/widgets/track_tile.dart';
 import 'mix/mix_models.dart';
 import 'mix/mix_presets.dart';
 import 'mix/mix_transition_editor.dart';
+import 'harmonic_discovery_sheet.dart';
 import 'mixed_playlist_view.dart';
 import 'playlist_edit_dialog.dart';
 import 'playlist_selection.dart';
@@ -35,11 +40,18 @@ class PlaylistDetailScreen extends StatefulWidget {
   final Future<MixPlan> Function(MixPlan plan, List<MixPlanClip> clips)?
       onSaveMixPlan;
 
+  /// Runs the harmonic discovery query. Injectable for the same reason as
+  /// [onSaveMixPlan]: the screen's own [ApiClient] is not constructor-injected,
+  /// so without this seam the entry point cannot be driven in a widget test.
+  /// Defaults to the authenticated `GET /tracks/nearby`.
+  final HarmonicSearch? harmonicSearch;
+
   const PlaylistDetailScreen({
     super.key,
     required this.playlistId,
     this.playlistService,
     this.onSaveMixPlan,
+    this.harmonicSearch,
   });
 
   @override
@@ -456,19 +468,120 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     }
   }
 
-  Future<void> _enqueueTrack(Track track) async {
+  Future<void> _enqueueTrack(Track track) =>
+      _enqueuePayload(track.toPlaybackJson(), track.title);
+
+  /// The single queue-append path for this screen, so a playlist row and a
+  /// harmonic match report success and failure identically.
+  Future<void> _enqueuePayload(
+    Map<String, dynamic> payload,
+    String title,
+  ) async {
     final playback = context.read<PlaybackState>();
     final messenger = ScaffoldMessenger.of(context);
     try {
-      await playback.enqueue(track.toPlaybackJson());
+      await playback.enqueue(payload);
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text('Added "${track.title}" to queue')),
+        SnackBar(content: Text('Added "$title" to queue')),
       );
     } catch (_) {
       if (!mounted) return;
       messenger.showSnackBar(
         const SnackBar(content: Text('Could not add to queue')),
+      );
+    }
+  }
+
+  String get _playlistDisplayName => _playlist?.name ?? 'this playlist';
+
+  /// Opens harmonic discovery seeded from the first analyzed track in this
+  /// playlist. Results come from the whole library, so the sheet is useful
+  /// even when nothing here is analyzed — the user can type a tempo and key.
+  Future<void> _openHarmonicDiscovery() async {
+    final tracks = _playlist?.tracks ?? const <Track>[];
+    final seed = harmonicSeedFromTracks(tracks);
+    final seeded = seed.bpm != null && seed.camelot != null;
+    await HarmonicDiscoverySheet.show(
+      context,
+      search: widget.harmonicSearch ?? _searchNearbyTracks,
+      playlistName: _playlistDisplayName,
+      seedBpm: seed.bpm,
+      seedCamelot: seed.camelot,
+      // Only meaningful once the anchor actually drove the query.
+      excludeTrackId: seeded ? seed.trackId : null,
+      onAddToQueue: _enqueueMatch,
+      onAddToPlaylist: _addMatchToPlaylist,
+    );
+  }
+
+  Future<NearbyTracksResult> _searchNearbyTracks({
+    required double bpm,
+    required String camelot,
+    required double tolerance,
+    required bool orderByHistory,
+  }) =>
+      _mixPlanApiClient.getNearbyTracks(
+        bpm: bpm,
+        camelot: camelot,
+        tolerance: tolerance,
+        orderByHistory: orderByHistory,
+      );
+
+  /// Prefers the library track already on screen: it carries artwork and
+  /// analysis that `/tracks/nearby` does not return. Otherwise the match's own
+  /// `duration_ms` builds the payload — a queue item of unknown length becomes
+  /// a zero-length timeline clip that is never active, so it would be silently
+  /// skipped in playback while colliding with the next track's slot. That is
+  /// worse than not queueing at all, so an unknown length is refused out loud.
+  Future<void> _enqueueMatch(NearbyTrack match) {
+    for (final track in _playlist?.tracks ?? const <Track>[]) {
+      if (track.id == match.id) {
+        return _enqueuePayload(track.toPlaybackJson(), track.title);
+      }
+    }
+    final durationMs = match.durationMs;
+    if (durationMs == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Could not add "${match.title}" to queue: its length is unknown.',
+          ),
+        ),
+      );
+      return Future<void>.value();
+    }
+    return _enqueuePayload(
+      buildPlaybackPayload(
+        id: match.id,
+        title: match.title,
+        artist: match.artist,
+        album: match.album,
+        duration: Duration(milliseconds: durationMs),
+      ),
+      match.title,
+    );
+  }
+
+  Future<void> _addMatchToPlaylist(NearbyTrack match) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final playlistName = _playlistDisplayName;
+    try {
+      final result = await _playlistService.addTracks(
+        widget.playlistId,
+        [match.id],
+      );
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(content: Text(result.feedbackMessage(playlistName))),
+      );
+      await _loadPlaylist();
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Could not add to this playlist. Try again.'),
+        ),
       );
     }
   }
@@ -904,6 +1017,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         ),
       ),
       actions: [
+        _HarmonicDiscoveryAction(onPressed: _openHarmonicDiscovery),
         if (_hasMixEligibleTracks && _isMixLoading)
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 12),
@@ -1280,6 +1394,46 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         },
         childCount: tracks.length * 2 - 1,
       ),
+    );
+  }
+}
+
+/// The only way into harmonic discovery.
+///
+/// Unlike the DJ deck this surface allocates no audio voices and has no
+/// URL-reachable state, so there is nothing a route redirect could protect
+/// that hiding the entry point does not — the gate lives here, on the entry
+/// point itself, and reads the same user-controlled `djModeEnabled` switch
+/// that bounds every other DJ-facing affordance.
+class _HarmonicDiscoveryAction extends StatelessWidget {
+  const _HarmonicDiscoveryAction({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    try {
+      riverpod.ProviderScope.containerOf(context, listen: false);
+    } catch (_) {
+      // Narrow widget harnesses mount PlaylistDetailScreen without the
+      // app-level ProviderScope. With no settings to consult there is no
+      // recorded opt-in, so the entry point stays hidden rather than turning
+      // itself on by default.
+      return const SizedBox.shrink();
+    }
+    return riverpod.Consumer(
+      builder: (context, ref, _) {
+        final enabled = ref.watch(
+          settingsProvider.select((settings) => settings.djModeEnabled),
+        );
+        if (!enabled) return const SizedBox.shrink();
+        return IconButton(
+          key: const ValueKey('harmonic_discovery_action'),
+          icon: const Icon(Icons.travel_explore),
+          tooltip: 'Find harmonic matches',
+          onPressed: onPressed,
+        );
+      },
     );
   }
 }

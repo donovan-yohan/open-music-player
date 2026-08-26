@@ -41,6 +41,12 @@ func TestNearbyTracksProjectsOverridesAndFiltersBoundariesAgainstPostgres(t *tes
 		t.Fatalf("nearby boundary query: %v", err)
 	}
 	assertNearbyTrackIDs(t, tracks, lower, upper, invalidOverride)
+	// The client queues a match straight into its playback timeline, where a
+	// clip of unknown length is never active, so the projection has to carry
+	// the track's own duration.
+	if !tracks[0].DurationMs.Valid || tracks[0].DurationMs.Int64 != 200000 {
+		t.Fatalf("duration_ms = %#v, want the seeded 200000 ms", tracks[0].DurationMs)
+	}
 
 	if _, err := analysisRepo.SetOverrides(ctx, lower, json.RawMessage(`{
 		"bpm":{"value":140},
