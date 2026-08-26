@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../../app/theme.dart';
+import '../dj_deck_copy.dart';
 import '../models/dj_deck_state.dart';
 
 /// Header width below which the beat-phase counter is dropped.
@@ -58,6 +59,39 @@ class DjDeckHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final headerKey = ValueKey('dj_deck_header_${deck.deckId.name}');
+    // A deck with no audio has no metrics, and says so. It used to render the
+    // whole placeholder run — `-- BPM`, `+0.0%`, `0:00/-0:00` — at full
+    // emphasis beside a lane saying the track is not on this device, which is
+    // the header advertising a track it does not have (#414).
+    if (!deck.isLoaded) {
+      final muted = theme.colorScheme.onSurfaceVariant;
+      return Row(
+        key: headerKey,
+        children: [
+          Expanded(
+            child: Text(
+              deck.title ?? 'Deck ${deck.deckId.name.toUpperCase()}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelLarge?.copyWith(color: muted),
+            ),
+          ),
+          const SizedBox(width: AppTheme.space2),
+          Flexible(
+            child: Text(
+              djDeckHeaderNotLoaded,
+              key: ValueKey('dj_deck_header_status_${deck.deckId.name}'),
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall?.copyWith(color: muted),
+            ),
+          ),
+        ],
+      );
+    }
     final remaining =
         (deck.durationMs - deck.positionMs).clamp(0, deck.durationMs);
     final bpm = deck.bpm;
@@ -65,6 +99,7 @@ class DjDeckHeader extends StatelessWidget {
     final reliableBeatPhase =
         deck.beatPhase == null ? '' : '${deck.beatPhase}/4';
     return LayoutBuilder(
+      key: headerKey,
       builder: (context, constraints) {
         final width = constraints.maxWidth;
         // Display order; `dropRank` is the give-order, which is deliberately
