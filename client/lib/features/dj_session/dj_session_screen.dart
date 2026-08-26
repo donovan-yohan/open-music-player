@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../app/theme.dart';
 import '../../core/api/api_client.dart';
 import '../../providers/queue_provider.dart';
+import '../dj/dj_system_overlay_style.dart';
 import 'dj_session_filters.dart';
 import 'dj_session_models.dart';
 import 'dj_session_service.dart';
@@ -645,7 +646,9 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final reducedMotion = MediaQuery.disableAnimationsOf(context);
-    return Scaffold(
+    // Both DJ routes annotate the same deck-surface overlay style so the
+    // status bar cannot render light-on-light here (#415).
+    final scaffold = Scaffold(
       body: SafeArea(
         child: Stack(
           children: [
@@ -786,6 +789,10 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
           ],
         ),
       ),
+    );
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: djSystemOverlayStyle(context),
+      child: scaffold,
     );
   }
 
