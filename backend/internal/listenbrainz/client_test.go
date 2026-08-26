@@ -138,9 +138,9 @@ func TestClientRequestBudgetBoundsStackedRetries(t *testing.T) {
 	}
 }
 
-// TestClientCancelledParentContextIsUnreachable pins that a caller cancelling
+// TestClientCanceledParentContextIsUnreachable pins that a caller canceling
 // mid-backoff gets a typed error rather than a stuck goroutine.
-func TestClientCancelledParentContextIsUnreachable(t *testing.T) {
+func TestClientCanceledParentContextIsUnreachable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
@@ -157,9 +157,9 @@ func TestClientCancelledParentContextIsUnreachable(t *testing.T) {
 	start := time.Now()
 	_, err := client.SimilarArtists(ctx, testSeedMBID)
 	if !errors.Is(err, ErrUnreachable) {
-		t.Fatalf("err = %v, want ErrUnreachable on cancelled context", err)
+		t.Fatalf("err = %v, want ErrUnreachable on canceled context", err)
 	}
 	if elapsed := time.Since(start); elapsed >= time.Second {
-		t.Fatalf("cancelled call took %v, want well under 1s", elapsed)
+		t.Fatalf("canceled call took %v, want well under 1s", elapsed)
 	}
 }

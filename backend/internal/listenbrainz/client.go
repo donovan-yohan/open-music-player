@@ -58,7 +58,7 @@ var (
 	// is visible in logs instead of looking like a generic outage.
 	ErrUpstreamStatus = errors.New("listenbrainz unexpected status")
 	// ErrUnreachable reports a transport failure, a per-attempt timeout, or an
-	// exhausted request budget / cancelled context. It wraps the cause.
+	// exhausted request budget / canceled context. It wraps the cause.
 	ErrUnreachable = errors.New("listenbrainz unreachable")
 )
 
@@ -153,7 +153,7 @@ type Response struct {
 //     carries an unparseable MBID / negative score, or names an algorithm
 //     other than the pinned one.
 //   - ErrUnreachable  — transport error, per-attempt timeout, exhausted
-//     request budget, or a cancelled caller context.
+//     request budget, or a canceled caller context.
 //
 // Degrading to an empty candidate expansion is ExpansionService.Expand's job.
 func (c *Client) SimilarArtists(ctx context.Context, artistMBID uuid.UUID) (*Response, error) {
@@ -189,14 +189,14 @@ func (c *Client) SimilarArtists(ctx context.Context, artistMBID uuid.UUID) (*Res
 			}
 			continue
 		}
-		// Transport error, per-attempt timeout, cancelled context, or a body
+		// Transport error, per-attempt timeout, canceled context, or a body
 		// read that failed part-way: no retry can distinguish these cheaply.
 		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
 }
 
 // waitBackoff sleeps for d but abandons the wait as soon as ctx is done, so a
-// cancelled request or an exhausted request budget never pays a full backoff.
+// canceled request or an exhausted request budget never pays a full backoff.
 func waitBackoff(ctx context.Context, d time.Duration) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("%w: %v", ErrUnreachable, err)

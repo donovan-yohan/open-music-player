@@ -269,7 +269,7 @@ func TestListenBrainzTruncatesToRequestedCount(t *testing.T) {
 }
 
 // TestListenBrainzClampsCountToMaximum pins the response-size ceiling: an
-// oversized count= is clamped to maxSimilarArtistsCount, not honoured.
+// oversized count= is clamped to maxSimilarArtistsCount, not honored.
 func TestListenBrainzClampsCountToMaximum(t *testing.T) {
 	router := listenBrainzExpanderRouter(t, listenBrainzFixtureEntries(maxSimilarArtistsCount+40))
 

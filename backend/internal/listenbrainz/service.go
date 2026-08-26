@@ -39,7 +39,7 @@ type ExpansionService struct {
 	client   ClientInterface
 	store    CacheStore
 	cacheTTL time.Duration
-	// now is injectable so TTL behaviour is deterministic in tests.
+	// now is injectable so TTL behavior is deterministic in tests.
 	now func() time.Time
 }
 
