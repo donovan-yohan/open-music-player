@@ -101,6 +101,11 @@ type Config struct {
 	// ordered tracks. Backend seam only (no DJ/waveform UI or mixing logic).
 	EnablePlaylistMix bool
 
+	// Optional ListenBrainz similar-artist candidate expansion (issue #392).
+	// Disabled by default; when enabled, GET /api/v1/artists/{artist_mbid}/similar-artists
+	// serves pinned-algorithm candidates from the labs cache/upstream.
+	EnableListenBrainzMix bool
+
 	// Durable research jobs always create a deterministic baseline. This flag
 	// controls only optional model enhancement; a disabled runner records the
 	// model-disabled degradation while retaining that baseline.
@@ -257,6 +262,9 @@ func Load() *Config {
 
 		// Save-playlist-as-mix seam (default OFF)
 		EnablePlaylistMix: parseBoolEnv("ENABLE_PLAYLIST_MIX", false),
+
+		// ListenBrainz similar-artist expansion (default OFF, issue #392)
+		EnableListenBrainzMix: parseBoolEnv("ENABLE_LISTENBRAINZ_MIX", false),
 
 		ResearchEnabled:       parseBoolEnv("RESEARCH_ENABLED", false),
 		ResearchWorkerEnabled: parseBoolEnv("RESEARCH_WORKER_ENABLED", true),
