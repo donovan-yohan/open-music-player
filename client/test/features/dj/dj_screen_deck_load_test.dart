@@ -108,8 +108,8 @@ void main() {
     queue.dispose();
   });
 
-  testWidgets('a genuinely empty queue still invokes the picker once',
-      (tester) async {
+  testWidgets('a genuinely empty queue renders the inline load affordance '
+      'instead of a modal', (tester) async {
     pinViewport(tester);
     final api = _CountingQueueApiClient(QueueState.empty());
     final queue = QueueProvider(api);
@@ -141,7 +141,16 @@ void main() {
     await tester.pump();
     await tester.pump();
 
+    // #414: an empty queue is answered in the lane, not by a modal that
+    // ambushes a session that may already be playing.
     expect(api.getQueueCalls, 1);
+    expect(pickerCalls, 0);
+    expect(find.text('Load local audio file'), findsNothing);
+    expect(find.byKey(const ValueKey('dj_deck_load_file_a')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('dj_deck_load_file_a')));
+    await tester.pumpAndSettle();
+
     expect(pickerCalls, 1);
     expect(session.deckA.title, 'Picked track');
     expect(tester.takeException(), isNull);

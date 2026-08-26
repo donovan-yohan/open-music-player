@@ -97,7 +97,7 @@ void main() {
     expect(find.byKey(const ValueKey('dj_stem_separate')), findsNothing);
   });
 
-  testWidgets('empty queue invokes local-file fallback and loads deck A', (
+  testWidgets('the inline load affordance loads deck A from a picked file', (
     tester,
   ) async {
     var fallbackCalls = 0;
@@ -120,6 +120,14 @@ void main() {
     );
     await tester.pump();
     await tester.pump();
+
+    // #414: the picker is user-initiated. Entering the deck no longer opens
+    // anything over a session that may already be playing.
+    expect(fallbackCalls, 0);
+    expect(find.byKey(const ValueKey('dj_deck_load_file_a')), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('dj_deck_load_file_a')));
+    await tester.pumpAndSettle();
 
     expect(fallbackCalls, 1);
     expect(session.deckA.trackRef, 'picked-track');

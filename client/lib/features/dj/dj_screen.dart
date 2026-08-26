@@ -19,6 +19,10 @@ import 'dj_system_overlay_style.dart';
 import 'engine/deck_controller.dart';
 import 'providers/dj_session_provider.dart';
 import '../../app/theme.dart';
+import '../../core/download/download_state.dart';
+import '../../models/track.dart';
+import 'dj_deck_actions.dart';
+import 'models/dj_deck_state.dart';
 
 /// Direct-Voice performance view.
 ///
@@ -69,6 +73,10 @@ class _DjScreenState extends State<DjScreen> {
   /// Last analysis revision already pushed onto the decks. QueueProvider also
   /// notifies for queue/position changes, which must not re-seed anything.
   int _lastAnalysisRevision = -1;
+
+  /// Track ids whose deck download ended badly. `DownloadState` removes a
+  /// failed transfer from its active-progress map, so it cannot answer this.
+  final Set<int> _downloadFailures = <int>{};
 
   @override
   void initState() {
@@ -122,11 +130,9 @@ class _DjScreenState extends State<DjScreen> {
       final next = rawNext == null || queue == null
           ? rawNext
           : queue.trackWithAnalysis(rawNext);
-      await _session!.seed(
-        current: current,
-        next: next,
-        filePicker: widget.filePicker ?? _promptForLocalFile,
-      );
+      // No filePicker: an empty queue is answered by an inline affordance in
+      // the deck lane, not by a modal that ambushes a playing session (#414).
+      await _session!.seed(current: current, next: next);
       // Resolve stem availability for whatever actually landed on deck A. A
       // local-file fallback load has no library track id, so the panel says so
       // rather than offering a separation that cannot be queued.
@@ -236,18 +242,103 @@ class _DjScreenState extends State<DjScreen> {
     super.dispose();
   }
 
+  /// The queue row still standing behind [deck], or null.
+  ///
+  /// A refused deck keeps its `queueItemId` (deck_controller.dart), so the
+  /// candidate is accepted only when it still matches: a queue that moved out
+  /// from under the deck yields null rather than downloading the wrong track.
+  QueueTrack? _queueTrackFor(DjDeckId deck) {
+    final queue = context.read<QueueProvider?>();
+    if (queue == null) return null;
+    final candidate = deck == DjDeckId.a
+        ? queue.currentTrack
+        : (queue.upNext.isEmpty ? null : queue.upNext.first);
+    if (candidate == null) return null;
+    return candidate.queueItemId == _session!.stateFor(deck).queueItemId
+        ? candidate
+        : null;
+  }
+
+  int? _downloadTrackIdFor(DjDeckId deck) {
+    final track = _queueTrackFor(deck);
+    if (track == null) return null;
+    final ref = DjSessionProvider.djDeckTrackRef(track);
+    return ref == null ? null : int.tryParse(ref);
+  }
+
+  DjDeckDownload _downloadForDeck(DjDeckId deck, DownloadState? downloads) {
+    if (downloads == null) return DjDeckDownload.unavailable;
+    final id = _downloadTrackIdFor(deck);
+    if (id == null) return DjDeckDownload.unavailable;
+    final progress = downloads.getProgress(id);
+    if (progress != null) return DjDeckDownload.running(progress.progress);
+    return _downloadFailures.contains(id)
+        ? DjDeckDownload.failed
+        : DjDeckDownload.idle;
+  }
+
+  /// Sends the deck's refused track through the app's one download pipeline
+  /// and, on success, re-seeds that single deck in place.
+  ///
+  /// The re-seed goes through `DjSessionProvider.queueSeeds` so this is not a
+  /// second seed authority; the deck the user is looking at reloads without
+  /// leaving `/dj`.
+  Future<void> _downloadDeck(DjDeckId deck) async {
+    final queueTrack = _queueTrackFor(deck);
+    if (queueTrack == null) return;
+    final track = djDownloadTrackFor(queueTrack);
+    if (track == null) return;
+    final downloads = context.read<DownloadState?>();
+    if (downloads == null) return;
+    if (_downloadFailures.remove(track.id) && mounted) setState(() {});
+    try {
+      await downloads.downloadTrack(track);
+    } catch (_) {
+      // DownloadState drops a failed transfer from its active progress map,
+      // so the terminal state is recorded here or nowhere.
+      if (mounted) setState(() => _downloadFailures.add(track.id));
+      return;
+    }
+    if (!mounted) return;
+    final seeds = DjSessionProvider.queueSeeds(queueTrack, null);
+    if (seeds.isEmpty) return;
+    await _session!.load(deck, seeds.first);
+    if (!mounted) return;
+    // A deck that still refuses after a completed transfer has no usable local
+    // file; say so rather than leaving the same button offering the same thing.
+    if (_session!.stateFor(deck).loadFailure != null) {
+      setState(() => _downloadFailures.add(track.id));
+    } else {
+      setState(() {});
+    }
+  }
+
+  Future<void> _pickLocalFile() async {
+    final picked = await (widget.filePicker ?? _promptForLocalFile)();
+    if (picked != null && mounted) await _session!.load(DjDeckId.a, picked);
+  }
+
   @override
-  Widget build(BuildContext context) =>
-      ChangeNotifierProvider<DjSessionProvider>.value(
-        value: _session!,
-        child: AnnotatedRegion<SystemUiOverlayStyle>(
-          value: djSystemOverlayStyle(context),
+  Widget build(BuildContext context) {
+    // Watched, not read: the lane's download affordance has to follow the
+    // transfer's progress and its completion without the user leaving /dj.
+    final downloads = context.watch<DownloadState?>();
+    return ChangeNotifierProvider<DjSessionProvider>.value(
+      value: _session!,
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: djSystemOverlayStyle(context),
+        child: DjDeckActions(
+          onPickLocalFile: _pickLocalFile,
+          onDownload: downloads == null ? null : _downloadDeck,
+          downloadFor: (deck) => _downloadForDeck(deck, downloads),
           child: const Scaffold(
             key: ValueKey('dj_screen'),
             body: DjLayout(),
           ),
         ),
-      );
+      ),
+    );
+  }
 }
 
 /// The local-file prompt, owning its own [TextEditingController].
