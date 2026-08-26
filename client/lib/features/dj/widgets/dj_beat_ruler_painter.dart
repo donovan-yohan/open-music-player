@@ -66,6 +66,10 @@ List<DjBeatTick> djBeatRulerTicks({
   final barSpacingPx = beatSpacingPx * ruler.beatsPerBar;
   final phraseSpacingPx = barSpacingPx * ruler.phraseLengthBars;
 
+  // Mirrors the un-clipped branch timelineWaveformMarkerXs itself takes for a
+  // null MixClip (timeline_waveform_painter.dart:593-596). Used only to map a
+  // thinned x back to the phrase it belongs to, since the helper returns bare
+  // coordinates; it must stay in step with that branch.
   double xFor(int ms) => ms / durationMs * contentWidth;
 
   // timelineWaveformMarkerXs is the shared viewport-mapping + density-thinning

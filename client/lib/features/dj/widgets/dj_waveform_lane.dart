@@ -122,8 +122,7 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
         status == TrackAnalysisStatus.unsupported;
     final theme = Theme.of(context);
     final deckName = widget.deck.deckId.name;
-    return Align(
-      alignment: Alignment.center,
+    return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),
         child: Text(
@@ -183,6 +182,10 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
             );
             final theme = Theme.of(context);
             final beatToken = SoundQPlayerTheme.of(context).waveformBeat;
+            // The waveform and the ruler share one content box, so the ruler
+            // cannot drift off the peaks it annotates.
+            final contentLeft =
+                -(viewport.offsetMs / 1000) * widget.pixelsPerSecond;
             return Semantics(
               // The lane's own node, kept addressable by label. The analysis
               // notice below carries a label of its own, and without an
@@ -197,7 +200,7 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
                   fit: StackFit.expand,
                   children: [
                     Positioned(
-                      left: -(viewport.offsetMs / 1000) * widget.pixelsPerSecond,
+                      left: contentLeft,
                       width: contentWidth,
                       top: 0,
                       bottom: 0,
@@ -211,9 +214,8 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
                           viewportPixelsPerMs: widget.pixelsPerSecond / 1000,
                           viewportOriginMs: 0,
                           color: widget.color,
-                          dimColor:
-                              Theme.of(context).colorScheme.onSurfaceVariant,
-                          handleColor: Theme.of(context).colorScheme.secondary,
+                          dimColor: theme.colorScheme.onSurfaceVariant,
+                          handleColor: theme.colorScheme.secondary,
                           // The deck paints its own three-level ruler in design
                           // tokens; the shared painter's white/amber literals
                           // would double-draw underneath it (#416).
@@ -221,12 +223,9 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
                         ),
                       ),
                     ),
-                    // Same geometry as the waveform above, so the ruler tracks
-                    // the peaks it annotates.
                     if (ticks.isNotEmpty)
                       Positioned(
-                        left: -(viewport.offsetMs / 1000) *
-                            widget.pixelsPerSecond,
+                        left: contentLeft,
                         width: contentWidth,
                         top: 0,
                         bottom: 0,
@@ -236,9 +235,9 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
                             beatColor: beatToken.withValues(alpha: 0.28),
                             barColor: beatToken.withValues(alpha: 0.55),
                             phraseColor: beatToken.withValues(alpha: 0.85),
-                            labelStyle:
-                                (theme.textTheme.labelSmall ?? const TextStyle())
-                                    .copyWith(
+                            labelStyle: (theme.textTheme.labelSmall ??
+                                    const TextStyle())
+                                .copyWith(
                               color: beatToken.withValues(alpha: 0.85),
                             ),
                           ),
