@@ -7,6 +7,7 @@ import 'package:open_music_player/features/dj/dj_deck_copy.dart';
 import 'package:open_music_player/features/dj/dj_entry_hint.dart';
 import 'package:open_music_player/features/settings/settings_screen.dart';
 import 'package:open_music_player/models/queue_state.dart';
+import 'package:open_music_player/models/track.dart';
 import 'package:open_music_player/providers/queue_provider.dart';
 import 'package:provider/provider.dart' as legacy_provider;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -62,6 +63,16 @@ void main() {
 
       expect(find.byKey(const ValueKey('dj_entry_hint')), findsOneWidget);
       expect(find.byType(Badge), findsOneWidget);
+      // Material's default badge colour is colorScheme.error. An advisory hint
+      // painted alert-red re-creates the "the deck is broken" reading #414
+      // exists to remove (#414 review).
+      final scheme = Theme.of(
+        tester.element(find.byKey(const ValueKey('dj_entry_hint'))),
+      ).colorScheme;
+      final badge = tester.widget<Badge>(find.byType(Badge));
+      expect(badge.backgroundColor, isNotNull);
+      expect(badge.backgroundColor, isNot(scheme.error));
+      expect(badge.backgroundColor, scheme.secondary);
 
       await tester.pumpWidget(
         const MaterialApp(
@@ -126,9 +137,45 @@ void main() {
       final downloads = _FakeDownloadState(const <int>{});
       addTearDown(downloads.dispose);
 
+      final hint = await readHint(tester, queue: queue, downloads: downloads);
+      expect(hint, djDeckEntryDownloadHint);
+      // The deck also accepts playback-cache-backed sources, and no
+      // synchronous cached-id fact exists to consult here, so the copy hedges
+      // rather than instructing a download the deck may not need (#414 review;
+      // follow-up recorded in docs/dj-deck-spec.md section 1).
+      expect(hint, isNot(startsWith('Download this track')));
+      expect(hint, contains('may need'));
+    });
+
+    // #414 review: a row with no numeric track id cannot be downloaded at all
+    // (the pipeline keys on that id) and the deck refuses it for a different
+    // reason, so the entry point must not advertise an impossible action.
+    testWidgets('a row that cannot be downloaded advertises nothing',
+        (tester) async {
+      final queue = QueueProvider(
+        _QueueApiClient(
+          QueueState(
+            tracks: [
+              QueueTrack(
+                id: 'queue-item-uuid',
+                queueItemId: 'queue-item-uuid',
+                title: 'Source-backed row',
+                duration: 100,
+                addedAt: DateTime.utc(2026, 8, 26),
+              ),
+            ],
+            currentIndex: 0,
+          ),
+        ),
+      );
+      addTearDown(queue.dispose);
+      await queue.loadQueue();
+      final downloads = _FakeDownloadState(const <int>{});
+      addTearDown(downloads.dispose);
+
       expect(
         await readHint(tester, queue: queue, downloads: downloads),
-        djDeckEntryDownloadHint,
+        isNull,
       );
     });
 

@@ -38,6 +38,11 @@ String? djDeckEntryHintFor(
   final ref =
       current == null ? null : DjSessionProvider.djDeckTrackRef(current);
   final id = ref == null ? null : int.tryParse(ref);
+  // A row with no numeric track id cannot be downloaded at all — the pipeline
+  // keys on that id — and the deck refuses it with a different reason. Telling
+  // the user to download it advertises an impossible action, so advertise
+  // nothing (#414 review).
+  if (current != null && id == null) return null;
   return djDeckEntryHint(
     djModeEnabled: djModeEnabled,
     hasCurrentTrack: current != null,
@@ -57,6 +62,11 @@ class DjEntryHintBadge extends StatelessWidget {
       ? child
       : Badge(
           key: const ValueKey('dj_entry_hint'),
+          // Material's default badge colour is `colorScheme.error`. This is an
+          // advisory hint, not a fault: an error-red dot on the deck action is
+          // the "something is wrong here" signal #414 exists to remove, so the
+          // badge takes the informational accent instead (#414 review).
+          backgroundColor: Theme.of(context).colorScheme.secondary,
           child: child,
         );
 }
