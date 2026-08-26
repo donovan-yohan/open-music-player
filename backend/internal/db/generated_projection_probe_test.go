@@ -10,9 +10,41 @@ import (
 // generatedColumnPattern captures the column name and the projection expression of
 // every GENERATED ALWAYS ... STORED declaration in the schema string in db.go,
 // both in CREATE TABLE and in ALTER TABLE ... ADD COLUMN IF NOT EXISTS form.
+//
+// The type is matched generically (any uppercase SQL type, with an optional
+// precision/length modifier and an optional array suffix) and the expression is
+// captured up to its matching `) STORED` rather than being restricted to a single
+// unnested omp_ call, so unusual-but-legal declarations are parsed instead of
+// skipped. looseGeneratedColumnPattern below is the fail-closed backstop for
+// anything this still cannot parse.
 var generatedColumnPattern = regexp.MustCompile(
-	`([a-z_]+)\s+(?:DOUBLE PRECISION|TEXT|BIGINT|INTEGER|NUMERIC|BOOLEAN)\s+GENERATED ALWAYS AS \((omp_[a-z_]+\([^()]*\))\)\s+STORED`,
+	`([a-z_][a-z0-9_]*)\s+[A-Z][A-Z0-9_ ]*(?:\([^()]*\))?(?:\s*\[\])?\s+GENERATED ALWAYS AS \((.*?)\)\s+STORED`,
 )
+
+// looseGeneratedColumnPattern is a deliberately permissive detector for the
+// declaration keyword alone, independent of column type and expression shape.
+// generatedColumnPattern must find exactly as many declarations as this one does;
+// see countGeneratedColumnDeclarations.
+var looseGeneratedColumnPattern = regexp.MustCompile(`\bGENERATED ALWAYS AS \(`)
+
+// countGeneratedColumnDeclarations counts every GENERATED ALWAYS AS ( occurrence in
+// db.go that is real schema rather than prose, and returns the offending source
+// lines for the failure message. Lines whose first non-space characters are an SQL
+// (`--`) or Go (`//`) comment marker are skipped: the FROZEN PROJECTION INTERFACE
+// block deliberately illustrates the very syntax it governs.
+func countGeneratedColumnDeclarations(source string) (int, []string) {
+	var declarations []string
+	for _, line := range strings.Split(source, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--") || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		for range looseGeneratedColumnPattern.FindAllString(line, -1) {
+			declarations = append(declarations, trimmed)
+		}
+	}
+	return len(declarations), declarations
+}
 
 const freezeSentinel = "-- FROZEN PROJECTION INTERFACE (omp_* functions)"
 
@@ -33,11 +65,20 @@ func TestGeneratedProjectionProbeCoversEveryGeneratedColumn(t *testing.T) {
 	source := readSchemaSource(t)
 
 	matches := generatedColumnPattern.FindAllStringSubmatch(source, -1)
-	// Guard against the pattern silently matching nothing, which would make every
-	// assertion below vacuous. There are four occurrences today (two in
-	// CREATE TABLE track_analysis, two in the ALTER TABLE ... ADD COLUMN upgrades).
-	if len(matches) < 4 {
-		t.Fatalf("generatedColumnPattern matched %d GENERATED ALWAYS ... STORED declarations in db.go, want at least 4; the pattern is stale and this test is not actually guarding anything", len(matches))
+
+	// Fail closed. A fixed floor (there are four declarations today: two in
+	// CREATE TABLE track_analysis, two in the ALTER TABLE ... ADD COLUMN upgrades)
+	// only catches the pattern matching nothing at all -- a new column whose type or
+	// expression the pattern cannot parse would leave the count at four and sail
+	// through every assertion below, unprobed. Deriving the expected count from a
+	// detector that cannot go stale with the type list makes that impossible.
+	declared, declarations := countGeneratedColumnDeclarations(source)
+	if declared != len(matches) {
+		t.Fatalf("db.go declares %d GENERATED ALWAYS ... STORED columns but generatedColumnPattern parsed only %d; widen generatedColumnPattern (a new column type or expression shape it cannot read) so this guard keeps covering every projection.\ndeclarations found:\n\t%s",
+			declared, len(matches), strings.Join(declarations, "\n\t"))
+	}
+	if declared == 0 {
+		t.Fatalf("db.go declares no GENERATED ALWAYS ... STORED columns at all; the schema moved and this test is no longer guarding anything")
 	}
 
 	registered := make(map[string]bool, len(generatedProjectionProbes))

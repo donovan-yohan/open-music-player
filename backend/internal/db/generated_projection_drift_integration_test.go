@@ -24,16 +24,55 @@ AS $$ SELECT 1.0::DOUBLE PRECISION $$;`
 // induceProjectionDrift edits a frozen omp_* body in place and registers the
 // restore immediately, so a failing assertion can never leave the shared throwaway
 // database carrying a drifted function for the next lane.
+//
+// The restore is exactly as heavy as the drift it undoes: one CREATE OR REPLACE,
+// captured from the catalog before the edit. Restoring via Migrate() instead would
+// replay the entire schema as a single implicit transaction, taking ACCESS
+// EXCLUSIVE on every table in schema order -- which deadlocks against the reverse
+// order TRUNCATE in a concurrently running test package, and when that transaction
+// rolls back it un-restores the frozen body and leaves the drifted one installed on
+// the shared throwaway database.
 func induceProjectionDrift(t *testing.T, database *DB) {
 	t.Helper()
+	var frozenDefinition string
+	if err := database.QueryRow(
+		`SELECT pg_get_functiondef('omp_effective_analysis_bpm(jsonb,jsonb)'::regprocedure)`,
+	).Scan(&frozenDefinition); err != nil {
+		t.Fatalf("capture frozen omp_effective_analysis_bpm definition: %v", err)
+	}
+	if !strings.Contains(frozenDefinition, "CREATE OR REPLACE FUNCTION") {
+		t.Fatalf("pg_get_functiondef did not return a replaceable definition, refusing to induce drift without a restore: %s", frozenDefinition)
+	}
+
 	if _, err := database.Exec(driftedEffectiveBPMBody); err != nil {
 		t.Fatalf("induce projection drift: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := database.Migrate(); err != nil {
-			t.Fatalf("restore frozen omp_effective_analysis_bpm via Migrate(): %v", err)
+		if _, err := database.Exec(frozenDefinition); err != nil {
+			t.Fatalf("restore frozen omp_effective_analysis_bpm: %v", err)
 		}
 	})
+}
+
+// captureLogOutput redirects the stdlib logger for the duration of fn and returns
+// everything written to it. The db package logs drift through the package logger,
+// so this is how a test observes the loud path actually running.
+func captureLogOutput(t *testing.T, fn func()) string {
+	t.Helper()
+	var captured bytes.Buffer
+	previousOutput := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&captured)
+	log.SetFlags(0)
+	// Deferred rather than t.Cleanup so the logger is restored even when fn calls
+	// t.Fatalf (which unwinds via runtime.Goexit), and before the caller inspects
+	// anything else.
+	defer func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	}()
+	fn()
+	return captured.String()
 }
 
 func driftReportForColumn(t *testing.T, reports []generatedProjectionDriftReport, column string) generatedProjectionDriftReport {
@@ -142,17 +181,9 @@ func TestGeneratedProjectionDriftProbeDetectsInPlaceFunctionEdit(t *testing.T) {
 	}
 
 	// The loud path must actually run, not just the pure check function.
-	var captured bytes.Buffer
-	previousOutput := log.Writer()
-	previousFlags := log.Flags()
-	log.SetOutput(&captured)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(previousOutput)
-		log.SetFlags(previousFlags)
+	logged := captureLogOutput(t, func() {
+		database.logGeneratedProjectionDrift(ctx)
 	})
-	database.logGeneratedProjectionDrift(ctx)
-	logged := captured.String()
 
 	for _, want := range []string{
 		"PROJECTION DRIFT",
@@ -221,8 +252,22 @@ func TestStoredProjectionStaysStaleUntilBaseColumnRewrite(t *testing.T) {
 	assertStoredProjection(t, database, trackID, 1, "6A")
 
 	// Restoring the real function body does NOT heal the already-rewritten row.
-	if err := database.Migrate(); err != nil {
-		t.Fatalf("restore frozen body via Migrate(): %v", err)
+	//
+	// This Migrate() is also the only place any test observes the drift probe wired
+	// into the tail of Migrate() (db.go). The row above was baked under the drifted
+	// definition, so it stays mismatched across the schema replay and the in-Migrate
+	// probe must say so out loud. Deleting that call site fails here -- without this
+	// assertion the whole startup wiring is a one-line deletion away from becoming
+	// dead code with every test still green.
+	migrateLog := captureLogOutput(t, func() {
+		if err := database.Migrate(); err != nil {
+			t.Fatalf("restore frozen body via Migrate(): %v", err)
+		}
+	})
+	for _, want := range []string{"PROJECTION DRIFT", "track_analysis.effective_bpm"} {
+		if !strings.Contains(migrateLog, want) {
+			t.Errorf("Migrate() tail probe did not log %q; the drift probe is no longer wired into Migrate(). Captured:\n%s", want, migrateLog)
+		}
 	}
 	if got := mismatchCount(t, database, ctx, "effective_bpm"); got != 1 {
 		t.Errorf("effective_bpm Mismatched = %d after restoring the frozen body, want 1: restoring a function does not recompute stored rows", got)
