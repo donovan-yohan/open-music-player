@@ -54,8 +54,25 @@ const String djDeckHeaderNotLoaded = 'Not loaded';
 /// Tooltip on the transport controls of a deck that holds no audio.
 const String djDeckTransportDisabledReason = 'This deck has no track loaded';
 
-/// Sync is deferred to DJ-3; the glyph says so in the user's language.
-const String djDeckSyncUnavailable = 'Sync is not available yet';
+/// Idle, enabled SYNC: what one tap will do.
+const String djDeckSyncFollowAction = 'Match this deck to the other deck';
+
+/// This deck is an engaged follower.
+const String djDeckSyncEngaged = 'Matched to the other deck';
+
+/// This deck is the master. Tapping it hands the master role to the other deck.
+const String djDeckSyncMaster = 'This deck sets the tempo';
+
+/// Either deck's BPM is missing or below the reliability floor.
+const String djDeckSyncNoTempo = 'This track has no reliable tempo to sync to';
+
+/// The would-be leader deck holds no audio.
+const String djDeckSyncOtherDeckUnavailable =
+    'Load a track on the other deck to sync';
+
+/// Even octave-normalized, the follower rate falls outside the deck window.
+const String djDeckSyncTempoOutOfRange =
+    'The tempo gap is too wide for this deck';
 
 /// The deck is landscape only, and Android does not always honour the request
 /// immediately (or at all, in split-screen / freeform windows).
@@ -110,7 +127,12 @@ const List<String> djDeckCopyStrings = <String>[
   djDeckLoadFileAction,
   djDeckHeaderNotLoaded,
   djDeckTransportDisabledReason,
-  djDeckSyncUnavailable,
+  djDeckSyncFollowAction,
+  djDeckSyncEngaged,
+  djDeckSyncMaster,
+  djDeckSyncNoTempo,
+  djDeckSyncOtherDeckUnavailable,
+  djDeckSyncTempoOutOfRange,
   djDeckRotatePrompt,
   djDeckRotateDetail,
   djDeckTooSmall,
