@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/features/dj/dj_deck_copy.dart';
 import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/widgets/dj_beat_ruler_painter.dart';
+import 'package:open_music_player/features/dj/widgets/dj_deck_notice.dart';
 import 'package:open_music_player/features/dj/widgets/dj_waveform_lane.dart';
-import 'package:open_music_player/models/waveform.dart';
 import 'package:open_music_player/widgets/timeline_waveform_painter.dart';
 
 import '../../support/dj_analysis_fixtures.dart';
@@ -265,7 +266,7 @@ void main() {
       await djRetireSession(tester, session);
     });
 
-    testWidgets('an empty deck mounts a bare lane and claims no analysis',
+    testWidgets('an empty deck explains itself and claims no analysis',
         (tester) async {
       await pumpDjLane(
         tester,
@@ -273,10 +274,22 @@ void main() {
         track: null,
       );
 
-      final painter = painterIn<TimelineWaveformPainter>(tester, DjDeckId.a);
-      expect(painter.waveform, isA<TimelineWaveformData>());
-      expect(painter.waveform!.frames, isEmpty);
-      // Nothing is being analyzed on a deck that holds nothing.
+      // A deck holding no audio hands its lane to DjDeckNotice rather than
+      // painting an empty waveform beside an armed transport (#414), so there
+      // is no peak painter here at all — the bare lane this used to assert was
+      // the very affordance gap the notice closes.
+      expect(find.byType(DjDeckNotice), findsOneWidget);
+      expect(find.text(djDeckEmpty), findsOneWidget);
+      expect(
+        find.descendant(
+          of: laneFor(DjDeckId.a),
+          matching: find.byType(CustomPaint),
+        ).evaluate().map((e) => (e.widget as CustomPaint).painter)
+            .whereType<TimelineWaveformPainter>(),
+        isEmpty,
+      );
+      // Nothing is being analyzed on a deck that holds nothing: the notice
+      // must not be joined by an 'Analyzing…' claim (#410 + #414).
       expect(
         find.byKey(const ValueKey('dj_lane_analysis_pending_a')),
         findsNothing,

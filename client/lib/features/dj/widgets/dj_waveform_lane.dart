@@ -107,19 +107,20 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
   /// The lane's explicit unanalyzed state, or null once frames exist.
   ///
   /// The flat-baseline branch in TimelineWaveformPainter still paints
-  /// underneath: this is the affordance, not a replacement lane. A refused deck
-  /// never reaches here — DjDeckNotice wins in [build].
+  /// underneath: this is the affordance, not a replacement lane. A refused or
+  /// unloaded deck never reaches here — DjDeckNotice wins in [build] (#414),
+  /// so this state only ever describes a deck that does hold audio.
   Widget? _analysisNotice(
     BuildContext context,
     TimelineWaveformData waveform,
     QueueTrack? track,
   ) {
     if (waveform.frames.isNotEmpty) return null;
-    // A deck holding no track has nothing in flight: no analysis was ever
-    // requested and none ever will be, so claiming one is in progress would be
-    // a false status (deck B's steady state on a single-item queue). The empty
-    // deck says what it is in its own header and in DjDeckNotice, which is lane
-    // D's copy; the lane keeps its bare baseline.
+    // A loaded deck with no queue row behind it — a local file the queue does
+    // not know — has no analysis in flight, so claiming one is in progress
+    // would be a false status. The empty and refused decks never get this far
+    // (DjDeckNotice owns that copy), so this is only the file-loaded case; the
+    // lane keeps its bare baseline.
     if (track == null) return null;
     final status = track.analysis?.status;
     // Everything else — no analysis object at all, pending/analyzing/stale/
