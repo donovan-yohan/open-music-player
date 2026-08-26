@@ -71,10 +71,13 @@ class DjDeckNotice extends StatelessWidget {
             // copy; only a roomy lane stacks it.
             final stacked =
                 !constraints.hasBoundedHeight || constraints.maxHeight >= 80;
-            // 48dp targets everywhere the lane can afford them: the reference
-            // viewport gives each lane 56dp, which fits a full-height button
-            // beside the copy. Only a lane below the geometry budget's floor
-            // degrades, and that degradation is recorded in the spec.
+            // A full 48dp target only while the lane can hold one outright.
+            // The reference viewport gives each lane 56dp, which fits a
+            // full-height button beside the copy; any shorter lane drops to
+            // 24dp. That threshold is coarser than the serviceable floor — it
+            // also fires on the density-540 (47.63dp lane) and dpr-3.5
+            // (40.86dp lane) configurations of the reference device. See the
+            // geometry budget in docs/dj-deck-spec.md.
             final compactAction =
                 constraints.hasBoundedHeight && constraints.maxHeight < 48;
             final style = _actionStyle(compact: compactAction);
@@ -185,8 +188,10 @@ class DjDeckNotice extends StatelessWidget {
 /// The lane action's style: a full 48dp target wherever the lane can hold one,
 /// and tokens only.
 ///
-/// [compact] is taken only below the geometry budget's serviceable floor, where
-/// a lane is ~28dp tall and a 48dp control cannot be honoured at all.
+/// [compact] is taken in any lane under 48dp, which includes two of the three
+/// `djServiceableViewports` fixtures, not only the sub-floor lanes. It renders
+/// at **24dp**, not the 32dp asked for below: `VisualDensity.compact` subtracts
+/// 8 from `minimumSize` and `shrinkWrap` drops the padded target.
 ButtonStyle _actionStyle({required bool compact}) => FilledButton.styleFrom(
       minimumSize: Size(0, compact ? 32 : 48),
       visualDensity:
