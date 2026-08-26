@@ -17,10 +17,11 @@ type CacheStore interface {
 	UpsertListenBrainzSimilarArtists(ctx context.Context, entry db.ListenBrainzCacheEntry) error
 }
 
-// ExpansionService merges the pinned-algorithm cache with the labs client:
-// cache hits never trigger upstream calls, misses fetch once and backfill the
-// cache with retrieval provenance. Every upstream failure mode degrades to a
-// nil response so candidate expansion simply contributes nothing.
+// ExpansionService merges the pinned-algorithm cache with the labs client and
+// is the SINGLE point where upstream failure degrades into empty candidate
+// expansion: cache hits never trigger upstream calls, misses fetch once and
+// backfill the cache with retrieval provenance, and every typed client error
+// is logged here and turned into a nil response.
 type ExpansionService struct {
 	client ClientInterface
 	store  CacheStore
@@ -53,8 +54,9 @@ func (s *ExpansionService) Expand(ctx context.Context, artistMBID uuid.UUID, cou
 
 	resp, err := s.client.SimilarArtists(ctx, artistMBID, count)
 	if err != nil || resp == nil {
-		// Includes ErrRateLimited after exhausted retries: callers get empty
-		// expansion, throttling is visible in logs only.
+		// Includes ErrRateLimited/ErrUpstreamStatus/ErrBadPayload/
+		// ErrUnreachable: callers get empty expansion, the cause is visible in
+		// logs only.
 		log.Printf("listenbrainz expansion unavailable for %s: %v", artistMBID, err)
 		return nil, nil
 	}

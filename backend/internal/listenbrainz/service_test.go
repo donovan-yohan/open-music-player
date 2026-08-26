@@ -273,3 +273,52 @@ func TestPinnedAlgorithmIsTheSingleAcceptedName(t *testing.T) {
 		t.Fatalf("object body must reject as bad payload, got %v", err)
 	}
 }
+
+// realLabsSimilarArtistsPayload is the VERBATIM shape the live labs API
+// returned on 2026-08-26 for a pinned-algorithm similar-artists query: entries
+// carry descriptive comment/type/gender fields this integration does not model,
+// and carry NO per-entry algorithm. Before issue #392's review fixes the
+// decoder rejected unknown fields, so every production fetch degraded silently
+// to an empty expansion; this fixture is the regression guard.
+const realLabsSimilarArtistsPayload = `[
+  {"artist_mbid":"22222222-2222-2222-2222-222222222222","name":"Nirvana","comment":"1980s-1990s US grunge band","type":"Group","gender":null,"score":6507,"reference_mbid":"11111111-1111-1111-1111-111111111111"},
+  {"artist_mbid":"33333333-3333-3333-3333-333333333333","name":"Soundgarden","comment":"","type":"Group","gender":null,"score":4200,"reference_mbid":"11111111-1111-1111-1111-111111111111"}
+]`
+
+func TestFixtureServerAcceptsRealLabsPayloadShape(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(realLabsSimilarArtistsPayload))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL)
+	client.maxRetries = 0
+	client.retryBackoff = func(int) time.Duration { return time.Millisecond }
+	store := newFakeCacheStore()
+	svc := NewExpansionService(client, store)
+
+	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	if err != nil {
+		t.Fatalf("Expand returned error %v", err)
+	}
+	if resp == nil {
+		t.Fatal("real labs payload REJECTED: Expand returned nil (every production fetch would degrade to empty expansion)")
+	}
+	if len(resp.Similar) != 2 {
+		t.Fatalf("similar entries = %d, want 2 (%+v)", len(resp.Similar), resp.Similar)
+	}
+	if resp.Similar[0].ArtistMBID != testSimMBID || resp.Similar[0].Name != "Nirvana" || resp.Similar[0].Score != 6507 {
+		t.Fatalf("first entry lost fidelity: %+v", resp.Similar[0])
+	}
+	if resp.Algorithm != PinnedAlgorithm {
+		t.Fatalf("algorithm = %q, want the pinned request value", resp.Algorithm)
+	}
+	if store.upsertCalls != 1 {
+		t.Fatalf("upsert calls = %d, want 1 (accepted payload must be cached)", store.upsertCalls)
+	}
+	cached := store.upserts[0]
+	if len(cached.Payload) != 2 || cached.Payload[1].Name != "Soundgarden" || cached.Payload[1].ReferenceMBID != testSeedMBID {
+		t.Fatalf("cached payload lost fidelity: %+v", cached.Payload)
+	}
+}
