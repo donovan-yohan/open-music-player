@@ -4,6 +4,10 @@ import '../../app/theme.dart';
 import '../../models/track_analysis.dart';
 import 'mix/mix_models.dart';
 
+/// Every label on the Camelot wheel, and nothing else. Hoisted out of the
+/// normalizer so a long blended playlist does not rebuild it per row.
+final RegExp _camelotPattern = RegExp(r'^(?:[1-9]|1[0-2])[AB]$');
+
 /// Right-aligned BPM + Camelot key badges for a blended playlist row.
 ///
 /// Thin adapter over [MixMetadataBadges] that reads the values out of a
@@ -62,7 +66,7 @@ class MixMetadataBadges extends StatelessWidget {
   static String? normalizeCamelot(String? value) {
     final text = value?.trim().toUpperCase();
     if (text == null) return null;
-    return RegExp(r'^(?:[1-9]|1[0-2])[AB]$').hasMatch(text) ? text : null;
+    return _camelotPattern.hasMatch(text) ? text : null;
   }
 }
 
