@@ -118,18 +118,37 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
                     // shared column grid puts this axis down the middle of the
                     // centre (mixer/crossfader) column rather than on a deck
                     // A/B boundary, so it cannot read as a divider (#415).
+                    //
+                    // The pixels the bar actually crosses are waveform peaks in
+                    // the deck lane colour, not the surface: dark deck B is one
+                    // hue step from the playhead token (1.1:1), so a bare 2dp
+                    // bar vanishes into its own lane. A 1dp surface hairline on
+                    // each side separates it from any lane colour (#415).
                     Align(
                       alignment: Alignment.center,
                       child: SizedBox(
-                        width: 2,
+                        width: 4,
                         height: double.infinity,
                         child: ColoredBox(
                           key: ValueKey(
-                            'dj_waveform_playhead_'
+                            'dj_waveform_playhead_hairline_'
                             '${widget.deck.deckId.name}',
                           ),
-                          color:
-                              SoundQPlayerTheme.of(context).waveformPlayhead,
+                          color: Theme.of(context).colorScheme.surface,
+                          child: Center(
+                            child: SizedBox(
+                              width: 2,
+                              height: double.infinity,
+                              child: ColoredBox(
+                                key: ValueKey(
+                                  'dj_waveform_playhead_'
+                                  '${widget.deck.deckId.name}',
+                                ),
+                                color: SoundQPlayerTheme.of(context)
+                                    .waveformPlayhead,
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),

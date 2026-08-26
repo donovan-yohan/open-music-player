@@ -74,7 +74,8 @@ void main() {
         theme: theme,
       );
 
-      final expected = theme.extension<SoundQPlayerTheme>()!.waveformPlayhead;
+      final tokens = theme.extension<SoundQPlayerTheme>()!;
+      final expected = tokens.waveformPlayhead;
       for (final id in const ['a', 'b']) {
         final playhead = tester.widget<ColoredBox>(
           find.byKey(ValueKey('dj_waveform_playhead_$id')),
@@ -86,6 +87,29 @@ void main() {
           _contrastRatio(playhead.color, theme.colorScheme.surface),
           greaterThanOrEqualTo(3.0),
         );
+
+        // Contrast against the *surface* is the easy case: once a track is
+        // loaded the pixels the bar crosses are peaks painted in the deck lane
+        // colour, and the dark playhead token is one hue step from deck B
+        // (1.12:1). The hairline is what has to read against the lane.
+        final hairlineKey = ValueKey('dj_waveform_playhead_hairline_$id');
+        final hairline = tester.widget<ColoredBox>(find.byKey(hairlineKey));
+        for (final lane in <Color>[
+          tokens.waveformDeckA,
+          tokens.waveformDeckB,
+          playhead.color,
+        ]) {
+          expect(_contrastRatio(hairline.color, lane),
+              greaterThanOrEqualTo(3.0));
+        }
+        final hairlineRect = tester.getRect(find.byKey(hairlineKey));
+        final playheadRect =
+            tester.getRect(find.byKey(ValueKey('dj_waveform_playhead_$id')));
+        expect(playheadRect.width, 2.0);
+        expect(hairlineRect.width, 4.0,
+            reason: 'a 1dp hairline on each side of the 2dp playhead');
+        expect(hairlineRect.left, lessThan(playheadRect.left));
+        expect(hairlineRect.right, greaterThan(playheadRect.right));
       }
     });
 
