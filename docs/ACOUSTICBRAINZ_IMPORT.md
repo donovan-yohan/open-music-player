@@ -108,11 +108,25 @@ Base URL:
 | `acousticbrainz-lowlevel-features-20220623-lowlevel.tar.zst` | 1,159,433,718 | `cf1b6511d9c33996edb1bbf1c6415b428bf45f263b0f87af4a7afa8ed70985ea` — **unused, do not download** |
 | `sha256sums` | 370 | — |
 
-Verify before use:
+Verify before use **against the digests in the table above**, not only against
+the downloaded `sha256sums`: that manifest ships from the same base URL as the
+archives, so a re-cut dump arrives with a matching re-cut manifest and passes.
+`scripts/acousticbrainz-import.sh fetch` enforces the pinned digests
+(`AB_RHYTHM_SHA256` / `AB_TONAL_SHA256` in the script) and keeps the manifest as
+a cross-check. By hand:
 
 ```bash
-grep -E 'rhythm|tonal' sha256sums | sha256sum -c -
+printf '%s  %s\n%s  %s\n' \
+  5f813ff49c2ac1f35cca3947e081178758cddbd9b5292163dff58bdf3a025fad acousticbrainz-lowlevel-features-20220623-rhythm.tar.zst \
+  fa1d9e4c5e1af80372d9dbf96bc25bb84a3b0165600fbe2684496dbd1445bc0d acousticbrainz-lowlevel-features-20220623-tonal.tar.zst \
+  | sha256sum -c -
+grep -E 'rhythm|tonal' sha256sums | sha256sum -c -   # cross-check only
 ```
+
+**If the pinned digests do not match, STOP.** The loader stamps
+`dump_revision = acousticbrainz-dump-2022-06` and the matching provenance onto
+whatever bytes it is given, so loading a different cut silently mislabels the
+cache, and every number recorded under "Observed run" stops describing it.
 
 Each archive holds exactly one member,
 `acousticbrainz-lowlevel-features-20220623/<name>.csv`. Uncompressed: rhythm
@@ -141,11 +155,23 @@ sample:     0e11c0fd-a1da-4b88-a438-7ef55c5809ec,0,120.763885498,120,120,133,133
 ```
 
 `parseRhythmRow` reads `record[1]` as BPM, so on a raw dump row it parses
-`submission_offset` (`0`), which fails the `[30, 300]` guard — **100% of raw
-rhythm rows are rejected**. `parseTonalRow` reads `record[1]`/`record[2]` as
+`submission_offset` — which fails the `[30, 300]` guard for the overwhelming
+majority of rows, **but not for all of them**. A recording with 30 or more
+submissions has raw rows whose `submission_offset` parses as a perfectly legal
+BPM, and those rows are imported with a BPM equal to the submission counter. In
+a 1,379,684-row sample of the real rhythm dump, 757 rows (0.055%) carried an
+offset in `[30, 300]` (observed maximum 61) — order 10⁴ silently wrong BPM
+values across the whole dump, each of which passes the
+`chk_mb_acousticbrainz_bpm` CHECK and then backfills user-visible bpm/camelot
+with AcousticBrainz provenance. `parseTonalRow` reads `record[1]`/`record[2]` as
 key/scale, so a raw row silently yields `key="0", scale="A"` and
-`camelotFromKey` returns `""`. Feeding raw dump files to the loader imports
-nothing and reports no error beyond the rejection counter.
+`camelotFromKey` returns `""`.
+
+**A nonzero `imported=` count is therefore NOT proof that the input was
+projected.** The reliable checks are the projected header itself
+(`mbid,bpm` / `mbid,key,scale`, no `submission_offset` column) and, after a
+load, `SELECT count(*) FROM mb_acousticbrainz WHERE bpm < 70;` — raw-layout
+contamination clusters at the bottom of the range (30–61 in the sampled data).
 
 Project the dump before loading:
 
@@ -155,35 +181,55 @@ Project the dump before loading:
 | `tonal.csv` | `submission_offset == 0` | `$1,$3,$4` → `mbid,key,scale` |
 
 `submission_offset == 0` selects one canonical submission per recording. It is
-the O(1)-memory dedup: the dumps hold ~29.46M submission rows for ~6.06M unique
-recordings, and de-duplicating by hashing 7.5M UUIDs would cost ~1 GB of RAM for
-no extra determinism.
+the O(1)-memory dedup: the dumps hold ~29.46M submission rows, of which
+**7,564,449 have `submission_offset == 0`** (measured — see "Observed run";
+acousticbrainz.org's "~6.06M unique recordings" counter is 25% lower and is not
+the number to budget against). De-duplicating instead by hashing 7.5M UUIDs
+would cost ~1 GB of RAM for no extra determinism.
 
-This contract is pinned by `TestParseRhythmRowRejectsRawDumpLayout` and
-`TestParseTonalRowRejectsRawDumpLayout` in
-`backend/cmd/acousticbrainz-import/main_test.go`. If either fails, the
+This contract is pinned by `TestParseRhythmRowRejectsRawDumpLayout`,
+`TestParseTonalRowRejectsRawDumpLayout` and
+`TestParseRhythmRowAcceptsRawRowsWhoseOffsetLooksLikeBPM` (the residue above) in
+`backend/cmd/acousticbrainz-import/main_test.go`. If any of them fails, the
 projection rule above has drifted.
 
 ## Disk and time budget
 
-- Download: ~2.14 GB for the two archives (~1–2 min at 30 MB/s).
+Every figure below is measured from the issue #399 run on the dogfood box
+(details and raw numbers under "Observed run"). Size the maintenance window
+from these, not from the pre-run estimates they replaced.
+
+- Download: ~2.14 GB for the two archives (72 s measured, ~30 MB/s).
 - Projection: streaming (`zstd -dc | tar -xOf - | awk`), no multi-GB
-  intermediate files; the projected shards are ~0.8 GB.
-- Peak working set: ~3 GB. Require at least 10 GB free.
+  intermediate files; 19.4 s, and the projected shards total ~0.7 GB.
+- Peak working set: ~2.7 GB on disk (archives + shards). Require at least
+  10 GB free.
+- Rows to load: **7,564,449** (`submission_offset == 0`), i.e. **~473k per
+  shard** across 16 shards.
 - Loader throughput is **per row, not batched**: `flush()` issues one
   `UpsertAcousticBrainz` per entry and opens no transaction, so `-batch-size`
   only controls flush cadence — its "rows per transaction batch" help text is
-  inaccurate. Measured ~1,235 upserts/s.
-- Full load: ~6.06M rows ≈ 82 min, ≈ 1.1 GB table + index (~142 B/row).
-- Each run has a hard 2 h `context.WithTimeout`, and a single run holds the
-  whole tonal side in memory as a `map[uuid.UUID]tonalRow` (~1.5–2 GB at 6M
-  entries).
+  inaccurate. **Measured on the real load: ~309 upserts/s** (shard 0 =
+  477,178 rows in 1544 s) on a box running several concurrent agent lanes.
+  An earlier synthetic benchmark against an idle single-container Postgres
+  reached ~1,235 upserts/s and implied an 82-minute full load; that rate did
+  **not** hold and must not be used for planning.
+- **Full load: ~7.56M rows ≈ 7 h serial** (16 shards × ~26 min at the measured
+  rate), ≈ **1.2 GB table + index** (~158 B/row, measured: 72 MB for
+  477,161 rows).
+- Each run has a hard 2 h `context.WithTimeout` and holds that shard's whole
+  tonal side in memory as a `map[uuid.UUID]tonalRow` — **~473k entries per
+  shard** (an unsharded run would need ~7.5M entries, ~2 GB).
+- **Stop rule for a bounded window:** after shard 0 finishes, extrapolate
+  `elapsed × 16`. If that exceeds the window you budgeted — issue #399 budgeted
+  **180 minutes** — stop after the current shard and load the rest later. This
+  is the rule that fired in the #399 run (411 min projected vs. 180 budgeted).
 
 **Therefore: shard the load.** Split on the first hex character of the MBID into
 16 `rhythm-<h>.csv` / `tonal-<h>.csv` pairs. Sharding on the join key keeps a
 recording's rhythm and tonal rows in the same shard, so `-rhythm`/`-tonal`
-pairing stays lossless while each run holds ~380k map entries and finishes in
-minutes, far inside the context deadline.
+pairing stays lossless while each run holds ~473k map entries and completes in
+~26 min on a loaded box, well inside the context deadline.
 
 Shards are independent and idempotent, so a failed or interrupted shard is
 simply re-run. A partial load is valid — the table is a pure cache.
@@ -218,9 +264,26 @@ Operational notes:
 - The loader always calls `database.Migrate()` on startup. Against a target
   already at or ahead of the current schema this is a no-op, but confirm it with
   the before/after census rather than assuming.
-- **The only table this import writes is `mb_acousticbrainz`.** The before/after
-  census is the proof; any other counter moving is a failure to report, not to
-  paper over.
+- **The only table the *import* writes is `mb_acousticbrainz`** — but that is
+  not the same as "the loader writes nothing else". `Migrate()` also runs
+  data-normalizing `UPDATE`s on `research_jobs`, `research_runs`,
+  `research_revisions` and `research_events` (assigned variant/cohort, status
+  and kind remaps, `result_limit` clamped to 25) and drops
+  `research_revisions.is_terminal` (`backend/internal/db/db.go`,
+  `refreshResearchSchemaConstraints`). Those are the backend's own idempotent
+  startup normalizations, so they are no-ops against a target whose backend
+  already boots this schema — but they are **not** covered by the rollback, and
+  `snapshot` cannot detect them (they are `UPDATE`s and a `DROP COLUMN`, not
+  row-count changes). If the target's backend is older than this checkout,
+  migrate it first or accept the normalization.
+- The before/after census is the proof for `mb_acousticbrainz` and the row-count
+  tables it lists; any other counter moving is a failure to report, not to paper
+  over. It says nothing about the `research_*` normalizations above.
+- `snapshot`, `verify` and `scope` run `psql` through `docker exec` on the
+  **local** docker daemon while the loader connects over TCP to
+  `OMP_AB_DB_HOST`. The script refuses a non-local `OMP_AB_DB_HOST` for exactly
+  this reason: otherwise the census would describe a different database than the
+  one that was written.
 - ⚠️ **Never point `OMP_POSTGRES_TEST_DSN`, `DATABASE_URL`, or
   `QA_DATABASE_URL` at a dogfooded database.** The db integration tests
   `TRUNCATE TABLE play_events, user_library, tracks, users RESTART IDENTITY
@@ -284,19 +347,20 @@ project name has already changed once.
 | projected rows | rhythm 7,564,449 / tonal 7,564,449 (identical — pairing is lossless) |
 | peak disk | 2.7 GB (archives + shards); 694 MB after deleting the archives |
 
-Note the row count: `submission_offset == 0` yields **7,564,449** rows, not the
-~6.06M "unique recordings" figure quoted on acousticbrainz.org. Budget against
-the measured number. Within one shard, MBIDs are very nearly unique — shard 0
-held 477,218 rows for 477,201 distinct MBIDs (17 duplicates, 0.004%), which the
-loader resolves last-row-wins.
+Row counts: `submission_offset == 0` yields **7,564,449** rows, not the ~6.06M
+"unique recordings" figure quoted on acousticbrainz.org; the budget section
+above is written against this measured number. Within one shard, MBIDs are very
+nearly unique — shard 0 held 477,218 rows for 477,201 distinct MBIDs
+(17 duplicates, 0.004%), which the loader resolves last-row-wins.
 
 **Load**
 
 Only shard `0` was loaded, plus a library-scoped pass. Shard 0 took
-**1544 s (25.7 min)** on a box running several concurrent lanes — about
-300–450 upserts/s against the ~1,235/s benchmark. Extrapolating
-`1544 s × 16 = 411 min` blew past the 180-minute budget for the run, so the load
-was stopped after shard 0. **A partial load is a valid state**: the table is a
+**1544 s (25.7 min)** on a box running several concurrent lanes —
+**309 upserts/s** (477,178 / 1544), roughly 4× below the ~1,235/s synthetic
+benchmark. Extrapolating `1544 s × 16 = 411 min` blew past the 180-minute stop
+rule budgeted for this run (see "Disk and time budget"), so the load was stopped
+after shard 0. **A partial load is a valid state**: the table is a
 pure cache, shards are independent, and the remaining shards can be loaded later
 with `scripts/acousticbrainz-import.sh load-full 1 2 3 ...`.
 
@@ -374,7 +438,15 @@ with no analysis row is a follow-up candidate, not a bug in this loader.
 TRUNCATE mb_acousticbrainz;
 ```
 
-That is the whole rollback. The table is a pure cache: the loader never writes
-`track_analysis`, user overrides, or any other table, and the backfill happens
-at read time. After truncation, bpm/camelot projections simply revert to
-analyzer-only values, and provenance markers disappear with them.
+That is the whole rollback **of the import**. The table is a pure cache: the
+import never writes `track_analysis`, user overrides, or any other table, and
+the backfill happens at read time. After truncation, bpm/camelot projections
+simply revert to analyzer-only values, and provenance markers disappear with
+them.
+
+It does **not** undo the `database.Migrate()` side effects described under
+"Running against a target" (the `research_*` normalizations and the
+`research_revisions.is_terminal` drop). Those are the backend's own startup
+migrations, they are no-ops against a target already running this schema, and
+there is no rollback for them here — check the target's backend version before
+importing rather than planning to reverse them.

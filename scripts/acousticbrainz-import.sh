@@ -18,6 +18,16 @@ AB_DUMP_DIRNAME="acousticbrainz-lowlevel-features-20220623"
 AB_BASE_URL="${AB_BASE_URL:-https://data.metabrainz.org/pub/musicbrainz/acousticbrainz/dumps/${AB_DUMP_DIRNAME}}"
 AB_RHYTHM_ARCHIVE="${AB_DUMP_DIRNAME}-rhythm.tar.zst"
 AB_TONAL_ARCHIVE="${AB_DUMP_DIRNAME}-tonal.tar.zst"
+# Digests of the exact bytes the runbook's recorded evidence was produced from.
+# Deliberately NOT env-overridable: the server-supplied `sha256sums` ships from
+# the same base URL as the archives, so verifying against it proves transport
+# integrity only -- a re-cut dump arrives with a matching re-cut manifest. These
+# literals are the only thing that can detect that, and the loader stamps
+# dump_revision/provenance as if the bytes were the pinned ones. Keep in sync
+# with the artifact table in docs/ACOUSTICBRAINZ_IMPORT.md (pinned by
+# TestImportScriptPinsDumpDigestsMatchingRunbook).
+AB_RHYTHM_SHA256="5f813ff49c2ac1f35cca3947e081178758cddbd9b5292163dff58bdf3a025fad"
+AB_TONAL_SHA256="fa1d9e4c5e1af80372d9dbf96bc25bb84a3b0165600fbe2684496dbd1445bc0d"
 
 # --- Workspace ---------------------------------------------------------------
 AB_DIR="${AB_DIR:-${TMPDIR:-/tmp}/ab-dumps}"
@@ -36,6 +46,14 @@ die() { printf '[ab] ERROR: %s\n' "$*" >&2; exit 1; }
 
 # psql is not installed on the ops host; every query goes through the container.
 resolve_container() {
+  # snapshot/verify/scope reach the database with `docker exec` against the
+  # LOCAL docker daemon, while the loader connects over TCP to $AB_DB_HOST. If
+  # the host is remote those are two different databases: the before/after
+  # census would "prove" nothing about the database that was actually written.
+  case "$AB_DB_HOST" in
+    localhost | 127.0.0.1 | ::1) ;;
+    *) die "OMP_AB_DB_HOST=$AB_DB_HOST is remote, but snapshot/verify/scope run psql via 'docker exec' on the local docker daemon -- they would census a different database than load-lib/load-full writes. Run this script on the target's own host, or reach the target as localhost through a published port or tunnel." ;;
+  esac
   if [[ -n "${AB_PG_CONTAINER:-}" ]]; then
     printf '%s\n' "$AB_PG_CONTAINER"
     return 0
@@ -46,8 +64,32 @@ resolve_container() {
   printf '%s\n' "$name"
 }
 
-psql_t() { docker exec "$(resolve_container)" psql -U "$AB_DB_USER" -d "$AB_DB_NAME" -tAc "$1"; }
-psql_c() { docker exec "$(resolve_container)" psql -U "$AB_DB_USER" -d "$AB_DB_NAME" -c "$1"; }
+# Resolve into a variable first: a bare "$(resolve_container)" inside the docker
+# argument list would swallow the die() and hand docker an empty container name.
+psql_t() { local c; c="$(resolve_container)"; docker exec "$c" psql -U "$AB_DB_USER" -d "$AB_DB_NAME" -tAc "$1"; }
+psql_c() { local c; c="$(resolve_container)"; docker exec "$c" psql -U "$AB_DB_USER" -d "$AB_DB_NAME" -c "$1"; }
+
+# True when $1 exists and already hashes to the pinned digest $2.
+sha256_matches() {
+  [[ -f "$1" ]] || return 1
+  printf '%s  %s\n' "$2" "$1" | sha256sum -c --status -
+}
+
+# Download $1 unless the local copy already matches the pinned digest $2.
+fetch_artifact() {
+  local name="$1" want="$2" rc=0
+  if sha256_matches "$name" "$want"; then
+    log "$name already matches the pinned sha256; skipping download"
+    return 0
+  fi
+  # `-C -` resumes a partial download. When the local file happens to be
+  # complete the origin answers 416 and curl exits 22 -- that is not a failure
+  # here, and swallowing it is what keeps `fetch` re-runnable. The pinned
+  # checksum below is the thing that decides whether the bytes are usable.
+  curl -fL -C - -O "$AB_BASE_URL/$name" || rc=$?
+  (( rc == 0 || rc == 22 )) || return "$rc"
+  return 0
+}
 
 cmd_fetch() {
   mkdir -p "$AB_DIR/shards"
@@ -60,9 +102,24 @@ cmd_fetch() {
   cd "$AB_DIR"
   # The 'lowlevel' archive carries nothing the loader reads -- never fetch it.
   curl -fL -O "$AB_BASE_URL/sha256sums"
-  curl -fL -C - -O "$AB_BASE_URL/$AB_RHYTHM_ARCHIVE"
-  curl -fL -C - -O "$AB_BASE_URL/$AB_TONAL_ARCHIVE"
-  grep -E 'rhythm|tonal' sha256sums | sha256sum -c -
+  fetch_artifact "$AB_RHYTHM_ARCHIVE" "$AB_RHYTHM_SHA256"
+  fetch_artifact "$AB_TONAL_ARCHIVE" "$AB_TONAL_SHA256"
+
+  # Hard gate, run unconditionally on every invocation (including re-runs where
+  # nothing was downloaded): the archives must be the pinned bytes.
+  if ! printf '%s  %s\n%s  %s\n' \
+      "$AB_RHYTHM_SHA256" "$AB_RHYTHM_ARCHIVE" \
+      "$AB_TONAL_SHA256" "$AB_TONAL_ARCHIVE" | sha256sum -c -; then
+    log "pinned:   $AB_RHYTHM_SHA256  $AB_RHYTHM_ARCHIVE"
+    log "pinned:   $AB_TONAL_SHA256  $AB_TONAL_ARCHIVE"
+    log "observed:"
+    sha256sum "$AB_RHYTHM_ARCHIVE" "$AB_TONAL_ARCHIVE" >&2 || true
+    die "archives do not match the digests pinned in docs/ACOUSTICBRAINZ_IMPORT.md -- STOP. Delete the local copies and re-fetch; if a fresh download still differs, upstream re-cut the dump and the runbook's recorded evidence no longer describes it."
+  fi
+  # Cross-check only. A matching manifest adds nothing the pinned gate did not
+  # already prove; a mismatching one means the published manifest drifted.
+  grep -E 'rhythm|tonal' sha256sums | sha256sum -c - \
+    || log "warning: the server's sha256sums disagrees with bytes that DO match the pinned digests; upstream republished the manifest"
   du -sh "$AB_DIR"
 }
 
@@ -113,10 +170,13 @@ cmd_scope() {
 }
 
 run_loader() {
+  # The credential travels through the environment ONLY. The loader defaults
+  # -db-password from OMP_AB_DB_PASSWORD, while argv is world-readable via
+  # `ps` / /proc/<pid>/cmdline for the whole ~26 min a shard runs.
   OMP_AB_DB_PASSWORD="$AB_DB_PASSWORD" "$AB_DIR/ab-import" \
     -rhythm "$1" -tonal "$2" \
     -db-host "$AB_DB_HOST" -db-port "$AB_DB_PORT" \
-    -db-user "$AB_DB_USER" -db-password "$AB_DB_PASSWORD" -db-name "$AB_DB_NAME"
+    -db-user "$AB_DB_USER" -db-name "$AB_DB_NAME"
 }
 
 cmd_load_lib() {
@@ -194,12 +254,23 @@ Environment (defaults shown):
   AB_MIN_FREE_GB=10                  fetch aborts below this
   AB_SHARDS="0 1 ... f"              shard list for load-full
   AB_PG_CONTAINER=<auto>             else resolved via docker ps --filter publish=$OMP_AB_DB_PORT
-  OMP_AB_DB_HOST=localhost  OMP_AB_DB_PORT=5434
+  OMP_AB_DB_HOST=localhost  OMP_AB_DB_PORT=5434  (host must stay local; see Safety)
   OMP_AB_DB_USER=omp        OMP_AB_DB_NAME=openmusicplayer
   OMP_AB_DB_PASSWORD=<dev default>
 
 Safety:
-  - This loader only ever writes mb_acousticbrainz. Rollback is TRUNCATE mb_acousticbrainz;
+  - The import itself writes only mb_acousticbrainz. Rollback is TRUNCATE mb_acousticbrainz;
+  - That is NOT the loader's only write: main.go calls database.Migrate() on
+    startup, which besides idempotent DDL normalizes existing rows in
+    research_jobs / research_runs / research_revisions / research_events (and
+    drops research_revisions.is_terminal). Those writes are NOT covered by the
+    rollback, and `snapshot` cannot see them -- they are UPDATEs, not new rows.
+    Against a target whose backend already runs this schema they are no-ops
+    (the same statements ran at that backend's startup); against one that is
+    behind, migrate the backend first or accept the normalization.
+  - snapshot/verify/scope run psql through `docker exec` on the LOCAL docker
+    daemon, so OMP_AB_DB_HOST must be localhost or they describe a different
+    database than the one load-lib/load-full writes.
   - NEVER point OMP_POSTGRES_TEST_DSN / DATABASE_URL / QA_DATABASE_URL at a dogfooded
     database: the db integration tests TRUNCATE tracks/users/user_library.
   - psql is not required on the host; queries run via docker exec into the container.
@@ -224,4 +295,8 @@ main() {
   esac
 }
 
-main "$@"
+# Sourcing the script (e.g. from a contract test) defines the helpers without
+# running anything; executing it dispatches as usual.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi
