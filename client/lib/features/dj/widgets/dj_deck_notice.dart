@@ -38,7 +38,14 @@ class DjDeckNotice extends StatelessWidget {
     final failure = deck.loadFailure;
     final message = failure != null
         ? messageFor(failure.kind)
-        : (deck.isLoaded ? '' : djDeckEmpty);
+        : deck.isLoaded
+            ? ''
+            // Only deck A is seeded from a single-row queue, so an unseeded
+            // deck B is the ordinary state beside a full queue. Telling that
+            // user to add a track is factually wrong and hides the real cause.
+            : (actions?.queueHasTracks ?? false)
+                ? djDeckNotSeeded
+                : djDeckEmpty;
     final download = failure?.kind == DjDeckLoadFailureKind.unavailableOffline
         ? (actions?.downloadFor(deck.deckId) ?? DjDeckDownload.unavailable)
         : DjDeckDownload.unavailable;
@@ -64,6 +71,13 @@ class DjDeckNotice extends StatelessWidget {
             // copy; only a roomy lane stacks it.
             final stacked =
                 !constraints.hasBoundedHeight || constraints.maxHeight >= 80;
+            // 48dp targets everywhere the lane can afford them: the reference
+            // viewport gives each lane 56dp, which fits a full-height button
+            // beside the copy. Only a lane below the geometry budget's floor
+            // degrades, and that degradation is recorded in the spec.
+            final compactAction =
+                constraints.hasBoundedHeight && constraints.maxHeight < 48;
+            final style = _actionStyle(compact: compactAction);
             final copy = _copyBlock(
               context,
               message: message,
@@ -74,6 +88,7 @@ class DjDeckNotice extends StatelessWidget {
                 ? _DownloadAction(
                     deckId: deck.deckId,
                     download: download,
+                    style: style,
                     onDownload: actions!.onDownload!,
                   )
                 : showsLoadFile
@@ -81,8 +96,11 @@ class DjDeckNotice extends StatelessWidget {
                         key: ValueKey(
                           'dj_deck_load_file_${deck.deckId.name}',
                         ),
-                        style: _actionStyle,
-                        onPressed: () => actions!.onPickLocalFile!(),
+                        style: style,
+                        // The deck this lane belongs to, not a hardcoded one:
+                        // this button is rendered on whichever deck is empty.
+                        onPressed: () =>
+                            actions!.onPickLocalFile!(deck.deckId),
                         child: const Text(djDeckLoadFileAction),
                       )
                     : null;
@@ -164,23 +182,32 @@ class DjDeckNotice extends StatelessWidget {
   }
 }
 
-/// Compact enough for the 64dp waveform-stack floor, and tokens only.
-final ButtonStyle _actionStyle = FilledButton.styleFrom(
-  minimumSize: const Size(0, 32),
-  visualDensity: VisualDensity.compact,
-  padding: const EdgeInsets.symmetric(horizontal: AppTheme.space3),
-  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-);
+/// The lane action's style: a full 48dp target wherever the lane can hold one,
+/// and tokens only.
+///
+/// [compact] is taken only below the geometry budget's serviceable floor, where
+/// a lane is ~28dp tall and a 48dp control cannot be honoured at all.
+ButtonStyle _actionStyle({required bool compact}) => FilledButton.styleFrom(
+      minimumSize: Size(0, compact ? 32 : 48),
+      visualDensity:
+          compact ? VisualDensity.compact : VisualDensity.standard,
+      padding: const EdgeInsets.symmetric(horizontal: AppTheme.space3),
+      tapTargetSize: compact
+          ? MaterialTapTargetSize.shrinkWrap
+          : MaterialTapTargetSize.padded,
+    );
 
 class _DownloadAction extends StatelessWidget {
   const _DownloadAction({
     required this.deckId,
     required this.download,
+    required this.style,
     required this.onDownload,
   });
 
   final DjDeckId deckId;
   final DjDeckDownload download;
+  final ButtonStyle style;
   final Future<void> Function(DjDeckId deck) onDownload;
 
   @override
@@ -193,7 +220,7 @@ class _DownloadAction extends StatelessWidget {
     };
     return FilledButton.tonal(
       key: ValueKey('dj_deck_download_${deckId.name}'),
-      style: _actionStyle,
+      style: style,
       onPressed: running ? null : () => onDownload(deckId),
       child: Row(
         mainAxisSize: MainAxisSize.min,

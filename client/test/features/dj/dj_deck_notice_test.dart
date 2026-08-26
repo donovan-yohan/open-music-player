@@ -33,7 +33,8 @@ void main() {
     double width = 380,
     double height = 56,
     bool withActions = true,
-    Future<void> Function()? onPickLocalFile,
+    bool queueHasTracks = false,
+    Future<void> Function(DjDeckId deck)? onPickLocalFile,
     Future<void> Function(DjDeckId deck)? onDownload,
     DjDeckDownload Function(DjDeckId deck)? downloadFor,
   }) async {
@@ -55,6 +56,7 @@ void main() {
               height: height,
               child: withActions
                   ? DjDeckActions(
+                      queueHasTracks: queueHasTracks,
                       onPickLocalFile: onPickLocalFile,
                       onDownload: onDownload,
                       downloadFor: downloadFor ?? (_) => DjDeckDownload.idle,
@@ -68,8 +70,10 @@ void main() {
     );
   }
 
-  String copyOf(WidgetTester tester) => tester
-      .widget<Text>(find.byKey(const ValueKey('dj_deck_unavailable_a')))
+  String copyOf(WidgetTester tester, [DjDeckId deck = DjDeckId.a]) => tester
+      .widget<Text>(
+        find.byKey(ValueKey('dj_deck_unavailable_${deck.name}')),
+      )
       .data!;
 
   testWidgets('an offline refusal offers the download action', (tester) async {
@@ -77,7 +81,7 @@ void main() {
       tester,
       deck: refused(DjDeckLoadFailureKind.unavailableOffline),
       onDownload: (_) async {},
-      onPickLocalFile: () async {},
+      onPickLocalFile: (_) async {},
     );
 
     expect(copyOf(tester), djDeckDownloadRequired);
@@ -91,7 +95,7 @@ void main() {
       tester,
       deck: refused(DjDeckLoadFailureKind.pickerNotLocal),
       onDownload: (_) async {},
-      onPickLocalFile: () async {},
+      onPickLocalFile: (_) async {},
     );
 
     expect(copyOf(tester), djDeckPickLocalFile);
@@ -105,7 +109,7 @@ void main() {
       tester,
       deck: refused(DjDeckLoadFailureKind.sourceUnavailable),
       onDownload: (_) async {},
-      onPickLocalFile: () async {},
+      onPickLocalFile: (_) async {},
     );
 
     expect(copyOf(tester), djDeckSourceUnavailable);
@@ -120,7 +124,7 @@ void main() {
       tester,
       deck: const DjDeckState(deckId: DjDeckId.a),
       onDownload: (_) async {},
-      onPickLocalFile: () async {},
+      onPickLocalFile: (_) async {},
     );
 
     expect(copyOf(tester), djDeckEmpty);
@@ -239,6 +243,83 @@ void main() {
 
       expect(errors.overflows, isEmpty,
           reason: 'the notice overflowed: ${errors.overflows}');
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+
+  testWidgets("the load affordance carries its own deck's id", (tester) async {
+    final picks = <DjDeckId>[];
+    await pumpNotice(
+      tester,
+      deck: const DjDeckState(deckId: DjDeckId.b),
+      onPickLocalFile: (deck) async => picks.add(deck),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('dj_deck_load_file_b')));
+    await tester.pump();
+
+    // A deck-less callback here is what loaded deck A from deck B's button.
+    expect(picks, [DjDeckId.b]);
+  });
+
+  testWidgets('an unseeded deck beside a full queue does not blame the queue',
+      (tester) async {
+    await pumpNotice(
+      tester,
+      deck: const DjDeckState(deckId: DjDeckId.b),
+      queueHasTracks: true,
+      onPickLocalFile: (_) async {},
+    );
+
+    expect(copyOf(tester, DjDeckId.b), djDeckNotSeeded);
+    expect(find.text(djDeckEmpty), findsNothing);
+    expect(find.byKey(const ValueKey('dj_deck_load_file_b')), findsOneWidget);
+  });
+
+  testWidgets('an unseeded deck beside an empty queue says how to fill it',
+      (tester) async {
+    await pumpNotice(
+      tester,
+      deck: const DjDeckState(deckId: DjDeckId.b),
+      onPickLocalFile: (_) async {},
+    );
+
+    expect(copyOf(tester, DjDeckId.b), djDeckEmpty);
+  });
+
+  // docs/dj-deck-spec.md, geometry budget: 48dp targets everywhere at and above
+  // the reference viewport, where each lane is 56dp tall.
+  for (final probe in <(String, ValueKey<String>, DjDeckState)>[
+    (
+      'download',
+      const ValueKey('dj_deck_download_a'),
+      const DjDeckState(
+        deckId: DjDeckId.a,
+        loadFailure: DjDeckLoadFailure(
+          kind: DjDeckLoadFailureKind.unavailableOffline,
+        ),
+      ),
+    ),
+    (
+      'load-a-file',
+      const ValueKey('dj_deck_load_file_a'),
+      const DjDeckState(deckId: DjDeckId.a),
+    ),
+  ]) {
+    testWidgets('the ${probe.$1} action keeps a 48dp target at the reference '
+        'lane', (tester) async {
+      await pumpNotice(
+        tester,
+        deck: probe.$3,
+        onDownload: (_) async {},
+        onPickLocalFile: (_) async {},
+      );
+
+      expect(
+        tester.getSize(find.byKey(probe.$2)).height,
+        greaterThanOrEqualTo(48.0),
+      );
       expect(tester.takeException(), isNull);
     });
   }

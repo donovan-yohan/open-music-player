@@ -313,9 +313,14 @@ class _DjScreenState extends State<DjScreen> {
     }
   }
 
-  Future<void> _pickLocalFile() async {
+  /// Loads a picked local file onto [deck].
+  ///
+  /// The lane renders this affordance on whichever deck is empty, so the target
+  /// has to come from the lane. Hardcoding deck A here made deck B's button
+  /// replace deck A's live track and silence it (#414 review).
+  Future<void> _pickLocalFile(DjDeckId deck) async {
     final picked = await (widget.filePicker ?? _promptForLocalFile)();
-    if (picked != null && mounted) await _session!.load(DjDeckId.a, picked);
+    if (picked != null && mounted) await _session!.load(deck, picked);
   }
 
   @override
@@ -323,6 +328,10 @@ class _DjScreenState extends State<DjScreen> {
     // Watched, not read: the lane's download affordance has to follow the
     // transfer's progress and its completion without the user leaving /dj.
     final downloads = context.watch<DownloadState?>();
+    // Watched for the same reason: an unseeded deck beside a non-empty queue
+    // says something different from an unseeded deck beside an empty one, and
+    // the queue can change under an open deck.
+    final queue = context.watch<QueueProvider?>();
     return ChangeNotifierProvider<DjSessionProvider>.value(
       value: _session!,
       child: AnnotatedRegion<SystemUiOverlayStyle>(
@@ -331,6 +340,8 @@ class _DjScreenState extends State<DjScreen> {
           onPickLocalFile: _pickLocalFile,
           onDownload: downloads == null ? null : _downloadDeck,
           downloadFor: (deck) => _downloadForDeck(deck, downloads),
+          queueHasTracks: queue != null &&
+              (queue.currentTrack != null || queue.upNext.isNotEmpty),
           child: const Scaffold(
             key: ValueKey('dj_screen'),
             body: DjLayout(),

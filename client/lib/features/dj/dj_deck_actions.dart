@@ -56,16 +56,29 @@ class DjDeckActions extends InheritedWidget {
     required this.onDownload,
     required this.downloadFor,
     required super.child,
+    this.queueHasTracks = false,
   });
 
   /// Null means the screen offers no local-file affordance.
-  final Future<void> Function()? onPickLocalFile;
+  ///
+  /// Takes the deck the affordance was rendered for. The lane draws this action
+  /// on whichever deck is empty, so a deck-less callback would load the picked
+  /// file onto deck A from deck B's button — replacing whatever deck A was
+  /// playing and leaving deck B empty (#414 review).
+  final Future<void> Function(DjDeckId deck)? onPickLocalFile;
 
   /// Null means the screen offers no download affordance at all (for example,
   /// no `DownloadState` in the tree).
   final Future<void> Function(DjDeckId deck)? onDownload;
 
   final DjDeckDownload Function(DjDeckId deck) downloadFor;
+
+  /// Whether the queue currently holds anything at all.
+  ///
+  /// An unseeded deck beside a full queue must not tell the user to add a track
+  /// they have already added; the lane picks its copy on this fact. Defaults to
+  /// false so a lane pumped without a queue keeps the empty-queue wording.
+  final bool queueHasTracks;
 
   static DjDeckActions? maybeOf(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<DjDeckActions>();
