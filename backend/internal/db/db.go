@@ -771,6 +771,20 @@ func (db *DB) Migrate() error {
 		)
 	);
 
+	-- ListenBrainz labs similar-artists cache (issue #392). One row per
+	-- (artist MBID, pinned algorithm); payload is the verbatim labs response
+	-- for that artist so candidate expansion never re-hits the upstream on a
+	-- cache hit. Mirrors the mb_acousticbrainz external-reference conventions:
+	-- provenance fields (algorithm, retrieved_at) travel with every row and
+	-- this table is coverage data only, never an authority over library facts.
+	CREATE TABLE IF NOT EXISTS mb_listenbrainz_similar_artists (
+		artist_mbid UUID PRIMARY KEY,
+		algorithm TEXT NOT NULL,
+		payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'array'),
+		retrieved_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		CONSTRAINT chk_mb_listenbrainz_algorithm CHECK (algorithm <> '')
+	);
+
 	CREATE TABLE IF NOT EXISTS research_jobs (
 		id UUID PRIMARY KEY,
 		user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
