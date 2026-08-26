@@ -14,9 +14,9 @@ import (
 // ListenBrainzSimilarArtist is one similar-artist entry inside a cached labs
 // response payload.
 type ListenBrainzSimilarArtist struct {
-	ArtistMBID   uuid.UUID `json:"artist_mbid"`
-	Name         string    `json:"name"`
-	Score        int       `json:"score"`
+	ArtistMBID    uuid.UUID `json:"artist_mbid"`
+	Name          string    `json:"name"`
+	Score         int       `json:"score"`
 	ReferenceMBID uuid.UUID `json:"reference_mbid"`
 }
 
