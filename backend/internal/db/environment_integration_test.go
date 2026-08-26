@@ -178,6 +178,15 @@ func TestEnvironmentMarkerProtectionRefusesDestructiveSetup(t *testing.T) {
 	}
 	t.Setenv(AllowProtectedDBTestsEnv, "")
 
+	// End the pinned transaction BEFORE reading from another session. While it is
+	// open it holds a row lock on omp_environment, and a concurrent Migrate() in
+	// another test package queueing for ACCESS EXCLUSIVE on that table would park
+	// this read behind it -- a wait Postgres cannot see as a cycle, so it would
+	// hang rather than fail.
+	if _, err := pinned.Exec(`ROLLBACK`); err != nil {
+		t.Fatalf("roll back the pinned transaction: %v", err)
+	}
+
 	// The flip must never have been visible to the other sessions sharing this
 	// throwaway database.
 	if err := shared.CheckDatabaseNotProtected(ctx); err != nil {
