@@ -1429,6 +1429,11 @@ func newProcessorPostgresTestDB(t *testing.T) (*db.DB, context.Context) {
 	if dsn == "" {
 		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres processor integration tests")
 	}
+	// Issue #407: refuse a DSN aimed at a protected (dogfood) database
+	// before a single statement can reach it.
+	if err := db.CheckDSNNotProtected(dsn); err != nil {
+		t.Fatalf("refusing destructive test setup: %v", err)
+	}
 	rawDB, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatalf("open test database: %v", err)
@@ -1440,6 +1445,9 @@ func newProcessorPostgresTestDB(t *testing.T) (*db.DB, context.Context) {
 	}
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("migrate test database: %v", err)
+	}
+	if err := database.CheckDatabaseNotProtected(context.Background()); err != nil {
+		t.Fatalf("refusing destructive test setup: %v", err)
 	}
 	if _, err := database.ExecContext(context.Background(), `TRUNCATE TABLE tracks RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate test database: %v", err)

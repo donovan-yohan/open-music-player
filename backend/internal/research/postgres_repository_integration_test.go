@@ -31,6 +31,11 @@ func newPostgresResearchRepository(t *testing.T, cfg PostgresRepositoryConfig) (
 	if dsn == "" {
 		t.Skip("set OMP_POSTGRES_TEST_DSN or POSTGRES_DSN=" + researchPostgresDSN + " to run Postgres research repository integration tests")
 	}
+	// Issue #407: refuse a DSN aimed at a protected (dogfood) database
+	// before a single statement can reach it.
+	if err := store.CheckDSNNotProtected(dsn); err != nil {
+		t.Fatalf("refusing destructive test setup: %v", err)
+	}
 	raw, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)
@@ -42,6 +47,9 @@ func newPostgresResearchRepository(t *testing.T, cfg PostgresRepositoryConfig) (
 	}
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("migrate postgres: %v", err)
+	}
+	if err := database.CheckDatabaseNotProtected(context.Background()); err != nil {
+		t.Fatalf("refusing destructive test setup: %v", err)
 	}
 	return NewPostgresRepository(database, cfg), database
 }

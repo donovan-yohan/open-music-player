@@ -12,27 +12,9 @@ import (
 
 func newPlaylistSourceTestDB(t *testing.T) (*DB, context.Context) {
 	t.Helper()
-	dsn := postgresTestDSN()
-	if dsn == "" {
-		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres playlist source integration tests")
-	}
-
-	rawDB, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatalf("open test database: %v", err)
-	}
-	t.Cleanup(func() { _ = rawDB.Close() })
-	database := &DB{DB: rawDB}
-	if err := database.Ping(); err != nil {
-		t.Fatalf("ping test database: %v", err)
-	}
-	if err := database.Migrate(); err != nil {
-		t.Fatalf("migrate test database: %v", err)
-	}
-	if _, err := database.Exec(`TRUNCATE TABLE playlist_source_entries, playlist_source_bindings, playlist_tracks, playlists, user_library, tracks, users RESTART IDENTITY CASCADE`); err != nil {
-		t.Fatalf("truncate playlist source tables: %v", err)
-	}
-	return database, context.Background()
+	return newGuardedTestDB(t,
+		"set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres playlist source integration tests",
+		"TRUNCATE TABLE playlist_source_entries, playlist_source_bindings, playlist_tracks, playlists, user_library, tracks, users RESTART IDENTITY CASCADE")
 }
 
 func seedPlaylistSourceUser(t *testing.T, database *DB, email string) uuid.UUID {

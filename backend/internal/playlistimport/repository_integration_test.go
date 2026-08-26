@@ -25,6 +25,11 @@ func newImportRepositoryTestDB(t *testing.T) (*db.DB, context.Context) {
 		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres playlist import integration tests")
 	}
 
+	// Issue #407: refuse a DSN aimed at a protected (dogfood) database
+	// before a single statement can reach it.
+	if err := db.CheckDSNNotProtected(dsn); err != nil {
+		t.Fatalf("refusing destructive test setup: %v", err)
+	}
 	rawDB, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatalf("open test database: %v", err)
@@ -36,6 +41,9 @@ func newImportRepositoryTestDB(t *testing.T) (*db.DB, context.Context) {
 	}
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("migrate test database: %v", err)
+	}
+	if err := database.CheckDatabaseNotProtected(context.Background()); err != nil {
+		t.Fatalf("refusing destructive test setup: %v", err)
 	}
 	if _, err := database.Exec(`TRUNCATE TABLE playlist_import_items, playlist_import_jobs, playlist_source_entries, playlist_source_bindings, playlist_tracks, playlists, user_library, tracks, users RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate playlist import tables: %v", err)
