@@ -55,10 +55,24 @@ class DjDeckHeader extends StatelessWidget {
           if (width >= kDjHeaderClockMinWidth)
             '${_clock(deck.positionMs)}/-${_clock(remaining)}',
         ];
+        // The metrics are non-flex, so the Expanded title alone cannot stop
+        // them overflowing the row: they are capped instead. Splitting the
+        // budget evenly would ellipsise a long metric while a short one kept
+        // slack, so the caps are proportional to what each string actually
+        // needs, and no cap binds at all while everything fits.
+        final metricStyle = DefaultTextStyle.of(context).style;
+        final textScaler = MediaQuery.textScalerOf(context);
+        final intrinsic = [
+          for (final metric in metrics)
+            _measure(metric, metricStyle, textScaler),
+        ];
+        final needed = intrinsic.fold<double>(0, (sum, w) => sum + w);
         final gaps = metrics.length * AppTheme.space2;
         final metricBudget =
             math.max(0.0, width - gaps - kDjHeaderTitleMinWidth);
-        final perMetric = metricBudget / metrics.length;
+        final scale = needed <= metricBudget || needed == 0
+            ? 1.0
+            : metricBudget / needed;
         return Row(
           children: [
             Expanded(
@@ -69,15 +83,16 @@ class DjDeckHeader extends StatelessWidget {
                 style: Theme.of(context).textTheme.labelLarge,
               ),
             ),
-            for (final metric in metrics) ...[
+            for (var i = 0; i < metrics.length; i++) ...[
               const SizedBox(width: AppTheme.space2),
               ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: perMetric),
+                constraints: BoxConstraints(maxWidth: intrinsic[i] * scale),
                 child: Text(
-                  metric,
+                  metrics[i],
                   maxLines: 1,
                   softWrap: false,
                   overflow: TextOverflow.ellipsis,
+                  style: metricStyle,
                 ),
               ),
             ],
@@ -85,6 +100,18 @@ class DjDeckHeader extends StatelessWidget {
         );
       },
     );
+  }
+
+  static double _measure(String text, TextStyle style, TextScaler scaler) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      textScaler: scaler,
+      maxLines: 1,
+    )..layout();
+    final width = painter.width;
+    painter.dispose();
+    return width;
   }
 
   String _clock(int ms) {
