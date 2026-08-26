@@ -519,8 +519,18 @@ class _Transport extends StatelessWidget {
   Widget build(BuildContext context) {
     final syncMatch = session.syncMatchFor(deck);
     final syncIsMaster = session.isSyncMaster(deck);
-    // The master's own SYNC stays live: its tap hands the master role over.
-    final syncEnabled = state.isLoaded && (syncIsMaster || syncMatch.isMatched);
+    final syncEngaged = session.syncEngagedOn(deck);
+    // An engaged follower's tap is a pure disengage (`pressSync` returns before
+    // it computes anything), so it must stay live even when the match has since
+    // stopped being reachable -- a master pitch bend can push it out of the
+    // deck's rate window mid-blend, and a greyed glyph would strand the deck
+    // engaged with no way to release it.
+    //
+    // The master gets no such exemption. Its tap is a real swap that goes
+    // through the match, so when the swap would refuse the button gates like
+    // every other state and states the reason, instead of accepting a tap that
+    // changes nothing and reports nothing.
+    final syncEnabled = state.isLoaded && (syncEngaged || syncMatch.isMatched);
     final refusal = syncMatch.refusal;
     return Row(
       children: [
@@ -538,7 +548,7 @@ class _Transport extends StatelessWidget {
             onCueRelease: () => session.cueRelease(deck),
             onPlayPause: () => session.togglePlay(deck),
             onSync: syncEnabled ? () => session.pressSync(deck) : null,
-            syncEngaged: session.syncEngagedOn(deck),
+            syncEngaged: syncEngaged,
             syncIsMaster: syncIsMaster,
             syncDisabledReason:
                 refusal == null ? null : djDeckSyncReasonFor(refusal),

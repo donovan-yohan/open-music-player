@@ -76,6 +76,13 @@ void main() {
     await rig.session.nudgePitchEnd(DjDeckId.a);
     expect(rig.session.syncEngagedOn(DjDeckId.a), isTrue,
         reason: 'a bend restores the base rate, exactly like a correction');
+    // The restore is the half that matters: this is the one seam where the
+    // sync flag and the real rate can silently disagree, and a deck left 2%
+    // fast while its glyph still reads "matched" is audible drift under a UI
+    // that claims otherwise. Pin it in state and at the voice.
+    const matchedRate = 128 / 124.5;
+    expect(rig.session.stateFor(DjDeckId.a).rate, closeTo(matchedRate, 1e-9));
+    expect(rig.voiceFor(DjDeckId.a).speeds.last, closeTo(matchedRate, 1e-9));
 
     await rig.session.setPitchPercent(DjDeckId.a, 3);
     expect(rig.session.syncEngagedOn(DjDeckId.a), isFalse);

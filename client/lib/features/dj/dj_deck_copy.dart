@@ -63,12 +63,24 @@ const String djDeckSyncEngaged = 'Matched to the other deck';
 /// This deck is the master. Tapping it hands the master role to the other deck.
 const String djDeckSyncMaster = 'This deck sets the tempo';
 
-/// Either deck's BPM is missing or below the reliability floor.
+/// This deck's own BPM is missing or below the reliability floor.
 const String djDeckSyncNoTempo = 'This track has no reliable tempo to sync to';
+
+/// The *other* deck's BPM is missing or below the reliability floor.
+///
+/// Separate from [djDeckSyncNoTempo] because `syncMatchFor` always makes the
+/// other deck the leader, so a leader refusal is a statement about the deck the
+/// user is not looking at. One sentence for both sides named whichever deck
+/// happened to be innocent.
+const String djDeckSyncOtherTrackNoTempo =
+    'The other track has no reliable tempo to sync to';
 
 /// The would-be leader deck holds no audio.
 const String djDeckSyncOtherDeckUnavailable =
     'Load a track on the other deck to sync';
+
+/// This deck holds no audio, so it cannot be made to follow anything.
+const String djDeckSyncThisDeckEmpty = 'Load a track on this deck to sync';
 
 /// Even octave-normalized, the follower rate falls outside the deck window.
 const String djDeckSyncTempoOutOfRange =
@@ -131,7 +143,9 @@ const List<String> djDeckCopyStrings = <String>[
   djDeckSyncEngaged,
   djDeckSyncMaster,
   djDeckSyncNoTempo,
+  djDeckSyncOtherTrackNoTempo,
   djDeckSyncOtherDeckUnavailable,
+  djDeckSyncThisDeckEmpty,
   djDeckSyncTempoOutOfRange,
   djDeckRotatePrompt,
   djDeckRotateDetail,

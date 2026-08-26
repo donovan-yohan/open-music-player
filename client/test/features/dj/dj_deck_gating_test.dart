@@ -233,10 +233,14 @@ void main() {
 
     testWidgets('a wired sync glyph states each of its three live states',
         (tester) async {
-      for (final state in const <(bool, bool, String, String)>[
-        (false, false, 'dj_sync_off_a', djDeckSyncFollowAction),
-        (true, false, 'dj_sync_on_a', djDeckSyncEngaged),
-        (false, true, 'dj_sync_master_a', djDeckSyncMaster),
+      // Every state names the control before it describes itself, the same
+      // 'Sync. <detail>' shape the gated glyph and `_name` already use: the
+      // tooltip is the only text on this node, so a bare state phrase leaves a
+      // screen-reader user unable to tell which control they are on.
+      for (final state in <(bool, bool, String, String)>[
+        (false, false, 'dj_sync_off_a', 'Sync. $djDeckSyncFollowAction'),
+        (true, false, 'dj_sync_on_a', 'Sync. $djDeckSyncEngaged'),
+        (false, true, 'dj_sync_master_a', 'Sync. $djDeckSyncMaster'),
       ]) {
         await tester.pumpWidget(
           MaterialApp(

@@ -169,6 +169,27 @@ void main() {
       expect(tooltipsAround(tester, 'dj_sync_off_a'),
           isNot(contains(djDeckSyncFollowAction)));
     });
+
+    testWidgets('names the other deck on the reliable deck', (tester) async {
+      // Deck B's own track is fine; it is deck A that failed the floor. The
+      // reason painted on B has to say so, or B is told its own trustworthy
+      // track has no tempo.
+      await pumpDjScreen(
+        tester,
+        session: session,
+        viewport: landscapeReference,
+      );
+
+      expect(syncButton(tester, 'dj_sync_off_b').onPressed, isNull);
+      expect(
+        tooltipsAround(tester, 'dj_sync_off_b'),
+        contains(djDeckSyncOtherTrackNoTempo),
+      );
+      expect(
+        tooltipsAround(tester, 'dj_sync_off_b'),
+        isNot(contains(djDeckSyncNoTempo)),
+      );
+    });
   });
 
   group('an empty partner deck', () {
@@ -192,6 +213,106 @@ void main() {
         tooltipsAround(tester, 'dj_sync_off_a'),
         contains(djDeckSyncOtherDeckUnavailable),
       );
+    });
+
+    testWidgets('tells the empty deck to load itself', (tester) async {
+      // The most common first state on the deck, and the one the AC 10 device
+      // evidence captured: deck B is the empty one, so pointing it at "the
+      // other deck" pointed it at the deck that already had a track.
+      await pumpDjScreen(
+        tester,
+        session: session,
+        viewport: landscapeReference,
+      );
+
+      expect(syncButton(tester, 'dj_sync_off_b').onPressed, isNull);
+      expect(
+        tooltipsAround(tester, 'dj_sync_off_b'),
+        contains(djDeckSyncThisDeckEmpty),
+      );
+      expect(
+        tooltipsAround(tester, 'dj_sync_off_b'),
+        isNot(contains(djDeckSyncOtherDeckUnavailable)),
+      );
+    });
+  });
+
+  group('a master whose swap has stopped being reachable', () {
+    late DjSessionProvider session;
+
+    setUp(() async {
+      session = djSyncRig().session;
+      await session.load(DjDeckId.a, djSyncDeckSeed(id: '90', bpm: 124.5));
+      await session.load(DjDeckId.b, djSyncDeckSeed(id: '91', bpm: 128));
+      await session.pressSync(DjDeckId.a);
+      // The follower's fader takes its tempo back by hand: deck A drops to
+      // rate 0.75 and leaves the engaged set, but deck B stays master.
+      await session.setPitchPercent(DjDeckId.a, -25);
+    });
+    tearDown(() => session.dispose());
+
+    testWidgets('gates the master glyph and states the refusal',
+        (tester) async {
+      await pumpDjScreen(
+        tester,
+        session: session,
+        viewport: landscapeReference,
+      );
+
+      expect(session.isSyncMaster(DjDeckId.b), isTrue);
+      expect(
+        session.syncMatchFor(DjDeckId.b).refusal,
+        DjSyncRefusal.tempoOutOfRange,
+      );
+      // An armed button whose tap changes nothing and reports nothing is the
+      // exact failure #413 was filed about.
+      expect(find.byKey(const ValueKey('dj_sync_master_b')), findsNothing);
+      expect(syncButton(tester, 'dj_sync_off_b').onPressed, isNull);
+      expect(
+        tooltipsAround(tester, 'dj_sync_off_b'),
+        contains(djDeckSyncTempoOutOfRange),
+      );
+    });
+  });
+
+  group('an engaged follower whose match has stopped being reachable', () {
+    late DjSessionProvider session;
+
+    setUp(() async {
+      session = djSyncRig().session;
+      await session.load(DjDeckId.a, djSyncDeckSeed(id: '90', bpm: 104));
+      await session.load(DjDeckId.b, djSyncDeckSeed(id: '91', bpm: 128));
+      await session.pressSync(DjDeckId.a);
+    });
+    tearDown(() => session.dispose());
+
+    testWidgets('stays live so the deck can still be disengaged',
+        (tester) async {
+      await pumpDjScreen(
+        tester,
+        session: session,
+        viewport: landscapeReference,
+      );
+      expect(find.byKey(const ValueKey('dj_sync_on_a')), findsOneWidget);
+
+      // A bend on the master does not disengage the follower (D3), but it does
+      // move the target: 128 * 1.02 / 104 = 1.2554, outside the deck window.
+      await session.nudgePitchStart(DjDeckId.b, 2);
+      await settle(tester);
+
+      expect(session.syncEngagedOn(DjDeckId.a), isTrue);
+      expect(
+        session.syncMatchFor(DjDeckId.a).refusal,
+        DjSyncRefusal.tempoOutOfRange,
+      );
+      expect(find.byKey(const ValueKey('dj_sync_on_a')), findsOneWidget,
+          reason: 'the deck is still engaged, so it still reads as engaged');
+      expect(syncButton(tester, 'dj_sync_on_a').onPressed, isNotNull);
+
+      await tester.tap(find.byKey(const ValueKey('dj_sync_on_a')));
+      await settle(tester);
+
+      expect(session.syncEngagedOn(DjDeckId.a), isFalse);
     });
   });
 

@@ -11,16 +11,21 @@ const double kDjTransportCompactWidth = 168;
 
 /// The sentence-case reason a refused sync shows on the disabled glyph.
 ///
-/// Six engine refusals collapse to three user-facing statements: the user can
-/// only act on "this track has no tempo", "the other deck is empty" and "the
-/// gap is too wide", and which side of the pair failed is not their problem.
+/// The reason is painted on the glyph of the deck the match was computed
+/// *for*, and `DjSessionProvider.syncMatchFor` always evaluates
+/// `leader: other, follower: this`. A `follower*` refusal is therefore a
+/// statement about the deck the user is looking at and a `leader*` refusal is a
+/// statement about the other one. Collapsing each pair onto a single
+/// deck-naming sentence made half the reachable states say the opposite of the
+/// truth: an empty deck B was told to load a track on the other deck, which
+/// already had one. A specific reason that is wrong is worse than a generic
+/// one, because the user acts on it.
 String djDeckSyncReasonFor(DjSyncRefusal refusal) => switch (refusal) {
-      DjSyncRefusal.leaderTempoUnreliable ||
-      DjSyncRefusal.followerTempoUnreliable =>
-        djDeckSyncNoTempo,
+      DjSyncRefusal.followerTempoUnreliable => djDeckSyncNoTempo,
+      DjSyncRefusal.leaderTempoUnreliable => djDeckSyncOtherTrackNoTempo,
+      DjSyncRefusal.followerNotLoaded => djDeckSyncThisDeckEmpty,
       DjSyncRefusal.noLeader ||
-      DjSyncRefusal.leaderNotLoaded ||
-      DjSyncRefusal.followerNotLoaded =>
+      DjSyncRefusal.leaderNotLoaded =>
         djDeckSyncOtherDeckUnavailable,
       DjSyncRefusal.tempoOutOfRange => djDeckSyncTempoOutOfRange,
     };
@@ -182,6 +187,12 @@ class DjTransport extends StatelessWidget {
   /// variant and a keyed icon rather than through extra widgets. Exactly one of
   /// `dj_sync_master_<deck>`, `dj_sync_on_<deck>` and `dj_sync_off_<deck>` is
   /// present at any time, which is a layout-free widget-test contract.
+  ///
+  /// Every state's tooltip is prefixed with the control's own name, the same
+  /// `'Sync. <detail>'` shape `_name` gives CUE and PLAY: `IconButton.tooltip`
+  /// is the only text on this node (the icon carries no semantic label), so a
+  /// bare state phrase like "This deck sets the tempo" left a screen-reader
+  /// user unable to tell which control they were on.
   Widget _sync({
     required bool compact,
     required EdgeInsets iconPadding,
@@ -212,7 +223,7 @@ class DjTransport extends StatelessWidget {
     if (syncIsMaster) {
       return IconButton.filledTonal(
         key: const ValueKey('dj_sync'),
-        tooltip: djDeckSyncMaster,
+        tooltip: 'Sync. $djDeckSyncMaster',
         iconSize: iconSize,
         padding: iconPadding,
         constraints: iconConstraints,
@@ -224,7 +235,7 @@ class DjTransport extends StatelessWidget {
     if (syncEngaged) {
       return IconButton.filled(
         key: const ValueKey('dj_sync'),
-        tooltip: djDeckSyncEngaged,
+        tooltip: 'Sync. $djDeckSyncEngaged',
         iconSize: iconSize,
         padding: iconPadding,
         constraints: iconConstraints,
@@ -235,7 +246,7 @@ class DjTransport extends StatelessWidget {
 
     return IconButton(
       key: const ValueKey('dj_sync'),
-      tooltip: djDeckSyncFollowAction,
+      tooltip: 'Sync. $djDeckSyncFollowAction',
       iconSize: iconSize,
       padding: iconPadding,
       constraints: iconConstraints,
