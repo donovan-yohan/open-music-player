@@ -82,11 +82,53 @@ void main() {
   });
 
   group('DjBeatRuler derivation', () {
-    test('bars fall back to meter + phase when downbeats are absent', () {
+    test('a manual downbeat phase anchors bars on its projected downbeats', () {
       final analysis = djNumberedAnalysis(downbeatPhaseIndex: 1);
+      // The manual correction rewrites downbeats.positions_ms, so this is the
+      // downbeats branch, not the meter+phase fallback below.
+      expect(analysis.effectiveTiming.downbeats?.positionsMs, isNotEmpty);
       final ruler = DjBeatRuler.forAnalysis(analysis)!;
       expect(ruler.anchorBeatIndex, 1);
       expect(ruler.barLinesMs.take(3), [djBeatMs, djBeatMs * 5, djBeatMs * 9]);
+    });
+
+    test('bars fall back to meter + phase when downbeats are absent', () {
+      final analysis = djMeterPhaseOnlyAnalysis(downbeatPhaseIndex: 1);
+      // The fixture has to have no downbeat array at all, or the fallback is
+      // never reached.
+      expect(analysis.effectiveTiming.downbeats?.positionsMs ?? const <int>[],
+          isEmpty);
+
+      final ruler = DjBeatRuler.forAnalysis(analysis)!;
+      expect(ruler.beatsPerBar, 4);
+      expect(ruler.anchorBeatIndex, 1);
+      expect(ruler.barStartsMs.first, djBeatMs);
+      expect(ruler.barLinesMs.take(3), [djBeatMs, djBeatMs * 5, djBeatMs * 9]);
+      // Generated authority is still not numbering authority; the painter and
+      // the counter are what withhold the number, not the model.
+      expect(ruler.numbered, isFalse);
+      expect(ruler.positionAt(djBeatMs)!.label, '1.1 · phrase 1');
+    });
+
+    test('beatsPerBar is inferred from the downbeat stride when no meter is '
+        'declared', () {
+      final analysis = djDownbeatsWithoutMeterAnalysis(beatsPerBar: 3);
+      expect(analysis.effectiveTiming.meter, isNull);
+
+      final ruler = DjBeatRuler.forAnalysis(analysis)!;
+      // 3, not the hard-coded 4 the ruler falls back to with nothing to infer
+      // from.
+      expect(ruler.beatsPerBar, 3);
+      expect(ruler.barLinesMs.take(3), [0, djBeatMs * 3, djBeatMs * 6]);
+    });
+
+    test('beatsPerBar falls back to 4 when neither meter nor stride is known',
+        () {
+      final ruler = DjBeatRuler.forAnalysis(djBeatGridOnlyAnalysis())!;
+      expect(ruler.beatsPerBar, 4);
+      expect(ruler.hasBarAnchor, isFalse);
+      expect(ruler.barLinesMs, isEmpty);
+      expect(ruler.positionAt(djBeatMs * 4), isNull);
     });
 
     test('phrase markers stop at the anchor rather than numbering backwards',

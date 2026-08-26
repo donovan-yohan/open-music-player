@@ -64,6 +64,42 @@ void main() {
       expect(after.activeLoop, before.activeLoop);
     });
 
+    test('refuses a snapshot that would drop the waveform it already has',
+        () async {
+      final session = djCountingSession([]);
+      addTearDown(session.dispose);
+      final compact = djAnalysisTrack(analysis: djCompactAnalysis());
+      await djLoadDecks(session, deckA: compact);
+      expect(
+        session.applyAnalysisUpdate([
+          compact.copyWith(analysis: djHydratedAnalysis()),
+        ]),
+        isTrue,
+      );
+      final hydrated = session.deckA;
+      expect(hydrated.queueTrack!.analysis!.summary!.waveform, isNotNull);
+
+      // What a hydration eviction on another screen produces: the next
+      // revision tick offers the deck the compact queue snapshot again.
+      // Accepting it would flip a painted lane back to a flat "Analyzing…"
+      // baseline and re-derive beatsMs from the truncated grid.
+      var notifications = 0;
+      void listener() => notifications++;
+      session.addListener(listener);
+      expect(
+        session.applyAnalysisUpdate([
+          compact.copyWith(analysis: djCompactAnalysis()),
+        ]),
+        isFalse,
+      );
+      session.removeListener(listener);
+
+      expect(notifications, 0);
+      expect(identical(session.deckA, hydrated), isTrue);
+      expect(session.deckA.queueTrack!.analysis!.summary!.waveform, isNotNull);
+      expect(session.deckA.beatsMs, hydrated.beatsMs);
+    });
+
     test('refuses an empty deck and a refused deck', () async {
       final voices = <CountingFakeVoice>[];
       final session = djCountingSession(voices);

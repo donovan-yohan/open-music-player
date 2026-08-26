@@ -119,6 +119,74 @@ TrackAnalysis djUnnumberedAnalysis({
   );
 }
 
+/// A bare beat grid: no meter, no phase, no downbeats, no overrides.
+///
+/// Bars are unknowable, which is the beat-ticks-only ruler.
+TrackAnalysis djBeatGridOnlyAnalysis({
+  double bpm = djBeatBpm,
+  int beats = djBeatGridBeats,
+}) =>
+    TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: djBeatGridSummary(bpm: bpm, beats: beats),
+    );
+
+/// A beat grid with **generated** meter and downbeat phase and **no**
+/// `downbeats` array at all.
+///
+/// This is the only fixture that reaches `DjBeatRuler`'s meter+phase anchor
+/// fallback: a manual correction projects a `downbeats.positions_ms` array of
+/// its own (`TrackAnalysisOverrides.applyTo`), so a tier A fixture always takes
+/// the downbeats branch instead.
+TrackAnalysis djMeterPhaseOnlyAnalysis({
+  double bpm = djBeatBpm,
+  int beats = djBeatGridBeats,
+  int beatsPerBar = 4,
+  int downbeatPhaseIndex = 1,
+}) =>
+    TrackAnalysis.fromJson(
+      status: 'analyzed',
+      summary: <String, dynamic>{
+        ...djBeatGridSummary(bpm: bpm, beats: beats),
+        'meter': {
+          'beats_per_bar': beatsPerBar,
+          'confidence': 0.72,
+          'provenance': 'beat-this-v1',
+        },
+        'downbeat_phase': {
+          'index': downbeatPhaseIndex,
+          'confidence': 0.68,
+          'provenance': 'beat-this-v1',
+        },
+      },
+    );
+
+/// Downbeat markers with **no** meter and no phase: the stride-inference
+/// fallback for `beatsPerBar`.
+///
+/// [beatsPerBar] defaults to 3 so an inferred value is distinguishable from the
+/// hard-coded 4 the ruler falls back to when nothing can be inferred.
+TrackAnalysis djDownbeatsWithoutMeterAnalysis({
+  double bpm = djBeatBpm,
+  int beats = djBeatGridBeats,
+  int beatsPerBar = 3,
+}) {
+  final beatMs = (60000 / bpm).round();
+  return TrackAnalysis.fromJson(
+    status: 'analyzed',
+    summary: <String, dynamic>{
+      ...djBeatGridSummary(bpm: bpm, beats: beats),
+      'downbeats': {
+        'positions_ms': [
+          for (var i = 0; i < beats; i += beatsPerBar) beatMs * i,
+        ],
+        'confidence': 0.7,
+        'provenance': 'beat-this-v1',
+      },
+    },
+  );
+}
+
 /// Tier C: analyzed, but no beat grid at all.
 TrackAnalysis djNoGridAnalysis() => TrackAnalysis.fromJson(
       status: 'analyzed',

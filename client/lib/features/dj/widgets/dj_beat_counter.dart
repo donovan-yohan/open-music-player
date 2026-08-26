@@ -14,8 +14,22 @@ import '../models/dj_deck_state.dart';
 ///   generated meter and phase are compatibility data, not structure.
 /// * **none** (no effective beat grid): nothing at all, no placeholder.
 ///
-/// Returns a [Flexible] so a narrow transport slot shrinks the label instead of
-/// pushing CUE off the row.
+/// The counter is deliberately **not** a flex child of the transport row: as a
+/// `Flexible` sibling of `Expanded(DjTransport)` it claimed an equal flex share,
+/// so RenderFlex handed the transport exactly half the deck slot however little
+/// the label actually used. That pushed DjTransport below
+/// `kDjTransportCompactWidth` at most landscape viewports and silently swapped
+/// the labelled CUE button for the icon-only variant. Non-flex plus
+/// [kDjBeatCounterMaxWidth] bounds the label and leaves every other pixel to the
+/// transport.
+/// Cap on the tier A counter's width inside the transport row.
+///
+/// Wide enough for `1.1 · phrase 1` at the default text scale and narrow enough
+/// that the narrowest serviceable deck slot still leaves DjTransport above
+/// `kDjTransportCompactWidth`. A longer reading clips (the label's own
+/// [TextOverflow.clip]) rather than eating the transport.
+const double kDjBeatCounterMaxWidth = 96;
+
 class DjBeatCounter extends StatefulWidget {
   const DjBeatCounter({super.key, required this.deck});
 
@@ -53,8 +67,8 @@ class _DjBeatCounterState extends State<DjBeatCounter> {
     final position =
         ruler.numbered ? ruler.positionAt(widget.deck.positionMs) : null;
     if (position != null) {
-      return Flexible(
-        fit: FlexFit.loose,
+      return ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: kDjBeatCounterMaxWidth),
         child: Text(
           position.label,
           key: ValueKey('dj_beat_counter_$deckName'),

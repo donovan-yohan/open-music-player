@@ -115,14 +115,23 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
     QueueTrack? track,
   ) {
     if (waveform.frames.isNotEmpty) return null;
-    final status = track?.analysis?.status;
+    // A deck holding no track has nothing in flight: no analysis was ever
+    // requested and none ever will be, so claiming one is in progress would be
+    // a false status (deck B's steady state on a single-item queue). The empty
+    // deck says what it is in its own header and in DjDeckNotice, which is lane
+    // D's copy; the lane keeps its bare baseline.
+    if (track == null) return null;
+    final status = track.analysis?.status;
     // Everything else — no analysis object at all, pending/analyzing/stale/
     // unknown, and analyzed-but-not-yet-hydrated — is still on its way.
     final missing = status == TrackAnalysisStatus.failed ||
         status == TrackAnalysisStatus.unsupported;
     final theme = Theme.of(context);
     final deckName = widget.deck.deckId.name;
-    return Center(
+    return Align(
+      // Off the centre playhead axis; a vertical offset would not help, the
+      // hairline is full height.
+      alignment: const Alignment(-0.45, 0),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),
         child: Text(
@@ -229,25 +238,30 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
                         width: contentWidth,
                         top: 0,
                         bottom: 0,
-                        child: CustomPaint(
-                          painter: DjBeatRulerPainter(
-                            ticks: ticks,
-                            beatColor: beatToken.withValues(alpha: 0.28),
-                            barColor: beatToken.withValues(alpha: 0.55),
-                            phraseColor: beatToken.withValues(alpha: 0.85),
-                            labelStyle: (theme.textTheme.labelSmall ??
-                                    const TextStyle())
-                                .copyWith(
-                              color: beatToken.withValues(alpha: 0.85),
+                        // A position tick rewrites `left`, which marks the
+                        // Stack needing layout, and layout always ends in
+                        // markNeedsPaint — so without a boundary of its own the
+                        // ruler replays every tick (and every phrase
+                        // TextPainter) at 30 Hz however cheap shouldRepaint is.
+                        // The tick geometry is position-independent, so the
+                        // boundary lets a pure translation reuse the recorded
+                        // layer.
+                        child: RepaintBoundary(
+                          child: CustomPaint(
+                            painter: DjBeatRulerPainter(
+                              ticks: ticks,
+                              beatColor: beatToken.withValues(alpha: 0.28),
+                              barColor: beatToken.withValues(alpha: 0.55),
+                              phraseColor: beatToken.withValues(alpha: 0.85),
+                              labelStyle: (theme.textTheme.labelSmall ??
+                                      const TextStyle())
+                                  .copyWith(
+                                color: beatToken.withValues(alpha: 0.85),
+                              ),
                             ),
                           ),
                         ),
                       ),
-                    // Peaks arrive from the per-track analysis endpoint long
-                    // after the deck seed, and a lane with no frames paints a
-                    // flat centre line that is indistinguishable from silence.
-                    // Say which state the lane is in instead (#410).
-                    if (analysisNotice != null) analysisNotice,
                     // The fixed centre playhead. It resolves from the
                     // waveformPlayhead design token in both themes, and D1's
                     // shared column grid puts this axis down the middle of the
@@ -287,6 +301,16 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
                         ),
                       ),
                     ),
+                    // Peaks arrive from the per-track analysis endpoint long
+                    // after the deck seed, and a lane with no frames paints a
+                    // flat centre line that is indistinguishable from silence.
+                    // Say which state the lane is in instead (#410).
+                    //
+                    // Held off the centre axis and painted last: the playhead's
+                    // hairline is an opaque full-height surface band on that
+                    // exact axis, so a centred label came out bisected
+                    // ("Analy|zing…") on every deck entry.
+                    if (analysisNotice != null) analysisNotice,
                   ],
                 ),
               ),

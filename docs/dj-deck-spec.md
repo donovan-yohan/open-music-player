@@ -112,6 +112,12 @@ The deck lanes draw a three-level ruler from the effective beat grid, and each d
 
 Tier A is unreachable on current dogfood data: every live `analysisSummary` carries generated `meter` and `downbeat_phase`, which fails both the canonical-manual and legacy-compatibility branches of `hasReliableDownbeats`, so the deck renders tier B until #312/#316 make downbeats trustworthy or a manual downbeat correction is landed for the track.
 
+**Transport-row geometry.** The counter is a non-flex, width-capped child of the transport row (`kDjBeatCounterMaxWidth`, `client/lib/features/dj/widgets/dj_beat_counter.dart`), not a `Flexible`. A flex sibling of `Expanded(DjTransport)` takes an equal share of the slot however narrow the label is, which leaves dead space and drops the transport below `kDjTransportCompactWidth` — silently swapping the labelled CUE button for the icon-only variant. A long reading clips instead.
+
+**Lane state notice.** A lane with no frames names its state (`Analyzing…` / `No analysis`, keyed `dj_lane_analysis_{pending,missing}_<deck>`) so a flat baseline is never read as silence. A deck holding no track at all is excluded: nothing is in flight there, and empty-deck copy belongs to `DjDeckNotice`. The notice is held off the lane's centre axis and painted above the playhead, because the playhead's hairline is an opaque full-height `surface` band that otherwise bisects a centred label.
+
+**Repaint discipline.** The ruler's `CustomPaint` sits inside its own `RepaintBoundary`. `DjBeatRulerPainter.shouldRepaint` returning false is not enough on its own: the ruler rides in a `Positioned` whose `left` is position-derived, and the relayout that a 30 Hz tick triggers always ends in `markNeedsPaint`, so without a boundary the whole-track tick list (and every phrase `TextPainter`) is replayed each frame. `DjBeatRulerPainter.debugPaintCount` makes that measurable in a widget test.
+
 **`beatPosition` vs `beatPhase`.** `DjDeckState.beatPhase` is the automation-authority value and stays null without reliable downbeats, because sync and quantize may not act on generated meter. `DjDeckState.beatPosition` is the display value and follows the unreliable-downbeats rule above: it resolves for generated downbeats, but `DjBeatRuler.numbered` is false there, so the counter withholds bar numbers rather than inventing structure. The two are deliberately not unified.
 
 ## Engine feasibility

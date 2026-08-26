@@ -45,6 +45,30 @@ void main() {
       );
       expect(find.text('Analyzing…'), findsWidgets);
       expect(find.textContaining('!'), findsNothing);
+
+      // Deck B holds nothing here — the single-item-queue shape the emulator
+      // ran in. An empty deck has no analysis in flight and must not claim one.
+      expect(
+        find.byKey(const ValueKey('dj_lane_analysis_pending_b')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('dj_lane_analysis_missing_b')),
+        findsNothing,
+      );
+
+      // The playhead hairline is an opaque full-height surface band on the
+      // lane's centre axis, so a centred notice came out bisected.
+      final notice =
+          tester.getRect(find.byKey(const ValueKey('dj_lane_analysis_pending_a')));
+      final hairline = tester.getRect(
+        find.byKey(const ValueKey('dj_waveform_playhead_hairline_a')),
+      );
+      expect(
+        notice.overlaps(hairline),
+        isFalse,
+        reason: 'notice $notice is crossed by the playhead $hairline',
+      );
       expect(tester.takeException(), isNull);
       await djRetireSession(tester, session);
     });
@@ -187,6 +211,42 @@ void main() {
     });
   });
 
+  group('the ruler layer stays off the 30 Hz path (#416)', () {
+    testWidgets('a position tick does not re-run the ruler paint',
+        (tester) async {
+      final track = djAnalysisTrack(analysis: djNumberedAnalysis());
+      final session = djCountingSession([]);
+      await djLoadDecks(session, deckA: track);
+
+      await pumpDjScreen(
+        tester,
+        session: session,
+        viewport: landscapeReference,
+      );
+      expect(painterIn<DjBeatRulerPainter>(tester, DjDeckId.a).ticks,
+          isNotEmpty);
+
+      // shouldRepaint cannot observe this: the ruler rides in a Positioned
+      // whose left is position-derived, and the relayout that follows always
+      // ends in markNeedsPaint. Only the lane's RepaintBoundary keeps the
+      // whole-track tick list — and its per-phrase TextPainter layouts — from
+      // being replayed on every snapshot.
+      DjBeatRulerPainter.debugPaintCount = 0;
+      for (var step = 1; step <= 10; step++) {
+        await session.seek(DjDeckId.a, step * 250);
+        await tester.pump();
+      }
+
+      expect(
+        DjBeatRulerPainter.debugPaintCount,
+        0,
+        reason: 'the ruler repainted on position-only updates',
+      );
+      expect(tester.takeException(), isNull);
+      await djRetireSession(tester, session);
+    });
+  });
+
   group('lane zoom parameter', () {
     testWidgets('defaults to the deck detail zoom', (tester) async {
       final track = djAnalysisTrack(analysis: djNumberedAnalysis());
@@ -205,7 +265,7 @@ void main() {
       await djRetireSession(tester, session);
     });
 
-    testWidgets('an empty deck still mounts an unanalyzed lane',
+    testWidgets('an empty deck mounts a bare lane and claims no analysis',
         (tester) async {
       await pumpDjLane(
         tester,
@@ -216,6 +276,33 @@ void main() {
       final painter = painterIn<TimelineWaveformPainter>(tester, DjDeckId.a);
       expect(painter.waveform, isA<TimelineWaveformData>());
       expect(painter.waveform!.frames, isEmpty);
+      // Nothing is being analyzed on a deck that holds nothing.
+      expect(
+        find.byKey(const ValueKey('dj_lane_analysis_pending_a')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey('dj_lane_analysis_missing_a')),
+        findsNothing,
+      );
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a loaded track whose peaks have not landed still does',
+        (tester) async {
+      final track = djAnalysisTrack(analysis: djCompactAnalysis());
+      await pumpDjLane(
+        tester,
+        deck: DjDeckState(
+          deckId: DjDeckId.a,
+          trackRef: track.id,
+          queueItemId: track.queueItemId,
+          queueTrack: track,
+          durationMs: track.durationMs,
+        ),
+        track: track,
+      );
+
       expect(
         find.byKey(const ValueKey('dj_lane_analysis_pending_a')),
         findsOneWidget,

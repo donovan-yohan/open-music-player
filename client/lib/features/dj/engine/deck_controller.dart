@@ -8,6 +8,7 @@ import '../../../core/engine/timeline_model.dart';
 import '../../../core/engine/voice.dart';
 import '../../../models/timeline_clip.dart';
 import '../../../models/track.dart';
+import '../../../models/waveform.dart';
 import '../models/dj_deck_load_failure.dart';
 import '../models/dj_deck_state.dart';
 import '../models/dj_hot_cue.dart';
@@ -170,6 +171,20 @@ class DeckController {
     // start advertising analysis again.
     if (_state.trackRef == null || _state.loadFailure != null) return false;
     if (identical(_state.queueTrack, track)) return false;
+    // Hydration is one-way for the deck. QueueProvider evicts a hydrated
+    // analysis whenever another screen takes over hydration interest
+    // (_releaseAnalysisHydration), and the very next revision tick then offers
+    // the deck the compact, waveform-less queue snapshot again. Accepting it
+    // would flip a painted lane back to a flat "Analyzing…" baseline and
+    // re-derive beatsMs from the truncated grid until the refetch lands. The
+    // re-arm still happens — DjScreen calls trackWithAnalysis for that side
+    // effect — but the deck keeps the better snapshot it already has.
+    final current = _state.queueTrack;
+    if (current != null &&
+        waveformAvailableSampleCountForTrack(current) != null &&
+        waveformAvailableSampleCountForTrack(track) == null) {
+      return false;
+    }
     final analysis = track.analysis;
     _state = _state.copyWith(
       queueTrack: track,

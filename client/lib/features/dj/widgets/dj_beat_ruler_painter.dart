@@ -135,8 +135,18 @@ List<DjBeatTick> djBeatRulerTicks({
 
 /// Paints a precomputed three-level beat ruler over a deck lane (#416).
 ///
-/// Nothing position-derived is a field, so a 30 Hz position tick never
-/// repaints this layer.
+/// Nothing position-derived is a field, so [shouldRepaint] is false across a
+/// 30 Hz position tick. That alone does not keep [paint] from running: the
+/// ruler rides in a `Positioned` content box whose `left` is position-derived,
+/// and a ParentData change relayouts the enclosing Stack, which always ends in
+/// `markNeedsPaint`. `shouldRepaint` is only consulted when the painter object
+/// itself is swapped. What actually keeps the whole-track tick list — and its
+/// per-phrase `TextPainter` layouts — off the 30 Hz path is the
+/// `RepaintBoundary` the lane wraps this CustomPaint in: a pure translation
+/// then reuses the recorded layer instead of replaying paint.
+///
+/// [debugPaintCount] exists so that guarantee is measurable in a widget test
+/// rather than asserted through `shouldRepaint`, which cannot observe it.
 class DjBeatRulerPainter extends CustomPainter {
   const DjBeatRulerPainter({
     required this.ticks,
@@ -152,8 +162,14 @@ class DjBeatRulerPainter extends CustomPainter {
   final Color phraseColor;
   final TextStyle labelStyle;
 
+  /// Number of [paint] calls since the last reset. Test-only probe for the
+  /// "the ruler does not repaint on a position tick" invariant.
+  @visibleForTesting
+  static int debugPaintCount = 0;
+
   @override
   void paint(Canvas canvas, Size size) {
+    debugPaintCount++;
     if (ticks.isEmpty || size.width <= 0 || size.height <= 0) return;
     // A lane is 56dp tall at the reference viewport and 28dp on the waveform
     // stack's floor, so the levels are expressed as fractions of it.

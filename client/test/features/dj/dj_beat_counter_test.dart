@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:open_music_player/app/theme.dart';
 import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/widgets/dj_beat_counter.dart';
+import 'package:open_music_player/features/dj/widgets/dj_transport.dart';
 import 'package:open_music_player/models/track_analysis.dart';
 
 import '../../support/dj_analysis_fixtures.dart';
@@ -146,6 +148,45 @@ void main() {
           isFalse,
           reason: '${viewport.name}: counter $counter overlaps cue $cue',
         );
+
+        // The counter must not be a flex sibling of Expanded(DjTransport): a
+        // flex share would hand the transport exactly half the deck slot
+        // however narrow the label is, leave the rest dead, and silently drop
+        // the transport under kDjTransportCompactWidth.
+        final slot =
+            tester.getRect(find.byKey(const ValueKey('dj_transport_deck_a')));
+        final transport = tester.getRect(
+          find.descendant(
+            of: find.byKey(const ValueKey('dj_transport_deck_a')),
+            matching: find.byType(DjTransport),
+          ),
+        );
+        expect(
+          transport.width,
+          closeTo(slot.width - counter.width - AppTheme.space1, 1),
+          reason: '${viewport.name}: transport ${transport.width} of slot '
+              '${slot.width} with a ${counter.width} counter',
+        );
+        expect(counter.width, lessThanOrEqualTo(kDjBeatCounterMaxWidth + 0.5));
+
+        // landscapeNarrowServiceable is compact with or without the counter
+        // (its bare slot is already under the gate); the three serviceable
+        // fixtures must keep the labelled CUE button, which is lane D's
+        // behaviour contract and not this widget's to change.
+        final cueLabel = find.descendant(
+          of: find.byKey(const ValueKey('dj_transport_deck_a')),
+          matching: find.text('CUE'),
+        );
+        if (viewport == landscapeNarrowServiceable) {
+          expect(transport.width, lessThan(kDjTransportCompactWidth));
+        } else {
+          expect(
+            transport.width,
+            greaterThanOrEqualTo(kDjTransportCompactWidth),
+            reason: viewport.name,
+          );
+          expect(cueLabel, findsOneWidget, reason: viewport.name);
+        }
         expect(tester.takeException(), isNull);
         await djRetireSession(tester, session);
       });
