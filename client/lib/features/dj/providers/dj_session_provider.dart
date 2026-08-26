@@ -109,7 +109,8 @@ class DjSessionProvider extends ChangeNotifier {
       queueItemId: track.queueItemId,
       title: track.title,
       queueTrack: track,
-      durationMs: track.duration,
+      // QueueTrack.duration is whole seconds (track.dart:286) — #412.
+      durationMs: track.durationMs,
       beatsMs: track.analysis?.summary?.beatGrid?.beatsMs ?? const [],
       initialCueMs: track.analysis?.summary?.intro?.startMs ?? 0,
     );
