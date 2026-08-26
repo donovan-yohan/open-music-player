@@ -300,7 +300,14 @@ class _DjScreenState extends State<DjScreen> {
       return;
     }
     if (!mounted) return;
-    final seeds = DjSessionProvider.queueSeeds(queueTrack, null);
+    // Seeded through the same hydration path as the cold entry above, not from
+    // the raw queue row: collection payloads never carry waveform arrays
+    // (queue_provider.dart:197-199), so re-seeding from `queueTrack` loaded the
+    // deck under a lane that said "Analyzing…" and had no peaks. It also
+    // re-arms hydration interest, which a deck refused long enough for another
+    // screen to evict its analysis needs (#410).
+    final seedTrack = _queue?.trackWithAnalysis(queueTrack) ?? queueTrack;
+    final seeds = DjSessionProvider.queueSeeds(seedTrack, null);
     if (seeds.isEmpty) return;
     await _session!.load(deck, seeds.first);
     if (!mounted) return;

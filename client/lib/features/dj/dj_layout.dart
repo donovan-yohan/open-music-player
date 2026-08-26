@@ -490,6 +490,11 @@ class _DeckControl extends StatelessWidget {
               for (final cue in session.hotCuesFor(deck.deckId)) cue.slot: cue
             },
             enabled: deck.isLoaded,
+            // The same reason the transport below is given, from the same
+            // failure, so one deck cannot tell two stories (#414).
+            disabledReason: deck.loadFailure == null
+                ? null
+                : DjDeckNotice.messageFor(deck.loadFailure!.kind),
             onTrigger: (slot) => session.triggerHotCue(deck.deckId, slot),
             onSet: (slot) => session.setHotCue(deck.deckId, slot),
           ),
