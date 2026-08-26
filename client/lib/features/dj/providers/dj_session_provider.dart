@@ -233,9 +233,9 @@ class DjSessionProvider extends ChangeNotifier {
   ///
   /// Returns true when a rate command was actually issued.
   Future<bool> _restoreSyncBaseRate(DjDeckId deck) async {
-    final base = _syncBaseRates.remove(deck);
-    final offset = _syncOffsets.remove(deck) ?? 0;
-    _syncCommandAtMs.remove(deck);
+    final base = _syncBaseRates[deck];
+    final offset = _syncOffsets[deck] ?? 0;
+    _forgetSyncCorrection(deck);
     if (base == null || offset == 0) return false;
     await _decks[deck]!.setRate(base);
     return true;
@@ -604,7 +604,7 @@ class DjSessionProvider extends ChangeNotifier {
         );
       }
     }
-    _traceSyncCorrection(deck, reading, target);
+    _traceSyncCorrection(follower, reading, target);
     final applied = _syncOffsets[deck] ?? 0;
     if ((target - applied).abs() <= kDjSyncRateEpsilon) return;
     final now = _clock();
@@ -627,7 +627,7 @@ class DjSessionProvider extends ChangeNotifier {
   /// an API-seeded deck (#425) - so this line is the only device-side evidence
   /// that the loop converges rather than merely looking settled.
   void _traceSyncCorrection(
-    DjDeckId deck,
+    DjDeckState follower,
     DjSyncPhaseReading? reading,
     double offset,
   ) {
@@ -640,9 +640,9 @@ class DjSessionProvider extends ChangeNotifier {
         ? 'unavailable'
         : '${reading.errorMs.toStringAsFixed(1)}ms';
     debugPrint(
-      'OMP DJ sync deck=${deck.name} beat error=$error '
+      'OMP DJ sync deck=${follower.deckId.name} beat error=$error '
       'offset=${offset.toStringAsFixed(4)} '
-      'rate=${stateFor(deck).rate.toStringAsFixed(6)}',
+      'rate=${follower.rate.toStringAsFixed(6)}',
     );
   }
 

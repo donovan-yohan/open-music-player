@@ -10,6 +10,7 @@
 library;
 
 import '../../../core/engine/tempo_automation.dart';
+import '../../../models/track_analysis.dart';
 import '../models/dj_beat_grid.dart';
 import '../models/dj_deck_state.dart';
 import 'deck_controller.dart';
@@ -132,7 +133,6 @@ DjSyncMatch djSyncTempoMatch({
   );
 }
 
-
 // ---------------------------------------------------------------------------
 // Beat-level alignment (#413, DJ-3, slice 2)
 // ---------------------------------------------------------------------------
@@ -241,23 +241,37 @@ double? djSyncPhaseErrorMs({
 }) =>
     djSyncPhaseReading(leader: leader, follower: follower)?.errorMs;
 
+/// Memoises the grid verdict per analysis object, the way `DjBeatRuler` does.
+///
+/// `hasReliableBeatGrid` walks the whole marker array and takes a median of its
+/// intervals (tempo_automation.dart:99-112). The correction asks this question
+/// on every 33ms pass for both decks, and the answer cannot change without the
+/// analysis object itself being replaced, so re-deriving it 60 times a second
+/// is pure waste. Weak keys, so a superseded snapshot is collected with its
+/// verdict and no eviction policy is needed.
+final Expando<bool> _reliableGridByAnalysis =
+    Expando<bool>('djSyncReliableBeatGrid');
+
+bool _hasReliableGrid(TrackAnalysis? analysis) {
+  if (analysis == null) return false;
+  final cached = _reliableGridByAnalysis[analysis];
+  if (cached != null) return cached;
+  return _reliableGridByAnalysis[analysis] =
+      ClipTempoMetadata.fromTrackAnalysis(analysis).hasReliableBeatGrid;
+}
+
 /// Whether beat-level correction may act on this pair at all.
 ///
-/// The tempo match is gated on `hasReliableBpm` (see [djSyncTempoMatch]); phase
+/// The tempo match is gated on `hasReliableBpm` (see [djSyncTempoMatch]); this
 /// work needs the grid itself to be trustworthy on BOTH decks, because a
 /// correction computed against a wrong grid pushes a deck away from the beat
 /// rather than towards it (docs/dj-deck-spec.md:365).
 bool djSyncPhaseCorrectionAllowed({
   required DjDeckState leader,
   required DjDeckState follower,
-}) {
-  final leaderAnalysis = leader.queueTrack?.analysis;
-  final followerAnalysis = follower.queueTrack?.analysis;
-  if (leaderAnalysis == null || followerAnalysis == null) return false;
-  return ClipTempoMetadata.fromTrackAnalysis(leaderAnalysis)
-          .hasReliableBeatGrid &&
-      ClipTempoMetadata.fromTrackAnalysis(followerAnalysis).hasReliableBeatGrid;
-}
+}) =>
+    _hasReliableGrid(leader.queueTrack?.analysis) &&
+    _hasReliableGrid(follower.queueTrack?.analysis);
 
 /// The correction cap available on top of [baseRate].
 ///
