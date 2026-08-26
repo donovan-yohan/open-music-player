@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -155,5 +156,44 @@ func TestNearbyTracksPassesHistoryRankAndRejectsUnknownOrder(t *testing.T) {
 
 	if badRec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown order status = %d, want %d", badRec.Code, http.StatusBadRequest)
+	}
+}
+
+// A queued nearby match becomes a playback timeline clip on the client, and a
+// clip of unknown length is never active — so the track's own duration has to
+// survive the wire, and an unknown one has to stay absent rather than arrive
+// as a zero the client cannot tell apart from a real length.
+func TestNearbyTracksCarriesTrackDurationAndOmitsUnknownOnes(t *testing.T) {
+	userID := uuid.New()
+	store := &fakeNearbyTrackReader{tracks: []db.NearbyTrack{
+		{ID: 1, Title: "known", DurationMs: sql.NullInt64{Int64: 214000, Valid: true}, EffectiveBPM: 120, EffectiveCamelot: "1A"},
+		{ID: 2, Title: "unknown", EffectiveBPM: 120, EffectiveCamelot: "1A"},
+		{ID: 3, Title: "zero", DurationMs: sql.NullInt64{Int64: 0, Valid: true}, EffectiveBPM: 120, EffectiveCamelot: "1A"},
+	}}
+	h := NewNearbyTracksHandlers(store, true)
+	req := authedRequest(userID, http.MethodGet, "/api/v1/tracks/nearby?bpm=120&camelot=1A&tolerance=5", nil)
+	rec := httptest.NewRecorder()
+
+	h.GetNearbyTracks(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Tracks []map[string]any `json:"tracks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Tracks) != 3 {
+		t.Fatalf("tracks = %#v, want three rows", payload.Tracks)
+	}
+	if got := payload.Tracks[0]["duration_ms"]; got != float64(214000) {
+		t.Fatalf("known duration_ms = %#v, want 214000", got)
+	}
+	for _, index := range []int{1, 2} {
+		if _, present := payload.Tracks[index]["duration_ms"]; present {
+			t.Fatalf("row %d = %#v, want duration_ms omitted when unknown", index, payload.Tracks[index])
+		}
 	}
 }

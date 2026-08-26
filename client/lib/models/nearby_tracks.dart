@@ -1,10 +1,11 @@
 /// Typed view of `GET /api/v1/tracks/nearby`.
 ///
 /// Mirrors `backend/internal/api/track_nearby_handlers.go`:
-/// `{ tracks: [{id,title,artist?,album?,bpm,camelot}], bpm, camelot,
-///    tolerance, order? }`. `artist`/`album` are `omitempty` on the wire, and
-/// `order` is echoed only when `order=history` was requested, so every field
-/// here parses tolerantly in the same style as the mix-plan slices.
+/// `{ tracks: [{id,title,artist?,album?,duration_ms?,bpm,camelot}], bpm,
+///    camelot, tolerance, order? }`. `artist`, `album` and `duration_ms` are
+/// `omitempty` on the wire, and `order` is echoed only when `order=history`
+/// was requested, so every field here parses tolerantly in the same style as
+/// the mix-plan slices.
 library;
 
 /// A single harmonically compatible track from the caller's own library.
@@ -16,6 +17,14 @@ class NearbyTrack {
   final String title;
   final String? artist;
   final String? album;
+
+  /// Track length in milliseconds, or null when the server does not know it
+  /// (`duration_ms` is `omitempty` on the wire).
+  ///
+  /// Queueing a match builds a playback item from this response, and a queue
+  /// item of unknown length becomes a zero-length timeline clip that is never
+  /// active — so callers must treat null as "cannot be queued", not as zero.
+  final int? durationMs;
 
   /// Effective tempo, or null when the server sent no usable tempo.
   final double? bpm;
@@ -29,6 +38,7 @@ class NearbyTrack {
     required this.title,
     this.artist,
     this.album,
+    this.durationMs,
     this.bpm,
     this.camelot,
   });
@@ -38,6 +48,7 @@ class NearbyTrack {
         title: _nonEmpty(json['title']) ?? '',
         artist: _nonEmpty(json['artist']),
         album: _nonEmpty(json['album']),
+        durationMs: _positiveInt(json['duration_ms']),
         bpm: _positiveFinite(json['bpm']),
         camelot: normalizeCamelotLabel(json['camelot']),
       );
@@ -112,6 +123,10 @@ String? _nonEmpty(Object? value) {
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
 }
+
+/// Whole milliseconds, or null when absent or not a real length. Zero and
+/// negatives are "unknown", never a playable duration.
+int? _positiveInt(Object? value) => _positiveFinite(value)?.toInt();
 
 double? _positiveFinite(Object? value) {
   final number = _finite(value);

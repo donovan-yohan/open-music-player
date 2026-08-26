@@ -40,11 +40,18 @@ class PlaylistDetailScreen extends StatefulWidget {
   final Future<MixPlan> Function(MixPlan plan, List<MixPlanClip> clips)?
       onSaveMixPlan;
 
+  /// Runs the harmonic discovery query. Injectable for the same reason as
+  /// [onSaveMixPlan]: the screen's own [ApiClient] is not constructor-injected,
+  /// so without this seam the entry point cannot be driven in a widget test.
+  /// Defaults to the authenticated `GET /tracks/nearby`.
+  final HarmonicSearch? harmonicSearch;
+
   const PlaylistDetailScreen({
     super.key,
     required this.playlistId,
     this.playlistService,
     this.onSaveMixPlan,
+    this.harmonicSearch,
   });
 
   @override
@@ -497,18 +504,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final seeded = seed.bpm != null && seed.camelot != null;
     await HarmonicDiscoverySheet.show(
       context,
-      search: ({
-        required double bpm,
-        required String camelot,
-        required double tolerance,
-        required bool orderByHistory,
-      }) =>
-          _mixPlanApiClient.getNearbyTracks(
-        bpm: bpm,
-        camelot: camelot,
-        tolerance: tolerance,
-        orderByHistory: orderByHistory,
-      ),
+      search: widget.harmonicSearch ?? _searchNearbyTracks,
       playlistName: _playlistDisplayName,
       seedBpm: seed.bpm,
       seedCamelot: seed.camelot,
@@ -519,13 +515,41 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
-  /// Prefers the library track already on screen: it carries duration,
-  /// artwork, and analysis that `/tracks/nearby` does not return.
+  Future<NearbyTracksResult> _searchNearbyTracks({
+    required double bpm,
+    required String camelot,
+    required double tolerance,
+    required bool orderByHistory,
+  }) =>
+      _mixPlanApiClient.getNearbyTracks(
+        bpm: bpm,
+        camelot: camelot,
+        tolerance: tolerance,
+        orderByHistory: orderByHistory,
+      );
+
+  /// Prefers the library track already on screen: it carries artwork and
+  /// analysis that `/tracks/nearby` does not return. Otherwise the match's own
+  /// `duration_ms` builds the payload — a queue item of unknown length becomes
+  /// a zero-length timeline clip that is never active, so it would be silently
+  /// skipped in playback while colliding with the next track's slot. That is
+  /// worse than not queueing at all, so an unknown length is refused out loud.
   Future<void> _enqueueMatch(NearbyTrack match) {
     for (final track in _playlist?.tracks ?? const <Track>[]) {
       if (track.id == match.id) {
         return _enqueuePayload(track.toPlaybackJson(), track.title);
       }
+    }
+    final durationMs = match.durationMs;
+    if (durationMs == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Could not add "${match.title}" to queue: its length is unknown.',
+          ),
+        ),
+      );
+      return Future<void>.value();
     }
     return _enqueuePayload(
       buildPlaybackPayload(
@@ -533,7 +557,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         title: match.title,
         artist: match.artist,
         album: match.album,
-        duration: Duration.zero,
+        duration: Duration(milliseconds: durationMs),
       ),
       match.title,
     );

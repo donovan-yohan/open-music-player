@@ -33,12 +33,17 @@ func NewNearbyTracksHandlers(tracks nearbyTrackReader, enabled bool) *NearbyTrac
 }
 
 type NearbyTrackResponse struct {
-	ID      int64   `json:"id"`
-	Title   string  `json:"title"`
-	Artist  string  `json:"artist,omitempty"`
-	Album   string  `json:"album,omitempty"`
-	BPM     float64 `json:"bpm"`
-	Camelot string  `json:"camelot"`
+	ID     int64  `json:"id"`
+	Title  string `json:"title"`
+	Artist string `json:"artist,omitempty"`
+	Album  string `json:"album,omitempty"`
+	// DurationMs is omitted when the server does not know the track's length.
+	// Clients queue a match by building a playback item from this response, and
+	// a queued item with no length is silently skipped during playback, so an
+	// absent value has to stay distinguishable from a real one.
+	DurationMs int64   `json:"duration_ms,omitempty"`
+	BPM        float64 `json:"bpm"`
+	Camelot    string  `json:"camelot"`
 }
 
 type NearbyTracksResponse struct {
@@ -96,6 +101,9 @@ func (h *NearbyTracksHandlers) GetNearbyTracks(w http.ResponseWriter, r *http.Re
 		}
 		if track.Album.Valid {
 			response.Album = track.Album.String
+		}
+		if track.DurationMs.Valid && track.DurationMs.Int64 > 0 {
+			response.DurationMs = track.DurationMs.Int64
 		}
 		responseTracks = append(responseTracks, response)
 	}

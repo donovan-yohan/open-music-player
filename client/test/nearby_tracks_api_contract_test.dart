@@ -18,11 +18,12 @@ Map<String, dynamic> _payload({bool withOrder = false}) => {
           'title': 'Full Row',
           'artist': 'Anchor Artist',
           'album': 'Anchor Album',
+          'duration_ms': 214000,
           'bpm': 124.4,
           'camelot': '8a',
         },
         {
-          // artist/album/bpm/camelot all omitted by the server.
+          // artist/album/duration_ms/bpm/camelot all omitted by the server.
           'id': 12,
           'title': 'Sparse Row',
         },
@@ -30,6 +31,7 @@ Map<String, dynamic> _payload({bool withOrder = false}) => {
           'id': 13,
           'title': 'Off Wheel Row',
           'artist': '   ',
+          'duration_ms': 0,
           'bpm': 0,
           'camelot': '13Z',
         },
@@ -65,6 +67,11 @@ void main() {
       expect(full.title, 'Full Row');
       expect(full.artist, 'Anchor Artist');
       expect(full.album, 'Anchor Album');
+      expect(
+        full.durationMs,
+        214000,
+        reason: 'a queued match needs a real length or its clip is never active',
+      );
       expect(full.bpm, 124.4);
       expect(full.camelot, '8A', reason: 'labels are canonicalized');
 
@@ -72,11 +79,17 @@ void main() {
       expect(sparse.id, 12);
       expect(sparse.artist, isNull);
       expect(sparse.album, isNull);
+      expect(sparse.durationMs, isNull, reason: 'duration_ms is omitempty');
       expect(sparse.bpm, isNull);
       expect(sparse.camelot, isNull);
 
       final offWheel = result.tracks[2];
       expect(offWheel.artist, isNull, reason: 'blank artist is not a name');
+      expect(
+        offWheel.durationMs,
+        isNull,
+        reason: '0 ms is an unknown length, not a playable one',
+      );
       expect(offWheel.bpm, isNull, reason: '0 BPM is not a tempo');
       expect(offWheel.camelot, isNull, reason: '13Z is not on the wheel');
 
