@@ -502,8 +502,19 @@ func (db *DB) Migrate() error {
 	--      function (or batch-rewrite every row through its base columns) and rebuild
 	--      the dependent partial indexes.
 	--   3. Keep the old function until no column or index references it.
-	-- Only edits that provably cannot change output (comments, whitespace) are allowed
-	-- in place.
+	-- Only edits that provably cannot change output (comments, whitespace, and
+	-- schema-qualifying a call that already resolved to the same public function)
+	-- are allowed in place.
+	--
+	-- RESTORABILITY: every call one omp_* function makes to another MUST be
+	-- schema-qualified (public.omp_...). pg_dump emits the whole archive under
+	-- an explicit set_config('search_path', '', false), and pg_restore INLINES
+	-- these IMMUTABLE SQL bodies while building track_analysis's GENERATED
+	-- ALWAYS columns. An unqualified inner call is unresolvable there, so
+	-- CREATE TABLE public.track_analysis fails and the restore silently lands a
+	-- database with no track_analysis at all -- which the next Migrate() then
+	-- recreates EMPTY. TestSchemaFunctionsResolveWithoutSearchPath reproduces
+	-- exactly that resolution and fails if a call loses its schema.
 	--
 	-- Backpressure: checkGeneratedProjectionDrift (bottom of this file) compares a
 	-- bounded sample of stored values against a fresh evaluation on every Migrate()
@@ -673,9 +684,9 @@ func (db *DB) Migrate() error {
 	PARALLEL SAFE
 	AS $$
 		SELECT COALESCE(
-			omp_manual_timing_bpm(overrides),
-			omp_compact_number_value(overrides, 'bpm'),
-			omp_compact_number_value(summary, 'bpm')
+			public.omp_manual_timing_bpm(overrides),
+			public.omp_compact_number_value(overrides, 'bpm'),
+			public.omp_compact_number_value(summary, 'bpm')
 		)
 	$$;
 
@@ -686,8 +697,8 @@ func (db *DB) Migrate() error {
 	PARALLEL SAFE
 	AS $$
 		SELECT COALESCE(
-			omp_compact_camelot_value(overrides),
-			omp_compact_camelot_value(summary)
+			public.omp_compact_camelot_value(overrides),
+			public.omp_compact_camelot_value(summary)
 		)
 	$$;
 
