@@ -333,6 +333,61 @@ def check_doc_check_commands() -> None:
                 )
 
 
+def check_protected_stack_guard() -> None:
+    """The dogfood database's guards are only real while their tests pass.
+
+    `scripts/local-low-memory.sh clean` runs `down -v`, which deletes the named
+    volumes holding the only copy of the real library, and every truncating
+    integration-test helper points at whatever DSN the environment hands it. The
+    refusals (issue #407) are cheap to delete by accident, so `scripts/lint
+    delivery` runs their stubbed shell tests on every pass rather than trusting
+    the doctrine in deploy/README.md.
+    """
+    required_phrases = {
+        "scripts/local-low-memory.sh": [
+            "assert_teardown_allowed clean",
+            "OMP_ALLOW_PROTECTED_STACK_TEARDOWN",
+            "OMP_PROTECTED_COMPOSE_PROJECTS",
+        ],
+        "scripts/dogfood-backup.sh": [
+            "OMP_ALLOW_PROTECTED_DB_RESTORE",
+            "--clean --if-exists --no-owner",
+        ],
+    }
+    for name, phrases in required_phrases.items():
+        path = ROOT / name
+        if not path.exists():
+            fail(f"{name}: protected-stack script is missing")
+            continue
+        text = path.read_text(errors="replace")
+        for phrase in phrases:
+            if phrase not in text:
+                fail(f"{name}: missing protected-stack guard phrase {phrase!r}")
+
+    for name in [
+        "scripts/tests/local_low_memory_guard_test.sh",
+        "scripts/tests/dogfood_backup_test.sh",
+    ]:
+        path = ROOT / name
+        if not path.exists():
+            fail(f"{name}: protected-stack guard test is missing")
+            continue
+        if not os.access(path, os.X_OK):
+            fail(f"{name}: script must be executable")
+            continue
+        result = subprocess.run(
+            ["bash", str(path)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
+            tail = " | ".join(detail[-5:]) if detail else "no output"
+            fail(f"{name}: protected-stack guard test failed: {tail}")
+
+
 def check_json_syntax(files: list[Path]) -> None:
     for path in files:
         if path.suffix.lower() != ".json":
@@ -535,6 +590,7 @@ def main() -> int:
     check_ci_wires_harness()
     check_local_dev_contracts()
     check_doc_check_commands()
+    check_protected_stack_guard()
     check_json_syntax(files)
     check_python_syntax(files)
     check_soundq_brand_assets()
