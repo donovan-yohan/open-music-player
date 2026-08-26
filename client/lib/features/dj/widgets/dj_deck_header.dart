@@ -20,13 +20,37 @@ const double kDjHeaderClockMinWidth = 150;
 /// Width the title keeps no matter how wide the metric run wants to be.
 const double kDjHeaderTitleMinWidth = 48;
 
+/// One metric segment of the header run.
+///
+/// [dropRank] orders the give-up sequence — lowest rank is surrendered first.
+/// A null rank is never dropped, which is BPM and only BPM.
+class _DjHeaderMetric {
+  _DjHeaderMetric(this.text, this.dropRank, {this.minWidth = 0});
+
+  final String text;
+  final int? dropRank;
+  final double minWidth;
+  double intrinsicWidth = 0;
+
+  bool get droppable => dropRank != null;
+}
+
 /// One deck's title + live metric run.
 ///
 /// The band height belongs to `DjLayout`'s row budget, not to this widget, so
-/// there is no `SizedBox(height:)` here any more. As width falls the metric run
+/// there is no `SizedBox(height:)` here any more. As the run stops fitting it
 /// drops segments in this order — beat phase, key + camelot, pitch %, clock —
-/// and BPM is never dropped. Every remaining metric is width-capped and
-/// ellipsised, so no font, locale or textScaler can overflow the row.
+/// and BPM is never dropped.
+///
+/// The decision is *cumulative and measured*, not a set of independent width
+/// thresholds: the raw-width constants above are only an outer gate, and text
+/// scaling, a long key or a clock past ten minutes never move them. Without the
+/// measured pass the proportional cap below became the only mechanism and
+/// ellipsised every segment together, so the user was shown `142.1 B…` next to
+/// an intact `1/4` — the exact inversion of the documented order (#411). The
+/// cap now only ever binds once BPM is the sole survivor, so it cannot overflow
+/// the row and cannot truncate the deck's primary metric ahead of a lower
+/// priority one.
 class DjDeckHeader extends StatelessWidget {
   const DjDeckHeader({super.key, required this.deck});
 
@@ -43,40 +67,68 @@ class DjDeckHeader extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
-        final metrics = <String>[
-          '${bpm == null ? '--' : (bpm * deck.rate).toStringAsFixed(1)} BPM',
-          if (width >= kDjHeaderPitchMinWidth)
+        // Display order; `dropRank` is the give-order, which is deliberately
+        // not the same sequence.
+        final metrics = <_DjHeaderMetric>[
+          _DjHeaderMetric(
+            '${bpm == null ? '--' : (bpm * deck.rate).toStringAsFixed(1)} BPM',
+            null,
+          ),
+          _DjHeaderMetric(
             '${deck.ratePercent >= 0 ? '+' : ''}'
                 '${deck.ratePercent.toStringAsFixed(1)}%',
-          if (key.isNotEmpty && width >= kDjHeaderKeyMinWidth) key,
-          if (reliableBeatPhase.isNotEmpty &&
-              width >= kDjHeaderBeatPhaseMinWidth)
-            reliableBeatPhase,
-          if (width >= kDjHeaderClockMinWidth)
+            2,
+            minWidth: kDjHeaderPitchMinWidth,
+          ),
+          if (key.isNotEmpty)
+            _DjHeaderMetric(key, 1, minWidth: kDjHeaderKeyMinWidth),
+          if (reliableBeatPhase.isNotEmpty)
+            _DjHeaderMetric(
+              reliableBeatPhase,
+              0,
+              minWidth: kDjHeaderBeatPhaseMinWidth,
+            ),
+          _DjHeaderMetric(
             '${_clock(deck.positionMs)}/-${_clock(remaining)}',
-        ];
-        // The metrics are non-flex, so the Expanded title alone cannot stop
-        // them overflowing the row: they are capped instead. Splitting the
-        // budget evenly would ellipsise a long metric while a short one kept
-        // slack, so the caps are proportional to what each string actually
-        // needs, and no cap binds at all while everything fits.
+            3,
+            minWidth: kDjHeaderClockMinWidth,
+          ),
+        ]..retainWhere((metric) => width >= metric.minWidth);
+
         final metricStyle = DefaultTextStyle.of(context).style;
         final painter = TextPainter(
           textDirection: TextDirection.ltr,
           textScaler: MediaQuery.textScalerOf(context),
           maxLines: 1,
         );
-        final intrinsic = <double>[];
         for (final metric in metrics) {
-          painter.text = TextSpan(text: metric, style: metricStyle);
+          painter.text = TextSpan(text: metric.text, style: metricStyle);
           painter.layout();
-          intrinsic.add(painter.width);
+          metric.intrinsicWidth = painter.width;
         }
         painter.dispose();
-        final needed = intrinsic.fold<double>(0, (sum, w) => sum + w);
-        final gaps = metrics.length * AppTheme.space2;
-        final metricBudget =
-            math.max(0.0, width - gaps - kDjHeaderTitleMinWidth);
+
+        double budgetFor(int count) => math.max(
+              0.0,
+              width - count * AppTheme.space2 - kDjHeaderTitleMinWidth,
+            );
+        double neededBy(List<_DjHeaderMetric> run) =>
+            run.fold<double>(0, (sum, metric) => sum + metric.intrinsicWidth);
+
+        // Give up whole segments, cheapest first, until the run fits.
+        while (metrics.any((metric) => metric.droppable) &&
+            neededBy(metrics) > budgetFor(metrics.length)) {
+          metrics.remove(
+            metrics.where((metric) => metric.droppable).reduce(
+                  (a, b) => a.dropRank! <= b.dropRank! ? a : b,
+                ),
+          );
+        }
+
+        // Last resort, reached only when BPM alone still does not fit: cap
+        // proportionally so the row ellipsises instead of overflowing.
+        final needed = neededBy(metrics);
+        final metricBudget = budgetFor(metrics.length);
         final scale = needed <= metricBudget || needed == 0
             ? 1.0
             : metricBudget / needed;
@@ -90,12 +142,13 @@ class DjDeckHeader extends StatelessWidget {
                 style: Theme.of(context).textTheme.labelLarge,
               ),
             ),
-            for (var i = 0; i < metrics.length; i++) ...[
+            for (final metric in metrics) ...[
               const SizedBox(width: AppTheme.space2),
               ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: intrinsic[i] * scale),
+                constraints:
+                    BoxConstraints(maxWidth: metric.intrinsicWidth * scale),
                 child: Text(
-                  metrics[i],
+                  metric.text,
                   maxLines: 1,
                   softWrap: false,
                   overflow: TextOverflow.ellipsis,
