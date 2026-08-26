@@ -17,6 +17,39 @@ import 'widgets/dj_stem_panel.dart';
 import 'widgets/dj_transport.dart';
 import 'widgets/dj_waveform_lane.dart';
 
+/// Preferred height of the two stacked waveform lanes.
+const double kDjWaveformStackHeight = 120;
+
+/// Floor the waveform stack degrades to before the header band gives way.
+const double kDjWaveformStackMinHeight = 64;
+
+/// Preferred height of the deck header + overview strip band.
+const double kDjHeaderBandHeight = 44;
+
+/// Floor of the header band. The 8dp overview strip is dropped below 40dp.
+const double kDjHeaderBandMinHeight = 36;
+
+/// Band height at or above which the header still carries its overview strip.
+const double kDjHeaderOverviewStripMinBandHeight = 40;
+
+/// Cap on the flexible control field (pitch fader + panel + mixer).
+const double kDjControlFieldMaxHeight = 180;
+
+/// Floor of the flexible control field. Below this the deck is not serviceable.
+const double kDjControlFieldMinHeight = 120;
+
+/// The transport row never shrinks: it is the primary thumb surface and is
+/// pinned by docs/dj-deck-spec.md.
+const double kDjTransportHeight = 64;
+
+/// Minimum post-SafeArea height the deck can be laid out in:
+/// 64 waveform + 36 header + 120 control + 64 transport.
+const double kDjMinDeckHeight = 284;
+
+/// Minimum post-SafeArea width the deck can be laid out in:
+/// 2 * (48 pitch fader + 4 + 120 panel) + 2 * 12 gutter + 120 centre column.
+const double kDjMinDeckWidth = 488;
+
 /// Height reserved for the per-deck panel switcher inside the control field.
 const double kDjPanelSwitcherHeight = 40;
 
@@ -49,6 +82,55 @@ class DjDeckGrid {
   final double gutter;
 }
 
+/// The deck's vertical budget, derived from the post-SafeArea height.
+///
+/// Give-order when the viewport is short, highest priority first:
+/// 1. control field (the spec's designated flexible region) 180 -> 120,
+/// 2. waveform stack 120 -> 64,
+/// 3. header band 44 -> 36 (overview strip dropped below 40),
+/// 4. transport — never; pinned at [kDjTransportHeight].
+@visibleForTesting
+class DjRowBudget {
+  const DjRowBudget({
+    required this.waveformStack,
+    required this.headerBand,
+    required this.controlField,
+    required this.transport,
+  });
+
+  factory DjRowBudget.of(double available) {
+    final control = (available -
+            kDjWaveformStackHeight -
+            kDjHeaderBandHeight -
+            kDjTransportHeight)
+        .clamp(kDjControlFieldMinHeight, kDjControlFieldMaxHeight)
+        .toDouble();
+    final waveform =
+        (available - control - kDjHeaderBandHeight - kDjTransportHeight)
+            .clamp(kDjWaveformStackMinHeight, kDjWaveformStackHeight)
+            .toDouble();
+    final header = (available - control - waveform - kDjTransportHeight)
+        .clamp(kDjHeaderBandMinHeight, kDjHeaderBandHeight)
+        .toDouble();
+    return DjRowBudget(
+      waveformStack: waveform,
+      headerBand: header,
+      controlField: control,
+      transport: kDjTransportHeight,
+    );
+  }
+
+  final double waveformStack;
+  final double headerBand;
+  final double controlField;
+  final double transport;
+
+  double get total => waveformStack + headerBand + controlField + transport;
+
+  bool get showsOverviewStrip =>
+      headerBand >= kDjHeaderOverviewStripMinBandHeight;
+}
+
 class DjLayout extends StatefulWidget {
   const DjLayout({super.key});
   @override
@@ -70,11 +152,12 @@ class _DjLayoutState extends State<DjLayout> {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final grid = DjDeckGrid.of(constraints);
+          final budget = DjRowBudget.of(constraints.maxHeight);
           return Column(
             children: [
               SizedBox(
                 key: const ValueKey('dj_waveform_stack'),
-                height: 120,
+                height: budget.waveformStack,
                 child: Column(
                   children: [
                     Expanded(
@@ -96,7 +179,8 @@ class _DjLayoutState extends State<DjLayout> {
                 ),
               ),
               SizedBox(
-                height: 44,
+                key: const ValueKey('dj_header_row'),
+                height: budget.headerBand,
                 child: _GridRow(
                   grid: grid,
                   deckAKey: const ValueKey('dj_header_deck_a'),
@@ -106,18 +190,23 @@ class _DjLayoutState extends State<DjLayout> {
                     deck: session.deckA,
                     cues: session.hotCuesFor(DjDeckId.a),
                     onSeek: (ms) => session.seek(DjDeckId.a, ms),
+                    showOverviewStrip: budget.showsOverviewStrip,
                   ),
                   deckB: _HeaderOverview(
                     deck: session.deckB,
                     cues: session.hotCuesFor(DjDeckId.b),
                     onSeek: (ms) => session.seek(DjDeckId.b, ms),
+                    showOverviewStrip: budget.showsOverviewStrip,
                   ),
                 ),
               ),
+              // The only Expanded child of this Column, so the Column itself
+              // can never overflow; the centred SizedBox holds the row budget.
               Expanded(
                 child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 180),
+                  child: SizedBox(
+                    key: const ValueKey('dj_control_field'),
+                    height: budget.controlField,
                     child: _GridRow(
                       grid: grid,
                       deckAKey: const ValueKey('dj_control_deck_a'),
@@ -147,7 +236,8 @@ class _DjLayoutState extends State<DjLayout> {
                 ),
               ),
               SizedBox(
-                height: 64,
+                key: const ValueKey('dj_transport_row'),
+                height: budget.transport,
                 child: _GridRow(
                   grid: grid,
                   deckAKey: const ValueKey('dj_transport_deck_a'),
@@ -217,20 +307,23 @@ class _HeaderOverview extends StatelessWidget {
     required this.deck,
     required this.cues,
     required this.onSeek,
+    required this.showOverviewStrip,
   });
   final DjDeckState deck;
   final List<DjHotCue> cues;
   final ValueChanged<int> onSeek;
+  final bool showOverviewStrip;
   @override
   Widget build(BuildContext context) => Column(
         children: [
           Expanded(child: DjDeckHeader(deck: deck)),
-          DjOverviewStrip(
-            durationMs: deck.durationMs,
-            positionMs: deck.positionMs,
-            cues: cues,
-            onSeek: onSeek,
-          ),
+          if (showOverviewStrip)
+            DjOverviewStrip(
+              durationMs: deck.durationMs,
+              positionMs: deck.positionMs,
+              cues: cues,
+              onSeek: onSeek,
+            ),
         ],
       );
 }
