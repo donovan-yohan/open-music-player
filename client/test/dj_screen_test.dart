@@ -8,6 +8,8 @@ import 'package:open_music_player/features/dj/dj_screen.dart';
 import 'package:open_music_player/features/dj/engine/deck_controller.dart';
 import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/providers/dj_session_provider.dart';
+import 'package:open_music_player/features/dj/widgets/dj_beat_counter.dart';
+import 'package:open_music_player/features/dj/widgets/dj_transport.dart';
 
 import 'support/dj_viewport_fixtures.dart';
 
@@ -64,6 +66,42 @@ void main() {
     await tester.pump();
 
     expect(session.deckA.playing, isTrue);
+  });
+
+  testWidgets(
+      'the transport slot carries the beat counter beside a gated transport',
+      (tester) async {
+    // The rebase seam between #420 (beat counter in the transport row) and
+    // #414 (gating on a deck that holds no audio): both land in the same slot,
+    // and neither may displace the other.
+    await pumpDj(tester);
+
+    expect(find.byType(DjBeatCounter), findsNWidgets(2),
+        reason: 'one counter per deck, alongside the transport');
+    // Sharing one Row is what keeps #420's fixed flex: counter at its
+    // intrinsic width, transport flexing into the rest.
+    expect(
+      find.ancestor(
+        of: find.byType(DjBeatCounter).first,
+        matching: find.ancestor(
+          of: find.byType(DjTransport).first,
+          matching: find.byType(Row),
+        ),
+      ),
+      findsWidgets,
+    );
+
+    expect(tester.widget<DjTransport>(find.byType(DjTransport).first).enabled,
+        isFalse,
+        reason: 'an unseeded deck keeps #414\'s gate under #420\'s counter');
+
+    await session.load(DjDeckId.a, djLoadedDeckSeed());
+    await tester.pump();
+
+    expect(tester.widget<DjTransport>(find.byType(DjTransport).first).enabled,
+        isTrue);
+    expect(find.byType(DjBeatCounter), findsNWidgets(2),
+        reason: 'the counter survives the deck becoming playable');
   });
 
   testWidgets('the stems panel is reachable but exposes no mixer', (
