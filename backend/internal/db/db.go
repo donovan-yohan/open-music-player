@@ -1100,6 +1100,23 @@ func (db *DB) Migrate() error {
 		CONSTRAINT chk_research_user_runtime_slots_active_runs CHECK (active_run_count >= 0)
 	);
 
+	-- Single-row environment marker (issue #407). protected = TRUE means "this
+	-- database holds human-owned data": automated test helpers and teardown
+	-- tooling MUST refuse to truncate, drop, or restore over it.
+	--
+	-- The flag is flipped BY HAND on a dogfood/staging database, never by code:
+	--   UPDATE omp_environment SET name = 'dogfood', protected = TRUE, updated_at = NOW();
+	-- Migrate() only ever inserts the default row when it is missing, so replaying
+	-- the schema on a protected database keeps protected = TRUE. Fresh and
+	-- throwaway databases stay protected = FALSE and behave exactly as before.
+	CREATE TABLE IF NOT EXISTS omp_environment (
+		id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+		name TEXT NOT NULL DEFAULT 'unnamed',
+		protected BOOLEAN NOT NULL DEFAULT FALSE,
+		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+	);
+	INSERT INTO omp_environment (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
 	`
 
 	_, err = db.Exec(schema)
