@@ -151,6 +151,26 @@ class _DjLayoutState extends State<DjLayout> {
     return SafeArea(
       child: LayoutBuilder(
         builder: (context, constraints) {
+          // Landscape is only *requested* by DjScreen; Android ignores the
+          // request in split-screen/freeform/connected-display windows and
+          // takes some frames to honour it after a route push. Paint an
+          // explicit state instead of a portrait deck full of overflow.
+          if (constraints.maxHeight > constraints.maxWidth) {
+            return const _DjDeckNotice(
+              key: ValueKey('dj_rotate_prompt'),
+              icon: Icons.screen_rotation,
+              message: 'Rotate your phone to use the deck',
+            );
+          }
+          if (constraints.maxHeight < kDjMinDeckHeight ||
+              constraints.maxWidth < kDjMinDeckWidth) {
+            return const _DjDeckNotice(
+              key: ValueKey('dj_deck_too_small'),
+              icon: Icons.aspect_ratio,
+              message: 'Not enough room for the deck',
+              detail: 'Try a smaller display size or a larger window.',
+            );
+          }
           final grid = DjDeckGrid.of(constraints);
           final budget = DjRowBudget.of(constraints.maxHeight);
           return Column(
@@ -300,6 +320,54 @@ class _GridRow extends StatelessWidget {
           Expanded(key: deckBKey, child: deckB),
         ],
       );
+}
+
+class _DjDeckNotice extends StatelessWidget {
+  const _DjDeckNotice({
+    super.key,
+    required this.icon,
+    required this.message,
+    this.detail,
+  });
+
+  final IconData icon;
+  final String message;
+  final String? detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(AppTheme.space4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: muted),
+            const SizedBox(height: AppTheme.space2),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleSmall?.copyWith(color: muted),
+            ),
+            if (detail != null) ...[
+              const SizedBox(height: AppTheme.space1),
+              Text(
+                detail!,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(color: muted),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _HeaderOverview extends StatelessWidget {
