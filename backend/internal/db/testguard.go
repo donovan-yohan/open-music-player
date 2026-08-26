@@ -13,6 +13,15 @@ import (
 // to assert the refusal (rather than just print it) match with errors.Is.
 var ErrProtectedDatabase = errors.New("refusing to run destructive test setup against a protected database")
 
+// ErrNoTestDSN is returned by CheckDSNNotProtected for an empty DSN. An empty
+// DSN is not "no target": lib/pq falls back to PGHOST/PGPORT/PGDATABASE or the
+// local socket, so sql.Open("postgres", "") reaches whatever database the ambient
+// environment happens to name -- one no port list can guard, because there is no
+// port in the DSN to inspect. Destructive test setup must skip on an empty DSN
+// (see newGuardedTestDB) rather than dial an ambient database; this refusal is
+// the backstop for a helper that forgets.
+var ErrNoTestDSN = errors.New("refusing to run destructive test setup without an explicit DSN")
+
 const (
 	// AllowProtectedDBTestsEnv is the single escape hatch for both guards. It is
 	// deliberately awkward: destroying the dogfood library should take a
@@ -55,10 +64,20 @@ func protectedDatabaseTestsAllowed() bool {
 //
 // A DSN this function cannot parse is not treated as protected: guessing would
 // break every unusual-but-harmless throwaway DSN, and the marker check that runs
-// after Migrate() is the backstop for anything that gets through here.
+// after Migrate() is the backstop for anything that gets through here. An EMPTY
+// DSN is the one exception -- it is refused outright (ErrNoTestDSN), because it
+// carries no host and no port for either check to bite on while still resolving
+// to a real database through lib/pq's environment fallback.
 func CheckDSNNotProtected(dsn string) error {
 	if protectedDatabaseTestsAllowed() {
 		return nil
+	}
+	if strings.TrimSpace(dsn) == "" {
+		return fmt.Errorf(
+			"%w: empty DSN; lib/pq would fall back to PGHOST/PGPORT or the local socket. "+
+				"Set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL, or skip the test when no DSN is configured",
+			ErrNoTestDSN,
+		)
 	}
 	host, port := dsnHostPort(dsn)
 	if port == "" {

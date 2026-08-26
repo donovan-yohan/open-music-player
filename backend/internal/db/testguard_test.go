@@ -36,6 +36,7 @@ func TestCheckDSNNotProtectedRefusesProtectedPorts(t *testing.T) {
 		ports       string
 		allow       string
 		wantRefused bool
+		wantNoDSN   bool
 	}{
 		{
 			name:        "url dsn on the dogfood port",
@@ -80,8 +81,22 @@ func TestCheckDSNNotProtectedRefusesProtectedPorts(t *testing.T) {
 			dsn:  "://not a dsn :5434 %%%",
 		},
 		{
-			name: "empty dsn",
-			dsn:  "",
+			// An empty DSN has no port to inspect, but lib/pq still resolves it to
+			// a real database through PGHOST/PGPORT or the local socket, so it is
+			// refused outright rather than waved through.
+			name:      "empty dsn is refused, not waved through",
+			dsn:       "",
+			wantNoDSN: true,
+		},
+		{
+			name:      "blank dsn is refused like an empty one",
+			dsn:       "   ",
+			wantNoDSN: true,
+		},
+		{
+			name:  "escape hatch lifts the empty-dsn refusal too",
+			dsn:   "",
+			allow: "1",
 		},
 	}
 
@@ -96,6 +111,15 @@ func TestCheckDSNNotProtectedRefusesProtectedPorts(t *testing.T) {
 			}
 
 			err := CheckDSNNotProtected(tc.dsn)
+			if tc.wantNoDSN {
+				if !errors.Is(err, ErrNoTestDSN) {
+					t.Fatalf("CheckDSNNotProtected(%q) = %v, want an ErrNoTestDSN", tc.dsn, err)
+				}
+				if !strings.Contains(err.Error(), "OMP_POSTGRES_TEST_DSN") {
+					t.Fatalf("refusal does not name the DSN variables: %v", err)
+				}
+				return
+			}
 			if tc.wantRefused {
 				if !errors.Is(err, ErrProtectedDatabase) {
 					t.Fatalf("CheckDSNNotProtected(%q) = %v, want an ErrProtectedDatabase", tc.dsn, err)

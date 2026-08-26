@@ -123,6 +123,14 @@ func TestMigrateLeavesAnExistingEnvironmentMarkerUntouched(t *testing.T) {
 func singleSessionDB(t *testing.T) *DB {
 	t.Helper()
 	dsn := postgresTestDSN()
+	// Same skip newGuardedTestDB performs, and for the same reason: with no DSN
+	// lib/pq falls back to PGHOST/PGPORT or the local socket, so an unguarded
+	// sql.Open here would DROP omp_environment on a database this test was never
+	// pointed at. CheckDSNNotProtected refuses an empty DSN too; skipping first
+	// keeps "no Postgres configured" a skip rather than a failure.
+	if dsn == "" {
+		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres environment marker tests")
+	}
 	if err := CheckDSNNotProtected(dsn); err != nil {
 		t.Fatalf("refusing destructive test setup: %v", err)
 	}
