@@ -477,6 +477,40 @@ func (db *DB) Migrate() error {
 
 	CREATE INDEX IF NOT EXISTS idx_mix_plans_user_updated ON mix_plans(user_id, updated_at DESC);
 
+	-- FROZEN PROJECTION INTERFACE (omp_* functions)
+	--
+	-- Every omp_* function below is a FROZEN interface. track_analysis.effective_bpm
+	-- and track_analysis.effective_camelot are GENERATED ALWAYS ... STORED over these
+	-- functions, and PostgreSQL does NOT recompute already-stored values when a
+	-- function body is replaced. Because this block runs CREATE OR REPLACE on every
+	-- boot, an in-place semantic edit silently leaves every deployed row on the OLD
+	-- projection while only newly written rows use the new one -- and the partial
+	-- indexes idx_track_analysis_effective_bpm / idx_track_analysis_effective_camelot_bpm
+	-- keep serving those stale values to the nearby/harmonic queries.
+	--
+	-- Measured on PostgreSQL 15.18 after replacing such a function: VACUUM FULL, a
+	-- table-rewriting ALTER TABLE ... ALTER COLUMN TYPE, and an UPDATE that touches
+	-- only a non-base column all leave the stored value stale. ONLY these refresh it:
+	--   * UPDATE track_analysis SET summary_json = summary_json (assign a BASE column);
+	--   * ALTER TABLE track_analysis DROP COLUMN <generated>, then ADD COLUMN
+	--     <generated> ... GENERATED ALWAYS AS (...) STORED.
+	--
+	-- Upgrade path for a SEMANTIC change -- never edit a body in place:
+	--   1. Add a NEW versioned function (e.g. omp_effective_analysis_bpm_v2) and leave
+	--      the frozen one untouched.
+	--   2. In the same release, drop and re-add the generated column against the new
+	--      function (or batch-rewrite every row through its base columns) and rebuild
+	--      the dependent partial indexes.
+	--   3. Keep the old function until no column or index references it.
+	-- Only edits that provably cannot change output (comments, whitespace) are allowed
+	-- in place.
+	--
+	-- Backpressure: checkGeneratedProjectionDrift (bottom of this file) compares a
+	-- bounded sample of stored values against a fresh evaluation on every Migrate()
+	-- and logs loudly on mismatch. generatedProjectionProbes must list every generated
+	-- projection column; TestGeneratedProjectionProbeCoversEveryGeneratedColumn fails
+	-- if a new one is added without registering it.
+	--
 	-- Filter projections are generated from the same compact fields served by the
 	-- analysis list boundary. The helper functions distinguish absent/invalid
 	-- override facts from valid values, so a malformed manual edit cannot hide a
