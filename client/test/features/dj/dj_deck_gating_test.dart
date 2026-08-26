@@ -94,6 +94,43 @@ void main() {
       });
     }
 
+    // #414 review: `tooltip: enabled ? 'Cue' : null` stripped the only
+    // accessible name these controls have — Tooltip maps to
+    // SemanticsProperties.tooltip, not label, and the icons carry no
+    // semanticLabel. The compact CUE and PLAY nodes came out byte-identical.
+    for (final width in <double>[300, 140]) {
+      testWidgets('a gated control keeps its name at ${width}dp',
+          (tester) async {
+        final handle = tester.ensureSemantics();
+        await pumpTransport(
+          tester,
+          width: width,
+          enabled: false,
+          disabledReason: djDeckDownloadRequired,
+        );
+
+        final cue =
+            tester.getSemantics(find.byKey(const ValueKey('dj_cue')));
+        final play =
+            tester.getSemantics(find.byKey(const ValueKey('dj_play_pause')));
+
+        // Named: an icon-only control has to say which control it is.
+        expect('${cue.label}${cue.tooltip}'.toLowerCase(), contains('cue'));
+        expect('${play.label}${play.tooltip}'.toLowerCase(), contains('play'));
+        // And the two are not interchangeable to a reader.
+        expect(
+          '${cue.label}|${cue.tooltip}',
+          isNot('${play.label}|${play.tooltip}'),
+        );
+        // The reason still reaches the reader, on the node or its wrapper.
+        expect(
+          '${play.tooltip}${play.hint}',
+          contains(djDeckDownloadRequired),
+        );
+        handle.dispose();
+      });
+    }
+
     testWidgets('a gated deck records no cue press or release',
         (tester) async {
       final cue = <String>[];
@@ -299,6 +336,36 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('dj_play_pause')).last);
       await tester.pump();
       expect(session.deckB.playing, isTrue);
+
+      // The pads are gated by dj_layout's `enabled: deck.isLoaded` wiring, not
+      // by DjHotCuePads itself. Pumping the widget with a literal flag tests
+      // the flag; this tests the wiring, so flipping it back to `true` fails
+      // here instead of shipping four armed pads over silence (#414 review).
+      // Deck A builds before deck B, and both decks default to DjPanel.cues.
+      final padA = find.byKey(const ValueKey('dj_hot_cue_1')).first;
+      final padB = find.byKey(const ValueKey('dj_hot_cue_1')).last;
+      expect(tester.widget<FilledButton>(padA).onPressed, isNull,
+          reason: 'a deck holding no audio must arm no pad');
+      expect(tester.widget<FilledButton>(padB).onPressed, isNotNull);
+      // onSet is the route that reached the zero-duration cue division.
+      expect(
+        tester
+            .widget<GestureDetector>(
+              find.ancestor(of: padA, matching: find.byType(GestureDetector))
+                  .first,
+            )
+            .onLongPress,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<GestureDetector>(
+              find.ancestor(of: padB, matching: find.byType(GestureDetector))
+                  .first,
+            )
+            .onLongPress,
+        isNotNull,
+      );
 
       await tester.pumpWidget(const SizedBox.shrink());
       await tester.pump(const Duration(milliseconds: 20));

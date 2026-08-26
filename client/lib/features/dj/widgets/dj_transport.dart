@@ -31,12 +31,22 @@ class DjTransport extends StatelessWidget {
   /// one, so the transport and the waveform lane cannot tell different stories.
   final String? disabledReason;
 
+  String get _reason => disabledReason ?? djDeckTransportDisabledReason;
+
+  /// The accessible name a gated control keeps, with the reason appended.
+  ///
+  /// A disabled control still has to say which control it is. `Tooltip` maps to
+  /// `SemanticsProperties.tooltip`, not `label`, so dropping the control's own
+  /// tooltip while gated left the compact CUE and PLAY nodes byte-identical to
+  /// a screen reader (#414 review).
+  String _name(String name) => enabled ? name : '$name. $_reason';
+
+  /// The wrapper keeps carrying the reason in semantics as well as on screen:
+  /// the labelled CUE variant has no tooltip of its own, so this node is where
+  /// its reason lives.
   Widget _gated(Widget child) => enabled
       ? child
-      : Tooltip(
-          message: disabledReason ?? djDeckTransportDisabledReason,
-          child: child,
-        );
+      : Tooltip(message: _reason, child: child);
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -68,7 +78,7 @@ class DjTransport extends StatelessWidget {
                     child: compact
                         ? IconButton.filled(
                             key: const ValueKey('dj_cue'),
-                            tooltip: enabled ? 'Cue' : null,
+                            tooltip: _name('Cue'),
                             iconSize: 20,
                             padding: iconPadding,
                             constraints: iconConstraints,
@@ -77,6 +87,8 @@ class DjTransport extends StatelessWidget {
                           )
                         : FilledButton(
                             key: const ValueKey('dj_cue'),
+                            // The labelled variant already carries its name in
+                            // its Text child; only the reason is missing.
                             style: FilledButton.styleFrom(
                               minimumSize: const Size(56, 48),
                               padding: const EdgeInsets.symmetric(
@@ -99,8 +111,7 @@ class DjTransport extends StatelessWidget {
                 child: _gated(
                   IconButton.filled(
                     key: const ValueKey('dj_play_pause'),
-                    tooltip:
-                        enabled ? (playing ? 'Pause' : 'Play') : null,
+                    tooltip: _name(playing ? 'Pause' : 'Play'),
                     iconSize: compact ? 20 : 28,
                     padding: iconPadding,
                     constraints: iconConstraints,
