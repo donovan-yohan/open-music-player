@@ -61,11 +61,18 @@ class DjDeckHeader extends StatelessWidget {
         // slack, so the caps are proportional to what each string actually
         // needs, and no cap binds at all while everything fits.
         final metricStyle = DefaultTextStyle.of(context).style;
-        final textScaler = MediaQuery.textScalerOf(context);
-        final intrinsic = [
-          for (final metric in metrics)
-            _measure(metric, metricStyle, textScaler),
-        ];
+        final painter = TextPainter(
+          textDirection: TextDirection.ltr,
+          textScaler: MediaQuery.textScalerOf(context),
+          maxLines: 1,
+        );
+        final intrinsic = <double>[];
+        for (final metric in metrics) {
+          painter.text = TextSpan(text: metric, style: metricStyle);
+          painter.layout();
+          intrinsic.add(painter.width);
+        }
+        painter.dispose();
         final needed = intrinsic.fold<double>(0, (sum, w) => sum + w);
         final gaps = metrics.length * AppTheme.space2;
         final metricBudget =
@@ -100,18 +107,6 @@ class DjDeckHeader extends StatelessWidget {
         );
       },
     );
-  }
-
-  static double _measure(String text, TextStyle style, TextScaler scaler) {
-    final painter = TextPainter(
-      text: TextSpan(text: text, style: style),
-      textDirection: TextDirection.ltr,
-      textScaler: scaler,
-      maxLines: 1,
-    )..layout();
-    final width = painter.width;
-    painter.dispose();
-    return width;
   }
 
   String _clock(int ms) {

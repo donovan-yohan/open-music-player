@@ -25,6 +25,13 @@ class DjTransport extends StatelessWidget {
           // Every child is loose-flexible, so the row divides its slot instead
           // of painting the sync glyph over the neighbouring deck (#411).
           final compact = constraints.maxWidth < kDjTransportCompactWidth;
+          // One set of compact metrics for all three controls, so the variants
+          // cannot drift apart.
+          final iconPadding =
+              EdgeInsets.all(compact ? AppTheme.space1 : AppTheme.space2);
+          final iconConstraints = compact
+              ? const BoxConstraints(minWidth: 28, minHeight: 28)
+              : null;
           return Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
@@ -41,11 +48,8 @@ class DjTransport extends StatelessWidget {
                           key: const ValueKey('dj_cue'),
                           tooltip: 'Cue',
                           iconSize: 20,
-                          padding: const EdgeInsets.all(AppTheme.space1),
-                          constraints: const BoxConstraints(
-                            minWidth: 28,
-                            minHeight: 28,
-                          ),
+                          padding: iconPadding,
+                          constraints: iconConstraints,
                           onPressed: () {},
                           icon: const Icon(Icons.flag),
                         )
@@ -73,12 +77,8 @@ class DjTransport extends StatelessWidget {
                   key: const ValueKey('dj_play_pause'),
                   tooltip: playing ? 'Pause' : 'Play',
                   iconSize: compact ? 20 : 28,
-                  padding: compact
-                      ? const EdgeInsets.all(AppTheme.space1)
-                      : const EdgeInsets.all(AppTheme.space2),
-                  constraints: compact
-                      ? const BoxConstraints(minWidth: 28, minHeight: 28)
-                      : null,
+                  padding: iconPadding,
+                  constraints: iconConstraints,
                   onPressed: onPlayPause,
                   icon: Icon(playing ? Icons.pause : Icons.play_arrow),
                 ),
@@ -90,12 +90,8 @@ class DjTransport extends StatelessWidget {
                   child: IconButton(
                     key: const ValueKey('dj_sync'),
                     iconSize: compact ? 20 : 24,
-                    padding: compact
-                        ? const EdgeInsets.all(AppTheme.space1)
-                        : const EdgeInsets.all(AppTheme.space2),
-                    constraints: compact
-                        ? const BoxConstraints(minWidth: 28, minHeight: 28)
-                        : null,
+                    padding: iconPadding,
+                    constraints: iconConstraints,
                     onPressed: null,
                     icon: const Icon(Icons.sync),
                   ),
