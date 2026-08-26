@@ -34,6 +34,10 @@ const (
 	defaultBaseURL = "https://labs.api.listenbrainz.org"
 	// defaultTimeout bounds ONE HTTP attempt.
 	defaultTimeout = 10 * time.Second
+	// defaultRequestBudget bounds one SimilarArtists call end to end: every
+	// attempt plus every backoff wait share this deadline, so worst-case
+	// handler latency cannot stack retries (finding 3, issue #392).
+	defaultRequestBudget = 15 * time.Second
 	// maxResponseBytes bounds the decoded body read so a hostile upstream
 	// cannot exhaust memory through this client.
 	maxResponseBytes = 4 << 20
@@ -52,8 +56,8 @@ var (
 	// code is in the message so an upstream algorithm-enum rename (HTTP 400)
 	// is visible in logs instead of looking like a generic outage.
 	ErrUpstreamStatus = errors.New("listenbrainz unexpected status")
-	// ErrUnreachable reports a transport failure, a per-attempt timeout, or a
-	// cancelled caller context. It wraps the cause.
+	// ErrUnreachable reports a transport failure, a per-attempt timeout, or an
+	// exhausted request budget / cancelled context. It wraps the cause.
 	ErrUnreachable = errors.New("listenbrainz unreachable")
 )
 
@@ -66,6 +70,8 @@ type Client struct {
 	// issue #392's rate-limit/backoff requirement.
 	maxRetries   int
 	retryBackoff func(attempt int) time.Duration
+	// requestBudget caps the whole call (all attempts + all backoffs).
+	requestBudget time.Duration
 }
 
 func NewClient() *Client {
@@ -79,15 +85,17 @@ func NewClientWithBaseURL(baseURL string) *Client {
 
 func newClient(baseURL string) *Client {
 	return &Client{
-		baseURL:      strings.TrimRight(baseURL, "/"),
-		httpClient:   &http.Client{Timeout: defaultTimeout},
-		maxRetries:   2,
-		retryBackoff: defaultRetryBackoff,
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		httpClient:    &http.Client{Timeout: defaultTimeout},
+		maxRetries:    2,
+		retryBackoff:  defaultRetryBackoff,
+		requestBudget: defaultRequestBudget,
 	}
 }
 
 // defaultRetryBackoff is a small capped exponential: 250ms then 500ms. The cap
-// keeps worst-case handler latency bounded even when upstream stays throttled.
+// keeps worst-case handler latency bounded even when upstream stays throttled;
+// requestBudget is the hard ceiling regardless of what this returns.
 func defaultRetryBackoff(attempt int) time.Duration {
 	d := 250 * time.Millisecond
 	for i := 0; i < attempt && d < time.Second; i++ {
@@ -133,7 +141,8 @@ type Response struct {
 }
 
 // SimilarArtists fetches similar artists for one reference artist MBID under
-// the pinned algorithm.
+// the pinned algorithm. The whole call (all attempts plus all backoff waits)
+// is bounded by requestBudget.
 //
 // It returns a typed error for EVERY failure mode and never returns a nil
 // response with a nil error, except for a uuid.Nil input which is a no-op:
@@ -142,8 +151,8 @@ type Response struct {
 //   - ErrBadPayload   — body is not a valid array of similar-artist entries,
 //     carries an unparseable MBID / negative score, or names an algorithm
 //     other than the pinned one.
-//   - ErrUnreachable  — transport error, per-attempt timeout, or a cancelled
-//     caller context.
+//   - ErrUnreachable  — transport error, per-attempt timeout, exhausted
+//     request budget, or a cancelled caller context.
 //
 // Degrading to an empty candidate expansion is ExpansionService.Expand's job.
 func (c *Client) SimilarArtists(ctx context.Context, artistMBID uuid.UUID, count int) (*Response, error) {
@@ -154,6 +163,13 @@ func (c *Client) SimilarArtists(ctx context.Context, artistMBID uuid.UUID, count
 		"algorithm":    []string{PinnedAlgorithm},
 		"artist_mbids": []string{artistMBID.String()},
 	}.Encode()
+
+	budget := c.requestBudget
+	if budget <= 0 {
+		budget = defaultRequestBudget
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 
 	for attempt := 0; ; attempt++ {
 		payload, status, err := c.fetch(ctx, endpoint)
@@ -167,12 +183,35 @@ func (c *Client) SimilarArtists(ctx context.Context, artistMBID uuid.UUID, count
 			if attempt >= c.maxRetries {
 				return nil, fmt.Errorf("%w after %d attempt(s)", ErrRateLimited, attempt+1)
 			}
-			time.Sleep(c.retryBackoff(attempt))
+			if waitErr := waitBackoff(ctx, c.retryBackoff(attempt)); waitErr != nil {
+				return nil, waitErr
+			}
 			continue
 		}
 		// Transport error, per-attempt timeout, cancelled context, or a body
 		// read that failed part-way: no retry can distinguish these cheaply.
 		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+}
+
+// waitBackoff sleeps for d but abandons the wait as soon as ctx is done, so a
+// cancelled request or an exhausted request budget never pays a full backoff.
+func waitBackoff(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%w: %v", ErrUnreachable, ctx.Err())
+		default:
+			return nil
+		}
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("%w: %v", ErrUnreachable, ctx.Err())
 	}
 }
 

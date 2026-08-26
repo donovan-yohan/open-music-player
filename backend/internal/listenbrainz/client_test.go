@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -100,5 +101,65 @@ func TestClientNilMBIDIsANoOp(t *testing.T) {
 	resp, err := testClient("http://127.0.0.1:1").SimilarArtists(context.Background(), uuid.Nil, 5)
 	if resp != nil || err != nil {
 		t.Fatalf("nil MBID = %v, %v; want nil, nil", resp, err)
+	}
+}
+
+// TestClientRequestBudgetBoundsStackedRetries is the finding-3 regression: a
+// 5s backoff must not be paid once the whole-call budget is spent. Exactly one
+// upstream attempt happens and the call returns well inside a second.
+func TestClientRequestBudgetBoundsStackedRetries(t *testing.T) {
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL)
+	client.maxRetries = 2
+	client.retryBackoff = func(int) time.Duration { return 5 * time.Second }
+	client.requestBudget = 50 * time.Millisecond
+
+	start := time.Now()
+	resp, err := client.SimilarArtists(context.Background(), testSeedMBID, 5)
+	elapsed := time.Since(start)
+
+	if resp != nil {
+		t.Fatalf("budget exhaustion returned a response: %+v", resp)
+	}
+	if !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("err = %v, want ErrUnreachable on exhausted request budget", err)
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("call took %v, want well under 1s (backoff must be ctx-aware)", elapsed)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want exactly 1", hits.Load())
+	}
+}
+
+// TestClientCancelledParentContextIsUnreachable pins that a caller cancelling
+// mid-backoff gets a typed error rather than a stuck goroutine.
+func TestClientCancelledParentContextIsUnreachable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL)
+	client.maxRetries = 2
+	client.retryBackoff = func(int) time.Duration { return 5 * time.Second }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(10*time.Millisecond, cancel)
+	defer cancel()
+
+	start := time.Now()
+	_, err := client.SimilarArtists(ctx, testSeedMBID, 5)
+	if !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("err = %v, want ErrUnreachable on cancelled context", err)
+	}
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Fatalf("cancelled call took %v, want well under 1s", elapsed)
 	}
 }
