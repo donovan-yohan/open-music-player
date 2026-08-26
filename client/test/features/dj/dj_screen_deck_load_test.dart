@@ -8,7 +8,13 @@ import 'package:open_music_player/features/dj/dj_screen.dart';
 import 'package:open_music_player/features/dj/engine/deck_controller.dart';
 import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/providers/dj_session_provider.dart';
+import 'package:open_music_player/models/queue_state.dart';
 import 'package:open_music_player/models/track.dart';
+import 'package:open_music_player/models/track_analysis.dart';
+import 'package:open_music_player/providers/queue_provider.dart';
+import 'package:provider/provider.dart';
+
+import '../../support/mock_dio_client.dart';
 
 void main() {
   // Pixel 10 Pro class landscape: 2856 x 1280 at dpr 3 -> 952 x 426.7 dp.
@@ -55,6 +61,98 @@ void main() {
     session.dispose();
   });
 
+  testWidgets('deck entry loads the queue once and does not prompt for a '
+      'local file', (tester) async {
+    pinViewport(tester);
+    final api = _CountingQueueApiClient(
+      QueueState(tracks: [_track('4242')], currentIndex: 0),
+    );
+    final queue = QueueProvider(api);
+    final session = DjSessionProvider(
+      deckA: _deck(DjDeckId.a, const _LocalResolver()),
+      deckB: _deck(DjDeckId.b, const _LocalResolver()),
+    );
+    var pickerCalls = 0;
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<QueueProvider>.value(
+        value: queue,
+        child: MaterialApp(
+          home: DjScreen(
+            session: session,
+            filePicker: () async {
+              pickerCalls++;
+              return null;
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+
+    expect(api.getQueueCalls, 1);
+    expect(pickerCalls, 0);
+    expect(find.text('Load local audio file'), findsNothing);
+    expect(session.deckA.isLoaded, isTrue);
+    expect(session.deckA.trackRef, '4242');
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 20));
+    // The session is built inside the test body, so its 30 Hz snapshot timer
+    // is a FakeTimer that must be cancelled before the binding's invariants.
+    session.dispose();
+    // QueueProvider's analysis retry timer is a FakeTimer too.
+    queue.dispose();
+  });
+
+  testWidgets('a genuinely empty queue still invokes the picker once',
+      (tester) async {
+    pinViewport(tester);
+    final api = _CountingQueueApiClient(QueueState.empty());
+    final queue = QueueProvider(api);
+    final session = DjSessionProvider(
+      deckA: _deck(DjDeckId.a, const _LocalResolver()),
+      deckB: _deck(DjDeckId.b, const _LocalResolver()),
+    );
+    var pickerCalls = 0;
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider<QueueProvider>.value(
+        value: queue,
+        child: MaterialApp(
+          home: DjScreen(
+            session: session,
+            filePicker: () async {
+              pickerCalls++;
+              return DjDeckLoad(
+                trackRef: 'local:/tmp/picked.mp3',
+                title: 'Picked track',
+                localUri: Uri.file('/tmp/picked.mp3'),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+    await tester.pump();
+
+    expect(api.getQueueCalls, 1);
+    expect(pickerCalls, 1);
+    expect(session.deckA.title, 'Picked track');
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 20));
+    // The session is built inside the test body, so its 30 Hz snapshot timer
+    // is a FakeTimer that must be cancelled before the binding's invariants.
+    session.dispose();
+    queue.dispose();
+  });
 }
 
 /// A short title and a lean analysis: a fully populated deck header overflows
@@ -75,6 +173,22 @@ DeckController _deck(DjDeckId deckId, EngineAudioSourceResolver resolver) =>
       resolver: resolver,
       slew: const Duration(milliseconds: 1),
     );
+
+class _CountingQueueApiClient extends EmptyQueueApiClient {
+  _CountingQueueApiClient(this.state);
+  final QueueState state;
+  int getQueueCalls = 0;
+
+  @override
+  Future<QueueState> getQueue() async {
+    getQueueCalls++;
+    return state;
+  }
+
+  @override
+  Future<TrackAnalysis> getTrackAnalysis(int trackId) async =>
+      TrackAnalysis.fromJson(status: 'analyzed', summary: const {});
+}
 
 class _LocalResolver implements EngineAudioSourceResolver {
   const _LocalResolver();
