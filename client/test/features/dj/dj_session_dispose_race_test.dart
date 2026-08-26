@@ -3,13 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/core/engine/engine_audio_source_resolver.dart';
-import 'package:open_music_player/core/engine/voice.dart';
 import 'package:open_music_player/features/dj/dj_screen.dart';
 import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/providers/dj_session_provider.dart';
 import 'package:open_music_player/features/dj/widgets/dj_transport.dart';
 
 import '../../support/dj_viewport_fixtures.dart';
+import '../../support/fake_voice.dart';
 
 /// Every mutator on `DjSessionProvider` awaits the engine and *then* notifies,
 /// so each one straddles an async gap that a back-navigation can land in. The
@@ -163,12 +163,14 @@ void main() {
 
 /// A voice whose `play()` hangs until the test lets it finish, which is how the
 /// route gets to pop in the middle of `togglePlay`'s await.
-class _GatedVoice implements Voice {
-  final _events = StreamController<VoiceEvent>.broadcast();
+///
+/// Only `play()` differs from the shared fake, so it extends it rather than
+/// spelling the whole `Voice` interface a third time (cf. `CountingFakeVoice`).
+class _GatedVoice extends FakeVoice {
+  _GatedVoice() : super('gated-dj');
+
   final _playGate = Completer<void>();
   var playCalls = 0;
-  var _playing = false;
-  int? _positionMs = 0;
 
   /// Lets the parked `play()` complete: the engine answering after the deck is
   /// already gone.
@@ -177,48 +179,9 @@ class _GatedVoice implements Voice {
   }
 
   @override
-  String get debugId => 'gated-dj';
-  @override
-  bool get isLoaded => true;
-  @override
-  bool get isReady => true;
-  @override
-  bool get isPlaying => _playing;
-  @override
-  Stream<VoiceEvent> get events => _events.stream;
-  @override
-  int? get currentLocalPositionMs => _positionMs;
-
-  @override
   Future<void> play() async {
     playCalls++;
     await _playGate.future;
-    _playing = true;
+    await super.play();
   }
-
-  @override
-  Future<void> dispose() => _events.close();
-  @override
-  int? driftMs(int expectedLocalPositionMs) => 0;
-  @override
-  Future<void> load(Uri source, {int initialLocalPositionMs = 0}) async {
-    _positionMs = initialLocalPositionMs;
-  }
-
-  @override
-  Future<void> pause() async => _playing = false;
-  @override
-  Future<void> release() async => _playing = false;
-  @override
-  Future<void> resync(int expectedLocalPositionMs) =>
-      seekLocal(expectedLocalPositionMs);
-  @override
-  Future<void> seekLocal(int localPositionMs) async =>
-      _positionMs = localPositionMs;
-  @override
-  Future<bool> setPitch(double factor) async => true;
-  @override
-  Future<void> setSpeed(double rate) async {}
-  @override
-  Future<void> setVolume(double linearGain) async {}
 }

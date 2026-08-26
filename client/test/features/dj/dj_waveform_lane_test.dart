@@ -14,13 +14,15 @@ Finder laneFor(DjDeckId deck) => find.byWidgetPredicate(
       (widget) => widget is DjWaveformLane && widget.deck.deckId == deck,
     );
 
-T painterIn<T>(WidgetTester tester, DjDeckId deck) => tester
+Iterable<T> paintersIn<T>(WidgetTester tester, DjDeckId deck) => tester
     .widgetList<CustomPaint>(
       find.descendant(of: laneFor(deck), matching: find.byType(CustomPaint)),
     )
     .map((paint) => paint.painter)
-    .whereType<T>()
-    .first;
+    .whereType<T>();
+
+T painterIn<T>(WidgetTester tester, DjDeckId deck) =>
+    paintersIn<T>(tester, deck).first;
 
 void main() {
   group('lane analysis state (#410)', () {
@@ -280,14 +282,7 @@ void main() {
       // the very affordance gap the notice closes.
       expect(find.byType(DjDeckNotice), findsOneWidget);
       expect(find.text(djDeckEmpty), findsOneWidget);
-      expect(
-        find.descendant(
-          of: laneFor(DjDeckId.a),
-          matching: find.byType(CustomPaint),
-        ).evaluate().map((e) => (e.widget as CustomPaint).painter)
-            .whereType<TimelineWaveformPainter>(),
-        isEmpty,
-      );
+      expect(paintersIn<TimelineWaveformPainter>(tester, DjDeckId.a), isEmpty);
       // Nothing is being analyzed on a deck that holds nothing: the notice
       // must not be joined by an 'Analyzing…' claim (#410 + #414).
       expect(
