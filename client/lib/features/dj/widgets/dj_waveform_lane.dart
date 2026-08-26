@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../../../app/theme.dart';
 import '../../../models/track.dart';
 import '../../../models/timeline_viewport.dart';
 import '../../../models/waveform.dart';
@@ -112,12 +113,24 @@ class _DjWaveformLaneState extends State<DjWaveformLane> {
                         ),
                       ),
                     ),
-                    const Align(
+                    // The fixed centre playhead. It resolves from the
+                    // waveformPlayhead design token in both themes, and D1's
+                    // shared column grid puts this axis down the middle of the
+                    // centre (mixer/crossfader) column rather than on a deck
+                    // A/B boundary, so it cannot read as a divider (#415).
+                    Align(
                       alignment: Alignment.center,
                       child: SizedBox(
                         width: 2,
                         height: double.infinity,
-                        child: ColoredBox(color: Colors.white),
+                        child: ColoredBox(
+                          key: ValueKey(
+                            'dj_waveform_playhead_'
+                            '${widget.deck.deckId.name}',
+                          ),
+                          color:
+                              SoundQPlayerTheme.of(context).waveformPlayhead,
+                        ),
                       ),
                     ),
                   ],

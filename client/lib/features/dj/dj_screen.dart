@@ -15,6 +15,7 @@ import '../../core/services/stems_service.dart';
 import '../../providers/queue_provider.dart';
 import '../stems/track_stem_channel_source.dart';
 import 'dj_layout.dart';
+import 'dj_system_overlay_style.dart';
 import 'engine/deck_controller.dart';
 import 'providers/dj_session_provider.dart';
 
@@ -202,9 +203,12 @@ class _DjScreenState extends State<DjScreen> {
   Widget build(BuildContext context) =>
       ChangeNotifierProvider<DjSessionProvider>.value(
         value: _session!,
-        child: const Scaffold(
-          key: ValueKey('dj_screen'),
-          body: DjLayout(),
+        child: AnnotatedRegion<SystemUiOverlayStyle>(
+          value: djSystemOverlayStyle(context),
+          child: const Scaffold(
+            key: ValueKey('dj_screen'),
+            body: DjLayout(),
+          ),
         ),
       );
 }

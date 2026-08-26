@@ -13,6 +13,8 @@ class SoundQPlayerTheme extends ThemeExtension<SoundQPlayerTheme> {
     required this.waveformBeat,
     required this.waveformPlayhead,
     required this.waveformSelection,
+    required this.waveformDeckA,
+    required this.waveformDeckB,
     required this.playheadColor,
     required this.selectionColor,
     required this.timelineColor,
@@ -28,6 +30,12 @@ class SoundQPlayerTheme extends ThemeExtension<SoundQPlayerTheme> {
   final Color waveformBeat;
   final Color waveformPlayhead;
   final Color waveformSelection;
+
+  /// Deck lane identity for the DJ deck's stacked waveforms (deck A blue,
+  /// deck B red per docs/dj-deck-spec.md). Role-based so the deck never needs
+  /// a palette literal of its own.
+  final Color waveformDeckA;
+  final Color waveformDeckB;
   final Color playheadColor;
   final Color selectionColor;
   final Color timelineColor;
@@ -64,6 +72,8 @@ class SoundQPlayerTheme extends ThemeExtension<SoundQPlayerTheme> {
     Color? waveformBeat,
     Color? waveformPlayhead,
     Color? waveformSelection,
+    Color? waveformDeckA,
+    Color? waveformDeckB,
     Color? playheadColor,
     Color? selectionColor,
     Color? timelineColor,
@@ -80,6 +90,8 @@ class SoundQPlayerTheme extends ThemeExtension<SoundQPlayerTheme> {
       waveformBeat: waveformBeat ?? this.waveformBeat,
       waveformPlayhead: waveformPlayhead ?? this.waveformPlayhead,
       waveformSelection: waveformSelection ?? this.waveformSelection,
+      waveformDeckA: waveformDeckA ?? this.waveformDeckA,
+      waveformDeckB: waveformDeckB ?? this.waveformDeckB,
       playheadColor: playheadColor ?? this.playheadColor,
       selectionColor: selectionColor ?? this.selectionColor,
       timelineColor: timelineColor ?? this.timelineColor,
@@ -114,6 +126,10 @@ class SoundQPlayerTheme extends ThemeExtension<SoundQPlayerTheme> {
       waveformSelection:
           Color.lerp(waveformSelection, other.waveformSelection, t) ??
               waveformSelection,
+      waveformDeckA:
+          Color.lerp(waveformDeckA, other.waveformDeckA, t) ?? waveformDeckA,
+      waveformDeckB:
+          Color.lerp(waveformDeckB, other.waveformDeckB, t) ?? waveformDeckB,
       playheadColor:
           Color.lerp(playheadColor, other.playheadColor, t) ?? playheadColor,
       selectionColor:
@@ -134,6 +150,8 @@ class SoundQPlayerTheme extends ThemeExtension<SoundQPlayerTheme> {
     waveformBeat: Color(0xFF39C6B6),
     waveformPlayhead: Color(0xFFFF5A00),
     waveformSelection: Color(0x3DFF5A00),
+    waveformDeckA: Color(0xFF4FC3F7),
+    waveformDeckB: AppTheme.error,
     playheadColor: Color(0xFFFF5A00),
     selectionColor: Color(0x3DFF5A00),
     timelineColor: Color(0xFF32281F),
@@ -150,6 +168,8 @@ class SoundQPlayerTheme extends ThemeExtension<SoundQPlayerTheme> {
     waveformBeat: Color(0xFF007F73),
     waveformPlayhead: Color(0xFFC74400),
     waveformSelection: Color(0x3DC74400),
+    waveformDeckA: Color(0xFF00629E),
+    waveformDeckB: AppTheme.lightError,
     playheadColor: Color(0xFFC74400),
     selectionColor: Color(0x3DC74400),
     timelineColor: Color(0xFFC8C2BC),

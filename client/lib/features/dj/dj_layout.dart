@@ -148,6 +148,7 @@ class _DjLayoutState extends State<DjLayout> {
     final session = context.watch<DjSessionProvider>();
     final aTrack = session.deckA.queueTrack;
     final bTrack = session.deckB.queueTrack;
+    final deckTokens = SoundQPlayerTheme.of(context);
     return SafeArea(
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -184,7 +185,7 @@ class _DjLayoutState extends State<DjLayout> {
                       child: DjWaveformLane(
                         deck: session.deckA,
                         track: aTrack,
-                        color: Colors.lightBlue,
+                        color: deckTokens.waveformDeckA,
                       ),
                     ),
                     const SizedBox(height: AppTheme.space2),
@@ -192,7 +193,7 @@ class _DjLayoutState extends State<DjLayout> {
                       child: DjWaveformLane(
                         deck: session.deckB,
                         track: bTrack,
-                        color: Colors.redAccent,
+                        color: deckTokens.waveformDeckB,
                       ),
                     ),
                   ],
