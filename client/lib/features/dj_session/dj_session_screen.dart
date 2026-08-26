@@ -145,6 +145,17 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
       _loadedAllOnce &&
       _blocks.every((block) => block.tracks.isEmpty);
 
+  /// Last enqueued track id from the queue snapshot this screen already has.
+  /// The DJ session surface stays a discovery surface: it never triggers a
+  /// queue fetch and never becomes a queue authority.
+  int? _queueTailTrackId() {
+    if (!mounted) return null;
+    final tracks = context.read<QueueProvider>().queue.tracks;
+    if (tracks.isEmpty) return null;
+    final tail = tracks.last;
+    return int.tryParse(tail.playbackTrackId ?? tail.id);
+  }
+
   DjLineupRequest _requestForFilters({
     String? block,
     List<int> excludeIds = const [],
@@ -158,6 +169,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
       block: block,
       excludeIds: excludeIds,
       seed: seed,
+      anchorTrackId: _queueTailTrackId(),
     );
   }
 
