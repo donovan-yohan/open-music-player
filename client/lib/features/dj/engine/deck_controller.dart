@@ -8,6 +8,7 @@ import '../../../core/engine/timeline_model.dart';
 import '../../../core/engine/voice.dart';
 import '../../../models/timeline_clip.dart';
 import '../../../models/track.dart';
+import '../../../models/waveform.dart';
 import '../models/dj_deck_load_failure.dart';
 import '../models/dj_deck_state.dart';
 import '../models/dj_hot_cue.dart';
@@ -153,6 +154,50 @@ class DeckController {
       );
       return;
     }
+  }
+
+  /// Replaces the deck's pinned analysis snapshot after async hydration, without
+  /// touching the voice, the position, the cue or the loop (#410).
+  ///
+  /// [load] is the only thing that may talk to the Voice. This is deliberately a
+  /// separate, total, synchronous method so a hydration arrival can never become
+  /// a second audio load (ADR 0001's one-playback-truth rule applies to the
+  /// deck's own voice too).
+  ///
+  /// Returns true when the snapshot changed.
+  bool updateQueueTrack(QueueTrack track) {
+    // A refused deck and an empty deck are both refused: neither has audio, and
+    // _markLoadFailure deliberately drops queueTrack so a refused lane cannot
+    // start advertising analysis again.
+    if (_state.trackRef == null || _state.loadFailure != null) return false;
+    if (identical(_state.queueTrack, track)) return false;
+    // Hydration is one-way for the deck. QueueProvider evicts a hydrated
+    // analysis whenever another screen takes over hydration interest
+    // (_releaseAnalysisHydration), and the very next revision tick then offers
+    // the deck the compact, waveform-less queue snapshot again. Accepting it
+    // would flip a painted lane back to a flat "Analyzing…" baseline and
+    // re-derive beatsMs from the truncated grid until the refetch lands. The
+    // re-arm still happens — DjScreen calls trackWithAnalysis for that side
+    // effect — but the deck keeps the better snapshot it already has.
+    final current = _state.queueTrack;
+    if (current != null &&
+        waveformAvailableSampleCountForTrack(current) != null &&
+        waveformAvailableSampleCountForTrack(track) == null) {
+      return false;
+    }
+    final analysis = track.analysis;
+    _state = _state.copyWith(
+      queueTrack: track,
+      // Refreshed from the same interpreter DjSessionProvider._seedForTrack
+      // uses, so hot-cue and loop snapping pick up the hydrated grid. That is
+      // the point of re-seeding, not a side effect.
+      beatsMs: analysis == null
+          ? const <int>[]
+          : List.unmodifiable(
+              ClipTempoMetadata.fromTrackAnalysis(analysis).beatsMs,
+            ),
+    );
+    return true;
   }
 
   /// Records a refusal for [load] and drops any audio the voice still holds.

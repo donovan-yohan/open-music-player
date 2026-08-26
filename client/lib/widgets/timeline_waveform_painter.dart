@@ -663,6 +663,13 @@ class TimelineWaveformPainter extends CustomPainter {
   final double trimEndFraction;
   final int snapMarkerCount;
 
+  /// Whether this painter draws its own beat/downbeat/transient ticks.
+  ///
+  /// Defaults to true, so the player timeline and the mix editor are unchanged.
+  /// The DJ deck lane opts out and paints its own three-level ruler in design
+  /// tokens instead, which would otherwise double-draw over these (#416).
+  final bool musicalMarkers;
+
   TimelineWaveformPainter({
     required this.peaks,
     this.waveform,
@@ -682,6 +689,7 @@ class TimelineWaveformPainter extends CustomPainter {
     this.trimStartFraction = 0.0,
     this.trimEndFraction = 1.0,
     this.snapMarkerCount = 0,
+    this.musicalMarkers = true,
   }) : paintCache = paintCache ?? TimelineWaveformPaintCache();
 
   @override
@@ -750,22 +758,24 @@ class TimelineWaveformPainter extends CustomPainter {
         visibleSourceStartMs: visibleSourceStartMs,
         visibleSourceEndMs: visibleSourceEndMs,
       );
-      _paintMusicalMarkers(
-        canvas,
-        size,
-        paintCache._markerGeometryFor(
-          waveform: richWaveform,
-          mixClip: mixClip,
-          mappingRevision: mappingRevision,
-          laneIdentity: laneIdentity,
-          width: size.width,
-          viewportPixelsPerMs: viewportPixelsPerMs,
-          viewportOriginMs: viewportOriginMs,
-          projectedBeatMarkers: projectedBeatMarkers,
-        ),
-        visibleStartFraction: startFraction,
-        visibleEndFraction: endFraction,
-      );
+      if (musicalMarkers) {
+        _paintMusicalMarkers(
+          canvas,
+          size,
+          paintCache._markerGeometryFor(
+            waveform: richWaveform,
+            mixClip: mixClip,
+            mappingRevision: mappingRevision,
+            laneIdentity: laneIdentity,
+            width: size.width,
+            viewportPixelsPerMs: viewportPixelsPerMs,
+            viewportOriginMs: viewportOriginMs,
+            projectedBeatMarkers: projectedBeatMarkers,
+          ),
+          visibleStartFraction: startFraction,
+          visibleEndFraction: endFraction,
+        );
+      }
     }
 
     final midY = size.height / 2;
@@ -825,7 +835,8 @@ class TimelineWaveformPainter extends CustomPainter {
       old.snapMarkerColor != snapMarkerColor ||
       old.trimStartFraction != trimStartFraction ||
       old.trimEndFraction != trimEndFraction ||
-      old.snapMarkerCount != snapMarkerCount;
+      old.snapMarkerCount != snapMarkerCount ||
+      old.musicalMarkers != musicalMarkers;
 
   bool _usesLaneColor(TimelineWaveformData? data) =>
       data == null ||

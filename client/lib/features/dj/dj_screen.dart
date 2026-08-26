@@ -61,6 +61,14 @@ class _DjScreenState extends State<DjScreen> {
   bool _ownsSession = false;
   bool _seeded = false;
 
+  /// The QueueProvider the seed actually read, pinned so dispose removes the
+  /// listener from the same object addListener was called on (#410).
+  QueueProvider? _queue;
+
+  /// Last analysis revision already pushed onto the decks. QueueProvider also
+  /// notifies for queue/position changes, which must not re-seed anything.
+  int _lastAnalysisRevision = -1;
+
   @override
   void initState() {
     super.initState();
@@ -122,7 +130,41 @@ class _DjScreenState extends State<DjScreen> {
       // local-file fallback load has no library track id, so the panel says so
       // rather than offering a separation that cannot be queued.
       await _stems?.bindTrack(_libraryTrackId(_session!.deckA.trackRef));
+      if (!mounted) return;
+      // Attached only after the seed: a listener that fired mid-seed would race
+      // DeckController.load. Waveform peak arrays are never in the queue
+      // collection payload (queue_provider.dart:197-199), so the deck's first
+      // read is always a cold cache and this subscription is the only thing
+      // that lets the hydrated arrays reach the lane (#410).
+      _queue = queue;
+      queue?.addListener(_onQueueAnalysisChanged);
+      // A hydration that completed while the seed above was awaiting fired
+      // before this listener existed, and recording the current revision as
+      // already-seen would strand the deck on the unhydrated snapshot forever.
+      // Reconcile once, from a deliberately impossible revision.
+      _lastAnalysisRevision = -1;
+      _onQueueAnalysisChanged();
     });
+  }
+
+  /// Re-seeds both decks from QueueProvider when hydrated analysis lands.
+  void _onQueueAnalysisChanged() {
+    final queue = _queue;
+    final session = _session;
+    if (!mounted || queue == null || session == null) return;
+    final revision = queue.analysisRevision;
+    // Position/queue-only notifications leave the revision alone.
+    if (revision == _lastAnalysisRevision) return;
+    _lastAnalysisRevision = revision;
+    final current = queue.currentTrack;
+    final next = queue.upNext.isEmpty ? null : queue.upNext.first;
+    // trackWithAnalysis re-arms hydration interest (queue_provider.dart:215-218),
+    // so a deck whose analysis was purged by another screen's
+    // setAnalysisHydrationInterest re-requests it instead of staying blank.
+    session.applyAnalysisUpdate([
+      for (final track in [current, next])
+        if (track != null) queue.trackWithAnalysis(track),
+    ]);
   }
 
   /// Deck refs are `playbackTrackId ?? queueItemId` for library tracks and
@@ -192,6 +234,7 @@ class _DjScreenState extends State<DjScreen> {
 
   @override
   void dispose() {
+    _queue?.removeListener(_onQueueAnalysisChanged);
     _stems?.dispose();
     if (_ownsSession) {
       // DeckController.dispose releases its Voice; do not overlap it with a

@@ -129,6 +129,35 @@ class DjSessionProvider extends ChangeNotifier {
     );
   }
 
+  /// Pushes freshly hydrated queue analysis onto whichever decks it belongs to.
+  ///
+  /// Returns true if any deck changed. Never loads audio (#410): the deck's
+  /// waveform peaks only exist on the per-track analysis endpoint, so they
+  /// arrive long after the seed and have to reach deck state without a second
+  /// Voice.load.
+  ///
+  /// Matching is by queue item first, then by the resolver-backed track ref, so
+  /// a re-queued row still finds its deck.
+  bool applyAnalysisUpdate(Iterable<QueueTrack> tracks) {
+    var changed = false;
+    for (final track in tracks) {
+      final trackRef = djDeckTrackRef(track);
+      for (final controller in _decks.values) {
+        final state = controller.state;
+        final queueItemId = state.queueItemId;
+        final matches = (queueItemId != null &&
+                queueItemId == track.queueItemId) ||
+            (trackRef != null && state.trackRef == trackRef);
+        if (!matches) continue;
+        if (controller.updateQueueTrack(track)) changed = true;
+      }
+    }
+    // One notify for the whole batch, and none at all when nothing moved: this
+    // runs off a QueueProvider notification, not off the 33 Hz snapshot loop.
+    if (changed) notifyListeners();
+    return changed;
+  }
+
   /// Loads current/next queue seeds. If neither is available the caller may
   /// provide a local-file picker seam (no file_picker dependency in the spike).
   Future<void> seed({
