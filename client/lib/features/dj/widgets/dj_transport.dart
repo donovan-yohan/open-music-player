@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../app/theme.dart';
+import '../dj_deck_copy.dart';
 
 /// Slot width below which the transport swaps its labelled CUE button for an
 /// icon-only one. Three labelled controls do not fit narrower than this.
@@ -13,11 +14,29 @@ class DjTransport extends StatelessWidget {
     required this.onCuePress,
     required this.onCueRelease,
     required this.onPlayPause,
+    this.enabled = true,
+    this.disabledReason,
   });
   final bool playing;
   final VoidCallback onCuePress;
   final VoidCallback onCueRelease;
   final VoidCallback onPlayPause;
+
+  /// Whether this deck holds audio. A deck with nothing loaded used to present
+  /// a fully coloured, fully armed CUE and PLAY that latched `playing` over
+  /// silence (#414).
+  final bool enabled;
+
+  /// Tooltip shown on the gated controls; the lane's own reason where there is
+  /// one, so the transport and the waveform lane cannot tell different stories.
+  final String? disabledReason;
+
+  Widget _gated(Widget child) => enabled
+      ? child
+      : Tooltip(
+          message: disabledReason ?? djDeckTransportDisabledReason,
+          child: child,
+        );
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -37,56 +56,66 @@ class DjTransport extends StatelessWidget {
             children: [
               Flexible(
                 fit: FlexFit.loose,
-                child: Listener(
-                  // The press/release pair is the cue contract; both variants
-                  // keep it and keep the dj_cue key.
-                  onPointerDown: (_) => onCuePress(),
-                  onPointerUp: (_) => onCueRelease(),
-                  onPointerCancel: (_) => onCueRelease(),
-                  child: compact
-                      ? IconButton.filled(
-                          key: const ValueKey('dj_cue'),
-                          tooltip: 'Cue',
-                          iconSize: 20,
-                          padding: iconPadding,
-                          constraints: iconConstraints,
-                          onPressed: () {},
-                          icon: const Icon(Icons.flag),
-                        )
-                      : FilledButton(
-                          key: const ValueKey('dj_cue'),
-                          style: FilledButton.styleFrom(
-                            minimumSize: const Size(56, 48),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: AppTheme.space2,
+                child: _gated(
+                  Listener(
+                    // The press/release pair is the cue contract; both variants
+                    // keep it and keep the dj_cue key. A gated deck wires
+                    // neither, so a press cannot reach the voice by the pointer
+                    // route while the button itself is disabled.
+                    onPointerDown: enabled ? (_) => onCuePress() : null,
+                    onPointerUp: enabled ? (_) => onCueRelease() : null,
+                    onPointerCancel: enabled ? (_) => onCueRelease() : null,
+                    child: compact
+                        ? IconButton.filled(
+                            key: const ValueKey('dj_cue'),
+                            tooltip: enabled ? 'Cue' : null,
+                            iconSize: 20,
+                            padding: iconPadding,
+                            constraints: iconConstraints,
+                            onPressed: enabled ? () {} : null,
+                            icon: const Icon(Icons.flag),
+                          )
+                        : FilledButton(
+                            key: const ValueKey('dj_cue'),
+                            style: FilledButton.styleFrom(
+                              minimumSize: const Size(56, 48),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: AppTheme.space2,
+                              ),
+                            ),
+                            onPressed: enabled ? () {} : null,
+                            child: const Text(
+                              'CUE',
+                              maxLines: 1,
+                              softWrap: false,
+                              overflow: TextOverflow.clip,
                             ),
                           ),
-                          onPressed: () {},
-                          child: const Text(
-                            'CUE',
-                            maxLines: 1,
-                            softWrap: false,
-                            overflow: TextOverflow.clip,
-                          ),
-                        ),
+                  ),
                 ),
               ),
               Flexible(
                 fit: FlexFit.loose,
-                child: IconButton.filled(
-                  key: const ValueKey('dj_play_pause'),
-                  tooltip: playing ? 'Pause' : 'Play',
-                  iconSize: compact ? 20 : 28,
-                  padding: iconPadding,
-                  constraints: iconConstraints,
-                  onPressed: onPlayPause,
-                  icon: Icon(playing ? Icons.pause : Icons.play_arrow),
+                child: _gated(
+                  IconButton.filled(
+                    key: const ValueKey('dj_play_pause'),
+                    tooltip:
+                        enabled ? (playing ? 'Pause' : 'Play') : null,
+                    iconSize: compact ? 20 : 28,
+                    padding: iconPadding,
+                    constraints: iconConstraints,
+                    onPressed: enabled ? onPlayPause : null,
+                    icon: Icon(playing ? Icons.pause : Icons.play_arrow),
+                  ),
                 ),
               ),
               Flexible(
                 fit: FlexFit.loose,
                 child: Tooltip(
-                  message: 'sync engine: phase 2',
+                  // Sync is deferred to DJ-3 (docs/dj-deck-spec.md); the glyph
+                  // says so in the user's language rather than naming an
+                  // internal phase (#414).
+                  message: djDeckSyncUnavailable,
                   child: IconButton(
                     key: const ValueKey('dj_sync'),
                     iconSize: compact ? 20 : 24,
