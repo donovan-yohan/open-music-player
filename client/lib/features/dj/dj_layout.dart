@@ -521,22 +521,45 @@ class _Transport extends StatelessWidget {
   // the counter keeps its intrinsic width and the gated transport flexes into
   // whatever is left.
   @override
-  Widget build(BuildContext context) => Row(
-        children: [
-          DjBeatCounter(deck: state),
-          const SizedBox(width: AppTheme.space1),
-          Expanded(
-            child: DjTransport(
-              playing: state.playing,
-              enabled: state.isLoaded,
-              disabledReason: state.loadFailure == null
-                  ? null
-                  : DjDeckNotice.messageFor(state.loadFailure!.kind),
-              onCuePress: () => session.cuePress(deck),
-              onCueRelease: () => session.cueRelease(deck),
-              onPlayPause: () => session.togglePlay(deck),
-            ),
+  Widget build(BuildContext context) {
+    final syncMatch = session.syncMatchFor(deck);
+    final syncIsMaster = session.isSyncMaster(deck);
+    final syncEngaged = session.syncEngagedOn(deck);
+    // An engaged follower's tap is a pure disengage (`pressSync` returns before
+    // it computes anything), so it must stay live even when the match has since
+    // stopped being reachable -- a master pitch bend can push it out of the
+    // deck's rate window mid-blend, and a greyed glyph would strand the deck
+    // engaged with no way to release it.
+    //
+    // The master gets no such exemption. Its tap is a real swap that goes
+    // through the match, so when the swap would refuse the button gates like
+    // every other state and states the reason, instead of accepting a tap that
+    // changes nothing and reports nothing.
+    final syncEnabled = state.isLoaded && (syncEngaged || syncMatch.isMatched);
+    final refusal = syncMatch.refusal;
+    return Row(
+      children: [
+        DjBeatCounter(deck: state),
+        const SizedBox(width: AppTheme.space1),
+        Expanded(
+          child: DjTransport(
+            deck: deck,
+            playing: state.playing,
+            enabled: state.isLoaded,
+            disabledReason: state.loadFailure == null
+                ? null
+                : DjDeckNotice.messageFor(state.loadFailure!.kind),
+            onCuePress: () => session.cuePress(deck),
+            onCueRelease: () => session.cueRelease(deck),
+            onPlayPause: () => session.togglePlay(deck),
+            onSync: syncEnabled ? () => session.pressSync(deck) : null,
+            syncEngaged: syncEngaged,
+            syncIsMaster: syncIsMaster,
+            syncDisabledReason:
+                refusal == null ? null : djDeckSyncReasonFor(refusal),
           ),
-        ],
-      );
+        ),
+      ],
+    );
+  }
 }

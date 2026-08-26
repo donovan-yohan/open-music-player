@@ -10,6 +10,7 @@ import '../../../core/cache/playback_cache_manager.dart';
 import '../../../core/stems/stem_channel_source.dart';
 import '../../../models/track.dart';
 import '../../dj/engine/deck_controller.dart';
+import '../engine/deck_sync.dart';
 import '../models/dj_deck_state.dart';
 import '../models/dj_hot_cue.dart';
 import '../models/dj_musical_grid.dart';
@@ -66,6 +67,13 @@ class DjSessionProvider extends ChangeNotifier {
   final Map<DjDeckId, int> _pendingLoopInMs = {};
   final Map<DjDeckId, double> _preNudgeRates = {};
   final Set<DjDeckId> _loopWrapsInFlight = {};
+
+  /// The deck that sets the tempo. Null until sync is first engaged.
+  DjDeckId? _syncMaster;
+
+  /// The decks currently following [_syncMaster]. With two decks this holds at
+  /// most one entry; the master is never a member.
+  final Set<DjDeckId> _syncEngaged = {};
   late final Timer _snapshotTimer;
   bool _disposed = false;
   double _crossfader = .5;
@@ -74,6 +82,82 @@ class DjSessionProvider extends ChangeNotifier {
   DjDeckState get deckB => stateFor(DjDeckId.b);
   double get crossfader => _crossfader;
   DjDeckState stateFor(DjDeckId deck) => _decks[deck]!.state;
+
+  /// The deck that currently sets the tempo, or null if sync is idle.
+  DjDeckId? get syncMaster => _syncMaster;
+  bool syncEngagedOn(DjDeckId deck) => _syncEngaged.contains(deck);
+  bool isSyncMaster(DjDeckId deck) => _syncMaster == deck;
+
+  static DjDeckId _otherDeck(DjDeckId deck) =>
+      deck == DjDeckId.a ? DjDeckId.b : DjDeckId.a;
+
+  /// Pure preview of what [pressSync] would do to [deck], for gating the
+  /// button and rendering its reason. Applies nothing.
+  ///
+  /// The would-be leader is always the *other* deck: with no master yet the
+  /// other deck becomes master, pressing the master swaps to the other deck,
+  /// and a follower's master already is the other deck.
+  DjSyncMatch syncMatchFor(DjDeckId deck) => djSyncTempoMatch(
+        leader: stateFor(_otherDeck(deck)),
+        follower: stateFor(deck),
+      );
+
+  /// One SYNC press on [deck].
+  ///
+  /// * idle, or [deck] is the master: the other deck becomes master and [deck]
+  ///   follows it. Pressing the master is therefore the master swap.
+  /// * [deck] is an engaged follower: it disengages and **keeps its current
+  ///   rate**. Snapping back to 1.0 would be an audible tempo jump mid-blend.
+  /// * refused: nothing is applied, no state moves, and no notification is
+  ///   sent. The refusal is returned and rendered as the disabled reason.
+  ///
+  /// The master's own rate is never written (issue #413, AC 8).
+  Future<DjSyncMatch> pressSync(DjDeckId deck) async {
+    if (_disposed) {
+      return const DjSyncMatch.refused(DjSyncRefusal.noLeader);
+    }
+    final other = _otherDeck(deck);
+    if (_syncEngaged.contains(deck) && _syncMaster != deck) {
+      _syncEngaged.remove(deck);
+      _notify();
+      // Nothing was applied; this describes the match a re-engage would use.
+      return syncMatchFor(deck);
+    }
+    final match = djSyncTempoMatch(
+      leader: stateFor(other),
+      follower: stateFor(deck),
+    );
+    if (!match.isMatched) return match;
+    // Every engaged case resolves to the same shape: the other deck leads and
+    // this deck is the only follower. A two-deck session has no third state.
+    _syncMaster = other;
+    _syncEngaged
+      ..clear()
+      ..add(deck);
+    await _decks[deck]!.setRate(match.targetRate);
+    _notify();
+    return match;
+  }
+
+  /// Takes [deck] out of whatever sync role it held.
+  ///
+  /// Two callers, one rule. A manual tempo change hands that deck's rate back
+  /// to the user, and a deck that took new audio or lost it can neither lead
+  /// nor follow. Either way, if [deck] was the *master* the whole session
+  /// returns to idle: every follower's match was against a tempo that has now
+  /// moved, and leaving a follower marked as matched would be a lie.
+  ///
+  /// The phase-correction slice is where these two callers stop agreeing: a
+  /// deliberate disengage has to restore the follower's base rate once, while a
+  /// deck that lost its audio has no rate to restore.
+  void _releaseSyncRole(DjDeckId deck) {
+    if (_syncMaster == deck) {
+      _syncMaster = null;
+      _syncEngaged.clear();
+      return;
+    }
+    _syncEngaged.remove(deck);
+  }
   List<DjHotCue> hotCuesFor(DjDeckId deck) =>
       _hotCues[deck]!.values.toList()..sort((a, b) => a.slot.compareTo(b.slot));
 
@@ -189,6 +273,7 @@ class DjSessionProvider extends ChangeNotifier {
       // free to load, and this deck explaining itself in its lane. Refusing
       // through the controller (rather than a bare state write) also releases a
       // voice that an unforeseen throw may have left holding audio.
+      _releaseSyncRole(deck);
       await _decks[deck]!.refuseLoad(seed, detail: '$error');
       _applyDeckGains();
       _notify();
@@ -197,6 +282,9 @@ class DjSessionProvider extends ChangeNotifier {
 
   Future<void> load(DjDeckId deck, DjDeckLoad seed) async {
     if (_disposed) return;
+    // A deck taking new audio drops whatever sync role it held: the match was
+    // against a track it no longer holds.
+    _releaseSyncRole(deck);
     await _decks[deck]!.load(seed);
     _applyDeckGains();
     _notify();
@@ -243,6 +331,9 @@ class DjSessionProvider extends ChangeNotifier {
 
   Future<void> setPitchPercent(DjDeckId deck, double percent) async {
     if (_disposed) return;
+    // Two authorities must never fight over one rate: moving the fader by hand
+    // is the user taking this deck's tempo back from sync.
+    _releaseSyncRole(deck);
     await _decks[deck]!.setRate(1 + percent.clamp(-25.0, 25.0) / 100);
     _notify();
   }
@@ -392,6 +483,8 @@ class DjSessionProvider extends ChangeNotifier {
 
   Future<void> stopAll() async {
     if (_disposed) return;
+    _syncMaster = null;
+    _syncEngaged.clear();
     await Future.wait([for (final deck in _decks.values) deck.release()]);
     _notify();
   }

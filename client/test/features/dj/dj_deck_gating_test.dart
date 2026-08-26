@@ -204,8 +204,12 @@ void main() {
       );
     });
 
-    testWidgets('the sync glyph states its unavailability in plain language',
+    testWidgets('an unwired sync glyph names the state it is actually in',
         (tester) async {
+      // The glyph is live now (#413). A transport built without a session has
+      // no partner deck to sync against, so its reason is that, not the old
+      // roadmap line: `djDeckSyncUnavailable` no longer describes a real state
+      // and has been removed from the copy contract.
       await pumpTransport(tester, width: 300, enabled: true);
 
       final tooltip = tester.widget<Tooltip>(
@@ -216,9 +220,59 @@ void main() {
             )
             .first,
       );
-      expect(tooltip.message, djDeckSyncUnavailable);
+      expect(tooltip.message, djDeckSyncOtherDeckUnavailable);
       expect(tooltip.message, isNot(contains('phase')));
       expect(find.byIcon(Icons.sync), findsOneWidget);
+      expect(
+        tester
+            .widget<IconButton>(find.byKey(const ValueKey('dj_sync')))
+            .onPressed,
+        isNull,
+      );
+    });
+
+    testWidgets('a wired sync glyph states each of its three live states',
+        (tester) async {
+      // Every state names the control before it describes itself, the same
+      // 'Sync. <detail>' shape the gated glyph and `_name` already use: the
+      // tooltip is the only text on this node, so a bare state phrase leaves a
+      // screen-reader user unable to tell which control they are on.
+      for (final state in <(bool, bool, String, String)>[
+        (false, false, 'dj_sync_off_a', 'Sync. $djDeckSyncFollowAction'),
+        (true, false, 'dj_sync_on_a', 'Sync. $djDeckSyncEngaged'),
+        (false, true, 'dj_sync_master_a', 'Sync. $djDeckSyncMaster'),
+      ]) {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SizedBox(
+                width: 300,
+                height: 64,
+                child: DjTransport(
+                  deck: DjDeckId.a,
+                  playing: false,
+                  onCuePress: () {},
+                  onCueRelease: () {},
+                  onPlayPause: () {},
+                  onSync: () {},
+                  syncEngaged: state.$1,
+                  syncIsMaster: state.$2,
+                ),
+              ),
+            ),
+          ),
+        );
+
+        expect(find.byKey(ValueKey(state.$3)), findsOneWidget,
+            reason: 'exactly one sync state marker is painted at a time');
+        expect(find.byIcon(Icons.sync), findsOneWidget);
+        expect(
+          tester
+              .widget<IconButton>(find.byKey(const ValueKey('dj_sync')))
+              .tooltip,
+          state.$4,
+        );
+      }
     });
   });
 

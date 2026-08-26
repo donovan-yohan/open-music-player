@@ -2,10 +2,33 @@ import 'package:flutter/material.dart';
 
 import '../../../app/theme.dart';
 import '../dj_deck_copy.dart';
+import '../engine/deck_sync.dart';
+import '../models/dj_deck_state.dart';
 
 /// Slot width below which the transport swaps its labelled CUE button for an
 /// icon-only one. Three labelled controls do not fit narrower than this.
 const double kDjTransportCompactWidth = 168;
+
+/// The sentence-case reason a refused sync shows on the disabled glyph.
+///
+/// The reason is painted on the glyph of the deck the match was computed
+/// *for*, and `DjSessionProvider.syncMatchFor` always evaluates
+/// `leader: other, follower: this`. A `follower*` refusal is therefore a
+/// statement about the deck the user is looking at and a `leader*` refusal is a
+/// statement about the other one. Collapsing each pair onto a single
+/// deck-naming sentence made half the reachable states say the opposite of the
+/// truth: an empty deck B was told to load a track on the other deck, which
+/// already had one. A specific reason that is wrong is worse than a generic
+/// one, because the user acts on it.
+String djDeckSyncReasonFor(DjSyncRefusal refusal) => switch (refusal) {
+      DjSyncRefusal.followerTempoUnreliable => djDeckSyncNoTempo,
+      DjSyncRefusal.leaderTempoUnreliable => djDeckSyncOtherTrackNoTempo,
+      DjSyncRefusal.followerNotLoaded => djDeckSyncThisDeckEmpty,
+      DjSyncRefusal.noLeader ||
+      DjSyncRefusal.leaderNotLoaded =>
+        djDeckSyncOtherDeckUnavailable,
+      DjSyncRefusal.tempoOutOfRange => djDeckSyncTempoOutOfRange,
+    };
 
 class DjTransport extends StatelessWidget {
   const DjTransport({
@@ -16,6 +39,11 @@ class DjTransport extends StatelessWidget {
     required this.onPlayPause,
     this.enabled = true,
     this.disabledReason,
+    this.deck,
+    this.onSync,
+    this.syncEngaged = false,
+    this.syncIsMaster = false,
+    this.syncDisabledReason,
   });
   final bool playing;
   final VoidCallback onCuePress;
@@ -30,6 +58,24 @@ class DjTransport extends StatelessWidget {
   /// Tooltip shown on the gated controls; the lane's own reason where there is
   /// one, so the transport and the waveform lane cannot tell different stories.
   final String? disabledReason;
+
+  /// Which deck this transport drives. Only used to key the sync state marker,
+  /// so a transport built outside the deck layout still renders correctly.
+  final DjDeckId? deck;
+
+  /// Null disables the SYNC control. The session supplies a callback whenever
+  /// the press would do something: match, swap master, or disengage.
+  final VoidCallback? onSync;
+
+  /// This deck is an engaged follower.
+  final bool syncEngaged;
+
+  /// This deck sets the tempo. A master's SYNC stays enabled: its tap swaps.
+  final bool syncIsMaster;
+
+  /// Why SYNC is unavailable, when it is. Falls back to the honest default for
+  /// a transport that was never wired to a session.
+  final String? syncDisabledReason;
 
   String get _reason => disabledReason ?? djDeckTransportDisabledReason;
 
@@ -122,23 +168,90 @@ class DjTransport extends StatelessWidget {
               ),
               Flexible(
                 fit: FlexFit.loose,
-                child: Tooltip(
-                  // Sync is deferred to DJ-3 (docs/dj-deck-spec.md); the glyph
-                  // says so in the user's language rather than naming an
-                  // internal phase (#414).
-                  message: djDeckSyncUnavailable,
-                  child: IconButton(
-                    key: const ValueKey('dj_sync'),
-                    iconSize: compact ? 20 : 24,
-                    padding: iconPadding,
-                    constraints: iconConstraints,
-                    onPressed: null,
-                    icon: const Icon(Icons.sync),
-                  ),
+                child: _sync(
+                  compact: compact,
+                  iconPadding: iconPadding,
+                  iconConstraints: iconConstraints,
                 ),
               ),
             ],
           );
         },
       );
+
+  /// The SYNC control, in exactly one of four states.
+  ///
+  /// It stays the third and last child of the transport row: the 64dp row and
+  /// the three-way non-overlap contract at the 123.3dp slot both depend on
+  /// there being three controls, so state is expressed through the button
+  /// variant and a keyed icon rather than through extra widgets. Exactly one of
+  /// `dj_sync_master_<deck>`, `dj_sync_on_<deck>` and `dj_sync_off_<deck>` is
+  /// present at any time, which is a layout-free widget-test contract.
+  ///
+  /// Every state's tooltip is prefixed with the control's own name, the same
+  /// `'Sync. <detail>'` shape `_name` gives CUE and PLAY: `IconButton.tooltip`
+  /// is the only text on this node (the icon carries no semantic label), so a
+  /// bare state phrase like "This deck sets the tempo" left a screen-reader
+  /// user unable to tell which control they were on.
+  Widget _sync({
+    required bool compact,
+    required EdgeInsets iconPadding,
+    required BoxConstraints? iconConstraints,
+  }) {
+    final suffix = deck?.name ?? 'deck';
+    final iconSize = compact ? 20.0 : 24.0;
+
+    if (onSync == null) {
+      final reason = syncDisabledReason ?? djDeckSyncOtherDeckUnavailable;
+      return Tooltip(
+        message: reason,
+        child: IconButton(
+          key: const ValueKey('dj_sync'),
+          // The wrapper carries the reason on screen; the button's own tooltip
+          // is what a screen reader reads as the control's name, so a gated
+          // glyph still says which control it is (#414 review).
+          tooltip: 'Sync. $reason',
+          iconSize: iconSize,
+          padding: iconPadding,
+          constraints: iconConstraints,
+          onPressed: null,
+          icon: Icon(Icons.sync, key: ValueKey('dj_sync_off_$suffix')),
+        ),
+      );
+    }
+
+    if (syncIsMaster) {
+      return IconButton.filledTonal(
+        key: const ValueKey('dj_sync'),
+        tooltip: 'Sync. $djDeckSyncMaster',
+        iconSize: iconSize,
+        padding: iconPadding,
+        constraints: iconConstraints,
+        onPressed: onSync,
+        icon: Icon(Icons.sync, key: ValueKey('dj_sync_master_$suffix')),
+      );
+    }
+
+    if (syncEngaged) {
+      return IconButton.filled(
+        key: const ValueKey('dj_sync'),
+        tooltip: 'Sync. $djDeckSyncEngaged',
+        iconSize: iconSize,
+        padding: iconPadding,
+        constraints: iconConstraints,
+        onPressed: onSync,
+        icon: Icon(Icons.sync, key: ValueKey('dj_sync_on_$suffix')),
+      );
+    }
+
+    return IconButton(
+      key: const ValueKey('dj_sync'),
+      tooltip: 'Sync. $djDeckSyncFollowAction',
+      iconSize: iconSize,
+      padding: iconPadding,
+      constraints: iconConstraints,
+      onPressed: onSync,
+      icon: Icon(Icons.sync, key: ValueKey('dj_sync_off_$suffix')),
+    );
+  }
 }

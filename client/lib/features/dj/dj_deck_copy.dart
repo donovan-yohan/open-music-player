@@ -55,8 +55,37 @@ const String djDeckHeaderNotLoaded = 'Not loaded';
 /// holds no audio and gave no more specific reason.
 const String djDeckTransportDisabledReason = 'This deck has no track loaded';
 
-/// Sync is deferred to DJ-3; the glyph says so in the user's language.
-const String djDeckSyncUnavailable = 'Sync is not available yet';
+/// Idle, enabled SYNC: what one tap will do.
+const String djDeckSyncFollowAction = 'Match this deck to the other deck';
+
+/// This deck is an engaged follower.
+const String djDeckSyncEngaged = 'Matched to the other deck';
+
+/// This deck is the master. Tapping it hands the master role to the other deck.
+const String djDeckSyncMaster = 'This deck sets the tempo';
+
+/// This deck's own BPM is missing or below the reliability floor.
+const String djDeckSyncNoTempo = 'This track has no reliable tempo to sync to';
+
+/// The *other* deck's BPM is missing or below the reliability floor.
+///
+/// Separate from [djDeckSyncNoTempo] because `syncMatchFor` always makes the
+/// other deck the leader, so a leader refusal is a statement about the deck the
+/// user is not looking at. One sentence for both sides named whichever deck
+/// happened to be innocent.
+const String djDeckSyncOtherTrackNoTempo =
+    'The other track has no reliable tempo to sync to';
+
+/// The would-be leader deck holds no audio.
+const String djDeckSyncOtherDeckUnavailable =
+    'Load a track on the other deck to sync';
+
+/// This deck holds no audio, so it cannot be made to follow anything.
+const String djDeckSyncThisDeckEmpty = 'Load a track on this deck to sync';
+
+/// Even octave-normalized, the follower rate falls outside the deck window.
+const String djDeckSyncTempoOutOfRange =
+    'The tempo gap is too wide for this deck';
 
 /// The deck is landscape only, and Android does not always honour the request
 /// immediately (or at all, in split-screen / freeform windows).
@@ -111,7 +140,14 @@ const List<String> djDeckCopyStrings = <String>[
   djDeckLoadFileAction,
   djDeckHeaderNotLoaded,
   djDeckTransportDisabledReason,
-  djDeckSyncUnavailable,
+  djDeckSyncFollowAction,
+  djDeckSyncEngaged,
+  djDeckSyncMaster,
+  djDeckSyncNoTempo,
+  djDeckSyncOtherTrackNoTempo,
+  djDeckSyncOtherDeckUnavailable,
+  djDeckSyncThisDeckEmpty,
+  djDeckSyncTempoOutOfRange,
   djDeckRotatePrompt,
   djDeckRotateDetail,
   djDeckTooSmall,
