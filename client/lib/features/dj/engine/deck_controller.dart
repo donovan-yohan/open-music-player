@@ -13,6 +13,28 @@ import '../models/dj_deck_load_failure.dart';
 import '../models/dj_deck_state.dart';
 import '../models/dj_hot_cue.dart';
 
+/// The deck's own UI rate window. Deliberately narrower than the engine's
+/// 0.5-2.0 (tempo_automation.dart:5-6): the pitch fader is +/-25%
+/// (docs/dj-deck-spec.md:164), and sync must refuse against THIS window, not
+/// the engine's, or a follower settles at a tempo the fader cannot express.
+const double kDjDeckMinRate = 0.75;
+const double kDjDeckMaxRate = 1.25;
+
+/// What [DeckController.setRate] actually did.
+///
+/// The deck used to clamp silently, so a caller asking for a rate the deck
+/// cannot express got the clamped one back with no signal (#413). Sync refuses
+/// rather than settling a follower at the wrong tempo, and it can only refuse
+/// if the controller says what it did.
+class DjDeckRateOutcome {
+  const DjDeckRateOutcome({required this.requested, required this.applied});
+
+  final double requested;
+  final double applied;
+
+  bool get clamped => (requested - applied).abs() > 1e-9;
+}
+
 class DjDeckLoad {
   const DjDeckLoad({
     required this.trackRef,
@@ -62,6 +84,11 @@ class DeckController {
 
   DjDeckState get state => _state;
   Voice get voice => _voice;
+
+  /// True until a Voice reports that this backend cannot shift pitch
+  /// (voice.dart:151-161 returns false there). Key shift is disabled when
+  /// false; a freshly loaded or refused deck starts optimistic again.
+  bool get pitchSupported => _state.pitchSupported;
 
   // Initialized here instead of a late initializer to retain a stable snapshot
   // before a deck has a queue seed.
@@ -265,14 +292,29 @@ class DeckController {
     _state = _state.copyWith(positionMs: safe);
   }
 
-  Future<void> setRate(
+  /// Applies [rate] to the voice and reports what actually landed.
+  ///
+  /// The clamp itself is unchanged — the pitch fader is already range-limited
+  /// to the same window — but it is now reported, so `deck_sync.dart` can
+  /// refuse a follower it cannot reach instead of leaving it at a tempo the
+  /// user never asked for.
+  Future<DjDeckRateOutcome> setRate(
     double rate, {
     String pitchMode = pitchModePreserve,
   }) async {
-    final safe = rate.clamp(0.75, 1.25).toDouble();
+    final safe = rate.clamp(kDjDeckMinRate, kDjDeckMaxRate).toDouble();
     await _voice.setSpeed(safe);
-    await _voice.setPitch(pitchFactorForRate(rate: safe, pitchMode: pitchMode));
-    _state = _state.copyWith(rate: safe, pitchMode: pitchMode);
+    // Voice.setPitch returns false on a backend with no pitch shifting
+    // (voice.dart:151-161). Playback still proceeds; only the key-shift
+    // affordance is withheld, and the fact latches for the loaded track.
+    final pitched = await _voice
+        .setPitch(pitchFactorForRate(rate: safe, pitchMode: pitchMode));
+    _state = _state.copyWith(
+      rate: safe,
+      pitchMode: pitchMode,
+      pitchSupported: _state.pitchSupported && pitched,
+    );
+    return DjDeckRateOutcome(requested: rate, applied: safe);
   }
 
   /// Applies a live output multiplier without changing the channel fader's

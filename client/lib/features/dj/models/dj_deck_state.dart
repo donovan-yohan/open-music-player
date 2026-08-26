@@ -24,6 +24,8 @@ class DjDeckState {
     this.activeLoop,
     this.beatsMs = const [],
     this.loadFailure,
+    this.pitchSupported = true,
+    this.keySemitones = 0,
   });
 
   final DjDeckId deckId;
@@ -48,6 +50,16 @@ class DjDeckState {
   /// Set when the deck refused this seed. A refused deck carries no [trackRef],
   /// so [isLoaded] stays honestly false while the lane explains why (#409).
   final DjDeckLoadFailure? loadFailure;
+
+  /// False once this deck's Voice has reported that the backend cannot shift
+  /// pitch (voice.dart:151-161). A refused or freshly loaded deck advertises
+  /// nothing, so it starts true again and the first [DeckController.setRate]
+  /// re-establishes the fact.
+  final bool pitchSupported;
+
+  /// Independent key offset in semitones, composed on top of the keylock pitch
+  /// factor. Reserved for the per-deck key control; sync never writes it.
+  final int keySemitones;
 
   double get ratePercent => (rate - 1) * 100;
   bool get isLoaded => trackRef != null;
@@ -125,6 +137,8 @@ class DjDeckState {
     List<int>? beatsMs,
     DjDeckLoadFailure? loadFailure,
     bool clearLoadFailure = false,
+    bool? pitchSupported,
+    int? keySemitones,
   }) =>
       DjDeckState(
         deckId: deckId,
@@ -144,5 +158,7 @@ class DjDeckState {
         // The 30 Hz snapshot refresh copies a refused deck too; a failure must
         // survive it and only clear on an explicit request.
         loadFailure: clearLoadFailure ? null : loadFailure ?? this.loadFailure,
+        pitchSupported: pitchSupported ?? this.pitchSupported,
+        keySemitones: keySemitones ?? this.keySemitones,
       );
 }
