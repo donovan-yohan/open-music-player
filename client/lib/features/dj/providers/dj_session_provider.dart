@@ -17,6 +17,14 @@ import '../models/dj_musical_grid.dart';
 
 typedef DjFilePicker = Future<DjDeckLoad?> Function();
 
+/// Monotonic wall-clock source, in milliseconds, for the sync correction
+/// throttle.
+///
+/// Injectable so the convergence tests can step a deterministic clock instead
+/// of sleeping on real time: the throttle is the one part of the correction
+/// loop whose contract is stated in wall milliseconds rather than in ticks.
+typedef DjSyncClock = int Function();
+
 /// The only mutable screen state authority for the direct-Voice prototype.
 ///
 /// TODO(dj-production): project QueueTimelineController instead; see
@@ -26,18 +34,27 @@ class DjSessionProvider extends ChangeNotifier {
     required DeckController deckA,
     required DeckController deckB,
     StemChannelSource? stems,
+    DjSyncClock? clock,
   })  : _decks = {DjDeckId.a: deckA, DjDeckId.b: deckB},
+        _clock = clock ?? _elapsedWallMs,
         stems = stems ?? const UnavailableStemChannelSource() {
     _snapshotTimer = Timer.periodic(const Duration(milliseconds: 33), (_) {
       _refreshSnapshots();
     });
   }
 
+  /// Process-wide monotonic source. Deliberately not `DateTime.now()`: the
+  /// throttle measures an interval, and a wall-clock step (NTP, timezone) must
+  /// not be able to stall or flood the correction loop.
+  static final Stopwatch _wall = Stopwatch()..start();
+  static int _elapsedWallMs() => _wall.elapsedMilliseconds;
+
   factory DjSessionProvider.prototype({
     VoiceFactory? voiceFactory,
     EngineAudioSourceResolver? resolver,
     PlaybackCacheManager? cacheManager,
     StemChannelSource? stems,
+    DjSyncClock? clock,
   }) {
     final makeVoice = voiceFactory ?? () => JustAudioVoice(debugId: 'dj-voice');
     final sourceResolver = resolver ??
@@ -54,6 +71,7 @@ class DjSessionProvider extends ChangeNotifier {
         resolver: sourceResolver,
       ),
       stems: stems,
+      clock: clock,
     );
   }
 
@@ -74,6 +92,27 @@ class DjSessionProvider extends ChangeNotifier {
   /// The decks currently following [_syncMaster]. With two decks this holds at
   /// most one entry; the master is never a member.
   final Set<DjDeckId> _syncEngaged = {};
+
+  /// The matched tempo each engaged follower was put on, before any correction.
+  /// The correction is an offset around this, exactly like `_preNudgeRates`
+  /// holds the rate a pitch bend returns to.
+  final Map<DjDeckId, double> _syncBaseRates = {};
+
+  /// The correction offset currently applied to each engaged follower.
+  final Map<DjDeckId, double> _syncOffsets = {};
+
+  /// When each deck last had a rate command issued to it by sync.
+  final Map<DjDeckId, int> _syncCommandAtMs = {};
+
+  /// Decks whose `setRate` has not returned yet. The 33Hz pass is far faster
+  /// than a `setSpeed` round trip, so without this a slow backend would collect
+  /// a queue of stale corrections.
+  final Set<DjDeckId> _syncCommandsInFlight = {};
+
+  /// Throttles the debug-only alignment trace to the command interval.
+  int? _syncTraceAtMs;
+
+  final DjSyncClock _clock;
   late final Timer _snapshotTimer;
   bool _disposed = false;
   double _crossfader = .5;
@@ -106,8 +145,9 @@ class DjSessionProvider extends ChangeNotifier {
   ///
   /// * idle, or [deck] is the master: the other deck becomes master and [deck]
   ///   follows it. Pressing the master is therefore the master swap.
-  /// * [deck] is an engaged follower: it disengages and **keeps its current
-  ///   rate**. Snapping back to 1.0 would be an audible tempo jump mid-blend.
+  /// * [deck] is an engaged follower: it disengages and **keeps its matched
+  ///   tempo**. Snapping back to 1.0 would be an audible tempo jump mid-blend;
+  ///   only the transient alignment offset is unwound.
   /// * refused: nothing is applied, no state moves, and no notification is
   ///   sent. The refusal is returned and rendered as the disabled reason.
   ///
@@ -119,25 +159,93 @@ class DjSessionProvider extends ChangeNotifier {
     final other = _otherDeck(deck);
     if (_syncEngaged.contains(deck) && _syncMaster != deck) {
       _syncEngaged.remove(deck);
+      // A deliberate disengage hands the deck back at the tempo it was matched
+      // to, not at whatever the correction loop was holding at that instant.
+      await _restoreSyncBaseRate(deck);
       _notify();
-      // Nothing was applied; this describes the match a re-engage would use.
+      // Nothing else was applied; this describes the match a re-engage uses.
       return syncMatchFor(deck);
+    }
+    // A swap deposes the current follower. Unwind its correction offset first,
+    // so both the tempo the new match is computed against and the tempo the new
+    // master keeps are the matched base rate rather than a mid-correction one.
+    var restored = false;
+    if (_syncMaster == deck && _syncEngaged.contains(other)) {
+      restored = await _restoreSyncBaseRate(other);
     }
     final match = djSyncTempoMatch(
       leader: stateFor(other),
       follower: stateFor(deck),
     );
-    if (!match.isMatched) return match;
+    if (!match.isMatched) {
+      if (restored) _notify();
+      return match;
+    }
     // Every engaged case resolves to the same shape: the other deck leads and
     // this deck is the only follower. A two-deck session has no third state.
     _syncMaster = other;
+    for (final released in _syncEngaged) {
+      _forgetSyncCorrection(released);
+    }
     _syncEngaged
       ..clear()
       ..add(deck);
     await _decks[deck]!.setRate(match.targetRate);
+    _syncBaseRates[deck] = match.targetRate;
+    _syncOffsets[deck] = 0;
+    // The match itself is a rate command, so it starts the throttle window.
+    _syncCommandAtMs[deck] = _clock();
+    await _seekPausedFollowerIntoPulse(deck, other);
     _notify();
     return match;
   }
+
+  /// Puts a paused follower exactly on the leader's pulse before it starts.
+  ///
+  /// A playing deck is never seeked: a buffered ExoPlayer seek is 50-200ms and
+  /// audible (docs/dj-deck-spec.md:314). A paused one is silent, so it can be
+  /// placed exactly rather than spending the whole convergence window closing
+  /// an error it never needed to have.
+  Future<void> _seekPausedFollowerIntoPulse(
+    DjDeckId deck,
+    DjDeckId master,
+  ) async {
+    final follower = stateFor(deck);
+    if (follower.playing) return;
+    final leader = stateFor(master);
+    if (!djSyncPhaseCorrectionAllowed(leader: leader, follower: follower)) {
+      return;
+    }
+    final reading = djSyncPhaseReading(leader: leader, follower: follower);
+    if (reading == null) return;
+    // The error is wall time; the deck seeks in media time.
+    final shiftMs = (reading.errorMs * follower.rate).round();
+    if (shiftMs == 0) return;
+    final target = follower.positionMs - shiftMs;
+    // Clamping would land the deck off the pulse while reporting success, so a
+    // shift that leaves the track is simply not taken.
+    if (target < 0 || target > follower.durationMs) return;
+    await _decks[deck]!.seek(target);
+  }
+
+  /// Returns [deck] to its matched tempo and forgets its correction state.
+  ///
+  /// Returns true when a rate command was actually issued.
+  Future<bool> _restoreSyncBaseRate(DjDeckId deck) async {
+    final base = _syncBaseRates.remove(deck);
+    final offset = _syncOffsets.remove(deck) ?? 0;
+    _syncCommandAtMs.remove(deck);
+    if (base == null || offset == 0) return false;
+    await _decks[deck]!.setRate(base);
+    return true;
+  }
+
+  void _forgetSyncCorrection(DjDeckId deck) {
+    _syncBaseRates.remove(deck);
+    _syncOffsets.remove(deck);
+    _syncCommandAtMs.remove(deck);
+  }
+
 
   /// Takes [deck] out of whatever sync role it held.
   ///
@@ -153,10 +261,17 @@ class DjSessionProvider extends ChangeNotifier {
   void _releaseSyncRole(DjDeckId deck) {
     if (_syncMaster == deck) {
       _syncMaster = null;
+      for (final follower in _syncEngaged) {
+        _forgetSyncCorrection(follower);
+      }
       _syncEngaged.clear();
       return;
     }
-    _syncEngaged.remove(deck);
+    if (!_syncEngaged.remove(deck)) return;
+    // No restore here, deliberately: `setPitchPercent` writes the deck's rate
+    // itself on the next line, and a deck that lost its audio has no rate left
+    // to restore. Only the bookkeeping is dropped.
+    _forgetSyncCorrection(deck);
   }
   List<DjHotCue> hotCuesFor(DjDeckId deck) =>
       _hotCues[deck]!.values.toList()..sort((a, b) => a.slot.compareTo(b.slot));
@@ -417,14 +532,105 @@ class DjSessionProvider extends ChangeNotifier {
 
   final Map<DjDeckId, DjLoop> _loops = {};
 
-  void _refreshSnapshots() {
+  void _refreshSnapshots() => unawaited(debugTick());
+
+  /// One pass of the 33ms loop: refresh both deck snapshots, service any loop
+  /// wrap, run the sync correction, notify.
+  ///
+  /// Exposed so the correction tests can step the loop against a fake clock.
+  /// [_tickSync] takes its whole decision synchronously before its first await,
+  /// so notifying ahead of the awaited rate command is not a race: the command
+  /// was computed from the snapshot this pass just refreshed.
+  @visibleForTesting
+  Future<void> debugTick() async {
+    if (_disposed) return;
     for (final controller in _decks.values) {
       controller.refreshSnapshot();
     }
     for (final entry in _loops.entries) {
       _requestLoopWrap(entry.key, entry.value);
     }
+    final correcting = _tickSync();
     _notify();
+    await correcting;
+  }
+
+  /// The beat-alignment correction, riding this pass rather than a timer of its
+  /// own.
+  ///
+  /// docs/dj-deck-spec.md:312 asks DeckSync for "its own tighter loop" only to
+  /// escape VoicePool's 150ms drift window; 33ms is already 4.5x tighter than
+  /// that, and a second timer would be a third authority writing one deck's
+  /// rate. The command throttle, not the sample rate, is what keeps the stream
+  /// honest.
+  Future<void> _tickSync() async {
+    if (_disposed || _syncEngaged.isEmpty) return;
+    final master = _syncMaster;
+    if (master == null) return;
+    final leader = stateFor(master);
+    for (final deck in _syncEngaged.toList()) {
+      await _correctSyncedDeck(deck, leader);
+    }
+  }
+
+  Future<void> _correctSyncedDeck(DjDeckId deck, DjDeckState leader) async {
+    final base = _syncBaseRates[deck];
+    if (base == null) return;
+    final follower = stateFor(deck);
+    DjSyncPhaseReading? reading;
+    var target = 0.0;
+    // Two gates, not one. The tempo match only needs a trustworthy BPM; moving
+    // a deck's rate to chase an untrustworthy grid pushes it off the beat.
+    if (djSyncPhaseCorrectionAllowed(leader: leader, follower: follower)) {
+      reading = djSyncPhaseReading(leader: leader, follower: follower);
+      if (reading != null) {
+        target = djSyncRateOffset(
+          errorMs: reading.errorMs,
+          pulseMs: reading.pulseMs,
+          baseRate: base,
+        );
+      }
+    }
+    _traceSyncCorrection(deck, reading, target);
+    final applied = _syncOffsets[deck] ?? 0;
+    if ((target - applied).abs() <= kDjSyncRateEpsilon) return;
+    final now = _clock();
+    final last = _syncCommandAtMs[deck];
+    if (last != null && now - last < kDjSyncCorrectionIntervalMs) return;
+    if (!_syncCommandsInFlight.add(deck)) return;
+    _syncCommandAtMs[deck] = now;
+    _syncOffsets[deck] = target;
+    try {
+      await _decks[deck]!.setRate(base * (1 + target));
+    } finally {
+      _syncCommandsInFlight.remove(deck);
+    }
+  }
+
+  /// Debug-only alignment trace, throttled to the command interval.
+  ///
+  /// Kept in the shipped source on purpose: the emulator has no way to read the
+  /// beat error off the screen - the header clock and the waveform both lie on
+  /// an API-seeded deck (#425) - so this line is the only device-side evidence
+  /// that the loop converges rather than merely looking settled.
+  void _traceSyncCorrection(
+    DjDeckId deck,
+    DjSyncPhaseReading? reading,
+    double offset,
+  ) {
+    if (!kDebugMode) return;
+    final now = _clock();
+    final last = _syncTraceAtMs;
+    if (last != null && now - last < kDjSyncCorrectionIntervalMs) return;
+    _syncTraceAtMs = now;
+    final error = reading == null
+        ? 'unavailable'
+        : '${reading.errorMs.toStringAsFixed(1)}ms';
+    debugPrint(
+      'OMP DJ sync deck=${deck.name} beat error=$error '
+      'offset=${offset.toStringAsFixed(4)} '
+      'rate=${stateFor(deck).rate.toStringAsFixed(6)}',
+    );
   }
 
   void _requestLoopWrap(DjDeckId deck, DjLoop loop) {
@@ -484,6 +690,9 @@ class DjSessionProvider extends ChangeNotifier {
   Future<void> stopAll() async {
     if (_disposed) return;
     _syncMaster = null;
+    for (final follower in _syncEngaged) {
+      _forgetSyncCorrection(follower);
+    }
     _syncEngaged.clear();
     await Future.wait([for (final deck in _decks.values) deck.release()]);
     _notify();
