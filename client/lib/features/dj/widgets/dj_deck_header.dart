@@ -116,13 +116,11 @@ class DjDeckHeader extends StatelessWidget {
             run.fold<double>(0, (sum, metric) => sum + metric.intrinsicWidth);
 
         // Give up whole segments, cheapest first, until the run fits.
-        while (metrics.any((metric) => metric.droppable) &&
-            neededBy(metrics) > budgetFor(metrics.length)) {
-          metrics.remove(
-            metrics.where((metric) => metric.droppable).reduce(
-                  (a, b) => a.dropRank! <= b.dropRank! ? a : b,
-                ),
-          );
+        final giveOrder = metrics.where((metric) => metric.droppable).toList()
+          ..sort((a, b) => a.dropRank!.compareTo(b.dropRank!));
+        for (final victim in giveOrder) {
+          if (neededBy(metrics) <= budgetFor(metrics.length)) break;
+          metrics.remove(victim);
         }
 
         // Last resort, reached only when BPM alone still does not fit: cap
