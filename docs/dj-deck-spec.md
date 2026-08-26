@@ -47,7 +47,11 @@ client/lib/features/dj/
                                   TimelineWaveformPainter (client/lib/widgets/timeline_waveform_painter.dart) +
                                   TimelineViewport; template = AnalysisCalibrationWaveform's follow-playhead mode
                                   (client/lib/widgets/analysis_calibration_waveform.dart:13-100). Data =
-                                  richWaveformForTrack over hydrated bands3-v1 analysis; beat/downbeat ticks already painted.
+                                  richWaveformForTrack over hydrated bands3-v1 analysis, which reaches the lane through the
+                                  QueueProvider.analysisRevision re-seed rather than the one-shot seed read: the queue payload
+                                  omits waveform arrays, so a deck that only reads at seed time never gets peaks (#410). The lane
+                                  suppresses the shared painter's own tick layer (musicalMarkers: false) and paints its own
+                                  DjBeatRulerPainter in design tokens instead — see "Beat ruler and beat counter" below.
   widgets/dj_deck_header.dart     DjDeckHeader: BPM (live effective, from merged PR #238 telemetry), pitch %, key/Camelot,
                                   beat-phase counter (beat index within bar from beatsMs+downbeats, blank until reliable),
                                   elapsed/remaining.
@@ -81,6 +85,34 @@ client/lib/features/dj/
 - No stems yet: stems panel hidden; panel switcher shows [CUES | LOOP]; mixer is channel faders + crossfader only. This is the v1 ship state.
 - No analysis (missing/pending/failed): lane falls back to peak-only waveform, no beat ticks, SYNC disabled with tooltip, quantize off, pitch fader still live, beat counter blank. Playback is never blocked.
 - Unreliable downbeats (hasReliableDownbeats false — the current common case, tempo_automation.dart:117-154): beat counter shows beat pulses without bar numbers; sync does beat-level phase only, never bar-level.
+
+## Beat ruler and beat counter
+
+The deck lanes draw a three-level ruler from the effective beat grid, and each deck carries a counter in the transport row (#416). Both read `TrackAnalysis.effectiveTiming` through `DjBeatRuler` (`client/lib/features/dj/models/dj_beat_grid.dart`); `ClipTempoMetadata` stays the only timing-override interpreter and nothing merges overrides a second time.
+
+**Levels and their density gates.** A level is drawn only when its own on-screen spacing clears its `minSpacingPx`, and the same value is passed to `timelineWaveformMarkerXs` (`client/lib/widgets/timeline_waveform_painter.dart:483`) as the thinning parameter, so the deck reuses the player timeline's tick geometry rather than forking the mix editor's inline loop.
+
+| level | width / extent | minSpacingPx |
+|---|---|---|
+| beat | 1dp over the bottom 25% of the lane | 7 |
+| bar | 1.5dp over the bottom 50% | 14 |
+| phrase | 2dp full height, numbered at the top-left | 28 |
+
+**Zoom rule.** The deck has no zoom control today (the 8dp overview strip in the header band is the only other zoom surface), so "overview zoom vs detail zoom" is expressed as density rather than a mode. `DjWaveformLane.pixelsPerSecond` defaults to `kDjLaneDetailPixelsPerSecond` = 90; `kDjLaneOverviewPixelsPerSecond` = 8 is the overview case the rule is tested against. At 120 BPM: detail gives beat 45px, bar 180px, phrase 720px and all three levels draw; overview gives beat 4px (below 7, dropped), bar 16px and phrase 64px, so bars and phrases survive. The overview constant is 8 rather than 6 precisely so a 4/4 bar clears its own 14px gate.
+
+**Phrase and anchor.** A phrase is `effectiveTiming.phraseLengthBars ?? 4` bars, i.e. 16 beats in the default 4/4 case. Bars anchor on `downbeats.positions_ms` when present, otherwise on `meter.beats_per_bar` + `downbeat_phase.index` (first bar at `beats[phase]`); with neither, there are no bars. Bar lines and phrase markers are then projected across the whole grid from that anchor, so the ruler stays continuous past the end of the analyzer's downbeat array and every tick agrees with the counter. Phrases are numbered from the first downbeat and are not emitted before it.
+
+**Display tiers.** This is the ruler/counter reading of the degraded-states rules at the two bullets directly above (`No analysis` and `Unreliable downbeats`).
+
+| tier | condition | ruler | counter |
+|---|---|---|---|
+| A — numbered | `ClipTempoMetadata.hasReliableDownbeats` (manual or legacy authority) | beat + bar + phrase, phrases numbered from the first downbeat | `bar.beat · phrase N`, e.g. `2.3 · phrase 5` |
+| B — unnumbered | beat grid present, downbeats present but not reliable | beat + bar ticks, no phrase level and no numbers | keyed beat pulse, no text |
+| C — none | no effective beat grid | nothing | nothing |
+
+Tier A is unreachable on current dogfood data: every live `analysisSummary` carries generated `meter` and `downbeat_phase`, which fails both the canonical-manual and legacy-compatibility branches of `hasReliableDownbeats`, so the deck renders tier B until #312/#316 make downbeats trustworthy or a manual downbeat correction is landed for the track.
+
+**`beatPosition` vs `beatPhase`.** `DjDeckState.beatPhase` is the automation-authority value and stays null without reliable downbeats, because sync and quantize may not act on generated meter. `DjDeckState.beatPosition` is the display value and follows the unreliable-downbeats rule above: it resolves for generated downbeats, but `DjBeatRuler.numbered` is false there, so the counter withholds bar numbers rather than inventing structure. The two are deliberately not unified.
 
 ## Engine feasibility
 # Engine Feasibility (Android, current stack: just_audio ^0.10.5 / ExoPlayer + audio_service ^0.18.18, audio_session ^0.1.25)
