@@ -126,18 +126,40 @@ same issue.
   128 over 64 takes the 2x interpretation and lands at exactly 1.0; 128 over 95
   resolves to 1.347 and is refused. The window is 0.737 octaves wide, so ratios
   in (1.25, 1.5) x 2^k are unreachable by construction.
-- **Six refusals, three sentences.** `DjSyncRefusal` distinguishes `noLeader`,
-  `leaderNotLoaded`, `followerNotLoaded`, `leaderTempoUnreliable`,
-  `followerTempoUnreliable` and `tempoOutOfRange`; which side of a pair failed
-  is not the user's problem, so those collapse to `djDeckSyncNoTempo`,
-  `djDeckSyncOtherDeckUnavailable` and `djDeckSyncTempoOutOfRange`. The old
-  `djDeckSyncUnavailable` ("Sync is not available yet") is removed: it no
-  longer describes a state the deck can be in.
+- **Six refusals, five sentences, and the direction matters.** `DjSyncRefusal`
+  distinguishes `noLeader`, `leaderNotLoaded`, `followerNotLoaded`,
+  `leaderTempoUnreliable`, `followerTempoUnreliable` and `tempoOutOfRange`.
+  `syncMatchFor(deck)` always evaluates `leader: other, follower: this`, so a
+  `follower*` refusal is a statement about the deck the glyph is painted on and
+  a `leader*` refusal is a statement about the other deck. Collapsing each pair
+  onto one deck-naming sentence therefore lied on one of the two decks every
+  time — an empty deck B was told to "load a track on the other deck" while
+  deck A already held one — so the pairs are split:
+  `followerNotLoaded` -> `djDeckSyncThisDeckEmpty`, `leaderNotLoaded` /
+  `noLeader` -> `djDeckSyncOtherDeckUnavailable`, `followerTempoUnreliable` ->
+  `djDeckSyncNoTempo`, `leaderTempoUnreliable` ->
+  `djDeckSyncOtherTrackNoTempo`, `tempoOutOfRange` ->
+  `djDeckSyncTempoOutOfRange`. A specific reason that is wrong is worse than a
+  generic one, because the user acts on it. The old `djDeckSyncUnavailable`
+  ("Sync is not available yet") is removed: it no longer describes a state the
+  deck can be in.
 - **Three keyed states.** The glyph keeps `ValueKey('dj_sync')` and marks its
   state with exactly one of `dj_sync_master_<deck>`, `dj_sync_on_<deck>` and
   `dj_sync_off_<deck>` on the icon, so widget tests can assert the state
   without measuring anything and the 64dp three-control transport row is
-  unchanged.
+  unchanged. Every state's tooltip is prefixed with the control's own name
+  (`Sync. <detail>`), the same shape CUE and PLAY use: the tooltip is the only
+  text on that semantics node, so a bare state phrase like "This deck sets the
+  tempo" left a screen-reader user unable to tell which control they were on.
+- **What arms the glyph.** `state.isLoaded && (engaged || match.isMatched)`. An
+  engaged follower's tap is a pure disengage that needs no match, so it stays
+  live even after the match stops being reachable (a bend on the master can
+  push the target outside the deck window mid-blend); greying it there would
+  strand the deck engaged with no control to release it. The master gets no
+  exemption: its tap is a real swap that goes through the match, so a master
+  whose partner has since been re-faded or re-loaded gates like every other
+  state and states the reason, rather than accepting a tap that changes
+  nothing and reports nothing.
 - No user-facing surface names an internal milestone; a source scan in
   `dj_deck_copy_test.dart` fails the build on `phase <n>` in any deck string.
 
@@ -237,7 +259,7 @@ client/lib/features/dj/
 - No stems yet: stems panel hidden; panel switcher shows [CUES | LOOP]; mixer is channel faders + crossfader only. This is the v1 ship state.
 - No analysis (missing/pending/failed): lane falls back to peak-only waveform, no beat ticks, SYNC disabled with tooltip, quantize off, pitch fader still live, beat counter blank. Playback is never blocked.
 - Unreliable downbeats (hasReliableDownbeats false — the current common case, tempo_automation.dart:117-154): beat counter shows beat pulses without bar numbers; sync does beat-level phase only, never bar-level.
-- No reliable BPM on either deck (hasReliableBpm false): SYNC is disabled and says which honest reason applies - no reliable tempo, no track on the other deck, or a tempo gap the deck cannot close. It is never a generic placeholder, and the disabled-with-a-reason state is a first-class deliverable rather than an afterthought: two thirds of the dogfood library lands in it.
+- No reliable BPM on either deck (hasReliableBpm false): SYNC is disabled and says which honest reason applies, naming the deck it is actually about - this track has no reliable tempo, the other track has no reliable tempo, this deck is empty, the other deck is empty, or a tempo gap the deck cannot close. It is never a generic placeholder, and the disabled-with-a-reason state is a first-class deliverable rather than an afterthought: two thirds of the dogfood library lands in it.
 - Unreliable beat grid (hasReliableBeatGrid false) with a reliable BPM: the tempo match stays available and phase correction is withheld. Tempo and phase are deliberately gated separately.
 
 ## Beat ruler and beat counter
