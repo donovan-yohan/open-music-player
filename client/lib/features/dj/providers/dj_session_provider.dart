@@ -139,28 +139,24 @@ class DjSessionProvider extends ChangeNotifier {
     return match;
   }
 
-  /// Hands one rate authority back to the user.
+  /// Takes [deck] out of whatever sync role it held.
   ///
-  /// A manual tempo change on a follower disengages that follower. A manual
-  /// tempo change on the *master* invalidates every follower's match, so it
-  /// returns the whole session to the idle state rather than leaving a
-  /// follower marked as matched to a tempo that has since moved.
-  void _disengageSync(DjDeckId deck) {
+  /// Two callers, one rule. A manual tempo change hands that deck's rate back
+  /// to the user, and a deck that took new audio or lost it can neither lead
+  /// nor follow. Either way, if [deck] was the *master* the whole session
+  /// returns to idle: every follower's match was against a tempo that has now
+  /// moved, and leaving a follower marked as matched would be a lie.
+  ///
+  /// The phase-correction slice is where these two callers stop agreeing: a
+  /// deliberate disengage has to restore the follower's base rate once, while a
+  /// deck that lost its audio has no rate to restore.
+  void _releaseSyncRole(DjDeckId deck) {
     if (_syncMaster == deck) {
       _syncMaster = null;
       _syncEngaged.clear();
       return;
     }
     _syncEngaged.remove(deck);
-  }
-
-  /// A deck that lost its audio can neither lead nor follow.
-  void _releaseSync(DjDeckId deck) {
-    _syncEngaged.remove(deck);
-    if (_syncMaster == deck) {
-      _syncMaster = null;
-      _syncEngaged.clear();
-    }
   }
   List<DjHotCue> hotCuesFor(DjDeckId deck) =>
       _hotCues[deck]!.values.toList()..sort((a, b) => a.slot.compareTo(b.slot));
@@ -277,7 +273,7 @@ class DjSessionProvider extends ChangeNotifier {
       // free to load, and this deck explaining itself in its lane. Refusing
       // through the controller (rather than a bare state write) also releases a
       // voice that an unforeseen throw may have left holding audio.
-      _releaseSync(deck);
+      _releaseSyncRole(deck);
       await _decks[deck]!.refuseLoad(seed, detail: '$error');
       _applyDeckGains();
       _notify();
@@ -288,7 +284,7 @@ class DjSessionProvider extends ChangeNotifier {
     if (_disposed) return;
     // A deck taking new audio drops whatever sync role it held: the match was
     // against a track it no longer holds.
-    _releaseSync(deck);
+    _releaseSyncRole(deck);
     await _decks[deck]!.load(seed);
     _applyDeckGains();
     _notify();
@@ -337,7 +333,7 @@ class DjSessionProvider extends ChangeNotifier {
     if (_disposed) return;
     // Two authorities must never fight over one rate: moving the fader by hand
     // is the user taking this deck's tempo back from sync.
-    _disengageSync(deck);
+    _releaseSyncRole(deck);
     await _decks[deck]!.setRate(1 + percent.clamp(-25.0, 25.0) / 100);
     _notify();
   }
