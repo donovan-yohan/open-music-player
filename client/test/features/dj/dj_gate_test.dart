@@ -52,6 +52,67 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  // The notice replaces overflow banners, so it is held to the same bar as the
+  // deck it rescues: a near-minimum freeform window, at an ordinary and at an
+  // accessibility font scale, where its own intrinsic height does not fit.
+  for (final textScale in <double>[1.0, 1.6]) {
+    testWidgets('the too-small notice itself fits a 300x120 window '
+        'at textScale $textScale', (tester) async {
+      final errors = DjErrorCollector()..install();
+      addTearDown(errors.restore);
+
+      await pumpDjScreen(
+        tester,
+        session: deck.session,
+        viewport: textScale == 1.0
+            ? landscapeTinyWindow
+            : landscapeTinyWindow.withTextScale(textScale),
+      );
+
+      expect(find.byKey(const ValueKey('dj_deck_too_small')), findsOneWidget);
+      expect(errors.overflows, isEmpty,
+          reason: 'the notice overflowed: ${errors.overflows}');
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('a landscape box below the minimum *width* renders the '
+      'too-small state', (tester) async {
+    final errors = DjErrorCollector()..install();
+    addTearDown(errors.restore);
+
+    // Height is comfortably above kDjMinDeckHeight, so the width half of the
+    // gate is the term under test.
+    await pumpDjScreen(
+      tester,
+      session: deck.session,
+      viewport: landscapeBelowMinimumWidth,
+    );
+
+    expect(find.byKey(const ValueKey('dj_deck_too_small')), findsOneWidget);
+    expect(find.byKey(const ValueKey('dj_crossfader')), findsNothing);
+    expect(errors.overflows, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a narrow but serviceable box renders the deck, not a gate',
+      (tester) async {
+    final errors = DjErrorCollector()..install();
+    addTearDown(errors.restore);
+
+    await pumpDjScreen(
+      tester,
+      session: deck.session,
+      viewport: landscapeNarrowServiceable,
+    );
+
+    expect(find.byKey(const ValueKey('dj_rotate_prompt')), findsNothing);
+    expect(find.byKey(const ValueKey('dj_deck_too_small')), findsNothing);
+    expect(find.byKey(const ValueKey('dj_crossfader')), findsOneWidget);
+    expect(errors.overflows, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('the reference viewport renders the deck and neither gate',
       (tester) async {
     final errors = DjErrorCollector()..install();

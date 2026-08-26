@@ -48,10 +48,24 @@ const double kDjMinDeckHeight = 284;
 
 /// Minimum post-SafeArea width the deck can be laid out in:
 /// 2 * (48 pitch fader + 4 + 120 panel) + 2 * 12 gutter + 120 centre column.
+///
+/// This is a *serviceability* floor, not a comfort one: between here and the
+/// reference viewport the deck panel is at its 120dp minimum and the hot-cue
+/// pads degrade below the 48dp touch target, the same way the pitch fader's
+/// nudge ladder does. Raising the gate to the width that would keep the pads
+/// at 48dp (~840dp post-SafeArea) would blank the deck on the reference device
+/// itself, so the pad aspect ratio is the thing to revisit, not this constant.
 const double kDjMinDeckWidth = 488;
 
-/// Height reserved for the per-deck panel switcher inside the control field.
-const double kDjPanelSwitcherHeight = 40;
+/// Height reserved for the per-deck panel switcher inside the control field
+/// while the deck is at or above the reference budget. docs/dj-deck-spec.md
+/// requires a 48dp touch target there, so the switcher gets a real one.
+const double kDjPanelSwitcherHeight = 48;
+
+/// Compact switcher band. Used only below the reference control-field budget,
+/// on the same rung as the pitch fader's 40dp nudge step, and documented in
+/// docs/dj-deck-spec.md as a deliberate degraded state.
+const double kDjPanelSwitcherCompactHeight = 40;
 
 /// The one column grid every row below the waveform stack is laid out on.
 ///
@@ -129,6 +143,15 @@ class DjRowBudget {
 
   bool get showsOverviewStrip =>
       headerBand >= kDjHeaderOverviewStripMinBandHeight;
+
+  /// The switcher keeps its full 48dp target while the control field is at or
+  /// above the reference budget, and steps to the compact band on the same
+  /// rung as [DjPitchFader.nudgeExtentFor], so the two touch-target ladders
+  /// cannot drift apart.
+  double get panelSwitcherHeight =>
+      controlField >= kDjPitchFaderFullNudgeHeight
+          ? kDjPanelSwitcherHeight
+          : kDjPanelSwitcherCompactHeight;
 }
 
 class DjLayout extends StatefulWidget {
@@ -242,6 +265,7 @@ class _DjLayoutState extends State<DjLayout> {
                         deck: session.deckA,
                         panel: _panels[DjDeckId.a]!,
                         session: session,
+                        switcherHeight: budget.panelSwitcherHeight,
                         onPanel: (panel) =>
                             setState(() => _panels[DjDeckId.a] = panel),
                       ),
@@ -249,6 +273,7 @@ class _DjLayoutState extends State<DjLayout> {
                         deck: session.deckB,
                         panel: _panels[DjDeckId.b]!,
                         session: session,
+                        switcherHeight: budget.panelSwitcherHeight,
                         onPanel: (panel) =>
                             setState(() => _panels[DjDeckId.b] = panel),
                       ),
@@ -339,32 +364,45 @@ class _DjDeckNotice extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final muted = theme.colorScheme.onSurfaceVariant;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(AppTheme.space4),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: muted),
-            const SizedBox(height: AppTheme.space2),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.titleSmall?.copyWith(color: muted),
-            ),
-            if (detail != null) ...[
-              const SizedBox(height: AppTheme.space1),
-              Text(
-                detail!,
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall?.copyWith(color: muted),
+    // The notice exists to replace overflow banners, so it must not paint one
+    // itself: its intrinsic height (icon + two lines) exceeds a near-minimum
+    // freeform window at an elevated font scale. Scroll rather than overflow,
+    // and stay centred whenever it does fit (#411).
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minHeight: constraints.hasBoundedHeight ? constraints.maxHeight : 0,
+          ),
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(AppTheme.space4),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(icon, color: muted),
+                  const SizedBox(height: AppTheme.space2),
+                  Text(
+                    message,
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall?.copyWith(color: muted),
+                  ),
+                  if (detail != null) ...[
+                    const SizedBox(height: AppTheme.space1),
+                    Text(
+                      detail!,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(color: muted),
+                    ),
+                  ],
+                ],
               ),
-            ],
-          ],
+            ),
+          ),
         ),
       ),
     );
@@ -402,11 +440,13 @@ class _DeckControl extends StatelessWidget {
     required this.deck,
     required this.panel,
     required this.session,
+    required this.switcherHeight,
     required this.onPanel,
   });
   final DjDeckState deck;
   final DjPanel panel;
   final DjSessionProvider session;
+  final double switcherHeight;
   final ValueChanged<DjPanel> onPanel;
   @override
   Widget build(BuildContext context) => Row(
@@ -426,8 +466,12 @@ class _DeckControl extends StatelessWidget {
             child: Column(
               children: [
                 SizedBox(
-                  height: kDjPanelSwitcherHeight,
-                  child: DjPanelSwitcher(selected: panel, onSelected: onPanel),
+                  height: switcherHeight,
+                  child: DjPanelSwitcher(
+                    selected: panel,
+                    onSelected: onPanel,
+                    compact: switcherHeight < kDjPanelSwitcherHeight,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 Expanded(child: _panel()),

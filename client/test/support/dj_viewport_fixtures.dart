@@ -94,6 +94,40 @@ const landscapeMinimum = DjViewport(
   FakeViewPadding(left: 159, top: 96, right: 0, bottom: 96),
 );
 
+/// Zero insets: the freeform / connected-display windows below are described
+/// directly in dp, so there is nothing to subtract.
+const _noPadding = FakeViewPadding(left: 0, top: 0, right: 0, bottom: 0);
+
+/// Just inside *both* gates: 490 x 290dp, two dp above `kDjMinDeckWidth` and
+/// six above `kDjMinDeckHeight`. This is the serviceable-but-narrow band where
+/// `DjDeckGrid.of` clamps the centre column to its 120dp floor, i.e. the
+/// strongest new claim the gate makes ("this viewport IS serviceable"), and the
+/// band Android freeform / connected-display windows land in.
+const landscapeNarrowServiceable = DjViewport(
+  'landscape 490x290 (narrow but serviceable)',
+  Size(490, 290),
+  1.0,
+  _noPadding,
+);
+
+/// Below `kDjMinDeckWidth` on *width alone*, with height comfortably above
+/// `kDjMinDeckHeight`, so the width half of the gate is what fires.
+const landscapeBelowMinimumWidth = DjViewport(
+  'landscape 480x300 (below the minimum deck width)',
+  Size(480, 300),
+  1.0,
+  _noPadding,
+);
+
+/// A near-minimum freeform window: shorter than the too-small notice's own
+/// intrinsic height, which is where the notice used to overflow.
+const landscapeTinyWindow = DjViewport(
+  'landscape 300x120 (near-minimum freeform window)',
+  Size(300, 120),
+  1.0,
+  _noPadding,
+);
+
 /// The frames between a route push and the OS honouring the rotation request,
 /// and the permanent state in split-screen / freeform / connected-display.
 const portraitReference = DjViewport(
