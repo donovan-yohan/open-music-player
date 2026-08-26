@@ -127,14 +127,50 @@ func TestDJHarmonicLineupIntegrationFallsBackForUnanalyzedAnchor(t *testing.T) {
 	seedNearbyTrackAnalysis(t, analysisRepo, ctx, analyzed, 128, "8A")
 
 	lineupRepo := db.NewDJLineupRepository(database)
+
+	// The anchor rejection itself, against the real projection: an unanalyzed
+	// row comes back with no usable BPM/camelot and the resolver refuses it,
+	// while the analyzed neighbour resolves from the same read. Without this,
+	// relaxing resolveDJHarmonicAnchor's validation would still leave the
+	// response comparison below green, because a bogus anchor simply matches
+	// no candidates.
+	projection, err := lineupRepo.ListDJLineupTracks(ctx, userID)
+	if err != nil {
+		t.Fatalf("list lineup tracks: %v", err)
+	}
+	if _, resolved := resolveDJHarmonicAnchor(projection, unanalyzed); resolved {
+		t.Fatalf("unanalyzed track %d resolved as a harmonic anchor: %#v", unanalyzed, projection)
+	}
+	if _, resolved := resolveDJHarmonicAnchor(projection, analyzed); !resolved {
+		t.Fatalf("analyzed track %d did not resolve as a harmonic anchor: %#v", analyzed, projection)
+	}
+
 	rawURL := "/api/v1/dj/lineup?perBlock=10&anchorTrackId=" + itoa64(unanalyzed)
 
 	on := NewDJLineupHandlersWithHarmonicCandidates(lineupRepo, nil, nil, libraryRepo, true)
 	off := NewDJLineupHandlersWithHarmonicCandidates(lineupRepo, nil, nil, libraryRepo, false)
 
-	got := djHarmonicRawResponse(t, on, rawURL)
-	want := djHarmonicRawResponse(t, off, rawURL)
+	// Both arms must authenticate as the seeded user: requesting as anyone
+	// else returns the empty-library envelope from both handlers, and the
+	// byte comparison would then hold even with the fallback fully broken.
+	got := djHarmonicRawResponseAs(t, on, rawURL, userID)
+	want := djHarmonicRawResponseAs(t, off, rawURL, userID)
+
+	// Non-triviality gate: the compared response has to actually carry the
+	// seeded rows, or this test proves nothing about the fallback.
+	baseline := decodeDJHarmonicRawResponse(t, want)
+	if len(baseline.Blocks) == 0 {
+		t.Fatalf("flag-off arm returned no blocks; the seeded library was not read: %s", want)
+	}
+	if !djLineupContainsTrack(baseline, analyzed) {
+		t.Fatalf("analyzed neighbour %d is missing from the themed lineup: %s", analyzed, want)
+	}
+
 	if string(got) != string(want) {
 		t.Fatalf("unanalyzed anchor changed the response:\n got: %s\nwant: %s", got, want)
+	}
+	// And the fallback is an omission, not a degraded block.
+	if _, present := djHarmonicBlock(t, decodeDJHarmonicRawResponse(t, got)); present {
+		t.Fatalf("unanalyzed anchor still produced a harmonic block: %s", got)
 	}
 }

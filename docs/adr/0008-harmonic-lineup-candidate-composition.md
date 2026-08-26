@@ -78,7 +78,13 @@ A golden corpus captured before the feature landed enforces that.
 **The DJ session surface remains a discovery surface.** The client reads the
 queue snapshot its provider already holds; it never triggers a queue fetch from
 the lineup path and never becomes a second playback controller. Epic #380's
-"one playback truth, no second controller" constraint holds unchanged.
+"one playback truth, no second controller" constraint holds unchanged. Because
+`QueueProvider` is hydrated lazily by whichever surface loads it first, a cold
+start straight into the DJ session would otherwise read an empty queue and
+omit the anchor forever; the screen therefore observes the provider and
+re-issues its own lineup load once, the first time a non-empty snapshot
+appears. That is an observation, not a fetch: the DJ surface still never asks
+for the queue.
 
 ## Consequences
 
@@ -94,3 +100,19 @@ the lineup path and never becomes a second playback controller. Epic #380's
   a trust boundary beyond that.
 - If a server-side queue is ever introduced, the anchor becomes derivable
   server-side and `anchorTrackId` can be deprecated without changing the block.
+- **The harmonic block is exempt from fast-exit pruning.** Skip sequencing
+  applies to it like any other block — a heavily skipped track is demoted and
+  stays demoted in the emitted order — but the fast-exit rule that empties
+  `fresh-finds` does not extend to it. Fast exit means the listener is
+  rejecting unfamiliar material; the harmonic block is scoped to what mixes out
+  of the track they just queued, which is a different claim, so it stays.
+  `TestDJHarmonicLineupSurvivesFastExitPruning` pins that decision.
+- **The harmonic block is deliberately unpinnable.** The vibe pin stores an
+  energy/genre envelope derived from a themed block's candidate set, and there
+  is no meaningful envelope for "in key with the queue tail" — the pin's
+  candidate lookup has no harmonic case and would fall through to the whole
+  library. `POST /api/v1/dj/pin` therefore keeps its frozen three-theme enum
+  (`TestDJPinRejectsHarmonicBlockID`) and the client hides the pin affordance
+  on the harmonic block rather than offering a control the server rejects. Swap
+  is unaffected: `block=harmonic` is a valid lineup selector while the flag is
+  on.

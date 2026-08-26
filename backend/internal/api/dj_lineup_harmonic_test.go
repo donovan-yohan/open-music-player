@@ -124,13 +124,55 @@ func newDJHarmonicHandlerWithPin(reader nearbyTrackReader, enabled bool, pin *st
 }
 
 // djHarmonicRawResponse returns status line + raw body so tests can compare
-// whole responses byte-for-byte, not just decoded fields.
+// whole responses byte-for-byte, not just decoded fields. It authenticates as
+// the fixed parity user, which is who the in-memory fixture store answers for.
 func djHarmonicRawResponse(t *testing.T, handler *DJLineupHandlers, rawURL string) []byte {
 	t.Helper()
-	req := withUser(httptest.NewRequest(http.MethodGet, rawURL, nil), djLineupParityUserID)
+	return djHarmonicRawResponseAs(t, handler, rawURL, djLineupParityUserID)
+}
+
+// djHarmonicRawResponseAs is djHarmonicRawResponse for a caller that owns its
+// own user. DB-backed tests MUST use this: the fixed parity user has no
+// user_library rows in a freshly truncated database, so requesting as it would
+// compare one empty-library response against another and prove nothing.
+func djHarmonicRawResponseAs(
+	t *testing.T,
+	handler *DJLineupHandlers,
+	rawURL string,
+	userID uuid.UUID,
+) []byte {
+	t.Helper()
+	req := withUser(httptest.NewRequest(http.MethodGet, rawURL, nil), userID)
 	rec := httptest.NewRecorder()
 	handler.GetLineup(rec, req)
 	return append([]byte(fmt.Sprintf("status: %d\n", rec.Code)), rec.Body.Bytes()...)
+}
+
+// decodeDJHarmonicRawResponse parses the body half of a djHarmonicRawResponse
+// capture so a test can assert the compared response is actually non-trivial.
+func decodeDJHarmonicRawResponse(t *testing.T, raw []byte) DJLineupResponse {
+	t.Helper()
+	newline := bytes.IndexByte(raw, '\n')
+	if newline < 0 {
+		t.Fatalf("malformed raw response capture: %s", raw)
+	}
+	var response DJLineupResponse
+	if err := json.Unmarshal(raw[newline+1:], &response); err != nil {
+		t.Fatalf("decode raw response body: %v (raw=%s)", err, raw)
+	}
+	return response
+}
+
+// djLineupContainsTrack reports whether any block served this track id.
+func djLineupContainsTrack(response DJLineupResponse, trackID int64) bool {
+	for _, block := range response.Blocks {
+		for _, track := range block.Tracks {
+			if track.ID == trackID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func itoa64(id int64) string {
@@ -590,5 +632,168 @@ func TestDJHarmonicLineupOutputIsAffinityOrdered(t *testing.T) {
 		if want := []int64{103, 101, 104, 102}; !reflect.DeepEqual(djHarmonicBlockTrackIDs(block), want) {
 			t.Fatalf("seed %d order = %v, want %v", seed, djHarmonicBlockTrackIDs(block), want)
 		}
+	}
+}
+
+// --- D6: skip sequencing interaction ---------------------------------------
+
+// djHarmonicSkipFixtureTracks is a harmonic-compatible library whose candidates
+// sit in pairwise-distinct genres and far-apart energies, so one heavily
+// skipped track demotes ONLY itself. The shared djHarmonicFixtureTracks set
+// cannot express that: its candidates are all "House" at 0.66-0.72 energy, so
+// any demotion spreads to the whole neighborhood and ordering assertions go
+// vacuous.
+func djHarmonicSkipFixtureTracks() []db.DJLineupTrack {
+	added := func(day int) time.Time {
+		return time.Date(2026, time.January, day, 8, 0, 0, 0, time.UTC)
+	}
+	return []db.DJLineupTrack{
+		{ID: djHarmonicAnchorTrackID, Title: "Anchor Track", Artist: "Anchor", Album: "Anchor LP", DurationMs: 210000,
+			BPM: 128, Camelot: "8A", Energy: 0.70, GenreHints: []string{"Techno"}, AddedAt: added(1)},
+		{ID: 101, Title: "Clean House", Artist: "One", Album: "One LP", DurationMs: 200000,
+			BPM: 127, Camelot: "8A", Energy: 0.30, GenreHints: []string{"House"}, AddedAt: added(2)},
+		{ID: 102, Title: "Skipped Trance", Artist: "Two", Album: "Two LP", DurationMs: 205000,
+			BPM: 130, Camelot: "9A", Energy: 0.60, GenreHints: []string{"Trance"}, AddedAt: added(3)},
+		{ID: 103, Title: "Clean Ambient", Artist: "Three", Album: "Three LP", DurationMs: 215000,
+			BPM: 124, Camelot: "8B", Energy: 0.90, GenreHints: []string{"Ambient"}, AddedAt: added(4)},
+		{ID: 104, Title: "Clean Dub", Artist: "Four", Album: "Four LP", DurationMs: 220000,
+			BPM: 132, Camelot: "7A", Energy: 0.10, GenreHints: []string{"Dub"}, AddedAt: added(5)},
+	}
+}
+
+// djHarmonicSkipFixtureCandidates is the repository's affinity ranking for that
+// library, with the to-be-demoted track deliberately ranked first.
+func djHarmonicSkipFixtureCandidates() []db.NearbyTrack {
+	return []db.NearbyTrack{
+		nearbyCandidate(102, 130, "9A"),
+		nearbyCandidate(101, 127, "8A"),
+		nearbyCandidate(103, 124, "8B"),
+		nearbyCandidate(104, 132, "7A"),
+	}
+}
+
+func newDJHarmonicHandlerWithSkips(
+	tracks []db.DJLineupTrack,
+	reader nearbyTrackReader,
+	skips DJSkipSignalStore,
+) *DJLineupHandlers {
+	return NewDJLineupHandlersWithHarmonicCandidates(
+		&fakeDJLineupStore{tracks: tracks}, nil, skips, reader, true)
+}
+
+// TestDJHarmonicLineupKeepsSkipDemotionInEmittedOrder pins the ordering
+// invariant the harmonic block's determinism rule depends on: affinity ranks
+// are captured AFTER skip sequencing, so a demoted track stays demoted in the
+// emitted order instead of being restored to its affinity position. Capturing
+// ranks before applyDJSkipSequencing flips the expected order here.
+func TestDJHarmonicLineupKeepsSkipDemotionInEmittedOrder(t *testing.T) {
+	const rawURL = "/api/v1/dj/lineup?perBlock=10&seed=41&anchorTrackId=100"
+	tracks := djHarmonicSkipFixtureTracks()
+
+	clean := newDJHarmonicHandlerWithSkips(
+		tracks, &recordingNearbyReader{tracks: djHarmonicSkipFixtureCandidates()}, &fakeSkipSignalStore{})
+	baseline, ok := djHarmonicBlock(t, requestDJLineup(t, clean, rawURL))
+	if !ok {
+		t.Fatalf("no harmonic block without skip signals")
+	}
+	if want := []int64{102, 101, 103, 104}; !reflect.DeepEqual(djHarmonicBlockTrackIDs(baseline), want) {
+		t.Fatalf("baseline order = %v, want repository affinity order %v",
+			djHarmonicBlockTrackIDs(baseline), want)
+	}
+
+	// 102 is skipped 9 times per 10 plays: past the demotion threshold, and
+	// alone in its genre/energy neighborhood so nothing else moves with it.
+	demoting := newDJHarmonicHandlerWithSkips(
+		tracks,
+		&recordingNearbyReader{tracks: djHarmonicSkipFixtureCandidates()},
+		&fakeSkipSignalStore{stats: []db.SkipStats{{TrackID: 102, Skips: 9, Plays: 10}}},
+	)
+	demoted, ok := djHarmonicBlock(t, requestDJLineup(t, demoting, rawURL))
+	if !ok {
+		t.Fatalf("no harmonic block with skip signals")
+	}
+	if want := []int64{101, 103, 104, 102}; !reflect.DeepEqual(djHarmonicBlockTrackIDs(demoted), want) {
+		t.Fatalf("demoted order = %v, want the skipped track last %v",
+			djHarmonicBlockTrackIDs(demoted), want)
+	}
+}
+
+// TestDJHarmonicLineupSurvivesFastExitPruning records the product decision that
+// fast-exit mode prunes fresh finds but NOT the harmonic block: fast exit means
+// the listener is rejecting unfamiliar material, while the harmonic block is
+// scoped to what mixes out of the track they just queued, so it stays. See
+// docs/adr/0008-harmonic-lineup-candidate-composition.md.
+func TestDJHarmonicLineupSurvivesFastExitPruning(t *testing.T) {
+	const rawURL = "/api/v1/dj/lineup?perBlock=10&seed=17&anchorTrackId=100"
+	tracks := djHarmonicFixtureTracks()
+
+	calm := newDJHarmonicHandlerWithSkips(
+		tracks, &recordingNearbyReader{tracks: djHarmonicFixtureCandidates()}, &fakeSkipSignalStore{})
+	calmResponse := requestDJLineup(t, calm, rawURL)
+	calmHarmonic, ok := djHarmonicBlock(t, calmResponse)
+	if !ok {
+		t.Fatalf("no harmonic block outside fast exit")
+	}
+	if !djLineupHasBlock(calmResponse, "fresh-finds") {
+		t.Fatalf("fixture does not serve fresh-finds outside fast exit; the pruning contrast is vacuous")
+	}
+
+	fast := newDJHarmonicHandlerWithSkips(
+		tracks,
+		&recordingNearbyReader{tracks: djHarmonicFixtureCandidates()},
+		&fakeSkipSignalStore{recentSkips: fastExitSkipCount},
+	)
+	fastResponse := requestDJLineup(t, fast, rawURL)
+	if djLineupHasBlock(fastResponse, "fresh-finds") {
+		t.Fatalf("fast exit did not prune fresh-finds: %#v", fastResponse.Blocks)
+	}
+	fastHarmonic, ok := djHarmonicBlock(t, fastResponse)
+	if !ok {
+		t.Fatalf("fast exit removed the harmonic block: %#v", fastResponse.Blocks)
+	}
+	if !reflect.DeepEqual(djHarmonicBlockTrackIDs(fastHarmonic), djHarmonicBlockTrackIDs(calmHarmonic)) {
+		t.Fatalf("fast exit changed the harmonic block: %v, want %v",
+			djHarmonicBlockTrackIDs(fastHarmonic), djHarmonicBlockTrackIDs(calmHarmonic))
+	}
+}
+
+func djLineupHasBlock(response DJLineupResponse, blockID string) bool {
+	for _, block := range response.Blocks {
+		if block.ID == blockID {
+			return true
+		}
+	}
+	return false
+}
+
+// --- Pin contract: the harmonic block is deliberately unpinnable ------------
+
+// TestDJPinRejectsHarmonicBlockID freezes the pin enum against the widened
+// lineup block enum. filterDJLineupTracksByPin has no meaningful envelope for
+// the harmonic block (eligibleDJLineupTracks has no harmonic case and would
+// fall through to the whole library), so the pin contract stays at the three
+// themes and the client hides the affordance instead — see the widget test
+// "harmonic block renders no pin affordance" in
+// client/test/features/dj_session/dj_session_harmonic_anchor_test.dart.
+func TestDJPinRejectsHarmonicBlockID(t *testing.T) {
+	handler := NewDJPinHandlers(newFakeDJPinStore(), &fakeDJLineupStore{tracks: djHarmonicFixtureTracks()})
+
+	rec := httptest.NewRecorder()
+	handler.CreatePin(rec, pinRequest(t, `{"blockId": "harmonic"}`, djLineupParityUserID))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("pin harmonic status = %d, want 400 (body=%s)", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode pin error: %v (body=%s)", err, rec.Body.String())
+	}
+	if payload.Code != "INVALID_REQUEST" {
+		t.Fatalf("code = %q, want INVALID_REQUEST", payload.Code)
+	}
+	if want := "blockId must be one of: on-repeat, flashback, fresh-finds"; payload.Message != want {
+		t.Fatalf("message = %q, want %q", payload.Message, want)
 	}
 }
