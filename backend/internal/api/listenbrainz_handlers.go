@@ -24,6 +24,12 @@ type listenbrainzExpander interface {
 // by ENABLE_LISTENBRAINZ_MIX alongside the other server-side DJ building
 // blocks and degrades to an empty candidate set when upstream is unreachable —
 // never a caller-facing error.
+//
+// Responses are served from a cache that is refreshed once a row is older than
+// listenbrainz.DefaultCacheTTL. When upstream fails and only a stale row
+// exists, that stale row is served with its ORIGINAL retrieved_at, so a client
+// comparing retrieved_at against now can tell the candidate set is not
+// current.
 type ListenBrainzHandlers struct {
 	expander listenbrainzExpander
 	enabled  bool
@@ -55,7 +61,9 @@ type ListenBrainzSimilarArtistsResponse struct {
 }
 
 // GetSimilarArtists handles GET /api/v1/tracks/{track_id}/similar-artists.
-// track_id here is an artist MBID (the labs API is MBID-keyed).
+// track_id here is an artist MBID (the labs API is MBID-keyed). retrieved_at
+// in the response may predate the request by up to the cache TTL, or by more
+// when a stale row is being served because upstream is unavailable.
 func (h *ListenBrainzHandlers) GetSimilarArtists(w http.ResponseWriter, r *http.Request) {
 	userCtx := auth.GetUserFromContext(r.Context())
 	if userCtx == nil {

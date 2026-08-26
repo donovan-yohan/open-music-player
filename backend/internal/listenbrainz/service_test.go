@@ -2,6 +2,7 @@ package listenbrainz
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -50,11 +51,13 @@ func (s *fakeCacheStore) UpsertListenBrainzSimilarArtists(_ context.Context, ent
 }
 
 type fakeClient struct {
-	resp *Response
-	err  error
+	resp  *Response
+	err   error
+	calls int
 }
 
 func (c *fakeClient) SimilarArtists(_ context.Context, _ uuid.UUID, _ int) (*Response, error) {
+	c.calls++
 	return c.resp, c.err
 }
 
@@ -73,7 +76,7 @@ func TestExpandFetchesMissAndBackfillsProvenance(t *testing.T) {
 	}}
 	svc := NewExpansionService(client, store)
 
-	resp, err := svc.Expand(context.Background(), testSeedMBID, 10)
+	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
 	if err != nil || resp == nil {
 		t.Fatalf("Expand = %v, %v; want response", resp, err)
 	}
@@ -98,11 +101,15 @@ func TestExpandServesCacheWithoutUpstreamCall(t *testing.T) {
 		RetrievedAt: sqlNullTime(t, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 	}
 	client := &fakeClient{}
-	svc := NewExpansionService(client, store)
+	svc := NewExpansionService(client, store).
+		WithClock(func() time.Time { return time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC) })
 
-	resp, err := svc.Expand(context.Background(), testSeedMBID, 10)
+	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
 	if err != nil || resp == nil {
 		t.Fatalf("Expand = %v, %v; want cached response", resp, err)
+	}
+	if client.calls != 0 {
+		t.Fatalf("fresh cache row triggered %d upstream calls, want 0", client.calls)
 	}
 	if len(resp.Similar) != 1 || resp.Similar[0].Name != "Cached" {
 		t.Fatalf("cached round-trip lost payload: %+v", resp.Similar)
@@ -112,14 +119,14 @@ func TestExpandServesCacheWithoutUpstreamCall(t *testing.T) {
 	}
 }
 
-func sqlNullTime(t *testing.T, ts time.Time) (nt nullTime) {
-	t.Helper()
-	return nullTime{Time: ts, Valid: true}
-}
-
-type nullTime = struct {
-	Time  time.Time
-	Valid bool
+// sqlNullTime builds a valid sql.NullTime for cache-row fixtures. The
+// *testing.T parameter is accepted (and may be nil) so call sites read like
+// the other helpers in this file.
+func sqlNullTime(t *testing.T, ts time.Time) sql.NullTime {
+	if t != nil {
+		t.Helper()
+	}
+	return sql.NullTime{Time: ts, Valid: true}
 }
 
 func TestExpandUnreachableDegradesToEmptyExpansion(t *testing.T) {
@@ -129,7 +136,7 @@ func TestExpandUnreachableDegradesToEmptyExpansion(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			svc := NewExpansionService(client, newFakeCacheStore())
-			resp, err := svc.Expand(context.Background(), testSeedMBID, 10)
+			resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
 			if err != nil {
 				t.Fatalf("Expand returned error %v, want empty expansion", err)
 			}
@@ -320,5 +327,146 @@ func TestFixtureServerAcceptsRealLabsPayloadShape(t *testing.T) {
 	cached := store.upserts[0]
 	if len(cached.Payload) != 2 || cached.Payload[1].Name != "Soundgarden" || cached.Payload[1].ReferenceMBID != testSeedMBID {
 		t.Fatalf("cached payload lost fidelity: %+v", cached.Payload)
+	}
+}
+
+// cachedEntryAt builds a pinned-algorithm cache row retrieved at ts.
+func cachedEntryAt(ts time.Time, name string) db.ListenBrainzCacheEntry {
+	return db.ListenBrainzCacheEntry{
+		ArtistMBID:  testSeedMBID,
+		Algorithm:   PinnedAlgorithm,
+		Payload:     []db.ListenBrainzSimilarArtist{{ArtistMBID: testSimMBID, Name: name, Score: 50, ReferenceMBID: testSeedMBID}},
+		RetrievedAt: sqlNullTime(nil, ts),
+	}
+}
+
+var (
+	ttlTestNow      = time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	ttlTestFreshAt  = ttlTestNow.Add(-24 * time.Hour)
+	ttlTestStaleAt  = ttlTestNow.Add(-40 * 24 * time.Hour)
+	ttlTestFetchedA = ttlTestNow.Add(-time.Minute)
+)
+
+func ttlTestClock() time.Time { return ttlTestNow }
+
+func TestExpandFreshCacheRowSkipsUpstream(t *testing.T) {
+	store := newFakeCacheStore()
+	store.entries[testSeedMBID] = cachedEntryAt(ttlTestFreshAt, "Fresh")
+	client := &fakeClient{}
+	svc := NewExpansionService(client, store).WithClock(ttlTestClock)
+
+	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	if err != nil || resp == nil {
+		t.Fatalf("Expand = %v, %v; want the fresh cached row", resp, err)
+	}
+	if client.calls != 0 {
+		t.Fatalf("upstream calls = %d, want 0 for a row inside the TTL", client.calls)
+	}
+	if store.upsertCalls != 0 {
+		t.Fatalf("upsert calls = %d, want 0 for a cache hit", store.upsertCalls)
+	}
+	if !resp.RetrievedAt.Equal(ttlTestFreshAt) {
+		t.Fatalf("RetrievedAt = %v, want the cached %v", resp.RetrievedAt, ttlTestFreshAt)
+	}
+}
+
+func TestExpandStaleCacheRowRefetchesAndReplaces(t *testing.T) {
+	store := newFakeCacheStore()
+	store.entries[testSeedMBID] = cachedEntryAt(ttlTestStaleAt, "Stale")
+	client := &fakeClient{resp: &Response{
+		ArtistMBID:  testSeedMBID,
+		Algorithm:   PinnedAlgorithm,
+		RetrievedAt: ttlTestFetchedA,
+		Similar:     []SimilarArtist{{ArtistMBID: testSimMBID, Name: "Refreshed", Score: 91}},
+	}}
+	svc := NewExpansionService(client, store).WithClock(ttlTestClock)
+
+	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	if err != nil || resp == nil {
+		t.Fatalf("Expand = %v, %v; want the refreshed response", resp, err)
+	}
+	if client.calls != 1 {
+		t.Fatalf("upstream calls = %d, want exactly 1 for a stale row", client.calls)
+	}
+	if store.upsertCalls != 1 {
+		t.Fatalf("upsert calls = %d, want 1 (stale row must be replaced)", store.upsertCalls)
+	}
+	if !resp.RetrievedAt.Equal(ttlTestFetchedA) {
+		t.Fatalf("RetrievedAt = %v, want the new fetch time %v", resp.RetrievedAt, ttlTestFetchedA)
+	}
+	if len(resp.Similar) != 1 || resp.Similar[0].Name != "Refreshed" {
+		t.Fatalf("stale payload was served instead of the refresh: %+v", resp.Similar)
+	}
+}
+
+func TestExpandStaleCacheRowServedWhenUpstreamFails(t *testing.T) {
+	store := newFakeCacheStore()
+	store.entries[testSeedMBID] = cachedEntryAt(ttlTestStaleAt, "Stale")
+	client := &fakeClient{err: ErrRateLimited}
+	svc := NewExpansionService(client, store).WithClock(ttlTestClock)
+
+	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	if err != nil {
+		t.Fatalf("Expand returned error %v, want the stale row", err)
+	}
+	if resp == nil {
+		t.Fatal("stale-while-error dropped the cached row")
+	}
+	if client.calls != 1 {
+		t.Fatalf("upstream calls = %d, want exactly 1", client.calls)
+	}
+	if store.upsertCalls != 0 {
+		t.Fatalf("upsert calls = %d, want 0 when upstream failed", store.upsertCalls)
+	}
+	if !resp.RetrievedAt.Equal(ttlTestStaleAt) {
+		t.Fatalf("RetrievedAt = %v, want the ORIGINAL stale %v so callers can see it is not current", resp.RetrievedAt, ttlTestStaleAt)
+	}
+	if resp.Algorithm != PinnedAlgorithm {
+		t.Fatalf("stale algorithm = %q, want it verbatim", resp.Algorithm)
+	}
+	if len(resp.Similar) != 1 || resp.Similar[0].Name != "Stale" {
+		t.Fatalf("stale payload not served verbatim: %+v", resp.Similar)
+	}
+}
+
+func TestExpandZeroRetrievedAtIsTreatedAsStale(t *testing.T) {
+	store := newFakeCacheStore()
+	entry := cachedEntryAt(ttlTestFreshAt, "NoProvenance")
+	entry.RetrievedAt = sql.NullTime{}
+	store.entries[testSeedMBID] = entry
+	client := &fakeClient{resp: &Response{
+		ArtistMBID:  testSeedMBID,
+		Algorithm:   PinnedAlgorithm,
+		RetrievedAt: ttlTestFetchedA,
+		Similar:     []SimilarArtist{{ArtistMBID: testSimMBID, Name: "Refreshed", Score: 12}},
+	}}
+	svc := NewExpansionService(client, store).WithClock(ttlTestClock)
+
+	resp, err := svc.Expand(context.Background(), testSeedMBID, 5)
+	if err != nil || resp == nil {
+		t.Fatalf("Expand = %v, %v; want a refetched response", resp, err)
+	}
+	if client.calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1 (missing provenance must not count as fresh)", client.calls)
+	}
+	if len(resp.Similar) != 1 || resp.Similar[0].Name != "Refreshed" {
+		t.Fatalf("row without provenance was served as fresh: %+v", resp.Similar)
+	}
+}
+
+func TestExpandCacheTTLIsConfigurable(t *testing.T) {
+	store := newFakeCacheStore()
+	store.entries[testSeedMBID] = cachedEntryAt(ttlTestNow.Add(-2*time.Hour), "HourOld")
+	client := &fakeClient{err: ErrUnreachable}
+	svc := NewExpansionService(client, store).WithClock(ttlTestClock).WithCacheTTL(time.Hour)
+
+	if _, err := svc.Expand(context.Background(), testSeedMBID, 5); err != nil {
+		t.Fatalf("Expand returned error %v", err)
+	}
+	if client.calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1 under a 1h TTL for a 2h-old row", client.calls)
+	}
+	if DefaultCacheTTL != 30*24*time.Hour {
+		t.Fatalf("DefaultCacheTTL = %v, want 30 days", DefaultCacheTTL)
 	}
 }

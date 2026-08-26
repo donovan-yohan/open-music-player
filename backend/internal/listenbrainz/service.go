@@ -4,11 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/openmusicplayer/backend/internal/db"
 )
+
+// DefaultCacheTTL is how long a cached similar-artists row is served without
+// re-checking upstream. Artist similarity moves on the order of ListenBrainz
+// dump cycles, so a month keeps upstream load negligible while still letting
+// the pinned algorithm's output refresh (issue #392).
+const DefaultCacheTTL = 30 * 24 * time.Hour
 
 // CacheStore is the slice-2-style mb-cache persistence the service reads
 // before hitting upstream and writes after every successful fetch.
@@ -19,12 +26,21 @@ type CacheStore interface {
 
 // ExpansionService merges the pinned-algorithm cache with the labs client and
 // is the SINGLE point where upstream failure degrades into empty candidate
-// expansion: cache hits never trigger upstream calls, misses fetch once and
-// backfill the cache with retrieval provenance, and every typed client error
-// is logged here and turned into a nil response.
+// expansion. Cache freshness is bounded by cacheTTL:
+//
+//   - fresh row (retrieved_at newer than now-cacheTTL): served, no upstream call;
+//   - stale row (older than the TTL, or missing/zero retrieved_at): upstream is
+//     re-fetched and, on success, the row is replaced;
+//   - stale row + upstream failure: the STALE row is served verbatim, keeping
+//     its old retrieved_at so callers can see the response is not current
+//     (stale-while-error). Nothing is written back.
+//   - no row + upstream failure: empty expansion.
 type ExpansionService struct {
-	client ClientInterface
-	store  CacheStore
+	client   ClientInterface
+	store    CacheStore
+	cacheTTL time.Duration
+	// now is injectable so TTL behaviour is deterministic in tests.
+	now func() time.Time
 }
 
 // ClientInterface narrows the client surface for tests.
@@ -33,12 +49,37 @@ type ClientInterface interface {
 }
 
 func NewExpansionService(client ClientInterface, store CacheStore) *ExpansionService {
-	return &ExpansionService{client: client, store: store}
+	return &ExpansionService{
+		client:   client,
+		store:    store,
+		cacheTTL: DefaultCacheTTL,
+		now:      time.Now,
+	}
 }
 
-// Expand returns the cached-or-fetched similar artists for one seed artist,
-// or nil when upstream is unreachable/throttled/malformed (empty candidate
-// expansion, never an error surfaced to callers).
+// WithCacheTTL overrides the cache freshness window. A non-positive ttl keeps
+// DefaultCacheTTL. Returns the receiver so it can be chained at construction.
+func (s *ExpansionService) WithCacheTTL(ttl time.Duration) *ExpansionService {
+	if ttl > 0 {
+		s.cacheTTL = ttl
+	}
+	return s
+}
+
+// WithClock overrides the clock used for TTL comparisons (tests only). A nil
+// clock keeps time.Now.
+func (s *ExpansionService) WithClock(now func() time.Time) *ExpansionService {
+	if now != nil {
+		s.now = now
+	}
+	return s
+}
+
+// Expand returns the similar artists for one seed artist, preferring a fresh
+// cache row, then a successful upstream fetch (which replaces the row), then a
+// stale cache row, and finally nil when there is nothing at all to serve.
+// It never surfaces an error to callers: nil means empty candidate expansion.
+// See ExpansionService for the full freshness contract.
 func (s *ExpansionService) Expand(ctx context.Context, artistMBID uuid.UUID, count int) (*Response, error) {
 	if artistMBID == uuid.Nil || s.client == nil || s.store == nil {
 		return nil, nil
@@ -48,15 +89,25 @@ func (s *ExpansionService) Expand(ctx context.Context, artistMBID uuid.UUID, cou
 		// Cache lookup failures are non-fatal: fall through to upstream.
 		entries = nil
 	}
+	var stale *db.ListenBrainzCacheEntry
 	if entry, ok := entries[artistMBID]; ok && entry.Algorithm == PinnedAlgorithm {
-		return cacheEntryToResponse(entry), nil
+		if s.isFresh(entry) {
+			return cacheEntryToResponse(entry), nil
+		}
+		cached := entry
+		stale = &cached
 	}
 
 	resp, err := s.client.SimilarArtists(ctx, artistMBID, count)
 	if err != nil || resp == nil {
 		// Includes ErrRateLimited/ErrUpstreamStatus/ErrBadPayload/
-		// ErrUnreachable: callers get empty expansion, the cause is visible in
-		// logs only.
+		// ErrUnreachable: callers get the stale row when there is one and
+		// empty expansion otherwise. The cause is visible in logs only.
+		if stale != nil {
+			log.Printf("listenbrainz serving stale cache for %s (retrieved %s): %v",
+				artistMBID, formatRetrievedAt(stale.RetrievedAtTime()), err)
+			return cacheEntryToResponse(*stale), nil
+		}
 		log.Printf("listenbrainz expansion unavailable for %s: %v", artistMBID, err)
 		return nil, nil
 	}
@@ -81,6 +132,32 @@ func (s *ExpansionService) Expand(ctx context.Context, artistMBID uuid.UUID, cou
 		log.Printf("listenbrainz cache write failed for %s: %v", artistMBID, upsertErr)
 	}
 	return resp, nil
+}
+
+// isFresh reports whether a cached row is inside the TTL window. A zero or
+// invalid retrieved_at counts as stale: without provenance we cannot claim the
+// row is current.
+func (s *ExpansionService) isFresh(entry db.ListenBrainzCacheEntry) bool {
+	retrieved := entry.RetrievedAtTime()
+	if retrieved.IsZero() {
+		return false
+	}
+	ttl := s.cacheTTL
+	if ttl <= 0 {
+		ttl = DefaultCacheTTL
+	}
+	clock := s.now
+	if clock == nil {
+		clock = time.Now
+	}
+	return retrieved.After(clock().Add(-ttl))
+}
+
+func formatRetrievedAt(ts time.Time) string {
+	if ts.IsZero() {
+		return "never"
+	}
+	return ts.UTC().Format(time.RFC3339)
 }
 
 func cacheEntryToResponse(entry db.ListenBrainzCacheEntry) *Response {
