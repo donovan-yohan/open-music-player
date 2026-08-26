@@ -21,7 +21,7 @@ type listenbrainzExpander interface {
 	Expand(ctx context.Context, artistMBID uuid.UUID) (*listenbrainz.Response, error)
 }
 
-// ListenBrainzHandlers exposes GET /api/v1/tracks/{track_id}/similar-artists,
+// ListenBrainzHandlers exposes GET /api/v1/artists/{artist_mbid}/similar-artists,
 // the taste-driven candidate-expansion seam from issue #392. It is configured
 // by ENABLE_LISTENBRAINZ_MIX alongside the other server-side DJ building
 // blocks and degrades to an empty candidate set when upstream is unreachable —
@@ -62,10 +62,10 @@ type ListenBrainzSimilarArtistsResponse struct {
 	Count       int                  `json:"count"`
 }
 
-// GetSimilarArtists handles GET /api/v1/tracks/{track_id}/similar-artists.
-// track_id here is an artist MBID (the labs API is MBID-keyed). count clamps
-// how many entries this handler returns; it does not change what is fetched or
-// cached upstream. retrieved_at in the response may predate the request by up
+// GetSimilarArtists handles GET /api/v1/artists/{artist_mbid}/similar-artists.
+// The path segment is a MusicBrainz artist MBID, not a DB track ID: the labs
+// API is MBID-keyed. count clamps how many entries this handler returns; it
+// does not change what is fetched or cached upstream. retrieved_at in the response may predate the request by up
 // to the cache TTL, or by more when a stale row is being served because
 // upstream is unavailable.
 func (h *ListenBrainzHandlers) GetSimilarArtists(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +82,7 @@ func (h *ListenBrainzHandlers) GetSimilarArtists(w http.ResponseWriter, r *http.
 		writeErrorResponse(w, http.StatusNotFound, "NOT_FOUND", "listenbrainz mix is not enabled")
 		return
 	}
-	mbidText := r.PathValue("track_id")
+	mbidText := r.PathValue("artist_mbid")
 	mbid, err := uuid.Parse(mbidText)
 	if err != nil || mbid == uuid.Nil {
 		writeErrorResponse(w, http.StatusBadRequest, "VALIDATION_ERROR", "invalid artist MBID")

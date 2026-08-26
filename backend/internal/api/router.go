@@ -304,11 +304,15 @@ func (r *Router) setupRoutes() {
 	if r.nearbyTracksHandlers != nil {
 		r.mux.HandleFunc("GET /api/v1/tracks/nearby", r.withAuth(r.nearbyTracksHandlers.GetNearbyTracks))
 	}
-	// ListenBrainz similar-artist candidate expansion (issue #392). Registered
-	// only when wired so legacy construction keeps the route absent rather than
-	// unauthenticated; the handler itself 404s when the flag is disabled.
+	// ListenBrainz similar-artist candidate expansion (issue #392). The path
+	// segment is an artist MBID, so this hangs off /artists/{artist_mbid} like
+	// the other MBID-keyed browse routes rather than off tracks/{track_id},
+	// whose segment is a numeric DB track ID everywhere else in this API.
+	// Registered only when wired so legacy construction keeps the route absent
+	// rather than unauthenticated; the handler itself 404s when the flag is
+	// disabled.
 	if r.listenBrainzHandlers != nil {
-		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/similar-artists", r.withAuth(r.listenBrainzHandlers.GetSimilarArtists))
+		r.mux.HandleFunc("GET /api/v1/artists/{artist_mbid}/similar-artists", r.withAuth(r.listenBrainzHandlers.GetSimilarArtists))
 	}
 	// Opt-in, on-demand stem separation. Registered even when disabled so auth is
 	// evaluated before an availability response, and never as a library sweep.

@@ -102,7 +102,7 @@ type Config struct {
 	EnablePlaylistMix bool
 
 	// Optional ListenBrainz similar-artist candidate expansion (issue #392).
-	// Disabled by default; when enabled, GET /api/v1/tracks/{track_id}/similar-artists
+	// Disabled by default; when enabled, GET /api/v1/artists/{artist_mbid}/similar-artists
 	// serves pinned-algorithm candidates from the labs cache/upstream.
 	EnableListenBrainzMix bool
 
