@@ -8,10 +8,16 @@ class DjHotCuePads extends StatelessWidget {
     required this.cues,
     required this.onTrigger,
     required this.onSet,
+    this.enabled = true,
   });
   final Map<int, DjHotCue> cues;
   final ValueChanged<int> onTrigger;
   final ValueChanged<int> onSet;
+
+  /// Whether this deck holds audio. Pads on an empty deck used to be fully
+  /// coloured and fully armed, and setting a cue on a zero-duration deck is
+  /// what produced the divide-by-zero in the overview strip (#414).
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) => GridView.count(
@@ -22,10 +28,10 @@ class DjHotCuePads extends StatelessWidget {
         children: [
           for (var slot = 1; slot <= 4; slot++)
             GestureDetector(
-              onLongPress: () => onSet(slot),
+              onLongPress: enabled ? () => onSet(slot) : null,
               child: FilledButton(
                 key: ValueKey('dj_hot_cue_$slot'),
-                onPressed: () => onTrigger(slot),
+                onPressed: enabled ? () => onTrigger(slot) : null,
                 child: Text(cues.containsKey(slot) ? 'C$slot' : '$slot'),
               ),
             ),

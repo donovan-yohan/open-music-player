@@ -6,6 +6,7 @@ import 'package:open_music_player/core/engine/engine_audio_source_resolver.dart'
 import 'package:open_music_player/core/engine/voice.dart';
 import 'package:open_music_player/features/dj/dj_screen.dart';
 import 'package:open_music_player/features/dj/engine/deck_controller.dart';
+import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/providers/dj_session_provider.dart';
 
 import 'support/dj_viewport_fixtures.dart';
@@ -42,9 +43,22 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('transport toggles deck playback state', (tester) async {
+  testWidgets('transport toggles a loaded deck and never an empty one',
+      (tester) async {
     await pumpDj(tester);
     expect(session.deckA.playing, isFalse);
+
+    // #414: an empty deck's transport is gated. PLAY used to latch
+    // `playing == true` over silence on a deck holding no audio.
+    await tester.tap(
+      find.byKey(const ValueKey('dj_play_pause')).first,
+      warnIfMissed: false,
+    );
+    await tester.pump();
+    expect(session.deckA.playing, isFalse);
+
+    await session.load(DjDeckId.a, djLoadedDeckSeed());
+    await tester.pump();
 
     await tester.tap(find.byKey(const ValueKey('dj_play_pause')).first);
     await tester.pump();
