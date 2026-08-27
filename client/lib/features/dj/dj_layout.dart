@@ -10,6 +10,7 @@ import 'widgets/dj_beat_counter.dart';
 import 'widgets/dj_crossfader.dart';
 import 'widgets/dj_deck_header.dart';
 import 'widgets/dj_deck_notice.dart';
+import 'widgets/dj_deck_tempo_sheet.dart';
 import 'widgets/dj_hot_cue_pads.dart';
 import 'widgets/dj_loop_panel.dart';
 import 'widgets/dj_mixer_panel.dart';
@@ -239,12 +240,14 @@ class _DjLayoutState extends State<DjLayout> {
                     cues: session.hotCuesFor(DjDeckId.a),
                     onSeek: (ms) => session.seek(DjDeckId.a, ms),
                     showOverviewStrip: budget.showsOverviewStrip,
+                    session: session,
                   ),
                   deckB: _HeaderOverview(
                     deck: session.deckB,
                     cues: session.hotCuesFor(DjDeckId.b),
                     onSeek: (ms) => session.seek(DjDeckId.b, ms),
                     showOverviewStrip: budget.showsOverviewStrip,
+                    session: session,
                   ),
                 ),
               ),
@@ -419,15 +422,31 @@ class _HeaderOverview extends StatelessWidget {
     required this.cues,
     required this.onSeek,
     required this.showOverviewStrip,
+    required this.session,
   });
   final DjDeckState deck;
   final List<DjHotCue> cues;
   final ValueChanged<int> onSeek;
   final bool showOverviewStrip;
+  final DjSessionProvider session;
   @override
   Widget build(BuildContext context) => Column(
         children: [
-          Expanded(child: DjDeckHeader(deck: deck)),
+          Expanded(
+            child: DjDeckHeader(
+              deck: deck,
+              // The header's BPM segment is the tempo sheet's trigger (#413).
+              // Only a deck holding audio has a tempo to set, so an empty deck
+              // keeps the inert header it already had.
+              onTapBpm: deck.isLoaded
+                  ? () => showDjDeckTempoSheet(
+                        context,
+                        session: session,
+                        deck: deck.deckId,
+                      )
+                  : null,
+            ),
+          ),
           if (showOverviewStrip)
             DjOverviewStrip(
               durationMs: deck.durationMs,

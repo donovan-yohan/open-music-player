@@ -11,6 +11,7 @@ import '../../../core/stems/stem_channel_source.dart';
 import '../../../models/track.dart';
 import '../../dj/engine/deck_controller.dart';
 import '../engine/deck_sync.dart';
+import '../engine/deck_tempo_target.dart';
 import '../models/dj_deck_state.dart';
 import '../models/dj_hot_cue.dart';
 import '../models/dj_musical_grid.dart';
@@ -552,6 +553,130 @@ class DjSessionProvider extends ChangeNotifier {
         base == null ? captured : base * (1 + (_syncOffsets[deck] ?? 0));
     await _decks[deck]!.setRate(rate);
     _notify();
+  }
+
+  /// True while sync owns this deck's tempo, so the tempo sheet's BPM field and
+  /// fine steps are inert on it.
+  ///
+  /// Only an *engaged follower* qualifies. The master's own tempo is still the
+  /// user's to set — editing it is how a DJ moves the whole blend — and an
+  /// idle deck was never sync's to begin with.
+  bool tempoControlledBySync(DjDeckId deck) => _syncEngaged.contains(deck);
+
+  /// Applies an exact tempo typed into the deck's tempo sheet (#413).
+  ///
+  /// Returns what was decided so the sheet can render the refusal rather than
+  /// discovering the rate quietly did not move. Nothing is applied on a
+  /// refusal, and no notification is sent for a press that changed nothing.
+  ///
+  /// Unlike [setPitchPercent] this does **not** release the deck's sync role:
+  /// editing the master's BPM re-matches its followers through the one sync
+  /// path below, which is what "the master sets the tempo" has to mean once the
+  /// tempo can be set by hand. An engaged follower is refused outright — its
+  /// rate belongs to sync, and the sheet disables the control that reaches
+  /// here.
+  Future<DjTempoTarget> setTargetBpm(DjDeckId deck, double targetBpm) async {
+    if (_disposed) {
+      return const DjTempoTarget.refused(DjTempoTargetRefusal.noTempo);
+    }
+    if (_syncEngaged.contains(deck)) {
+      return const DjTempoTarget.refused(DjTempoTargetRefusal.outOfReach);
+    }
+    final target =
+        djResolveTargetBpm(deck: stateFor(deck), targetBpm: targetBpm);
+    if (!target.isResolved) return target;
+    await _decks[deck]!.setRate(target.rate);
+    await _rematchFollowersOf(deck);
+    _notify();
+    return target;
+  }
+
+  /// One +/-0.1 BPM fine step on [deck].
+  ///
+  /// Steps the target BPM and re-resolves it, rather than multiplying the rate:
+  /// see [djSteppedTargetBpm] for why the rounding lives there.
+  Future<DjTempoTarget> stepTempo(DjDeckId deck, double deltaBpm) async {
+    if (_disposed) {
+      return const DjTempoTarget.refused(DjTempoTargetRefusal.noTempo);
+    }
+    final next = djSteppedTargetBpm(stateFor(deck), deltaBpm);
+    if (next == null) {
+      return const DjTempoTarget.refused(DjTempoTargetRefusal.noTempo);
+    }
+    return setTargetBpm(deck, next);
+  }
+
+  /// Turns keylock on (pitch preserved while the tempo moves) or off (the
+  /// vinyl-style coupling).
+  ///
+  /// Writes the deck's current rate back at the new pitch mode: the rate does
+  /// not move, so this is safe on an engaged follower and never disengages it.
+  Future<void> setKeylock(DjDeckId deck, bool enabled) async {
+    if (_disposed) return;
+    final state = stateFor(deck);
+    final mode = enabled ? pitchModePreserve : pitchModeFollowTempo;
+    if (state.pitchMode == mode) return;
+    await _decks[deck]!.setRate(state.rate, pitchMode: mode);
+    _notify();
+  }
+
+  /// Sets this deck's independent key offset, clamped by the controller.
+  Future<void> setKeySemitones(DjDeckId deck, int semitones) async {
+    if (_disposed) return;
+    if (stateFor(deck).keySemitones == semitones) return;
+    await _decks[deck]!.setKeySemitones(semitones);
+    _notify();
+  }
+
+  /// One +/-1 semitone chip tap.
+  Future<void> nudgeKeySemitones(DjDeckId deck, int delta) =>
+      setKeySemitones(deck, stateFor(deck).keySemitones + delta);
+
+  /// Returns [deck] to rate 1.0, no key shift and keylock on.
+  ///
+  /// The tempo half is withheld from an engaged follower for the same reason
+  /// the BPM field is: sync owns that rate until the user releases it. The key
+  /// half always applies, because key shift is independent of tempo on every
+  /// loaded deck. Resetting the *master*'s tempo re-matches its followers, the
+  /// same as any other tempo edit.
+  Future<void> resetTempoAndKey(DjDeckId deck) async {
+    if (_disposed) return;
+    if (!_syncEngaged.contains(deck)) {
+      await _decks[deck]!.setRate(1, pitchMode: pitchModePreserve);
+      await _rematchFollowersOf(deck);
+    } else {
+      await _decks[deck]!
+          .setRate(stateFor(deck).rate, pitchMode: pitchModePreserve);
+    }
+    await _decks[deck]!.setKeySemitones(0);
+    _notify();
+  }
+
+  /// Re-runs the tempo match for every deck following [master].
+  ///
+  /// The one sync path, reused: a hand-set master tempo goes through
+  /// `djSyncTempoMatch` exactly as a SYNC press does, so there is no second
+  /// place that decides a follower's rate. A follower the new master tempo puts
+  /// out of reach is released on its own matched base rate rather than left
+  /// wearing a mark that no longer describes anything.
+  Future<void> _rematchFollowersOf(DjDeckId master) async {
+    if (_syncMaster != master) return;
+    final leader = stateFor(master);
+    for (final follower in _syncEngaged.toList()) {
+      final match =
+          djSyncTempoMatch(leader: leader, follower: stateFor(follower));
+      if (!match.isMatched) {
+        _syncEngaged.remove(follower);
+        await _restoreSyncBaseRate(follower);
+        continue;
+      }
+      await _decks[follower]!.setRate(match.targetRate);
+      _syncBaseRates[follower] = match.targetRate;
+      _syncOffsets[follower] = 0;
+      // The re-match is itself a rate command, so it opens a throttle window.
+      _syncCommandAtMs[follower] = _clock();
+    }
+    _clearMasterWithoutFollowers();
   }
 
   Future<void> setChannelGain(DjDeckId deck, double gain) async {
