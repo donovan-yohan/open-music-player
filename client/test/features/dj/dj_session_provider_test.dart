@@ -185,6 +185,148 @@ void main() {
       expect(controller.state.positionMs, 1000);
     });
 
+    test('a deck with no known duration seeks where it was asked', () async {
+      // The other half of the same rule. `refreshSnapshot` was taught that an
+      // unknown duration is not an upper bound of zero; `seek` was not, so on a
+      // device-seeded deck (#425) every seek folded onto 0. That was masked
+      // while positions were pinned at 0 too - a hot cue recorded at 0 and
+      // seeking to 0 is a no-op - and became reachable the moment positions
+      // started advancing truthfully.
+      final voice = _FakeVoice();
+      final controller = _controller(DjDeckId.a, voice);
+      await controller.load(DjDeckLoad(
+        trackRef: '1',
+        localUri: Uri.file('/tmp/local.mp3'),
+      ));
+      expect(controller.state.durationMs, 0);
+
+      await controller.seek(90000);
+
+      expect(voice.positionMs, 90000);
+      expect(controller.state.positionMs, 90000);
+
+      await controller.seek(-5);
+      expect(controller.state.positionMs, 0,
+          reason: 'a negative position is still refused');
+    });
+
+    test('a deck with a known duration still clamps a seek into it', () async {
+      final voice = _FakeVoice();
+      final controller = _controller(DjDeckId.a, voice);
+      await controller.load(DjDeckLoad(
+        trackRef: '1',
+        durationMs: 1000,
+        localUri: Uri.file('/tmp/local.mp3'),
+      ));
+
+      await controller.seek(90000);
+
+      expect(voice.positionMs, 1000);
+      expect(controller.state.positionMs, 1000);
+    });
+
+    test('a hot cue on a duration-less deck returns to where it was dropped',
+        () async {
+      // The user-visible shape of the seek clamp: a cue dropped at 1:30 on a
+      // deck the queue gave no duration for sent the deck to the start of the
+      // track. `_wrapLoop` has the same shape, so a loop set anywhere in the
+      // track wrapped to the head of it instead of to its own start.
+      final voice = _FakeVoice();
+      final provider = _provider(voice);
+      addTearDown(provider.dispose);
+      await provider.load(
+        DjDeckId.a,
+        DjDeckLoad(
+          trackRef: 'picked',
+          localUri: Uri.file('/tmp/picked.mp3'),
+          beatsMs: const [0, 500, 1000, 89500, 90000, 90500],
+        ),
+      );
+      voice.positionMs = 90134;
+      await provider.debugTick();
+      await provider.setHotCue(DjDeckId.a, 1);
+      expect(provider.hotCuesFor(DjDeckId.a).single.positionMs, 90000);
+
+      voice.positionMs = 120000;
+      await provider.debugTick();
+      await provider.triggerHotCue(DjDeckId.a, 1);
+
+      expect(voice.positionMs, 90000);
+      expect(provider.deckA.positionMs, 90000);
+    });
+
+    test('a deck adopts the duration its voice reports when the seed had none',
+        () async {
+      // #425 is a queue-payload defect, but the deck is not helpless: the voice
+      // has the file open, so it is a second and independent authority on the
+      // length. Adopting it is what makes every clamp downstream - seek, hot
+      // cue, loop wrap, the paused-follower placement, the correction loop -
+      // work on a deck a real queue seeded.
+      final voice = _FakeVoice()..reportedDurationMs = 245000;
+      final controller = _controller(DjDeckId.a, voice);
+
+      await controller.load(DjDeckLoad(
+        trackRef: '1',
+        localUri: Uri.file('/tmp/local.mp3'),
+        initialCueMs: 1200,
+      ));
+
+      expect(controller.state.durationMs, 245000);
+      expect(controller.state.loadedCueMs, 1200);
+      await controller.seek(300000);
+      expect(controller.state.positionMs, 245000,
+          reason: 'an adopted duration is a real upper bound');
+    });
+
+    test('a seed that carries a duration keeps it over the voice', () async {
+      final voice = _FakeVoice()..reportedDurationMs = 999999;
+      final controller = _controller(DjDeckId.a, voice);
+
+      await controller.load(DjDeckLoad(
+        trackRef: '1',
+        durationMs: 245000,
+        localUri: Uri.file('/tmp/local.mp3'),
+      ));
+
+      expect(controller.state.durationMs, 245000);
+    });
+
+    test('a duration the voice only learns later is adopted on the next pass',
+        () async {
+      // A backend that reports null at `setAudioSource` and a length once it
+      // has read enough of the stream must not leave the deck unbounded for
+      // ever; the snapshot pass is the deck's own heartbeat, so it is where the
+      // late answer is picked up.
+      final voice = _FakeVoice();
+      final controller = _controller(DjDeckId.a, voice);
+      await controller.load(DjDeckLoad(
+        trackRef: '1',
+        localUri: Uri.file('/tmp/local.mp3'),
+      ));
+      expect(controller.state.durationMs, 0);
+
+      voice.reportedDurationMs = 245000;
+      voice.positionMs = 300000;
+      controller.refreshSnapshot();
+
+      expect(controller.state.durationMs, 245000);
+      expect(controller.state.positionMs, 245000);
+    });
+
+    test('an unknown duration does not fold the loaded cue onto zero',
+        () async {
+      final controller = _controller(DjDeckId.a, _FakeVoice());
+
+      await controller.load(DjDeckLoad(
+        trackRef: '1',
+        localUri: Uri.file('/tmp/local.mp3'),
+        initialCueMs: 1200,
+      ));
+
+      expect(controller.state.loadedCueMs, 1200,
+          reason: 'CUE must not send a device-seeded deck to 0:00');
+    });
+
     test('crossfader uses both channel faders without mutating them', () async {
       final a = _FakeVoice();
       final b = _FakeVoice();
@@ -264,6 +406,13 @@ class _FakeVoice implements Voice {
   bool get isReady => true;
   @override
   int? get currentLocalPositionMs => positionMs;
+
+  @override
+  int? get currentDurationMs => reportedDurationMs;
+
+  /// What this fake claims the loaded audio is worth, or null for unknown.
+  int? reportedDurationMs;
+
   @override
   Future<void> dispose() async => _events.close();
   @override

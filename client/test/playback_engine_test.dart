@@ -467,6 +467,13 @@ class _FakeVoice implements Voice {
   Stream<VoiceEvent> get events => _events.stream;
   @override
   int? get currentLocalPositionMs => 0;
+
+  @override
+  int? get currentDurationMs => reportedDurationMs;
+
+  /// What this fake claims the loaded audio is worth, or null for unknown.
+  int? reportedDurationMs;
+
   @override
   Future<void> load(Uri source, {int initialLocalPositionMs = 0}) async {
     if (loadStarted != null && !loadStarted!.isCompleted) {

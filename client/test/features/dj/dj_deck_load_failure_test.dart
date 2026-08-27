@@ -303,16 +303,19 @@ void main() {
 
     test('a seed that throws after the voice took the source releases it',
         () async {
-      final voice = _FakeVoice();
+      final voice = _FakeVoice(loadThrowsHoldingSource: true);
       final controller = DeckController.empty(
         deckId: DjDeckId.a,
         voice: voice,
         resolver: const _LocalResolver(),
       );
 
-      // A negative durationMs reaches initialCueMs.clamp(0, durationMs), which
-      // throws ArgumentError after the voice already holds the source.
-      await controller.load(const DjDeckLoad(trackRef: '9', durationMs: -1000));
+      // The voice takes the source and then fails. This used to be provoked by
+      // a negative durationMs reaching `initialCueMs.clamp(0, durationMs)`, but
+      // the deck now reads a nonsense duration as no duration rather than
+      // throwing on it, so the shape is asserted directly instead of through an
+      // arithmetic accident that a later fix could quietly remove.
+      await controller.load(const DjDeckLoad(trackRef: '9', durationMs: 1000));
 
       expect(voice.loadCalls, 1);
       expect(controller.state.loadFailure?.kind,
@@ -321,6 +324,31 @@ void main() {
       // No orphan voice: nothing keeps audio a deck state no longer describes.
       expect(voice.releaseCalls, 1);
       expect(voice.isLoaded, isFalse);
+    });
+
+    test('a nonsense seed duration is read as no duration, not a refusal',
+        () async {
+      // A negative durationMs used to throw out of the state build and refuse
+      // the deck. Nothing about a bad number in the payload means this device
+      // cannot play the file, and the deck already has a rule for a length
+      // nobody knows (#425), so it takes that rule.
+      final voice = _FakeVoice();
+      final controller = DeckController.empty(
+        deckId: DjDeckId.a,
+        voice: voice,
+        resolver: const _LocalResolver(),
+      );
+
+      await controller.load(const DjDeckLoad(
+        trackRef: '9',
+        durationMs: -1000,
+        initialCueMs: 1200,
+      ));
+
+      expect(controller.state.loadFailure, isNull);
+      expect(controller.state.durationMs, 0);
+      expect(controller.state.loadedCueMs, 1200);
+      expect(voice.releaseCalls, 0);
     });
 
     test("a throwing deck A load releases deck A's voice", () async {
@@ -429,10 +457,18 @@ class _SwitchableResolver implements EngineAudioSourceResolver {
 }
 
 class _FakeVoice implements Voice {
-  _FakeVoice({this.releaseThrows = false});
+  _FakeVoice({
+    this.releaseThrows = false,
+    this.loadThrowsHoldingSource = false,
+  });
 
   /// JustAudioVoice.release is a bare platform `stop()`, which can throw.
   final bool releaseThrows;
+
+  /// Takes the source and then fails, which is the shape `DeckController.load`
+  /// has to survive: the voice is left holding audio no deck state describes,
+  /// and only the refusal path can give it back.
+  final bool loadThrowsHoldingSource;
   bool _playing = false;
   int positionMs = 0;
   int loadCalls = 0;
@@ -452,6 +488,13 @@ class _FakeVoice implements Voice {
   bool get isReady => true;
   @override
   int? get currentLocalPositionMs => positionMs;
+
+  @override
+  int? get currentDurationMs => reportedDurationMs;
+
+  /// What this fake claims the loaded audio is worth, or null for unknown.
+  int? reportedDurationMs;
+
   @override
   Future<void> dispose() async => _events.close();
   @override
@@ -462,6 +505,7 @@ class _FakeVoice implements Voice {
     loadCalls++;
     loadedUri = source;
     positionMs = initialLocalPositionMs;
+    if (loadThrowsHoldingSource) throw StateError('source went away');
   }
 
   @override
