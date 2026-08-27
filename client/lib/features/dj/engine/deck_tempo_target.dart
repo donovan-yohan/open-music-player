@@ -30,6 +30,11 @@ enum DjTempoTargetRefusal {
 
   /// No octave interpretation puts the deck's rate inside its own window.
   outOfReach,
+
+  /// Sync owns this deck's tempo. Not a statement about the number typed, so
+  /// it must not be collapsed into [outOfReach]: the two reasons send the user
+  /// to different actions.
+  syncControlled,
 }
 
 /// The tempo band a deck can reach at its native octave.
@@ -44,8 +49,6 @@ class DjTempoBand {
 
   final double minBpm;
   final double maxBpm;
-
-  bool contains(double bpm) => bpm >= minBpm - 1e-9 && bpm <= maxBpm + 1e-9;
 }
 
 /// What [djResolveTargetBpm] decided.

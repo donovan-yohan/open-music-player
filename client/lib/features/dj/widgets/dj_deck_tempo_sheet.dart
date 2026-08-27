@@ -56,10 +56,15 @@ class DjDeckTempoSheet extends StatefulWidget {
 class _DjDeckTempoSheetState extends State<DjDeckTempoSheet> {
   late final TextEditingController _bpmField;
 
-  /// The last refusal, held until the next successful edit. Deliberately not
-  /// cleared on every rebuild: the 33Hz snapshot pass rebuilds this sheet, and
-  /// a message that vanished 33ms after it appeared would never be read.
+  /// What the last edit did, held until the next one. Deliberately not cleared
+  /// on every rebuild: the 33Hz snapshot pass rebuilds this sheet, and a
+  /// message that vanished 33ms after it appeared would never be read.
   String? _refusal;
+
+  /// True while the applied tempo was read as the half- or double-time
+  /// statement of the deck's own. Without saying so the readout looks like it
+  /// contradicts the number that was typed.
+  bool _octaveShifted = false;
 
   String get _suffix => widget.deck.name;
   DjDeckState get _deck => widget.session.stateFor(widget.deck);
@@ -67,10 +72,13 @@ class _DjDeckTempoSheetState extends State<DjDeckTempoSheet> {
   @override
   void initState() {
     super.initState();
+    _bpmField = TextEditingController(text: _fieldText());
+  }
+
+  /// The field's text for the tempo the deck is actually on.
+  String _fieldText() {
     final effective = djDeckEffectiveBpm(_deck);
-    _bpmField = TextEditingController(
-      text: effective == null ? '' : effective.toStringAsFixed(1),
-    );
+    return effective == null ? '' : effective.toStringAsFixed(1);
   }
 
   @override
@@ -81,39 +89,42 @@ class _DjDeckTempoSheetState extends State<DjDeckTempoSheet> {
 
   Future<void> _applyTyped() async {
     final typed = double.tryParse(_bpmField.text.trim());
-    if (typed == null) {
-      setState(() => _refusal = djDeckTempoOutOfReach);
-      return;
-    }
-    final result = await widget.session.setTargetBpm(widget.deck, typed);
-    if (!mounted) return;
-    setState(() => _refusal = result.isResolved ? null : _reasonFor(result));
-    if (result.isResolved) _syncFieldToDeck();
+    _adopt(
+      typed == null
+          ? const DjTempoTarget.refused(DjTempoTargetRefusal.outOfReach)
+          : await widget.session.setTargetBpm(widget.deck, typed),
+    );
   }
 
-  Future<void> _step(double delta) async {
-    final result = await widget.session.stepTempo(widget.deck, delta);
-    if (!mounted) return;
-    setState(() => _refusal = result.isResolved ? null : _reasonFor(result));
-    if (result.isResolved) _syncFieldToDeck();
-  }
+  Future<void> _step(double delta) async =>
+      _adopt(await widget.session.stepTempo(widget.deck, delta));
 
   Future<void> _reset() async {
     await widget.session.resetTempoAndKey(widget.deck);
     if (!mounted) return;
-    setState(() => _refusal = null);
-    _syncFieldToDeck();
+    setState(() {
+      _refusal = null;
+      _octaveShifted = false;
+      _bpmField.text = _fieldText();
+    });
   }
 
-  void _syncFieldToDeck() {
-    final effective = djDeckEffectiveBpm(_deck);
-    _bpmField.text = effective == null ? '' : effective.toStringAsFixed(1);
+  /// One place where an outcome becomes what the sheet shows: the field
+  /// follows the deck on success and the reason is held on refusal.
+  void _adopt(DjTempoTarget target) {
+    if (!mounted) return;
+    setState(() {
+      _refusal = target.isResolved ? null : _reasonFor(target);
+      _octaveShifted = target.octaveShifted;
+      if (target.isResolved) _bpmField.text = _fieldText();
+    });
   }
 
-  String _reasonFor(DjTempoTarget target) =>
-      target.refusal == DjTempoTargetRefusal.noTempo
-          ? djDeckTempoUnknown
-          : djDeckTempoOutOfReach;
+  String _reasonFor(DjTempoTarget target) => switch (target.refusal) {
+        DjTempoTargetRefusal.noTempo => djDeckTempoUnknown,
+        DjTempoTargetRefusal.syncControlled => djDeckTempoSyncControlled,
+        _ => djDeckTempoOutOfReach,
+      };
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
@@ -179,6 +190,15 @@ class _DjDeckTempoSheetState extends State<DjDeckTempoSheet> {
                       style: theme.textTheme.bodySmall,
                     ),
                   ),
+                if (_octaveShifted)
+                  Padding(
+                    padding: const EdgeInsets.only(top: AppTheme.space1),
+                    child: Text(
+                      djDeckTempoOctaveDetail,
+                      key: ValueKey('dj_tempo_octave_$_suffix'),
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
                 if (_refusal != null)
                   Padding(
                     padding: const EdgeInsets.only(top: AppTheme.space1),
@@ -228,8 +248,7 @@ class _DjDeckTempoSheetState extends State<DjDeckTempoSheet> {
           const SizedBox(width: AppTheme.space2),
           Flexible(
             child: Text(
-              '${deck.ratePercent >= 0 ? '+' : ''}'
-              '${deck.ratePercent.toStringAsFixed(1)}%',
+              deck.ratePercentLabel,
               key: ValueKey('dj_tempo_percent_$_suffix'),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -385,16 +404,13 @@ class _DjDeckTempoSheetState extends State<DjDeckTempoSheet> {
     );
   }
 
-  /// `8A` unshifted, `8A → 10A` shifted, and the semitone label for a track
-  /// with no Camelot value. One Camelot parser, in `dj_camelot.dart`.
+  /// `8A` unshifted, `8A → 10A` shifted, and the semitone label alone for a
+  /// track with no Camelot value. The suffix comes from `dj_camelot.dart`, the
+  /// same helper the header's key segment uses.
   String _keyReadout(DjDeckState deck) {
     final camelot = deck.camelot;
-    final semitones = deck.keySemitones;
-    if (camelot == null) return djKeySemitoneLabel(semitones);
-    if (semitones == 0) return camelot;
-    final shifted = djCamelotShifted(camelot, semitones);
-    return shifted == null
-        ? '$camelot ${djKeySemitoneLabel(semitones)}'
-        : '$camelot → $shifted';
+    final suffix = djCamelotShiftSuffix(camelot, deck.keySemitones);
+    if (camelot == null) return djKeySemitoneLabel(deck.keySemitones);
+    return suffix.isEmpty ? camelot : '$camelot $suffix';
   }
 }

@@ -253,6 +253,8 @@ void main() {
       final target = await rig.session.setTargetBpm(DjDeckId.a, 100);
 
       expect(target.isResolved, isFalse);
+      expect(target.refusal, DjTempoTargetRefusal.syncControlled,
+          reason: '100 BPM is reachable; sync is why it was refused');
       expect(rig.session.deckA.rate, synced);
       expect(rig.session.syncEngagedOn(DjDeckId.a), isTrue,
           reason: 'a refused edit moves no sync state either');

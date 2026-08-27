@@ -143,8 +143,7 @@ class DjDeckHeader extends StatelessWidget {
             tappable: true,
           ),
           _DjHeaderMetric(
-            '${deck.ratePercent >= 0 ? '+' : ''}'
-                '${deck.ratePercent.toStringAsFixed(1)}%',
+            deck.ratePercentLabel,
             2,
             minWidth: kDjHeaderPitchMinWidth,
           ),

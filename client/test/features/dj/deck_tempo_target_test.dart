@@ -125,6 +125,18 @@ void main() {
       expect(target.refusal, DjTempoTargetRefusal.noTempo);
     });
 
+    test('an unreachable target and a sync-owned deck are distinct reasons',
+        () {
+      // Collapsing them would send the user to the wrong action: one is about
+      // the number typed, the other about who owns the deck's rate.
+      expect(DjTempoTargetRefusal.values, contains(
+          DjTempoTargetRefusal.syncControlled));
+      expect(
+        djResolveTargetBpm(deck: deck(), targetBpm: 300).refusal,
+        DjTempoTargetRefusal.outOfReach,
+      );
+    });
+
     test('a non-finite target is refused rather than propagated', () {
       for (final bad in <double>[double.nan, double.infinity, 0, -128]) {
         expect(djResolveTargetBpm(deck: deck(), targetBpm: bad).isResolved,

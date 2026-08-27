@@ -154,6 +154,41 @@ void main() {
       );
     });
 
+    testWidgets('an octave-resolved tempo says so', (tester) async {
+      await pumpDeck(tester);
+      await openSheet(tester, 'a');
+
+      // 62.25 is 124.5 counted in half time: reachable only through the octave
+      // search, and the readout then shows the deck's own octave rather than
+      // the number that was typed. Saying nothing would look like a bug.
+      await tester.enterText(
+          find.byKey(const ValueKey('dj_bpm_field_a')), '62.25');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+
+      expect(find.text(djDeckTempoOctaveDetail), findsOneWidget);
+      expect(deck.session.deckA.rate, closeTo(1.0, 1e-9));
+      expect(
+        tester
+            .widget<Text>(find.byKey(const ValueKey('dj_bpm_readout_a')))
+            .data,
+        '124.5 BPM',
+      );
+    });
+
+    testWidgets('a plain reachable tempo says nothing about octaves',
+        (tester) async {
+      await pumpDeck(tester);
+      await openSheet(tester, 'a');
+
+      await tester.enterText(
+          find.byKey(const ValueKey('dj_bpm_field_a')), '130');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+
+      expect(find.text(djDeckTempoOctaveDetail), findsNothing);
+    });
+
     testWidgets('ten fine steps land the readout on 125.5 BPM',
         (tester) async {
       await pumpDeck(tester);

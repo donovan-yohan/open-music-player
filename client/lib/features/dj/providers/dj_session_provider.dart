@@ -580,7 +580,7 @@ class DjSessionProvider extends ChangeNotifier {
       return const DjTempoTarget.refused(DjTempoTargetRefusal.noTempo);
     }
     if (_syncEngaged.contains(deck)) {
-      return const DjTempoTarget.refused(DjTempoTargetRefusal.outOfReach);
+      return const DjTempoTarget.refused(DjTempoTargetRefusal.syncControlled);
     }
     final target =
         djResolveTargetBpm(deck: stateFor(deck), targetBpm: targetBpm);
@@ -641,13 +641,12 @@ class DjSessionProvider extends ChangeNotifier {
   /// same as any other tempo edit.
   Future<void> resetTempoAndKey(DjDeckId deck) async {
     if (_disposed) return;
-    if (!_syncEngaged.contains(deck)) {
-      await _decks[deck]!.setRate(1, pitchMode: pitchModePreserve);
-      await _rematchFollowersOf(deck);
-    } else {
-      await _decks[deck]!
-          .setRate(stateFor(deck).rate, pitchMode: pitchModePreserve);
-    }
+    final syncOwnsTempo = _syncEngaged.contains(deck);
+    await _decks[deck]!.setRate(
+      syncOwnsTempo ? stateFor(deck).rate : 1,
+      pitchMode: pitchModePreserve,
+    );
+    if (!syncOwnsTempo) await _rematchFollowersOf(deck);
     await _decks[deck]!.setKeySemitones(0);
     _notify();
   }

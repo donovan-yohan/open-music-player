@@ -47,7 +47,18 @@ String? djCamelotShifted(String? camelot, int semitones) {
 String djKeySemitoneLabel(int semitones) =>
     '${semitones >= 0 ? '+' : '-'}${semitones.abs()} st';
 
-/// The deck header's key segment: `A minor 8A -> 3A` while shifted, and the
+/// How far [camelot] has been moved, as a suffix: `→ 3A` while the wheel can
+/// name the destination and `+2 st` while it cannot. Empty at zero.
+///
+/// The one place the shift is turned into text. Both the header's key segment
+/// and the sheet's key readout call it, so they cannot drift apart.
+String djCamelotShiftSuffix(String? camelot, int semitones) {
+  if (semitones == 0) return '';
+  final shifted = djCamelotShifted(camelot, semitones);
+  return shifted == null ? djKeySemitoneLabel(semitones) : '→ $shifted';
+}
+
+/// The deck header's key segment: `A minor 8A → 3A` while shifted, and the
 /// plain `A minor 8A` at zero.
 ///
 /// Returns an empty string when the deck knows neither a key name nor a
@@ -58,9 +69,6 @@ String djDeckKeySegment({
   int semitones = 0,
 }) {
   final base = [musicalKey, camelot].whereType<String>().join(' ');
-  if (base.isEmpty || semitones == 0) return base;
-  final shifted = djCamelotShifted(camelot, semitones);
-  return shifted == null
-      ? '$base ${djKeySemitoneLabel(semitones)}'
-      : '$base → $shifted';
+  final suffix = base.isEmpty ? '' : djCamelotShiftSuffix(camelot, semitones);
+  return suffix.isEmpty ? base : '$base $suffix';
 }
