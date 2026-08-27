@@ -129,6 +129,13 @@ class _TrackingVoice implements Voice {
   int? get currentLocalPositionMs => _positionMs;
 
   @override
+  int? get currentDurationMs => reportedDurationMs;
+
+  /// What this fake claims the loaded audio is worth, or null for unknown.
+  int? reportedDurationMs;
+
+
+  @override
   Future<void> dispose() async {
     disposeCount++;
     await _events.close();

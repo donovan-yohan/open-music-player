@@ -46,6 +46,17 @@ abstract class Voice {
 
   int? get currentLocalPositionMs;
 
+  /// The length of the audio this voice actually holds, once the backend knows
+  /// it, or null while it does not.
+  ///
+  /// The deck's own duration comes from the queue payload, which omits it for
+  /// an item with no source row (#425). The voice is the second, independent
+  /// authority: it has the file open, so it can answer even when the API
+  /// could not. Nullable rather than 0 on purpose - "not known yet" and "zero
+  /// long" are different facts, and a deck that treats the first as the second
+  /// clamps every position it will ever hold onto 0.
+  int? get currentDurationMs;
+
   int? driftMs(int expectedLocalPositionMs);
   Future<void> resync(int expectedLocalPositionMs);
 }
@@ -181,6 +192,12 @@ class JustAudioVoice implements Voice {
 
   @override
   int? get currentLocalPositionMs => _player.position.inMilliseconds;
+
+  // `AudioPlayer.duration` is populated by `setAudioSource` before it completes
+  // and stays null for a source whose length the backend cannot determine, so
+  // this is exactly the "known or not" the interface asks for.
+  @override
+  int? get currentDurationMs => _player.duration?.inMilliseconds;
 
   @override
   int? driftMs(int expectedLocalPositionMs) {

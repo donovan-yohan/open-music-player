@@ -203,6 +203,13 @@ class _FakeVoice implements Voice {
   bool get isReady => true;
   @override
   int? get currentLocalPositionMs => positionMs;
+
+  @override
+  int? get currentDurationMs => reportedDurationMs;
+
+  /// What this fake claims the loaded audio is worth, or null for unknown.
+  int? reportedDurationMs;
+
   @override
   Future<void> dispose() async => _events.close();
   @override

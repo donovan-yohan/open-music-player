@@ -144,10 +144,9 @@ class DeckController {
     );
     // The only broad catch on the deck path: a deck seed must not escape into
     // dj_screen.dart's un-awaited post-frame callback. The success state is
-    // built inside the block on purpose: a hostile seed can still throw after
-    // the voice took the source (`initialCueMs.clamp(0, durationMs)` throws for
-    // a negative durationMs), and the voice must not be left holding audio no
-    // deck state describes.
+    // built inside the block on purpose: the resolver and the voice both throw
+    // for a source this device cannot open, and the voice must not be left
+    // holding audio no deck state describes.
     try {
       final resolved = localUri == null ? await _resolver.resolve(clip) : null;
       if (kDebugMode) {
@@ -161,6 +160,15 @@ class DeckController {
         return;
       }
       await _voice.load(localUri ?? resolved!.uri);
+      // The seed's duration is the queue payload's, and the queue API omits it
+      // for an item with no source row (#425), so a device-seeded deck arrives
+      // claiming to be zero long. The voice has the file open by this line and
+      // is the only other authority on the question, so adopt what it reports.
+      // This is the one place the deck can learn a duration before anything is
+      // measured against it - every clamp below and in `seek` is an upper bound
+      // this value sets.
+      final duration =
+          load.durationMs > 0 ? load.durationMs : _voiceDurationMs();
       // A freshly built success state carries loadFailure == null, so a
       // recovered deck needs no explicit clearing.
       _state = DjDeckState(
@@ -169,8 +177,11 @@ class DeckController {
         trackRef: load.trackRef,
         title: load.title,
         queueTrack: load.queueTrack,
-        durationMs: load.durationMs,
-        loadedCueMs: load.initialCueMs.clamp(0, load.durationMs).toInt(),
+        durationMs: duration,
+        // Same rule as every other clamp on this class: an unknown duration is
+        // not an upper bound of zero. A cue at the intro start on a deck whose
+        // length nobody knows stays where the analysis put it.
+        loadedCueMs: _clampPosition(load.initialCueMs, duration),
         beatsMs: List.unmodifiable(load.beatsMs),
       );
     } catch (error) {
@@ -286,8 +297,17 @@ class DeckController {
     _state = _state.copyWith(playing: false);
   }
 
+  /// Moves the deck to [positionMs], clamped only against a duration this deck
+  /// actually knows.
+  ///
+  /// The same rule as [refreshSnapshot], and for the same reason: clamping into
+  /// [0, 0] on a deck whose seed carried no duration (#425) folded every seek
+  /// onto 0, so a hot cue dropped at 1:30 returned the deck to the start of the
+  /// track and a loop set anywhere in it wrapped to the head instead of to its
+  /// own start. [_adoptedDurationMs] gives the voice a late chance to supply
+  /// the bound before the clamp is taken.
   Future<void> seek(int positionMs) async {
-    final safe = positionMs.clamp(0, _state.durationMs).toInt();
+    final safe = _clampPosition(positionMs, _adoptedDurationMs());
     await _voice.seekLocal(safe);
     _state = _state.copyWith(positionMs: safe);
   }
@@ -345,12 +365,45 @@ class DeckController {
   }
 
   void refreshSnapshot() {
+    final reported = _voice.currentLocalPositionMs ?? _state.positionMs;
+    final duration = _adoptedDurationMs();
     _state = _state.copyWith(
-      positionMs: (_voice.currentLocalPositionMs ?? _state.positionMs)
-          .clamp(0, _state.durationMs)
-          .toInt(),
+      positionMs: _clampPosition(reported, duration),
       playing: _voice.isPlaying,
     );
+  }
+
+  /// The deck's duration, taking the voice's answer if the deck has none yet.
+  ///
+  /// A deck seeded from the queue API can arrive with no duration at all (#425:
+  /// the payload omits it for an item with no source row), which used to leave
+  /// every clamp on this class working against an upper bound of zero - the
+  /// transport clock pinned at 0 for the deck's whole life, and with it the
+  /// beat position, the alignment signal and the correction loop, silently and
+  /// with no error anywhere. The voice holds the actual audio, so it can answer
+  /// when the API could not. Adopted once and then kept: this is a fact about
+  /// the file, and a backend that starts returning null again (a released voice
+  /// does) must not un-know it.
+  int _adoptedDurationMs() {
+    if (_state.durationMs > 0) return _state.durationMs;
+    final adopted = _voiceDurationMs();
+    if (adopted > 0) _state = _state.copyWith(durationMs: adopted);
+    return adopted;
+  }
+
+  /// What the voice says it is holding, or 0 for "nobody knows" - which every
+  /// caller reads as *no upper bound*, never as an upper bound of zero.
+  int _voiceDurationMs() {
+    final reported = _voice.currentDurationMs;
+    return reported != null && reported > 0 ? reported : 0;
+  }
+
+  /// Refuses a negative position, and only bounds it above when [durationMs] is
+  /// a duration the deck actually knows.
+  static int _clampPosition(int positionMs, int durationMs) {
+    if (positionMs < 0) return 0;
+    if (durationMs > 0 && positionMs > durationMs) return durationMs;
+    return positionMs;
   }
 
   Future<void> dispose() async {

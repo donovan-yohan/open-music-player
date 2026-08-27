@@ -116,6 +116,31 @@ void main() {
           reason: 'a master swap must not move either effective tempo');
     });
 
+    testWidgets('disengaging the last follower returns both glyphs to idle',
+        (tester) async {
+      await pumpDjScreen(
+        tester,
+        session: session,
+        viewport: landscapeReference,
+      );
+      await tester.tap(find.byKey(const ValueKey('dj_sync_off_a')));
+      await settle(tester);
+      expect(find.byKey(const ValueKey('dj_sync_master_b')), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('dj_sync_on_a')));
+      await settle(tester);
+
+      // D4b: the ex-master used to keep its glyph and its "this deck sets the
+      // tempo" tooltip with nobody following it.
+      expect(session.syncMaster, isNull);
+      expect(find.byKey(const ValueKey('dj_sync_master_b')), findsNothing);
+      expect(find.byKey(const ValueKey('dj_sync_on_a')), findsNothing);
+      expect(find.byKey(const ValueKey('dj_sync_off_a')), findsOneWidget);
+      expect(find.byKey(const ValueKey('dj_sync_off_b')), findsOneWidget);
+      expect(tooltipsAround(tester, 'dj_sync_off_b'),
+          isNot(contains(djDeckSyncMaster)));
+    });
+
     testWidgets('engaging sync allocates no third voice (ADR 0001)',
         (tester) async {
       await pumpDjScreen(
@@ -237,7 +262,7 @@ void main() {
     });
   });
 
-  group('a master whose swap has stopped being reachable', () {
+  group('a former master whose only follower took its tempo back', () {
     late DjSessionProvider session;
 
     setUp(() async {
@@ -259,7 +284,12 @@ void main() {
         viewport: landscapeReference,
       );
 
-      expect(session.isSyncMaster(DjDeckId.b), isTrue);
+      // D4b: deck B kept the master glyph and the "this deck sets the tempo"
+      // tooltip here, claiming a relationship that no longer existed. With the
+      // engaged set empty the session is idle, and deck B gates on its own
+      // refusal like any other idle deck.
+      expect(session.isSyncMaster(DjDeckId.b), isFalse);
+      expect(session.syncMaster, isNull);
       expect(
         session.syncMatchFor(DjDeckId.b).refusal,
         DjSyncRefusal.tempoOutOfRange,
@@ -340,5 +370,75 @@ void main() {
         expect(find.byKey(const ValueKey('dj_sync_master_b')), findsOneWidget);
       });
     }
+  });
+
+  group('a pair mid-correction', () {
+    late DjSyncFakeClock clock;
+    late DjSyncRig rig;
+    late double base;
+
+    setUp(() async {
+      clock = DjSyncFakeClock();
+      rig = djSyncRig(clock: clock.read);
+      await rig.session.load(
+        DjDeckId.a,
+        djSyncDeckSeed(id: '90', analysis: djSyncLongGridAnalysis(bpm: 124.5)),
+      );
+      await rig.session.load(
+        DjDeckId.b,
+        djSyncDeckSeed(id: '91', analysis: djSyncLongGridAnalysis(bpm: 128)),
+      );
+      // Both decks run: the correction only acts on two moving decks, because
+      // rate is no authority over a paused deck's phase.
+      await rig.session.togglePlay(DjDeckId.a);
+      await rig.session.togglePlay(DjDeckId.b);
+      await rig.session.pressSync(DjDeckId.a);
+      base = rig.session.stateFor(DjDeckId.a).rate;
+      // 206ms of media at the matched rate is 200ms of wall error, well past
+      // the deadband, so the loop is saturated at its cap while the screen is
+      // measured.
+      rig.voiceFor(DjDeckId.a).localPositionMs = 206;
+      rig.voiceFor(DjDeckId.b).localPositionMs = 0;
+      clock.advance(kDjSyncCorrectionIntervalMs + 33);
+      await rig.session.debugTick();
+    });
+    tearDown(() => rig.session.dispose());
+
+    for (final viewport in djServiceableViewports) {
+      testWidgets('keeps the engaged state while correcting at '
+          '${viewport.name}', (tester) async {
+        final errors = DjErrorCollector()..install();
+        addTearDown(errors.restore);
+
+        await pumpDjScreen(tester, session: rig.session, viewport: viewport);
+
+        // The correction is live: the deck is off its matched base rate but
+        // still inside the cap, and still reads as engaged.
+        final rate = rig.session.stateFor(DjDeckId.a).rate;
+        expect(rate, isNot(closeTo(base, 1e-9)));
+        expect((rate / base - 1).abs(),
+            lessThanOrEqualTo(kDjSyncMaxRateOffset + 1e-9));
+        expect(errors.overflows, isEmpty);
+        expect(tester.takeException(), isNull);
+        expect(find.byKey(const ValueKey('dj_sync_on_a')), findsOneWidget);
+        expect(find.byKey(const ValueKey('dj_sync_master_b')), findsOneWidget);
+      });
+    }
+
+    testWidgets('reports the corrected tempo, not the matched one',
+        (tester) async {
+      await pumpDjScreen(
+        tester,
+        session: rig.session,
+        viewport: landscapeReference,
+      );
+
+      // The header multiplies native BPM by the live rate, so a deck being
+      // pulled back into alignment reads a hair under the leader rather than
+      // claiming a lock it has not reached yet.
+      expect(find.text('128.0 BPM'), findsOneWidget,
+          reason: 'only the master is exactly at 128.0 while correcting');
+      expect(find.text('125.4 BPM'), findsOneWidget);
+    });
   });
 }

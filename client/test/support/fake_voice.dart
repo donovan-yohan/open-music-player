@@ -43,6 +43,16 @@ class FakeVoice implements Voice {
   @override
   int? get currentLocalPositionMs => _localPositionMs;
 
+  /// What this voice reports as the length of the audio it holds.
+  ///
+  /// Null by default, matching a backend that has not determined a length yet.
+  /// A test that wants to exercise the deck adopting the voice's duration
+  /// (#425: the queue payload omits it) sets this before `load`.
+  int? reportedDurationMs;
+
+  @override
+  int? get currentDurationMs => reportedDurationMs;
+
   /// Drives the fake transport clock from a test.
   set localPositionMs(int value) => _localPositionMs = value;
 

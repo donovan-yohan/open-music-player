@@ -215,7 +215,12 @@ class DjBeatRuler {
 int _floorDiv(int a, int b) => (a - (a % b + b) % b) ~/ b;
 
 /// Index of the last entry <= [value], or -1 when [value] precedes the grid.
-int _lastBeatIndexAtOrBefore(List<int> sorted, int value) {
+///
+/// Public because deck sync's beat-level error signal has to read the *same*
+/// beat the ruler and the counter read (`engine/deck_sync.dart`): a second
+/// binary search with its own tie-breaking would let the correction loop and
+/// the painted grid disagree about which beat the deck is inside.
+int djLastBeatIndexAtOrBefore(List<int> sorted, int value) {
   var low = 0;
   var high = sorted.length;
   while (low < high) {
@@ -228,6 +233,10 @@ int _lastBeatIndexAtOrBefore(List<int> sorted, int value) {
   }
   return low - 1;
 }
+
+/// In-library alias, so the existing call sites did not have to churn.
+int _lastBeatIndexAtOrBefore(List<int> sorted, int value) =>
+    djLastBeatIndexAtOrBefore(sorted, value);
 
 int _nearestBeatIndex(List<int> sorted, int value) {
   final before = _lastBeatIndexAtOrBefore(sorted, value);
