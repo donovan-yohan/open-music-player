@@ -234,17 +234,29 @@ void main() {
 
     /// Loads a long-grid pair and returns the rig. Deck A follows deck B, so
     /// deck A is the one every rate assertion is about.
-    Future<void> loadPair({double followerBpm = 124.5}) async {
+    ///
+    /// [durationMs] 0 is the shape a real queue seeds: the API omits the field
+    /// for an item with no source row (#425), and the fixture voices report no
+    /// duration either, so such a deck genuinely does not know its length.
+    Future<void> loadPair({
+      double followerBpm = 124.5,
+      int durationMs = 245000,
+    }) async {
       await rig.session.load(
         DjDeckId.a,
         djSyncDeckSeed(
           id: '90',
           analysis: djSyncLongGridAnalysis(bpm: followerBpm),
+          durationMs: durationMs,
         ),
       );
       await rig.session.load(
         DjDeckId.b,
-        djSyncDeckSeed(id: '91', analysis: djSyncLongGridAnalysis(bpm: 128)),
+        djSyncDeckSeed(
+          id: '91',
+          analysis: djSyncLongGridAnalysis(bpm: 128),
+          durationMs: durationMs,
+        ),
       );
     }
 
@@ -751,6 +763,123 @@ void main() {
       );
       expect(startedError!.abs(), lessThan(kDjSyncPhaseDeadbandMs),
           reason: 'the deck must start its first sample already in phase');
+    });
+
+    test('a follower with no known duration is still placed on the pulse',
+        () async {
+      // The placement was bounded above by `follower.durationMs` with no test
+      // for whether that duration was ever known. On a deck a real queue seeds
+      // it is 0 (#425), so every positive target was refused and the headline
+      // behaviour - "starts its first sample already in phase" - was never once
+      // taken in production, only in tests whose fixture carried a duration.
+      await loadPair(durationMs: 0);
+      expect(rig.session.stateFor(DjDeckId.a).durationMs, 0,
+          reason: 'the device shape: the deck knows no duration at all');
+      await rig.session.togglePlay(DjDeckId.b);
+      await rig.session.seek(DjDeckId.a, 688);
+      final voice = rig.voiceFor(DjDeckId.a);
+      final seeksBefore = voice.seeks.length;
+
+      await rig.session.pressSync(DjDeckId.a);
+
+      expect(voice.seeks.length, seeksBefore + 1,
+          reason: 'the placement was refused against an unknown duration');
+      expect(voice.seeks.last, greaterThan(0),
+          reason: 'a target of 0 would pass the broken bound by accident');
+      final error = djSyncPhaseErrorMs(
+        leader: rig.session.stateFor(DjDeckId.b),
+        follower: rig.session.stateFor(DjDeckId.a),
+      );
+      expect(error!.abs(), lessThan(kDjSyncPhaseDeadbandMs));
+    });
+
+    test('a placement that leaves a known-length track is still refused',
+        () async {
+      // Conditioning the bound on a known duration must not weaken it where it
+      // is known. A follower sitting just before its beat has to move forward,
+      // and on a 400ms track that lands past the end: clamping there would put
+      // the deck off the pulse while reporting success, so the shift is simply
+      // not taken.
+      await loadPair(durationMs: 400);
+      await rig.session.togglePlay(DjDeckId.b);
+      await rig.session.seek(DjDeckId.a, 400);
+      final voice = rig.voiceFor(DjDeckId.a);
+      final seeksBefore = voice.seeks.length;
+
+      await rig.session.pressSync(DjDeckId.a);
+
+      expect(voice.seeks.length, seeksBefore,
+          reason: 'landing off the pulse while reporting success is worse');
+
+      // The same geometry on a deck long enough to hold the target IS taken,
+      // so the refusal above is the bound doing its job rather than a missing
+      // alignment signal.
+      rig.session.dispose();
+      clock = DjSyncFakeClock();
+      rig = djSyncRig(clock: clock.read);
+      await loadPair();
+      await rig.session.togglePlay(DjDeckId.b);
+      await rig.session.seek(DjDeckId.a, 400);
+      final roomy = rig.voiceFor(DjDeckId.a);
+      final roomySeeksBefore = roomy.seeks.length;
+
+      await rig.session.pressSync(DjDeckId.a);
+
+      expect(roomy.seeks.length, roomySeeksBefore + 1);
+      expect(roomy.seeks.last, greaterThan(400),
+          reason: 'the target the short track had to refuse');
+    });
+
+    test('a bend held across a release still lands on the matched tempo',
+        () async {
+      // Two authorities, one rate, in the other order. The loop already stands
+      // down for a held bend, but the three restore paths did not: each wrote
+      // the base rate under the user's finger and then deleted the bookkeeping
+      // `nudgePitchEnd` reads, so the release fell back to the rate captured
+      // when the bend started - a mid-correction rate, up to the 2% cap off the
+      // matched tempo, now with nothing left that could ever put it back.
+      for (final release in <String>['master fader', 'disengage press']) {
+        rig.session.dispose();
+        clock = DjSyncFakeClock();
+        rig = djSyncRig(clock: clock.read);
+        await loadPair();
+        await startBothDecks();
+        await rig.session.pressSync(DjDeckId.a);
+        final base = rig.session.stateFor(DjDeckId.a).rate;
+        final voice = rig.voiceFor(DjDeckId.a);
+
+        var positionA = 206.0;
+        var positionB = 0.0;
+        for (var tickIndex = 0; tickIndex < 40; tickIndex++) {
+          await tick(
+              positionA: positionA.toInt(), positionB: positionB.toInt());
+          positionA += rig.session.stateFor(DjDeckId.a).rate * 33;
+          positionB += 33;
+        }
+        expect(rig.session.stateFor(DjDeckId.a).rate,
+            isNot(closeTo(base, 1e-9)),
+            reason: 'the correction has bent the rate away from the base');
+
+        await rig.session.nudgePitchStart(DjDeckId.a, -2);
+        final commandsUnderHold = voice.speeds.length;
+
+        if (release == 'master fader') {
+          await rig.session.setPitchPercent(DjDeckId.b, 3);
+        } else {
+          await rig.session.pressSync(DjDeckId.a);
+        }
+
+        expect(voice.speeds.length, commandsUnderHold,
+            reason: 'the restore overwrote a bend the user was holding '
+                '($release)');
+        expect(rig.session.syncEngagedOn(DjDeckId.a), isFalse, reason: release);
+
+        await rig.session.nudgePitchEnd(DjDeckId.a);
+
+        expect(voice.speeds.last, closeTo(base, 1e-9), reason: release);
+        expect(rig.session.stateFor(DjDeckId.a).rate, closeTo(base, 1e-9),
+            reason: 'the bend must release onto the matched tempo ($release)');
+      }
     });
 
     test('a playing follower is never seeked', () async {

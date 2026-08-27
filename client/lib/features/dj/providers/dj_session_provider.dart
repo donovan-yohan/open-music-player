@@ -257,8 +257,13 @@ class DjSessionProvider extends ChangeNotifier {
     if (shiftMs == 0) return;
     final target = follower.positionMs - shiftMs;
     // Clamping would land the deck off the pulse while reporting success, so a
-    // shift that leaves the track is simply not taken.
-    if (target < 0 || target > follower.durationMs) return;
+    // shift that leaves the track is simply not taken. The upper bound is only
+    // a bound when the deck knows its duration: a deck seeded from a queue item
+    // with no source row reports 0 (#425), and testing every positive target
+    // against that refused the placement on precisely the decks a real queue
+    // builds - the headline behaviour, never once taken in production.
+    if (target < 0) return;
+    if (follower.durationMs > 0 && target > follower.durationMs) return;
     await _decks[deck]!.seek(target);
   }
 
@@ -270,6 +275,19 @@ class DjSessionProvider extends ChangeNotifier {
     final offset = _syncOffsets[deck] ?? 0;
     _forgetSyncCorrection(deck);
     if (base == null || offset == 0) return false;
+    // A pitch bend is the user holding this deck's rate in their hand, and the
+    // same rule the correction loop obeys applies here: two authorities must
+    // never fight over one rate. Writing the base rate now would be overwritten
+    // the instant the finger lifts - `nudgePitchEnd` restores the rate captured
+    // when the bend started, and the bookkeeping this method just dropped is
+    // what would otherwise have told it better - re-stranding the follower at
+    // the correction cap with nothing left that could put it back. So hand the
+    // release the right destination instead of racing it, and issue no command:
+    // the deck lands on `base` when the bend ends, which is the contract.
+    if (_preNudgeRates.containsKey(deck)) {
+      _preNudgeRates[deck] = base;
+      return false;
+    }
     await _decks[deck]!.setRate(base);
     return true;
   }
