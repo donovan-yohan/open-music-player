@@ -388,6 +388,10 @@ void main() {
         DjDeckId.b,
         djSyncDeckSeed(id: '91', analysis: djSyncLongGridAnalysis(bpm: 128)),
       );
+      // Both decks run: the correction only acts on two moving decks, because
+      // rate is no authority over a paused deck's phase.
+      await rig.session.togglePlay(DjDeckId.a);
+      await rig.session.togglePlay(DjDeckId.b);
       await rig.session.pressSync(DjDeckId.a);
       base = rig.session.stateFor(DjDeckId.a).rate;
       // 206ms of media at the matched rate is 200ms of wall error, well past

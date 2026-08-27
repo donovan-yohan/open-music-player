@@ -345,12 +345,19 @@ class DeckController {
   }
 
   void refreshSnapshot() {
-    _state = _state.copyWith(
-      positionMs: (_voice.currentLocalPositionMs ?? _state.positionMs)
-          .clamp(0, _state.durationMs)
-          .toInt(),
-      playing: _voice.isPlaying,
-    );
+    final reported = _voice.currentLocalPositionMs ?? _state.positionMs;
+    final duration = _state.durationMs;
+    // An unknown duration is not an upper bound of zero. The queue API omits
+    // `durationMs` on an item it has no source row for (#425), so such a deck
+    // arrives with `durationMs == 0`; clamping into [0, 0] then folded every
+    // reported position onto 0 and pinned the deck's transport clock there for
+    // its whole life. Everything downstream that reads a position - the beat
+    // position, the alignment signal, the correction loop - is inert on such a
+    // deck, silently and with no error anywhere. Clamp against a duration the
+    // deck actually knows, and otherwise only refuse a negative position.
+    var position = reported < 0 ? 0 : reported;
+    if (duration > 0 && position > duration) position = duration;
+    _state = _state.copyWith(positionMs: position, playing: _voice.isPlaying);
   }
 
   Future<void> dispose() async {

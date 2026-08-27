@@ -171,7 +171,9 @@ class DjSessionProvider extends ChangeNotifier {
     // so both the tempo the new match is computed against and the tempo the new
     // master keeps are the matched base rate rather than a mid-correction one.
     var restored = false;
+    double? deposedBase;
     if (_syncMaster == deck && _syncEngaged.contains(other)) {
+      deposedBase = _syncBaseRates[other];
       restored = await _restoreSyncBaseRate(other);
     }
     final match = djSyncTempoMatch(
@@ -179,6 +181,17 @@ class DjSessionProvider extends ChangeNotifier {
       follower: stateFor(deck),
     );
     if (!match.isMatched) {
+      // A refused swap moves nothing, so the deck that was following before the
+      // press is still following after it. The restore above dropped its
+      // bookkeeping, and a follower with no base rate is one the correction
+      // loop abandons on every later pass while the UI still shows it engaged.
+      // It is now sitting on exactly `deposedBase` with no offset applied, so
+      // re-registering that is not a guess.
+      if (deposedBase != null) {
+        _syncBaseRates[other] = deposedBase;
+        _syncOffsets[other] = 0;
+        if (restored) _syncCommandAtMs[other] = _clock();
+      }
       if (restored) _notify();
       return match;
     }
@@ -196,9 +209,29 @@ class DjSessionProvider extends ChangeNotifier {
     _syncOffsets[deck] = 0;
     // The match itself is a rate command, so it starts the throttle window.
     _syncCommandAtMs[deck] = _clock();
-    await _seekPausedFollowerIntoPulse(deck, other);
+    await _placeEngagedFollowerOnPulse(deck);
     _notify();
     return match;
+  }
+
+  /// Puts an engaged, paused follower on its leader's pulse.
+  ///
+  /// Called from both the transitions that can leave it out of phase. The
+  /// placement taken when SYNC is pressed is only exact for the instant of the
+  /// press: the leader keeps playing, so a deck cued up and synced now and
+  /// started seconds later is an arbitrary fraction of a beat out again by the
+  /// time PLAY is pressed. The start transition is where the placement has to
+  /// happen for "starts its first sample already in phase" to mean anything;
+  /// the press-time call remains for the both-decks-paused case.
+  ///
+  /// [cuePress] deliberately does not call this. A hot cue is a request for one
+  /// exact position; moving the deck off it to land on the pulse would answer a
+  /// different question. A cue-started follower closes its error through the
+  /// correction loop like any other.
+  Future<void> _placeEngagedFollowerOnPulse(DjDeckId deck) async {
+    final master = _syncMaster;
+    if (master == null || !_syncEngaged.contains(deck)) return;
+    await _seekPausedFollowerIntoPulse(deck, master);
   }
 
   /// Puts a paused follower exactly on the leader's pulse before it starts.
@@ -270,13 +303,20 @@ class DjSessionProvider extends ChangeNotifier {
   /// The phase-correction slice is where these two callers stop agreeing: a
   /// deliberate disengage has to restore the follower's base rate once, while a
   /// deck that lost its audio has no rate to restore.
-  void _releaseSyncRole(DjDeckId deck) {
+  Future<void> _releaseSyncRole(DjDeckId deck) async {
     if (_syncMaster == deck) {
       _syncMaster = null;
-      for (final follower in _syncEngaged) {
-        _forgetSyncCorrection(follower);
-      }
+      final followers = _syncEngaged.toList();
       _syncEngaged.clear();
+      for (final follower in followers) {
+        // Every follower here is a deck *nobody else is about to write*, which
+        // is exactly what separates this branch from the one below. Dropping
+        // its bookkeeping without the restoring command would leave it playing
+        // at up to the correction cap off the tempo it was matched to - for the
+        // rest of the session, with the base rate deleted so nothing could ever
+        // put it back (docs/dj-deck-spec.md, section 3).
+        await _restoreSyncBaseRate(follower);
+      }
       return;
     }
     if (!_syncEngaged.remove(deck)) return;
@@ -401,7 +441,7 @@ class DjSessionProvider extends ChangeNotifier {
       // free to load, and this deck explaining itself in its lane. Refusing
       // through the controller (rather than a bare state write) also releases a
       // voice that an unforeseen throw may have left holding audio.
-      _releaseSyncRole(deck);
+      await _releaseSyncRole(deck);
       await _decks[deck]!.refuseLoad(seed, detail: '$error');
       _applyDeckGains();
       _notify();
@@ -411,8 +451,10 @@ class DjSessionProvider extends ChangeNotifier {
   Future<void> load(DjDeckId deck, DjDeckLoad seed) async {
     if (_disposed) return;
     // A deck taking new audio drops whatever sync role it held: the match was
-    // against a track it no longer holds.
-    _releaseSyncRole(deck);
+    // against a track it no longer holds. Awaited before the load, so the
+    // follower's restoring rate command and this deck's load do not overlap on
+    // the audio session `seed` deliberately serialises.
+    await _releaseSyncRole(deck);
     await _decks[deck]!.load(seed);
     _applyDeckGains();
     _notify();
@@ -424,6 +466,7 @@ class DjSessionProvider extends ChangeNotifier {
     if (controller.state.playing) {
       await controller.pause();
     } else {
+      await _placeEngagedFollowerOnPulse(deck);
       await controller.play();
     }
     _notify();
@@ -461,7 +504,7 @@ class DjSessionProvider extends ChangeNotifier {
     if (_disposed) return;
     // Two authorities must never fight over one rate: moving the fader by hand
     // is the user taking this deck's tempo back from sync.
-    _releaseSyncRole(deck);
+    await _releaseSyncRole(deck);
     await _decks[deck]!.setRate(1 + percent.clamp(-25.0, 25.0) / 100);
     _notify();
   }
@@ -477,8 +520,18 @@ class DjSessionProvider extends ChangeNotifier {
 
   Future<void> nudgePitchEnd(DjDeckId deck) async {
     if (_disposed) return;
-    final rate = _preNudgeRates.remove(deck);
-    if (rate == null) return;
+    final captured = _preNudgeRates.remove(deck);
+    if (captured == null) return;
+    // An engaged follower goes back to what sync believes it is holding rather
+    // than to the rate captured when the bend started. The two agree today
+    // because the correction stands down for the length of a bend, and reading
+    // the sync bookkeeping here is what keeps them agreeing: a restore to a
+    // stale captured rate would leave `_syncOffsets` describing a rate the deck
+    // is not on, and the loop's "same offset, nothing to do" test would then
+    // hold the deck at the wrong tempo forever.
+    final base = _syncBaseRates[deck];
+    final rate =
+        base == null ? captured : base * (1 + (_syncOffsets[deck] ?? 0));
     await _decks[deck]!.setRate(rate);
     _notify();
   }
@@ -592,11 +645,34 @@ class DjSessionProvider extends ChangeNotifier {
     final follower = stateFor(deck);
     DjSyncPhaseReading? reading;
     var target = 0.0;
-    // Two gates, not one. The tempo match only needs a trustworthy BPM; moving
-    // a deck's rate to chase an untrustworthy grid pushes it off the beat.
-    if (djSyncPhaseCorrectionAllowed(leader: leader, follower: follower)) {
+    String? withheld;
+    // Three gates, not one, and each withholds for its own reason.
+    //
+    // Both decks must be running. Rate is only an authority over phase while
+    // the deck is moving: against a paused leader the error is a sawtooth no
+    // rate can slow, and a paused follower's phase does not answer to rate at
+    // all. Either way the loop cannot converge, so it saturates at the cap,
+    // flips sign every half beat and issues a command every throttle window
+    // forever - an audible +/-2% wobble on whichever deck is being listened to,
+    // which is precisely what [kDjSyncMaxRateOffset] exists to prevent. A deck
+    // that stops is handed back on its base rate (target 0) rather than parked
+    // wherever the correction happened to be, so PLAY starts it at the tempo it
+    // was matched to.
+    //
+    // The tempo match only needs a trustworthy BPM; moving a deck's rate to
+    // chase an untrustworthy grid pushes it off the beat.
+    if (!leader.playing || !follower.playing) {
+      withheld = 'paused';
+    } else if (!djSyncPhaseCorrectionAllowed(
+      leader: leader,
+      follower: follower,
+    )) {
+      withheld = 'grid';
+    } else {
       reading = djSyncPhaseReading(leader: leader, follower: follower);
-      if (reading != null) {
+      if (reading == null) {
+        withheld = 'no beat';
+      } else {
         target = djSyncRateOffset(
           errorMs: reading.errorMs,
           pulseMs: reading.pulseMs,
@@ -604,7 +680,13 @@ class DjSessionProvider extends ChangeNotifier {
         );
       }
     }
-    _traceSyncCorrection(follower, reading, target);
+    _traceSyncCorrection(follower, reading, target, withheld);
+    // A pitch bend is the user holding this deck's rate in their hand. Two
+    // authorities must never fight over one rate (see [setPitchPercent]): the
+    // loop would overwrite the held bend mid-hold, and `nudgePitchEnd` would
+    // then restore a rate the loop has already moved past, leaving the recorded
+    // offset describing a rate the deck is not on. The loop watches and waits.
+    if (_preNudgeRates.containsKey(deck)) return;
     final applied = _syncOffsets[deck] ?? 0;
     if ((target - applied).abs() <= kDjSyncRateEpsilon) return;
     final now = _clock();
@@ -630,14 +712,18 @@ class DjSessionProvider extends ChangeNotifier {
     DjDeckState follower,
     DjSyncPhaseReading? reading,
     double offset,
+    String? withheld,
   ) {
     if (!kDebugMode) return;
     final now = _clock();
     final last = _syncTraceAtMs;
     if (last != null && now - last < kDjSyncCorrectionIntervalMs) return;
     _syncTraceAtMs = now;
+    // Naming the reason is the point: a bare "unavailable" cannot tell a device
+    // reader whether the loop is refusing an untrustworthy grid, waiting for
+    // both decks to run, or reading a deck whose position never moves.
     final error = reading == null
-        ? 'unavailable'
+        ? 'unavailable (${withheld ?? 'unknown'})'
         : '${reading.errorMs.toStringAsFixed(1)}ms';
     debugPrint(
       'OMP DJ sync deck=${follower.deckId.name} beat error=$error '
@@ -703,6 +789,8 @@ class DjSessionProvider extends ChangeNotifier {
   Future<void> stopAll() async {
     if (_disposed) return;
     _syncMaster = null;
+    // No restoring rate command here, unlike `_releaseSyncRole`: every deck is
+    // released on the next line, so it holds no audio for a rate to apply to.
     for (final follower in _syncEngaged) {
       _forgetSyncCorrection(follower);
     }

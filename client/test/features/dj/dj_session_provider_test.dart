@@ -142,6 +142,49 @@ void main() {
       expect(voice.positionMs, 1000);
     });
 
+    test('a deck with no known duration still reports its transport clock',
+        () async {
+      // The queue API omits `durationMs` on an item it has no source row for
+      // (#425), so a deck seeded from it arrives with duration 0. Clamping the
+      // reported position into [0, 0] then pinned that deck's transport clock
+      // at zero for its whole life, and everything that reads a position - the
+      // beat position, the alignment signal, the sync correction loop - went
+      // silently inert on exactly the decks a device fixture seeds.
+      final voice = _FakeVoice();
+      final controller = _controller(DjDeckId.a, voice);
+      await controller.load(DjDeckLoad(
+        trackRef: '1',
+        title: 'No duration',
+        localUri: Uri.file('/tmp/local.mp3'),
+      ));
+      expect(controller.state.durationMs, 0);
+
+      voice.positionMs = 4321;
+      controller.refreshSnapshot();
+      expect(controller.state.positionMs, 4321,
+          reason: 'an unknown duration is not an upper bound of zero');
+
+      voice.positionMs = -5;
+      controller.refreshSnapshot();
+      expect(controller.state.positionMs, 0,
+          reason: 'a negative position is still refused');
+    });
+
+    test('a deck with a known duration still clamps into it', () async {
+      final voice = _FakeVoice();
+      final controller = _controller(DjDeckId.a, voice);
+      await controller.load(DjDeckLoad(
+        trackRef: '1',
+        durationMs: 1000,
+        localUri: Uri.file('/tmp/local.mp3'),
+      ));
+
+      voice.positionMs = 4321;
+      controller.refreshSnapshot();
+
+      expect(controller.state.positionMs, 1000);
+    });
+
     test('crossfader uses both channel faders without mutating them', () async {
       final a = _FakeVoice();
       final b = _FakeVoice();
