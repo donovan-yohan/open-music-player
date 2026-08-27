@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../app/theme.dart';
 import '../dj_deck_copy.dart';
+import '../models/dj_camelot.dart';
 import '../models/dj_deck_state.dart';
 
 /// Header width below which the beat-phase counter is dropped.
@@ -26,11 +27,20 @@ const double kDjHeaderTitleMinWidth = 48;
 /// [dropRank] orders the give-up sequence — lowest rank is surrendered first.
 /// A null rank is never dropped, which is BPM and only BPM.
 class _DjHeaderMetric {
-  _DjHeaderMetric(this.text, this.dropRank, {this.minWidth = 0});
+  _DjHeaderMetric(
+    this.text,
+    this.dropRank, {
+    this.minWidth = 0,
+    this.tappable = false,
+  });
 
   final String text;
   final int? dropRank;
   final double minWidth;
+
+  /// True for the BPM segment, which doubles as the tempo sheet's tap target
+  /// (#413). Nothing else in the run is interactive.
+  final bool tappable;
   double intrinsicWidth = 0;
 
   bool get droppable => dropRank != null;
@@ -53,9 +63,24 @@ class _DjHeaderMetric {
 /// the row and cannot truncate the deck's primary metric ahead of a lower
 /// priority one.
 class DjDeckHeader extends StatelessWidget {
-  const DjDeckHeader({super.key, required this.deck});
+  const DjDeckHeader({super.key, required this.deck, this.onTapBpm});
 
   final DjDeckState deck;
+
+  /// Opens the deck's tempo and key sheet (#413). Null leaves the run inert,
+  /// which is what a header built outside the deck layout gets.
+  ///
+  /// The trigger is the BPM segment because BPM is the one metric the give
+  /// order never drops (`dropRank: null`), so the control can never disappear
+  /// with the run. Its target is the header band's own height — measured at
+  /// **36dp** at the three serviceable fixtures (the 44dp band less the 8dp
+  /// overview strip) and 42dp where the strip is dropped — i.e. below the 48dp
+  /// minimum by construction. That is the same deliberate ladder
+  /// `DjPitchFader.nudgeExtentFor` and `DjDeckNotice`'s 24dp action already sit
+  /// on (docs/dj-deck-spec.md, "Geometry budget"), and it is documented there
+  /// rather than silently accepted: the header band is pinned by the row budget
+  /// and a taller tap target would have to come out of the waveform stack.
+  final VoidCallback? onTapBpm;
 
   @override
   Widget build(BuildContext context) {
@@ -95,7 +120,14 @@ class DjDeckHeader extends StatelessWidget {
     final remaining =
         (deck.durationMs - deck.positionMs).clamp(0, deck.durationMs);
     final bpm = deck.bpm;
-    final key = [deck.musicalKey, deck.camelot].whereType<String>().join(' ');
+    // `A minor 8A -> 3A` while the deck is shifted; the plain pair at zero.
+    // One parser, in dj_camelot.dart, and the header never re-derives the wheel
+    // arithmetic itself.
+    final key = djDeckKeySegment(
+      musicalKey: deck.musicalKey,
+      camelot: deck.camelot,
+      semitones: deck.keySemitones,
+    );
     final reliableBeatPhase =
         deck.beatPhase == null ? '' : '${deck.beatPhase}/4';
     return LayoutBuilder(
@@ -108,6 +140,7 @@ class DjDeckHeader extends StatelessWidget {
           _DjHeaderMetric(
             '${bpm == null ? '--' : (bpm * deck.rate).toStringAsFixed(1)} BPM',
             null,
+            tappable: true,
           ),
           _DjHeaderMetric(
             '${deck.ratePercent >= 0 ? '+' : ''}'
@@ -177,21 +210,52 @@ class DjDeckHeader extends StatelessWidget {
             ),
             for (final metric in metrics) ...[
               const SizedBox(width: AppTheme.space2),
-              ConstrainedBox(
-                constraints:
-                    BoxConstraints(maxWidth: metric.intrinsicWidth * scale),
-                child: Text(
-                  metric.text,
-                  maxLines: 1,
-                  softWrap: false,
-                  overflow: TextOverflow.ellipsis,
-                  style: metricStyle,
-                ),
-              ),
+              _segment(metric, scale, metricStyle, constraints.maxHeight),
             ],
           ],
         );
       },
+    );
+  }
+
+  /// One metric, and — for BPM — the tempo sheet's tap target around it.
+  ///
+  /// The target is grown to the band height rather than to the text's own
+  /// height, so the whole header band under the number is tappable instead of
+  /// a ~16dp text box. `HitTestBehavior.opaque` because the box is otherwise
+  /// transparent above the `Text`. Layout is unchanged: the `SizedBox` takes a
+  /// height the `Row` already offered and the `ConstrainedBox` inside it is the
+  /// same one that was there before.
+  Widget _segment(
+    _DjHeaderMetric metric,
+    double scale,
+    TextStyle style,
+    double bandHeight,
+  ) {
+    final box = ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: metric.intrinsicWidth * scale),
+      child: Text(
+        metric.text,
+        maxLines: 1,
+        softWrap: false,
+        overflow: TextOverflow.ellipsis,
+        style: style,
+      ),
+    );
+    if (!metric.tappable || onTapBpm == null) return box;
+    return KeyedSubtree(
+      key: ValueKey('dj_tempo_key_${deck.deckId.name}'),
+      child: GestureDetector(
+        key: ValueKey('dj_bpm_${deck.deckId.name}'),
+        behavior: HitTestBehavior.opaque,
+        onTap: onTapBpm,
+        child: SizedBox(
+          // Unbounded only when the header is laid out outside the deck's row
+          // budget; there the segment simply keeps its intrinsic height.
+          height: bandHeight.isFinite ? bandHeight : null,
+          child: Center(child: box),
+        ),
+      ),
     );
   }
 

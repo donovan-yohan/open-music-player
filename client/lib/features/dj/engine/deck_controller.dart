@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
@@ -9,6 +10,7 @@ import '../../../core/engine/voice.dart';
 import '../../../models/timeline_clip.dart';
 import '../../../models/track.dart';
 import '../../../models/waveform.dart';
+import '../models/dj_camelot.dart';
 import '../models/dj_deck_load_failure.dart';
 import '../models/dj_deck_state.dart';
 import '../models/dj_hot_cue.dart';
@@ -318,24 +320,79 @@ class DeckController {
   /// to the same window — but it is now reported, so `deck_sync.dart` can
   /// refuse a follower it cannot reach instead of leaving it at a tempo the
   /// user never asked for.
+  ///
+  /// [pitchMode] defaults to **keeping** the mode the deck is already in rather
+  /// than to `pitchModePreserve`. Keylock is a per-deck setting the user owns
+  /// (#413), and every rate write on this class — the pitch fader, a pitch
+  /// bend, the sync match and its correction loop — would otherwise silently
+  /// switch keylock back on the next time the deck's tempo moved.
   Future<DjDeckRateOutcome> setRate(
     double rate, {
-    String pitchMode = pitchModePreserve,
+    String? pitchMode,
   }) async {
     final safe = rate.clamp(kDjDeckMinRate, kDjDeckMaxRate).toDouble();
+    final mode = pitchMode ?? _state.pitchMode;
     await _voice.setSpeed(safe);
     // Voice.setPitch returns false on a backend with no pitch shifting
     // (voice.dart:151-161). Playback still proceeds; only the key-shift
     // affordance is withheld, and the fact latches for the loaded track.
-    final pitched = await _voice
-        .setPitch(pitchFactorForRate(rate: safe, pitchMode: pitchMode));
+    final pitched = await _voice.setPitch(
+      _composedPitchFactor(
+        rate: safe,
+        pitchMode: mode,
+        semitones: _state.keySemitones,
+      ),
+    );
     _state = _state.copyWith(
       rate: safe,
-      pitchMode: pitchMode,
+      pitchMode: mode,
       pitchSupported: _state.pitchSupported && pitched,
     );
     return DjDeckRateOutcome(requested: rate, applied: safe);
   }
+
+  /// Shifts this deck's key by [semitones], independently of its tempo.
+  ///
+  /// Clamped to +/-[kDjMaxKeySemitones]. That range reaches all twelve pitch
+  /// classes (a tritone each way) and never collides with `Voice.setPitch`'s
+  /// own 0.5-2.0 clamp: the worst composed factor is 2^(6/12) * 1.25 = 1.76777
+  /// going up and 2^(-6/12) * 0.75 = 0.53033 going down.
+  ///
+  /// Only the pitch is written. The rate is untouched, so a key shift on a
+  /// synced follower cannot fight the correction loop for its tempo.
+  Future<void> setKeySemitones(int semitones) async {
+    final clamped =
+        semitones.clamp(-kDjMaxKeySemitones, kDjMaxKeySemitones).toInt();
+    final pitched = await _voice.setPitch(
+      _composedPitchFactor(
+        rate: _state.rate,
+        pitchMode: _state.pitchMode,
+        semitones: clamped,
+      ),
+    );
+    _state = _state.copyWith(
+      keySemitones: clamped,
+      pitchSupported: _state.pitchSupported && pitched,
+    );
+  }
+
+  /// The single pitch factor the voice is ever given.
+  ///
+  /// Composition, exactly: the keylock factor from the shipped
+  /// `pitchFactorForRate` (1 while keylock is on, the rate itself while it is
+  /// off) **multiplied by** the key shift's own 2^(n/12). With keylock off the
+  /// tempo and the key couple like a vinyl pitch fader and the key shift rides
+  /// on top of that coupling — it is an offset from wherever the tempo has
+  /// already put the key, not a replacement for it. `pitchFactorForRate` stays
+  /// the single source of the rate-to-pitch mapping; this function never
+  /// re-derives it.
+  static double _composedPitchFactor({
+    required double rate,
+    required String pitchMode,
+    required int semitones,
+  }) =>
+      pitchFactorForRate(rate: rate, pitchMode: pitchMode) *
+      math.pow(2, semitones / 12).toDouble();
 
   /// Applies a live output multiplier without changing the channel fader's
   /// logical value in the immutable deck snapshot.
