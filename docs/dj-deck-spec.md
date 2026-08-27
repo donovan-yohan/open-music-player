@@ -91,10 +91,11 @@ There is no portrait deck and none is planned in this phase.
 
 ### 3. Sync
 
-SYNC is live (#413, DJ-3, slices 1 and 2). One tap matches the follower deck's
-tempo to the master, octave-normalized, refuses honestly when it cannot, and
-then holds the two decks' beats lined up. The per-deck BPM/key controls are the
-remaining slice on the same issue.
+SYNC is live (#413, DJ-3, slices 1, 2 and 3). One tap matches the follower
+deck's tempo to the master, octave-normalized, refuses honestly when it cannot,
+and then holds the two decks' beats lined up. Slice 3 adds the per-deck tempo
+and key sheet — see "Tempo and key controls" below, which is also where the
+interaction between a hand-set tempo and an engaged follower is specified.
 
 - **Master and follower.** `DjSessionProvider` holds one `syncMaster` plus a
   set of engaged followers, and `engine/deck_sync.dart` decides the tempo.
@@ -299,6 +300,102 @@ exempt from the sentence-case rule and are deliberately **not** members of
 `djDeckCopyStrings`. Everything else the deck says to a user is in that list and
 is held to sentence case, no exclamation marks, and no internal jargon.
 
+## Tempo and key controls (#413, DJ-3, slice 3)
+
+Per-deck BPM, keylock and key shift live in a **modal bottom sheet** reached
+from the deck header's BPM segment, not in a fourth `DjPanelSwitcher` segment:
+at `landscapeNarrowServiceable` the deck panel body is 121dp wide, where four
+segmented labels clip to two characters each, and the switcher is a shared
+control the viewport matrix pins.
+
+- **The trigger, and its degradation.** `DjDeckHeader.onTapBpm` wraps the BPM
+  segment — keyed `dj_bpm_<deck>`, inside `dj_tempo_key_<deck>` — in an opaque
+  `GestureDetector` grown to the header band's own height. BPM is the one metric
+  the give-order never drops (`dropRank: null`), so the trigger can never
+  disappear with the run. **Measured target: 36 x 128dp** at all three
+  `djServiceableViewports` and **34 x 117dp** at `landscapeNarrowServiceable` —
+  the 44dp / 42dp header band less the 8dp overview strip. That is below the
+  48dp minimum by construction, on the same deliberate ladder as
+  `DjPitchFader.nudgeExtentFor` (48 -> 40 -> 24dp) and `DjDeckNotice`'s 24dp
+  recovery action in the "Touch targets" bullet of the geometry budget. It is
+  recorded here rather than silently accepted: the header band is pinned by the
+  row budget, so a taller target would have to be taken out of the waveform
+  stack, and an empty deck gets no trigger at all.
+- **The sheet.** `widgets/dj_deck_tempo_sheet.dart`, keyed
+  `dj_deck_tempo_sheet_<deck>`, opened with `isScrollControlled: true` and
+  capped at 360dp — about one deck column — laid out as `SingleChildScrollView`
+  + `ConstrainedBox(minHeight: 0)`, the same overflow-proof shape
+  `_DjDeckNotice` uses, because it has to survive a 290dp-tall landscape window
+  at textScale 1.6. Controls: `dj_bpm_readout_<deck>`, `dj_bpm_field_<deck>`,
+  `dj_bpm_step_down/up_<deck>` (+/-0.1 BPM), `dj_bpm_band_<deck>`,
+  `dj_keylock_<deck>`, `dj_key_shift_down/up_<deck>`, `dj_key_readout_<deck>`
+  and `dj_tempo_reset_<deck>`. Every step and shift chip keeps a full 48dp
+  target inside the sheet.
+- **The reachable band, and no silent clamp.** The helper line reads
+  `Reachable tempo: 93.4 to 155.6 BPM` — `nativeBpm x {0.75, 1.25}`, the deck's
+  own rate window rather than the engine's 0.5-2.0. A typed tempo outside every
+  reachable octave is **refused** with that band named; it is never clamped to
+  the edge, because `DeckController.setRate` clamps and would otherwise land the
+  deck at 1.25 while the field said 300 and nothing said otherwise. The field
+  itself only accepts 50-200 BPM.
+- **The octave fallback.** The native octave is tried first and always wins when
+  it is reachable at all: the deck window is 0.737 octaves wide, so a rate
+  already inside it is always closer to 1 than half or double that rate. Half
+  and double time are then tried, so typing `62.25` on a 124.5 BPM deck resolves
+  to rate 1.0 rather than being refused. The readout follows the header
+  (`nativeBpm x rate`), so an octave-resolved edit says `Matched at half or
+  double time` rather than appearing to contradict the number that was typed.
+- **The fine steps step the BPM, not the rate.**
+  `next = round1(currentEffectiveBpm + delta)`, then `rate = next / nativeBpm`.
+  Stepping the rate accumulates float error: ten `+0.1` taps from 124.5 landed
+  on 125.49999999999999 and the readout started disagreeing with itself. A step
+  that would leave the band disables its own chip.
+- **Keylock is per deck, on by default, and survives every later rate write.**
+  On is `pitchModePreserve`, off is `pitchModeFollowTempo`.
+  `DeckController.setRate` now **keeps** the deck's current pitch mode when the
+  caller does not name one; it used to default to `pitchModePreserve`, so the
+  pitch fader, a pitch bend, the sync match and the correction loop each
+  silently switched keylock back on the next time the deck's tempo moved.
+  Toggling keylock writes the deck's current rate back at the new mode, so it
+  moves no tempo and never disengages sync.
+- **Key shift is independent of tempo, and composes on top of it.** The single
+  pitch factor the voice ever receives is
+  `pitchFactorForRate(rate, pitchMode) * 2^(semitones / 12)`.
+  `pitchFactorForRate` stays the one source of the rate-to-pitch mapping: with
+  keylock **on** its term is 1 and the shift is the whole factor; with keylock
+  **off** its term is the rate itself, so tempo and key couple like a vinyl
+  pitch fader and **the key shift rides on top of that coupling** — it is an
+  offset from wherever the tempo has already put the key, not a replacement for
+  it. The same sentence is what `djDeckKeylockOffDetail` says to the user.
+- **Range +/-6 semitones.** That reaches all twelve pitch classes (a tritone
+  each way) and never collides with `Voice.setPitch`'s own 0.5-2.0 clamp: the
+  worst composed factor is `2^(6/12) x 1.25 = 1.76777` up and
+  `2^(-6/12) x 0.75 = 0.53033` down. The chip at a bound disables itself rather
+  than clamping. A backend whose `Voice.setPitch` returns false latches
+  `DjDeckState.pitchSupported` false for that load, and both chips gate with
+  `Key shift is not available on this device`; playback is unaffected.
+- **Camelot: one semitone is seven wheel steps.** Camelot numbers are ordered by
+  fifths, so `n' = ((n - 1 + 7 x semitones) mod 12) + 1`, letter unchanged
+  (transposition never changes mode). `8A + 1 semitone = 3A`, `+2 = 10A`,
+  `-1 = 1A`, `+/-6 = 2A`. **Issue #413's illustrative `8A -> 9A` is +7
+  semitones (or -5), not +1** — the implementation follows the wheel and
+  `models/dj_camelot.dart` records the correction. The header key segment reads
+  `A minor 8A → 3A` while shifted, and `A minor +2 st` for a track with no
+  Camelot value (there is exactly one key parser and it is not asked to invent
+  a name). The key segment stays at `dropRank: 1`, so on a narrow deck column
+  the header surrenders it before BPM and the sheet's own `dj_key_readout` is
+  the surface that always shows the shift.
+- **Sync owns an engaged follower's tempo.** While a deck is an engaged
+  follower its BPM field and fine steps are inert and say
+  `Sync sets this deck's tempo`; two authorities must never fight over one rate.
+  Key shift stays live on any loaded deck, because it never writes the rate.
+  Editing the **master's** BPM re-matches every follower through
+  `djSyncTempoMatch` — the one sync path, not a second one — so the blend moves
+  together; a follower the new master tempo puts out of reach is released on its
+  own matched base rate and the master mark clears with it. `Reset tempo and
+  key` follows the same rule: it always clears the shift and restores keylock,
+  and returns the rate to 1.0 only on a deck sync does not own.
+
 ## Widget hierarchy — exact files under client/lib/features/dj/
 ```
 client/lib/features/dj/
@@ -310,6 +407,9 @@ client/lib/features/dj/
                                   ratePercent (-25..+25 mapped to 0.75-1.25 of 0.5-2.0 engine window), pitchMode,
                                   gain, loadedCue, activeLoop} — immutable snapshot published by the provider.
   models/dj_hot_cue.dart          DjHotCue + DjLoop: versioned edit events per the dj_cues_v1 contract (below).
+  models/dj_camelot.dart          djCamelotShifted / djDeckKeySegment: Camelot wheel transposition for the key shift.
+                                  One semitone is SEVEN wheel steps (the wheel is ordered by fifths), so 8A + 1 = 3A;
+                                  issue #413's illustrative 8A -> 9A is +7 semitones. The deck's only key parser.
   providers/dj_session_provider.dart
                                   DjSessionProvider (ChangeNotifier, provider ^6.1.2): the ONLY state authority for the
                                   screen. Production shape: a projection over QueueTimelineController (deck A = current
@@ -327,6 +427,15 @@ client/lib/features/dj/
                                   DjSessionProvider owns master/follower state, runs the correction on its existing 33ms
                                   snapshot pass, and is the only caller that applies either result through
                                   DeckController.setRate.
+  engine/deck_tempo_target.dart   Target-BPM resolution for the tempo sheet, pure like deck_sync.dart: djResolveTargetBpm /
+                                  djReachableBpmBand / djSteppedTargetBpm take a DjDeckState and a typed number and
+                                  return a rate or an honest refusal. Refuses against the deck's 0.75-1.25 window and
+                                  never clamps; the +/-0.1 steps step the BPM, not the rate.
+  widgets/dj_deck_tempo_sheet.dart
+                                  DjDeckTempoSheet: the per-deck modal bottom sheet - effective BPM readout, numeric
+                                  target field with the reachable band named, +/-0.1 fine steps, keylock switch,
+                                  +/-6 semitone key shift with the Camelot readout, and reset. Reached from the header
+                                  BPM segment; writes only through DjSessionProvider.
   widgets/dj_waveform_lane.dart   DjWaveformLane: playhead-centered auto-scroll lane over the existing
                                   TimelineWaveformPainter (client/lib/widgets/timeline_waveform_painter.dart) +
                                   TimelineViewport; template = AnalysisCalibrationWaveform's follow-playhead mode
@@ -338,7 +447,9 @@ client/lib/features/dj/
                                   DjBeatRulerPainter in design tokens instead — see "Beat ruler and beat counter" below.
   widgets/dj_deck_header.dart     DjDeckHeader: BPM (live effective, from merged PR #238 telemetry), pitch %, key/Camelot,
                                   beat-phase counter (beat index within bar from beatsMs+downbeats, blank until reliable),
-                                  elapsed/remaining.
+                                  elapsed/remaining. The BPM segment is also the tempo sheet's tap target (onTapBpm,
+                                  keyed dj_bpm_<deck>) and the key segment renders '<key> <camelot> -> <shifted>' while
+                                  the deck is key-shifted (#413).
   widgets/dj_overview_strip.dart  DjOverviewStrip: full-track overview tier (bands3-v1 'overview' resolution), tap-to-jump,
                                   cue markers drawn as colored ticks.
   widgets/dj_transport.dart       DjTransport: CUE (press = jump+audition from cue, release = return if not playing —
