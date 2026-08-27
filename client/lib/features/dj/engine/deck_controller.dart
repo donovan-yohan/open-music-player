@@ -162,6 +162,27 @@ class DeckController {
         return;
       }
       await _voice.load(localUri ?? resolved!.uri);
+      // Speed and pitch are AudioPlayer-level properties: `Voice.load` only
+      // swaps the audio source and `release()` only stops, so both survive a
+      // track change. The fresh state below claims rate 1, keylock on and no
+      // key shift, so without these two writes a deck loaded after a +6 shift
+      // and a 140 BPM target played the new track a tritone up and 12% fast
+      // while the header read `+0.0%` and the unshifted Camelot, with nothing
+      // in the UI to reveal it (#413 review). Routed through the one
+      // composition site so the deck still has exactly one pitch formula.
+      await _voice.setSpeed(1);
+      // The verdict is deliberately not adopted here: a freshly loaded deck
+      // starts optimistic about pitch support and only `setRate` /
+      // `setKeySemitones` latch a refusal, which is what
+      // dj_deck_key_shift_test's "a fresh load resets ... the pitch verdict"
+      // pins.
+      await _voice.setPitch(
+        _composedPitchFactor(
+          rate: 1,
+          pitchMode: pitchModePreserve,
+          semitones: 0,
+        ),
+      );
       // The seed's duration is the queue payload's, and the queue API omits it
       // for an item with no source row (#425), so a device-seeded deck arrives
       // claiming to be zero long. The voice has the file open by this line and

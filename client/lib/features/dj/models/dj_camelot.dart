@@ -58,8 +58,21 @@ String djCamelotShiftSuffix(String? camelot, int semitones) {
   return shifted == null ? djKeySemitoneLabel(semitones) : '→ $shifted';
 }
 
-/// The deck header's key segment: `A minor 8A → 3A` while shifted, and the
-/// plain `A minor 8A` at zero.
+/// The deck header's key segment: the plain `A minor 8A` at zero, and the
+/// **compact** `8A → 3A` while shifted.
+///
+/// The spelled key name is dropped while the shift is on, and that is the whole
+/// point. The header gives up whole segments in a measured order once the run
+/// stops fitting, and the long shifted form `A minor 8A → 3A` is wider than the
+/// unshifted `A minor 8A` the deck column already only just fits: on the
+/// reference device turning the key shift on *deleted* the header's key
+/// readout, so the action taken to see the shifted key removed the key the user
+/// already had (#413 review, emu/09-header-shifted-camelot.png). `8A → 3A` is
+/// strictly narrower than `A minor 8A`, so the segment now survives wherever it
+/// survived before and the give-order logic is untouched.
+///
+/// A track with no Camelot value has no compact form to fall back to, so it
+/// keeps `A minor +2 st`; the wheel is what makes the short form readable.
 ///
 /// Returns an empty string when the deck knows neither a key name nor a
 /// Camelot value, which is what the header treats as "no key segment".
@@ -69,6 +82,8 @@ String djDeckKeySegment({
   int semitones = 0,
 }) {
   final base = [musicalKey, camelot].whereType<String>().join(' ');
-  final suffix = base.isEmpty ? '' : djCamelotShiftSuffix(camelot, semitones);
-  return suffix.isEmpty ? base : '$base $suffix';
+  if (base.isEmpty) return '';
+  final suffix = djCamelotShiftSuffix(camelot, semitones);
+  if (suffix.isEmpty) return base;
+  return '${camelot ?? base} $suffix';
 }

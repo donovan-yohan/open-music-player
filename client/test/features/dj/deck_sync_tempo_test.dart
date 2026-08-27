@@ -172,11 +172,15 @@ void main() {
       await rig.session.load(DjDeckId.a, djSyncDeckSeed(id: '90', bpm: 95));
 
       final before = rig.session.stateFor(DjDeckId.a).rate;
+      // A load re-establishes the voice's speed and pitch (they are
+      // AudioPlayer-level and survive a source change), so the snapshot is
+      // taken after the load and the press must add nothing to it.
+      final speeds = rig.voiceFor(DjDeckId.a).speeds.length;
       final result = await rig.session.pressSync(DjDeckId.a);
 
       expect(result.refusal, DjSyncRefusal.tempoOutOfRange);
       expect(rig.session.stateFor(DjDeckId.a).rate, before);
-      expect(rig.voiceFor(DjDeckId.a).speeds, isEmpty,
+      expect(rig.voiceFor(DjDeckId.a).speeds.length, speeds,
           reason: 'a refusal must not reach the voice at all');
       expect(rig.session.syncMaster, isNull);
       expect(rig.session.syncEngagedOn(DjDeckId.a), isFalse);
@@ -191,6 +195,7 @@ void main() {
           .load(DjDeckId.a, djSyncDeckSeed(id: '90', bpm: 124.5));
 
       final leaderBefore = rig.session.stateFor(DjDeckId.b);
+      final leaderSpeeds = rig.voiceFor(DjDeckId.b).speeds.length;
       for (var i = 0; i < 20; i++) {
         await rig.session.pressSync(DjDeckId.a);
       }
@@ -199,7 +204,9 @@ void main() {
       expect(leaderAfter.rate, leaderBefore.rate);
       expect(leaderAfter.pitchMode, pitchModePreserve);
       expect(leaderAfter.positionMs, leaderBefore.positionMs);
-      expect(rig.voiceFor(DjDeckId.b).speeds, isEmpty,
+      // Snapshot taken after the leader's own load, for the same reason as
+      // above: the press must add nothing.
+      expect(rig.voiceFor(DjDeckId.b).speeds.length, leaderSpeeds,
           reason: 'issue #413 AC 8: sync never mutates the leader rate');
     });
   });

@@ -103,6 +103,19 @@ const String djDeckTempoReachablePrefix = 'Reachable tempo';
 const String djDeckTempoOutOfReach =
     'That tempo is outside what this deck can reach';
 
+/// What was typed is not a number at all - an empty field, or a run like
+/// `1.2.3`. Deliberately NOT [djDeckTempoOutOfReach]: telling a user their
+/// deck cannot reach a tempo they never named is a false statement about the
+/// deck, and it contradicts the reachable-band line directly above it.
+const String djDeckTempoNotANumber = 'Enter a tempo in BPM';
+
+/// The deck's own tempo is so far outside the field's 50-200 BPM bounds that no
+/// rate inside the deck window lands in them. Distinct from
+/// [djDeckTempoUnknown]: the track has an analyzed tempo, it is just not one
+/// this field can express.
+const String djDeckTempoFieldOutOfRange =
+    "This track's tempo is outside what the field can set";
+
 /// The typed number was read as the half- or double-time statement of the same
 /// tempo, so the readout shows the deck's own octave rather than the input.
 const String djDeckTempoOctaveDetail = 'Matched at half or double time';
@@ -197,6 +210,8 @@ const List<String> djDeckCopyStrings = <String>[
   djDeckTempoFieldLabel,
   djDeckTempoReachablePrefix,
   djDeckTempoOutOfReach,
+  djDeckTempoNotANumber,
+  djDeckTempoFieldOutOfRange,
   djDeckTempoOctaveDetail,
   djDeckTempoSyncControlled,
   djDeckTempoUnknown,

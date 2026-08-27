@@ -97,6 +97,36 @@ void main() {
       }
     });
 
+    testWidgets('a long press on the deck lane opens the same sheet',
+        (tester) async {
+      // The header trigger can only ever be as tall as the header band, which
+      // DjRowBudget pins at 36-44dp, so it cannot meet the 48dp rule from
+      // inside the band. The lane carries the compliant target instead; the
+      // header stays the fast path.
+      await pumpDeck(tester);
+
+      expect(find.byKey(const ValueKey('dj_deck_tempo_sheet_a')), findsNothing);
+      await tester
+          .longPress(find.byKey(const ValueKey('dj_tempo_key_lane_a')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(
+          find.byKey(const ValueKey('dj_deck_tempo_sheet_a')), findsOneWidget);
+      expect(find.byKey(const ValueKey('dj_deck_tempo_sheet_b')), findsNothing);
+    });
+
+    testWidgets('the lane trigger keeps a 48dp target at the reference '
+        'viewport', (tester) async {
+      await pumpDeck(tester);
+
+      for (final id in const ['a', 'b']) {
+        final rect =
+            tester.getRect(find.byKey(ValueKey('dj_tempo_key_lane_$id')));
+        expect(rect.height, greaterThanOrEqualTo(48.0), reason: id);
+        expect(rect.width, greaterThanOrEqualTo(48.0), reason: id);
+      }
+    });
   });
 
   group('an empty deck', () {
@@ -109,6 +139,7 @@ void main() {
 
       expect(find.byKey(const ValueKey('dj_bpm_a')), findsNothing);
       expect(find.byKey(const ValueKey('dj_tempo_key_a')), findsNothing);
+      expect(find.byKey(const ValueKey('dj_tempo_key_lane_a')), findsNothing);
     });
   });
 
@@ -152,6 +183,53 @@ void main() {
         tester.widget<Text>(find.byKey(const ValueKey('dj_bpm_band_a'))).data,
         '$djDeckTempoReachablePrefix: 93.4 to 155.6 BPM',
       );
+    });
+
+    testWidgets('an empty field is not a claim about the deck\'s range',
+        (tester) async {
+      // The regression: `double.tryParse` failing was mapped straight onto
+      // `outOfReach`, so clearing the field and pressing done answered
+      // "That tempo is outside what this deck can reach" while the band line
+      // directly above still read 93.4 to 155.6 BPM. Two contradictory claims
+      // in one view, and the first of them false.
+      await pumpDeck(tester);
+      await openSheet(tester, 'a');
+      final before = deck.session.deckA.rate;
+
+      await tester.enterText(find.byKey(const ValueKey('dj_bpm_field_a')), '');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+
+      expect(find.text(djDeckTempoNotANumber), findsOneWidget);
+      expect(find.text(djDeckTempoOutOfReach), findsNothing);
+      expect(deck.session.deckA.rate, before);
+      // The field goes back to the tempo the deck is actually on rather than
+      // sitting empty under a refusal.
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const ValueKey('dj_bpm_field_a')))
+            .controller!
+            .text,
+        '124.5',
+      );
+    });
+
+    testWidgets('a second decimal point cannot be typed at all',
+        (tester) async {
+      await pumpDeck(tester);
+      await openSheet(tester, 'a');
+
+      await tester.enterText(
+          find.byKey(const ValueKey('dj_bpm_field_a')), '1.2.3');
+      await tester.pump();
+
+      final text = tester
+          .widget<TextField>(find.byKey(const ValueKey('dj_bpm_field_a')))
+          .controller!
+          .text;
+      expect(text, isNot('1.2.3'));
+      expect(double.tryParse(text), isNotNull,
+          reason: 'the field only ever holds a parseable decimal');
     });
 
     testWidgets('an octave-resolved tempo says so', (tester) async {
@@ -274,16 +352,8 @@ void main() {
 
     testWidgets('the header key segment renders the shifted camelot',
         (tester) async {
-      // Pumped at a width where the whole metric run fits, so this asserts the
-      // segment's content rather than re-testing the header's give-order (that
-      // is dj_deck_header_test.dart's job). 800dp because the shifted segment
-      // is the widest the key metric ever gets and the test font is
-      // fixed-advance, so every glyph costs the same as the widest one - the
-      // measured run is pessimistic here relative to a real proportional face.
-      // That the deck column drops this segment long before 800dp is the
-      // documented give-order, not a defect: the sheet's own `dj_key_readout`
-      // is the primary surface for the shift, and BPM is what the header
-      // guarantees.
+      // Content only; that the segment still *survives* the deck column's
+      // give-order once shifted is dj_deck_header_test.dart's job.
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -301,7 +371,10 @@ void main() {
         ),
       );
 
-      expect(find.text('A minor 8A → 10A'), findsOneWidget);
+      // Compact while shifted: the spelled key name gives way to the wheel
+      // pair, so turning the shift on can never widen the segment.
+      expect(find.text('8A → 10A'), findsOneWidget);
+      expect(find.text('A minor 8A → 10A'), findsNothing);
       expect(find.text('A minor 8A'), findsNothing);
     });
 

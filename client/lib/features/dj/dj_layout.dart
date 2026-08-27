@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../app/theme.dart';
+import '../../models/track.dart';
 import 'dj_deck_copy.dart';
 import 'models/dj_deck_state.dart';
 import 'models/dj_hot_cue.dart';
@@ -210,7 +211,8 @@ class _DjLayoutState extends State<DjLayout> {
                 child: Column(
                   children: [
                     Expanded(
-                      child: DjWaveformLane(
+                      child: _TempoSheetLane(
+                        session: session,
                         deck: session.deckA,
                         track: aTrack,
                         color: deckTokens.waveformDeckA,
@@ -218,7 +220,8 @@ class _DjLayoutState extends State<DjLayout> {
                     ),
                     const SizedBox(height: AppTheme.space2),
                     Expanded(
-                      child: DjWaveformLane(
+                      child: _TempoSheetLane(
+                        session: session,
                         deck: session.deckB,
                         track: bTrack,
                         color: deckTokens.waveformDeckB,
@@ -412,6 +415,52 @@ class _DjDeckNotice extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// A deck's waveform lane, with the tempo sheet's **second** entry point on it.
+///
+/// The header's BPM segment is the fast path, but it is only as tall as the
+/// header band, which `DjRowBudget` pins at 36-44dp — below the 48dp touch
+/// target, and unreachably so: a `GestureDetector` cannot take hits outside its
+/// render box, and growing the band would have to come out of the waveform
+/// stack. So the large target lives here instead. Each lane is
+/// `(waveformStack - 8) / 2` tall, i.e. 56dp at the reference viewport, and the
+/// lane is the full deck width; it carries no other gesture, so a long press
+/// competes with nothing.
+///
+/// Long press rather than tap: a tap on a waveform is the scrub gesture this
+/// lane will eventually want, and an accidental modal over a live deck is worse
+/// than a deliberate one.
+class _TempoSheetLane extends StatelessWidget {
+  const _TempoSheetLane({
+    required this.session,
+    required this.deck,
+    required this.track,
+    required this.color,
+  });
+
+  final DjSessionProvider session;
+  final DjDeckState deck;
+  final QueueTrack? track;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final lane = DjWaveformLane(deck: deck, track: track, color: color);
+    // Same rule as the header trigger: only a deck holding audio has a tempo
+    // to set.
+    if (!deck.isLoaded) return lane;
+    return GestureDetector(
+      key: ValueKey('dj_tempo_key_lane_${deck.deckId.name}'),
+      behavior: HitTestBehavior.opaque,
+      onLongPress: () => showDjDeckTempoSheet(
+        context,
+        session: session,
+        deck: deck.deckId,
+      ),
+      child: lane,
     );
   }
 }

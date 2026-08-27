@@ -89,11 +89,21 @@ class _DjDeckTempoSheetState extends State<DjDeckTempoSheet> {
 
   Future<void> _applyTyped() async {
     final typed = double.tryParse(_bpmField.text.trim());
-    _adopt(
-      typed == null
-          ? const DjTempoTarget.refused(DjTempoTargetRefusal.outOfReach)
-          : await widget.session.setTargetBpm(widget.deck, typed),
-    );
+    if (typed == null) {
+      // An empty field or a run like `1.2.3` is not a statement about the
+      // deck's range, so it must not borrow the range refusal: that copy would
+      // contradict the reachable-band line rendered directly above it. The
+      // field is put back to the tempo the deck is actually on, so the sheet
+      // never keeps text that means nothing.
+      if (!mounted) return;
+      setState(() {
+        _refusal = djDeckTempoNotANumber;
+        _octaveShifted = false;
+        _bpmField.text = _fieldText();
+      });
+      return;
+    }
+    _adopt(await widget.session.setTargetBpm(widget.deck, typed));
   }
 
   Future<void> _step(double delta) async =>
@@ -114,16 +124,20 @@ class _DjDeckTempoSheetState extends State<DjDeckTempoSheet> {
   void _adopt(DjTempoTarget target) {
     if (!mounted) return;
     setState(() {
-      _refusal = target.isResolved ? null : _reasonFor(target);
+      _refusal = target.isResolved ? null : _reasonFor(target.refusal!);
       _octaveShifted = target.octaveShifted;
       if (target.isResolved) _bpmField.text = _fieldText();
     });
   }
 
-  String _reasonFor(DjTempoTarget target) => switch (target.refusal) {
+  /// Exhaustive over [DjTempoTargetRefusal] on purpose: a catch-all arm here
+  /// silently swallowed every reason that was not one of the two named ones,
+  /// so a future member would inherit the range copy rather than a compile
+  /// error.
+  String _reasonFor(DjTempoTargetRefusal refusal) => switch (refusal) {
         DjTempoTargetRefusal.noTempo => djDeckTempoUnknown,
         DjTempoTargetRefusal.syncControlled => djDeckTempoSyncControlled,
-        _ => djDeckTempoOutOfReach,
+        DjTempoTargetRefusal.outOfReach => djDeckTempoOutOfReach,
       };
 
   @override
@@ -169,7 +183,15 @@ class _DjDeckTempoSheetState extends State<DjDeckTempoSheet> {
                     style: theme.textTheme.bodySmall,
                   )
                 else if (band == null)
-                  Text(djDeckTempoUnknown, style: theme.textTheme.bodySmall)
+                  Text(
+                    // A deck with no analysis and a deck whose tempo the field
+                    // cannot express are different facts about the track.
+                    djDeckNativeBpm(deck) == null
+                        ? djDeckTempoUnknown
+                        : djDeckTempoFieldOutOfRange,
+                    key: ValueKey('dj_bpm_no_band_$_suffix'),
+                    style: theme.textTheme.bodySmall,
+                  )
                 else ...[
                   _tempoControls(theme, deck, enabled: tempoEditable),
                   const SizedBox(height: AppTheme.space1),
@@ -277,9 +299,7 @@ class _DjDeckTempoSheetState extends State<DjDeckTempoSheet> {
       controller: _bpmField,
       enabled: enabled,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-      inputFormatters: [
-        FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
-      ],
+      inputFormatters: const [_DjBpmTextFormatter()],
       textInputAction: TextInputAction.done,
       onSubmitted: (_) => _applyTyped(),
       decoration: const InputDecoration(
@@ -413,4 +433,24 @@ class _DjDeckTempoSheetState extends State<DjDeckTempoSheet> {
     if (camelot == null) return djKeySemitoneLabel(deck.keySemitones);
     return suffix.isEmpty ? camelot : '$camelot $suffix';
   }
+}
+
+/// Keeps the field to one well-formed decimal number.
+///
+/// `FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))` filters per character
+/// and so admitted `1.2.3`, which `double.tryParse` then rejected. This rejects
+/// the whole candidate value instead, so a second decimal point simply cannot
+/// be typed. An empty field stays typable - clearing the field is how a user
+/// starts over - and is handled by `_applyTyped`.
+class _DjBpmTextFormatter extends TextInputFormatter {
+  const _DjBpmTextFormatter();
+
+  static final RegExp _decimal = RegExp(r'^\d*\.?\d*$');
+
+  @override
+  TextEditingValue formatEditUpdate(
+    TextEditingValue oldValue,
+    TextEditingValue newValue,
+  ) =>
+      _decimal.hasMatch(newValue.text) ? newValue : oldValue;
 }

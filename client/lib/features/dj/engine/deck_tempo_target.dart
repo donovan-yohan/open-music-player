@@ -10,6 +10,8 @@
 /// question the user did not ask and gives no sign that it did.
 library;
 
+import 'dart:math' as math;
+
 import '../../../core/engine/tempo_automation.dart';
 import '../models/dj_deck_state.dart';
 import 'deck_controller.dart';
@@ -99,14 +101,27 @@ double? djDeckEffectiveBpm(DjDeckState deck) {
   return native == null ? null : native * deck.rate;
 }
 
-/// The scale-1 reachable band, or null when the deck has no tempo.
+/// The scale-1 reachable band, or null when the deck has no settable tempo.
+///
+/// **Intersected with the field bounds**, because this is the line the sheet
+/// renders and [djResolveTargetBpm] refuses anything outside
+/// [kDjTempoFieldMinBpm]-[kDjTempoFieldMaxBpm] regardless of the deck window.
+/// Unintersected, a 174 BPM deck advertised `130.5 to 217.5 BPM` and then
+/// refused 205 with "outside what this deck can reach" - a false statement
+/// about the deck, and the exact contradiction the never-lie-about-reachability
+/// contract exists to prevent. Both ends lie symmetrically: a 60 BPM deck
+/// advertised 45.0 and refused 46.
+///
+/// Null when the two ranges do not overlap at all (native below 40 or above
+/// 266.7 BPM). The deck then has a tempo but no tempo this field can set, and
+/// the sheet says exactly that rather than reusing the no-analysis line.
 DjTempoBand? djReachableBpmBand(DjDeckState deck) {
   final native = djDeckNativeBpm(deck);
   if (native == null) return null;
-  return DjTempoBand(
-    minBpm: native * kDjDeckMinRate,
-    maxBpm: native * kDjDeckMaxRate,
-  );
+  final minBpm = math.max(native * kDjDeckMinRate, kDjTempoFieldMinBpm);
+  final maxBpm = math.min(native * kDjDeckMaxRate, kDjTempoFieldMaxBpm);
+  if (minBpm > maxBpm) return null;
+  return DjTempoBand(minBpm: minBpm, maxBpm: maxBpm);
 }
 
 /// Resolves [targetBpm] into a rate this deck can actually hold.

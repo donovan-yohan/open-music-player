@@ -199,6 +199,36 @@ void main() {
       expect(rig.session.deckA.keySemitones, 0);
       expect(rig.session.deckA.pitchSupported, isTrue);
     });
+
+    test('a fresh load puts the VOICE back to rate 1 and pitch 1, not just '
+        'the state', () async {
+      // The regression this pins: `Voice.load` swaps the audio source and
+      // nothing else, and `release()` only stops, so speed and pitch are
+      // AudioPlayer-level properties that survive a track change. The deck used
+      // to claim rate 1 / keylock on / no shift in a fresh state while the
+      // voice was still holding the previous track's tritone and +12% - the new
+      // track played wrong and the header said `+0.0%`.
+      final rig = await loadedRig();
+      await rig.session.setKeySemitones(DjDeckId.a, 6);
+      await rig.session.setTargetBpm(DjDeckId.a, 139);
+      final voice = rig.voiceFor(DjDeckId.a);
+      expect(voice.pitches.last, closeTo(semitoneFactor(6), 1e-9));
+      expect(voice.speeds.last, isNot(closeTo(1.0, 1e-6)));
+
+      final speeds = voice.speeds.length;
+      final pitches = voice.pitches.length;
+      await rig.session.load(DjDeckId.a, djSyncDeckSeed(id: '92', bpm: 120));
+
+      expect(voice.speeds.length, greaterThan(speeds));
+      expect(voice.pitches.length, greaterThan(pitches));
+      expect(voice.speeds.last, closeTo(1.0, 1e-9),
+          reason: 'the new track must not inherit the old rate');
+      expect(voice.pitches.last, closeTo(1.0, 1e-9),
+          reason: 'the new track must not inherit the old key shift');
+      expect(rig.session.deckA.rate, closeTo(1.0, 1e-9));
+      expect(rig.session.deckA.keySemitones, 0);
+      expect(rig.session.deckA.pitchMode, pitchModePreserve);
+    });
   });
 
   group('the hand-set tempo and sync', () {

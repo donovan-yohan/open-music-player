@@ -92,14 +92,38 @@ void main() {
         djDeckKeySegment(musicalKey: 'A minor', camelot: '8A'),
         'A minor 8A',
       );
+      // Compact while shifted: the spelled key name is dropped so the shifted
+      // segment is never wider than the unshifted one the header already fits.
       expect(
         djDeckKeySegment(musicalKey: 'A minor', camelot: '8A', semitones: 1),
-        'A minor 8A → 3A',
+        '8A → 3A',
       );
       expect(
         djDeckKeySegment(musicalKey: 'A minor', camelot: '8A', semitones: -2),
-        'A minor 8A → 6A',
+        '8A → 6A',
       );
+    });
+
+    test('the shifted form is never wider than the unshifted one', () {
+      // The property the header depends on: enabling the key shift must not be
+      // able to push the key segment past the give-order's budget and delete
+      // the readout the user already had (#413 review).
+      for (final key in const ['A minor', 'C# minor', 'F major']) {
+        for (final camelot in const ['8A', '12A', '1B']) {
+          final plain = djDeckKeySegment(musicalKey: key, camelot: camelot);
+          for (var semitones = -6; semitones <= 6; semitones++) {
+            if (semitones == 0) continue;
+            final shifted = djDeckKeySegment(
+              musicalKey: key,
+              camelot: camelot,
+              semitones: semitones,
+            );
+            expect(shifted.length, lessThanOrEqualTo(plain.length),
+                reason: '$key $camelot $semitones: "$shifted" > "$plain"');
+            expect(shifted, contains('→'));
+          }
+        }
+      }
     });
 
     test('falls back to a semitone label with no camelot value', () {

@@ -36,6 +36,49 @@ void main() {
         isNull,
       );
     });
+
+    test('every BPM the band names actually resolves, at both ends', () {
+      // The regression: the band was the raw deck window and the resolver also
+      // gated on the field's 50-200 BPM bounds, so a 174 BPM deck advertised
+      // `130.5 to 217.5 BPM` and then refused 205 with "outside what this deck
+      // can reach". The floor lied the same way: a 60 BPM deck advertised 45.0
+      // and refused 46.
+      for (final nativeBpm in <double>[60, 100, 124.5, 174, 190]) {
+        final band = djReachableBpmBand(deck(bpm: nativeBpm))!;
+        expect(band.minBpm, greaterThanOrEqualTo(kDjTempoFieldMinBpm - 1e-9),
+            reason: '$nativeBpm BPM');
+        expect(band.maxBpm, lessThanOrEqualTo(kDjTempoFieldMaxBpm + 1e-9),
+            reason: '$nativeBpm BPM');
+        for (final target in <double>[band.minBpm, band.maxBpm]) {
+          expect(
+            djResolveTargetBpm(deck: deck(bpm: nativeBpm), targetBpm: target)
+                .isResolved,
+            isTrue,
+            reason: '$nativeBpm BPM deck refused $target, which it advertised',
+          );
+        }
+      }
+    });
+
+    test('a 174 BPM deck is capped at the field ceiling, not at 217.5', () {
+      final band = djReachableBpmBand(deck(bpm: 174))!;
+
+      expect(band.minBpm, closeTo(130.5, 1e-9));
+      expect(band.maxBpm, closeTo(kDjTempoFieldMaxBpm, 1e-9));
+      // The `+` chip disables exactly where the line stops promising.
+      expect(
+        djResolveTargetBpm(deck: deck(bpm: 174), targetBpm: 200.1).isResolved,
+        isFalse,
+      );
+    });
+
+    test('a deck whose tempo the field cannot express has no band', () {
+      // Not the same fact as "no analyzed tempo", and the sheet says so with
+      // its own copy line.
+      expect(djReachableBpmBand(deck(bpm: 300)), isNull);
+      expect(djReachableBpmBand(deck(bpm: 30)), isNull);
+      expect(djDeckNativeBpm(deck(bpm: 300)), 300);
+    });
   });
 
   group('djResolveTargetBpm', () {
