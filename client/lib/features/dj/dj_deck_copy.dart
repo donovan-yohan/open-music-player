@@ -87,6 +87,64 @@ const String djDeckSyncThisDeckEmpty = 'Load a track on this deck to sync';
 const String djDeckSyncTempoOutOfRange =
     'The tempo gap is too wide for this deck';
 
+/// Title of the per-deck tempo and key sheet (#413).
+const String djDeckTempoSheetTitle = 'Tempo and key';
+
+/// Label on the sheet's numeric tempo field.
+const String djDeckTempoFieldLabel = 'Target tempo';
+
+/// Prefix of the runtime reachable-band line, completed with the deck's own
+/// numbers: `Reachable tempo: 93.4 to 155.6 BPM`.
+const String djDeckTempoReachablePrefix = 'Reachable tempo';
+
+/// A typed tempo no octave interpretation puts inside the deck's rate window.
+/// The deck refuses rather than clamping: a clamp answers a question the user
+/// did not ask and gives no sign that it did.
+const String djDeckTempoOutOfReach =
+    'That tempo is outside what this deck can reach';
+
+/// What was typed is not a number at all - an empty field, or a run like
+/// `1.2.3`. Deliberately NOT [djDeckTempoOutOfReach]: telling a user their
+/// deck cannot reach a tempo they never named is a false statement about the
+/// deck, and it contradicts the reachable-band line directly above it.
+const String djDeckTempoNotANumber = 'Enter a tempo in BPM';
+
+/// The deck's own tempo is so far outside the field's 50-200 BPM bounds that no
+/// rate inside the deck window lands in them. Distinct from
+/// [djDeckTempoUnknown]: the track has an analyzed tempo, it is just not one
+/// this field can express.
+const String djDeckTempoFieldOutOfRange =
+    "This track's tempo is outside what the field can set";
+
+/// The typed number was read as the half- or double-time statement of the same
+/// tempo, so the readout shows the deck's own octave rather than the input.
+const String djDeckTempoOctaveDetail = 'Matched at half or double time';
+
+/// Why the tempo controls are inert on an engaged follower. Two authorities
+/// must never fight over one rate, so sync keeps this deck's tempo until the
+/// user releases it.
+const String djDeckTempoSyncControlled = "Sync sets this deck's tempo";
+
+/// The deck holds audio but no analyzed tempo, so there is no BPM to set.
+const String djDeckTempoUnknown = 'This track has no analyzed tempo to set';
+
+/// Keylock switch label.
+const String djDeckKeylockLabel = 'Keylock';
+
+/// What turning keylock off actually does, said plainly.
+const String djDeckKeylockOffDetail =
+    'With keylock off, a tempo change moves the key too';
+
+/// Key-shift control label.
+const String djDeckKeyShiftLabel = 'Key shift';
+
+/// The Voice reported that this backend cannot shift pitch at all.
+const String djDeckKeyShiftUnavailable =
+    'Key shift is not available on this device';
+
+/// Returns the deck to rate 1.0, no key shift and keylock on.
+const String djDeckTempoResetAction = 'Reset tempo and key';
+
 /// The deck is landscape only, and Android does not always honour the request
 /// immediately (or at all, in split-screen / freeform windows).
 const String djDeckRotatePrompt = 'Rotate your phone to use the deck';
@@ -148,6 +206,20 @@ const List<String> djDeckCopyStrings = <String>[
   djDeckSyncOtherDeckUnavailable,
   djDeckSyncThisDeckEmpty,
   djDeckSyncTempoOutOfRange,
+  djDeckTempoSheetTitle,
+  djDeckTempoFieldLabel,
+  djDeckTempoReachablePrefix,
+  djDeckTempoOutOfReach,
+  djDeckTempoNotANumber,
+  djDeckTempoFieldOutOfRange,
+  djDeckTempoOctaveDetail,
+  djDeckTempoSyncControlled,
+  djDeckTempoUnknown,
+  djDeckKeylockLabel,
+  djDeckKeylockOffDetail,
+  djDeckKeyShiftLabel,
+  djDeckKeyShiftUnavailable,
+  djDeckTempoResetAction,
   djDeckRotatePrompt,
   djDeckRotateDetail,
   djDeckTooSmall,

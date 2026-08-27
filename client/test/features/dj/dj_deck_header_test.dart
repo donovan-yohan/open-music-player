@@ -58,6 +58,7 @@ void main() {
     WidgetTester tester, {
     required double width,
     required double textScale,
+    int keySemitones = 0,
   }) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -69,7 +70,10 @@ void main() {
               child: SizedBox(
                 width: width,
                 height: 44, // the preferred header band height
-                child: DjDeckHeader(deck: djLoadedDeckState()),
+                child: DjDeckHeader(
+                  deck: djLoadedDeckState()
+                      .copyWith(keySemitones: keySemitones),
+                ),
               ),
             ),
           ),
@@ -134,6 +138,42 @@ void main() {
       expect(present.length, lessThanOrEqualTo(previous),
           reason: '${width}dp brought a dropped segment back');
       previous = present.length;
+    }
+  });
+
+  testWidgets('shifting the key never costs the header its key segment',
+      (tester) async {
+    // #413 review: the shifted segment used to be `A minor 8A -> 3A`, wider
+    // than the unshifted `A minor 8A` the ~352dp deck column only just fits.
+    // The give-order then surrendered the whole segment, so the user's action
+    // to SEE the shifted key deleted the key readout they already had. The
+    // compact form is narrower than the unshifted one, so the shifted segment
+    // survives at every width the unshifted one survives.
+    for (final width in <double>[640, 560, 480, 400, 340, 280, 220, 200]) {
+      for (final textScale in <double>[1.0, 1.3]) {
+        await pumpHeader(tester, width: width, textScale: textScale);
+        final unshifted = find.text('A minor 8A').evaluate().isNotEmpty;
+
+        await pumpHeader(
+          tester,
+          width: width,
+          textScale: textScale,
+          keySemitones: 1,
+        );
+        final shifted = find.text('8A → 3A').evaluate().isNotEmpty;
+
+        expect(find.text('A minor 8A'), findsNothing,
+            reason: '${width}dp @ $textScale still shows the unshifted key');
+        if (unshifted) {
+          expect(shifted, isTrue,
+              reason: '${width}dp @ $textScale dropped the key segment only '
+                  'because the deck was shifted');
+          expect(isTruncated(tester, find.text('8A → 3A')), isFalse,
+              reason: '${width}dp @ $textScale ellipsised the shifted key');
+        }
+        expect(find.text(bpm), findsOneWidget,
+            reason: '${width}dp @ $textScale dropped BPM');
+      }
     }
   });
 

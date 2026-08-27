@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/features/dj/dj_layout.dart';
+import 'package:open_music_player/features/dj/models/dj_deck_state.dart';
 import 'package:open_music_player/features/dj/widgets/dj_pitch_fader.dart';
 
 import '../../support/dj_viewport_fixtures.dart';
@@ -116,6 +117,41 @@ void main() {
         expect(crossfader.overlaps(transport), isFalse,
             reason: 'deck $id transport/crossfader');
       }
+    });
+  }
+
+  // #413: a shifted key is the widest the header's key segment ever gets
+  // (`A minor 8A -> 5A` at +3), and the BPM segment now carries the tempo
+  // sheet's tap target. Neither may cost the deck its no-overflow contract.
+  for (final viewport in matrix) {
+    testWidgets('a shifted key and the tempo trigger fit ${viewport.name}',
+        (tester) async {
+      final errors = DjErrorCollector()..install();
+      addTearDown(errors.restore);
+
+      await deck.session.setKeySemitones(DjDeckId.a, 3);
+      await deck.session.setKeySemitones(DjDeckId.b, 3);
+      await pumpDjScreen(tester, session: deck.session, viewport: viewport);
+
+      expect(errors.overflows, isEmpty,
+          reason: '${viewport.name} overflowed: ${errors.overflows}');
+      expect(tester.takeException(), isNull);
+
+      if (viewport == portraitReference ||
+          viewport == landscapeMinimum ||
+          viewport == landscapeBelowMinimumWidth) {
+        return;
+      }
+      // BPM is never dropped, so its tap target is present at every
+      // serviceable viewport no matter what the key segment costs.
+      for (final id in const ['a', 'b']) {
+        expect(find.byKey(ValueKey('dj_bpm_$id')), findsOneWidget,
+            reason: '${viewport.name} deck $id');
+      }
+      expect(
+        tester.getSize(find.byKey(const ValueKey('dj_transport_row'))).height,
+        kDjTransportHeight,
+      );
     });
   }
 

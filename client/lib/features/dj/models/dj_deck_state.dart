@@ -62,6 +62,11 @@ class DjDeckState {
   final int keySemitones;
 
   double get ratePercent => (rate - 1) * 100;
+
+  /// The signed pitch percentage as the deck writes it: `+0.0%` / `-3.2%`.
+  /// The header and the tempo sheet both show it, and they must agree.
+  String get ratePercentLabel =>
+      '${ratePercent >= 0 ? '+' : ''}${ratePercent.toStringAsFixed(1)}%';
   bool get isLoaded => trackRef != null;
 
   double? get bpm {
