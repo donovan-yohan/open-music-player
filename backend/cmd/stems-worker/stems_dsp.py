@@ -4,7 +4,7 @@
 The Go service in ``main.go`` owns HTTP, bearer auth, MinIO transfer, and the
 durable Postgres row. This module owns everything that is pure signal
 processing plus the artifact manifest shape, and it is deliberately importable
-without ``torch``/``demucs`` so the DSP contract can be unit tested in a tiny
+without ``torch``/``audio-separator`` so the DSP contract can be unit tested in a tiny
 image (see the ``stems-test`` stage in ``backend/Dockerfile``).
 
 Contract notes that are load-bearing (see docs/adr/0006-stem-edit-events-and-playback-ladder.md
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import math
 import os
@@ -41,17 +42,28 @@ from scipy.signal import butter, filtfilt
 SCHEMA_VERSION = 1
 
 WORKER_NAME = "stemsep-worker"
-WORKER_VERSION = "2026-08-03-1"
+WORKER_VERSION = "2026-08-30-1"
 
-# Verified sha256 of the checkpoint demucs 4.1.0 resolves through huggingface-hub.
-# (The spec's original ``955717e8`` value is the demucs model SIGNATURE, not a hash;
-# see the CRITIC CORRECTIONS block in docs/stems5-spec.md.)
-CHECKPOINT_REPO = "adefossez/HTDemucs"
-CHECKPOINT_FILE = "955717e8.safetensors"
-CHECKPOINT_SHA256 = "d9fa14133cfcc034a6758923bb3a8ca9f8dfd0b582134643bbf83f72c17576dd"
+# audio-separator is the inference provider. htdemucs_ft remains a coherent
+# Demucs-family four-stem model; this changes the runtime and artifact identity,
+# not the user-facing channel vocabulary.
+INFERENCE_PROVIDER = "audio-separator"
+AUDIO_SEPARATOR_VERSION = "0.47.0"
+AUDIO_SEPARATOR_WHEEL_SHA256 = "756f3b620d78e581a117c6b6d96fe4f0eafc3432ab2824cb11532b4868bfd9a8"
+MODEL_DIR = Path(os.environ.get("STEMS_MODEL_DIR", "/app/models"))
+MODEL_CONFIG_FILE = "htdemucs_ft.yaml"
+MODEL_CONFIG_SHA256 = "69470b8c1bbd674437b51bc9fb491327a10ab0396b702c93389b9cf750016346"
+DOWNLOAD_CHECKS_FILE = "download_checks.json"
+DOWNLOAD_CHECKS_SHA256 = "d3622e1fa19c161d3cf704927711b453d593a3f1eb0f2e0838c3136907935151"
+MODEL_WEIGHTS: Dict[str, str] = {
+    "f7e0c4bc-ba3fe64a.th": "ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066",
+    "d12395a8-e57c48e6.th": "e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6",
+    "92cfc3b6-ef3bcb9c.th": "ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2",
+    "04573f0d-f3cf25b2.th": "f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49",
+}
 
 # Canonical wire names. ``hihat`` is retired; ``perc`` is the only name for the
-# non-kick percussion channel, and ``melody`` is the only alias of demucs
+# non-kick percussion channel, and ``melody`` is the only alias of the model's
 # ``other``. Declaring the alias map exactly once is what stops edit events,
 # energy channels, and the client colour registry from drifting apart.
 BASE_CHANNELS: Tuple[str, ...] = ("vocals", "drums", "bass", "other")
@@ -61,14 +73,14 @@ CHANNEL_SETS: Dict[str, Tuple[str, ...]] = {
 }
 CHANNEL_ALIASES: Dict[str, str] = {"melody": "other"}
 
-BASE_MODEL_VERSION = "htdemucs-4s-v1"
+BASE_MODEL_VERSION = "audio-separator-htdemucs-ft-4s-v1"
 CROSSOVER_TAG = "lr4-180"
 STEM_MODEL_VERSIONS: Dict[str, str] = {
     "stems4-demucs-v1": BASE_MODEL_VERSION,
     "stems5-hybrid-v1": f"{BASE_MODEL_VERSION}+{CROSSOVER_TAG}",
 }
 
-BASE_PREFIX = "htdemucs-4s-v1"
+BASE_PREFIX = BASE_MODEL_VERSION
 DERIVATION_SEPARATOR = "separator"
 DERIVATION_CROSSOVER = "dsp-crossover-lr4-180"
 
@@ -121,21 +133,20 @@ def stem_model_version(channel_set: str) -> str:
 
 
 def base_channel_for(channel: str) -> str:
-    """Resolve a wire channel name onto the demucs output it is stored as."""
+    """Resolve a wire channel name onto the coherent four-stem output."""
     return CHANNEL_ALIASES.get(channel, channel)
 
 
 def object_key(track_id: int, channel_set: str, channel: str) -> str:
     """MinIO key for one channel of one set.
 
-    ``stems5-hybrid-v1`` intentionally REFERENCES the base objects for
-    vocals/melody/bass instead of duplicating them; only the two derived
-    channels get their own prefix. ``drums`` is always retained so the pair can
-    be re-derived (or null-verified) without re-running demucs.
+    Every persisted channel is namespaced by the complete immutable model
+    version for its channel set. In particular, the stems5-derived drums,
+    melody, kick, and perc cannot overwrite pre-migration keys that happened
+    to share a channel-set name. ``drums`` is retained with the five-channel
+    result so the pair can be null-verified without another separator run.
     """
-    if channel in ("kick", "perc"):
-        return f"stems/{track_id}/stems5-hybrid-v1/{channel}.opus"
-    return f"stems/{track_id}/{BASE_PREFIX}/{base_channel_for(channel)}.opus"
+    return f"stems/{track_id}/{stem_model_version(channel_set)}/{base_channel_for(channel)}.opus"
 
 
 def derivation_for(channel: str) -> str:
@@ -376,41 +387,147 @@ def encode_opus(signal: np.ndarray, dest_path: str | Path, sample_rate: int) -> 
 Separator = Callable[[str, int], Dict[str, np.ndarray]]
 
 
-def demucs_separator(audio_path: str, sample_rate: int) -> Dict[str, np.ndarray]:
-    """Real htdemucs separator. Imported lazily so tests need no torch."""
-    import torch  # noqa: PLC0415 - deliberate lazy import
-    from demucs.apply import apply_model  # noqa: PLC0415
-    from demucs.pretrained import get_model  # noqa: PLC0415
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-    model = get_model("htdemucs")
-    model.eval()
-    segment = float(os.environ.get("STEMS_SEGMENT_SECONDS", "7"))
-    waveform = torch.from_numpy(decode_pcm(audio_path, model.samplerate)).unsqueeze(0)
-    with torch.no_grad():
-        estimates = apply_model(
-            model,
-            waveform,
-            device="cpu",
-            shifts=0,
-            split=True,
-            overlap=0.25,
-            segment=segment,
-            progress=False,
-        )[0]
-    out: Dict[str, np.ndarray] = {}
-    for index, name in enumerate(model.sources):
-        out[name] = estimates[index].cpu().numpy().astype(np.float32)
-    missing = [name for name in BASE_CHANNELS if name not in out]
+
+def validate_model_bundle(model_dir: Path = MODEL_DIR) -> None:
+    """Fail closed unless every mutable provider input is the pinned artifact."""
+    expected = {
+        MODEL_CONFIG_FILE: MODEL_CONFIG_SHA256,
+        DOWNLOAD_CHECKS_FILE: DOWNLOAD_CHECKS_SHA256,
+        **MODEL_WEIGHTS,
+    }
+    for filename, expected_hash in expected.items():
+        path = model_dir / filename
+        if not path.is_file():
+            raise StemsError(f"pinned model artifact is missing: {path}")
+        actual_hash = _sha256(path)
+        if actual_hash != expected_hash:
+            raise StemsError(
+                f"pinned model artifact hash mismatch for {filename}: "
+                f"got {actual_hash}, expected {expected_hash}"
+            )
+
+
+def _read_separator_outputs(
+    paths: Iterable[str | Path], sample_rate: int, output_dir: str | Path | None = None
+) -> Dict[str, np.ndarray]:
+    """Read exactly one WAV boundary per expected audio-separator output.
+
+    audio-separator's public API publishes files rather than source arrays. The
+    WAV handoff is therefore unavoidable: it is PCM quantized at the source
+    subtype and it may normalize only an over-unity stem. We configure the
+    least-mutating allowed thresholds (1.0 / 0.0), then immediately own all
+    subsequent DSP and the single uniform Opus boundary ourselves.
+    """
+    import soundfile as sf  # noqa: PLC0415 - lazy runtime dependency
+
+    expected = {f"omp-{name}.wav": name for name in BASE_CHANNELS}
+    outputs: Dict[str, np.ndarray] = {}
+    for output in paths:
+        path = Path(output)
+        # The provider API returns basenames for some architectures and full
+        # paths for others. Both forms refer only to our private temp output
+        # directory; never fall back to the process working directory.
+        if output_dir is not None and not path.is_absolute():
+            path = Path(output_dir) / path
+        channel = expected.get(path.name)
+        if channel is None:
+            raise StemsError(f"separator emitted unexpected output: {path.name}")
+        if channel in outputs:
+            raise StemsError(f"separator emitted duplicate output for {channel}")
+        signal, actual_rate = sf.read(path, dtype="float32", always_2d=True)
+        if actual_rate != sample_rate:
+            raise StemsError(
+                f"separator output {path.name} has sample rate {actual_rate}, expected {sample_rate}"
+            )
+        if signal.size == 0:
+            raise StemsError(f"separator output {path.name} is empty")
+        outputs[channel] = np.ascontiguousarray(signal.T)
+    missing = [name for name in BASE_CHANNELS if name not in outputs]
     if missing:
         raise StemsError(f"separator did not emit required channels: {missing}")
-    return out
+    return outputs
 
 
-def _demucs_version() -> str:
+def audio_separator_htdemucs_ft_separator(audio_path: str, sample_rate: int) -> Dict[str, np.ndarray]:
+    """Run the pinned htdemucs_ft model through audio-separator's public API.
+
+    ``Separator.load_model`` normally refreshes UVR's mutable model registry.
+    The narrow subclass below permits only this baked local bundle, so an
+    absent/corrupt artifact fails instead of becoming an implicit download.
+    """
+    import logging  # noqa: PLC0415
+    from audio_separator.separator import Separator as AudioSeparator  # noqa: PLC0415
+
+    validate_model_bundle()
+
+    class OfflineHTDemucsFT(AudioSeparator):
+        def setup_accelerated_inferencing_device(self) -> None:
+            # This worker has a CPU-only artifact/runtime contract. Pinning the
+            # provider's auto-detection prevents an opportunistic CUDA/MPS
+            # choice from making the advertised device identity untrue.
+            import torch  # noqa: PLC0415
+
+            self.torch_device_cpu = torch.device("cpu")
+            self.torch_device = self.torch_device_cpu
+            self.requested_torch_device = self.torch_device_cpu
+            self.onnx_execution_provider = ["CPUExecutionProvider"]
+
+        def download_model_files(self, model_filename: str):  # type: ignore[no-untyped-def]
+            if model_filename != MODEL_CONFIG_FILE:
+                raise StemsError(f"unexpected audio-separator model request: {model_filename}")
+            # Deliberately bypasses list_supported_model_files(), whose stock
+            # implementation refreshes download_checks.json from the network.
+            return (
+                MODEL_CONFIG_FILE,
+                "Demucs",
+                "HTDemucs FT (OMP pinned)",
+                str(MODEL_DIR / MODEL_CONFIG_FILE),
+                str(MODEL_DIR / MODEL_CONFIG_FILE),
+            )
+
+        def download_file_if_not_exists(self, url: str, output_path: str) -> None:
+            # A future provider code path must fail closed rather than acquiring
+            # an unreviewed model/registry at runtime.
+            if not Path(output_path).is_file():
+                raise StemsError(f"runtime model download blocked for {Path(output_path).name}")
+
+    with tempfile.TemporaryDirectory(prefix="omp-audio-separator-") as provider_output:
+        separator = OfflineHTDemucsFT(
+            log_level=logging.ERROR,
+            model_file_dir=str(MODEL_DIR),
+            output_dir=provider_output,
+            output_format="WAV",
+            sample_rate=sample_rate,
+            use_soundfile=True,
+            normalization_threshold=1.0,
+            amplification_threshold=0.0,
+            demucs_params={
+                "segment_size": float(os.environ.get("STEMS_SEGMENT_SECONDS", "7")),
+                "shifts": 0,
+                "overlap": 0.25,
+                "segments_enabled": True,
+            },
+        )
+        separator.load_model(MODEL_CONFIG_FILE)
+        output_paths = separator.separate(
+            audio_path,
+            custom_output_names={name: f"omp-{name}" for name in BASE_CHANNELS},
+        )
+        return _read_separator_outputs(output_paths, sample_rate, provider_output)
+
+
+def _audio_separator_version() -> str:
     try:
         from importlib.metadata import version  # noqa: PLC0415
 
-        return version("demucs")
+        return version("audio-separator")
     except Exception:  # pragma: no cover - torch-free test path
         return "unknown"
 
@@ -456,12 +573,18 @@ def build_manifest(
     provenance: Dict[str, object] = {
         "worker": WORKER_NAME,
         "worker_version": WORKER_VERSION,
-        "demucs_version": _demucs_version(),
+        "inference_provider": {
+            "name": INFERENCE_PROVIDER,
+            "version": _audio_separator_version(),
+            "wheel_sha256": AUDIO_SEPARATOR_WHEEL_SHA256,
+        },
         "torch_version": _torch_version(),
-        "checkpoint": {
-            "repo": CHECKPOINT_REPO,
-            "file": CHECKPOINT_FILE,
-            "sha256": CHECKPOINT_SHA256,
+        "model": {
+            "family": "demucs",
+            "name": "htdemucs_ft",
+            "config": {"file": MODEL_CONFIG_FILE, "sha256": MODEL_CONFIG_SHA256},
+            "weights": dict(MODEL_WEIGHTS),
+            "download_checks": {"file": DOWNLOAD_CHECKS_FILE, "sha256": DOWNLOAD_CHECKS_SHA256},
         },
         "crossover": {
             "type": "lr4",
@@ -471,10 +594,17 @@ def build_manifest(
             "design": "butterworth-filtfilt",
         },
         "separator": {
-            "model": "htdemucs",
+            "model": "htdemucs_ft",
             "sample_rate_hz": sample_rate,
             "shifts": 0,
             "overlap": 0.25,
+            "output_mapping": {name: f"omp-{name}.wav" for name in BASE_CHANNELS},
+            "output_boundary": {
+                "format": "wav",
+                "normalization_threshold": 1.0,
+                "amplification_threshold": 0.0,
+                "note": "audio-separator public API returns normalized PCM files; OMP re-encodes every final artifact uniformly",
+            },
         },
     }
     if provenance_extra:
@@ -512,7 +642,7 @@ def run_separation(
     manifest gates) is exercisable without torch.
     """
     channels = channels_for(channel_set)
-    separate = separator or demucs_separator
+    separate = separator or audio_separator_htdemucs_ft_separator
     stems = separate(audio_path, sample_rate)
 
     missing = [name for name in BASE_CHANNELS if name not in stems]
@@ -537,7 +667,7 @@ def run_separation(
         return emitted[channel] if channel in emitted else emitted[base_channel_for(channel)]
 
     # ``drums`` is always retained even when the active set is stems5, so the
-    # pair can be null-verified or re-derived without another demucs run.
+    # pair can be null-verified or re-derived without another separator run.
     persist_order = list(channels)
     if "drums" not in persist_order:
         persist_order.append("drums")
@@ -592,9 +722,17 @@ def _identity_payload() -> Dict[str, object]:
         "worker_version": WORKER_VERSION,
         "channel_sets": sorted(CHANNEL_SETS),
         "stem_model_versions": dict(STEM_MODEL_VERSIONS),
-        "demucs_version": _demucs_version(),
+        "inference_provider": INFERENCE_PROVIDER,
+        "inference_provider_version": _audio_separator_version(),
+        "inference_provider_wheel_sha256": AUDIO_SEPARATOR_WHEEL_SHA256,
         "torch_version": _torch_version(),
-        "checkpoint_sha256": CHECKPOINT_SHA256,
+        "model_family": "demucs",
+        "model_name": "htdemucs_ft",
+        "model_config_sha256": MODEL_CONFIG_SHA256,
+        "model_weight_sha256": dict(MODEL_WEIGHTS),
+        "download_checks_sha256": DOWNLOAD_CHECKS_SHA256,
+        "output_mapping": {name: f"omp-{name}.wav" for name in BASE_CHANNELS},
+        "device": "cpu",
         "ffmpeg": bool(shutil.which(_ffmpeg_binary())),
     }
 
@@ -613,6 +751,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     if args.check:
+        # Health must prove that the worker can use its immutable local model
+        # bundle before Go starts queue consumers or exposes stem handlers.
+        validate_model_bundle()
         json.dump(_identity_payload(), sys.stdout)
         sys.stdout.write("\n")
         return 0

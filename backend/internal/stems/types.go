@@ -15,8 +15,8 @@ const SchemaVersion = 1
 // Canonical channel-set names. These are the only audio-addressable sets; the
 // client color registry, edit events, and energy channels all key off them.
 const (
-	// ChannelSetStems4Demucs is the base demucs output, using demucs' own
-	// channel names so ADR 0006's example event (`channel: vocals`) stays valid.
+	// ChannelSetStems4Demucs is the base coherent four-stem output. The legacy
+	// identifier remains wire-compatible with saved UI payloads.
 	ChannelSetStems4Demucs = "stems4-demucs-v1"
 	// ChannelSetStems5Hybrid adds the deterministic LR4-180Hz kick/perc split of
 	// the drums stem. vocals/bass/melody reference the base objects.
@@ -27,23 +27,47 @@ const (
 )
 
 // Stem model versions. The stems5 suffix records the crossover so a change to
-// either the separator or the DSP split invalidates artifacts via
+// either the inference provider/model or the DSP split invalidates artifacts via
 // MarkStaleByStemModelVersion.
 const (
-	StemModelVersionStems4 = "htdemucs-4s-v1"
-	StemModelVersionStems5 = "htdemucs-4s-v1+lr4-180"
+	StemModelVersionStems4 = "audio-separator-htdemucs-ft-4s-v1"
+	StemModelVersionStems5 = "audio-separator-htdemucs-ft-4s-v1+lr4-180"
 )
 
 // Worker identity advertised by the stems worker's GET /health and echoed in
 // every /separate request as expected_worker/expected_worker_version.
 const (
 	WorkerName    = "stemsep-worker"
-	WorkerVersion = "2026-08-03-1"
+	WorkerVersion = "2026-08-30-1"
+
+	// InferenceProvider and the model artifact constants are the exact health
+	// contract that the API admits at startup. The Go worker independently
+	// verifies the Python helper against these same immutable values.
+	InferenceProvider        = "audio-separator"
+	InferenceProviderVersion = "0.47.0"
+	ModelFamily              = "demucs"
+	ModelName                = "htdemucs_ft"
+	ModelConfigSHA256        = "69470b8c1bbd674437b51bc9fb491327a10ab0396b702c93389b9cf750016346"
+	ModelDevice              = "cpu"
 )
+
+var expectedModelWeightSHA256 = map[string]string{
+	"f7e0c4bc-ba3fe64a.th": "ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066",
+	"d12395a8-e57c48e6.th": "e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6",
+	"92cfc3b6-ef3bcb9c.th": "ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2",
+	"04573f0d-f3cf25b2.th": "f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49",
+}
+
+var expectedOutputMapping = map[string]string{
+	"vocals": "omp-vocals.wav",
+	"drums":  "omp-drums.wav",
+	"bass":   "omp-bass.wav",
+	"other":  "omp-other.wav",
+}
 
 // Derivation tags recorded per artifact object in the manifest.
 const (
-	// DerivationSeparator marks a channel emitted directly by demucs.
+	// DerivationSeparator marks a channel emitted directly by the provider.
 	DerivationSeparator = "separator"
 	// DerivationCrossover marks the deterministic DSP-derived kick/perc pair.
 	// These are real audio artifacts that null-sum to drums, which is what makes
@@ -61,7 +85,7 @@ var channelSets = map[string][]string{
 
 // channelAliases maps a channel-set channel name onto the base object it
 // references. stems5 does not duplicate vocals/bass; "melody" is the DJ-facing
-// alias of the demucs "other" object under stems/{id}/htdemucs-4s-v1/.
+// alias of the model's "other" object under its immutable model prefix.
 var channelAliases = map[string]string{
 	"melody": "other",
 }

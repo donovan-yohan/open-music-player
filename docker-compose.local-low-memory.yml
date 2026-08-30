@@ -128,7 +128,7 @@ services:
       - omp-lowmem-network
 
   # Stem separation worker. Behind a profile because the image bakes torch-cpu,
-  # demucs, and a pinned checkpoint (multi-GB), and because a running container
+  # audio-separator, its pinned htdemucs_ft local bundle (roughly 337 MB), and because a running container
   # is only useful when the backend has STEMS_ENABLED=true. The backend
   # deliberately does NOT depend_on this service: a depends_on would pull the
   # profile in on every `up`, and the backend already degrades to its unavailable

@@ -10,13 +10,17 @@ uniformity rule, and the manifest shape are all provable in the tiny
 from __future__ import annotations
 
 import base64
+import io
 import json
 import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
+from unittest import mock
 from pathlib import Path
+from contextlib import redirect_stdout
 
 import numpy as np
 
@@ -78,28 +82,45 @@ class ChannelVocabularyTest(unittest.TestCase):
         self.assertEqual(stems_dsp.base_channel_for("kick"), "kick")
 
     def test_stem_model_versions(self):
-        self.assertEqual(stems_dsp.stem_model_version("stems4-demucs-v1"), "htdemucs-4s-v1")
         self.assertEqual(
-            stems_dsp.stem_model_version("stems5-hybrid-v1"), "htdemucs-4s-v1+lr4-180"
+            stems_dsp.stem_model_version("stems4-demucs-v1"),
+            "audio-separator-htdemucs-ft-4s-v1",
+        )
+        self.assertEqual(
+            stems_dsp.stem_model_version("stems5-hybrid-v1"),
+            "audio-separator-htdemucs-ft-4s-v1+lr4-180",
         )
 
-    def test_object_layout_references_base_objects(self):
+    def test_object_layout_uses_full_immutable_model_identity(self):
         self.assertEqual(
             stems_dsp.object_key(42, "stems5-hybrid-v1", "melody"),
-            "stems/42/htdemucs-4s-v1/other.opus",
+            "stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/other.opus",
         )
         self.assertEqual(
             stems_dsp.object_key(42, "stems5-hybrid-v1", "vocals"),
-            "stems/42/htdemucs-4s-v1/vocals.opus",
+            "stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/vocals.opus",
         )
         self.assertEqual(
             stems_dsp.object_key(42, "stems5-hybrid-v1", "kick"),
-            "stems/42/stems5-hybrid-v1/kick.opus",
+            "stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/kick.opus",
         )
         self.assertEqual(
             stems_dsp.object_key(42, "stems5-hybrid-v1", "perc"),
-            "stems/42/stems5-hybrid-v1/perc.opus",
+            "stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/perc.opus",
         )
+
+    def test_new_six_artifact_keys_are_disjoint_from_legacy_layout(self):
+        new_keys = {
+            stems_dsp.object_key(42, "stems5-hybrid-v1", channel)
+            for channel in ("vocals", "melody", "bass", "kick", "perc", "drums")
+        }
+        legacy_keys = {
+            f"stems/42/htdemucs-4s-v1/{channel}.opus"
+            for channel in ("vocals", "other", "bass", "drums")
+        } | {
+            f"stems/42/stems5-hybrid-v1/{channel}.opus" for channel in ("kick", "perc")
+        }
+        self.assertTrue(new_keys.isdisjoint(legacy_keys), (new_keys, legacy_keys))
 
     def test_derivation_tags(self):
         self.assertEqual(stems_dsp.derivation_for("kick"), "dsp-crossover-lr4-180")
@@ -109,6 +130,50 @@ class ChannelVocabularyTest(unittest.TestCase):
     def test_unknown_channel_set_rejected(self):
         with self.assertRaises(stems_dsp.StemsError):
             stems_dsp.channels_for("stems5-learned-hihat-v1")
+
+
+class AudioSeparatorAdapterContractTest(unittest.TestCase):
+    def _soundfile_module(self):
+        module = types.ModuleType("soundfile")
+
+        def read(path, dtype, always_2d):
+            self.assertEqual(dtype, "float32")
+            self.assertTrue(always_2d)
+            return np.ones((4, 2), dtype=np.float32), SR
+
+        module.read = read
+        return module
+
+    def test_output_mapping_requires_exact_unique_four_stems(self):
+        outputs = [Path(f"/tmp/omp-{name}.wav") for name in stems_dsp.BASE_CHANNELS]
+        with mock.patch.dict(sys.modules, {"soundfile": self._soundfile_module()}):
+            result = stems_dsp._read_separator_outputs(outputs, SR)
+        self.assertEqual(set(result), set(stems_dsp.BASE_CHANNELS))
+        self.assertEqual(result["vocals"].shape, (2, 4))
+
+    def test_output_mapping_rejects_duplicate_missing_and_unexpected_stems(self):
+        with mock.patch.dict(sys.modules, {"soundfile": self._soundfile_module()}):
+            with self.assertRaisesRegex(stems_dsp.StemsError, "duplicate"):
+                stems_dsp._read_separator_outputs(
+                    ["/tmp/omp-vocals.wav", "/tmp/omp-vocals.wav"], SR
+                )
+            with self.assertRaisesRegex(stems_dsp.StemsError, "unexpected"):
+                stems_dsp._read_separator_outputs(["/tmp/not-omp.wav"], SR)
+
+    def test_bundle_validation_rejects_missing_or_wrong_hash_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            with self.assertRaisesRegex(stems_dsp.StemsError, "missing"):
+                stems_dsp.validate_model_bundle(model_dir)
+            expected = {
+                stems_dsp.MODEL_CONFIG_FILE: stems_dsp.MODEL_CONFIG_SHA256,
+                stems_dsp.DOWNLOAD_CHECKS_FILE: stems_dsp.DOWNLOAD_CHECKS_SHA256,
+                **stems_dsp.MODEL_WEIGHTS,
+            }
+            for filename in expected:
+                (model_dir / filename).write_bytes(b"wrong")
+            with self.assertRaisesRegex(stems_dsp.StemsError, "hash mismatch"):
+                stems_dsp.validate_model_bundle(model_dir)
 
 
 class CrossoverTest(unittest.TestCase):
@@ -256,7 +321,7 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(manifest["schema_version"], 1)
         self.assertEqual(manifest["track_id"], 7)
         self.assertEqual(manifest["channel_set"], "stems5-hybrid-v1")
-        self.assertEqual(manifest["stem_model_version"], "htdemucs-4s-v1+lr4-180")
+        self.assertEqual(manifest["stem_model_version"], "audio-separator-htdemucs-ft-4s-v1+lr4-180")
 
     def test_manifest_emits_six_objects_with_drums_retained(self):
         objects = self._manifest()["artifacts"]["objects"]
@@ -277,9 +342,11 @@ class ManifestTest(unittest.TestCase):
         provenance = self._manifest()["provenance"]
         self.assertEqual(provenance["worker"], "stemsep-worker")
         self.assertEqual(provenance["worker_version"], stems_dsp.WORKER_VERSION)
+        self.assertEqual(provenance["inference_provider"]["name"], "audio-separator")
+        self.assertEqual(provenance["model"]["name"], "htdemucs_ft")
+        self.assertEqual(provenance["model"]["config"]["sha256"], stems_dsp.MODEL_CONFIG_SHA256)
         self.assertEqual(
-            provenance["checkpoint"]["sha256"],
-            "d9fa14133cfcc034a6758923bb3a8ca9f8dfd0b582134643bbf83f72c17576dd",
+            provenance["separator"]["output_boundary"]["normalization_threshold"], 1.0
         )
         self.assertEqual(provenance["crossover"]["cutoff_hz"], 180.0)
         self.assertTrue(provenance["crossover"]["zero_phase"])
@@ -297,7 +364,7 @@ class ManifestTest(unittest.TestCase):
         channels = [obj["channel"] for obj in manifest["artifacts"]["objects"]]
         self.assertEqual(channels, ["vocals", "drums", "bass", "other"])
         self.assertNotIn("null_sum", manifest["artifacts"])
-        self.assertEqual(manifest["stem_model_version"], "htdemucs-4s-v1")
+        self.assertEqual(manifest["stem_model_version"], "audio-separator-htdemucs-ft-4s-v1")
 
     def test_incomplete_separator_output_is_rejected(self):
         def broken(_path, sample_rate):
@@ -342,12 +409,10 @@ class FfmpegRoundTripTest(unittest.TestCase):
             self.assertGreater(obj["duration_ms"], 2500)
 
     def test_cli_check_reports_identity(self):
-        completed = subprocess.run(
-            [sys.executable, str(Path(__file__).with_name("stems_dsp.py")), "--check"],
-            capture_output=True,
-            check=True,
-        )
-        payload = json.loads(completed.stdout)
+        stdout = io.StringIO()
+        with mock.patch.object(stems_dsp, "validate_model_bundle"), redirect_stdout(stdout):
+            self.assertEqual(stems_dsp.main(["--check"]), 0)
+        payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["worker"], "stemsep-worker")
         self.assertEqual(payload["worker_version"], stems_dsp.WORKER_VERSION)
         self.assertIn("stems5-hybrid-v1", payload["channel_sets"])

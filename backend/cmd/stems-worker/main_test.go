@@ -64,12 +64,12 @@ func stubSeparator(t *testing.T) separateFunc {
 			key        string
 			derivation string
 		}{
-			{"vocals", fmt.Sprintf("stems/%d/htdemucs-4s-v1/vocals.opus", trackID), "separator"},
-			{"melody", fmt.Sprintf("stems/%d/htdemucs-4s-v1/other.opus", trackID), "separator"},
-			{"bass", fmt.Sprintf("stems/%d/htdemucs-4s-v1/bass.opus", trackID), "separator"},
-			{"kick", fmt.Sprintf("stems/%d/stems5-hybrid-v1/kick.opus", trackID), "dsp-crossover-lr4-180"},
-			{"perc", fmt.Sprintf("stems/%d/stems5-hybrid-v1/perc.opus", trackID), "dsp-crossover-lr4-180"},
-			{"drums", fmt.Sprintf("stems/%d/htdemucs-4s-v1/drums.opus", trackID), "separator"},
+			{"vocals", fmt.Sprintf("stems/%d/audio-separator-htdemucs-ft-4s-v1+lr4-180/vocals.opus", trackID), "separator"},
+			{"melody", fmt.Sprintf("stems/%d/audio-separator-htdemucs-ft-4s-v1+lr4-180/other.opus", trackID), "separator"},
+			{"bass", fmt.Sprintf("stems/%d/audio-separator-htdemucs-ft-4s-v1+lr4-180/bass.opus", trackID), "separator"},
+			{"kick", fmt.Sprintf("stems/%d/audio-separator-htdemucs-ft-4s-v1+lr4-180/kick.opus", trackID), "dsp-crossover-lr4-180"},
+			{"perc", fmt.Sprintf("stems/%d/audio-separator-htdemucs-ft-4s-v1+lr4-180/perc.opus", trackID), "dsp-crossover-lr4-180"},
+			{"drums", fmt.Sprintf("stems/%d/audio-separator-htdemucs-ft-4s-v1+lr4-180/drums.opus", trackID), "separator"},
 		}
 		objects := make([]manifestObject, 0, len(channels))
 		for _, channel := range channels {
@@ -100,7 +100,7 @@ func stubSeparator(t *testing.T) separateFunc {
 				NullSum: json.RawMessage(`{"pair":["kick","perc"],"against":"drums","residual_db":-120.4,"threshold_db":-80.0,"passed":true}`),
 				Energy:  json.RawMessage(`{"frame_hz":80,"frame_count":4,"encoding":"uint8-linear","channels":{"vocals":"AAAA"}}`),
 			},
-			Provenance: map[string]interface{}{"demucs_version": demucsVersion},
+			Provenance: map[string]interface{}{"inference_provider": inferenceProvider},
 		}, nil
 	}
 }
@@ -137,11 +137,14 @@ func TestHealthAdvertisesVersionedIdentity(t *testing.T) {
 	if payload["channel_set"] != "stems5-hybrid-v1" {
 		t.Fatalf("channel_set = %v", payload["channel_set"])
 	}
-	if payload["stem_model_version"] != "htdemucs-4s-v1+lr4-180" {
+	if payload["stem_model_version"] != "audio-separator-htdemucs-ft-4s-v1+lr4-180" {
 		t.Fatalf("stem_model_version = %v", payload["stem_model_version"])
 	}
-	if payload["checkpoint_sha256"] != "d9fa14133cfcc034a6758923bb3a8ca9f8dfd0b582134643bbf83f72c17576dd" {
-		t.Fatalf("checkpoint sha mismatch: %v", payload["checkpoint_sha256"])
+	if payload["inference_provider"] != inferenceProvider || payload["model_config_sha256"] != modelConfigSHA256 {
+		t.Fatalf("provider/model config mismatch: %v", payload)
+	}
+	if hashes, ok := payload["model_weight_sha256"].(map[string]string); !ok || len(hashes) != 4 {
+		t.Fatalf("model hashes = %#v, want four pinned hashes", payload["model_weight_sha256"])
 	}
 }
 
@@ -223,7 +226,7 @@ func TestSeparateUploadsEveryStemAndReturnsManifest(t *testing.T) {
 	if manifest.ChannelSet != "stems5-hybrid-v1" {
 		t.Fatalf("channel_set = %s", manifest.ChannelSet)
 	}
-	if manifest.StemModelVersion != "htdemucs-4s-v1+lr4-180" {
+	if manifest.StemModelVersion != "audio-separator-htdemucs-ft-4s-v1+lr4-180" {
 		t.Fatalf("stem_model_version = %s", manifest.StemModelVersion)
 	}
 	if manifest.SourceStorageKey != "tracks/youtube/x.mp3" {
@@ -240,15 +243,28 @@ func TestSeparateUploadsEveryStemAndReturnsManifest(t *testing.T) {
 		t.Fatalf("uploaded %d objects, want 6: %v", len(store.uploads), store.putOrder)
 	}
 	for _, key := range []string{
-		"stems/42/htdemucs-4s-v1/vocals.opus",
-		"stems/42/htdemucs-4s-v1/other.opus",
-		"stems/42/htdemucs-4s-v1/bass.opus",
-		"stems/42/htdemucs-4s-v1/drums.opus",
-		"stems/42/stems5-hybrid-v1/kick.opus",
-		"stems/42/stems5-hybrid-v1/perc.opus",
+		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/vocals.opus",
+		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/other.opus",
+		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/bass.opus",
+		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/drums.opus",
+		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/kick.opus",
+		"stems/42/audio-separator-htdemucs-ft-4s-v1+lr4-180/perc.opus",
 	} {
 		if _, ok := store.uploads[key]; !ok {
 			t.Fatalf("missing upload %s (have %v)", key, store.putOrder)
+		}
+	}
+	legacyKeys := map[string]struct{}{
+		"stems/42/htdemucs-4s-v1/vocals.opus": {},
+		"stems/42/htdemucs-4s-v1/other.opus":  {},
+		"stems/42/htdemucs-4s-v1/bass.opus":   {},
+		"stems/42/htdemucs-4s-v1/drums.opus":  {},
+		"stems/42/stems5-hybrid-v1/kick.opus": {},
+		"stems/42/stems5-hybrid-v1/perc.opus": {},
+	}
+	for key := range store.uploads {
+		if _, overlaps := legacyKeys[key]; overlaps {
+			t.Fatalf("new immutable artifact key overlaps legacy layout: %s", key)
 		}
 	}
 
@@ -308,7 +324,7 @@ func TestSeparateRejectsHelperIdentityDrift(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		manifest.StemModelVersion = "htdemucs-4s-v1+lr4-120"
+		manifest.StemModelVersion = "audio-separator-htdemucs-ft-4s-v1+lr4-120"
 		return manifest, nil
 	}
 	rec := postSeparate(t, server, `{"track_id":1,"storage_key":"tracks/a.mp3"}`, "")
@@ -353,8 +369,13 @@ func TestChannelSetModelVersionsMatchTheHelper(t *testing.T) {
 			t.Fatalf("helper does not declare model version %s", version)
 		}
 	}
-	if !bytes.Contains(helper, []byte(checkpointSHA256)) {
-		t.Fatalf("helper does not pin the verified checkpoint sha256")
+	if !bytes.Contains(helper, []byte(modelConfigSHA256)) {
+		t.Fatalf("helper does not pin the verified model config sha256")
+	}
+	for filename, hash := range modelWeightSHA256 {
+		if !bytes.Contains(helper, []byte(filename)) || !bytes.Contains(helper, []byte(hash)) {
+			t.Fatalf("helper does not pin %s", filename)
+		}
 	}
 	if bytes.Contains(helper, []byte(`"hihat"`)) {
 		t.Fatal("helper still references the retired hihat channel name")

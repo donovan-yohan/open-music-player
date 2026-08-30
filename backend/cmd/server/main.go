@@ -701,6 +701,24 @@ func main() {
 		case stemsServiceClient == nil:
 			log.Info(ctx, "Stem separation unavailable: worker client not configured", nil)
 		default:
+			// Do this before opening the queue or exposing trigger handlers. A
+			// reachable but stale/misconfigured worker would otherwise accept jobs
+			// whose artifact identity this server cannot safely persist.
+			healthCtx, cancelStemsHealth := context.WithTimeout(ctx, 15*time.Second)
+			stemsInfo, healthErr := stemsServiceClient.Info(healthCtx)
+			cancelStemsHealth()
+			if healthErr != nil {
+				log.Error(ctx, "Stem separation unavailable: worker health check failed", map[string]interface{}{
+					"base_url": cfg.StemsBaseURL,
+				}, healthErr)
+				break
+			}
+			if healthErr = stems.ValidateInfo(stemsInfo); healthErr != nil {
+				log.Error(ctx, "Stem separation unavailable: worker identity does not match this server", map[string]interface{}{
+					"base_url": cfg.StemsBaseURL,
+				}, healthErr)
+				break
+			}
 			stemsQueue, queueErr := stems.NewQueue(cfg.RedisURL, stems.QueueConfig{MaxDepth: cfg.StemsQueueMaxDepth})
 			if queueErr != nil {
 				log.Error(ctx, "Stem separation unavailable: queue could not be initialized", nil, queueErr)

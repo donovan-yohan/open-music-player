@@ -37,12 +37,13 @@ const (
 	defaultAddr       = ":18290"
 	defaultDSPHelper  = "/app/stems_dsp.py"
 	workerName        = "stemsep-worker"
-	workerVersion     = "2026-08-03-1"
-	demucsVersion     = "4.1.0"
+	workerVersion     = "2026-08-30-1"
+	inferenceProvider = "audio-separator"
+	inferenceVersion  = "0.47.0"
 	torchVersion      = "2.8.0"
-	checkpointRepo    = "adefossez/HTDemucs"
-	checkpointFile    = "955717e8.safetensors"
-	checkpointSHA256  = "d9fa14133cfcc034a6758923bb3a8ca9f8dfd0b582134643bbf83f72c17576dd"
+	modelFamily       = "demucs"
+	modelName         = "htdemucs_ft"
+	modelConfigSHA256 = "69470b8c1bbd674437b51bc9fb491327a10ab0396b702c93389b9cf750016346"
 	defaultChannelSet = "stems5-hybrid-v1"
 
 	maxRequestBytes       = 1 << 20
@@ -54,8 +55,22 @@ const (
 // stems_dsp.py; the readiness probe cross-checks them at startup so a helper
 // swap cannot silently change the identity this service advertises.
 var channelSetModelVersions = map[string]string{
-	"stems4-demucs-v1": "htdemucs-4s-v1",
-	"stems5-hybrid-v1": "htdemucs-4s-v1+lr4-180",
+	"stems4-demucs-v1": "audio-separator-htdemucs-ft-4s-v1",
+	"stems5-hybrid-v1": "audio-separator-htdemucs-ft-4s-v1+lr4-180",
+}
+
+var modelWeightSHA256 = map[string]string{
+	"f7e0c4bc-ba3fe64a.th": "ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066",
+	"d12395a8-e57c48e6.th": "e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6",
+	"92cfc3b6-ef3bcb9c.th": "ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2",
+	"04573f0d-f3cf25b2.th": "f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49",
+}
+
+var outputMapping = map[string]string{
+	"vocals": "omp-vocals.wav",
+	"drums":  "omp-drums.wav",
+	"bass":   "omp-bass.wav",
+	"other":  "omp-other.wav",
 }
 
 type separateRequest struct {
@@ -131,10 +146,9 @@ func main() {
 		log.Fatalf("storage ping failed: %v", err)
 	}
 
-	// Concurrency is hard-capped at 2. demucs peaks around 2.3 GB RSS on the
-	// bench host, so a third slot would trade separation throughput for the
-	// analyzer and download workers being starved or OOM-killed.
-	concurrency := clampInt(envInt("STEMS_CONCURRENCY", 1), 1, 2)
+	// Keep this new provider/model bag serialized until representative three-track
+	// CPU RSS and realtime-factor evidence justifies a higher limit.
+	concurrency := 1
 	server := &stemsServer{
 		storage:   store,
 		authToken: strings.TrimSpace(os.Getenv("STEMS_AUTH_TOKEN")),
@@ -164,18 +178,22 @@ func main() {
 
 func healthPayload() map[string]any {
 	return map[string]any{
-		"status":              "healthy",
-		"worker":              workerName,
-		"worker_version":      workerVersion,
-		"channel_set":         defaultChannelSet,
-		"channel_sets":        []string{"stems4-demucs-v1", "stems5-hybrid-v1"},
-		"stem_model_version":  channelSetModelVersions[defaultChannelSet],
-		"stem_model_versions": channelSetModelVersions,
-		"demucs_version":      demucsVersion,
-		"torch_version":       torchVersion,
-		"checkpoint_repo":     checkpointRepo,
-		"checkpoint_file":     checkpointFile,
-		"checkpoint_sha256":   checkpointSHA256,
+		"status":                     "healthy",
+		"worker":                     workerName,
+		"worker_version":             workerVersion,
+		"channel_set":                defaultChannelSet,
+		"channel_sets":               []string{"stems4-demucs-v1", "stems5-hybrid-v1"},
+		"stem_model_version":         channelSetModelVersions[defaultChannelSet],
+		"stem_model_versions":        channelSetModelVersions,
+		"inference_provider":         inferenceProvider,
+		"inference_provider_version": inferenceVersion,
+		"torch_version":              torchVersion,
+		"model_family":               modelFamily,
+		"model_name":                 modelName,
+		"model_config_sha256":        modelConfigSHA256,
+		"model_weight_sha256":        modelWeightSHA256,
+		"output_mapping":             outputMapping,
+		"device":                     "cpu",
 	}
 }
 
@@ -415,7 +433,14 @@ func validateDSPRuntime(ctx context.Context, helperPath string) error {
 		Worker            string            `json:"worker"`
 		WorkerVersion     string            `json:"worker_version"`
 		StemModelVersions map[string]string `json:"stem_model_versions"`
-		CheckpointSHA256  string            `json:"checkpoint_sha256"`
+		InferenceProvider string            `json:"inference_provider"`
+		InferenceVersion  string            `json:"inference_provider_version"`
+		ModelFamily       string            `json:"model_family"`
+		ModelName         string            `json:"model_name"`
+		ModelConfigSHA256 string            `json:"model_config_sha256"`
+		ModelWeightSHA256 map[string]string `json:"model_weight_sha256"`
+		OutputMapping     map[string]string `json:"output_mapping"`
+		Device            string            `json:"device"`
 		Ffmpeg            bool              `json:"ffmpeg"`
 	}
 	if err := json.Unmarshal(stdout, &identity); err != nil {
@@ -427,8 +452,27 @@ func validateDSPRuntime(ctx context.Context, helperPath string) error {
 			identity.Worker, identity.WorkerVersion, workerName, workerVersion,
 		)
 	}
-	if identity.CheckpointSHA256 != checkpointSHA256 {
-		return fmt.Errorf("stems DSP helper checkpoint sha256 %q does not match the pinned value", identity.CheckpointSHA256)
+	if identity.InferenceProvider != inferenceProvider || identity.InferenceVersion != inferenceVersion {
+		return fmt.Errorf("stems DSP helper inference provider %q/%q does not match %q/%q", identity.InferenceProvider, identity.InferenceVersion, inferenceProvider, inferenceVersion)
+	}
+	if identity.ModelFamily != modelFamily || identity.ModelName != modelName || identity.Device != "cpu" {
+		return fmt.Errorf("stems DSP helper model family/name/device %q/%q/%q does not match %q/%q/cpu", identity.ModelFamily, identity.ModelName, identity.Device, modelFamily, modelName)
+	}
+	if identity.ModelConfigSHA256 != modelConfigSHA256 {
+		return fmt.Errorf("stems DSP helper model config sha256 %q does not match the pinned value", identity.ModelConfigSHA256)
+	}
+	if len(identity.ModelWeightSHA256) != len(modelWeightSHA256) || len(identity.OutputMapping) != len(outputMapping) {
+		return fmt.Errorf("stems DSP helper reports incomplete model hashes or output mapping")
+	}
+	for filename, expectedHash := range modelWeightSHA256 {
+		if identity.ModelWeightSHA256[filename] != expectedHash {
+			return fmt.Errorf("stems DSP helper model hash for %s does not match pinned value", filename)
+		}
+	}
+	for channel, filename := range outputMapping {
+		if identity.OutputMapping[channel] != filename {
+			return fmt.Errorf("stems DSP helper output mapping for %s does not match pinned value", channel)
+		}
 	}
 	for set, version := range channelSetModelVersions {
 		if identity.StemModelVersions[set] != version {
