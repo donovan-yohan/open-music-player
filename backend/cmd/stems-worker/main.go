@@ -501,18 +501,6 @@ func env(key, fallback string) string {
 	return fallback
 }
 
-func envInt(key string, fallback int) int {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return fallback
-	}
-	return parsed
-}
-
 func envBool(key string, fallback bool) bool {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
@@ -523,14 +511,4 @@ func envBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return parsed
-}
-
-func clampInt(value, min, max int) int {
-	if value < min {
-		return min
-	}
-	if value > max {
-		return max
-	}
-	return value
 }
