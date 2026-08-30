@@ -110,10 +110,11 @@ class StemChannelSet {
   int indexOf(String channelId) =>
       channels.indexWhere((channel) => channel.id == channelId);
 
-  /// Demucs four-stem output, used directly.
+  /// Coherent four-stem output produced through the pinned audio-separator
+  /// provider. The legacy channel-set id remains stable for persisted edits.
   static const StemChannelSet stems4Demucs = StemChannelSet._(
     id: 'stems4-demucs-v1',
-    stemModelVersion: 'htdemucs-4s-v1',
+    stemModelVersion: 'audio-separator-htdemucs-ft-4s-v1',
     channels: <StemChannelDescriptor>[
       StemChannelDescriptor(
         id: 'vocals',
@@ -138,12 +139,12 @@ class StemChannelSet {
     ],
   );
 
-  /// Five-channel hybrid set: demucs four-stem plus a low/high split of the
+  /// Five-channel hybrid set: coherent four-stem output plus a low/high split of the
   /// drum stem. `hihat` is retired — `perc` is the canonical wire name — and
   /// `melody` is the alias of demucs `other`.
   static const StemChannelSet stems5Hybrid = StemChannelSet._(
     id: 'stems5-hybrid-v1',
-    stemModelVersion: 'htdemucs-4s-v1+lr4-180',
+    stemModelVersion: 'audio-separator-htdemucs-ft-4s-v1+lr4-180',
     channels: <StemChannelDescriptor>[
       StemChannelDescriptor(
         id: 'vocals',
@@ -153,7 +154,7 @@ class StemChannelSet {
       StemChannelDescriptor(
         id: 'melody',
         label: 'Melody',
-        honestyCopy: 'Synths, guitars and keys — the demucs "other" stem.',
+        honestyCopy: 'Synths, guitars and keys — the model "other" stem.',
         modelSourceChannel: 'other',
       ),
       StemChannelDescriptor(

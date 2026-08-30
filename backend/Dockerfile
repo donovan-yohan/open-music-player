@@ -134,22 +134,25 @@ RUN set -eu; \
 
 RUN python -m unittest stems_dsp_test
 
-# The 5-stem separation runtime. Sibling of analyzer-runtime: same python base,
-# same torch-cpu pin, same "bake the model at build time behind a pinned hash"
-# rule. demucs 4.1.0 resolves htdemucs through huggingface-hub as safetensors,
-# so the bake targets the HF cache rather than a torch-hub .th URL.
+# The 5-stem separation runtime. audio-separator is the pinned inference
+# provider; htdemucs_ft remains a coherent Demucs-family four-stem model. Its
+# mutable UVR registry is preseeded, while the local-only adapter prevents a
+# runtime network refresh or model download.
 FROM python:3.11-slim-bookworm AS stems-runtime
 
 WORKDIR /app
 
-# Verified sha256 of the htdemucs checkpoint demucs 4.1.0 resolves. NOTE: the
-# familiar "955717e8" string is the demucs model SIGNATURE, not a hash; using it
-# as an expected sha256 would fail this build.
-ARG DEMUCS_CHECKPOINT_REPO="adefossez/HTDemucs"
-ARG DEMUCS_CHECKPOINT_FILE="955717e8.safetensors"
-ARG DEMUCS_CHECKPOINT_SHA256="d9fa14133cfcc034a6758923bb3a8ca9f8dfd0b582134643bbf83f72c17576dd"
+ARG AUDIO_SEPARATOR_WHEEL_URL="https://files.pythonhosted.org/packages/8c/ba/24b4a5d2147acf35012758c3de7d910399a55a8a4aa74f7a039af530a00d/audio_separator-0.47.0-py3-none-any.whl"
+ARG AUDIO_SEPARATOR_WHEEL_SHA256="756f3b620d78e581a117c6b6d96fe4f0eafc3432ab2824cb11532b4868bfd9a8"
+ARG DOWNLOAD_CHECKS_SHA256="d3622e1fa19c161d3cf704927711b453d593a3f1eb0f2e0838c3136907935151"
+ARG HTDEMUCS_FT_CONFIG_SHA256="69470b8c1bbd674437b51bc9fb491327a10ab0396b702c93389b9cf750016346"
+ARG HTDEMUCS_FT_F7E0C4BC_SHA256="ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066"
+ARG HTDEMUCS_FT_D12395A8_SHA256="e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6"
+ARG HTDEMUCS_FT_92CFC3B6_SHA256="ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2"
+ARG HTDEMUCS_FT_04573F0D_SHA256="f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49"
 
-ENV HF_HOME=/app/hf-cache \
+ENV AUDIO_SEPARATOR_MODEL_DIR=/app/models \
+    STEMS_MODEL_DIR=/app/models \
     STEMS_DSP_HELPER=/app/stems_dsp.py \
     STEMS_CONCURRENCY=1
 
@@ -157,36 +160,62 @@ RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        build-essential \
         ffmpeg \
+        libsamplerate0-dev \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m pip install --no-cache-dir \
+# The complete CPython 3.11/Linux x86_64 closure is committed with the exact
+# artifact hash selected for this image. diffq is source-only; its sdist and
+# Cython/setuptools/wheel build prerequisites are part of the same hash lock.
+COPY cmd/stems-worker/requirements-runtime.txt /tmp/stems-runtime-requirements.txt
+RUN printf '%s\n' \
+        'Cython==3.3.0 --hash=sha256:e6035b5231a9316edc19d6415f4296fd1d0370e2a165a714b3edc167b9ca00e1' \
+        'setuptools==79.0.1 --hash=sha256:e147c0549f27767ba362f9da434eab9c5dc0045d5304feb602a0af001089fc51' \
+        'wheel==0.46.3 --hash=sha256:4b399d56c9d9338230118d705d9737a2a468ccca63d5e813e2a4fc7815d8bc4d' \
+        > /tmp/stems-build-requirements.txt \
+    && python -m pip install --no-cache-dir --require-hashes --no-deps \
         --index-url https://download.pytorch.org/whl/cpu \
-        "torch==2.8.0" \
-    && python -m pip install --no-cache-dir \
-        "demucs==4.1.0" \
-        "numpy==2.4.6" \
-        "scipy==1.16.3" \
-        "soundfile==0.13.1"
+        --extra-index-url https://pypi.org/simple \
+        -r /tmp/stems-build-requirements.txt \
+    && python -m pip install --no-cache-dir --require-hashes --no-build-isolation \
+        --index-url https://download.pytorch.org/whl/cpu \
+        --extra-index-url https://pypi.org/simple \
+        -r /tmp/stems-runtime-requirements.txt \
+    && python -m pip check
 
-# Bake the checkpoint into the image behind an explicit sha256 assert, then pin
-# the runtime offline so a running container can never fetch weights.
-RUN mkdir -p /app/hf-cache \
-    && python -c "from demucs.pretrained import get_model; model = get_model('htdemucs'); assert sorted(model.sources) == ['bass', 'drums', 'other', 'vocals'], model.sources; print('baked htdemucs sources', model.sources)" \
-    && CKPT="$(find /app/hf-cache -name "$DEMUCS_CHECKPOINT_FILE" -print -quit)" \
-    && test -n "$CKPT" \
-    && echo "$DEMUCS_CHECKPOINT_SHA256  $CKPT" | sha256sum -c - \
-    && echo "$CKPT" > /app/models-checkpoint.path
+# Bake every local repo member explicitly. audio-separator checks file existence
+# before trying its mutable registry; OMP's adapter never calls that loader path
+# and runtime checksum verification is a second fail-closed backstop.
+RUN set -eu; \
+    mkdir -p /app/models /tmp/audio-separator-wheel; \
+    curl -fsSL "$AUDIO_SEPARATOR_WHEEL_URL" -o /tmp/audio-separator-wheel/audio_separator-0.47.0-py3-none-any.whl; \
+    echo "$AUDIO_SEPARATOR_WHEEL_SHA256  /tmp/audio-separator-wheel/audio_separator-0.47.0-py3-none-any.whl" | sha256sum -c -; \
+    python -m pip install --no-cache-dir --no-deps /tmp/audio-separator-wheel/audio_separator-0.47.0-py3-none-any.whl; \
+    python -m pip check; \
+    curl -fsSL https://raw.githubusercontent.com/TRvlvr/application_data/main/filelists/download_checks.json -o /app/models/download_checks.json; \
+    curl -fsSL https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/htdemucs_ft.yaml -o /app/models/htdemucs_ft.yaml; \
+    curl -fsSL https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/f7e0c4bc-ba3fe64a.th -o /app/models/f7e0c4bc-ba3fe64a.th; \
+    curl -fsSL https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/d12395a8-e57c48e6.th -o /app/models/d12395a8-e57c48e6.th; \
+    curl -fsSL https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/92cfc3b6-ef3bcb9c.th -o /app/models/92cfc3b6-ef3bcb9c.th; \
+    curl -fsSL https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/04573f0d-f3cf25b2.th -o /app/models/04573f0d-f3cf25b2.th; \
+    echo "$DOWNLOAD_CHECKS_SHA256  /app/models/download_checks.json" | sha256sum -c -; \
+    echo "$HTDEMUCS_FT_CONFIG_SHA256  /app/models/htdemucs_ft.yaml" | sha256sum -c -; \
+    echo "$HTDEMUCS_FT_F7E0C4BC_SHA256  /app/models/f7e0c4bc-ba3fe64a.th" | sha256sum -c -; \
+    echo "$HTDEMUCS_FT_D12395A8_SHA256  /app/models/d12395a8-e57c48e6.th" | sha256sum -c -; \
+    echo "$HTDEMUCS_FT_92CFC3B6_SHA256  /app/models/92cfc3b6-ef3bcb9c.th" | sha256sum -c -; \
+    echo "$HTDEMUCS_FT_04573F0D_SHA256  /app/models/04573f0d-f3cf25b2.th" | sha256sum -c -; \
+    rm -rf /tmp/audio-separator-wheel
 
 COPY cmd/stems-worker/stems_dsp.py /app/stems_dsp.py
 COPY cmd/stems-worker/stems_dsp_test.py /app/stems_dsp_test.py
 
 RUN python -m unittest stems_dsp_test
 RUN python /app/stems_dsp.py --check \
-    && python -c "import json,subprocess,sys; payload=json.loads(subprocess.check_output([sys.executable,'/app/stems_dsp.py','--check'])); assert payload['worker']=='stemsep-worker', payload; assert payload['checkpoint_sha256']=='$DEMUCS_CHECKPOINT_SHA256', payload; assert payload['demucs_version']=='4.1.0', payload; assert payload['ffmpeg'], payload; print('stems identity ok', payload['worker_version'])"
+    && python -c "import json,subprocess,sys; payload=json.loads(subprocess.check_output([sys.executable,'/app/stems_dsp.py','--check'])); assert payload['worker']=='stemsep-worker', payload; assert payload['inference_provider']=='audio-separator', payload; assert payload['inference_provider_version']=='0.47.0', payload; assert payload['model_config_sha256']=='$HTDEMUCS_FT_CONFIG_SHA256', payload; assert len(payload['model_weight_sha256']) == 4, payload; assert payload['ffmpeg'], payload; print('stems identity ok', payload['worker_version'])"
 
-# Real end-to-end separation smoke on synthesized audio: four demucs stems, the
+# Real end-to-end separation smoke on synthesized audio: four coherent model stems, the
 # crossover null-sum bound, and one uniform libopus configuration across every
 # emitted file. These are the gates the spec makes acceptance, run at build time
 # so a checkpoint or encoder-flag drift cannot ship.
@@ -213,7 +242,8 @@ signatures = {stems_dsp.encoder_flag_signature(stems_dsp.opus_encode_argv(obj['p
 assert len(signatures) == 1, signatures; \
 assert manifest['artifacts']['codec']['sample_rate_hz'] == 48000, manifest['artifacts']['codec']; \
 assert manifest['artifacts']['energy']['frame_hz'] == 80, manifest['artifacts']['energy']; \
-assert manifest['provenance']['checkpoint']['sha256'] == '$DEMUCS_CHECKPOINT_SHA256', manifest['provenance']; \
+assert manifest['provenance']['inference_provider']['name'] == 'audio-separator', manifest['provenance']; \
+assert manifest['provenance']['model']['config']['sha256'] == '$HTDEMUCS_FT_CONFIG_SHA256', manifest['provenance']; \
 print('stems separation smoke ok', null_sum['residual_db'], 'dB')" \
     && rm -rf /tmp/stems-smoke.wav /tmp/stems-smoke.json /tmp/stems-smoke
 
@@ -223,10 +253,11 @@ RUN useradd --system --uid 10001 --create-home appuser \
     && mkdir -p /app/data /app/tmp \
     && chown -R appuser:appuser /app
 
-# Offline at runtime: the checkpoint is already baked, and a container that can
-# reach huggingface.co could silently drift off the pinned hash.
+# Offline at runtime: every model/registry artifact is baked and the adapter
+# rejects any provider path that would fetch a replacement.
 ENV HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1
+    TRANSFORMERS_OFFLINE=1 \
+    PIP_NO_INDEX=1
 
 USER appuser
 EXPOSE 18290

@@ -31,7 +31,7 @@ void main() {
       const set = StemChannelSet.stems5Hybrid;
 
       expect(set.id, 'stems5-hybrid-v1');
-      expect(set.stemModelVersion, 'htdemucs-4s-v1+lr4-180');
+      expect(set.stemModelVersion, 'audio-separator-htdemucs-ft-4s-v1+lr4-180');
       expect(set.channelIds, ['vocals', 'melody', 'bass', 'kick', 'perc']);
       expect(set.contains('hihat'), isFalse,
           reason: 'hihat is retired; perc is canonical');
@@ -42,7 +42,7 @@ void main() {
       const set = StemChannelSet.stems4Demucs;
 
       expect(set.id, 'stems4-demucs-v1');
-      expect(set.stemModelVersion, 'htdemucs-4s-v1');
+      expect(set.stemModelVersion, 'audio-separator-htdemucs-ft-4s-v1');
       expect(set.channelIds, ['vocals', 'drums', 'bass', 'other']);
     });
 
@@ -80,12 +80,26 @@ void main() {
       expect(decoded.toJson(), source.toJson());
       expect(decoded.schemaVersion, 1);
       expect(decoded.channelSet.id, 'stems5-hybrid-v1');
-      expect(decoded.stemModelVersion, 'htdemucs-4s-v1+lr4-180');
+      expect(decoded.stemModelVersion, 'audio-separator-htdemucs-ft-4s-v1+lr4-180');
       expect(decoded.sourceFileHash, 'sha256:deadbeef');
       expect(decoded.beatGridRef?.analysisRef, 'analysis-77');
       expect(decoded.eventsFor('bass').single.beatIndex, isNull,
           reason: 'bass event carries no beat index');
       expect(decoded.eventsFor('vocals').single.beatIndex, 32);
+    });
+
+    test('keeps legacy model identity and marks it changed', () {
+      final decoded = StemEdits.fromJson(<String, dynamic>{
+        'schemaVersion': 1,
+        'channelSet': 'stems5-hybrid-v1',
+        'stemModelVersion': 'htdemucs-4s-v1+lr4-180',
+        'sourceFileHash': 'sha256:old',
+        'events': const <Map<String, dynamic>>[],
+      });
+
+      expect(decoded.stemModelVersion, 'htdemucs-4s-v1+lr4-180');
+      expect(decoded.hasCanonicalStemModelVersion, isFalse);
+      expect(decoded.toJson()['stemModelVersion'], 'htdemucs-4s-v1+lr4-180');
     });
 
     test('default ramp is written explicitly and stays click-safe', () {
@@ -107,7 +121,7 @@ void main() {
       final json = <String, dynamic>{
         'schemaVersion': 1,
         'channelSet': 'stems5-hybrid-v1',
-        'stemModelVersion': 'htdemucs-4s-v1+lr4-180',
+        'stemModelVersion': 'audio-separator-htdemucs-ft-4s-v1+lr4-180',
         'sourceFileHash': 'sha256:deadbeef',
         'futureTopLevel': {'nested': true},
         'beatGridRef': {
