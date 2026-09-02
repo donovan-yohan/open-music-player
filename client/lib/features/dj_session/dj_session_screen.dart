@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../app/theme.dart';
 import '../../core/api/api_client.dart';
 import '../../providers/queue_provider.dart';
+import '../dj/dj_system_overlay_style.dart';
 import 'dj_session_filters.dart';
 import 'dj_session_models.dart';
 import 'dj_session_service.dart';
@@ -41,6 +42,12 @@ class DjSessionScreen extends StatefulWidget {
   @override
   State<DjSessionScreen> createState() => _DjSessionScreenState();
 }
+
+/// Server id of the flag-gated harmonic block. It is not a themed block: the
+/// pin endpoint's enum is deliberately frozen at the three themes, so the pin
+/// affordance is hidden here rather than offering a control the server rejects.
+/// See docs/adr/0008-harmonic-lineup-candidate-composition.md.
+const djHarmonicBlockId = 'harmonic';
 
 class _DjSessionScreenState extends State<DjSessionScreen> {
   static const _coachMarkSeenKey = 'dj_session.coach_mark_seen';
@@ -111,6 +118,21 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   bool get _isPinBusy =>
       _pendingPinBlockId != null || _loadingBlockIds.isNotEmpty;
 
+  /// The queue provider this screen observes for its anchor. QueueProvider is
+  /// hydrated lazily by whichever surface loads it first, so a cold start into
+  /// the DJ session reads an empty snapshot and omits anchorTrackId entirely.
+  QueueProvider? _queue;
+
+  /// True once a non-empty queue snapshot has been seen. Until then, the
+  /// first snapshot to arrive re-issues the lineup load so the anchor is
+  /// actually sent — this screen still never fetches the queue itself.
+  bool _anchorSettled = false;
+
+  /// True while this screen is the one mutating the queue. Its own enqueues
+  /// already know the anchor, and reloading the lineup under the listener's
+  /// tap would swap the set they just acted on.
+  bool _mutatingQueue = false;
+
   @override
   void initState() {
     super.initState();
@@ -118,15 +140,31 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
     _randomSeed = widget.randomSeed ?? () => Random().nextInt(1 << 31);
     _clock = widget.clock ?? DateTime.now;
     _requestController = TextEditingController();
+    final queue = context.read<QueueProvider>();
+    _queue = queue;
+    _anchorSettled = queue.queue.tracks.isNotEmpty;
+    queue.addListener(_onQueueChanged);
     _loadAll();
     _maybeShowCoachMark();
   }
 
   @override
   void dispose() {
+    _queue?.removeListener(_onQueueChanged);
     _requestController.dispose();
     _requestFocusNode.dispose();
     super.dispose();
+  }
+
+  /// Reloads the lineup the first time the queue hydrates, so a session opened
+  /// before the queue snapshot existed still gets a queue-tail-anchored lineup.
+  /// Fires at most once, and never for this screen's own queue mutations.
+  void _onQueueChanged() {
+    if (!mounted || _anchorSettled) return;
+    if (_queue?.queue.tracks.isEmpty ?? true) return;
+    _anchorSettled = true;
+    if (_mutatingQueue) return;
+    _loadAll();
   }
 
   List<DjLineupBlock> get _visibleBlocks =>
@@ -145,6 +183,17 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
       _loadedAllOnce &&
       _blocks.every((block) => block.tracks.isEmpty);
 
+  /// Last enqueued track id from the queue snapshot this screen already has.
+  /// The DJ session surface stays a discovery surface: it never triggers a
+  /// queue fetch and never becomes a queue authority.
+  int? _queueTailTrackId() {
+    if (!mounted) return null;
+    final tracks = context.read<QueueProvider>().queue.tracks;
+    if (tracks.isEmpty) return null;
+    final tail = tracks.last;
+    return int.tryParse(tail.playbackTrackId ?? tail.id);
+  }
+
   DjLineupRequest _requestForFilters({
     String? block,
     List<int> excludeIds = const [],
@@ -158,6 +207,7 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
       block: block,
       excludeIds: excludeIds,
       seed: seed,
+      anchorTrackId: _queueTailTrackId(),
     );
   }
 
@@ -365,9 +415,17 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   Future<void> _unlockFromBanner() async {
     final pinnedId = _pinnedBlockId;
     if (pinnedId == null) return;
+    // The fallback must carry the pinned id, not the first visible block:
+    // with the harmonic block leading the lineup, unlocking would otherwise
+    // POST a pin for an unpinnable block instead of DELETEing the real one.
     await _togglePin(_visibleBlocks.firstWhere(
       (item) => item.id == pinnedId,
-      orElse: () => _visibleBlocks.first,
+      orElse: () => DjLineupBlock(
+        id: pinnedId,
+        title: _titleOf(pinnedId),
+        reason: '',
+        tracks: const [],
+      ),
     ));
   }
 
@@ -378,6 +436,15 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   Future<void> _enqueueSession() async {
     if (_isAnySectionLoading) return;
     final queue = context.read<QueueProvider>();
+    _mutatingQueue = true;
+    try {
+      await _enqueueSessionThrough(queue);
+    } finally {
+      _mutatingQueue = false;
+    }
+  }
+
+  Future<void> _enqueueSessionThrough(QueueProvider queue) async {
     // Seed the provider's view of the queue so pre-existing tracks aren't
     // re-added; a failed load falls back to an empty snapshot (append-only).
     await queue.loadQueue();
@@ -423,7 +490,12 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
 
   Future<void> _enqueue(DjLineupTrack track, {bool playNext = false}) async {
     final queue = context.read<QueueProvider>();
-    await queue.addToQueue([track.id.toString()], playNext: playNext);
+    _mutatingQueue = true;
+    try {
+      await queue.addToQueue([track.id.toString()], playNext: playNext);
+    } finally {
+      _mutatingQueue = false;
+    }
     if (!mounted) return;
 
     final messenger = ScaffoldMessenger.of(context);
@@ -574,7 +646,9 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final reducedMotion = MediaQuery.disableAnimationsOf(context);
-    return Scaffold(
+    // Both DJ routes annotate the same deck-surface overlay style so the
+    // status bar cannot render light-on-light here (#415).
+    final scaffold = Scaffold(
       body: SafeArea(
         child: Stack(
           children: [
@@ -715,6 +789,10 @@ class _DjSessionScreenState extends State<DjSessionScreen> {
           ],
         ),
       ),
+    );
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: djSystemOverlayStyle(context),
+      child: scaffold,
     );
   }
 
@@ -1030,13 +1108,16 @@ class _LineupBlockSection extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              _PinButton(
-                blockId: block.id,
-                isPinned: isPinned,
-                pending: pinPending,
-                disabled: pinBlockedByOther || isLoading,
-                onTogglePin: onTogglePin,
-              ),
+              // The harmonic block cannot be pinned: POST /dj/pin validates
+              // against the frozen three-theme enum and 400s on 'harmonic'.
+              if (block.id != djHarmonicBlockId)
+                _PinButton(
+                  blockId: block.id,
+                  isPinned: isPinned,
+                  pending: pinPending,
+                  disabled: pinBlockedByOther || isLoading,
+                  onTogglePin: onTogglePin,
+                ),
               Tooltip(
                 message: 'Swap these tracks',
                 child: TextButton.icon(

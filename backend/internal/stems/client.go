@@ -62,13 +62,20 @@ type ServiceClient struct {
 
 // Info is the versioned identity advertised by the worker health endpoint.
 type Info struct {
-	Status           string `json:"status"`
-	Worker           string `json:"worker"`
-	WorkerVersion    string `json:"worker_version"`
-	ChannelSet       string `json:"channel_set"`
-	StemModelVersion string `json:"stem_model_version"`
-	DemucsVersion    string `json:"demucs_version"`
-	CheckpointSHA256 string `json:"checkpoint_sha256"`
+	Status                   string            `json:"status"`
+	Worker                   string            `json:"worker"`
+	WorkerVersion            string            `json:"worker_version"`
+	ChannelSet               string            `json:"channel_set"`
+	StemModelVersion         string            `json:"stem_model_version"`
+	StemModelVersions        map[string]string `json:"stem_model_versions"`
+	InferenceProvider        string            `json:"inference_provider"`
+	InferenceProviderVersion string            `json:"inference_provider_version"`
+	ModelFamily              string            `json:"model_family"`
+	ModelName                string            `json:"model_name"`
+	ModelConfigSHA256        string            `json:"model_config_sha256"`
+	ModelWeightSHA256        map[string]string `json:"model_weight_sha256"`
+	OutputMapping            map[string]string `json:"output_mapping"`
+	Device                   string            `json:"device"`
 }
 
 // Request is the POST /separate body.
@@ -211,6 +218,51 @@ func (c *ServiceClient) Info(ctx context.Context) (Info, error) {
 		return Info{}, errors.New("stems health response missing model identity")
 	}
 	return info, nil
+}
+
+// ValidateInfo is the startup boundary for optional separation: no queue
+// consumer or trigger handler may start unless the remote worker advertises the
+// exact immutable artifact identity this API binary will persist.
+func ValidateInfo(info Info) error {
+	if info.Worker != WorkerName || info.WorkerVersion != WorkerVersion {
+		return fmt.Errorf("stems worker identity %q/%q does not match %q/%q", info.Worker, info.WorkerVersion, WorkerName, WorkerVersion)
+	}
+	if info.ChannelSet != DefaultChannelSet {
+		return fmt.Errorf("stems worker default channel set %q does not match %q", info.ChannelSet, DefaultChannelSet)
+	}
+	if info.StemModelVersion != StemModelVersionStems5 {
+		return fmt.Errorf("stems worker default model version %q does not match %q", info.StemModelVersion, StemModelVersionStems5)
+	}
+	for channelSet, want := range stemModelVersions {
+		if got := info.StemModelVersions[channelSet]; got != want {
+			return fmt.Errorf("stems worker model version for %q is %q, want %q", channelSet, got, want)
+		}
+	}
+	if info.InferenceProvider != InferenceProvider || info.InferenceProviderVersion != InferenceProviderVersion {
+		return fmt.Errorf("stems worker inference provider is %q/%q, want %q/%q", info.InferenceProvider, info.InferenceProviderVersion, InferenceProvider, InferenceProviderVersion)
+	}
+	if info.ModelFamily != ModelFamily || info.ModelName != ModelName || info.ModelConfigSHA256 != ModelConfigSHA256 {
+		return fmt.Errorf("stems worker model identity is %q/%q/%q, want %q/%q/%q", info.ModelFamily, info.ModelName, info.ModelConfigSHA256, ModelFamily, ModelName, ModelConfigSHA256)
+	}
+	if !sameStringMap(info.ModelWeightSHA256, expectedModelWeightSHA256) {
+		return errors.New("stems worker model weight hashes do not match pinned bundle")
+	}
+	if !sameStringMap(info.OutputMapping, expectedOutputMapping) || info.Device != ModelDevice {
+		return errors.New("stems worker output mapping or device does not match pinned identity")
+	}
+	return nil
+}
+
+func sameStringMap(got, want map[string]string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for key, expected := range want {
+		if got[key] != expected {
+			return false
+		}
+	}
+	return true
 }
 
 // Separate runs one separation and returns the artifact manifest.

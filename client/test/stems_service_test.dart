@@ -47,7 +47,7 @@ class _FakeApiClient extends ApiClient {
 Map<String, dynamic> _readyBody() => {
       'trackId': 42,
       'channelSet': 'stems5-hybrid-v1',
-      'stemModelVersion': 'htdemucs-4s-v1+lr4-180',
+      'stemModelVersion': 'audio-separator-htdemucs-ft-4s-v1+lr4-180',
       'status': 'ready',
       'artifacts': {
         'objects': [
@@ -80,7 +80,7 @@ void main() {
       expect(stems.status, StemsStatus.ready);
       expect(stems.isReady, isTrue);
       expect(stems.channels, ['vocals', 'melody', 'bass', 'kick', 'perc']);
-      expect(stems.stemModelVersion, 'htdemucs-4s-v1+lr4-180');
+      expect(stems.stemModelVersion, 'audio-separator-htdemucs-ft-4s-v1+lr4-180');
     });
 
     test('a ready row with no manifest objects is not reported ready',

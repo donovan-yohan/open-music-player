@@ -10,6 +10,8 @@ services:
     environment:
       SERVER_ADDR: ":8080"
       ENABLE_PLAYLIST_MIX: ${ENABLE_PLAYLIST_MIX:-false}
+      ENABLE_LISTENBRAINZ_MIX: ${ENABLE_LISTENBRAINZ_MIX:-false}
+      ENABLE_HARMONIC_LINEUP: ${ENABLE_HARMONIC_LINEUP:-false}
 
       # Discovery source budgets. Lower metadata concurrency if this host is RAM-bound.
       DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS: ${DISCOVERY_PER_PROVIDER_TIMEOUT_SECONDS:-8}
@@ -126,7 +128,7 @@ services:
       - omp-lowmem-network
 
   # Stem separation worker. Behind a profile because the image bakes torch-cpu,
-  # demucs, and a pinned checkpoint (multi-GB), and because a running container
+  # audio-separator, its pinned htdemucs_ft local bundle (roughly 337 MB), and because a running container
   # is only useful when the backend has STEMS_ENABLED=true. The backend
   # deliberately does NOT depend_on this service: a depends_on would pull the
   # profile in on every `up`, and the backend already degrades to its unavailable

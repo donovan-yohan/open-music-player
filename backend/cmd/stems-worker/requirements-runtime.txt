@@ -1,0 +1,70 @@
+# Fully resolved Linux x86_64 / CPython 3.11 runtime closure for
+# audio-separator 0.47.0. The provider wheel itself is separately downloaded
+# and SHA-verified in backend/Dockerfile. `diffq` is source-only; its sdist and
+# its Cython/setuptools/wheel build prerequisites are hash pinned here too.
+# Re-download and recheck this exact closure on the verified local
+# CPython 3.11/Linux x86_64 image with:
+# docker run --rm --user root -e PIP_NO_INDEX=0 -v "$PWD/backend/cmd/stems-worker:/work:ro" -v /tmp/omp-stems-lock:/wheels --entrypoint python omp-stems-runtime-audio-separator:verify -m pip download --no-deps --dest /wheels --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple -r /work/requirements-runtime.txt
+# Then use `sha256sum /tmp/omp-stems-lock/*`; this does not resolve a new
+# closure. Review versions and hashes before replacing this lock (the Docker
+# build is the executable verifier).
+absl-py==2.5.0 --hash=sha256:0f17b89f2a4eaaedc4f28c622998aa690564b3012a396a4ffad0821007fe03ba
+audioread==3.1.0 --hash=sha256:b30d1df6c5d3de5dcef0fb0e256f6ea17bdcf5f979408df0297d8a408e2971b4
+beartype==0.18.5 --hash=sha256:5301a14f2a9a5540fe47ec6d34d758e9cd8331d36c4760fc7a5499ab86310089
+certifi==2026.7.22 --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775
+cffi==2.1.1 --hash=sha256:34e261f78cb6ceaaa36f42f2613f4380d94d9c759a9c73c769ee6e0247364632
+charset-normalizer==3.5.1 --hash=sha256:c7b742bf31c88566b4bb6335a7f393bb322e580b6bb98df7bd0c25e6e3519ce8
+coloredlogs==15.0.1 --hash=sha256:612ee75c546f53e92e70049c9dbfcc18c935a2b9a53b66085ce9ef6a6e5c0934
+Cython==3.3.0 --hash=sha256:e6035b5231a9316edc19d6415f4296fd1d0370e2a165a714b3edc167b9ca00e1
+decorator==5.3.1 --hash=sha256:f47fe6fdbd2edd623ecfe36875d37aba411624e2670dd395dddae1358689bb3c
+diffq==0.2.4 --hash=sha256:049064861e974ebf00d0badab8b324c775037371419eda3150985b9d477b5bd2
+einops==0.8.2 --hash=sha256:54058201ac7087911181bfec4af6091bb59380360f069276601256a76af08193
+filelock==3.32.3 --hash=sha256:7f0ca4bcc0e181c60dbbd8aa9ab5b120ebb99e4e064e83636340056f833a1f09
+flatbuffers==25.12.19 --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
+fsspec==2026.7.0 --hash=sha256:b57ddbafedfaef7018c1ecab32aa200a9d7ca26b77965f64e48b70061249d279
+humanfriendly==10.0 --hash=sha256:1697e1a8a8f550fd43c2865cd84542fc175a61dcb779b6fee18cf6b6ccba1477
+idna==3.19 --hash=sha256:815e7be7a7806d54abb586dc943addc79e8b2ee16915059658cbeff4b1b43bf4
+Jinja2==3.1.6 --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
+joblib==1.5.3 --hash=sha256:5fc3c5039fc5ca8c0276333a188bbd59d6b7ab37fe6632daa76bc7f9ec18e713
+julius==0.2.8 --hash=sha256:6891235cbc355e629d839f87489bff8ca46e57a0e7cc35abb909c7a2aa538c25
+lazy-loader==0.5 --hash=sha256:ab0ea149e9c554d4ffeeb21105ac60bed7f3b4fd69b1d2360a4add51b170b005
+librosa==0.11.0 --hash=sha256:0b6415c4fd68bff4c29288abe67c6d80b587e0e1e2cfb0aad23e4559504a7fa1
+llvmlite==0.49.0 --hash=sha256:a8c0fc9d624bdc30a3d2db11eb2fb98f80fb209d20b37604eda516cd9b699cf4
+MarkupSafe==3.0.3 --hash=sha256:0bf2a864d67e76e5c9a34dc26ec616a66b9888e25e7b9460e1c76d3293bd9dbf
+ml_collections==1.1.0 --hash=sha256:23b6fa4772aac1ae745a96044b925a5746145a70734f087eaca6626e92c05cbc
+ml_dtypes==0.6.0 --hash=sha256:6c8e39b53e90afda8ce52859c93de4dba3e02b76d85dcf091cc469f9184c6dae
+mpmath==1.3.0 --hash=sha256:a0b2b9fe80bbcd81a6647ff13108738cfb482d481d826cc0e02f5b35e5c88d2c
+msgpack==1.2.2 --hash=sha256:f11e09f10210a91c169e39c7a5a1f9090eaa73ad75555fafad5023c3053c47ba
+narwhals==2.25.0 --hash=sha256:1f0f403e8c7e4463cde9bfe78b12fdd809e3ae3dda6d9b2f802934fb9c7a6a8f
+networkx==3.6.1 --hash=sha256:d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762
+numba==0.67.0 --hash=sha256:8c80c847301dc33dc8f84a97a952004023d9a05578ae4512b087176264cc1960
+numpy==2.4.6 --hash=sha256:89cd468399cfd2504718f0ba50e410dca55a170b61a02ad92bb18c8a65186e93
+onnx-weekly==1.23.0.dev20260824 --hash=sha256:49da8b691ac40da1f3de7b52afc05a0749aa9a5fc4d9879aec4c4174981ca659
+onnx2torch-py313==1.6.0 --hash=sha256:03b1cc771f93941cc221635547e97dd7823dffc05f052057e51c6a45fbacba70
+onnxruntime==1.20.1 --hash=sha256:5eec64c0269dcdb8d9a9a53dc4d64f87b9e0c19801d9321246a53b7eb5a7d1bc
+packaging==24.2 --hash=sha256:09abb1bccd265c01f4a3aa3f7a7db064b36514d2cba19a2f694fe6150451a759
+pillow==12.3.0 --hash=sha256:23d27a3e0307ec2244cc51e7287b919aa68d097504ebe19df4e76a98a3eea5bd
+platformdirs==4.11.5 --hash=sha256:89f8d42695853b89c7170bd49bc3dc593f98a71e695ede88e06a3b247bc4563b
+pooch==1.9.0 --hash=sha256:f265597baa9f760d25ceb29d0beb8186c243d6607b0f60b83ecf14078dbc703b
+protobuf==7.36.0 --hash=sha256:70f5ec8eb0da81a44360c0dc0beac99a0d78071d21956a7076bae8bd2051841b
+pycparser==3.0 --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+pydub==0.25.1 --hash=sha256:65617e33033874b59d87db603aa1ed450633288aefead953b30bded59cb599a6
+PyYAML==6.0.2 --hash=sha256:3ad2a3decf9aaba3d29c8f537ac4b243e36bef957511b4766cb0057d32b0be85
+requests==2.32.3 --hash=sha256:70761cfe03c773ceb22aa2f671b4757976145175cdfca038c02654d061d6dcc6
+resampy==0.4.3 --hash=sha256:ad2ed64516b140a122d96704e32bc0f92b23f45419e8b8f478e5a05f83edcebd
+rotary-embedding-torch==0.6.5 --hash=sha256:96c0b27b688820cbde652dd7869cf035b4f653eee53ddaf78133cf7cdd4aab19
+samplerate==0.1.0 --hash=sha256:f55e5c9d0a8ba3c82a53b7d9c34a2d145439c61166a7f310efaec88f2781b8f8
+scikit-learn==1.9.0 --hash=sha256:f7e254636164090da847715a27f8e5478feb98c40a9e0ee90cbd277de9e5ceb8
+scipy==1.16.3 --hash=sha256:0151a0749efeaaab78711c78422d413c583b8cdd2011a3c1d6c794938ee9fdb2
+setuptools==79.0.1 --hash=sha256:e147c0549f27767ba362f9da434eab9c5dc0045d5304feb602a0af001089fc51
+six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+soundfile==0.13.1 --hash=sha256:03267c4e493315294834a0870f31dbb3b28a95561b80b134f0bd3cf2d5f0e618
+soxr==1.1.0 --hash=sha256:3da87e3ffa3e41823d873b051c7ecb2acebd8d1b6b46b752f5facf10a0d84ab9
+sympy==1.14.0 --hash=sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5
+threadpoolctl==3.6.0 --hash=sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb
+torch==2.8.0+cpu --hash=sha256:cb06175284673a581dd91fb1965662ae4ecaba6e5c357aa0ea7bb8b84b6b7eeb
+torchvision==0.23.0+cpu --hash=sha256:d83d8075db43b8ca89680bdeb2f100c832e2a3aa61ee42c038b1a146e5e511b6
+tqdm==4.67.1 --hash=sha256:26445eca388f82e72884e0d580d5464cd801a3ea01e63e5601bdff9ba6a48de2
+typing_extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+urllib3==2.7.0 --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
+wheel==0.46.3 --hash=sha256:4b399d56c9d9338230118d705d9737a2a468ccca63d5e813e2a4fc7815d8bc4d

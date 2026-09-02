@@ -24,6 +24,7 @@ import (
 	"github.com/openmusicplayer/backend/internal/discovery"
 	"github.com/openmusicplayer/backend/internal/download"
 	"github.com/openmusicplayer/backend/internal/health"
+	"github.com/openmusicplayer/backend/internal/listenbrainz"
 	"github.com/openmusicplayer/backend/internal/logger"
 	"github.com/openmusicplayer/backend/internal/matcher"
 	"github.com/openmusicplayer/backend/internal/metrics"
@@ -475,6 +476,11 @@ func main() {
 	discoveryConfig := discoveryServiceConfigFromEnv(os.Getenv)
 	discoveryConfig.MusicCatalog = mbClient
 	discoveryConfig.SourceQualityJudge = sourceQualityJudge
+	// AcousticBrainz candidate hints (issue #400): a pure read of the local
+	// dump-loaded cache that attaches advisory ab_* metadata to discovery
+	// candidates. Hint-only — it never blocks, rejects, reorders, or delays a
+	// download, and a nil source is the documented off state.
+	discoveryConfig.AcousticBrainzHints = analysisRepo
 	discoveryService := discovery.NewDefaultServiceWithConfig(discoveryConfig)
 	researchRuntime, err := newResearchRuntime(cfg, database, discoveryService, appMetrics)
 	if err != nil {
@@ -522,14 +528,29 @@ func main() {
 	})
 	libraryHandlers := api.NewLibraryHandlers(trackRepo, libraryRepo)
 	trackOverrideHandlers := api.NewTrackMetadataOverrideHandlers(metadataOverrideRepo, libraryRepo)
-	analysisHandlers := api.NewAnalysisHandlers(analysisRepo, libraryRepo)
+	// trackRepo wires the AcousticBrainz backfill into the analysis detail
+	// response (issue #390): the handler resolves the track's recording MBID to
+	// look up cached external reference values.
+	analysisHandlers := api.NewAnalysisHandlersWithTrackRepo(analysisRepo, libraryRepo, trackRepo)
 	playlistHandlers := api.NewPlaylistHandlersWithMetadataOverrides(playlistRepo, trackRepo, metadataOverrideRepo)
 	mixPlanHandlers := api.NewMixPlanHandlers(mixPlanRepo)
 	playlistMixHandlers := api.NewPlaylistMixHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
 	autoBlendHandlers := api.NewPlaylistAutoBlendHandlers(playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
 	smartReorderHandlers := api.NewPlaylistSmartReorderHandlers(playlistRepo, playlistRepo, mixPlanRepo, cfg.EnablePlaylistMix)
+	nearbyTracksHandlers := api.NewNearbyTracksHandlers(libraryRepo, cfg.EnablePlaylistMix)
+
+	// ListenBrainz similar-artist candidate expansion (issue #392), mirroring
+	// the save-playlist-as-mix convention: always constructed, gated by
+	// ENABLE_LISTENBRAINZ_MIX so a disabled handler answers 404 after auth.
+	// The labs client targets the pinned algorithm; every upstream failure mode
+	// degrades to empty expansion inside ExpansionService.
+	expansionService := listenbrainz.NewExpansionService(listenbrainz.NewClient(), analysisRepo)
+	listenBrainzHandlers := api.NewListenBrainzHandlers(expansionService, cfg.EnableListenBrainzMix)
 	playEventHandlers := api.NewPlayEventHandlersWithMetadataOverrides(playEventRepo, trackRepo, metadataOverrideRepo)
-	djLineupHandlers := api.NewDJLineupHandlersWithSkipSignals(djLineupRepo, djPinRepo, playEventRepo)
+	// libraryRepo supplies the harmonic nearby+affinity candidate read behind
+	// ENABLE_HARMONIC_LINEUP (issue #401); with the flag off the lineup is
+	// byte-identical to the themed lineup.
+	djLineupHandlers := api.NewDJLineupHandlersWithHarmonicCandidates(djLineupRepo, djPinRepo, playEventRepo, libraryRepo, cfg.EnableHarmonicLineup)
 	djPinHandlers := api.NewDJPinHandlers(djPinRepo, djLineupRepo)
 
 	// Initialize storage client
@@ -680,6 +701,24 @@ func main() {
 		case stemsServiceClient == nil:
 			log.Info(ctx, "Stem separation unavailable: worker client not configured", nil)
 		default:
+			// Do this before opening the queue or exposing trigger handlers. A
+			// reachable but stale/misconfigured worker would otherwise accept jobs
+			// whose artifact identity this server cannot safely persist.
+			healthCtx, cancelStemsHealth := context.WithTimeout(ctx, 15*time.Second)
+			stemsInfo, healthErr := stemsServiceClient.Info(healthCtx)
+			cancelStemsHealth()
+			if healthErr != nil {
+				log.Error(ctx, "Stem separation unavailable: worker health check failed", map[string]interface{}{
+					"base_url": cfg.StemsBaseURL,
+				}, healthErr)
+				break
+			}
+			if healthErr = stems.ValidateInfo(stemsInfo); healthErr != nil {
+				log.Error(ctx, "Stem separation unavailable: worker identity does not match this server", map[string]interface{}{
+					"base_url": cfg.StemsBaseURL,
+				}, healthErr)
+				break
+			}
 			stemsQueue, queueErr := stems.NewQueue(cfg.RedisURL, stems.QueueConfig{MaxDepth: cfg.StemsQueueMaxDepth})
 			if queueErr != nil {
 				log.Error(ctx, "Stem separation unavailable: queue could not be initialized", nil, queueErr)
@@ -808,6 +847,8 @@ func main() {
 		PlaylistMixHandlers:     playlistMixHandlers,
 		AutoBlendHandlers:       autoBlendHandlers,
 		SmartReorderHandlers:    smartReorderHandlers,
+		NearbyTracksHandlers:    nearbyTracksHandlers,
+		ListenBrainzHandlers:    listenBrainzHandlers,
 		MixPlanHandlers:         mixPlanHandlers,
 		DownloadHandlers:        downloadHandlers,
 		SourceSelectionHandlers: sourceSelectionHandlers,

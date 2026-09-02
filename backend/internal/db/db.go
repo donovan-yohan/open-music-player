@@ -477,12 +477,239 @@ func (db *DB) Migrate() error {
 
 	CREATE INDEX IF NOT EXISTS idx_mix_plans_user_updated ON mix_plans(user_id, updated_at DESC);
 
+	-- FROZEN PROJECTION INTERFACE (omp_* functions)
+	--
+	-- Every omp_* function below is a FROZEN interface. track_analysis.effective_bpm
+	-- and track_analysis.effective_camelot are GENERATED ALWAYS ... STORED over these
+	-- functions, and PostgreSQL does NOT recompute already-stored values when a
+	-- function body is replaced. Because this block runs CREATE OR REPLACE on every
+	-- boot, an in-place semantic edit silently leaves every deployed row on the OLD
+	-- projection while only newly written rows use the new one -- and the partial
+	-- indexes idx_track_analysis_effective_bpm / idx_track_analysis_effective_camelot_bpm
+	-- keep serving those stale values to the nearby/harmonic queries.
+	--
+	-- Measured on PostgreSQL 15.18 after replacing such a function: VACUUM FULL, a
+	-- table-rewriting ALTER TABLE ... ALTER COLUMN TYPE, and an UPDATE that touches
+	-- only a non-base column all leave the stored value stale. ONLY these refresh it:
+	--   * UPDATE track_analysis SET summary_json = summary_json (assign a BASE column);
+	--   * ALTER TABLE track_analysis DROP COLUMN <generated>, then ADD COLUMN
+	--     <generated> ... GENERATED ALWAYS AS (...) STORED.
+	--
+	-- Upgrade path for a SEMANTIC change -- never edit a body in place:
+	--   1. Add a NEW versioned function (e.g. omp_effective_analysis_bpm_v2) and leave
+	--      the frozen one untouched.
+	--   2. In the same release, drop and re-add the generated column against the new
+	--      function (or batch-rewrite every row through its base columns) and rebuild
+	--      the dependent partial indexes.
+	--   3. Keep the old function until no column or index references it.
+	-- Only edits that provably cannot change output (comments, whitespace, and
+	-- schema-qualifying a call that already resolved to the same public function)
+	-- are allowed in place.
+	--
+	-- RESTORABILITY: every call one omp_* function makes to another MUST be
+	-- schema-qualified (public.omp_...). pg_dump emits the whole archive under
+	-- an explicit set_config('search_path', '', false), and pg_restore INLINES
+	-- these IMMUTABLE SQL bodies while building track_analysis's GENERATED
+	-- ALWAYS columns. An unqualified inner call is unresolvable there, so
+	-- CREATE TABLE public.track_analysis fails and the restore silently lands a
+	-- database with no track_analysis at all -- which the next Migrate() then
+	-- recreates EMPTY. TestSchemaFunctionsResolveWithoutSearchPath reproduces
+	-- exactly that resolution and fails if a call loses its schema.
+	--
+	-- Backpressure: checkGeneratedProjectionDrift (bottom of this file) compares a
+	-- bounded sample of stored values against a fresh evaluation on every Migrate()
+	-- and logs loudly on mismatch. generatedProjectionProbes must list every generated
+	-- projection column; TestGeneratedProjectionProbeCoversEveryGeneratedColumn fails
+	-- if a new one is added without registering it.
+	--
+	-- Filter projections are generated from the same compact fields served by the
+	-- analysis list boundary. The helper functions distinguish absent/invalid
+	-- override facts from valid values, so a malformed manual edit cannot hide a
+	-- valid analyzer result. manual_timing_v2.bpm is the canonical timing edit
+	-- and therefore wins before the ordinary compact BPM field.
+	CREATE OR REPLACE FUNCTION omp_compact_number_value(document JSONB, field TEXT)
+	RETURNS DOUBLE PRECISION
+	LANGUAGE SQL
+	IMMUTABLE
+	PARALLEL SAFE
+	AS $$
+		SELECT CASE
+			WHEN jsonb_typeof(document -> field) = 'number' THEN
+				CASE WHEN (document ->> field)::numeric BETWEEN -1.7976931348623157e308::numeric AND 1.7976931348623157e308::numeric
+					THEN (document ->> field)::DOUBLE PRECISION END
+			WHEN jsonb_typeof(document -> field) = 'object'
+				AND jsonb_typeof(document -> field -> 'value') = 'number' THEN
+				CASE WHEN (document -> field ->> 'value')::numeric BETWEEN -1.7976931348623157e308::numeric AND 1.7976931348623157e308::numeric
+					THEN (document -> field ->> 'value')::DOUBLE PRECISION END
+			WHEN jsonb_typeof(document -> field) = 'object'
+				AND NOT ((document -> field) ? 'value')
+				AND jsonb_typeof(document -> field -> 'nativeBpm') = 'number' THEN
+				CASE WHEN (document -> field ->> 'nativeBpm')::numeric BETWEEN -1.7976931348623157e308::numeric AND 1.7976931348623157e308::numeric
+					THEN (document -> field ->> 'nativeBpm')::DOUBLE PRECISION END
+		END
+	$$;
+
+	CREATE OR REPLACE FUNCTION omp_compact_camelot_value(document JSONB)
+	RETURNS TEXT
+	LANGUAGE SQL
+	IMMUTABLE
+	PARALLEL SAFE
+	AS $$
+		SELECT CASE
+			WHEN jsonb_typeof(document -> 'camelot') = 'string'
+				AND char_length(BTRIM(document ->> 'camelot')) BETWEEN 1 AND 128
+				THEN UPPER(BTRIM(document ->> 'camelot'))
+			WHEN jsonb_typeof(document -> 'camelot') = 'object'
+				AND jsonb_typeof(document -> 'camelot' -> 'value') = 'string'
+				AND char_length(BTRIM(document -> 'camelot' ->> 'value')) BETWEEN 1 AND 128
+				THEN UPPER(BTRIM(document -> 'camelot' ->> 'value'))
+		END
+	$$;
+
+	CREATE OR REPLACE FUNCTION omp_manual_timing_bpm(document JSONB)
+	RETURNS DOUBLE PRECISION
+	LANGUAGE SQL
+	IMMUTABLE
+	PARALLEL SAFE
+	AS $$
+		-- This mirrors decodeCompactManualTimingOverride and validCompactManualTiming:
+		-- malformed optional scalar values decode as absent; structurally valid v2
+		-- timing wins over its legacy form; timing with an invalid grid is ignored.
+		WITH timing AS (
+			SELECT document -> 'manual_timing_v2' AS value, TRUE AS requires_schema
+			UNION ALL
+			SELECT document -> 'manual_timing_override' AS value, FALSE AS requires_schema
+		), valid AS (
+			SELECT value
+			FROM timing
+			WHERE jsonb_typeof(value) = 'object'
+				AND NOT EXISTS (
+					SELECT 1
+					FROM jsonb_object_keys(value) AS key
+					WHERE key NOT IN (
+						'schema_version', 'bpm', 'beat_anchor_ms', 'beats_per_bar',
+						'downbeat_phase_index', 'phrase_length_bars', 'confidence',
+						'provenance', 'revision', 'updated_at'
+					)
+				)
+				AND (
+					(requires_schema
+						AND jsonb_typeof(value -> 'schema_version') = 'number'
+						AND value ->> 'schema_version' = '2')
+					OR (NOT requires_schema AND (
+						NOT (value ? 'schema_version')
+						OR (jsonb_typeof(value -> 'schema_version') = 'number' AND value ->> 'schema_version' = '2')
+					))
+				)
+				-- A finite decoded BPM outside the manual 30..300 range invalidates the
+				-- timing document. An unparseable value is absent, matching Go decoding.
+				AND (
+					jsonb_typeof(value -> 'bpm') IS DISTINCT FROM 'number'
+					OR (value ->> 'bpm')::numeric NOT BETWEEN -1.7976931348623157e308::numeric AND 1.7976931348623157e308::numeric
+					OR (value ->> 'bpm')::numeric BETWEEN 30 AND 300
+				)
+				-- A finite integer anchor below zero invalidates the timing document.
+				AND (
+					jsonb_typeof(value -> 'beat_anchor_ms') IS DISTINCT FROM 'number'
+					OR (value ->> 'beat_anchor_ms')::numeric <> trunc((value ->> 'beat_anchor_ms')::numeric)
+					OR (value ->> 'beat_anchor_ms')::numeric NOT BETWEEN -9223372036854775808 AND 9223372036854775807
+					OR (value ->> 'beat_anchor_ms')::numeric >= 0
+				)
+				-- A finite positive meter above 32 beats is rejected by the compact
+				-- timing validator. Invalid/non-integer meter values decode as absent.
+				AND (
+					jsonb_typeof(value -> 'beats_per_bar') IS DISTINCT FROM 'number'
+					OR (value ->> 'beats_per_bar')::numeric <> trunc((value ->> 'beats_per_bar')::numeric)
+					OR (value ->> 'beats_per_bar')::numeric NOT BETWEEN -9223372036854775808 AND 9223372036854775807
+					OR (value ->> 'beats_per_bar')::numeric <= 0
+					OR (value ->> 'beats_per_bar')::numeric <= 32
+				)
+				-- Positive phrases over 128 bars are explicitly rejected by the compact
+				-- validator. Non-integer/out-of-range values decode as absent instead.
+				AND (
+					jsonb_typeof(value -> 'phrase_length_bars') IS DISTINCT FROM 'number'
+					OR (value ->> 'phrase_length_bars')::numeric <> trunc((value ->> 'phrase_length_bars')::numeric)
+					OR (value ->> 'phrase_length_bars')::numeric NOT BETWEEN -9223372036854775808 AND 9223372036854775807
+					OR (value ->> 'phrase_length_bars')::numeric <= 0
+					OR (value ->> 'phrase_length_bars')::numeric <= 128
+				)
+				-- A decoded phase needs a decoded 1..32 meter and must lie in that
+				-- meter. Invalid/non-integer phase values themselves decode as absent.
+				AND (
+					jsonb_typeof(value -> 'downbeat_phase_index') IS DISTINCT FROM 'number'
+					OR (value ->> 'downbeat_phase_index')::numeric <> trunc((value ->> 'downbeat_phase_index')::numeric)
+					OR (value ->> 'downbeat_phase_index')::numeric NOT BETWEEN 0 AND 9223372036854775807
+					OR (
+						jsonb_typeof(value -> 'beats_per_bar') = 'number'
+						AND (value ->> 'beats_per_bar')::numeric = trunc((value ->> 'beats_per_bar')::numeric)
+						AND (value ->> 'beats_per_bar')::numeric BETWEEN 1 AND 32
+						AND (value ->> 'downbeat_phase_index')::numeric < (value ->> 'beats_per_bar')::numeric
+					)
+				)
+				-- The Go decoder returns nil unless at least one timing fact survives.
+				AND (
+					(jsonb_typeof(value -> 'bpm') = 'number'
+						AND (value ->> 'bpm')::numeric BETWEEN -1.7976931348623157e308::numeric AND 1.7976931348623157e308::numeric)
+					OR (jsonb_typeof(value -> 'beat_anchor_ms') = 'number'
+						AND (value ->> 'beat_anchor_ms')::numeric = trunc((value ->> 'beat_anchor_ms')::numeric)
+						AND (value ->> 'beat_anchor_ms')::numeric BETWEEN 0 AND 9223372036854775807)
+					OR (jsonb_typeof(value -> 'beats_per_bar') = 'number'
+						AND (value ->> 'beats_per_bar')::numeric = trunc((value ->> 'beats_per_bar')::numeric)
+						AND (value ->> 'beats_per_bar')::numeric BETWEEN 1 AND 32)
+					OR (jsonb_typeof(value -> 'downbeat_phase_index') = 'number'
+						AND (value ->> 'downbeat_phase_index')::numeric = trunc((value ->> 'downbeat_phase_index')::numeric)
+						AND (value ->> 'downbeat_phase_index')::numeric BETWEEN 0 AND 9223372036854775807)
+					OR (jsonb_typeof(value -> 'phrase_length_bars') = 'number'
+						AND (value ->> 'phrase_length_bars')::numeric = trunc((value ->> 'phrase_length_bars')::numeric)
+						AND (value ->> 'phrase_length_bars')::numeric BETWEEN 1 AND 9223372036854775807)
+					OR (jsonb_typeof(value -> 'revision') = 'number'
+						AND (value ->> 'revision')::numeric = trunc((value ->> 'revision')::numeric)
+						AND (value ->> 'revision')::numeric BETWEEN 0 AND 9223372036854775807)
+				)
+			ORDER BY requires_schema DESC
+			LIMIT 1
+		)
+		SELECT CASE
+			WHEN jsonb_typeof(value -> 'bpm') = 'number'
+				AND (value ->> 'bpm')::numeric BETWEEN 30 AND 300
+				THEN (value ->> 'bpm')::DOUBLE PRECISION
+		END
+		FROM valid
+	$$;
+
+	CREATE OR REPLACE FUNCTION omp_effective_analysis_bpm(summary JSONB, overrides JSONB)
+	RETURNS DOUBLE PRECISION
+	LANGUAGE SQL
+	IMMUTABLE
+	PARALLEL SAFE
+	AS $$
+		SELECT COALESCE(
+			public.omp_manual_timing_bpm(overrides),
+			public.omp_compact_number_value(overrides, 'bpm'),
+			public.omp_compact_number_value(summary, 'bpm')
+		)
+	$$;
+
+	CREATE OR REPLACE FUNCTION omp_effective_analysis_camelot(summary JSONB, overrides JSONB)
+	RETURNS TEXT
+	LANGUAGE SQL
+	IMMUTABLE
+	PARALLEL SAFE
+	AS $$
+		SELECT COALESCE(
+			public.omp_compact_camelot_value(overrides),
+			public.omp_compact_camelot_value(summary)
+		)
+	$$;
+
 	CREATE TABLE IF NOT EXISTS track_analysis (
 		track_id BIGINT PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
 		schema_version INTEGER NOT NULL DEFAULT 1,
 		status VARCHAR(32) NOT NULL DEFAULT 'pending',
 		summary_json JSONB NOT NULL DEFAULT '{}'::jsonb,
 		overrides_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+		effective_bpm DOUBLE PRECISION GENERATED ALWAYS AS (omp_effective_analysis_bpm(summary_json, overrides_json)) STORED,
+		effective_camelot TEXT GENERATED ALWAYS AS (omp_effective_analysis_camelot(summary_json, overrides_json)) STORED,
 		manual_override_revision BIGINT NOT NULL DEFAULT 0,
 		manual_override_updated_at TIMESTAMP WITH TIME ZONE,
 		artifacts_json JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -502,6 +729,17 @@ func (db *DB) Migrate() error {
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS overrides_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS manual_override_revision BIGINT NOT NULL DEFAULT 0;
 	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS manual_override_updated_at TIMESTAMP WITH TIME ZONE;
+	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS effective_bpm DOUBLE PRECISION GENERATED ALWAYS AS (omp_effective_analysis_bpm(summary_json, overrides_json)) STORED;
+	ALTER TABLE track_analysis ADD COLUMN IF NOT EXISTS effective_camelot TEXT GENERATED ALWAYS AS (omp_effective_analysis_camelot(summary_json, overrides_json)) STORED;
+	-- The composite partial index is the nearby query's hot path: Camelot is an
+	-- equality candidate set and BPM is a bounded range. The scalar BPM index is
+	-- retained for future BPM-only candidate generation.
+	CREATE INDEX IF NOT EXISTS idx_track_analysis_effective_bpm
+		ON track_analysis(effective_bpm)
+		WHERE status = 'analyzed' AND effective_bpm IS NOT NULL;
+	CREATE INDEX IF NOT EXISTS idx_track_analysis_effective_camelot_bpm
+		ON track_analysis(effective_camelot, effective_bpm)
+		WHERE status = 'analyzed' AND effective_camelot IS NOT NULL AND effective_bpm IS NOT NULL;
 
 	-- Stem separation artifacts are deliberately NOT overloaded onto
 	-- track_analysis: they have a different lifecycle, a different model
@@ -553,6 +791,50 @@ func (db *DB) Migrate() error {
 		genres JSONB NOT NULL DEFAULT '[]',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 		expires_at TIMESTAMPTZ NOT NULL
+	);
+
+	-- AcousticBrainz external-reference cache (issue #390). One row per
+	-- MusicBrainz recording MBID, loaded one-time from the frozen CC0 dump by
+	-- cmd/acousticbrainz-import. This is coverage REFERENCE data only — never
+	-- ground truth, never an override of track_analysis (see
+	-- docs/AUDIO_MIR_EVALS.md); BackfillAcousticBrainzSummary projects it only
+	-- into fields the analyzer and user overrides left empty, provenance-tagged.
+	CREATE TABLE IF NOT EXISTS mb_acousticbrainz (
+		recording_mbid UUID PRIMARY KEY,
+		bpm DOUBLE PRECISION,
+		key_key TEXT,
+		key_scale TEXT,
+		camelot TEXT,
+		source TEXT NOT NULL DEFAULT 'acousticbrainz',
+		dump_revision TEXT NOT NULL DEFAULT '',
+		retrieved_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		CONSTRAINT chk_mb_acousticbrainz_bpm CHECK (
+			bpm IS NULL OR bpm BETWEEN 30 AND 300
+		),
+		CONSTRAINT chk_mb_acousticbrainz_payload CHECK (
+			bpm IS NOT NULL OR camelot IS NOT NULL
+		)
+	);
+
+	-- ListenBrainz labs similar-artists cache (issue #392). Exactly ONE row per
+	-- artist MBID (the primary key); payload is the verbatim labs response for
+	-- that artist so candidate expansion never re-hits upstream on a cache hit.
+	-- The algorithm column records which pinned algorithm produced the row: a
+	-- row whose algorithm differs from the currently pinned one reads back as a
+	-- cache MISS and is overwritten by the next successful fetch, rather than
+	-- coexisting as a second row. Rows older than the expansion service TTL
+	-- (listenbrainz.DefaultCacheTTL) are refreshed on the next read, and are
+	-- served as-is with their original retrieved_at when upstream is
+	-- unavailable (stale-while-error). Mirrors the mb_acousticbrainz
+	-- external-reference conventions: provenance fields (algorithm,
+	-- retrieved_at) travel with every row and this table is coverage data
+	-- only, never an authority over library facts.
+	CREATE TABLE IF NOT EXISTS mb_listenbrainz_similar_artists (
+		artist_mbid UUID PRIMARY KEY,
+		algorithm TEXT NOT NULL,
+		payload JSONB NOT NULL CHECK (jsonb_typeof(payload) = 'array'),
+		retrieved_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+		CONSTRAINT chk_mb_listenbrainz_algorithm CHECK (algorithm <> '')
 	);
 
 	CREATE TABLE IF NOT EXISTS research_jobs (
@@ -829,6 +1111,23 @@ func (db *DB) Migrate() error {
 		CONSTRAINT chk_research_user_runtime_slots_active_runs CHECK (active_run_count >= 0)
 	);
 
+	-- Single-row environment marker (issue #407). protected = TRUE means "this
+	-- database holds human-owned data": automated test helpers and teardown
+	-- tooling MUST refuse to truncate, drop, or restore over it.
+	--
+	-- The flag is flipped BY HAND on a dogfood/staging database, never by code:
+	--   UPDATE omp_environment SET name = 'dogfood', protected = TRUE, updated_at = NOW();
+	-- Migrate() only ever inserts the default row when it is missing, so replaying
+	-- the schema on a protected database keeps protected = TRUE. Fresh and
+	-- throwaway databases stay protected = FALSE and behave exactly as before.
+	CREATE TABLE IF NOT EXISTS omp_environment (
+		id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+		name TEXT NOT NULL DEFAULT 'unnamed',
+		protected BOOLEAN NOT NULL DEFAULT FALSE,
+		updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+	);
+	INSERT INTO omp_environment (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
 	`
 
 	_, err = db.Exec(schema)
@@ -854,6 +1153,12 @@ func (db *DB) Migrate() error {
 	// have. If it fails, we log it and keep TrigramEnabled false so search degrades
 	// gracefully to the FTS path — the server still starts and search still works.
 	db.TrigramEnabled = db.tryEnableTrigram()
+
+	// Schema work is done: verify that the stored generated projections still agree
+	// with the frozen omp_* definitions just (re)created above. Best-effort and
+	// bounded; a mismatch means a function body was edited in place and deployed
+	// rows are stale, which must be loud but must never block startup.
+	db.logGeneratedProjectionDrift(context.Background())
 
 	return nil
 }
@@ -1132,4 +1437,107 @@ func (db *DB) tryEnableTrigram() bool {
 	}
 
 	return true
+}
+
+// generatedProjectionProbeSampleLimit bounds the probe to a PK-ordered head sample
+// so startup cost stays flat regardless of table size.
+const generatedProjectionProbeSampleLimit = 1000
+
+type generatedProjectionProbe struct {
+	Table      string
+	KeyColumn  string
+	Column     string
+	Expression string
+}
+
+// generatedProjectionProbes must list EVERY GENERATED ALWAYS ... STORED column in
+// the schema above; TestGeneratedProjectionProbeCoversEveryGeneratedColumn enforces it.
+var generatedProjectionProbes = []generatedProjectionProbe{
+	{Table: "track_analysis", KeyColumn: "track_id", Column: "effective_bpm", Expression: "omp_effective_analysis_bpm(summary_json, overrides_json)"},
+	{Table: "track_analysis", KeyColumn: "track_id", Column: "effective_camelot", Expression: "omp_effective_analysis_camelot(summary_json, overrides_json)"},
+}
+
+type generatedProjectionDriftReport struct {
+	Probe            generatedProjectionProbe
+	Sampled          int
+	Mismatched       int
+	FirstMismatchKey sql.NullInt64
+	Skipped          bool  // table empty in the sampled range; nothing to compare
+	Err              error // probe query failed; never fatal
+}
+
+// checkGeneratedProjectionDrift compares the stored value of every registered
+// GENERATED ALWAYS ... STORED projection against a fresh evaluation of the same
+// expression over a bounded, PK-ordered head sample. It exists because
+// PostgreSQL does not recompute stored generated columns when CREATE OR REPLACE
+// swaps the underlying function body, so an in-place edit to a frozen omp_*
+// function leaves deployed rows silently stale (see the FROZEN PROJECTION
+// INTERFACE block above). It returns exactly one report per registered probe, in
+// order, and never returns an error: a failed probe is reported via the report's
+// Err field so a diagnostic can never abort startup.
+func (db *DB) checkGeneratedProjectionDrift(ctx context.Context) []generatedProjectionDriftReport {
+	reports := make([]generatedProjectionDriftReport, 0, len(generatedProjectionProbes))
+	for _, probe := range generatedProjectionProbes {
+		report := generatedProjectionDriftReport{Probe: probe}
+
+		// Every Sprintf input below is a compile-time constant from
+		// generatedProjectionProbes -- identifiers and an SQL expression owned by
+		// this file. No user data ever reaches this string, and the probe is
+		// read-only (SELECT only; it never ALTERs or UPDATEs anything).
+		query := fmt.Sprintf(`
+			SELECT
+				COUNT(*),
+				COUNT(*) FILTER (WHERE stored IS DISTINCT FROM recomputed),
+				MIN(sample_key) FILTER (WHERE stored IS DISTINCT FROM recomputed)
+			FROM (
+				SELECT %[2]s AS sample_key, %[3]s AS stored, %[4]s AS recomputed
+				FROM %[1]s
+				ORDER BY %[2]s
+				LIMIT %[5]d
+			) AS sample
+		`, probe.Table, probe.KeyColumn, probe.Column, probe.Expression, generatedProjectionProbeSampleLimit)
+
+		var sampled, mismatched int
+		var firstMismatchKey sql.NullInt64
+		if err := db.QueryRowContext(ctx, query).Scan(&sampled, &mismatched, &firstMismatchKey); err != nil {
+			report.Err = err
+			reports = append(reports, report)
+			continue
+		}
+
+		report.Sampled = sampled
+		report.Mismatched = mismatched
+		report.FirstMismatchKey = firstMismatchKey
+		// Nothing in the sampled range means nothing to compare; stay quiet rather
+		// than reporting a clean result we did not actually observe.
+		report.Skipped = sampled == 0
+		reports = append(reports, report)
+	}
+	return reports
+}
+
+// logGeneratedProjectionDrift runs checkGeneratedProjectionDrift and reports the
+// outcome through the package logger. Clean and empty-table startups stay silent;
+// a mismatch is logged loudly with the remediation pointer. Like tryEnableTrigram
+// it never returns an error, so it can never abort startup.
+func (db *DB) logGeneratedProjectionDrift(ctx context.Context) {
+	for _, report := range db.checkGeneratedProjectionDrift(ctx) {
+		switch {
+		case report.Skipped:
+			// Table empty in the sampled range; nothing to say.
+		case report.Err != nil:
+			log.Printf("db: generated projection drift probe unavailable for %s.%s: %v",
+				report.Probe.Table, report.Probe.Column, report.Err)
+		case report.Mismatched > 0:
+			log.Printf("db: PROJECTION DRIFT: %s.%s differs from a fresh evaluation of %s in %d of %d sampled rows (first %s=%d). A frozen omp_* function body was edited in place; PostgreSQL does not recompute stored generated columns on CREATE OR REPLACE. See the FROZEN PROJECTION INTERFACE block in internal/db/db.go and backend/internal/db/migrations/README.md for the versioned-function upgrade path.",
+				report.Probe.Table,
+				report.Probe.Column,
+				report.Probe.Expression,
+				report.Mismatched,
+				report.Sampled,
+				report.Probe.KeyColumn,
+				report.FirstMismatchKey.Int64,
+			)
+		}
+	}
 }

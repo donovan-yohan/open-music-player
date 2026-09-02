@@ -16,12 +16,12 @@ const testManifestBody = `{
 	"schema_version": 1,
 	"track_id": 123,
 	"channel_set": "stems5-hybrid-v1",
-	"stem_model_version": "htdemucs-4s-v1+lr4-180",
+	"stem_model_version": "audio-separator-htdemucs-ft-4s-v1+lr4-180",
 	"source_file_hash": "sha256:deadbeef",
 	"source_storage_key": "tracks/youtube/x.mp3",
 	"duration_ms": 210000,
-	"artifacts": {"objects": [{"channel": "vocals", "key": "stems/123/htdemucs-4s-v1/vocals.opus", "derivation": "separator"}]},
-	"provenance": {"worker": "stemsep-worker", "worker_version": "2026-08-03-1", "demucs_version": "4.1.0"}
+	"artifacts": {"objects": [{"channel": "vocals", "key": "stems/123/audio-separator-htdemucs-ft-4s-v1/vocals.opus", "derivation": "separator"}]},
+	"provenance": {"worker": "stemsep-worker", "worker_version": "2026-08-30-1", "inference_provider": {"name":"audio-separator"}}
 }`
 
 func newTestClient(t *testing.T, handler http.Handler, authToken string) (*ServiceClient, *httptest.Server) {
@@ -128,7 +128,7 @@ func TestSeparateSurfacesIdentityMismatchAsTypedError(t *testing.T) {
 }
 
 func TestSeparateRejectsManifestClaimingAnotherWorkerIdentity(t *testing.T) {
-	body := strings.Replace(testManifestBody, `"worker_version": "2026-08-03-1"`, `"worker_version": "1999-01-01-1"`, 1)
+	body := strings.Replace(testManifestBody, `"worker_version": "2026-08-30-1"`, `"worker_version": "1999-01-01-1"`, 1)
 	client, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, body)
 	}), "")
@@ -146,10 +146,10 @@ func TestSeparateRejectsMalformedAndEmptyResponses(t *testing.T) {
 	}{
 		{"malformed json", `{"schema_version": 1,`},
 		{"empty body", ""},
-		{"missing artifacts", `{"schema_version":1,"channel_set":"stems5-hybrid-v1","provenance":{"worker":"stemsep-worker","worker_version":"2026-08-03-1"}}`},
+		{"missing artifacts", `{"schema_version":1,"channel_set":"stems5-hybrid-v1","provenance":{"worker":"stemsep-worker","worker_version":"2026-08-30-1"}}`},
 		{"missing provenance", `{"schema_version":1,"channel_set":"stems5-hybrid-v1","artifacts":{"objects":[]}}`},
-		{"channel set mismatch", `{"schema_version":1,"channel_set":"stems4-demucs-v1","stem_model_version":"htdemucs-4s-v1","artifacts":{"objects":[]},"provenance":{"worker":"stemsep-worker","worker_version":"2026-08-03-1"}}`},
-		{"missing model version", `{"schema_version":1,"channel_set":"stems5-hybrid-v1","artifacts":{"objects":[]},"provenance":{"worker":"stemsep-worker","worker_version":"2026-08-03-1"}}`},
+		{"channel set mismatch", `{"schema_version":1,"channel_set":"stems4-demucs-v1","stem_model_version":"audio-separator-htdemucs-ft-4s-v1","artifacts":{"objects":[]},"provenance":{"worker":"stemsep-worker","worker_version":"2026-08-30-1"}}`},
+		{"missing model version", `{"schema_version":1,"channel_set":"stems5-hybrid-v1","artifacts":{"objects":[]},"provenance":{"worker":"stemsep-worker","worker_version":"2026-08-30-1"}}`},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -241,21 +241,21 @@ func TestInfoValidatesWorkerIdentity(t *testing.T) {
 	}{
 		{
 			name: "healthy",
-			body: `{"status":"healthy","worker":"stemsep-worker","worker_version":"2026-08-03-1","channel_set":"stems5-hybrid-v1","stem_model_version":"htdemucs-4s-v1+lr4-180","demucs_version":"4.1.0","checkpoint_sha256":"d9fa1413"}`,
+			body: `{"status":"healthy","worker":"stemsep-worker","worker_version":"2026-08-30-1","channel_set":"stems5-hybrid-v1","stem_model_version":"audio-separator-htdemucs-ft-4s-v1+lr4-180","stem_model_versions":{"stems4-demucs-v1":"audio-separator-htdemucs-ft-4s-v1","stems5-hybrid-v1":"audio-separator-htdemucs-ft-4s-v1+lr4-180"},"inference_provider":"audio-separator","inference_provider_version":"0.47.0","model_family":"demucs","model_name":"htdemucs_ft","model_config_sha256":"69470b8c1bbd674437b51bc9fb491327a10ab0396b702c93389b9cf750016346","model_weight_sha256":{"f7e0c4bc-ba3fe64a.th":"ba3fe64ae8ef66ac9a4857222ce48efbdc5eb3ad375cb79dd13debee5aaa4066","d12395a8-e57c48e6.th":"e57c48e6b0e38af4f7118d7bd08c49f0a0c0edf7d09143bdd902ea0d237303e6","92cfc3b6-ef3bcb9c.th":"ef3bcb9c8b40d14ae5d51b6db2587339cc12c6b77c0be151ce6d69002e087bf2","04573f0d-f3cf25b2.th":"f3cf25b222c4eed7cd49dd8b2c9597d50c18bd154090f7b919cfa5f93cf22c49"},"output_mapping":{"vocals":"omp-vocals.wav","drums":"omp-drums.wav","bass":"omp-bass.wav","other":"omp-other.wav"},"device":"cpu"}`,
 		},
 		{
 			name:    "missing identity",
-			body:    `{"status":"healthy","channel_set":"stems5-hybrid-v1","stem_model_version":"htdemucs-4s-v1+lr4-180"}`,
+			body:    `{"status":"healthy","channel_set":"stems5-hybrid-v1","stem_model_version":"audio-separator-htdemucs-ft-4s-v1+lr4-180"}`,
 			wantErr: true,
 		},
 		{
 			name:    "unhealthy",
-			body:    `{"status":"degraded","worker":"stemsep-worker","worker_version":"2026-08-03-1","channel_set":"stems5-hybrid-v1","stem_model_version":"htdemucs-4s-v1+lr4-180"}`,
+			body:    `{"status":"degraded","worker":"stemsep-worker","worker_version":"2026-08-30-1","channel_set":"stems5-hybrid-v1","stem_model_version":"audio-separator-htdemucs-ft-4s-v1+lr4-180"}`,
 			wantErr: true,
 		},
 		{
 			name:    "missing model identity",
-			body:    `{"status":"healthy","worker":"stemsep-worker","worker_version":"2026-08-03-1"}`,
+			body:    `{"status":"healthy","worker":"stemsep-worker","worker_version":"2026-08-30-1"}`,
 			wantErr: true,
 		},
 	}
@@ -285,8 +285,79 @@ func TestInfoValidatesWorkerIdentity(t *testing.T) {
 			if info.ChannelSet != ChannelSetStems5Hybrid || info.StemModelVersion != StemModelVersionStems5 {
 				t.Fatalf("info model identity = %q/%q", info.ChannelSet, info.StemModelVersion)
 			}
+			if err := ValidateInfo(info); err != nil {
+				t.Fatalf("startup validation rejected healthy worker: %v", err)
+			}
 		})
 	}
+}
+
+func TestValidateInfoFailsClosedOnWorkerDrift(t *testing.T) {
+	info := Info{
+		Status:                   "healthy",
+		Worker:                   WorkerName,
+		WorkerVersion:            WorkerVersion,
+		ChannelSet:               DefaultChannelSet,
+		StemModelVersion:         StemModelVersionStems5,
+		StemModelVersions:        map[string]string{ChannelSetStems4Demucs: StemModelVersionStems4, ChannelSetStems5Hybrid: StemModelVersionStems5},
+		InferenceProvider:        InferenceProvider,
+		InferenceProviderVersion: InferenceProviderVersion,
+		ModelFamily:              ModelFamily,
+		ModelName:                ModelName,
+		ModelConfigSHA256:        ModelConfigSHA256,
+		ModelWeightSHA256:        cloneStringMap(expectedModelWeightSHA256),
+		OutputMapping:            cloneStringMap(expectedOutputMapping),
+		Device:                   ModelDevice,
+	}
+	if err := ValidateInfo(info); err != nil {
+		t.Fatalf("validate healthy info: %v", err)
+	}
+	info.WorkerVersion = "old"
+	if err := ValidateInfo(info); err == nil {
+		t.Fatal("worker identity drift passed startup validation")
+	}
+}
+
+func TestValidateInfoFailsClosedOnModelDrift(t *testing.T) {
+	base := Info{
+		Status:                   "healthy",
+		Worker:                   WorkerName,
+		WorkerVersion:            WorkerVersion,
+		ChannelSet:               DefaultChannelSet,
+		StemModelVersion:         StemModelVersionStems5,
+		StemModelVersions:        map[string]string{ChannelSetStems4Demucs: StemModelVersionStems4, ChannelSetStems5Hybrid: StemModelVersionStems5},
+		InferenceProvider:        InferenceProvider,
+		InferenceProviderVersion: InferenceProviderVersion,
+		ModelFamily:              ModelFamily,
+		ModelName:                ModelName,
+		ModelConfigSHA256:        ModelConfigSHA256,
+		ModelWeightSHA256:        cloneStringMap(expectedModelWeightSHA256),
+		OutputMapping:            cloneStringMap(expectedOutputMapping),
+		Device:                   ModelDevice,
+	}
+	for _, mutate := range []func(*Info){
+		func(info *Info) { info.InferenceProviderVersion = "0.46.0" },
+		func(info *Info) { info.ModelConfigSHA256 = "wrong" },
+		func(info *Info) { info.ModelWeightSHA256["f7e0c4bc-ba3fe64a.th"] = "wrong" },
+		func(info *Info) { info.OutputMapping["vocals"] = "wrong.wav" },
+		func(info *Info) { info.Device = "cuda" },
+	} {
+		info := base
+		info.ModelWeightSHA256 = cloneStringMap(base.ModelWeightSHA256)
+		info.OutputMapping = cloneStringMap(base.OutputMapping)
+		mutate(&info)
+		if err := ValidateInfo(info); err == nil {
+			t.Fatal("model identity drift passed startup validation")
+		}
+	}
+}
+
+func cloneStringMap(source map[string]string) map[string]string {
+	copy := make(map[string]string, len(source))
+	for key, value := range source {
+		copy[key] = value
+	}
+	return copy
 }
 
 func TestNilServiceClientIsInert(t *testing.T) {

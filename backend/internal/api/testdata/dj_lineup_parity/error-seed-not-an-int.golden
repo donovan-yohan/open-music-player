@@ -1,0 +1,2 @@
+status: 400
+{"code":"invalid_request","message":"seed must be an integer"}

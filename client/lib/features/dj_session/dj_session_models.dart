@@ -12,6 +12,7 @@ class DjLineupRequest {
     this.seed,
     this.excludeIds = const [],
     this.block,
+    this.anchorTrackId,
   });
 
   final int? blocks;
@@ -25,6 +26,11 @@ class DjLineupRequest {
   final List<int> excludeIds;
   final String? block;
 
+  /// Last enqueued track id, used server-side as the harmonic anchor for the
+  /// "In key" block. Null omits the key entirely, which is wire-identical to
+  /// a client that never sends it.
+  final int? anchorTrackId;
+
   Map<String, dynamic> toQueryParameters() => {
         if (blocks != null) 'blocks': blocks,
         if (perBlock != null) 'perBlock': perBlock,
@@ -36,6 +42,7 @@ class DjLineupRequest {
         if (seed != null) 'seed': seed,
         if (excludeIds.isNotEmpty) 'excludeIds': excludeIds.join(','),
         if (block != null && block!.isNotEmpty) 'block': block,
+        if (anchorTrackId != null) 'anchorTrackId': anchorTrackId,
       };
 }
 

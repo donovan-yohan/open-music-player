@@ -316,3 +316,54 @@ Prose does not enforce; these do, and each can fail:
   downloads.
 - Client unit tests prove change-point/range equivalence, unknown-key
   preservation, unknown-`schemaVersion` rejection, and the honesty copy.
+
+## 2026-08-30 implementation addendum — audio-separator runtime
+
+This addendum supersedes only the prior runtime provider/model, artifact-key,
+and current performance assertions. The preceding derived-render selector,
+energy ownership, automation/change-point, sample-close, configuration,
+enforcement, and historical research decisions remain intact.
+
+`stems-runtime` uses `audio-separator==0.47.0` as the inference provider with
+the SHA-verified `htdemucs_ft` bag. This is a Demucs-family four-stem model,
+not a different channel-set vocabulary: its exact outputs are `vocals`,
+`drums`, `bass`, and `other`, with `other` exposed as `melody` in the v5 UI.
+The provider wheel, mutable UVR registry, model config, and four weights are
+baked only at image build behind SHA-256 assertions. The adapter revalidates
+the local bundle at readiness and before inference, rejects provider
+model/registry downloads, and reports provider/version, exact
+wheel/registry/config/weight hashes, output mapping, CPU device, and worker
+version. The API compares that complete identity before it starts handlers or
+queue consumers.
+
+The stable channel-set IDs now resolve to immutable model versions
+`audio-separator-htdemucs-ft-4s-v1` (`stems4-demucs-v1`) and
+`audio-separator-htdemucs-ft-4s-v1+lr4-180` (`stems5-hybrid-v1`). All new
+objects carry the complete identity, including the v5 base channels:
+
+```text
+stems/{track_id}/audio-separator-htdemucs-ft-4s-v1/
+  {vocals,drums,bass,other}.opus
+stems/{track_id}/audio-separator-htdemucs-ft-4s-v1+lr4-180/
+  {vocals,other,bass,drums,kick,perc}.opus
+```
+
+This makes every new six-object set disjoint from the legacy
+`htdemucs-4s-v1` and `stems5-hybrid-v1` layouts. Existing ready rows retain
+their old stored model version and are model-changed/stale, never rewritten.
+The LR4 split, -80 dB null-sum guard, uniform Opus encode, and energy/manifest
+contracts remain unchanged. audio-separator emits WAV files, so the adapter
+uses its least-mutating normalization/amplification settings before OMP-owned
+DSP and encoding.
+
+The 2026-08-03 Demucs benchmark remains historical evidence only; it does not
+characterize this current provider/model bag. Concurrency is fixed at `1`
+until a representative three-track CPU RSS/realtime-factor benchmark exists.
+Offline readiness was manually verified with `docker run --rm --network none
+--entrypoint python omp-stems-runtime-audio-separator:verify /app/stems_dsp.py
+--check`; that evidence is not currently CI backpressure.
+
+Modern specialist vocal, instrumental, and drum-component routes are future
+evaluation work only: no such checkpoint is bundled or fetched here, and any
+later route requires separate license, quality, identity, and stale-model
+review.

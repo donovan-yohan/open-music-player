@@ -15,8 +15,14 @@ import '../../core/services/stems_service.dart';
 import '../../providers/queue_provider.dart';
 import '../stems/track_stem_channel_source.dart';
 import 'dj_layout.dart';
+import 'dj_system_overlay_style.dart';
 import 'engine/deck_controller.dart';
 import 'providers/dj_session_provider.dart';
+import '../../app/theme.dart';
+import '../../core/download/download_state.dart';
+import '../../models/track.dart';
+import 'dj_deck_actions.dart';
+import 'models/dj_deck_state.dart';
 
 /// Direct-Voice performance view.
 ///
@@ -60,6 +66,18 @@ class _DjScreenState extends State<DjScreen> {
   bool _ownsSession = false;
   bool _seeded = false;
 
+  /// The QueueProvider the seed actually read, pinned so dispose removes the
+  /// listener from the same object addListener was called on (#410).
+  QueueProvider? _queue;
+
+  /// Last analysis revision already pushed onto the decks. QueueProvider also
+  /// notifies for queue/position changes, which must not re-seed anything.
+  int _lastAnalysisRevision = -1;
+
+  /// Track ids whose deck download ended badly. `DownloadState` removes a
+  /// failed transfer from its active-progress map, so it cannot answer this.
+  final Set<int> _downloadFailures = <int>{};
+
   @override
   void initState() {
     super.initState();
@@ -94,6 +112,13 @@ class _DjScreenState extends State<DjScreen> {
       }
       if (!mounted) return;
       final queue = context.read<QueueProvider?>();
+      // Match dj_session_screen.dart:449 / queue_screen.dart:314: a cold deck
+      // entry must see the real queue before deciding it is empty, or it
+      // prompts for a local file over a track that is already playing (#409).
+      // QueueProvider.loadQueue records transport failures in `error` and does
+      // not throw (queue_provider.dart:403-445), so no try/catch here.
+      if (queue != null) await queue.loadQueue();
+      if (!mounted) return;
       final rawCurrent = queue?.currentTrack;
       final rawNext =
           queue?.upNext.isEmpty ?? true ? null : queue!.upNext.first;
@@ -105,16 +130,48 @@ class _DjScreenState extends State<DjScreen> {
       final next = rawNext == null || queue == null
           ? rawNext
           : queue.trackWithAnalysis(rawNext);
-      await _session!.seed(
-        current: current,
-        next: next,
-        filePicker: widget.filePicker ?? _promptForLocalFile,
-      );
+      // No filePicker: an empty queue is answered by an inline affordance in
+      // the deck lane, not by a modal that ambushes a playing session (#414).
+      await _session!.seed(current: current, next: next);
       // Resolve stem availability for whatever actually landed on deck A. A
       // local-file fallback load has no library track id, so the panel says so
       // rather than offering a separation that cannot be queued.
       await _stems?.bindTrack(_libraryTrackId(_session!.deckA.trackRef));
+      if (!mounted) return;
+      // Attached only after the seed: a listener that fired mid-seed would race
+      // DeckController.load. Waveform peak arrays are never in the queue
+      // collection payload (queue_provider.dart:197-199), so the deck's first
+      // read is always a cold cache and this subscription is the only thing
+      // that lets the hydrated arrays reach the lane (#410).
+      _queue = queue;
+      queue?.addListener(_onQueueAnalysisChanged);
+      // A hydration that completed while the seed above was awaiting fired
+      // before this listener existed, and recording the current revision as
+      // already-seen would strand the deck on the unhydrated snapshot forever.
+      // Reconcile once, from a deliberately impossible revision.
+      _lastAnalysisRevision = -1;
+      _onQueueAnalysisChanged();
     });
+  }
+
+  /// Re-seeds both decks from QueueProvider when hydrated analysis lands.
+  void _onQueueAnalysisChanged() {
+    final queue = _queue;
+    final session = _session;
+    if (!mounted || queue == null || session == null) return;
+    final revision = queue.analysisRevision;
+    // Position/queue-only notifications leave the revision alone.
+    if (revision == _lastAnalysisRevision) return;
+    _lastAnalysisRevision = revision;
+    final current = queue.currentTrack;
+    final next = queue.upNext.isEmpty ? null : queue.upNext.first;
+    // trackWithAnalysis re-arms hydration interest (queue_provider.dart:215-218),
+    // so a deck whose analysis was purged by another screen's
+    // setAnalysisHydrationInterest re-requests it instead of staying blank.
+    session.applyAnalysisUpdate([
+      for (final track in [current, next])
+        if (track != null) queue.trackWithAnalysis(track),
+    ]);
   }
 
   /// Deck refs are `playbackTrackId ?? queueItemId` for library tracks and
@@ -145,33 +202,19 @@ class _DjScreenState extends State<DjScreen> {
   /// Dependency-free local source fallback for an empty queue. A user supplies
   /// an absolute device path; DeckController accepts only the resulting file:
   /// URI and refuses remote schemes.
+  ///
+  /// The controller is owned by [_DjLocalFilePrompt], whose `State.dispose`
+  /// runs when the route actually unmounts. Disposing it here, the frame
+  /// `showDialog`'s future resolved, tore down a `TextEditingController` while
+  /// the dialog's `TextField` was still mounted for its exit transition;
+  /// `EditableText.dispose` then removed a listener from a disposed notifier,
+  /// threw mid-unmount and stranded an `InheritedElement`'s dependents
+  /// (`_dependents.isEmpty` assertion, #414 residual 2).
   Future<DjDeckLoad?> _promptForLocalFile() async {
-    final controller = TextEditingController();
     final path = await showDialog<String>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Load local audio file'),
-        content: TextField(
-          key: const ValueKey('dj_local_file_path'),
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: '/storage/emulated/0/Music/track.mp3',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
-            child: const Text('Load'),
-          ),
-        ],
-      ),
+      builder: (_) => const _DjLocalFilePrompt(),
     );
-    controller.dispose();
     final trimmed = path?.trim();
     if (trimmed == null || trimmed.isEmpty) return null;
     final slash = trimmed.lastIndexOf('/');
@@ -184,6 +227,7 @@ class _DjScreenState extends State<DjScreen> {
 
   @override
   void dispose() {
+    _queue?.removeListener(_onQueueAnalysisChanged);
     _stems?.dispose();
     if (_ownsSession) {
       // DeckController.dispose releases its Voice; do not overlap it with a
@@ -198,13 +242,170 @@ class _DjScreenState extends State<DjScreen> {
     super.dispose();
   }
 
+  /// The queue row still standing behind [deck], or null.
+  ///
+  /// A refused deck keeps its `queueItemId` (deck_controller.dart), so the
+  /// candidate is accepted only when it still matches: a queue that moved out
+  /// from under the deck yields null rather than downloading the wrong track.
+  QueueTrack? _queueTrackFor(DjDeckId deck) {
+    final queue = context.read<QueueProvider?>();
+    if (queue == null) return null;
+    final candidate = deck == DjDeckId.a
+        ? queue.currentTrack
+        : (queue.upNext.isEmpty ? null : queue.upNext.first);
+    if (candidate == null) return null;
+    return candidate.queueItemId == _session!.stateFor(deck).queueItemId
+        ? candidate
+        : null;
+  }
+
+  int? _downloadTrackIdFor(DjDeckId deck) {
+    final track = _queueTrackFor(deck);
+    if (track == null) return null;
+    final ref = DjSessionProvider.djDeckTrackRef(track);
+    return ref == null ? null : int.tryParse(ref);
+  }
+
+  DjDeckDownload _downloadForDeck(DjDeckId deck, DownloadState? downloads) {
+    if (downloads == null) return DjDeckDownload.unavailable;
+    final id = _downloadTrackIdFor(deck);
+    if (id == null) return DjDeckDownload.unavailable;
+    final progress = downloads.getProgress(id);
+    if (progress != null) return DjDeckDownload.running(progress.progress);
+    return _downloadFailures.contains(id)
+        ? DjDeckDownload.failed
+        : DjDeckDownload.idle;
+  }
+
+  /// Sends the deck's refused track through the app's one download pipeline
+  /// and, on success, re-seeds that single deck in place.
+  ///
+  /// The re-seed goes through `DjSessionProvider.queueSeeds` so this is not a
+  /// second seed authority; the deck the user is looking at reloads without
+  /// leaving `/dj`.
+  Future<void> _downloadDeck(DjDeckId deck) async {
+    final queueTrack = _queueTrackFor(deck);
+    if (queueTrack == null) return;
+    final track = djDownloadTrackFor(queueTrack);
+    if (track == null) return;
+    final downloads = context.read<DownloadState?>();
+    if (downloads == null) return;
+    if (_downloadFailures.remove(track.id) && mounted) setState(() {});
+    try {
+      await downloads.downloadTrack(track);
+    } catch (_) {
+      // DownloadState drops a failed transfer from its active progress map,
+      // so the terminal state is recorded here or nowhere.
+      if (mounted) setState(() => _downloadFailures.add(track.id));
+      return;
+    }
+    if (!mounted) return;
+    // Seeded through the same hydration path as the cold entry above, not from
+    // the raw queue row: collection payloads never carry waveform arrays
+    // (queue_provider.dart:197-199), so re-seeding from `queueTrack` loaded the
+    // deck under a lane that said "Analyzing…" and had no peaks. It also
+    // re-arms hydration interest, which a deck refused long enough for another
+    // screen to evict its analysis needs (#410).
+    final seedTrack = _queue?.trackWithAnalysis(queueTrack) ?? queueTrack;
+    final seeds = DjSessionProvider.queueSeeds(seedTrack, null);
+    if (seeds.isEmpty) return;
+    await _session!.load(deck, seeds.first);
+    if (!mounted) return;
+    // A deck that still refuses after a completed transfer has no usable local
+    // file; say so rather than leaving the same button offering the same thing.
+    if (_session!.stateFor(deck).loadFailure != null) {
+      setState(() => _downloadFailures.add(track.id));
+    } else {
+      setState(() {});
+    }
+  }
+
+  /// Loads a picked local file onto [deck].
+  ///
+  /// The lane renders this affordance on whichever deck is empty, so the target
+  /// has to come from the lane. Hardcoding deck A here made deck B's button
+  /// replace deck A's live track and silence it (#414 review).
+  Future<void> _pickLocalFile(DjDeckId deck) async {
+    final picked = await (widget.filePicker ?? _promptForLocalFile)();
+    if (picked != null && mounted) await _session!.load(deck, picked);
+  }
+
   @override
-  Widget build(BuildContext context) =>
-      ChangeNotifierProvider<DjSessionProvider>.value(
-        value: _session!,
-        child: const Scaffold(
-          key: ValueKey('dj_screen'),
-          body: DjLayout(),
+  Widget build(BuildContext context) {
+    // Watched, not read: the lane's download affordance has to follow the
+    // transfer's progress and its completion without the user leaving /dj.
+    final downloads = context.watch<DownloadState?>();
+    // Watched for the same reason: an unseeded deck beside a non-empty queue
+    // says something different from an unseeded deck beside an empty one, and
+    // the queue can change under an open deck.
+    final queue = context.watch<QueueProvider?>();
+    return ChangeNotifierProvider<DjSessionProvider>.value(
+      value: _session!,
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: djSystemOverlayStyle(context),
+        child: DjDeckActions(
+          onPickLocalFile: _pickLocalFile,
+          onDownload: downloads == null ? null : _downloadDeck,
+          downloadFor: (deck) => _downloadForDeck(deck, downloads),
+          queueHasTracks: queue != null &&
+              (queue.currentTrack != null || queue.upNext.isNotEmpty),
+          child: const Scaffold(
+            key: ValueKey('dj_screen'),
+            body: DjLayout(),
+          ),
         ),
+      ),
+    );
+  }
+}
+
+/// The local-file prompt, owning its own [TextEditingController].
+///
+/// `scrollable` + a tightened inset keep it inside a landscape window with the
+/// soft keyboard up, where it used to paint `BOTTOM OVERFLOWED BY 70 PIXELS`.
+class _DjLocalFilePrompt extends StatefulWidget {
+  const _DjLocalFilePrompt();
+
+  @override
+  State<_DjLocalFilePrompt> createState() => _DjLocalFilePromptState();
+}
+
+class _DjLocalFilePromptState extends State<_DjLocalFilePrompt> {
+  final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+        scrollable: true,
+        insetPadding: const EdgeInsets.symmetric(
+          horizontal: AppTheme.space6,
+          vertical: AppTheme.space3,
+        ),
+        title: const Text('Load local audio file'),
+        content: TextField(
+          key: const ValueKey('dj_local_file_path'),
+          controller: _controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '/storage/emulated/0/Music/track.mp3',
+          ),
+        ),
+        actions: [
+          TextButton(
+            key: const ValueKey('dj_local_file_cancel'),
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const ValueKey('dj_local_file_load'),
+            onPressed: () => Navigator.of(context).pop(_controller.text),
+            child: const Text('Load'),
+          ),
+        ],
       );
 }

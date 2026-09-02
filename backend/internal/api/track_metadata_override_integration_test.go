@@ -27,6 +27,11 @@ func newMetadataOverrideAPIDB(t *testing.T) *db.DB {
 	if dsn == "" {
 		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run metadata override API integration tests")
 	}
+	// Issue #407: refuse a DSN aimed at a protected (dogfood) database
+	// before a single statement can reach it.
+	if err := db.CheckDSNNotProtected(dsn); err != nil {
+		t.Fatalf("refusing destructive test setup: %v", err)
+	}
 	raw, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatalf("open Postgres: %v", err)
@@ -38,6 +43,9 @@ func newMetadataOverrideAPIDB(t *testing.T) *db.DB {
 	}
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("migrate Postgres: %v", err)
+	}
+	if err := database.CheckDatabaseNotProtected(context.Background()); err != nil {
+		t.Fatalf("refusing destructive test setup: %v", err)
 	}
 	if _, err := database.Exec(`TRUNCATE TABLE track_metadata_overrides, user_library, tracks, users RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatalf("truncate metadata override tables: %v", err)

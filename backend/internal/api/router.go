@@ -42,6 +42,8 @@ type Router struct {
 	playlistMixHandlers     *PlaylistMixHandlers
 	autoBlendHandlers       *PlaylistAutoBlendHandlers
 	smartReorderHandlers    *PlaylistSmartReorderHandlers
+	nearbyTracksHandlers    *NearbyTracksHandlers
+	listenBrainzHandlers    *ListenBrainzHandlers
 	mixPlanHandlers         *MixPlanHandlers
 	downloadHandlers        *DownloadHandlers
 	sourceSelectionHandlers *SourceSelectionHandlers
@@ -82,6 +84,8 @@ type RouterConfig struct {
 	PlaylistMixHandlers     *PlaylistMixHandlers
 	AutoBlendHandlers       *PlaylistAutoBlendHandlers
 	SmartReorderHandlers    *PlaylistSmartReorderHandlers
+	NearbyTracksHandlers    *NearbyTracksHandlers
+	ListenBrainzHandlers    *ListenBrainzHandlers
 	MixPlanHandlers         *MixPlanHandlers
 	DownloadHandlers        *DownloadHandlers
 	SourceSelectionHandlers *SourceSelectionHandlers
@@ -147,6 +151,8 @@ func NewRouterWithConfig(cfg *RouterConfig) *Router {
 		playlistMixHandlers:     cfg.PlaylistMixHandlers,
 		autoBlendHandlers:       cfg.AutoBlendHandlers,
 		smartReorderHandlers:    cfg.SmartReorderHandlers,
+		nearbyTracksHandlers:    cfg.NearbyTracksHandlers,
+		listenBrainzHandlers:    cfg.ListenBrainzHandlers,
 		mixPlanHandlers:         cfg.MixPlanHandlers,
 		downloadHandlers:        cfg.DownloadHandlers,
 		sourceSelectionHandlers: cfg.SourceSelectionHandlers,
@@ -292,6 +298,21 @@ func (r *Router) setupRoutes() {
 	} else {
 		r.mux.HandleFunc("GET /api/v1/tracks/{track_id}/analysis", r.withAuth(unavailableHandler("Track analysis is unavailable")))
 		r.mux.HandleFunc("PATCH /api/v1/tracks/{track_id}/analysis/overrides", r.withAuth(unavailableHandler("Track analysis is unavailable")))
+	}
+	// Harmonic candidate search is only wired with its optional mix handler. A
+	// configured but disabled handler answers 404 after the ordinary auth boundary.
+	if r.nearbyTracksHandlers != nil {
+		r.mux.HandleFunc("GET /api/v1/tracks/nearby", r.withAuth(r.nearbyTracksHandlers.GetNearbyTracks))
+	}
+	// ListenBrainz similar-artist candidate expansion (issue #392). The path
+	// segment is an artist MBID, so this hangs off /artists/{artist_mbid} like
+	// the other MBID-keyed browse routes rather than off tracks/{track_id},
+	// whose segment is a numeric DB track ID everywhere else in this API.
+	// Registered only when wired so legacy construction keeps the route absent
+	// rather than unauthenticated; the handler itself 404s when the flag is
+	// disabled.
+	if r.listenBrainzHandlers != nil {
+		r.mux.HandleFunc("GET /api/v1/artists/{artist_mbid}/similar-artists", r.withAuth(r.listenBrainzHandlers.GetSimilarArtists))
 	}
 	// Opt-in, on-demand stem separation. Registered even when disabled so auth is
 	// evaluated before an availability response, and never as a library sweep.

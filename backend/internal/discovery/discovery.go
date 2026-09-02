@@ -128,19 +128,25 @@ func (e *providerFailure) Error() string { return e.err.Error() }
 func (e *providerFailure) Unwrap() error { return e.err }
 
 type Service struct {
-	providers          map[string]Provider
-	defaultProviders   []string
-	musicCatalog       MusicCatalog
-	sourceQualityJudge SourceQualityJudge
-	overallTimeout     time.Duration
-	perProviderTimeout time.Duration
+	providers           map[string]Provider
+	defaultProviders    []string
+	musicCatalog        MusicCatalog
+	sourceQualityJudge  SourceQualityJudge
+	acousticBrainzHints AcousticBrainzHintSource
+	overallTimeout      time.Duration
+	perProviderTimeout  time.Duration
 }
 
 type ServiceConfig struct {
-	Providers                                 []Provider
-	DefaultProviders                          []string
-	MusicCatalog                              MusicCatalog
-	SourceQualityJudge                        SourceQualityJudge
+	Providers          []Provider
+	DefaultProviders   []string
+	MusicCatalog       MusicCatalog
+	SourceQualityJudge SourceQualityJudge
+	// AcousticBrainzHints reads the local AcousticBrainz cache table to attach
+	// advisory ab_* candidate metadata (issue #400). A nil value disables hints
+	// entirely and is the documented off state; hints never affect ranking,
+	// selection, or downloads.
+	AcousticBrainzHints                       AcousticBrainzHintSource
 	OverallTimeout                            time.Duration
 	PerProviderTimeout                        time.Duration
 	YouTubeMusicMetadataEnrichmentTimeout     time.Duration
@@ -186,12 +192,13 @@ func NewService(cfg ServiceConfig) *Service {
 		}
 	}
 	return &Service{
-		providers:          providers,
-		defaultProviders:   defaults,
-		musicCatalog:       cfg.MusicCatalog,
-		sourceQualityJudge: cfg.SourceQualityJudge,
-		overallTimeout:     cfg.OverallTimeout,
-		perProviderTimeout: cfg.PerProviderTimeout,
+		providers:           providers,
+		defaultProviders:    defaults,
+		musicCatalog:        cfg.MusicCatalog,
+		sourceQualityJudge:  cfg.SourceQualityJudge,
+		acousticBrainzHints: cfg.AcousticBrainzHints,
+		overallTimeout:      cfg.OverallTimeout,
+		perProviderTimeout:  cfg.PerProviderTimeout,
 	}
 }
 
@@ -298,7 +305,11 @@ func (s *Service) search(ctx context.Context, query string, requested []string, 
 	if rankSources {
 		results = rankSourceCandidatesWithJudge(ctx, query, results, s.sourceQualityJudge)
 	}
-	resp := SearchResponse{Query: query, Results: stripSourceQualityInputMetadata(results), Sections: []SearchSection{}, Providers: raw.Providers}
+	// Attach AcousticBrainz candidate hints after the strip so the strip cannot
+	// remove a hint key, and before buildSections so sections carry the same
+	// candidate metadata. This is the single attach site (issue #400).
+	results = attachAcousticBrainzHints(ctx, s.acousticBrainzHints, stripSourceQualityInputMetadata(results))
+	resp := SearchResponse{Query: query, Results: results, Sections: []SearchSection{}, Providers: raw.Providers}
 	sections, catalogSummary := s.buildSections(ctx, query, limit, resp.Results, includeCatalog)
 	resp.Sections = sections
 	if catalogSummary != nil {

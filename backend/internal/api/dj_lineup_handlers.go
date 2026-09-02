@@ -37,6 +37,11 @@ type DJLineupHandlers struct {
 	store       DJLineupStore
 	pins        DJPinReader
 	skipSignals DJSkipSignalStore
+	// nearby and harmonicEnabled gate the flag-gated harmonic block only. A
+	// handler built by any of the older constructors leaves both zero, which
+	// is exactly the themed-lineup behavior those constructors always had.
+	nearby          nearbyTrackReader
+	harmonicEnabled bool
 }
 
 func NewDJLineupHandlers(store DJLineupStore) *DJLineupHandlers {
@@ -54,6 +59,35 @@ func NewDJLineupHandlersWithPinStore(store DJLineupStore, pins DJPinReader) *DJL
 // demoted, and rapid skipping enables fast-exit sequencing.
 func NewDJLineupHandlersWithSkipSignals(store DJLineupStore, pins DJPinReader, skips DJSkipSignalStore) *DJLineupHandlers {
 	return &DJLineupHandlers{store: store, pins: pins, skipSignals: skips}
+}
+
+// NewDJLineupHandlersWithHarmonicCandidates additionally wires the harmonic
+// nearby+affinity reader so the lineup can lead with a block that mixes out of
+// the caller's queue tail. The block is produced only when enabled is true AND
+// nearby is non-nil; with either missing the handler serves the themed lineup
+// byte-for-byte, so a legacy wiring path degrades instead of panicking.
+func NewDJLineupHandlersWithHarmonicCandidates(
+	store DJLineupStore,
+	pins DJPinReader,
+	skips DJSkipSignalStore,
+	nearby nearbyTrackReader,
+	enabled bool,
+) *DJLineupHandlers {
+	return &DJLineupHandlers{
+		store:           store,
+		pins:            pins,
+		skipSignals:     skips,
+		nearby:          nearby,
+		harmonicEnabled: enabled,
+	}
+}
+
+// harmonicLineupActive reports whether this handler may emit the harmonic
+// block at all. It is the single gate consulted by both query parsing and
+// lineup composition, so the parser cannot accept parameters the composer
+// would then ignore.
+func (h *DJLineupHandlers) harmonicLineupActive() bool {
+	return h.harmonicEnabled && h.nearby != nil
 }
 
 type DJLineupRequestedFilters struct {
@@ -100,6 +134,10 @@ type djLineupQuery struct {
 	Seed      int64
 	ExcludeID map[int64]struct{}
 	BlockID   string
+	// AnchorTrackID is the client-supplied queue-tail track id. It is parsed
+	// only while the harmonic block is active; otherwise the key is never
+	// inspected and the request behaves exactly as it did before issue #401.
+	AnchorTrackID int64
 }
 
 type djLineupTheme struct {
@@ -124,7 +162,8 @@ func (h *DJLineupHandlers) GetLineup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query, err := parseDJLineupQuery(r)
+	harmonicActive := h.harmonicLineupActive()
+	query, err := parseDJLineupQuery(r, harmonicActive)
 	if err != nil {
 		writeDJLineupError(w, http.StatusBadRequest, err.Error())
 		return
@@ -134,6 +173,15 @@ func (h *DJLineupHandlers) GetLineup(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error: failed to load DJ lineup for user %s: %v", userCtx.UserID, err)
 		writeDJLineupError(w, http.StatusInternalServerError, "failed to load DJ lineup")
 		return
+	}
+
+	// The anchor is resolved against the unfiltered library so an active vibe
+	// pin cannot hide the very track the listener just queued. The pin still
+	// governs which candidates may appear in the block.
+	var anchor djHarmonicAnchor
+	anchorResolved := false
+	if harmonicActive && query.AnchorTrackID > 0 && query.includesHarmonicBlock() {
+		anchor, anchorResolved = resolveDJHarmonicAnchor(tracks, query.AnchorTrackID)
 	}
 
 	var pin *db.DJPin
@@ -157,9 +205,28 @@ func (h *DJLineupHandlers) GetLineup(w http.ResponseWriter, r *http.Request) {
 	}
 	signals.withCandidates(tracks)
 
+	// Harmonic candidates are a nice-to-have overlay on a lineup that already
+	// works: a failed read is logged and dropped, never surfaced as a 500.
+	var harmonic *djHarmonicLineupInputs
+	if anchorResolved {
+		candidates, candidatesErr := h.nearby.NearbyTracks(
+			r.Context(),
+			userCtx.UserID,
+			anchor.BPM,
+			djHarmonicLineupBPMTolerance,
+			compatibleCamelotLabels(anchor.Number, anchor.Letter),
+			db.AffinityRankHistory,
+		)
+		if candidatesErr != nil {
+			log.Printf("Error: harmonic lineup candidates unavailable for user %s: %v", userCtx.UserID, candidatesErr)
+		} else {
+			harmonic = &djHarmonicLineupInputs{Anchor: anchor, Candidates: candidates}
+		}
+	}
+
 	response := DJLineupResponse{
 		Requested: query.Requested,
-		Blocks:    buildDJLineup(tracks, query, signals),
+		Blocks:    buildDJLineup(tracks, query, signals, harmonic),
 	}
 	if pin != nil {
 		response.Pinned = &DJLineupPinned{BlockID: pin.BlockID}
@@ -180,7 +247,7 @@ func filterDJLineupTracksByPin(tracks []db.DJLineupTrack, pin db.DJPin) []db.DJL
 	return filtered
 }
 
-func parseDJLineupQuery(r *http.Request) (djLineupQuery, error) {
+func parseDJLineupQuery(r *http.Request, harmonicEnabled bool) (djLineupQuery, error) {
 	values := r.URL.Query()
 	query := djLineupQuery{
 		Blocks:    djLineupDefaultBlocks,
@@ -236,8 +303,17 @@ func parseDJLineupQuery(r *http.Request) (djLineupQuery, error) {
 	}
 	if raw, present := values["block"]; present {
 		query.BlockID = strings.ToLower(strings.TrimSpace(firstDJLineupValue(raw)))
-		if !isDJLineupTheme(query.BlockID) {
-			return query, errors.New("block must be one of: on-repeat, flashback, fresh-finds")
+		if !isDJLineupBlockID(query.BlockID, harmonicEnabled) {
+			return query, errors.New(djLineupBlockEnumError(harmonicEnabled))
+		}
+	}
+	if harmonicEnabled {
+		if raw, present := values["anchorTrackId"]; present {
+			anchorTrackID, anchorErr := strconv.ParseInt(strings.TrimSpace(firstDJLineupValue(raw)), 10, 64)
+			if anchorErr != nil || anchorTrackID <= 0 {
+				return query, errors.New("anchorTrackId must be a positive integer track ID")
+			}
+			query.AnchorTrackID = anchorTrackID
 		}
 	}
 	for _, raw := range values["excludeIds"] {
@@ -272,6 +348,23 @@ func parseDJLineupBoundedInt(raw, name string, min, max int) (int, error) {
 	return value, nil
 }
 
+// isDJLineupBlockID accepts the harmonic block id only while the block is
+// active, so a flag-off server rejects block=harmonic with the pre-#401 enum
+// error and a flag-on server never advertises a block it cannot build.
+func isDJLineupBlockID(id string, harmonicEnabled bool) bool {
+	if harmonicEnabled && id == djHarmonicLineupBlockID {
+		return true
+	}
+	return isDJLineupTheme(id)
+}
+
+func djLineupBlockEnumError(harmonicEnabled bool) string {
+	if harmonicEnabled {
+		return "block must be one of: on-repeat, flashback, fresh-finds, harmonic"
+	}
+	return "block must be one of: on-repeat, flashback, fresh-finds"
+}
+
 func isDJLineupTheme(id string) bool {
 	for _, theme := range djLineupThemes {
 		if theme.ID == id {
@@ -281,7 +374,16 @@ func isDJLineupTheme(id string) bool {
 	return false
 }
 
-func buildDJLineup(tracks []db.DJLineupTrack, query djLineupQuery, signals djSkipSignals) []DJLineupBlock {
+// buildDJLineup composes the response blocks. It is pure: every input is
+// already resolved by the handler. harmonic is nil whenever the harmonic block
+// must not be produced, in which case this function behaves exactly as it did
+// before issue #401.
+func buildDJLineup(
+	tracks []db.DJLineupTrack,
+	query djLineupQuery,
+	signals djSkipSignals,
+	harmonic *djHarmonicLineupInputs,
+) []DJLineupBlock {
 	filtered := make([]db.DJLineupTrack, 0, len(tracks))
 	for _, track := range tracks {
 		if matchesDJLineupFilters(track, query) {
@@ -290,8 +392,26 @@ func buildDJLineup(tracks []db.DJLineupTrack, query djLineupQuery, signals djSki
 	}
 
 	themes := selectedDJLineupThemes(query)
-	blocks := make([]DJLineupBlock, 0, len(themes))
+	blocks := make([]DJLineupBlock, 0, len(themes)+1)
 	usedTrackIDs := make(map[int64]struct{})
+
+	// The harmonic block leads: it continues the queue the listener just
+	// built, so it is the most immediately actionable block on the surface.
+	// Marking its tracks used first preserves the "no track twice in one
+	// response" invariant for the themed blocks that follow.
+	if harmonic != nil && query.includesHarmonicBlock() {
+		byID := make(map[int64]db.DJLineupTrack, len(filtered))
+		for _, track := range filtered {
+			byID[track.ID] = track
+		}
+		if block, ok := buildDJHarmonicLineupBlock(harmonic, byID, query, signals); ok {
+			for _, track := range block.Tracks {
+				usedTrackIDs[track.ID] = struct{}{}
+			}
+			blocks = append(blocks, block)
+		}
+	}
+
 	for themeIndex, theme := range themes {
 		candidates := eligibleDJLineupTracks(filtered, usedTrackIDs, theme.ID)
 		orderDJLineupTracks(candidates, theme.ID)

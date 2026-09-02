@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/openmusicplayer/backend/internal/auth"
 	"github.com/openmusicplayer/backend/internal/db"
 )
@@ -15,10 +17,22 @@ import (
 type AnalysisHandlers struct {
 	analysisRepo *db.AnalysisRepository
 	libraryRepo  *db.LibraryRepository
+	trackRepo    *db.TrackRepository
 }
 
 func NewAnalysisHandlers(analysisRepo *db.AnalysisRepository, libraryRepo *db.LibraryRepository) *AnalysisHandlers {
 	return &AnalysisHandlers{analysisRepo: analysisRepo, libraryRepo: libraryRepo}
+}
+
+// NewAnalysisHandlersWithTrackRepo additionally wires the track repository so
+// GetTrackAnalysis can resolve a track's recording MBID and backfill missing
+// bpm/key from the AcousticBrainz cache (issue #390).
+func NewAnalysisHandlersWithTrackRepo(
+	analysisRepo *db.AnalysisRepository,
+	libraryRepo *db.LibraryRepository,
+	trackRepo *db.TrackRepository,
+) *AnalysisHandlers {
+	return &AnalysisHandlers{analysisRepo: analysisRepo, libraryRepo: libraryRepo, trackRepo: trackRepo}
 }
 
 type AnalysisResponse struct {
@@ -115,7 +129,33 @@ func (h *AnalysisHandlers) GetTrackAnalysis(w http.ResponseWriter, r *http.Reque
 		writeLibraryError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to retrieve track analysis")
 		return
 	}
-	writeLibraryJSON(w, http.StatusOK, newAnalysisResponse(analysis))
+	// AcousticBrainz backfill (issue #390): when the local analyzer left bpm/key
+	// entirely absent, project cached external reference values into the
+	// effective payload with provenance so clients can mark them externally
+	// sourced. Analyzer output and user overrides always win — the merge in
+	// BackfillAcousticBrainzSummary only fills empty fields.
+	response := newAnalysisResponse(analysis)
+	if h.trackRepo != nil && analysis.SummaryJSON != nil {
+		track, err := h.trackRepo.GetByID(r.Context(), trackID)
+		if err == nil && track.MBRecordingID != nil {
+			entries, err := h.analysisRepo.GetAcousticBrainzByRecordingIDs(r.Context(), []uuid.UUID{*track.MBRecordingID})
+			if err == nil {
+				if entry, ok := entries[*track.MBRecordingID]; ok {
+					backfilled := db.BackfillAcousticBrainzSummary(
+						analysis.SummaryJSON,
+						analysis.OverridesJSON,
+						entry,
+					)
+					effectiveTiming, _ := db.ProjectEffectiveTiming(backfilled, analysis.OverridesJSON)
+					response.Summary = backfilled
+					response.EffectiveTiming = effectiveTiming
+				}
+			}
+			// AB lookup failures are non-fatal: the detail response stays on the
+			// analyzer-only projection.
+		}
+	}
+	writeLibraryJSON(w, http.StatusOK, response)
 }
 
 func (h *AnalysisHandlers) UpdateTrackAnalysisOverrides(w http.ResponseWriter, r *http.Request) {

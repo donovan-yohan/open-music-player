@@ -27,6 +27,9 @@ export MINIO_PUBLIC_ENDPOINT
 # Tailnet staging is the explicit dogfood surface for playlist Mix. Production
 # and ordinary Compose remain default-off unless their operator opts in.
 export ENABLE_PLAYLIST_MIX="${ENABLE_PLAYLIST_MIX:-true}"
+# The harmonic "In key" lineup block stays opt-in even here: it is a QA switch
+# the operator flips deliberately, not a staging default.
+export ENABLE_HARMONIC_LINEUP="${ENABLE_HARMONIC_LINEUP:-false}"
 
 usage() {
   cat <<USAGE
@@ -50,6 +53,7 @@ env:
   OMP_FLUTTER_API_BASE_URL     Flutter /api/v1 base override (default: \$OMP_BACKEND_BASE_URL/api/v1)
   MINIO_PUBLIC_ENDPOINT        signed-audio object URL root (default: http://\$OMP_TAILNET_HOST:\$MINIO_PORT)
   ENABLE_PLAYLIST_MIX          expose playlist Mix endpoints (default: true for Tailnet staging)
+  ENABLE_HARMONIC_LINEUP       add the queue-tail-anchored "In key" DJ lineup block (default: false)
 USAGE
 }
 

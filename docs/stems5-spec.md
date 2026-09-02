@@ -111,3 +111,53 @@ Non-blocking. (a) Validate demucs-mlx htdemucs on server-mac (claimed 35-73x rea
 - Opus 128k 48kHz, 6 stems/track: ~19 MB/track.
 - Checkpoint: huggingface adefossez/HTDemucs 955717e8.safetensors sha256=d9fa14133cfcc034a6758923bb3a8ca9f8dfd0b582134643bbf83f72c17576dd (demucs 4.1.0 fetches via huggingface-hub — Dockerfile must bake the HF cache dir, NOT a torch-hub .th).
 - VERDICT: x86 trickle path viable at concurrency 1; spec's CPU assumptions were conservative.
+
+## 2026-08-30 implementation addendum — audio-separator runtime
+
+This addendum is the current implementation authority for the separation
+provider, model identity, object layout, and operational performance claim. It
+preserves the preceding exploration, decisions, tickets, risks, critic
+corrections, and 2026-08-03 benchmark as research history.
+
+The dedicated `stems-runtime` image now uses `audio-separator==0.47.0` as the
+inference provider with the SHA-verified `htdemucs_ft` bag. `htdemucs_ft` is
+still a Demucs-family four-stem model; it maps exactly `vocals`, `drums`,
+`bass`, and `other` (the UI calls `other` `melody`). The provider wheel, mutable
+UVR registry, model configuration, and four weights are fetched only during
+the image build and checked by SHA-256. The adapter rechecks the local bundle
+at readiness and before inference, and rejects provider download/refresh
+paths. Health and manifest provenance record provider/version, exact
+wheel/registry/config/weight hashes, output mapping, CPU device, and worker
+version; the API validates that identity before handlers or queue consumers
+start.
+
+The channel-set IDs and their edit vocabulary are unchanged, but their current
+immutable model identities are `audio-separator-htdemucs-ft-4s-v1` for
+`stems4-demucs-v1` and `audio-separator-htdemucs-ft-4s-v1+lr4-180` for
+`stems5-hybrid-v1`. Every new object uses the complete requested model identity:
+
+```text
+stems/{track_id}/audio-separator-htdemucs-ft-4s-v1/
+  {vocals,drums,bass,other}.opus
+stems/{track_id}/audio-separator-htdemucs-ft-4s-v1+lr4-180/
+  {vocals,other,bass,drums,kick,perc}.opus
+```
+
+The v5 set therefore no longer references an older base prefix; all six keys
+are disjoint from legacy `htdemucs-4s-v1`/`stems5-hybrid-v1` objects. Existing
+ready rows keep their stored version and are model-changed/stale rather than
+rewritten. The worker retains the LR4 split, its -80 dB null-sum guard, one
+uniform libopus encode configuration, energy curves, and manifest contract.
+The provider has a WAV file boundary; its least-mutating normalization and
+amplification options are used before OMP-owned DSP/encoding.
+
+The historical 2026-08-03 Demucs performance numbers above do not describe
+this provider/model bag and must not set its capacity. Runtime concurrency is
+hard-fixed at `1` pending representative three-track CPU RSS and realtime
+factor evidence. Offline readiness was manually verified with
+`docker run --rm --network none --entrypoint python omp-stems-runtime-audio-separator:verify /app/stems_dsp.py --check`; this is evidence, not CI backpressure.
+
+Modern specialist vocal, instrumental, and drum-component routes remain
+future evaluation work only. They are neither bundled nor fetched by this
+runtime and require independent license, quality, immutable-identity, and
+stale-transition review.

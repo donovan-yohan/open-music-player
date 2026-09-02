@@ -227,6 +227,78 @@ func TestSourceCandidateFromDecisionUsesOnlyOwnedSnapshotAndValidatesMusicBrainz
 	}
 }
 
+// TestSourceCandidateFromDecisionAcceptsAcousticBrainzHintsWithoutMusicBrainzID
+// is the selection-to-download evidence for issue #400: advisory ab_* hints on a
+// persisted discovery snapshot never block, alter, or fail a download, and they
+// ride through to download.SourceCandidate.Metadata verbatim. The key strings are
+// spelled out here on purpose: this package must keep honoring the published
+// metadata contract even if the discovery constants are renamed.
+func TestSourceCandidateFromDecisionAcceptsAcousticBrainzHintsWithoutMusicBrainzID(t *testing.T) {
+	hints := map[string]any{
+		"ab_bpm":           128.0,
+		"ab_key":           "A",
+		"ab_key_scale":     "minor",
+		"ab_camelot":       "8A",
+		"ab_source":        "acousticbrainz",
+		"ab_dump_revision": "acousticbrainz-dump-2022-06",
+		"ab_retrieved_at":  "2024-03-11T09:30:00Z",
+	}
+	snapshot := func(t *testing.T, mbID string) json.RawMessage {
+		t.Helper()
+		metadata := map[string]any{}
+		for key, value := range hints {
+			metadata[key] = value
+		}
+		if mbID != "" {
+			metadata["mbRecordingId"] = mbID
+		}
+		raw, err := json.Marshal(SourceCandidate{
+			CandidateID:  "youtube:hinted",
+			Provider:     "youtube",
+			SourceID:     "hinted",
+			SourceURL:    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+			Title:        "Hinted source",
+			Downloadable: true,
+			Metadata:     metadata,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	assertHintsRideAlong := func(t *testing.T, metadata map[string]interface{}) {
+		t.Helper()
+		for key, want := range hints {
+			got, ok := metadata[key]
+			if !ok {
+				t.Fatalf("download candidate metadata dropped %q: %#v", key, metadata)
+			}
+			if got != want {
+				t.Fatalf("download candidate metadata %q = %#v, want %#v", key, got, want)
+			}
+		}
+	}
+
+	candidate, derived, err := sourceCandidateFromDecision(snapshot(t, ""))
+	if err != nil {
+		t.Fatalf("hints without a MusicBrainz id failed the decision: %v", err)
+	}
+	if derived != nil {
+		t.Fatalf("derived MusicBrainz id = %v, want nil when only ab_* hints are present", *derived)
+	}
+	assertHintsRideAlong(t, candidate.Metadata)
+
+	mbID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	hintedWithMBID, derivedWithMBID, err := sourceCandidateFromDecision(snapshot(t, mbID))
+	if err != nil {
+		t.Fatalf("hints alongside a MusicBrainz id failed the decision: %v", err)
+	}
+	if derivedWithMBID == nil || *derivedWithMBID != mbID {
+		t.Fatalf("derived MusicBrainz id = %v, want %s", derivedWithMBID, mbID)
+	}
+	assertHintsRideAlong(t, hintedWithMBID.Metadata)
+}
+
 func TestSourceDecisionQueueUsesOwnedSnapshotAndStableResponse(t *testing.T) {
 	mbID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 	service := &fakeQueueHandlerService{state: &QueueState{Items: []QueueItem{}}}

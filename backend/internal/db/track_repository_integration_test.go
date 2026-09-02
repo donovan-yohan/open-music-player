@@ -231,30 +231,10 @@ func TestCreateOrGetConcurrentLegacyPromotionReturnsCoherentForwardRows(t *testi
 
 func newPostgresTestRepository(t *testing.T) (*TrackRepository, context.Context) {
 	t.Helper()
-
-	dsn := postgresTestDSN()
-	if dsn == "" {
-		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres repository integration tests")
-	}
-
-	rawDB, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatalf("open test database: %v", err)
-	}
-	t.Cleanup(func() { _ = rawDB.Close() })
-
-	database := &DB{DB: rawDB}
-	if err := database.Ping(); err != nil {
-		t.Fatalf("ping test database: %v", err)
-	}
-	if err := database.Migrate(); err != nil {
-		t.Fatalf("migrate test database: %v", err)
-	}
-	if _, err := database.Exec("TRUNCATE TABLE tracks RESTART IDENTITY CASCADE"); err != nil {
-		t.Fatalf("truncate test database: %v", err)
-	}
-
-	return NewTrackRepository(database), context.Background()
+	database, ctx := newGuardedTestDB(t,
+		"set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres repository integration tests",
+		"TRUNCATE TABLE tracks RESTART IDENTITY CASCADE")
+	return NewTrackRepository(database), ctx
 }
 
 func TestUpdateMBMatchPersistsJSONBAndPreservesStickyFieldsAgainstPostgres(t *testing.T) {

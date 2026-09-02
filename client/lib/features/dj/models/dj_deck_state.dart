@@ -1,5 +1,7 @@
 import '../../../core/engine/tempo_automation.dart';
 import '../../../models/track.dart';
+import 'dj_beat_grid.dart';
+import 'dj_deck_load_failure.dart';
 import 'dj_hot_cue.dart';
 
 enum DjDeckId { a, b }
@@ -21,6 +23,9 @@ class DjDeckState {
     this.loadedCueMs = 0,
     this.activeLoop,
     this.beatsMs = const [],
+    this.loadFailure,
+    this.pitchSupported = true,
+    this.keySemitones = 0,
   });
 
   final DjDeckId deckId;
@@ -42,12 +47,35 @@ class DjDeckState {
   final DjLoop? activeLoop;
   final List<int> beatsMs;
 
+  /// Set when the deck refused this seed. A refused deck carries no [trackRef],
+  /// so [isLoaded] stays honestly false while the lane explains why (#409).
+  final DjDeckLoadFailure? loadFailure;
+
+  /// False once this deck's Voice has reported that the backend cannot shift
+  /// pitch (voice.dart:151-161). A refused or freshly loaded deck advertises
+  /// nothing, so it starts true again and the first [DeckController.setRate]
+  /// re-establishes the fact.
+  final bool pitchSupported;
+
+  /// Independent key offset in semitones, composed on top of the keylock pitch
+  /// factor. Reserved for the per-deck key control; sync never writes it.
+  final int keySemitones;
+
   double get ratePercent => (rate - 1) * 100;
+
+  /// The signed pitch percentage as the deck writes it: `+0.0%` / `-3.2%`.
+  /// The header and the tempo sheet both show it, and they must agree.
+  String get ratePercentLabel =>
+      '${ratePercent >= 0 ? '+' : ''}${ratePercent.toStringAsFixed(1)}%';
   bool get isLoaded => trackRef != null;
 
   double? get bpm {
-    final summary = queueTrack?.analysis?.summary;
-    return summary?.bpm?.numericValue?.toDouble() ?? summary?.beatGrid?.bpm;
+    final analysis = queueTrack?.analysis;
+    if (analysis == null) return null;
+    // Same interpreter as beatPhase below: analysis.effectiveTiming via
+    // ClipTempoMetadata. Clients never merge overrides themselves
+    // (docs/AUDIO_ANALYZER_SERVICE.md, docs/dj-deck-spec.md:131).
+    return ClipTempoMetadata.fromTrackAnalysis(analysis).nativeBpm;
   }
 
   String? get musicalKey => queueTrack?.analysis?.summary?.key?.textValue;
@@ -81,6 +109,22 @@ class DjDeckState {
     return (beatInBar - 1) % beatsPerBar + 1;
   }
 
+  /// Display bar/beat/phrase for the deck's beat counter and ruler (#416).
+  ///
+  /// Deliberately distinct from [beatPhase], and the two must not be unified:
+  ///
+  /// * [beatPhase] is the **automation-authority** value. It returns null
+  ///   unless `ClipTempoMetadata.hasReliableDownbeats` grants manual (or
+  ///   legacy) authority, because sync and quantize may not act on generated
+  ///   meter — see tempo_automation.dart:117-154.
+  /// * [beatPosition] is the **display** value. It follows
+  ///   docs/dj-deck-spec.md:83, which grants generated downbeats bar-level
+  ///   *display* while withholding bar numbering: `DjBeatRuler.numbered` is
+  ///   false there, so the counter shows an unnumbered beat pulse instead of
+  ///   `bar.beat · phrase N`.
+  DjBeatPosition? get beatPosition =>
+      DjBeatRuler.forAnalysis(queueTrack?.analysis)?.positionAt(positionMs);
+
   DjDeckState copyWith({
     String? queueItemId,
     String? trackRef,
@@ -96,6 +140,10 @@ class DjDeckState {
     DjLoop? activeLoop,
     bool clearLoop = false,
     List<int>? beatsMs,
+    DjDeckLoadFailure? loadFailure,
+    bool clearLoadFailure = false,
+    bool? pitchSupported,
+    int? keySemitones,
   }) =>
       DjDeckState(
         deckId: deckId,
@@ -112,5 +160,10 @@ class DjDeckState {
         loadedCueMs: loadedCueMs ?? this.loadedCueMs,
         activeLoop: clearLoop ? null : activeLoop ?? this.activeLoop,
         beatsMs: beatsMs ?? this.beatsMs,
+        // The 30 Hz snapshot refresh copies a refused deck too; a failure must
+        // survive it and only clear on an explicit request.
+        loadFailure: clearLoadFailure ? null : loadFailure ?? this.loadFailure,
+        pitchSupported: pitchSupported ?? this.pitchSupported,
+        keySemitones: keySemitones ?? this.keySemitones,
       );
 }

@@ -96,10 +96,20 @@ type Config struct {
 	StemsConcurrency   int
 	StemsQueueMaxDepth int
 
+	// Queue-tail-anchored harmonic DJ lineup block (issue #401). Disabled by
+	// default; when off, GET /api/v1/dj/lineup is byte-identical to the themed
+	// lineup and anchorTrackId is ignored.
+	EnableHarmonicLineup bool
+
 	// Optional "save playlist as mix" seam. Disabled by default; when enabled,
 	// POST /api/v1/playlists/{id}/mix creates a mix_plan from a playlist's
 	// ordered tracks. Backend seam only (no DJ/waveform UI or mixing logic).
 	EnablePlaylistMix bool
+
+	// Optional ListenBrainz similar-artist candidate expansion (issue #392).
+	// Disabled by default; when enabled, GET /api/v1/artists/{artist_mbid}/similar-artists
+	// serves pinned-algorithm candidates from the labs cache/upstream.
+	EnableListenBrainzMix bool
 
 	// Durable research jobs always create a deterministic baseline. This flag
 	// controls only optional model enhancement; a disabled runner records the
@@ -255,8 +265,14 @@ func Load() *Config {
 		StemsConcurrency:   parseBoundedIntEnv("STEMS_CONCURRENCY", 1, 1, 2),
 		StemsQueueMaxDepth: parseBoundedIntEnv("STEMS_QUEUE_MAX_DEPTH", 32, 1, 512),
 
+		// Queue-tail-anchored harmonic DJ lineup block (default OFF)
+		EnableHarmonicLineup: parseBoolEnv("ENABLE_HARMONIC_LINEUP", false),
+
 		// Save-playlist-as-mix seam (default OFF)
 		EnablePlaylistMix: parseBoolEnv("ENABLE_PLAYLIST_MIX", false),
+
+		// ListenBrainz similar-artist expansion (default OFF, issue #392)
+		EnableListenBrainzMix: parseBoolEnv("ENABLE_LISTENBRAINZ_MIX", false),
 
 		ResearchEnabled:       parseBoolEnv("RESEARCH_ENABLED", false),
 		ResearchWorkerEnabled: parseBoolEnv("RESEARCH_WORKER_ENABLED", true),

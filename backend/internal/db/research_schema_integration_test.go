@@ -1,7 +1,6 @@
 package db
 
 import (
-	"database/sql"
 	"fmt"
 	"os"
 	"testing"
@@ -70,25 +69,11 @@ func TestResearchVariantMigrationDownUpPreservesPersistedAssignments(t *testing.
 
 func newResearchSchemaTestDB(t *testing.T) *DB {
 	t.Helper()
-
-	dsn := postgresTestDSN()
-	if dsn == "" {
-		t.Skip("set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres research schema tests")
-	}
-
-	rawDB, err := sql.Open("postgres", dsn)
-	if err != nil {
-		t.Fatalf("open test database: %v", err)
-	}
-	t.Cleanup(func() { _ = rawDB.Close() })
-
-	database := &DB{DB: rawDB}
-	if err := database.Ping(); err != nil {
-		t.Fatalf("ping test database: %v", err)
-	}
-	if err := database.Migrate(); err != nil {
-		t.Fatalf("migrate test database: %v", err)
-	}
+	// Empty truncate: this helper never wipes tables, but it still migrates a
+	// DSN-addressed database, so it goes through the same protection guards.
+	database, _ := newGuardedTestDB(t,
+		"set OMP_POSTGRES_TEST_DSN, QA_DATABASE_URL, or DATABASE_URL to run Postgres research schema tests",
+		"")
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("rerun idempotent test database migration: %v", err)
 	}
