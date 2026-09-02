@@ -2,6 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Same compose file the stack is started from, so `docker compose ps` resolves
+# the project name exactly the way local-low-memory.sh does (Compose reads the
+# repo .env from the compose file's directory) instead of guessing at it.
+COMPOSE_FILE="$ROOT/docker-compose.local-low-memory.yml"
 
 host_from_tailscale() {
   if command -v tailscale >/dev/null 2>&1; then
@@ -57,6 +61,43 @@ env:
 USAGE
 }
 
+# Guard against silent mis-provisioning: if the backend's signed URLs point at
+# localhost (the compose default when the export is lost), emulator/remote
+# playback stalls with PLAYING-but-zero-position and no AudioTrack. Fail loudly
+# instead (Mix slice-3 QA incident, 2026-08-24).
+#
+# Every step here is best-effort by design: a container we cannot resolve or
+# inspect is "unknown", not "wrong". Under `set -e` an unguarded command
+# substitution would abort start-backend outright and the operator would never
+# see the URLs, which is a worse outcome than an unverified endpoint.
+check_backend_minio_endpoint() {
+  local container running_endpoint
+  container="$(docker compose -f "$COMPOSE_FILE" ps -q backend 2>/dev/null)" || container=""
+  # Parameter expansion, not `| head -n 1`: an unguarded pipe under
+  # `set -o pipefail` could abort start-backend on SIGPIPE, which is exactly
+  # the loud-failure-instead-of-warning outcome this function avoids.
+  container="${container%%$'\n'*}"
+  if [ -z "$container" ]; then
+    echo "WARNING: could not resolve the backend container from $COMPOSE_FILE;" >&2
+    echo "         MINIO_PUBLIC_ENDPOINT was not verified. Expected $MINIO_PUBLIC_ENDPOINT." >&2
+    return 0
+  fi
+
+  running_endpoint="$(docker exec "$container" env 2>/dev/null \
+    | awk -F= '/^MINIO_PUBLIC_ENDPOINT=/{print $2}')" || running_endpoint=""
+  if [ -z "$running_endpoint" ]; then
+    echo "WARNING: could not read MINIO_PUBLIC_ENDPOINT from the running backend;" >&2
+    echo "         it was not verified. Expected $MINIO_PUBLIC_ENDPOINT." >&2
+    return 0
+  fi
+
+  if [ "$running_endpoint" != "$MINIO_PUBLIC_ENDPOINT" ]; then
+    echo "ERROR: backend MINIO_PUBLIC_ENDPOINT=$running_endpoint but expected $MINIO_PUBLIC_ENDPOINT" >&2
+    echo "       signed audio URLs would be unreachable from other tailnet devices. Recreate the backend with the exported env." >&2
+    exit 1
+  fi
+}
+
 print_urls() {
   cat <<URLS
 backend:        ${BACKEND_BASE_URL}
@@ -71,6 +112,7 @@ cmd="${1:-}"
 case "$cmd" in
   start-backend)
     "$ROOT/scripts/local-low-memory.sh" start
+    check_backend_minio_endpoint
     print_urls
     ;;
   start-downloads)

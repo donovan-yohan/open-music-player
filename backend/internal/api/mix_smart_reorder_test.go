@@ -416,7 +416,7 @@ func TestSmartReorderRegeneratesThePlanAndReportsSeamCounts(t *testing.T) {
 	// Hand-author seam 1 (track 2 -> track 3); seam 0 stays generated.
 	editedOverlap := generated[1].OverlapMs + 4000
 	clips := layoutAutoBlendClips(7, facts, []int64{generated[0].OverlapMs, editedOverlap})
-	plan := smartReorderPlan(t, userID, "Mix QA (Auto)", clips)
+	plan := smartReorderPlan(t, userID, autoBlendMixName("Autoblend"), clips)
 
 	store := &fakeMixPlanStore{getPlan: plan}
 	order := &fakePlaylistOrderWriter{}
@@ -474,7 +474,7 @@ func TestSmartReorderKeepsEditedSeamThatStaysAdjacent(t *testing.T) {
 	generated := computeAutoBlendTransitions(facts)
 	editedOverlap := generated[0].OverlapMs + 3000
 	clips := layoutAutoBlendClips(7, facts, []int64{editedOverlap, generated[1].OverlapMs})
-	plan := smartReorderPlan(t, userID, "Mix QA (Auto)", clips)
+	plan := smartReorderPlan(t, userID, autoBlendMixName("Autoblend"), clips)
 
 	store := &fakeMixPlanStore{getPlan: plan}
 	h := NewPlaylistSmartReorderHandlers(reader, &fakePlaylistOrderWriter{}, store, true)
@@ -505,7 +505,10 @@ func TestSmartReorderKeepsEditedSeamThatStaysAdjacent(t *testing.T) {
 	}
 }
 
-func TestSmartReorderSkipsPlanWorkWhenRegenerateIsFalse(t *testing.T) {
+func TestSmartReorderIgnoresRegeneratePlanFalseAndAlwaysReblends(t *testing.T) {
+	// F-2: regeneratePlan=false used to persist the order without touching the
+	// plan — the exact desync this endpoint exists to prevent. The field is
+	// now ignored; reblend-always is the contract.
 	userID := uuid.New()
 	tracks := []db.Track{
 		autoBlendTrack(1, 200000, 120, true, "8A"),
@@ -517,7 +520,7 @@ func TestSmartReorderSkipsPlanWorkWhenRegenerateIsFalse(t *testing.T) {
 		autoBlendTrackFactsFromAnalysis(tracks[1]),
 	}
 	clips, _ := buildAutoBlendMix(7, facts)
-	plan := smartReorderPlan(t, userID, "Mix QA (Auto)", clips)
+	plan := smartReorderPlan(t, userID, autoBlendMixName("Autoblend"), clips)
 	store := &fakeMixPlanStore{getPlan: plan}
 	h := NewPlaylistSmartReorderHandlers(reader, &fakePlaylistOrderWriter{}, store, true)
 
@@ -528,8 +531,8 @@ func TestSmartReorderSkipsPlanWorkWhenRegenerateIsFalse(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if store.updated != nil {
-		t.Fatal("regeneratePlan=false must not write the plan")
+	if store.updated == nil {
+		t.Fatal("regeneratePlan=false must be ignored; the plan is always regenerated")
 	}
 }
 
@@ -546,7 +549,7 @@ func TestSmartReorderRollsBackTheOrderWhenThePlanWriteFails(t *testing.T) {
 		facts[i] = autoBlendTrackFactsFromAnalysis(tracks[i])
 	}
 	clips, _ := buildAutoBlendMix(7, facts)
-	plan := smartReorderPlan(t, userID, "Mix QA (Auto)", clips)
+	plan := smartReorderPlan(t, userID, autoBlendMixName("Autoblend"), clips)
 
 	store := &fakeMixPlanStore{getPlan: plan, updateErr: db.ErrMixPlanVersionConflict}
 	order := &fakePlaylistOrderWriter{}
@@ -652,4 +655,115 @@ func TestSmartReorderGuardsAuthDisabledAndOwnership(t *testing.T) {
 			t.Fatalf("status = %d, want 400", w.Code)
 		}
 	})
+}
+
+// TestSmartReorderRequiresPlanLinkedToPlaylist pins review finding F-6: mix
+// plans have no playlist foreign key, so a plan matching the playlist's track
+// multiset is not enough — the plan's name must be one the app would have
+// written for this playlist. Both accepted spellings go through the same
+// normalizers the writers use, which is why a playlist name carrying
+// whitespace still matches its own plan.
+func TestSmartReorderRequiresPlanLinkedToPlaylist(t *testing.T) {
+	// Trailing whitespace: the plain playlist mix is created with
+	// playlistMixName(playlist.Name), so its stored name is the TRIMMED one.
+	// Comparing against the raw playlist name would reject the app's own plan.
+	const playlistName = "Set A  "
+
+	tests := []struct {
+		name       string
+		planName   string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "auto-blend derived name",
+			planName:   autoBlendMixName(playlistName),
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "normalized plain playlist mix name",
+			planName:   playlistMixName(playlistName),
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "raw untrimmed playlist name is not a name the app writes",
+			planName:   playlistName,
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "VALIDATION_ERROR",
+		},
+		{
+			name:       "another plan over the same tracks",
+			planName:   "Something Else",
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "VALIDATION_ERROR",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			userID := uuid.New()
+			tracks := []db.Track{
+				autoBlendTrack(1, 200000, 120, true, "8A"),
+				autoBlendTrack(2, 200000, 128, true, "2A"),
+				autoBlendTrack(3, 200000, 121, true, "8B"),
+			}
+			playlist := autoBlendPlaylist(userID, 7, tracks)
+			playlist.Name = playlistName
+			reader := &fakePlaylistMixReader{playlist: playlist}
+
+			facts := make([]autoBlendTrackFacts, len(tracks))
+			for i := range tracks {
+				facts[i] = autoBlendTrackFactsFromAnalysis(tracks[i])
+			}
+			// Correct track multiset in every case: the name is the only
+			// thing under test.
+			clips, _ := buildAutoBlendMix(7, facts)
+			plan := smartReorderPlan(t, userID, tt.planName, clips)
+
+			store := &fakeMixPlanStore{getPlan: plan}
+			order := &fakePlaylistOrderWriter{}
+			h := NewPlaylistSmartReorderHandlers(reader, order, store, true)
+
+			w := httptest.NewRecorder()
+			h.SmartReorderPlaylist(w, smartReorderRequest(userID, 7,
+				`{"mixPlanId":"`+plan.ID.String()+`"}`))
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d, body = %s",
+					w.Code, tt.wantStatus, w.Body.String())
+			}
+
+			if tt.wantStatus != http.StatusOK {
+				var errResp ErrorResponse
+				if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+					t.Fatalf("decode error response: %v", err)
+				}
+				if errResp.Code != tt.wantCode {
+					t.Fatalf("code = %q, want %q", errResp.Code, tt.wantCode)
+				}
+				// The rejection has to be actionable, and it has to happen
+				// BEFORE anything is persisted: an unlinked plan must never
+				// leave a reordered playlist behind.
+				if !strings.Contains(errResp.Message, "reblend") {
+					t.Fatalf("message = %q, want it to tell the user to reblend",
+						errResp.Message)
+				}
+				if len(order.orders) != 0 {
+					t.Fatalf("SetTrackOrder called %d times, want 0",
+						len(order.orders))
+				}
+				if store.updated != nil {
+					t.Fatal("a rejected plan must not be written")
+				}
+				return
+			}
+
+			if len(order.orders) != 1 {
+				t.Fatalf("SetTrackOrder calls = %d, want 1", len(order.orders))
+			}
+			if store.updated == nil {
+				t.Fatal("an accepted plan is reblended for the new order")
+			}
+		})
+	}
 }

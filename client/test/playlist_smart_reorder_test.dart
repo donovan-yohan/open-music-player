@@ -91,6 +91,8 @@ class _StubPlaylistService extends PlaylistService {
     required this.autoMixResult,
     this.smartReorderResult,
     this.failSmartReorder = false,
+    this.smartReorderError,
+    this.failReload = false,
   }) : super(api: core_api.ApiClient(storage: SecureStorage()));
 
   final List<Track> tracks;
@@ -98,18 +100,33 @@ class _StubPlaylistService extends PlaylistService {
   final Map<String, dynamic>? smartReorderResult;
   final bool failSmartReorder;
 
+  /// A specific failure to throw instead of the generic one, so the screen's
+  /// handling of a deliberate server rejection can be driven.
+  final Object? smartReorderError;
+
+  /// When true every [getPlaylist] after the screen's initial load throws, so
+  /// the failure-recovery reload can be made to fail too.
+  final bool failReload;
+
+  int getPlaylistCalls = 0;
   int smartReorderCalls = 0;
   String? lastMixPlanId;
   bool? lastRegeneratePlan;
 
   @override
-  Future<Playlist> getPlaylist(int id) async => Playlist(
-        id: id,
-        name: 'Mix',
-        createdAt: DateTime.utc(2026),
-        updatedAt: DateTime.utc(2026),
-        tracks: tracks,
-      );
+  Future<Playlist> getPlaylist(int id) async {
+    getPlaylistCalls++;
+    if (failReload && getPlaylistCalls > 1) {
+      throw Exception('playlist reload unavailable');
+    }
+    return Playlist(
+      id: id,
+      name: 'Mix',
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+      tracks: tracks,
+    );
+  }
 
   @override
   Future<AutoMixResult> autoMix(int playlistId) async =>
@@ -124,6 +141,8 @@ class _StubPlaylistService extends PlaylistService {
     smartReorderCalls++;
     lastMixPlanId = mixPlanId;
     lastRegeneratePlan = regeneratePlan;
+    final error = smartReorderError;
+    if (error != null) throw error;
     if (failSmartReorder) throw Exception('smart reorder unavailable');
     return SmartReorderResult.fromJson(smartReorderResult!);
   }
@@ -357,6 +376,80 @@ void main() {
       find.text('Could not reorder this playlist. Try again.'),
       findsOneWidget,
     );
+  });
+
+  testWidgets('a server rejection is shown verbatim, not as a generic retry',
+      (tester) async {
+    // F-6 rejects a plan that is not linked to this playlist, and the message
+    // is the only thing that tells the user how to recover. Swallowing it
+    // under "Try again" makes the reorder button look broken forever.
+    const serverMessage =
+        'mix plan is not linked to this playlist; reblend from the playlist first';
+    final service = _StubPlaylistService(
+      tracks: [_track(1, bpm: 120), _track(2, bpm: 160)],
+      autoMixResult: {
+        'playlistId': 7,
+        'transitions': [_transitionJson(1, 2)],
+        'mixPlan': _mixPlanJson([1, 2]),
+      },
+      smartReorderError: core_api.ApiException(
+        serverMessage,
+        400,
+        errorCode: 'VALIDATION_ERROR',
+      ),
+    );
+
+    await _pumpMixed(tester, service);
+    await _dismissToasts(tester);
+
+    await tester.tap(find.byKey(const ValueKey('mix_reorder_button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text(serverMessage), findsOneWidget);
+    expect(
+      find.text('Could not reorder this playlist. Try again.'),
+      findsNothing,
+    );
+    // The recovery path still runs: the order we hold is reloaded, not left
+    // in whatever state the failed call implied.
+    expect(find.byKey(const Key('mix_seam_1_2')), findsOneWidget);
+  });
+
+  testWidgets('a failed recovery reload still reports the server message',
+      (tester) async {
+    // The outage that rejects the reorder usually takes the reload with it.
+    // If the reload throws unguarded the message never reaches the user and
+    // the reorder button looks silently broken.
+    const serverMessage =
+        'mix plan is not linked to this playlist; reblend from the playlist first';
+    final service = _StubPlaylistService(
+      tracks: [_track(1, bpm: 120), _track(2, bpm: 160)],
+      autoMixResult: {
+        'playlistId': 7,
+        'transitions': [_transitionJson(1, 2)],
+        'mixPlan': _mixPlanJson([1, 2]),
+      },
+      smartReorderError: core_api.ApiException(
+        serverMessage,
+        400,
+        errorCode: 'VALIDATION_ERROR',
+      ),
+      failReload: true,
+    );
+
+    final playback = await _pumpMixed(tester, service);
+    await _dismissToasts(tester);
+
+    await tester.tap(find.byKey(const ValueKey('mix_reorder_button')));
+    await tester.pumpAndSettle();
+
+    // The reload was attempted and threw, and the message survived it.
+    expect(service.getPlaylistCalls, greaterThan(1));
+    expect(find.text(serverMessage), findsOneWidget);
+    // The blended view is kept on the order we already hold rather than torn
+    // down by the reload failure.
+    expect(find.byKey(const Key('mix_seam_1_2')), findsOneWidget);
+    expect(playback.mixPlanCalls, isEmpty);
   });
 
   testWidgets('the Cut preset saves zero fades and butt-joins the clips',

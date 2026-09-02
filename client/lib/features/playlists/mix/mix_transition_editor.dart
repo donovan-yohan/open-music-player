@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../app/theme.dart';
+import '../../../core/api/api_client.dart';
 import '../../../models/mix_plan.dart';
 import '../../../shared/models/track.dart';
 import '../mix/mix_models.dart';
@@ -333,6 +334,14 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
       await widget.onSave(edit);
       if (!mounted) return;
       Navigator.of(context).pop(edit);
+    } on ApiException catch (error) {
+      // Server-crafted messages carry actionable guidance (e.g. "reopen the
+      // seam" when the edited clips no longer exist); show them verbatim.
+      if (!mounted) return;
+      setState(() => _saving = false);
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text(error.message)),
+      );
     } catch (_) {
       if (!mounted) return;
       setState(() => _saving = false);
@@ -601,6 +610,33 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
   }
 }
 
+/// Builds the seam canvas on its own, for tests.
+///
+/// The canvas is private to this sheet, but the pixel-to-millisecond drag
+/// scale it derives is the H3 regression surface: it has to resolve against
+/// the PAINTED width inside the border, not the outer padded box, or a drag
+/// moves the seam by a different amount than the waveform under the finger
+/// says it should. Driving the whole sheet cannot assert that relationship, so
+/// tests pump this directly and compare the emitted milliseconds against the
+/// painted width they measure.
+@visibleForTesting
+Widget seamCanvasForTesting({
+  required int windowMs,
+  required int overlapMs,
+  required ValueChanged<int> onDragDeltaMs,
+}) =>
+    _SeamCanvas(
+      windowMs: windowMs,
+      overlapMs: overlapMs,
+      outgoingPeaks: const [],
+      incomingPeaks: const [],
+      outgoingDownbeats: const [],
+      incomingDownbeats: const [],
+      dividerColor: const Color(0xFF333333),
+      accentColor: const Color(0xFF88CCFF),
+      onDragDeltaMs: onDragDeltaMs,
+    );
+
 /// Two-lane seam view. The horizontal axis spans [windowMs]: the top lane is
 /// the outgoing track's final window, the bottom lane is the incoming track's
 /// first window, and the shaded region spanning both lanes at the right edge
@@ -635,36 +671,41 @@ class _SeamCanvas extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onHorizontalDragUpdate: (details) {
-            // Measure from the painted canvas box (inside the border and
-            // insets) so the drag scale exactly equals the paint scale.
-            final renderBox = context.findRenderObject();
-            final canvasWidth =
-                renderBox is RenderBox ? renderBox.size.width : 1.0;
-            final msPerPx = windowMs / canvasWidth.clamp(1.0, double.infinity);
-            onDragDeltaMs((details.delta.dx * msPerPx).round());
-          },
-          child: Container(
-            height: 220,
-            decoration: BoxDecoration(
-              border: Border.all(color: dividerColor),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: CustomPaint(
-              painter: _SeamCanvasPainter(
-                windowMs: windowMs,
-                overlapMs: overlapMs,
-                outgoingPeaks: outgoingPeaks,
-                incomingPeaks: incomingPeaks,
-                outgoingDownbeats: outgoingDownbeats,
-                incomingDownbeats: incomingDownbeats,
-                dividerColor: dividerColor,
-                accentColor: accentColor,
-              ),
-              size: Size.infinite,
-            ),
+        child: Container(
+          height: 220,
+          decoration: BoxDecoration(
+            border: Border.all(color: dividerColor),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          // LayoutBuilder sits INSIDE the border, so its constraint width is
+          // the painted canvas width — the drag scale now equals the paint
+          // scale (review finding H3; context.findRenderObject() previously
+          // resolved to the outer padded box, ~10% off).
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final canvasWidth = constraints.maxWidth;
+              final msPerPx =
+                  windowMs / canvasWidth.clamp(1.0, double.infinity);
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onHorizontalDragUpdate: (details) {
+                  onDragDeltaMs((details.delta.dx * msPerPx).round());
+                },
+                child: CustomPaint(
+                  painter: _SeamCanvasPainter(
+                    windowMs: windowMs,
+                    overlapMs: overlapMs,
+                    outgoingPeaks: outgoingPeaks,
+                    incomingPeaks: incomingPeaks,
+                    outgoingDownbeats: outgoingDownbeats,
+                    incomingDownbeats: incomingDownbeats,
+                    dividerColor: dividerColor,
+                    accentColor: accentColor,
+                  ),
+                  size: Size.infinite,
+                ),
+              );
+            },
           ),
         ),
       ),

@@ -27,12 +27,26 @@ class MixPreset {
   /// One-line description shown under the chips, sentence case.
   final String blurb;
 
-  /// Clip gain, in dB, this preset writes into both clips of the seam.
+  /// Clip gain, in dB, this preset imposes on both clips of the seam.
   ///
-  /// No shipped preset attenuates, so both are unity. Writing it explicitly
-  /// keeps the persisted plan a complete statement of the preset rather than
-  /// whatever gain the clip happened to carry.
+  /// No shipped preset attenuates, so both are unity and — because applying
+  /// a preset must not clobber an authored per-clip gain — unity presets
+  /// leave existing gain values untouched on write.
   final double gainDb;
+
+  /// A preset the ladder does not ship, for tests only.
+  ///
+  /// [applyTo]'s attenuating arm has no shipped caller — every shipped preset
+  /// is unity — so without this seam the branch that decides whether a preset
+  /// may overwrite an authored clip gain (review finding F-5) cannot be
+  /// exercised at all.
+  @visibleForTesting
+  const MixPreset.forTest({
+    required MixPresetId id,
+    required String label,
+    required String blurb,
+    required double gainDb,
+  }) : this._(id: id, label: label, blurb: blurb, gainDb: gainDb);
 
   static const fade = MixPreset._(
     id: MixPresetId.fade,
@@ -68,9 +82,16 @@ class MixPreset {
     required int overlapMs,
   }) {
     final overlap = overlapFor(overlapMs);
+    // Preserve any authored clip gain: shipped presets are unity, so writing
+    // gainDb unconditionally would silently zero a per-clip gain the user
+    // (or a future preset) had set. Only override when this preset actually
+    // attenuates (review finding F-5).
+    final appliesGain = gainDb != 0;
     return (
-      outgoing: outgoing.copyWith(fadeOutMs: overlap, gainDb: gainDb),
-      incoming: incoming.copyWith(fadeInMs: overlap, gainDb: gainDb),
+      outgoing: outgoing.copyWith(
+          fadeOutMs: overlap, gainDb: appliesGain ? gainDb : null),
+      incoming: incoming.copyWith(
+          fadeInMs: overlap, gainDb: appliesGain ? gainDb : null),
     );
   }
 

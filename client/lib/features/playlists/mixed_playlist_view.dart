@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../app/theme.dart';
 import '../../models/track_analysis.dart';
 import 'mix/mix_models.dart';
+import 'mix/mix_presets.dart';
 
 /// Every label on the Camelot wheel, and nothing else. Hoisted out of the
 /// normalizer so a long blended playlist does not rebuild it per row.
@@ -134,7 +135,30 @@ class MixSeamConnector extends StatelessWidget {
     }
   }
 
-  String get preset => transition?.preset ?? 'Fade';
+  /// The preset badge shown on the seam. Server auto-blend may report
+  /// Rise/Blend (beat-aligned geometry), which the editor ladder cannot offer
+  /// until the engine renders filter automation; the badge shows only what
+  /// the engine actually renders so tapping through to the editor is never a
+  /// downgrade surprise (review finding F-4).
+  ///
+  /// The downgrade resolves against the seam's actual overlap rather than a
+  /// hardcoded 'Fade', matching how the seam editor labels a persisted seam:
+  /// a zero-overlap seam is a Cut, and calling it a Fade would be the same
+  /// class of lie F-4 removed.
+  ///
+  /// A null transition is not a zero-overlap seam — it is a seam the plan does
+  /// not describe yet (a reorder-failure reload, say). Reading its absent
+  /// overlap as a Cut would contradict the sub-label and the semantic label,
+  /// which both still say fade, so the default stays Fade and only a known
+  /// transition can be downgraded.
+  String get preset {
+    final seam = transition;
+    if (seam == null) return MixPreset.fade.label;
+    final rendered = MixPreset.forOverlapMs(seam.overlapMs).label;
+    return MixPreset.shipped.any((p) => p.label == seam.preset)
+        ? seam.preset
+        : rendered;
+  }
 
   String get overlapLabel =>
       transition?.overlapLabel() ?? 'Simple fade between tracks';

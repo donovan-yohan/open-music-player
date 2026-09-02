@@ -31,6 +31,57 @@ import 'mixed_playlist_view.dart';
 import 'playlist_edit_dialog.dart';
 import 'playlist_selection.dart';
 
+/// Applies [edit] to [source], keeping the persisted invariant
+/// `fadeOut(i) == fadeIn(i+1) == placement overlap` at every seam.
+///
+/// The overlap change moves the edited pair, and because the incoming clip's
+/// end moves with its start, the entire downstream tail shifts by the same
+/// delta so all later seams keep their exact geometry. Returns null when
+/// either edited clip is absent from [source] — e.g. a regeneration replaced
+/// the clip set underneath the editor.
+///
+/// Top-level and visible for test on purpose: the rebase it performs is the
+/// H1 regression surface, and every widget-level route into it injects a save
+/// stub, so the version-conflict rebase branch is reachable only from a unit
+/// test.
+@visibleForTesting
+List<MixPlanClip>? clipsWithSeamEdit(
+  List<MixPlanClip> source,
+  MixTransitionEdit edit,
+) {
+  final outgoingIndex =
+      source.indexWhere((clip) => clip.clipId == edit.outgoing.clipId);
+  final incomingIndex =
+      source.indexWhere((clip) => clip.clipId == edit.incoming.clipId);
+  if (outgoingIndex < 0 || incomingIndex < 0) return null;
+
+  final clips = [...source];
+
+  // Apply only the authored fade values onto the CURRENT clips rather than
+  // substituting the stale editor copies wholesale: a concurrent writer's
+  // non-fade fields (gain, source bounds, stem edits) must survive a rebase.
+  // (Review finding H1.)
+  clips[outgoingIndex] =
+      source[outgoingIndex].copyWith(fadeOutMs: edit.outgoing.fadeOutMs);
+  clips[incomingIndex] =
+      source[incomingIndex].copyWith(fadeInMs: edit.incoming.fadeInMs);
+
+  final previousOutgoing = source[outgoingIndex];
+  final previousIncoming = source[incomingIndex];
+  final newOverlapMs = edit.overlapMs;
+  // Timeline overlap between two clips: outgoing end minus incoming start.
+  final previousOverlapMs =
+      previousOutgoing.timelineEndMs - previousIncoming.timelineStartMs;
+  final placementDeltaMs = newOverlapMs - previousOverlapMs;
+  clips[incomingIndex] = clips[incomingIndex].withTimelineStartMs(
+      previousIncoming.timelineStartMs - placementDeltaMs);
+  for (var j = incomingIndex + 1; j < clips.length; j++) {
+    clips[j] = clips[j]
+        .withTimelineStartMs(clips[j].timelineStartMs - placementDeltaMs);
+  }
+  return clips;
+}
+
 class PlaylistDetailScreen extends StatefulWidget {
   final int playlistId;
   final PlaylistService? playlistService;
@@ -200,44 +251,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
-  /// Applies [edit] to [source], keeping the persisted invariant
-  /// `fadeOut(i) == fadeIn(i+1) == placement overlap` at every seam.
-  ///
-  /// The overlap change moves the edited pair, and because the incoming clip's
-  /// end moves with its start, the entire downstream tail shifts by the same
-  /// delta so all later seams keep their exact geometry. Returns null when
-  /// either edited clip is absent from [source] — e.g. a regeneration replaced
-  /// the clip set underneath the editor.
-  static List<MixPlanClip>? _clipsWithSeamEdit(
-    List<MixPlanClip> source,
-    MixTransitionEdit edit,
-  ) {
-    final outgoingIndex =
-        source.indexWhere((clip) => clip.clipId == edit.outgoing.clipId);
-    final incomingIndex =
-        source.indexWhere((clip) => clip.clipId == edit.incoming.clipId);
-    if (outgoingIndex < 0 || incomingIndex < 0) return null;
-
-    final clips = [...source];
-    clips[outgoingIndex] = edit.outgoing;
-    clips[incomingIndex] = edit.incoming;
-
-    final previousOutgoing = source[outgoingIndex];
-    final previousIncoming = source[incomingIndex];
-    final newOverlapMs = edit.overlapMs;
-    // Timeline overlap between two clips: outgoing end minus incoming start.
-    final previousOverlapMs =
-        previousOutgoing.timelineEndMs - previousIncoming.timelineStartMs;
-    final placementDeltaMs = newOverlapMs - previousOverlapMs;
-    clips[incomingIndex] = clips[incomingIndex].withTimelineStartMs(
-        previousIncoming.timelineStartMs - placementDeltaMs);
-    for (var j = incomingIndex + 1; j < clips.length; j++) {
-      clips[j] = clips[j]
-          .withTimelineStartMs(clips[j].timelineStartMs - placementDeltaMs);
-    }
-    return clips;
-  }
-
   /// Auditions the draft seam without persisting it: the draft geometry is
   /// applied to a throwaway copy of the plan and handed to the one playback
   /// session, so the user hears exactly what Save would write.
@@ -247,7 +260,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     MixTransitionEdit draft,
   ) async {
     final tracks = _playlist?.tracks ?? const <Track>[];
-    final clips = _clipsWithSeamEdit(plan.clips, draft);
+    final clips = clipsWithSeamEdit(plan.clips, draft);
     if (clips == null || tracks.length != clips.length) return;
     final playback = context.read<PlaybackState>();
     await playback.previewMixSeam(
@@ -276,7 +289,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       );
 
   Future<void> _saveSeamEdit(MixPlan plan, MixTransitionEdit edit) async {
-    final clips = _clipsWithSeamEdit(plan.clips, edit);
+    final clips = clipsWithSeamEdit(plan.clips, edit);
     if (clips == null) {
       throw const FormatException('Edited clips are missing from the plan.');
     }
@@ -329,7 +342,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   /// clip no longer exists in the fresh plan (e.g. a regeneration replaced
   /// the clip set), in which case the user must reopen the seam.
   List<MixPlanClip>? _rebaseSeamEdit(MixPlan fresh, MixTransitionEdit edit) =>
-      _clipsWithSeamEdit(fresh.clips, edit);
+      clipsWithSeamEdit(fresh.clips, edit);
 
   /// Rebuilds the transition decorations from a freshly saved plan so seam
   /// badges reflect what was actually persisted.
@@ -672,29 +685,57 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       messenger.showSnackBar(
         SnackBar(content: Text(result.feedbackMessage())),
       );
+    } on ApiException catch (error) {
+      // The server's rejections here are deliberate and actionable — an
+      // unlinked plan asks the user to reblend first — so render the server's
+      // own message verbatim instead of burying it under a generic retry
+      // prompt (review finding P1-c, mirroring the seam editor sheet).
+      await _recoverFromFailedReorder(playlist, messenger, error.message);
     } catch (_) {
-      if (!mounted) return;
-      setState(() => _isMixLoading = false);
-      // A failed reorder may have persisted the order but not the plan
-      // (server-side compensation is best-effort), so the list we hold can be
-      // stale in either direction. Reload from the server, preserving the mix
-      // view so a transient failure does not tear down blended mode.
-      final reloaded = await _playlistService.getPlaylist(playlist.id);
-      if (!mounted) return;
+      await _recoverFromFailedReorder(
+        playlist,
+        messenger,
+        'Could not reorder this playlist. Try again.',
+      );
+    }
+  }
+
+  /// Puts the screen back on solid ground after a failed reorder, then reports
+  /// [message].
+  ///
+  /// A failed reorder may have persisted the order but not the plan
+  /// (server-side compensation is best-effort), so the list we hold can be
+  /// stale in either direction. Reload from the server, preserving the mix
+  /// view so a transient failure does not tear down blended mode.
+  Future<void> _recoverFromFailedReorder(
+    Playlist playlist,
+    ScaffoldMessengerState messenger,
+    String message,
+  ) async {
+    if (!mounted) return;
+    setState(() => _isMixLoading = false);
+    // The reload is best-effort. When it fails too — the same outage that
+    // killed the reorder usually kills this call as well — the screen keeps
+    // the state it holds, but the user still has to learn why the reorder did
+    // not take, so a failed reload must not swallow [message].
+    Playlist? reloaded;
+    try {
+      reloaded = await _playlistService.getPlaylist(playlist.id);
+    } catch (_) {
+      reloaded = null;
+    }
+    if (!mounted) return;
+    final loaded = reloaded;
+    if (loaded != null) {
       setState(() {
-        _playlist = reloaded;
-        if (reloaded.tracks == null ||
-            _mixPlanMissingTracks(reloaded.tracks!)) {
+        _playlist = loaded;
+        if (loaded.tracks == null || _mixPlanMissingTracks(loaded.tracks!)) {
           _mixPlan = null;
           _mixEnabled = false;
         }
       });
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('Could not reorder this playlist. Try again.'),
-        ),
-      );
     }
+    messenger.showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// True when [tracks] no longer contains every clip track of [_mixPlan], i.e.
