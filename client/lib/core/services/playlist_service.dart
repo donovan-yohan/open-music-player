@@ -203,17 +203,25 @@ class PlaylistService {
   /// Sequences the playlist by tempo and key on the server, which persists the
   /// new order and — when [mixPlanId] names the playlist's active plan —
   /// regenerates that plan for the new order in the same operation.
+  ///
+  /// Server rejections are deliberate and actionable — an unlinked plan asks
+  /// the user to reblend first — so the request is wrapped to surface the
+  /// server's own message as an [ApiException] rather than leaking a raw
+  /// transport error the UI can only render as "try again".
   Future<SmartReorderResult> smartReorder(
     int playlistId, {
     String? mixPlanId,
     bool regeneratePlan = true,
   }) async {
-    final response = await _api.post<Map<String, dynamic>>(
-      '/playlists/$playlistId/smart-reorder',
-      data: {
-        if (mixPlanId != null) 'mixPlanId': mixPlanId,
-        'regeneratePlan': regeneratePlan,
-      },
+    final response = await _api.withServerError(
+      'Could not reorder this playlist. Try again.',
+      () => _api.post<Map<String, dynamic>>(
+        '/playlists/$playlistId/smart-reorder',
+        data: {
+          if (mixPlanId != null) 'mixPlanId': mixPlanId,
+          'regeneratePlan': regeneratePlan,
+        },
+      ),
     );
     return SmartReorderResult.fromJson(response.data ?? const {});
   }

@@ -34,6 +34,20 @@ class MixPreset {
   /// leave existing gain values untouched on write.
   final double gainDb;
 
+  /// A preset the ladder does not ship, for tests only.
+  ///
+  /// [applyTo]'s attenuating arm has no shipped caller — every shipped preset
+  /// is unity — so without this seam the branch that decides whether a preset
+  /// may overwrite an authored clip gain (review finding F-5) cannot be
+  /// exercised at all.
+  @visibleForTesting
+  const MixPreset.forTest({
+    required MixPresetId id,
+    required String label,
+    required String blurb,
+    required double gainDb,
+  }) : this._(id: id, label: label, blurb: blurb, gainDb: gainDb);
+
   static const fade = MixPreset._(
     id: MixPresetId.fade,
     label: 'Fade',

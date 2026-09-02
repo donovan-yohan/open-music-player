@@ -545,18 +545,50 @@ class ApiClient {
       );
       return MixPlan.fromJson(_asMap(response.data));
     } on DioException catch (e) {
-      final data = e.response?.data;
-      final body = data is Map ? Map<String, dynamic>.from(data) : null;
-      final error = body?['error'];
-      final errorMap = error is Map
-          ? Map<String, dynamic>.from(error)
-          : const <String, dynamic>{};
-      throw ApiException(
-        'Failed to update mix plan',
-        _statusCodeOf(e),
-        errorCode: (errorMap['code'] ?? body?['code']) as String?,
-      );
+      throw _apiExceptionFrom(e, 'Failed to update mix plan');
     }
+  }
+
+  /// Runs [request], converting a transport failure into an [ApiException]
+  /// that carries the server's own error message when it sent one.
+  ///
+  /// The generic [get]/[post]/[put]/[delete] helpers throw the raw
+  /// [DioException], which callers cannot render. Wrapping a request in this
+  /// is how a deliberate, actionable server rejection ("mix plan is not
+  /// linked to this playlist; reblend from the playlist first") reaches the
+  /// user instead of a generic "try again".
+  Future<T> withServerError<T>(
+    String fallbackMessage,
+    Future<T> Function() request,
+  ) async {
+    try {
+      return await request();
+    } on DioException catch (e) {
+      throw _apiExceptionFrom(e, fallbackMessage);
+    }
+  }
+
+  /// The [ApiException] for a failed request, preferring the server's own
+  /// error body over [fallbackMessage].
+  ///
+  /// The API's error envelope is `{"code": ..., "message": ...}`, written
+  /// either at the top level or nested under `error`; both spellings are
+  /// read. A body that is missing, malformed, or carries a non-string message
+  /// falls back so a transport failure never renders as a type error.
+  ApiException _apiExceptionFrom(DioException error, String fallbackMessage) {
+    final data = error.response?.data;
+    final body = data is Map ? Map<String, dynamic>.from(data) : null;
+    final nested = body?['error'];
+    final errorMap = nested is Map
+        ? Map<String, dynamic>.from(nested)
+        : const <String, dynamic>{};
+    final message = errorMap['message'] ?? body?['message'];
+    final code = errorMap['code'] ?? body?['code'];
+    return ApiException(
+      message is String && message.isNotEmpty ? message : fallbackMessage,
+      _statusCodeOf(error),
+      errorCode: code is String ? code : null,
+    );
   }
 
   /// GET /tracks/nearby — harmonically compatible tracks from the caller's own

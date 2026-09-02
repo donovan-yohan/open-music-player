@@ -37,8 +37,12 @@ type playlistOrderWriter interface {
 // plan it is displaying — is the only thing that can identify it. Without one,
 // the endpoint persists the order and nothing else.
 type SmartReorderRequest struct {
-	MixPlanID      string `json:"mixPlanId,omitempty"`
-	RegeneratePlan *bool  `json:"regeneratePlan,omitempty"`
+	MixPlanID string `json:"mixPlanId,omitempty"`
+	// RegeneratePlan is accepted for wire compatibility and deliberately
+	// ignored. Persisting an order without regenerating its plan is exactly
+	// the desync this endpoint exists to prevent (review finding F-2), so
+	// reblend-always is the contract regardless of what the caller sends.
+	RegeneratePlan *bool `json:"regeneratePlan,omitempty"`
 }
 
 type SmartReorderResponse struct {
@@ -145,11 +149,6 @@ func (h *PlaylistSmartReorderHandlers) SmartReorderPlaylist(w http.ResponseWrite
 		plan        *db.MixPlan
 		planPayload MixPlanPayload
 	)
-	// The regeneratePlan request field is accepted for API compatibility but
-	// deliberately ignored: persisting an order without regenerating its plan
-	// is exactly the desync this endpoint exists to prevent (review finding
-	// F-2). Reblend-always is the contract.
-	regenerate := true
 	if req.MixPlanID != "" {
 		planID, parseErr := uuid.Parse(req.MixPlanID)
 		if parseErr != nil {
@@ -178,9 +177,20 @@ func (h *PlaylistSmartReorderHandlers) SmartReorderPlaylist(w http.ResponseWrite
 		// playlist FK, so a matching track multiset alone would let any of the
 		// user's plans over this same track set be reordered. Plans created by
 		// the app are named after the playlist (auto-blend derives the name;
-		// the editor save echoes it), so require that linkage.
+		// the plain playlist mix echoes it through playlistMixName), so
+		// require that linkage. Both sides go through the same normalizers the
+		// writers use, or a playlist named "  Set A  " would never match the
+		// trimmed name its own plan was created with.
+		//
+		// Known tradeoff: the plan name is a snapshot taken at creation, not a
+		// live reference. Renaming the playlist (PUT /playlists/{id}) breaks
+		// the linkage and smart reorder rejects the plan until the user
+		// reblends, which rebuilds the plan under the new name. Accepted over
+		// the alternatives (a schema change adding a playlist FK, or dropping
+		// the check) because the failure is loud, safe, and self-healing --
+		// the 400 below tells the user exactly how to recover.
 		if name := planPayload.Name; name != autoBlendMixName(playlist.Name) &&
-			name != playlist.Name {
+			name != playlistMixName(playlist.Name) {
 			writeMixPlanError(w, http.StatusBadRequest, "VALIDATION_ERROR",
 				"mix plan is not linked to this playlist; reblend from the playlist first")
 			return
@@ -198,7 +208,7 @@ func (h *PlaylistSmartReorderHandlers) SmartReorderPlaylist(w http.ResponseWrite
 		return
 	}
 
-	if plan == nil || !regenerate {
+	if plan == nil {
 		writeMixPlanJSON(w, http.StatusOK, response)
 		return
 	}

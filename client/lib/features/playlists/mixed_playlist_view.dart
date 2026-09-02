@@ -140,9 +140,15 @@ class MixSeamConnector extends StatelessWidget {
   /// until the engine renders filter automation; the badge shows only what
   /// the engine actually renders so tapping through to the editor is never a
   /// downgrade surprise (review finding F-4).
+  ///
+  /// The downgrade resolves against the seam's actual overlap rather than a
+  /// hardcoded 'Fade', matching how the seam editor labels a persisted seam:
+  /// a zero-overlap seam is a Cut, and calling it a Fade would be the same
+  /// class of lie F-4 removed.
   String get preset {
-    final label = transition?.preset ?? 'Fade';
-    return MixPreset.shipped.any((p) => p.label == label) ? label : 'Fade';
+    final rendered = MixPreset.forOverlapMs(transition?.overlapMs ?? 0).label;
+    final label = transition?.preset ?? rendered;
+    return MixPreset.shipped.any((p) => p.label == label) ? label : rendered;
   }
 
   String get overlapLabel =>

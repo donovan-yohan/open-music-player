@@ -3,8 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../../core/api/api_client.dart';
 import '../../../app/theme.dart';
+import '../../../core/api/api_client.dart';
 import '../../../models/mix_plan.dart';
 import '../../../shared/models/track.dart';
 import '../mix/mix_models.dart';
@@ -609,6 +609,33 @@ class _MixTransitionEditorSheetState extends State<MixTransitionEditorSheet> {
         : markers.where((m) => m < windowMs).toList();
   }
 }
+
+/// Builds the seam canvas on its own, for tests.
+///
+/// The canvas is private to this sheet, but the pixel-to-millisecond drag
+/// scale it derives is the H3 regression surface: it has to resolve against
+/// the PAINTED width inside the border, not the outer padded box, or a drag
+/// moves the seam by a different amount than the waveform under the finger
+/// says it should. Driving the whole sheet cannot assert that relationship, so
+/// tests pump this directly and compare the emitted milliseconds against the
+/// painted width they measure.
+@visibleForTesting
+Widget seamCanvasForTesting({
+  required int windowMs,
+  required int overlapMs,
+  required ValueChanged<int> onDragDeltaMs,
+}) =>
+    _SeamCanvas(
+      windowMs: windowMs,
+      overlapMs: overlapMs,
+      outgoingPeaks: const [],
+      incomingPeaks: const [],
+      outgoingDownbeats: const [],
+      incomingDownbeats: const [],
+      dividerColor: const Color(0xFF333333),
+      accentColor: const Color(0xFF88CCFF),
+      onDragDeltaMs: onDragDeltaMs,
+    );
 
 /// Two-lane seam view. The horizontal axis spans [windowMs]: the top lane is
 /// the outgoing track's final window, the bottom lane is the incoming track's

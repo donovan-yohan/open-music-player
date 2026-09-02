@@ -61,6 +61,44 @@ void main() {
     expect(applied.incoming.gainDb, 0);
   });
 
+  test('an attenuating preset writes gain, a unity preset leaves it alone', () {
+    // No shipped preset attenuates, so the arm of applyTo that decides
+    // whether a preset may overwrite an authored clip gain (F-5) is
+    // unreachable through the ladder. Drive it directly.
+    const attenuating = MixPreset.forTest(
+      id: MixPresetId.fade,
+      label: 'Duck',
+      blurb: 'Test-only preset that attenuates both clips.',
+      gainDb: -6,
+    );
+
+    final ducked = attenuating.applyTo(
+      outgoing: _clip('clip-1', timelineStartMs: 0, gainDb: -1.5),
+      incoming: _clip('clip-2', timelineStartMs: 190000, gainDb: -1.5),
+      overlapMs: 8000,
+    );
+    expect(ducked.outgoing.gainDb, -6);
+    expect(ducked.incoming.gainDb, -6);
+    // The envelope still follows the requested overlap.
+    expect(ducked.outgoing.fadeOutMs, 8000);
+    expect(ducked.incoming.fadeInMs, 8000);
+
+    // Same clips, a unity preset: the authored gain survives untouched.
+    const unity = MixPreset.forTest(
+      id: MixPresetId.fade,
+      label: 'Fade',
+      blurb: 'Test-only unity preset.',
+      gainDb: 0,
+    );
+    final untouched = unity.applyTo(
+      outgoing: _clip('clip-1', timelineStartMs: 0, gainDb: -1.5),
+      incoming: _clip('clip-2', timelineStartMs: 190000, gainDb: -1.5),
+      overlapMs: 8000,
+    );
+    expect(untouched.outgoing.gainDb, -1.5);
+    expect(untouched.incoming.gainDb, -1.5);
+  });
+
   test('a persisted seam maps back to the preset that produced it', () {
     expect(MixPreset.forOverlapMs(0), MixPreset.cut);
     expect(MixPreset.forOverlapMs(-1), MixPreset.cut);
