@@ -322,6 +322,38 @@ void main() {
     );
   });
 
+  testWidgets('a seam the plan does not describe stays Fade, not Cut',
+      (tester) async {
+    // A null transition means the pair is absent from the plan (a
+    // reorder-failure reload, say), not a zero-overlap seam. Reading the
+    // missing overlap as a Cut would contradict the sub-label and the
+    // semantic label, which both still describe a fade.
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MixSeamConnector(
+            transition: null,
+            collapsed: false,
+            onTap: () {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Fade'), findsOneWidget);
+    expect(find.text('Cut'), findsNothing);
+    expect(find.text('Simple fade between tracks'), findsOneWidget);
+
+    final connector =
+        tester.widget<MixSeamConnector>(find.byType(MixSeamConnector));
+    expect(connector.preset, 'Fade');
+    expect(
+      connector.semanticLabel,
+      'Simple fade transition into next track, Fade preset',
+    );
+  });
+
   testWidgets('seam confidence mapping: key match, tempo shift, simple fade',
       (tester) async {
     final keyMatch = MixTransition.fromJson(_transitionJson(1, 2));

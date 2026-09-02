@@ -714,15 +714,27 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   ) async {
     if (!mounted) return;
     setState(() => _isMixLoading = false);
-    final reloaded = await _playlistService.getPlaylist(playlist.id);
+    // The reload is best-effort. When it fails too — the same outage that
+    // killed the reorder usually kills this call as well — the screen keeps
+    // the state it holds, but the user still has to learn why the reorder did
+    // not take, so a failed reload must not swallow [message].
+    Playlist? reloaded;
+    try {
+      reloaded = await _playlistService.getPlaylist(playlist.id);
+    } catch (_) {
+      reloaded = null;
+    }
     if (!mounted) return;
-    setState(() {
-      _playlist = reloaded;
-      if (reloaded.tracks == null || _mixPlanMissingTracks(reloaded.tracks!)) {
-        _mixPlan = null;
-        _mixEnabled = false;
-      }
-    });
+    final loaded = reloaded;
+    if (loaded != null) {
+      setState(() {
+        _playlist = loaded;
+        if (loaded.tracks == null || _mixPlanMissingTracks(loaded.tracks!)) {
+          _mixPlan = null;
+          _mixEnabled = false;
+        }
+      });
+    }
     messenger.showSnackBar(SnackBar(content: Text(message)));
   }
 

@@ -145,10 +145,19 @@ class MixSeamConnector extends StatelessWidget {
   /// hardcoded 'Fade', matching how the seam editor labels a persisted seam:
   /// a zero-overlap seam is a Cut, and calling it a Fade would be the same
   /// class of lie F-4 removed.
+  ///
+  /// A null transition is not a zero-overlap seam — it is a seam the plan does
+  /// not describe yet (a reorder-failure reload, say). Reading its absent
+  /// overlap as a Cut would contradict the sub-label and the semantic label,
+  /// which both still say fade, so the default stays Fade and only a known
+  /// transition can be downgraded.
   String get preset {
-    final rendered = MixPreset.forOverlapMs(transition?.overlapMs ?? 0).label;
-    final label = transition?.preset ?? rendered;
-    return MixPreset.shipped.any((p) => p.label == label) ? label : rendered;
+    final seam = transition;
+    if (seam == null) return MixPreset.fade.label;
+    final rendered = MixPreset.forOverlapMs(seam.overlapMs).label;
+    return MixPreset.shipped.any((p) => p.label == seam.preset)
+        ? seam.preset
+        : rendered;
   }
 
   String get overlapLabel =>

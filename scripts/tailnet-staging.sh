@@ -73,7 +73,10 @@ USAGE
 check_backend_minio_endpoint() {
   local container running_endpoint
   container="$(docker compose -f "$COMPOSE_FILE" ps -q backend 2>/dev/null)" || container=""
-  container="$(printf '%s\n' "$container" | head -n 1)"
+  # Parameter expansion, not `| head -n 1`: an unguarded pipe under
+  # `set -o pipefail` could abort start-backend on SIGPIPE, which is exactly
+  # the loud-failure-instead-of-warning outcome this function avoids.
+  container="${container%%$'\n'*}"
   if [ -z "$container" ]; then
     echo "WARNING: could not resolve the backend container from $COMPOSE_FILE;" >&2
     echo "         MINIO_PUBLIC_ENDPOINT was not verified. Expected $MINIO_PUBLIC_ENDPOINT." >&2
