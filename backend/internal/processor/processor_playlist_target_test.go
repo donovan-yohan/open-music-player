@@ -139,3 +139,65 @@ func TestDownloadJobTargetPlaylistIsDurableAndClearsOnPlaylistDelete(t *testing.
 		t.Fatalf("target_playlist_id = %#v, want NULL after the playlist was deleted", target)
 	}
 }
+
+// A picked track must append. The first version of this path reused the job's
+// PlaylistPosition, which is 0 for a pick, so any playlist that already held a
+// track at position 0 failed on playlist_tracks_playlist_id_position_key — and
+// because the attach error failed the whole job, the download was marked failed
+// even though the audio had downloaded fine.
+func TestAttachTargetPlaylistTrackAppendsToANonEmptyPlaylist(t *testing.T) {
+	database, ctx := newProcessorPostgresTestDB(t)
+	userID := uuid.New()
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO users (id, email, username, password_hash)
+		VALUES ($1, $2, 'processor-append', 'x')
+	`, userID, "processor-append-"+userID.String()+"@example.test"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	playlistRepo := db.NewPlaylistRepository(database)
+	playlist := &db.Playlist{UserID: userID, Name: "Already has a first track"}
+	if err := playlistRepo.Create(ctx, playlist); err != nil {
+		t.Fatalf("create playlist: %v", err)
+	}
+	trackRepo := db.NewTrackRepository(database)
+	sitting, _, err := trackRepo.CreateTrackFromMetadata(ctx, "Occupant", "Sitting at position zero", "", 120000)
+	if err != nil {
+		t.Fatalf("create occupying track: %v", err)
+	}
+	if err := playlistRepo.AddTrackAtPosition(ctx, playlist.ID, sitting.ID, 0); err != nil {
+		t.Fatalf("occupy position 0: %v", err)
+	}
+	picked, _, err := trackRepo.CreateTrackFromMetadata(ctx, "Target Artist", "Picked at discovery", "", 180000)
+	if err != nil {
+		t.Fatalf("create picked track: %v", err)
+	}
+
+	processor := New(&ProcessorConfig{
+		PlaylistRepo: playlistRepo,
+		ImportRepo:   playlistimport.NewImportRepository(database),
+	})
+	job := &download.DownloadJob{ID: uuid.NewString(), UserID: userID.String(), PlaylistID: playlist.ID}
+	if err := processor.attachTrackToPlaylistIntent(ctx, job, picked.ID); err != nil {
+		t.Fatalf("attach picked track to a non-empty playlist: %v", err)
+	}
+
+	var position int
+	if err := database.QueryRowContext(ctx,
+		`SELECT position FROM playlist_tracks WHERE playlist_id = $1 AND track_id = $2`,
+		playlist.ID, picked.ID).Scan(&position); err != nil {
+		t.Fatalf("read picked track position: %v", err)
+	}
+	if position != 1 {
+		t.Fatalf("picked track position = %d, want 1 (appended after the occupant)", position)
+	}
+
+	var members int
+	if err := database.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = $1`, playlist.ID).Scan(&members); err != nil {
+		t.Fatalf("count members: %v", err)
+	}
+	if members != 2 {
+		t.Fatalf("playlist members = %d, want 2", members)
+	}
+}
