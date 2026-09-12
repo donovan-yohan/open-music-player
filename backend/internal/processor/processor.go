@@ -221,11 +221,11 @@ func (p *Processor) Process(ctx context.Context, job *download.DownloadJob, prog
 		log.Printf("Warning: failed to add track %d to library: %v", track.ID, err)
 	}
 	if err := p.attachTrackToPlaylistIntent(ctx, job, track.ID); err != nil {
-		// The audio downloaded and is already in the library. Failing the job
-		// here would retry the whole download over a playlist bookkeeping
-		// error and would leave the user with neither the track nor a reason.
-		// Playlist imports keep their own per-item state for reconciliation.
-		log.Printf("Warning: failed to attach track %d to its playlist: %v", track.ID, err)
+		// Only the import intent reaches here: a pick swallows its own failures
+		// because it owns nothing but membership. An import owns item state and
+		// job counts, and nothing sweeps a stuck item — the job retry is the
+		// only thing that reconciles one, so this must stay fatal.
+		return fmt.Errorf("playlist attach failed: %w", err)
 	}
 	p.enqueueAnalysis(ctx, track, metadata)
 	progress(95)
@@ -1147,7 +1147,12 @@ func (p *Processor) attachTargetPlaylistTrack(ctx context.Context, job *download
 		log.Printf("Skipped playlist attach for track %d: playlist %d no longer exists", trackID, job.PlaylistID)
 		return nil
 	default:
-		return fmt.Errorf("add track %d to playlist %d: %w", trackID, job.PlaylistID, err)
+		// A pick owns membership and nothing else. The audio downloaded and is
+		// already in the library, so retrying the whole download over a failed
+		// membership write would cost the user the track and tell them nothing.
+		// Unlike an import, there is no per-item state left inconsistent.
+		log.Printf("Warning: failed to add track %d to playlist %d: %v", trackID, job.PlaylistID, err)
+		return nil
 	}
 }
 
