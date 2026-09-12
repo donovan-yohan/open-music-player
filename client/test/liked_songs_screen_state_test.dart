@@ -8,8 +8,11 @@ import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
 import 'package:open_music_player/features/library/liked_songs_screen.dart';
+import 'package:open_music_player/features/playlists/add_to_playlist.dart';
 import 'package:open_music_player/shared/models/track.dart';
 import 'package:provider/provider.dart';
+
+import 'support/recording_playlist_service.dart';
 
 void main() {
   testWidgets(
@@ -65,6 +68,46 @@ void main() {
       );
     },
   );
+
+  testWidgets('a Liked Songs row adds its track to a playlist', (tester) async {
+    final service = _LibraryService();
+    final playlistService = RecordingPlaylistService(
+      playlists: [testPlaylist(5, 'Late night')],
+    );
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<LikedTracksState>.value(
+            value: LikedTracksState(service),
+          ),
+          ListenableProvider<PlaybackState>.value(value: _PlaybackState()),
+        ],
+        child: MaterialApp(
+          home: LikedSongsScreen(
+            libraryService: service,
+            playlistService: playlistService,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('liked_song_add_to_playlist_123')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(addToPlaylistSheetKey), findsOneWidget);
+    await tester.tap(find.text('Late night'));
+    await tester.pumpAndSettle();
+
+    expect(playlistService.addedTo, [5]);
+    expect(playlistService.addedTrackIds, [
+      [123]
+    ]);
+    expect(find.byKey(addToPlaylistSuccessKey), findsOneWidget);
+  });
 }
 
 class _LibraryService extends LibraryService {

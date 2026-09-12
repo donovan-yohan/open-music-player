@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/api/api_client.dart';
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/audio/queue_ordering.dart';
 import '../../core/services/services.dart' as services;
 import '../../core/services/liked_tracks_state.dart';
+import '../../core/services/playlist_service.dart';
 import '../../shared/models/track.dart';
+import '../playlists/add_to_playlist.dart';
 import '../../shared/widgets/download_button.dart';
 import '../../shared/widgets/queue_swipe_action.dart';
 import '../../shared/widgets/track_tile.dart';
@@ -16,11 +19,16 @@ import '../../shared/widgets/track_tile.dart';
 /// collection into the listening queue. Reached from a card at the top of the
 /// Library screen.
 class LikedSongsScreen extends StatefulWidget {
-  const LikedSongsScreen({super.key, this.libraryService});
+  const LikedSongsScreen(
+      {super.key, this.libraryService, this.playlistService});
 
   /// Injectable for tests; defaults to a real service over the parser-based
   /// [services.ApiClient], mirroring how the Library screen builds its client.
   final services.LibraryService? libraryService;
+
+  /// Injectable for tests; defaults to a service over the app-wide
+  /// [ApiClient], matching how the library rows build theirs.
+  final PlaylistService? playlistService;
 
   @override
   State<LikedSongsScreen> createState() => _LikedSongsScreenState();
@@ -125,6 +133,7 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
             track: track,
             onTap: () => _playFrom(index - 1),
             onAddToQueue: () => _enqueueTrack(track),
+            onAddToPlaylist: () => _addToPlaylist(track),
             onToggleLike: () => _toggleLike(track.id),
             queueActionKey: ValueKey('liked_queue_${track.id}_${index - 1}'),
           );
@@ -144,6 +153,18 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
         const SnackBar(content: Text('Could not update liked status')),
       );
     }
+  }
+
+  /// An explicit icon rather than an overflow menu: these rows carry only a
+  /// heart today, and "put this in a playlist" is the action the user could
+  /// not find.
+  Future<void> _addToPlaylist(Track track) {
+    return showAddToPlaylistSheet(
+      context,
+      playlistService: widget.playlistService ??
+          PlaylistService(api: context.read<ApiClient>()),
+      trackIds: [track.id],
+    );
   }
 
   Future<void> _enqueueTrack(Track track) async {
@@ -303,6 +324,7 @@ class _LikedSongRow extends StatelessWidget {
     required this.track,
     required this.onTap,
     required this.onAddToQueue,
+    required this.onAddToPlaylist,
     required this.onToggleLike,
     required this.queueActionKey,
   });
@@ -310,6 +332,7 @@ class _LikedSongRow extends StatelessWidget {
   final Track track;
   final VoidCallback onTap;
   final Future<void> Function() onAddToQueue;
+  final VoidCallback onAddToPlaylist;
   final VoidCallback onToggleLike;
   final Key queueActionKey;
 
@@ -332,11 +355,26 @@ class _LikedSongRow extends StatelessWidget {
         track,
         isCurrent: isCurrent,
         onTap: onTap,
-        trailing: IconButton(
-          key: ValueKey('liked_song_heart_${track.id}'),
-          icon: Icon(liked ? Icons.favorite : Icons.favorite_border),
-          tooltip: liked ? 'Unlike' : 'Like',
-          onPressed: isToggling ? null : onToggleLike,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              key: ValueKey('liked_song_add_to_playlist_${track.id}'),
+              visualDensity: VisualDensity.compact,
+              iconSize: 20,
+              icon: const Icon(Icons.playlist_add),
+              tooltip: 'Add to playlist',
+              onPressed: onAddToPlaylist,
+            ),
+            IconButton(
+              key: ValueKey('liked_song_heart_${track.id}'),
+              visualDensity: VisualDensity.compact,
+              iconSize: 20,
+              icon: Icon(liked ? Icons.favorite : Icons.favorite_border),
+              tooltip: liked ? 'Unlike' : 'Like',
+              onPressed: isToggling ? null : onToggleLike,
+            ),
+          ],
         ),
       ),
     );

@@ -16,8 +16,11 @@ import 'package:open_music_player/core/services/api_client.dart';
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
 import 'package:open_music_player/features/player/player_screen.dart';
+import 'package:open_music_player/features/playlists/add_to_playlist.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'support/recording_playlist_service.dart';
 
 void main() {
   // The DJ deck is the sanctioned ADR 0001 exception: it drives two audio
@@ -92,6 +95,81 @@ void main() {
     await tester.pump();
 
     expect(find.byKey(const ValueKey('player_dj_mode_action')), findsNothing);
+  });
+
+  group('add to playlist', () {
+    Future<void> pumpPlayer(
+      WidgetTester tester,
+      RecordingPlaylistService service, {
+      MediaItem? currentItem,
+    }) async {
+      tester.view.physicalSize = const Size(1200, 2200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        ListenableProvider<PlaybackState>.value(
+          value: _FakePlaybackState(currentItem: currentItem),
+          child: MaterialApp(
+            theme: AppTheme.lightTheme,
+            home: PlayerScreen(playlistService: service),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    testWidgets('the now-playing track reaches a playlist in two taps',
+        (tester) async {
+      final service = RecordingPlaylistService(
+        playlists: [testPlaylist(5, 'Late night')],
+      );
+
+      await pumpPlayer(tester, service);
+
+      final action =
+          find.byKey(const ValueKey('player_add_to_playlist_action'));
+      expect(action, findsOneWidget);
+      expect(find.byTooltip('Add to playlist'), findsOneWidget);
+
+      await tester.tap(action);
+      await tester.pumpAndSettle();
+      expect(find.byKey(addToPlaylistSheetKey), findsOneWidget);
+
+      await tester.tap(find.text('Late night'));
+      await tester.pumpAndSettle();
+
+      expect(service.addedTo, [5]);
+      expect(service.addedTrackIds, [
+        [1]
+      ]);
+      expect(find.byKey(addToPlaylistSuccessKey), findsOneWidget);
+    });
+
+    testWidgets('a local-only track offers no playlist action', (tester) async {
+      final service = RecordingPlaylistService();
+
+      await pumpPlayer(
+        tester,
+        service,
+        currentItem: const MediaItem(
+          id: 'local-file',
+          title: 'Local only',
+          duration: Duration(seconds: 60),
+        ),
+      );
+
+      expect(
+        tester
+            .widget<IconButton>(
+              find.byKey(const ValueKey('player_add_to_playlist_action')),
+            )
+            .onPressed,
+        isNull,
+      );
+      expect(service.listCalls, 0);
+    });
   });
 
   testWidgets('mobile Sound Q player keeps its controls usable at large text', (

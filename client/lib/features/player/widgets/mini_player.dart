@@ -1,17 +1,29 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import '../../../app/theme.dart';
+import '../../../core/api/api_client.dart';
 import '../../../core/audio/playback_context.dart';
 import '../../../core/audio/playback_state.dart';
+import '../../../core/services/playlist_service.dart';
+import '../../playlists/add_to_playlist.dart';
 import 'playback_context_label.dart';
 
 class MiniPlayer extends StatelessWidget {
-  const MiniPlayer({super.key});
+  const MiniPlayer({super.key, this.playlistService});
+
+  /// Injectable for tests; defaults to a service over the app-wide
+  /// [ApiClient], matching how the library rows build theirs.
+  final PlaylistService? playlistService;
 
   @override
   Widget build(BuildContext context) {
+    // The sheet is presented from this context, above the dark chrome the
+    // mobile bar wraps itself in below, so the picker keeps the app's theme.
+    final hostContext = context;
     // Everything except the progress bar changes only when the track or the
     // play/pause state changes. Rebuilding the whole mini player on every
     // position tick added avoidable per-frame work to every screen that shows
@@ -35,6 +47,9 @@ class MiniPlayer extends StatelessWidget {
         final isMobilePoster = MediaQuery.sizeOf(context).width < 960;
         return GestureDetector(
           onTap: () => context.push('/player'),
+          // A long press instead of another always-visible icon: the bar is
+          // four controls wide already and grows with the text scale.
+          onLongPress: () => _addToPlaylist(hostContext, item.id),
           child: Container(
             key: const ValueKey('spotify_like_mini_player'),
             constraints: const BoxConstraints(minHeight: 64),
@@ -148,6 +163,26 @@ class MiniPlayer extends StatelessWidget {
     );
     if (MediaQuery.sizeOf(context).width >= 960) return miniPlayer;
     return Theme(data: AppTheme.darkTheme, child: miniPlayer);
+  }
+
+  /// Source-backed queue items play before the backend has a track row, so a
+  /// non-numeric media id means there is nothing a playlist could reference.
+  void _addToPlaylist(BuildContext context, String mediaItemId) {
+    final trackId = int.tryParse(mediaItemId);
+    if (trackId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This track is not in your library yet')),
+      );
+      return;
+    }
+    unawaited(
+      showAddToPlaylistSheet(
+        context,
+        playlistService:
+            playlistService ?? PlaylistService(api: context.read<ApiClient>()),
+        trackIds: [trackId],
+      ),
+    );
   }
 
   Widget _buildPlaceholder(BuildContext context) {

@@ -7,6 +7,9 @@ import 'package:open_music_player/app/theme.dart';
 import 'package:open_music_player/core/audio/playback_context.dart';
 import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/features/player/widgets/mini_player.dart';
+import 'package:open_music_player/features/playlists/add_to_playlist.dart';
+
+import 'support/recording_playlist_service.dart';
 
 void main() {
   testWidgets('mini player grows without overflow at 2x and 3x text', (
@@ -83,6 +86,78 @@ void main() {
       isEmpty,
     );
   });
+
+  group('add to playlist', () {
+    Future<void> pumpMiniPlayer(
+      WidgetTester tester,
+      RecordingPlaylistService service, {
+      audio_service.MediaItem? item,
+    }) async {
+      final playback = _MiniPlayerPlaybackState(item: item);
+      addTearDown(playback.disposeFake);
+      await tester.pumpWidget(
+        ListenableProvider<PlaybackState>.value(
+          value: playback,
+          child: MaterialApp(
+            theme: AppTheme.lightTheme,
+            home: Scaffold(
+              body: Align(
+                alignment: Alignment.bottomCenter,
+                child: MiniPlayer(playlistService: service),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    testWidgets('a long press adds the playing track to a playlist',
+        (tester) async {
+      final service = RecordingPlaylistService(
+        playlists: [testPlaylist(5, 'Late night')],
+      );
+
+      await pumpMiniPlayer(tester, service);
+      await tester.longPress(
+        find.byKey(const ValueKey('spotify_like_mini_player')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(addToPlaylistSheetKey), findsOneWidget);
+      await tester.tap(find.text('Late night'));
+      await tester.pumpAndSettle();
+
+      expect(service.addedTo, [5]);
+      expect(service.addedTrackIds, [
+        [42]
+      ]);
+    });
+
+    testWidgets('a local-only track says so instead of opening the picker',
+        (tester) async {
+      final service = RecordingPlaylistService();
+
+      await pumpMiniPlayer(
+        tester,
+        service,
+        item: const audio_service.MediaItem(
+          id: 'local-file',
+          title: 'Local only',
+          duration: Duration(minutes: 3),
+        ),
+      );
+      await tester.longPress(
+        find.byKey(const ValueKey('spotify_like_mini_player')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(service.listCalls, 0);
+      expect(find.byKey(addToPlaylistSheetKey), findsNothing);
+      expect(
+          find.text('This track is not in your library yet'), findsOneWidget);
+    });
+  });
 }
 
 Color _effectiveTextColor(WidgetTester tester, Finder finder) {
@@ -101,18 +176,24 @@ double _contrastRatio(Color foreground, Color background) {
 }
 
 class _MiniPlayerPlaybackState extends Fake implements PlaybackState {
+  _MiniPlayerPlaybackState({audio_service.MediaItem? item})
+      : _item = item ?? _defaultItem;
+
+  static const _defaultItem = audio_service.MediaItem(
+    id: '42',
+    title: 'EVERYTHING I HAVE EVER WANTED',
+    artist: 'Tiffany Day',
+    duration: Duration(minutes: 3),
+  );
+
   final ChangeNotifier _notifier = ChangeNotifier();
+  final audio_service.MediaItem _item;
 
   @override
   bool get hasTrack => true;
 
   @override
-  audio_service.MediaItem get currentItem => const audio_service.MediaItem(
-        id: '42',
-        title: 'EVERYTHING I HAVE EVER WANTED',
-        artist: 'Tiffany Day',
-        duration: Duration(minutes: 3),
-      );
+  audio_service.MediaItem get currentItem => _item;
 
   @override
   Duration get duration => const Duration(minutes: 3);
