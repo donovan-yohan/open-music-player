@@ -1154,11 +1154,15 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
   Future<void> _addToQueue() async {
     final playback = context.read<PlaybackState>();
     final messenger = ScaffoldMessenger.of(context);
+    final mode = playback.swipeQueueMode;
     try {
-      await addTrackToQueue(playback.enqueue, track);
+      await addTrackToQueue(
+        (json) => playback.queueTrack(json, mode: mode),
+        track,
+      );
       if (!mounted) return;
       messenger.showSnackBar(
-        SnackBar(content: Text('Added "${track.title}" to queue')),
+        SnackBar(content: Text(mode.confirmationFor(track.title))),
       );
     } catch (_) {
       if (!mounted) return;

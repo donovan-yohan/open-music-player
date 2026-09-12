@@ -78,15 +78,65 @@ void main() {
 
     expect(playback.appliedEndOfQueueModes.last, EndOfQueueMode.shuffleLibrary);
   });
+
+  testWidgets('settings provider queue behavior reaches playback',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final preferences = await SharedPreferences.getInstance();
+    final playback = _PlaybackState();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [sharedPreferencesProvider.overrideWithValue(preferences)],
+        child: OpenMusicPlayerApp(
+          apiClient: ApiClient(),
+          authState: _AuthState(),
+          playbackState: playback,
+          sharedIntentReceiver: _SharedIntentReceiver(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    // Seeded from the stored preference before the listener is armed, so a
+    // relaunch honors the saved choices without the user touching settings.
+    expect(playback.appliedSwipeQueueModes, [QueueInsertMode.addToQueue]);
+    expect(playback.appliedPreserveManualQueue, [true]);
+
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(OpenMusicPlayerApp)),
+      listen: false,
+    );
+    container
+        .read(settingsProvider.notifier)
+        .setSwipeQueueMode(QueueInsertMode.playNext);
+    container.read(settingsProvider.notifier).setPreserveManualQueue(false);
+    await tester.pump();
+
+    expect(playback.appliedSwipeQueueModes.last, QueueInsertMode.playNext);
+    expect(playback.appliedPreserveManualQueue.last, isFalse);
+  });
 }
 
 class _PlaybackState extends Fake implements PlaybackState {
   final List<AudioPlaybackDefaults> appliedDefaults = [];
   final List<EndOfQueueMode> appliedEndOfQueueModes = [];
+  final List<QueueInsertMode> appliedSwipeQueueModes = [];
+  final List<bool> appliedPreserveManualQueue = [];
 
   @override
   void setEndOfQueueMode(EndOfQueueMode mode) {
     appliedEndOfQueueModes.add(mode);
+  }
+
+  @override
+  void setSwipeQueueMode(QueueInsertMode mode) {
+    appliedSwipeQueueModes.add(mode);
+  }
+
+  @override
+  void setPreserveManualQueue(bool preserve) {
+    appliedPreserveManualQueue.add(preserve);
   }
 
   @override
