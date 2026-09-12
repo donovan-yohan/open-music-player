@@ -8,6 +8,7 @@ import 'package:open_music_player/core/audio/playback_state.dart';
 import 'package:open_music_player/core/commands/command_registry.dart';
 import 'package:open_music_player/core/download/download_state.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
+import 'package:open_music_player/core/api/api_client.dart';
 import 'package:open_music_player/core/services/services.dart' as services;
 import 'package:open_music_player/features/library/library_screen.dart';
 import 'package:open_music_player/shared/models/track.dart';
@@ -26,7 +27,7 @@ void main() {
 
     final tracks = [for (var i = 1; i <= 4; i++) _track(i)];
     final playback = _RecordingPlayback();
-    final api = services.ApiClient();
+    final api = ApiClient();
     final liked = LikedTracksState(services.LibraryService(api));
     final registry = CommandRegistry(playbackState: playback);
     addTearDown(registry.dispose);
