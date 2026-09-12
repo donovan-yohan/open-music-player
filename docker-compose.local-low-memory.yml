@@ -249,7 +249,7 @@ services:
       - omp-lowmem-network
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     restart: unless-stopped
     ports:
       - "${MINIO_PORT:-9000}:9000"
@@ -270,7 +270,7 @@ services:
       - omp-lowmem-network
 
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     depends_on:
       minio:
         condition: service_healthy
@@ -306,7 +306,7 @@ services:
       - omp-lowmem-network
 
   minio-smoke:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     profiles:
       - smoke
     depends_on:
