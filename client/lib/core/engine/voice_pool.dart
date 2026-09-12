@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
+
 import '../cache/playback_cache_manager.dart';
 import 'engine_audio_source_resolver.dart';
 import 'tempo_automation.dart';
@@ -80,6 +82,10 @@ class VoicePool {
   final List<StreamSubscription> _subscriptions = [];
   final Map<Voice, StreamSubscription<VoiceEvent>> _voiceSubscriptions = {};
   final Map<Voice, _PlaybackTuningState> _voiceTuning = {};
+  // Last gain actually pushed to each voice. The gain timer runs at 100ms,
+  // so a flat envelope used to cost a platform-channel round trip every
+  // 100ms per voice for a value the player already had.
+  final Map<Voice, double> _voiceGain = {};
   final Map<String, VoiceEventKind> _voiceStatus = {};
   final Map<String, int> _lastDriftCorrectionMs = {};
   final Set<String> _capacityEvictedClipIds = {};
@@ -223,7 +229,7 @@ class VoicePool {
       if (forceSeek) {
         for (final voice in _activeVoices.values) {
           await voice.pause();
-          await voice.setVolume(0);
+          await _setVoiceVolume(voice, 0);
         }
       }
 
@@ -372,7 +378,7 @@ class VoicePool {
     _voiceStatus.remove(clipId);
     _lastDriftCorrectionMs.remove(clipId);
     _clearPitchFallbackFor(clipId);
-    await voice.setVolume(0);
+    await _setVoiceVolume(voice, 0);
     await _applyNeutralPlaybackTuning(voice);
     await voice.release();
     if (!_idleVoices.contains(voice)) _idleVoices.add(voice);
@@ -408,9 +414,12 @@ class VoicePool {
     _publishStatus();
 
     try {
-      await voice.setVolume(0);
+      await _setVoiceVolume(voice, 0);
       await _applyNeutralPlaybackTuning(voice);
       final source = await _resolver.resolve(clip);
+      // A reload can reset player-side state, so the cached gain no longer
+      // describes the player.
+      _voiceGain.remove(voice);
       await voice.load(source.uri,
           initialLocalPositionMs: _localPosition(clip, globalMs));
       if (generation != _generation || _activeVoices[clip.id] != voice) {
@@ -449,7 +458,7 @@ class VoicePool {
       _publishStatus();
       return;
     }
-    await voice.setVolume(0);
+    await _setVoiceVolume(voice, 0);
     await _applyNeutralPlaybackTuning(voice);
     await voice.release();
     _idleVoices.add(voice);
@@ -491,7 +500,7 @@ class VoicePool {
       if (voice == null || !voice.isReady) return;
       await _applyPlaybackTuning(voice, clip, globalMs);
       if (!_isCurrentVoice(clip.id, voice, generation)) return;
-      await voice.setVolume(clip.gainAt(globalMs));
+      await _setVoiceVolume(voice, clip.gainAt(globalMs));
     }));
     if (generation != _generation) return;
     if (_clock.isPlaying && !_coordinatedResumeInProgress) {
@@ -531,7 +540,7 @@ class VoicePool {
     if (!voice.isReady) return;
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
     final currentMs = _clock.positionMs;
-    await voice.setVolume(0);
+    await _setVoiceVolume(voice, 0);
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
     await voice.seekLocal(_localPosition(clip, currentMs));
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
@@ -539,7 +548,7 @@ class VoicePool {
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
     await _applyPlaybackTuning(voice, clip, currentMs);
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
-    await voice.setVolume(clip.gainAt(currentMs));
+    await _setVoiceVolume(voice, clip.gainAt(currentMs));
     if (!_isCurrentVoice(clip.id, voice, generation)) return;
     _voiceStatus[clip.id] = VoiceEventKind.ready;
     _publishStatus();
@@ -585,7 +594,7 @@ class VoicePool {
         ];
         await Future.wait(ready.map((clip) async {
           final voice = _activeVoices[clip.id]!;
-          await voice.setVolume(0);
+          await _setVoiceVolume(voice, 0);
           if (!_isCurrentVoice(clip.id, voice, generation)) return;
           await voice.seekLocal(_localPosition(clip, globalMs));
           if (!_isCurrentVoice(clip.id, voice, generation)) return;
@@ -602,7 +611,7 @@ class VoicePool {
           final voice = _activeVoices[clip.id];
           if (voice == null || !voice.isReady) return;
           if (!_isCurrentVoice(clip.id, voice, generation)) return;
-          await voice.setVolume(clip.gainAt(globalMs));
+          await _setVoiceVolume(voice, clip.gainAt(globalMs));
         }));
         if (generation != _generation) return;
         _updateBufferingHold(active);
@@ -629,6 +638,12 @@ class VoicePool {
       }
     }());
   }
+
+  /// Drives one periodic level update directly, without going through the
+  /// clock, so tests can exercise the drain's failure handling.
+  @visibleForTesting
+  void scheduleActiveVoiceLevelsForTest(int globalMs) =>
+      _scheduleActiveVoiceLevels(globalMs);
 
   void _scheduleActiveVoiceLevels(int globalMs) {
     if (!_started) return;
@@ -669,7 +684,7 @@ class VoicePool {
       if (!_isCurrentVoice(entry.key, voice, generation)) return;
       await _applyPlaybackTuning(voice, entry.value, globalMs);
       if (!_isCurrentVoice(entry.key, voice, generation)) return;
-      await voice.setVolume(entry.value.gainAt(globalMs));
+      await _setVoiceVolume(voice, entry.value.gainAt(globalMs));
     }));
     if (generation == _generation) {
       _updateBufferingHold(_model.activeClipsAt(globalMs));
@@ -704,11 +719,11 @@ class VoicePool {
           ),
         );
         final targetGain = entry.value.gainAt(globalMs);
-        await voice.setVolume(0);
+        await _setVoiceVolume(voice, 0);
         if (!_isCurrentVoice(entry.key, voice, generation)) continue;
         await voice.resync(expected);
         if (!_isCurrentVoice(entry.key, voice, generation)) continue;
-        await voice.setVolume(targetGain);
+        await _setVoiceVolume(voice, targetGain);
       } else if (drift > _driftSpeedNudgeThreshold.inMilliseconds) {
         _publishDriftCorrection(
           DriftCorrectionEvent(
@@ -807,6 +822,16 @@ class VoicePool {
         .toDouble();
   }
 
+  /// Pushes [gain] to [voice], skipping the platform call when the player
+  /// already holds that value.
+  Future<void> _setVoiceVolume(Voice voice, double gain) async {
+    final clamped = gain.clamp(0.0, 1.0).toDouble();
+    final previous = _voiceGain[voice];
+    if (previous != null && (previous - clamped).abs() < _gainEpsilon) return;
+    _voiceGain[voice] = clamped;
+    await voice.setVolume(clamped);
+  }
+
   Future<void> _applyPlaybackTuning(
     Voice voice,
     MixClip clip,
@@ -899,6 +924,8 @@ class VoicePool {
 }
 
 const double _tuningRateEpsilon = 0.001;
+// Below this the gain change is inaudible, so it is not worth a platform call.
+const double _gainEpsilon = 0.0005;
 const double _tuningPitchEpsilon = 0.001;
 
 class _PlaybackTuningState {

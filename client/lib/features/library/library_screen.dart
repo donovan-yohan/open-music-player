@@ -936,9 +936,16 @@ class _LibraryTrackListTileState extends State<LibraryTrackListTile> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final currentTrackId = context.watch<PlaybackState>().currentItem?.id;
-    final liked = context.watch<LikedTracksState>().isLiked(track.id) ?? false;
-    final isCurrent = currentTrackId == track.id.toString();
+    // Rows depend on *whether* they are the current track, not on the playback
+    // position. Watching the whole PlaybackState rebuilt every mounted row on
+    // every position tick, which is what made library scrolling stutter while
+    // audio played.
+    final isCurrent = context.select<PlaybackState, bool>(
+      (playback) => playback.currentItem?.id == track.id.toString(),
+    );
+    final liked = context.select<LikedTracksState, bool>(
+      (tracks) => tracks.isLiked(track.id) ?? false,
+    );
     final summary = track.analysis?.summary;
     final hasMetadata = summary?.bpm?.numericValue != null ||
         summary?.key?.textValue != null ||
