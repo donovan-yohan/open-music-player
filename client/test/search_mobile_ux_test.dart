@@ -127,7 +127,7 @@ void main() {
     );
     expect(queueClient.addSourceDecisionCalls, 0);
     expect(searchAdapter.sourceSelectionRequests, isEmpty);
-    expect(find.byIcon(Icons.playlist_add), findsWidgets);
+    expect(find.byIcon(Icons.queue_music), findsWidgets);
   });
 
   testWidgets('SERVICE_DISABLED queue is silent and removes queue affordances',
@@ -147,7 +147,7 @@ void main() {
     await search(tester);
 
     expect(find.textContaining('SERVICE_DISABLED'), findsNothing);
-    expect(find.byIcon(Icons.playlist_add), findsNothing);
+    expect(find.byIcon(Icons.queue_music), findsNothing);
     expect(find.byKey(const ValueKey('search_queue_affordance')), findsNothing);
     expect(
         find.byKey(const ValueKey('discover_preview_source_youtube:official')),

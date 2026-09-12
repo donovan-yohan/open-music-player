@@ -59,10 +59,10 @@ void main() {
 
       expect(find.text('Porter Robinson - Sad Machine'), findsOneWidget);
       expect(find.byType(FilledButton), findsNothing);
-      expect(find.byIcon(Icons.playlist_add), findsOneWidget);
+      expect(find.byIcon(Icons.queue_music), findsOneWidget);
 
       final queueButton = find.ancestor(
-        of: find.byIcon(Icons.playlist_add),
+        of: find.byIcon(Icons.queue_music),
         matching: find.byType(IconButton),
       );
       expect(tester.getSize(queueButton), const Size(48, 48));

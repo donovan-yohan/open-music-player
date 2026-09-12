@@ -12,8 +12,10 @@ import '../../core/discovery/discovery_models.dart';
 import '../../core/discovery/research_models.dart';
 import '../../core/discovery/research_service.dart';
 import '../../core/discovery/discovery_service.dart';
+import '../../core/services/playlist_service.dart';
 import '../../models/track.dart';
 import '../../providers/queue_provider.dart';
+import '../playlists/add_to_playlist.dart';
 import 'search_local_logic.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -25,11 +27,15 @@ class SearchScreen extends StatefulWidget {
   /// the provider page in its native application where possible.
   final Future<bool> Function(Uri url)? externalUrlLauncher;
 
+  /// Injectable for tests; production builds one from the provided client.
+  final PlaylistService? playlistService;
+
   const SearchScreen({
     super.key,
     this.researchService,
     this.commandFocusController,
     this.externalUrlLauncher,
+    this.playlistService,
     this.researchPollDelays = const [
       Duration(seconds: 1),
       Duration(seconds: 2),
@@ -2017,7 +2023,87 @@ class _SearchScreenState extends State<SearchScreen> {
             selection: selection,
             onChoose: onChoose,
           ),
+        if (canPreview || queueAvailable) const SizedBox(width: 4),
+        IconButton(
+          key: ValueKey('discover_result_more_${_candidateKey(candidate)}'),
+          tooltip: 'More actions',
+          onPressed: () => _showCandidateActions(candidate, queuedTrack),
+          visualDensity: VisualDensity.compact,
+          constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+          padding: EdgeInsets.zero,
+          iconSize: 20,
+          icon: const Icon(Icons.more_vert),
+        ),
       ],
+    );
+  }
+
+  /// Row overflow for a Discover result.
+  ///
+  /// Playlists hold library tracks, and a catalog candidate only becomes one
+  /// once it has been imported. The action therefore states that precondition
+  /// rather than disappearing, so the affordance is where the user expects it
+  /// on every row.
+  void _showCandidateActions(
+    DiscoveryCandidate candidate,
+    QueueTrack? queuedTrack,
+  ) {
+    final trackId = _libraryTrackId(queuedTrack);
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+          children: [
+            Text(
+              candidate.title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(
+                sheetContext,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              key: ValueKey(
+                'discover_add_to_playlist_${_candidateKey(candidate)}',
+              ),
+              contentPadding: EdgeInsets.zero,
+              enabled: trackId != null,
+              leading: const Icon(Icons.playlist_add),
+              title: const Text('Add to playlist'),
+              subtitle: trackId == null
+                  ? const Text('Import this result to add it to a playlist')
+                  : null,
+              onTap: trackId == null
+                  ? null
+                  : () {
+                      Navigator.of(sheetContext).pop();
+                      _addToPlaylist(trackId);
+                    },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// The backend track id behind an imported candidate, when it has one.
+  /// Source-backed queue items key their row by queue item UUID, so only the
+  /// numeric playback id names a track the playlist API will accept.
+  int? _libraryTrackId(QueueTrack? queuedTrack) {
+    if (queuedTrack == null) return null;
+    return int.tryParse(queuedTrack.playbackTrackId ?? queuedTrack.id);
+  }
+
+  Future<void> _addToPlaylist(int trackId) {
+    return showAddToPlaylistSheet(
+      context,
+      playlistService: widget.playlistService ??
+          PlaylistService(api: context.read<ApiClient>()),
+      trackIds: [trackId],
     );
   }
 
@@ -2112,7 +2198,7 @@ class _SearchScreenState extends State<SearchScreen> {
         constraints: const BoxConstraints.tightFor(width: 48, height: 48),
         padding: EdgeInsets.zero,
         iconSize: 20,
-        icon: const Icon(Icons.playlist_add),
+        icon: const Icon(Icons.queue_music),
       );
     }
 
@@ -2123,7 +2209,7 @@ class _SearchScreenState extends State<SearchScreen> {
         padding: const EdgeInsets.symmetric(horizontal: 10),
         minimumSize: const Size(84, 36),
       ),
-      icon: const Icon(Icons.playlist_add, size: 18),
+      icon: const Icon(Icons.queue_music, size: 18),
       label: const Text('Add', style: TextStyle(fontSize: 13)),
     );
   }
