@@ -164,6 +164,12 @@ match `OMP_SOURCE_REF` and `OMP_BUILD_ID`.
 - Do not add a second playback/session controller; extend the existing timeline
   controller and immutable snapshot model.
 - Do not make queue/list/timeline UI own independent playback truth.
+- Do not declare a `currentTrack`/`upNext`/`currentIndex`/`currentMediaItem`/`nowPlaying`
+  getter outside `client/lib/core/audio/playback_state.dart` and
+  `client/lib/core/audio/queue_timeline_controller.dart`; read
+  `PlaybackSnapshot` through
+  `client/lib/core/audio/playback_queue_projection.dart` instead. See
+  `docs/adr/0012-import-queue-is-not-the-playback-queue.md`.
 - Keep playback/timeline changes aligned with
   `docs/adr/0001-playback-timeline-source-of-truth.md`.
 - Do not bypass the unified authenticated API client for new client features

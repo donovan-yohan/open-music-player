@@ -10,7 +10,7 @@ import 'package:open_music_player/core/audio/signed_audio_url_service.dart';
 import 'package:open_music_player/core/engine/playback_engine.dart';
 import 'package:open_music_player/core/engine/timeline_clock.dart';
 import 'package:open_music_player/core/models/settings_model.dart';
-import 'package:open_music_player/screens/queue_screen.dart'
+import 'package:open_music_player/core/audio/playback_queue_projection.dart'
     show ListeningQueueEntry, listeningQueueEntries;
 
 import 'support/fake_voice.dart';

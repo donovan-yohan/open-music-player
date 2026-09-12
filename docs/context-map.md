@@ -33,7 +33,13 @@ domain concept moves or a new production harness becomes canonical.
   `PlaybackSnapshot`, `MixSession`, `CueTimeline`, `TimelineModel`,
   `BeatSnapMode`.
 - Architecture decision:
-  `docs/adr/0001-playback-timeline-source-of-truth.md`.
+  `docs/adr/0001-playback-timeline-source-of-truth.md`, and
+  `docs/adr/0012-import-queue-is-not-the-playback-queue.md` for why
+  `QueueProvider` is the import queue rather than a second controller.
+- Queue-shaped UI reads of `PlaybackSnapshot` go through one adapter:
+  `client/lib/core/audio/playback_queue_projection.dart`. It exposes
+  `currentTrackFor(snapshot)` as a function, not a getter, so the harness
+  can tell an adapter from an authority.
 - UI surfaces: `client/lib/screens/queue_screen.dart`,
   `client/lib/widgets/stacked_waveform_timeline.dart`,
   `client/lib/widgets/timeline_clip_widget.dart`.
