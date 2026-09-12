@@ -45,12 +45,39 @@ controller, another current-track authority, or UI-owned transport truth.
 
 ## Enforcement
 
-- `scripts/agentic-harness` checks for this ADR and the canonical playback files.
-- `scripts/agentic-harness` fails if another Dart file introduces a private
-  current-media-item subject outside `QueueTimelineController`.
-- PRs that touch playback, timeline, queue, lock-screen controls, or Android
-  audio behavior must include exact-head evidence and device dogfood when unit
-  tests cannot prove the claim.
+`scripts/agentic-harness` (`check_architecture_guardrails`) fails the build on
+each of the following. All of them key on *declarations*, so the adapters and
+caches permitted above do not trip them.
+
+- The canonical playback and engine files are missing, or `PlaybackState` stops
+  owning a `QueueTimelineController` and sourcing its public snapshot from it,
+  or `QueueTimelineController` stops carrying `PlaybackSnapshot`,
+  `_currentMediaItemSubject`, and `TimelineModel`.
+- A Dart file outside `QueueTimelineController` introduces a private
+  current-media-item subject.
+- A Dart file outside `QueueTimelineController` declares a class named
+  `*PlaybackController` or `*TransportController`.
+- **R1**: a file under `client/lib/` declares `get currentTrack`, `get upNext`,
+  `get currentIndex`, `get currentMediaItem`, or `get nowPlaying` outside
+  `client/lib/core/audio/playback_state.dart` and
+  `client/lib/core/audio/queue_timeline_controller.dart`. Reading those fields
+  off a snapshot, or caching them, is fine; declaring the answer is not.
+- **R2**: a file outside `client/lib/core/audio/` declares two or more of
+  `setTimelineStartMs`, `setTrimRange`, `setStartOffsetMs`, `setEndOffsetMs`,
+  `setPitchMode`, `applyMixPlanClips`. Calling them, or passing them as
+  tear-offs, is fine.
+
+R1 and R2 carry a dated exemption table for the pre-existing violations that
+ADR 0012 is unwinding. The table is self-removing: an exemption that stops
+tripping its rule fails the harness until the row is deleted.
+
+`scripts/agentic-harness --self-test` exercises R1 and R2 against synthetic
+compliant and violating fixtures, so a regex that drifts from
+declaration-matching into mention-matching fails before it reaches a PR.
+
+PRs that touch playback, timeline, queue, lock-screen controls, or Android
+audio behavior must include exact-head evidence and device dogfood when unit
+tests cannot prove the claim.
 
 ## Addendum: the DJ deck's direct-voice exception
 

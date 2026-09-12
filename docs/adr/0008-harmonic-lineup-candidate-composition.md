@@ -2,7 +2,8 @@
 
 Date: 2026-08-26
 
-Status: Accepted
+Status: Accepted. One Context claim is superseded in part — see the
+2026-09-12 addendum at the end of this record.
 
 ## Context
 
@@ -116,3 +117,33 @@ for the queue.
   on the harmonic block rather than offering a control the server rejects. Swap
   is unaffected: `block=harmonic` is a valid lineup selector while the flag is
   on.
+
+## 2026-09-12 addendum — the queue authority claim is superseded
+
+Status: Accepted. Supersedes only this record's Context claim that "every queue
+mutation stays in the client's `QueueProvider`, which ADR 0001 keeps as the
+single playback authority". Every decision above — the single additive
+`harmonic` block, the client-supplied `anchorTrackId`, the frozen three themed
+blocks, the silent exact fallback, fast-exit exemption and unpinnability — is
+untouched.
+
+`QueueProvider` is not the playback authority and never was. It is the *import*
+queue: the client's view of the server's download jobs. It holds no transport
+verbs, and its `currentTrack`/`upNext` getters are computed off an index that
+nothing advances, so they describe the head of the download queue rather than
+the playing track. The playback queue lives in `QueueTimelineController` and is
+read through `PlaybackSnapshot`. `docs/adr/0012-import-queue-is-not-the-playback-queue.md`
+records the diagnosis and the reconciliation.
+
+What that changes here is the *reason*, not the shape. The load-bearing fact in
+this record's first structural constraint still holds — there is no server-side
+**playback** queue, so the backend cannot read a queue tail and must be told one
+— and `anchorTrackId` stays exactly as decided. What was wrong was the
+attribution: the anchor is client-supplied because the listening queue is
+client-side, not because `QueueProvider` is the single playback authority.
+
+The practical consequence is deferred, not absent. The DJ session screen takes
+its anchor from the import queue's snapshot, so "what I just queued" today means
+"what I most recently downloaded". Correcting that is ADR 0012's step 3 — a
+change of input to the same `anchorTrackId` parameter, with no server change and
+no change to anything decided above.
