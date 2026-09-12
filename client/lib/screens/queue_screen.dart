@@ -12,7 +12,7 @@ import '../core/audio/audition_output_route_monitor.dart';
 import '../core/audio/playback_state.dart';
 import '../core/audio/playback_context.dart';
 import '../core/audio/playback_session.dart';
-import '../core/audio/queue_ordering.dart';
+import '../core/audio/playback_queue_projection.dart';
 import '../core/audio/queue_persistence.dart';
 import '../core/commands/app_command.dart';
 import '../core/commands/command_registry.dart';
@@ -30,7 +30,6 @@ import '../models/track.dart';
 import '../models/track_analysis.dart';
 import '../models/trim_range.dart';
 import '../providers/queue_provider.dart';
-import '../shared/models/track.dart' show trackArtworkKindFromPayload;
 import '../shared/widgets/like_button.dart';
 import '../shared/widgets/track_tile.dart';
 import '../widgets/queue_item.dart';
@@ -42,57 +41,6 @@ enum _QueueViewMode { list, timeline }
 
 typedef AuditionOutputRouteMonitorFactory = Future<AuditionOutputRouteMonitor>
     Function();
-
-@visibleForTesting
-class ListeningQueueEntry {
-  const ListeningQueueEntry({
-    required this.index,
-    required this.item,
-    required this.isCurrent,
-    this.isContinuationStart = false,
-  });
-
-  final int index;
-  final audio_service.MediaItem item;
-  final bool isCurrent;
-
-  /// True on the first item of an auto-continuation segment (#352), i.e. the
-  /// row the "Auto-continuation" header is drawn above. Set per segment rather
-  /// than per item so consecutive continuation batches read as one section.
-  final bool isContinuationStart;
-}
-
-(int, int) queueListReorderIndices({
-  required int relativeOldIndex,
-  required int relativeNewIndex,
-  required int currentIndex,
-  required bool hasActiveTrack,
-}) {
-  final firstMovableIndex = hasActiveTrack ? currentIndex + 1 : 0;
-  return (
-    firstMovableIndex + relativeOldIndex,
-    firstMovableIndex + relativeNewIndex,
-  );
-}
-
-@visibleForTesting
-List<ListeningQueueEntry> listeningQueueEntries({
-  required List<audio_service.MediaItem> queue,
-  required int? currentIndex,
-}) {
-  if (queue.isEmpty) return const [];
-  final normalizedCurrent = currentIndex?.clamp(0, queue.length - 1).toInt();
-  return [
-    for (var i = 0; i < queue.length; i++)
-      ListeningQueueEntry(
-        index: i,
-        item: queue[i],
-        isCurrent: normalizedCurrent != null && i == normalizedCurrent,
-        isContinuationStart: itemOrigin(queue[i]) == queueOriginContinuation &&
-            (i == 0 || itemOrigin(queue[i - 1]) != queueOriginContinuation),
-      ),
-  ];
-}
 
 /// Marks where the queue stops being what the listener built and starts being
 /// what end-of-queue continuation appended (#352).
@@ -125,31 +73,6 @@ class _AutoContinuationHeader extends StatelessWidget {
       ),
     );
   }
-}
-
-@visibleForTesting
-QueueTrack playbackTrackForMediaItem(
-  audio_service.MediaItem item, {
-  required String queueItemId,
-}) {
-  final duration = item.duration ?? Duration.zero;
-  final extras = item.extras;
-  final artworkKind = trackArtworkKindFromPayload(extras);
-  return QueueTrack(
-    id: queueItemId,
-    queueItemId: queueItemId,
-    playbackTrackId: item.id,
-    title: item.title,
-    artist: item.artist,
-    album: item.album,
-    duration: duration.inSeconds,
-    artworkUrl: item.artUri?.toString(),
-    artworkKind: artworkKind,
-    addedAt: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
-    analysis: trackAnalysisFromTrackJson(
-      Map<String, dynamic>.from(item.extras ?? const {}),
-    ),
-  );
 }
 
 @visibleForTesting

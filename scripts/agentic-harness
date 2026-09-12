@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,6 +71,45 @@ SKIP_PARTS = {
     "coverage",
     "dist",
     "node_modules",
+}
+
+# ADR 0001 / ADR 0012 queue-authority rules.
+#
+# Both rules key on *declarations*, never mentions. ADR 0001 permits adapters
+# and caches over the canonical path, so reading `snapshot.currentMediaItem` or
+# calling `playback.setTrimRange(...)` is fine; minting a second answer is not.
+# The `_currentMediaItemSubject` and `*(Playback|Transport)Controller` greps
+# below miss a plain `ChangeNotifier` that simply declares the getters.
+QUEUE_AUTHORITY_GETTER_RE = re.compile(
+    r"\bget\s+(currentTrack|upNext|currentIndex|currentMediaItem|nowPlaying)\b"
+)
+QUEUE_AUTHORITY_GETTER_ALLOWLIST = {
+    "client/lib/core/audio/playback_state.dart",
+    "client/lib/core/audio/queue_timeline_controller.dart",
+}
+# A declaration is the verb followed by `(` and *not* preceded by a receiver
+# dot, which is what separates `void setTrimRange(...)` from `p.setTrimRange(x)`
+# and from the `onTrimStartChanged: p.setStartOffsetMs` tear-offs the queue
+# screen passes down.
+TIMELINE_EDIT_DECL_RE = re.compile(
+    r"(?<![.\w$])(setTimelineStartMs|setTrimRange|setStartOffsetMs|setEndOffsetMs"
+    r"|setPitchMode|applyMixPlanClips)\s*\("
+)
+TIMELINE_EDIT_OWNER_PREFIX = "client/lib/core/audio/"
+
+# TEMPORARY, dated 2026-09-12. Step 4 of the queue-authority reconciliation
+# deletes the import queue's fictional current-track getters and its duplicate
+# ~466-line timeline editor; when that lands, both entries below stop tripping
+# and the stale-exemption check underneath forces this table to be deleted with
+# them. Do not add rows here — a new row means a new second authority.
+QUEUE_AUTHORITY_EXEMPTIONS = {
+    "R1": {
+        "client/lib/models/queue_state.dart",
+        "client/lib/providers/queue_provider.dart",
+    },
+    "R2": {
+        "client/lib/providers/queue_provider.dart",
+    },
 }
 
 
@@ -580,10 +620,68 @@ def check_architecture_guardrails(files: list[Path]) -> None:
             if path_rel != "client/lib/core/audio/queue_timeline_controller.dart":
                 fail(f"{path_rel}: do not introduce a second playback/transport controller")
 
+    check_queue_authority_declarations(files)
+
     if (ROOT / "Cargo.toml").exists():
         fail("Cargo.toml: root Rust/sqlx migration stack must not be reintroduced")
     if (ROOT / "migrations").exists():
         fail("migrations/: root migrations directory must not be reintroduced; backend/internal/db/db.go is schema authority")
+
+
+def queue_authority_violations(path_rel: str, text: str) -> list[tuple[str, str]]:
+    """Declaration-keyed ADR 0001/0012 rules for one file, before exemptions."""
+    if not (path_rel.startswith("client/lib/") and path_rel.endswith(".dart")):
+        return []
+
+    problems: list[tuple[str, str]] = []
+
+    if path_rel not in QUEUE_AUTHORITY_GETTER_ALLOWLIST:
+        declared = sorted({m.group(1) for m in QUEUE_AUTHORITY_GETTER_RE.finditer(text)})
+        if declared:
+            problems.append(
+                (
+                    "R1",
+                    f"{path_rel}: declares current-track getter(s) {', '.join(declared)}; "
+                    "only the canonical playback path may answer that question — read "
+                    "PlaybackSnapshot through "
+                    "client/lib/core/audio/playback_queue_projection.dart (ADR 0001, ADR 0012)",
+                )
+            )
+
+    if not path_rel.startswith(TIMELINE_EDIT_OWNER_PREFIX):
+        verbs = sorted({m.group(1) for m in TIMELINE_EDIT_DECL_RE.finditer(text)})
+        if len(verbs) >= 2:
+            problems.append(
+                (
+                    "R2",
+                    f"{path_rel}: declares timeline-edit verbs {', '.join(verbs)}; "
+                    "timeline editing belongs to QueueTimelineController under "
+                    f"{TIMELINE_EDIT_OWNER_PREFIX} (ADR 0001, ADR 0012)",
+                )
+            )
+
+    return problems
+
+
+def check_queue_authority_declarations(files: list[Path]) -> None:
+    tripped: dict[str, set[str]] = {rule: set() for rule in QUEUE_AUTHORITY_EXEMPTIONS}
+    for path in files:
+        if path.suffix.lower() != ".dart":
+            continue
+        path_rel = rel(path)
+        text = read_text(path) or ""
+        for rule, message in queue_authority_violations(path_rel, text):
+            if path_rel in QUEUE_AUTHORITY_EXEMPTIONS.get(rule, ()):
+                tripped[rule].add(path_rel)
+                continue
+            fail(message)
+
+    for rule, exempted in QUEUE_AUTHORITY_EXEMPTIONS.items():
+        for stale in sorted(exempted - tripped[rule]):
+            fail(
+                f"{stale}: queue-authority exemption {rule} no longer trips; "
+                "delete the row (and the table, once it is empty) in scripts/agentic-harness"
+            )
 
 
 def check_agentic_cycle_contracts() -> None:
@@ -630,7 +728,118 @@ def check_agentic_cycle_contracts() -> None:
             fail(f"scripts/dogfood-android: missing evidence phrase {phrase!r}")
 
 
+QUEUE_AUTHORITY_FIXTURES: list[tuple[str, str, str, list[str]]] = [
+    (
+        "adapter reading a snapshot trips nothing",
+        "client/lib/widgets/mini_player.dart",
+        "final item = snapshot.currentMediaItem;\n"
+        "final index = playback.currentIndex;\n"
+        "final rows = state.upNext;\n",
+        [],
+    ),
+    (
+        "the projection's function-shaped current track trips nothing",
+        "client/lib/core/audio/playback_queue_projection.dart",
+        "QueueTrack? currentTrackFor(PlaybackSnapshot snapshot) {\n"
+        "  final item = snapshot.currentMediaItem;\n"
+        "  return item == null ? null : playbackTrackForMediaItem(item);\n"
+        "}\n",
+        [],
+    ),
+    (
+        "a declared current-track getter outside the allowlist fails R1",
+        "client/lib/providers/listening_provider.dart",
+        "class ListeningProvider extends ChangeNotifier {\n"
+        "  QueueTrack? get currentTrack => _tracks[_index];\n"
+        "}\n",
+        ["R1"],
+    ),
+    (
+        "the allowlisted canonical path may declare the getters",
+        "client/lib/core/audio/playback_state.dart",
+        "int? get currentIndex => _queueController.currentIndex;\n",
+        [],
+    ),
+    (
+        "a cache keyed on the getter names trips nothing",
+        "client/lib/core/cache/queue_cache.dart",
+        "final Map<String, MediaItem> currentMediaItemCache = {};\n"
+        "void remember(int currentIndex) => _seen.add(currentIndex);\n",
+        [],
+    ),
+    (
+        "two declared timeline-edit verbs outside core/audio fail R2",
+        "client/lib/features/dj/deck_editor.dart",
+        "Future<void> setTrimRange(QueueTrack t, TrimRange r) async {}\n"
+        "void setPitchMode(QueueTrack t, String mode) {}\n",
+        ["R2"],
+    ),
+    (
+        "calling and tearing off the same verbs trips nothing",
+        "client/lib/screens/queue_screen.dart",
+        "onTrimStartChanged: provider.setStartOffsetMs,\n"
+        "onPitchModeChanged: provider.setPitchMode,\n"
+        "canEdit ? (ms) => provider.setEndOffsetMs(track, ms) : null,\n"
+        "provider.setTrimRange(track, range);\n",
+        [],
+    ),
+    (
+        "one declared verb is not yet a timeline editor",
+        "client/lib/features/dj/deck_editor.dart",
+        "void setPitchMode(QueueTrack t, String mode) {}\n",
+        [],
+    ),
+    (
+        "the timeline owner may declare every verb",
+        "client/lib/core/audio/queue_timeline_controller.dart",
+        "void setTrimRange() {}\nvoid setPitchMode() {}\n"
+        "void applyMixPlanClips() {}\n",
+        [],
+    ),
+    (
+        "non-client files are out of scope",
+        "backend/internal/queue/queue.go",
+        "// get currentTrack, setTrimRange(), setPitchMode()\n",
+        [],
+    ),
+]
+
+
+def run_self_test() -> int:
+    failures: list[str] = []
+    for label, path_rel, text, expected in QUEUE_AUTHORITY_FIXTURES:
+        actual = [rule for rule, _ in queue_authority_violations(path_rel, text)]
+        if sorted(actual) != sorted(expected):
+            failures.append(f"{label}: expected {expected or 'no rules'}, got {actual or 'no rules'}")
+
+    for rule, exempted in QUEUE_AUTHORITY_EXEMPTIONS.items():
+        for path_rel in sorted(exempted):
+            path = ROOT / path_rel
+            text = read_text(path) if path.exists() else None
+            if text is None:
+                failures.append(f"{rule} exemption {path_rel}: file is unreadable or gone")
+                continue
+            if rule not in [r for r, _ in queue_authority_violations(path_rel, text)]:
+                failures.append(f"{rule} exemption {path_rel}: no longer trips the rule")
+
+    if failures:
+        print("AGENTIC HARNESS SELF-TEST FAILED")
+        for item in failures:
+            print(f"- {item}")
+        return 1
+
+    print(f"AGENTIC HARNESS SELF-TEST OK ({len(QUEUE_AUTHORITY_FIXTURES)} queue-authority fixtures)")
+    return 0
+
+
 def main() -> int:
+    argv = sys.argv[1:]
+    if argv == ["--self-test"]:
+        return run_self_test()
+    if argv:
+        print(f"usage: {Path(__file__).name} [--self-test]")
+        return 2
+
     files = repo_files()
     check_required_files()
     check_executable_scripts()

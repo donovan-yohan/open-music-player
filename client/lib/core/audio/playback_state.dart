@@ -107,6 +107,13 @@ class PlaybackState extends ChangeNotifier implements AudioFocusPlayback {
   bool get canSkipNext => _queueController.canSkipNext;
   bool get canSkipPrevious => _queueController.canSkipPrevious;
   bool get hasPreviousInPlayOrder => _queueController.hasPreviousInPlayOrder;
+
+  /// The queue index that plays after [queueIndex], or null at the end of the
+  /// play order. Surfaces that want "the next track" must ask this rather than
+  /// add one to a queue index, which is only the next track when shuffle is off.
+  int? nextQueueIndexInPlayOrder(int queueIndex) =>
+      _queueController.nextQueueIndexInPlayOrder(queueIndex);
+
   bool get hasTrack => currentItem != null;
   String? get playbackError => _playbackError;
   bool get isResolvingSignedUrl => _isResolvingSignedUrl;

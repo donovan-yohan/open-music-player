@@ -235,6 +235,29 @@ void main() {
       await harness.dispose();
     });
 
+    test('nextQueueIndexInPlayOrder answers play order, not queue order',
+        () async {
+      final harness = _Harness();
+      await harness.controller.setQueue([
+        _item('1'),
+        _item('2'),
+        _item('3'),
+      ], initialIndex: 2);
+
+      expect(harness.controller.nextQueueIndexInPlayOrder(0), 1);
+      expect(harness.controller.nextQueueIndexInPlayOrder(2), isNull);
+      expect(harness.controller.nextQueueIndexInPlayOrder(9), isNull);
+
+      await harness.controller.setShuffleMode(true);
+
+      // The last queue index still has a successor once play order stops
+      // tracking queue order, which is the whole reason callers must ask.
+      expect(harness.controller.nextQueueIndexInPlayOrder(2), isNotNull);
+      expect(harness.controller.nextQueueIndexInPlayOrder(2), isNot(2));
+
+      await harness.dispose();
+    });
+
     test(
       'previous capability is loop-independent and follows shuffled play order',
       () async {

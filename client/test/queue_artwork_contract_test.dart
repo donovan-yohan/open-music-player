@@ -3,7 +3,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:open_music_player/models/track.dart';
-import 'package:open_music_player/screens/queue_screen.dart';
+import 'package:open_music_player/core/audio/playback_queue_projection.dart';
 import 'package:open_music_player/shared/models/track.dart'
     show TrackArtworkKind;
 import 'package:open_music_player/shared/widgets/track_artwork.dart';

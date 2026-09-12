@@ -1190,6 +1190,15 @@ class QueueTimelineController {
     return _nextQueueIndexAfter(current);
   }
 
+  /// The queue index that plays after [queueIndex], or null at the end of the
+  /// play order.
+  ///
+  /// Public because "what comes next" is a play-order question and only this
+  /// controller knows the play order: under shuffle, queue index + 1 is a
+  /// different track than the one that will actually play.
+  int? nextQueueIndexInPlayOrder(int queueIndex) =>
+      _nextQueueIndexAfter(queueIndex);
+
   int? _nextQueueIndexAfter(int current) {
     final orderIndex = _playOrder.indexOf(current);
     if (orderIndex == -1 || orderIndex + 1 >= _playOrder.length) return null;
