@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Measures library-scroll smoothness on a connected Android device.
+#
+# Why these two metrics and not the usual ones:
+#
+#   * `dumpsys gfxinfo <pkg>` reports "Total frames rendered: 0" for this app.
+#     Flutter draws into its own SurfaceView, so HWUI never sees the frames.
+#   * `dumpsys SurfaceFlinger --latency <layer>` returns only the refresh
+#     period on Android 14+; the per-frame buffer comes back empty.
+#   * SurfaceFlinger's timestats *does* record present-to-present deltas per
+#     layer, and works regardless of UI toolkit. That is the frame metric here.
+#   * Flutter merges the Dart UI task runner onto the platform (main) thread on
+#     Android, so UI work lives on TID == PID. Reading utime+stime from /proc
+#     measures it exactly; `top` never shows the thread because it rarely
+#     enters the visible set.
+#
+# Run with audio playing and the Library on screen: playback is what drives the
+# position-tick rebuilds, so a silent app under-reports the cost being measured.
+set -euo pipefail
+
+PKG="${OMP_BENCH_PACKAGE:-com.openmusicplayer.app}"
+LABEL="${1:-run}"
+PAIRS="${OMP_BENCH_PAIRS:-14}"
+OUT_DIR="${OMP_BENCH_OUT_DIR:-/tmp/open-music-player-bench}"
+mkdir -p "$OUT_DIR"
+
+adb_() { adb ${ANDROID_SERIAL:+-s "$ANDROID_SERIAL"} "$@"; }
+
+pid="$(adb_ shell pidof "$PKG" | tr -d '\r' | awk '{print $1}')"
+if [ -z "$pid" ]; then
+  printf 'Package %s is not running. Launch it and open the Library first.\n' \
+    "$PKG" >&2
+  exit 1
+fi
+
+cpu_jiffies() {
+  adb_ shell "cat /proc/$pid/task/$pid/stat" | awk '{print $14+$15}' | tr -d '\r'
+}
+
+read -r width height < <(
+  adb_ shell wm size | sed -E 's/.*: ([0-9]+)x([0-9]+)/\1 \2/' | tr -d '\r'
+)
+x=$((width / 2))
+# Stay clear of the mini player and the navigation bar at the bottom, and of
+# the search field and filter chips at the top.
+y_low=$((height * 75 / 100))
+y_high=$((height * 33 / 100))
+
+adb_ shell dumpsys SurfaceFlinger --timestats -enable >/dev/null
+adb_ shell dumpsys SurfaceFlinger --timestats -clear >/dev/null
+
+before="$(cpu_jiffies)"
+start="$(date +%s.%N)"
+for _ in $(seq 1 "$PAIRS"); do
+  adb_ shell input swipe "$x" "$y_low" "$x" "$y_high" 130 >/dev/null
+  adb_ shell input swipe "$x" "$y_high" "$x" "$y_low" 130 >/dev/null
+done
+after="$(cpu_jiffies)"
+end="$(date +%s.%N)"
+
+adb_ shell dumpsys SurfaceFlinger --timestats -dump --maxlayers 8 \
+  >"$OUT_DIR/$LABEL.timestats"
+
+python3 - "$LABEL" "$before" "$after" "$start" "$end" "$PAIRS" "$PKG" \
+  "$OUT_DIR/$LABEL.timestats" <<'PY'
+import sys
+
+label, before, after, start, end, pairs, pkg, timestats = sys.argv[1:]
+ui_seconds = (int(after) - int(before)) / 100  # 100 jiffies per second.
+wall = float(end) - float(start)
+
+histogram = {}
+total = janky = None
+in_layer = False
+for line in open(timestats):
+    line = line.strip()
+    if line.startswith("layerName"):
+        in_layer = pkg in line and "BLAST" in line
+        continue
+    if not in_layer:
+        continue
+    if line.startswith("totalFrames"):
+        total = int(line.split("=")[1])
+    elif line.startswith("jankyFrames"):
+        janky = int(line.split("=")[1])
+    elif line.startswith("present2presentDelta"):
+        in_layer = "histogram"
+    elif in_layer == "histogram" and "ms=" in line:
+        for bucket in line.split():
+            ms, _, count = bucket.partition("=")
+            histogram[int(ms.removesuffix("ms"))] = int(count)
+        in_layer = False
+
+# Buckets below 8ms are frames the compositor coalesced, not scroll frames.
+moving = {ms: n for ms, n in histogram.items() if ms >= 8 and n}
+moving_total = sum(moving.values())
+late = sum(n for ms, n in moving.items() if ms >= 16)
+worst = max(moving, default=0)
+
+print(f"{label}:")
+print(f"  ui_thread_cpu   {ui_seconds:.2f}s over {wall:.1f}s wall "
+      f"({1000 * ui_seconds / int(pairs):.0f}ms per fling pair)")
+if moving_total:
+    print(f"  moving_frames   {moving_total} "
+          f"(surfaceflinger totalFrames={total}, jankyFrames={janky})")
+    print(f"  late_frames     {late} ({100 * late / moving_total:.1f}%) "
+          f"— took two or more vsyncs to present")
+    print(f"  worst_frame     {worst}ms")
+else:
+    print("  no scroll frames recorded; is the Library on screen?")
+PY
