@@ -593,6 +593,9 @@ class _QueueScreenState extends State<QueueScreen> {
             trackId: int.tryParse(item.id),
             queueItemId:
                 queueItemId.startsWith('unresolved_') ? null : queueItemId,
+            // Without this the registry's "Add to playlist" stays invisible,
+            // which is what kept the queue's own per-track menu inert.
+            addTrackToPlaylist: _addTrackToPlaylist,
             playNow: () => _skipToPlaybackIndex(
               playback,
               entry,
@@ -613,6 +616,9 @@ class _QueueScreenState extends State<QueueScreen> {
               commandContext: commandContext,
               position: details.globalPosition,
             ),
+            // The right-click menu is desktop-only. Long press is the same
+            // registry on touch, so the commands are not pointer-gated.
+            onLongPress: () => _showQueueItemCommands(context, commandContext),
             child: TrackTile(
               key: ValueKey('playback_queue_$queueItemId'),
               title: item.title,
@@ -1838,12 +1844,12 @@ class _QueueScreenState extends State<QueueScreen> {
     required Future<void> Function() onRemove,
     required bool enabled,
     GestureTapUpCallback? onSecondaryTapUp,
+    VoidCallback? onLongPress,
   }) {
+    final hasGestures = onSecondaryTapUp != null || onLongPress != null;
     final result = enabled
         ? Dismissible(
-            key: onSecondaryTapUp == null
-                ? key
-                : ValueKey('dismissible_${key.toString()}'),
+            key: hasGestures ? ValueKey('dismissible_${key.toString()}') : key,
             direction: DismissDirection.endToStart,
             background: const SizedBox.shrink(),
             secondaryBackground: _buildSwipeDeleteBackground(context, label),
@@ -1854,11 +1860,12 @@ class _QueueScreenState extends State<QueueScreen> {
             child: child,
           )
         : child;
-    if (onSecondaryTapUp == null) return result;
+    if (!hasGestures) return result;
     return GestureDetector(
       key: key,
       behavior: HitTestBehavior.opaque,
       onSecondaryTapUp: onSecondaryTapUp,
+      onLongPress: onLongPress,
       child: result,
     );
   }
@@ -1885,6 +1892,31 @@ class _QueueScreenState extends State<QueueScreen> {
         unawaited(_saveQueueAsPlaylist());
         break;
     }
+  }
+
+  Future<void> _showQueueItemCommands(
+    BuildContext context,
+    CommandContext commandContext,
+  ) {
+    return showModalBottomSheet<void>(
+      context: context,
+      builder: (_) => RegistryCommandSheet(
+        key: const ValueKey('playback_queue_command_sheet'),
+        registry: context.read<CommandRegistry>(),
+        commandContext: commandContext,
+      ),
+    );
+  }
+
+  /// The registry hands back the numeric backend track id; source-backed rows
+  /// carry none and the command stays hidden for them.
+  Future<void> _addTrackToPlaylist(int trackId) {
+    return showAddToPlaylistSheet(
+      context,
+      playlistService: widget.playlistService ??
+          PlaylistService(api: context.read<ApiClient>()),
+      trackIds: [trackId],
+    );
   }
 
   /// Keeps an ad-hoc queue (drag-reordered, play-next inserts) as a playlist.

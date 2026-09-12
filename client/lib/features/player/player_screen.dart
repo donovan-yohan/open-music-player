@@ -8,6 +8,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import '../../app/theme.dart';
+import '../../core/api/api_client.dart' as dio_api;
 import '../../core/audio/playback_context.dart';
 import '../../core/audio/playback_state.dart';
 import '../../core/providers/settings_provider.dart';
@@ -15,7 +16,9 @@ import '../../core/services/analysis_service.dart';
 import '../../core/services/api_client.dart';
 import '../../core/services/liked_tracks_state.dart';
 import '../../core/services/library_service.dart';
+import '../../core/services/playlist_service.dart';
 import '../../models/track_analysis.dart';
+import '../playlists/add_to_playlist.dart';
 import '../library/local_browse_navigation.dart';
 import '../library/track_metadata_edit_sheet.dart';
 import '../../shared/formatters/source_quality_formatter.dart';
@@ -25,7 +28,11 @@ import '../dj/dj_entry_hint.dart';
 enum _PlayerTimeMode { song, queue }
 
 class PlayerScreen extends StatefulWidget {
-  const PlayerScreen({super.key});
+  const PlayerScreen({super.key, this.playlistService});
+
+  /// Injectable for tests; defaults to a service over the app-wide
+  /// [dio_api.ApiClient], matching how the library rows build theirs.
+  final PlaylistService? playlistService;
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
@@ -637,6 +644,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 },
         ),
         IconButton(
+          key: const ValueKey('player_add_to_playlist_action'),
+          icon: Icon(Icons.playlist_add, color: color),
+          tooltip: trackId == null
+              ? 'Playlists need a library track'
+              : 'Add to playlist',
+          onPressed:
+              trackId == null ? null : () => _addToPlaylist(context, trackId),
+        ),
+        IconButton(
           key: const ValueKey('player_share_action'),
           icon: Icon(Icons.share, color: color),
           tooltip: sourceUrl == null ? 'Source link unavailable' : 'Share',
@@ -656,6 +672,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 },
         ),
       ],
+    );
+  }
+
+  /// Sits beside the like button rather than behind an AppBar overflow: this
+  /// row is where "I am listening to this and want to keep it" already lives,
+  /// and a playlist is the other half of that intent.
+  Future<void> _addToPlaylist(BuildContext context, int trackId) {
+    return showAddToPlaylistSheet(
+      context,
+      playlistService: widget.playlistService ??
+          PlaylistService(api: context.read<dio_api.ApiClient>()),
+      trackIds: [trackId],
     );
   }
 

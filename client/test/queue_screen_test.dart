@@ -24,7 +24,8 @@ import 'package:open_music_player/core/engine/click_auditioner.dart';
 import 'package:open_music_player/core/engine/tempo_automation.dart';
 import 'package:open_music_player/core/models/settings_model.dart';
 import 'package:open_music_player/core/providers/settings_provider.dart';
-import 'package:open_music_player/core/services/api_client.dart' as services_api;
+import 'package:open_music_player/core/services/api_client.dart'
+    as services_api;
 import 'package:open_music_player/core/services/library_service.dart';
 import 'package:open_music_player/core/services/liked_tracks_state.dart';
 import 'package:open_music_player/core/services/playlist_service.dart';
@@ -289,7 +290,6 @@ void main() {
 
     expect(remaining, 165000);
   });
-
 
   testWidgets('playback queue rows expose the like heart', (tester) async {
     playbackState
@@ -563,6 +563,64 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Failed to save queue as playlist'), findsOneWidget);
+    });
+  });
+
+  group('per-track playlist command', () {
+    testWidgets('a long press reaches Add to playlist for a queued track',
+        (tester) async {
+      playbackState
+        ..fakeQueue = [
+          _mediaItem(11, 'First', seconds: 90),
+          _mediaItem(22, 'Second', seconds: 90),
+        ]
+        ..fakeCurrentIndex = 0;
+      final playlistService = _FakePlaylistService(
+        playlists: [_playlist(5, 'Late night')],
+      );
+
+      await pumpQueueScreen(tester, playlistService: playlistService);
+      await tester.longPress(find.text('Second'));
+      await tester.pumpAndSettle();
+
+      final addCommand =
+          find.byKey(const ValueKey('command_sheet_addToPlaylist'));
+      expect(addCommand, findsOneWidget);
+      await tester.tap(addCommand);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Late night'));
+      await tester.pumpAndSettle();
+
+      expect(playlistService.addedTo, [5]);
+      expect(playlistService.addedTrackIds, [
+        [22]
+      ]);
+    });
+
+    testWidgets('a source-backed row hides the command it cannot satisfy',
+        (tester) async {
+      // No backend track row yet, so nothing a server playlist could hold.
+      playbackState
+        ..fakeQueue = [
+          const audio_service.MediaItem(
+            id: 'local-file',
+            title: 'Local only',
+            duration: Duration(seconds: 90),
+          ),
+        ]
+        ..fakeCurrentIndex = 0;
+      final playlistService = _FakePlaylistService(playlists: const []);
+
+      await pumpQueueScreen(tester, playlistService: playlistService);
+      await tester.longPress(find.text('Local only'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey('command_sheet_addToPlaylist')),
+        findsNothing,
+      );
+      expect(playlistService.listCalls, 0);
     });
   });
 
